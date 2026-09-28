@@ -39,6 +39,7 @@ teamai push
 
 - `env add KEY --secret` 声明该 key；若该文件已声明这个 key，则更新它的 `description` 和 `url`，未传的选项保留原值。key 后面带值会被拒绝且不会保存，`env add` 与 `env remove` 的任何输出都不会出现值。
 - `env remove KEY` 在 `env.yaml` 设置了该 key 时删除这个变量，否则删除同目录 `secrets.yaml` 中的声明。`env remove KEY --secret` 只删除声明，用于两个文件都有该 key 的情况。
+- 文件中声明了两次的 key 会让该文件每次读取都失败：`env add KEY --secret` 更新第一个声明并只保留它，`env remove` 删除它的全部声明；两者都会说明删除了几个重复声明。
 - 两个命令都不会编辑无法解析的密钥文件。`--role` 与 `--project` 选择 namespace 的方式与变量相同。
 
 ## Namespace

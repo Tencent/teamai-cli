@@ -1056,6 +1056,20 @@ scope: 'user',
       expect(log.warn).not.toHaveBeenCalled();
     });
 
+    it('updates the first declaration of a key declared twice, removes the rest, and says how many', async () => {
+      await fse.outputFile(rootSecrets(), YAML.stringify({
+        secrets: [{ key: 'GITHUB_TOKEN', description: 'first' }, { key: 'NPM_TOKEN' }, { key: 'GITHUB_TOKEN' }, { key: 'GITHUB_TOKEN' }],
+      }));
+
+      await envAdd('GITHUB_TOKEN', undefined, { secret: true, url: 'https://github.com/settings/tokens' });
+
+      expect(await secretsIn(rootSecrets())).toEqual([
+        { key: 'GITHUB_TOKEN', description: 'first', url: 'https://github.com/settings/tokens' },
+        { key: 'NPM_TOKEN' },
+      ]);
+      expect(log.success).toHaveBeenCalledWith('Updated secret: GITHUB_TOKEN, and removed 2 duplicate declarations of it');
+    });
+
     it('updating a secret with an unknown key warns that it is still not declared, without printing a value', async () => {
       await fse.outputFile(rootSecrets(), YAML.stringify({
         secrets: [{ key: 'GITHUB_TOKEN', value: 'ghp_do_not_print', owner: 'infra' }],
@@ -1125,6 +1139,15 @@ scope: 'user',
       expect(await secretsIn(rootSecrets())).toEqual([{ key: 'NPM_TOKEN' }]);
       expect(log.success).toHaveBeenCalledWith('Removed secret: GITHUB_TOKEN');
       expect(log.info).toHaveBeenCalledWith('Run `teamai push` to sync to team repo.');
+    });
+
+    it('env remove --secret removes every declaration of a key declared twice, and says how many', async () => {
+      await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'GITHUB_TOKEN' }, { key: 'NPM_TOKEN' }, { key: 'GITHUB_TOKEN' }] }));
+
+      await envRemove('GITHUB_TOKEN', { secret: true });
+
+      expect(await secretsIn(rootSecrets())).toEqual([{ key: 'NPM_TOKEN' }]);
+      expect(log.success).toHaveBeenCalledWith('Removed secret: GITHUB_TOKEN, and 1 duplicate declaration of it');
     });
 
     it('env remove --role removes the secret from the namespace file only', async () => {

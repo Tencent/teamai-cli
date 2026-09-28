@@ -393,6 +393,8 @@ async function declareSecret(
   };
   if (isUpdate) secrets[index] = declaration;
   else secrets.push(declaration);
+  // A key declared twice fails every read of the file, so the update leaves one.
+  const duplicates = dropDuplicateSecrets(secrets, key);
   // The update keeps an unknown key, so the secret stays undeclared.
   const unknown = unknownSecretDeclarationKeys(declaration);
   if (unknown.length > 0) {
@@ -404,12 +406,13 @@ async function declareSecret(
     );
   }
 
+  const removedToo = duplicates === 0 ? '' : `, and ${options.dryRun ? 'remove' : 'removed'} ${declarationCount(duplicates)} of it`;
   if (options.dryRun) {
-    log.info(`[dry-run] Would ${isUpdate ? 'update' : 'declare'} secret${target.where}: ${key}`);
+    log.info(`[dry-run] Would ${isUpdate ? 'update' : 'declare'} secret${target.where}: ${key}${removedToo}`);
     return;
   }
   await writeSecretsFile(target.filePath, secrets);
-  log.success(`${isUpdate ? 'Updated' : 'Declared'} secret${target.where}: ${key}`);
+  log.success(`${isUpdate ? 'Updated' : 'Declared'} secret${target.where}: ${key}${removedToo}`);
   log.info('Run `teamai push` to sync to team repo.');
 }
 
@@ -482,15 +485,33 @@ async function removeSecret(
   const index = secrets.findIndex((secret) => secret.key === key);
   if (index === -1) return 'absent';
 
+  // Every declaration of it: one left behind still declares the key.
+  const duplicates = dropDuplicateSecrets(secrets, key, 0) - 1;
+  const removedToo = duplicates === 0 ? '' : `, and ${declarationCount(duplicates)} of it`;
   if (options.dryRun) {
-    log.info(`[dry-run] Would remove secret${file.where}: ${key}`);
+    log.info(`[dry-run] Would remove secret${file.where}: ${key}${removedToo}`);
     return 'removed';
   }
-  secrets.splice(index, 1);
   await writeSecretsFile(file.filePath, secrets);
-  log.success(`Removed secret${file.where}: ${key}`);
+  log.success(`Removed secret${file.where}: ${key}${removedToo}`);
   log.info('Run `teamai push` to sync to team repo.');
   return 'removed';
+}
+
+/** Remove the declarations of `key` after the first `keep` of them from `secrets`; answers how many. */
+function dropDuplicateSecrets(secrets: Record<string, unknown>[], key: string, keep = 1): number {
+  let seen = 0;
+  let removed = 0;
+  for (let i = 0; i < secrets.length; i++) {
+    if (secrets[i]?.key !== key || ++seen <= keep) continue;
+    secrets.splice(i--, 1);
+    removed++;
+  }
+  return removed;
+}
+
+function declarationCount(duplicates: number): string {
+  return `${duplicates} duplicate declaration${duplicates === 1 ? '' : 's'}`;
 }
 
 /**

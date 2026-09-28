@@ -39,6 +39,7 @@ teamai push
 
 - `env add KEY --secret` declares the key, or updates the `description` and `url` of a key already declared in that file; an option not passed leaves its field as it was. A value after the key is rejected and not stored, and no output of `env add` or `env remove` names a value.
 - `env remove KEY` removes a variable from `env.yaml` when that file sets the key, and otherwise the declaration from the `secrets.yaml` next to it. `env remove KEY --secret` removes only the declaration, for a key both files carry.
+- A key the file declares twice, which fails every read of it, is left declared once by `env add KEY --secret` (it updates the first declaration) and not at all by `env remove`; each says how many duplicate declarations it removed.
 - Neither command edits a secrets file that does not parse. `--role` and `--project` pick the namespace as they do for variables.
 
 ## Namespaces
