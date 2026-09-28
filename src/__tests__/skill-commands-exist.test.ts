@@ -105,7 +105,9 @@ function validate(program: Command, invocations: Invocation[]): string[] {
     }
 
     const flags = knownFlags(command, program);
-    for (const token of rest) {
+    // After `--` the words are another command's (`teamai env exec -- gh …`).
+    const end = rest.indexOf('--');
+    for (const token of end === -1 ? rest : rest.slice(0, end)) {
       if (!token.startsWith('-') || token === '-') continue;
       const flag = token.split('=')[0];
       // Placeholders and prose inside an example are not flags to resolve.
