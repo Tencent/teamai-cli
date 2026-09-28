@@ -35,7 +35,6 @@ let originalGuardedEnv: Record<string, string | undefined>;
 
 beforeEach(async () => {
   home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-config-'));
-  vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
   originalHome = process.env.HOME;
   process.env.HOME = home;
   originalGuardedEnv = {};
@@ -54,7 +53,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   process.env.HOME = originalHome;
-  vi.unstubAllEnvs();
   for (const key of GUARDED_ENV_KEYS) {
     const value = originalGuardedEnv[key];
     if (value === undefined) delete process.env[key];
