@@ -33,6 +33,25 @@ vi.mock('../config.js', async (importOriginal) => ({
   saveStateForScope: vi.fn(() => Promise.resolve()),
 }));
 
+// Path → writes still allowed before each further write fails, to stand for
+// a disk that refuses the restore.
+const failingWrites = new Map<string, number>();
+vi.mock('../utils/fs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/fs.js')>();
+  return {
+    ...actual,
+    writeFile: (filePath: string, content: string) => {
+      const allowed = failingWrites.get(filePath);
+      if (allowed === undefined) return actual.writeFile(filePath, content);
+      if (allowed > 0) {
+        failingWrites.set(filePath, allowed - 1);
+        return actual.writeFile(filePath, content);
+      }
+      return Promise.reject(new Error(`EACCES: permission denied, open '${filePath}'`));
+    },
+  };
+});
+
 vi.mock('../read-only.js', () => ({ assertNotReadOnly: vi.fn() }));
 vi.mock('../utils/pre-push-sync.js', () => ({ syncTeamUpdatesToLocal: vi.fn() }));
 vi.mock('../utils/prompt.js', () => ({
@@ -73,6 +92,11 @@ async function initTeamRepos(root: string): Promise<{ teamRepo: string; remote: 
   return { teamRepo, remote };
 }
 
+/** What log.error printed. */
+function errorOutput(): string {
+  return vi.mocked(console.error).mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+}
+
 /** What push printed to stderr, where the spinner reports the refusal. */
 function stderrOutput(): string {
   return vi.mocked(process.stderr.write).mock.calls.map(([chunk]) => String(chunk)).join('');
@@ -92,6 +116,7 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-push-env-'));
     vi.clearAllMocks();
+    failingWrites.clear();
     mockCreatePullRequest.mockResolvedValue('https://example.test/pr/1');
     ({ teamRepo, remote } = await initTeamRepos(tmpDir));
     const localConfig = {
@@ -237,6 +262,90 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     const [branch] = await pushBranches(remote);
     expect(branch).toBeDefined();
     expect(await simpleGit(remote).show([`${branch}:env/env.yaml`])).toContain('value: changed');
+  });
+
+  it('restores a new env file env add --role created when the push rolls the clone back', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    const git = simpleGit(teamRepo);
+    const opsEnv = path.join(teamRepo, 'env', 'ops', 'env.yaml');
+    await envAdd('OPS_VAR', 'ops-value', { role: 'ops' });
+    expect(await git.raw(['status', '--porcelain', '--untracked-files=all'])).toContain('?? env/ops/env.yaml');
+    await git.branch(['teamai/taken']);
+
+    await push({ all: true, branch: 'teamai/taken' });
+
+    expect(process.exitCode).toBe(1);
+    expect(stderrOutput()).toContain('Push failed');
+    expect(fs.readFileSync(opsEnv, 'utf8')).toContain('value: ops-value');
+    expect(await git.raw(['status', '--porcelain', '--untracked-files=all'])).toContain('?? env/ops/env.yaml');
+  });
+
+  it('restores a new env file env add --role created when git push fails after the commit', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    const git = simpleGit(teamRepo);
+    const opsEnv = path.join(teamRepo, 'env', 'ops', 'env.yaml');
+    fs.writeFileSync(path.join(remote, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    await envAdd('OPS_VAR', 'ops-value', { role: 'ops' });
+
+    await push({ all: true });
+
+    expect(process.exitCode).toBe(1);
+    expect((await git.revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe('main');
+    expect(fs.readFileSync(opsEnv, 'utf8')).toContain('value: ops-value');
+    expect(await git.raw(['status', '--porcelain', '--untracked-files=all'])).toContain('?? env/ops/env.yaml');
+  });
+
+  it('keeps the teamai.yaml edit on the default branch when git push fails after the commit', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    const git = simpleGit(teamRepo);
+    fs.writeFileSync(path.join(remote, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    await envAdd('TEAM_VAR', 'changed', {});
+    // After env add, whose refresh would realign the clone and drop it.
+    fs.appendFileSync(path.join(teamRepo, 'teamai.yaml'), '# local edit\n');
+
+    await push({ all: true });
+
+    expect(process.exitCode).toBe(1);
+    expect((await git.revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe('main');
+    expect(fs.readFileSync(path.join(teamRepo, 'teamai.yaml'), 'utf8')).toContain('# local edit');
+    expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: changed');
+  });
+
+  it('stops and names the env file when putting it back after the refresh fails', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    await envAdd('TEAM_VAR', 'changed', {});
+    failingWrites.set(path.join(teamRepo, 'env', 'env.yaml'), 0);
+
+    await push({ all: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(stderrOutput()).not.toContain('Pull failed');
+    expect(errorOutput()).toMatch(/env\/env\.yaml \(EACCES: permission denied/);
+    expect(errorOutput()).toContain('teamai env add');
+    expect(mockCreatePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('stops and names the env file when putting it back after a group fails', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    const { saveStateForScope } = await import('../config.js');
+    await envAdd('TEAM_VAR', 'changed', {});
+    await simpleGit(teamRepo).branch(['teamai/taken']);
+    // The restore after the refresh succeeds; the one after the rollback fails.
+    failingWrites.set(path.join(teamRepo, 'env', 'env.yaml'), 1);
+
+    await push({ all: true, branch: 'teamai/taken' });
+
+    expect(process.exitCode).toBe(1);
+    expect(stderrOutput()).toContain('Push failed');
+    expect(errorOutput()).toMatch(/env\/env\.yaml \(EACCES: permission denied/);
+    expect(errorOutput()).toContain('teamai env add');
+    // Earlier groups' PR records are saved before stopping, as for any failed group.
+    expect(vi.mocked(saveStateForScope)).toHaveBeenCalled();
   });
 
   it('still refuses a deleted env.yaml', async () => {
