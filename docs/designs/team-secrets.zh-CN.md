@@ -98,7 +98,7 @@ teamai env unset GITHUB_TOKEN [--global]
 
 ## 存储
 
-- 每个团队仓库一个文件：`~/.teamai/secrets/teams/<team>-<hash>.json`，由 `teamai.yaml` 中的团队名和仓库标识的哈希组成，与 `teamai models configure` 为团队密钥文件命名的方式相同。使用同一团队的每个项目和 worktree 读取同一个文件，所以成员每个团队只需设置一次。
+- 每个团队仓库一个文件：`~/.teamai/secrets/teams/<hash>.json`，只由仓库标识的哈希命名（与 `teamai models configure` 团队密钥文件名中的哈希相同），所以修改 `teamai.yaml` 中的 `team:` 不会丢失成员的值。使用同一团队的每个项目和 worktree 读取同一个文件，所以成员每个团队只需设置一次。
 - 本机一个文件：`~/.teamai/secrets/machine.json`，格式相同。每个 scope 都从中读取自己声明的密钥。
 - 始终位于 `~/.teamai` 下，绝不放在 scope 的数据目录中（单仓模式下该目录在业务仓库内）。不使用 `~/.teamai/env`：它是用户 scope 的 env 备份文件。
 - 以原子方式写入，权限 `0600`。这不是加密：能读取成员文件的人都能读到值。

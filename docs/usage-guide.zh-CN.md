@@ -991,8 +991,8 @@ teamai env set GITHUB_TOKEN --global                      # 对本机所有团�
 teamai env unset GITHUB_TOKEN [--global]
 ```
 
-`env set` 接受已声明的密钥，不加 `--global` 时也接受该目录收到的 `env.yaml` 变量，并把值保存在 `~/.teamai/secrets/teams/<team>-<hash>.json`
-（权限 `0600`），每个团队仓库一个文件；加 `--global` 时保存在 `~/.teamai/secrets/machine.json`，
+`env set` 接受已声明的密钥，不加 `--global` 时也接受该目录收到的 `env.yaml` 变量，并把值保存在 `~/.teamai/secrets/teams/<hash>.json`
+（权限 `0600`），每个团队仓库一个文件，按仓库标识命名，修改 `team:` 不影响它；加 `--global` 时保存在 `~/.teamai/secrets/machine.json`，
 对本机所有团队生效，为某个团队设置的值仍然优先。不在任何 scope 中时，`--global` 接受任何合法的 key，
 并提示目前还没有团队声明它。`teamai env list` 和 `teamai list env` 会把每个已声明的密钥
 显示为 `team`（你为该团队设置了它）、`global`（你为本机设置了它）、`environment`（你自己的环境中有它的值）、`missing`，

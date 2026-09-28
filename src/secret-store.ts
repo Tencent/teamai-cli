@@ -1,9 +1,9 @@
 /**
  * The values a member keeps for their team's declared secrets (#875), on their
  * own machine and never in the team repo: one file per team repo at
- * `~/.teamai/secrets/teams/<team>-<hash>.json`, named the way `teamai models
- * configure` names its team key files, and one for every team on the machine
- * at `~/.teamai/secrets/machine.json`. `~/.teamai/env` is not used: it is
+ * `~/.teamai/secrets/teams/<hash>.json`, named by the hash of the repository
+ * identity alone so renaming `team:` in `teamai.yaml` keeps the values, and
+ * one for every team on the machine at `~/.teamai/secrets/machine.json`. `~/.teamai/env` is not used: it is
  * already the user scope's env backup file.
  *
  * Each entry is exactly one of a literal value or the name of a variable to
@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { getTeamValuesPath } from './models/profile.js';
+import { getTeamRepoHash } from './models/profile.js';
 import { ENV_KEY_RE } from './resources/env-key.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
@@ -33,7 +33,7 @@ export type SecretStoreRead =
 
 /** This team's values file. */
 export function getTeamSecretsPath(localConfig: LocalConfig): string {
-  return getTeamValuesPath(localConfig, path.join(getTeamaiHomeDir(), 'secrets', 'teams'));
+  return path.join(getTeamaiHomeDir(), 'secrets', 'teams', `${getTeamRepoHash(localConfig)}.json`);
 }
 
 /** The values file for every team on this machine (`teamai env set --global`). */

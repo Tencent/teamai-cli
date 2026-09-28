@@ -64,7 +64,7 @@ describe('team secret values', () => {
     it('keeps values per team repo under ~/.teamai/secrets/teams, readable by the member only', async () => {
       const file = getTeamSecretsPath(localConfig);
       expect(path.dirname(file)).toBe(path.join(home, '.teamai', 'secrets', 'teams'));
-      expect(path.basename(file)).toMatch(/^acme-[0-9a-f]{10}\.json$/);
+      expect(path.basename(file)).toMatch(/^[0-9a-f]{10}\.json$/);
 
       await writeSecretStore(file, { GITHUB_TOKEN: { value: 'fixture-token' }, GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN' } });
 
@@ -73,6 +73,17 @@ describe('team secret values', () => {
         values: { GITHUB_TOKEN: { value: 'fixture-token' }, GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN' } },
       });
       if (process.platform !== 'win32') expect((await fse.stat(file)).mode & 0o777).toBe(0o600);
+    });
+
+    it("keeps the values when the team is renamed in teamai.yaml, and only for this team repo", async () => {
+      await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
+      await fse.outputFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), 'team: Acme Engineering\n');
+
+      expect(await readSecretStore(getTeamSecretsPath(localConfig))).toEqual({ ok: true, values: { GITHUB_TOKEN: { value: 'team-token' } } });
+
+      const otherRepo: LocalConfig = { ...localConfig, repo: { ...localConfig.repo, remote: 'https://example.com/other/team.git' } };
+      expect(getTeamSecretsPath(otherRepo)).not.toBe(getTeamSecretsPath(localConfig));
+      expect(await readSecretStore(getTeamSecretsPath(otherRepo))).toEqual({ ok: true, values: {} });
     });
 
     it('does not touch the env backup file ~/.teamai/env', async () => {
