@@ -10,6 +10,7 @@
  * piped. No value is written anywhere: the child gets it in its environment
  * only.
  */
+import os from 'node:os';
 import crossSpawn from 'cross-spawn';
 import { resolveConfigForDir } from './config.js';
 import { reportMissingSecrets } from './env-advisories.js';
@@ -52,14 +53,24 @@ export async function envExec(words: readonly string[], options: GlobalOptions, 
   return run(file, args, env, cwd);
 }
 
-/** Exit the way the command did: its exit code, or the signal that ended it. */
+/**
+ * Signals that end the command but not Node: Node ignores SIGPIPE, and SIGUSR1
+ * starts its inspector. Re-raising one would leave teamai running.
+ */
+const SURVIVED_SIGNALS: ReadonlySet<NodeJS.Signals> = new Set(['SIGPIPE', 'SIGUSR1']);
+
+/**
+ * Exit the way the command did: its exit code, or the signal that ended it.
+ * The shell's 128 + signal number is set first, for a signal teamai survives.
+ */
 export function exitLike(outcome: ExecOutcome): void {
   switch (outcome.kind) {
     case 'exited':
       process.exitCode = outcome.code;
       return;
     case 'signaled':
-      process.kill(process.pid, outcome.signal);
+      process.exitCode = 128 + os.constants.signals[outcome.signal];
+      if (!SURVIVED_SIGNALS.has(outcome.signal)) process.kill(process.pid, outcome.signal);
       return;
     default: {
       const unhandled: never = outcome;

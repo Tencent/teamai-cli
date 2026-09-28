@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 
-import { envExec } from '../env-exec.js';
+import { envExec, exitLike } from '../env-exec.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore, type SecretStore } from '../secret-store.js';
 import { resolveAnchors } from '../utils/git.js';
 import { _resetState, _setLogFilePath, setStderrOnly } from '../utils/logger.js';
@@ -281,6 +281,17 @@ describe('teamai env exec', () => {
     expect(await exec(nowhere, 'process.exit(3)', [])).toEqual({ kind: 'exited', code: 3 });
     expect(await exec(nowhere, 'process.kill(process.pid, "SIGTERM"); setTimeout(() => {}, 5000)', []))
       .toEqual({ kind: 'signaled', signal: 'SIGTERM' });
+  });
+
+  it('exits 128 + the signal number for a signal that does not end teamai (SIGPIPE, SIGUSR1)', () => {
+    try {
+      exitLike({ kind: 'signaled', signal: 'SIGPIPE' });
+      expect(process.exitCode).toBe(141);
+      exitLike({ kind: 'signaled', signal: 'SIGUSR1' });
+      expect(process.exitCode).toBe(128 + os.constants.signals.SIGUSR1);
+    } finally {
+      process.exitCode = undefined;
+    }
   });
 
   it('reports a command that cannot be started, with exit code 127', async () => {
