@@ -57,6 +57,8 @@ export interface EntryLayout {
   readonly file: string;
   /** The `resources.<key>` that lists the active namespaces. */
   readonly activation: EntryType;
+  /** What messages call the whole set, as `env` or `secrets`. */
+  readonly label: string;
   /** What one entry is called, for messages. */
   readonly noun: string;
   /** What a failure leaves unchanged, as a sentence, for messages. */
@@ -69,6 +71,7 @@ export function entryLayout(type: EntryType): EntryLayout {
     dir: type,
     file: ENTRY_FILE[type],
     activation: type,
+    label: type,
     noun: ENTRY_NOUN[type],
     kept: `${type} was not applied this run, so your ${INSTALLED[type]} are unchanged.`,
   };
@@ -598,17 +601,19 @@ export function describeOrigins(entries: readonly ResolvedEntry<unknown>[]): str
  * contributes any, each override, and in legacy mode each name the root file
  * repeats. None is a problem, so none is a failing check.
  */
-export function describeEntryNotes(type: EntryType, resolution: EntryResolution<unknown>): string[] {
+export function describeEntryNotes(where: EntryType | EntryLayout, resolution: EntryResolution<unknown>): string[] {
   if (resolution.kind !== 'resolved') return [];
+  const layout = asLayout(where);
+  const { label } = layout;
   const lines = resolution.entries.some((entry) => entry.namespace !== null)
-    ? [`${type}: ${resolution.entries.length} received here (${describeOrigins(resolution.entries)})`]
+    ? [`${label}: ${resolution.entries.length} received here (${describeOrigins(resolution.entries)})`]
     : [];
   for (const entry of resolution.entries) {
-    if (entry.replaces) lines.push(describeOverride(type, { name: entry.name, source: entry.source, replaces: entry.replaces }));
+    if (entry.replaces) lines.push(describeOverride(label, { name: entry.name, source: entry.source, replaces: entry.replaces }));
   }
   if (resolution.active === null) {
     for (const name of resolution.repeated) {
-      lines.push(`${type}: "${name}" is defined more than once in ${entryFilePath(type, null)} (legacy mode does not check this; keep one of them)`);
+      lines.push(`${label}: "${name}" is defined more than once in ${entryFilePath(layout, null)} (legacy mode does not check this; keep one of them)`);
     }
   }
   return lines;

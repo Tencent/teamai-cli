@@ -49,6 +49,7 @@ import { deliversEveryNamespace } from './resource-namespaces.js';
 import { reportEntryResolution, resolveEntries } from './namespaced-entries.js';
 import { resetWarnOnce } from './utils/warn-once.js';
 import { envEntryReader } from './resources/env.js';
+import { resolveSecretDeclarations } from './resources/secrets.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
@@ -454,6 +455,15 @@ function activeEnvNamespaces(roleContext: RolePullContext | null): string[] | nu
 }
 
 /**
+ * Warn about secret declarations that cannot be used (#875). Nothing a pull
+ * delivers reads them yet, so the env variables go on regardless.
+ */
+async function reportSecretDeclarations(localConfig: LocalConfig, roleContext: RolePullContext | null): Promise<void> {
+  const declarations = await resolveSecretDeclarations(localConfig, activeEnvNamespaces(roleContext));
+  if (declarations.kind !== 'absent') reportEntryResolution(declarations);
+}
+
+/**
  * Pull resources for a single scope. This is the core sync logic extracted
  * from the original pull() function to support both user and project scope.
  */
@@ -480,6 +490,7 @@ async function reconcileEnvForUnchangedRepo(
   try {
     const resolution = await resolveEntries(envEntryReader, localConfig, activeEnvNamespaces(roleContext));
     reportEntryResolution(resolution);
+    await reportSecretDeclarations(localConfig, roleContext);
     if (resolution.kind === 'failed') return;
     const envHandler = new EnvHandler();
     await envHandler.writeResolvedEnv(resolution.entries.map((entry) => entry.entry), freshConfig, localConfig);
@@ -1093,6 +1104,7 @@ async function pullForScope(
       // file that cannot be used, or a name defined twice, keeps env.sh as is.
       const resolution = await resolveEntries(envEntryReader, localConfig, activeEnvNamespaces(roleContext));
       reportEntryResolution(resolution);
+      await reportSecretDeclarations(localConfig, roleContext);
       if (resolution.kind === 'failed') continue;
       const variables = resolution.entries.map((entry) => entry.entry);
       const countLabel = `${variables.length} env variable(s)`;

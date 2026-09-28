@@ -515,7 +515,7 @@ knowledge on main is left exactly in place).
    - `.teamai/hooks/hooks.yaml` — team hooks
    - `.teamai/mcp/mcp.yaml` — shared MCP servers
 
-> **Heads-up on `env`.** In single-repo mode `.teamai/env/env.yaml` **is committed to main** (unlike standalone mode's per-machine env), so it travels to everyone who clones the repo. `env.yaml` stores plaintext key/value pairs — put only non-secret shared config there, and keep real secrets in your own untracked environment.
+> **Heads-up on `env`.** In single-repo mode `.teamai/env/env.yaml` **is committed to main** (unlike standalone mode's per-machine env), so it travels to everyone who clones the repo. `env.yaml` stores plaintext key/value pairs — put only non-secret shared config there. Declare a secret without its value in `.teamai/env/secrets.yaml` (see [Team secrets](designs/team-secrets.md)) and keep the value in your own untracked environment.
 
 > **Limitation.** Single-repo mode ties one team setup to one business repo. If you need to share one team knowledge base across many business repos, use a standalone team repo (`teamai init <repo>`) instead.
 
@@ -1048,6 +1048,25 @@ variables:
     value: https://api.example.com
     description: Team API endpoint        # optional
 ```
+
+**Secrets.** A secret the team needs is declared with no value, in
+`env/secrets.yaml` or a namespace's `env/<ns>/secrets.yaml` (active like
+`env/<ns>/env.yaml`, and a namespace entry replaces the root entry with the same
+key). Each member keeps the value on their own machine.
+
+```yaml
+secrets:
+  - key: GITHUB_TOKEN
+    description: GitHub token with repo scope   # optional
+    url: https://github.com/settings/tokens     # optional: where a member gets one
+```
+
+`teamai env list` and `teamai list env` show each declared secret as
+`environment` (your environment has a value for it) or `missing`, and never show
+a value, `--reveal` included. A secrets file that cannot be used fails the
+secrets only: env variables are still delivered, `pull` warns, and
+`teamai doctor` fails a check naming the file. `teamai push` picks up a change to
+any secrets file. See [Team secrets](designs/team-secrets.md).
 
 A variable that no longer reaches this directory is removed from `env.sh` on
 the next pull, even one that reports `Already synced` because the team repo has
