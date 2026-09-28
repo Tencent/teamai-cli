@@ -433,9 +433,9 @@ scope: 'user',
       expect(logged()).not.toContain('ghp_fixture_value');
     });
 
-    it('does not write on --dry-run', async () => {
+    it('does not write on --dry-run, nor take the store lock', async () => {
       await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN', dryRun: true });
-      expect(await fse.pathExists(storeFile())).toBe(false);
+      expect(await fse.pathExists(path.dirname(storeFile()))).toBe(false);
     });
 
     it.each([
@@ -452,6 +452,24 @@ scope: 'user',
       expect(log.info).toHaveBeenCalledWith(`[dry-run] Would set GITHUB_TOKEN for this team in ${storeFile()}`);
       expect(process.exitCode).toBeUndefined();
       expect(await fse.pathExists(path.dirname(storeFile()))).toBe(false);
+    });
+
+    it('keeps every change when env set and env unset run at the same time', async () => {
+      await writeSecretStore(storeFile(), { OLD_TOKEN: { env: 'OLD' } });
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'secrets.yaml'),
+        'secrets:\n  - key: GITHUB_TOKEN\n  - key: GITLAB_TOKEN\n  - key: OLD_TOKEN\n',
+      );
+
+      await Promise.all([
+        envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN' }),
+        envSet('GITLAB_TOKEN', { fromEnv: 'WORK_GITLAB_TOKEN' }),
+        envUnset('OLD_TOKEN', {}),
+      ]);
+
+      expect(await stored()).toEqual({ GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' }, GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN' } });
+      expect(await fse.pathExists(`${storeFile()}.lock`)).toBe(false);
+      expect(process.exitCode).toBeUndefined();
     });
 
     it('unset removes the team value and keeps the others', async () => {

@@ -8,7 +8,7 @@ import {
   SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, unknownSecretDeclarationKeys,
   writeSecretsFile,
 } from './resources/secrets.js';
-import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, writeSecretStore, type StoredSecret } from './secret-store.js';
+import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, updateSecretStore, type StoredSecret } from './secret-store.js';
 import { askSecret, isInteractive, readStdin } from './utils/prompt.js';
 import { reportMissingSecrets } from './env-advisories.js';
 import { envListing } from './env-listing.js';
@@ -106,6 +106,7 @@ export async function envSet(
   }
 
   const { file, target } = valuesFile(localConfig, options.global);
+  // Read before asking for the value, so an unusable store fails first; the write re-reads it under the lock.
   const store = await readSecretStore(file);
   if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
   if (options.dryRun) {
@@ -116,7 +117,9 @@ export async function envSet(
   const input = await secretInput(key, options);
   if (!input.ok) return fail(`${input.message} Nothing was changed.`);
   const { entry } = input;
-  await writeSecretStore(file, { ...store.values, [key]: entry });
+
+  const update = await updateSecretStore(file, (values) => ({ ...values, [key]: entry }));
+  if (update.kind === 'failed') return fail(`${update.reason} Nothing was changed.`);
   if ('env' in entry) {
     log.success(`${key} now reads ${entry.env} from your environment ${target} (${file}).`);
     if (!envValue(process.env, entry.env)) log.warn(`${entry.env} is not set in this shell; ${key} has no value until it is.`);
@@ -138,19 +141,32 @@ export async function envUnset(key: string, options: GlobalOptions & { global?: 
   const localConfig = scope.kind === 'scope' ? scope.localConfig : null;
 
   const { file, value } = valuesFile(localConfig, options.global);
-  const store = await readSecretStore(file);
-  if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
-  if (!Object.hasOwn(store.values, key)) {
-    log.info(`${key} has no ${value}. Nothing was changed.`);
-    return;
-  }
+  const hasNoValue = (): void => { log.info(`${key} has no ${value}. Nothing was changed.`); };
   if (options.dryRun) {
+    const store = await readSecretStore(file);
+    if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
+    if (!Object.hasOwn(store.values, key)) return hasNoValue();
     log.info(`[dry-run] Would remove ${key}'s ${value} from ${file}`);
     return;
   }
-  const rest = { ...store.values };
-  delete rest[key];
-  await writeSecretStore(file, rest);
+  const update = await updateSecretStore(file, (values) => {
+    if (!Object.hasOwn(values, key)) return null;
+    const rest = { ...values };
+    delete rest[key];
+    return rest;
+  });
+  switch (update.kind) {
+    case 'failed':
+      return fail(`${update.reason} Nothing was changed.`);
+    case 'unchanged':
+      return hasNoValue();
+    case 'written':
+      break;
+    default: {
+      const unhandled: never = update;
+      return unhandled;
+    }
+  }
   log.success(`Removed ${key}'s ${value} (${file}).`);
   if (!localConfig) return;
   log.info(`Run \`teamai pull\` to ${await unsetApplies(localConfig, key, options.global)}.`);

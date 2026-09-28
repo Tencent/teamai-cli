@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { getTeamRepoHash } from './models/profile.js';
 import { ENV_KEY_RE, envTable, envValue } from './resources/env-key.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
+import { acquireLock, releaseLock } from './update.js';
 import { writeJsonAtomic } from './utils/fs.js';
 
 const StoredSecretSchema = z.union([
@@ -86,6 +87,45 @@ export async function readSecretStore(filePath: string): Promise<SecretStoreRead
 /** Write a store file atomically, readable by this user only. */
 export async function writeSecretStore(filePath: string, values: SecretStore): Promise<void> {
   await writeJsonAtomic(filePath, SecretStoreSchema.parse(values), { mode: 0o600 });
+}
+
+/** What `updateSecretStore` did. */
+export type SecretStoreUpdate =
+  | { readonly kind: 'written' }
+  | { readonly kind: 'unchanged' }
+  | { readonly kind: 'failed'; readonly reason: string };
+
+/**
+ * Change a store file under its lock (`<file>.lock`), so two `env set` or
+ * `env unset` runs at once both land: the file is read inside the lock, and
+ * `change` returns the new entries, or null to leave it as it is.
+ */
+export async function updateSecretStore(
+  filePath: string,
+  change: (values: SecretStore) => SecretStore | null,
+): Promise<SecretStoreUpdate> {
+  const lock = `${filePath}.lock`;
+  let held = false;
+  for (let attempt = 0; attempt < 100 && !held; attempt++) {
+    held = await acquireLock(lock);
+    if (!held) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (!held) {
+    return {
+      kind: 'failed',
+      reason: `Another teamai command is changing ${filePath}. Run the command again once it has finished.`,
+    };
+  }
+  try {
+    const store = await readSecretStore(filePath);
+    if (!store.ok) return { kind: 'failed', reason: store.reason };
+    const next = change(store.values);
+    if (!next) return { kind: 'unchanged' };
+    await writeSecretStore(filePath, next);
+    return { kind: 'written' };
+  } finally {
+    await releaseLock(lock);
+  }
 }
 
 /** The value an entry stands for now: a `--from-env` reference is read from `env` each time. Empty is none. */
