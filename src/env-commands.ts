@@ -108,15 +108,14 @@ export async function envSet(
   const { file, target } = valuesFile(localConfig, options.global);
   const store = await readSecretStore(file);
   if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
-
-  const input = await secretInput(key, options);
-  if (!input.ok) return fail(`${input.message} Nothing was changed.`);
-  const { entry } = input;
-
   if (options.dryRun) {
     log.info(`[dry-run] Would set ${key} ${target} in ${file}`);
     return;
   }
+
+  const input = await secretInput(key, options);
+  if (!input.ok) return fail(`${input.message} Nothing was changed.`);
+  const { entry } = input;
   await writeSecretStore(file, { ...store.values, [key]: entry });
   if ('env' in entry) {
     log.success(`${key} now reads ${entry.env} from your environment ${target} (${file}).`);

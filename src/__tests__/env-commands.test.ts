@@ -438,6 +438,22 @@ scope: 'user',
       expect(await fse.pathExists(storeFile())).toBe(false);
     });
 
+    it.each([
+      ['the hidden prompt', {}],
+      ['--stdin', { stdin: true }],
+    ])('previews a --dry-run set without reading a value from %s', async (_source, flags) => {
+      vi.mocked(askSecret).mockRejectedValue(new Error('Cannot prompt for a secret in non-interactive mode'));
+      vi.mocked(readStdin).mockRejectedValue(new Error('stdin was read'));
+
+      await envSet('GITHUB_TOKEN', { ...flags, dryRun: true });
+
+      expect(askSecret).not.toHaveBeenCalled();
+      expect(readStdin).not.toHaveBeenCalled();
+      expect(log.info).toHaveBeenCalledWith(`[dry-run] Would set GITHUB_TOKEN for this team in ${storeFile()}`);
+      expect(process.exitCode).toBeUndefined();
+      expect(await fse.pathExists(path.dirname(storeFile()))).toBe(false);
+    });
+
     it('unset removes the team value and keeps the others', async () => {
       vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
       await envSet('GITHUB_TOKEN', { stdin: true });
