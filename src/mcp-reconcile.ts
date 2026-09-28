@@ -16,6 +16,7 @@ import {
   managedMcpManifestKey,
   resolveToolBaseDir,
   scopedToolPaths,
+  TeamaiConfigSchema,
 } from './types.js';
 import {
   detectMcpFormat,
@@ -48,6 +49,7 @@ import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
 import { isOnPath, SAFE_BIN_RE, type LookPathOptions } from './utils/lookpath.js';
+import { carriesResolvedValue, excludeFromGit, resolvedVariableIn } from './mcp-git-exclude.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
 //
@@ -222,7 +224,7 @@ function requirementsMet(def: McpServerDef, lookPath?: LookPathOptions): string 
 
 // ─── Tool targeting ──────────────────────────────────────────
 
-interface McpTarget {
+export interface McpTarget {
   tool: string;
   format: McpFormat;
   /** Absolute path of the config file to edit. */
@@ -241,13 +243,26 @@ interface McpTarget {
 export async function resolveMcpTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
+  /**
+   * Also the tools not detected here, and in project scope the built-in
+   * location of a tool the team dropped or moved: a file an earlier pull
+   * wrote outlives its tool and its mapping.
+   */
+  options: { includeUndetected?: boolean } = {},
 ): Promise<McpTarget[]> {
   const projectScope = localConfig.scope === 'project';
   const targets: McpTarget[] = [];
 
   // Skills/settings/agents probe paths must reflect the active scope: OpenCode's
   // user-scope resources live under ~/.config/opencode, not ~/.opencode.
-  for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+  const toolPaths = scopedToolPaths(teamConfig, localConfig);
+  const entries = Object.entries(toolPaths);
+  if (options.includeUndetected && projectScope) {
+    for (const [tool, paths] of Object.entries(TeamaiConfigSchema.shape.toolPaths.parse(undefined))) {
+      if (paths.mcpProject && toolPaths[tool]?.mcpProject !== paths.mcpProject) entries.push([tool, paths]);
+    }
+  }
+  for (const [tool, paths] of entries) {
     const format = detectMcpFormat(tool);
     if (!format) continue;
 
@@ -264,7 +279,7 @@ export async function resolveMcpTargets(
 
     const probe = paths.skills ?? paths.settings ?? paths.agents;
     if (!probe) continue;
-    if (!await isToolInstalledForConfig(tool, probe, localConfig, file)) {
+    if (!options.includeUndetected && !await isToolInstalledForConfig(tool, probe, localConfig, file)) {
       log.debug(`Skipping MCP sync for ${tool}: tool not installed`);
       continue;
     }
@@ -589,6 +604,32 @@ export async function keptMcpEntries(
   return kept;
 }
 
+/**
+ * Why `target`'s file may hold a value teamai resolved (#882), or null when it
+ * is missing or proven not to. Judged by what is on disk and in the manifest
+ * (`owned`: the names it records for the file's tool), never by delivery: an
+ * owned entry whose definition cannot be read, or has left the team's servers,
+ * is unproven. A file that does not parse is judged by `owned` alone.
+ */
+export async function resolvedValueEvidence(
+  target: McpTarget,
+  teamDefs: McpServerDef[] | null,
+  owned: string[],
+  vars: Record<string, string>,
+): Promise<string | null> {
+  const raw = await readFileSafe(target.file);
+  if (raw === null) return null;
+  const installed = await installedMcpEntries(target);
+  const present = installed ? owned.filter((name) => installed.has(name)) : owned;
+  if (!teamDefs) return present.length > 0 ? `teamai's ${present.join(', ')}, and the team's MCP servers cannot be read` : null;
+  const dropped = present.find((name) => !teamDefs.some((def) => def.name === name));
+  if (dropped) return `teamai's ${dropped}, which has left the team's MCP servers`;
+  const needing = present.find((name) => carriesResolvedValue(target, teamDefs, [name]));
+  if (needing) return `teamai's ${needing}, which needs a resolved \${VAR}`;
+  const variable = resolvedVariableIn(target, teamDefs, vars, raw);
+  return variable ? `the value of $${variable}` : null;
+}
+
 // ─── Main entry ──────────────────────────────────────────────
 
 export function mcpTargetExcluded(localConfig: LocalConfig, target: McpTarget): boolean {
@@ -606,6 +647,49 @@ export async function reconcileMcpForConfig(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   options: McpReconcileOptions = {},
+): Promise<McpReconcileResult> {
+  try {
+    return await reconcileTargets(teamConfig, localConfig, options);
+  } finally {
+    // Also after a failed write: what earlier pulls wrote is on disk either way.
+    if (!options.removeAll && !options.dryRun) await protectResolvedMcpConfigs(teamConfig, localConfig);
+  }
+}
+
+/**
+ * List each project MCP config holding a value teamai resolved in
+ * `.git/info/exclude` (#882). It covers what is on disk, whether or not this
+ * run delivered to it: the file of a disabled or undetected tool, or one
+ * written before the team turned delivery off, still holds what a pull wrote.
+ */
+async function protectResolvedMcpConfigs(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  const { projectRoot } = localConfig;
+  if (localConfig.scope !== 'project' || !projectRoot || localConfig.repo.kind === 'http') return;
+  try {
+    await protectProjectMcpConfigs(teamConfig, localConfig, projectRoot);
+  } catch (e) {
+    log.warn(
+      `Could not check this project's MCP configs for resolved values to keep out of git: ${e instanceof Error ? e.message : String(e)}. `
+      + 'Run `teamai doctor` to see whether git would commit one.',
+    );
+  }
+}
+
+async function protectProjectMcpConfigs(teamConfig: TeamaiConfig, localConfig: LocalConfig, projectRoot: string): Promise<void> {
+  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const { manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
+  const vars = await buildVarTable(localConfig);
+  for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })) {
+    const owned = (manifest[managedMcpManifestKey(target.tool, true)] ?? []).map((record) => record.name);
+    if (await resolvedValueEvidence(target, teamDefs, owned, vars)) await excludeFromGit(target.file);
+  }
+}
+
+async function reconcileTargets(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  options: McpReconcileOptions,
 ): Promise<McpReconcileResult> {
   const changes: McpChange[] = [];
   let wrote = false;

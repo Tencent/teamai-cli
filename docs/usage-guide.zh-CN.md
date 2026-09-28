@@ -1126,7 +1126,7 @@ Copilot 使用原生 `mcpServers` 结构：`stdio` 写成 `type: "local"`，远�
 
 teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配置文件，并以 `0600` 写入该文件，已有的 `0644` 文件也会收紧（不含已解析值的配置保持原权限；新建文件权限为 `0600`）。它不依赖任何工具自身的环境变量展开——因为那种展开很脆弱：最典型的是，以 GUI 方式（Dock/Launchpad）启动的 IDE 不会继承你 shell 中 `export` 的变量，`${VAR}` 占位符会展开为空、导致服务端 401。解析成明文可以保证无论工具如何启动，token 都在。
 
-> ⚠️ **解析后的 token 会落盘。** 项目级 MCP 配置（`.mcp.json`、`.github/mcp.json`、`.cursor/mcp.json`、`.codex/config.toml`、`opencode.json`）因此含有明文密钥——请把它们加入 `.gitignore`，切勿提交。
+> ⚠️ **解析后的 token 会落盘。** 项目级 MCP 配置（`.mcp.json`、`.github/mcp.json`、`.cursor/mcp.json`、`.codex/config.toml`、`opencode.json`）因此含有明文密钥。只要这类文件含有 teamai 解析出的值且 git 会跟踪它，teamai 就会把路径写入本地克隆的 `.git/info/exclude`，放在 `# [teamai:mcp-exclude:start]` 块中（同一仓库的各 worktree 共用该文件）。本次 pull 未写入的文件同样适用：之前为某个现已禁用、或已从 `toolPaths` 移除的工具写入的文件（按该工具的内置位置查找），或仍含已从 `mcp.yaml` 删除的 server 的文件。git 无法判断的路径也会照样写入，否则 teamai 会给出警告。不会改动已提交的 `.gitignore`，git 已忽略的路径不会重复添加，`teamai uninstall` 会移除该块，前提是该块列出的每个文件（在其仓库的每个 worktree 中）都已不存在，或不含以下任何一项：带解析值的团队 server、清理后仍残留的 teamai 条目、仍在环境中设置的变量的值（8 个字符以上）。否则，或对无法检查的文件（例如无法解析），会保留该块并给出警告，列出每个文件及原因。`teamai doctor` 会报告 git 仍会提交或无法判断的这类文件——例如已被跟踪的文件：请 `git rm --cached` 并轮换 token。
 
 Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互式会话中确认一次。
 

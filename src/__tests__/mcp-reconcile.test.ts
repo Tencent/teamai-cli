@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
+import { execFileSync } from 'node:child_process';
 
 vi.mock('../utils/logger.js', () => ({
   log: {
@@ -862,6 +863,164 @@ servers:
     expect(cursorDoc.mcpServers['no-secret']).toBeDefined();
 
     delete process.env.SECRET_TOKEN;
+  });
+
+  describe('project MCP configs holding a resolved value stay out of git (#882)', () => {
+    let projectRoot: string;
+    let projectConfig: LocalConfig;
+    const git = (cwd: string, ...args: string[]): string =>
+      execFileSync('git', args, { cwd, encoding: 'utf-8' });
+    const excludeOf = (root: string): Promise<string> =>
+      fse.readFile(path.join(root, '.git', 'info', 'exclude'), 'utf-8');
+    const withSecret = `
+servers:
+  - name: with-secret
+    transport: http
+    url: https://example.com/mcp
+    headers:
+      Authorization: Bearer \${SECRET_TOKEN}
+`;
+
+    beforeEach(async () => {
+      projectRoot = path.join(tmpDir, 'business-repo');
+      for (const d of ['.claude', '.cursor']) await fse.ensureDir(path.join(projectRoot, d, 'skills'));
+      git(projectRoot, 'init', '-q');
+      projectConfig = { ...localConfig, scope: 'project', projectRoot } as unknown as LocalConfig;
+      vi.stubEnv('SECRET_TOKEN', 'super-secret-value');
+    });
+
+    it('adds every such config to .git/info/exclude once, inside a teamai block', async () => {
+      await writeMcpYaml(withSecret);
+
+      await reconcileMcpForConfig(teamConfig, projectConfig);
+      await reconcileMcpForConfig(teamConfig, projectConfig, { force: true });
+
+      const exclude = await excludeOf(projectRoot);
+      expect(exclude.match(/^\/\.mcp\.json$/gm)).toHaveLength(1);
+      expect(exclude.match(/^\/\.cursor\/mcp\.json$/gm)).toHaveLength(1);
+      expect(exclude).toContain('# [teamai:mcp-exclude:start]');
+      expect(git(projectRoot, 'status', '--porcelain', '--untracked-files=all')).not.toMatch(/ (\.mcp\.json|\.cursor\/)/);
+      expect(await fse.pathExists(path.join(projectRoot, '.gitignore'))).toBe(false);
+    });
+
+    it('adds nothing for a config that carries no resolved value', async () => {
+      await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
+
+      await reconcileMcpForConfig(teamConfig, projectConfig);
+
+      expect(await excludeOf(projectRoot)).not.toContain('teamai');
+    });
+
+    it('adds nothing for a path git already ignores, and leaves .gitignore as it is', async () => {
+      await fse.writeFile(path.join(projectRoot, '.gitignore'), '.mcp.json\n.cursor/\n');
+      await writeMcpYaml(withSecret);
+
+      await reconcileMcpForConfig(teamConfig, projectConfig);
+
+      expect(await excludeOf(projectRoot)).not.toContain('teamai');
+      expect(await fse.readFile(path.join(projectRoot, '.gitignore'), 'utf-8')).toBe('.mcp.json\n.cursor/\n');
+    });
+
+    it('writes to the repository git dir from a linked worktree', async () => {
+      git(projectRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+      const worktree = path.join(tmpDir, 'business-wt');
+      git(projectRoot, 'worktree', 'add', '-q', worktree);
+      for (const d of ['.claude', '.cursor']) await fse.ensureDir(path.join(worktree, d, 'skills'));
+      await writeMcpYaml(withSecret);
+
+      await reconcileMcpForConfig(teamConfig, { ...projectConfig, projectRoot: worktree } as LocalConfig);
+
+      expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      expect(git(worktree, 'status', '--porcelain', '--untracked-files=all')).not.toMatch(/ (\.mcp\.json|\.cursor\/)/);
+    });
+
+    describe('a config an earlier pull wrote is protected even when this pull delivers nothing to it', () => {
+      beforeEach(async () => {
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+        // As if written before this release: the token is on disk, nothing excludes it.
+        await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+      });
+
+      it('when its tool is disabled', async () => {
+        await reconcileMcpForConfig(teamConfig, { ...projectConfig, disabledAgents: ['cursor'] } as LocalConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+      });
+
+      it('when the team turned automatic MCP delivery off', async () => {
+        const manual = { ...teamConfig, sharing: { ...teamConfig.sharing, mcp: { autoApply: false } } } as TeamaiConfig;
+
+        await reconcileMcpForConfig(manual, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+      });
+
+      it('when its tool is no longer detected', async () => {
+        await fse.remove(path.join(projectRoot, '.claude'));
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+
+      it.skipIf(process.getuid?.() === 0)('when writing another tool\'s config fails', async () => {
+        await writeMcpYaml(`${withSecret}  - name: added-later\n    transport: http\n    url: https://example.com/later\n`);
+        await fse.chmod(path.join(projectRoot, '.cursor'), 0o555);
+
+        await expect(reconcileMcpForConfig(teamConfig, projectConfig)).rejects.toThrow();
+        await fse.chmod(path.join(projectRoot, '.cursor'), 0o755);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+      });
+
+      it('when its ownership manifest is gone', async () => {
+        const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+        await fse.remove(managedMcpManifestPath(getDataHome(projectConfig), projectRoot));
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+
+      it('when its server has left mcp.yaml and its tool is disabled', async () => {
+        await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
+        vi.stubEnv('SECRET_TOKEN', '');
+
+        await reconcileMcpForConfig(teamConfig, { ...projectConfig, disabledAgents: ['cursor'] } as LocalConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+        // Claude's copy was cleaned by this pull, so nothing of teamai's is left to protect there.
+        expect(await excludeOf(projectRoot)).not.toMatch(/^\/\.mcp\.json$/m);
+      });
+
+      it.each([
+        ['drops the tool', { claude: TOOL_PATHS.claude }],
+        ['moves its project MCP file', { ...TOOL_PATHS, cursor: { ...TOOL_PATHS.cursor, mcpProject: '.cursor/team-mcp.json' } }],
+      ])('when the team %s', async (_label, toolPaths) => {
+        await reconcileMcpForConfig({ ...teamConfig, toolPaths } as TeamaiConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+      });
+
+      it('when the team\'s mcp.yaml does not parse', async () => {
+        await writeMcpYaml('servers: [unclosed\n');
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+    });
+
+    it('leaves .git/info/exclude alone on a dry run', async () => {
+      await writeMcpYaml(withSecret);
+
+      await reconcileMcpForConfig(teamConfig, projectConfig, { dryRun: true });
+
+      expect(await excludeOf(projectRoot)).not.toContain('teamai');
+    });
   });
 
   it('skips tools that are not installed', async () => {

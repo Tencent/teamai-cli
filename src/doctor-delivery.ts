@@ -2,8 +2,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
-import { getDataHome, getMcpSharing, isAgentExcluded } from './types.js';
-import type { DeliveryTarget, LocalConfig, ResourceItem, TeamaiConfig } from './types.js';
+import { getDataHome, getMcpSharing, isAgentExcluded, managedMcpManifestKey } from './types.js';
+import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, ResourceItem, TeamaiConfig } from './types.js';
 import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
 import type { ResourceHandler } from './resources/base.js';
@@ -499,6 +499,55 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
   }
 
   return checks;
+}
+
+/**
+ * A project MCP config holding a resolved `${VAR}` that git would commit
+ * (#882). Pull lists such a file in `.git/info/exclude`; this is the standing
+ * check for a file that is tracked already, or a repo whose exclude could not
+ * be written. Read-only: `git check-ignore` changes nothing.
+ */
+export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, teamConfig } = ctx;
+  const { projectRoot } = localConfig;
+  if (!teamConfig || localConfig.scope !== 'project' || !projectRoot || localConfig.repo.kind === 'http') return [];
+
+  const { resolveMcpTargets, resolvedValueEvidence, buildVarTable } = await import('./mcp-reconcile.js');
+  const { gitTracking } = await import('./mcp-git-exclude.js');
+  const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
+  const { resolveEntriesFor } = await import('./namespaced-entries.js');
+  const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
+
+  // Unreadable team servers still leave teamai's entries on disk: judged by the manifest, as pull does.
+  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  let manifest: ManagedMcpManifest | undefined;
+  let vars: Record<string, string> | undefined;
+
+  const holding = new Set<string>();
+  const tracked: string[] = [];
+  // Every tool's file, delivery on or off, the same files and evidence pull protects. Two tools may share one.
+  for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })) {
+    if (holding.has(target.file) || !await pathExists(target.file)) continue;
+    manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
+    vars ??= await buildVarTable(localConfig);
+    const owned = (manifest[managedMcpManifestKey(target.tool, true)] ?? []).map((record) => record.name);
+    if (!await resolvedValueEvidence(target, teamDefs, owned, vars)) continue;
+    holding.add(target.file);
+    const tracking = await gitTracking(target.file);
+    if (tracking.kind === 'would-commit') tracked.push(target.file);
+    else if (tracking.kind === 'unknown') tracked.push(`${target.file} (git failed: ${tracking.error})`);
+  }
+  if (holding.size === 0) return [];
+
+  return [{
+    name: 'Project MCP configs with resolved values are kept out of git',
+    source: 'local',
+    check: async () => tracked.length === 0,
+    fix: `${tracked.join(', ')} may hold MCP variables resolved to plaintext, and git would commit them or cannot say. `
+      + 'Fix any git error shown, then run `teamai pull` to list them in .git/info/exclude. If git already tracks one, run '
+      + '`git rm --cached <file>` and rotate the values it held.',
+  }];
 }
 
 /**
