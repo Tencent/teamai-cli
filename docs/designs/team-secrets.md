@@ -6,7 +6,7 @@ Proposal: [#875](https://github.com/Tencent/teamai-cli/issues/875). Plan: [#879]
 
 A team declares which secrets its members need, in the team repo, with no value. Each member supplies the value on their own machine. No secret value is written to the team repo.
 
-This document grows with the implementation and describes only what the current version does. Today that is declaring secrets, a member's value for each team, `${VAR}` in MCP servers, and keeping an MCP entry when a pull can't find a declared secret. A value for every team on the machine and `env exec` come later.
+This document grows with the implementation and describes only what the current version does. Today that is declaring secrets, a member's value for each team, `${VAR}` in MCP servers, keeping an MCP entry when a pull can't find a declared secret, and telling the member what to run for it. A value for every team on the machine and `env exec` come later.
 
 ## Declaring secrets
 
@@ -128,6 +128,22 @@ A team value wins over the environment because it is an explicit choice for that
 A kept entry holds the value the earlier pull wrote. After a secret is rotated or revoked, the server keeps the old value until a pull finds the new one.
 
 While the declarations fail, `pull` and `teamai mcp inject` change no MCP server: nothing is added, updated or removed, and `mcp inject` exits 1. `mcp remove` and uninstall still remove every managed server.
+
+## A missing secret tells the member what to run
+
+An interactive `pull`, `teamai mcp list`, `teamai env list` and `teamai doctor` print one line for each declared secret with no value: the MCP servers that use it, if any, the command that sets it, and the declared `url`.
+
+```text
+github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (https://github.com/settings/tokens).
+GITLAB_TOKEN is not set. Run `teamai env set GITLAB_TOKEN`.
+```
+
+- The line comes from the declarations, so it appears for a secret no MCP server uses, with no `mcp.yaml`, with no tool to write to, and with `sharing.mcp.autoApply` off.
+- `doctor` prints it as a note (`notes` in `doctor --json`) and exits as it would without it: a server skipped only because a declared secret has no value doesn't fail `MCP servers delivered to <tool>`. Any other problem in that tool's servers still fails it.
+- The silent session-start pull prints nothing.
+- `pull` and `doctor` also say when an entry is kept and may hold an old value (`github: the entry an earlier pull wrote stays in claude and may hold an old GITHUB_TOKEN until a pull finds its value.`), and warn about a key declared as a secret and also set in `env.yaml`, whose value is ignored, naming the file to remove it from.
+- A secret stored with `--from-env` whose variable is unset reads as missing too.
+- When the declarations or the member's value file can't be read, no line is printed: the command reports that failure instead.
 
 ## Rotation
 

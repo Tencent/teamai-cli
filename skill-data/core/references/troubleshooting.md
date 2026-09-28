@@ -64,6 +64,17 @@ This is the #1 onboarding issue. In order:
    `recall` refuses the same way with `Nothing was searched: <file>: <reason>`:
    no team knowledge was searched, so do not report that the team has none.
 
+## "KEY is not set. Run `teamai env set KEY`"
+
+`pull`, `teamai mcp list`, `teamai env list` and `teamai doctor` print this for
+a secret the team declares in `env/secrets.yaml` that has no value on this
+machine, naming the MCP servers that need it and where to get one. It is a note,
+not a failure: `doctor` exits as it would without it. The value is the user's:
+ask them to run `teamai env set KEY` in their own terminal (it prompts without
+echo), then `teamai pull` to update the MCP servers. Never ask for the value in
+chat. A note that an entry "may hold an old" value means an earlier pull wrote
+it and it stays until a pull finds the value.
+
 ## Permission / access denied
 
 `init`, `pull`, or `push` failing with a permission error usually means the user

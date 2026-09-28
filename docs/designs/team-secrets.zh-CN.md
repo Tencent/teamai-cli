@@ -6,7 +6,7 @@
 
 团队在团队仓库中声明成员需要哪些密钥，但不写值。每个成员在自己的机器上提供值。密钥的值不会写入团队仓库。
 
-本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队设置的值、MCP server 中的 `${VAR}`，以及 pull 找不到已声明的密钥时保留 MCP 条目。对本机所有团队生效的值和 `env exec` 会在后续版本加入。
+本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队设置的值、MCP server 中的 `${VAR}`，pull 找不到已声明的密钥时保留 MCP 条目，以及告诉成员该运行什么命令。对本机所有团队生效的值和 `env exec` 会在后续版本加入。
 
 ## 声明密钥
 
@@ -128,6 +128,22 @@ teamai env unset GITHUB_TOKEN
 保留下来的条目里是之前那次 pull 写入的值。密钥轮换或吊销后，server 会一直使用旧值，直到某次 pull 找到新值。
 
 声明解析失败期间，`pull` 与 `teamai mcp inject` 不会改动任何 MCP server：不新增、不更新、不删除，`mcp inject` 以 1 退出。`mcp remove` 与 uninstall 仍会删除所有受管理的 server。
+
+## 缺少密钥时告诉成员该运行什么
+
+交互式 `pull`、`teamai mcp list`、`teamai env list` 和 `teamai doctor` 会为每个没有值的已声明密钥打印一行：用到它的 MCP server（如果有）、设置它的命令，以及声明中的 `url`。
+
+```text
+github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (https://github.com/settings/tokens).
+GITLAB_TOKEN is not set. Run `teamai env set GITLAB_TOKEN`.
+```
+
+- 这一行来自声明本身，所以没有 MCP server 用到的密钥、没有 `mcp.yaml`、没有可写入的工具、`sharing.mcp.autoApply` 关闭时也会打印。
+- `doctor` 把它作为备注打印（`doctor --json` 中的 `notes`），退出码与没有这个缺失密钥时相同：只因已声明的密钥没有值而跳过的 server 不会让 `MCP servers delivered to <tool>` 失败。该工具的 server 有其他问题时仍会失败。
+- 会话开始时的静默 pull 不打印任何内容。
+- `pull` 和 `doctor` 还会在条目被保留、可能含有旧值时说明（`github: the entry an earlier pull wrote stays in claude and may hold an old GITHUB_TOKEN until a pull finds its value.`），并在某个 key 既声明为密钥、又在 `env.yaml` 中设置时发出警告：该值被忽略，并指出应从哪个文件删除它。
+- 用 `--from-env` 保存、但对应变量未设置的密钥同样视为缺失。
+- 声明或成员的值文件无法读取时不打印这一行：命令会改为报告该失败。
 
 ## 轮换
 
