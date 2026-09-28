@@ -91,11 +91,9 @@ export function isRelevantScore(
  * as absolute scores. Returns 1 for legacy indexes lacking a df map, which
  * makes `isRelevantScore` degrade to its previous absolute behavior.
  *
- * When multiple scopes are active, we take the entry count of whichever
- * df-bearing index is largest. This is a deliberately conservative approximation
- * (the resulting threshold is higher) — a more precise approach would carry each
- * index's own baseline through to the per-result scoring, which is left as a
- * known limitation (see P2-5).
+ * When a caller needs one aggregate baseline across multiple scopes, use the
+ * largest df-bearing index. Recall ranking instead carries each index's own
+ * baseline with its results so one scope's corpus size cannot distort another's.
  *
  * Legacy indexes (no df map) are excluded from the N computation because their
  * presence would otherwise inflate maxEntries and raise the threshold against
@@ -129,6 +127,8 @@ export function normalizeLearningsScoreForRanking(score: number, idfBaseline: nu
 /** Search result with scope label for merged output. */
 interface ScopedSearchResult extends SearchResult {
   scope?: 'user' | 'project';
+  /** IDF baseline of the index that produced this result. */
+  idfBaseline?: number;
   /** Base path for learnings files (so AI can read the correct path). */
   learningsBase?: string;
   /** Source file anchors from codebase wiki frontmatter (codebase results only). */
@@ -579,6 +579,7 @@ export async function recall(
   const idfBaseline = computeIdfBaseline(scopeIndexes.map((s) => s.index));
 
   for (const { index, scope, learningsBase } of scopeIndexes) {
+    const scopeIdfBaseline = computeIdfBaseline([index]);
     const results = search(query, index);
     for (const r of results) {
       // A project entry shadows the same logical user entry even when the
@@ -588,7 +589,7 @@ export async function recall(
       if (scope === 'user' && projectEntryKeys.has(entryKey)) continue;
       if (!seenEntries.has(entryKey)) {
         seenEntries.add(entryKey);
-        allResults.push({ ...r, scope, learningsBase });
+        allResults.push({ ...r, scope, learningsBase, idfBaseline: scopeIdfBaseline });
       }
     }
   }
@@ -629,7 +630,7 @@ export async function recall(
   // Keep each result's original score for --check, quality tracking, and output.
   const rankingScore = (result: ScopedSearchResult): number => result.fromCodebase
     ? result.score
-    : normalizeLearningsScoreForRanking(result.score, idfBaseline);
+    : normalizeLearningsScoreForRanking(result.score, result.idfBaseline ?? idfBaseline);
   allResults.sort((a, b) => {
     const scoreDelta = rankingScore(b) - rankingScore(a);
     if (scoreDelta !== 0) return scoreDelta;
@@ -638,7 +639,7 @@ export async function recall(
 
   if (options.check) {
     const top = allResults.length > 0 ? allResults[0] : undefined;
-    emitCheckVerdict(top?.score ?? 0, top?.fromCodebase ?? false, idfBaseline, top);
+    emitCheckVerdict(top?.score ?? 0, top?.fromCodebase ?? false, top?.idfBaseline ?? idfBaseline, top);
     return;
   }
 

@@ -150,6 +150,55 @@ describe('recall scope isolation (issue #73)', () => {
     expect(captured).toContain('[user]');
   });
 
+  it('normalizes inherited results against the IDF baseline of their own scope', async () => {
+    projectConfig.inheritUserScope = true;
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(userConfig);
+
+    // Keep one strong project hit (score 8.5 with a cold-start baseline), then
+    // grow the inherited user corpus without adding another matching result.
+    const projectLearnings = path.join(projectConfig.repo.localPath, 'learnings');
+    await fse.remove(projectLearnings);
+    await fse.ensureDir(projectLearnings);
+    await fse.writeFile(path.join(projectLearnings, 'project-timeout.md'), learningDoc(PROJECT_TITLE));
+    await buildIndex({
+      learningsDir: projectLearnings,
+      indexPath: path.join(getTeamaiHome('project', projectRoot), 'search-index.json'),
+    });
+
+    const userLearnings = path.join(tmpDir, 'user-learnings');
+    await fse.remove(userLearnings);
+    await fse.ensureDir(userLearnings);
+    await Promise.all(Array.from({ length: 1000 }, (_, i) => fse.writeFile(
+      path.join(userLearnings, `background-${i}.md`),
+      `---\ntitle: "Background Record ${i}"\nauthor: tester\ndate: 2026-05-01\ntags: [background]\n---\n\nUnrelated notes.\n`,
+    )));
+    await buildIndex({
+      learningsDir: userLearnings,
+      indexPath: path.join(getTeamaiHome('user'), 'search-index.json'),
+    });
+
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([{
+      page: 'evidence/code/demo/docs/agent-session-recovery.md',
+      title: 'Agent Session Recovery',
+      score: 3, // Maps to the codebase relevance threshold of 4.0.
+      snippet: 'The graph page matches the full query.',
+      kind: 'codebase',
+    }]);
+
+    await recall('deployment timeout', { dryRun: true });
+
+    const projectPosition = captured.indexOf(`[learnings] ${PROJECT_TITLE}`);
+    const graphPosition = captured.indexOf('[docs] Agent Session Recovery');
+    expect(projectPosition).toBeGreaterThanOrEqual(0);
+    expect(graphPosition).toBeGreaterThanOrEqual(0);
+    expect(projectPosition).toBeLessThan(graphPosition);
+
+    captured = '';
+    await recall('deployment timeout', { check: true });
+    expect(captured).toMatch(/^RELEVANT score=[\d.]+ threshold=4\.0 title="Project Deployment Timeout Fix"/);
+  });
+
   it('project mode: project entry wins when both scopes contain the same type and filename', async () => {
     projectConfig.inheritUserScope = true;
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
