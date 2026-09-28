@@ -74,7 +74,7 @@ Team secrets (3):
 
 ## 设置值
 
-成员为当前目录的团队保存某个已声明密钥的值：
+成员为当前目录的团队保存某个已声明密钥的值，或它收到的某个 env 变量的值（见[变量](#变量)）：
 
 ```text
 teamai env set GITHUB_TOKEN                               提示输入，不回显
@@ -85,10 +85,10 @@ teamai env unset GITHUB_TOKEN [--global]
 ```
 
 - 值从不通过命令行参数传入，因此不会进入 shell 历史。`--stdin` 拒绝终端输入。
-- `env set` 只接受该 scope 声明为密钥的 key，加 `--global` 时也一样。声明无法读取时它不做任何修改，因为无法判断。
+- `env set` 接受该 scope 声明为密钥的 key，不加 `--global` 时也接受它收到的 `env.yaml` 变量；`--global` 只用于密钥。声明或 `env.yaml` 无法读取时它不做任何修改，因为无法判断。
 - 不在任何 scope 中时（当前目录没有项目，也没有用户 scope），`env set --global` 接受任何合法的 key 名，并提示目前还没有团队声明它，方便成员提前设置在多个团队间复用的 token。`env unset` 接受任何已有值的 key。
 - `--from-env` 指定的变量在当前 shell 中未设置时会警告。变量未设置期间该密钥为 `missing`：不会改用[解析顺序](#解析顺序)中的下一个来源，因为那可能是另一个账号的 token。
-- 之后运行 `teamai pull` 更新 MCP server。
+- 之后运行 `teamai pull` 更新 MCP server，变量还会更新 `env.sh`。
 
 ## 存储
 
@@ -111,9 +111,24 @@ teamai env unset GITHUB_TOKEN [--global]
 > missing                     跳过该 server；env exec 不带它运行命令
 ```
 
-团队值优先于环境，因为它是针对该团队的明确选择：否则 `.zshrc` 中导出的个人 `GITHUB_TOKEN` 会覆盖成员为工作团队设置的 token。本机值适合成员在所有团队中都使用的 token；需要另一个账号的团队设置自己的值，该值优先。未声明为密钥的变量按原有方式解析。
+团队值优先于环境，因为它是针对该团队的明确选择：否则 `.zshrc` 中导出的个人 `GITHUB_TOKEN` 会覆盖成员为工作团队设置的 token。本机值适合成员在所有团队中都使用的 token；需要另一个账号的团队设置自己的值，该值优先。
 
 **成员自己的环境。** shell profile 加载最近一次 pull 的 scope 的 `env.sh`，因此环境中也带有 teamai 导出的值。对某个 key，环境中的值若等于本机任一 teamai `env.sh` 为该 key 导出的值（`~/.teamai/env.sh`、`~/.teamai/projects/*/env.sh`，以及本 scope 在 pull 重写之前的 `env.sh`），或者对已声明的密钥而言等于本 scope 的 `env.yaml` 值，则不计入。未覆盖的情况：本 scope 以外、位于非 git 目录的项目（`<dir>/.teamai/env.sh`），以及 shell 启动后被轮换的其他 scope 的值。
+
+### 变量
+
+未声明为密钥的 `env.yaml` 变量在 MCP server、`env exec` 和 `env.sh` 中按同一顺序解析：
+
+```text
+成员为该团队设置的值   teamai env set KEY [--from-env VAR]
+> env.yaml             根文件，或替换它的活动 namespace 文件
+```
+
+- 环境不再覆盖它，因此为一个团队导出的值不会进入另一个团队的 server。这会改变现有团队的行为：原先通过导出变量来覆盖 `env.yaml` 的成员，改用 `teamai env set KEY`。本机值不适用于变量。
+- 当成员自己的环境（见下文）中有不同的值时，交互式 `pull` 和 `teamai doctor`（作为备注）会指出：`` GITLAB_HOST in your environment differs from the value in env/env.yaml, which this team uses. To use yours for this team, run `teamai env set GITLAB_HOST`. `` `doctor` 列出它，因为它在成员的 shell 中运行，可以解释 MCP server 为什么没有使用成员导出的值。`mcp list` 和 `env list` 不列出，静默 pull 什么也不输出。成员为该 key 设置了值之后不再输出。
+- `env.sh` 导出成员设置的字面值，因此新 shell 遵循同一顺序。用 `--from-env` 保存的值不写入 `env.sh`，`env.sh` 中不保存它的副本。该变量未设置期间使用 `env.yaml` 的值：与密钥的下一个来源不同，这是其他每个成员都拿到的值。
+- 团队没有设置的 `${VAR}` 仍从环境解析。
+- 成员的值文件无法读取时，MCP server 保留上一次 pull 写入的值，`pull` 保持 `env.sh` 不变。
 
 **同一个 key 出现两次。** 某个 key 既声明为密钥、又在 `env.yaml` 中设置为变量时，按密钥解析，仓库中的值在所有地方都被忽略：不写入 `env.sh` 和 env 备份（每次 pull 都如此，包括 `Already synced`），不出现在 `env list` 和 `list env` 中（`--reveal` 也一样），也不进入 MCP server。旧版 CLI 在团队删除该值之前继续使用该变量。
 
@@ -160,9 +175,9 @@ teamai env exec -- glab mr list     GITLAB_HOST 来自 env.yaml，GITLAB_TOKEN �
 ```
 
 - **Scope。** 当前目录的 scope：teamai 在此处配置的项目（通过 git 查找，因此项目的每个 worktree 都解析到该项目），否则是用户 scope。
-- **环境。** 命令继承 teamai 的环境，先叠加该 scope 的 `env.yaml` 变量（scope 变量覆盖继承的同名变量），再按[解析顺序](#解析顺序)叠加它的密钥。声明为密钥、但在该 scope 下没有值的 key 会从命令的环境中移除，因此命令永远拿不到 `teamai env list` 不会显示为该 scope 的值：另一个团队导出的值，或者该团队的值用 `--from-env` 指向另一个变量时成员自己导出的值。
+- **环境。** 命令继承 teamai 的环境，先按[变量顺序](#变量)叠加该 scope 的变量（scope 变量覆盖继承的同名变量），再按[解析顺序](#解析顺序)叠加它的密钥。声明为密钥、但在该 scope 下没有值的 key 会从命令的环境中移除，因此命令永远拿不到 `teamai env list` 不会显示为该 scope 的值：另一个团队导出的值，或者该团队的值用 `--from-env` 指向另一个变量时成员自己导出的值。
 - **缺少密钥。** 那一[行提示](#缺少密钥时告诉成员该运行什么)输出到 stderr，命令照常运行：`gh` 和 `glab` 仍可以使用它们自己的登录。
-- **失败。** 声明失败时，只应用变量，不应用任何密钥；`env.yaml` 失败时，只应用密钥，不应用任何变量；值文件无法读取时，移除所有已声明的 key。每种情况都会在 stderr 上说明。项目配置存在但无法读取时，会在 stderr 上指出该文件，并以继承的环境运行命令：既不当作"没有 scope"，也不回退到用户 scope。
+- **失败。** 声明失败时，只应用变量，不应用任何密钥；`env.yaml` 失败时，只应用密钥，不应用任何变量；值文件无法读取时，移除所有已声明的 key，也不应用任何变量。每种情况都会在 stderr 上说明。项目配置存在但无法读取时，会在 stderr 上指出该文件，并以继承的环境运行命令：既不当作"没有 scope"，也不回退到用户 scope。
 - **没有 scope。** 既没有项目配置也没有用户配置时，命令以继承的环境运行，并在 stderr 上给出提示。这里不应用本机值，因为没有团队声明命令需要哪些 key。HTTP 团队仓库在这里同样不提供 env。
 - **输出。** teamai 打印的所有内容都输出到 stderr，因此命令的 stdout 可以直接接管道。退出码就是命令的退出码；命令被信号终止时，teamai 以同一信号结束，teamai 收到的信号会转发给命令。无法启动的命令以 127 退出。
 - **不写入值。** 不会把任何值写入磁盘或 `debug.log`。查找 scope 的行为与其他查找 scope 的命令相同：可能接管项目分区、保存用户 scope 的角色迁移，或为刚克隆的单仓项目完成配置；这些写入都不包含值。
