@@ -6,7 +6,7 @@ Proposal: [#875](https://github.com/Tencent/teamai-cli/issues/875). Plan: [#879]
 
 A team declares which secrets its members need, in the team repo, with no value. Each member supplies the value on their own machine. No secret value is written to the team repo.
 
-This document grows with the implementation and describes only what the current version does. Today that is declaring secrets, a member's value for each team, and `${VAR}` in MCP servers. A value for every team on the machine and `env exec` come later.
+This document grows with the implementation and describes only what the current version does. Today that is declaring secrets, a member's value for each team or for every team on the machine, and `${VAR}` in MCP servers. `env exec` comes later.
 
 ## Declaring secrets
 
@@ -47,6 +47,7 @@ A namespace declares its own secrets in `env/<ns>/secrets.yaml`. It is active wh
 | State | Meaning |
 |---|---|
 | `team` | The member set a value for this team with `teamai env set`. |
+| `global` | The member set a value for every team on the machine with `teamai env set --global`, and none for this team. |
 | `environment` | The member's own environment has a non-empty value for the key (see [Resolution](#resolution)). |
 | `missing` | No value is available. |
 
@@ -68,21 +69,24 @@ A member keeps their value for a secret the scope declares, for this directory's
 teamai env set GITHUB_TOKEN                               prompts, without echo
 printf '%s' "$TOKEN" | teamai env set GITHUB_TOKEN --stdin   for the member's own scripts
 teamai env set GITHUB_TOKEN --from-env WORK_GITHUB_TOKEN  reads WORK_GITHUB_TOKEN each time the value is used; no copy is stored
-teamai env unset GITHUB_TOKEN
+teamai env set GITHUB_TOKEN --global                      for every team on this machine; a value set for a team still wins
+teamai env unset GITHUB_TOKEN [--global]
 ```
 
 - The value is never taken from an argument, so it stays out of shell history. `--stdin` refuses a terminal.
-- `env set` accepts only a key the scope declares as a secret. When the declarations cannot be read it changes nothing, since it cannot tell.
-- `--from-env` warns when the variable is not set in the current shell. While it is unset, the secret is `missing`: the member's own environment is not used instead, since that could be another account's token.
+- `env set` accepts only a key the scope declares as a secret, with `--global` too. When the declarations cannot be read it changes nothing, since it cannot tell.
+- Outside any scope (no project here and no user scope), `env set --global` accepts any valid key name and notes that no team declares it yet, so a member can set a token they reuse across teams ahead of time. `env unset` accepts any key that has a value.
+- `--from-env` warns when the variable is not set in the current shell. While it is unset, the secret is `missing`: the next source in the [order](#resolution) is not used instead, since that could be another account's token.
 - Run `teamai pull` afterwards to update the MCP servers.
 
 ## Storage
 
 - One file per team repo: `~/.teamai/secrets/teams/<team>-<hash>.json`, named from `teamai.yaml`'s team name and a hash of the repository identity, the way `teamai models configure` names its team key files. Every project and worktree that uses the same team reads the same file, so a member sets a value once per team.
+- One file for the machine: `~/.teamai/secrets/machine.json`, in the same format. Every scope reads it for the secrets it declares.
 - Always under `~/.teamai`, never in the scope's data directory, which in single-repo mode sits inside the business repo. `~/.teamai/env` is not used: it is the user scope's env backup file.
 - Written atomically with mode `0600`. That is not encryption: anyone who can read the member's files can read the value.
-- Each entry is exactly one of `{"value": "..."}` or `{"env": "VAR"}`. A file that does not parse, or holds any other entry, is reported by its path and a line and column or entry number, never with its content, and every secret of that team is `missing` until it is fixed.
-- Lifetime: uninstalling a project scope leaves the per-team values in place, since another scope may use the same team; `teamai uninstall` of the user scope removes `~/.teamai`, and the values with it.
+- Each entry is exactly one of `{"value": "..."}` or `{"env": "VAR"}`. A file that does not parse, or holds any other entry, is reported by its path and a line and column or entry number, never with its content, and every secret of that team (of every team, for `machine.json`) is `missing` until it is fixed.
+- Lifetime: uninstalling a project scope leaves the per-team and machine values in place, since another scope may use them; `teamai uninstall` of the user scope removes `~/.teamai`, and the values with it.
 - Model profile keys stay where they are ([Model profiles](model-profiles.md)): `env set` does not configure them, and `env/secrets.yaml` cannot declare one.
 
 ## Resolution
@@ -91,11 +95,12 @@ teamai env unset GITHUB_TOKEN
 
 ```text
 the member's value for this team     teamai env set KEY [--from-env VAR]
+> the member's value for the machine teamai env set KEY --global
 > the member's own environment       not a value a teamai env.sh exported
 > missing                            the server is skipped
 ```
 
-A team value wins over the environment because it is an explicit choice for that team: otherwise a personal `GITHUB_TOKEN` exported in `.zshrc` would override the token a member set for their work team. Variables that are not declared as secrets resolve as before.
+A team value wins over the environment because it is an explicit choice for that team: otherwise a personal `GITHUB_TOKEN` exported in `.zshrc` would override the token a member set for their work team. A machine value suits a token the member uses with every team; a team that needs another account sets its own value, which wins. Variables that are not declared as secrets resolve as before.
 
 **The member's own environment.** The shell profile loads the `env.sh` of whichever scope pulled, so the environment also carries values teamai exported. For a key, a value in the environment does not count when it equals what any teamai `env.sh` on the machine exports for that key (`~/.teamai/env.sh`, `~/.teamai/projects/*/env.sh`, and this scope's as it stood before the pull rewrote it), or, for a declared secret, this scope's `env.yaml` value for it. Not covered: a project in a non-git directory other than this scope (`<dir>/.teamai/env.sh`), and another scope's value rotated after the shell started.
 

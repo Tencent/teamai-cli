@@ -907,7 +907,8 @@ P1 migration is not supported (`.teamai.bak/` is the manual rollback path).
 
 A member's values for their teams' declared secrets live in `~/.teamai/secrets/`,
 a class-A2 (machine-level) directory: `teams/<team>-<hash>.json`, one file per
-team repo, named the way `~/.teamai/models/teams/` names the team model key files.
+team repo, named the way `~/.teamai/models/teams/` names the team model key files,
+and `machine.json`, the values set with `teamai env set --global` for every team.
 Every scope that uses the same team, and every worktree of it, reads the same file.
 It never goes to a partition or to `<dataHome>`, which in single-repo mode is inside
 the business repo, and it is not `~/.teamai/env`, which is already the user scope's

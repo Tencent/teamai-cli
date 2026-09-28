@@ -6,7 +6,7 @@
 
 团队在团队仓库中声明成员需要哪些密钥，但不写值。每个成员在自己的机器上提供值。密钥的值不会写入团队仓库。
 
-本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队设置的值，以及 MCP server 中的 `${VAR}`。对本机所有团队生效的值和 `env exec` 会在后续版本加入。
+本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队或为本机所有团队设置的值，以及 MCP server 中的 `${VAR}`。`env exec` 会在后续版本加入。
 
 ## 声明密钥
 
@@ -47,6 +47,7 @@ namespace 在 `env/<ns>/secrets.yaml` 中声明自己的密钥，生效条件与
 | 状态 | 含义 |
 |---|---|
 | `team` | 成员用 `teamai env set` 为该团队设置了值。 |
+| `global` | 成员用 `teamai env set --global` 为本机所有团队设置了值，且没有为该团队设置值。 |
 | `environment` | 成员自己的环境中该 key 有非空值（见[解析顺序](#解析顺序)）。 |
 | `missing` | 没有可用的值。 |
 
@@ -68,21 +69,24 @@ Team secrets (3):
 teamai env set GITHUB_TOKEN                               提示输入，不回显
 printf '%s' "$TOKEN" | teamai env set GITHUB_TOKEN --stdin   供成员自己的脚本使用
 teamai env set GITHUB_TOKEN --from-env WORK_GITHUB_TOKEN  每次使用时读取 WORK_GITHUB_TOKEN，不保存副本
-teamai env unset GITHUB_TOKEN
+teamai env set GITHUB_TOKEN --global                      对本机所有团队生效；为某个团队设置的值仍然优先
+teamai env unset GITHUB_TOKEN [--global]
 ```
 
 - 值从不通过命令行参数传入，因此不会进入 shell 历史。`--stdin` 拒绝终端输入。
-- `env set` 只接受该 scope 声明为密钥的 key。声明无法读取时它不做任何修改，因为无法判断。
-- `--from-env` 指定的变量在当前 shell 中未设置时会警告。变量未设置期间该密钥为 `missing`：不会改用成员自己的环境，因为那可能是另一个账号的 token。
+- `env set` 只接受该 scope 声明为密钥的 key，加 `--global` 时也一样。声明无法读取时它不做任何修改，因为无法判断。
+- 不在任何 scope 中时（当前目录没有项目，也没有用户 scope），`env set --global` 接受任何合法的 key 名，并提示目前还没有团队声明它，方便成员提前设置在多个团队间复用的 token。`env unset` 接受任何已有值的 key。
+- `--from-env` 指定的变量在当前 shell 中未设置时会警告。变量未设置期间该密钥为 `missing`：不会改用[解析顺序](#解析顺序)中的下一个来源，因为那可能是另一个账号的 token。
 - 之后运行 `teamai pull` 更新 MCP server。
 
 ## 存储
 
 - 每个团队仓库一个文件：`~/.teamai/secrets/teams/<team>-<hash>.json`，由 `teamai.yaml` 中的团队名和仓库标识的哈希组成，与 `teamai models configure` 为团队密钥文件命名的方式相同。使用同一团队的每个项目和 worktree 读取同一个文件，所以成员每个团队只需设置一次。
+- 本机一个文件：`~/.teamai/secrets/machine.json`，格式相同。每个 scope 都从中读取自己声明的密钥。
 - 始终位于 `~/.teamai` 下，绝不放在 scope 的数据目录中（单仓模式下该目录在业务仓库内）。不使用 `~/.teamai/env`：它是用户 scope 的 env 备份文件。
 - 以原子方式写入，权限 `0600`。这不是加密：能读取成员文件的人都能读到值。
-- 每个条目恰好是 `{"value": "..."}` 或 `{"env": "VAR"}` 之一。文件无法解析或含有其他条目时，只报告路径以及行列号或条目序号，绝不输出其内容；修复之前，该团队的每个密钥都是 `missing`。
-- 生命周期：卸载项目 scope 不会删除按团队保存的值，因为其他 scope 可能使用同一团队；卸载用户 scope（`teamai uninstall`）会删除 `~/.teamai`，值也随之删除。
+- 每个条目恰好是 `{"value": "..."}` 或 `{"env": "VAR"}` 之一。文件无法解析或含有其他条目时，只报告路径以及行列号或条目序号，绝不输出其内容；修复之前，该团队的每个密钥（对 `machine.json` 而言是所有团队的每个密钥）都是 `missing`。
+- 生命周期：卸载项目 scope 不会删除按团队保存的值和本机的值，因为其他 scope 可能使用它们；卸载用户 scope（`teamai uninstall`）会删除 `~/.teamai`，值也随之删除。
 - 模型配置的密钥保持原位（[模型配置](model-profiles.zh-CN.md)）：`env set` 不配置它们，`env/secrets.yaml` 也不能声明它们。
 
 ## 解析顺序
@@ -91,11 +95,12 @@ teamai env unset GITHUB_TOKEN
 
 ```text
 成员为该团队设置的值          teamai env set KEY [--from-env VAR]
+> 成员为本机设置的值          teamai env set KEY --global
 > 成员自己的环境              不包括 teamai env.sh 导出的值
 > missing                     跳过该 server
 ```
 
-团队值优先于环境，因为它是针对该团队的明确选择：否则 `.zshrc` 中导出的个人 `GITHUB_TOKEN` 会覆盖成员为工作团队设置的 token。未声明为密钥的变量按原有方式解析。
+团队值优先于环境，因为它是针对该团队的明确选择：否则 `.zshrc` 中导出的个人 `GITHUB_TOKEN` 会覆盖成员为工作团队设置的 token。本机值适合成员在所有团队中都使用的 token；需要另一个账号的团队设置自己的值，该值优先。未声明为密钥的变量按原有方式解析。
 
 **成员自己的环境。** shell profile 加载最近一次 pull 的 scope 的 `env.sh`，因此环境中也带有 teamai 导出的值。对某个 key，环境中的值若等于本机任一 teamai `env.sh` 为该 key 导出的值（`~/.teamai/env.sh`、`~/.teamai/projects/*/env.sh`，以及本 scope 在 pull 重写之前的 `env.sh`），或者对已声明的密钥而言等于本 scope 的 `env.yaml` 值，则不计入。未覆盖的情况：本 scope 以外、位于非 git 目录的项目（`<dir>/.teamai/env.sh`），以及 shell 启动后被轮换的其他 scope 的值。
 

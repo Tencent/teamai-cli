@@ -187,7 +187,8 @@ and push it with git. `teamai doctor` lists each override.
   same key): a `secrets:` list of `key`, optional `description` and optional `url`
   (where a member gets one). Never put a value there. Edit the file in the team repo;
   `teamai push` picks it up. Each member sets their own value with `teamai env set KEY`
-  in their terminal. `teamai env list` shows each secret as `team`, `environment` or
+  in their terminal (`--global` for every team on their machine; a team value still
+  wins). `teamai env list` shows each secret as `team`, `global`, `environment` or
   `missing` and never shows a value, `--reveal` included. A key declared as a secret
   and also set in `env.yaml` is a secret: its `env.yaml` value is not delivered. A
   secrets file that does not parse keeps `env.sh` as it was, and `teamai doctor` fails
