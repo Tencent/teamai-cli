@@ -162,6 +162,20 @@ describe('teamai list / status resource coverage', () => {
     expect(out).not.toContain('fixture-github-value');
   });
 
+  // #875 (#879 Conflict 13): a key declared twice is listed only as a secret.
+  it('list env --reveal leaves out the env.yaml value of a key declared as a secret, and shows a team value as team', async () => {
+    await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: SECRET_TOKEN\n');
+    const { getTeamSecretsPath, writeSecretStore } = await import('../secret-store.js');
+    const { localConfig } = await mockAutoDetectInit() as { localConfig: LocalConfig };
+    await writeSecretStore(getTeamSecretsPath(localConfig), { SECRET_TOKEN: { value: 'fixture-team-value' } });
+
+    await list('env', { source: 'repo', reveal: true });
+    const out = lines.join('\n');
+    expect(out).not.toContain('super-secret-value');
+    expect(out).not.toContain('fixture-team-value');
+    expect(out).toContain('SECRET_TOKEN  secret, team  (root)');
+  });
+
   it('list env still lists the variables when the secrets file is broken, and names it', async () => {
     await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secret:\n  - key: GITHUB_TOKEN\n');
 

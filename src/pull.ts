@@ -48,8 +48,8 @@ import type { CultureFrontmatter } from './types.js';
 import { deliversEveryNamespace } from './resource-namespaces.js';
 import { reportEntryResolution, resolveEntries } from './namespaced-entries.js';
 import { resetWarnOnce } from './utils/warn-once.js';
-import { envEntryReader } from './resources/env.js';
-import { resolveSecretDeclarations } from './resources/secrets.js';
+import { envEntryReader, type EnvVariable } from './resources/env.js';
+import { declaredSecretKeys, resolveSecretDeclarations } from './resources/secrets.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
@@ -455,12 +455,19 @@ function activeEnvNamespaces(roleContext: RolePullContext | null): string[] | nu
 }
 
 /**
- * Warn about secret declarations that cannot be used (#875). Nothing a pull
- * delivers reads them yet, so the env variables go on regardless.
+ * The env variables to write to env.sh, or null to leave it as it is. A key
+ * the team also declares as a secret (#875) resolves as the secret, so its
+ * repo value is left out; secret declarations that cannot be used are
+ * reported and, like an env file that cannot be, keep env.sh as it is.
  */
-async function reportSecretDeclarations(localConfig: LocalConfig, roleContext: RolePullContext | null): Promise<void> {
+async function deliverableEnvVariables(localConfig: LocalConfig, roleContext: RolePullContext | null): Promise<EnvVariable[] | null> {
+  const resolution = await resolveEntries(envEntryReader, localConfig, activeEnvNamespaces(roleContext));
+  reportEntryResolution(resolution);
   const declarations = await resolveSecretDeclarations(localConfig, activeEnvNamespaces(roleContext));
   if (declarations.kind !== 'absent') reportEntryResolution(declarations);
+  const secretKeys = declaredSecretKeys(declarations);
+  if (resolution.kind === 'failed' || !secretKeys) return null;
+  return resolution.entries.filter((entry) => !secretKeys.has(entry.name)).map((entry) => entry.entry);
 }
 
 /**
@@ -488,12 +495,9 @@ async function reconcileEnvForUnchangedRepo(
   roleContext: RolePullContext | null,
 ): Promise<void> {
   try {
-    const resolution = await resolveEntries(envEntryReader, localConfig, activeEnvNamespaces(roleContext));
-    reportEntryResolution(resolution);
-    await reportSecretDeclarations(localConfig, roleContext);
-    if (resolution.kind === 'failed') return;
-    const envHandler = new EnvHandler();
-    await envHandler.writeResolvedEnv(resolution.entries.map((entry) => entry.entry), freshConfig, localConfig);
+    const variables = await deliverableEnvVariables(localConfig, roleContext);
+    if (!variables) return;
+    await new EnvHandler().writeResolvedEnv(variables, freshConfig, localConfig);
   } catch (e) {
     // Visible rather than debug-only, and still not rethrown. This is the path
     // that REMOVES a variable the member is no longer scoped to, so a failed
@@ -1102,11 +1106,8 @@ async function pullForScope(
       // even when the root file is absent or empty: rewriting env.sh from the
       // resolved set is what removes a deactivated namespace's variables. A
       // file that cannot be used, or a name defined twice, keeps env.sh as is.
-      const resolution = await resolveEntries(envEntryReader, localConfig, activeEnvNamespaces(roleContext));
-      reportEntryResolution(resolution);
-      await reportSecretDeclarations(localConfig, roleContext);
-      if (resolution.kind === 'failed') continue;
-      const variables = resolution.entries.map((entry) => entry.entry);
+      const variables = await deliverableEnvVariables(localConfig, roleContext);
+      if (!variables) continue;
       const countLabel = `${variables.length} env variable(s)`;
 
       if (options.dryRun) {

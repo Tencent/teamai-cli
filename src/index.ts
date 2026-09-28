@@ -691,6 +691,26 @@ envCmd
     await envRemove(key, { ...globalOpts, ...cmdOpts });
   });
 
+envCmd
+  .command('set <key>')
+  .description("Set your value for a secret the team declares, for this directory's team, on this machine (prompts without echo)")
+  .option('--stdin', 'Read the value from piped stdin')
+  .option('--from-env <var>', 'Read the value from this environment variable each time it is used; no copy is stored')
+  .action(async (key, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { envSet } = await import('./env-commands.js');
+    await envSet(key, { ...globalOpts, ...cmdOpts });
+  });
+
+envCmd
+  .command('unset <key>')
+  .description("Remove your value for a secret, for this directory's team, from this machine")
+  .action(async (key, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { envUnset } = await import('./env-commands.js');
+    await envUnset(key, { ...globalOpts, ...cmdOpts });
+  });
+
 // ─── Hooks commands ─────────────────────────────────────
 
 const hooksCmd = program

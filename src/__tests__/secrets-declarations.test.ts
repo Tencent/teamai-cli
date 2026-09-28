@@ -10,7 +10,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { describeEntryFailure } from '../namespaced-entries.js';
-import { resolveSecretDeclarations, secretState } from '../resources/secrets.js';
+import { resolveSecretDeclarations } from '../resources/secrets.js';
 import type { LocalConfig } from '../types.js';
 
 /**
@@ -100,7 +100,7 @@ describe('team secret declarations', () => {
     if (declarations.kind !== 'failed') return;
     const message = describeEntryFailure(declarations.failure);
     expect(message).toContain(reason);
-    expect(message).toContain('Team secrets were not resolved this run; env variables are not affected. Fix the file in the team repo and push.');
+    expect(message).toContain('Team secrets were not resolved this run; env.sh keeps the variables it had. Fix the file in the team repo and push.');
   });
 
   it('fails when a namespace file repeats a key, naming it a secret', async () => {
@@ -109,7 +109,7 @@ describe('team secret declarations', () => {
     const declarations = await resolveSecretDeclarations(config(), []);
 
     expect(declarations.kind === 'failed' && describeEntryFailure(declarations.failure)).toBe(
-      'env/secrets.yaml defines secret "A" more than once. Team secrets were not resolved this run; env variables are not affected. '
+      'env/secrets.yaml defines secret "A" more than once. Team secrets were not resolved this run; env.sh keeps the variables it had. '
         + 'Keep one of them in the team repo and push.',
     );
   });
@@ -125,11 +125,5 @@ describe('team secret declarations', () => {
     expect(declarations.notices.map((notice) => notice.message)).toEqual([
       'env/secrets.yaml: secret "A" has unknown key `value:`, so this entry is not delivered. Correct the key or remove it.',
     ]);
-  });
-
-  it('reads a secret as set from the environment only when it has a value there', () => {
-    expect(secretState('GITHUB_TOKEN', { GITHUB_TOKEN: 'fixture' })).toBe('environment');
-    expect(secretState('GITHUB_TOKEN', { GITHUB_TOKEN: '' })).toBe('missing');
-    expect(secretState('GITHUB_TOKEN', {})).toBe('missing');
   });
 });

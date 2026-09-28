@@ -434,4 +434,30 @@ describe('doctor — env variables reach a shell', () => {
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('variable "API_BASE" is defined in both env/checkout/env.yaml and env/billing/env.yaml');
   });
+
+  // #875 (#879 Conflict 13): pull leaves the env.yaml value of a key declared as a secret out of env.sh.
+  it('does not owe env.sh a key the team also declares as a secret, and reports one it still exports', async () => {
+    await writeEnvYaml('variables:\n  - key: JIRA_PASSWORD\n    value: "s3cret"\n  - key: API_URL\n    value: "u"\n');
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: JIRA_PASSWORD\n');
+    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+
+    await writeEnvSh("export API_URL='u'\n");
+    expect(await (await envCheck()).check()).toBe(true);
+
+    await writeEnvSh("export API_URL='u'\nexport JIRA_PASSWORD='s3cret'\n");
+    const check = await envCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain('still exports JIRA_PASSWORD');
+  });
+
+  // #879 Conflict 14: a failed declaration keeps env.sh as it is, so it cannot be checked against env.yaml.
+  it('names the secrets file when the declarations cannot be read', async () => {
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: [\n');
+    await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
+    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain('env/secrets.yaml is not valid YAML');
+  });
 });

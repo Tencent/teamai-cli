@@ -202,6 +202,18 @@ function parseEnvYamlDocument(raw: unknown, label: string): EnvYamlRead {
   return { ok: true, variables: parsed.data.variables };
 }
 
+/**
+ * What each env.sh exported before this process first rewrote it, by path. A
+ * shell opened before the rewrite still carries those values, and they are the
+ * team's, not the member's (#879 Conflict 10).
+ */
+const exportsBeforeRewrite = new Map<string, ReadonlyMap<string, string>>();
+
+/** The exports of every env.sh this process rewrote, as they stood before. */
+export function envShExportsBeforeRewrite(): Iterable<ReadonlyMap<string, string>> {
+  return exportsBeforeRewrite.values();
+}
+
 function envPushItem(relativePath: string, sourcePath: string): ResourceItem {
   return { name: relativePath.slice('env/'.length), type: 'env', sourcePath, relativePath };
 }
@@ -330,6 +342,9 @@ export class EnvHandler extends ResourceHandler {
     await writeFile(getEnvBackupPath(localConfig), backupLines.join('\n') + '\n');
 
     // <teamaiHome>/env.sh (sourceable export file)
+    if (!exportsBeforeRewrite.has(envShPath)) {
+      exportsBeforeRewrite.set(envShPath, parseEnvFile(await readFileSafe(envShPath) ?? ''));
+    }
     await writeFile(envShPath, this.generateEnvFile(variables));
 
     // Inject source line into shell profile if enabled
