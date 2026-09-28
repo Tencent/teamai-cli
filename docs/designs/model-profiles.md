@@ -20,6 +20,8 @@ Model profiles let a team publish one gateway catalog that every supported agent
 
 A key is either stored or referenced as an environment variable; it is never accepted as a command-line argument. `0600` is not encryption. The team-key file name combines the sanitized `teamai.yaml` team name with a hash of the repository identity, and the same identity is recorded with each `team:` switch so `pull` only re-applies the current team's profiles. Inside it, each key is stored under `team:<id>@<origin>`; see [Namespaces and key binding](#namespaces-and-key-binding).
 
+Model profile keys are not [team secrets](team-secrets.md): `teamai env set` does not configure them, `env/secrets.yaml` cannot declare one, and the two stores share code, not files.
+
 ## Catalog and protocols
 
 ```yaml
