@@ -203,6 +203,7 @@ describe('uninstall', () => {
 
   beforeEach(async () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-uninstall-test-'));
+    vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
     mockAutoDetectInit.mockReset();
     mockReconcileHooks.mockReset();
     mockSaveLocalConfig.mockReset();
