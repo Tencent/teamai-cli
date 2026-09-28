@@ -28,7 +28,18 @@ secrets:
 
 使用单独的文件，是为了让旧版 CLI（只读取 `env.yaml`）忽略它，旧版的 `teamai env add` 或 `env remove`（会重写 `env.yaml`）也不会把它丢掉。
 
-目前由管理员直接编辑该文件，并用 `teamai push` 发布：`push` 会像 env 文件一样列出改动过的 `env/secrets.yaml` 或 `env/<ns>/secrets.yaml`，单仓库模式也一样。
+管理员用 `teamai env add --secret` 声明密钥（不接受值），再用 `teamai push` 发布：`push` 会像 env 文件一样列出改动过的 `env/secrets.yaml` 或 `env/<ns>/secrets.yaml`，单仓库模式也一样。也可以直接编辑该文件。
+
+```text
+teamai env add GITHUB_TOKEN --secret -d "GitHub token with repo scope" --url https://github.com/settings/tokens
+teamai env add GITHUB_TOKEN --secret --role checkout     # 或 --project <id>：env/<ns>/secrets.yaml
+teamai env remove GITHUB_TOKEN                          # 删除该声明（同样支持 --role / --project）
+teamai push
+```
+
+- `env add KEY --secret` 声明该 key；若该文件已声明这个 key，则更新它的 `description` 和 `url`，未传的选项保留原值。key 后面带值会被拒绝且不会保存，`env add` 与 `env remove` 的任何输出都不会出现值。
+- `env remove KEY` 在 `env.yaml` 设置了该 key 时删除这个变量，否则删除同目录 `secrets.yaml` 中的声明。`env remove KEY --secret` 只删除声明，用于两个文件都有该 key 的情况。
+- 两个命令都不会编辑无法解析的密钥文件。`--role` 与 `--project` 选择 namespace 的方式与变量相同。
 
 ## Namespace
 

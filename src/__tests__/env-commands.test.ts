@@ -36,6 +36,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { envList, envAdd, envRemove } from '../env-commands.js';
 import { requireInit } from '../config.js';
+import { resolveSecretDeclarations } from '../resources/secrets.js';
 import { log } from '../utils/logger.js';
 import { pullRepo } from '../utils/git.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
@@ -515,6 +516,196 @@ scope: 'user',
       expect(YAML.parse(await fse.readFile(path.join(repoPath, 'env', 'env.yaml'), 'utf-8')).variables)
         .toEqual([{ key: 'API_BASE', value: 'root' }]);
       expect(log.success).toHaveBeenCalledWith('Removed env variable in env/checkout/env.yaml: API_BASE');
+    });
+  });
+
+  // ─── Declaring secrets (#875) ────────────────────────────
+
+  describe('env add --secret / env remove of a secret (#875)', () => {
+    const rootSecrets = () => path.join(repoPath, 'env', 'secrets.yaml');
+    const nsSecrets = (ns: string) => path.join(repoPath, 'env', ns, 'secrets.yaml');
+    const secretsIn = async (file: string): Promise<unknown> => YAML.parse(await fse.readFile(file, 'utf-8')).secrets;
+    /** Every string the command logged, to assert a value never appears in it. */
+    const logged = (): string => [log.info, log.success, log.warn, log.error, log.dim]
+      .flatMap((fn) => vi.mocked(fn).mock.calls.flat()).join('\n');
+
+    beforeEach(() => {
+      vi.mocked(log.warn).mockClear();
+      process.exitCode = 0;
+    });
+    afterEach(() => {
+      process.exitCode = 0;
+    });
+
+    it('declares a secret in env/secrets.yaml with its description and url, and no value', async () => {
+      await envAdd('GITHUB_TOKEN', undefined, {
+        secret: true, description: 'GitHub token for gh', url: 'https://github.com/settings/tokens',
+      });
+
+      expect(await secretsIn(rootSecrets())).toEqual([
+        { key: 'GITHUB_TOKEN', description: 'GitHub token for gh', url: 'https://github.com/settings/tokens' },
+      ]);
+      expect(await fse.pathExists(path.join(repoPath, 'env', 'env.yaml'))).toBe(false);
+      expect(log.success).toHaveBeenCalledWith('Declared secret: GITHUB_TOKEN');
+      expect(log.info).toHaveBeenCalledWith('Run `teamai push` to sync to team repo.');
+      // What was written is what a member's CLI reads back.
+      const declarations = await resolveSecretDeclarations(localConfig);
+      expect(declarations.kind === 'resolved' && declarations.entries.map((s) => s.name)).toEqual(['GITHUB_TOKEN']);
+    });
+
+    it('declares a secret with the key alone', async () => {
+      await envAdd('NPM_TOKEN', undefined, { secret: true });
+
+      expect(await secretsIn(rootSecrets())).toEqual([{ key: 'NPM_TOKEN' }]);
+    });
+
+    it('--role declares it in env/<ns>/secrets.yaml, and --role names that file when no one declares the namespace', async () => {
+      await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'GITHUB_TOKEN' }] }));
+
+      await envAdd('GITHUB_TOKEN', undefined, { secret: true, role: 'checkout', description: 'checkout token' });
+
+      expect(await secretsIn(nsSecrets('checkout'))).toEqual([{ key: 'GITHUB_TOKEN', description: 'checkout token' }]);
+      expect(await secretsIn(rootSecrets())).toEqual([{ key: 'GITHUB_TOKEN' }]);
+      expect(log.success).toHaveBeenCalledWith('Declared secret in env/checkout/secrets.yaml: GITHUB_TOKEN');
+    });
+
+    it('--role warns about the secrets file when no role or project declares the namespace', async () => {
+      await fse.outputFile(path.join(repoPath, 'manifest', 'projects.yaml'), YAML.stringify({
+        version: 1, projects: [{ id: 'billing', resources: { env: ['billing'] } }],
+      }));
+
+      await envAdd('GITHUB_TOKEN', undefined, { secret: true, role: 'checkout' });
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
+        'No role or project declares env namespace "checkout", so env/checkout/secrets.yaml reaches nobody',
+      ));
+    });
+
+    it("--project declares it in the project's env namespace", async () => {
+      await fse.outputFile(path.join(repoPath, 'manifest', 'projects.yaml'), YAML.stringify({
+        version: 1, projects: [{ id: 'checkout', resources: { env: ['checkout-env'] } }],
+      }));
+
+      await envAdd('GITHUB_TOKEN', undefined, { secret: true, project: 'checkout' });
+
+      expect(await secretsIn(nsSecrets('checkout-env'))).toEqual([{ key: 'GITHUB_TOKEN' }]);
+    });
+
+    it('updates a declared secret: a new description replaces the old one, the url and other entries stay', async () => {
+      await fse.outputFile(rootSecrets(), YAML.stringify({
+        secrets: [
+          { key: 'GITHUB_TOKEN', description: 'old', url: 'https://github.com/settings/tokens' },
+          { key: 'NPM_TOKEN', owner: 'infra' },
+        ],
+      }));
+
+      await envAdd('GITHUB_TOKEN', undefined, { secret: true, description: 'new' });
+
+      expect(await secretsIn(rootSecrets())).toEqual([
+        { key: 'GITHUB_TOKEN', description: 'new', url: 'https://github.com/settings/tokens' },
+        { key: 'NPM_TOKEN', owner: 'infra' },
+      ]);
+      expect(log.success).toHaveBeenCalledWith('Updated secret: GITHUB_TOKEN');
+    });
+
+    it('writes nothing on dry-run', async () => {
+      await envAdd('GITHUB_TOKEN', undefined, { secret: true, dryRun: true });
+
+      expect(await fse.pathExists(rootSecrets())).toBe(false);
+      expect(log.info).toHaveBeenCalledWith('[dry-run] Would declare secret: GITHUB_TOKEN');
+    });
+
+    it('rejects a value with --secret, writes nothing and never prints the value', async () => {
+      await envAdd('GITHUB_TOKEN', 'ghp_do_not_print', { secret: true });
+
+      expect(await fse.pathExists(rootSecrets())).toBe(false);
+      expect(await fse.pathExists(path.join(repoPath, 'env', 'env.yaml'))).toBe(false);
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('A secret has no value in the team repo'));
+      expect(logged()).not.toContain('ghp_do_not_print');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('rejects a variable without a value', async () => {
+      await envAdd('API_BASE', undefined, {});
+
+      expect(await fse.pathExists(path.join(repoPath, 'env', 'env.yaml'))).toBe(false);
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('No value for "API_BASE"'));
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('rejects --url without --secret', async () => {
+      await envAdd('API_BASE', 'x', { url: 'https://example.com' });
+
+      expect(await fse.pathExists(path.join(repoPath, 'env', 'env.yaml'))).toBe(false);
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('--url'));
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses to write into a secrets file that does not parse, and leaves it as it was', async () => {
+      const broken = 'GITHUB_TOKEN: x\n';
+      await fse.outputFile(rootSecrets(), broken);
+
+      await envAdd('NPM_TOKEN', undefined, { secret: true });
+
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining('env/secrets.yaml'));
+      expect(await fse.readFile(rootSecrets(), 'utf-8')).toBe(broken);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('env remove removes a declared secret', async () => {
+      await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'GITHUB_TOKEN' }, { key: 'NPM_TOKEN' }] }));
+
+      await envRemove('GITHUB_TOKEN', {});
+
+      expect(await secretsIn(rootSecrets())).toEqual([{ key: 'NPM_TOKEN' }]);
+      expect(log.success).toHaveBeenCalledWith('Removed secret: GITHUB_TOKEN');
+      expect(log.info).toHaveBeenCalledWith('Run `teamai push` to sync to team repo.');
+    });
+
+    it('env remove --role removes the secret from the namespace file only', async () => {
+      await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'GITHUB_TOKEN' }] }));
+      await fse.outputFile(nsSecrets('checkout'), YAML.stringify({ secrets: [{ key: 'GITHUB_TOKEN' }] }));
+
+      await envRemove('GITHUB_TOKEN', { role: 'checkout' });
+
+      expect(await secretsIn(nsSecrets('checkout'))).toEqual([]);
+      expect(await secretsIn(rootSecrets())).toEqual([{ key: 'GITHUB_TOKEN' }]);
+      expect(log.success).toHaveBeenCalledWith('Removed secret in env/checkout/secrets.yaml: GITHUB_TOKEN');
+    });
+
+    // An admin moving a token out of env.yaml declares it first, then removes the value.
+    it('with the key in both files, env remove removes the variable and --secret removes the secret', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'GITHUB_TOKEN', value: 'v' }] }));
+      await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'GITHUB_TOKEN' }] }));
+
+      await envRemove('GITHUB_TOKEN', {});
+
+      expect(YAML.parse(await fse.readFile(path.join(repoPath, 'env', 'env.yaml'), 'utf-8')).variables).toEqual([]);
+      expect(await secretsIn(rootSecrets())).toEqual([{ key: 'GITHUB_TOKEN' }]);
+
+      await envRemove('GITHUB_TOKEN', { secret: true });
+
+      expect(await secretsIn(rootSecrets())).toEqual([]);
+    });
+
+    it('env remove --secret leaves a variable alone and says the secret is not declared', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'GITHUB_TOKEN', value: 'v' }] }));
+
+      await envRemove('GITHUB_TOKEN', { secret: true });
+
+      expect(YAML.parse(await fse.readFile(path.join(repoPath, 'env', 'env.yaml'), 'utf-8')).variables)
+        .toEqual([{ key: 'GITHUB_TOKEN', value: 'v' }]);
+      expect(log.error).toHaveBeenCalledWith('Secret "GITHUB_TOKEN" is not declared');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('env remove of a secret writes nothing on dry-run', async () => {
+      await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'GITHUB_TOKEN' }] }));
+
+      await envRemove('GITHUB_TOKEN', { dryRun: true });
+
+      expect(await secretsIn(rootSecrets())).toEqual([{ key: 'GITHUB_TOKEN' }]);
+      expect(log.info).toHaveBeenCalledWith('[dry-run] Would remove secret: GITHUB_TOKEN');
     });
   });
 

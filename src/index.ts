@@ -669,10 +669,12 @@ envCmd
   });
 
 envCmd
-  .command('add <key> <value>')
-  .description('Add or update a team environment variable')
-  .option('-d, --description <desc>', 'Description for the variable')
-  .option('--role <ns>', 'Write to env/<ns>/env.yaml instead of env/env.yaml')
+  .command('add <key> [value]')
+  .description('Add or update a team environment variable, or declare a secret with --secret')
+  .option('-d, --description <desc>', 'Description for the variable or secret')
+  .option('--secret', 'Declare a secret in env/secrets.yaml: no value, each member sets their own')
+  .option('--url <url>', 'Where a member gets a value for the secret (with --secret)')
+  .option('--role <ns>', 'Write to env/<ns>/ instead of env/ (env.yaml, or secrets.yaml with --secret)')
   .option('--project <id>', "Write to the project's env namespace (resources.env in manifest/projects.yaml)")
   .action(async (key, value, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
@@ -682,8 +684,9 @@ envCmd
 
 envCmd
   .command('remove <key>')
-  .description('Remove a team environment variable')
-  .option('--role <ns>', 'Remove from env/<ns>/env.yaml instead of env/env.yaml')
+  .description('Remove a team environment variable or declared secret')
+  .option('--secret', 'Remove the declared secret only (env/secrets.yaml), for a key env.yaml also sets')
+  .option('--role <ns>', 'Remove from env/<ns>/ instead of env/')
   .option('--project <id>', "Remove from the project's env namespace (resources.env in manifest/projects.yaml)")
   .action(async (key, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;

@@ -1061,6 +1061,16 @@ secrets:
     url: https://github.com/settings/tokens     # optional: where a member gets one
 ```
 
+```bash
+teamai env add GITHUB_TOKEN --secret -d "GitHub token with repo scope" --url https://github.com/settings/tokens
+teamai env remove GITHUB_TOKEN        # a key env.yaml does not set; --secret for one both files carry
+teamai push
+```
+
+`teamai env add KEY --secret` declares a key, or updates its description and url,
+in the root file or, with `--role` / `--project`, the namespace's; it takes no
+value and prints none.
+
 `teamai env list` and `teamai list env` show each declared secret as
 `environment` (your environment has a value for it) or `missing`, and never show
 a value, `--reveal` included. A secrets file that cannot be used fails the

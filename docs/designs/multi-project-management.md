@@ -445,7 +445,8 @@ source order is active namespace, then this machine's placement record, then the
 shared root; in role/project mode a same-stem root file no longer withdraws the
 placement record (legacy mode still does). The skills push scan uses role ∪
 project namespaces, and `push` picks up a change to any `env/<ns>/env.yaml` or `env/<ns>/secrets.yaml`.
-`teamai env add|remove` take `--role` / `--project`. `teamai remove mcp <name>`
+`teamai env add|remove` take `--role` / `--project`, and `--secret` for that namespace's `secrets.yaml`.
+`teamai remove mcp <name>`
 removes from the root file when it defines the name, otherwise from the one
 namespace file that does, and asks for `--role` / `--project` only when several
 namespace files and not the root define it, and removes nothing by a bare name

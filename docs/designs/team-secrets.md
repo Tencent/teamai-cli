@@ -28,7 +28,18 @@ secrets:
 
 It is a separate file so a member on an older CLI, which reads only `env.yaml`, ignores it, and an older `teamai env add` or `env remove`, which rewrite `env.yaml`, cannot drop it.
 
-For now an admin edits the file directly and publishes it with `teamai push`, which lists a changed `env/secrets.yaml` or `env/<ns>/secrets.yaml` like an env file, in single-repo mode too.
+An admin declares a secret with `teamai env add --secret`, which takes no value, and publishes it with `teamai push`, which lists a changed `env/secrets.yaml` or `env/<ns>/secrets.yaml` like an env file, in single-repo mode too. Editing the file directly works as well.
+
+```text
+teamai env add GITHUB_TOKEN --secret -d "GitHub token with repo scope" --url https://github.com/settings/tokens
+teamai env add GITHUB_TOKEN --secret --role checkout     # or --project <id>: env/<ns>/secrets.yaml
+teamai env remove GITHUB_TOKEN                          # removes the declaration (same --role / --project)
+teamai push
+```
+
+- `env add KEY --secret` declares the key, or updates the `description` and `url` of a key already declared in that file; an option not passed leaves its field as it was. A value after the key is rejected and not stored, and no output of `env add` or `env remove` names a value.
+- `env remove KEY` removes a variable from `env.yaml` when that file sets the key, and otherwise the declaration from the `secrets.yaml` next to it. `env remove KEY --secret` removes only the declaration, for a key both files carry.
+- Neither command edits a secrets file that does not parse. `--role` and `--project` pick the namespace as they do for variables.
 
 ## Namespaces
 
