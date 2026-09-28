@@ -1090,7 +1090,10 @@ teamai env unset GITHUB_TOKEN [--global]
 `~/.teamai/secrets/teams/<hash>.json` (mode `0600`), one file per team
 repo, named by the repository identity so renaming `team:` keeps it; with `--global`, in `~/.teamai/secrets/machine.json`, for every team on the
 machine, and a value set for a team still wins. Outside any scope, `--global`
-accepts any valid key and notes that no team declares it yet.
+accepts any valid key and notes that no team declares it yet. A value stays the
+kind the key had when you set it: once the team stops declaring a secret that
+`env.yaml` also sets, your value is not used for the variable, and `env list`
+says to run `teamai env unset KEY`, then `teamai env set KEY`.
 `teamai env list` and `teamai list env` show each declared secret as
 `team` (you set it for this team), `global` (you set it for the machine),
 `environment` (your own environment has a value for it), `missing`, or

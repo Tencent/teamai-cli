@@ -994,7 +994,7 @@ teamai env unset GITHUB_TOKEN [--global]
 `env set` 接受已声明的密钥，不加 `--global` 时也接受该目录收到的 `env.yaml` 变量，并把值保存在 `~/.teamai/secrets/teams/<hash>.json`
 （权限 `0600`），每个团队仓库一个文件，按仓库标识命名，修改 `team:` 不影响它；加 `--global` 时保存在 `~/.teamai/secrets/machine.json`，
 对本机所有团队生效，为某个团队设置的值仍然优先。不在任何 scope 中时，`--global` 接受任何合法的 key，
-并提示目前还没有团队声明它。`teamai env list` 和 `teamai list env` 会把每个已声明的密钥
+并提示目前还没有团队声明它。值保持设置时该 key 的类型：团队不再声明某个同时在 `env.yaml` 中设置的密钥后，你的值不会用于该变量，`env list` 会提示先运行 `teamai env unset KEY`，再运行 `teamai env set KEY`。`teamai env list` 和 `teamai list env` 会把每个已声明的密钥
 显示为 `team`（你为该团队设置了它）、`global`（你为本机设置了它）、`environment`（你自己的环境中有它的值）、`missing`，
 或 `unreadable`（你的值文件无法读取），从不显示值，
 `--reveal` 也一样。既声明为密钥、又在 `env.yaml` 中设置的 key 按密钥处理：它的 `env.yaml` 值不会

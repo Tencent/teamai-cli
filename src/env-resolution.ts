@@ -13,8 +13,8 @@ import { resolveEntries, resolveEntriesFor, type EntryResolution, type ResolvedE
 import { envEntryReader, type EnvVariable } from './resources/env.js';
 import { declaredSecretKeys, resolveSecretDeclarations, type KnownNamespaces, type SecretDeclarations } from './resources/secrets.js';
 import {
-  getMachineSecretsPath, getTeamSecretsPath, readSecretStore, storedSecretValue, type SecretStore, type SecretStoreRead,
-  type StoredSecret,
+  getMachineSecretsPath, getTeamSecretsPath, readSecretStore, storedEntryKind, storedSecretValue, type SecretStore,
+  type SecretStoreRead, type StoredEntryKind, type StoredSecret,
 } from './secret-store.js';
 import type { LocalConfig } from './types.js';
 
@@ -67,6 +67,12 @@ export interface TeamEnv {
   readonly unsetReferences: ReadonlyMap<string, UnsetReference>;
   /** The value of each variable that isn't a declared secret (each one when the declarations failed). */
   readonly variableValues: StoreResolution<VariableValue>;
+  /**
+   * The keys whose entry for this team is of the other kind, so it is not
+   * applied: a secret's value for a key now a variable, or a variable override
+   * for a key now a secret. The key maps to the entry's kind.
+   */
+  readonly staleEntries: ReadonlyMap<string, StoredEntryKind>;
   /** The member's own environment (member-env.ts). */
   readonly member: MemberEnvironment;
 }
@@ -106,12 +112,31 @@ export async function resolveTeamEnv(
     secrets: secrets.values,
     unsetReferences: secrets.unsetReferences,
     variableValues: variableValues(plain, team, env),
+    staleEntries: staleEntries(secretKeys, plain, team),
     member,
   };
 }
 
-function storeEntry(store: SecretStore, key: string): StoredSecret | undefined {
-  return Object.hasOwn(store, key) ? store[key] : undefined;
+/** The entry for `key` when it is of this kind: a secret never resolves from a variable override, nor the reverse. */
+function storeEntry(store: SecretStore, key: string, kind: StoredEntryKind): StoredSecret | undefined {
+  const entry = Object.hasOwn(store, key) ? store[key] : undefined;
+  return entry && storedEntryKind(entry) === kind ? entry : undefined;
+}
+
+function staleEntries(
+  secretKeys: ReadonlySet<string>,
+  variables: readonly ResolvedEntry<EnvVariable>[],
+  team: SecretStoreRead,
+): ReadonlyMap<string, StoredEntryKind> {
+  const stale = new Map<string, StoredEntryKind>();
+  if (!team.ok) return stale;
+  const check = (key: string, kind: StoredEntryKind): void => {
+    const entry = Object.hasOwn(team.values, key) ? team.values[key] : undefined;
+    if (entry && storedEntryKind(entry) !== kind) stale.set(key, storedEntryKind(entry));
+  };
+  for (const key of secretKeys) check(key, 'secret');
+  for (const variable of variables) check(variable.name, 'variable');
+  return stale;
 }
 
 function secretValues(
@@ -128,8 +153,8 @@ function secretValues(
   if (!team.ok) return { values: { kind: 'store-unreadable', reason: team.reason }, unsetReferences };
   if (!machine.ok) return { values: { kind: 'store-unreadable', reason: machine.reason }, unsetReferences };
   for (const key of keys) {
-    const teamEntry = storeEntry(team.values, key);
-    const machineEntry = storeEntry(machine.values, key);
+    const teamEntry = storeEntry(team.values, key, 'secret');
+    const machineEntry = storeEntry(machine.values, key, 'secret');
     const entry = teamEntry ?? machineEntry;
     const [source, value]: [SecretValue['source'], string | undefined] = teamEntry ? ['team', storedSecretValue(teamEntry, env)]
       : machineEntry ? ['global', storedSecretValue(machineEntry, env)]
@@ -149,7 +174,7 @@ function variableValues(
   if (variables.length === 0) return { kind: 'resolved', values };
   if (!team.ok) return { kind: 'store-unreadable', reason: team.reason };
   for (const variable of variables) {
-    const entry = storeEntry(team.values, variable.name);
+    const entry = storeEntry(team.values, variable.name, 'variable');
     const member = entry ? storedSecretValue(entry, env) : undefined;
     const fromEnv = entry !== undefined && 'env' in entry;
     values.set(variable.name, member !== undefined

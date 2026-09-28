@@ -911,6 +911,8 @@ team repo, named by the repository identity hash that `~/.teamai/models/teams/` 
 names also carry, without the team name, so renaming `team:` keeps the values,
 and `machine.json`, the values set with `teamai env set --global` for every team.
 Every scope that uses the same team, and every worktree of it, reads the same file.
+Each entry records whether it is a secret's value or the member's value for an
+`env.yaml` variable (`kind`), so one is never used as the other.
 It never goes to a partition or to `<dataHome>`, which in single-repo mode is inside
 the business repo, and it is not `~/.teamai/env`, which is already the user scope's
 env backup file. Files are written atomically with mode `0600`. Uninstalling a

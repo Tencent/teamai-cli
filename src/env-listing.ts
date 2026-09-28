@@ -33,7 +33,7 @@ export interface EnvListing {
 }
 
 export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbose?: boolean }): EnvListing {
-  const { variables, declarations, variableValues, secrets } = teamEnv;
+  const { variables, declarations, variableValues, secrets, staleEntries } = teamEnv;
   const problems = new Set<string>();
   if (variables.kind === 'failed') problems.add(describeEntryFailure(variables.failure));
   if (declarations.kind === 'failed') problems.add(describeEntryFailure(declarations.failure));
@@ -47,6 +47,15 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
   const line = (text: string): void => { lines.push({ text, detail: false }); };
   const detail = (text: string | undefined): void => { if (text && options.verbose) lines.push({ text: `    ${text}`, detail: true }); };
   let revealed = false;
+  // A value set as the other kind is not used (secret-store.ts); `env set` again stores it as this one.
+  const stale = (key: string, now: 'secret' | 'env variable'): void => {
+    const kind = staleEntries.get(key);
+    if (!kind) return;
+    line(
+      `    Your value for this team was set while ${key} was ${kind === 'secret' ? 'a secret' : 'an env variable'}, so it is not used. `
+        + `Run \`teamai env unset ${key}\` to remove it, then \`teamai env set ${key}\` to set one for the ${now}.`,
+    );
+  };
 
   if (received.length > 0) {
     line(`Team env variables (${received.length}):`);
@@ -62,6 +71,7 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
         const value = resolved?.value ?? variable.entry.value;
         revealed ||= options.reveal === true;
         line(`  ${variable.name}=${options.reveal ? value : maskEnvValue(value)}  ${resolved?.source ?? 'env.yaml'}  ${origin}`);
+        stale(variable.name, 'env variable');
       }
       detail(variable.entry.description);
     }
@@ -72,6 +82,7 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
     line('');
     for (const secret of declared) {
       line(`  ${secret.name}  ${secretState(secrets, secret.name)}  (${describeOrigin(secret)})`);
+      stale(secret.name, 'secret');
       detail(secret.entry.description);
       detail(secret.entry.url);
     }

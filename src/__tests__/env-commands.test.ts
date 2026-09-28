@@ -287,7 +287,7 @@ scope: 'user',
 
       await envSet('GITHUB_TOKEN', { stdin: true });
 
-      expect(await stored()).toEqual({ GITHUB_TOKEN: { value: 'fixture-token-value' } });
+      expect(await stored()).toEqual({ GITHUB_TOKEN: { value: 'fixture-token-value', kind: 'secret' } });
       expect(storeFile().startsWith(path.join(tmpDir, 'home', '.teamai', 'secrets', 'teams') + path.sep)).toBe(true);
       if (process.platform !== 'win32') expect((await fse.stat(storeFile())).mode & 0o777).toBe(0o600);
       await envList({ reveal: true });
@@ -302,7 +302,7 @@ scope: 'user',
       await envSet('GITHUB_TOKEN', {});
 
       expect(askSecret).toHaveBeenCalledWith('Value for GITHUB_TOKEN: ');
-      expect(await stored()).toEqual({ GITHUB_TOKEN: { value: 'fixture-prompt-value' } });
+      expect(await stored()).toEqual({ GITHUB_TOKEN: { value: 'fixture-prompt-value', kind: 'secret' } });
     });
 
     it('says how to pass a value when there is no terminal to prompt on', async () => {
@@ -337,7 +337,7 @@ scope: 'user',
 
       await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN' });
 
-      expect(await stored()).toEqual({ GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+      expect(await stored()).toEqual({ GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN', kind: 'secret' } });
       expect(log.warn).toHaveBeenCalledWith('WORK_GITHUB_TOKEN is not set in this shell; GITHUB_TOKEN has no value until it is.');
     });
 
@@ -363,14 +363,14 @@ scope: 'user',
 
       await envSet('API_URL', { stdin: true });
 
-      expect(await stored()).toEqual({ API_URL: { value: 'https://mine.example' } });
+      expect(await stored()).toEqual({ API_URL: { value: 'https://mine.example', kind: 'variable' } });
       expect(log.info).toHaveBeenCalledWith('Run `teamai pull` to update MCP servers and env.sh.');
       expect(process.exitCode).toBeUndefined();
     });
 
     it('says env.sh needs a pull too after unsetting a value for an env variable, and not for a secret', async () => {
       await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
-      await writeSecretStore(storeFile(), { API_URL: { value: 'https://mine.example' }, GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+      await writeSecretStore(storeFile(), { API_URL: { value: 'https://mine.example', kind: 'variable' }, GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
 
       await envUnset('API_URL', {});
       expect(log.info).toHaveBeenLastCalledWith('Run `teamai pull` to update MCP servers and env.sh.');
@@ -467,7 +467,9 @@ scope: 'user',
         envUnset('OLD_TOKEN', {}),
       ]);
 
-      expect(await stored()).toEqual({ GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' }, GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN' } });
+      expect(await stored()).toEqual({
+        GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN', kind: 'secret' }, GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN', kind: 'secret' },
+      });
       expect(await fse.pathExists(`${storeFile()}.lock`)).toBe(false);
       expect(process.exitCode).toBeUndefined();
     });
@@ -480,7 +482,7 @@ scope: 'user',
       await envUnset('GITHUB_TOKEN', {});
       await envUnset('GITHUB_TOKEN', {});
 
-      expect(await stored()).toEqual({ GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN' } });
+      expect(await stored()).toEqual({ GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN', kind: 'secret' } });
       expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no value for this team. Nothing was changed.');
       expect(process.exitCode).toBeUndefined();
     });
@@ -493,7 +495,7 @@ scope: 'user',
 
       const machineFile = path.join(tmpDir, 'home', '.teamai', 'secrets', 'machine.json');
       expect(getMachineSecretsPath()).toBe(machineFile);
-      expect(await fse.readJson(machineFile)).toEqual({ GITHUB_TOKEN: { value: 'fixture-machine-value' } });
+      expect(await fse.readJson(machineFile)).toEqual({ GITHUB_TOKEN: { value: 'fixture-machine-value', kind: 'secret' } });
       if (process.platform !== 'win32') expect((await fse.stat(machineFile)).mode & 0o777).toBe(0o600);
       expect(await fse.pathExists(storeFile())).toBe(false);
       expect(log.success).toHaveBeenCalledWith(`Set GITHUB_TOKEN as your global value (every team on this machine) (${machineFile}).`);
@@ -526,7 +528,7 @@ scope: 'user',
 
       await envSet('SENTRY_AUTH_TOKEN', { fromEnv: 'MY_SENTRY_TOKEN', global: true });
 
-      expect(await fse.readJson(getMachineSecretsPath())).toEqual({ SENTRY_AUTH_TOKEN: { env: 'MY_SENTRY_TOKEN' } });
+      expect(await fse.readJson(getMachineSecretsPath())).toEqual({ SENTRY_AUTH_TOKEN: { env: 'MY_SENTRY_TOKEN', kind: 'secret' } });
       expect(log.info).toHaveBeenCalledWith(
         'No teamai scope here, so no team declares SENTRY_AUTH_TOKEN yet. The value applies to every team on this machine that declares it.',
       );
@@ -603,8 +605,8 @@ scope: 'user',
       await envUnset('GITHUB_TOKEN', { global: true });
       await envUnset('GITHUB_TOKEN', { global: true });
 
-      expect(await fse.readJson(getMachineSecretsPath())).toEqual({ GITLAB_TOKEN: { env: 'PERSONAL_GITLAB_TOKEN' } });
-      expect(await stored()).toEqual({ GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+      expect(await fse.readJson(getMachineSecretsPath())).toEqual({ GITLAB_TOKEN: { env: 'PERSONAL_GITLAB_TOKEN', kind: 'secret' } });
+      expect(await stored()).toEqual({ GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN', kind: 'secret' } });
       expect(log.success).toHaveBeenCalledWith(`Removed GITHUB_TOKEN's global value (every team on this machine) (${getMachineSecretsPath()}).`);
       expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no global value (every team on this machine). Nothing was changed.');
     });
@@ -622,6 +624,41 @@ scope: 'user',
       expect(logged()).toContain('GITLAB_HOST=gitlab.dave.example  team  (root)');
       expect(logged()).toContain('API_URL=u  env.yaml  (root)');
       expect(logged()).not.toContain('gitlab.team.example');
+    });
+
+    // #879: a value keeps the kind it was set as, so a former secret's value never becomes a variable override.
+    it('env list says a value set while the key was a secret is not used for the variable it is now, and how to fix it', async () => {
+      vi.mocked(readStdin).mockResolvedValue('fixture-old-secret');
+      await envSet('GITLAB_TOKEN', { stdin: true });
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GITHUB_TOKEN\n');
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'GITLAB_TOKEN', value: 'team-gitlab' }] }));
+      consoleSpy.mockClear();
+
+      await envList({ reveal: true });
+
+      expect(logged()).toContain('GITLAB_TOKEN=team-gitlab  env.yaml  (root)');
+      expect(logged()).toContain(
+        '    Your value for this team was set while GITLAB_TOKEN was a secret, so it is not used. '
+          + 'Run `teamai env unset GITLAB_TOKEN` to remove it, then `teamai env set GITLAB_TOKEN` to set one for the env variable.',
+      );
+      expect(logged()).not.toContain('fixture-old-secret');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('env list says a variable override is not used for the secret the key is now', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      vi.mocked(readStdin).mockResolvedValue('https://mine.example');
+      await envSet('API_URL', { stdin: true });
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: API_URL\n');
+      consoleSpy.mockClear();
+
+      await envList({ reveal: true });
+
+      expect(logged()).toContain('API_URL  missing  (root)');
+      expect(logged()).toContain(
+        '    Your value for this team was set while API_URL was an env variable, so it is not used. '
+          + 'Run `teamai env unset API_URL` to remove it, then `teamai env set API_URL` to set one for the secret.',
+      );
     });
 
     it('env list shows unreadable, not missing, while the member\'s values file can\'t be read, and exits 1', async () => {

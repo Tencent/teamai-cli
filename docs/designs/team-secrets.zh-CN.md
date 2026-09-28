@@ -102,7 +102,7 @@ teamai env unset GITHUB_TOKEN [--global]
 - 本机一个文件：`~/.teamai/secrets/machine.json`，格式相同。每个 scope 都从中读取自己声明的密钥。
 - 始终位于 `~/.teamai` 下，绝不放在 scope 的数据目录中（单仓模式下该目录在业务仓库内）。不使用 `~/.teamai/env`：它是用户 scope 的 env 备份文件。
 - 以原子方式写入，权限 `0600`。这不是加密：能读取成员文件的人都能读到值。
-- 每个条目恰好是 `{"value": "..."}` 或 `{"env": "VAR"}` 之一。文件无法解析时只报告路径，含有其他条目时报告路径和条目序号，绝不输出其内容；修复之前，该团队的每个密钥（对 `machine.json` 而言是所有团队的每个密钥）都是 `unreadable`。
+- 每个条目恰好是 `{"value": "..."}` 或 `{"env": "VAR"}` 之一，并带有 `kind`（`secret` 或 `variable`）：`env set` 写入时该 scope 把这个 key 声明为什么。没有 `kind` 的条目按密钥的值处理。条目只按它的 `kind` 使用：团队不再把某个 key 声明为密钥、而 `env.yaml` 仍设置它时，密钥的值绝不会作为变量导出；成员为变量设置的值也绝不会成为密钥的值。`env list` 会在该 key 下把另一种 `kind` 的条目显示为未使用，并给出修复方法：`teamai env unset KEY`，然后 `teamai env set KEY`。文件无法解析时只报告路径，含有其他条目时报告路径和条目序号，绝不输出其内容；修复之前，该团队的每个密钥（对 `machine.json` 而言是所有团队的每个密钥）都是 `unreadable`。
 - 生命周期：卸载项目 scope 不会删除按团队保存的值和本机的值，因为其他 scope 可能使用它们；卸载用户 scope（`teamai uninstall`）会删除 `~/.teamai`，值也随之删除。
 - 模型配置的密钥保持原位（[模型配置](model-profiles.zh-CN.md)）：`env set` 不配置它们，`env/secrets.yaml` 也不能声明它们。
 

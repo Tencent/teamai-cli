@@ -140,12 +140,29 @@ describe('teamai env exec', () => {
 
     expect((await childEnv(home)).API_URL).toBe('https://team.example');
 
-    await writeSecretStore(getTeamSecretsPath(config), { API_URL: { value: 'https://mine.example' } });
+    await writeSecretStore(getTeamSecretsPath(config), { API_URL: { value: 'https://mine.example', kind: 'variable' } });
     expect((await childEnv(home)).API_URL).toBe('https://mine.example');
 
-    await writeSecretStore(getTeamSecretsPath(config), { API_URL: { env: 'MY_API_URL' } });
+    await writeSecretStore(getTeamSecretsPath(config), { API_URL: { env: 'MY_API_URL', kind: 'variable' } });
     vi.stubEnv('MY_API_URL', 'https://mine-from-env.example');
     expect((await childEnv(home)).API_URL).toBe('https://mine-from-env.example');
+  });
+
+  // #879: a former secret's stored value never reaches the child as the variable it is now.
+  it('gives a variable its env.yaml value, never a value stored while it was a secret, and a secret never a variable override', async () => {
+    const { repoPath } = await team('personal', {
+      'env/env.yaml': 'variables:\n  - key: API_URL\n    value: https://team.example\n', 'env/secrets.yaml': GITHUB_SECRET,
+    });
+    const config = await userScope(repoPath);
+    await writeSecretStore(getTeamSecretsPath(config), {
+      API_URL: { value: 'fixture-old-secret' },
+      GITHUB_TOKEN: { value: 'fixture-override', kind: 'variable' },
+    });
+
+    const env = await childEnv(home);
+    expect(env.API_URL).toBe('https://team.example');
+    expect(Object.hasOwn(env, 'GITHUB_TOKEN')).toBe(false);
+    expect(text(stderr)).toContain(GITHUB_LINE);
   });
 
   // `__proto__` is a valid env key; an ordinary object's inherited setter would drop it.

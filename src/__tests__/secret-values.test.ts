@@ -11,7 +11,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import YAML from 'yaml';
 import { EnvHandler, type EnvVariable } from '../resources/env.js';
-import { resolveTeamEnv, secretState, type SecretValue, type StoreResolution } from '../env-resolution.js';
+import { resolveTeamEnv, secretState, type SecretValue, type StoreResolution, type TeamEnv } from '../env-resolution.js';
 import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, writeSecretStore } from '../secret-store.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
@@ -34,17 +34,27 @@ describe('team secret values', () => {
   const keys = (...names: string[]): readonly string[] => names;
   const values = (resolution: StoreResolution<SecretValue>): Record<string, string> =>
     resolution.kind === 'resolved' ? Object.fromEntries([...resolution.values].map(([k, v]) => [k, `${v.source}:${v.value}`])) : {};
-  /** The secrets `declared` resolve to with this env, as the team repo declares them. */
+  /** This scope's env with this env, as the team repo declares `declared` and sets `variables`. */
+  const resolveTeamEnvWith = async (
+    declared: readonly string[],
+    variables: readonly EnvVariable[],
+    env: NodeJS.ProcessEnv = {},
+  ): Promise<TeamEnv> => {
+    const repoPath = localConfig.repo.localPath;
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), YAML.stringify({ secrets: declared.map((key) => ({ key })) }));
+    await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables }));
+    return resolveTeamEnv(localConfig, undefined, env);
+  };
+  /** The secrets `declared` resolve to with this env. */
   const resolveSecretValues = async (
     declared: readonly string[],
     variables: readonly EnvVariable[],
     env: NodeJS.ProcessEnv,
-  ): Promise<StoreResolution<SecretValue>> => {
-    const repoPath = localConfig.repo.localPath;
-    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), YAML.stringify({ secrets: declared.map((key) => ({ key })) }));
-    await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables }));
-    return (await resolveTeamEnv(localConfig, undefined, env)).secrets;
-  };
+  ): Promise<StoreResolution<SecretValue>> => (await resolveTeamEnvWith(declared, variables, env)).secrets;
+
+  const variableSources = (teamEnv: TeamEnv): Record<string, string> => teamEnv.variableValues.kind === 'resolved'
+    ? Object.fromEntries([...teamEnv.variableValues.values].map(([k, v]) => [k, `${v.source}:${v.value}`]))
+    : {};
 
   beforeEach(async () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-secret-values-'));
@@ -96,6 +106,17 @@ describe('team secret values', () => {
       if (!read.ok) return;
       expect(Object.keys(read.values)).toEqual(['__proto__', 'API_URL']);
       expect(Object.hasOwn(read.values, '__proto__')).toBe(true);
+    });
+
+    it('keeps whether an entry is a secret or a variable override, and rejects any other kind', async () => {
+      const file = getTeamSecretsPath(localConfig);
+      await writeSecretStore(file, { GITHUB_TOKEN: { value: 't', kind: 'secret' }, API_URL: { env: 'MY_API_URL', kind: 'variable' } });
+
+      expect(await readSecretStore(file)).toEqual({
+        ok: true, values: { GITHUB_TOKEN: { value: 't', kind: 'secret' }, API_URL: { env: 'MY_API_URL', kind: 'variable' } },
+      });
+      await fse.outputJson(file, { GITHUB_TOKEN: { value: 't', kind: 'token' } });
+      expect((await readSecretStore(file)).ok).toBe(false);
     });
 
     it('does not touch the env backup file ~/.teamai/env', async () => {
@@ -196,6 +217,37 @@ describe('team secret values', () => {
 
       expect(values(await resolveSecretValues(keys('GITHUB_TOKEN', 'GITLAB_TOKEN'), [], { GITLAB_TOKEN: 'exported' })))
         .toEqual({});
+    });
+
+    // #879: secrets and variable overrides share the team store; each entry says which it is.
+    it('never resolves a variable from a value stored while the key was a secret, an entry without a kind counting as one', async () => {
+      await writeSecretStore(getTeamSecretsPath(localConfig), {
+        API_URL: { value: 'fixture-old-secret' }, GITLAB_HOST: { value: 'fixture-old-secret-2', kind: 'secret' },
+      });
+      const teamEnv = await resolveTeamEnvWith(keys(), [variable('API_URL', 'team-url'), variable('GITLAB_HOST', 'gitlab.team')]);
+
+      expect(variableSources(teamEnv)).toEqual({ API_URL: 'env.yaml:team-url', GITLAB_HOST: 'env.yaml:gitlab.team' });
+      expect([...teamEnv.staleEntries]).toEqual([['API_URL', 'secret'], ['GITLAB_HOST', 'secret']]);
+    });
+
+    it('never resolves a secret from a variable override of the same key', async () => {
+      await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'fixture-override', kind: 'variable' } });
+      await writeSecretStore(getMachineSecretsPath(), { GITLAB_TOKEN: { value: 'machine-gitlab', kind: 'secret' } });
+      const teamEnv = await resolveTeamEnvWith(keys('GITHUB_TOKEN', 'GITLAB_TOKEN'), [], { GITHUB_TOKEN: 'exported-token' });
+
+      expect(values(teamEnv.secrets)).toEqual({ GITHUB_TOKEN: 'environment:exported-token', GITLAB_TOKEN: 'global:machine-gitlab' });
+      expect([...teamEnv.staleEntries]).toEqual([['GITHUB_TOKEN', 'variable']]);
+    });
+
+    it("resolves a variable from the member's override and a secret from its value, each by its kind", async () => {
+      await writeSecretStore(getTeamSecretsPath(localConfig), {
+        API_URL: { value: 'member-url', kind: 'variable' }, GITHUB_TOKEN: { value: 'team-token', kind: 'secret' },
+      });
+      const teamEnv = await resolveTeamEnvWith(keys('GITHUB_TOKEN'), [variable('API_URL', 'team-url')]);
+
+      expect(variableSources(teamEnv)).toEqual({ API_URL: 'team:member-url' });
+      expect(values(teamEnv.secrets)).toEqual({ GITHUB_TOKEN: 'team:team-token' });
+      expect(teamEnv.staleEntries.size).toBe(0);
     });
 
     it('leaves every secret without a value when the machine store cannot be read', async () => {

@@ -276,10 +276,26 @@ describe('pull advisories for team secrets', () => {
       expect(printed().some((message) => message.includes('GITLAB_HOST') || message.includes('API_URL'))).toBe(false);
     });
 
+    // #879: a secret's value stays one after the key stops being a secret; an entry without a kind counts as one.
+    it('exports the env.yaml value, never a value stored while the key was a secret, in env.sh and the env backup', async () => {
+      await writeSecretStore(getTeamSecretsPath(scopeConfig), {
+        GITLAB_HOST: { value: 'fixture-old-secret' },
+        API_URL: { value: 'fixture-old-secret-2', kind: 'secret' },
+      });
+
+      await pull({ force: true });
+
+      const exported = await envSh();
+      expect(exported).toContain("export GITLAB_HOST='gitlab.team.example'");
+      expect(exported).toContain("export API_URL='https://team.example'");
+      const backup = await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf8');
+      expect(`${exported}${backup}${printed().join('\n')}`).not.toContain('fixture-old-secret');
+    });
+
     it("exports the member's literal value in env.sh, leaves out a --from-env one, and says nothing then", async () => {
       await writeSecretStore(getTeamSecretsPath(scopeConfig), {
-        GITLAB_HOST: { value: 'gitlab.dave.example' },
-        API_URL: { env: 'MY_API_URL' },
+        GITLAB_HOST: { value: 'gitlab.dave.example', kind: 'variable' },
+        API_URL: { env: 'MY_API_URL', kind: 'variable' },
       });
       vi.stubEnv('GITLAB_HOST', 'gitlab.other.example');
       vi.stubEnv('MY_API_URL', 'https://mine.example');

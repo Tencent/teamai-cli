@@ -180,7 +180,7 @@ describe('teamai list / status resource coverage', () => {
   it('list env shows the member\'s value of an overridden variable, as team', async () => {
     const { getTeamSecretsPath, writeSecretStore } = await import('../secret-store.js');
     const { localConfig } = await mockAutoDetectInit() as { localConfig: LocalConfig };
-    await writeSecretStore(getTeamSecretsPath(localConfig), { SECRET_TOKEN: { value: 'fixture-member-value' } });
+    await writeSecretStore(getTeamSecretsPath(localConfig), { SECRET_TOKEN: { value: 'fixture-member-value', kind: 'variable' } });
 
     await list('env', { source: 'repo', reveal: true });
     const out = lines.join('\n');

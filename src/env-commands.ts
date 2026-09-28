@@ -118,7 +118,9 @@ export async function envSet(
   if (!input.ok) return fail(`${input.message} Nothing was changed.`);
   const { entry } = input;
 
-  const update = await updateSecretStore(file, (values) => ({ ...values, [key]: entry }));
+  // The kind the scope declares the key as now, so the value is never used as the other one (#879).
+  const kind = isVariable ? 'variable' : 'secret';
+  const update = await updateSecretStore(file, (values) => ({ ...values, [key]: { ...entry, kind } }));
   if (update.kind === 'failed') return fail(`${update.reason} Nothing was changed.`);
   if ('env' in entry) {
     log.success(`${key} now reads ${entry.env} from your environment ${target} (${file}).`);

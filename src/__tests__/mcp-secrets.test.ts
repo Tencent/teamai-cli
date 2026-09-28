@@ -148,6 +148,20 @@ describe('MCP servers and declared secrets', () => {
     expect(vars.API_URL).toBe('u');
   });
 
+  // #879: secrets and variable overrides share the team store; an entry is used only as the kind it was set as.
+  it('gives a server the env.yaml value of a former secret, never its stored value, and a secret never a variable override', async () => {
+    await write('env/env.yaml', 'variables:\n  - key: API_URL\n    value: team-url\n');
+    await writeSecretStore(getTeamSecretsPath(localConfig), {
+      API_URL: { value: 'fixture-old-secret' },
+      GITHUB_TOKEN: { value: 'fixture-override', kind: 'variable' },
+    });
+    vi.stubEnv('GITHUB_TOKEN', 'exported-token');
+
+    expect((await buildVarTable(localConfig)).API_URL).toBe('team-url');
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(await githubAuthorization()).toBe('Bearer exported-token');
+  });
+
   // #875 (#879 S9): one order for a variable, member team value > env.yaml,
   // with no environment override and no machine value.
   it("resolves a variable from the member's value for this team, then env.yaml, never the environment", async () => {
@@ -161,10 +175,10 @@ describe('MCP servers and declared secrets', () => {
     expect(vars.API_URL).toBe('team-url');
     expect(vars.UNRELATED_URL).toBe('exported-unrelated');
 
-    await writeSecretStore(getTeamSecretsPath(localConfig), { API_URL: { value: 'member-url' } });
+    await writeSecretStore(getTeamSecretsPath(localConfig), { API_URL: { value: 'member-url', kind: 'variable' } });
     expect((await buildVarTable(localConfig)).API_URL).toBe('member-url');
 
-    await writeSecretStore(getTeamSecretsPath(localConfig), { API_URL: { env: 'MY_API_URL' } });
+    await writeSecretStore(getTeamSecretsPath(localConfig), { API_URL: { env: 'MY_API_URL', kind: 'variable' } });
     expect((await buildVarTable(localConfig)).API_URL).toBe('team-url');
     vi.stubEnv('MY_API_URL', 'member-env-url');
     vars = await buildVarTable(localConfig);

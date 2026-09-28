@@ -455,7 +455,7 @@ describe('doctor — env variables reach a shell', () => {
   it("expects the member's value for a variable in env.sh, and no --from-env one", async () => {
     await writeEnvYaml('variables:\n  - key: GITLAB_HOST\n    value: "gitlab.team.example"\n  - key: API_URL\n    value: "u"\n');
     await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
-    await writeSecretStore(getTeamSecretsPath(localConfig), { GITLAB_HOST: { value: 'gitlab.mine.example' }, API_URL: { env: 'MY_API_URL' } });
+    await writeSecretStore(getTeamSecretsPath(localConfig), { GITLAB_HOST: { value: 'gitlab.mine.example', kind: 'variable' }, API_URL: { env: 'MY_API_URL', kind: 'variable' } });
 
     await writeEnvSh("export GITLAB_HOST='gitlab.mine.example'\n");
     expect(await (await envCheck()).check()).toBe(true);

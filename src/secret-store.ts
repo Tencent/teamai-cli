@@ -7,7 +7,12 @@
  * already the user scope's env backup file.
  *
  * Each entry is exactly one of a literal value or the name of a variable to
- * read when the value is used (`--from-env`), so no copy of it is stored.
+ * read when the value is used (`--from-env`), so no copy of it is stored, and
+ * says what it is (`kind`): a secret's value, or the member's override of an
+ * env variable, as the scope declared the key when `env set` wrote it. A
+ * secret's value stays one after the team stops declaring the key, so it is
+ * never exported as a variable. An entry without `kind` (earlier builds) is a
+ * secret's.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,11 +23,19 @@ import { getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { writeJsonAtomic } from './utils/fs.js';
 
+const StoredEntryKindSchema = z.enum(['secret', 'variable']);
+export type StoredEntryKind = z.infer<typeof StoredEntryKindSchema>;
+
 const StoredSecretSchema = z.union([
-  z.object({ value: z.string() }).strict(),
-  z.object({ env: z.string().regex(ENV_KEY_RE) }).strict(),
+  z.object({ value: z.string(), kind: StoredEntryKindSchema.optional() }).strict(),
+  z.object({ env: z.string().regex(ENV_KEY_RE), kind: StoredEntryKindSchema.optional() }).strict(),
 ]);
 export type StoredSecret = z.infer<typeof StoredSecretSchema>;
+
+/** What an entry is; one without `kind` is a secret's, the side that never exports it. */
+export function storedEntryKind(entry: StoredSecret): StoredEntryKind {
+  return entry.kind ?? 'secret';
+}
 
 // Not z.record: it drops a `__proto__` key, which ENV_KEY_RE accepts.
 const SecretStoreSchema = z
@@ -80,7 +93,7 @@ export async function readSecretStore(filePath: string): Promise<SecretStoreRead
   return {
     ok: false,
     reason: `${filePath} ${entry > 0 ? `has an invalid entry (entry ${entry})` : 'is not a JSON object'}: `
-      + `each entry maps a variable name to {"value": "..."} or {"env": "VAR"}. ${fix}`,
+      + `each entry maps a variable name to {"value": "..."} or {"env": "VAR"}, with an optional "kind" of "secret" or "variable". ${fix}`,
   };
 }
 
