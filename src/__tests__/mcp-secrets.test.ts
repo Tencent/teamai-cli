@@ -171,6 +171,62 @@ describe('MCP servers and declared secrets', () => {
     expect(vars.API_URL).toBe('member-env-url');
   });
 
+  // `__proto__` is a valid env key: an ordinary object's inherited setter
+  // would swallow it, and a missing one would read as Object.prototype.
+  describe('a key named __proto__', () => {
+    const protoAuthorization = async (): Promise<string | undefined> => {
+      const file = path.join(homeDir, '.claude.json');
+      if (!await fse.pathExists(file)) return undefined;
+      const config = await fse.readJson(file) as { mcpServers?: Record<string, { headers?: Record<string, string> }> };
+      return config.mcpServers?.proto?.headers?.Authorization;
+    };
+    beforeEach(async () => {
+      await write('mcp/mcp.yaml', [
+        'servers:',
+        '  - name: proto',
+        '    transport: http',
+        '    url: https://api.example.com/mcp/',
+        '    headers:',
+        '      Authorization: Bearer ${__proto__}',
+      ].join('\n'));
+    });
+
+    it('delivers a declared secret named __proto__, and leaves it unresolved when it has no value', async () => {
+      await write('env/secrets.yaml', 'secrets:\n  - key: __proto__\n');
+
+      let vars = await buildVarTable(localConfig);
+      expect(Object.hasOwn(vars, '__proto__')).toBe(false);
+      expect(vars['__proto__']).toBeUndefined();
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      expect(await protoAuthorization()).toBeUndefined();
+
+      await writeSecretStore(getTeamSecretsPath(localConfig), { ['__proto__']: { value: 'proto-secret' } });
+      vars = await buildVarTable(localConfig);
+      expect(Object.hasOwn(vars, '__proto__')).toBe(true);
+      expect(vars['__proto__']).toBe('proto-secret');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      expect(await protoAuthorization()).toBe('Bearer proto-secret');
+    });
+
+    it('delivers a variable named __proto__, and leaves it unresolved when nothing sets it', async () => {
+      let vars = await buildVarTable(localConfig);
+      expect(vars['__proto__']).toBeUndefined();
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      expect(await protoAuthorization()).toBeUndefined();
+
+      await write('env/env.yaml', 'variables:\n  - key: __proto__\n    value: proto-team\n');
+      vars = await buildVarTable(localConfig);
+      expect(vars['__proto__']).toBe('proto-team');
+
+      vi.mocked(requireInit).mockResolvedValue({ localConfig, teamConfig });
+      vi.mocked(readStdin).mockResolvedValueOnce('proto-member');
+      await envSet('__proto__', { stdin: true });
+      expect((await buildVarTable(localConfig))['__proto__']).toBe('proto-member');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      expect(await protoAuthorization()).toBe('Bearer proto-member');
+    });
+  });
+
   it('keeps the variables the last pull wrote when the store cannot be read, without the value', async () => {
     await write('env/env.yaml', 'variables:\n  - key: API_URL\n    value: team-url\n');
     await fse.outputFile(path.join(homeDir, '.teamai', 'env'), 'API_URL=member-url\n');

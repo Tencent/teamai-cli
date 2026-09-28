@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { exportDigest, readEnvShExports, type EnvShExports } from './env-sh-exports.js';
 import { parseEnvFile } from './resources/env.js';
+import { envValue } from './resources/env-key.js';
 import { getDataHome, getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 
@@ -56,7 +57,7 @@ export async function memberEnvironment(
     recorded.push(await readEnvShExports(envSh));
   }
   return (key) => {
-    const value = env[key];
+    const value = envValue(env, key);
     if (value === undefined || value === '') return undefined;
     if (exported.some((exports) => exports.get(key) === value)) return undefined;
     const digest = exportDigest(key, value);

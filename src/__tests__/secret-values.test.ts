@@ -86,6 +86,18 @@ describe('team secret values', () => {
       expect(await readSecretStore(getTeamSecretsPath(otherRepo))).toEqual({ ok: true, values: {} });
     });
 
+    it('keeps an entry named __proto__ as an own key, through a write and a read', async () => {
+      const file = getTeamSecretsPath(localConfig);
+      await writeSecretStore(file, { ['__proto__']: { value: 'proto-value' }, API_URL: { value: 'u' } });
+
+      expect(JSON.parse(await fse.readFile(file, 'utf8'))).toEqual({ ['__proto__']: { value: 'proto-value' }, API_URL: { value: 'u' } });
+      const read = await readSecretStore(file);
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(Object.keys(read.values)).toEqual(['__proto__', 'API_URL']);
+      expect(Object.hasOwn(read.values, '__proto__')).toBe(true);
+    });
+
     it('does not touch the env backup file ~/.teamai/env', async () => {
       await fse.outputFile(path.join(home, '.teamai', 'env'), 'API_URL=u\n');
       await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'fixture-token' } });

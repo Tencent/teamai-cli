@@ -148,6 +148,26 @@ describe('teamai env exec', () => {
     expect((await childEnv(home)).API_URL).toBe('https://mine-from-env.example');
   });
 
+  // `__proto__` is a valid env key; an ordinary object's inherited setter would drop it.
+  it('passes a secret and a variable named __proto__, and removes the secret when it has no value', async () => {
+    const { repoPath } = await team('personal', { 'env/secrets.yaml': 'secrets:\n  - key: __proto__\n' });
+    const config = await userScope(repoPath);
+    vi.stubEnv('__proto__', 'fixture-exported');
+
+    expect((await childEnv(home))['__proto__']).toBe('fixture-exported');
+
+    await writeSecretStore(getTeamSecretsPath(config), { ['__proto__']: { env: 'WORK_GITHUB_TOKEN' } });
+    expect(Object.hasOwn(await childEnv(home), '__proto__')).toBe(false);
+
+    await writeSecretStore(getTeamSecretsPath(config), { ['__proto__']: { value: 'fixture-secret' } });
+    expect((await childEnv(home))['__proto__']).toBe('fixture-secret');
+
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: []\n');
+    await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), 'variables:\n  - key: __proto__\n    value: fixture-team\n');
+    await writeSecretStore(getTeamSecretsPath(config), {});
+    expect((await childEnv(home))['__proto__']).toBe('fixture-team');
+  });
+
   it('resolves the project scope from a linked worktree of the project, and the user scope elsewhere', async () => {
     const personal = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
     const user = await userScope(personal.repoPath);

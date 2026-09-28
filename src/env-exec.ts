@@ -16,6 +16,7 @@ import { resolveConfigForDir } from './config.js';
 import { reportMissingSecrets } from './env-advisories.js';
 import { resolveTeamEnv } from './env-resolution.js';
 import { describeEntryFailure } from './namespaced-entries.js';
+import { envTable } from './resources/env-key.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { log, setStderrOnly } from './utils/logger.js';
@@ -97,18 +98,23 @@ async function commandEnvironment(cwd: string, dryRun: boolean | undefined): Pro
   if (unreadable.length > 0) {
     log.warn(`${unreadable.join(' ')} No team env variables or secrets were applied; the command runs with the inherited `
       + 'environment. Fix the file, or run `teamai init` again in this project.');
-    return { ...process.env };
+    return inheritedEnvironment();
   }
   if (!localConfig) {
     log.warn('No teamai config applies to this directory, so the command runs with the inherited environment and no team '
       + 'env variables or secrets.');
-    return { ...process.env };
+    return inheritedEnvironment();
   }
   if (localConfig.repo.kind === 'http') {
     log.warn('An HTTP team repo delivers no env variables or secrets here, so the command runs with the inherited environment.');
-    return { ...process.env };
+    return inheritedEnvironment();
   }
   return overlayTeamEnv(localConfig);
+}
+
+/** A copy of the inherited environment that keeps `__proto__` an own key when the overlay sets it. */
+function inheritedEnvironment(): NodeJS.ProcessEnv {
+  return envTable(Object.entries(process.env));
 }
 
 /**
@@ -121,7 +127,7 @@ async function commandEnvironment(cwd: string, dryRun: boolean | undefined): Pro
  * team's, as in MCP; the inherited value never overrides it (#875).
  */
 async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessEnv> {
-  const env = { ...process.env };
+  const env = inheritedEnvironment();
   const teamEnv = await resolveTeamEnv(localConfig);
   const { variables, declarations, variableValues, secrets } = teamEnv;
   if (variables.kind === 'failed') {

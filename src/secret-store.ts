@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { getTeamRepoHash } from './models/profile.js';
-import { ENV_KEY_RE } from './resources/env-key.js';
+import { ENV_KEY_RE, envTable, envValue } from './resources/env-key.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
 
@@ -23,7 +23,12 @@ const StoredSecretSchema = z.union([
 ]);
 export type StoredSecret = z.infer<typeof StoredSecretSchema>;
 
-const SecretStoreSchema = z.record(z.string().regex(ENV_KEY_RE), StoredSecretSchema);
+// Not z.record: it drops a `__proto__` key, which ENV_KEY_RE accepts.
+const SecretStoreSchema = z
+  .custom<object>((raw) => raw !== null && typeof raw === 'object' && !Array.isArray(raw))
+  .transform((raw) => Object.entries(raw))
+  .pipe(z.array(z.tuple([z.string().regex(ENV_KEY_RE), StoredSecretSchema])))
+  .transform((entries) => envTable(entries));
 export type SecretStore = z.infer<typeof SecretStoreSchema>;
 
 /** A store file's entries, or why it cannot be used. A missing file holds none. */
@@ -69,8 +74,8 @@ export async function readSecretStore(filePath: string): Promise<SecretStoreRead
   }
   const parsed = SecretStoreSchema.safeParse(raw);
   if (parsed.success) return { ok: true, values: parsed.data };
-  const name = parsed.error.issues[0]?.path[0];
-  const entry = typeof name === 'string' && raw !== null && typeof raw === 'object' ? Object.keys(raw).indexOf(name) + 1 : 0;
+  const index = parsed.error.issues[0]?.path[0];
+  const entry = typeof index === 'number' ? index + 1 : 0;
   return {
     ok: false,
     reason: `${filePath} ${entry > 0 ? `has an invalid entry (entry ${entry})` : 'is not a JSON object'}: `
@@ -85,6 +90,6 @@ export async function writeSecretStore(filePath: string, values: SecretStore): P
 
 /** The value an entry stands for now: a `--from-env` reference is read from `env` each time. Empty is none. */
 export function storedSecretValue(entry: StoredSecret, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const value = 'value' in entry ? entry.value : env[entry.env];
+  const value = 'value' in entry ? entry.value : envValue(env, entry.env);
   return value === undefined || value === '' ? undefined : value;
 }

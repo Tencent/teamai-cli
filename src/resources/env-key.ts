@@ -8,3 +8,19 @@
  * without importing env.ts, which imports them.
  */
 export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * A table keyed by env names, built without a prototype: `__proto__` passes
+ * ENV_KEY_RE, and on an ordinary object assigning it hits the inherited
+ * setter and reading it when unset returns `Object.prototype`.
+ */
+export function envTable<V>(entries: Iterable<readonly [string, V]> = []): Record<string, V> {
+  const table: Record<string, V> = Object.create(null);
+  for (const [key, value] of entries) table[key] = value;
+  return table;
+}
+
+/** `env[key]` when `key` is set: an unset `__proto__` would read `Object.prototype`. */
+export function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
+  return Object.hasOwn(env, key) ? env[key] : undefined;
+}

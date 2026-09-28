@@ -31,6 +31,7 @@ import {
   type McpFormat,
 } from './resources/mcp-format.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
+import { envTable } from './resources/env-key.js';
 import { declaredSecretKeys, type SecretDeclarations } from './resources/secrets.js';
 import { resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
 import { isToolInstalledForConfig } from './resources/base.js';
@@ -126,7 +127,7 @@ async function readManifest(manifestPath: string): Promise<ManagedMcpManifest> {
  * each file once. HTTP mode ignores it.
  */
 export async function buildVarTable(localConfig: LocalConfig, teamEnv?: TeamEnv): Promise<Record<string, string>> {
-  const table: Record<string, string> = {};
+  const table = envTable<string>();
   const resolved = localConfig.repo.kind === 'http' ? null : teamEnv ?? await resolveTeamEnv(localConfig);
   const secretKeys = resolved ? declaredSecretKeys(resolved.declarations) : new Set<string>();
   const isSecret = (key: string): boolean => secretKeys?.has(key) ?? false;
@@ -153,7 +154,7 @@ export async function buildVarTable(localConfig: LocalConfig, teamEnv?: TeamEnv)
 
 /** The KEY=value file the env channel last wrote. */
 async function readEnvBackup(localConfig: LocalConfig): Promise<Record<string, string>> {
-  const table: Record<string, string> = {};
+  const table = envTable<string>();
   // Must use the same path the env channel wrote (getEnvBackupPath) — self mode
   // uses env.local, not env (which is a committed directory there).
   const envFile = getEnvBackupPath(localConfig);

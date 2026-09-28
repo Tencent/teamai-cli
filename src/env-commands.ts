@@ -3,7 +3,7 @@ import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
-import { ENV_KEY_RE } from './resources/env-key.js';
+import { ENV_KEY_RE, envValue } from './resources/env-key.js';
 import {
   SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, unknownSecretDeclarationKeys,
   writeSecretsFile,
@@ -119,7 +119,7 @@ export async function envSet(
   await writeSecretStore(file, { ...store.values, [key]: entry });
   if ('env' in entry) {
     log.success(`${key} now reads ${entry.env} from your environment ${target} (${file}).`);
-    if (!process.env[entry.env]) log.warn(`${entry.env} is not set in this shell; ${key} has no value until it is.`);
+    if (!envValue(process.env, entry.env)) log.warn(`${entry.env} is not set in this shell; ${key} has no value until it is.`);
   } else {
     log.success(`Set ${key} ${target} (${file}).`);
   }
