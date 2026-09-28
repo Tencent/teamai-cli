@@ -37,6 +37,13 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
 
   // HTTP mode has no repo tree to declare secrets in.
   const teamEnv = localConfig.repo.kind === 'http' ? undefined : await resolveTeamEnv(localConfig);
+  // A failed declaration is not "no secrets" (#879 Conflict 14): nothing says
+  // which of a server's variables are secrets, so none is called set.
+  const declarationsFailed = teamEnv?.declarations.kind === 'failed';
+  if (teamEnv?.declarations.kind === 'failed') {
+    log.error(describeEntryFailure(teamEnv.declarations.failure));
+    process.exitCode = 1;
+  }
 
   if (servers.length === 0) {
     log.info('No team MCP servers reach this directory (mcp/mcp.yaml and active mcp/<ns>/mcp.yaml files are absent or empty)');
@@ -69,7 +76,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
     const needed = referencedVars(s);
     if (needed.length > 0) {
       const missing = needed.filter((v) => !vars[v]);
-      const state = missing.length === 0 ? 'all set' : `MISSING: ${missing.join(', ')}`;
+      const state = declarationsFailed ? 'not resolved' : missing.length === 0 ? 'all set' : `MISSING: ${missing.join(', ')}`;
       console.log(`    secrets:  ${needed.join(', ')} (${state})`);
     }
 

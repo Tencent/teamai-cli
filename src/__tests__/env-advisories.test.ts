@@ -112,6 +112,24 @@ describe('a missing declared secret tells the member what to run', () => {
     expect(warned()).toContain(GITHUB_LINE);
   });
 
+  // #879 Conflict 14: a failed declaration can't mean "no secrets".
+  it('mcp list reports a broken secrets.yaml, exits 1 and does not call a secret from the environment set', async () => {
+    await write('env/secrets.yaml', 'secret:\n  - key: GITHUB_TOKEN\n');
+    vi.stubEnv('GITHUB_TOKEN', 'other-team-token');
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await mcpList({});
+      const out = spy.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(out).toContain('secrets:  GITHUB_TOKEN (not resolved)');
+      expect(out).not.toContain('all set');
+      expect(process.exitCode).toBe(1);
+    } finally {
+      spy.mockRestore();
+      process.exitCode = undefined;
+    }
+    expect(vi.mocked(log.error)).toHaveBeenCalledWith(expect.stringContaining('env/secrets.yaml declares no secrets'));
+  });
+
   it('env list prints the same line', async () => {
     await quietly(() => envList({}));
 
