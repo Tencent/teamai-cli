@@ -74,7 +74,7 @@ Team secrets (3):
 
 ## Setting a value
 
-A member keeps their value for a secret the scope declares, for this directory's team:
+A member keeps their value for a secret the scope declares, or for an env variable it receives (see [Variables](#variables)), for this directory's team:
 
 ```text
 teamai env set GITHUB_TOKEN                               prompts, without echo
@@ -85,10 +85,10 @@ teamai env unset GITHUB_TOKEN [--global]
 ```
 
 - The value is never taken from an argument, so it stays out of shell history. `--stdin` refuses a terminal.
-- `env set` accepts only a key the scope declares as a secret, with `--global` too. When the declarations cannot be read it changes nothing, since it cannot tell.
+- `env set` accepts a key the scope declares as a secret or, without `--global`, an `env.yaml` variable it receives; `--global` is for secrets only. When the declarations or `env.yaml` cannot be read it changes nothing, since it cannot tell.
 - Outside any scope (no project here and no user scope), `env set --global` accepts any valid key name and notes that no team declares it yet, so a member can set a token they reuse across teams ahead of time. `env unset` accepts any key that has a value.
 - `--from-env` warns when the variable is not set in the current shell. While it is unset, the secret is `missing`: the next source in the [order](#resolution) is not used instead, since that could be another account's token.
-- Run `teamai pull` afterwards to update the MCP servers.
+- Run `teamai pull` afterwards to update the MCP servers, and `env.sh` for a variable.
 
 ## Storage
 
@@ -111,9 +111,24 @@ the member's value for this team     teamai env set KEY [--from-env VAR]
 > missing                            the server is skipped; env exec runs the command without it
 ```
 
-A team value wins over the environment because it is an explicit choice for that team: otherwise a personal `GITHUB_TOKEN` exported in `.zshrc` would override the token a member set for their work team. A machine value suits a token the member uses with every team; a team that needs another account sets its own value, which wins. Variables that are not declared as secrets resolve as before.
+A team value wins over the environment because it is an explicit choice for that team: otherwise a personal `GITHUB_TOKEN` exported in `.zshrc` would override the token a member set for their work team. A machine value suits a token the member uses with every team; a team that needs another account sets its own value, which wins.
 
 **The member's own environment.** The shell profile loads the `env.sh` of whichever scope pulled, so the environment also carries values teamai exported. For a key, a value in the environment does not count when it equals what any teamai `env.sh` on the machine exports for that key (`~/.teamai/env.sh`, `~/.teamai/projects/*/env.sh`, and this scope's as it stood before the pull rewrote it), or, for a declared secret, this scope's `env.yaml` value for it. Not covered: a project in a non-git directory other than this scope (`<dir>/.teamai/env.sh`), and another scope's value rotated after the shell started.
+
+### Variables
+
+An `env.yaml` variable that isn't a declared secret resolves in one order, in MCP servers, `env exec` and `env.sh`:
+
+```text
+the member's value for this team   teamai env set KEY [--from-env VAR]
+> env.yaml                         the root file, or the active namespace file that replaces it
+```
+
+- The environment no longer overrides it, so a value exported for one team doesn't reach another team's servers. This changes existing teams: a member who exported a variable to override `env.yaml` sets it with `teamai env set KEY` instead. A machine value doesn't apply to a variable.
+- An interactive `pull` and `teamai doctor` (as a note) say so when the member's own environment (below) has another value: `` GITLAB_HOST in your environment differs from the value in env/env.yaml, which this team uses. To use yours for this team, run `teamai env set GITLAB_HOST`. `` `doctor` lists it because it runs in the member's shell and explains why an MCP server doesn't use their export. `mcp list` and `env list` don't, and the silent pull prints nothing. No line is printed once the member set a value for the key.
+- `env.sh` exports the member's literal value, so a new shell follows the same order. A value stored with `--from-env` is left out of `env.sh`, which holds no copy of it. While that variable is unset, the `env.yaml` value is used: unlike a secret's next source, it is the value every other member gets.
+- A `${VAR}` the team sets nothing for still resolves from the environment.
+- When the member's value file can't be read, MCP servers keep the values the last pull wrote, and `pull` leaves `env.sh` as it is.
 
 **Same key twice.** A key declared as a secret and also set as a variable in `env.yaml` resolves as the secret, and the repo value is ignored everywhere: it is left out of `env.sh` and the env backup (on every pull, `Already synced` included), out of `env list` and `list env`, `--reveal` included, and out of MCP servers. An older CLI keeps using the variable while the team removes the value.
 
@@ -160,9 +175,9 @@ teamai env exec -- glab mr list     GITLAB_HOST from env.yaml and GITLAB_TOKEN f
 ```
 
 - **Scope.** The directory's scope: the project teamai is set up for there, found through git, so every worktree of a project resolves to that project, else the user scope.
-- **Environment.** The command inherits teamai's environment, overlaid with the scope's `env.yaml` variables (a scope variable wins over an inherited one), then with its secrets in the [resolution order](#resolution). A key declared as a secret that has no value for this scope is removed from the command's environment, so the command never sees a value `teamai env list` doesn't show for this scope: another team's export, or the member's own export when this team's value names another variable with `--from-env`.
+- **Environment.** The command inherits teamai's environment, overlaid with the scope's variables in the [variable order](#variables) (a scope variable wins over an inherited one), then with its secrets in the [resolution order](#resolution). A key declared as a secret that has no value for this scope is removed from the command's environment, so the command never sees a value `teamai env list` doesn't show for this scope: another team's export, or the member's own export when this team's value names another variable with `--from-env`.
 - **Missing secret.** The [line](#a-missing-secret-tells-the-member-what-to-run) goes to stderr, and the command runs anyway: `gh` and `glab` can still use their own login.
-- **Failures.** When the declarations fail, the variables are applied and no secret is; when `env.yaml` fails, the secrets are applied and no variable is; when the value file can't be read, every declared key is removed. Each says so on stderr. A project config that exists but can't be read is named on stderr, and the command runs with the inherited environment: it is not taken for "no scope", nor for the user scope.
+- **Failures.** When the declarations fail, the variables are applied and no secret is; when `env.yaml` fails, the secrets are applied and no variable is; when the value file can't be read, every declared key is removed and no variable is applied. Each says so on stderr. A project config that exists but can't be read is named on stderr, and the command runs with the inherited environment: it is not taken for "no scope", nor for the user scope.
 - **No scope.** With no project or user config, the command runs with the inherited environment and a notice on stderr. Machine values are not applied there, since no team declares which keys the command needs. An HTTP team repo delivers no env here either.
 - **Output.** Everything teamai prints goes to stderr, so the command's stdout can be piped. The exit code is the command's; a command ended by a signal ends teamai with the same signal, and a signal teamai receives is passed on. A command that can't be started exits 127.
 - **Nothing written.** No value is written to disk or to `debug.log`. Finding the scope does what every command that finds one does: it may adopt a project partition, save the user scope's role migration, or set up a freshly cloned single-repo project; none of these writes a value.

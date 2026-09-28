@@ -72,6 +72,7 @@ import { log } from '../utils/logger.js';
 import { pull } from '../pull.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
+import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 
 const GITHUB_LINE = 'github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (https://github.com/settings/tokens).';
 const KEPT_LINE = 'github: the entry an earlier pull wrote stays in claude and may hold an old GITHUB_TOKEN until a pull finds its value.';
@@ -80,6 +81,7 @@ describe('pull advisories for team secrets', () => {
   let tempDir: string;
   let homeDir: string;
   let repoPath: string;
+  let scopeConfig: LocalConfig;
 
   const write = (relativePath: string, content: string): Promise<void> =>
     fse.outputFile(path.join(repoPath, ...relativePath.split('/')), content);
@@ -97,6 +99,8 @@ describe('pull advisories for team secrets', () => {
     vi.stubEnv('USERPROFILE', homeDir);
     vi.stubEnv('GITHUB_TOKEN', undefined);
     vi.stubEnv('GITLAB_TOKEN', undefined);
+    vi.stubEnv('GITLAB_HOST', undefined);
+    vi.stubEnv('MY_GITLAB_HOST', undefined);
 
     await write('skills/common/kept-skill/SKILL.md', '---\nname: kept-skill\ndescription: kept\n---\n');
     await write('manifest/roles.yaml', 'version: 1\n');
@@ -118,6 +122,7 @@ describe('pull advisories for team secrets', () => {
       primaryRole: 'dev',
       additionalRoles: [],
     };
+    scopeConfig = localConfig;
     const teamConfig: TeamaiConfig = {
       team: 'test',
       description: '',
@@ -207,5 +212,63 @@ describe('pull advisories for team secrets', () => {
     await pull({ force: true });
 
     expect(warned().some((message) => message.includes('GITHUB_TOKEN'))).toBe(false);
+  });
+
+  // #875 (#879 S9): the environment no longer overrides a plain variable; pull
+  // says so, and env.sh exports the member's value for this team.
+  describe('a plain variable the environment no longer overrides', () => {
+    const IGNORED_LINE = 'GITLAB_HOST in your environment differs from the value in env/env.yaml, which this team uses. '
+      + 'To use yours for this team, run `teamai env set GITLAB_HOST`.';
+    const envSh = (): Promise<string> => fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8');
+
+    beforeEach(async () => {
+      await write('env/env.yaml', 'variables:\n  - key: GITLAB_HOST\n    value: gitlab.team.example\n  - key: API_URL\n    value: https://team.example\n');
+    });
+
+    it('tells the member to run env set when it ignores a differing export, and never prints either value', async () => {
+      vi.stubEnv('GITLAB_HOST', 'gitlab.dave.example');
+
+      await pull({ force: true });
+
+      expect(warned()).toContain(IGNORED_LINE);
+      expect(warned().filter((message) => message.includes('--from-env'))).toEqual([]);
+      expect(printed().some((message) => message.includes('gitlab.dave.example') || message.includes('gitlab.team.example'))).toBe(false);
+      expect(await envSh()).toContain("export GITLAB_HOST='gitlab.team.example'");
+    });
+
+    it('says nothing on a silent pull', async () => {
+      vi.stubEnv('GITLAB_HOST', 'gitlab.dave.example');
+
+      await pull({ force: true, silent: true });
+
+      expect(printed().some((message) => message.includes('GITLAB_HOST'))).toBe(false);
+    });
+
+    it("says nothing for an export that is another scope's env.sh value, or equals the team's", async () => {
+      await fse.outputFile(path.join(homeDir, '.teamai', 'projects', 'other-abc', 'env.sh'), "export GITLAB_HOST='gitlab.other.example'\n");
+      vi.stubEnv('GITLAB_HOST', 'gitlab.other.example');
+      vi.stubEnv('API_URL', 'https://team.example');
+
+      await pull({ force: true });
+
+      expect(printed().some((message) => message.includes('GITLAB_HOST') || message.includes('API_URL'))).toBe(false);
+    });
+
+    it("exports the member's literal value in env.sh, leaves out a --from-env one, and says nothing then", async () => {
+      await writeSecretStore(getTeamSecretsPath(scopeConfig), {
+        GITLAB_HOST: { value: 'gitlab.dave.example' },
+        API_URL: { env: 'MY_API_URL' },
+      });
+      vi.stubEnv('GITLAB_HOST', 'gitlab.other.example');
+      vi.stubEnv('MY_API_URL', 'https://mine.example');
+
+      await pull({ force: true });
+
+      const exported = await envSh();
+      expect(exported).toContain("export GITLAB_HOST='gitlab.dave.example'");
+      expect(exported).not.toContain('API_URL');
+      expect(await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf8')).toBe('GITLAB_HOST=gitlab.dave.example\n');
+      expect(printed().some((message) => message.includes('GITLAB_HOST') || message.includes('API_URL'))).toBe(false);
+    });
   });
 });

@@ -42,7 +42,7 @@ vi.mock('../utils/prompt.js', async (importOriginal) => ({
 
 import { envList, envAdd, envRemove, envSet, envUnset } from '../env-commands.js';
 import { askSecret, readStdin } from '../utils/prompt.js';
-import { getMachineSecretsPath, getTeamSecretsPath } from '../secret-store.js';
+import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { NotInitializedError, requireInit } from '../config.js';
 import { resolveSecretDeclarations } from '../resources/secrets.js';
 import { log } from '../utils/logger.js';
@@ -334,18 +334,52 @@ scope: 'user',
       expect(log.warn).toHaveBeenCalledWith('WORK_GITHUB_TOKEN is not set in this shell; GITHUB_TOKEN has no value until it is.');
     });
 
-    it('accepts only a key the scope declares as a secret', async () => {
+    it('accepts only a key the scope declares as a secret or receives as a variable', async () => {
       await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
       vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
 
-      await envSet('API_URL', { stdin: true });
+      await envSet('OTHER_URL', { stdin: true });
 
       expect(log.error).toHaveBeenCalledWith(
-        "API_URL is not a secret this directory's team declares, so it was not set. It declares: GITHUB_TOKEN, GITLAB_TOKEN. "
-          + 'If the team declared it recently, run `teamai pull` first.',
+        "OTHER_URL is neither a secret nor an env variable this directory's team declares, so it was not set. "
+          + 'Its secrets: GITHUB_TOKEN, GITLAB_TOKEN. Its variables: API_URL. If the team added it recently, run `teamai pull` first.',
       );
       expect(process.exitCode).toBe(1);
       expect(readStdin).not.toHaveBeenCalled();
+      expect(await fse.pathExists(storeFile())).toBe(false);
+    });
+
+    // #875 (#879 S9): a member overrides a variable for this team.
+    it('keeps a value for an env variable the scope receives, for this team', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      vi.mocked(readStdin).mockResolvedValue('https://mine.example');
+
+      await envSet('API_URL', { stdin: true });
+
+      expect(await stored()).toEqual({ API_URL: { value: 'https://mine.example' } });
+      expect(log.info).toHaveBeenCalledWith('Run `teamai pull` to update MCP servers and env.sh.');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('says env.sh needs a pull too after unsetting a value for an env variable, and not for a secret', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      await writeSecretStore(storeFile(), { API_URL: { value: 'https://mine.example' }, GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+
+      await envUnset('API_URL', {});
+      expect(log.info).toHaveBeenLastCalledWith('Run `teamai pull` to update MCP servers and env.sh.');
+
+      await envUnset('GITHUB_TOKEN', {});
+      expect(log.info).toHaveBeenLastCalledWith('Run `teamai pull` to update MCP servers.');
+      expect(await stored()).toEqual({});
+    });
+
+    it("refuses to set a key it cannot tell is a variable when env.yaml can't be read", async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), 'variables: [\n');
+
+      await envSet('API_URL', { fromEnv: 'MY_API_URL' });
+
+      expect(log.error).toHaveBeenCalledWith('Cannot tell whether API_URL is an env variable this team sets. Nothing was changed.');
+      expect(process.exitCode).toBe(1);
       expect(await fse.pathExists(storeFile())).toBe(false);
     });
 

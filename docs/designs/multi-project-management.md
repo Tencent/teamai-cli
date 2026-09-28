@@ -267,7 +267,8 @@ active, the next pull delivers the root item again and removes items that only
 the namespace had; for env, hooks and MCP that happens on an `Already synced`
 pull too, and `env.sh` is regenerated from the resolved set even when
 `env/env.yaml` is missing or declares nothing. MCP `${VAR}` lookup reads the same
-resolved env set.
+resolved env set, with the member's value for this team (`teamai env set KEY`)
+first; the environment no longer overrides a team variable ([Team secrets](team-secrets.md#variables)).
 
 Skills keep one difference: in role/project mode the root `skills/` stays the tag
 catalog and is not delivered by default. A root skill that arrives through a

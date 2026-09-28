@@ -197,6 +197,65 @@ export async function resolveSecretValues(
   return { kind: 'resolved', values };
 }
 
+/**
+ * The value of an env.yaml variable this scope receives (#875): the member's
+ * value for this team (`teamai env set KEY`), then the team's. The environment
+ * doesn't override either, so a value exported for one team doesn't reach
+ * another team's servers, and `--global` doesn't apply: it is for secrets only.
+ * `fromEnv` says the member's entry reads another variable, so `env.sh` leaves
+ * the key out rather than hold a copy of that variable's value. While that
+ * variable is unset the team's value is used: unlike a secret's next source,
+ * it is the value every other member of the team gets.
+ */
+export interface VariableValue {
+  readonly source: 'team' | 'env.yaml';
+  readonly value: string;
+  readonly fromEnv: boolean;
+}
+
+/** The value of each variable that is not a declared secret, or why the member's values cannot be read. */
+export type VariableValues =
+  | { readonly kind: 'resolved'; readonly values: ReadonlyMap<string, VariableValue> }
+  | { readonly kind: 'store-unreadable'; readonly reason: string };
+
+export async function resolveVariableValues(
+  localConfig: LocalConfig,
+  variables: readonly ResolvedEntry<EnvVariable>[],
+  secretKeys: ReadonlySet<string>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<VariableValues> {
+  const values = new Map<string, VariableValue>();
+  const received = variables.filter((variable) => !secretKeys.has(variable.name));
+  if (received.length === 0) return { kind: 'resolved', values };
+  const team = await readSecretStore(getTeamSecretsPath(localConfig));
+  if (!team.ok) return { kind: 'store-unreadable', reason: team.reason };
+  for (const variable of received) {
+    const entry = Object.hasOwn(team.values, variable.name) ? team.values[variable.name] : undefined;
+    const member = entry ? storedSecretValue(entry, env) : undefined;
+    const fromEnv = entry !== undefined && 'env' in entry;
+    values.set(variable.name, member !== undefined
+      ? { source: 'team', value: member, fromEnv }
+      : { source: 'env.yaml', value: variable.entry.value, fromEnv });
+  }
+  return { kind: 'resolved', values };
+}
+
+/** The variables `env.sh` exports, with their resolved values: every one in `values` but a `--from-env` override. */
+export function envShVariables(
+  variables: readonly ResolvedEntry<EnvVariable>[],
+  values: ReadonlyMap<string, VariableValue>,
+): EnvVariable[] {
+  return variables.flatMap((variable) => {
+    const resolved = values.get(variable.name);
+    return resolved && !resolved.fromEnv ? [{ ...variable.entry, value: resolved.value }] : [];
+  });
+}
+
+/** What a pull and MCP do while the member's values cannot be read: keep what the last pull wrote. */
+export function variablesKeptWarning(reason: string): string {
+  return `${reason} Team env variables keep the values the last pull wrote until it is fixed.`;
+}
+
 export function secretState(values: SecretValues, key: string): SecretState {
   return values.kind === 'resolved' ? values.values.get(key)?.source ?? 'missing' : 'missing';
 }

@@ -33,7 +33,8 @@ import {
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
 import { envEntryReader } from './resources/env.js';
 import {
-  declaredSecretKeys, resolveSecretDeclarations, resolveSecretValues, type SecretDeclarations,
+  declaredSecretKeys, resolveSecretDeclarations, resolveSecretValues, resolveVariableValues, variablesKeptWarning,
+  type SecretDeclarations,
 } from './resources/secrets.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import { reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
@@ -110,14 +111,16 @@ async function readManifest(manifestPath: string): Promise<ManagedMcpManifest> {
 /**
  * Build the ${VAR} lookup table: the team env variables this member receives
  * (root plus active namespace files, the same set pull writes env.sh from),
- * then process env on top. A declared secret (#875) resolves from the
+ * each with the member's value for this team when they set one, then process
+ * env for every other key; it no longer overrides a team variable (#875).
+ * A declared secret (#875) resolves from the
  * member's value for this team, then their value for the machine, then their
  * own environment (not a value a teamai env.sh exported); its env.yaml value,
  * if the team also sets one, is ignored.
  *
  * The installed KEY=value backup is read instead only when that set cannot be
- * resolved, or the secret declarations cannot (pull then keeps env.sh as it
- * is, so MCP sees what the shell sees), or the team has no repo tree to
+ * resolved, or the secret declarations or the member's values cannot (pull
+ * then keeps env.sh as it is, so MCP sees what the shell sees), or the team has no repo tree to
  * resolve it from (HTTP mode, which declares no secrets).
  *
  * `declarations` is for a caller that already resolved them, so one run
@@ -134,14 +137,19 @@ export async function buildVarTable(
     ? new Set<string>()
     : declaredSecretKeys(declarations ?? await resolveSecretDeclarations(localConfig));
   const isSecret = (key: string): boolean => secretKeys?.has(key) ?? false;
-  if (env?.kind === 'resolved' && secretKeys) {
-    for (const variable of env.entries) if (!isSecret(variable.name)) table[variable.name] = variable.entry.value;
+  const variables = env?.kind === 'resolved' && secretKeys
+    ? await resolveVariableValues(localConfig, env.entries, secretKeys)
+    : null;
+  if (variables?.kind === 'resolved') {
+    for (const [key, variable] of variables.values) table[key] = variable.value;
   } else {
+    if (variables) warnOnce(variablesKeptWarning(variables.reason));
     for (const [key, value] of Object.entries(await readEnvBackup(localConfig))) if (!isSecret(key)) table[key] = value;
   }
-  // process.env wins: it lets a user override a team-provided value locally.
+  // The environment fills only what the team sets nothing for (#875): a
+  // member overrides a team variable with `teamai env set`, for that team.
   for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !isSecret(k)) table[k] = v;
+    if (v !== undefined && !isSecret(k) && !Object.hasOwn(table, k)) table[k] = v;
   }
   if (!secretKeys || secretKeys.size === 0) return table;
   const secrets = await resolveSecretValues(localConfig, secretKeys, env?.kind === 'resolved' ? env.entries : []);

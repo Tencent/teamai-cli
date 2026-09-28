@@ -49,7 +49,9 @@ import { deliversEveryNamespace } from './resource-namespaces.js';
 import { reportEntryResolution, resolveEntries } from './namespaced-entries.js';
 import { resetWarnOnce } from './utils/warn-once.js';
 import { envEntryReader, type EnvVariable } from './resources/env.js';
-import { declaredSecretKeys, resolveSecretDeclarations } from './resources/secrets.js';
+import {
+  declaredSecretKeys, envShVariables, resolveSecretDeclarations, resolveVariableValues, variablesKeptWarning,
+} from './resources/secrets.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
@@ -459,7 +461,11 @@ function activeEnvNamespaces(roleContext: RolePullContext | null): string[] | nu
  * The env variables to write to env.sh, or null to leave it as it is. A key
  * the team also declares as a secret (#875) resolves as the secret, so its
  * repo value is left out; secret declarations that cannot be used are
- * reported and, like an env file that cannot be, keep env.sh as it is.
+ * reported and, like an env file that cannot be, keep env.sh as it is. A
+ * variable the member set for this team exports their value, so a new shell
+ * follows the order MCP does; one set with `--from-env` is left out, so env.sh
+ * holds no copy of a value the member keeps elsewhere. A values file that cannot be read
+ * keeps env.sh as it is too.
  */
 async function deliverableEnvVariables(localConfig: LocalConfig, roleContext: RolePullContext | null): Promise<EnvVariable[] | null> {
   const resolution = await resolveEntries(envEntryReader, localConfig, activeEnvNamespaces(roleContext));
@@ -468,7 +474,12 @@ async function deliverableEnvVariables(localConfig: LocalConfig, roleContext: Ro
   if (declarations.kind !== 'absent') reportEntryResolution(declarations);
   const secretKeys = declaredSecretKeys(declarations);
   if (resolution.kind === 'failed' || !secretKeys) return null;
-  return resolution.entries.filter((entry) => !secretKeys.has(entry.name)).map((entry) => entry.entry);
+  const values = await resolveVariableValues(localConfig, resolution.entries, secretKeys);
+  if (values.kind === 'store-unreadable') {
+    log.warn(variablesKeptWarning(values.reason));
+    return null;
+  }
+  return envShVariables(resolution.entries, values.values);
 }
 
 /**

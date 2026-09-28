@@ -129,6 +129,23 @@ describe('teamai env exec', () => {
     expect(text(stderr)).not.toContain('is not set');
   });
 
+  // #875 (#879 S9): the same order as MCP for a variable.
+  it("gives a variable the member's value for this team over env.yaml and the inherited one", async () => {
+    const { repoPath } = await team('personal', { 'env/env.yaml': 'variables:\n  - key: API_URL\n    value: https://team.example\n' });
+    const config = await userScope(repoPath);
+    vi.stubEnv('API_URL', 'https://inherited.example');
+    await writeSecretStore(getMachineSecretsPath(), { API_URL: { value: 'https://machine.example' } });
+
+    expect((await childEnv(home)).API_URL).toBe('https://team.example');
+
+    await writeSecretStore(getTeamSecretsPath(config), { API_URL: { value: 'https://mine.example' } });
+    expect((await childEnv(home)).API_URL).toBe('https://mine.example');
+
+    await writeSecretStore(getTeamSecretsPath(config), { API_URL: { env: 'MY_API_URL' } });
+    vi.stubEnv('MY_API_URL', 'https://mine-from-env.example');
+    expect((await childEnv(home)).API_URL).toBe('https://mine-from-env.example');
+  });
+
   it('resolves the project scope from a linked worktree of the project, and the user scope elsewhere', async () => {
     const personal = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
     const user = await userScope(personal.repoPath);
