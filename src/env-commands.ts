@@ -63,7 +63,7 @@ export async function envSet(
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
   if (options.stdin && options.fromEnv !== undefined) return fail('Pass either --stdin or --from-env, not both. Nothing was changed.');
   if (options.fromEnv !== undefined && !ENV_KEY_RE.test(options.fromEnv)) {
-    return fail(`Invalid --from-env variable name "${options.fromEnv}": use letters, digits and underscores, starting with a letter or underscore.`);
+    return fail(invalidKeyMessage(options.fromEnv, '--from-env variable name'));
   }
 
   const scope = await scopeHere(options.global);
@@ -108,12 +108,9 @@ export async function envSet(
   const store = await readSecretStore(file);
   if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
 
-  let entry: StoredSecret;
-  try {
-    entry = await secretInput(key, options);
-  } catch (e) {
-    return fail(`${(e as Error).message} Nothing was changed.`);
-  }
+  const input = await secretInput(key, options);
+  if (!input.ok) return fail(`${input.message} Nothing was changed.`);
+  const { entry } = input;
 
   if (options.dryRun) {
     log.info(`[dry-run] Would set ${key} ${target} in ${file}`);
@@ -140,26 +137,23 @@ export async function envUnset(key: string, options: GlobalOptions & { global?: 
   if (scope.kind === 'reported') return;
   const localConfig = scope.kind === 'scope' ? scope.localConfig : null;
 
-  const { file } = valuesFile(localConfig, options.global);
-  const owner = options.global ? 'machine' : 'team';
+  const { file, value } = valuesFile(localConfig, options.global);
   const store = await readSecretStore(file);
   if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
   if (!Object.hasOwn(store.values, key)) {
-    log.info(`${key} has no value set for this ${owner}. Nothing was changed.`);
+    log.info(`${key} has no ${value}. Nothing was changed.`);
     return;
   }
   if (options.dryRun) {
-    log.info(`[dry-run] Would remove the ${owner} value of ${key} from ${file}`);
+    log.info(`[dry-run] Would remove ${key}'s ${value} from ${file}`);
     return;
   }
   const rest = { ...store.values };
   delete rest[key];
   await writeSecretStore(file, rest);
-  log.success(`Removed the ${owner} value of ${key} (${file}).`);
+  log.success(`Removed ${key}'s ${value} (${file}).`);
   if (!localConfig) return;
-  // env.sh exports a member's value for a variable (#875), not for a secret.
-  const secret = options.global || declaredSecretKeys(await resolveSecretDeclarations(localConfig))?.has(key);
-  log.info(secret ? 'Run `teamai pull` to update MCP servers.' : 'Run `teamai pull` to update MCP servers and env.sh.');
+  log.info(`Run \`teamai pull\` to ${await unsetApplies(localConfig, key, options.global)}.`);
 }
 
 /**
@@ -188,38 +182,60 @@ async function requireScope(): Promise<LocalConfig | null> {
   return scope.kind === 'scope' ? scope.localConfig : null;
 }
 
-/** The store `env set` / `env unset` write, and how their messages name it. Without a scope, only the machine's. */
-function valuesFile(localConfig: LocalConfig | null, global: boolean | undefined): { file: string; target: string } {
+/**
+ * The store `env set` / `env unset` write, and how their messages name it and
+ * a value in it. Without a scope, only the machine's: `global` there, as the
+ * flag and `env list` call it.
+ */
+function valuesFile(
+  localConfig: LocalConfig | null,
+  global: boolean | undefined,
+): { file: string; target: string; value: string } {
   return localConfig && !global
-    ? { file: getTeamSecretsPath(localConfig), target: 'for this team' }
-    : { file: getMachineSecretsPath(), target: 'for every team on this machine' };
+    ? { file: getTeamSecretsPath(localConfig), target: 'for this team', value: 'value for this team' }
+    : {
+      file: getMachineSecretsPath(),
+      target: 'as your global value (every team on this machine)',
+      value: 'global value (every team on this machine)',
+    };
+}
+
+/**
+ * What the pull after `env unset` updates: env.sh exports a member's value for
+ * a variable (#875), not for a secret. Declarations that fail can't say which
+ * the key is.
+ */
+async function unsetApplies(localConfig: LocalConfig, key: string, global: boolean | undefined): Promise<string> {
+  if (global) return 'update MCP servers';
+  const declared = declaredSecretKeys(await resolveSecretDeclarations(localConfig));
+  if (!declared) return 'apply it';
+  return declared.has(key) ? 'update MCP servers' : 'update MCP servers and env.sh';
 }
 
 /** The entry `env set` stores: a `--from-env` reference, piped stdin, or the hidden prompt. */
-async function secretInput(key: string, options: { stdin?: boolean; fromEnv?: string }): Promise<StoredSecret> {
-  if (options.fromEnv !== undefined) return { env: options.fromEnv };
-  let value: string;
+async function secretInput(
+  key: string,
+  options: { stdin?: boolean; fromEnv?: string },
+): Promise<{ ok: true; entry: StoredSecret } | { ok: false; message: string }> {
+  if (options.fromEnv !== undefined) return { ok: true, entry: { env: options.fromEnv } };
   if (options.stdin) {
-    if (process.stdin.isTTY) throw new Error('--stdin expects piped stdin; run without it to be prompted.');
+    if (process.stdin.isTTY) return { ok: false, message: '--stdin expects piped stdin; run without it to be prompted.' };
     process.stdin.setEncoding('utf8');
-    value = await readStdin();
-    if (!value) throw new Error('No value was provided on stdin.');
-    return { value };
+    const value = await readStdin();
+    return value ? { ok: true, entry: { value } } : { ok: false, message: 'No value was provided on stdin.' };
   }
+  let value: string;
   try {
     value = await askSecret(`Value for ${key}: `);
   } catch (e) {
-    if (!isInteractive()) {
-      throw new Error(`Cannot prompt for ${key} without a terminal. Pipe the value with --stdin, or pass --from-env <VAR>.`);
-    }
-    throw e;
+    if (isInteractive()) throw e;
+    return { ok: false, message: `Cannot prompt for ${key} without a terminal. Pipe the value with --stdin, or pass --from-env <VAR>.` };
   }
-  if (!value) throw new Error('No value was entered.');
-  return { value };
+  return value ? { ok: true, entry: { value } } : { ok: false, message: 'No value was entered.' };
 }
 
-function invalidKeyMessage(key: string): string {
-  return `Invalid env variable name "${key}": use letters, digits and underscores, starting with a letter or underscore.`;
+function invalidKeyMessage(key: string, what = 'env variable name'): string {
+  return `Invalid ${what} "${key}": use letters, digits and underscores, starting with a letter or underscore.`;
 }
 
 function fail(message: string): void {
@@ -242,34 +258,23 @@ export async function envAdd(
   // `generateEnvFile` drops such keys, which would make this command report
   // success for a variable that never reaches anyone's shell — reject it here,
   // where the user still sees what they typed.
-  if (!ENV_KEY_RE.test(key)) {
-    log.error(
-      `Invalid env variable name "${key}": use letters, digits and underscores, starting with a letter or underscore.`,
-    );
-    return;
-  }
+  if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
   // Every member supplies a secret's value on their own machine; the value
   // passed here is neither stored nor printed.
   if (options.secret && value !== undefined) {
-    log.error(
+    return fail(
       `A secret has no value in the team repo, so --secret takes none. Nothing was changed. `
         + `Run \`teamai env add ${key} --secret\` without the value.`,
     );
-    process.exitCode = 1;
-    return;
   }
   if (!options.secret && options.url !== undefined) {
-    log.error('--url says where a member gets a secret\'s value, so it needs --secret. Nothing was changed.');
-    process.exitCode = 1;
-    return;
+    return fail('--url says where a member gets a secret\'s value, so it needs --secret. Nothing was changed.');
   }
   if (!options.secret && value === undefined) {
-    log.error(
+    return fail(
       `No value for "${key}". Run \`teamai env add ${key} <value>\`, `
         + `or \`teamai env add ${key} --secret\` to declare a secret each member sets.`,
     );
-    process.exitCode = 1;
-    return;
   }
 
   const localConfig = await requireScope();
@@ -277,10 +282,12 @@ export async function envAdd(
   const repoPath = localConfig.repo.localPath;
 
   if (!await refreshTeamRepo(localConfig, options.project)) return;
-  if (value === undefined) {
+  if (options.secret) {
     await declareSecret(repoPath, key, options);
     return;
   }
+  // Refused above: a variable needs a value.
+  if (value === undefined) return;
 
   const target = await envFileFromFlags(repoPath, options);
   if (!target) return;
@@ -393,18 +400,18 @@ export async function envRemove(
   const target = await envFileFromFlags(repoPath, options, options.secret ? SECRETS_LAYOUT : 'env');
   if (!target) return;
   if (options.secret) {
-    if (await removeSecret(key, target, options)) return;
-    log.error(`Secret "${key}" is not declared${target.where}`);
-    process.exitCode = 1;
-    return;
+    if (await removeSecret(key, target, options) !== 'absent') return;
+    return fail(
+      `Secret "${key}" is not declared in ${target.relativePath}. Nothing was changed. For a namespace's file, pass `
+      + '--role <ns> or --project <id>; `teamai env list` shows where each secret this directory receives comes from.',
+    );
   }
   const { filePath: envYamlPath, relativePath, where } = target;
   const secretsFile = entryFileIn(repoPath, SECRETS_LAYOUT, target.namespace);
 
   if (!await pathExists(envYamlPath)) {
-    if (await removeSecret(key, secretsFile, options)) return;
-    log.error(`No env variables defined (${relativePath} not found)`);
-    return;
+    if (await removeSecret(key, secretsFile, options) === 'removed') return;
+    return fail(`No env variables defined (${relativePath} not found)`);
   }
 
   const envConfig = await readEnvFileForEdit(envYamlPath);
@@ -412,9 +419,8 @@ export async function envRemove(
   const idx = envConfig.variables.findIndex(v => v.key === key);
 
   if (idx === -1) {
-    if (await removeSecret(key, secretsFile, options)) return;
-    log.error(`Env variable "${key}" not found${where}`);
-    return;
+    if (await removeSecret(key, secretsFile, options) === 'removed') return;
+    return fail(`Env variable "${key}" not found${where}`);
   }
 
   if (options.dryRun) {
@@ -430,24 +436,29 @@ export async function envRemove(
 }
 
 /**
- * Remove a declared secret from `file`. False when the file does not declare
- * it; true once it is removed, or reported when the file does not parse.
+ * Remove a declared secret from `file`: `removed` (or would be, on dry-run),
+ * `absent` when the file does not declare it, `reported` when the file does
+ * not parse and the reason was printed.
  */
-async function removeSecret(key: string, file: EntryFileTarget, options: GlobalOptions): Promise<boolean> {
+async function removeSecret(
+  key: string,
+  file: EntryFileTarget,
+  options: GlobalOptions,
+): Promise<'removed' | 'absent' | 'reported'> {
   const secrets = await readSecretsFileForEdit(file);
-  if (!secrets) return true;
+  if (!secrets) return 'reported';
   const index = secrets.findIndex((secret) => secret.key === key);
-  if (index === -1) return false;
+  if (index === -1) return 'absent';
 
   if (options.dryRun) {
     log.info(`[dry-run] Would remove secret${file.where}: ${key}`);
-    return true;
+    return 'removed';
   }
   secrets.splice(index, 1);
   await writeSecretsFile(file.filePath, secrets);
   log.success(`Removed secret${file.where}: ${key}`);
   log.info('Run `teamai push` to sync to team repo.');
-  return true;
+  return 'removed';
 }
 
 /**
@@ -469,11 +480,10 @@ async function refreshTeamRepo(localConfig: LocalConfig, project: string | undef
       return true;
     }
     pullSpin.fail(`Pull failed: ${(e as Error).message}`);
-    log.error(
+    fail(
       `The team repo could not be refreshed (${(e as Error).message}), so the env namespace of project "${project}" `
       + 'may be out of date. Nothing was changed. Fix the pull (run `teamai pull` to see why) and retry, or pass --role <ns>.',
     );
-    process.exitCode = 1;
     return false;
   }
 }
@@ -485,8 +495,7 @@ async function refreshTeamRepo(localConfig: LocalConfig, project: string | undef
 async function readEnvFileForEdit(envYamlPath: string): Promise<EnvYaml | null> {
   const read = await envHandler.readEnvYaml(envYamlPath);
   if (read.ok) return { variables: read.variables };
-  log.error(`${read.reason}. Nothing was changed. Fix the file in the team repo, then retry.`);
-  process.exitCode = 1;
+  fail(`${read.reason}. Nothing was changed. Fix the file in the team repo, then retry.`);
   return null;
 }
 
@@ -505,8 +514,7 @@ interface EntryFileTarget {
 async function readSecretsFileForEdit(file: EntryFileTarget): Promise<Record<string, unknown>[] | null> {
   const read = await readSecretsForEdit(file.filePath, file.relativePath);
   if (read.ok) return read.secrets;
-  log.error(`${read.reason}. Nothing was changed. Fix the file in the team repo, then retry.`);
-  process.exitCode = 1;
+  fail(`${read.reason}. Nothing was changed. Fix the file in the team repo, then retry.`);
   return null;
 }
 
@@ -522,8 +530,7 @@ async function envFileFromFlags(
 ): Promise<EntryFileTarget | null> {
   const target = await entryNamespaceFromFlags(repoPath, layout, flags);
   if (!target.ok) {
-    log.error(target.message);
-    process.exitCode = 1;
+    fail(target.message);
     return null;
   }
   return entryFileIn(repoPath, layout, target.namespace);

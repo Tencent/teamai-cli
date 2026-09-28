@@ -396,6 +396,13 @@ scope: 'user',
       expect(await fse.pathExists(storeFile())).toBe(false);
     });
 
+    it('lets an unexpected failure reading stdin through, rather than report it as a user error', async () => {
+      vi.mocked(readStdin).mockRejectedValue(new Error('EIO: i/o error, read'));
+
+      await expect(envSet('GITHUB_TOKEN', { stdin: true })).rejects.toThrow('EIO: i/o error, read');
+      expect(await fse.pathExists(storeFile())).toBe(false);
+    });
+
     it('rejects --stdin with --from-env, and an invalid key', async () => {
       await envSet('GITHUB_TOKEN', { stdin: true, fromEnv: 'X' });
       await envSet('bad key', { fromEnv: 'X' });
@@ -436,7 +443,7 @@ scope: 'user',
       await envUnset('GITHUB_TOKEN', {});
 
       expect(await stored()).toEqual({ GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN' } });
-      expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no value set for this team. Nothing was changed.');
+      expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no value for this team. Nothing was changed.');
       expect(process.exitCode).toBeUndefined();
     });
 
@@ -451,7 +458,7 @@ scope: 'user',
       expect(await fse.readJson(machineFile)).toEqual({ GITHUB_TOKEN: { value: 'fixture-machine-value' } });
       if (process.platform !== 'win32') expect((await fse.stat(machineFile)).mode & 0o777).toBe(0o600);
       expect(await fse.pathExists(storeFile())).toBe(false);
-      expect(log.success).toHaveBeenCalledWith(`Set GITHUB_TOKEN for every team on this machine (${machineFile}).`);
+      expect(log.success).toHaveBeenCalledWith(`Set GITHUB_TOKEN as your global value (every team on this machine) (${machineFile}).`);
 
       await envList({ reveal: true });
       expect(logged()).toContain('GITHUB_TOKEN  global  (root)');
@@ -506,6 +513,17 @@ scope: 'user',
       expect(process.exitCode).toBe(1);
     });
 
+    it('unset does not call a key a variable when the declarations can\'t be read', async () => {
+      await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN' });
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: [\n');
+      vi.mocked(log.info).mockClear();
+
+      await envUnset('GITHUB_TOKEN', {});
+
+      expect(log.info).toHaveBeenCalledWith('Run `teamai pull` to apply it.');
+      expect(log.info).not.toHaveBeenCalledWith(expect.stringContaining('env.sh'));
+    });
+
     it('unset --global removes only the machine value', async () => {
       await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN' });
       await envSet('GITHUB_TOKEN', { fromEnv: 'PERSONAL_GITHUB_TOKEN', global: true });
@@ -516,8 +534,8 @@ scope: 'user',
 
       expect(await fse.readJson(getMachineSecretsPath())).toEqual({ GITLAB_TOKEN: { env: 'PERSONAL_GITLAB_TOKEN' } });
       expect(await stored()).toEqual({ GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
-      expect(log.success).toHaveBeenCalledWith(`Removed the machine value of GITHUB_TOKEN (${getMachineSecretsPath()}).`);
-      expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no value set for this machine. Nothing was changed.');
+      expect(log.success).toHaveBeenCalledWith(`Removed GITHUB_TOKEN's global value (every team on this machine) (${getMachineSecretsPath()}).`);
+      expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no global value (every team on this machine). Nothing was changed.');
     });
 
     it('env list shows the member\'s value of an overridden variable, as team, and the team\'s value otherwise', async () => {
@@ -575,6 +593,8 @@ scope: 'user',
       await envAdd('bad key', 'v', {});
 
       expect(log.error).toHaveBeenCalledWith(expect.stringContaining('bad key'));
+      expect(process.exitCode).toBe(1);
+      process.exitCode = undefined;
       // Nothing written, and no env.yaml is created just to hold nothing.
       const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
       expect(await fse.pathExists(envYamlPath)).toBe(false);
@@ -1032,8 +1052,23 @@ scope: 'user',
 
       expect(YAML.parse(await fse.readFile(path.join(repoPath, 'env', 'env.yaml'), 'utf-8')).variables)
         .toEqual([{ key: 'GITHUB_TOKEN', value: 'v' }]);
-      expect(log.error).toHaveBeenCalledWith('Secret "GITHUB_TOKEN" is not declared');
+      expect(log.error).toHaveBeenCalledWith(
+        'Secret "GITHUB_TOKEN" is not declared in env/secrets.yaml. Nothing was changed. For a namespace\'s file, pass '
+          + '--role <ns> or --project <id>; `teamai env list` shows where each secret this directory receives comes from.',
+      );
       expect(process.exitCode).toBe(1);
+    });
+
+    it('env remove of a variable env.yaml lacks names the broken secrets file and still says the variable is not there', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      await fse.outputFile(rootSecrets(), 'secrets: [\n');
+
+      await envRemove('FOO', {});
+
+      expect(log.error).toHaveBeenCalledWith(expect.stringMatching(/^env\/secrets\.yaml is not valid YAML/));
+      expect(log.error).toHaveBeenCalledWith('Env variable "FOO" not found');
+      expect(process.exitCode).toBe(1);
+      process.exitCode = undefined;
     });
 
     it('env remove of a secret writes nothing on dry-run', async () => {
