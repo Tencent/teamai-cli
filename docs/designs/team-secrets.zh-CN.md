@@ -91,7 +91,7 @@ teamai env unset GITHUB_TOKEN [--global]
 ```
 
 - 值从不通过命令行参数传入，因此不会进入 shell 历史。`--stdin` 拒绝终端输入。
-- `env set` 接受该 scope 声明为密钥的 key，不加 `--global` 时也接受它收到的 `env.yaml` 变量；`--global` 只用于密钥。声明或 `env.yaml` 无法读取时它不做任何修改，因为无法判断。
+- `env set` 接受该 scope 声明为密钥的 key，不加 `--global` 时也接受它收到的 `env.yaml` 变量；`--global` 只用于密钥。声明或 `env.yaml` 无法读取时它不做任何修改，因为无法判断。项目配置存在但无法读取时，`env set`、`env unset` 和 `env list` 会报出该文件路径和原因并失败，而不是改用用户 scope，因为用户 scope 的团队未必是这个项目的团队。
 - 不在任何 scope 中时（当前目录没有项目，也没有用户 scope），`env set --global` 接受任何合法的 key 名，并提示目前还没有团队声明它，方便成员提前设置在多个团队间复用的 token。`env unset` 接受任何已有值的 key。
 - `--from-env` 指定的变量在当前 shell 中未设置时会警告。变量未设置期间该密钥为 `missing`：不会改用[解析顺序](#解析顺序)中的下一个来源，因为那可能是另一个账号的 token。
 - 之后运行 `teamai pull` 更新 MCP server，变量还会更新 `env.sh`。
@@ -185,7 +185,7 @@ teamai env exec -- glab mr list     GITLAB_HOST 来自 env.yaml，GITLAB_TOKEN �
 - **缺少密钥。** 那一[行提示](#缺少密钥时告诉成员该运行什么)输出到 stderr，命令照常运行：`gh` 和 `glab` 仍可以使用它们自己的登录。
 - **失败。** 声明失败时，只应用变量，不应用任何密钥；`env.yaml` 失败时，只应用密钥，不应用任何变量；值文件无法读取时，移除所有已声明的 key，也不应用任何变量。每种情况都会在 stderr 上说明。项目配置存在但无法读取时，会在 stderr 上指出该文件，并以继承的环境运行命令：既不当作"没有 scope"，也不回退到用户 scope。
 - **没有 scope。** 既没有项目配置也没有用户配置时，命令以继承的环境运行，并在 stderr 上给出提示。这里不应用本机值，因为没有团队声明命令需要哪些 key。HTTP 团队仓库在这里同样不提供 env。
-- **输出。** teamai 打印的所有内容都输出到 stderr，因此命令的 stdout 可以直接接管道。退出码就是命令的退出码；命令被信号终止时，teamai 以同一信号结束，teamai 收到的信号会转发给命令。无法启动的命令以 127 退出。
+- **输出。** teamai 打印的所有内容都输出到 stderr，因此命令的 stdout 可以直接接管道。退出码就是命令的退出码；命令被信号终止时，teamai 以同一信号结束；对于 Node 不会因之退出的信号（SIGPIPE、SIGUSR1），则以 128 + 信号编号退出。发给 teamai 的 SIGTERM 或 SIGHUP 会转发给命令。`Ctrl-C` 和 `Ctrl-\` 不转发：终端已经把它们发给了命令，第二个 SIGINT 会让 terraform 等工具强制退出，因此 teamai 忽略它们并等待命令结束。无法启动的命令以 127 退出。
 - **不写入值。** 不会把任何值写入磁盘或 `debug.log`。查找 scope 的行为与其他查找 scope 的命令相同：可能接管项目分区、保存用户 scope 的角色迁移，或为刚克隆的单仓项目完成配置；这些写入都不包含值。
 - **原样继承，有三个例外。** 没有终端时（所有 agent 都是这种情况），teamai 会在 `GIT_TERMINAL_PROMPT=0`、`GIT_ASKPASS=echo` 和 `GCM_INTERACTIVE=never` 未设置时设置它们，让 git 子进程不会等待凭据提示。命令会继承它们。
 - **不用于启动 agent。** 与模型配置写入的变量同名的变量或密钥（`ANTHROPIC_*`）会为该命令覆盖那个模型配置。`env exec` 用于 CLI，而不是用来启动 agent。
