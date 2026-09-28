@@ -696,6 +696,7 @@ envCmd
   .description("Set your value for a secret the team declares, for this directory's team, on this machine (prompts without echo)")
   .option('--stdin', 'Read the value from piped stdin')
   .option('--from-env <var>', 'Read the value from this environment variable each time it is used; no copy is stored')
+  .option('--global', 'Set it for every team on this machine; a value set for a team still wins')
   .action(async (key, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { envSet } = await import('./env-commands.js');
@@ -705,6 +706,7 @@ envCmd
 envCmd
   .command('unset <key>')
   .description("Remove your value for a secret, for this directory's team, from this machine")
+  .option('--global', 'Remove the value set for every team on this machine instead')
   .action(async (key, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { envUnset } = await import('./env-commands.js');

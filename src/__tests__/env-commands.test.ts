@@ -42,8 +42,8 @@ vi.mock('../utils/prompt.js', async (importOriginal) => ({
 
 import { envList, envAdd, envRemove, envSet, envUnset } from '../env-commands.js';
 import { askSecret, readStdin } from '../utils/prompt.js';
-import { getTeamSecretsPath } from '../secret-store.js';
-import { requireInit } from '../config.js';
+import { getMachineSecretsPath, getTeamSecretsPath } from '../secret-store.js';
+import { NotInitializedError, requireInit } from '../config.js';
 import { log } from '../utils/logger.js';
 import { pullRepo } from '../utils/git.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
@@ -400,6 +400,78 @@ scope: 'user',
       expect(await stored()).toEqual({ GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN' } });
       expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no value set for this team. Nothing was changed.');
       expect(process.exitCode).toBeUndefined();
+    });
+
+    // #875: one value for every team on the machine.
+    it('--global keeps the value in machine.json, and env list shows it as global until a team value wins', async () => {
+      vi.mocked(readStdin).mockResolvedValue('fixture-machine-value');
+
+      await envSet('GITHUB_TOKEN', { stdin: true, global: true });
+
+      const machineFile = path.join(tmpDir, 'home', '.teamai', 'secrets', 'machine.json');
+      expect(getMachineSecretsPath()).toBe(machineFile);
+      expect(await fse.readJson(machineFile)).toEqual({ GITHUB_TOKEN: { value: 'fixture-machine-value' } });
+      if (process.platform !== 'win32') expect((await fse.stat(machineFile)).mode & 0o777).toBe(0o600);
+      expect(await fse.pathExists(storeFile())).toBe(false);
+      expect(log.success).toHaveBeenCalledWith(`Set GITHUB_TOKEN for every team on this machine (${machineFile}).`);
+
+      await envList({ reveal: true });
+      expect(logged()).toContain('GITHUB_TOKEN  global  (root)');
+
+      await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN' });
+      vi.stubEnv('WORK_GITHUB_TOKEN', 'fixture-work-value');
+      consoleSpy.mockClear();
+      await envList({ reveal: true });
+      expect(logged()).toContain('GITHUB_TOKEN  team  (root)');
+      expect(logged()).not.toContain('fixture-machine-value');
+      expect(logged()).not.toContain('fixture-work-value');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('--global in a scope still accepts only a key the scope declares as a secret', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+
+      await envSet('API_URL', { fromEnv: 'MY_API_URL', global: true });
+
+      expect(log.error).toHaveBeenCalledWith(expect.stringContaining("API_URL is not a secret this directory's team declares, so it was not set."));
+      expect(process.exitCode).toBe(1);
+      expect(await fse.pathExists(getMachineSecretsPath())).toBe(false);
+    });
+
+    it('--global outside any scope accepts any valid key and notes that no team declares it yet', async () => {
+      vi.mocked(requireInit).mockRejectedValue(new NotInitializedError('teamai is not initialized. Run `teamai init` first.'));
+
+      await envSet('SENTRY_AUTH_TOKEN', { fromEnv: 'MY_SENTRY_TOKEN', global: true });
+
+      expect(await fse.readJson(getMachineSecretsPath())).toEqual({ SENTRY_AUTH_TOKEN: { env: 'MY_SENTRY_TOKEN' } });
+      expect(log.info).toHaveBeenCalledWith(
+        'No teamai scope here, so no team declares SENTRY_AUTH_TOKEN yet. The value applies to every team on this machine that declares it.',
+      );
+      expect(process.exitCode).toBeUndefined();
+
+      await envUnset('SENTRY_AUTH_TOKEN', { global: true });
+      expect(await fse.readJson(getMachineSecretsPath())).toEqual({});
+    });
+
+    it('without --global, outside any scope still fails as not initialized', async () => {
+      vi.mocked(requireInit).mockRejectedValue(new NotInitializedError('teamai is not initialized. Run `teamai init` first.'));
+
+      await expect(envSet('GITHUB_TOKEN', { fromEnv: 'X' })).rejects.toThrow(NotInitializedError);
+      await expect(envUnset('GITHUB_TOKEN', {})).rejects.toThrow(NotInitializedError);
+    });
+
+    it('unset --global removes only the machine value', async () => {
+      await envSet('GITHUB_TOKEN', { fromEnv: 'WORK_GITHUB_TOKEN' });
+      await envSet('GITHUB_TOKEN', { fromEnv: 'PERSONAL_GITHUB_TOKEN', global: true });
+      await envSet('GITLAB_TOKEN', { fromEnv: 'PERSONAL_GITLAB_TOKEN', global: true });
+
+      await envUnset('GITHUB_TOKEN', { global: true });
+      await envUnset('GITHUB_TOKEN', { global: true });
+
+      expect(await fse.readJson(getMachineSecretsPath())).toEqual({ GITLAB_TOKEN: { env: 'PERSONAL_GITLAB_TOKEN' } });
+      expect(await stored()).toEqual({ GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+      expect(log.success).toHaveBeenCalledWith(`Removed the machine value of GITHUB_TOKEN (${getMachineSecretsPath()}).`);
+      expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no value set for this machine. Nothing was changed.');
     });
 
     // #879 Conflict 13: a key declared twice is listed only as a secret.

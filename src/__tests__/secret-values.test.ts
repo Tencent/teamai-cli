@@ -11,14 +11,15 @@ vi.mock('../utils/logger.js', () => ({
 
 import { EnvHandler } from '../resources/env.js';
 import { resolveSecretValues, secretState, type SecretValues } from '../resources/secrets.js';
-import { getTeamSecretsPath, readSecretStore, writeSecretStore } from '../secret-store.js';
+import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, writeSecretStore } from '../secret-store.js';
 import type { ResolvedEntry } from '../namespaced-entries.js';
 import type { EnvVariable } from '../resources/env.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 /**
  * A member's value for a declared secret (#875): stored per team repo under
- * ~/.teamai/secrets/, resolved team value > the member's own environment.
+ * ~/.teamai/secrets/, or once for the machine, resolved team value > machine
+ * value > the member's own environment.
  */
 describe('team secret values', () => {
   let tmpDir: string;
@@ -65,6 +66,10 @@ describe('team secret values', () => {
       await fse.outputFile(path.join(home, '.teamai', 'env'), 'API_URL=u\n');
       await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'fixture-token' } });
       expect(await fse.readFile(path.join(home, '.teamai', 'env'), 'utf8')).toBe('API_URL=u\n');
+    });
+
+    it('keeps the machine values beside the team files, in ~/.teamai/secrets/machine.json', () => {
+      expect(getMachineSecretsPath()).toBe(path.join(home, '.teamai', 'secrets', 'machine.json'));
     });
 
     it('reads a missing file as no values', async () => {
@@ -118,6 +123,38 @@ describe('team secret values', () => {
       expect(values(await resolveSecretValues(localConfig, secret, [], { WORK_GITHUB_TOKEN: 'work-2' })))
         .toEqual({ GITHUB_TOKEN: 'team:work-2' });
       expect(values(await resolveSecretValues(localConfig, secret, [], { GITHUB_TOKEN: 'personal' }))).toEqual({});
+    });
+
+    it('takes the team value over the machine value, and the machine value over the environment', async () => {
+      await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
+      await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'machine-github' }, GITLAB_TOKEN: { value: 'machine-gitlab' } });
+      const resolved = await resolveSecretValues(localConfig, keys('GITHUB_TOKEN', 'GITLAB_TOKEN', 'SENTRY_TOKEN'), [], {
+        GITHUB_TOKEN: 'exported-github', GITLAB_TOKEN: 'exported-gitlab', SENTRY_TOKEN: 'exported-sentry',
+      });
+
+      expect(values(resolved)).toEqual({
+        GITHUB_TOKEN: 'team:team-token', GITLAB_TOKEN: 'global:machine-gitlab', SENTRY_TOKEN: 'environment:exported-sentry',
+      });
+      expect(secretState(resolved, 'GITLAB_TOKEN')).toBe('global');
+    });
+
+    it('lets an entry decide even when its --from-env variable is unset: a team entry over the machine, a machine entry over the environment', async () => {
+      await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+      await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'personal' }, GITLAB_TOKEN: { env: 'PERSONAL_GITLAB_TOKEN' } });
+
+      expect(values(await resolveSecretValues(localConfig, keys('GITHUB_TOKEN', 'GITLAB_TOKEN'), [], { GITLAB_TOKEN: 'exported' })))
+        .toEqual({});
+    });
+
+    it('leaves every secret without a value when the machine store cannot be read', async () => {
+      await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
+      await fse.outputFile(getMachineSecretsPath(), '{ "GITLAB_TOKEN": { "value": ghp_fixture_value } }');
+      const resolved = await resolveSecretValues(localConfig, keys('GITHUB_TOKEN', 'GITLAB_TOKEN'), [], { GITLAB_TOKEN: 'exported' });
+
+      expect(resolved.kind).toBe('store-unreadable');
+      if (resolved.kind !== 'store-unreadable') return;
+      expect(resolved.reason).toContain(`${getMachineSecretsPath()} is not valid JSON`);
+      expect(resolved.reason).not.toContain('ghp_fixture_value');
     });
 
     it('leaves every secret without a value when the store cannot be read', async () => {
