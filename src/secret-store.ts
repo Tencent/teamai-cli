@@ -22,7 +22,6 @@ import { ENV_KEY_RE, envTable, envValue } from './resources/env-key.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { writeJsonAtomic } from './utils/fs.js';
-import { normalizeRepoUrlForCompare } from './utils/git.js';
 
 const StoredEntryKindSchema = z.enum(['secret', 'variable']);
 export type StoredEntryKind = z.infer<typeof StoredEntryKindSchema>;
@@ -54,15 +53,53 @@ export type SecretStoreRead =
 /**
  * This team's values file, named by the team repo URL this machine's config
  * holds and never by `teamai.yaml`'s `repo:`: a copied team repo that claims
- * another team's `repo:` must not get that team's values. The URL is
- * normalized so its ssh, https and credentialed forms name one file.
+ * another team's `repo:` must not get that team's values. See `repoIdentity`
+ * for which forms of the URL name one file.
  */
 export function getTeamSecretsPath(localConfig: LocalConfig): string {
   const { remote, url, localPath } = localConfig.repo;
   const configured = remote && remote !== 'origin' && remote !== 'upstream' ? remote : url;
-  const identity = configured ? normalizeRepoUrlForCompare(configured) : localPath;
+  const identity = configured ? repoIdentity(configured) : localPath;
   const hash = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
   return path.join(getTeamaiHomeDir(), 'secrets', 'teams', `${hash}.json`);
+}
+
+/** Each scheme's default port, and the family whose URLs of one repo share a file. */
+const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly defaultPort: string }> = new Map([
+  ['ssh', { family: 'ssh', defaultPort: '22' }],
+  ['git+ssh', { family: 'ssh', defaultPort: '22' }],
+  ['ssh+git', { family: 'ssh', defaultPort: '22' }],
+  ['https', { family: 'http', defaultPort: '443' }],
+  ['http', { family: 'http', defaultPort: '80' }],
+  ['git', { family: 'git', defaultPort: '9418' }],
+]);
+
+/**
+ * A team repo URL as the part of it that says which repo it is: scheme family
+ * (ssh or http(s)), lowercased host, a port other than the scheme's default,
+ * and the path as written. Only credentials, the ssh user, a trailing `.git`
+ * and slashes are dropped, so `git@host:acme/team.git` and
+ * `ssh://git@host:22/acme/team` name one file, while two repos on one host
+ * with different ports never share values. Not `normalizeRepoUrlForCompare`:
+ * it drops the port, and its callers compare loosely on purpose.
+ */
+function repoIdentity(url: string): string {
+  const trimmed = url.trim();
+  const key = (family: string, host: string, port: string, repoPath: string): string => {
+    const name = repoPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
+    return `${family}://${host.toLowerCase()}${port ? `:${port}` : ''}/${name}`;
+  };
+  const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(trimmed);
+  if (scp) return key('ssh', scp[1] ?? '', '', scp[2] ?? '');
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return trimmed;
+  }
+  const scheme = parsed.protocol.slice(0, -1).toLowerCase();
+  const known = SCHEMES.get(scheme);
+  return key(known?.family ?? scheme, parsed.hostname, parsed.port === known?.defaultPort ? '' : parsed.port, parsed.pathname);
 }
 
 /** The values file for every team on this machine (`teamai env set --global`). */

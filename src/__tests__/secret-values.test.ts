@@ -106,14 +106,36 @@ describe('team secret values', () => {
       expect(getTeamSecretsPath(copied)).not.toBe(getTeamSecretsPath(localConfig));
     });
 
-    it('gives the ssh and https forms of one team repo URL the same file', () => {
-      const withRemote = (remote: string): LocalConfig => ({ ...localConfig, repo: { ...localConfig.repo, remote } });
+    describe('naming the file by the team repo URL', () => {
+      const fileFor = (remote: string): string => getTeamSecretsPath({ ...localConfig, repo: { ...localConfig.repo, remote } });
 
-      for (const remote of [
-        'git@example.com:acme/team.git',
-        'https://user:fixture-pass@EXAMPLE.com/acme/team/',
-        'ssh://git@example.com/acme/team',
-      ]) expect(getTeamSecretsPath(withRemote(remote))).toBe(getTeamSecretsPath(localConfig));
+      it('gives the credentialed, default-port and trailing-slash forms of one https URL the same file', () => {
+        for (const remote of [
+          'https://user:fixture-pass@EXAMPLE.com/acme/team/',
+          'https://example.com:443/acme/team.git',
+          'http://example.com:80/acme/team',
+        ]) expect(fileFor(remote)).toBe(getTeamSecretsPath(localConfig));
+      });
+
+      it('gives the scp form and the ssh URL of one repo the same file, with the default port written or not', () => {
+        for (const remote of ['ssh://git@example.com/acme/team', 'ssh://git@EXAMPLE.com:22/acme/team.git/']) {
+          expect(fileFor(remote)).toBe(fileFor('git@example.com:acme/team.git'));
+        }
+      });
+
+      it('gives repos on one host with different ports different files', () => {
+        expect(fileFor('ssh://git@example.com:2222/acme/team.git')).not.toBe(fileFor('ssh://git@example.com:2223/acme/team.git'));
+        expect(fileFor('ssh://git@example.com:2222/acme/team.git')).not.toBe(fileFor('git@example.com:acme/team.git'));
+        expect(fileFor('https://example.com:8443/acme/team.git')).not.toBe(getTeamSecretsPath(localConfig));
+      });
+
+      it('gives the ssh and https URLs of a repo different files', () => {
+        expect(fileFor('git@example.com:acme/team.git')).not.toBe(getTeamSecretsPath(localConfig));
+      });
+
+      it('keeps the case of the path', () => {
+        expect(fileFor('https://example.com/Acme/Team.git')).not.toBe(getTeamSecretsPath(localConfig));
+      });
     });
 
     it('keeps an entry named __proto__ as an own key, through a write and a read', async () => {
