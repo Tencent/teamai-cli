@@ -1,3 +1,4 @@
+import { chmod, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
@@ -34,11 +35,11 @@ import { pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.
 import { brokenTeamProfileFiles } from './models/profile.js';
 
 /**
- * Filter a list of repo-root-relative paths (e.g. "rules/", "env/") down to
+ * Filter a list of repo-root-relative paths (e.g. "rules/", ".codebuddy-plugin/") down to
  * those that actually exist on disk. `git add` throws `pathspec did not match
  * any files` when any argument doesn't exist, so we guard against that when
  * passing "sweeper" directories that may or may not be present in a given
- * team repo (e.g. a pure-wiki team has no rules/ or env/).
+ * team repo (e.g. a pure-wiki team has no rules/).
  */
 export async function filterExistingTopLevelPaths(
   repoPath: string,
@@ -339,6 +340,16 @@ async function hasGitModeChange(
     // If Git cannot prove that metadata is unchanged, stop before reset rather
     // than risk discarding a mode change that was not captured.
     return true;
+  }
+}
+
+/** A file's bytes and permission bits, or null when it cannot be read. */
+async function readFileSnapshot(filePath: string): Promise<{ content: Buffer; mode: number } | null> {
+  try {
+    const [content, stats] = await Promise.all([readFile(filePath), stat(filePath)]);
+    return { content, mode: stats.mode & 0o777 };
+  } catch {
+    return null;
   }
 }
 
@@ -872,13 +883,18 @@ async function pushCore(
   // The env edits captured before the refresh below. Their only copy is the
   // clone's working tree, so every reset that can run before they are
   // committed must be followed by this restore (#881).
-  const pendingEnvFiles = new Map<string, string>();
+  // Bytes and permission bits: a hand edit need not be UTF-8, and git records
+  // no mode for an untracked file (a new env/<role>/env.yaml), so clean -fd
+  // plus a plain write would recreate a 0600 file under the umask.
+  const pendingEnvFiles = new Map<string, { content: Buffer; mode: number }>();
   /** Write the captured env edits back; returns each one it could not, with the reason. */
   const restorePendingEnvFiles = async (): Promise<string[]> => {
     const lost: string[] = [];
-    for (const [relativePath, content] of pendingEnvFiles) {
+    for (const [relativePath, { content, mode }] of pendingEnvFiles) {
+      const target = path.join(localConfig.repo.localPath, ...relativePath.split('/'));
       try {
-        await writeFile(path.join(localConfig.repo.localPath, ...relativePath.split('/')), content);
+        await writeFile(target, content);
+        await chmod(target, mode);
       } catch (e) {
         lost.push(`${relativePath} (${(e as Error).message})`);
       }
@@ -941,9 +957,9 @@ async function pushCore(
       }));
       for (const item of await getHandler('env').scanLocalForPush(teamConfig, localConfig)) {
         if (indexedPaths.has(item.relativePath)) continue;
-        const content = await readFileSafe(item.sourcePath);
-        if (content !== null && !await hasGitModeChange(git, item.relativePath)) {
-          pendingEnvFiles.set(item.relativePath, content);
+        const snapshot = await readFileSnapshot(item.sourcePath);
+        if (snapshot !== null && !await hasGitModeChange(git, item.relativePath)) {
+          pendingEnvFiles.set(item.relativePath, snapshot);
         }
       }
       const unsafeDirtyPaths = collectUnsafeDirtyPaths(
@@ -1705,15 +1721,14 @@ async function pushCore(
       await writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), pendingTeamConfig);
     }
     // A group that pushed a branch carries its own env files, so those are no
-    // longer pending. Any other group may have reset and cleaned the clone on
-    // the way out (the rollback, or pushRepoBranch's no-change path), taking
-    // the edits with it.
-    let lost: string[] = [];
+    // longer pending. Any group may have reset and cleaned the clone on the way
+    // out (the rollback, or pushRepoBranch's no-change path, which a reuse group
+    // retrying its PR also takes before it reports pushed), so the rest go back
+    // whatever the outcome; rewriting a file still in place changes nothing.
     if (outcome === 'pushed' || outcome === 'pr-failed') {
       for (const item of group.items) pendingEnvFiles.delete(item.relativePath);
-    } else {
-      lost = await restorePendingEnvFiles();
     }
+    const lost = await restorePendingEnvFiles();
     if (outcome === 'failed' || lost.length > 0) {
       // The branch/PR for earlier groups is already on the remote, so their
       // records must survive this failure or the next run would duplicate them.

@@ -14,6 +14,8 @@ import { askSelection } from '../utils/prompt.js';
 const mockCreatePullRequest = vi.fn().mockResolvedValue('https://example.test/pr/1');
 const mockAutoDetectInit = vi.fn();
 const mockDetectProjectConfig = vi.fn();
+const freshState = (): unknown => ({ lastPush: null, pushedSkills: [], pushedRules: [], pushedEnvVars: [] });
+let storedState = freshState();
 
 vi.mock('../providers/index.js', () => ({
   getProvider: () => ({
@@ -27,10 +29,12 @@ vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: (...args: unknown[]) => mockAutoDetectInit(...args),
   detectProjectConfig: (...args: unknown[]) => mockDetectProjectConfig(...args),
-  loadStateForScope: vi.fn(() => Promise.resolve({
-    lastPush: null, pushedSkills: [], pushedRules: [], pushedEnvVars: [],
-  })),
-  saveStateForScope: vi.fn(() => Promise.resolve()),
+  // One state file per test, so a second push sees the first one's records.
+  loadStateForScope: vi.fn(() => Promise.resolve(structuredClone(storedState))),
+  saveStateForScope: vi.fn((state: unknown) => {
+    storedState = structuredClone(state);
+    return Promise.resolve();
+  }),
 }));
 
 // Path → writes still allowed before each further write fails, to stand for
@@ -117,6 +121,7 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-push-env-'));
     vi.clearAllMocks();
     failingWrites.clear();
+    storedState = freshState();
     mockCreatePullRequest.mockResolvedValue('https://example.test/pr/1');
     ({ teamRepo, remote } = await initTeamRepos(tmpDir));
     const localConfig = {
@@ -203,10 +208,13 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: changed');
   });
 
-  it('keeps the env.yaml edit when the push rolls the clone back', async () => {
+  it('keeps the env.yaml edit and its mode when the push rolls the clone back', async () => {
     const { envAdd } = await import('../env-commands.js');
     const { push } = await import('../push.js');
+    const envPath = path.join(teamRepo, 'env', 'env.yaml');
     await envAdd('TEAM_VAR', 'changed', {});
+    // Git sees no mode change in 0600, but reset --hard recreates the file 0644.
+    fs.chmodSync(envPath, 0o600);
     // A local branch of the requested name makes the branch creation throw
     // after the copy step, so pushGroup resets and cleans the clone.
     await simpleGit(teamRepo).branch(['teamai/taken']);
@@ -215,7 +223,8 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
 
     expect(process.exitCode).toBe(1);
     expect(stderrOutput()).toContain('Push failed');
-    expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: changed');
+    expect(fs.readFileSync(envPath, 'utf8')).toContain('value: changed');
+    expect(fs.statSync(envPath).mode & 0o777).toBe(0o600);
   });
 
   it('pushes only the selected env file and keeps the deselected edit in the clone', async () => {
@@ -271,6 +280,8 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     const opsEnv = path.join(teamRepo, 'env', 'ops', 'env.yaml');
     await envAdd('OPS_VAR', 'ops-value', { role: 'ops' });
     expect(await git.raw(['status', '--porcelain', '--untracked-files=all'])).toContain('?? env/ops/env.yaml');
+    // Git records no mode for an untracked file, so only the snapshot can keep it.
+    fs.chmodSync(opsEnv, 0o600);
     await git.branch(['teamai/taken']);
 
     await push({ all: true, branch: 'teamai/taken' });
@@ -278,6 +289,7 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(process.exitCode).toBe(1);
     expect(stderrOutput()).toContain('Push failed');
     expect(fs.readFileSync(opsEnv, 'utf8')).toContain('value: ops-value');
+    expect(fs.statSync(opsEnv).mode & 0o777).toBe(0o600);
     expect(await git.raw(['status', '--porcelain', '--untracked-files=all'])).toContain('?? env/ops/env.yaml');
   });
 
@@ -288,12 +300,14 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     const opsEnv = path.join(teamRepo, 'env', 'ops', 'env.yaml');
     fs.writeFileSync(path.join(remote, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
     await envAdd('OPS_VAR', 'ops-value', { role: 'ops' });
+    fs.chmodSync(opsEnv, 0o600);
 
     await push({ all: true });
 
     expect(process.exitCode).toBe(1);
     expect((await git.revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe('main');
     expect(fs.readFileSync(opsEnv, 'utf8')).toContain('value: ops-value');
+    expect(fs.statSync(opsEnv).mode & 0o777).toBe(0o600);
     expect(await git.raw(['status', '--porcelain', '--untracked-files=all'])).toContain('?? env/ops/env.yaml');
   });
 
@@ -346,6 +360,82 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(errorOutput()).toContain('teamai env add');
     // Earlier groups' PR records are saved before stopping, as for any failed group.
     expect(vi.mocked(saveStateForScope)).toHaveBeenCalled();
+  });
+
+  it('keeps the bytes of an env file that is not UTF-8', async () => {
+    const { push } = await import('../push.js');
+    const envPath = path.join(teamRepo, 'env', 'env.yaml');
+    // A hand edit saved as Latin-1: 0xE9 is "é" there and invalid UTF-8.
+    const latin1 = Buffer.from('variables:\n  - key: TEAM_VAR\n    value: caf\xe9\n', 'latin1');
+    fs.writeFileSync(envPath, latin1);
+    await simpleGit(teamRepo).branch(['teamai/taken']);
+
+    await push({ all: true, branch: 'teamai/taken' });
+
+    expect(process.exitCode).toBe(1);
+    expect(fs.readFileSync(envPath).equals(latin1)).toBe(true);
+  });
+
+  it('keeps a deselected env edit when a group with no change rolls the clone back', async () => {
+    const { push } = await import('../push.js');
+    const rootEnv = path.join(teamRepo, 'env', 'env.yaml');
+    fs.writeFileSync(rootEnv, fs.readFileSync(rootEnv, 'utf8').replace('value: first', 'value: deselected'));
+    // A blank line only: pushRepoBranch reads it as metadata, resets and cleans.
+    fs.appendFileSync(path.join(teamRepo, 'env', 'team', 'env.yaml'), '\n');
+    vi.mocked(askSelection).mockResolvedValueOnce([1]);
+
+    await push({});
+
+    expect(await pushBranches(remote)).toEqual([]);
+    expect(fs.readFileSync(rootEnv, 'utf8')).toContain('value: deselected');
+  });
+
+  /** Push an env/team/env.yaml edit whose PR creation fails, leaving a reuse record with prUrl null. */
+  async function pushWithoutPr(): Promise<void> {
+    const { push } = await import('../push.js');
+    const teamEnv = path.join(teamRepo, 'env', 'team', 'env.yaml');
+    fs.writeFileSync(teamEnv, fs.readFileSync(teamEnv, 'utf8').replace('value: first', 'value: reviewed'));
+    mockCreatePullRequest.mockResolvedValue(null);
+    await push({ all: true });
+    expect(await pushBranches(remote)).toHaveLength(1);
+    expect(fs.readFileSync(teamEnv, 'utf8')).toContain('value: first');
+    process.exitCode = previousExitCode;
+    vi.mocked(process.stderr.write).mockClear();
+  }
+
+  it('keeps a deselected env edit when a reuse group that retries its PR rolls the clone back', async () => {
+    const { push } = await import('../push.js');
+    await pushWithoutPr();
+    const rootEnv = path.join(teamRepo, 'env', 'env.yaml');
+    fs.writeFileSync(rootEnv, fs.readFileSync(rootEnv, 'utf8').replace('value: first', 'value: deselected'));
+    // The recorded file now differs from main by a blank line only: the reuse
+    // branch is rebuilt from main, reads that as metadata, resets and cleans
+    // the clone, then retries the missing PR.
+    fs.appendFileSync(path.join(teamRepo, 'env', 'team', 'env.yaml'), '\n');
+    vi.mocked(askSelection).mockResolvedValueOnce([1]);
+    mockCreatePullRequest.mockClear();
+
+    await push({});
+
+    expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
+    expect(fs.readFileSync(rootEnv, 'utf8')).toContain('value: deselected');
+  });
+
+  it('keeps a deselected env edit when the config-only push after the reuse groups has no change', async () => {
+    const { push } = await import('../push.js');
+    await pushWithoutPr();
+    const rootEnv = path.join(teamRepo, 'env', 'env.yaml');
+    const teamEnv = path.join(teamRepo, 'env', 'team', 'env.yaml');
+    fs.writeFileSync(rootEnv, fs.readFileSync(rootEnv, 'utf8').replace('value: first', 'value: deselected'));
+    fs.writeFileSync(teamEnv, fs.readFileSync(teamEnv, 'utf8').replace('value: first', 'value: reviewed again'));
+    // A blank line only: pushTeamConfigOnly's pushRepoBranch resets and cleans.
+    fs.appendFileSync(path.join(teamRepo, 'teamai.yaml'), '\n');
+    vi.mocked(askSelection).mockResolvedValueOnce([1]);
+
+    await push({ branch: 'teamai/config' });
+
+    expect(stderrOutput()).toContain('No changes to push (config already up to date)');
+    expect(fs.readFileSync(rootEnv, 'utf8')).toContain('value: deselected');
   });
 
   it('still refuses a deleted env.yaml', async () => {

@@ -274,13 +274,13 @@ export class EnvHandler extends ResourceHandler {
   }
 
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    // Non-self modes: env files already live in the repo dir; push.ts commits
-    // them via the env/ sweeper — nothing to copy.
+    // Non-self modes: env files already live in the repo dir; push.ts stages
+    // each selected one by its path — nothing to copy.
     //
     // Single-repo mode: the source is the ACTIVE tree's .teamai/env/ file, but
     // the commit happens in the knowledge worktree (localConfig.repo.localPath).
     // Copy the active copy into the worktree so the PR actually carries the change;
-    // otherwise the env/ sweeper would commit the stale baseline. (Guarded on the
+    // otherwise staging that path would commit the stale baseline. (Guarded on the
     // paths differing so non-self stays a no-op.)
     if (isSelfMode(localConfig)) {
       const dest = path.join(localConfig.repo.localPath, ...item.relativePath.split('/'));
