@@ -31,7 +31,7 @@ export function exportDigest(key: string, value: string): string {
 /**
  * The variable each env.sh exports beside its own, naming what it exported:
  * `TEAMAI_ENV_SH_<data home hash>=<digest prefix> ...`, one digest prefix per
- * export, never a value. The record above is found by scanning known paths,
+ * export and per value the record keeps, never a value. The record above is found by scanning known paths,
  * and a non-git project keeps its env.sh at `<dir>/.teamai/`, which no scan
  * reaches; a shell that sourced it carries the marker instead. Named after
  * the data home, so a shell that sourced the user's env.sh and a project's
@@ -48,12 +48,22 @@ function markedDigest(key: string, value: string): string {
   return exportDigest(key, value).slice(0, MARKED_DIGEST_LENGTH);
 }
 
-/** The marker an env.sh in `dataHome` exports for `exports`, as [name, value]; null when it exports nothing. */
-export function envShMarker(dataHome: string, exports: Iterable<readonly [string, string]>): [string, string] | null {
-  const digests = [...exports].map(([key, value]) => markedDigest(key, value));
-  if (digests.length === 0) return null;
+/**
+ * The marker an env.sh in `dataHome` exports for `exports` and what it
+ * `recorded` exporting before, as [name, value]; null when it lists nothing.
+ * A shell that sources the rewritten env.sh keeps a value an earlier one
+ * exported, while the new marker replaces the old, so it lists both.
+ */
+export function envShMarker(
+  dataHome: string,
+  exports: Iterable<readonly [string, string]>,
+  recorded: EnvShExports = new Map(),
+): [string, string] | null {
+  const digests = new Set([...exports].map(([key, value]) => markedDigest(key, value)));
+  for (const kept of recorded.values()) for (const digest of kept) digests.add(digest.slice(0, MARKED_DIGEST_LENGTH));
+  if (digests.size === 0) return null;
   const name = `TEAMAI_ENV_SH_${crypto.createHash('sha256').update(path.resolve(dataHome)).digest('hex').slice(0, 10)}`;
-  return [name, digests.join(' ')];
+  return [name, [...digests].join(' ')];
 }
 
 /** Whether a teamai env.sh this environment sourced exported `key=value`, by its markers. */
@@ -91,8 +101,8 @@ export async function readEnvShExports(envShPath: string): Promise<EnvShExports>
   return new Map([...await readRecord(envShPath)].map(([key, digests]) => [key, new Set(digests)]));
 }
 
-/** Add `exports` to the record beside `envShPath`, readable by this user only. */
-export async function recordEnvShExports(envShPath: string, exports: Iterable<readonly [string, string]>): Promise<void> {
+/** Add `exports` to the record beside `envShPath`, readable by this user only; answers the record. */
+export async function recordEnvShExports(envShPath: string, exports: Iterable<readonly [string, string]>): Promise<EnvShExports> {
   const record = await readRecord(envShPath);
   for (const [key, value] of exports) {
     const digest = exportDigest(key, value);
@@ -100,4 +110,5 @@ export async function recordEnvShExports(envShPath: string, exports: Iterable<re
     record.set(key, [...kept, digest].slice(-KEPT_PER_KEY));
   }
   await writeJsonAtomic(recordPath(envShPath), Object.fromEntries(record), { mode: 0o600 });
+  return new Map([...record].map(([key, digests]) => [key, new Set(digests)]));
 }

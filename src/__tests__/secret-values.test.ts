@@ -345,6 +345,19 @@ describe('team secret values', () => {
         expect(marker?.[0]).not.toContain('https://a');
         expect([...parseEnvFile(content).keys()]).toEqual(['GITHUB_TOKEN', 'API_URL']);
       });
+
+      // The shell re-sources the rewritten env.sh: the old value stays
+      // exported, and the new marker replaces the old one.
+      it('keeps marking a value that env.sh exported before a rewrite dropped it, in a shell that sources it again', async () => {
+        const first = await sourcedProjectEnvSh([variable('GITHUB_TOKEN', 'project-a-token'), variable('API_URL', 'https://a')]);
+        const second = await sourcedProjectEnvSh([variable('API_URL', 'https://a')]);
+        const env = { ...first.env, ...second.env };
+
+        expect(second.content).not.toContain('project-a-token');
+        expect(env.GITHUB_TOKEN).toBe('project-a-token');
+        expect(await resolve(env)).toEqual({});
+        expect(await resolve({ ...env, GITHUB_TOKEN: 'hand-export' })).toEqual({ GITHUB_TOKEN: 'environment:hand-export' });
+      });
     });
 
     it('records what env.sh exported as hashes beside it, readable by the member only, and forgets the oldest', async () => {

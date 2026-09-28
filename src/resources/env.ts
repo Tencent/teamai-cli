@@ -327,9 +327,9 @@ export class EnvHandler extends ResourceHandler {
     // carries those values, and they are the team's, not the member's (#879
     // Conflict 10). The old ones are there too for an env.sh an older CLI wrote.
     const previous = parseEnvFile(await readFileSafe(envShPath) ?? '');
-    await recordEnvShExports(envShPath, [...previous, ...variables.map((v): [string, string] => [v.key, v.value])]);
+    const recorded = await recordEnvShExports(envShPath, [...previous, ...variables.map((v): [string, string] => [v.key, v.value])]);
     const envSh = this.generateEnvFile(variables);
-    const marker = envShMarker(teamaiHome, parseEnvFile(envSh));
+    const marker = envShMarker(teamaiHome, parseEnvFile(envSh), recorded);
     await writeFile(envShPath, marker ? `${envSh}export ${marker[0]}='${marker[1]}'\n` : envSh);
 
     // Inject source line into shell profile if enabled

@@ -4,7 +4,7 @@ import os from 'node:os';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 import { execFileSync } from 'node:child_process';
-import { EnvHandler, describeEnvYamlShapeProblem } from '../resources/env.js';
+import { EnvHandler, describeEnvYamlShapeProblem, parseEnvFile } from '../resources/env.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 import type { TeamaiConfig, LocalConfig, ResourceItem } from '../types.js';
@@ -664,7 +664,9 @@ scope: 'user',
       expect(await envSh()).toContain('CHECKOUT_ONLY');
 
       await handler.pullItem(item, teamConfig, { ...localConfig, projects: ['billing'] });
-      expect((await envSh()).trim()).toBe('');
+      // Only the marker of what it exported before is left (env-sh-exports.ts).
+      expect(await envSh()).not.toContain('CHECKOUT_ONLY');
+      expect([...parseEnvFile(await envSh()).keys()]).toEqual([]);
       const backup = await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf-8');
       expect(backup).not.toContain('CHECKOUT_ONLY');
     });
