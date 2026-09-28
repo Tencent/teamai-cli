@@ -20,7 +20,7 @@ import type { LocalConfig } from '../types.js';
 import { ensureDir, readFileSafe, writeFile } from '../utils/fs.js';
 import { ENV_KEY_RE, type EnvVariable } from './env.js';
 import { memberEnvironment } from '../member-env.js';
-import { getTeamSecretsPath, readSecretStore, storedSecretValue } from '../secret-store.js';
+import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, storedSecretValue, type SecretStore } from '../secret-store.js';
 
 const SecretDeclarationSchema = z.object({
   key: z.string().regex(ENV_KEY_RE, 'must be a shell variable name: letters, digits and underscores, not starting with a digit'),
@@ -146,17 +146,18 @@ export function declaredSecretKeys(declarations: SecretDeclarations): ReadonlySe
 export type SecretState = SecretValue['source'] | 'missing';
 
 export interface SecretValue {
-  readonly source: 'team' | 'environment';
+  readonly source: 'team' | 'global' | 'environment';
   readonly value: string;
 }
 
 /**
  * The value of each declared secret, in the resolution order: the member's
- * value for this team (`teamai env set`), then the member's own environment
- * (see member-env.ts). `variables` are the env.yaml variables this scope
- * receives. A key without one is absent from `values`. A team
- * entry decides even when its `--from-env` variable is unset: falling back to
- * the environment would send another account's token to this team.
+ * value for this team (`teamai env set`), then their value for the machine
+ * (`teamai env set --global`), then the member's own environment (see
+ * member-env.ts). `variables` are the env.yaml variables this scope receives.
+ * A key without one is absent from `values`. The first entry found decides
+ * even when its `--from-env` variable is unset: falling back to the next
+ * source would send another account's token to this team.
  *
  * A store file that cannot be read leaves every secret without a value, for
  * the same reason; `reason` says why, with no value in it.
@@ -174,13 +175,19 @@ export async function resolveSecretValues(
   const values = new Map<string, SecretValue>();
   if (secretKeys.size === 0) return { kind: 'resolved', values };
   const envYaml = new Map(variables.map((variable) => [variable.name, variable.entry.value]));
-  const store = await readSecretStore(getTeamSecretsPath(localConfig));
-  if (!store.ok) return { kind: 'store-unreadable', reason: store.reason };
+  const team = await readSecretStore(getTeamSecretsPath(localConfig));
+  if (!team.ok) return { kind: 'store-unreadable', reason: team.reason };
+  const machine = await readSecretStore(getMachineSecretsPath());
+  if (!machine.ok) return { kind: 'store-unreadable', reason: machine.reason };
   const member = await memberEnvironment(localConfig, { secretKeys, envYaml }, env);
+  const entry = (store: SecretStore, key: string) => (Object.hasOwn(store, key) ? store[key] : undefined);
   for (const key of secretKeys) {
-    const stored = Object.hasOwn(store.values, key) ? store.values[key] : undefined;
-    const value = stored ? storedSecretValue(stored, env) : member(key);
-    if (value !== undefined) values.set(key, { source: stored ? 'team' : 'environment', value });
+    const teamEntry = entry(team.values, key);
+    const machineEntry = entry(machine.values, key);
+    const [source, value]: [SecretValue['source'], string | undefined] = teamEntry ? ['team', storedSecretValue(teamEntry, env)]
+      : machineEntry ? ['global', storedSecretValue(machineEntry, env)]
+      : ['environment', member(key)];
+    if (value !== undefined) values.set(key, { source, value });
   }
   return { kind: 'resolved', values };
 }

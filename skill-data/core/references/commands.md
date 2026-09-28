@@ -206,7 +206,9 @@ Generated: do not edit by hand. Regenerate with
   - `teamai env set <key>` — Set your value for a secret the team declares, for this directory's team, on this machine (prompts without echo)
     - `--stdin` — Read the value from piped stdin
     - `--from-env <var>` — Read the value from this environment variable each time it is used; no copy is stored
+    - `--global` — Set it for every team on this machine; a value set for a team still wins
   - `teamai env unset <key>` — Remove your value for a secret, for this directory's team, from this machine
+    - `--global` — Remove the value set for every team on this machine instead
 
 ## hooks
 

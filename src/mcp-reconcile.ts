@@ -111,9 +111,9 @@ async function readManifest(manifestPath: string): Promise<ManagedMcpManifest> {
  * Build the ${VAR} lookup table: the team env variables this member receives
  * (root plus active namespace files, the same set pull writes env.sh from),
  * then process env on top. A declared secret (#875) resolves from the
- * member's value for this team, then from their own environment (not a value
- * a teamai env.sh exported); its env.yaml value, if the team also sets one,
- * is ignored.
+ * member's value for this team, then their value for the machine, then their
+ * own environment (not a value a teamai env.sh exported); its env.yaml value,
+ * if the team also sets one, is ignored.
  *
  * The installed KEY=value backup is read instead only when that set cannot be
  * resolved, or the secret declarations cannot (pull then keeps env.sh as it

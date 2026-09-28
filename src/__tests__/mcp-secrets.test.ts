@@ -10,14 +10,15 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { buildVarTable, reconcileMcpForConfig } from '../mcp-reconcile.js';
-import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
+import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 /**
  * `${VAR}` in mcp.yaml for a declared secret (#875): the member's value for
- * this team, then their own environment (#879 Conflict 10), never the repo's
+ * this team, then their value for the machine, then their own environment
+ * (#879 Conflict 10), never the repo's
  * env.yaml value for the same key.
  */
 describe('MCP servers and declared secrets', () => {
@@ -71,6 +72,18 @@ describe('MCP servers and declared secrets', () => {
 
     await reconcileMcpForConfig(teamConfig, localConfig);
 
+    expect(await githubAuthorization()).toBe('Bearer team-token');
+  });
+
+  it('gives a server the machine value when the team has none, over an exported one', async () => {
+    await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'machine-token' } });
+    vi.stubEnv('GITHUB_TOKEN', 'exported-token');
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(await githubAuthorization()).toBe('Bearer machine-token');
+
+    await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
+    await reconcileMcpForConfig(teamConfig, localConfig);
     expect(await githubAuthorization()).toBe('Bearer team-token');
   });
 

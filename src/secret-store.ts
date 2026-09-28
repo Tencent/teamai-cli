@@ -2,7 +2,8 @@
  * The values a member keeps for their team's declared secrets (#875), on their
  * own machine and never in the team repo: one file per team repo at
  * `~/.teamai/secrets/teams/<team>-<hash>.json`, named the way `teamai models
- * configure` names its team key files. `~/.teamai/env` is not used: it is
+ * configure` names its team key files, and one for every team on the machine
+ * at `~/.teamai/secrets/machine.json`. `~/.teamai/env` is not used: it is
  * already the user scope's env backup file.
  *
  * Each entry is exactly one of a literal value or the name of a variable to
@@ -34,6 +35,11 @@ export type SecretStoreRead =
 /** This team's values file. */
 export function getTeamSecretsPath(localConfig: LocalConfig): string {
   return getTeamValuesPath(localConfig, path.join(getTeamaiHomeDir(), 'secrets', 'teams'));
+}
+
+/** The values file for every team on this machine (`teamai env set --global`). */
+export function getMachineSecretsPath(): string {
+  return path.join(getTeamaiHomeDir(), 'secrets', 'machine.json');
 }
 
 /**

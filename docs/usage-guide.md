@@ -1077,14 +1077,18 @@ Each member sets their value for this directory's team, never as an argument:
 teamai env set GITHUB_TOKEN                               # prompts, without echo
 teamai env set GITHUB_TOKEN --stdin                       # from a pipe
 teamai env set GITHUB_TOKEN --from-env WORK_GITHUB_TOKEN  # read from that variable when used
-teamai env unset GITHUB_TOKEN
+teamai env set GITHUB_TOKEN --global                      # for every team on this machine
+teamai env unset GITHUB_TOKEN [--global]
 ```
 
 `env set` accepts only a declared secret, and stores the value in
 `~/.teamai/secrets/teams/<team>-<hash>.json` (mode `0600`), one file per team
-repo. `teamai env list` and `teamai list env` show each declared secret as
-`team` (you set it), `environment` (your own environment has a value for it) or
-`missing`, and never show a value, `--reveal` included. A key declared as a
+repo; with `--global`, in `~/.teamai/secrets/machine.json`, for every team on the
+machine, and a value set for a team still wins. Outside any scope, `--global`
+accepts any valid key and notes that no team declares it yet.
+`teamai env list` and `teamai list env` show each declared secret as
+`team` (you set it for this team), `global` (you set it for the machine),
+`environment` (your own environment has a value for it) or `missing`, and never show a value, `--reveal` included. A key declared as a
 secret and also set in `env.yaml` is a secret: its `env.yaml` value is not
 exported to `env.sh` or listed. A secrets file that cannot be used is not read
 as "no secrets": `env.sh` and the MCP servers keep what they had, `pull` warns,
@@ -1198,7 +1202,7 @@ Claude Code also reads the root `.mcp.json`, so this file is shared by both tool
 
 Copilot uses its native `mcpServers` schema: `stdio` becomes `type: "local"`, remote transports keep `http` or `sse`, and every managed entry gets the required `tools: ["*"]` allowlist. TeamAI honors `COPILOT_HOME`; project configuration uses Copilot CLI's documented `.github/mcp.json` repository location. See [Adding MCP servers for GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers). Codex supports `stdio` and `http`; `sse` is skipped. Qoder supports the Claude-compatible `mcpServers` format in its scope-specific `.qoder/settings.json`. Kiro supports the same `mcpServers` format in its dedicated, mcpServers-only `.kiro/settings/mcp.json` (see [Kiro's MCP configuration docs](https://kiro.dev/docs/mcp/configuration/)). OpenCode supports `stdio` (written as its `type:"local"` shape) and `http` (`type:"remote"`); `sse` is skipped, and its servers live under the `mcp` key of the shared `opencode.json`. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
 
-**Secrets.** Write `${VAR}`, never a literal, in `mcp.yaml`. A key the team declares in `env/secrets.yaml` resolves from your value for this team (`teamai env set`), then from your own environment, which leaves out values a teamai `env.sh` exported (see [Team secrets](designs/team-secrets.md#resolution)). Any other variable resolves from the environment, then from the team env variables this directory receives (`env/env.yaml` and the active `env/<ns>/env.yaml`). Unresolved variables skip the server with a hint. A declared secret is different: when a pull can't find it, the entry an earlier pull wrote stays as it is, so it may hold a value that was since rotated, until a pull finds the new one (see [Team secrets](designs/team-secrets.md#a-missing-secret-keeps-the-mcp-entry)).
+**Secrets.** Write `${VAR}`, never a literal, in `mcp.yaml`. A key the team declares in `env/secrets.yaml` resolves from your value for this team (`teamai env set`), then your value for the machine (`teamai env set --global`), then your own environment, which leaves out values a teamai `env.sh` exported (see [Team secrets](designs/team-secrets.md#resolution)). Any other variable resolves from the environment, then from the team env variables this directory receives (`env/env.yaml` and the active `env/<ns>/env.yaml`). Unresolved variables skip the server with a hint. A declared secret is different: when a pull can't find it, the entry an earlier pull wrote stays as it is, so it may hold a value that was since rotated, until a pull finds the new one (see [Team secrets](designs/team-secrets.md#a-missing-secret-keeps-the-mcp-entry)).
 
 teamai **resolves every `${VAR}` to its value and writes it verbatim** into each tool's config (new files are created `0600`). It does not rely on any tool's own env-var expansion: that expansion is fragile — most decisively, IDEs launched from the GUI (Dock/Launchpad) never inherit your shell's exported variables, so a `${VAR}` placeholder expands to empty and the server 401s. Resolving to plaintext makes the token present no matter how the tool is started.
 

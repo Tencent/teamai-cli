@@ -1,4 +1,4 @@
-import { requireInit, detectProjectConfig } from './config.js';
+import { requireInit, detectProjectConfig, NotInitializedError } from './config.js';
 import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
@@ -7,7 +7,7 @@ import {
   SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, resolveSecretValues, secretState,
   writeSecretsFile,
 } from './resources/secrets.js';
-import { getTeamSecretsPath, readSecretStore, writeSecretStore, type StoredSecret } from './secret-store.js';
+import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, writeSecretStore, type StoredSecret } from './secret-store.js';
 import { askSecret, isInteractive, readStdin } from './utils/prompt.js';
 import {
   describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, resolveEntriesFor,
@@ -90,13 +90,14 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
 
 /**
  * Keep this member's value for a secret the scope declares, for this team
- * repo, on this machine (#875). The value comes from a hidden prompt, from
- * piped stdin, or is a reference to another variable read each time it is
- * used; never from an argument, so it stays out of shell history.
+ * repo, on this machine (#875); with `global`, for every team on the machine.
+ * The value comes from a hidden prompt, from piped stdin, or is a reference to
+ * another variable read each time it is used; never from an argument, so it
+ * stays out of shell history.
  */
 export async function envSet(
   key: string,
-  options: GlobalOptions & { stdin?: boolean; fromEnv?: string },
+  options: GlobalOptions & { stdin?: boolean; fromEnv?: string; global?: boolean },
 ): Promise<void> {
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
   if (options.stdin && options.fromEnv !== undefined) return fail('Pass either --stdin or --from-env, not both. Nothing was changed.');
@@ -104,24 +105,24 @@ export async function envSet(
     return fail(`Invalid --from-env variable name "${options.fromEnv}": use letters, digits and underscores, starting with a letter or underscore.`);
   }
 
-  const projectConfig = await detectProjectConfig();
-  const localConfig = projectConfig ?? (await requireInit()).localConfig;
-
-  const declarations = await resolveSecretDeclarations(localConfig);
-  if (declarations.kind === 'failed') {
-    log.error(describeEntryFailure(declarations.failure));
-    return fail(`Cannot tell whether ${key} is a secret this team declares. Nothing was changed.`);
+  const localConfig = await scopeHere(options.global);
+  if (localConfig) {
+    const declarations = await resolveSecretDeclarations(localConfig);
+    if (declarations.kind === 'failed') {
+      log.error(describeEntryFailure(declarations.failure));
+      return fail(`Cannot tell whether ${key} is a secret this team declares. Nothing was changed.`);
+    }
+    const declared = declaredSecretKeys(declarations);
+    if (!declared.has(key)) {
+      const list = declared.size > 0 ? ` It declares: ${[...declared].sort().join(', ')}.` : ' It declares none.';
+      return fail(
+        `${key} is not a secret this directory's team declares, so it was not set.${list} `
+        + 'If the team declared it recently, run `teamai pull` first.',
+      );
+    }
   }
-  const declared = declaredSecretKeys(declarations);
-  if (!declared.has(key)) {
-    const list = declared.size > 0 ? ` It declares: ${[...declared].sort().join(', ')}.` : ' It declares none.';
-    return fail(
-      `${key} is not a secret this directory's team declares, so it was not set.${list} `
-      + 'If the team declared it recently, run `teamai pull` first.',
-    );
-  }
 
-  const file = getTeamSecretsPath(localConfig);
+  const { file, target } = valuesFile(localConfig, options.global);
   const store = await readSecretStore(file);
   if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
 
@@ -133,41 +134,67 @@ export async function envSet(
   }
 
   if (options.dryRun) {
-    log.info(`[dry-run] Would set ${key} for this team in ${file}`);
+    log.info(`[dry-run] Would set ${key} ${target} in ${file}`);
     return;
   }
   await writeSecretStore(file, { ...store.values, [key]: entry });
   if ('env' in entry) {
-    log.success(`${key} now reads ${entry.env} from your environment for this team (${file}).`);
+    log.success(`${key} now reads ${entry.env} from your environment ${target} (${file}).`);
     if (!process.env[entry.env]) log.warn(`${entry.env} is not set in this shell; ${key} has no value until it is.`);
   } else {
-    log.success(`Set ${key} for this team (${file}).`);
+    log.success(`Set ${key} ${target} (${file}).`);
   }
-  log.info('Run `teamai pull` to update MCP servers.');
+  if (localConfig) {
+    log.info('Run `teamai pull` to update MCP servers.');
+  } else {
+    log.info(`No teamai scope here, so no team declares ${key} yet. The value applies to every team on this machine that declares it.`);
+  }
 }
 
-/** Remove this member's value for a secret, for this team repo. */
-export async function envUnset(key: string, options: GlobalOptions): Promise<void> {
+/** Remove this member's value for a secret, for this team repo or, with `global`, for the machine. */
+export async function envUnset(key: string, options: GlobalOptions & { global?: boolean }): Promise<void> {
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
-  const projectConfig = await detectProjectConfig();
-  const localConfig = projectConfig ?? (await requireInit()).localConfig;
+  const localConfig = await scopeHere(options.global);
 
-  const file = getTeamSecretsPath(localConfig);
+  const { file } = valuesFile(localConfig, options.global);
+  const owner = options.global ? 'machine' : 'team';
   const store = await readSecretStore(file);
   if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
   if (!Object.hasOwn(store.values, key)) {
-    log.info(`${key} has no value set for this team. Nothing was changed.`);
+    log.info(`${key} has no value set for this ${owner}. Nothing was changed.`);
     return;
   }
   if (options.dryRun) {
-    log.info(`[dry-run] Would remove the team value of ${key} from ${file}`);
+    log.info(`[dry-run] Would remove the ${owner} value of ${key} from ${file}`);
     return;
   }
   const rest = { ...store.values };
   delete rest[key];
   await writeSecretStore(file, rest);
-  log.success(`Removed the team value of ${key} (${file}).`);
-  log.info('Run `teamai pull` to update MCP servers.');
+  log.success(`Removed the ${owner} value of ${key} (${file}).`);
+  if (localConfig) log.info('Run `teamai pull` to update MCP servers.');
+}
+
+/**
+ * This directory's scope. Outside any scope `env set --global` still has
+ * somewhere to write, so `global` turns "not initialized" into null.
+ */
+async function scopeHere(global: boolean | undefined): Promise<LocalConfig | null> {
+  const projectConfig = await detectProjectConfig();
+  if (projectConfig) return projectConfig;
+  try {
+    return (await requireInit()).localConfig;
+  } catch (e) {
+    if (global && e instanceof NotInitializedError) return null;
+    throw e;
+  }
+}
+
+/** The store `env set` / `env unset` write, and how their messages name it. Without a scope, only the machine's. */
+function valuesFile(localConfig: LocalConfig | null, global: boolean | undefined): { file: string; target: string } {
+  return localConfig && !global
+    ? { file: getTeamSecretsPath(localConfig), target: 'for this team' }
+    : { file: getMachineSecretsPath(), target: 'for every team on this machine' };
 }
 
 /** The entry `env set` stores: a `--from-env` reference, piped stdin, or the hidden prompt. */
