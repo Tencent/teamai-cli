@@ -9,6 +9,7 @@ import {
 } from './resources/secrets.js';
 import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, writeSecretStore, type StoredSecret } from './secret-store.js';
 import { askSecret, isInteractive, readStdin } from './utils/prompt.js';
+import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import {
   describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, resolveEntriesFor,
   type EntryLayout, type EntryType,
@@ -85,6 +86,8 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
       }
     }
     console.log('');
+    const missing = (await envAdvisories(localConfig, null)).filter((advisory) => advisory.kind === 'missing-secret');
+    for (const advisory of missing) log.warn(describeEnvAdvisory(advisory));
   }
 }
 

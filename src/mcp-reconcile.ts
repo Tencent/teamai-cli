@@ -529,6 +529,56 @@ export async function installedMcpEntries(target: McpTarget): Promise<Map<string
   return doc === null ? null : new Map(Object.entries(doc.servers));
 }
 
+/**
+ * The manifest of the servers teamai wrote for this scope. Project scope uses a
+ * PER-WORKTREE manifest under the partition (migrating this worktree's records
+ * out of any legacy shared file on first read, unless `dryRun`); user scope
+ * keeps the single global file. Either way a reconcile owns exactly one file.
+ */
+async function loadMcpManifest(
+  localConfig: LocalConfig,
+  dryRun: boolean | undefined,
+): Promise<{ manifestPath: string; manifest: ManagedMcpManifest }> {
+  const dataHome = getDataHome(localConfig);
+  if (localConfig.scope === 'project' && localConfig.projectRoot) {
+    return loadProjectMcpManifest(dataHome, localConfig.projectRoot, { dryRun });
+  }
+  const manifestPath = managedMcpManifestPath(dataHome);
+  return { manifestPath, manifest: await readManifest(manifestPath) };
+}
+
+/**
+ * The team servers whose entry an earlier pull wrote and a pull now keeps,
+ * because a declared secret has no value (#875), with the tools holding one.
+ * Read-only: for the note that such an entry may hold an old value.
+ */
+export async function keptMcpEntries(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<Map<string, string[]>> {
+  const kept = new Map<string, string[]>();
+  if (localConfig.repo.kind === 'http') return kept;
+  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  if (resolution.kind === 'failed' || resolution.entries.length === 0) return kept;
+  const teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  const targets = await resolveMcpTargets(teamConfig, localConfig);
+  if (targets.length === 0) return kept;
+  const ctx = await buildDesiredMcpContext(teamConfig, localConfig);
+  if (ctx.secrets.kind !== 'resolved') return kept;
+  const { manifest } = await loadMcpManifest(localConfig, true);
+
+  for (const target of targets) {
+    if (mcpTargetExcluded(localConfig, target)) continue;
+    const owned = new Set((manifest[managedMcpManifestKey(target.tool, target.projectScope)] ?? []).map((r) => r.name));
+    const installed = await installedMcpEntries(target);
+    for (const name of desiredMcpForTarget(target, teamDefs, ctx).kept) {
+      if (!owned.has(name) || !installed?.has(name)) continue;
+      kept.set(name, [...kept.get(name) ?? [], target.tool]);
+    }
+  }
+  return kept;
+}
+
 // ─── Main entry ──────────────────────────────────────────────
 
 export function mcpTargetExcluded(localConfig: LocalConfig, target: McpTarget): boolean {
@@ -579,19 +629,7 @@ export async function reconcileMcpForConfig(
   const targets = await resolveMcpTargets(teamConfig, localConfig);
   if (targets.length === 0) return { changes, wrote };
 
-  const dataHome = getDataHome(localConfig);
-  const projectScope = localConfig.scope === 'project';
-  // Project scope uses a PER-WORKTREE manifest under the partition (migrating this
-  // worktree's records out of any legacy shared file on first read); user scope
-  // keeps the single global file. Either way this reconcile owns exactly one file.
-  let manifestPath: string;
-  let manifest: ManagedMcpManifest;
-  if (projectScope && localConfig.projectRoot) {
-    ({ manifestPath, manifest } = await loadProjectMcpManifest(dataHome, localConfig.projectRoot, { dryRun: options.dryRun }));
-  } else {
-    manifestPath = managedMcpManifestPath(dataHome);
-    manifest = await readManifest(manifestPath);
-  }
+  const { manifestPath, manifest } = await loadMcpManifest(localConfig, options.dryRun);
 
   // An empty desired set still has to run: it is how servers dropped from
   // mcp.yaml get cleaned out of the tools we previously injected them into.

@@ -1,0 +1,216 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fse from 'fs-extra';
+import os from 'node:os';
+import path from 'node:path';
+
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  autoDetectInit: vi.fn(),
+  detectProjectConfig: vi.fn().mockResolvedValue(null),
+  loadLocalConfig: vi.fn(),
+  loadTeamConfig: vi.fn(),
+  requireInit: vi.fn(),
+}));
+
+vi.mock('../utils/logger.js', () => ({
+  log: {
+    debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(), persist: vi.fn(),
+  },
+  setStderrOnly: vi.fn(),
+}));
+
+import { autoDetectInit, loadLocalConfig, loadTeamConfig, requireInit } from '../config.js';
+import { doctor, type DoctorReport } from '../doctor.js';
+import { envList } from '../env-commands.js';
+import { mcpList } from '../mcp-cmd.js';
+import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
+import { log } from '../utils/logger.js';
+import { resetWarnOnce } from '../utils/warn-once.js';
+import type { LocalConfig, TeamaiConfig } from '../types.js';
+
+const GITHUB_LINE = 'github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (https://github.com/settings/tokens).';
+const GITHUB_SERVER = [
+  'servers:',
+  '  - name: github',
+  '    transport: http',
+  '    url: https://api.example.com/mcp/',
+  '    headers:',
+  '      Authorization: Bearer ${GITHUB_TOKEN}',
+].join('\n');
+const GITHUB_SECRET = 'secrets:\n  - key: GITHUB_TOKEN\n    url: https://github.com/settings/tokens\n';
+
+/**
+ * #875 (#879 S6): a declared secret with no value names the server that needs
+ * it and the command that fixes it, in `mcp list`, `env list` and `doctor`.
+ * Pull is covered in pull-env-advisories.test.ts.
+ */
+describe('a missing declared secret tells the member what to run', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let repoPath: string;
+  let localConfig: LocalConfig;
+  let teamConfig: TeamaiConfig;
+
+  const write = (relativePath: string, content: string): Promise<void> =>
+    fse.outputFile(path.join(repoPath, ...relativePath.split('/')), content);
+  const warned = (): string[] => vi.mocked(log.warn).mock.calls.map(([message]) => String(message));
+
+  async function doctorReport(): Promise<{ allPassed: boolean; report: DoctorReport }> {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const allPassed = await doctor({ json: true });
+      return { allPassed, report: JSON.parse(String(spy.mock.calls.at(-1)?.[0])) as DoctorReport };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  async function quietly(run: () => Promise<void>): Promise<void> {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await run();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  beforeEach(async () => {
+    resetWarnOnce();
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-env-advisories-'));
+    homeDir = path.join(tmpDir, 'home');
+    repoPath = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(path.join(homeDir, '.claude', 'skills'));
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('USERPROFILE', homeDir);
+    vi.stubEnv('GITHUB_TOKEN', undefined);
+    vi.stubEnv('GITLAB_TOKEN', undefined);
+    localConfig = { repo: { localPath: repoPath, remote: 'owner/repo' }, username: 'tester', scope: 'user', additionalRoles: [] };
+    teamConfig = {
+      team: 'test', description: '', repo: 'owner/repo', provider: 'git', reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: false } },
+      toolPaths: { claude: { skills: '.claude/skills', mcp: '.claude.json' } },
+    };
+    await write('teamai.yaml', 'team: test\n');
+    await write('mcp/mcp.yaml', GITHUB_SERVER);
+    await write('env/secrets.yaml', GITHUB_SECRET);
+    vi.mocked(loadLocalConfig).mockResolvedValue(localConfig);
+    vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
+    vi.mocked(autoDetectInit).mockResolvedValue({ localConfig, teamConfig });
+    vi.mocked(requireInit).mockResolvedValue({ localConfig, teamConfig });
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+    await fse.remove(tmpDir);
+  });
+
+  it('mcp list names the server, the key, the command and the url', async () => {
+    await quietly(() => mcpList({}));
+
+    expect(warned()).toContain(GITHUB_LINE);
+  });
+
+  it('env list prints the same line', async () => {
+    await quietly(() => envList({}));
+
+    expect(warned()).toContain(GITHUB_LINE);
+  });
+
+  it('names no server for a secret no MCP server uses, with no mcp.yaml and no url', async () => {
+    await fse.remove(path.join(repoPath, 'mcp'));
+    await write('env/secrets.yaml', 'secrets:\n  - key: GITLAB_TOKEN\n');
+
+    await quietly(() => envList({}));
+    await quietly(() => mcpList({}));
+    const { report } = await doctorReport();
+
+    const line = 'GITLAB_TOKEN is not set. Run `teamai env set GITLAB_TOKEN`.';
+    expect(warned().filter((message) => message === line)).toHaveLength(2);
+    expect(report.notes).toContain(line);
+  });
+
+  it('says nothing once the member set a value', async () => {
+    await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
+
+    await quietly(() => envList({}));
+    await quietly(() => mcpList({}));
+    const { report } = await doctorReport();
+
+    expect(warned().some((message) => message.includes('is not set'))).toBe(false);
+    expect(report.notes ?? []).not.toContain(GITHUB_LINE);
+  });
+
+  it('says nothing when the only value is the machine value', async () => {
+    await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'machine-token' } });
+
+    await quietly(() => envList({}));
+    await quietly(() => mcpList({}));
+    const { report } = await doctorReport();
+
+    expect(warned().some((message) => message.includes('is not set'))).toBe(false);
+    expect(report.notes ?? []).not.toContain(GITHUB_LINE);
+  });
+
+  it('doctor reports it as a note and exits as it would without the secret', async () => {
+    await write('mcp/mcp.yaml', 'servers: []\n');
+    await fse.remove(path.join(repoPath, 'env'));
+    const without = await doctorReport();
+
+    await write('mcp/mcp.yaml', GITHUB_SERVER);
+    await write('env/secrets.yaml', GITHUB_SECRET);
+    const withMissing = await doctorReport();
+
+    expect(withMissing.report.notes).toContain(GITHUB_LINE);
+    expect(withMissing.allPassed).toBe(without.allPassed);
+    expect(withMissing.report.ok).toBe(without.report.ok);
+    expect(withMissing.report.checks.filter((check) => !check.ok).map((check) => check.name))
+      .toEqual(without.report.checks.filter((check) => !check.ok).map((check) => check.name));
+  });
+
+  it('doctor still fails an unrelated MCP delivery problem next to it', async () => {
+    await write('mcp/mcp.yaml', `${GITHUB_SERVER}\n  - name: docs\n    transport: stdio\n    command: docs-server\n`);
+
+    const { report } = await doctorReport();
+
+    const mcp = report.checks.find((check) => check.name === 'MCP servers delivered to claude');
+    expect(mcp?.ok).toBe(false);
+    expect(mcp?.fix).toContain('not injected: docs');
+    expect(mcp?.fix).not.toContain('GITHUB_TOKEN');
+    expect(report.notes).toContain(GITHUB_LINE);
+  });
+
+  it('doctor notes that an entry kept for a missing secret may hold an old value', async () => {
+    await fse.writeJson(path.join(homeDir, '.claude.json'), {
+      mcpServers: { github: { type: 'http', url: 'https://api.example.com/mcp/', headers: { Authorization: 'Bearer old' } } },
+    });
+    await fse.outputJson(path.join(homeDir, '.teamai', 'managed-mcp.json'), { claude: [{ name: 'github', hash: 'h' }] });
+
+    const { report } = await doctorReport();
+
+    expect(report.notes).toContain(
+      'github: the entry an earlier pull wrote stays in claude and may hold an old GITHUB_TOKEN until a pull finds its value.',
+    );
+    expect(JSON.stringify(report)).not.toContain('Bearer old');
+  });
+
+  it('doctor does not call an entry teamai never wrote a kept one', async () => {
+    await fse.writeJson(path.join(homeDir, '.claude.json'), { mcpServers: { github: { type: 'http', url: 'https://mine/' } } });
+
+    const { report } = await doctorReport();
+
+    expect((report.notes ?? []).some((note) => note.includes('earlier pull'))).toBe(false);
+  });
+
+  it('doctor notes a key declared as a secret and also set in env.yaml', async () => {
+    await write('env/env.yaml', 'variables:\n  - key: GITHUB_TOKEN\n    value: repo-token\n');
+
+    const { report } = await doctorReport();
+
+    expect(report.notes).toContain(
+      'GITHUB_TOKEN is a team secret and is also set in env/env.yaml, whose value is ignored. '
+        + 'Remove it from env/env.yaml and run `teamai push`.',
+    );
+    expect(JSON.stringify(report)).not.toContain('repo-token');
+  });
+});

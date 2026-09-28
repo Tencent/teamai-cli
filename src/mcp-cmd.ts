@@ -9,8 +9,9 @@ import {
   type McpChange,
 } from './mcp-reconcile.js';
 import { referencedVars } from './resources/mcp-format.js';
+import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { log } from './utils/logger.js';
-import type { GlobalOptions } from './types.js';
+import type { GlobalOptions, LocalConfig } from './types.js';
 import { managedMcpManifestPath, managedMcpManifestKey, getDataHome } from './types.js';
 import { readJson } from './utils/fs.js';
 import type { ManagedMcpManifest } from './types.js';
@@ -35,6 +36,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
 
   if (servers.length === 0) {
     log.info('No team MCP servers reach this directory (mcp/mcp.yaml and active mcp/<ns>/mcp.yaml files are absent or empty)');
+    await reportMissingSecrets(localConfig);
     return;
   }
 
@@ -80,6 +82,14 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   } else {
     for (const t of targets) console.log(`  ${t.tool.padEnd(16)} ${displayPath(t.file)}`);
   }
+  await reportMissingSecrets(localConfig);
+}
+
+/** A declared secret with no value, and the command that sets it (#875). */
+async function reportMissingSecrets(localConfig: LocalConfig): Promise<void> {
+  const missing = (await envAdvisories(localConfig, null)).filter((advisory) => advisory.kind === 'missing-secret');
+  if (missing.length > 0) console.log('');
+  for (const advisory of missing) log.warn(describeEnvAdvisory(advisory));
 }
 
 function reportChanges(changes: McpChange[]): void {

@@ -458,9 +458,11 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
   for (const target of targets) {
     if (mcpTargetExcluded(localConfig, target)) continue;
 
-    const { desired, skipped } = desiredMcpForTarget(target, teamDefs, desiredContext);
+    const { desired, skipped, kept } = desiredMcpForTarget(target, teamDefs, desiredContext);
+    // A server skipped only for a missing declared secret (#875) is a note
+    // doctor prints with the command that fixes it, not a failed delivery.
     const blocked = skipped
-      .filter((change) => !excludedByUser.has(change.server))
+      .filter((change) => !excludedByUser.has(change.server) && !kept.has(change.server))
       .map((change) => `${change.server} (${change.reason ?? 'skipped'})`);
 
     const problems: string[] = [];

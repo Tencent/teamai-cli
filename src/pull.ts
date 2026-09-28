@@ -50,6 +50,7 @@ import { reportEntryResolution, resolveEntries } from './namespaced-entries.js';
 import { resetWarnOnce } from './utils/warn-once.js';
 import { envEntryReader, type EnvVariable } from './resources/env.js';
 import { declaredSecretKeys, resolveSecretDeclarations } from './resources/secrets.js';
+import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
@@ -2006,6 +2007,11 @@ export async function pull(
   // hooks. User-scope MCP remains isolated in project mode.
   await reconcileMcpAllScopes(reconcileUser, reconcileProject, options);
 
+  // 3.6b. What the member should run for a team secret with no value (#875).
+  // Not on the silent session-start pull: its output is discarded, and it runs
+  // on every session.
+  if (!options.silent) await reportEnvAdvisories(reconcileUser, reconcileProject);
+
   // 3.7. Reconcile the team co-author policy (does an AI tool stamp a
   // Co-Authored-By / attribution trailer on its commits?). Outside pullForScope
   // for the same reason as hooks/MCP; write-only, so it self-heals but never
@@ -2308,6 +2314,24 @@ async function reconcileMcpAllScopes(
       }
     } catch (e) {
       log.debug(`[${localConfig.scope}] MCP reconcile skipped: ${(e as Error).message}`);
+    }
+  }
+}
+
+/**
+ * Print each scope's env advisories (env-advisories.ts): a declared secret with
+ * no value and the command that sets it, an MCP entry kept for it, a key both
+ * declared as a secret and set in env.yaml. After the MCP reconcile, so a kept
+ * entry is the one this pull left.
+ */
+async function reportEnvAdvisories(userConfig: LocalConfig | null, projectConfig: LocalConfig | null): Promise<void> {
+  const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
+  for (const localConfig of scopes) {
+    try {
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      for (const advisory of await envAdvisories(localConfig, teamConfig)) log.warn(describeEnvAdvisory(advisory));
+    } catch (e) {
+      log.debug(`[${localConfig.scope}] Env advisories skipped: ${(e as Error).message}`);
     }
   }
 }
