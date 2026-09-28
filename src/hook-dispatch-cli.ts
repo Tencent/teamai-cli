@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { Readable } from 'node:stream';
 
 import { resolveCliEntry } from './builtin-hooks.js';
 import { captureTail } from './utils/exec.js';
@@ -46,17 +47,27 @@ const STDIN_READ_TIMEOUT_MS = 1_000;
  * for EOF. Returns empty string if STDIN is a TTY. On timeout, returns whatever
  * chunks were already received (typically the full payload minus a missing EOF).
  */
-async function readStdin(): Promise<string> {
-  if (process.stdin.isTTY) return '';
+export async function readStdin(
+  stream: Readable & { readonly isTTY?: boolean } = process.stdin,
+  timeoutMs = STDIN_READ_TIMEOUT_MS,
+): Promise<string> {
+  if (stream.isTTY) return '';
   const chunks: Buffer[] = [];
   const readAll = (async () => {
-    for await (const chunk of process.stdin) {
+    for await (const chunk of stream) {
       chunks.push(chunk as Buffer);
     }
   })();
+  // The timeout path destroys the stream below. Attach a handler now so a late
+  // iterator rejection cannot become an unhandled rejection after the race.
+  void readAll.catch(() => {});
   let timer: NodeJS.Timeout | undefined;
+  let timedOut = false;
   const deadline = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, STDIN_READ_TIMEOUT_MS);
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolve();
+    }, timeoutMs);
     // Don't let this timer itself keep the event loop alive.
     timer.unref();
   });
@@ -65,8 +76,9 @@ async function readStdin(): Promise<string> {
   } finally {
     if (timer) clearTimeout(timer);
   }
-  // Swallow late read errors/rejections so an aborted read can't crash the hook.
-  readAll.catch(() => {});
+  // A pending async iterator keeps the pipe handle alive even after the hook
+  // has continued. Closing it releases the process when the host never sends EOF.
+  if (timedOut && !stream.destroyed) stream.destroy();
   return Buffer.concat(chunks).toString('utf-8');
 }
 

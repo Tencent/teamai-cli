@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 
 const { mockSpawn, mockDispatcher } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
@@ -19,9 +20,20 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: mockSpawn,
 }));
 
-const { parseStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli } =
+const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli } =
   await import('../hook-dispatch-cli.js');
 const { log } = await import('../utils/logger.js');
+
+describe('readStdin', () => {
+  it('closes a pipe after the EOF timeout so the hook process can exit', async () => {
+    const stdin = new PassThrough();
+    const pending = readStdin(stdin, 100);
+    stdin.write('{"session_id":"open-pipe"}');
+
+    await expect(pending).resolves.toBe('{"session_id":"open-pipe"}');
+    expect(stdin.destroyed).toBe(true);
+  });
+});
 
 describe('deriveDispatchSessionId', () => {
   it('keeps a Copilot background fallback ID free of workspace paths', () => {
