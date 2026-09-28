@@ -167,7 +167,14 @@ export function getLocalValuesPath(): string {
   return path.join(getTeamaiHomeDir(), 'models', 'values.json');
 }
 
-export function getTeamValuesPath(localConfig: LocalConfig): string {
+/**
+ * This team's values file in `storeDir`, named `<team>-<hash>.json` from the
+ * team repository's identity. Defaults to the model key store.
+ */
+export function getTeamValuesPath(
+  localConfig: LocalConfig,
+  storeDir = path.join(getTeamaiHomeDir(), 'models', 'teams'),
+): string {
   // Team inputs may contain credentials. Keep them under the user home even
   // when project scope places dataHome inside a Git workspace.
   const remote = localConfig.repo.remote;
@@ -193,7 +200,7 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 40)
     .replace(/-+$/g, '') || 'team';
-  return path.join(getTeamaiHomeDir(), 'models', 'teams', `${slug}-${digest.slice(0, 10)}.json`);
+  return path.join(storeDir, `${slug}-${digest.slice(0, 10)}.json`);
 }
 
 /** Stable identity of the team repository, recorded with `team:` switches. */

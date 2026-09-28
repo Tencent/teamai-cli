@@ -3,7 +3,7 @@ import { autoDetectInit } from './config.js';
 import { describeEntryFailure, describeOrigin, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { askQuestion, askSecret, isInteractive } from './utils/prompt.js';
+import { askQuestion, askSecret, isInteractive, readStdin } from './utils/prompt.js';
 import type { LocalConfig } from './types.js';
 import {
   API_KEY_PLACEHOLDER,
@@ -113,9 +113,7 @@ function parseProtocols(value: string | undefined): ModelProtocol[] {
 
 async function readSecretStdin(): Promise<string> {
   if (process.stdin.isTTY) throw new Error('--api-key-stdin expects piped stdin');
-  let value = '';
-  for await (const chunk of process.stdin) value += String(chunk);
-  value = value.replace(/[\r\n]+$/, '');
+  const value = await readStdin();
   if (!value) throw new Error('No API key was provided on stdin');
   return value;
 }
