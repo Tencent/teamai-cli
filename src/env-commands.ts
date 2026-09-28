@@ -5,7 +5,7 @@ import { log, spinner } from './utils/logger.js';
 import { EnvHandler, maskEnvValue, ENV_KEY_RE, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
 import {
   SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, resolveSecretValues, secretState,
-  writeSecretsFile,
+  unknownSecretDeclarationKeys, writeSecretsFile,
 } from './resources/secrets.js';
 import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, writeSecretStore, type StoredSecret } from './secret-store.js';
 import { askSecret, isInteractive, readStdin } from './utils/prompt.js';
@@ -359,6 +359,16 @@ async function declareSecret(
   };
   if (isUpdate) secrets[index] = declaration;
   else secrets.push(declaration);
+  // The update keeps an unknown key, so the secret stays undeclared.
+  const unknown = unknownSecretDeclarationKeys(declaration);
+  if (unknown.length > 0) {
+    const one = unknown.length === 1;
+    log.warn(
+      `${target.relativePath}: secret "${key}" has unknown ${one ? 'key' : 'keys'} `
+        + `${unknown.map((k) => `\`${k}:\``).join(', ')}, so it is not declared. `
+        + `Correct the ${one ? 'key' : 'keys'} or remove ${one ? 'it' : 'them'} in ${target.relativePath}.`,
+    );
+  }
 
   if (options.dryRun) {
     log.info(`[dry-run] Would ${isUpdate ? 'update' : 'declare'} secret${target.where}: ${key}`);

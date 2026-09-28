@@ -851,6 +851,24 @@ scope: 'user',
         { key: 'NPM_TOKEN', owner: 'infra' },
       ]);
       expect(log.success).toHaveBeenCalledWith('Updated secret: GITHUB_TOKEN');
+      expect(log.warn).not.toHaveBeenCalled();
+    });
+
+    it('updating a secret with an unknown key warns that it is still not declared, without printing a value', async () => {
+      await fse.outputFile(rootSecrets(), YAML.stringify({
+        secrets: [{ key: 'GITHUB_TOKEN', value: 'ghp_do_not_print', owner: 'infra' }],
+      }));
+
+      await envAdd('GITHUB_TOKEN', undefined, { secret: true, description: 'new' });
+
+      expect(await secretsIn(rootSecrets())).toEqual([
+        { key: 'GITHUB_TOKEN', value: 'ghp_do_not_print', owner: 'infra', description: 'new' },
+      ]);
+      expect(log.warn).toHaveBeenCalledWith(
+        'env/secrets.yaml: secret "GITHUB_TOKEN" has unknown keys `value:`, `owner:`, so it is not declared. '
+          + 'Correct the keys or remove them in env/secrets.yaml.',
+      );
+      expect(logged()).not.toContain('ghp_do_not_print');
     });
 
     it('writes nothing on dry-run', async () => {

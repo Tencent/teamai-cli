@@ -35,6 +35,11 @@ const SecretsYamlSchema = z.object({
 
 export type SecretDeclaration = z.infer<typeof SecretDeclarationSchema>;
 
+/** The keys `declaration` was written with that secrets.yaml does not know: that secret is not declared. */
+export function unknownSecretDeclarationKeys(declaration: object): string[] {
+  return Object.keys(declaration).filter((key) => !Object.hasOwn(SecretDeclarationSchema.shape, key));
+}
+
 /** `env/secrets.yaml` and `env/<ns>/secrets.yaml`, active through `resources.env`. */
 export const SECRETS_LAYOUT: EntryLayout = {
   ...entryLayout('env'),
