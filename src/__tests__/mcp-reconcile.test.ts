@@ -1057,6 +1057,57 @@ servers:
       expect(await mode(userFile)).toBe(0o644);
     });
 
+    it('tightens a 0644 config whose managed entry holds a resolved value, though nothing changed', async () => {
+      await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
+      await writeMcpYaml(SECRET_SERVER);
+      // Twice: the second pull pads the Codex block it appended last with a blank line.
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      const files = [path.join(homeDir, '.claude.json'), path.join(homeDir, '.codex', 'config.toml')];
+      const contents: string[] = [];
+      for (const file of files) {
+        await fse.chmod(file, 0o644);
+        contents.push(await fse.readFile(file, 'utf-8'));
+      }
+
+      await reconcileMcpForConfig(teamConfig, localConfig, { dryRun: true });
+      for (const file of files) expect(await mode(file)).toBe(0o644);
+
+      const { wrote, changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect(changes).toEqual([]);
+      expect(wrote).toBe(false);
+      for (const [i, file] of files.entries()) {
+        expect(await fse.readFile(file, 'utf-8')).toBe(contents[i]);
+        expect(await mode(file)).toBe(0o600);
+      }
+    });
+
+    it('tightens a 0644 config whose kept entry holds an earlier resolved value', async () => {
+      await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: SECRET_TOKEN\n');
+      await writeMcpYaml(SECRET_SERVER);
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      const userFile = path.join(homeDir, '.claude.json');
+      await fse.chmod(userFile, 0o644);
+      vi.stubEnv('SECRET_TOKEN', undefined);
+
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect((await fse.readJson(userFile)).mcpServers['with-secret']).toBeDefined();
+      expect(await mode(userFile)).toBe(0o600);
+    });
+
+    it('keeps the mode of an unchanged config whose servers hold no resolved value', async () => {
+      await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      const userFile = path.join(homeDir, '.claude.json');
+      await fse.chmod(userFile, 0o644);
+
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect(await mode(userFile)).toBe(0o644);
+    });
+
     it('never lets the Codex config temp file be wider than 0600, and names it at random', async () => {
       await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
       await writeMcpYaml(`${SECRET_SERVER}    tools: [codex]\n`);

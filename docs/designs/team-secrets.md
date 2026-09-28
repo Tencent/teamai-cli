@@ -140,7 +140,7 @@ the member's value for this team   teamai env set KEY [--from-env VAR]
 
 **Not bound to a host.** A secret reaches whatever server `mcp.yaml` names, as `${VAR}` always has. Unlike model profile keys, it is not tied to a gateway, so whoever can change `mcp.yaml` or add a namespace decides where members' tokens go. Whoever can push to the team repo already ships hooks that run on every member's machine.
 
-**Still reachable.** The resolved value is written in plaintext to each tool's MCP config, as before. A config that holds a resolved `${VAR}` value is written `0600`, an existing wider one (`.mcp.json` is often `0644`) included; one without such a value keeps its mode, and a new one is created `0600`. A command run under `env exec` gets it in its environment, and so does every process it starts: an agent that runs `teamai env exec -- env` can read it. The agent skills forbid that, but nothing enforces it. This keeps secrets out of git, not away from the member's machine or the agent running on it.
+**Still reachable.** The resolved value is written in plaintext to each tool's MCP config, as before. A config that holds a resolved `${VAR}` value is written `0600`, an existing wider one (`.mcp.json` is often `0644`) included, and a pull that changes nothing in it still tightens it to `0600` without rewriting it; one without such a value keeps its mode, and a new one is created `0600`. A command run under `env exec` gets it in its environment, and so does every process it starts: an agent that runs `teamai env exec -- env` can read it. The agent skills forbid that, but nothing enforces it. This keeps secrets out of git, not away from the member's machine or the agent running on it.
 
 ## A missing secret keeps the MCP entry
 

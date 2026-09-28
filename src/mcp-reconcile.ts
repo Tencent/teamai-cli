@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import type {
   LocalConfig,
@@ -744,7 +745,11 @@ async function applyJson(
     changes.push({ tool: target.tool, server: name, action: 'removed' });
   }
 
-  if (!dirty || options.dryRun) return false;
+  if (options.dryRun) return false;
+  if (!dirty) {
+    if (holdsResolvedValue) await tightenMode(target.file);
+    return false;
+  }
 
   // Key-level surgery: every unrelated top-level key is carried over untouched.
   // Some tools (OpenCode) key the server map under `mcp`, not `mcpServers`;
@@ -767,8 +772,9 @@ async function applyCodex(
   let source = (await readFileSafe(target.file)) ?? '';
   const present = new Set(codexServerNames(source));
   let dirty = false;
+  let holdsResolvedValue = false;
 
-  for (const [name, { hash, block }] of desired) {
+  for (const [name, { hash, block, resolvedValue }] of desired) {
     if (present.has(name) && !ownedNames.has(name) && !options.force) {
       changes.push({
         tool: target.tool,
@@ -779,6 +785,7 @@ async function applyCodex(
       continue;
     }
     nextRecords.push({ name, hash });
+    holdsResolvedValue ||= resolvedValue;
     const next = spliceCodexBlock(source, name, block!);
     if (next === source) continue;
     source = next;
@@ -791,6 +798,7 @@ async function applyCodex(
     const kept = keep.get(name);
     if (kept && present.has(name)) {
       nextRecords.push(kept);
+      holdsResolvedValue = true;
       continue;
     }
     const next = spliceCodexBlock(source, name, null);
@@ -801,10 +809,24 @@ async function applyCodex(
     changes.push({ tool: target.tool, server: name, action: 'removed' });
   }
 
-  if (!dirty || options.dryRun) return false;
+  if (options.dryRun) return false;
+  if (!dirty) {
+    if (holdsResolvedValue) await tightenMode(target.file);
+    return false;
+  }
 
   await writeCodexAtomic(target.file, source);
   return true;
+}
+
+/**
+ * Make an unchanged config readable by this user only, without rewriting it:
+ * an entry a CLI before #879 wrote holds its resolved value in a file that may
+ * still be 0644.
+ */
+async function tightenMode(file: string): Promise<void> {
+  const { mode } = await fs.promises.stat(file);
+  if ((mode & 0o077) !== 0) await fs.promises.chmod(file, 0o600);
 }
 
 /** Write a Codex config.toml atomically, readable by this user only: it may hold resolved values. */
