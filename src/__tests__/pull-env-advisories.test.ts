@@ -18,7 +18,9 @@ vi.mock('../config.js', async (importOriginal) => ({
   saveStateForScope: vi.fn(),
 }));
 
-vi.mock('../utils/git.js', () => ({
+vi.mock('../utils/git.js', async (importOriginal) => ({
+  // The team secrets file is named by the normalized team repo URL.
+  normalizeRepoUrlForCompare: (await importOriginal<typeof import('../utils/git.js')>()).normalizeRepoUrlForCompare,
   getHeadRev: vi.fn().mockResolvedValue('abc1234'),
   pullRepo: vi.fn().mockResolvedValue('already up to date'),
 }));
