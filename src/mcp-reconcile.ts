@@ -32,6 +32,7 @@ import {
 } from './resources/mcp-format.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
 import { envEntryReader } from './resources/env.js';
+import { resolveSecretDeclarations, type SecretDeclarations } from './resources/secrets.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import { reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import {
@@ -87,8 +88,9 @@ export interface McpReconcileResult {
   /** True when any file was actually written. */
   wrote: boolean;
   /**
-   * Set when the team's servers could not be resolved (a file that does not
-   * parse, a name twice): nothing was changed, and the reason was reported.
+   * Set when the team's servers, or the secrets they may need, could not be
+   * resolved (a file that does not parse, a name twice): nothing was changed,
+   * and the reason was reported.
    */
   unresolved?: true;
 }
@@ -369,6 +371,8 @@ export interface DesiredMcpContext {
   sharing: ReturnType<typeof getMcpSharing>;
   excluded: Set<string>;
   vars: Record<string, string>;
+  /** Which `${VAR}` names are declared secrets, whose missing value keeps an entry (#875). */
+  secrets: SecretDeclarations;
   lookPath?: McpReconcileOptions['lookPath'];
 }
 
@@ -381,6 +385,8 @@ export async function buildDesiredMcpContext(
     sharing: getMcpSharing(teamConfig),
     excluded: new Set(localConfig.excludedSkills ?? []),
     vars: await buildVarTable(localConfig),
+    // HTTP mode has no repo tree to declare secrets in.
+    secrets: localConfig.repo.kind === 'http' ? { kind: 'absent' } : await resolveSecretDeclarations(localConfig),
     lookPath: options.lookPath,
   };
 }
@@ -393,14 +399,21 @@ export async function buildDesiredMcpContext(
  * the filters (#624). A second copy of them is how an MCP server ends up
  * skipped for `unresolved variable(s)` during one pull and reported as
  * correctly delivered forever after.
+ *
+ * `kept` names the skipped servers whose only missing variables are declared
+ * secrets (#875): the session-start pull inherits the agent's environment, so
+ * a secret that lives in the member's shell is there for one pull and gone for
+ * the next, and an entry an earlier pull wrote stays as it is.
  */
 export function desiredMcpForTarget(
   target: McpTarget,
   teamDefs: McpServerDef[],
   ctx: DesiredMcpContext,
-): { desired: Map<string, DesiredMcpEntry>; skipped: McpChange[] } {
+): { desired: Map<string, DesiredMcpEntry>; skipped: McpChange[]; kept: Set<string> } {
   const desired = new Map<string, DesiredMcpEntry>();
   const skipped: McpChange[] = [];
+  const kept = new Set<string>();
+  const declared = new Set(ctx.secrets.kind === 'resolved' ? ctx.secrets.entries.map((secret) => secret.name) : []);
 
   for (const raw of teamDefs) {
     if (raw.tools && !raw.tools.includes(target.tool)) continue;
@@ -444,6 +457,7 @@ export function desiredMcpForTarget(
           action: 'skipped',
           reason: `unresolved variable(s): ${missing.join(', ')}`,
         });
+        if (missing.every((key) => declared.has(key))) kept.add(raw.name);
         continue;
       }
       def = resolved;
@@ -460,7 +474,7 @@ export function desiredMcpForTarget(
     }
   }
 
-  return { desired, skipped };
+  return { desired, skipped, kept };
 }
 
 /**
@@ -559,6 +573,14 @@ export async function reconcileMcpForConfig(
   if (teamDefs.length === 0 && nothingOwned) return { changes, wrote };
 
   const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, options);
+  // A failed declaration is not "no secrets": read as none, every server whose
+  // secret the member left in their shell would be removed. Keep what is
+  // installed rather than guess which variables are secrets. `removeAll`
+  // (mcp remove, uninstall) still removes everything.
+  if (!removeAll && desiredContext.secrets.kind === 'failed') {
+    reportEntryResolution(desiredContext.secrets);
+    return { changes, wrote, unresolved: true };
+  }
 
   for (const target of targets) {
     // Same enabledAgents / disabledAgents gate as the other resource syncs. The
@@ -571,13 +593,15 @@ export async function reconcileMcpForConfig(
     const nextRecords: ManagedMcpRecord[] = [];
 
     // Which of this team's servers apply to this tool, and in what rendered form.
-    const { desired, skipped } = desiredMcpForTarget(target, teamDefs, desiredContext);
+    const { desired, skipped, kept } = desiredMcpForTarget(target, teamDefs, desiredContext);
     changes.push(...skipped);
+    // Their old records, so a manifest this run writes still claims them.
+    const keep = new Map(owned.filter((r) => kept.has(r.name)).map((r) => [r.name, r]));
 
     if (target.format === 'codex') {
-      wrote = await applyCodex(target, desired, ownedNames, nextRecords, changes, options) || wrote;
+      wrote = await applyCodex(target, desired, keep, ownedNames, nextRecords, changes, options) || wrote;
     } else {
-      wrote = await applyJson(target, desired, owned, ownedNames, nextRecords, changes, options) || wrote;
+      wrote = await applyJson(target, desired, keep, owned, ownedNames, nextRecords, changes, options) || wrote;
     }
 
     if (nextRecords.length > 0) manifest[manifestKey] = nextRecords;
@@ -595,6 +619,7 @@ export async function reconcileMcpForConfig(
 async function applyJson(
   target: McpTarget,
   desired: Map<string, { entry: unknown; hash: string }>,
+  keep: Map<string, ManagedMcpRecord>,
   owned: ManagedMcpRecord[],
   ownedNames: Set<string>,
   nextRecords: ManagedMcpRecord[],
@@ -632,6 +657,11 @@ async function applyJson(
 
   for (const name of ownedNames) {
     if (desired.has(name)) continue;
+    const kept = keep.get(name);
+    if (kept && doc.servers[name] !== undefined) {
+      nextRecords.push(kept);
+      continue;
+    }
     if (doc.servers[name] !== undefined) {
       delete doc.servers[name];
       dirty = true;
@@ -652,6 +682,7 @@ async function applyJson(
 async function applyCodex(
   target: McpTarget,
   desired: Map<string, { entry: unknown; hash: string; block?: string }>,
+  keep: Map<string, ManagedMcpRecord>,
   ownedNames: Set<string>,
   nextRecords: ManagedMcpRecord[],
   changes: McpChange[],
@@ -681,6 +712,11 @@ async function applyCodex(
 
   for (const name of ownedNames) {
     if (desired.has(name)) continue;
+    const kept = keep.get(name);
+    if (kept && present.has(name)) {
+      nextRecords.push(kept);
+      continue;
+    }
     const next = spliceCodexBlock(source, name, null);
     if (next !== source) {
       source = next;
