@@ -719,10 +719,12 @@ envCmd
 envCmd
   .command('exec <command...>')
   .description("Run a command with this directory's team env variables and secrets (put -- before the command)")
-  .action(async (command: string[]) => {
+  .action(async () => {
     const globalOpts = program.opts() as GlobalOptions;
     const { envExec, exitLike } = await import('./env-exec.js');
-    exitLike(await envExec(command, globalOpts));
+    // What was typed after `exec`, `--` included: Commander drops it.
+    const argv = process.argv.slice(2);
+    exitLike(await envExec(argv.slice(argv.indexOf('exec', argv.indexOf('env')) + 1), globalOpts));
   });
 
 // ─── Hooks commands ─────────────────────────────────────

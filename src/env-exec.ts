@@ -26,10 +26,20 @@ export type ExecOutcome =
 
 const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
-export async function envExec(command: readonly string[], options: GlobalOptions, cwd = process.cwd()): Promise<ExecOutcome> {
+/**
+ * Run the command in `words`, what was typed after `exec`: teamai's own
+ * options, then `--`, then the command. Without `--`, a flag of the command
+ * (`gh pr list --dry-run`) would be read as teamai's, so it is refused.
+ */
+export async function envExec(words: readonly string[], options: GlobalOptions, cwd = process.cwd()): Promise<ExecOutcome> {
   // Before the scope lookup, which can print (a role migration, for one).
   setStderrOnly(true);
-  const [file, ...args] = command;
+  const separator = words.indexOf('--');
+  if (separator === -1 || !words.slice(0, separator).every((word) => word.startsWith('-'))) {
+    log.error('Put -- before the command: teamai env exec -- <command>');
+    return { kind: 'exited', code: 2 };
+  }
+  const [file, ...args] = words.slice(separator + 1);
   if (!file) {
     log.error('No command to run. Usage: teamai env exec -- <command> [args...]');
     return { kind: 'exited', code: 2 };

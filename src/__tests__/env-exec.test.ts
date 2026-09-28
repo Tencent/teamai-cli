@@ -71,7 +71,7 @@ describe('teamai env exec', () => {
   }
 
   async function exec(cwd: string, script = DUMP, args: string[] = [out]): ReturnType<typeof envExec> {
-    return envExec([process.execPath, '-e', script, ...args], {}, cwd);
+    return envExec(['--', process.execPath, '-e', script, ...args], {}, cwd);
   }
 
   async function childEnv(cwd: string): Promise<Record<string, string>> {
@@ -256,6 +256,22 @@ describe('teamai env exec', () => {
     expect(stdout).toEqual([]);
   });
 
+  // Without `--`, a flag of the command (`gh pr list --dry-run`) would be read as teamai's.
+  it('rejects a command without -- before it, with exit code 2, and runs nothing', async () => {
+    const marker = path.join(tmpDir, 'ran');
+    const outcome = await envExec([process.execPath, '-e', `require("fs").writeFileSync(${JSON.stringify(marker)}, "")`, '--dry-run'], {}, tmpDir);
+
+    expect(outcome).toEqual({ kind: 'exited', code: 2 });
+    expect(text(stderr)).toContain('Put -- before the command: teamai env exec -- <command>');
+    expect(await fse.pathExists(marker)).toBe(false);
+  });
+
+  it('accepts teamai options before --, and passes everything after it to the command', async () => {
+    const outcome = await envExec(['--verbose', '--', process.execPath, '-e', 'process.exit(process.argv[1] === "--dry-run" ? 4 : 5)', '--', '--dry-run'], {}, tmpDir);
+
+    expect(outcome).toEqual({ kind: 'exited', code: 4 });
+  });
+
   it('passes the exit code and the signal through', async () => {
     const nowhere = path.join(tmpDir, 'nowhere');
     await fse.ensureDir(nowhere);
@@ -269,7 +285,7 @@ describe('teamai env exec', () => {
     const nowhere = path.join(tmpDir, 'nowhere');
     await fse.ensureDir(nowhere);
 
-    expect(await envExec(['teamai-no-such-command-875'], {}, nowhere)).toEqual({ kind: 'exited', code: 127 });
+    expect(await envExec(['--', 'teamai-no-such-command-875'], {}, nowhere)).toEqual({ kind: 'exited', code: 127 });
     expect(text(stderr)).toContain('teamai-no-such-command-875');
   });
 
