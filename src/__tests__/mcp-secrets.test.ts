@@ -40,11 +40,11 @@ describe('MCP servers and declared secrets', () => {
   let homeDir: string;
   let repoPath: string;
   let localConfig: LocalConfig;
-  const teamConfig = {
+  const teamConfig: TeamaiConfig = {
     team: 't', description: '', repo: 'r', provider: 'tgit', reviewers: [],
     sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '~/.teamai/docs' }, env: { injectShellProfile: false } },
     toolPaths: { claude: { skills: '.claude/skills', settings: '.claude/settings.json', mcp: '.claude.json', mcpProject: '.mcp.json' } },
-  } as unknown as TeamaiConfig;
+  };
 
   const write = (relativePath: string, content: string): Promise<void> =>
     fse.outputFile(path.join(repoPath, ...relativePath.split('/')), content);
@@ -65,7 +65,7 @@ describe('MCP servers and declared secrets', () => {
     vi.stubEnv('HOME', homeDir);
     vi.stubEnv('USERPROFILE', homeDir);
     vi.stubEnv('GITHUB_TOKEN', undefined);
-    localConfig = { repo: { localPath: repoPath, remote: 'r' }, username: 'u', scope: 'user', additionalRoles: [] } as unknown as LocalConfig;
+    localConfig = { repo: { localPath: repoPath, remote: 'r' }, username: 'u', scope: 'user', additionalRoles: [] };
     await write('mcp/mcp.yaml', [
       'servers:',
       '  - name: github',

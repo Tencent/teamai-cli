@@ -44,9 +44,11 @@ describe('teamai env exec', () => {
   }
 
   async function userScope(repoPath: string, extra: Partial<LocalConfig> = {}): Promise<LocalConfig> {
-    const config = { repo: { localPath: repoPath, remote: 'https://example.com/user.git' }, username: 't', scope: 'user', additionalRoles: [], ...extra };
+    const config: LocalConfig = {
+      repo: { localPath: repoPath, remote: 'https://example.com/user.git' }, username: 't', scope: 'user', additionalRoles: [], ...extra,
+    };
     await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), YAML.stringify(config));
-    return config as LocalConfig;
+    return config;
   }
 
   /** A git project with a linked worktree, set up as a teamai project in its partition. */
@@ -62,12 +64,12 @@ describe('teamai env exec', () => {
     const anchors = await resolveAnchors(root);
     if (!anchors) throw new Error('no git anchors for the fixture project');
     const partition = projectDataHome(anchors.projectAnchor);
-    const config = {
+    const config: LocalConfig = {
       repo: { localPath: repoPath, remote: 'https://example.com/work.git' }, username: 't', scope: 'project',
       projectRoot: root, additionalRoles: [],
     };
     await fse.outputFile(path.join(partition, 'config.yaml'), YAML.stringify(config));
-    return { root, worktree, config: config as LocalConfig, partition };
+    return { root, worktree, config, partition };
   }
 
   async function exec(cwd: string, script = DUMP, args: string[] = [out]): ReturnType<typeof envExec> {
