@@ -595,11 +595,12 @@ async function pushGroup(args: {
     }
 
     // Create branch, commit, and push.
-    // Only include "sweeper" directories (rules/, env/) that actually
-    // exist — otherwise `git add 'rules/'` throws `pathspec did not match
-    // any files` and the whole push aborts (BUG #1). A team may not have
-    // rules/ or env/ yet.
-    const sweeperCandidates = ['rules/', 'env/', '.codebuddy-plugin/'];
+    // Only include "sweeper" directories (rules/) that actually exist —
+    // otherwise `git add 'rules/'` throws `pathspec did not match any files`
+    // and the whole push aborts (BUG #1). A team may not have rules/ yet.
+    // env/ is not swept: each env item is its own file in pushedFiles, and a
+    // sweep would publish the env edits the user left out of the selection (#881).
+    const sweeperCandidates = ['rules/', '.codebuddy-plugin/'];
     const existingSweepers = await filterExistingTopLevelPaths(
       localConfig.repo.localPath,
       sweeperCandidates,
@@ -1675,12 +1676,18 @@ async function pushCore(
     if (pendingTeamConfig !== null && groupIndex < configGroupIndex) {
       await writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), pendingTeamConfig);
     }
-    // A group that pushed a branch committed the env edits through the env/
-    // sweeper, so they are no longer pending. Any other group may have reset
-    // and cleaned the clone on the way out (the rollback, or pushRepoBranch's
-    // no-change path), taking them with it.
-    if (outcome === 'pushed' || outcome === 'pr-failed') pendingEnvFiles.clear();
-    else await restorePendingEnvFiles();
+    // A group that pushed a branch carries its own env files, so those are no
+    // longer pending. Any other group may have reset and cleaned the clone on
+    // the way out (the rollback, or pushRepoBranch's no-change path), taking
+    // the edits with it. A failure can also leave the clone on the group's
+    // local branch, where an unpushed commit holds them: go back to the default
+    // branch first, where the next run finds them again.
+    if (outcome === 'pushed' || outcome === 'pr-failed') {
+      for (const item of group.items) pendingEnvFiles.delete(item.relativePath);
+    } else {
+      if (outcome === 'failed' && pendingEnvFiles.size > 0) await checkoutMaster(localConfig.repo.localPath);
+      await restorePendingEnvFiles();
+    }
     if (outcome === 'failed') {
       // The branch/PR for earlier groups is already on the remote, so their
       // records must survive this failure or the next run would duplicate them.

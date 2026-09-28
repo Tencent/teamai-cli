@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { simpleGit } from 'simple-git';
+import { askSelection } from '../utils/prompt.js';
 
 // Regression for #881: `env add` edits env/env.yaml in a standalone team clone
 // without committing and leaves the commit to `push`. The #690 dirty-clone
@@ -50,10 +51,11 @@ async function initTeamRepos(root: string): Promise<{ teamRepo: string; remote: 
   const teamRepo = path.join(root, 'team-repo');
   await simpleGit().init(['--bare', '--initial-branch=main', remote]);
 
-  fs.mkdirSync(path.join(seed, 'env'), { recursive: true });
+  fs.mkdirSync(path.join(seed, 'env', 'team'), { recursive: true });
   fs.writeFileSync(path.join(seed, 'teamai.yaml'), 'version: 1\n');
   fs.writeFileSync(path.join(seed, 'README.md'), '# team\n');
   fs.writeFileSync(path.join(seed, 'env', 'env.yaml'), 'variables:\n  - key: TEAM_VAR\n    value: first\n');
+  fs.writeFileSync(path.join(seed, 'env', 'team', 'env.yaml'), 'variables:\n  - key: TEAM_ONLY\n    value: first\n');
   const seedGit = simpleGit(seed);
   await seedGit.init();
   await seedGit.addConfig('user.email', 't@t.com');
@@ -189,6 +191,52 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(process.exitCode).toBe(1);
     expect(stderrOutput()).toContain('Push failed');
     expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: changed');
+  });
+
+  it('pushes only the selected env file and keeps the deselected edit in the clone', async () => {
+    const { push } = await import('../push.js');
+    const git = simpleGit(teamRepo);
+    const rootEnv = path.join(teamRepo, 'env', 'env.yaml');
+    const teamEnv = path.join(teamRepo, 'env', 'team', 'env.yaml');
+    fs.writeFileSync(rootEnv, fs.readFileSync(rootEnv, 'utf8').replace('value: first', 'value: selected'));
+    fs.writeFileSync(teamEnv, fs.readFileSync(teamEnv, 'utf8').replace('value: first', 'value: deselected'));
+    // Entry files list the root first: 1. env.yaml, 2. team/env.yaml.
+    vi.mocked(askSelection).mockResolvedValueOnce([0]);
+
+    await push({});
+
+    const [branch] = await pushBranches(remote);
+    expect(branch).toBeDefined();
+    expect(await simpleGit(remote).show([`${branch}:env/env.yaml`])).toContain('value: selected');
+    expect(await simpleGit(remote).show([`${branch}:env/team/env.yaml`])).toContain('value: first');
+    expect(fs.readFileSync(teamEnv, 'utf8')).toContain('value: deselected');
+    expect(await git.raw(['status', '--porcelain'])).toContain('env/team/env.yaml');
+  });
+
+  it('keeps the env.yaml edit on the default branch when git push fails after the commit, and retries it', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    const git = simpleGit(teamRepo);
+    const hook = path.join(remote, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\necho rejected >&2\nexit 1\n', { mode: 0o755 });
+    await envAdd('TEAM_VAR', 'changed', {});
+
+    await push({ all: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(stderrOutput()).toContain('Push failed');
+    expect((await git.revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe('main');
+    expect(await git.raw(['status', '--porcelain'])).toContain('env/env.yaml');
+    expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: changed');
+
+    fs.rmSync(hook);
+    process.exitCode = previousExitCode;
+    // A generated name could repeat the failed run's, which is still a local branch.
+    await push({ all: true, branch: 'teamai/retry' });
+
+    const [branch] = await pushBranches(remote);
+    expect(branch).toBeDefined();
+    expect(await simpleGit(remote).show([`${branch}:env/env.yaml`])).toContain('value: changed');
   });
 
   it('still refuses a deleted env.yaml', async () => {
