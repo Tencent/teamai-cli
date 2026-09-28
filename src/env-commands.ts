@@ -3,7 +3,7 @@ import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler, maskEnvValue, ENV_KEY_RE, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
-import { describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
+import { describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, moveTo, reportEntryResolution, resolveEntriesFor, TargetFiles } from './namespaced-entries.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { isSelfMode } from './types.js';
 
@@ -112,11 +112,18 @@ export async function envAdd(
     if (updated.projects !== undefined) removed.push('projects');
     if (updated.roles !== undefined) removed.push('roles');
     if (removed.length > 0) {
-      const one = removed.length === 1;
+      // The remediation has to name the namespace file, as pull's notice does:
+      // dropping a root-scoped key where it sits would deliver the secret to
+      // everyone — the outcome the per-entry key was scoping against.
+      const targets = new TargetFiles(repoPath, 'env');
+      const files: string[] = [];
+      for (const key of removed) {
+        files.push(...await targets.forIds(key as 'roles' | 'projects', updated[key as 'roles' | 'projects'] ?? []));
+      }
       log.warn(
         `${relativePath}: variable "${key}" is scoped with per-entry `
           + `${removed.map((k) => `\`${k}:\``).join(' and ')}, which this version no longer reads, `
-          + `so pull does not deliver it. Remove ${one ? 'it' : 'them'} in ${relativePath}.`,
+          + `so pull does not deliver it. ${moveTo(files)}`,
       );
     }
   } else {

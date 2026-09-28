@@ -423,19 +423,24 @@ async function keepScopedEntry(
   return roles === null || scope.roles.some((role) => roles.includes(role));
 }
 
-function moveTo(files: string[]): string {
+/**
+ * Where an entry carrying a removed per-entry key belongs: the namespace files
+ * its listed ids declare, or the removal. Shared with the write path (`env
+ * add`), whose remediation has to name the same file — telling a user to drop
+ * a root-scoped key where it sits would deliver the value to the whole team.
+ */
+export function moveTo(files: readonly string[]): string {
   if (files.length === 0) return 'It lists no id: remove it, or move it to the namespace file it is meant for.';
   if (files.length === 1) return `Move it to ${files[0]} and drop the key.`;
   return `Copy it into each of ${files.join(', ')} and drop the key.`;
 }
-
 /**
  * The namespace files an id's entries belong in: the namespaces its role or
  * project declares for the type, or `<type>/<id>/` with the declaration to add
  * when it declares none. The manifests are read at most once, and only when an
  * entry carries a per-entry key.
  */
-class TargetFiles {
+export class TargetFiles {
   private roles: ReturnType<typeof loadRolesManifestIfPresent> | null = null;
   private projects: ReturnType<typeof loadProjectsManifest> | null = null;
 

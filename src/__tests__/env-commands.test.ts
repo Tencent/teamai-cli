@@ -319,7 +319,7 @@ scope: 'user',
       });
     });
 
-    it('says an updated variable it cannot deliver is undelivered (#822)', async () => {
+    it('says an updated variable it cannot deliver is undelivered, naming the namespace file to move it to (#822)', async () => {
       // `roles:` on env is no longer read, so this update reaches nobody —
       // "Updated" alone would read as success.
       await fse.writeFile(
@@ -331,11 +331,57 @@ scope: 'user',
 
       await envAdd('DB_URL', 'new', {});
 
+      // The remedy has to name the namespace file, as pull's notice does:
+      // dropping the key in env/env.yaml would deliver the secret to everyone.
+      // No role or project declares `legacy`, so the notice says which
+      // declaration makes env/legacy/env.yaml reach it.
       expect(log.warn).toHaveBeenCalledWith(
         'env/env.yaml: variable "DB_URL" is scoped with per-entry `roles:`, which this version no longer reads, '
-          + 'so pull does not deliver it. Remove it in env/env.yaml.',
+          + 'so pull does not deliver it. Move it to env/legacy/env.yaml (declare env: [legacy] for role legacy '
+          + 'in manifest/roles.yaml) and drop the key.',
       );
       expect(log.success).toHaveBeenCalledWith('Updated env variable: DB_URL=new');
+    });
+
+    // A role that declares the namespace names the file alone, as pull does.
+    it('names the declared namespace file an updated variable belongs in (#822)', async () => {
+      await fse.outputFile(path.join(repoPath, 'manifest', 'roles.yaml'), YAML.stringify({
+        version: 1,
+        roles: [{ id: 'legacy', description: '', resources: { knowledge: [], skills: [], env: ['legacy'] } }],
+      }));
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [{ key: 'DB_URL', value: 'old', roles: ['legacy'] }],
+        }),
+      );
+
+      await envAdd('DB_URL', 'new', {});
+
+      expect(log.warn).toHaveBeenCalledWith(
+        'env/env.yaml: variable "DB_URL" is scoped with per-entry `roles:`, which this version no longer reads, '
+          + 'so pull does not deliver it. Move it to env/legacy/env.yaml and drop the key.',
+      );
+      expect(log.success).toHaveBeenCalledWith('Updated env variable: DB_URL=new');
+    });
+
+    // The same guidance pull gives when no role or project declares the id:
+    // the namespace file the entry belongs in, with the declaration to add.
+    it('names the namespace file to declare when no role declares the removed key\'s id (#822)', async () => {      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [{ key: 'DB_URL', value: 'old', projects: ['checkout'], roles: ['legacy'] }],
+        }),
+      );
+
+      await envAdd('DB_URL', 'new', {});
+
+      expect(log.warn).toHaveBeenCalledWith(
+        'env/env.yaml: variable "DB_URL" is scoped with per-entry `projects:` and `roles:`, which this version '
+          + 'no longer reads, so pull does not deliver it. Copy it into each of env/checkout/env.yaml (declare env: '
+          + '[checkout] for project checkout in manifest/projects.yaml), env/legacy/env.yaml (declare env: [legacy] '
+          + 'for role legacy in manifest/roles.yaml) and drop the key.',
+      );
     });
 
     // A variable with a misspelled `roles:` reaches nobody (#822); a rewrite
