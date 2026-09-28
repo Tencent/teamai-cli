@@ -8,6 +8,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 
 import { envExec, exitLike, inTerminalForeground } from '../env-exec.js';
+import { envShMarker } from '../env-sh-exports.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore, type SecretStore } from '../secret-store.js';
 import { resolveAnchors } from '../utils/git.js';
 import { _resetState, _setLogFilePath, setStderrOnly } from '../utils/logger.js';
@@ -250,6 +251,26 @@ describe('teamai env exec', () => {
     expect(env.GITHUB_TOKEN).toBe('fixture-exported');
     expect(text(stderr)).toContain('env/secrets.yaml');
     expect(text(stderr)).toContain('The command runs with the inherited environment, without team env variables or secrets.');
+  });
+
+  it('removes what a teamai env.sh exported while the declarations fail, keeps the member\'s own exports, and names the keys', async () => {
+    const { repoPath } = await team('personal', { 'env/secrets.yaml': 'secrets: [not yaml\n' });
+    await userScope(repoPath);
+    await fse.outputFile(path.join(home, '.teamai', 'env.sh'), "export GITHUB_TOKEN='fixture-repo-token'\nexport SENTRY_TOKEN='fixture-repo-sentry'\n");
+    const [marker, digests] = envShMarker(path.join(tmpDir, 'unscanned', '.teamai'), [['GITLAB_TOKEN', 'fixture-marked']]) ?? [];
+    if (!marker || !digests) throw new Error('no marker for the fixture export');
+    vi.stubEnv(marker, digests);
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-repo-token');
+    vi.stubEnv('GITLAB_TOKEN', 'fixture-marked');
+    vi.stubEnv('SENTRY_TOKEN', 'fixture-hand-export');
+
+    const env = await childEnv(home);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.GITLAB_TOKEN).toBeUndefined();
+    expect(env.SENTRY_TOKEN).toBe('fixture-hand-export');
+    expect(text(stderr)).toContain('without GITHUB_TOKEN, GITLAB_TOKEN, whose values a teamai env.sh exported.');
+    expect(text(stderr)).not.toMatch(/fixture-(repo|marked|hand)/);
   });
 
   it('keeps a legacy env.yaml value of a key that may be a secret from the command while the declarations fail', async () => {

@@ -156,16 +156,21 @@ function inheritedEnvironment(): NodeJS.ProcessEnv {
  * names another variable. A key that is also an env.yaml variable resolves as
  * a secret. A variable takes the member's value for this team, else the
  * team's, as in MCP; the inherited value never overrides it (#875). While the
- * declarations fail, nothing is overlaid.
+ * declarations fail, nothing is overlaid, and every inherited value that is
+ * not the member's own (member-env.ts) is removed.
  */
 async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessEnv> {
   const env = inheritedEnvironment();
   const teamEnv = await resolveTeamEnv(localConfig);
   const { variables, declarations, variableValues, secrets } = teamEnv;
   if (declarations.kind === 'failed') {
-    // Any env.yaml key may be a secret the file declares, so no team value is applied (#879 Conflict 14).
+    // Any env.yaml key may be a secret the file declares, so no team value is applied (#879 Conflict 14),
+    // and one a teamai env.sh exported is a team value, not the member's: it is removed.
     const failures = [variables, declarations].flatMap((entries) => entries.kind === 'failed' ? [describeEntryFailure(entries.failure)] : []);
-    log.warn(`${failures.join(' ')} The command runs with the inherited environment, without team env variables or secrets.`);
+    const removed = Object.keys(env).filter((key) => env[key] !== '' && teamEnv.member(key) === undefined);
+    for (const key of removed) delete env[key];
+    const without = removed.length > 0 ? `, and without ${removed.join(', ')}, whose values a teamai env.sh exported` : '';
+    log.warn(`${failures.join(' ')} The command runs with the inherited environment, without team env variables or secrets${without}.`);
     return env;
   }
   if (variables.kind === 'failed') {
