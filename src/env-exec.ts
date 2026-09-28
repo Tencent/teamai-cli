@@ -25,7 +25,14 @@ export type ExecOutcome =
   | { readonly kind: 'exited'; readonly code: number }
   | { readonly kind: 'signaled'; readonly signal: NodeJS.Signals };
 
-const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+/** Signals sent to teamai alone, which the command gets only if teamai passes them on. */
+const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGHUP'];
+/**
+ * A terminal sends Ctrl-C and Ctrl-\ to its whole foreground process group, so
+ * the command has them already; passing them on would send a second, which
+ * tools such as terraform take as "force quit". teamai ignores them and waits.
+ */
+const TERMINAL_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT'];
 
 /**
  * Run the command in `words`, what was typed after `exec`: teamai's own
@@ -140,20 +147,24 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
 }
 
 /**
- * Run the command with the terminal's stdio. A signal teamai receives is
- * passed on, and teamai waits for the command to end rather than exit first.
+ * Run the command with the terminal's stdio. A signal sent to teamai alone is
+ * passed on, one from the terminal is not, and either way teamai waits for
+ * the command to end rather than exit first.
  */
 function run(file: string, args: readonly string[], env: NodeJS.ProcessEnv, cwd: string): Promise<ExecOutcome> {
   return new Promise((resolve) => {
     // cross-spawn: on Windows, npm installs CLIs as .cmd shims spawn can't start.
     const child = crossSpawn(file, [...args], { cwd, env, stdio: 'inherit' });
     const forward = (signal: NodeJS.Signals): void => { child.kill(signal); };
+    const ignore = (): void => {};
     for (const signal of FORWARDED_SIGNALS) process.on(signal, forward);
+    for (const signal of TERMINAL_SIGNALS) process.on(signal, ignore);
     let settled = false;
     const settle = (outcome: ExecOutcome): void => {
       if (settled) return;
       settled = true;
       for (const signal of FORWARDED_SIGNALS) process.off(signal, forward);
+      for (const signal of TERMINAL_SIGNALS) process.off(signal, ignore);
       resolve(outcome);
     };
     child.on('error', (e) => {
