@@ -6,7 +6,7 @@ Proposal: [#875](https://github.com/Tencent/teamai-cli/issues/875). Plan: [#879]
 
 A team declares which secrets its members need, in the team repo, with no value. Each member supplies the value on their own machine. No secret value is written to the team repo.
 
-This document grows with the implementation and describes only what the current version does. Today that is declaring secrets, a member's value for each team or for every team on the machine, `${VAR}` in MCP servers, keeping an MCP entry when a pull can't find a declared secret, and telling the member what to run for it. `env exec` comes later.
+This document grows with the implementation and describes only what the current version does. Today that is declaring secrets, a member's value for each team or for every team on the machine, `${VAR}` in MCP servers, keeping an MCP entry when a pull can't find a declared secret, telling the member what to run for it, and running a CLI with the team's env and secrets through `teamai env exec`.
 
 ## Declaring secrets
 
@@ -23,7 +23,7 @@ secrets:
 
 - `key` is required and must be a shell variable name (letters, digits and underscores, not starting with a digit).
 - An entry with any other key, `value:` included, is not declared, and `pull` and `teamai doctor` name the file, the secret and the key. A value does not belong in this file.
-- A file that does not parse, that has no top-level `secrets:` key, or that defines a key twice is never read as "no secrets": the secrets are not resolved this run, and `env.sh`, the env backup and the MCP servers keep what they had, as for an `env.yaml` that cannot be used. `pull` warns, `env list` exits non-zero, and `teamai doctor` fails the `Team secrets can be resolved` check, each naming the file and the fix.
+- A file that does not parse, that has no top-level `secrets:` key, or that defines a key twice is never read as "no secrets": the secrets are not resolved this run, and `env.sh`, the env backup and the MCP servers keep what they had, as for an `env.yaml` that cannot be used; `env exec` applies no secrets. `pull` warns, `env list` exits non-zero, and `teamai doctor` fails the `Team secrets can be resolved` check, each naming the file and the fix.
 - An empty file or `secrets: []` declares none.
 
 It is a separate file so a member on an older CLI, which reads only `env.yaml`, ignores it, and an older `teamai env add` or `env remove`, which rewrite `env.yaml`, cannot drop it.
@@ -102,13 +102,13 @@ teamai env unset GITHUB_TOKEN [--global]
 
 ## Resolution
 
-`${VAR}` in `mcp/mcp.yaml` resolves a declared secret in this order:
+`${VAR}` in `mcp/mcp.yaml` and [`env exec`](#running-a-cli-with-env-exec) resolve a declared secret in this order:
 
 ```text
 the member's value for this team     teamai env set KEY [--from-env VAR]
 > the member's value for the machine teamai env set KEY --global
 > the member's own environment       not a value a teamai env.sh exported
-> missing                            the server is skipped
+> missing                            the server is skipped; env exec runs the command without it
 ```
 
 A team value wins over the environment because it is an explicit choice for that team: otherwise a personal `GITHUB_TOKEN` exported in `.zshrc` would override the token a member set for their work team. A machine value suits a token the member uses with every team; a team that needs another account sets its own value, which wins. Variables that are not declared as secrets resolve as before.
@@ -119,7 +119,7 @@ A team value wins over the environment because it is an explicit choice for that
 
 **Not bound to a host.** A secret reaches whatever server `mcp.yaml` names, as `${VAR}` always has. Unlike model profile keys, it is not tied to a gateway, so whoever can change `mcp.yaml` or add a namespace decides where members' tokens go. Whoever can push to the team repo already ships hooks that run on every member's machine.
 
-**Still reachable.** The resolved value is written in plaintext to each tool's MCP config, as before (new files are created `0600`).
+**Still reachable.** The resolved value is written in plaintext to each tool's MCP config, as before (new files are created `0600`). A command run under `env exec` gets it in its environment, and so does every process it starts: an agent that runs `teamai env exec -- env` can read it. The agent skills forbid that, but nothing enforces it. This keeps secrets out of git, not away from the member's machine or the agent running on it.
 
 ## A missing secret keeps the MCP entry
 
@@ -136,7 +136,7 @@ While the declarations fail, `pull` and `teamai mcp inject` change no MCP server
 
 ## A missing secret tells the member what to run
 
-An interactive `pull`, `teamai mcp list`, `teamai env list` and `teamai doctor` print one line for each declared secret with no value: the MCP servers that use it, if any, the command that sets it, and the declared `url`.
+An interactive `pull`, `teamai mcp list`, `teamai env list`, `teamai doctor` and `teamai env exec` (on stderr) print one line for each declared secret with no value: the MCP servers that use it, if any, the command that sets it, and the declared `url`.
 
 ```text
 github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (https://github.com/settings/tokens).
@@ -149,6 +149,26 @@ GITLAB_TOKEN is not set. Run `teamai env set GITLAB_TOKEN`.
 - `pull` and `doctor` also say when an entry is kept and may hold an old value (`github: the entry an earlier pull wrote stays in claude and may hold an old GITHUB_TOKEN until a pull finds its value.`), and warn about a key declared as a secret and also set in `env.yaml`, whose value is ignored, naming the file to remove it from.
 - A secret stored with `--from-env` whose variable is unset reads as missing too.
 - When the declarations or the member's value file can't be read, no line is printed: the command reports that failure instead.
+
+## Running a CLI with `env exec`
+
+A CLI such as `gh`, `glab` or one the company ships reads its token from its environment. `teamai env exec` runs it with this directory's team env:
+
+```text
+teamai env exec -- gh pr create
+teamai env exec -- glab mr list     GITLAB_HOST from env.yaml and GITLAB_TOKEN from the member, for this directory's team
+```
+
+- **Scope.** The directory's scope: the project teamai is set up for there, found through git, so every worktree of a project resolves to that project, else the user scope.
+- **Environment.** The command inherits teamai's environment, overlaid with the scope's `env.yaml` variables (a scope variable wins over an inherited one), then with its secrets in the [resolution order](#resolution). A key declared as a secret that has no value for this scope is removed from the command's environment, so the command never sees a value `teamai env list` doesn't show for this scope: another team's export, or the member's own export when this team's value names another variable with `--from-env`.
+- **Missing secret.** The [line](#a-missing-secret-tells-the-member-what-to-run) goes to stderr, and the command runs anyway: `gh` and `glab` can still use their own login.
+- **Failures.** When the declarations fail, the variables are applied and no secret is; when `env.yaml` fails, the secrets are applied and no variable is; when the value file can't be read, every declared key is removed. Each says so on stderr. A project config that exists but can't be read is named on stderr, and the command runs with the inherited environment: it is not taken for "no scope", nor for the user scope.
+- **No scope.** With no project or user config, the command runs with the inherited environment and a notice on stderr. Machine values are not applied there, since no team declares which keys the command needs. An HTTP team repo delivers no env here either.
+- **Output.** Everything teamai prints goes to stderr, so the command's stdout can be piped. The exit code is the command's; a command ended by a signal ends teamai with the same signal, and a signal teamai receives is passed on. A command that can't be started exits 127.
+- **Nothing written.** No value is written to disk or to `debug.log`. Finding the scope does what every command that finds one does: it may adopt a project partition, save the user scope's role migration, or set up a freshly cloned single-repo project; none of these writes a value.
+- **Inherited as is, with three exceptions.** Without a terminal (every agent), teamai sets `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo` and `GCM_INTERACTIVE=never` where they are unset, so a git child never waits for a credential prompt. The command inherits them.
+- **Not for agents.** A variable or secret named like one a model profile writes (`ANTHROPIC_*`) overrides that profile for the command. `env exec` is for CLIs, not for starting an agent.
+- Put `--` before the command: without it, teamai reads the command's own options as its own.
 
 ## Rotation
 

@@ -998,6 +998,19 @@ teamai env unset GITHUB_TOKEN [--global]
 `pull` 会警告，`teamai doctor` 的检查失败并指出该文件。`teamai push` 会带上任何密钥文件的改动。
 见[团队密钥](designs/team-secrets.zh-CN.md)。
 
+`gh`、`glab` 等 CLI 在 `teamai env exec` 下运行时，会拿到当前目录的变量和密钥；它对项目的每个 worktree
+都以同样的方式找到 scope：
+
+```bash
+teamai env exec -- gh pr create
+teamai env exec -- glab mr list
+```
+
+命令继承你的环境，并叠加该 scope 的 `env.yaml` 变量和按上述顺序解析的密钥；在该 scope 下没有值的已声明密钥
+会从中移除。缺少密钥时，会在 stderr 上打印 `teamai env set` 那一行提示，命令照常运行。teamai 打印的所有内容
+都输出到 stderr，退出码就是命令的退出码。这里没有 teamai 配置时，命令以你的环境运行，并给出提示。
+不会把任何值写入磁盘。见[用 `env exec` 运行 CLI](designs/team-secrets.zh-CN.md#用-env-exec-运行-cli)。
+
 不再下发到该目录的变量会在下一次 pull 时从 `env.sh` 中移除，即使这次 pull 因团队仓库
 未变化而提示 `Already synced` 也一样。在那次 pull 之前，`teamai doctor` 会报告
 `env.sh` 中仍在导出的这类变量，前一个项目的密钥不会悄无声息地继续生效。
@@ -1099,7 +1112,7 @@ TeamAI 不会迁移或删除旧文件。Claude Code 也读取根目录的 `.mcp.
 
 Copilot 使用原生 `mcpServers` 结构：`stdio` 写成 `type: "local"`，远程传输保留 `http` 或 `sse`，每个 TeamAI 管理的条目都会带上必需的 `tools: ["*"]` 允许列表。TeamAI 遵循 `COPILOT_HOME`，项目配置使用 Copilot CLI 官方文档指定的 `.github/mcp.json` 仓库路径。详见 [GitHub Copilot CLI 添加 MCP Server](https://docs.github.com/zh/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)。Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式。Kiro 在专用的、只含 `mcpServers` 的 `.kiro/settings/mcp.json` 中使用同一格式（见 [Kiro MCP 配置文档](https://kiro.dev/docs/mcp/configuration/)）。OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）与 `http`（`type:"remote"`），`sse` 会被跳过，其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
 
-**密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。团队在 `env/secrets.yaml` 中声明的 key 优先取你为该团队设置的值（`teamai env set`），其次取你为本机设置的值（`teamai env set --global`），再次取你自己的环境，不包括 teamai `env.sh` 导出的值（见[团队密钥](designs/team-secrets.zh-CN.md#解析顺序)）。其他变量优先来自环境变量，其次是该目录收到的团队环境变量（`env/env.yaml` 与活动的 `env/<ns>/env.yaml`）。变量无法解析则跳过并提示。已声明的密钥不同：pull 找不到它时，之前某次 pull 写入的条目原样保留，因此里面可能是已经轮换掉的旧值，直到某次 pull 找到新值（见[团队密钥](designs/team-secrets.zh-CN.md#缺少密钥时保留-mcp-条目)）。交互式 `pull`、`teamai mcp list`、`teamai env list` 和 `teamai doctor` 会指出没有值的已声明密钥、用到它的 server 以及设置它的命令：`` github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (<url>). ``
+**密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。团队在 `env/secrets.yaml` 中声明的 key 优先取你为该团队设置的值（`teamai env set`），其次取你为本机设置的值（`teamai env set --global`），再次取你自己的环境，不包括 teamai `env.sh` 导出的值（见[团队密钥](designs/team-secrets.zh-CN.md#解析顺序)）。其他变量优先来自环境变量，其次是该目录收到的团队环境变量（`env/env.yaml` 与活动的 `env/<ns>/env.yaml`）。变量无法解析则跳过并提示。已声明的密钥不同：pull 找不到它时，之前某次 pull 写入的条目原样保留，因此里面可能是已经轮换掉的旧值，直到某次 pull 找到新值（见[团队密钥](designs/team-secrets.zh-CN.md#缺少密钥时保留-mcp-条目)）。交互式 `pull`、`teamai mcp list`、`teamai env list`、`teamai doctor` 和 `teamai env exec` 会指出没有值的已声明密钥、用到它的 server 以及设置它的命令：`` github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (<url>). ``
 
 teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配置文件（新建文件权限为 `0600`）。它不依赖任何工具自身的环境变量展开——因为那种展开很脆弱：最典型的是，以 GUI 方式（Dock/Launchpad）启动的 IDE 不会继承你 shell 中 `export` 的变量，`${VAR}` 占位符会展开为空、导致服务端 401。解析成明文可以保证无论工具如何启动，token 都在。
 

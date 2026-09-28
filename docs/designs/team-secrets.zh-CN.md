@@ -6,7 +6,7 @@
 
 团队在团队仓库中声明成员需要哪些密钥，但不写值。每个成员在自己的机器上提供值。密钥的值不会写入团队仓库。
 
-本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队或为本机所有团队设置的值、MCP server 中的 `${VAR}`，pull 找不到已声明的密钥时保留 MCP 条目，以及告诉成员该运行什么命令。`env exec` 会在后续版本加入。
+本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队或为本机所有团队设置的值、MCP server 中的 `${VAR}`，pull 找不到已声明的密钥时保留 MCP 条目，告诉成员该运行什么命令，以及通过 `teamai env exec` 用团队的 env 和密钥运行 CLI。
 
 ## 声明密钥
 
@@ -23,7 +23,7 @@ secrets:
 
 - `key` 必填，且必须是 shell 变量名（字母、数字和下划线，不以数字开头）。
 - 条目带有其他任何键（包括 `value:`）时不会被声明，`pull` 和 `teamai doctor` 会指出文件、密钥和该键。值不应该写在这个文件里。
-- 文件无法解析、没有顶层 `secrets:` 键，或同一个 key 定义了两次时，绝不会被当作"没有密钥"：本次不解析密钥，`env.sh`、env 备份和 MCP server 保持原样，与 `env.yaml` 无法使用时相同。`pull` 会警告，`env list` 以非零状态退出，`teamai doctor` 的 `Team secrets can be resolved` 检查失败，三者都会指出文件和修复方法。
+- 文件无法解析、没有顶层 `secrets:` 键，或同一个 key 定义了两次时，绝不会被当作"没有密钥"：本次不解析密钥，`env.sh`、env 备份和 MCP server 保持原样，与 `env.yaml` 无法使用时相同；`env exec` 不应用任何密钥。`pull` 会警告，`env list` 以非零状态退出，`teamai doctor` 的 `Team secrets can be resolved` 检查失败，三者都会指出文件和修复方法。
 - 空文件或 `secrets: []` 表示没有声明任何密钥。
 
 使用单独的文件，是为了让旧版 CLI（只读取 `env.yaml`）忽略它，旧版的 `teamai env add` 或 `env remove`（会重写 `env.yaml`）也不会把它丢掉。
@@ -102,13 +102,13 @@ teamai env unset GITHUB_TOKEN [--global]
 
 ## 解析顺序
 
-`mcp/mcp.yaml` 中的 `${VAR}` 按以下顺序解析已声明的密钥：
+`mcp/mcp.yaml` 中的 `${VAR}` 和 [`env exec`](#用-env-exec-运行-cli) 按以下顺序解析已声明的密钥：
 
 ```text
 成员为该团队设置的值          teamai env set KEY [--from-env VAR]
 > 成员为本机设置的值          teamai env set KEY --global
 > 成员自己的环境              不包括 teamai env.sh 导出的值
-> missing                     跳过该 server
+> missing                     跳过该 server；env exec 不带它运行命令
 ```
 
 团队值优先于环境，因为它是针对该团队的明确选择：否则 `.zshrc` 中导出的个人 `GITHUB_TOKEN` 会覆盖成员为工作团队设置的 token。本机值适合成员在所有团队中都使用的 token；需要另一个账号的团队设置自己的值，该值优先。未声明为密钥的变量按原有方式解析。
@@ -119,7 +119,7 @@ teamai env unset GITHUB_TOKEN [--global]
 
 **不绑定主机。** 密钥会发往 `mcp.yaml` 中指定的任何 server，与 `${VAR}` 一贯的行为相同。与模型配置的密钥不同，它不绑定网关，因此能修改 `mcp.yaml` 或添加 namespace 的人决定成员的 token 发往哪里。能推送到团队仓库的人本来就能下发在每个成员机器上运行的 hooks。
 
-**仍可访问。** 解析后的值仍以明文写入各工具的 MCP 配置（新文件以 `0600` 创建）。
+**仍可访问。** 解析后的值仍以明文写入各工具的 MCP 配置（新文件以 `0600` 创建）。在 `env exec` 下运行的命令会在环境变量中拿到它，它启动的每个进程也一样：agent 运行 `teamai env exec -- env` 就能读到。agent skill 禁止这样做，但没有任何机制强制。这让密钥不进入 git，而不是让它远离成员的机器或在上面运行的 agent。
 
 ## 缺少密钥时保留 MCP 条目
 
@@ -136,7 +136,7 @@ teamai env unset GITHUB_TOKEN [--global]
 
 ## 缺少密钥时告诉成员该运行什么
 
-交互式 `pull`、`teamai mcp list`、`teamai env list` 和 `teamai doctor` 会为每个没有值的已声明密钥打印一行：用到它的 MCP server（如果有）、设置它的命令，以及声明中的 `url`。
+交互式 `pull`、`teamai mcp list`、`teamai env list`、`teamai doctor` 和 `teamai env exec`（输出到 stderr）会为每个没有值的已声明密钥打印一行：用到它的 MCP server（如果有）、设置它的命令，以及声明中的 `url`。
 
 ```text
 github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (https://github.com/settings/tokens).
@@ -149,6 +149,26 @@ GITLAB_TOKEN is not set. Run `teamai env set GITLAB_TOKEN`.
 - `pull` 和 `doctor` 还会在条目被保留、可能含有旧值时说明（`github: the entry an earlier pull wrote stays in claude and may hold an old GITHUB_TOKEN until a pull finds its value.`），并在某个 key 既声明为密钥、又在 `env.yaml` 中设置时发出警告：该值被忽略，并指出应从哪个文件删除它。
 - 用 `--from-env` 保存、但对应变量未设置的密钥同样视为缺失。
 - 声明或成员的值文件无法读取时不打印这一行：命令会改为报告该失败。
+
+## 用 `env exec` 运行 CLI
+
+`gh`、`glab` 或公司发布的 CLI 从自己的环境变量读取 token。`teamai env exec` 用当前目录的团队 env 运行它：
+
+```text
+teamai env exec -- gh pr create
+teamai env exec -- glab mr list     GITLAB_HOST 来自 env.yaml，GITLAB_TOKEN 来自成员，都按当前目录的团队
+```
+
+- **Scope。** 当前目录的 scope：teamai 在此处配置的项目（通过 git 查找，因此项目的每个 worktree 都解析到该项目），否则是用户 scope。
+- **环境。** 命令继承 teamai 的环境，先叠加该 scope 的 `env.yaml` 变量（scope 变量覆盖继承的同名变量），再按[解析顺序](#解析顺序)叠加它的密钥。声明为密钥、但在该 scope 下没有值的 key 会从命令的环境中移除，因此命令永远拿不到 `teamai env list` 不会显示为该 scope 的值：另一个团队导出的值，或者该团队的值用 `--from-env` 指向另一个变量时成员自己导出的值。
+- **缺少密钥。** 那一[行提示](#缺少密钥时告诉成员该运行什么)输出到 stderr，命令照常运行：`gh` 和 `glab` 仍可以使用它们自己的登录。
+- **失败。** 声明失败时，只应用变量，不应用任何密钥；`env.yaml` 失败时，只应用密钥，不应用任何变量；值文件无法读取时，移除所有已声明的 key。每种情况都会在 stderr 上说明。项目配置存在但无法读取时，会在 stderr 上指出该文件，并以继承的环境运行命令：既不当作"没有 scope"，也不回退到用户 scope。
+- **没有 scope。** 既没有项目配置也没有用户配置时，命令以继承的环境运行，并在 stderr 上给出提示。这里不应用本机值，因为没有团队声明命令需要哪些 key。HTTP 团队仓库在这里同样不提供 env。
+- **输出。** teamai 打印的所有内容都输出到 stderr，因此命令的 stdout 可以直接接管道。退出码就是命令的退出码；命令被信号终止时，teamai 以同一信号结束，teamai 收到的信号会转发给命令。无法启动的命令以 127 退出。
+- **不写入值。** 不会把任何值写入磁盘或 `debug.log`。查找 scope 的行为与其他查找 scope 的命令相同：可能接管项目分区、保存用户 scope 的角色迁移，或为刚克隆的单仓项目完成配置；这些写入都不包含值。
+- **原样继承，有三个例外。** 没有终端时（所有 agent 都是这种情况），teamai 会在 `GIT_TERMINAL_PROMPT=0`、`GIT_ASKPASS=echo` 和 `GCM_INTERACTIVE=never` 未设置时设置它们，让 git 子进程不会等待凭据提示。命令会继承它们。
+- **不用于启动 agent。** 与模型配置写入的变量同名的变量或密钥（`ANTHROPIC_*`）会为该命令覆盖那个模型配置。`env exec` 用于 CLI，而不是用来启动 agent。
+- 在命令前加 `--`：否则 teamai 会把命令自己的选项当作 teamai 的选项。
 
 ## 轮换
 
