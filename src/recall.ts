@@ -113,6 +113,19 @@ export function computeIdfBaseline(indexes: SearchIndex[]): number {
   return Math.log((maxEntries + 1) / 2) + 1;
 }
 
+/**
+ * Put learnings scores on the bounded scale used by codebase graph results.
+ * The relevance threshold is the corpus-aware reference point: a learnings
+ * hit at that threshold maps to 4, matching the codebase relevance threshold.
+ * This prevents corpus growth from changing which source wins the merged sort.
+ */
+export function normalizeLearningsScoreForRanking(score: number, idfBaseline: number): number {
+  if (score <= 0) return 0;
+  const baseline = idfBaseline > 0 ? idfBaseline : 1;
+  const threshold = Math.max(baseline * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
+  return Math.min(10, Math.max(0, 4 + 2 * Math.log2(score / threshold)));
+}
+
 /** Search result with scope label for merged output. */
 interface ScopedSearchResult extends SearchResult {
   scope?: 'user' | 'project';
@@ -612,15 +625,14 @@ export async function recall(
     log.warn('recall: code graph retrieval unavailable, run teamai codebase --lint to diagnose');
   }
 
-  // Re-sort merged results by score descending, then date descending
-  // TODO(cross-scale): learnings scores are unbounded TF-IDF sums that grow with
-  // log(N), while codebase scores are log-compressed into [0,10]. Sorting them
-  // directly compares different scales — as the corpus grows, learnings hits
-  // increasingly crowd out codebase hits regardless of true relevance. Fixing
-  // this properly means normalizing learnings scores against the IDF baseline
-  // before the merge (related to the per-domain IDF work).
+  // Re-sort merged results by normalized score descending, then date descending.
+  // Keep each result's original score for --check, quality tracking, and output.
+  const rankingScore = (result: ScopedSearchResult): number => result.fromCodebase
+    ? result.score
+    : normalizeLearningsScoreForRanking(result.score, idfBaseline);
   allResults.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
+    const scoreDelta = rankingScore(b) - rankingScore(a);
+    if (scoreDelta !== 0) return scoreDelta;
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 

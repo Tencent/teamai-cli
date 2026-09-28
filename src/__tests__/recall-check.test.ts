@@ -12,9 +12,13 @@ vi.mock('../config.js', async (importOriginal) => ({
   detectProjectConfig: vi.fn(),
   requireInit: vi.fn(),
 }));
+vi.mock('../code-knowledge-recall.js', () => ({
+  queryCodeKnowledge: vi.fn().mockResolvedValue([]),
+}));
 
 import { recall } from '../recall.js';
 import { detectProjectConfig } from '../config.js';
+import { queryCodeKnowledge } from '../code-knowledge-recall.js';
 import { buildIndex } from '../utils/search-index.js';
 import { getTeamaiHome, type LocalConfig } from '../types.js';
 import { readRecallQuality } from '../recall-quality.js';
@@ -102,6 +106,52 @@ describe('recall --check precheck mode', () => {
     await recall('completely unrelated gibberish xyzzy quantum', { check: true });
 
     expect(captured).toMatch(/^NOT_RELEVANT score=\d+\.\d+ threshold=\d+\.\d+\n$/);
+  });
+
+  it('ranks graph hits against corpus-normalized learnings scores', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(queryCodeKnowledge).mockResolvedValueOnce([{
+      page: 'evidence/code/demo/docs/agent-session-recovery.md',
+      title: 'Agent Session Recovery',
+      score: 100,
+      snippet: 'The graph page matches the full query.',
+      kind: 'codebase',
+    }]);
+
+    const learningsDir = path.join(projectConfig.repo.localPath, 'learnings');
+    await fse.remove(path.join(learningsDir, 'proj-deploy-2026-05-01-ccc.md'));
+    await fse.writeFile(
+      path.join(learningsDir, 'cross-scale-learning.md'),
+      [
+        '---',
+        'title: "Deployment Timeout Retry"',
+        'author: tester',
+        'date: 2026-05-01',
+        'tags: [deployment]',
+        '---',
+        '',
+        'General operational notes with no additional query matches.',
+        '',
+      ].join('\n'),
+    );
+    for (let i = 0; i < 100; i++) {
+      await fse.writeFile(
+        path.join(learningsDir, `unrelated-${i}.md`),
+        learningDoc(`Unrelated Background Record ${i}`),
+      );
+    }
+    await buildIndex({
+      learningsDir,
+      indexPath: path.join(getTeamaiHome('project', projectRoot), 'search-index.json'),
+    });
+
+    await recall('deployment timeout retry policy', { dryRun: true });
+
+    const graphPosition = captured.indexOf('[docs] Agent Session Recovery');
+    const learningPosition = captured.indexOf('[learnings] Deployment Timeout Retry');
+    expect(graphPosition).toBeGreaterThanOrEqual(0);
+    expect(learningPosition).toBeGreaterThanOrEqual(0);
+    expect(graphPosition).toBeLessThan(learningPosition);
   });
 
   it('check mode does not record recall quality (no side effects)', async () => {
