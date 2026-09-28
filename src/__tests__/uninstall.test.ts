@@ -796,7 +796,7 @@ describe('uninstall', () => {
     await uninstall({ force: true });
 
     expect(await fse.readFile(excludeFile, 'utf8')).toBe(block);
-    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`Kept teamai's block in ${await fse.realpath(excludeFile)}`));
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`Kept \`/.mcp.json\` in ${await fse.realpath(excludeFile)}`));
   });
 
   describe('the block protects a config holding a resolved value (#882)', () => {
@@ -843,7 +843,7 @@ describe('uninstall', () => {
 
       expect(await fse.readJson(path.join(projectRoot, '.mcp.json'))).toEqual({ mcpServers: { jira } });
       expect(await fse.readFile(excludeFile, 'utf8')).toBe(block);
-      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`Kept teamai's block in ${await fse.realpath(excludeFile)}`));
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`Kept \`/.mcp.json\` in ${await fse.realpath(excludeFile)}`));
     });
 
     it('keeps the block when a server dropped from mcp.yaml left its token behind with no manifest', async () => {
@@ -856,6 +856,50 @@ describe('uninstall', () => {
       await uninstall({ force: true });
 
       expect(await fse.readFile(excludeFile, 'utf8')).toBe(block);
+    });
+
+    it('keeps the entry, naming the file, when the manifest is lost, the server left mcp.yaml and its value is not set', async () => {
+      const { repoPath, projectRoot, excludeFile } = await setup();
+      await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+      await fse.writeJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { jira } });
+      const { log } = await import('../utils/logger.js');
+
+      await uninstall({ force: true });
+
+      expect(await fse.readFile(excludeFile, 'utf8')).toBe(block);
+      const warning = vi.mocked(log.warn).mock.calls.map(([message]) => String(message)).find((m) => m.includes('/.mcp.json'));
+      expect(warning).toContain(path.join(await fse.realpath(projectRoot), '.mcp.json'));
+      expect(warning).toContain(await fse.realpath(excludeFile));
+    });
+
+    it('removes the entry when the file holds no server, with no manifest', async () => {
+      const { projectRoot, excludeFile } = await setup();
+      await fse.writeJson(path.join(projectRoot, '.mcp.json'), { mcpServers: {} });
+
+      await uninstall({ force: true });
+
+      expect(await fse.readFile(excludeFile, 'utf8')).toBe('');
+    });
+
+    it('removes only the entry whose file is gone', async () => {
+      const { projectRoot, excludeFile } = await setup();
+      await fse.writeFile(excludeFile, [
+        '# [teamai:mcp-exclude:start] project MCP configs holding resolved ${VAR} values',
+        '/.mcp.json',
+        '/other.json',
+        '# [teamai:mcp-exclude:end]',
+        '',
+      ].join('\n'));
+      await fse.writeJson(path.join(projectRoot, 'other.json'), { mcpServers: { jira } });
+
+      await uninstall({ force: true });
+
+      expect(await fse.readFile(excludeFile, 'utf8')).toBe([
+        '# [teamai:mcp-exclude:start] project MCP configs holding resolved ${VAR} values',
+        '/other.json',
+        '# [teamai:mcp-exclude:end]',
+        '',
+      ].join('\n'));
     });
 
     it('names the variable whose value keeps the block', async () => {
