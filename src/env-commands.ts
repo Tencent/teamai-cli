@@ -29,8 +29,8 @@ const envHandler = new EnvHandler();
  * list only, and the command exits non-zero.
  */
 export async function envList(options: GlobalOptions & { reveal?: boolean }): Promise<void> {
-  const projectConfig = await detectProjectConfig();
-  const localConfig = projectConfig ?? (await requireInit()).localConfig;
+  const localConfig = await requireScope();
+  if (!localConfig) return;
   const teamEnv = await resolveTeamEnv(localConfig);
   const listing = envListing(teamEnv, options);
   for (const problem of listing.problems) fail(problem);
@@ -66,7 +66,9 @@ export async function envSet(
     return fail(`Invalid --from-env variable name "${options.fromEnv}": use letters, digits and underscores, starting with a letter or underscore.`);
   }
 
-  const localConfig = await scopeHere(options.global);
+  const scope = await scopeHere(options.global);
+  if (scope.kind === 'reported') return;
+  const localConfig = scope.kind === 'scope' ? scope.localConfig : null;
   let isVariable = false;
   if (localConfig) {
     const declarations = await resolveSecretDeclarations(localConfig);
@@ -134,7 +136,9 @@ export async function envSet(
 /** Remove this member's value for a secret or variable, for this team repo or, with `global`, for the machine. */
 export async function envUnset(key: string, options: GlobalOptions & { global?: boolean }): Promise<void> {
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
-  const localConfig = await scopeHere(options.global);
+  const scope = await scopeHere(options.global);
+  if (scope.kind === 'reported') return;
+  const localConfig = scope.kind === 'scope' ? scope.localConfig : null;
 
   const { file } = valuesFile(localConfig, options.global);
   const owner = options.global ? 'machine' : 'team';
@@ -160,17 +164,28 @@ export async function envUnset(key: string, options: GlobalOptions & { global?: 
 
 /**
  * This directory's scope. Outside any scope `env set --global` still has
- * somewhere to write, so `global` turns "not initialized" into null.
+ * somewhere to write, so there `global` gives `none`; otherwise "not
+ * initialized" is reported (exit 1) and gives `reported`.
  */
-async function scopeHere(global: boolean | undefined): Promise<LocalConfig | null> {
+async function scopeHere(
+  global: boolean | undefined,
+): Promise<{ kind: 'scope'; localConfig: LocalConfig } | { kind: 'none' } | { kind: 'reported' }> {
   const projectConfig = await detectProjectConfig();
-  if (projectConfig) return projectConfig;
+  if (projectConfig) return { kind: 'scope', localConfig: projectConfig };
   try {
-    return (await requireInit()).localConfig;
+    return { kind: 'scope', localConfig: (await requireInit()).localConfig };
   } catch (e) {
-    if (global && e instanceof NotInitializedError) return null;
-    throw e;
+    if (!(e instanceof NotInitializedError)) throw e;
+    if (global) return { kind: 'none' };
+    fail(e.message);
+    return { kind: 'reported' };
   }
+}
+
+/** This directory's scope, or null once "not initialized" is reported. */
+async function requireScope(): Promise<LocalConfig | null> {
+  const scope = await scopeHere(false);
+  return scope.kind === 'scope' ? scope.localConfig : null;
 }
 
 /** The store `env set` / `env unset` write, and how their messages name it. Without a scope, only the machine's. */
@@ -257,8 +272,8 @@ export async function envAdd(
     return;
   }
 
-  const projectConfig = await detectProjectConfig();
-  const localConfig = projectConfig ?? (await requireInit()).localConfig;
+  const localConfig = await requireScope();
+  if (!localConfig) return;
   const repoPath = localConfig.repo.localPath;
 
   if (!await refreshTeamRepo(localConfig, options.project)) return;
@@ -369,8 +384,8 @@ export async function envRemove(
   key: string,
   options: GlobalOptions & { role?: string; project?: string; secret?: boolean },
 ): Promise<void> {
-  const projectConfig = await detectProjectConfig();
-  const localConfig = projectConfig ?? (await requireInit()).localConfig;
+  const localConfig = await requireScope();
+  if (!localConfig) return;
   const repoPath = localConfig.repo.localPath;
 
   if (!await refreshTeamRepo(localConfig, options.project)) return;

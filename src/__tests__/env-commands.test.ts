@@ -491,11 +491,19 @@ scope: 'user',
       expect(await fse.readJson(getMachineSecretsPath())).toEqual({});
     });
 
-    it('without --global, outside any scope still fails as not initialized', async () => {
+    it.each([
+      ['env set', () => envSet('GITHUB_TOKEN', { fromEnv: 'X' })],
+      ['env unset', () => envUnset('GITHUB_TOKEN', {})],
+      ['env list', () => envList({})],
+      ['env add', () => envAdd('API_URL', 'u', {})],
+      ['env remove', () => envRemove('API_URL', {})],
+    ])('%s outside any scope says it is not initialized and exits 1, without a stack trace', async (_name, run) => {
       vi.mocked(requireInit).mockRejectedValue(new NotInitializedError('teamai is not initialized. Run `teamai init` first.'));
 
-      await expect(envSet('GITHUB_TOKEN', { fromEnv: 'X' })).rejects.toThrow(NotInitializedError);
-      await expect(envUnset('GITHUB_TOKEN', {})).rejects.toThrow(NotInitializedError);
+      await run();
+
+      expect(log.error).toHaveBeenCalledWith('teamai is not initialized. Run `teamai init` first.');
+      expect(process.exitCode).toBe(1);
     });
 
     it('unset --global removes only the machine value', async () => {
