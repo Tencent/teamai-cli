@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
-import { resolveBaseDir, resolveToolBaseDir, scopedToolPaths } from '../types.js';
+import { isAgentExcluded, resolveBaseDir, resolveToolBaseDir, scopedToolPaths } from '../types.js';
 import {
   listFilesRecursive,
   listDirs,
@@ -88,6 +88,7 @@ async function syncRulesToLocal(
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!toolPath.rules) continue;
+    if (isAgentExcluded(localConfig, tool)) continue;
     if (!await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
 
     const rulesDir = path.join(resolveToolBaseDir(tool, localConfig), toolPath.rules);

@@ -70,6 +70,8 @@ another checkout may have moved (#812). Cursor and Copilot rules compare bodies
 against those revisions, ignoring derived frontmatter, and render refreshed
 copies in the tool's native format. Rule sync uses the same tool root as the
 scanner, including `COPILOT_HOME` for user-scope Copilot instructions.
+It checks `isAgentExcluded` before installation detection, so retained tool
+directories do not authorize writes to rules excluded by the local configuration.
 For Copilot updates that only change `paths`, it compares the entire local file
 with the rendered recorded versions before refreshing `applyTo`, preserving
 locally edited headers rather than overwriting them on a body match alone.

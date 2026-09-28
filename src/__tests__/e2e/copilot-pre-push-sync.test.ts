@@ -78,6 +78,23 @@ it('push refreshes an unedited Copilot rule instead of pushing a rollback, and p
     git(['commit', '-q', '-am', 'Teammate updates rule'], teammate);
     git(['push', '-q', 'origin', 'main'], teammate);
 
+    // Pull migrates the legacy project config into the shared data directory.
+    const dataRoot = path.join(testHome, '.teamai');
+    const configs = fs.readdirSync(dataRoot, { recursive: true, encoding: 'utf8' })
+      .filter((file) => path.basename(file) === 'config.yaml');
+    expect(configs).toHaveLength(1);
+    const configPath = path.join(dataRoot, configs[0]);
+    const originalConfig = fs.readFileSync(configPath, 'utf8');
+    const excludedCopy = teamRuleToCopilotInstructions(v1).replace('src/**/*.ts', 'custom/**/*.ts');
+    put(deployed, excludedCopy);
+    fs.mkdirSync(env.COPILOT_HOME, { recursive: true });
+    for (const exclusion of [{ enabledAgents: ['claude'] }, { disabledAgents: ['copilot'] }]) {
+      put(configPath, YAML.stringify({ ...YAML.parse(originalConfig), ...exclusion }));
+      expect(run(['push', '--all'])).not.toContain('[rules] api (modified)');
+      expect(fs.readFileSync(deployed, 'utf8')).toBe(excludedCopy);
+    }
+    put(configPath, originalConfig);
+
     const output = run(['push', '--all']);
     expect(output).not.toContain('[rules] api (modified)');
     expect(fs.readFileSync(deployed, 'utf8')).toBe(teamRuleToCopilotInstructions(v2));

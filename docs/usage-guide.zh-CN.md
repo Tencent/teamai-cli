@@ -681,6 +681,8 @@ excludedSkills:
 
 团队仅修改 `paths` 时，只要本地文件仍与某个已记录版本的生成副本一致，`push` 也会刷新 Copilot 的 `applyTo`；此时本地手动修改过的头部会保留。
 
+规则预同步会跳过被 `enabledAgents` 或 `disabledAgents` 排除的工具，即使其配置目录仍然存在。
+
 ```bash
 teamai push          # 扫描新增/修改的资源，创建 MR
 teamai push --all    # 跳过确认，直接推送

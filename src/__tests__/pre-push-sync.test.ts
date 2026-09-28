@@ -453,6 +453,21 @@ describe('syncTeamUpdatesToLocal — rules', () => {
         : path.join(copilotHome, 'instructions');
     });
 
+    it.each(['enabledAgents', 'disabledAgents'] as const)('does not touch rules excluded by %s', async (setting) => {
+      localConfig[setting] = setting === 'enabledAgents' ? ['claude'] : ['copilot'];
+      // Installation is independent of permission to sync this tool.
+      await fse.ensureDir(process.env.COPILOT_HOME!);
+      const localFile = path.join(instructionsDir, 'my-rule.instructions.md');
+      const original = teamRuleToCopilotInstructions(oldRule).replace('src/**/*.ts', 'custom/**/*.ts');
+      await fse.outputFile(localFile, original);
+      await fse.writeFile(path.join(repoPath, 'rules/my-rule.md'), newRule);
+
+      await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+      expect(await fse.readFile(localFile, 'utf-8')).toBe(original);
+      expect(mockGetFileContentAtRev).not.toHaveBeenCalled();
+    });
+
     it('updates an unedited old body and regenerates applyTo from the current team rule', async () => {
       const localFile = path.join(instructionsDir, 'my-rule.instructions.md');
       await fse.outputFile(localFile, teamRuleToCopilotInstructions(oldRule));

@@ -120,6 +120,7 @@ Before listing rules, `push` refreshes copies whose bodies still match a recorde
 sync revision. Copilot's generated `applyTo` header does not count as a local
 edit: unedited old instructions update in native format, including under
 `COPILOT_HOME` in user scope. Genuine local body edits remain push candidates.
+Rule pre-sync leaves tools excluded by `enabledAgents` or `disabledAgents` untouched.
 When only team `paths` change, `applyTo` refreshes if the local file still matches
 a recorded version's generated copy; locally edited headers are kept.
 

@@ -746,6 +746,8 @@ Before scanning, `push` refreshes unedited old rule copies from the team repo. F
 
 When only the team's `paths` change, `push` also refreshes Copilot's `applyTo` if the local file still matches a recorded version's generated copy. A locally edited header is preserved in this case.
 
+Rule pre-sync skips tools excluded by `enabledAgents` or `disabledAgents`, even if their configuration directories still exist.
+
 ```bash
 teamai push          # Scan for new/modified resources, create an MR
 teamai push --all    # Skip confirmation, push directly
