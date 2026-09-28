@@ -118,6 +118,20 @@ scope: 'user',
       expect(items.map((item) => item.name)).toEqual(['billing/env.yaml', 'checkout/env.yaml']);
     });
 
+    // #875: a declared secret is published by push like a variable.
+    it('reports a changed secrets file, root and namespace', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), 'variables: []\n');
+      run(['init', '-q', '-b', 'main']);
+      run(['add', '-A']);
+      run(['commit', '-q', '-m', 'seed']);
+
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GITHUB_TOKEN\n');
+      await fse.outputFile(path.join(repoPath, 'env', 'checkout', 'secrets.yaml'), 'secrets:\n  - key: NPM_TOKEN\n');
+
+      const items = await handler.scanLocalForPush(teamConfig, localConfig);
+      expect(items.map((item) => item.relativePath)).toEqual(['env/secrets.yaml', 'env/checkout/secrets.yaml']);
+    });
+
     // git quotes a non-ASCII path in its default output, so it never matched.
     it('reports a changed namespace file whose name is not ASCII', async () => {
       await fse.outputFile(path.join(repoPath, 'env', 'café', 'env.yaml'), 'variables: []\n');

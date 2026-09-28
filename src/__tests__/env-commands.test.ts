@@ -189,6 +189,59 @@ scope: 'user',
 
       expect(log.dim).toHaveBeenCalledWith(expect.stringContaining('My API endpoint'));
     });
+
+    // #875: a declared secret is listed with where its value comes from, never the value.
+    it('lists each declared secret with its state and never its value, --reveal included', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), YAML.stringify({
+        secrets: [
+          { key: 'GITHUB_TOKEN', description: 'GitHub token', url: 'https://github.com/settings/tokens' },
+          { key: 'GITLAB_TOKEN' },
+        ],
+      }));
+      vi.stubEnv('GITHUB_TOKEN', 'fixture-github-value');
+      vi.stubEnv('GITLAB_TOKEN', '');
+
+      await envList({ reveal: true, verbose: true });
+
+      const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
+      expect(allOutput).toContain('API_URL=u  (root)');
+      expect(allOutput).toContain('Team secrets (2):');
+      expect(allOutput).toContain('GITHUB_TOKEN  environment  (root)');
+      expect(allOutput).toContain('GITLAB_TOKEN  missing  (root)');
+      expect(allOutput).not.toContain('fixture-github-value');
+      expect(vi.mocked(log.dim).mock.calls.map(c => c[0])).toEqual(expect.arrayContaining([
+        expect.stringContaining('GitHub token'),
+        expect.stringContaining('https://github.com/settings/tokens'),
+      ]));
+    });
+
+    it('lists declared secrets when the team has no env variables', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GITHUB_TOKEN\n');
+      vi.stubEnv('GITHUB_TOKEN', '');
+
+      await envList({});
+
+      const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
+      expect(allOutput).toContain('GITHUB_TOKEN  missing  (root)');
+      expect(allOutput).not.toContain('Team env variables');
+      expect(log.info).not.toHaveBeenCalledWith('No env variables defined');
+    });
+
+    it('still lists the variables when the secrets file is broken, and says so in secret wording', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: [\n');
+
+      await envList({ reveal: true });
+
+      const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
+      expect(allOutput).toContain('API_URL=u  (root)');
+      expect(log.error).toHaveBeenCalledWith(expect.stringMatching(
+        /^env\/secrets\.yaml is not valid YAML: .*Team secrets were not resolved this run; env variables are not affected\./s,
+      ));
+      expect(process.exitCode).toBe(1);
+      process.exitCode = undefined;
+    });
   });
 
   // ─── envAdd ──────────────────────────────────────────────

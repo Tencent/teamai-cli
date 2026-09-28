@@ -180,6 +180,20 @@ describe('env.yaml shape warning on a real pull', () => {
     expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining(SHAPE_WARNING));
   });
 
+  // #875: a broken env/secrets.yaml fails the secrets only; the variables still reach env.sh.
+  it('warns about a secrets file that does not parse, in secret wording, and still writes env.sh', async () => {
+    await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), 'variables:\n  - key: FOO\n    value: bar\n');
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secret:\n  - key: GITHUB_TOKEN\n');
+
+    await pull({ force: true });
+
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
+      'env/secrets.yaml declares no secrets: it has no top-level `secrets:` key, only `secret`. '
+        + 'Team secrets were not resolved this run; env variables are not affected.',
+    ));
+    expect(await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8')).toContain("export FOO='bar'");
+  });
+
   it('warns from the unchanged-rev fast path too', async () => {
     // The machine pulled once while the CLI still accepted a bad shape, so it
     // stored the rev. The repo has not moved since — every later pull takes the

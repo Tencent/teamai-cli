@@ -450,7 +450,7 @@ main 的团队知识 —— `git status` 保持干净。旧版单仓装升级后
    - `.teamai/hooks/hooks.yaml` —— 团队 hooks
    - `.teamai/mcp/mcp.yaml` —— 共享 MCP servers
 
-> **关于 `env` 的提醒。** 单仓模式下 `.teamai/env/env.yaml` **会被提交到 main**（不同于独立模式的每机本地 env），因此会随 clone 分发给所有人。`env.yaml` 存的是明文键值对 —— 只放非敏感的共享配置，真正的密钥请留在你自己未追踪的环境里。
+> **关于 `env` 的提醒。** 单仓模式下 `.teamai/env/env.yaml` **会被提交到 main**（不同于独立模式的每机本地 env），因此会随 clone 分发给所有人。`env.yaml` 存的是明文键值对 —— 只放非敏感的共享配置。密钥请在 `.teamai/env/secrets.yaml` 中只声明、不写值（见[团队密钥](designs/team-secrets.zh-CN.md)），值留在你自己未追踪的环境里。
 
 > **限制。** 单仓模式把一套团队配置绑定到一个业务仓。如果需要一套团队知识库被多个业务仓共享，请改用独立团队仓（`teamai init <repo>`）。
 
@@ -957,6 +957,22 @@ variables:
     value: https://api.example.com
     description: 团队 API 地址              # 可选
 ```
+
+**密钥。** 团队需要的密钥只声明、不写值，写在 `env/secrets.yaml` 或某个 namespace 的
+`env/<ns>/secrets.yaml` 中（生效条件与 `env/<ns>/env.yaml` 相同，namespace 条目替换根文件中同 key
+的条目）。每个成员在自己的机器上保存值。
+
+```yaml
+secrets:
+  - key: GITHUB_TOKEN
+    description: GitHub token with repo scope   # 可选
+    url: https://github.com/settings/tokens     # 可选：成员获取 token 的地址
+```
+
+`teamai env list` 和 `teamai list env` 会把每个已声明的密钥显示为 `environment`（你的环境中有它的值）
+或 `missing`，从不显示值，`--reveal` 也一样。密钥文件无法使用时只有密钥失败：env 变量照常下发，
+`pull` 会警告，`teamai doctor` 的检查失败并指出该文件。`teamai push` 会带上任何密钥文件的改动。
+见[团队密钥](designs/team-secrets.zh-CN.md)。
 
 不再下发到该目录的变量会在下一次 pull 时从 `env.sh` 中移除，即使这次 pull 因团队仓库
 未变化而提示 `Already synced` 也一样。在那次 pull 之前，`teamai doctor` 会报告

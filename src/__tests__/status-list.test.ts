@@ -144,6 +144,34 @@ describe('teamai list / status resource coverage', () => {
     expect(out).toContain('SECRET_TOKEN=super-secret-value');
   });
 
+  // #875: a declared secret shows where its value comes from, never the value.
+  it('list env shows each declared secret with its state and never its value, --reveal included', async () => {
+    await fse.writeFile(
+      path.join(repoPath, 'env', 'secrets.yaml'),
+      'secrets:\n  - key: GITHUB_TOKEN\n    description: GitHub token\n  - key: GITLAB_TOKEN\n',
+    );
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-github-value');
+    vi.stubEnv('GITLAB_TOKEN', '');
+
+    await list('env', { source: 'repo', reveal: true, verbose: true });
+    const out = lines.join('\n');
+    expect(out).toContain('SECRET_TOKEN=super-secret-value');
+    expect(out).toContain('GITHUB_TOKEN  secret, environment  (root)');
+    expect(out).toContain('    GitHub token');
+    expect(out).toContain('GITLAB_TOKEN  secret, missing  (root)');
+    expect(out).not.toContain('fixture-github-value');
+  });
+
+  it('list env still lists the variables when the secrets file is broken, and names it', async () => {
+    await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secret:\n  - key: GITHUB_TOKEN\n');
+
+    await list('env', { source: 'repo' });
+    const out = lines.join('\n');
+    expect(out).toContain('SECRET_TOKEN=su****');
+    expect(out).toContain('env/secrets.yaml declares no secrets');
+    expect(out).toContain('Team secrets were not resolved this run');
+  });
+
   it('list rejects unknown types', async () => {
     await list('widgets', { source: 'repo' });
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Unknown resource type'));

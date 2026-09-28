@@ -7,8 +7,8 @@ import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, isSelf
 import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import {
-  entryFileAbsolutePath, listEntryFiles, readEntryFileText, reportEntryResolution, resolveEntriesFor,
-  unknownEntryKeys, writtenList, type EntryReader,
+  listEntryFiles, readEntryFileText, reportEntryResolution, resolveEntriesFor,
+  unknownEntryKeys, writtenList, type EntryFile, type EntryReader,
 } from '../namespaced-entries.js';
 import {
   resolveActiveShellProfile,
@@ -212,10 +212,15 @@ export class EnvHandler extends ResourceHandler {
   readonly type = 'env' as const;
 
   /**
-   * Scan for local env changes that need to be pushed: `env/env.yaml` and every
-   * `env/<ns>/env.yaml`, one item per changed file.
+   * Scan for local env changes that need to be pushed: `env/env.yaml`, every
+   * `env/<ns>/env.yaml`, and the same for `secrets.yaml`, one item per changed file.
    */
   async scanLocalForPush(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
+    // Imported here: secrets.ts reads ENV_KEY_RE from this module as it loads.
+    const { SECRETS_LAYOUT } = await import('./secrets.js');
+    const listEnvFiles = async (root: string): Promise<EntryFile[]> =>
+      [...await listEntryFiles(root, 'env'), ...await listEntryFiles(root, SECRETS_LAYOUT)];
+
     // Single-repo mode: users edit team env directly at <repo>/.teamai/env/
     // (it lives in their own repo). push runs in the knowledge worktree, so
     // localConfig.repo.localPath here is the origin/<default> checkout — diff the
@@ -224,8 +229,8 @@ export class EnvHandler extends ResourceHandler {
     if (isSelfMode(localConfig) && localConfig.projectRoot) {
       const activeRoot = path.join(localConfig.projectRoot, '.teamai');
       const items: ResourceItem[] = [];
-      for (const { namespace, relativePath, absolutePath: activeEnv } of await listEntryFiles(activeRoot, 'env')) {
-        const baseEnv = entryFileAbsolutePath(localConfig.repo.localPath, 'env', namespace);
+      for (const { relativePath, absolutePath: activeEnv } of await listEnvFiles(activeRoot)) {
+        const baseEnv = path.join(localConfig.repo.localPath, ...relativePath.split('/'));
         // Not in the baseline → new; present but different → modified; equal → skip.
         if (await pathExists(baseEnv) && await fileContentEqual(activeEnv, baseEnv)) continue;
         items.push(envPushItem(relativePath, activeEnv));
@@ -254,7 +259,7 @@ export class EnvHandler extends ResourceHandler {
     }
 
     const items: ResourceItem[] = [];
-    for (const { relativePath, absolutePath } of await listEntryFiles(repoPath, 'env')) {
+    for (const { relativePath, absolutePath } of await listEnvFiles(repoPath)) {
       if (changed && !changed.has(relativePath)) continue;
       items.push(envPushItem(relativePath, absolutePath));
     }

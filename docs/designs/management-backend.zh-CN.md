@@ -43,7 +43,8 @@
 | `skills/` | SkillsHandler、命名空间及 marketplace 元数据 | 不可变文件和依赖组成的资源包，派生 marketplace 视图 |
 | `rules/` | RulesHandler 及强制规则选择 | 版本化规则，并单独执行强制策略约束 |
 | `docs/` | DocsHandler 及文档索引 | 版本化文档、授权物化及召回索引 |
-| `env/env.yaml` | EnvHandler、本地覆盖和环境注入 | 非密钥模板及密钥引用，解析密钥时单独授权 |
+| `env/env.yaml` | EnvHandler、本地覆盖和环境注入；值为明文 | 非密钥模板及密钥引用，解析密钥时单独授权 |
+| `env/secrets.yaml` | 只声明、不含值的密钥（[团队密钥](team-secrets.zh-CN.md)）；v1 在每个成员的机器上解析其值 | 密钥引用；下文的加密密钥服务仍属未来工作 |
 | `agents/` | AgentsHandler 及工具格式转换 | 版本化 agent 定义，复用现有工具适配器渲染 |
 | `hooks/hooks.yaml` | HooksHandler 及 hook 协调，不支持通用逐项 push | 可审核的声明式 hooks、客户端同意及类型验证 |
 | `mcp/mcp.yaml` | McpHandler 及 MCP 协调，贡献通过直接编辑 YAML 完成 | 可审核的服务定义、transport 策略及密钥引用 |

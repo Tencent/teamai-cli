@@ -22,6 +22,7 @@ import { maskEnvValue } from './resources/env.js';
 import { mcpEntryReader } from './resources/mcp.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { envEntryReader } from './resources/env.js';
+import { resolveSecretDeclarations, secretState } from './resources/secrets.js';
 import {
   describeEntryFailure, describeOrigin, describeOrigins, resolveEntriesFor,
   type EntryResolution, type EntryType,
@@ -316,13 +317,16 @@ async function printRepoSection(
   console.log(`=== REPO ${t.toUpperCase()} ===`);
 
   // Env, hooks and MCP list what reaches this directory, each with its
-  // namespace: root plus the active namespace files.
+  // namespace: root plus the active namespace files. Env lists the declared
+  // secrets after the variables, with where each value comes from, never the value.
   if (t === 'env') {
     const env = await resolveEntriesFor(envEntryReader, localConfig);
+    const secrets = await resolveSecretDeclarations(localConfig);
+    const noSecrets = secrets.kind === 'absent' || (secrets.kind === 'resolved' && secrets.entries.length === 0);
     if (env.kind === 'failed') {
       console.log(`  ${describeEntryFailure(env.failure)}`);
     } else if (env.entries.length === 0) {
-      console.log('  (none)');
+      if (noSecrets) console.log('  (none)');
     } else {
       if (options.reveal) {
         process.stderr.write('[warn] Env values will be shown in plaintext\n');
@@ -332,6 +336,16 @@ async function printRepoSection(
         console.log(`  ${v.name}=${display}  (${describeOrigin(v)})`);
         if (options.verbose && v.entry.description) {
           console.log(`    ${v.entry.description}`);
+        }
+      }
+    }
+    if (secrets.kind === 'failed') {
+      console.log(`  ${describeEntryFailure(secrets.failure)}`);
+    } else if (secrets.kind === 'resolved') {
+      for (const s of secrets.entries) {
+        console.log(`  ${s.name}  secret, ${secretState(s.name)}  (${describeOrigin(s)})`);
+        if (options.verbose && s.entry.description) {
+          console.log(`    ${s.entry.description}`);
         }
       }
     }

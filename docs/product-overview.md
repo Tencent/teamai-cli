@@ -61,7 +61,7 @@ Each resource is delivered to every agent:
 | **Agents** | `agents/<name>.yaml`, `agents/<namespace>/<name>.yaml` | |
 | **Culture** | `culture.md` | Team mission, values, and working principles — injected into each agent's CLAUDE.md / AGENTS.md so every session inherits them |
 | **CLAUDE.md** | `claudemd/*.md` | |
-| **Env** | `env/env.yaml`, `env/<namespace>/env.yaml` | Shared team-level environment variables and switches; do not put secrets here |
+| **Env** | `env/env.yaml`, `env/<namespace>/env.yaml` | Shared team-level environment variables and switches; do not put secret values here: declare a secret without its value in `env/secrets.yaml` |
 | **Hooks** | `hooks/hooks.yaml`, `hooks/<namespace>/hooks.yaml` | |
 | **MCP** | `mcp/mcp.yaml`, `mcp/<namespace>/mcp.yaml` | |
 | **Packages** | `teamai.yaml` | Currently npm packages and Claude Code plugins only |
