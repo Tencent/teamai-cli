@@ -9,6 +9,20 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  detectProjectConfig: vi.fn().mockResolvedValue(null),
+  requireInit: vi.fn(),
+}));
+
+vi.mock('../utils/prompt.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/prompt.js')>()),
+  readStdin: vi.fn(),
+}));
+
+import { requireInit } from '../config.js';
+import { envSet, envUnset } from '../env-commands.js';
+import { readStdin } from '../utils/prompt.js';
 import { buildVarTable, reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { log } from '../utils/logger.js';
@@ -86,6 +100,25 @@ describe('MCP servers and declared secrets', () => {
     await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
     await reconcileMcpForConfig(teamConfig, localConfig);
     expect(await githubAuthorization()).toBe('Bearer team-token');
+  });
+
+  // What a member runs: set a value, pull, unset it with nothing exported, pull.
+  it('keeps the entry and still owns it after env unset, so a later value replaces it', async () => {
+    vi.mocked(requireInit).mockResolvedValue({ localConfig, teamConfig });
+    vi.mocked(readStdin).mockResolvedValueOnce('first-token').mockResolvedValueOnce('second-token');
+
+    await envSet('GITHUB_TOKEN', { stdin: true });
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(await githubAuthorization()).toBe('Bearer first-token');
+
+    await envUnset('GITHUB_TOKEN', {});
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(await githubAuthorization()).toBe('Bearer first-token');
+
+    await envSet('GITHUB_TOKEN', { stdin: true });
+    const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(await githubAuthorization()).toBe('Bearer second-token');
+    expect(changes.filter((change) => change.server === 'github').map((change) => change.action)).not.toContain('skipped');
   });
 
   it("uses the member's own export when no team value is set", async () => {
