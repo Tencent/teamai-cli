@@ -167,57 +167,33 @@ export function getLocalValuesPath(): string {
   return path.join(getTeamaiHomeDir(), 'models', 'values.json');
 }
 
-/** What `teamai.yaml` says about the team repository: its display name and `repo:` identity, when set. */
-function readTeamManifest(localConfig: LocalConfig): { teamName: string; repo: string } {
-  const manifest = { teamName: '', repo: '' };
+export function getTeamValuesPath(localConfig: LocalConfig): string {
+  // Team inputs may contain credentials. Keep them under the user home even
+  // when project scope places dataHome inside a Git workspace.
+  const remote = localConfig.repo.remote;
+  let identity = remote && remote !== 'origin' && remote !== 'upstream'
+    ? remote
+    : localConfig.repo.url || localConfig.repo.localPath;
+  let teamName = '';
   try {
     const raw = YAML.parse(fs.readFileSync(path.join(localConfig.repo.localPath, 'teamai.yaml'), 'utf8')) as unknown;
     if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
       const candidate = (raw as { team?: unknown; repo?: unknown }).team;
-      if (typeof candidate === 'string') manifest.teamName = candidate;
+      if (typeof candidate === 'string') teamName = candidate;
       const repo = (raw as { repo?: unknown }).repo;
-      if (typeof repo === 'string' && repo.trim()) manifest.repo = repo.trim();
+      if (typeof repo === 'string' && repo.trim()) identity = repo.trim();
     }
   } catch {
     // Older team repositories may not have teamai.yaml. Use the repository name.
   }
-  return manifest;
-}
-
-function teamRepoDigest(localConfig: LocalConfig, manifestRepo: string): string {
-  const remote = localConfig.repo.remote;
-  const identity = manifestRepo || (remote && remote !== 'origin' && remote !== 'upstream'
-    ? remote
-    : localConfig.repo.url || localConfig.repo.localPath);
-  return crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
-}
-
-/**
- * A short hash of the team repository's identity, independent of the team's
- * display name: the same hash `getTeamValuesPath` puts in its file names.
- */
-export function getTeamRepoHash(localConfig: LocalConfig): string {
-  return teamRepoDigest(localConfig, readTeamManifest(localConfig).repo);
-}
-
-/**
- * This team's values file in `storeDir`, named `<team>-<hash>.json` from the
- * team repository's identity. Defaults to the model key store.
- */
-export function getTeamValuesPath(
-  localConfig: LocalConfig,
-  storeDir = path.join(getTeamaiHomeDir(), 'models', 'teams'),
-): string {
-  // Team inputs may contain credentials. Keep them under the user home even
-  // when project scope places dataHome inside a Git workspace.
-  const { teamName, repo } = readTeamManifest(localConfig);
   const fallback = path.basename(localConfig.repo.localPath) || 'team';
+  const digest = crypto.createHash('sha256').update(identity).digest('hex');
   const slug = (teamName || fallback).normalize('NFKC').toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 40)
     .replace(/-+$/g, '') || 'team';
-  return path.join(storeDir, `${slug}-${teamRepoDigest(localConfig, repo)}.json`);
+  return path.join(getTeamaiHomeDir(), 'models', 'teams', `${slug}-${digest.slice(0, 10)}.json`);
 }
 
 /** Stable identity of the team repository, recorded with `team:` switches. */

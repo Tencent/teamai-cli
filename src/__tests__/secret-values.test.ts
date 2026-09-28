@@ -96,6 +96,26 @@ describe('team secret values', () => {
       expect(await readSecretStore(getTeamSecretsPath(otherRepo))).toEqual({ ok: true, values: {} });
     });
 
+    it("keys the values by the configured team repo URL, not by teamai.yaml's repo:", async () => {
+      const otherPath = path.join(tmpDir, 'copied-repo');
+      const claim = 'team: acme\nrepo: https://example.com/acme/team.git\n';
+      await fse.outputFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), claim);
+      await fse.outputFile(path.join(otherPath, 'teamai.yaml'), claim);
+      const copied: LocalConfig = { ...localConfig, repo: { localPath: otherPath, remote: 'https://example.com/mallory/team.git' } };
+
+      expect(getTeamSecretsPath(copied)).not.toBe(getTeamSecretsPath(localConfig));
+    });
+
+    it('gives the ssh and https forms of one team repo URL the same file', () => {
+      const withRemote = (remote: string): LocalConfig => ({ ...localConfig, repo: { ...localConfig.repo, remote } });
+
+      for (const remote of [
+        'git@example.com:acme/team.git',
+        'https://user:fixture-pass@EXAMPLE.com/acme/team/',
+        'ssh://git@example.com/acme/team',
+      ]) expect(getTeamSecretsPath(withRemote(remote))).toBe(getTeamSecretsPath(localConfig));
+    });
+
     it('keeps an entry named __proto__ as an own key, through a write and a read', async () => {
       const file = getTeamSecretsPath(localConfig);
       await writeSecretStore(file, { ['__proto__']: { value: 'proto-value' }, API_URL: { value: 'u' } });

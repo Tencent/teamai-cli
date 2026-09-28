@@ -907,8 +907,8 @@ P1 migration is not supported (`.teamai.bak/` is the manual rollback path).
 
 A member's values for their teams' declared secrets live in `~/.teamai/secrets/`,
 a class-A2 (machine-level) directory: `teams/<hash>.json`, one file per
-team repo, named by the repository identity hash that `~/.teamai/models/teams/` file
-names also carry, without the team name, so renaming `team:` keeps the values,
+team repo, named by a hash of the team repo URL in `~/.teamai/config.yaml` (never
+`teamai.yaml`'s `repo:`), without the team name, so renaming `team:` keeps the values,
 and `machine.json`, the values set with `teamai env set --global` for every team.
 Every scope that uses the same team, and every worktree of it, reads the same file.
 Each entry records whether it is a secret's value or the member's value for an

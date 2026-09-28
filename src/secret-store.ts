@@ -1,8 +1,8 @@
 /**
  * The values a member keeps for their team's declared secrets (#875), on their
  * own machine and never in the team repo: one file per team repo at
- * `~/.teamai/secrets/teams/<hash>.json`, named by the hash of the repository
- * identity alone so renaming `team:` in `teamai.yaml` keeps the values, and
+ * `~/.teamai/secrets/teams/<hash>.json`, named by the hash of the configured
+ * team repo URL alone so renaming `team:` in `teamai.yaml` keeps the values, and
  * one for every team on the machine at `~/.teamai/secrets/machine.json`. `~/.teamai/env` is not used: it is
  * already the user scope's env backup file.
  *
@@ -14,14 +14,15 @@
  * never exported as a variable. An entry without `kind` (earlier builds) is a
  * secret's.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { getTeamRepoHash } from './models/profile.js';
 import { ENV_KEY_RE, envTable, envValue } from './resources/env-key.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { writeJsonAtomic } from './utils/fs.js';
+import { normalizeRepoUrlForCompare } from './utils/git.js';
 
 const StoredEntryKindSchema = z.enum(['secret', 'variable']);
 export type StoredEntryKind = z.infer<typeof StoredEntryKindSchema>;
@@ -50,9 +51,18 @@ export type SecretStoreRead =
   | { readonly ok: true; readonly values: SecretStore }
   | { readonly ok: false; readonly reason: string };
 
-/** This team's values file. */
+/**
+ * This team's values file, named by the team repo URL this machine's config
+ * holds and never by `teamai.yaml`'s `repo:`: a copied team repo that claims
+ * another team's `repo:` must not get that team's values. The URL is
+ * normalized so its ssh, https and credentialed forms name one file.
+ */
 export function getTeamSecretsPath(localConfig: LocalConfig): string {
-  return path.join(getTeamaiHomeDir(), 'secrets', 'teams', `${getTeamRepoHash(localConfig)}.json`);
+  const { remote, url, localPath } = localConfig.repo;
+  const configured = remote && remote !== 'origin' && remote !== 'upstream' ? remote : url;
+  const identity = configured ? normalizeRepoUrlForCompare(configured) : localPath;
+  const hash = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
+  return path.join(getTeamaiHomeDir(), 'secrets', 'teams', `${hash}.json`);
 }
 
 /** The values file for every team on this machine (`teamai env set --global`). */

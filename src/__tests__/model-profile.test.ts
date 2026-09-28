@@ -14,7 +14,7 @@ import {
   resolveProfileRef,
   type ModelProfilesFile,
 } from '../models/profile.js';
-import { LocalConfigSchema, type LocalConfig } from '../types.js';
+import type { LocalConfig } from '../types.js';
 
 const TOKENHUB = {
   id: 'tokenhub',
@@ -39,20 +39,6 @@ describe('model profiles', () => {
       const other = getTeamValuesPath({ repo: { localPath: `${repo}-other`, remote: 'origin', url: 'https://example.test/other' } } as LocalConfig);
       expect(path.basename(other).match(/-([a-f0-9]{10})\.json$/)?.[1])
         .not.toBe(path.basename(file).match(/-([a-f0-9]{10})\.json$/)?.[1]);
-    } finally {
-      await fse.remove(repo);
-    }
-  });
-
-  it('names a team file the same way in another store directory', async () => {
-    const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-team-'));
-    try {
-      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: HAI Platform\n');
-      const localConfig = LocalConfigSchema.parse({ repo: { localPath: repo, remote: 'origin', url: 'https://example.test/hai' }, username: 'alice' });
-      const storeDir = path.join(repo, 'store');
-      const file = getTeamValuesPath(localConfig, storeDir);
-      expect(path.dirname(file)).toBe(storeDir);
-      expect(path.basename(file)).toBe(path.basename(getTeamValuesPath(localConfig)));
     } finally {
       await fse.remove(repo);
     }

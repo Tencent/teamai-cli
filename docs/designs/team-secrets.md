@@ -98,7 +98,7 @@ teamai env unset GITHUB_TOKEN [--global]
 
 ## Storage
 
-- One file per team repo: `~/.teamai/secrets/teams/<hash>.json`, named by a hash of the repository identity alone (the hash `teamai models configure` puts in its team key file names), so renaming `team:` in `teamai.yaml` keeps every member's values. Every project and worktree that uses the same team reads the same file, so a member sets a value once per team.
+- One file per team repo: `~/.teamai/secrets/teams/<hash>.json`, named by a hash of the team repo URL in the member's own `~/.teamai/config.yaml` alone, normalized so its ssh, https and credentialed forms match, so renaming `team:` in `teamai.yaml` keeps every member's values. `teamai.yaml`'s `repo:` is not used: a copied or hostile team repo could claim another team's `repo:` and receive that team's values. Every project and worktree that uses the same team reads the same file, so a member sets a value once per team.
 - One file for the machine: `~/.teamai/secrets/machine.json`, in the same format. Every scope reads it for the secrets it declares.
 - Always under `~/.teamai`, never in the scope's data directory, which in single-repo mode sits inside the business repo. `~/.teamai/env` is not used: it is the user scope's env backup file.
 - Written atomically with mode `0600`. That is not encryption: anyone who can read the member's files can read the value.
