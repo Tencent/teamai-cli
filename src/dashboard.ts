@@ -77,7 +77,11 @@ export async function startDashboard(port?: number): Promise<void> {
 
   // Watch events file and push updates to SSE clients
   let watchDebounce: ReturnType<typeof setTimeout> | null = null;
-  const watcher = fs.watch(eventsPath, () => {
+  // Compaction atomically replaces events.jsonl. Watching the file itself
+  // follows the old inode on Linux and macOS, so watch its directory instead.
+  const eventsFileName = path.basename(eventsPath);
+  const watcher = fs.watch(path.dirname(eventsPath), (_eventType, filename) => {
+    if (filename && filename.toString() !== eventsFileName) return;
     // Debounce rapid file changes (multiple hooks firing near-simultaneously)
     if (watchDebounce) clearTimeout(watchDebounce);
     watchDebounce = setTimeout(async () => {

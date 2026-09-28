@@ -70,11 +70,30 @@ describe('built dashboard CLI (offline provider fixtures)', () => {
       expect(context.maintenance).toContain('teamai recall maintenance --prune --archive');
       expect(await (await fetch(base+'/kb-report')).text()).toContain('Knowledge Base');
       expect((await (await fetch(base+'/api/kb-summary')).json()).source.scope).toBe('team');
-      const stream=await fetch(base+'/events',{signal:AbortSignal.timeout(5000)}),reader=stream.body!.getReader();
+      const stream=await fetch(base+'/events',{signal:AbortSignal.timeout(15000)}),reader=stream.body!.getReader();
       await reader.read();
       await fs.appendFile(eventsPath,JSON.stringify({type:'prompt_submit',timestamp:stamp(0),sessionId:'claude',tool:'claude',promptSummary:'wrong, check again'})+'\n');
-      let live='';while(!live.includes('wrong, check again')){const {value,done}=await reader.read();if(done)break;live+=new TextDecoder().decode(value);}
-      await reader.cancel();expect(live).toContain('wrong, check again');expect(live).toContain('"status":"running"');
+      const readUntil = async (text: string) => {
+        let received = '';
+        while (!received.includes(text)) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          received += new TextDecoder().decode(value);
+        }
+        return received;
+      };
+      const live = await readUntil('wrong, check again');
+      expect(live).toContain('wrong, check again');expect(live).toContain('"status":"running"');
+
+      // Compaction replaces events.jsonl atomically; the SSE stream must keep
+      // observing appends to the replacement file too.
+      const replacementPath = `${eventsPath}.replacement`;
+      await fs.copyFile(eventsPath, replacementPath);
+      await fs.rename(replacementPath, eventsPath);
+      await fs.appendFile(eventsPath,JSON.stringify({type:'prompt_submit',timestamp:stamp(1),sessionId:'claude',tool:'claude',promptSummary:'after compaction'})+'\n');
+      const afterCompaction = await readUntil('after compaction');
+      expect(afterCompaction).toContain('after compaction');
+      await reader.cancel();
     });
   }
 });
