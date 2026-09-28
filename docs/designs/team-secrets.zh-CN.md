@@ -142,6 +142,8 @@ teamai env unset GITHUB_TOKEN [--global]
 
 **仍可访问。** 解析后的值仍以明文写入各工具的 MCP 配置。含有已解析 `${VAR}` 值的配置以 `0600` 写入，已有的更宽权限文件（`.mcp.json` 常为 `0644`）也会收紧，即使 pull 没有改动其中任何内容，也会在不重写文件的情况下收紧为 `0600`；不含这类值的配置保持原权限，新文件以 `0600` 创建。在 `env exec` 下运行的命令会在环境变量中拿到它，它启动的每个进程也一样：agent 运行 `teamai env exec -- env` 就能读到。agent skill 禁止这样做，但没有任何机制强制。这让密钥不进入 git，而不是让它远离成员的机器或在上面运行的 agent。
 
+**不进入 git。** 含有已解析值的项目级 MCP 配置会被写入本地克隆的 `.git/info/exclude`（#882），这能阻止 `git add`，但挡不住 git 已跟踪的文件。因此已声明密钥的值永远不会写入 `git ls-files` 已跟踪的项目配置：该工具跳过这个 server，之前 pull 写入的条目保持不变，`pull`（警告）、`teamai mcp list`（`withheld:`）和 `teamai doctor`（`MCP servers delivered to <tool>` 失败）会指出该文件和修复方法：`git rm --cached <file>`，如果它曾随 token 一起提交过，还要轮换 token。团队未声明为密钥的变量照旧写入。git 无法判断的仓库不视为跟踪了该文件：在那里提交同样会失败。
+
 ## 缺少密钥时保留 MCP 条目
 
 `mcp/mcp.yaml` 中的 `${VAR}` 可以引用已声明的密钥。会话开始时的 pull 运行在 agent 的环境里，而这个环境常常没有成员 shell 中导出的变量（从图形界面启动的工具，或在 `bash -lc` 下读不到的 zsh export），所以一个密钥可能这次 pull 能找到、下次就找不到。pull 找不到某个 server 所需的已声明密钥时：

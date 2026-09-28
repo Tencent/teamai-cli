@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -310,5 +311,26 @@ describe('a missing declared secret tells the member what to run', () => {
     const { report } = await doctorReport();
 
     expect((report.notes ?? []).some((note) => note.includes('GITLAB_HOST'))).toBe(false);
+  });
+
+  it('mcp list names a declared secret withheld from a project config git tracks, with the file and the fix (#879)', async () => {
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    await fse.ensureDir(path.join(projectRoot, '.claude', 'skills'));
+    execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+    await fse.writeJson(path.join(projectRoot, '.mcp.json'), { mcpServers: {} });
+    execFileSync('git', ['add', '.mcp.json'], { cwd: projectRoot });
+    Object.assign(localConfig, { scope: 'project', projectRoot });
+    teamConfig.toolPaths = { claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: '.mcp.json' } };
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-github-token');
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await mcpList({});
+      const out = spy.mock.calls.map(([line]) => String(line)).join('\n');
+      const file = path.join(projectRoot, '.mcp.json');
+      expect(out).toContain(`withheld: claude — ${file} is tracked by git, so the value of GITHUB_TOKEN would be committed.`);
+      expect(out).toContain(`git rm --cached ${file}`);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

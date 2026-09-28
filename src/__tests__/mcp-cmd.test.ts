@@ -11,7 +11,8 @@ vi.mock('../namespaced-entries.js', async (importOriginal) => ({
 vi.mock('../mcp-reconcile.js', () => ({
   reconcileMcpForConfig: vi.fn(),
   resolveMcpTargets: vi.fn().mockResolvedValue([]),
-  buildVarTable: vi.fn().mockResolvedValue({}),
+  buildDesiredMcpContext: vi.fn().mockResolvedValue({ vars: {} }),
+  desiredMcpForTarget: vi.fn(),
 }));
 vi.mock('../utils/fs.js', () => ({
   readJson: vi.fn().mockResolvedValue(null),

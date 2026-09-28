@@ -22,6 +22,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { reconcileMcpForConfig, resolveMcpTargets, spliceCodexBlock, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
+import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
 
@@ -1011,6 +1012,57 @@ servers:
         await reconcileMcpForConfig(teamConfig, projectConfig);
 
         expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+    });
+
+    describe('a config git already tracks never gets a declared secret (#879)', () => {
+      const claudeFile = (): string => path.join(projectRoot, '.mcp.json');
+
+      beforeEach(async () => {
+        await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: SECRET_TOKEN\n');
+        await writeMcpYaml(withSecret);
+        vi.mocked(log.warn).mockClear();
+      });
+
+      it('skips the server there, names the file and the fix, and still writes and excludes an untracked config', async () => {
+        await fse.writeJson(claudeFile(), { mcpServers: {} });
+        git(projectRoot, 'add', '.mcp.json');
+
+        const { changes } = await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await fse.readFile(claudeFile(), 'utf-8')).not.toContain('super-secret-value');
+        expect(changes).toContainEqual(expect.objectContaining({
+          tool: 'claude', server: 'with-secret', action: 'skipped', reason: expect.stringContaining(`git rm --cached ${claudeFile()}`),
+        }));
+        expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/tracked by git.*git rm --cached .*rotate/));
+        expect((await fse.readJson(path.join(projectRoot, '.cursor', 'mcp.json'))).mcpServers['with-secret'].headers.Authorization)
+          .toBe('Bearer super-secret-value');
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+      });
+
+      it('keeps the entry an earlier pull wrote as it is, and updates it once the file is untracked', async () => {
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+        git(projectRoot, 'add', '-f', '.mcp.json');
+        const before = await fse.readFile(claudeFile(), 'utf-8');
+        vi.stubEnv('SECRET_TOKEN', 'rotated-secret-value');
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+        expect(await fse.readFile(claudeFile(), 'utf-8')).toBe(before);
+
+        git(projectRoot, 'rm', '-q', '--cached', '.mcp.json');
+        const { changes } = await reconcileMcpForConfig(teamConfig, projectConfig);
+        expect(changes).toContainEqual({ tool: 'claude', server: 'with-secret', action: 'updated' });
+        expect(await fse.readFile(claudeFile(), 'utf-8')).toContain('rotated-secret-value');
+      });
+
+      it('writes a variable the team does not declare as a secret, as before', async () => {
+        await fse.remove(path.join(repoPath, 'env', 'secrets.yaml'));
+        await fse.writeJson(claudeFile(), { mcpServers: {} });
+        git(projectRoot, 'add', '.mcp.json');
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await fse.readFile(claudeFile(), 'utf-8')).toContain('super-secret-value');
       });
     });
 

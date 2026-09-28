@@ -349,5 +349,18 @@ describe('doctor — MCP servers delivered on disk', () => {
 
       expect(await excludeCheck()).toBeUndefined();
     });
+
+    it('fails the delivery check for a declared secret withheld from a file git tracks, naming the file and the fix (#879)', async () => {
+      await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: JIRA_TOKEN\n');
+      vi.stubEnv('JIRA_TOKEN', 'fixture-jira-token');
+      execFileSync('git', ['add', '.mcp.json'], { cwd: projectRoot });
+
+      const check = await mcpCheck();
+      expect(await check.check()).toBe(false);
+      const file = path.join(projectRoot, '.mcp.json');
+      expect(check.fix).toContain(`jira not written: ${file} is tracked by git, so the value of JIRA_TOKEN would be committed.`);
+      expect(check.fix).toContain(`git rm --cached ${file}`);
+      expect(check.fix).not.toContain('pull --force');
+    });
   });
 });

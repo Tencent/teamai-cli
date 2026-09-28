@@ -82,6 +82,15 @@ reference to VAR (`--from-env`) and VAR is unset in this environment. Ask the
 user whether to set VAR in their shell or replace the reference with the
 command in the line; do not choose for them.
 
+## "MCP server X not written: <file> is tracked by git"
+
+`pull`, `teamai mcp list` (`withheld:`) and `teamai doctor` print this when a
+project MCP config git already tracks would get a declared secret's value.
+That server is skipped for that tool, and an entry an earlier pull wrote
+stays as it is. Tell the user: `git rm --cached <file>` (the file stays on
+disk), commit that, and rotate the token if the file was ever committed with
+it; then `teamai pull`. Do not run `git rm` or commit for them.
+
 ## Permission / access denied
 
 `init`, `pull`, or `push` failing with a permission error usually means the user

@@ -100,6 +100,21 @@ export async function gitTracking(file: string): Promise<GitTracking> {
 }
 
 /**
+ * Whether git tracks `file` (#879): the next `git commit -a` commits a change to
+ * it, and no exclude rule stops that. Read-only. A file outside any repository
+ * is not tracked; nor is one in a repository git cannot answer for, where a
+ * commit fails too.
+ */
+export async function gitTracks(file: string): Promise<boolean> {
+  // The file, or even its directory, may be gone from disk and still be in the index.
+  let dir = path.dirname(file);
+  while (!await pathExists(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+  const result = await execCommand('git', ['--literal-pathspecs', 'ls-files', '--error-unmatch', '--', path.relative(dir, file)], { cwd: dir, timeoutMs: 10_000 })
+    .catch(() => null);
+  return result?.code === 0;
+}
+
+/**
  * teamai's block and what surrounds it; null without both markers, so a damaged
  * block never takes the member's lines with it. The last start marker opens it:
  * one that lost its end marker is left behind, not paired with the next block's end.

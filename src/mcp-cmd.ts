@@ -5,7 +5,8 @@ import { describeEntryFailure, describeOrigin, resolveEntriesFor } from './names
 import {
   reconcileMcpForConfig,
   resolveMcpTargets,
-  buildVarTable,
+  buildDesiredMcpContext,
+  desiredMcpForTarget,
   type McpChange,
 } from './mcp-reconcile.js';
 import { referencedVars } from './resources/mcp-format.js';
@@ -52,7 +53,16 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   }
 
   const targets = await resolveMcpTargets(teamConfig, localConfig);
-  const vars = await buildVarTable(localConfig, teamEnv);
+  const context = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv }, targets);
+  const { vars } = context;
+  // Why each server is not written to a tool's config git tracks (#879), by server.
+  const withheld = new Map<string, string[]>();
+  for (const target of targets) {
+    const { skipped, withheld: names } = desiredMcpForTarget(target, servers.map((s) => teamMcpToDef(s.entry)), context);
+    for (const change of skipped) {
+      if (names.has(change.server)) withheld.set(change.server, [...withheld.get(change.server) ?? [], `${target.tool} — ${change.reason}`]);
+    }
+  }
   // Project scope reads THIS worktree's own per-worktree manifest; user the global file.
   const manifest = (await readJson<ManagedMcpManifest>(
     managedMcpManifestPath(
@@ -84,6 +94,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
       .filter((t) => (manifest[managedMcpManifestKey(t.tool, t.projectScope)] ?? []).some((r) => r.name === s.name))
       .map((t) => t.tool);
     console.log(`    installed: ${installedIn.length > 0 ? installedIn.join(', ') : '(none)'}`);
+    for (const reason of withheld.get(s.name) ?? []) console.log(`    withheld: ${reason}`);
     console.log('');
   }
 

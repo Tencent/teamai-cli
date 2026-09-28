@@ -451,19 +451,21 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
   if (teamDefs.length === 0) return [];
 
   const targets = await resolveMcpTargets(teamConfig, localConfig);
-  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv: ctx.teamEnv });
+  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv: ctx.teamEnv }, targets);
   const excludedByUser = new Set(localConfig.excludedSkills ?? []);
 
   const checks: Check[] = [];
   for (const target of targets) {
     if (mcpTargetExcluded(localConfig, target)) continue;
 
-    const { desired, skipped, kept } = desiredMcpForTarget(target, teamDefs, desiredContext);
+    const { desired, skipped, kept, withheld } = desiredMcpForTarget(target, teamDefs, desiredContext);
     // A server skipped only for a missing declared secret (#875) is a note
     // doctor prints with the command that fixes it, not a failed delivery.
     const blocked = skipped
-      .filter((change) => !excludedByUser.has(change.server) && !kept.has(change.server))
+      .filter((change) => !excludedByUser.has(change.server) && !kept.has(change.server) && !withheld.has(change.server))
       .map((change) => `${change.server} (${change.reason ?? 'skipped'})`);
+    // Its reason says what fixes it (#879).
+    const withheldNotes = skipped.filter((change) => withheld.has(change.server)).map((change) => `${change.server} not written: ${change.reason}.`);
 
     const problems: string[] = [];
     const installed = await installedMcpEntries(target);
@@ -484,17 +486,18 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
     }
     if (blocked.length > 0) problems.push(`skipped: ${nameList(blocked)}`);
 
-    if (problems.length === 0 && desired.size === 0) continue;
+    if (problems.length === 0 && withheldNotes.length === 0 && desired.size === 0) continue;
 
+    const delivery = problems.length === 0 ? [] : [`In ${target.file}, ${problems.join('; ')}. A server needing a variable reads it from `
+      + '`env/env.yaml` or an active `env/<ns>/env.yaml`, whose top-level key is `variables:` — a plain `KEY: value` mapping '
+      + 'parses as no variables at all. Then run `teamai pull --force`: a pull leaves an entry '
+      + 'teamai does not own untouched, so a server of your own under a team name only gives '
+      + 'way to `--force`.'];
     checks.push({
       name: `MCP servers delivered to ${target.tool}`,
       source: 'local',
-      check: async () => problems.length === 0,
-      fix: `In ${target.file}, ${problems.join('; ')}. A server needing a variable reads it from `
-        + '`env/env.yaml` or an active `env/<ns>/env.yaml`, whose top-level key is `variables:` — a plain `KEY: value` mapping '
-        + 'parses as no variables at all. Then run `teamai pull --force`: a pull leaves an entry '
-        + 'teamai does not own untouched, so a server of your own under a team name only gives '
-        + 'way to `--force`.',
+      check: async () => problems.length === 0 && withheldNotes.length === 0,
+      fix: [...withheldNotes, ...delivery].join(' '),
     });
   }
 

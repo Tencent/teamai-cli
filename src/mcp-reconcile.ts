@@ -49,7 +49,7 @@ import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
 import { isOnPath, SAFE_BIN_RE, type LookPathOptions } from './utils/lookpath.js';
-import { carriesResolvedValue, excludeFromGit, resolvedVariableIn } from './mcp-git-exclude.js';
+import { carriesResolvedValue, excludeFromGit, gitTracks, resolvedVariableIn } from './mcp-git-exclude.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
 //
@@ -418,21 +418,38 @@ export interface DesiredMcpContext {
   vars: Record<string, string>;
   /** Which `${VAR}` names are declared secrets, whose missing value keeps an entry (#875). */
   secrets: SecretDeclarations;
+  /** The project MCP configs git tracks, which never get a declared secret's value (#879). */
+  tracked: ReadonlySet<string>;
   lookPath?: McpReconcileOptions['lookPath'];
 }
 
+/** Why a server is not written to `file`, a config git tracks, and what fixes it (#879). */
+export function trackedConfigReason(file: string, secrets: readonly string[]): string {
+  return `${file} is tracked by git, so the value of ${secrets.join(', ')} would be committed. `
+    + `Run \`git rm --cached ${file}\` and rotate the token, then \`teamai pull\``;
+}
+
+/** `targets` are the ones the caller will render for: which of them git tracks is asked here, once. */
 export async function buildDesiredMcpContext(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   options: McpReconcileOptions = {},
+  targets: readonly McpTarget[] = [],
 ): Promise<DesiredMcpContext> {
   // HTTP mode has no repo tree to declare secrets in.
   const teamEnv = localConfig.repo.kind === 'http' ? undefined : options.teamEnv ?? await resolveTeamEnv(localConfig);
+  const secrets: SecretDeclarations = teamEnv?.declarations ?? { kind: 'absent' };
+  // Declarations that failed may name any variable, so they are asked about too.
+  const mayHoldSecret = declaredSecretKeys(secrets)?.size !== 0;
+  const tracked = mayHoldSecret
+    ? await Promise.all(targets.filter((t) => t.projectScope).map(async (t) => (await gitTracks(t.file) ? [t.file] : [])))
+    : [];
   return {
     sharing: getMcpSharing(teamConfig),
     excluded: new Set(localConfig.excludedSkills ?? []),
     vars: await buildVarTable(localConfig, teamEnv),
-    secrets: teamEnv?.declarations ?? { kind: 'absent' },
+    secrets,
+    tracked: new Set(tracked.flat()),
     lookPath: options.lookPath,
   };
 }
@@ -451,15 +468,20 @@ export async function buildDesiredMcpContext(
  * a secret that lives in the member's shell is there for one pull and gone for
  * the next, and an entry an earlier pull wrote stays as it is. With
  * declarations that failed, every skipped server is kept.
+ *
+ * `withheld` names the servers skipped because `target` is a project config
+ * git tracks and the entry would hold a declared secret's value (#879): git
+ * would commit it. An entry an earlier pull wrote there stays as it is.
  */
 export function desiredMcpForTarget(
   target: McpTarget,
   teamDefs: McpServerDef[],
   ctx: DesiredMcpContext,
-): { desired: Map<string, DesiredMcpEntry>; skipped: McpChange[]; kept: Set<string> } {
+): { desired: Map<string, DesiredMcpEntry>; skipped: McpChange[]; kept: Set<string>; withheld: Set<string> } {
   const desired = new Map<string, DesiredMcpEntry>();
   const skipped: McpChange[] = [];
   const kept = new Set<string>();
+  const withheld = new Set<string>();
   // Declarations that failed can't say which variables are secrets, so every
   // missing one may be: pull keeps every installed entry then.
   const declared = declaredSecretKeys(ctx.secrets);
@@ -492,9 +514,9 @@ export function desiredMcpForTarget(
 
     // Pass ${VAR} through where the tool expands it itself, so the secret
     // never lands on disk; otherwise resolve and require every var to exist.
-    // A resolved value is written verbatim into the target file, including
-    // project-scope files that get committed — the team has opted into that
-    // by declaring the server with a ${VAR} a tool cannot expand itself.
+    // A resolved value is written verbatim into the target file; a project
+    // file holding one is kept out of git (#882), and one git already tracks
+    // never gets a declared secret's value.
     const passthrough = supportsEnvExpansion(target.format, target.projectScope, raw);
     let def = raw;
     if (!passthrough) {
@@ -507,6 +529,12 @@ export function desiredMcpForTarget(
           reason: `unresolved variable(s): ${missing.join(', ')}`,
         });
         if (missing.every((key) => declared?.has(key) ?? true)) kept.add(raw.name);
+        continue;
+      }
+      const secrets = referencedVars(raw).filter((key) => declared?.has(key) ?? true);
+      if (secrets.length > 0 && ctx.tracked.has(target.file)) {
+        skipped.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: trackedConfigReason(target.file, secrets) });
+        withheld.add(raw.name);
         continue;
       }
       def = resolved;
@@ -524,7 +552,7 @@ export function desiredMcpForTarget(
     }
   }
 
-  return { desired, skipped, kept };
+  return { desired, skipped, kept, withheld };
 }
 
 /**
@@ -730,7 +758,7 @@ async function reconcileTargets(
   const nothingOwned = Object.values(manifest).every((r) => r.length === 0);
   if (teamDefs.length === 0 && nothingOwned) return { changes, wrote };
 
-  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, options);
+  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, options, targets);
   // A failed declaration is not "no secrets": read as none, every server whose
   // secret the member left in their shell would be removed. Keep what is
   // installed rather than guess which variables are secrets. `removeAll`
@@ -751,10 +779,11 @@ async function reconcileTargets(
     const nextRecords: ManagedMcpRecord[] = [];
 
     // Which of this team's servers apply to this tool, and in what rendered form.
-    const { desired, skipped, kept } = desiredMcpForTarget(target, teamDefs, desiredContext);
+    const { desired, skipped, kept, withheld } = desiredMcpForTarget(target, teamDefs, desiredContext);
     changes.push(...skipped);
+    for (const change of skipped) if (withheld.has(change.server)) log.warn(`MCP server ${change.server} not written: ${change.reason}.`);
     // Their old records, so a manifest this run writes still claims them.
-    const keep = new Map(owned.filter((r) => kept.has(r.name)).map((r) => [r.name, r]));
+    const keep = new Map(owned.filter((r) => kept.has(r.name) || withheld.has(r.name)).map((r) => [r.name, r]));
 
     if (target.format === 'codex') {
       wrote = await applyCodex(target, desired, keep, ownedNames, nextRecords, changes, options) || wrote;
