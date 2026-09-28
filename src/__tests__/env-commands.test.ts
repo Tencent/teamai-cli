@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 import YAML from 'yaml';
+import { execFileSync } from 'node:child_process';
 
 // Mock external dependencies before importing modules
 vi.mock('../config.js', async (importOriginal) => ({
@@ -11,7 +12,8 @@ vi.mock('../config.js', async (importOriginal) => ({
   detectProjectConfig: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock('../utils/git.js', () => ({
+vi.mock('../utils/git.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/git.js')>()),
   pullRepo: vi.fn().mockResolvedValue('Already up to date.'),
 }));
 
@@ -43,7 +45,9 @@ vi.mock('../utils/prompt.js', async (importOriginal) => ({
 import { envList, envAdd, envRemove, envSet, envUnset } from '../env-commands.js';
 import { askSecret, readStdin } from '../utils/prompt.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
-import { NotInitializedError, requireInit } from '../config.js';
+import { NotInitializedError, detectProjectConfig, requireInit } from '../config.js';
+import { resolveAnchors } from '../utils/git.js';
+import { projectDataHome } from '../utils/partition.js';
 import { resolveSecretDeclarations } from '../resources/secrets.js';
 import { log } from '../utils/logger.js';
 import { pullRepo } from '../utils/git.js';
@@ -522,6 +526,39 @@ scope: 'user',
 
       expect(log.info).toHaveBeenCalledWith('Run `teamai pull` to apply it.');
       expect(log.info).not.toHaveBeenCalledWith(expect.stringContaining('env.sh'));
+    });
+
+    it('refuses set, unset and list in a project whose config cannot be read, and writes no store for any team', async () => {
+      const actual = await vi.importActual<typeof import('../config.js')>('../config.js');
+      vi.mocked(detectProjectConfig).mockImplementation(actual.detectProjectConfig);
+      const root = path.join(tmpDir, 'api');
+      await fse.ensureDir(root);
+      execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'pipe' });
+      const anchors = await resolveAnchors(root);
+      if (!anchors) throw new Error('no git anchors for the fixture project');
+      const configPath = path.join(projectDataHome(anchors.projectAnchor), 'config.yaml');
+      await fse.outputFile(configPath, 'repo: [not a config\n');
+      vi.spyOn(process, 'cwd').mockReturnValue(root);
+      vi.mocked(readStdin).mockResolvedValue('fixture-work-token');
+
+      try {
+        await envSet('GITHUB_TOKEN', { stdin: true });
+        await envUnset('GITHUB_TOKEN', {});
+        await envList({});
+      } finally {
+        vi.mocked(process.cwd).mockRestore();
+        vi.mocked(detectProjectConfig).mockResolvedValue(null);
+      }
+
+      expect(await fse.pathExists(path.join(tmpDir, 'home', '.teamai', 'secrets'))).toBe(false);
+      expect(vi.mocked(log.error).mock.calls.map((c) => c[0])).toEqual([
+        expect.stringMatching(/^Cannot tell which team this directory belongs to: .*config\.yaml/),
+        expect.stringMatching(/^Cannot tell which team this directory belongs to: .*config\.yaml/),
+        expect.stringMatching(/^Cannot tell which team this directory belongs to: .*config\.yaml/),
+      ]);
+      expect(String(vi.mocked(log.error).mock.calls[0][0])).toContain(configPath);
+      expect(logged()).not.toContain('fixture-work-token');
+      expect(process.exitCode).toBe(1);
     });
 
     it('unset --global removes only the machine value', async () => {

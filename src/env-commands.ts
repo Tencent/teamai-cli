@@ -1,4 +1,4 @@
-import { requireInit, detectProjectConfig, NotInitializedError } from './config.js';
+import { requireInit, detectProjectConfig, describeUnreadableConfig, NotInitializedError } from './config.js';
 import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
@@ -159,12 +159,20 @@ export async function envUnset(key: string, options: GlobalOptions & { global?: 
 /**
  * This directory's scope. Outside any scope `env set --global` still has
  * somewhere to write, so there `global` gives `none`; otherwise "not
- * initialized" is reported (exit 1) and gives `reported`.
+ * initialized" is reported (exit 1) and gives `reported`. A project config
+ * that cannot be read is reported too: detection would answer with the user
+ * scope, whose team may not be this project's (the rule `pull` follows, #784).
  */
 async function scopeHere(
   global: boolean | undefined,
 ): Promise<{ kind: 'scope'; localConfig: LocalConfig } | { kind: 'none' } | { kind: 'reported' }> {
-  const projectConfig = await detectProjectConfig();
+  const unreadable: string[] = [];
+  const projectConfig = await detectProjectConfig(process.cwd(), (configPath, error) => { unreadable.push(`${configPath}: ${error}`); });
+  const [problem] = unreadable;
+  if (problem !== undefined) {
+    fail(`Cannot tell which team this directory belongs to: ${describeUnreadableConfig(problem)}`);
+    return { kind: 'reported' };
+  }
   if (projectConfig) return { kind: 'scope', localConfig: projectConfig };
   try {
     return { kind: 'scope', localConfig: (await requireInit()).localConfig };
