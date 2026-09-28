@@ -23,6 +23,7 @@ import { autoDetectInit, loadLocalConfig, loadTeamConfig, requireInit } from '..
 import { doctor, type DoctorReport } from '../doctor.js';
 import { envList } from '../env-commands.js';
 import { mcpList } from '../mcp-cmd.js';
+import { EnvHandler } from '../resources/env.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
@@ -230,5 +231,20 @@ describe('a missing declared secret tells the member what to run', () => {
     expect(report.notes).toContain(line);
     expect(warned().some((message) => message.includes('GITLAB_HOST'))).toBe(false);
     expect(JSON.stringify(report)).not.toContain('gitlab.dave.example');
+  });
+
+  // #879 Conflict 10: a shell opened before a team edit carries the old value
+  // through every later command, not only the pull that rewrote env.sh.
+  it('doctor does not call the value an earlier env.sh exported an ignored export', async () => {
+    await fse.remove(path.join(repoPath, 'env', 'secrets.yaml'));
+    const handler = new EnvHandler();
+    await handler.writeResolvedEnv([{ key: 'GITLAB_HOST', value: 'gitlab.old.example' }], teamConfig, localConfig);
+    await handler.writeResolvedEnv([{ key: 'GITLAB_HOST', value: 'gitlab.new.example' }], teamConfig, localConfig);
+    await write('env/env.yaml', 'variables:\n  - key: GITLAB_HOST\n    value: gitlab.new.example\n');
+    vi.stubEnv('GITLAB_HOST', 'gitlab.old.example');
+
+    const { report } = await doctorReport();
+
+    expect((report.notes ?? []).some((note) => note.includes('GITLAB_HOST'))).toBe(false);
   });
 });

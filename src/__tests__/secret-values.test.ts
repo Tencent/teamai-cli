@@ -192,5 +192,30 @@ describe('team secret values', () => {
       expect(await resolve({ GITHUB_TOKEN: 'old-repo-token' })).toEqual({});
       expect(await resolve({ GITHUB_TOKEN: 'hand-export' })).toEqual({ GITHUB_TOKEN: 'environment:hand-export' });
     });
+
+    // A shell opened before a pull keeps what env.sh exported then, through
+    // every later command, not only the one that rewrote it.
+    it('leaves out a value an earlier rewrite of env.sh exported, after a later rewrite dropped it', async () => {
+      const write = (value?: string): Promise<boolean> =>
+        new EnvHandler().writeResolvedEnv(value ? [{ key: 'GITHUB_TOKEN', value }] : [], teamConfig, localConfig);
+      await write('repo-token');
+      await write();
+
+      expect(await resolve({ GITHUB_TOKEN: 'repo-token' })).toEqual({});
+      expect(await resolve({ GITHUB_TOKEN: 'hand-export' })).toEqual({ GITHUB_TOKEN: 'environment:hand-export' });
+    });
+
+    it('records what env.sh exported as hashes beside it, readable by the member only, and forgets the oldest', async () => {
+      const write = (value: string): Promise<boolean> =>
+        new EnvHandler().writeResolvedEnv([{ key: 'GITHUB_TOKEN', value }], teamConfig, localConfig);
+      for (let i = 1; i <= 21; i++) await write(`repo-token-${i}`);
+      await new EnvHandler().writeResolvedEnv([], teamConfig, localConfig);
+
+      const record = path.join(home, '.teamai', 'env.sh.exports.json');
+      expect(await fse.readFile(record, 'utf8')).not.toContain('repo-token');
+      if (process.platform !== 'win32') expect((await fse.stat(record)).mode & 0o777).toBe(0o600);
+      expect(await resolve({ GITHUB_TOKEN: 'repo-token-1' })).toEqual({ GITHUB_TOKEN: 'environment:repo-token-1' });
+      expect(await resolve({ GITHUB_TOKEN: 'repo-token-2' })).toEqual({});
+    });
   });
 });

@@ -915,3 +915,8 @@ the business repo, and it is not `~/.teamai/env`, which is already the user scop
 env backup file. Files are written atomically with mode `0600`. Uninstalling a
 project scope removes only its partition, so the values stay; uninstalling the user
 scope removes `~/.teamai` and them with it. See [Team secrets](team-secrets.md#storage).
+
+Beside each scope's `env.sh`, in `<dataHome>`, `env.sh.exports.json` records what
+that `env.sh` has exported: per key, a SHA-256 of `KEY=VALUE` for the last 20
+values, never a value, mode `0600`. It is machine data like `env.sh` and is
+removed with it. See [Team secrets](team-secrets.md#resolution).

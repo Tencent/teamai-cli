@@ -765,6 +765,8 @@ export function buildSelfModeGitignore(): string {
     // and teammates get them on clone. env.yaml holds plaintext key/value pairs, so
     // only put non-secret config there; keep real secrets out of the repo.
     'env.sh',
+    // What env.sh has exported, as hashes (#879 Conflict 10).
+    'env.sh.exports.json',
     // env.local is the machine-local KEY=value backup pull writes for ${VAR}
     // resolution (self mode uses this name to avoid colliding with the env/ dir).
     'env.local',
@@ -811,6 +813,7 @@ export function buildProjectScopeGitignore(): string {
     '.update-lock',
     'env',
     'env.sh',
+    'env.sh.exports.json',
     'sessions/',
     'dashboard/',
     'usage.jsonl',

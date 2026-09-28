@@ -6,6 +6,7 @@ import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, isSelfMode } from '../types.js';
 import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { recordEnvShExports } from '../env-sh-exports.js';
 import {
   listEntryFiles, readEntryFileText, reportEntryResolution, resolveEntriesFor,
   unknownEntryKeys, writtenList, type EntryFile, type EntryReader,
@@ -202,18 +203,6 @@ function parseEnvYamlDocument(raw: unknown, label: string): EnvYamlRead {
   return { ok: true, variables: parsed.data.variables };
 }
 
-/**
- * What each env.sh exported before this process first rewrote it, by path. A
- * shell opened before the rewrite still carries those values, and they are the
- * team's, not the member's (#879 Conflict 10).
- */
-const exportsBeforeRewrite = new Map<string, ReadonlyMap<string, string>>();
-
-/** The exports of every env.sh this process rewrote, as they stood before. */
-export function envShExportsBeforeRewrite(): Iterable<ReadonlyMap<string, string>> {
-  return exportsBeforeRewrite.values();
-}
-
 function envPushItem(relativePath: string, sourcePath: string): ResourceItem {
   return { name: relativePath.slice('env/'.length), type: 'env', sourcePath, relativePath };
 }
@@ -341,10 +330,12 @@ export class EnvHandler extends ResourceHandler {
     await ensureDir(teamaiHome);
     await writeFile(getEnvBackupPath(localConfig), backupLines.join('\n') + '\n');
 
-    // <teamaiHome>/env.sh (sourceable export file)
-    if (!exportsBeforeRewrite.has(envShPath)) {
-      exportsBeforeRewrite.set(envShPath, parseEnvFile(await readFileSafe(envShPath) ?? ''));
-    }
+    // <teamaiHome>/env.sh (sourceable export file). What it exported before
+    // and after is recorded first: a shell opened before this rewrite still
+    // carries those values, and they are the team's, not the member's (#879
+    // Conflict 10). The old ones are there too for an env.sh an older CLI wrote.
+    const previous = parseEnvFile(await readFileSafe(envShPath) ?? '');
+    await recordEnvShExports(envShPath, [...previous, ...variables.map((v): [string, string] => [v.key, v.value])]);
     await writeFile(envShPath, this.generateEnvFile(variables));
 
     // Inject source line into shell profile if enabled
