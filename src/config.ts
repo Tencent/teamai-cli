@@ -374,16 +374,20 @@ export async function resolveDataHomeForScope(scope: Scope, projectRoot?: string
  * scope its session last recorded (#810). `onUnreadable` is told which file
  * could not be read, for a caller that names it.
  */
-export async function resolveConfigForDir(dir?: string, onUnreadable?: UnreadableConfigSink): Promise<LocalConfig | null> {
+export async function resolveConfigForDir(
+  dir?: string,
+  onUnreadable?: UnreadableConfigSink,
+  options: LoadOptions = {},
+): Promise<LocalConfig | null> {
   const target = dir ?? process.cwd();
-  if (!(await pathExists(target))) return loadLocalConfig();
+  if (!(await pathExists(target))) return loadLocalConfig(options);
   let unreadable = false;
   const project = await detectProjectConfig(target, (configPath, error) => {
     unreadable = true;
     onUnreadable?.(configPath, error);
-  });
+  }, options);
   if (unreadable) return null;
-  return project ?? loadLocalConfig();
+  return project ?? loadLocalConfig(options);
 }
 
 /**

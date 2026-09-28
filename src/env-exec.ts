@@ -52,7 +52,7 @@ export async function envExec(words: readonly string[], options: GlobalOptions, 
     log.error('No command to run. Usage: teamai env exec -- <command> [args...]');
     return { kind: 'exited', code: 2 };
   }
-  const env = await commandEnvironment(cwd);
+  const env = await commandEnvironment(cwd, options.dryRun);
   if (options.dryRun) {
     log.info(`[dry-run] Would run ${file} with this directory's team env`);
     return { kind: 'exited', code: 0 };
@@ -87,9 +87,13 @@ export function exitLike(outcome: ExecOutcome): void {
 }
 
 /** The environment the command runs with, reporting on stderr whatever it leaves out. */
-async function commandEnvironment(cwd: string): Promise<NodeJS.ProcessEnv> {
+async function commandEnvironment(cwd: string, dryRun: boolean | undefined): Promise<NodeJS.ProcessEnv> {
   const unreadable: string[] = [];
-  const localConfig = await resolveConfigForDir(cwd, (configPath, error) => { unreadable.push(`${configPath} could not be read: ${error}.`); });
+  const localConfig = await resolveConfigForDir(
+    cwd,
+    (configPath, error) => { unreadable.push(`${configPath} could not be read: ${error}.`); },
+    { dryRun },
+  );
   if (unreadable.length > 0) {
     log.warn(`${unreadable.join(' ')} No team env variables or secrets were applied; the command runs with the inherited `
       + 'environment. Fix the file, or run `teamai init` again in this project.');

@@ -29,7 +29,7 @@ const envHandler = new EnvHandler();
  * list only, and the command exits non-zero.
  */
 export async function envList(options: GlobalOptions & { reveal?: boolean }): Promise<void> {
-  const localConfig = await requireScope();
+  const localConfig = await requireScope(options.dryRun);
   if (!localConfig) return;
   const teamEnv = await resolveTeamEnv(localConfig);
   const listing = envListing(teamEnv, options);
@@ -66,7 +66,7 @@ export async function envSet(
     return fail(invalidKeyMessage(options.fromEnv, '--from-env variable name'));
   }
 
-  const scope = await scopeHere(options.global);
+  const scope = await scopeHere(options.global, options.dryRun);
   if (scope.kind === 'reported') return;
   const localConfig = scope.kind === 'scope' ? scope.localConfig : null;
   let isVariable = false;
@@ -133,7 +133,7 @@ export async function envSet(
 /** Remove this member's value for a secret or variable, for this team repo or, with `global`, for the machine. */
 export async function envUnset(key: string, options: GlobalOptions & { global?: boolean }): Promise<void> {
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
-  const scope = await scopeHere(options.global);
+  const scope = await scopeHere(options.global, options.dryRun);
   if (scope.kind === 'reported') return;
   const localConfig = scope.kind === 'scope' ? scope.localConfig : null;
 
@@ -162,12 +162,18 @@ export async function envUnset(key: string, options: GlobalOptions & { global?: 
  * initialized" is reported (exit 1) and gives `reported`. A project config
  * that cannot be read is reported too: detection would answer with the user
  * scope, whose team may not be this project's (the rule `pull` follows, #784).
+ * A `dryRun` lookup writes nothing (#866).
  */
 async function scopeHere(
   global: boolean | undefined,
+  dryRun: boolean | undefined,
 ): Promise<{ kind: 'scope'; localConfig: LocalConfig } | { kind: 'none' } | { kind: 'reported' }> {
   const unreadable: string[] = [];
-  const projectConfig = await detectProjectConfig(process.cwd(), (configPath, error) => { unreadable.push(`${configPath}: ${error}`); });
+  const projectConfig = await detectProjectConfig(
+    process.cwd(),
+    (configPath, error) => { unreadable.push(`${configPath}: ${error}`); },
+    { dryRun },
+  );
   const [problem] = unreadable;
   if (problem !== undefined) {
     fail(`Cannot tell which team this directory belongs to: ${describeUnreadableConfig(problem)}`);
@@ -175,7 +181,7 @@ async function scopeHere(
   }
   if (projectConfig) return { kind: 'scope', localConfig: projectConfig };
   try {
-    return { kind: 'scope', localConfig: (await requireInit()).localConfig };
+    return { kind: 'scope', localConfig: (await requireInit({ dryRun })).localConfig };
   } catch (e) {
     if (!(e instanceof NotInitializedError)) throw e;
     if (global) return { kind: 'none' };
@@ -185,8 +191,8 @@ async function scopeHere(
 }
 
 /** This directory's scope, or null once "not initialized" is reported. */
-async function requireScope(): Promise<LocalConfig | null> {
-  const scope = await scopeHere(false);
+async function requireScope(dryRun: boolean | undefined): Promise<LocalConfig | null> {
+  const scope = await scopeHere(false, dryRun);
   return scope.kind === 'scope' ? scope.localConfig : null;
 }
 
@@ -285,7 +291,7 @@ export async function envAdd(
     );
   }
 
-  const localConfig = await requireScope();
+  const localConfig = await requireScope(options.dryRun);
   if (!localConfig) return;
   const repoPath = localConfig.repo.localPath;
 
@@ -399,7 +405,7 @@ export async function envRemove(
   key: string,
   options: GlobalOptions & { role?: string; project?: string; secret?: boolean },
 ): Promise<void> {
-  const localConfig = await requireScope();
+  const localConfig = await requireScope(options.dryRun);
   if (!localConfig) return;
   const repoPath = localConfig.repo.localPath;
 

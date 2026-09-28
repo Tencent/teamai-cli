@@ -31,6 +31,8 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => ({
 
 import { contribute } from '../contribute.js';
 import { loadLocalConfigForScope } from '../config.js';
+import { envList, envUnset } from '../env-commands.js';
+import { envExec } from '../env-exec.js';
 import { pull } from '../pull.js';
 import { push } from '../push.js';
 import { recall } from '../recall.js';
@@ -38,7 +40,7 @@ import { rolesSet } from '../roles-cmd.js';
 import { list, status } from '../status.js';
 import { tagsSubscribe, tagsUnsubscribe } from '../tags.js';
 import { updateReports } from '../utils/reports-branch.js';
-import { log } from '../utils/logger.js';
+import { log, setStderrOnly } from '../utils/logger.js';
 import { legacyProjectSlug } from '../utils/partition.js';
 
 const ROLES_YAML =
@@ -137,6 +139,15 @@ function snapshotTree(root: string): Record<string, string> {
   };
   walk(root);
   return files;
+}
+
+/** `env exec` sends the logger to stderr for the rest of the process; put it back for the next case. */
+async function envExecDryRun(): Promise<void> {
+  try {
+    await envExec(['--', 'true'], { dryRun: true });
+  } finally {
+    setStderrOnly(false);
+  }
 }
 
 const FIXTURES: Array<[string, (root: string) => string]> = [
@@ -254,6 +265,9 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     ['push --dry-run', () => push({ dryRun: true })],
     ['status', () => status({})],
     ['list', () => list(undefined, {})],
+    ['env list --dry-run', () => envList({ dryRun: true })],
+    ['env unset --dry-run', () => envUnset('TOKEN', { dryRun: true })],
+    ['env exec --dry-run', envExecDryRun],
   ];
 
   it.each(LOAD_ONLY_COMMANDS)('%s migrates nothing it loads (#850)', async (_command, run) => {
@@ -288,6 +302,8 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     ['pull --dry-run', () => pull({ dryRun: true })],
     ['status', () => status({})],
     ['list', () => list(undefined, {})],
+    ['env list --dry-run', () => envList({ dryRun: true })],
+    ['env exec --dry-run', envExecDryRun],
   ];
 
   it.each(PROJECT_SCOPE_COMMANDS)('%s adopts no legacy partition on a git project (#850)', async (_command, run) => {
