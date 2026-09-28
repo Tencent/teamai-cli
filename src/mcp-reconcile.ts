@@ -33,6 +33,7 @@ import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
 import { envTable } from './resources/env-key.js';
 import { declaredSecretKeys, type SecretDeclarations } from './resources/secrets.js';
 import { resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
+import { isEnvShMarker } from './env-sh-exports.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import { reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import {
@@ -140,8 +141,9 @@ export async function buildVarTable(localConfig: LocalConfig, teamEnv?: TeamEnv)
   }
   // The environment fills only what the team sets nothing for (#875): a
   // member overrides a team variable with `teamai env set`, for that team.
+  // An env.sh marker says what a shell sourced, and is no server's value.
   for (const [k, v] of Object.entries(process.env)) {
-    if (v !== undefined && !isSecret(k) && !Object.hasOwn(table, k)) table[k] = v;
+    if (v !== undefined && !isSecret(k) && !isEnvShMarker(k) && !Object.hasOwn(table, k)) table[k] = v;
   }
   if (!resolved || !secretKeys || secretKeys.size === 0) return table;
   if (resolved.secrets.kind === 'store-unreadable') {

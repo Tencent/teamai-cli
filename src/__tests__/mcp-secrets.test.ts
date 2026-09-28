@@ -24,6 +24,7 @@ import { requireInit } from '../config.js';
 import { envSet, envUnset } from '../env-commands.js';
 import { readStdin } from '../utils/prompt.js';
 import { buildVarTable, reconcileMcpForConfig } from '../mcp-reconcile.js';
+import { envShMarker } from '../env-sh-exports.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
@@ -136,6 +137,19 @@ describe('MCP servers and declared secrets', () => {
     await reconcileMcpForConfig(teamConfig, localConfig);
 
     expect(await githubAuthorization()).toBeUndefined();
+  });
+
+  it('does not use a value an env.sh no scan finds exported, and gives no server the marker that says so', async () => {
+    const marker = envShMarker(path.join(tmpDir, 'elsewhere', '.teamai'), [['GITHUB_TOKEN', 'project-a-token']]);
+    expect(marker).not.toBeNull();
+    const [name, digests] = marker ?? ['', ''];
+    vi.stubEnv('GITHUB_TOKEN', 'project-a-token');
+    vi.stubEnv(name, digests);
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+
+    expect(await githubAuthorization()).toBeUndefined();
+    expect(Object.hasOwn(await buildVarTable(localConfig), name)).toBe(false);
   });
 
   it("ignores the env.yaml value of a key declared as a secret, and the shell's copy of it", async () => {

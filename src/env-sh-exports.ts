@@ -28,6 +28,43 @@ export function exportDigest(key: string, value: string): string {
   return crypto.createHash('sha256').update(`${key}=${value}`).digest('hex');
 }
 
+/**
+ * The variable each env.sh exports beside its own, naming what it exported:
+ * `TEAMAI_ENV_SH_<data home hash>=<digest prefix> ...`, one digest prefix per
+ * export, never a value. The record above is found by scanning known paths,
+ * and a non-git project keeps its env.sh at `<dir>/.teamai/`, which no scan
+ * reaches; a shell that sourced it carries the marker instead. Named after
+ * the data home, so a shell that sourced the user's env.sh and a project's
+ * keeps both.
+ */
+const MARKER_RE = /^TEAMAI_ENV_SH_[0-9a-f]{10}$/i;
+const MARKED_DIGEST_LENGTH = 12;
+
+export function isEnvShMarker(key: string): boolean {
+  return MARKER_RE.test(key);
+}
+
+function markedDigest(key: string, value: string): string {
+  return exportDigest(key, value).slice(0, MARKED_DIGEST_LENGTH);
+}
+
+/** The marker an env.sh in `dataHome` exports for `exports`, as [name, value]; null when it exports nothing. */
+export function envShMarker(dataHome: string, exports: Iterable<readonly [string, string]>): [string, string] | null {
+  const digests = [...exports].map(([key, value]) => markedDigest(key, value));
+  if (digests.length === 0) return null;
+  const name = `TEAMAI_ENV_SH_${crypto.createHash('sha256').update(path.resolve(dataHome)).digest('hex').slice(0, 10)}`;
+  return [name, digests.join(' ')];
+}
+
+/** Whether a teamai env.sh this environment sourced exported `key=value`, by its markers. */
+export function markedAsExported(env: NodeJS.ProcessEnv): (key: string, value: string) => boolean {
+  const marked = new Set<string>();
+  for (const [name, digests] of Object.entries(env)) {
+    if (digests !== undefined && isEnvShMarker(name)) for (const digest of digests.split(' ')) marked.add(digest);
+  }
+  return (key, value) => marked.has(markedDigest(key, value));
+}
+
 function recordPath(envShPath: string): string {
   return path.join(path.dirname(envShPath), RECORD_FILE);
 }

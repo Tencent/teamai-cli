@@ -7,16 +7,18 @@
  * team now declares as a secret. Those are the team's values, not the
  * member's, and a secret must not fall back to them.
  *
- * Each env.sh keeps a record of what it has exported (env-sh-exports.ts), so a
- * shell opened before any scope's pull keeps being discounted after it.
+ * Each env.sh exports a marker of what it exported, which reaches a shell that
+ * sourced one no scan finds (`<dir>/.teamai/env.sh` of a non-git project), and
+ * keeps a record of what it has exported (env-sh-exports.ts), so a shell
+ * opened before any scope's pull keeps being discounted after it.
  *
- * Not covered: a project in a non-git directory other than this scope
- * (`<dir>/.teamai/env.sh`), a value exported before the last 20 changes of its
- * key, and one an env.sh written by a CLI without the record dropped.
+ * Not covered: a value a shell got from an env.sh no scan finds, written by a
+ * CLI without the marker; a value exported before the last 20 changes of its
+ * key; and one an env.sh written by a CLI without the record dropped.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { exportDigest, readEnvShExports, type EnvShExports } from './env-sh-exports.js';
+import { exportDigest, markedAsExported, readEnvShExports, type EnvShExports } from './env-sh-exports.js';
 import { parseEnvFile } from './resources/env.js';
 import { envValue } from './resources/env-key.js';
 import { getDataHome, getTeamaiHomeDir, type LocalConfig } from './types.js';
@@ -39,8 +41,9 @@ async function teamaiEnvShPaths(localConfig: LocalConfig): Promise<string[]> {
 }
 
 /**
- * For key K, `env[K]` is the member's unless it is empty, equals what a teamai
- * env.sh exports for K or has exported for K since it recorded its exports
+ * For key K, `env[K]` is the member's unless it is empty, a marker in `env`
+ * says a teamai env.sh exported it for K, it equals what a teamai env.sh
+ * exports for K or has exported for K since it recorded its exports
  * (env-sh-exports.ts), or K is a declared secret and it equals this scope's
  * env.yaml value for K.
  */
@@ -56,9 +59,11 @@ export async function memberEnvironment(
     if (content !== null) exported.push(parseEnvFile(content));
     recorded.push(await readEnvShExports(envSh));
   }
+  const marked = markedAsExported(env);
   return (key) => {
     const value = envValue(env, key);
     if (value === undefined || value === '') return undefined;
+    if (marked(key, value)) return undefined;
     if (exported.some((exports) => exports.get(key) === value)) return undefined;
     const digest = exportDigest(key, value);
     if (recorded.some((exports) => exports.get(key)?.has(digest))) return undefined;

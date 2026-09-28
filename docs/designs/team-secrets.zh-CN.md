@@ -119,7 +119,7 @@ teamai env unset GITHUB_TOKEN [--global]
 
 团队值优先于环境，因为它是针对该团队的明确选择：否则 `.zshrc` 中导出的个人 `GITHUB_TOKEN` 会覆盖成员为工作团队设置的 token。本机值适合成员在所有团队中都使用的 token；需要另一个账号的团队设置自己的值，该值优先。
 
-**成员自己的环境。** shell profile 加载最近一次 pull 的 scope 的 `env.sh`，因此环境中也带有 teamai 导出的值。对某个 key，环境中的值若等于本机任一 teamai `env.sh`（`~/.teamai/env.sh`、`~/.teamai/projects/*/env.sh`）当前或以前为该 key 导出的值，或者对已声明的密钥而言等于本 scope 的 `env.yaml` 值，则不计入。在 pull 之前打开的 shell 在之后运行的每条命令中都带着旧值，因此每个 `env.sh` 旁边都有一份记录 `env.sh.exports.json`：对每个 key，记录它最近导出的 20 个值各自的 `KEY=VALUE` SHA-256，从不记录值本身，因此这份记录不会在本机多存一份团队的值或令牌（权限 `0600`）。未覆盖的情况：本 scope 以外、位于非 git 目录的项目（`<dir>/.teamai/env.sh`），早于该 key 最近 20 个值的值，以及由不保留记录的 CLI 从 `env.sh` 中去掉的值。
+**成员自己的环境。** shell profile 加载最近一次 pull 的 scope 的 `env.sh`，因此环境中也带有 teamai 导出的值。对某个 key，环境中的值若等于本机任一 teamai `env.sh`（`~/.teamai/env.sh`、`~/.teamai/projects/*/env.sh`）当前或以前为该 key 导出的值，或者对已声明的密钥而言等于本 scope 的 `env.yaml` 值，则不计入。非 git 项目的 `env.sh` 位于 `<dir>/.teamai/env.sh`，扫描已知路径找不到它，因此每个 `env.sh` 还会导出一个标记变量 `TEAMAI_ENV_SH_<其 data home 的 SHA-256 前 10 位十六进制>`，其值列出它每个导出的 `KEY=VALUE` SHA-256 前 12 位十六进制，从不包含值本身；环境中某个标记列出的值同样不计入。在 pull 之前打开的 shell 在之后运行的每条命令中都带着旧值，因此每个 `env.sh` 旁边都有一份记录 `env.sh.exports.json`：对每个 key，记录它最近导出的 20 个值各自的 `KEY=VALUE` SHA-256，从不记录值本身，因此这份记录不会在本机多存一份团队的值或令牌（权限 `0600`）。在 `env exec` 下运行的命令保留这些标记，因此嵌套运行的 teamai 读到相同的来源信息；MCP 服务器永远拿不到标记。未覆盖的情况：shell 从扫描找不到、且由不写标记的 CLI 生成的 `env.sh` 得到的值，早于该 key 最近 20 个值的值，以及由不保留记录的 CLI 从 `env.sh` 中去掉的值。
 
 ### 变量
 

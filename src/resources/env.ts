@@ -6,7 +6,7 @@ import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, isSelfMode } from '../types.js';
 import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { recordEnvShExports } from '../env-sh-exports.js';
+import { envShMarker, isEnvShMarker, recordEnvShExports } from '../env-sh-exports.js';
 import { ENV_KEY_RE } from './env-key.js';
 import { SECRETS_LAYOUT } from './secrets.js';
 import {
@@ -142,7 +142,8 @@ export function parseEnvFile(content: string): Map<string, string> {
   while (i < content.length) {
     const eq = content.startsWith(PREFIX, i) ? content.indexOf('=', i + PREFIX.length) : -1;
     const key = eq === -1 ? '' : content.slice(i + PREFIX.length, eq);
-    if (eq === -1 || !ENV_KEY_RE.test(key) || content[eq + 1] !== "'") {
+    // The marker is not a team variable (env-sh-exports.ts), and fits on its line.
+    if (eq === -1 || !ENV_KEY_RE.test(key) || content[eq + 1] !== "'" || isEnvShMarker(key)) {
       const nl = content.indexOf('\n', i);
       if (nl === -1) break;
       i = nl + 1;
@@ -327,7 +328,9 @@ export class EnvHandler extends ResourceHandler {
     // Conflict 10). The old ones are there too for an env.sh an older CLI wrote.
     const previous = parseEnvFile(await readFileSafe(envShPath) ?? '');
     await recordEnvShExports(envShPath, [...previous, ...variables.map((v): [string, string] => [v.key, v.value])]);
-    await writeFile(envShPath, this.generateEnvFile(variables));
+    const envSh = this.generateEnvFile(variables);
+    const marker = envShMarker(teamaiHome, parseEnvFile(envSh));
+    await writeFile(envShPath, marker ? `${envSh}export ${marker[0]}='${marker[1]}'\n` : envSh);
 
     // Inject source line into shell profile if enabled
     const inject = teamConfig.sharing.env.injectShellProfile !== false;

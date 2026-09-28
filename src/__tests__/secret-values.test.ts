@@ -10,7 +10,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import YAML from 'yaml';
-import { EnvHandler, type EnvVariable } from '../resources/env.js';
+import { EnvHandler, parseEnvFile, type EnvVariable } from '../resources/env.js';
 import { resolveTeamEnv, secretState, type SecretValue, type StoreResolution, type TeamEnv } from '../env-resolution.js';
 import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, writeSecretStore } from '../secret-store.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
@@ -307,6 +307,44 @@ describe('team secret values', () => {
 
       expect(await resolve({ GITHUB_TOKEN: 'repo-token' })).toEqual({});
       expect(await resolve({ GITHUB_TOKEN: 'hand-export' })).toEqual({ GITHUB_TOKEN: 'environment:hand-export' });
+    });
+
+    // No scan finds every env.sh a shell may have loaded: a non-git project
+    // keeps its own under `<dir>/.teamai/`. The marker each one exports says so.
+    describe('an env.sh at a path no scan reaches', () => {
+      const MARKER_LINE = /^export (TEAMAI_ENV_SH_[0-9a-f]{10})='([^']*)'$/m;
+      /** The environment of a shell that sourced a project's env.sh in `<tmp>/elsewhere/.teamai`. */
+      const sourcedProjectEnvSh = async (variables: EnvVariable[]): Promise<{ env: NodeJS.ProcessEnv; content: string }> => {
+        const projectRoot = path.join(tmpDir, 'elsewhere');
+        const project: LocalConfig = { ...localConfig, scope: 'project', projectRoot };
+        await new EnvHandler().writeResolvedEnv(variables, teamConfig, project);
+        const content = await fse.readFile(path.join(projectRoot, '.teamai', 'env.sh'), 'utf8');
+        const env = Object.fromEntries([...content.matchAll(/^export (\w+)='([^']*)'$/gm)].map((m) => [m[1], m[2]]));
+        return { env, content };
+      };
+
+      it('leaves out a value that env.sh exported', async () => {
+        const { env } = await sourcedProjectEnvSh([variable('GITHUB_TOKEN', 'project-a-token'), variable('API_URL', 'https://a')]);
+
+        expect(env.GITHUB_TOKEN).toBe('project-a-token');
+        expect(await resolve(env)).toEqual({});
+      });
+
+      it('counts a different value the member exported by hand for the same key', async () => {
+        const { env } = await sourcedProjectEnvSh([variable('GITHUB_TOKEN', 'project-a-token')]);
+
+        expect(await resolve({ ...env, GITHUB_TOKEN: 'hand-export' })).toEqual({ GITHUB_TOKEN: 'environment:hand-export' });
+      });
+
+      it('exports one marker of hashes, never a value, that env.sh does not read back as a variable', async () => {
+        const { content } = await sourcedProjectEnvSh([variable('GITHUB_TOKEN', 'project-a-token'), variable('API_URL', 'https://a')]);
+        const marker = content.match(MARKER_LINE);
+
+        expect(marker?.[2]).toMatch(/^[0-9a-f]{12} [0-9a-f]{12}$/);
+        expect(marker?.[0]).not.toContain('project-a-token');
+        expect(marker?.[0]).not.toContain('https://a');
+        expect([...parseEnvFile(content).keys()]).toEqual(['GITHUB_TOKEN', 'API_URL']);
+      });
     });
 
     it('records what env.sh exported as hashes beside it, readable by the member only, and forgets the oldest', async () => {
