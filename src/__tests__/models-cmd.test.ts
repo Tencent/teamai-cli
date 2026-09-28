@@ -1,6 +1,7 @@
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsSwitch } from '../models-cmd.js';
 import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../models/profile.js';
@@ -119,6 +120,27 @@ describe('models commands', () => {
     expect(await fse.readFile(file, 'utf8')).toBe(before);
     await modelsConfigure('local:mine', { name: 'Renamed', fromEnv: 'MY_MODEL_KEY' });
     expect((await loadLocalProfiles()).profiles[0].name).toBe('Renamed');
+  });
+
+  it('stores a key piped with --api-key-stdin and refuses a terminal or empty input', async () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+    const pipeStdin = (chunks: string[], isTTY?: true) => Object.defineProperty(process, 'stdin', {
+      value: Object.assign(Readable.from(chunks), { isTTY }), configurable: true,
+    });
+    try {
+      await addMine();
+      pipeStdin(['sk-pi', 'ped\r\n']);
+      await modelsConfigure('local:mine', { apiKeyStdin: true });
+      expect(Object.values(await loadModelInputs(getLocalValuesPath())).map((entry) => entry.API_KEY))
+        .toEqual([{ value: 'sk-piped' }]);
+
+      pipeStdin([], true);
+      await expect(modelsConfigure('local:mine', { apiKeyStdin: true })).rejects.toThrow('--api-key-stdin expects piped stdin');
+      pipeStdin(['\n']);
+      await expect(modelsConfigure('local:mine', { apiKeyStdin: true })).rejects.toThrow('No API key was provided on stdin');
+    } finally {
+      if (original) Object.defineProperty(process, 'stdin', original);
+    }
   });
 
   it('switches every compatible installed agent by default and lists where a profile is active', async () => {
