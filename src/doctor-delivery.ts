@@ -532,15 +532,9 @@ export async function buildEntryScopeKeyCheck(ctx: DoctorContext): Promise<Check
  */
 export async function buildEntryResolutionChecks(ctx: DoctorContext): Promise<Check[]> {
   const { describeEntryFailure } = await import('./namespaced-entries.js');
-  const names: Partial<Record<string, string>> = {
-    hooks: 'Team hooks can be resolved',
-    models: 'Team model profiles can be resolved',
-    secrets: 'Team secrets can be resolved',
-  };
   const checks: Check[] = [];
-  for (const { layout, resolution } of await resolveEntryTypes(ctx.localConfig)) {
-    const name = names[layout.label];
-    if (name === undefined || resolution.kind !== 'failed') continue;
+  for (const { checkName: name, resolution } of await resolveEntryTypes(ctx.localConfig)) {
+    if (name === null || resolution.kind !== 'failed') continue;
     checks.push({ name, source: 'local', check: async () => false, fix: describeEntryFailure(resolution.failure) });
   }
   return checks;
@@ -577,8 +571,14 @@ export async function entryNamespaceNotes(ctx: DoctorContext): Promise<string[]>
   return (await resolveEntryTypes(ctx.localConfig)).flatMap(({ layout, resolution }) => describeEntryNotes(layout, resolution));
 }
 
-/** Every namespaced entry file set, each with the layout its messages use. */
-async function resolveEntryTypes(localConfig: LocalConfig): Promise<{ layout: EntryLayout; resolution: EntryResolution<unknown> }[]> {
+/**
+ * Every namespaced entry file set, each with the layout its messages use and
+ * the doctor check that fails when it does not resolve (null for env and MCP,
+ * whose delivery checks report it).
+ */
+async function resolveEntryTypes(
+  localConfig: LocalConfig,
+): Promise<{ layout: EntryLayout; resolution: EntryResolution<unknown>; checkName: string | null }[]> {
   if (localConfig.repo.kind === 'http') return [];
   const { entryLayout, resolveEntriesFor } = await import('./namespaced-entries.js');
   const { envEntryReader } = await import('./resources/env.js');
@@ -587,11 +587,23 @@ async function resolveEntryTypes(localConfig: LocalConfig): Promise<{ layout: En
   const { mcpEntryReader } = await import('./resources/mcp.js');
   const { modelsEntryReader } = await import('./models/profile.js');
   return [
-    { layout: entryLayout('env'), resolution: await resolveEntriesFor(envEntryReader, localConfig) },
-    { layout: SECRETS_LAYOUT, resolution: await resolveEntriesFor(secretsEntryReader, localConfig) },
-    { layout: entryLayout('hooks'), resolution: await resolveEntriesFor(hooksEntryReader, localConfig) },
-    { layout: entryLayout('mcp'), resolution: await resolveEntriesFor(mcpEntryReader, localConfig) },
-    { layout: entryLayout('models'), resolution: await resolveEntriesFor(modelsEntryReader, localConfig) },
+    { layout: entryLayout('env'), resolution: await resolveEntriesFor(envEntryReader, localConfig), checkName: null },
+    {
+      layout: SECRETS_LAYOUT,
+      resolution: await resolveEntriesFor(secretsEntryReader, localConfig),
+      checkName: 'Team secrets can be resolved',
+    },
+    {
+      layout: entryLayout('hooks'),
+      resolution: await resolveEntriesFor(hooksEntryReader, localConfig),
+      checkName: 'Team hooks can be resolved',
+    },
+    { layout: entryLayout('mcp'), resolution: await resolveEntriesFor(mcpEntryReader, localConfig), checkName: null },
+    {
+      layout: entryLayout('models'),
+      resolution: await resolveEntriesFor(modelsEntryReader, localConfig),
+      checkName: 'Team model profiles can be resolved',
+    },
   ];
 }
 
