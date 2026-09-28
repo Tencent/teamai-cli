@@ -29,7 +29,8 @@ const envHandler = new EnvHandler();
  * list only, and the command exits non-zero.
  */
 export async function envList(options: GlobalOptions & { reveal?: boolean }): Promise<void> {
-  const localConfig = await requireScope(options.dryRun);
+  // Read-only, so `dryRun: true` unconditionally, as in `status` and `list` (#850).
+  const localConfig = await requireScope(true);
   if (!localConfig) return;
   const teamEnv = await resolveTeamEnv(localConfig);
   const listing = envListing(teamEnv, options);

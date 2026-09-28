@@ -254,8 +254,8 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
   // The command-level half of #850. Each of these reaches the legacy role
   // migration through a loader it used to call bare, so the fixture's
   // `config.yaml` gained `primaryRole` even though nothing had asked to write.
-  // `pull`/`push` carry `--dry-run`; `status`/`list` are read-only and pass it
-  // unconditionally (see the note at their `autoDetectInit` call site).
+  // `pull`/`push` carry `--dry-run`; `status`/`list`/`env list` are read-only
+  // and pass it unconditionally (see the note at their `autoDetectInit` call site).
   //
   // The positive control is the test directly above: the SAME fixture does gain
   // `primaryRole` when the flag is absent, so an unchanged tree here is a real
@@ -265,7 +265,7 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     ['push --dry-run', () => push({ dryRun: true })],
     ['status', () => status({})],
     ['list', () => list(undefined, {})],
-    ['env list --dry-run', () => envList({ dryRun: true })],
+    ['env list', () => envList({})],
     ['env unset --dry-run', () => envUnset('TOKEN', { dryRun: true })],
     ['env exec --dry-run', envExecDryRun],
   ];
@@ -302,7 +302,7 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     ['pull --dry-run', () => pull({ dryRun: true })],
     ['status', () => status({})],
     ['list', () => list(undefined, {})],
-    ['env list --dry-run', () => envList({ dryRun: true })],
+    ['env list', () => envList({})],
     ['env exec --dry-run', envExecDryRun],
   ];
 
