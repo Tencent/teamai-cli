@@ -43,6 +43,7 @@ import {
 export type CheckSource = 'local' | 'provider';
 import { hasPiHooks } from './pi-hooks.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
+import { resolveTeamEnv, type TeamEnv } from './env-resolution.js';
 
 export interface Check {
   name: string;
@@ -90,6 +91,8 @@ export interface DoctorContext {
   hookToolPaths: TeamaiConfig['toolPaths'];
   /** Where hooks are actually injected — see `resolveHookScope` (#264). */
   baseDir: string;
+  /** This scope's env, resolved once for every check that reads it (env-resolution.ts); none in HTTP mode. */
+  teamEnv?: TeamEnv;
 }
 
 export interface DoctorOptions extends GlobalOptions {
@@ -334,8 +337,9 @@ export async function resolveDoctorContext(): Promise<DoctorContext | null> {
     )
     : {};
   const baseDir = hookScope.baseDir;
+  const teamEnv = localConfig.repo.kind === 'http' ? undefined : await resolveTeamEnv(localConfig);
 
-  return { localConfig, teamConfig, toolPaths, hookToolPaths, baseDir };
+  return { localConfig, teamConfig, toolPaths, hookToolPaths, baseDir, teamEnv };
 }
 
 /**
@@ -558,7 +562,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   const notes = [
     ...await buildNamespaceNotes(ctx),
     ...await entryNamespaceNotes(ctx),
-    ...(await envAdvisories(localConfig, ctx.teamConfig)).map(describeEnvAdvisory),
+    ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
     ...(codexNote ? [codexNote] : []),
   ];
 

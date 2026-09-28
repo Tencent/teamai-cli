@@ -65,7 +65,7 @@ describe('team secret declarations', () => {
     await write('env/secrets.yaml', 'secrets:\n  - { key: A }\n');
     await write('env/billing/secrets.yaml', 'secrets:\n  - { key: B }\n');
 
-    const declarations = await resolveSecretDeclarations(config(), ['billing']);
+    const declarations = await resolveSecretDeclarations(config(), { active: ['billing'] });
 
     expect(declarations.kind === 'resolved' && declarations.entries.map((entry) => entry.name)).toEqual(['A', 'B']);
   });
@@ -106,7 +106,7 @@ describe('team secret declarations', () => {
   it('fails when a namespace file repeats a key, naming it a secret', async () => {
     await write('env/secrets.yaml', 'secrets:\n  - { key: A }\n  - { key: A }\n');
 
-    const declarations = await resolveSecretDeclarations(config(), []);
+    const declarations = await resolveSecretDeclarations(config(), { active: [] });
 
     expect(declarations.kind === 'failed' && describeEntryFailure(declarations.failure)).toBe(
       'env/secrets.yaml defines secret "A" more than once. Team secrets were not resolved this run; env variables and MCP servers stay as they are. '

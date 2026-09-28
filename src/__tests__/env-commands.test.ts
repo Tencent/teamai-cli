@@ -159,9 +159,9 @@ scope: 'user',
       await envList({ reveal: true });
 
       const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
-      expect(allOutput).toContain('API_BASE=checkout-value  (checkout, overrides root)');
-      expect(allOutput).toContain('SHARED=s  (root)');
-      expect(allOutput).toContain('CHECKOUT_ONLY=c  (checkout)');
+      expect(allOutput).toContain('API_BASE=checkout-value  env.yaml  (checkout, overrides root)');
+      expect(allOutput).toContain('SHARED=s  env.yaml  (root)');
+      expect(allOutput).toContain('CHECKOUT_ONLY=c  env.yaml  (checkout)');
       expect(allOutput).not.toContain('BILLING_ONLY');
     });
 
@@ -214,7 +214,7 @@ scope: 'user',
       await envList({ reveal: true, verbose: true });
 
       const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
-      expect(allOutput).toContain('API_URL=u  (root)');
+      expect(allOutput).toContain('API_URL=u  env.yaml  (root)');
       expect(allOutput).toContain('Team secrets (2):');
       expect(allOutput).toContain('GITHUB_TOKEN  environment  (root)');
       expect(allOutput).toContain('GITLAB_TOKEN  missing  (root)');
@@ -237,14 +237,17 @@ scope: 'user',
       expect(log.info).not.toHaveBeenCalledWith('No env variables defined');
     });
 
-    it('still lists the variables when the secrets file is broken, and says so in secret wording', async () => {
-      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+    // #879 Conflict 14: while the declarations fail, any variable may be a
+    // secret whose repo value is ignored, so no value is shown, --reveal included.
+    it('still lists the variables when the secrets file is broken, without their values, and says so in secret wording', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'fixture-url' }] }));
       await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: [\n');
 
       await envList({ reveal: true });
 
       const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
-      expect(allOutput).toContain('API_URL=u  (root)');
+      expect(allOutput).toContain('API_URL  (root)');
+      expect(allOutput).not.toContain('fixture-url');
       expect(log.error).toHaveBeenCalledWith(expect.stringMatching(
         /^env\/secrets\.yaml is not valid YAML: .*Team secrets were not resolved this run; env variables and MCP servers stay as they are\./s,
       ));
@@ -509,6 +512,35 @@ scope: 'user',
       expect(log.info).toHaveBeenCalledWith('GITHUB_TOKEN has no value set for this machine. Nothing was changed.');
     });
 
+    it('env list shows the member\'s value of an overridden variable, as team, and the team\'s value otherwise', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({
+        variables: [{ key: 'GITLAB_HOST', value: 'gitlab.team.example' }, { key: 'API_URL', value: 'u' }],
+      }));
+      vi.mocked(readStdin).mockResolvedValue('gitlab.dave.example');
+      await envSet('GITLAB_HOST', { stdin: true });
+      consoleSpy.mockClear();
+
+      await envList({ reveal: true });
+
+      expect(logged()).toContain('GITLAB_HOST=gitlab.dave.example  team  (root)');
+      expect(logged()).toContain('API_URL=u  env.yaml  (root)');
+      expect(logged()).not.toContain('gitlab.team.example');
+    });
+
+    it('env list shows unreadable, not missing, while the member\'s values file can\'t be read, and exits 1', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      await fse.outputFile(storeFile(), '{ "GITHUB_TOKEN": { "value": ghp_fixture_value } }');
+
+      await envList({ reveal: true });
+
+      expect(logged()).toContain('GITHUB_TOKEN  unreadable  (root)');
+      expect(logged()).toContain('API_URL  unreadable  (root)');
+      expect(logged()).toContain(`${storeFile()} is not valid JSON`);
+      expect(logged()).not.toContain('ghp_fixture_value');
+      expect(logged()).not.toContain('GITHUB_TOKEN is not set');
+      expect(process.exitCode).toBe(1);
+    });
+
     // #879 Conflict 13: a key declared twice is listed only as a secret.
     it('env list --reveal leaves out the env.yaml value of a key declared as a secret', async () => {
       await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({
@@ -518,7 +550,7 @@ scope: 'user',
       await envList({ reveal: true });
 
       expect(logged()).toContain('Team env variables (1):');
-      expect(logged()).toContain('API_URL=u  (root)');
+      expect(logged()).toContain('API_URL=u  env.yaml  (root)');
       expect(logged()).toContain('GITHUB_TOKEN  missing  (root)');
       expect(logged()).not.toContain('fixture-repo-value');
     });

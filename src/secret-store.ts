@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { getTeamValuesPath } from './models/profile.js';
-import { ENV_KEY_RE } from './resources/env.js';
+import { ENV_KEY_RE } from './resources/env-key.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
 import { jsonSyntaxErrorOffset, lineAndColumn } from './utils/json-position.js';

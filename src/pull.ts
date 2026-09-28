@@ -46,12 +46,11 @@ import {
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
 import { deliversEveryNamespace } from './resource-namespaces.js';
-import { reportEntryResolution, resolveEntries } from './namespaced-entries.js';
+import { reportEntryResolution } from './namespaced-entries.js';
 import { resetWarnOnce } from './utils/warn-once.js';
-import { envEntryReader, type EnvVariable } from './resources/env.js';
-import {
-  declaredSecretKeys, envShVariables, resolveSecretDeclarations, resolveVariableValues, variablesKeptWarning,
-} from './resources/secrets.js';
+import type { EnvVariable } from './resources/env.js';
+import { declaredSecretKeys } from './resources/secrets.js';
+import { envShVariables, resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
@@ -458,6 +457,21 @@ function activeEnvNamespaces(roleContext: RolePullContext | null): string[] | nu
 }
 
 /**
+ * This scope's env for this pull, in the role context's namespaces. Kept in
+ * `teamEnvs` so the MCP and advisory stages use the same resolution rather
+ * than read every file again.
+ */
+async function resolvePullEnv(
+  localConfig: LocalConfig,
+  roleContext: RolePullContext | null,
+  teamEnvs: Map<LocalConfig, TeamEnv> | undefined,
+): Promise<TeamEnv> {
+  const teamEnv = await resolveTeamEnv(localConfig, { active: activeEnvNamespaces(roleContext) });
+  teamEnvs?.set(localConfig, teamEnv);
+  return teamEnv;
+}
+
+/**
  * The env variables to write to env.sh, or null to leave it as it is. A key
  * the team also declares as a secret (#875) resolves as the secret, so its
  * repo value is left out; secret declarations that cannot be used are
@@ -467,19 +481,16 @@ function activeEnvNamespaces(roleContext: RolePullContext | null): string[] | nu
  * holds no copy of a value the member keeps elsewhere. A values file that cannot be read
  * keeps env.sh as it is too.
  */
-async function deliverableEnvVariables(localConfig: LocalConfig, roleContext: RolePullContext | null): Promise<EnvVariable[] | null> {
-  const resolution = await resolveEntries(envEntryReader, localConfig, activeEnvNamespaces(roleContext));
-  reportEntryResolution(resolution);
-  const declarations = await resolveSecretDeclarations(localConfig, activeEnvNamespaces(roleContext));
+function deliverableEnvVariables(teamEnv: TeamEnv): EnvVariable[] | null {
+  const { variables, declarations } = teamEnv;
+  reportEntryResolution(variables);
   if (declarations.kind !== 'absent') reportEntryResolution(declarations);
-  const secretKeys = declaredSecretKeys(declarations);
-  if (resolution.kind === 'failed' || !secretKeys) return null;
-  const values = await resolveVariableValues(localConfig, resolution.entries, secretKeys);
-  if (values.kind === 'store-unreadable') {
-    log.warn(variablesKeptWarning(values.reason));
+  if (variables.kind === 'failed' || !declaredSecretKeys(declarations)) return null;
+  if (teamEnv.variableValues.kind === 'store-unreadable') {
+    log.warn(variablesKeptWarning(teamEnv.variableValues.reason));
     return null;
   }
-  return envShVariables(resolution.entries, values.values);
+  return envShVariables(variables.entries, teamEnv.variableValues.values);
 }
 
 /**
@@ -505,9 +516,10 @@ async function reconcileEnvForUnchangedRepo(
   freshConfig: TeamaiConfig,
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
+  teamEnvs: Map<LocalConfig, TeamEnv> | undefined,
 ): Promise<void> {
   try {
-    const variables = await deliverableEnvVariables(localConfig, roleContext);
+    const variables = deliverableEnvVariables(await resolvePullEnv(localConfig, roleContext, teamEnvs));
     if (!variables) return;
     await new EnvHandler().writeResolvedEnv(variables, freshConfig, localConfig);
   } catch (e) {
@@ -713,6 +725,8 @@ async function pullForScope(
   } = {},
   /** Set to `{ completed: true }` on a real (non-dry-run) sync. See pull(). */
   result?: { completed: boolean; docsSyncFailed: boolean },
+  /** Collects this scope's env resolution for the stages after it (see resolvePullEnv). */
+  teamEnvs?: Map<LocalConfig, TeamEnv>,
 ): Promise<void> {
   const scopeLabel = localConfig.scope;
   const revisionField = policy.revisionField ?? 'lastPullRev';
@@ -1051,7 +1065,7 @@ async function pullForScope(
           // scope a variable this CLI version now withholds; the Step 2 env
           // branch below is unreachable from here.
           if (resourceTypes.includes('env')) {
-            await reconcileEnvForUnchangedRepo(freshConfig, localConfig, roleContext);
+            await reconcileEnvForUnchangedRepo(freshConfig, localConfig, roleContext, teamEnvs);
           }
           // The knowledge branch has its own history: a teammate's contribution
           // moves teamai-learnings without touching main, so main's revision is
@@ -1118,7 +1132,7 @@ async function pullForScope(
       // even when the root file is absent or empty: rewriting env.sh from the
       // resolved set is what removes a deactivated namespace's variables. A
       // file that cannot be used, or a name defined twice, keeps env.sh as is.
-      const variables = await deliverableEnvVariables(localConfig, roleContext);
+      const variables = deliverableEnvVariables(await resolvePullEnv(localConfig, roleContext, teamEnvs));
       if (!variables) continue;
       const countLabel = `${variables.length} env variable(s)`;
 
@@ -1860,6 +1874,8 @@ export async function pull(
   const reported = new Set<string>();
   // A later successful scope must not hide an earlier docs failure (or vice versa).
   const syncResult = { completed: false, docsSyncFailed: false };
+  // Each scope's env, resolved once by its env stage (resolvePullEnv).
+  const teamEnvs = new Map<LocalConfig, TeamEnv>();
 
   // Whether HOME's settings.json still has the pre-dispatch hook format. Read now
   // (HOME-only, no shared clone), but the actual reinject runs later under the
@@ -1952,7 +1968,7 @@ export async function pull(
         } else {
           activeUserConfig = loadedUserConfig;
           if (await lockScope(activeUserConfig)) {
-            await pullForScope(activeUserConfig, options, reported, {}, syncResult);
+            await pullForScope(activeUserConfig, options, reported, {}, syncResult, teamEnvs);
           }
         }
       } else if (inheritUserScope) {
@@ -1969,7 +1985,7 @@ export async function pull(
   if (projectConfig) {
     try {
       if (await lockScope(projectConfig)) {
-        await pullForScope(projectConfig, options, reported, {}, syncResult);
+        await pullForScope(projectConfig, options, reported, {}, syncResult, teamEnvs);
       }
     } catch (e) {
       log.warn(`Project-scope pull error: ${(e as Error).message}`);
@@ -2016,12 +2032,12 @@ export async function pull(
 
   // 3.6. Reconcile team MCP servers. Outside pullForScope for the same reason as
   // hooks. User-scope MCP remains isolated in project mode.
-  await reconcileMcpAllScopes(reconcileUser, reconcileProject, options);
+  await reconcileMcpAllScopes(reconcileUser, reconcileProject, options, teamEnvs);
 
   // 3.6b. What the member should run for a team secret with no value (#875).
   // Not on the silent session-start pull: its output is discarded, and it runs
   // on every session.
-  if (!options.silent) await reportEnvAdvisories(reconcileUser, reconcileProject);
+  if (!options.silent) await reportEnvAdvisories(reconcileUser, reconcileProject, teamEnvs);
 
   // 3.7. Reconcile the team co-author policy (does an AI tool stamp a
   // Co-Authored-By / attribution trailer on its commits?). Outside pullForScope
@@ -2295,6 +2311,7 @@ async function reconcileMcpAllScopes(
   userConfig: LocalConfig | null,
   projectConfig: LocalConfig | null,
   options: GlobalOptions,
+  teamEnvs: Map<LocalConfig, TeamEnv>,
 ): Promise<void> {
   // Same contract as the hooks stage: resolve and report the entry warnings on
   // a dry run, skip the writes. `reconcileMcpForConfig` already gates every
@@ -2306,7 +2323,9 @@ async function reconcileMcpAllScopes(
       const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
       if (!teamConfig) continue;
       const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
-      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, { force: options.force, dryRun: options.dryRun });
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, {
+        force: options.force, dryRun: options.dryRun, teamEnv: await scopeEnv(localConfig, teamEnvs),
+      });
 
       const applied = changes.filter((c) => c.action !== 'skipped');
       for (const c of changes) {
@@ -2335,16 +2354,34 @@ async function reconcileMcpAllScopes(
  * declared as a secret and set in env.yaml. After the MCP reconcile, so a kept
  * entry is the one this pull left.
  */
-async function reportEnvAdvisories(userConfig: LocalConfig | null, projectConfig: LocalConfig | null): Promise<void> {
+async function reportEnvAdvisories(
+  userConfig: LocalConfig | null,
+  projectConfig: LocalConfig | null,
+  teamEnvs: Map<LocalConfig, TeamEnv>,
+): Promise<void> {
   const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
   for (const localConfig of scopes) {
     try {
       const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
-      for (const advisory of await envAdvisories(localConfig, teamConfig)) log.warn(describeEnvAdvisory(advisory));
+      const teamEnv = await scopeEnv(localConfig, teamEnvs);
+      for (const advisory of await envAdvisories(localConfig, teamConfig, teamEnv)) log.warn(describeEnvAdvisory(advisory));
     } catch (e) {
       log.debug(`[${localConfig.scope}] Env advisories skipped: ${(e as Error).message}`);
     }
   }
+}
+
+/**
+ * The env this pull resolved for the scope, or a fresh resolution when its env
+ * stage did not run (HTTP mode delivers none). Kept for the next stage.
+ */
+async function scopeEnv(localConfig: LocalConfig, teamEnvs: Map<LocalConfig, TeamEnv>): Promise<TeamEnv | undefined> {
+  if (localConfig.repo.kind === 'http') return undefined;
+  const known = teamEnvs.get(localConfig);
+  if (known) return known;
+  const teamEnv = await resolveTeamEnv(localConfig);
+  teamEnvs.set(localConfig, teamEnv);
+  return teamEnv;
 }
 
 /**

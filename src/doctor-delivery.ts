@@ -451,7 +451,7 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
   if (teamDefs.length === 0) return [];
 
   const targets = await resolveMcpTargets(teamConfig, localConfig);
-  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig);
+  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv: ctx.teamEnv });
   const excludedByUser = new Set(localConfig.excludedSkills ?? []);
 
   const checks: Check[] = [];
@@ -621,28 +621,24 @@ async function envDeliveryProblems(
   const none = { problems: [], staleProfiles: [] };
   if (teamConfig?.sharing?.env?.injectShellProfile === false) return none;
 
-  const { EnvHandler, envEntryReader } = await import('./resources/env.js');
+  const { EnvHandler } = await import('./resources/env.js');
   const envHandler = new EnvHandler();
 
   // The variables this member and directory receive: the same resolution pull
   // writes env.sh from, not a second copy of it. A file that cannot be used, or
   // a name defined twice, is reported here as pull reports it (#662), and a
   // deliberate `variables: []` is not.
-  const { resolveEntriesFor, describeEntryFailure } = await import('./namespaced-entries.js');
-  const resolution = await resolveEntriesFor(envEntryReader, localConfig);
+  const { describeEntryFailure } = await import('./namespaced-entries.js');
+  const { envShVariables, resolveTeamEnv } = await import('./env-resolution.js');
+  const teamEnv = ctx.teamEnv ?? await resolveTeamEnv(localConfig);
+  const { variables: resolution, declarations: secrets, variableValues: values } = teamEnv;
   if (resolution.kind === 'failed') return { problems: [describeEntryFailure(resolution.failure)], staleProfiles: [] };
   // A key the team also declares as a secret is not delivered (#875); declarations
   // that cannot be read keep env.sh as it is, as a broken env file does.
-  const {
-    declaredSecretKeys, envShVariables, resolveSecretDeclarations, resolveVariableValues,
-  } = await import('./resources/secrets.js');
-  const secrets = await resolveSecretDeclarations(localConfig);
   if (secrets.kind === 'failed') return { problems: [describeEntryFailure(secrets.failure)], staleProfiles: [] };
-  const secretKeys = declaredSecretKeys(secrets);
   // A variable the member set for this team is owed their value, and one set
   // with `--from-env` is not owed at all (#875); a values file that cannot be
   // read keeps env.sh as it is, as pull does.
-  const values = await resolveVariableValues(localConfig, resolution.entries, secretKeys);
   if (values.kind === 'store-unreadable') return { problems: [values.reason], staleProfiles: [] };
   const declared = envShVariables(resolution.entries, values.values);
   const deliverable = new Set(declared.map((variable) => variable.key));

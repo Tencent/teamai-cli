@@ -208,8 +208,8 @@ describe('env, hooks and MCP by namespace via the real CLI (#707)', () => {
     expect(hookCommands()).not.toContain('echo root-lint');
 
     const envList = await runCLI(['env', 'list'], projectRoot, home);
-    expect(envList.output).toContain('API_BASE=ht****  (checkout, overrides root)');
-    expect(envList.output).toContain('SHARED=ev****  (root)');
+    expect(envList.output).toContain('API_BASE=ht****  env.yaml  (checkout, overrides root)');
+    expect(envList.output).toContain('SHARED=ev****  env.yaml  (root)');
     const mcpList = await runCLI(['mcp', 'list'], projectRoot, home);
     expect(mcpList.output).toContain('from:     mcp/checkout/mcp.yaml (checkout, overrides root)');
     const hooksList = await runCLI(['hooks', 'list'], projectRoot, home);

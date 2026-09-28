@@ -9,11 +9,10 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { EnvHandler } from '../resources/env.js';
-import { resolveSecretValues, secretState, type SecretValues } from '../resources/secrets.js';
+import YAML from 'yaml';
+import { EnvHandler, type EnvVariable } from '../resources/env.js';
+import { resolveTeamEnv, secretState, type SecretValue, type StoreResolution } from '../env-resolution.js';
 import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, writeSecretStore } from '../secret-store.js';
-import type { ResolvedEntry } from '../namespaced-entries.js';
-import type { EnvVariable } from '../resources/env.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 /**
@@ -26,12 +25,26 @@ describe('team secret values', () => {
   let home: string;
   let localConfig: LocalConfig;
 
-  const teamConfig = { sharing: { env: { injectShellProfile: false } } } as unknown as TeamaiConfig;
-  const variable = (key: string, value: string): ResolvedEntry<EnvVariable> =>
-    ({ name: key, entry: { key, value }, namespace: null, source: 'env/env.yaml' }) as ResolvedEntry<EnvVariable>;
-  const keys = (...names: string[]): ReadonlySet<string> => new Set(names);
-  const values = (resolution: SecretValues): Record<string, string> =>
+  const teamConfig: TeamaiConfig = {
+    team: 'acme', description: '', repo: 'https://example.com/acme/team.git', provider: 'git', reviewers: [],
+    sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: false } },
+    toolPaths: {},
+  };
+  const variable = (key: string, value: string): EnvVariable => ({ key, value });
+  const keys = (...names: string[]): readonly string[] => names;
+  const values = (resolution: StoreResolution<SecretValue>): Record<string, string> =>
     resolution.kind === 'resolved' ? Object.fromEntries([...resolution.values].map(([k, v]) => [k, `${v.source}:${v.value}`])) : {};
+  /** The secrets `declared` resolve to with this env, as the team repo declares them. */
+  const resolveSecretValues = async (
+    declared: readonly string[],
+    variables: readonly EnvVariable[],
+    env: NodeJS.ProcessEnv,
+  ): Promise<StoreResolution<SecretValue>> => {
+    const repoPath = localConfig.repo.localPath;
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), YAML.stringify({ secrets: declared.map((key) => ({ key })) }));
+    await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables }));
+    return (await resolveTeamEnv(localConfig, undefined, env)).secrets;
+  };
 
   beforeEach(async () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-secret-values-'));
@@ -40,7 +53,7 @@ describe('team secret values', () => {
     vi.stubEnv('USERPROFILE', home);
     const repoPath = path.join(tmpDir, 'team-repo');
     await fse.outputFile(path.join(repoPath, 'teamai.yaml'), 'team: acme\n');
-    localConfig = { repo: { localPath: repoPath, remote: 'https://example.com/acme/team.git' }, username: 't', scope: 'user', additionalRoles: [] } as LocalConfig;
+    localConfig = { repo: { localPath: repoPath, remote: 'https://example.com/acme/team.git' }, username: 't', scope: 'user', additionalRoles: [] };
   });
   afterEach(async () => {
     vi.unstubAllEnvs();
@@ -104,7 +117,7 @@ describe('team secret values', () => {
   describe('resolution', () => {
     it('takes the team value over the environment, and the environment when no team value is set', async () => {
       await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
-      const resolved = await resolveSecretValues(localConfig, keys('GITHUB_TOKEN', 'GITLAB_TOKEN', 'ACME_TOKEN'), [], {
+      const resolved = await resolveSecretValues(keys('GITHUB_TOKEN', 'GITLAB_TOKEN', 'ACME_TOKEN'), [], {
         GITHUB_TOKEN: 'exported-token', GITLAB_TOKEN: 'exported-gitlab', ACME_TOKEN: '',
       });
 
@@ -118,17 +131,17 @@ describe('team secret values', () => {
       await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
       const secret = keys('GITHUB_TOKEN');
 
-      expect(values(await resolveSecretValues(localConfig, secret, [], { WORK_GITHUB_TOKEN: 'work-1', GITHUB_TOKEN: 'personal' })))
+      expect(values(await resolveSecretValues(secret, [], { WORK_GITHUB_TOKEN: 'work-1', GITHUB_TOKEN: 'personal' })))
         .toEqual({ GITHUB_TOKEN: 'team:work-1' });
-      expect(values(await resolveSecretValues(localConfig, secret, [], { WORK_GITHUB_TOKEN: 'work-2' })))
+      expect(values(await resolveSecretValues(secret, [], { WORK_GITHUB_TOKEN: 'work-2' })))
         .toEqual({ GITHUB_TOKEN: 'team:work-2' });
-      expect(values(await resolveSecretValues(localConfig, secret, [], { GITHUB_TOKEN: 'personal' }))).toEqual({});
+      expect(values(await resolveSecretValues(secret, [], { GITHUB_TOKEN: 'personal' }))).toEqual({});
     });
 
     it('takes the team value over the machine value, and the machine value over the environment', async () => {
       await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
       await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'machine-github' }, GITLAB_TOKEN: { value: 'machine-gitlab' } });
-      const resolved = await resolveSecretValues(localConfig, keys('GITHUB_TOKEN', 'GITLAB_TOKEN', 'SENTRY_TOKEN'), [], {
+      const resolved = await resolveSecretValues(keys('GITHUB_TOKEN', 'GITLAB_TOKEN', 'SENTRY_TOKEN'), [], {
         GITHUB_TOKEN: 'exported-github', GITLAB_TOKEN: 'exported-gitlab', SENTRY_TOKEN: 'exported-sentry',
       });
 
@@ -142,14 +155,14 @@ describe('team secret values', () => {
       await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
       await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'personal' }, GITLAB_TOKEN: { env: 'PERSONAL_GITLAB_TOKEN' } });
 
-      expect(values(await resolveSecretValues(localConfig, keys('GITHUB_TOKEN', 'GITLAB_TOKEN'), [], { GITLAB_TOKEN: 'exported' })))
+      expect(values(await resolveSecretValues(keys('GITHUB_TOKEN', 'GITLAB_TOKEN'), [], { GITLAB_TOKEN: 'exported' })))
         .toEqual({});
     });
 
     it('leaves every secret without a value when the machine store cannot be read', async () => {
       await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
       await fse.outputFile(getMachineSecretsPath(), '{ "GITLAB_TOKEN": { "value": ghp_fixture_value } }');
-      const resolved = await resolveSecretValues(localConfig, keys('GITHUB_TOKEN', 'GITLAB_TOKEN'), [], { GITLAB_TOKEN: 'exported' });
+      const resolved = await resolveSecretValues(keys('GITHUB_TOKEN', 'GITLAB_TOKEN'), [], { GITLAB_TOKEN: 'exported' });
 
       expect(resolved.kind).toBe('store-unreadable');
       if (resolved.kind !== 'store-unreadable') return;
@@ -157,20 +170,20 @@ describe('team secret values', () => {
       expect(resolved.reason).not.toContain('ghp_fixture_value');
     });
 
-    it('leaves every secret without a value when the store cannot be read', async () => {
+    it('leaves every secret without a value when the store cannot be read, and says so rather than missing', async () => {
       await fse.outputFile(getTeamSecretsPath(localConfig), '{ "GITHUB_TOKEN": { "value": ghp_fixture_value } }');
-      const resolved = await resolveSecretValues(localConfig, keys('GITHUB_TOKEN'), [], { GITHUB_TOKEN: 'exported' });
+      const resolved = await resolveSecretValues(keys('GITHUB_TOKEN'), [], { GITHUB_TOKEN: 'exported' });
 
       expect(resolved.kind).toBe('store-unreadable');
-      expect(secretState(resolved, 'GITHUB_TOKEN')).toBe('missing');
+      expect(secretState(resolved, 'GITHUB_TOKEN')).toBe('unreadable');
       expect(JSON.stringify(resolved)).not.toContain('ghp_fixture_value');
     });
   });
 
   // #879 Conflict 10: the environment in the order is the member's own.
   describe("the member's environment", () => {
-    const resolve = async (env: NodeJS.ProcessEnv, variables: ResolvedEntry<EnvVariable>[] = []): Promise<Record<string, string>> =>
-      values(await resolveSecretValues(localConfig, keys('GITHUB_TOKEN'), variables, env));
+    const resolve = async (env: NodeJS.ProcessEnv, variables: EnvVariable[] = []): Promise<Record<string, string>> =>
+      values(await resolveSecretValues(keys('GITHUB_TOKEN'), variables, env));
 
     it.each([
       ['counts a value the member exported by hand', null, [], 'hand-export', { GITHUB_TOKEN: 'environment:hand-export' }],

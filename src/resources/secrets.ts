@@ -14,13 +14,11 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import {
   entryLayout, missingTopLevelKeyReason, readEntryFileText, resolveEntries, resolveEntriesFor, unknownEntryKeys,
-  writtenList, type EntryLayout, type EntryReader, type EntryResolution, type ResolvedEntry,
+  writtenList, type EntryLayout, type EntryReader, type EntryResolution,
 } from '../namespaced-entries.js';
 import type { LocalConfig } from '../types.js';
 import { ensureDir, readFileSafe, writeFile } from '../utils/fs.js';
-import { ENV_KEY_RE, type EnvVariable } from './env.js';
-import { memberEnvironment } from '../member-env.js';
-import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, storedSecretValue, type SecretStore } from '../secret-store.js';
+import { ENV_KEY_RE } from './env-key.js';
 
 const SecretDeclarationSchema = z.object({
   key: z.string().regex(ENV_KEY_RE, 'must be a shell variable name: letters, digits and underscores, not starting with a digit'),
@@ -116,13 +114,21 @@ export async function writeSecretsFile(absolutePath: string, secrets: readonly o
 export type SecretDeclarations = { readonly kind: 'absent' } | EntryResolution<SecretDeclaration>;
 
 /**
- * Resolve the secret declarations for this member. `active` is env's active
- * namespaces when the caller already has them (pull); otherwise they are
- * resolved from `resources.env`.
+ * Env's active namespaces as a caller that already resolved them has them
+ * (pull's role context); `active` is null in legacy mode, which reads the root
+ * file alone.
+ */
+export interface KnownNamespaces {
+  readonly active: readonly string[] | null;
+}
+
+/**
+ * Resolve the secret declarations for this member, in env's active namespaces:
+ * `namespaces` when the caller has them, else resolved from `resources.env`.
  */
 export async function resolveSecretDeclarations(
   localConfig: LocalConfig,
-  active?: readonly string[] | null,
+  namespaces?: KnownNamespaces,
 ): Promise<SecretDeclarations> {
   let found = false;
   const reader: EntryReader<SecretDeclaration> = {
@@ -133,9 +139,9 @@ export async function resolveSecretDeclarations(
       return read;
     },
   };
-  const resolution = active === undefined
-    ? await resolveEntriesFor(reader, localConfig)
-    : await resolveEntries(reader, localConfig, active);
+  const resolution = namespaces
+    ? await resolveEntries(reader, localConfig, namespaces.active)
+    : await resolveEntriesFor(reader, localConfig);
   return resolution.kind === 'resolved' && !found ? { kind: 'absent' } : resolution;
 }
 
@@ -145,117 +151,4 @@ export function declaredSecretKeys(declarations: SecretDeclarations): ReadonlySe
 export function declaredSecretKeys(declarations: SecretDeclarations): ReadonlySet<string> | null {
   if (declarations.kind === 'failed') return null;
   return new Set(declarations.kind === 'resolved' ? declarations.entries.map((entry) => entry.name) : []);
-}
-
-/** Where a declared secret's value comes from for this member. */
-export type SecretState = SecretValue['source'] | 'missing';
-
-export interface SecretValue {
-  readonly source: 'team' | 'global' | 'environment';
-  readonly value: string;
-}
-
-/**
- * The value of each declared secret, in the resolution order: the member's
- * value for this team (`teamai env set`), then their value for the machine
- * (`teamai env set --global`), then the member's own environment (see
- * member-env.ts). `variables` are the env.yaml variables this scope receives.
- * A key without one is absent from `values`. The first entry found decides
- * even when its `--from-env` variable is unset: falling back to the next
- * source would send another account's token to this team.
- *
- * A store file that cannot be read leaves every secret without a value, for
- * the same reason; `reason` says why, with no value in it.
- */
-export type SecretValues =
-  | { readonly kind: 'resolved'; readonly values: ReadonlyMap<string, SecretValue> }
-  | { readonly kind: 'store-unreadable'; readonly reason: string };
-
-export async function resolveSecretValues(
-  localConfig: LocalConfig,
-  secretKeys: ReadonlySet<string>,
-  variables: readonly ResolvedEntry<EnvVariable>[],
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<SecretValues> {
-  const values = new Map<string, SecretValue>();
-  if (secretKeys.size === 0) return { kind: 'resolved', values };
-  const envYaml = new Map(variables.map((variable) => [variable.name, variable.entry.value]));
-  const team = await readSecretStore(getTeamSecretsPath(localConfig));
-  if (!team.ok) return { kind: 'store-unreadable', reason: team.reason };
-  const machine = await readSecretStore(getMachineSecretsPath());
-  if (!machine.ok) return { kind: 'store-unreadable', reason: machine.reason };
-  const member = await memberEnvironment(localConfig, { secretKeys, envYaml }, env);
-  const entry = (store: SecretStore, key: string) => (Object.hasOwn(store, key) ? store[key] : undefined);
-  for (const key of secretKeys) {
-    const teamEntry = entry(team.values, key);
-    const machineEntry = entry(machine.values, key);
-    const [source, value]: [SecretValue['source'], string | undefined] = teamEntry ? ['team', storedSecretValue(teamEntry, env)]
-      : machineEntry ? ['global', storedSecretValue(machineEntry, env)]
-      : ['environment', member(key)];
-    if (value !== undefined) values.set(key, { source, value });
-  }
-  return { kind: 'resolved', values };
-}
-
-/**
- * The value of an env.yaml variable this scope receives (#875): the member's
- * value for this team (`teamai env set KEY`), then the team's. The environment
- * doesn't override either, so a value exported for one team doesn't reach
- * another team's servers, and `--global` doesn't apply: it is for secrets only.
- * `fromEnv` says the member's entry reads another variable, so `env.sh` leaves
- * the key out rather than hold a copy of that variable's value. While that
- * variable is unset the team's value is used: unlike a secret's next source,
- * it is the value every other member of the team gets.
- */
-export interface VariableValue {
-  readonly source: 'team' | 'env.yaml';
-  readonly value: string;
-  readonly fromEnv: boolean;
-}
-
-/** The value of each variable that is not a declared secret, or why the member's values cannot be read. */
-export type VariableValues =
-  | { readonly kind: 'resolved'; readonly values: ReadonlyMap<string, VariableValue> }
-  | { readonly kind: 'store-unreadable'; readonly reason: string };
-
-export async function resolveVariableValues(
-  localConfig: LocalConfig,
-  variables: readonly ResolvedEntry<EnvVariable>[],
-  secretKeys: ReadonlySet<string>,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<VariableValues> {
-  const values = new Map<string, VariableValue>();
-  const received = variables.filter((variable) => !secretKeys.has(variable.name));
-  if (received.length === 0) return { kind: 'resolved', values };
-  const team = await readSecretStore(getTeamSecretsPath(localConfig));
-  if (!team.ok) return { kind: 'store-unreadable', reason: team.reason };
-  for (const variable of received) {
-    const entry = Object.hasOwn(team.values, variable.name) ? team.values[variable.name] : undefined;
-    const member = entry ? storedSecretValue(entry, env) : undefined;
-    const fromEnv = entry !== undefined && 'env' in entry;
-    values.set(variable.name, member !== undefined
-      ? { source: 'team', value: member, fromEnv }
-      : { source: 'env.yaml', value: variable.entry.value, fromEnv });
-  }
-  return { kind: 'resolved', values };
-}
-
-/** The variables `env.sh` exports, with their resolved values: every one in `values` but a `--from-env` override. */
-export function envShVariables(
-  variables: readonly ResolvedEntry<EnvVariable>[],
-  values: ReadonlyMap<string, VariableValue>,
-): EnvVariable[] {
-  return variables.flatMap((variable) => {
-    const resolved = values.get(variable.name);
-    return resolved && !resolved.fromEnv ? [{ ...variable.entry, value: resolved.value }] : [];
-  });
-}
-
-/** What a pull and MCP do while the member's values cannot be read: keep what the last pull wrote. */
-export function variablesKeptWarning(reason: string): string {
-  return `${reason} Team env variables keep the values the last pull wrote until it is fixed.`;
-}
-
-export function secretState(values: SecretValues, key: string): SecretState {
-  return values.kind === 'resolved' ? values.values.get(key)?.source ?? 'missing' : 'missing';
 }

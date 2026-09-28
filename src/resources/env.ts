@@ -7,6 +7,8 @@ import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, isSelf
 import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { recordEnvShExports } from '../env-sh-exports.js';
+import { ENV_KEY_RE } from './env-key.js';
+import { SECRETS_LAYOUT } from './secrets.js';
 import {
   listEntryFiles, readEntryFileText, reportEntryResolution, resolveEntriesFor,
   unknownEntryKeys, writtenList, type EntryFile, type EntryReader,
@@ -124,15 +126,6 @@ export function maskEnvValue(value: string): string {
 }
 
 /**
- * A key this module will write into env.sh, and the only shape it reads back.
- *
- * Shared by `parseEnvFile` and `generateEnvFile` on purpose: the write side has
- * to reject exactly what the read side skips, or a variable can exist in env.sh
- * that the CLI can never see again.
- */
-export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/**
  * Read back the assignments `generateEnvFile` writes, as key → value.
  *
  * The inverse of the generator, and it has to be: a YAML block scalar is a
@@ -217,8 +210,6 @@ export class EnvHandler extends ResourceHandler {
    * `env/<ns>/env.yaml`, and the same for `secrets.yaml`, one item per changed file.
    */
   async scanLocalForPush(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
-    // Imported here: secrets.ts reads ENV_KEY_RE from this module as it loads.
-    const { SECRETS_LAYOUT } = await import('./secrets.js');
     const listEnvFiles = async (root: string): Promise<EntryFile[]> =>
       [...await listEntryFiles(root, 'env'), ...await listEntryFiles(root, SECRETS_LAYOUT)];
 

@@ -31,11 +31,8 @@ import {
   type McpFormat,
 } from './resources/mcp-format.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
-import { envEntryReader } from './resources/env.js';
-import {
-  declaredSecretKeys, resolveSecretDeclarations, resolveSecretValues, resolveVariableValues, variablesKeptWarning,
-  type SecretDeclarations,
-} from './resources/secrets.js';
+import { declaredSecretKeys, type SecretDeclarations } from './resources/secrets.js';
+import { resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import { reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import {
@@ -78,6 +75,8 @@ export interface McpReconcileOptions {
    * without mutating the host platform.
    */
   lookPath?: LookPathOptions;
+  /** This scope's env, when the caller already resolved it (env-resolution.ts). */
+  teamEnv?: TeamEnv;
 }
 
 export interface McpChange {
@@ -123,23 +122,15 @@ async function readManifest(manifestPath: string): Promise<ManagedMcpManifest> {
  * then keeps env.sh as it is, so MCP sees what the shell sees), or the team has no repo tree to
  * resolve it from (HTTP mode, which declares no secrets).
  *
- * `declarations` is for a caller that already resolved them, so one run
- * reads env/secrets.yaml once.
+ * `teamEnv` is for a caller that already resolved it, so one command reads
+ * each file once. HTTP mode ignores it.
  */
-export async function buildVarTable(
-  localConfig: LocalConfig,
-  declarations?: SecretDeclarations,
-): Promise<Record<string, string>> {
+export async function buildVarTable(localConfig: LocalConfig, teamEnv?: TeamEnv): Promise<Record<string, string>> {
   const table: Record<string, string> = {};
-  const http = localConfig.repo.kind === 'http';
-  const env = http ? null : await resolveEntriesFor(envEntryReader, localConfig);
-  const secretKeys = http
-    ? new Set<string>()
-    : declaredSecretKeys(declarations ?? await resolveSecretDeclarations(localConfig));
+  const resolved = localConfig.repo.kind === 'http' ? null : teamEnv ?? await resolveTeamEnv(localConfig);
+  const secretKeys = resolved ? declaredSecretKeys(resolved.declarations) : new Set<string>();
   const isSecret = (key: string): boolean => secretKeys?.has(key) ?? false;
-  const variables = env?.kind === 'resolved' && secretKeys
-    ? await resolveVariableValues(localConfig, env.entries, secretKeys)
-    : null;
+  const variables = resolved?.variables.kind === 'resolved' && secretKeys ? resolved.variableValues : null;
   if (variables?.kind === 'resolved') {
     for (const [key, variable] of variables.values) table[key] = variable.value;
   } else {
@@ -151,13 +142,12 @@ export async function buildVarTable(
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined && !isSecret(k) && !Object.hasOwn(table, k)) table[k] = v;
   }
-  if (!secretKeys || secretKeys.size === 0) return table;
-  const secrets = await resolveSecretValues(localConfig, secretKeys, env?.kind === 'resolved' ? env.entries : []);
-  if (secrets.kind === 'store-unreadable') {
-    warnOnce(`${secrets.reason} Team secrets have no value until it is fixed.`);
+  if (!resolved || !secretKeys || secretKeys.size === 0) return table;
+  if (resolved.secrets.kind === 'store-unreadable') {
+    warnOnce(`${resolved.secrets.reason} Team secrets have no value until it is fixed.`);
     return table;
   }
-  for (const [key, secret] of secrets.values) table[key] = secret.value;
+  for (const [key, secret] of resolved.secrets.values) table[key] = secret.value;
   return table;
 }
 
@@ -413,14 +403,12 @@ export async function buildDesiredMcpContext(
   options: McpReconcileOptions = {},
 ): Promise<DesiredMcpContext> {
   // HTTP mode has no repo tree to declare secrets in.
-  const secrets: SecretDeclarations = localConfig.repo.kind === 'http'
-    ? { kind: 'absent' }
-    : await resolveSecretDeclarations(localConfig);
+  const teamEnv = localConfig.repo.kind === 'http' ? undefined : options.teamEnv ?? await resolveTeamEnv(localConfig);
   return {
     sharing: getMcpSharing(teamConfig),
     excluded: new Set(localConfig.excludedSkills ?? []),
-    vars: await buildVarTable(localConfig, secrets),
-    secrets,
+    vars: await buildVarTable(localConfig, teamEnv),
+    secrets: teamEnv?.declarations ?? { kind: 'absent' },
     lookPath: options.lookPath,
   };
 }
@@ -437,7 +425,8 @@ export async function buildDesiredMcpContext(
  * `kept` names the skipped servers whose only missing variables are declared
  * secrets (#875): the session-start pull inherits the agent's environment, so
  * a secret that lives in the member's shell is there for one pull and gone for
- * the next, and an entry an earlier pull wrote stays as it is.
+ * the next, and an entry an earlier pull wrote stays as it is. With
+ * declarations that failed, every skipped server is kept.
  */
 export function desiredMcpForTarget(
   target: McpTarget,
@@ -447,7 +436,9 @@ export function desiredMcpForTarget(
   const desired = new Map<string, DesiredMcpEntry>();
   const skipped: McpChange[] = [];
   const kept = new Set<string>();
-  const declared = new Set(ctx.secrets.kind === 'resolved' ? ctx.secrets.entries.map((secret) => secret.name) : []);
+  // Declarations that failed can't say which variables are secrets, so every
+  // missing one may be: pull keeps every installed entry then.
+  const declared = declaredSecretKeys(ctx.secrets);
 
   for (const raw of teamDefs) {
     if (raw.tools && !raw.tools.includes(target.tool)) continue;
@@ -491,7 +482,7 @@ export function desiredMcpForTarget(
           action: 'skipped',
           reason: `unresolved variable(s): ${missing.join(', ')}`,
         });
-        if (missing.every((key) => declared.has(key))) kept.add(raw.name);
+        if (missing.every((key) => declared?.has(key) ?? true)) kept.add(raw.name);
         continue;
       }
       def = resolved;
@@ -563,6 +554,7 @@ async function loadMcpManifest(
 export async function keptMcpEntries(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
+  teamEnv?: TeamEnv,
 ): Promise<Map<string, string[]>> {
   const kept = new Map<string, string[]>();
   if (localConfig.repo.kind === 'http') return kept;
@@ -571,7 +563,7 @@ export async function keptMcpEntries(
   const teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
   const targets = await resolveMcpTargets(teamConfig, localConfig);
   if (targets.length === 0) return kept;
-  const ctx = await buildDesiredMcpContext(teamConfig, localConfig);
+  const ctx = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv });
   if (ctx.secrets.kind !== 'resolved') return kept;
   const { manifest } = await loadMcpManifest(localConfig, true);
 

@@ -57,6 +57,12 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Counts the value store reads, for the one-resolution-per-pull test.
+vi.mock('../secret-store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../secret-store.js')>();
+  return { ...actual, readSecretStore: vi.fn(actual.readSecretStore) };
+});
+
 // The end-of-pull checks are exercised in pull-post-checks.test.ts; keep them
 // out of the way here so a warning under test is the only thing on the wire.
 vi.mock('../doctor.js', async (importOriginal) => ({
@@ -72,7 +78,8 @@ import { log } from '../utils/logger.js';
 import { pull } from '../pull.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
-import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
+import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, writeSecretStore } from '../secret-store.js';
+import { secretsEntryReader } from '../resources/secrets.js';
 
 const GITHUB_LINE = 'github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (https://github.com/settings/tokens).';
 const KEPT_LINE = 'github: the entry an earlier pull wrote stays in claude and may hold an old GITHUB_TOKEN until a pull finds its value.';
@@ -170,6 +177,21 @@ describe('pull advisories for team secrets', () => {
     await pull({ force: true });
 
     expect(warned()).toContain('GITLAB_TOKEN is not set. Run `teamai env set GITLAB_TOKEN`.');
+  });
+
+  // One resolution per scope serves env.sh, the MCP reconcile and the advisories.
+  it('reads env/secrets.yaml and each value store once', async () => {
+    await write('env/env.yaml', 'variables:\n  - key: API_URL\n    value: u\n');
+    const secretsRead = vi.spyOn(secretsEntryReader, 'read');
+    vi.mocked(readSecretStore).mockClear();
+
+    await pull({ force: true });
+
+    expect(warned()).toContain(GITHUB_LINE);
+    expect(secretsRead.mock.calls.map(([, relativePath]) => relativePath)).toEqual(['env/secrets.yaml']);
+    expect(vi.mocked(readSecretStore).mock.calls.map(([file]) => file).sort())
+      .toEqual([getMachineSecretsPath(), getTeamSecretsPath(scopeConfig)].sort());
+    secretsRead.mockRestore();
   });
 
   it('prints nothing about it on a silent pull', async () => {

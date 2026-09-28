@@ -12,10 +12,10 @@
  */
 import crossSpawn from 'cross-spawn';
 import { resolveConfigForDir } from './config.js';
-import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
-import { describeEntryFailure, resolveEntriesFor } from './namespaced-entries.js';
-import { envEntryReader } from './resources/env.js';
-import { declaredSecretKeys, resolveSecretDeclarations, resolveSecretValues, resolveVariableValues } from './resources/secrets.js';
+import { reportMissingSecrets } from './env-advisories.js';
+import { resolveTeamEnv } from './env-resolution.js';
+import { describeEntryFailure } from './namespaced-entries.js';
+import { declaredSecretKeys } from './resources/secrets.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { log, setStderrOnly } from './utils/logger.js';
 
@@ -90,25 +90,22 @@ async function commandEnvironment(cwd: string): Promise<NodeJS.ProcessEnv> {
  */
 async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessEnv> {
   const env = { ...process.env };
-  const variables = await resolveEntriesFor(envEntryReader, localConfig);
+  const teamEnv = await resolveTeamEnv(localConfig);
+  const { variables, declarations, variableValues, secrets } = teamEnv;
   if (variables.kind === 'failed') {
     log.warn(`${describeEntryFailure(variables.failure)} The command runs without the team's env variables.`);
   }
-  const declarations = await resolveSecretDeclarations(localConfig);
-  const secretKeys = declaredSecretKeys(declarations);
   if (declarations.kind === 'failed') {
     log.warn(`${describeEntryFailure(declarations.failure)} The command runs without team secrets.`);
   }
-  const received = variables.kind === 'resolved' ? variables.entries : [];
-  const values = await resolveVariableValues(localConfig, received, secretKeys ?? new Set(), process.env);
-  if (values.kind === 'store-unreadable') {
-    log.warn(`${values.reason} The command runs without the team's env variables.`);
+  if (variableValues.kind === 'store-unreadable') {
+    log.warn(`${variableValues.reason} The command runs without the team's env variables.`);
   } else {
-    for (const [key, variable] of values.values) env[key] = variable.value;
+    for (const [key, variable] of variableValues.values) env[key] = variable.value;
   }
+  const secretKeys = declaredSecretKeys(declarations);
   if (!secretKeys || secretKeys.size === 0) return env;
 
-  const secrets = await resolveSecretValues(localConfig, secretKeys, received);
   if (secrets.kind === 'store-unreadable') {
     log.warn(`${secrets.reason} The command runs without team secrets.`);
   }
@@ -117,11 +114,7 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
     if (secret) env[key] = secret.value;
     else delete env[key];
   }
-  if (secrets.kind === 'resolved') {
-    for (const advisory of await envAdvisories(localConfig, null)) {
-      if (advisory.kind === 'missing-secret') log.warn(describeEnvAdvisory(advisory));
-    }
-  }
+  if (secrets.kind === 'resolved') await reportMissingSecrets(localConfig, teamEnv);
   return env;
 }
 

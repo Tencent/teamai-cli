@@ -18,11 +18,11 @@ import {
 } from './agent-skills.js';
 import { RESOURCE_TYPES, LocalConfigSchema, getDataHome, type GlobalOptions, type ResourceType } from './types.js';
 import { projectsRootDir, readAnchorFile, projectSlug, legacyProjectSlug } from './utils/partition.js';
-import { maskEnvValue } from './resources/env.js';
 import { mcpEntryReader } from './resources/mcp.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { envEntryReader } from './resources/env.js';
-import { resolveSecretDeclarations, resolveSecretValues, secretState } from './resources/secrets.js';
+import { envListing } from './env-listing.js';
+import { resolveTeamEnv } from './env-resolution.js';
 import {
   describeEntryFailure, describeOrigin, describeOrigins, resolveEntriesFor,
   type EntryResolution, type EntryType,
@@ -317,44 +317,17 @@ async function printRepoSection(
   console.log(`=== REPO ${t.toUpperCase()} ===`);
 
   // Env, hooks and MCP list what reaches this directory, each with its
-  // namespace: root plus the active namespace files. Env lists the declared
-  // secrets after the variables, with where each value comes from, never the value.
+  // namespace: root plus the active namespace files. Env is the listing
+  // `teamai env list` prints (env-listing.ts).
   if (t === 'env') {
-    const env = await resolveEntriesFor(envEntryReader, localConfig);
-    const secrets = await resolveSecretDeclarations(localConfig);
-    const noSecrets = secrets.kind === 'absent' || (secrets.kind === 'resolved' && secrets.entries.length === 0);
-    // A key declared as a secret is listed only as one: its env.yaml value is not delivered.
-    const secretKeys = new Set(secrets.kind === 'resolved' ? secrets.entries.map((s) => s.name) : []);
-    const received = env.kind === 'resolved' ? env.entries : [];
-    const variables = received.filter((v) => !secretKeys.has(v.name));
-    if (env.kind === 'failed') {
-      console.log(`  ${describeEntryFailure(env.failure)}`);
-    } else if (variables.length === 0) {
-      if (noSecrets) console.log('  (none)');
-    } else {
-      if (options.reveal) {
-        process.stderr.write('[warn] Env values will be shown in plaintext\n');
-      }
-      for (const v of variables) {
-        const display = options.reveal ? v.entry.value : maskEnvValue(v.entry.value);
-        console.log(`  ${v.name}=${display}  (${describeOrigin(v)})`);
-        if (options.verbose && v.entry.description) {
-          console.log(`    ${v.entry.description}`);
-        }
-      }
+    const listing = envListing(await resolveTeamEnv(localConfig), options);
+    for (const problem of listing.problems) console.log(`  ${problem}`);
+    if (listing.lines.length === 0) {
+      if (listing.problems.length === 0) console.log('  (none)');
+      return;
     }
-    if (secrets.kind === 'failed') {
-      console.log(`  ${describeEntryFailure(secrets.failure)}`);
-    } else if (secrets.kind === 'resolved') {
-      const values = await resolveSecretValues(localConfig, secretKeys, received);
-      if (values.kind === 'store-unreadable') console.log(`  ${values.reason}`);
-      for (const s of secrets.entries) {
-        console.log(`  ${s.name}  secret, ${secretState(values, s.name)}  (${describeOrigin(s)})`);
-        if (options.verbose && s.entry.description) {
-          console.log(`    ${s.entry.description}`);
-        }
-      }
-    }
+    if (listing.revealed) process.stderr.write('[warn] Env values will be shown in plaintext\n');
+    for (const line of listing.lines) console.log(line.text);
     return;
   }
 

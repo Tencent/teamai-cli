@@ -9,9 +9,10 @@ import {
   type McpChange,
 } from './mcp-reconcile.js';
 import { referencedVars } from './resources/mcp-format.js';
-import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
+import { reportMissingSecrets } from './env-advisories.js';
+import { resolveTeamEnv } from './env-resolution.js';
 import { log } from './utils/logger.js';
-import type { GlobalOptions, LocalConfig } from './types.js';
+import type { GlobalOptions } from './types.js';
 import { managedMcpManifestPath, managedMcpManifestKey, getDataHome } from './types.js';
 import { readJson } from './utils/fs.js';
 import type { ManagedMcpManifest } from './types.js';
@@ -34,14 +35,17 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   }
   const servers = resolution.entries;
 
+  // HTTP mode has no repo tree to declare secrets in.
+  const teamEnv = localConfig.repo.kind === 'http' ? undefined : await resolveTeamEnv(localConfig);
+
   if (servers.length === 0) {
     log.info('No team MCP servers reach this directory (mcp/mcp.yaml and active mcp/<ns>/mcp.yaml files are absent or empty)');
-    await reportMissingSecrets(localConfig);
+    await reportMissingSecrets(localConfig, teamEnv);
     return;
   }
 
   const targets = await resolveMcpTargets(teamConfig, localConfig);
-  const vars = await buildVarTable(localConfig);
+  const vars = await buildVarTable(localConfig, teamEnv);
   // Project scope reads THIS worktree's own per-worktree manifest; user the global file.
   const manifest = (await readJson<ManagedMcpManifest>(
     managedMcpManifestPath(
@@ -82,14 +86,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   } else {
     for (const t of targets) console.log(`  ${t.tool.padEnd(16)} ${displayPath(t.file)}`);
   }
-  await reportMissingSecrets(localConfig);
-}
-
-/** A declared secret with no value, and the command that sets it (#875). */
-async function reportMissingSecrets(localConfig: LocalConfig): Promise<void> {
-  const missing = (await envAdvisories(localConfig, null)).filter((advisory) => advisory.kind === 'missing-secret');
-  if (missing.length > 0) console.log('');
-  for (const advisory of missing) log.warn(describeEnvAdvisory(advisory));
+  await reportMissingSecrets(localConfig, teamEnv);
 }
 
 function reportChanges(changes: McpChange[]): void {

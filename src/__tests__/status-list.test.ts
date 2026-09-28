@@ -156,9 +156,9 @@ describe('teamai list / status resource coverage', () => {
     await list('env', { source: 'repo', reveal: true, verbose: true });
     const out = lines.join('\n');
     expect(out).toContain('SECRET_TOKEN=super-secret-value');
-    expect(out).toContain('GITHUB_TOKEN  secret, environment  (root)');
+    expect(out).toContain('GITHUB_TOKEN  environment  (root)');
     expect(out).toContain('    GitHub token');
-    expect(out).toContain('GITLAB_TOKEN  secret, missing  (root)');
+    expect(out).toContain('GITLAB_TOKEN  missing  (root)');
     expect(out).not.toContain('fixture-github-value');
   });
 
@@ -173,15 +173,28 @@ describe('teamai list / status resource coverage', () => {
     const out = lines.join('\n');
     expect(out).not.toContain('super-secret-value');
     expect(out).not.toContain('fixture-team-value');
-    expect(out).toContain('SECRET_TOKEN  secret, team  (root)');
+    expect(out).toContain('SECRET_TOKEN  team  (root)');
   });
 
-  it('list env still lists the variables when the secrets file is broken, and names it', async () => {
+  // #875: list env is the listing env list prints, so it shows a member's override too.
+  it('list env shows the member\'s value of an overridden variable, as team', async () => {
+    const { getTeamSecretsPath, writeSecretStore } = await import('../secret-store.js');
+    const { localConfig } = await mockAutoDetectInit() as { localConfig: LocalConfig };
+    await writeSecretStore(getTeamSecretsPath(localConfig), { SECRET_TOKEN: { value: 'fixture-member-value' } });
+
+    await list('env', { source: 'repo', reveal: true });
+    const out = lines.join('\n');
+    expect(out).toContain('SECRET_TOKEN=fixture-member-value  team  (root)');
+    expect(out).not.toContain('super-secret-value');
+  });
+
+  it('list env still lists the variables when the secrets file is broken, without their values, and names it', async () => {
     await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secret:\n  - key: GITHUB_TOKEN\n');
 
-    await list('env', { source: 'repo' });
+    await list('env', { source: 'repo', reveal: true });
     const out = lines.join('\n');
-    expect(out).toContain('SECRET_TOKEN=su****');
+    expect(out).toContain('SECRET_TOKEN  (root)');
+    expect(out).not.toContain('super-secret-value');
     expect(out).toContain('env/secrets.yaml declares no secrets');
     expect(out).toContain('Team secrets were not resolved this run');
   });

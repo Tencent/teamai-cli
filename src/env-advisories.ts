@@ -4,15 +4,13 @@
  * each says the same thing. None is a failure; `doctor` reports them as notes.
  */
 import { keptMcpEntries } from './mcp-reconcile.js';
-import { envEntryReader, type EnvVariable } from './resources/env.js';
-import { memberEnvironment } from './member-env.js';
+import { resolveTeamEnv, secretState, type TeamEnv } from './env-resolution.js';
 import { referencedVars } from './resources/mcp-format.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
-import {
-  declaredSecretKeys, resolveSecretDeclarations, resolveSecretValues, resolveVariableValues, secretState,
-} from './resources/secrets.js';
-import { resolveEntriesFor, type ResolvedEntry } from './namespaced-entries.js';
+import { declaredSecretKeys } from './resources/secrets.js';
+import { resolveEntriesFor } from './namespaced-entries.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
+import { log } from './utils/logger.js';
 
 export type EnvAdvisory =
   /** A declared secret with no value; `servers` are the team MCP servers that use it. */
@@ -29,17 +27,21 @@ export type EnvAdvisory =
  * server uses is reported too. `teamConfig` null leaves out the kept entries,
  * which need the team's tool paths. Declarations or a store that cannot be
  * read give none: the command reading them reports that failure itself.
+ * `teamEnv` is for a caller that already resolved it.
  */
-export async function envAdvisories(localConfig: LocalConfig, teamConfig: TeamaiConfig | null): Promise<EnvAdvisory[]> {
+export async function envAdvisories(
+  localConfig: LocalConfig,
+  teamConfig: TeamaiConfig | null,
+  teamEnv?: TeamEnv,
+): Promise<EnvAdvisory[]> {
   if (localConfig.repo.kind === 'http') return [];
-  const declarations = await resolveSecretDeclarations(localConfig);
+  const resolved = teamEnv ?? await resolveTeamEnv(localConfig);
+  const { declarations } = resolved;
   if (declarations.kind === 'failed') return [];
-  const env = await resolveEntriesFor(envEntryReader, localConfig);
-  const variables = env.kind === 'resolved' ? env.entries : [];
-  const ignored = await ignoredExports(localConfig, variables, declaredSecretKeys(declarations));
+  const variables = resolved.variables.kind === 'resolved' ? resolved.variables.entries : [];
+  const ignored = ignoredExports(resolved);
   if (declarations.kind === 'absent' || declarations.entries.length === 0) return ignored;
-  const secretKeys = new Set(declarations.entries.map((secret) => secret.name));
-  const values = await resolveSecretValues(localConfig, secretKeys, variables);
+  const secretKeys = declaredSecretKeys(declarations);
   const mcp = await resolveEntriesFor(mcpEntryReader, localConfig);
   const excluded = new Set(localConfig.excludedSkills ?? []);
   const servers = (mcp.kind === 'resolved' ? mcp.entries : [])
@@ -49,14 +51,26 @@ export async function envAdvisories(localConfig: LocalConfig, teamConfig: Teamai
     servers.filter((server) => referencedVars(server).includes(key)).map((server) => server.name);
 
   const advisories: EnvAdvisory[] = [];
-  if (values.kind === 'resolved') {
-    for (const secret of declarations.entries) {
-      if (secretState(values, secret.name) !== 'missing') continue;
-      advisories.push({ kind: 'missing-secret', key: secret.name, url: secret.entry.url, servers: usedBy(secret.name) });
+  for (const secret of declarations.entries) {
+    const state = secretState(resolved.secrets, secret.name);
+    switch (state) {
+      case 'missing':
+        advisories.push({ kind: 'missing-secret', key: secret.name, url: secret.entry.url, servers: usedBy(secret.name) });
+        break;
+      // Nobody knows while the store can't be read; the command reports that itself.
+      case 'unreadable':
+      case 'team':
+      case 'global':
+      case 'environment':
+        break;
+      default: {
+        const unhandled: never = state;
+        return unhandled;
+      }
     }
   }
   if (teamConfig) {
-    for (const [server, tools] of await keptMcpEntries(teamConfig, localConfig)) {
+    for (const [server, tools] of await keptMcpEntries(teamConfig, localConfig, resolved)) {
       const def = servers.find((candidate) => candidate.name === server);
       const keys = def ? referencedVars(def).filter((key) => secretKeys.has(key)) : [];
       advisories.push({ kind: 'kept-entry', server, tools, keys });
@@ -68,21 +82,23 @@ export async function envAdvisories(localConfig: LocalConfig, teamConfig: Teamai
   return [...advisories, ...ignored];
 }
 
+/** Warn about each declared secret with no value, with the command that sets it (#875). */
+export async function reportMissingSecrets(localConfig: LocalConfig, teamEnv?: TeamEnv): Promise<void> {
+  for (const advisory of await envAdvisories(localConfig, null, teamEnv)) {
+    if (advisory.kind === 'missing-secret') log.warn(describeEnvAdvisory(advisory));
+  }
+}
+
 /**
  * The variables whose export the MCP servers and `env exec` no longer use: the
  * member's own value (see member-env.ts), differing from the team's, for a key
  * they set no value for with `teamai env set`. A store that cannot be read
  * gives none.
  */
-async function ignoredExports(
-  localConfig: LocalConfig,
-  variables: readonly ResolvedEntry<EnvVariable>[],
-  secretKeys: ReadonlySet<string>,
-): Promise<EnvAdvisory[]> {
-  const values = await resolveVariableValues(localConfig, variables, secretKeys);
+function ignoredExports(teamEnv: TeamEnv): EnvAdvisory[] {
+  const { variableValues: values, member } = teamEnv;
   if (values.kind === 'store-unreadable' || values.values.size === 0) return [];
-  const envYaml = new Map(variables.map((variable) => [variable.name, variable.entry.value]));
-  const member = await memberEnvironment(localConfig, { secretKeys, envYaml });
+  const variables = teamEnv.variables.kind === 'resolved' ? teamEnv.variables.entries : [];
   return variables.flatMap((variable): EnvAdvisory[] => {
     const resolved = values.values.get(variable.name);
     if (!resolved || resolved.source !== 'env.yaml' || resolved.fromEnv) return [];

@@ -342,7 +342,7 @@ describe('project-scoped hooks, MCP servers and env variables via the real CLI (
 
     const envList = await runCLI(['env', 'list'], projectRoot, home);
     expect(envList.code, envList.output).toBe(0);
-    expect(envList.output).toMatch(/BILLING_URL=\S+ {2}\(billing\)/);
+    expect(envList.output).toMatch(/BILLING_URL=\S+ {2}env\.yaml {2}\(billing\)/);
     expect(envList.output).not.toContain('DEVOPS_ONLY');
   }, 60_000);
 
