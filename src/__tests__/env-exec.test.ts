@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 
-import { envExec, exitLike } from '../env-exec.js';
+import { envExec, exitLike, inTerminalForeground } from '../env-exec.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore, type SecretStore } from '../secret-store.js';
 import { resolveAnchors } from '../utils/git.js';
 import { _resetState, _setLogFilePath, setStderrOnly } from '../utils/logger.js';
@@ -342,6 +342,18 @@ describe('teamai env exec', () => {
     } finally {
       process.exitCode = undefined;
     }
+  });
+
+  // #879: a terminal sends Ctrl-C to its foreground group, the command included; any other SIGINT is teamai's alone.
+  it.each([
+    ['in the foreground group of its terminal', '77167 77167\n', true],
+    ['in a background job of its terminal', ' 77167 80012\n', false],
+    ['without a controlling terminal (macOS)', '77167     0\n', false],
+    ['without a controlling terminal (Linux)', '77167    -1\n', false],
+    ['when ps printed nothing', '', false],
+    ['when ps printed something else', 'PGID TPGID\n', false],
+  ] as const)('takes teamai to be %s from `ps -o pgid=,tpgid=`', (_name, ps, foreground) => {
+    expect(inTerminalForeground(ps)).toBe(foreground);
   });
 
   it('reports a command that cannot be started, with exit code 127', async () => {

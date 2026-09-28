@@ -10,7 +10,9 @@
  * piped. No value is written anywhere: the child gets it in its environment
  * only.
  */
+import { execFile } from 'node:child_process';
 import os from 'node:os';
+import { promisify } from 'node:util';
 import crossSpawn from 'cross-spawn';
 import { resolveConfigForDir } from './config.js';
 import { reportMissingSecrets } from './env-advisories.js';
@@ -30,10 +32,39 @@ export type ExecOutcome =
 const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGHUP'];
 /**
  * A terminal sends Ctrl-C and Ctrl-\ to its whole foreground process group, so
- * the command has them already; passing them on would send a second, which
- * tools such as terraform take as "force quit". teamai ignores them and waits.
+ * when teamai is in that group the command has them already; passing them on
+ * would send a second, which tools such as terraform take as "force quit".
+ * teamai then ignores them and waits. Anywhere else (a background job, no
+ * terminal) one is sent to teamai alone, and is passed on.
  */
 const TERMINAL_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT'];
+
+/**
+ * Whether `ps -o pgid=,tpgid=` says the process is in its terminal's
+ * foreground process group. No controlling terminal prints a tpgid of 0
+ * (macOS) or -1 (Linux).
+ */
+export function inTerminalForeground(ps: string): boolean {
+  const [pgid, tpgid] = ps.trim().split(/\s+/).map(Number);
+  return Number.isInteger(tpgid) && tpgid > 0 && pgid === tpgid;
+}
+
+/**
+ * Whether a terminal delivers Ctrl-C to the command as well as to teamai.
+ * Windows delivers it to every process on the console. Elsewhere, when `ps`
+ * cannot say, teamai takes a SIGINT to be its alone: passing on one the
+ * command already had is a second Ctrl-C, keeping it leaves the command
+ * running.
+ */
+async function terminalReachesCommand(): Promise<boolean> {
+  if (process.platform === 'win32') return true;
+  try {
+    const { stdout } = await promisify(execFile)('ps', ['-o', 'pgid=,tpgid=', '-p', String(process.pid)]);
+    return inTerminalForeground(stdout);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Run the command in `words`, what was typed after `exec`: teamai's own
@@ -58,7 +89,7 @@ export async function envExec(words: readonly string[], options: GlobalOptions, 
     log.info(`[dry-run] Would run ${file} with this directory's team env`);
     return { kind: 'exited', code: 0 };
   }
-  return run(file, args, env, cwd);
+  return run(file, args, env, cwd, await terminalReachesCommand());
 }
 
 /**
@@ -165,20 +196,28 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
  * passed on, one from the terminal is not, and either way teamai waits for
  * the command to end rather than exit first.
  */
-function run(file: string, args: readonly string[], env: NodeJS.ProcessEnv, cwd: string): Promise<ExecOutcome> {
+function run(
+  file: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  terminalReachesCommand: boolean,
+): Promise<ExecOutcome> {
+  const forwarded = terminalReachesCommand ? FORWARDED_SIGNALS : [...FORWARDED_SIGNALS, ...TERMINAL_SIGNALS];
+  const ignored = terminalReachesCommand ? TERMINAL_SIGNALS : [];
   return new Promise((resolve) => {
     // cross-spawn: on Windows, npm installs CLIs as .cmd shims spawn can't start.
     const child = crossSpawn(file, [...args], { cwd, env, stdio: 'inherit' });
     const forward = (signal: NodeJS.Signals): void => { child.kill(signal); };
     const ignore = (): void => {};
-    for (const signal of FORWARDED_SIGNALS) process.on(signal, forward);
-    for (const signal of TERMINAL_SIGNALS) process.on(signal, ignore);
+    for (const signal of forwarded) process.on(signal, forward);
+    for (const signal of ignored) process.on(signal, ignore);
     let settled = false;
     const settle = (outcome: ExecOutcome): void => {
       if (settled) return;
       settled = true;
-      for (const signal of FORWARDED_SIGNALS) process.off(signal, forward);
-      for (const signal of TERMINAL_SIGNALS) process.off(signal, ignore);
+      for (const signal of forwarded) process.off(signal, forward);
+      for (const signal of ignored) process.off(signal, ignore);
       resolve(outcome);
     };
     child.on('error', (e) => {
