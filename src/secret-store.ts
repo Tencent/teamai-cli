@@ -16,7 +16,6 @@ import { getTeamValuesPath } from './models/profile.js';
 import { ENV_KEY_RE } from './resources/env-key.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { writeJsonAtomic } from './utils/fs.js';
-import { jsonSyntaxErrorOffset, lineAndColumn } from './utils/json-position.js';
 
 const StoredSecretSchema = z.union([
   z.object({ value: z.string() }).strict(),
@@ -25,7 +24,7 @@ const StoredSecretSchema = z.union([
 export type StoredSecret = z.infer<typeof StoredSecretSchema>;
 
 const SecretStoreSchema = z.record(z.string().regex(ENV_KEY_RE), StoredSecretSchema);
-export type SecretStore = Record<string, StoredSecret>;
+export type SecretStore = z.infer<typeof SecretStoreSchema>;
 
 /** A store file's entries, or why it cannot be used. A missing file holds none. */
 export type SecretStoreRead =
@@ -43,27 +42,31 @@ export function getMachineSecretsPath(): string {
 }
 
 /**
- * Read a store file. A file that does not parse, or holds an entry that is not
- * one `value` or one `env`, is reported by path and position only: the
- * parser's own message quotes the text around the problem, which may be a
- * value.
+ * Read a store file. A file that does not parse is reported by its path only,
+ * one with an entry that is not one `value` or one `env` by the entry's
+ * number: the parser's own message quotes the text around the problem, which
+ * may be a value.
  */
 export async function readSecretStore(filePath: string): Promise<SecretStoreRead> {
   let content: string;
   try {
     content = await fs.promises.readFile(filePath, 'utf8');
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
+    const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
     if (code === 'ENOENT') return { ok: true, values: {} };
-    return { ok: false, reason: `Cannot read your secret values at ${filePath} (${code ?? 'unknown error'}).` };
+    return {
+      ok: false,
+      reason: `Cannot read your secret values at ${filePath} (${code ?? 'unknown error'}). Check that the file is yours and `
+        + `readable (\`ls -l ${filePath}\`), or delete it and set the values again with \`teamai env set\`.`,
+    };
   }
   const fix = 'Fix the file, or delete it and set the values again with `teamai env set`.';
-  const offset = jsonSyntaxErrorOffset(content);
-  if (offset !== null) {
-    const { line, column } = lineAndColumn(content, offset);
-    return { ok: false, reason: `${filePath} is not valid JSON (line ${line}, column ${column}). ${fix}` };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content);
+  } catch {
+    return { ok: false, reason: `${filePath} is not valid JSON. ${fix}` };
   }
-  const raw: unknown = JSON.parse(content);
   const parsed = SecretStoreSchema.safeParse(raw);
   if (parsed.success) return { ok: true, values: parsed.data };
   const name = parsed.error.issues[0]?.path[0];

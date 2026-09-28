@@ -191,7 +191,7 @@ describe('MCP servers and declared secrets', () => {
 
     expect(vars.GITHUB_TOKEN).toBeUndefined();
     const warnings = vi.mocked(log.warn).mock.calls.map((call) => String(call[0]));
-    expect(warnings).toEqual([expect.stringContaining(`${getTeamSecretsPath(localConfig)} is not valid JSON (line 1, column 28)`)]);
+    expect(warnings).toEqual([expect.stringContaining(`${getTeamSecretsPath(localConfig)} is not valid JSON.`)]);
     expect(warnings.join('\n')).not.toContain('ghp_fixture_value');
   });
 });

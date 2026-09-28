@@ -89,7 +89,7 @@ describe('team secret values', () => {
       expect(await readSecretStore(getTeamSecretsPath(localConfig))).toEqual({ ok: true, values: {} });
     });
 
-    it('reports a hand-corrupted file by path and position, never with the value', async () => {
+    it('reports a hand-corrupted file by path only, never with the value or the parser message', async () => {
       const file = getTeamSecretsPath(localConfig);
       await fse.outputFile(file, '{\n  "GITHUB_TOKEN": { "value": ghp_fixture_value }\n}\n');
 
@@ -97,8 +97,24 @@ describe('team secret values', () => {
 
       expect(read.ok).toBe(false);
       if (read.ok) return;
-      expect(read.reason).toContain(`${file} is not valid JSON (line 2, column 30)`);
-      expect(read.reason).not.toContain('ghp_fixture_value');
+      expect(read.reason).toBe(`${file} is not valid JSON. Fix the file, or delete it and set the values again with \`teamai env set\`.`);
+    });
+
+    it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('says what to check when the file cannot be read', async () => {
+      const file = getTeamSecretsPath(localConfig);
+      await writeSecretStore(file, { GITHUB_TOKEN: { value: 'fixture-token' } });
+      await fse.chmod(file, 0o000);
+      try {
+        const read = await readSecretStore(file);
+
+        expect(read).toEqual({
+          ok: false,
+          reason: `Cannot read your secret values at ${file} (EACCES). Check that the file is yours and readable (\`ls -l ${file}\`), `
+            + 'or delete it and set the values again with `teamai env set`.',
+        });
+      } finally {
+        await fse.chmod(file, 0o600);
+      }
     });
 
     it('rejects an entry that is not exactly one of a value or a variable reference', async () => {

@@ -423,8 +423,8 @@ scope: 'user',
 
       expect(await fse.readFile(storeFile(), 'utf8')).toBe(corrupt);
       expect(vi.mocked(log.error).mock.calls.map((c) => c[0])).toEqual([
-        expect.stringContaining(`${storeFile()} is not valid JSON (line 1, column 28)`),
-        expect.stringContaining(`${storeFile()} is not valid JSON (line 1, column 28)`),
+        expect.stringContaining(`${storeFile()} is not valid JSON.`),
+        expect.stringContaining(`${storeFile()} is not valid JSON.`),
       ]);
       expect(logged()).not.toContain('ghp_fixture_value');
     });
