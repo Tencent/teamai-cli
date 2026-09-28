@@ -154,6 +154,8 @@ teamai env list --reveal     # show variable values in plaintext (never a secret
 teamai env add <KEY> <VALUE> # add or update in env/env.yaml
 teamai env add <KEY> <VALUE> --project <id>   # or --role <ns>: in that namespace's env/<ns>/env.yaml (warns if nothing declares <ns>)
 teamai env remove <KEY>      # remove (same --role / --project)
+teamai env add <KEY> --secret -d "<what it is for>" --url <where to get one>   # declare a secret in env/secrets.yaml, no value (same --role / --project)
+teamai env remove <KEY> --secret   # remove a declared secret (plain `env remove` does too when env.yaml does not set <KEY>)
 teamai remove mcp <name>     # root mcp/mcp.yaml if it has the name, else the one namespace file; --role / --project pick a namespace
 ```
 
@@ -185,7 +187,8 @@ and push it with git. `teamai doctor` lists each override.
 - Secrets are declared with no value in `env/secrets.yaml` or `env/<ns>/secrets.yaml`
   (active through `resources.env`; a namespace entry replaces the root entry with the
   same key): a `secrets:` list of `key`, optional `description` and optional `url`
-  (where a member gets one). Never put a value there. Edit the file in the team repo;
+  (where a member gets one). Never put a value there: `teamai env add <KEY> --secret`
+  takes none and rejects one. Declare with it or edit the file in the team repo;
   `teamai push` picks it up. `teamai env list` shows each secret as `environment` or
   `missing` and never shows a value, `--reveal` included. A secrets file that does not
   parse fails the secrets only; env variables are still delivered, and `teamai doctor`

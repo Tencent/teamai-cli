@@ -9,13 +9,15 @@
  * env.yaml, ignores it, and `env add` / `env remove` on an older CLI cannot
  * drop it by rewriting env.yaml.
  */
+import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import {
   entryLayout, missingTopLevelKeyReason, readEntryFileText, resolveEntries, resolveEntriesFor, unknownEntryKeys,
-  type EntryLayout, type EntryReader, type EntryResolution,
+  writtenList, type EntryLayout, type EntryReader, type EntryResolution,
 } from '../namespaced-entries.js';
 import type { LocalConfig } from '../types.js';
+import { ensureDir, readFileSafe, writeFile } from '../utils/fs.js';
 import { ENV_KEY_RE } from './env.js';
 
 const SecretDeclarationSchema = z.object({
@@ -73,6 +75,31 @@ export const secretsEntryReader: EntryReader<SecretDeclaration> = {
   nameOf: (secret) => secret.key,
   scopeOf: () => ({}),
 };
+
+/**
+ * A secrets file's declarations as written, for `env add --secret` and
+ * `env remove`: every key an entry was written with is kept, so a rewrite
+ * drops nothing the file had. A file that does not parse gives its reason:
+ * writing back what could be read would drop every declaration it has.
+ */
+export async function readSecretsForEdit(
+  absolutePath: string,
+  relativePath: string,
+): Promise<{ ok: true; secrets: Record<string, unknown>[] } | { ok: false; reason: string }> {
+  const read = await secretsEntryReader.read(absolutePath, relativePath);
+  if (read === null) return { ok: true, secrets: [] };
+  if (!read.ok) return read;
+  const text = await readFileSafe(absolutePath);
+  const written = writtenList(text === null ? null : YAML.parse(text), 'secrets');
+  const isEntry = (entry: unknown): entry is Record<string, unknown> => entry !== null && typeof entry === 'object';
+  return { ok: true, secrets: Array.isArray(written) ? written.filter(isEntry) : [] };
+}
+
+/** Write a secrets file with these declarations and nothing else. */
+export async function writeSecretsFile(absolutePath: string, secrets: readonly object[]): Promise<void> {
+  await ensureDir(path.dirname(absolutePath));
+  await writeFile(absolutePath, YAML.stringify({ secrets }));
+}
 
 /**
  * The secrets this member's scope declares: `absent` when none of the files it

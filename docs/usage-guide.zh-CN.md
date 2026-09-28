@@ -969,6 +969,15 @@ secrets:
     url: https://github.com/settings/tokens     # 可选：成员获取 token 的地址
 ```
 
+```bash
+teamai env add GITHUB_TOKEN --secret -d "GitHub token with repo scope" --url https://github.com/settings/tokens
+teamai env remove GITHUB_TOKEN        # env.yaml 未设置的 key；两个文件都有时加 --secret
+teamai push
+```
+
+`teamai env add KEY --secret` 在根文件中（或用 `--role` / `--project` 在对应 namespace 的文件中）声明一个 key，
+或更新它的描述和 url；它不接受值，也不会输出值。
+
 `teamai env list` 和 `teamai list env` 会把每个已声明的密钥显示为 `environment`（你的环境中有它的值）
 或 `missing`，从不显示值，`--reveal` 也一样。密钥文件无法使用时只有密钥失败：env 变量照常下发，
 `pull` 会警告，`teamai doctor` 的检查失败并指出该文件。`teamai push` 会带上任何密钥文件的改动。

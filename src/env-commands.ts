@@ -3,8 +3,13 @@ import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler, maskEnvValue, ENV_KEY_RE, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
-import { resolveSecretDeclarations, secretState } from './resources/secrets.js';
-import { describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, resolveEntriesFor } from './namespaced-entries.js';
+import {
+  SECRETS_LAYOUT, readSecretsForEdit, resolveSecretDeclarations, secretState, writeSecretsFile,
+} from './resources/secrets.js';
+import {
+  describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, resolveEntriesFor,
+  type EntryLayout, type EntryType,
+} from './namespaced-entries.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { isSelfMode } from './types.js';
 
@@ -73,13 +78,14 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
 }
 
 /**
- * Add or update an env variable locally.
+ * Add or update an env variable locally, or with `secret` declare a secret:
+ * the key, what it is for and where to get a value, never a value.
  * Changes are deferred — run `teamai push` to sync to team repo.
  */
 export async function envAdd(
   key: string,
-  value: string,
-  options: GlobalOptions & { description?: string; role?: string; project?: string },
+  value: string | undefined,
+  options: GlobalOptions & { description?: string; role?: string; project?: string; secret?: boolean; url?: string },
 ): Promise<void> {
   // env.sh is generated as `export <key>=...` and sourced by every member, so a
   // key that is not a shell identifier either breaks that line or runs as code.
@@ -92,16 +98,43 @@ export async function envAdd(
     );
     return;
   }
+  // Every member supplies a secret's value on their own machine; the value
+  // passed here is neither stored nor printed.
+  if (options.secret && value !== undefined) {
+    log.error(
+      `A secret has no value in the team repo, so --secret takes none. Nothing was changed. `
+        + `Run \`teamai env add ${key} --secret\` without the value.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+  if (!options.secret && options.url !== undefined) {
+    log.error('--url says where a member gets a secret\'s value, so it needs --secret. Nothing was changed.');
+    process.exitCode = 1;
+    return;
+  }
+  if (!options.secret && value === undefined) {
+    log.error(
+      `No value for "${key}". Run \`teamai env add ${key} <value>\`, `
+        + `or \`teamai env add ${key} --secret\` to declare a secret each member sets.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
 
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
   const repoPath = localConfig.repo.localPath;
 
   if (!await refreshTeamRepo(localConfig, options.project)) return;
+  if (value === undefined) {
+    await declareSecret(repoPath, key, options);
+    return;
+  }
 
   const target = await envFileFromFlags(repoPath, options);
   if (!target) return;
-  const { envYamlPath, relativePath, where } = target;
+  const { filePath: envYamlPath, relativePath, where } = target;
 
   // The target env.yaml, or a new one when it does not exist.
   const envConfig = await readEnvFileForEdit(envYamlPath);
@@ -148,21 +181,68 @@ export async function envAdd(
 }
 
 /**
- * Remove an env variable locally.
+ * Declare a secret in env/secrets.yaml or env/<ns>/secrets.yaml, or update
+ * the description and url of one already declared there.
+ */
+async function declareSecret(
+  repoPath: string,
+  key: string,
+  options: GlobalOptions & { description?: string; role?: string; project?: string; url?: string },
+): Promise<void> {
+  const target = await envFileFromFlags(repoPath, options, SECRETS_LAYOUT);
+  if (!target) return;
+  const secrets = await readSecretsFileForEdit(target);
+  if (!secrets) return;
+
+  const index = secrets.findIndex((secret) => secret.key === key);
+  const isUpdate = index !== -1;
+  const declaration = {
+    ...(isUpdate ? secrets[index] : {}),
+    key,
+    ...(options.description !== undefined ? { description: options.description } : {}),
+    ...(options.url !== undefined ? { url: options.url } : {}),
+  };
+  if (isUpdate) secrets[index] = declaration;
+  else secrets.push(declaration);
+
+  if (options.dryRun) {
+    log.info(`[dry-run] Would ${isUpdate ? 'update' : 'declare'} secret${target.where}: ${key}`);
+    return;
+  }
+  await writeSecretsFile(target.filePath, secrets);
+  log.success(`${isUpdate ? 'Updated' : 'Declared'} secret${target.where}: ${key}`);
+  log.info('Run `teamai push` to sync to team repo.');
+}
+
+/**
+ * Remove an env variable locally. A key that env.yaml does not set is removed
+ * from the secrets file next to it; `secret` removes from the secrets file
+ * only, for a key both files carry.
  * Changes are deferred — run `teamai push` to sync to team repo.
  */
-export async function envRemove(key: string, options: GlobalOptions & { role?: string; project?: string }): Promise<void> {
+export async function envRemove(
+  key: string,
+  options: GlobalOptions & { role?: string; project?: string; secret?: boolean },
+): Promise<void> {
   const projectConfig = await detectProjectConfig();
   const localConfig = projectConfig ?? (await requireInit()).localConfig;
   const repoPath = localConfig.repo.localPath;
 
   if (!await refreshTeamRepo(localConfig, options.project)) return;
 
-  const target = await envFileFromFlags(repoPath, options);
+  const target = await envFileFromFlags(repoPath, options, options.secret ? SECRETS_LAYOUT : 'env');
   if (!target) return;
-  const { envYamlPath, relativePath, where } = target;
+  if (options.secret) {
+    if (await removeSecret(key, target, options)) return;
+    log.error(`Secret "${key}" is not declared${target.where}`);
+    process.exitCode = 1;
+    return;
+  }
+  const { filePath: envYamlPath, relativePath, where } = target;
+  const secretsFile = entryFileIn(repoPath, SECRETS_LAYOUT, target.namespace);
 
   if (!await pathExists(envYamlPath)) {
+    if (await removeSecret(key, secretsFile, options)) return;
     log.error(`No env variables defined (${relativePath} not found)`);
     return;
   }
@@ -172,6 +252,7 @@ export async function envRemove(key: string, options: GlobalOptions & { role?: s
   const idx = envConfig.variables.findIndex(v => v.key === key);
 
   if (idx === -1) {
+    if (await removeSecret(key, secretsFile, options)) return;
     log.error(`Env variable "${key}" not found${where}`);
     return;
   }
@@ -186,6 +267,27 @@ export async function envRemove(key: string, options: GlobalOptions & { role?: s
 
   log.success(`Removed env variable${where}: ${key}`);
   log.info('Run `teamai push` to sync to team repo.');
+}
+
+/**
+ * Remove a declared secret from `file`. False when the file does not declare
+ * it; true once it is removed, or reported when the file does not parse.
+ */
+async function removeSecret(key: string, file: EntryFileTarget, options: GlobalOptions): Promise<boolean> {
+  const secrets = await readSecretsFileForEdit(file);
+  if (!secrets) return true;
+  const index = secrets.findIndex((secret) => secret.key === key);
+  if (index === -1) return false;
+
+  if (options.dryRun) {
+    log.info(`[dry-run] Would remove secret${file.where}: ${key}`);
+    return true;
+  }
+  secrets.splice(index, 1);
+  await writeSecretsFile(file.filePath, secrets);
+  log.success(`Removed secret${file.where}: ${key}`);
+  log.info('Run `teamai push` to sync to team repo.');
+  return true;
 }
 
 /**
@@ -228,25 +330,52 @@ async function readEnvFileForEdit(envYamlPath: string): Promise<EnvYaml | null> 
   return null;
 }
 
+/** A file `env add` / `env remove` edit, and how messages name it. */
+interface EntryFileTarget {
+  readonly namespace: string | null;
+  readonly filePath: string;
+  readonly relativePath: string;
+  readonly where: string;
+}
+
 /**
- * The env file `--role <ns>` / `--project <id>` name, or env/env.yaml without
- * either. Reports the reason and returns null when the flags name none.
+ * The secrets file to edit, or null when it does not parse, reported as for
+ * env.yaml.
+ */
+async function readSecretsFileForEdit(file: EntryFileTarget): Promise<Record<string, unknown>[] | null> {
+  const read = await readSecretsForEdit(file.filePath, file.relativePath);
+  if (read.ok) return read.secrets;
+  log.error(`${read.reason}. Nothing was changed. Fix the file in the team repo, then retry.`);
+  process.exitCode = 1;
+  return null;
+}
+
+/**
+ * The env file (env.yaml, or secrets.yaml for `SECRETS_LAYOUT`) that
+ * `--role <ns>` / `--project <id>` name, or the root one without either.
+ * Reports the reason and returns null when the flags name none.
  */
 async function envFileFromFlags(
   repoPath: string,
   flags: { role?: string; project?: string },
-): Promise<{ envYamlPath: string; relativePath: string; where: string } | null> {
-  const target = await entryNamespaceFromFlags(repoPath, 'env', flags);
+  layout: EntryType | EntryLayout = 'env',
+): Promise<EntryFileTarget | null> {
+  const target = await entryNamespaceFromFlags(repoPath, layout, flags);
   if (!target.ok) {
     log.error(target.message);
     process.exitCode = 1;
     return null;
   }
-  const relativePath = entryFilePath('env', target.namespace);
+  return entryFileIn(repoPath, layout, target.namespace);
+}
+
+function entryFileIn(repoPath: string, layout: EntryType | EntryLayout, namespace: string | null): EntryFileTarget {
+  const relativePath = entryFilePath(layout, namespace);
   return {
-    envYamlPath: entryFileAbsolutePath(repoPath, 'env', target.namespace),
+    namespace,
+    filePath: entryFileAbsolutePath(repoPath, layout, namespace),
     relativePath,
     // Messages name the file only for a namespace; the root is the default.
-    where: target.namespace === null ? '' : ` in ${relativePath}`,
+    where: namespace === null ? '' : ` in ${relativePath}`,
   };
 }

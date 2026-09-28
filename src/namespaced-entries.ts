@@ -630,9 +630,11 @@ export function describeEntryNotes(where: EntryType | EntryLayout, resolution: E
  */
 export async function entryNamespaceFromFlags(
   repoPath: string,
-  type: EntryType,
+  where: EntryType | EntryLayout,
   flags: { role?: string; project?: string },
 ): Promise<{ ok: true; namespace: string | null } | { ok: false; message: string }> {
+  const layout = asLayout(where);
+  const type = layout.activation;
   if (flags.role !== undefined && flags.project !== undefined) {
     return { ok: false, message: 'Use either --role or --project, not both.' };
   }
@@ -642,12 +644,12 @@ export async function entryNamespaceFromFlags(
     }
     if (await isDeclaredNamespace(repoPath, type, flags.role) === false) {
       log.warn(
-        `No role or project declares ${type} namespace "${flags.role}", so ${entryFilePath(type, flags.role)} reaches nobody. `
+        `No role or project declares ${type} namespace "${flags.role}", so ${entryFilePath(layout, flags.role)} reaches nobody. `
         + `Add \`${type}: [${flags.role}]\` to the resources of a role in manifest/roles.yaml or of a project in `
         + 'manifest/projects.yaml.',
       );
     }
-    return { ok: true, namespace: namespaceDir(await listDirs(path.join(repoPath, type)), flags.role) };
+    return { ok: true, namespace: namespaceDir(await listDirs(path.join(repoPath, layout.dir)), flags.role) };
   }
   if (flags.project === undefined) return { ok: true, namespace: null };
 
@@ -662,7 +664,7 @@ export async function entryNamespaceFromFlags(
   if (!project) return { ok: false, message: unknownProjectMessage(manifest, flags.project) };
   const namespaces = project.resources[type] ?? [];
   if (namespaces.length === 1 && namespaces[0] !== undefined) {
-    return { ok: true, namespace: namespaceDir(await listDirs(path.join(repoPath, type)), namespaces[0]) };
+    return { ok: true, namespace: namespaceDir(await listDirs(path.join(repoPath, layout.dir)), namespaces[0]) };
   }
   return {
     ok: false,
