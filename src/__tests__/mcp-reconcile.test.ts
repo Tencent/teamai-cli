@@ -20,7 +20,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { reconcileMcpForConfig, resolveMcpTargets, spliceCodexBlock, codexServerNames } from '../mcp-reconcile.js';
+import { reconcileMcpForConfig, resolveMcpTargets, spliceCodexBlock, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
 
@@ -1055,6 +1055,38 @@ servers:
 
       expect((await fse.readJson(userFile)).mcpServers.open).toBeDefined();
       expect(await mode(userFile)).toBe(0o644);
+    });
+
+    it('never lets the Codex config temp file be wider than 0600, and names it at random', async () => {
+      await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
+      await writeMcpYaml(`${SECRET_SERVER}    tools: [codex]\n`);
+      const isCodexTemp = (file: string): boolean => path.basename(file).startsWith('config.toml.');
+      const renamed: { file: string; mode: number }[] = [];
+      const rename = fse.rename.bind(fse);
+      vi.spyOn(fse, 'rename').mockImplementation(async (from: fse.PathLike, to: fse.PathLike) => {
+        if (typeof from === 'string' && isCodexTemp(from)) renamed.push({ file: from, mode: await mode(from) });
+        return rename(from, to);
+      });
+      const created: number[] = [];
+      const writeFile = fse.writeFile.bind(fse);
+      vi.spyOn(fse, 'writeFile').mockImplementation(async (...args: Parameters<typeof fse.writeFile>) => {
+        await writeFile(...args);
+        const [file] = args;
+        if (typeof file === 'string' && isCodexTemp(file)) created.push(await mode(file));
+      });
+      const configToml = path.join(homeDir, '.codex', 'config.toml');
+
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      await writeCodexAtomic(configToml, 'model = "gpt-5"\n');
+
+      expect(created).toHaveLength(2);
+      expect(created.every((m) => (m & 0o077) === 0)).toBe(true);
+      expect(renamed.map((r) => path.basename(r.file))).toEqual([
+        expect.stringMatching(/^config\.toml\.\d+\.[0-9a-f]{12}\.tmp$/),
+        expect.stringMatching(/^config\.toml\.\d+\.[0-9a-f]{12}\.tmp$/),
+      ]);
+      expect(renamed.every((r) => r.mode === 0o600)).toBe(true);
+      expect(await mode(configToml)).toBe(0o600);
     });
   });
 

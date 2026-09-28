@@ -1,6 +1,4 @@
-import crypto from 'node:crypto';
 import path from 'node:path';
-import fse from 'fs-extra';
 import type {
   LocalConfig,
   TeamaiConfig,
@@ -38,6 +36,7 @@ import { isToolInstalledForConfig } from './resources/base.js';
 import { reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import {
   readJson,
+  writeFileAtomic,
   writeJsonAtomic,
   readFileSafe,
   pathExists,
@@ -804,19 +803,11 @@ async function applyCodex(
 
   if (!dirty || options.dryRun) return false;
 
-  await fse.ensureDir(path.dirname(target.file));
-  const tmp = `${target.file}.${process.pid}.tmp`;
-  await fse.writeFile(tmp, source, 'utf-8');
-  await fse.chmod(tmp, 0o600);
-  await fse.rename(tmp, target.file);
+  await writeCodexAtomic(target.file, source);
   return true;
 }
 
+/** Write a Codex config.toml atomically, readable by this user only: it may hold resolved values. */
 export async function writeCodexAtomic(file: string, content: string): Promise<void> {
-  await fse.ensureDir(path.dirname(file));
-  const suffix = crypto.randomBytes(6).toString('hex');
-  const tmp = `${file}.${process.pid}.${suffix}.tmp`;
-  await fse.writeFile(tmp, content, 'utf-8');
-  await fse.chmod(tmp, 0o600);
-  await fse.rename(tmp, file);
+  await writeFileAtomic(file, content, { mode: 0o600 });
 }
