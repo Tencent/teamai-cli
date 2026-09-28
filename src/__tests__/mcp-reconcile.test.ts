@@ -1360,6 +1360,177 @@ servers:
     const oldFile = await fse.readJson(path.join(projectRoot, '.teamai', 'managed-mcp.json'));
     expect(oldFile['claude:project']).toBeUndefined();
   });
+
+  // #875: the session-start pull inherits the agent's environment, which often
+  // lacks the member's shell export, so a declared secret is there for one
+  // pull and gone for the next. Removing the entry then would undo the pull
+  // that found it.
+  describe('a missing declared secret (#875)', () => {
+    const GITHUB = `
+  - name: github
+    transport: http
+    url: https://api.example.com/mcp
+    headers:
+      Authorization: Bearer \${GITHUB_TOKEN}
+`;
+    const DOCS = `
+  - name: docs
+    transport: http
+    url: https://docs.example.com/mcp
+`;
+    const claudeJson = () => path.join(homeDir, '.claude.json');
+    const codexToml = () => path.join(homeDir, '.codex', 'config.toml');
+    const manifestNames = async (key: string): Promise<string[]> => {
+      const manifest = await fse.readJson(path.join(homeDir, '.teamai', 'managed-mcp.json'));
+      return (manifest[key] ?? []).map((r: { name: string }) => r.name).sort();
+    };
+
+    beforeEach(async () => {
+      await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
+      await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GITHUB_TOKEN\n');
+    });
+
+    it('keeps the entry an earlier pull wrote, in a JSON config and in Codex', async () => {
+      await writeMcpYaml(`servers:${GITHUB}`);
+      vi.stubEnv('GITHUB_TOKEN', 'first-token');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      const jsonBefore = (await fse.readJson(claudeJson())).mcpServers.github;
+      const tomlBefore = await fse.readFile(codexToml(), 'utf-8');
+      expect(tomlBefore).toContain('Bearer first-token');
+
+      vi.stubEnv('GITHUB_TOKEN', undefined);
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect(changes.filter((c) => c.action !== 'skipped')).toEqual([]);
+      expect((await fse.readJson(claudeJson())).mcpServers.github).toEqual(jsonBefore);
+      expect(await fse.readFile(codexToml(), 'utf-8')).toBe(tomlBefore);
+    });
+
+    it('keeps its ownership record when another server is written in the same pull', async () => {
+      await writeMcpYaml(`servers:${GITHUB}`);
+      vi.stubEnv('GITHUB_TOKEN', 'first-token');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      vi.stubEnv('GITHUB_TOKEN', undefined);
+      await writeMcpYaml(`servers:${GITHUB}${DOCS}`);
+      const { wrote } = await reconcileMcpForConfig(teamConfig, localConfig);
+      expect(wrote).toBe(true);
+      expect(await manifestNames('claude')).toEqual(['docs', 'github']);
+      expect(await manifestNames('codex')).toEqual(['docs', 'github']);
+
+      // Still teamai's: a later pull that finds a new value updates it rather
+      // than treating it as a server the member added.
+      vi.stubEnv('GITHUB_TOKEN', 'second-token');
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+      expect(changes.filter((c) => c.server === 'github').map((c) => `${c.tool}:${c.action}`).sort())
+        .toEqual(['claude:updated', 'codex:updated', 'cursor:updated']);
+      expect((await fse.readJson(claudeJson())).mcpServers.github.headers.Authorization).toBe('Bearer second-token');
+      expect(await fse.readFile(codexToml(), 'utf-8')).toContain('Bearer second-token');
+    });
+
+    it('skips a server no pull has written yet', async () => {
+      vi.stubEnv('GITHUB_TOKEN', undefined);
+      await writeMcpYaml(`servers:${GITHUB}${DOCS}`);
+
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect(changes.filter((c) => c.server === 'github').map((c) => `${c.tool}:${c.action}`).sort())
+        .toEqual(['claude:skipped', 'codex:skipped', 'cursor:skipped']);
+      expect((await fse.readJson(claudeJson())).mcpServers.github).toBeUndefined();
+      expect(await fse.readFile(codexToml(), 'utf-8')).not.toContain('[mcp_servers.github]');
+      expect(await manifestNames('claude')).toEqual(['docs']);
+    });
+
+    it('removes a kept server once it leaves mcp.yaml', async () => {
+      await writeMcpYaml(`servers:${GITHUB}`);
+      vi.stubEnv('GITHUB_TOKEN', 'first-token');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      vi.stubEnv('GITHUB_TOKEN', undefined);
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      await writeMcpYaml('servers: []\n');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect((await fse.readJson(claudeJson())).mcpServers.github).toBeUndefined();
+      expect(await fse.readFile(codexToml(), 'utf-8')).not.toContain('[mcp_servers.github]');
+    });
+
+    it('keeps every managed server as it is while the declarations cannot be read', async () => {
+      await writeMcpYaml(`servers:${GITHUB}${DOCS}`);
+      vi.stubEnv('GITHUB_TOKEN', 'first-token');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      const jsonBefore = await fse.readFile(claudeJson(), 'utf-8');
+      const tomlBefore = await fse.readFile(codexToml(), 'utf-8');
+
+      vi.stubEnv('GITHUB_TOKEN', undefined);
+      await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: [unclosed\n');
+      await writeMcpYaml(`servers:${GITHUB}`);
+      const { changes, wrote, unresolved } = await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect({ changes, wrote, unresolved }).toEqual({ changes: [], wrote: false, unresolved: true });
+      expect(await fse.readFile(claudeJson(), 'utf-8')).toBe(jsonBefore);
+      expect(await fse.readFile(codexToml(), 'utf-8')).toBe(tomlBefore);
+      const { log } = await import('../utils/logger.js');
+      expect(vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).join('\n')).toContain('env/secrets.yaml');
+    });
+
+    it('still removes a server whose missing variable is not declared as a secret', async () => {
+      await writeMcpYaml(`
+servers:
+  - name: plain
+    transport: http
+    url: https://plain.example.com/mcp
+    headers:
+      X-Key: \${PLAIN_KEY}
+`);
+      vi.stubEnv('PLAIN_KEY', 'k');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      expect((await fse.readJson(claudeJson())).mcpServers.plain).toBeDefined();
+
+      vi.stubEnv('PLAIN_KEY', undefined);
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect((await fse.readJson(claudeJson())).mcpServers.plain).toBeUndefined();
+      expect(await fse.readFile(codexToml(), 'utf-8')).not.toContain('[mcp_servers.plain]');
+    });
+
+    it('still removes a server that also misses a variable not declared as a secret', async () => {
+      await writeMcpYaml(`
+servers:
+  - name: both
+    transport: http
+    url: https://both.example.com/mcp
+    headers:
+      Authorization: Bearer \${GITHUB_TOKEN}
+      X-Key: \${PLAIN_KEY}
+    tools: [claude]
+`);
+      vi.stubEnv('GITHUB_TOKEN', 't');
+      vi.stubEnv('PLAIN_KEY', 'k');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      vi.stubEnv('GITHUB_TOKEN', undefined);
+      vi.stubEnv('PLAIN_KEY', undefined);
+      await reconcileMcpForConfig(teamConfig, localConfig);
+
+      expect((await fse.readJson(claudeJson())).mcpServers.both).toBeUndefined();
+    });
+
+    it('removeAll removes a kept server, while the declarations cannot be read too', async () => {
+      await writeMcpYaml(`servers:${GITHUB}`);
+      vi.stubEnv('GITHUB_TOKEN', 'first-token');
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      vi.stubEnv('GITHUB_TOKEN', undefined);
+      await reconcileMcpForConfig(teamConfig, localConfig);
+      await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: [unclosed\n');
+
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, { removeAll: true });
+
+      expect(changes.map((c) => `${c.tool}:${c.action}`).sort()).toEqual(['claude:removed', 'codex:removed', 'cursor:removed']);
+      expect((await fse.readJson(claudeJson())).mcpServers.github).toBeUndefined();
+      expect(await fse.readFile(codexToml(), 'utf-8')).not.toContain('[mcp_servers.github]');
+    });
+  });
 });
 
 describe('MCP reconcile — OpenCode', () => {

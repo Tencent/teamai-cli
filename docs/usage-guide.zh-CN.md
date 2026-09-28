@@ -1075,7 +1075,7 @@ TeamAI 不会迁移或删除旧文件。Claude Code 也读取根目录的 `.mcp.
 
 Copilot 使用原生 `mcpServers` 结构：`stdio` 写成 `type: "local"`，远程传输保留 `http` 或 `sse`，每个 TeamAI 管理的条目都会带上必需的 `tools: ["*"]` 允许列表。TeamAI 遵循 `COPILOT_HOME`，项目配置使用 Copilot CLI 官方文档指定的 `.github/mcp.json` 仓库路径。详见 [GitHub Copilot CLI 添加 MCP Server](https://docs.github.com/zh/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)。Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式。Kiro 在专用的、只含 `mcpServers` 的 `.kiro/settings/mcp.json` 中使用同一格式（见 [Kiro MCP 配置文档](https://kiro.dev/docs/mcp/configuration/)）。OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）与 `http`（`type:"remote"`），`sse` 会被跳过，其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；与手写同名则跳过，除非 `--force`。
 
-**密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。取值优先来自环境变量，其次是该目录收到的团队环境变量（`env/env.yaml` 与活动的 `env/<ns>/env.yaml`）。变量无法解析则跳过并提示。
+**密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。取值优先来自环境变量，其次是该目录收到的团队环境变量（`env/env.yaml` 与活动的 `env/<ns>/env.yaml`）。变量无法解析则跳过并提示。已声明为团队密钥的变量不同：pull 找不到它时，之前某次 pull 写入的条目原样保留，因此里面可能是已经轮换掉的旧值，直到某次 pull 找到新值（见[团队密钥](designs/team-secrets.zh-CN.md#缺少密钥时保留-mcp-条目)）。
 
 teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配置文件（新建文件权限为 `0600`）。它不依赖任何工具自身的环境变量展开——因为那种展开很脆弱：最典型的是，以 GUI 方式（Dock/Launchpad）启动的 IDE 不会继承你 shell 中 `export` 的变量，`${VAR}` 占位符会展开为空、导致服务端 401。解析成明文可以保证无论工具如何启动，token 都在。
 

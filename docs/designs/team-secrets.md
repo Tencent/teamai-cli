@@ -6,7 +6,7 @@ Proposal: [#875](https://github.com/Tencent/teamai-cli/issues/875). Plan: [#879]
 
 A team declares which secrets its members need, in the team repo, with no value. Each member supplies the value on their own machine. No secret value is written to the team repo.
 
-This document grows with the implementation and describes only what the current version does. Today that is declaring secrets and seeing, per member, whether a value is available. Storing a member's value, `${VAR}` in MCP servers and `env exec` come later.
+This document grows with the implementation and describes only what the current version does. Today that is declaring secrets, seeing, per member, whether a value is available, and keeping an MCP entry when a pull can't find a declared secret. Storing a member's value and `env exec` come later.
 
 ## Declaring secrets
 
@@ -61,6 +61,19 @@ Team secrets (2):
 ## Declarations are absent, valid or failed
 
 The declarations a member reads have three outcomes, and consumers keep them apart: `absent` (no secrets file this member reads exists), `valid` (possibly declaring none), and `failed`. A failed file is never read as "no secrets": a consumer that did would act on a team having no secrets while it has some.
+
+## A missing secret keeps the MCP entry
+
+`${VAR}` in `mcp/mcp.yaml` can name a declared secret. The session-start pull runs in the agent's environment, which often lacks the member's shell exports (a GUI-launched tool, or a zsh export under `bash -lc`), so a secret can be there for one pull and gone for the next. When a pull finds no value for a server's declared secret:
+
+- A server an earlier pull wrote keeps its entry in each tool's config, as it is, and teamai still manages it: a later pull that finds a value updates it.
+- A server no pull has written yet is skipped, as before.
+- The entry is removed when its server leaves `mcp.yaml`, and by `teamai mcp remove`, `teamai uninstall`, and `teamai init` when it moves the Claude Code root.
+- A server that also misses a variable not declared as a secret is removed, as before. Variables that aren't declared as secrets keep today's behaviour.
+
+A kept entry holds the value the earlier pull wrote. After a secret is rotated or revoked, the server keeps the old value until a pull finds the new one.
+
+While the declarations fail, `pull` and `teamai mcp inject` change no MCP server: nothing is added, updated or removed, and `mcp inject` exits 1. `mcp remove` and uninstall still remove every managed server.
 
 ## Workflows (#818)
 
