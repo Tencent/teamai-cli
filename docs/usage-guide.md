@@ -766,7 +766,7 @@ teamai push --role pm  # Push into the pm namespace (skills/pm/, rules/pm/, agen
 teamai push --branch feature/gitee-destination  # Use an explicit destination branch
 ```
 
-`--branch` names the branch that receives a new push; an existing open PR is always updated on its recorded branch. TeamAI refuses to start a push when the team-repo clone has user changes (modified, staged, untracked, or conflicted files); TeamAI-owned `teamai.yaml` and sync-lock state are handled separately. Commit or stash other local changes first.
+`--branch` names the branch that receives a new push; an existing open PR is always updated on its recorded branch. TeamAI refuses to start a push when the team-repo clone has user changes (modified, staged, untracked, or conflicted files); TeamAI-owned `teamai.yaml`, the env files `teamai env add` edited, and sync-lock state are handled separately. Commit or stash other local changes first.
 
 **Namespace selection (new resources):** When pushing a new skill, rule or agent, the CLI automatically detects available namespaces and offers an interactive choice:
 

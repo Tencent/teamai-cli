@@ -346,13 +346,17 @@ function isTeamaiOwnedDirtyPath(
   filePath: string,
   pendingTeamConfig: string | null,
   modeChangedPaths: ReadonlySet<string>,
+  pendingEnvPaths: ReadonlySet<string>,
 ): boolean {
   const normalized = filePath.replaceAll('\\', '/');
   // The sync lock is disposable TeamAI state. teamai.yaml is different: it is
   // safe to restore only when its content was captured above and its mode is
   // unchanged. Deletion, mode-only, and content+mode changes must stop before
-  // reset --hard, or the user's change is silently lost (#690 review).
+  // reset --hard, or the user's change is silently lost (#690 review). The
+  // env files `env add` left for push follow the same rule; the caller only
+  // lists the ones it captured with an unchanged mode (#881).
   if (normalized === '.teamai/.sync-lock') return true;
+  if (pendingEnvPaths.has(normalized)) return true;
   return normalized === 'teamai.yaml'
     && pendingTeamConfig !== null
     && !modeChangedPaths.has(normalized);
@@ -362,9 +366,10 @@ export function collectUnsafeDirtyPaths(
   status: PushRepoStatus,
   pendingTeamConfig: string | null,
   modeChangedPaths: ReadonlySet<string> = new Set(),
+  pendingEnvPaths: ReadonlySet<string> = new Set(),
 ): string[] {
   return collectDirtyPaths(status)
-    .filter((filePath) => !isTeamaiOwnedDirtyPath(filePath, pendingTeamConfig, modeChangedPaths));
+    .filter((filePath) => !isTeamaiOwnedDirtyPath(filePath, pendingTeamConfig, modeChangedPaths, pendingEnvPaths));
 }
 
 /**
@@ -894,10 +899,22 @@ async function pushCore(
       if (pendingTeamConfig !== null && await hasGitModeChange(git, 'teamai.yaml')) {
         modeChangedPaths.add('teamai.yaml');
       }
+      // `env add` edits env files in the clone and leaves the commit to push:
+      // capture what the env scan will push, to restore it after the refresh
+      // below as teamai.yaml is (#881). A mode change is not captured, so it
+      // stays dirty and stops the push.
+      const pendingEnvFiles = new Map<string, string>();
+      for (const item of await getHandler('env').scanLocalForPush(teamConfig, localConfig)) {
+        const content = await readFileSafe(item.sourcePath);
+        if (content !== null && !await hasGitModeChange(git, item.relativePath)) {
+          pendingEnvFiles.set(item.relativePath, content);
+        }
+      }
       const unsafeDirtyPaths = collectUnsafeDirtyPaths(
         await git.status(),
         pendingTeamConfig,
         modeChangedPaths,
+        new Set(pendingEnvFiles.keys()),
       );
       if (unsafeDirtyPaths.length > 0) {
         pullSpin.fail(
@@ -907,8 +924,16 @@ async function pushCore(
         process.exitCode = 1;
         return;
       }
-      await resetToCleanMaster(git, repoPath);
-      await pullRepo(repoPath);
+      try {
+        await resetToCleanMaster(git, repoPath);
+        await pullRepo(repoPath);
+      } finally {
+        // Unlike teamai.yaml, nothing later in the run holds these edits, so
+        // they go back even when the refresh fails after reset --hard.
+        for (const [relativePath, content] of pendingEnvFiles) {
+          await writeFile(path.join(repoPath, ...relativePath.split('/')), content);
+        }
+      }
       if (pendingTeamConfig !== null) {
         // Re-apply the TeamAI-owned config edit after refreshing the default branch.
         await writeFile(yamlPath, pendingTeamConfig);

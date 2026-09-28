@@ -695,7 +695,7 @@ teamai push --role pm  # 推送到 pm namespace（skills/pm/、rules/pm/、agent
 teamai push --branch feature/gitee-destination  # 使用显式目标分支
 ```
 
-`--branch` 指定新推送使用的分支；已有开放 PR 始终沿用其记录的分支进行更新。如果团队仓库 clone 存在用户修改、暂存、未跟踪或冲突文件，TeamAI 会在 push 前拒绝执行；TeamAI 自己管理的 `teamai.yaml` 和 sync-lock 状态会单独处理。其他本地改动请先提交或 stash。
+`--branch` 指定新推送使用的分支；已有开放 PR 始终沿用其记录的分支进行更新。如果团队仓库 clone 存在用户修改、暂存、未跟踪或冲突文件，TeamAI 会在 push 前拒绝执行；TeamAI 自己管理的 `teamai.yaml`、`teamai env add` 修改的 env 文件和 sync-lock 状态会单独处理。其他本地改动请先提交或 stash。
 
 **命名空间选择（新资源）：** 推送新的 skill、rule 或 agent 时，CLI 会自动检测可用的命名空间并提供交互式选择：
 
