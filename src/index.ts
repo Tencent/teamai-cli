@@ -716,6 +716,15 @@ envCmd
     await envUnset(key, { ...globalOpts, ...cmdOpts });
   });
 
+envCmd
+  .command('exec <command...>')
+  .description("Run a command with this directory's team env variables and secrets (put -- before the command)")
+  .action(async (command: string[]) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { envExec, exitLike } = await import('./env-exec.js');
+    exitLike(await envExec(command, globalOpts));
+  });
+
 // ─── Hooks commands ─────────────────────────────────────
 
 const hooksCmd = program
