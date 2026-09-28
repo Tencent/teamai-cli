@@ -23,7 +23,7 @@ secrets:
 
 - `key` 必填，且必须是 shell 变量名（字母、数字和下划线，不以数字开头）。
 - 条目带有其他任何键（包括 `value:`）时不会被声明，`pull` 和 `teamai doctor` 会指出文件、密钥和该键。值不应该写在这个文件里。
-- 文件无法解析、没有顶层 `secrets:` 键，或同一个 key 定义了两次时，绝不会被当作"没有密钥"：本次不解析密钥，`env.sh`、env 备份和 MCP server 保持原样，与 `env.yaml` 无法使用时相同；`env exec` 不应用任何密钥。`pull` 会警告，`env list` 和 `mcp list` 以非零状态退出（`mcp list` 把 server 的变量显示为 `not resolved`），`teamai doctor` 的 `Team secrets can be resolved` 检查失败，它们都会指出文件和修复方法。
+- 文件无法解析、没有顶层 `secrets:` 键，或同一个 key 定义了两次时，绝不会被当作"没有密钥"：本次不解析密钥，`env.sh`、env 备份和 MCP server 保持原样，与 `env.yaml` 无法使用时相同；`env exec` 不应用任何变量和密钥，因为 `env.yaml` 中的任何 key 都可能是该文件声明的密钥。`pull` 会警告，`env list` 和 `mcp list` 以非零状态退出（`mcp list` 把 server 的变量显示为 `not resolved`），`teamai doctor` 的 `Team secrets can be resolved` 检查失败，它们都会指出文件和修复方法。
 - 空文件或 `secrets: []` 表示没有声明任何密钥。
 
 使用单独的文件，是为了让旧版 CLI（只读取 `env.yaml`）忽略它，旧版的 `teamai env add` 或 `env remove`（会重写 `env.yaml`）也不会把它丢掉。
@@ -183,7 +183,7 @@ teamai env exec -- glab mr list     GITLAB_HOST 来自 env.yaml，GITLAB_TOKEN �
 - **Scope。** 当前目录的 scope：teamai 在此处配置的项目（通过 git 查找，因此项目的每个 worktree 都解析到该项目），否则是用户 scope。
 - **环境。** 命令继承 teamai 的环境，先按[变量顺序](#变量)叠加该 scope 的变量（scope 变量覆盖继承的同名变量），再按[解析顺序](#解析顺序)叠加它的密钥。声明为密钥、但在该 scope 下没有值的 key 会从命令的环境中移除，因此命令永远拿不到 `teamai env list` 不会显示为该 scope 的值：另一个团队导出的值，或者该团队的值用 `--from-env` 指向另一个变量时成员自己导出的值。
 - **缺少密钥。** 那一[行提示](#缺少密钥时告诉成员该运行什么)输出到 stderr，命令照常运行：`gh` 和 `glab` 仍可以使用它们自己的登录。
-- **失败。** 声明失败时，只应用变量，不应用任何密钥；`env.yaml` 失败时，只应用密钥，不应用任何变量；值文件无法读取时，移除所有已声明的 key，也不应用任何变量。每种情况都会在 stderr 上说明。项目配置存在但无法读取时，会在 stderr 上指出该文件，并以继承的环境运行命令：既不当作"没有 scope"，也不回退到用户 scope。
+- **失败。** 声明失败时，不应用任何变量和密钥，命令以继承的环境运行：`env.yaml` 中的任何 key 都可能是该文件声明的密钥，因此不传递它在仓库中的值；`env.yaml` 失败时，只应用密钥，不应用任何变量；值文件无法读取时，移除所有已声明的 key，也不应用任何变量。每种情况都会在 stderr 上说明。项目配置存在但无法读取时，会在 stderr 上指出该文件，并以继承的环境运行命令：既不当作"没有 scope"，也不回退到用户 scope。
 - **没有 scope。** 既没有项目配置也没有用户配置时，命令以继承的环境运行，并在 stderr 上给出提示。这里不应用本机值，因为没有团队声明命令需要哪些 key。HTTP 团队仓库在这里同样不提供 env。
 - **输出。** teamai 打印的所有内容都输出到 stderr，因此命令的 stdout 可以直接接管道。退出码就是命令的退出码；命令被信号终止时，teamai 以同一信号结束；对于 Node 不会因之退出的信号（SIGPIPE、SIGUSR1），则以 128 + 信号编号退出。发给 teamai 的 SIGTERM 或 SIGHUP 会转发给命令。`Ctrl-C` 和 `Ctrl-\` 不转发：终端已经把它们发给了命令，第二个 SIGINT 会让 terraform 等工具强制退出，因此 teamai 忽略它们并等待命令结束。无法启动的命令以 127 退出。
 - **不写入值。** 不会把任何值写入磁盘或 `debug.log`。查找 scope 的行为与其他查找 scope 的命令相同：可能接管项目分区、保存用户 scope 的角色迁移，或为刚克隆的单仓项目完成配置；这些写入都不包含值。

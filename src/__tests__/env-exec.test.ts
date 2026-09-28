@@ -218,7 +218,7 @@ describe('teamai env exec', () => {
     expect((await childEnv(home)).GITHUB_TOKEN).toBeUndefined();
   });
 
-  it('applies no secrets on a failed declaration, still overlays the variables, and names the failure', async () => {
+  it('applies no variables and no secrets on a failed declaration, and names the failure', async () => {
     const { repoPath } = await team('personal', {
       'env/env.yaml': 'variables:\n  - key: API_URL\n    value: https://team.example\n',
       'env/secrets.yaml': 'secrets:\n  - key: 1BAD\n',
@@ -229,10 +229,23 @@ describe('teamai env exec', () => {
 
     const env = await childEnv(home);
 
-    expect(env.API_URL).toBe('https://team.example');
+    expect(env.API_URL).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBe('fixture-exported');
     expect(text(stderr)).toContain('env/secrets.yaml');
-    expect(text(stderr)).toContain('The command runs without team secrets.');
+    expect(text(stderr)).toContain('The command runs with the inherited environment, without team env variables or secrets.');
+  });
+
+  it('keeps a legacy env.yaml value of a key that may be a secret from the command while the declarations fail', async () => {
+    const { repoPath } = await team('personal', {
+      'env/env.yaml': 'variables:\n  - key: GITHUB_TOKEN\n    value: fixture-legacy-repo\n',
+      'env/secrets.yaml': 'secrets: [not yaml\n',
+    });
+    await userScope(repoPath);
+
+    const env = await childEnv(home);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(text(stderr)).not.toContain('fixture-legacy-repo');
   });
 
   it('removes every declared key when the values file cannot be read, and says why', async () => {

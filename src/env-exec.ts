@@ -124,17 +124,21 @@ function inheritedEnvironment(): NodeJS.ProcessEnv {
  * another team's export, or the member's own export when this team's value
  * names another variable. A key that is also an env.yaml variable resolves as
  * a secret. A variable takes the member's value for this team, else the
- * team's, as in MCP; the inherited value never overrides it (#875).
+ * team's, as in MCP; the inherited value never overrides it (#875). While the
+ * declarations fail, nothing is overlaid.
  */
 async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessEnv> {
   const env = inheritedEnvironment();
   const teamEnv = await resolveTeamEnv(localConfig);
   const { variables, declarations, variableValues, secrets } = teamEnv;
+  if (declarations.kind === 'failed') {
+    // Any env.yaml key may be a secret the file declares, so no team value is applied (#879 Conflict 14).
+    const failures = [variables, declarations].flatMap((entries) => entries.kind === 'failed' ? [describeEntryFailure(entries.failure)] : []);
+    log.warn(`${failures.join(' ')} The command runs with the inherited environment, without team env variables or secrets.`);
+    return env;
+  }
   if (variables.kind === 'failed') {
     log.warn(`${describeEntryFailure(variables.failure)} The command runs without the team's env variables.`);
-  }
-  if (declarations.kind === 'failed') {
-    log.warn(`${describeEntryFailure(declarations.failure)} The command runs without team secrets.`);
   }
   if (variableValues.kind === 'store-unreadable') {
     log.warn(`${variableValues.reason} The command runs without the team's env variables.`);
