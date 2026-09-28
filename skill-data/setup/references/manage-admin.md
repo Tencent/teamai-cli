@@ -191,8 +191,8 @@ and push it with git. `teamai doctor` lists each override.
   takes none and rejects one. Declare with it or edit the file in the team repo;
   `teamai push` picks it up. Each member sets their own value with `teamai env set KEY`
   in their terminal (`--global` for every team on their machine; a team value still
-  wins). `teamai env list` shows each secret as `team`, `global`, `environment` or
-  `missing` and never shows a value, `--reveal` included. The `description` is what
+  wins). `teamai env list` shows each secret as `team`, `global`, `environment`,
+  `missing` or `unreadable` and never shows a value, `--reveal` included. The `description` is what
   agents see: the session-start hook lists each declared key with it and tells the
   agent to run the CLIs that need them through `teamai env exec --`, so say which
   tool or server uses the key. As the agent, run `teamai env add <KEY> --secret`

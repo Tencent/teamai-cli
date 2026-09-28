@@ -911,7 +911,8 @@ projects:
   `teamai list <env|hooks|mcp> --source repo` 会给出每个条目的 namespace 以及是否覆盖了
   根条目；`teamai status` 按 namespace 计数；`teamai doctor` 以提示信息列出每一处覆盖。
   你用 `teamai env set KEY` 为该团队设置了值时，变量取你的值，否则取文件中的值；环境
-  不覆盖二者，`env.sh` 导出的就是这个值（用 `--from-env` 设置的除外）。
+  不覆盖二者，`env.sh` 导出的就是这个值（用 `--from-env` 设置的除外）。`teamai env list` 与
+  `teamai list env` 显示这个值及其来源：`team` 或 `env.yaml`。
 - **先让所有成员升级。** teamai 0.25.0 与 0.26.0 beta 会拒绝不认识的 `resources:` key，
   声明 `env`、`hooks` 或 `mcp` 会让这些版本的 pull 失败。从本版本起，未知的
   `resources:` key 只会给出警告，`teamai roles` 与 `teamai projects` 保存 manifest 时也会保留它。
@@ -990,14 +991,16 @@ teamai env set GITHUB_TOKEN --global                      # 对本机所有团�
 teamai env unset GITHUB_TOKEN [--global]
 ```
 
-`env set` 只接受已声明的密钥，并把值保存在 `~/.teamai/secrets/teams/<team>-<hash>.json`
+`env set` 接受已声明的密钥，不加 `--global` 时也接受该目录收到的 `env.yaml` 变量，并把值保存在 `~/.teamai/secrets/teams/<team>-<hash>.json`
 （权限 `0600`），每个团队仓库一个文件；加 `--global` 时保存在 `~/.teamai/secrets/machine.json`，
 对本机所有团队生效，为某个团队设置的值仍然优先。不在任何 scope 中时，`--global` 接受任何合法的 key，
 并提示目前还没有团队声明它。`teamai env list` 和 `teamai list env` 会把每个已声明的密钥
-显示为 `team`（你为该团队设置了它）、`global`（你为本机设置了它）、`environment`（你自己的环境中有它的值）或 `missing`，从不显示值，
+显示为 `team`（你为该团队设置了它）、`global`（你为本机设置了它）、`environment`（你自己的环境中有它的值）、`missing`，
+或 `unreadable`（你的值文件无法读取），从不显示值，
 `--reveal` 也一样。既声明为密钥、又在 `env.yaml` 中设置的 key 按密钥处理：它的 `env.yaml` 值不会
 导出到 `env.sh`，也不会列出。密钥文件无法使用时不会被当作"没有密钥"：`env.sh` 和 MCP server 保持原样，
-`pull` 会警告，`teamai doctor` 的检查失败并指出该文件。`teamai push` 会带上任何密钥文件的改动。
+`pull` 会警告，`env list` 和 `mcp list` 以非零状态退出（此时 `env list` 不显示任何变量的值，因为其中任何一个都可能是密钥），
+`teamai doctor` 的检查失败并指出该文件。值文件无法读取时，`Your team secret values can be read` 检查失败。`teamai push` 会带上任何密钥文件的改动。
 见[团队密钥](designs/team-secrets.zh-CN.md)。
 
 `gh`、`glab` 等 CLI 在 `teamai env exec` 下运行时，会拿到当前目录的变量和密钥；它对项目的每个 worktree
@@ -1008,8 +1011,8 @@ teamai env exec -- gh pr create
 teamai env exec -- glab mr list
 ```
 
-命令继承你的环境，并叠加该 scope 的 `env.yaml` 变量和按上述顺序解析的密钥；在该 scope 下没有值的已声明密钥
-会从中移除。缺少密钥时，会在 stderr 上打印 `teamai env set` 那一行提示，命令照常运行。teamai 打印的所有内容
+命令继承你的环境，并叠加该 scope 的 `env.yaml` 变量和按[解析顺序](designs/team-secrets.zh-CN.md#解析顺序)解析的密钥；在该 scope 下没有值的已声明密钥
+会从中移除。命令前要加 `--`：否则 teamai 会把命令的参数当作自己的，因此它会提示并以退出码 2 结束。缺少密钥时，会在 stderr 上打印 `teamai env set` 那一行提示，命令照常运行。teamai 打印的所有内容
 都输出到 stderr，退出码就是命令的退出码。这里没有 teamai 配置时，命令以你的环境运行，并给出提示。
 不会把任何值写入磁盘。见[用 `env exec` 运行 CLI](designs/team-secrets.zh-CN.md#用-env-exec-运行-cli)。
 

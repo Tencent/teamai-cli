@@ -6,7 +6,7 @@
 
 团队在团队仓库中声明成员需要哪些密钥，但不写值。每个成员在自己的机器上提供值。密钥的值不会写入团队仓库。
 
-本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队或为本机所有团队设置的值、MCP server 中的 `${VAR}`，pull 找不到已声明的密钥时保留 MCP 条目，告诉成员该运行什么命令，通过 `teamai env exec` 用团队的 env 和密钥运行 CLI，以及告诉 agent 有哪些密钥。
+本文档随实现逐步补充，只描述当前版本已有的行为。目前包括声明密钥、成员为每个团队或为本机所有团队设置的值、MCP server 中的 `${VAR}`，pull 找不到已声明的密钥时保留 MCP 条目，告诉成员该运行什么命令，通过 `teamai env exec` 用团队的 env 和密钥运行 CLI，以及告诉 agent 有哪些密钥。团队普通的 `env.yaml` 变量也按同样的顺序解析：先取成员为该团队设置的值，再取 `env.yaml`；环境不再覆盖二者（见[变量](#变量)）。
 
 ## 声明密钥
 
@@ -23,7 +23,7 @@ secrets:
 
 - `key` 必填，且必须是 shell 变量名（字母、数字和下划线，不以数字开头）。
 - 条目带有其他任何键（包括 `value:`）时不会被声明，`pull` 和 `teamai doctor` 会指出文件、密钥和该键。值不应该写在这个文件里。
-- 文件无法解析、没有顶层 `secrets:` 键，或同一个 key 定义了两次时，绝不会被当作"没有密钥"：本次不解析密钥，`env.sh`、env 备份和 MCP server 保持原样，与 `env.yaml` 无法使用时相同；`env exec` 不应用任何密钥。`pull` 会警告，`env list` 以非零状态退出，`teamai doctor` 的 `Team secrets can be resolved` 检查失败，三者都会指出文件和修复方法。
+- 文件无法解析、没有顶层 `secrets:` 键，或同一个 key 定义了两次时，绝不会被当作"没有密钥"：本次不解析密钥，`env.sh`、env 备份和 MCP server 保持原样，与 `env.yaml` 无法使用时相同；`env exec` 不应用任何密钥。`pull` 会警告，`env list` 和 `mcp list` 以非零状态退出（`mcp list` 把 server 的变量显示为 `not resolved`），`teamai doctor` 的 `Team secrets can be resolved` 检查失败，它们都会指出文件和修复方法。
 - 空文件或 `secrets: []` 表示没有声明任何密钥。
 
 使用单独的文件，是为了让旧版 CLI（只读取 `env.yaml`）忽略它，旧版的 `teamai env add` 或 `env remove`（会重写 `env.yaml`）也不会把它丢掉。
@@ -61,8 +61,14 @@ namespace 在 `env/<ns>/secrets.yaml` 中声明自己的密钥，生效条件与
 | `global` | 成员用 `teamai env set --global` 为本机所有团队设置了值，且没有为该团队设置值。 |
 | `environment` | 成员自己的环境中该 key 有非空值（见[解析顺序](#解析顺序)）。 |
 | `missing` | 没有可用的值。 |
+| `unreadable` | 成员为该团队或本机保存值的文件无法读取，因此无从判断。 |
 
 ```text
+Team env variables (2):
+
+  GITLAB_HOST=gi****  team  (root)
+  API_URL=ht****  env.yaml  (checkout)
+
 Team secrets (3):
 
   GITHUB_TOKEN  team  (root)
@@ -70,7 +76,7 @@ Team secrets (3):
   GITLAB_TOKEN  missing  (checkout)
 ```
 
-`teamai list env` 显示相同信息，格式为 `GITHUB_TOKEN  secret, team  (root)`。加 `--verbose` 时两者都会打印 description，`env list` 还会打印 `url`。
+两个命令打印同一份列表。每个变量显示它解析出的值（不加 `--reveal` 时打码）及其来源：`team` 表示成员自己的值（见[变量](#变量)），`env.yaml` 表示团队的值。声明无法使用时，变量只列出名字、不显示值，`--reveal` 也一样，因为其中任何一个都可能是 repo 值被忽略的密钥；值文件无法读取时，变量同样显示 `unreadable`。加 `--verbose` 时两者都会打印 description 和 `url`。
 
 ## 设置值
 
@@ -126,9 +132,9 @@ teamai env unset GITHUB_TOKEN [--global]
 
 - 环境不再覆盖它，因此为一个团队导出的值不会进入另一个团队的 server。这会改变现有团队的行为：原先通过导出变量来覆盖 `env.yaml` 的成员，改用 `teamai env set KEY`。本机值不适用于变量。
 - 当成员自己的环境（见下文）中有不同的值时，交互式 `pull` 和 `teamai doctor`（作为备注）会指出：`` GITLAB_HOST in your environment differs from the value in env/env.yaml, which this team uses. To use yours for this team, run `teamai env set GITLAB_HOST`. `` `doctor` 列出它，因为它在成员的 shell 中运行，可以解释 MCP server 为什么没有使用成员导出的值。`mcp list` 和 `env list` 不列出，静默 pull 什么也不输出。成员为该 key 设置了值之后不再输出。
-- `env.sh` 导出成员设置的字面值，因此新 shell 遵循同一顺序。用 `--from-env` 保存的值不写入 `env.sh`，`env.sh` 中不保存它的副本。该变量未设置期间使用 `env.yaml` 的值：与密钥的下一个来源不同，这是其他每个成员都拿到的值。
+- `env.sh` 导出成员设置的字面值，因此新 shell 遵循同一顺序。用 `--from-env` 保存的值不写入 `env.sh`，`env.sh` 中不保存它的副本，因此新 shell 中该 key 完全没有值，既没有成员的值也没有团队的值：shell 里有的是该条目读取的那个变量，而不是这个 key。MCP server 和 `env exec` 仍会解析它。该变量未设置期间使用 `env.yaml` 的值：与密钥的下一个来源不同，这是其他每个成员都拿到的值。
 - 团队没有设置的 `${VAR}` 仍从环境解析。
-- 成员的值文件无法读取时，MCP server 保留上一次 pull 写入的值，`pull` 保持 `env.sh` 不变。
+- 成员的值文件无法读取时，MCP server 保留上一次 pull 写入的值，`pull` 保持 `env.sh` 不变，`teamai doctor` 的 `Your team secret values can be read` 检查失败并给出原因。
 
 **同一个 key 出现两次。** 某个 key 既声明为密钥、又在 `env.yaml` 中设置为变量时，按密钥解析，仓库中的值在所有地方都被忽略：不写入 `env.sh` 和 env 备份（每次 pull 都如此，包括 `Already synced`），不出现在 `env list` 和 `list env` 中（`--reveal` 也一样），也不进入 MCP server。旧版 CLI 在团队删除该值之前继续使用该变量。
 
@@ -183,7 +189,7 @@ teamai env exec -- glab mr list     GITLAB_HOST 来自 env.yaml，GITLAB_TOKEN �
 - **不写入值。** 不会把任何值写入磁盘或 `debug.log`。查找 scope 的行为与其他查找 scope 的命令相同：可能接管项目分区、保存用户 scope 的角色迁移，或为刚克隆的单仓项目完成配置；这些写入都不包含值。
 - **原样继承，有三个例外。** 没有终端时（所有 agent 都是这种情况），teamai 会在 `GIT_TERMINAL_PROMPT=0`、`GIT_ASKPASS=echo` 和 `GCM_INTERACTIVE=never` 未设置时设置它们，让 git 子进程不会等待凭据提示。命令会继承它们。
 - **不用于启动 agent。** 与模型配置写入的变量同名的变量或密钥（`ANTHROPIC_*`）会为该命令覆盖那个模型配置。`env exec` 用于 CLI，而不是用来启动 agent。
-- 在命令前加 `--`：否则 teamai 会把命令自己的选项当作 teamai 的选项。
+- 在命令前加 `--`：否则 teamai 会把命令自己的选项当作 teamai 的选项（`teamai env exec gh pr list --dry-run` 什么也不会运行），因此它会输出 `Put -- before the command: teamai env exec -- <command>` 并以退出码 2 结束。teamai 自己的选项可以放在 `--` 之前。
 
 ## 告诉 agent
 

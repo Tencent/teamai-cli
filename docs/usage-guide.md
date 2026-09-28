@@ -997,7 +997,8 @@ projects:
   namespace; `teamai doctor` lists each override as a note. A variable takes your
   value for this team when you set one with `teamai env set KEY`, else the file's;
   the environment doesn't override either, and `env.sh` exports that value (not one
-  set with `--from-env`).
+  set with `--from-env`). `teamai env list` and `teamai list env` show that value
+  with where it comes from, `team` or `env.yaml`.
 - **Upgrade every member first.** teamai 0.25.0 and the 0.26.0 betas reject a
   `resources:` key they do not know, so declaring `env`, `hooks` or `mcp` breaks
   their pull. From this version on, an unknown `resources:` key only warns, and
@@ -1084,18 +1085,23 @@ teamai env set GITHUB_TOKEN --global                      # for every team on th
 teamai env unset GITHUB_TOKEN [--global]
 ```
 
-`env set` accepts only a declared secret, and stores the value in
+`env set` accepts a key the scope declares as a secret or, without `--global`, an
+`env.yaml` variable it receives, and stores the value in
 `~/.teamai/secrets/teams/<team>-<hash>.json` (mode `0600`), one file per team
 repo; with `--global`, in `~/.teamai/secrets/machine.json`, for every team on the
 machine, and a value set for a team still wins. Outside any scope, `--global`
 accepts any valid key and notes that no team declares it yet.
 `teamai env list` and `teamai list env` show each declared secret as
 `team` (you set it for this team), `global` (you set it for the machine),
-`environment` (your own environment has a value for it) or `missing`, and never show a value, `--reveal` included. A key declared as a
+`environment` (your own environment has a value for it), `missing`, or
+`unreadable` (your values file can't be read), and never show a value, `--reveal` included. A key declared as a
 secret and also set in `env.yaml` is a secret: its `env.yaml` value is not
 exported to `env.sh` or listed. A secrets file that cannot be used is not read
 as "no secrets": `env.sh` and the MCP servers keep what they had, `pull` warns,
-and `teamai doctor` fails a check naming the file. `teamai push` picks up a
+`env list` and `mcp list` exit non-zero (`env list` then shows no variable
+value, since any of them may be a secret), and `teamai doctor` fails a check
+naming the file. A values file that can't be read fails
+`Your team secret values can be read`. `teamai push` picks up a
 change to any secrets file. See [Team secrets](designs/team-secrets.md).
 
 A CLI such as `gh` or `glab` gets this directory's variables and secrets when it
@@ -1108,8 +1114,10 @@ teamai env exec -- glab mr list
 ```
 
 The command inherits your environment, overlaid with the scope's `env.yaml`
-variables and its secrets in the order above; a declared secret with no value
-for this scope is removed from it. A missing secret prints the `teamai env set`
+variables and its secrets in the [resolution order](designs/team-secrets.md#resolution);
+a declared secret with no value for this scope is removed from it. Put `--`
+before the command: without it, teamai would read the command's flags as its
+own, so it says so and exits 2. A missing secret prints the `teamai env set`
 line on stderr and the command runs anyway. Everything teamai prints goes to
 stderr, and the exit code is the command's. With no teamai config here, the
 command runs with your environment and a notice. No value is written to disk.
