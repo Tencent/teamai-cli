@@ -179,7 +179,7 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
   if (variableValues.kind === 'store-unreadable') {
     log.warn(`${variableValues.reason} The command runs without the team's env variables.`);
   } else {
-    for (const [key, variable] of variableValues.values) env[key] = variable.value;
+    for (const [key, variable] of variableValues.values) setKey(env, key, variable.value);
   }
   const secretKeys = declaredSecretKeys(declarations);
   if (!secretKeys || secretKeys.size === 0) return env;
@@ -189,11 +189,27 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
   }
   for (const key of secretKeys) {
     const secret = secrets.kind === 'resolved' ? secrets.values.get(key) : undefined;
-    if (secret) env[key] = secret.value;
-    else delete env[key];
+    if (secret) setKey(env, key, secret.value);
+    else removeKey(env, key);
   }
   if (secrets.kind === 'resolved') await reportMissingSecrets(localConfig, teamEnv);
   return env;
+}
+
+/** Remove `key` from `env`, in every case on Windows, where environment names are case-insensitive. */
+function removeKey(env: NodeJS.ProcessEnv, key: string): void {
+  if (process.platform !== 'win32') {
+    delete env[key];
+    return;
+  }
+  const name = key.toUpperCase();
+  for (const other of Object.keys(env)) if (other.toUpperCase() === name) delete env[other];
+}
+
+/** Set `key` in `env`, replacing it in any case on Windows rather than adding a competing name. */
+function setKey(env: NodeJS.ProcessEnv, key: string, value: string): void {
+  removeKey(env, key);
+  env[key] = value;
 }
 
 /** Remove from `env` every value that is not the member's own (member-env.ts), and return the keys removed. */

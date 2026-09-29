@@ -186,6 +186,34 @@ describe('teamai env exec', () => {
     expect((await childEnv(home))['__proto__']).toBe('fixture-team');
   });
 
+  // Windows environment names are case-insensitive: a declared key in another case is the same variable.
+  it('on Windows, removes and overlays a declared key in any case, and elsewhere only in its own case', async () => {
+    const { repoPath } = await team('personal', {
+      'env/env.yaml': 'variables:\n  - key: api_url\n    value: https://team.example\n', 'env/secrets.yaml': GITHUB_SECRET,
+    });
+    const config = await userScope(repoPath);
+    await writeSecretStore(getTeamSecretsPath(config), { GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });
+    vi.stubEnv('API_URL', 'https://inherited.example');
+    vi.stubEnv('github_token', 'fixture-exported');
+    const named = (env: Record<string, string>, key: string): Record<string, string> =>
+      Object.fromEntries(Object.entries(env).filter(([name]) => name.toUpperCase() === key));
+
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    let env: Record<string, string>;
+    try {
+      env = await childEnv(home);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    }
+    expect(named(env, 'API_URL')).toEqual({ api_url: 'https://team.example' });
+    expect(named(env, 'GITHUB_TOKEN')).toEqual({});
+
+    env = await childEnv(home);
+    expect(named(env, 'API_URL')).toEqual({ API_URL: 'https://inherited.example', api_url: 'https://team.example' });
+    expect(named(env, 'GITHUB_TOKEN')).toEqual({ github_token: 'fixture-exported' });
+  });
+
   it('resolves the project scope from a linked worktree of the project, and the user scope elsewhere', async () => {
     const personal = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
     const user = await userScope(personal.repoPath);
