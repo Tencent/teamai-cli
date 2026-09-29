@@ -186,13 +186,14 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
   const named = remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined;
   // Hash only what names a repository. A remote alias (`fork`) does not: two
   // checkouts sharing the alias would share one values file and read each
-  // other's keys. The same holds for the local path — it is reused across
-  // teams — so when neither a remote URL nor repo.url exists, a `repo:` claim
-  // in teamai.yaml is the remaining repository identity before the path.
+  // other's keys. A provider-relative remote (`owner/repo`) DOES name one
+  // repository, just only together with its provider — exactly like a
+  // path-shaped `repo:` claim. The same holds for the local path — it is
+  // reused across teams, so it is the last resort and keeps the slug.
   const claim = repoClaim(localPath);
   const source = named && isRepoReference(named) ? named
     : url && isRepoReference(url) ? url
-    : claim?.claim ?? localPath;
+    : claim?.claim ?? (named ?? localPath);
   let identity: string;
   if (isRepoReference(source)) {
     // Host-bearing: repoIdentity normalizes scheme family, host, and path.
@@ -203,6 +204,10 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
     // it. Claim and provider survive a team rename, keeping the file bound
     // to the repository rather than the display name.
     identity = `${claim.provider ?? localConfig.provider ?? 'tgit'}:${source}`;
+  } else if (source === named) {
+    // Provider-relative remote: the same ambiguity the path-shaped claim
+    // handles, so the same provider qualification applies.
+    identity = `${localConfig.provider ?? 'tgit'}:${source}`;
   } else {
     // Path-only: no repository identity exists, so the team slug — the old
     // scheme's discriminator — joins the hash to separate teams sharing a
@@ -291,7 +296,7 @@ function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
     // gateway-origin provenance to survive a rename.
     { identity: claim?.claim, fileNeedsSlug: !urlShaped(claim?.claim), recordNeedsSlug: !urlShaped(claim?.claim), renameRepairable: claim?.claim !== undefined && !urlShaped(claim?.claim) },
     ...(claim === null ? [
-      { identity: configuredRemote, fileNeedsSlug: !urlShaped(configuredRemote), recordNeedsSlug: !urlShaped(configuredRemote) },
+      { identity: configuredRemote, fileNeedsSlug: !urlShaped(configuredRemote), recordNeedsSlug: !urlShaped(configuredRemote), renameRepairable: configuredRemote !== undefined && !urlShaped(configuredRemote) },
       { identity: url, fileNeedsSlug: false, recordNeedsSlug: false },
       // Only when the old implementation would have keyed on the path itself:
       // no repository identity exists there, so the slug separates teams.
@@ -330,49 +335,34 @@ function legacyTeamSlug(localPath: string): string {
     .replace(/-+$/g, '') || 'team';
 }
 
-/** The gateway origins this team's profiles serve; the renamed-team discriminator below. */
-function teamProfileOrigins(team: TeamModelProfiles): ReadonlySet<string> {
-  return new Set(team.profiles.map((profile) => profileOrigin(profile)));
-}
-
-/** The gateway origins stored team keys are bound to (the `@<origin>` of `team:<id>@<origin>` names). */
-function boundKeyOrigins(values: StoredModelInputs): string[] {
-  const origins: string[] = [];
-  for (const name of Object.keys(values)) {
-    const at = name.lastIndexOf('@');
-    if (name.startsWith('team:') && at > 'team:'.length) origins.push(name.slice(at + 1));
-  }
-  return origins;
-}
-
 /**
- * Whether a legacy `<slug>-<digest>.json` file under a provider-ambiguous
- * digest is provably this team's former file: it must exist and store at
- * least one key bound to THIS team's gateway. A renamed team keeps its
- * gateway, so the binding survives; a team on another provider binds to
- * another gateway and cannot pass. Unreadable or malformed files are not
- * evidence one way or the other — a later non-provenance read surfaces the
- * error where the file would actually be used.
+ * The team identities this machine has actually switched an agent to,
+ * recorded in `managed.json`. These are the tool's own past switches, so a
+ * legacy identity present here is this checkout's own former identity — the
+ * one trustworthy, machine-local statement of who a legacy file or switch
+ * record belonged to. Absent or unparsable manifests yield no evidence.
  */
-async function legacyFileBoundToTeam(
-  filePath: string,
-  origins: ReadonlySet<string>,
-): Promise<boolean> {
-  let content: string;
+async function switchedStoredIdentities(): Promise<ReadonlySet<string>> {
+  let raw: string;
   try {
-    content = await fs.promises.readFile(filePath, 'utf8');
+    raw = await fs.promises.readFile(path.join(getTeamaiHomeDir(), 'models', 'managed.json'), 'utf8');
   } catch {
-    return false;
+    return new Set();
   }
-  let raw: unknown;
+  let parsed: unknown;
   try {
-    raw = JSON.parse(content) as unknown;
+    parsed = JSON.parse(raw) as unknown;
   } catch {
-    return false;
+    return new Set();
   }
-  const parsed = StoredModelInputsSchema.safeParse(raw);
-  if (!parsed.success) return false;
-  return boundKeyOrigins(parsed.data).some((origin) => origins.has(origin));
+  const manifest = parsed as { version?: unknown; agents?: Record<string, unknown> };
+  if (manifest.version !== 1 || typeof manifest.agents !== 'object' || manifest.agents === null) return new Set();
+  const identities = new Set<string>();
+  for (const state of Object.values(manifest.agents)) {
+    const record = state as { team?: unknown };
+    if (typeof record.team === 'string') identities.add(record.team);
+  }
+  return identities;
 }
 
 /**
@@ -381,16 +371,19 @@ async function legacyFileBoundToTeam(
  * so may own the switches recorded under it. Digests whose identity names a
  * single repository (a URL, a URL-shaped claim or remote) match by digest
  * alone — the identity is the repository, so the slug can drift with team
- * renames. A path-shaped claim, a bare alias, or a path-only local path
- * names no single repository — the slug keeps teams apart — so the record is
- * accepted only when the stored slug is this checkout's too. A path-shaped
- * claim record under a DIFFERENT slug is still this team's when `team` is
- * given and its `<slug>-<digest>.json` values file provably holds keys bound
- * to this team's gateways: that is precisely a renamed team, whose legacy
- * keys and switches must keep working; another provider's keys bind to
- * another gateway and are rejected.
+ * renames. A path-shaped claim, a path-shaped provider-relative remote, a
+ * bare alias, or a path-only local path names no single repository — the
+ * slug keeps teams apart — so the record is accepted only when the stored
+ * slug is this checkout's too. A record under a DIFFERENT slug is still this
+ * team's only when this machine demonstrably switched to that identity:
+ * `managed.json` records the exact `<slug>-<digest>` identity of each past
+ * switch, so a renamed team's own legacy files and switches are recognised
+ * without trusting anything guessable — a gateway a foreign team might share,
+ * or a key binding that other-team files may also carry. Such a legacy
+ * identity that this machine never switched to names another team and is
+ * refused; another provider cannot fake this checkout's own switch history.
  */
-export async function sameTeamIdentity(stored: string | undefined, localConfig: LocalConfig, team?: TeamModelProfiles): Promise<boolean> {
+export async function sameTeamIdentity(stored: string | undefined, localConfig: LocalConfig): Promise<boolean> {
   if (!stored) return false;
   if (stored === getTeamIdentity(localConfig)) return true;
   const legacy = /^(.+)-([0-9a-f]{10})$/.exec(stored);
@@ -401,11 +394,8 @@ export async function sameTeamIdentity(stored: string | undefined, localConfig: 
   for (const candidate of legacyTeamValueHashes(localConfig)) {
     if (candidate.digest !== digest) continue;
     if (!candidate.recordNeedsSlug || slug === mySlug) return true;
-    if (candidate.renameRepairable !== true || team === undefined) return false;
-    return legacyFileBoundToTeam(
-      path.join(path.dirname(getTeamValuesPath(localConfig)), `${stored}.json`),
-      teamProfileOrigins(team),
-    );
+    if (candidate.renameRepairable !== true) return false;
+    return (await switchedStoredIdentities()).has(stored);
   }
   return false;
 }
@@ -424,13 +414,15 @@ export async function sameTeamIdentity(stored: string | undefined, localConfig: 
  * digest or a path-only local path names no single repository — two
  * checkouts sharing `remote: fork` hashed the same — so a file keyed by one
  * is adopted only when its slug is this checkout's too, the discriminator
- * the old scheme kept those files apart by. A path-shaped claim digest falls
- * on the same side: it names no single repository without its provider, so a
- * foreign-slug file is read only when `team` proves it — the file holds keys
- * bound to this team's gateways, which a rename keeps and another provider
- * cannot produce.
+ * the old scheme kept those files apart by. A different slug under a
+ * provider-ambiguous digest (a path-shaped claim, a path-shaped
+ * provider-relative remote) is read only when this machine demonstrably
+ * switched to that identity — the exact `<slug>-<digest>` recorded in this
+ * checkout's own `managed.json` switch history. That is a renamed team's own
+ * former file, recognised without trusting a gateway or key binding a
+ * foreign team could also carry.
  */
-export async function findTeamValuesPath(localConfig: LocalConfig, team?: TeamModelProfiles): Promise<string> {
+export async function findTeamValuesPath(localConfig: LocalConfig): Promise<string> {
   const target = getTeamValuesPath(localConfig);
   if (fs.existsSync(target)) return target;
   const candidates = legacyTeamValueHashes(localConfig);
@@ -442,7 +434,7 @@ export async function findTeamValuesPath(localConfig: LocalConfig, team?: TeamMo
   } catch {
     return target; // no teams directory yet — nothing to read
   }
-  const origins = team === undefined ? undefined : teamProfileOrigins(team);
+  const switched = await switchedStoredIdentities();
   const repairable = candidates.find((candidate) => candidate.renameRepairable === true);
   const matching: Array<{ entry: string; mtime: number }> = [];
   const renamed: Array<{ entry: string; mtime: number }> = [];
@@ -454,10 +446,9 @@ export async function findTeamValuesPath(localConfig: LocalConfig, team?: TeamMo
     if (candidate === undefined) continue;
     if (candidate.fileNeedsSlug && (legacy[1] ?? '') !== slug) {
       // A different slug under a provider-ambiguous digest. Re-admit it only
-      // as a renamed team's own file, proven by gateway-bound keys; anything
-      // else is another team's (or another provider's) and never read.
-      if (repairable !== undefined && candidate === repairable && origins !== undefined
-        && await legacyFileBoundToTeam(path.join(dir, entry), origins)) {
+      // as a renamed team's own file, proven by this machine's own switch
+      // history; anything else is another team's and never read.
+      if (repairable !== undefined && candidate === repairable && switched.has(entry.replace(/\.json$/, ''))) {
         try {
           const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
           renamed.push({ entry, mtime: mtimeMs });
