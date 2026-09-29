@@ -101,7 +101,7 @@ describe('enabledAgents whitelist on real CLI pull (#510)', () => {
 
     fs.mkdirSync(path.join(homeDir, '.workbuddy'), { recursive: true });
     fs.mkdirSync(path.join(homeDir, '.hermes'), { recursive: true });
-    fs.mkdirSync(path.join(homeDir, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(homeDir, '.claude', 'rules'), { recursive: true });
     fs.mkdirSync(path.join(homeDir, '.codebuddy'), { recursive: true });
     fs.writeFileSync(path.join(homeDir, '.codebuddy', 'CODEBUDDY.md'), '# User notes\n');
 
@@ -172,9 +172,16 @@ describe('enabledAgents whitelist on real CLI pull (#510)', () => {
     expect(JSON.parse(
       fs.readFileSync(path.join(homeDir, '.teamai', 'state.json'), 'utf8'),
     ).lastPullTargets).toEqual(['claude', 'workbuddy']);
+    const claudeMdPath = path.join(homeDir, '.claude', 'CLAUDE.md');
+    const claudeMd = fs.readFileSync(claudeMdPath, 'utf8');
+    expect(claudeMd).toContain('Follow the self-exemption in [Team Knowledge Recall](rules/teamai-recall.md) before applying this section.');
+    expect(claudeMd).not.toContain('If you ARE the `teamai-recall` subagent yourself');
+    expect(fs.readFileSync(path.join(homeDir, '.claude', 'rules', 'teamai-recall.md'), 'utf8'))
+      .toContain('If you ARE the `teamai-recall` subagent yourself');
 
     const third = await runCLI(['pull'], env, sandbox);
     expect(third.code, third.output).toBe(0);
     expect(third.output).toContain('Already synced');
+    expect(fs.readFileSync(claudeMdPath, 'utf8')).toBe(claudeMd);
   }, 60_000);
 });

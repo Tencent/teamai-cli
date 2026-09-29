@@ -141,7 +141,7 @@ describe('recall toggle native agent cleanup', () => {
       additionalRoles: [],
       scope: 'user',
       enabledAgents: ['copilot'],
-      recallEnabled: true,
+      recallEnabled: false,
     };
     const teamConfig = TeamaiConfigSchema.parse({
       team: 'test',
@@ -153,6 +153,7 @@ describe('recall toggle native agent cleanup', () => {
     const enabled = await fse.readFile(instructionPath, 'utf8');
     expect(enabled).toContain(userInstructions.trim());
     expect(enabled).toContain(TEAMAI_RECALL_RULES_START);
+    expect(enabled).toContain('[Team Knowledge Recall](instructions/teamai-recall.instructions.md)');
     await expect(fse.pathExists(path.join(
       copilotHome,
       'instructions',

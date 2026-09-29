@@ -25,6 +25,7 @@ import {
   forgetDelivered, judgeCopy, openLedger, removedCopyChanged, reportKept, type DeliveredHashes, type DeliveryLedger,
 } from './resources/delivered-copies.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
+import { TEAMAI_RECALL_SELF_EXEMPTION } from './builtin-rules.js';
 import type { GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, State } from './types.js';
 import {
   getUserLearningsDir,
@@ -1355,11 +1356,6 @@ async function pullForScope(
     await syncManagedInstructions(freshConfig, localConfig, roleContext, scopeLabel);
   }
 
-  // Step 3.8: Inject teamai-recall subagent rules block (Phase 1)
-  if (!options.dryRun) {
-    await injectRecallBlockIntoTools(freshConfig, localConfig, scopeLabel);
-  }
-
   // Step 4: Deploy CLI built-in skills
   if (!options.dryRun) {
     try {
@@ -1385,6 +1381,11 @@ async function pullForScope(
     } catch (e) {
       log.debug(`[${scopeLabel}] Built-in rules deployment skipped: ${(e as Error).message}`);
     }
+  }
+
+  // Inject after rule deployment so the self-exemption link works on the first pull.
+  if (!options.dryRun) {
+    await injectRecallBlockIntoTools(freshConfig, localConfig, scopeLabel);
   }
 
   // Step 4.6: Deploy CLI built-in agents (e.g. teamai-recall subagent)
@@ -1708,7 +1709,7 @@ async function syncManagedInstructions(
  * workbuddy) are skipped — for them the recall flow runs purely via the
  * TodoWrite hint hook and the manual `teamai recall` command.
  *
- * Extracted so both the full-sync path (Step 3.8) and the "Already synced"
+ * Extracted so both the full-sync path and the "Already synced"
  * rev fast-path can call it — otherwise a CLI upgrade that ships a new recall
  * block never reaches CLAUDE.md when the team repo HEAD is unchanged.
  * No-op when recall is disabled for this scope.
@@ -1720,7 +1721,6 @@ export async function injectRecallBlockIntoTools(
 ): Promise<void> {
     if (!isRecallEnabled(localConfig, config)) return;
     try {
-        const recallBlock = compileRecallRulesBlock();
         let injected = 0;
         for (const [tool, toolPath] of Object.entries(scopedToolPaths(config, localConfig))) {
             if (isAgentExcluded(localConfig, tool)) continue;
@@ -1729,6 +1729,14 @@ export async function injectRecallBlockIntoTools(
 
             const baseDir = resolveToolBaseDir(tool, localConfig);
             const claudeMdPath = path.join(baseDir, toolPath.claudemd);
+            const recallRulePath = toolPath.rules
+                ? path.join(baseDir, toolPath.rules, `teamai-recall${ruleFileExtensionForTool(tool)}`)
+                : undefined;
+            const recallBlock = compileRecallRulesBlock(
+                recallRulePath && await pathExists(recallRulePath)
+                    ? path.relative(path.dirname(claudeMdPath), recallRulePath).split(path.sep).join('/')
+                    : undefined,
+            );
             try {
                 await injectClaudeMdSection(
                     claudeMdPath,
@@ -1757,18 +1765,18 @@ export async function injectRecallBlockIntoTools(
  *   2. Declare which doc_ids were actually consulted at task completion.
  *
  * Only injected for Tier-1 tools (those with both `agents` and `claudemd`
- * paths configured) — see pull.ts Step 3.8.
+ * paths configured). Without a deployed recall rule, keep self-exemption inline.
  */
-export function compileRecallRulesBlock(): string {
+export function compileRecallRulesBlock(recallRulePath?: string): string {
     const lines = [
         TEAMAI_RECALL_RULES_START,
         '<!-- DO NOT EDIT: This section is auto-managed by teamai -->',
         '',
         '## Team Knowledge Recall (teamai)',
         '',
-        '> **Self-exemption (must read first):** If you ARE the `teamai-recall` subagent yourself, this rule does NOT apply to you — do not invoke `teamai-recall` (or any recall) again. Proceed directly to performing the knowledge search that is your task. This prevents infinite subagent recursion in tools (e.g. Cursor) whose always-apply rules leak into subagent sessions.',
-        '>',
-        '> **自豁免（务必先读）：** 如果你自己就是 `teamai-recall` subagent，本规则对你不适用——不要再调用 `teamai-recall`（或任何 recall），直接执行你本职的知识检索任务。此举防止在（如 Cursor 等）会把 always-apply 规则泄漏进 subagent 会话的工具中发生无限递归。',
+        recallRulePath
+            ? `> **Self-exemption (must read first):** Follow the self-exemption in [Team Knowledge Recall](${recallRulePath}) before applying this section.`
+            : TEAMAI_RECALL_SELF_EXEMPTION,
         '',
         '**Before** starting a task that involves code changes, debugging,',
         'or design decisions, you **SHOULD** invoke the `teamai-recall`',

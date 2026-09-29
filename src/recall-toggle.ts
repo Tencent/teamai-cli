@@ -2,7 +2,6 @@ import path from 'node:path';
 import { autoDetectInit, saveLocalConfigForScope } from './config.js';
 import { log } from './utils/logger.js';
 import { readFileSafe, writeFile, remove, pathExists } from './utils/fs.js';
-import { isToolInstalledForConfig } from './resources/base.js';
 import {
   ALL_SUPPORTED_TOOLS,
   agentFileExtensionForTool,
@@ -97,29 +96,8 @@ async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   await deployBuiltinAgents(teamConfig, localConfig, { skipRecall: false });
   await deployBuiltinSkills(teamConfig, localConfig);
 
-  // Inject recall rules block into CLAUDE.md for Tier-1 tools
-  const { injectClaudeMdSection } = await import('./utils/claudemd.js');
-  const { compileRecallRulesBlock } = await import('./pull.js');
-  const recallBlock = compileRecallRulesBlock();
-
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (isAgentExcluded(localConfig, tool)) continue;
-    if (!toolPath.claudemd || !toolPath.agents) continue;
-    if (!await isToolInstalledForConfig(tool, toolPath.agents, localConfig)) continue;
-
-    const baseDir = resolveToolBaseDir(tool, localConfig);
-    const claudeMdPath = path.join(baseDir, toolPath.claudemd);
-    try {
-      await injectClaudeMdSection(
-        claudeMdPath,
-        TEAMAI_RECALL_RULES_START,
-        TEAMAI_RECALL_RULES_END,
-        recallBlock,
-      );
-    } catch {
-      // best-effort
-    }
-  }
+  const { injectRecallBlockIntoTools } = await import('./pull.js');
+  await injectRecallBlockIntoTools(teamConfig, localConfig, localConfig.scope);
 }
 
 export async function recallDisable(_opts: GlobalOptions): Promise<void> {
@@ -138,7 +116,7 @@ export async function recallEnable(_opts: GlobalOptions): Promise<void> {
   const updated = { ...localConfig, recallEnabled: true };
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
 
-  await deployRecallArtifacts(teamConfig, localConfig);
+  await deployRecallArtifacts(teamConfig, updated);
   log.success('Recall enabled. AI tools will auto-search the knowledge base before tasks.');
 }
 

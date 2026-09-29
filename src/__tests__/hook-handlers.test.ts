@@ -160,6 +160,64 @@ const scope: LocalConfig = { repo: { localPath: '/tmp', remote: '' }, username: 
 
 // ── Tests ────────────────────────────────────────────────
 
+describe('final-recall-marker', () => {
+  const handler = () => buildHandlerRegistry().find(
+    (r) => r.event === 'stop' && r.matcher === '*' && r.handler.name === 'final-recall-marker',
+  )!.handler;
+  const marker = '<!-- teamai:referenced-doc-ids: [] -->';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '');
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    undefined,
+    null,
+    42,
+    '',
+    'Task completed.',
+    `${marker}\nMore text.`,
+    `Example: ${marker}`,
+    `\`${marker}\``,
+    `\`\`\`\n${marker}\n\`\`\``,
+    '<!-- teamai:referenced-doc-ids: [doc-a\ndoc-b] -->',
+  ])('reminds without recall or a transcript when the final marker is missing: %s', async (message) => {
+    const output = await handler().execute({ last_assistant_message: message }, 'claude', scope);
+    expect(JSON.parse(output!)).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'Stop',
+        additionalContext: expect.stringContaining(marker),
+      },
+    });
+    expect(mockParseTranscriptForVotes).not.toHaveBeenCalled();
+    expect(mockAutoDetectInit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    marker,
+    `Done.\n${marker}`,
+    `Done.\r\n${marker}\t \r\n`,
+    'Done.\n<!-- teamai:referenced-doc-ids: [doc-a, doc-b] -->',
+  ])('stays silent when the latest message ends with a marker: %s', async (message) => {
+    expect(await handler().execute({ last_assistant_message: message }, 'claude', scope)).toBeNull();
+  });
+
+  it('does not re-enter an active Stop hook', async () => {
+    expect(await handler().execute({ stop_hook_active: true }, 'claude', scope)).toBeNull();
+  });
+
+  it.each(['codex', 'codebuddy', 'cursor', 'opencode'])('does not affect %s', async (tool) => {
+    expect(await handler().execute({}, tool, scope)).toBeNull();
+  });
+
+  it('honors TEAMAI_RECALL_DISABLED', async () => {
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '1');
+    expect(await handler().execute({}, 'claude', scope)).toBeNull();
+  });
+});
+
 describe('hook-handlers registry', () => {
   beforeEach(() => {
     vi.clearAllMocks();

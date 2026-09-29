@@ -387,6 +387,25 @@ const packagePendingHintHandler: HookHandler = {
   },
 };
 
+function hasFinalRecallMarker(message: unknown): boolean {
+  return typeof message === 'string'
+    && /(?:^|\n)<!-- teamai:referenced-doc-ids: \[[^\]\r\n]*\] -->[ \t\r\n]*$/.test(message);
+}
+
+const finalRecallMarkerHandler: HookHandler = {
+  name: 'final-recall-marker',
+  async execute(stdin, tool) {
+    if (tool !== 'claude' || process.env.TEAMAI_RECALL_DISABLED === '1' || stdin.stop_hook_active === true) return null;
+    if (hasFinalRecallMarker(stdin.last_assistant_message)) return null;
+
+    const { formatStopHookOutput } = await import('./utils/hook-output.js');
+    return formatStopHookOutput(
+      '[teamai] End your final reply with a standalone <!-- teamai:referenced-doc-ids: [doc-id-1, doc-id-2] --> comment listing only knowledge entries you actually used. If none were used or recall was skipped, append <!-- teamai:referenced-doc-ids: [] -->. Do not put the comment in a code block.',
+      tool,
+    );
+  },
+};
+
 const votesSyncHandler: HookHandler = {
   name: 'votes-sync',
   async execute(stdin, tool, localConfig) {
@@ -822,13 +841,14 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-end', matcher: '*', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── Stop ─────────────────────────────────────────
-    // votes-sync and contribute-check may return a hint the host injects back
-    // into the session, so they run inline (capped at FOREGROUND_HOOK_TIMEOUT_MS).
+    // Reminder handlers run inline so the host receives their output, capped at
+    // FOREGROUND_HOOK_TIMEOUT_MS.
     // The rest are pure side effects — the update check in particular shells out
     // to the npm registry — so they run detached to avoid pushing the Stop hook
     // past the host's hook timeout (CodeBuddy kills hooks at ~10s regardless of
     // the declared timeout).
     { event: 'stop', matcher: '*', handler: updateHandler, timeoutMs: UPDATE_TIMEOUT_MS, background: true },
+    { event: 'stop', matcher: '*', handler: finalRecallMarkerHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     // Optional background LLM-judge (issue #723). Opt-in via TEAMAI_UPVOTE_JUDGE=1;
     // detached so it never delays the Stop. gitOnly (HTTP teams skip upvotes).
