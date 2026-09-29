@@ -189,15 +189,18 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
   // other's keys. The same holds for the local path — it is reused across
   // teams — so when neither a remote URL nor repo.url exists, a `repo:` claim
   // in teamai.yaml is the remaining repository identity before the path.
+  const claim = repoClaim(localPath);
   const source = named && isRepoReference(named) ? named
     : url && isRepoReference(url) ? url
-    : repoClaim(localPath) ?? localPath;
+    : claim?.claim ?? localPath;
   // A path-shaped identity (`owner/repo`) is provider-relative: the same
   // string is a different repository on GitHub and on GitCode, so the
-  // provider qualifies it. Host-bearing identities already carry the host.
+  // provider qualifies it. The claim's own provider wins; otherwise the
+  // local override (`init --provider`) and otherwise the team default.
+  const provider = source === claim?.claim ? claim.provider ?? localConfig.provider : localConfig.provider;
   const identity = isRepoReference(source)
     ? repoIdentity(source)
-    : `${localConfig.provider ?? 'tgit'}:${source}`;
+    : `${provider ?? 'tgit'}:${source}`;
   const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
   return path.join(getTeamaiHomeDir(), 'models', 'teams', `${digest}.json`);
 }
@@ -207,13 +210,22 @@ export function getTeamIdentity(localConfig: LocalConfig): string {
   return path.basename(getTeamValuesPath(localConfig), '.json');
 }
 
-/** The `repo:` claim in teamai.yaml, or null when it is missing or not a non-empty string. */
-function repoClaim(localPath: string): string | null {
+/**
+ * The `repo:` claim in teamai.yaml, or null when it is missing or not a
+ * non-empty string. Its `provider` accompanies the claim: the same
+ * `owner/repo` claim names a different repository per provider, and the
+ * local `provider` override is normally absent, so the team's own provider
+ * is the authoritative one for a path-shaped claim.
+ */
+function repoClaim(localPath: string): { claim: string; provider?: string } | null {
   try {
     const raw = YAML.parse(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8')) as unknown;
     if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
       const repo = (raw as { repo?: unknown }).repo;
-      if (typeof repo === 'string' && repo.trim()) return repo.trim();
+      if (typeof repo === 'string' && repo.trim()) {
+        const provider = (raw as { provider?: unknown }).provider;
+        return { claim: repo.trim(), ...(typeof provider === 'string' && provider.trim() ? { provider: provider.trim() } : {}) };
+      }
     }
   } catch {
     // teamai.yaml may be absent or unreadable.
@@ -232,8 +244,8 @@ function repoClaim(localPath: string): string | null {
  * (no claim, no configured remote, no URL). That keeps a checkout replaced
  * at the same path by another team from adopting the previous team's file.
  * A bare alias (`fork`) names no repository — two checkouts sharing it
- * hashed to the same digest — so a file keyed by an alias digest is
- * identified by the slug as well.
+ * hashed to the same digest — so a file keyed by an alias digest, or by a
+ * path-shaped claim digest, is identified by the slug as well.
  */
 interface LegacyDigest {
   digest: string;
@@ -243,17 +255,19 @@ interface LegacyDigest {
 function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
   const { remote, url, localPath } = localConfig.repo;
   const configuredRemote = remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined;
-  const claim = repoClaim(localPath) ?? undefined;
+  const claim = repoClaim(localPath);
   const candidates: Array<{ identity?: string; repoBound: boolean }> = [
     // A claim overrode everything below it; with a claim, the old
-    // implementation never hashed the remote, URL, or path.
-    { identity: claim, repoBound: true },
-    ...(claim !== undefined ? [] : [
+    // implementation never hashed the remote, URL, or path. A URL-shaped
+    // claim is repository-bound (it carries its host); a path-shaped one is
+    // provider-relative and can only be adopted under this team's slug.
+    { identity: claim?.claim, repoBound: isRepoReference(claim?.claim ?? '') },
+    ...(claim === null ? [
       { identity: configuredRemote, repoBound: configuredRemote !== undefined && isRepoReference(configuredRemote) },
       { identity: url, repoBound: url !== undefined && isRepoReference(url) },
       // Only when the old implementation would have keyed on the path itself.
       { identity: configuredRemote === undefined && !url ? localPath : undefined, repoBound: true },
-    ]),
+    ] : []),
   ];
   const seen = new Set<string>();
   const digests: LegacyDigest[] = [];

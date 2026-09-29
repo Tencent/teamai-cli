@@ -179,6 +179,39 @@ describe('model profiles', () => {
     }
   });
 
+  it('separates same-claim teams by the teamai.yaml provider, and slug-checks their legacy files', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-effective-'));
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-effective-repo-'));
+      // Both teams declare the same path-shaped claim; no local provider override —
+      // the effective provider is the teamai.yaml one.
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GH\nrepo: acme/widgets\nprovider: github\n');
+      const onGithub = { repo: { localPath: repo, remote: 'origin' } } as LocalConfig;
+      const githubFile = getTeamValuesPath(onGithub);
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GC\nrepo: acme/widgets\nprovider: gitcode\n');
+      const onGitcode = { repo: { localPath: repo, remote: 'origin' } } as LocalConfig;
+      const gitcodeFile = getTeamValuesPath(onGitcode);
+      expect(githubFile).not.toBe(gitcodeFile);
+      expect(sameTeamIdentity(path.basename(githubFile, '.json'), onGitcode)).toBe(false);
+      // Legacy provider-relative claim files share the raw claim digest; only the
+      // slug tells them apart, so a foreign-slug file is never read or adopted.
+      await fse.ensureDir(path.dirname(githubFile));
+      const foreign = path.join(path.dirname(githubFile), `gh-team-${crypto.createHash('sha256').update('acme/widgets').digest('hex').slice(0, 10)}.json`);
+      await fse.writeFile(foreign, '{"team:other":{"API_KEY":{"value":"other-key"}}}');
+      await fse.utimes(foreign, new Date(2_000_000_000), new Date(2_000_000_000));
+      expect(await findTeamValuesPath(onGitcode)).toBe(gitcodeFile);
+      expect(await fse.pathExists(foreign)).toBe(true);
+      expect(await fse.pathExists(gitcodeFile)).toBe(false);
+      expect(sameTeamIdentity(path.basename(foreign, '.json'), onGitcode)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
   it('reads an alias-digest legacy file only under this team\'s slug', async () => {
     const previous = process.env.HOME;
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-alias-'));
