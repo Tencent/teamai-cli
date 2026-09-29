@@ -74,7 +74,7 @@ describe('team secret values', () => {
     it('keeps values per team repo under ~/.teamai/secrets/teams, readable by the member only', async () => {
       const file = getTeamSecretsPath(localConfig);
       expect(path.dirname(file)).toBe(path.join(home, '.teamai', 'secrets', 'teams'));
-      expect(path.basename(file)).toMatch(/^[0-9a-f]{10}\.json$/);
+      expect(path.basename(file)).toMatch(/^[0-9a-f]{64}\.json$/);
 
       await writeSecretStore(file, { GITHUB_TOKEN: { value: 'fixture-token' }, GITLAB_TOKEN: { env: 'WORK_GITLAB_TOKEN' } });
 

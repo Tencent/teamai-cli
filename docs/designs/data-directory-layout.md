@@ -907,7 +907,7 @@ P1 migration is not supported (`.teamai.bak/` is the manual rollback path).
 
 A member's values for their teams' declared secrets live in `~/.teamai/secrets/`,
 a class-A2 (machine-level) directory: `teams/<hash>.json`, one file per
-team repo, named by a hash of the team repo URL in `~/.teamai/config.yaml` (never
+team repo, named by the full SHA-256 hex digest (64 characters, never shortened) of the team repo URL in `~/.teamai/config.yaml` (never
 `teamai.yaml`'s `repo:`), without the team name, so renaming `team:` keeps the values;
 the hash covers the URL's scheme (the ssh forms count as one; https and http are two),
 ssh user, host, non-default port and path (an scp-style path not starting with `/` or `~`

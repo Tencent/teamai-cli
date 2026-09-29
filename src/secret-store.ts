@@ -60,7 +60,8 @@ export function getTeamSecretsPath(localConfig: LocalConfig): string {
   const { remote, url, localPath } = localConfig.repo;
   const configured = remote && remote !== 'origin' && remote !== 'upstream' ? remote : url;
   const identity = configured ? repoIdentity(configured) : localPath;
-  const hash = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
+  // The full digest: the file name is all that keeps one team's values from another's.
+  const hash = crypto.createHash('sha256').update(identity).digest('hex');
   return path.join(getTeamaiHomeDir(), 'secrets', 'teams', `${hash}.json`);
 }
 
