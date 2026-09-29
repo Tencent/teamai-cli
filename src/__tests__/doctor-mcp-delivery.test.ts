@@ -617,6 +617,19 @@ describe('doctor — MCP servers delivered on disk', () => {
       expect((check.fix ?? '').split(path.join(projectRoot, '.mcp.json'))).toHaveLength(2);
     });
 
+    it('fails the same way while an installed tool mapping the file has no record, though another tool\'s is there', async () => {
+      teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };
+      await fse.ensureDir(path.join(projectRoot, '.codebuddy', 'skills'));
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'fixture-hash', resolved: false }],
+      });
+      await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+    });
+
     it('fails the same way while the record a pull wrote without managed-mcp.json is still marked unnoted', async () => {
       teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {

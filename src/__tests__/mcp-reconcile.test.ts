@@ -922,6 +922,25 @@ servers:
       await fse.outputJson(managedMcpManifestPath(getDataHome(projectConfig), projectRoot), { 'claude:project': [], 'cursor:project': [] });
     };
 
+    it('lists again the config of a tool whose record alone is lost, while it holds a server no record claims', async () => {
+      await writeMcpYaml(withSecret);
+      await reconcileMcpForConfig(teamConfig, projectConfig);
+      expect(await fse.readFile(path.join(projectRoot, '.cursor', 'mcp.json'), 'utf-8')).toContain('super-secret-value');
+      const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+      const manifestFile = managedMcpManifestPath(getDataHome(projectConfig), projectRoot);
+      const manifest = await fse.readJson(manifestFile) as Record<string, unknown>;
+      delete manifest['cursor:project'];
+      await fse.writeJson(manifestFile, manifest);
+      await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+      await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
+      vi.stubEnv('SECRET_TOKEN', '');
+
+      await reconcileMcpForConfig(teamConfig, { ...projectConfig, disabledAgents: ['cursor'] } as LocalConfig);
+
+      expect(await fse.readFile(path.join(projectRoot, '.cursor', 'mcp.json'), 'utf-8')).toContain('super-secret-value');
+      expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+    });
+
     it('keeps the line of a file tools of different formats share while a stale entry sits under any of their keys', async () => {
       // Cursor (mcpServers) and OpenCode (mcp) both on .mcp.json, OpenCode last: judged in one format, the other hides.
       const toolPaths = {

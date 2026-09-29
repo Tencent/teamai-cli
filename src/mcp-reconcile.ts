@@ -258,6 +258,8 @@ export interface McpTarget {
    * elsewhere or not at all. No mapping of today's reaches it for this tool.
    */
   builtinFallback?: true;
+  /** Added by `includeUndetected`: a tool not installed on this machine, so no pull of this checkout delivers to it. */
+  undetected?: true;
 }
 
 /**
@@ -307,12 +309,17 @@ export async function resolveMcpTargets(
 
     const probe = paths.skills ?? paths.settings ?? paths.agents;
     if (!probe) continue;
-    if (!options.includeUndetected && !await isToolInstalledForConfig(tool, probe, localConfig, file)) {
+    const installed = await isToolInstalledForConfig(tool, probe, localConfig, file);
+    if (!options.includeUndetected && !installed) {
       log.debug(`Skipping MCP sync for ${tool}: tool not installed`);
       continue;
     }
 
-    targets.push({ tool, format, file, projectScope, ...builtinFallback ? { builtinFallback: true as const } : {} });
+    targets.push({
+      tool, format, file, projectScope,
+      ...builtinFallback ? { builtinFallback: true as const } : {},
+      ...installed ? {} : { undetected: true as const },
+    });
   }
   return targets;
 }
@@ -1210,8 +1217,11 @@ async function protectProjectMcpConfigs(
   // a server no record claims may be one teamai wrote. Noted after the settle, as a rebuild of a lost record
   // notes the servers it did not write.
   const lost = Object.keys(before ?? manifest).length === 0;
+  // So, too, an installed tool the team maps there whose record alone is missing (lost, or never written);
+  // one this machine doesn't have was never delivered to by a pull here.
   const unnoted = (file: string): boolean => lost || targets.some((t) => t.file === file
-    && [before, manifest].some((m) => m?.[managedMcpManifestKey(t.tool, true)]?.some((record) => record.unnoted)));
+    && ((!t.builtinFallback && !t.undetected && (before ?? manifest)[managedMcpManifestKey(t.tool, true)] === undefined)
+      || [before, manifest].some((m) => m?.[managedMcpManifestKey(t.tool, true)]?.some((record) => record.unnoted))));
   const unclaimed = new Map<string, string[]>();
   const holds = async (target: McpTarget, owned: ManagedMcpRecord[]): Promise<boolean> => {
     // One file two tools map: what either's record claims.
