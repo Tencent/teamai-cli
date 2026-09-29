@@ -526,10 +526,17 @@ export function describeEntryFailure(failure: EntryFailure): string {
  * stale entries.
  */
 export function reportEntryResolution(resolution: EntryResolution<unknown>): void {
-  const messages = resolution.notices.map((notice) => notice.message);
-  if (resolution.kind === 'failed') messages.push(describeEntryFailure(resolution.failure));
-  for (const message of messages) {
+  reportEntryNotices(resolution);
+  if (resolution.kind === 'failed') {
+    const message = describeEntryFailure(resolution.failure);
     if (warnOnce(message)) log.persist(message);
+  }
+}
+
+/** Report notices even when the caller displays a resolution failure separately. */
+export function reportEntryNotices(resolution: Pick<EntryResolution<unknown>, 'notices'>): void {
+  for (const notice of resolution.notices) {
+    if (warnOnce(notice.message)) log.persist(notice.message);
   }
 }
 

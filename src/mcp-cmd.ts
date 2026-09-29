@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
-import { describeEntryFailure, describeOrigin, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
+import { describeEntryFailure, describeOrigin, reportEntryNotices, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import {
   reconcileMcpForConfig,
   resolveMcpTargets,
@@ -27,6 +27,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   const { localConfig, teamConfig } = await autoDetectInit();
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
   if (resolution.kind === 'failed') {
+    reportEntryNotices(resolution);
     log.error(describeEntryFailure(resolution.failure));
     process.exitCode = 1;
     return;

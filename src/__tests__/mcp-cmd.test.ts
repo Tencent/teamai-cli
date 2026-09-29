@@ -92,11 +92,15 @@ describe('mcpList', () => {
   it('reports a set that cannot be resolved instead of listing part of it', async () => {
     mockedResolve.mockResolvedValue({
       kind: 'failed',
-      notices: [],
+      notices: [{
+        kind: 'unknown-key',
+        message: 'mcp/mcp.yaml: server "hidden" has unknown key `role:`, so this entry is not delivered.',
+      }],
       failure: { kind: 'two-namespaces', type: 'mcp', name: 'db', first: 'mcp/checkout/mcp.yaml', second: 'mcp/billing/mcp.yaml' },
     });
     const { log } = await import('../utils/logger.js');
     await listOutput();
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('server "hidden" has unknown key `role:`'));
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('server "db" is defined in both mcp/checkout/mcp.yaml and mcp/billing/mcp.yaml'));
     process.exitCode = 0;
   });

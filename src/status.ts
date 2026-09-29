@@ -23,7 +23,7 @@ import { mcpEntryReader } from './resources/mcp.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { envEntryReader } from './resources/env.js';
 import {
-  describeEntryFailure, describeOrigin, describeOrigins, reportEntryResolution, resolveEntriesFor,
+  describeEntryFailure, describeOrigin, describeOrigins, reportEntryNotices, reportEntryResolution, resolveEntriesFor,
   type EntryResolution, type EntryType,
 } from './namespaced-entries.js';
 
@@ -106,6 +106,7 @@ export async function status(options: GlobalOptions): Promise<void> {
     // An entry an unknown or removed key takes out of the delivered set is
     // invisible in the count, so name it here too (#822).
     if (resolution.kind === 'resolved') reportEntryResolution(resolution);
+    else reportEntryNotices(resolution);
   };
   count('env', await resolveEntriesFor(envEntryReader, localConfig));
 
@@ -323,6 +324,7 @@ async function printRepoSection(
   if (t === 'env') {
     const env = await resolveEntriesFor(envEntryReader, localConfig);
     if (env.kind === 'failed') {
+      reportEntryNotices(env);
       console.log(`  ${describeEntryFailure(env.failure)}`);
     } else {
       reportEntryResolution(env);
@@ -347,6 +349,7 @@ async function printRepoSection(
   if (t === 'mcp') {
     const mcp = await resolveEntriesFor(mcpEntryReader, localConfig);
     if (mcp.kind === 'failed') {
+      reportEntryNotices(mcp);
       console.log(`  ${describeEntryFailure(mcp.failure)}`);
       return;
     }
@@ -371,6 +374,7 @@ async function printRepoSection(
   if (t === 'hooks') {
     const { resolution: hooks } = await resolveTeamHookEntries(localConfig);
     if (hooks.kind === 'failed') {
+      reportEntryNotices(hooks);
       console.log(`  ${describeEntryFailure(hooks.failure)}`);
       return;
     }

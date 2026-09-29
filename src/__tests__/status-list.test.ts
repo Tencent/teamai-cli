@@ -23,12 +23,14 @@ vi.mock('../utils/logger.js', () => ({
     error: vi.fn(),
     debug: vi.fn(),
     dim: vi.fn(),
+    persist: vi.fn(),
   },
 }));
 
 import { list, status } from '../status.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
+import { resetWarnOnce } from '../utils/warn-once.js';
 
 function makeTeamConfig(): TeamaiConfig {
   return {
@@ -61,10 +63,12 @@ describe('teamai list / status resource coverage', () => {
   let tmpDir: string;
   let homeDir: string;
   let repoPath: string;
+  let localConfig: LocalConfig;
   let lines: string[];
   let spy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
+    resetWarnOnce();
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-list-'));
     homeDir = path.join(tmpDir, 'home');
     repoPath = path.join(tmpDir, 'repo');
@@ -102,7 +106,7 @@ describe('teamai list / status resource coverage', () => {
     );
     await fse.writeFile(path.join(repoPath, 'agents', 'reviewer.md'), '# Reviewer\n');
 
-    const localConfig: LocalConfig = {
+    localConfig = {
       repo: { localPath: repoPath, remote: 'https://example.com/repo.git' },
       username: 'u',
       updatePolicy: 'auto',
@@ -155,6 +159,47 @@ describe('teamai list / status resource coverage', () => {
     expect(out).toMatch(/agents:\s*1/);
     expect(out).toMatch(/hooks:\s*1/);
     expect(out).toMatch(/mcp:\s*1/);
+  });
+
+  it('names an undelivered MCP entry even when another entry makes resolution fail', async () => {
+    localConfig.primaryRole = 'worker';
+    await fse.outputFile(path.join(repoPath, 'manifest', 'roles.yaml'), [
+      'version: 1',
+      'roles:',
+      '  - id: worker',
+      '    resources:',
+      '      knowledge: []',
+      '      skills: []',
+      '      agents: []',
+      '      mcp: [one, two]',
+    ].join('\n'));
+    await fse.writeFile(path.join(repoPath, 'mcp', 'mcp.yaml'), [
+      'servers:',
+      '  - name: hidden',
+      '    transport: http',
+      '    url: https://example.com/hidden',
+      '    role: worker',
+    ].join('\n'));
+    for (const namespace of ['one', 'two']) {
+      await fse.outputFile(path.join(repoPath, 'mcp', namespace, 'mcp.yaml'), [
+        'servers:',
+        '  - name: duplicate',
+        '    transport: http',
+        `    url: https://example.com/${namespace}`,
+      ].join('\n'));
+    }
+
+    vi.mocked(log.warn).mockClear();
+    await status({});
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('server "hidden" has unknown key `role:`'));
+    expect(lines.join('\n')).toContain('mcp: 0 (cannot be resolved; run `teamai doctor`)');
+
+    resetWarnOnce();
+    vi.mocked(log.warn).mockClear();
+    lines.length = 0;
+    await list('mcp', { source: 'repo' });
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('server "hidden" has unknown key `role:`'));
+    expect(lines.join('\n')).toContain('server "duplicate" is defined in both');
   });
 
   it('status counts nested rule files', async () => {
