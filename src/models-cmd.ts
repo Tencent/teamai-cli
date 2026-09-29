@@ -36,6 +36,7 @@ import {
   storedApiKey,
   teamProfilesFrom,
   unadoptedLegacyFiles,
+  withTeamValuesLock,
   type ModelAgent,
   type ModelGroup,
   type ModelProtocol,
@@ -176,19 +177,24 @@ async function loadTeamValues(
   }
   const sentTo = await switchedGatewayOrigins(localConfig);
   if (canMigrate && (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) || readFrom !== target) && !options.dryRun) {
-    // Save to the current name, which then shadows the legacy file. When this
-    // run is the migration that newly creates the hash-only target
-    // (readFrom !== target), another process may have written that target
-    // since we read the legacy file (writeJsonAtomic prevents torn files, not
-    // lost updates), so re-read and merge first: the concurrent content wins
-    // collisions and no key it added is silently discarded. When we are merely
-    // re-saving the file we already read (readFrom === target), the target is
-    // the same content, so merging would re-inject raw entries this bind just
-    // consumed — and there is no creation race to guard.
     if (readFrom !== target) {
-      values = mergeModelInputs(values, await loadModelInputs(target));
+      // Save to the current name, which then shadows the legacy file. The
+      // migration creates the hash-only target, so another process may be
+      // writing it in the same window (writeJsonAtomic prevents torn files,
+      // not lost updates). Hold the target's lock and re-read it inside the
+      // critical section: the concurrent content wins collisions, no key it
+      // added is silently discarded, and the read-merge-write cannot be
+      // interleaved with another writer's. When we are merely re-saving the
+      // file we already read (readFrom === target), the target holds the same
+      // content this bind just consumed — merging would re-inject raw entries
+      // the bind renamed, and there is no creation race to guard.
+      await withTeamValuesLock(target, async () => {
+        values = mergeModelInputs(values, await loadModelInputs(target));
+        await saveModelInputs(target, values);
+      });
+    } else {
+      await saveModelInputs(target, values);
     }
-    await saveModelInputs(target, values);
   }
   return values;
 }
@@ -447,8 +453,18 @@ export async function modelsConfigure(reference: string, options: ConfigureOptio
 
   if (secret) {
     if (ref.source === 'team' && context.localConfig) await assertNoShadowingLegacyWrite(context.localConfig);
-    setStoredApiKey(ref, values, secret);
-    await saveModelInputs(file, values);
+    if (ref.source === 'team') {
+      // Hold the target's lock and re-read inside it, so this write cannot
+      // clobber a migration or another configure this window holds.
+      await withTeamValuesLock(file, async () => {
+        const current = await loadModelInputs(file);
+        setStoredApiKey(ref, current, secret);
+        await saveModelInputs(file, current);
+      });
+    } else {
+      setStoredApiKey(ref, values, secret);
+      await saveModelInputs(file, values);
+    }
   }
   if (edited) {
     local.profiles[local.profiles.findIndex((profile) => profile.id === edited!.id)] = edited;
@@ -480,8 +496,17 @@ export async function modelsSwitch(reference: string, options: SwitchOptions): P
     const answer = await askSecret(`API key for ${key}${gatewaySuffix(ref, 'at')}: `);
     if (!answer) throw new Error(`Profile ${key} needs an API key`);
     if (ref.source === 'team' && context.localConfig) await assertNoShadowingLegacyWrite(context.localConfig);
-    setStoredApiKey(ref, values, { value: answer });
-    await saveModelInputs(file, values);
+    if (ref.source === 'team') {
+      // Hold the target's lock and re-read inside it, like `configure`.
+      await withTeamValuesLock(file, async () => {
+        const current = await loadModelInputs(file);
+        setStoredApiKey(ref, current, { value: answer });
+        await saveModelInputs(file, current);
+      });
+    } else {
+      setStoredApiKey(ref, values, { value: answer });
+      await saveModelInputs(file, values);
+    }
   } else if (!isApiKeyConfigured(stored) && !stored?.env) {
     throw new Error(`Profile ${key} has no API key${gatewaySuffix(ref, 'for')}. Run \`teamai models configure ${key}\`.`);
   }

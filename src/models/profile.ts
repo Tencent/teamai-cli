@@ -7,6 +7,7 @@ import type { LocalConfig } from '../types.js';
 import { getTeamaiHomeDir } from '../types.js';
 import { repoIdentity } from '../utils/git.js';
 import { writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { caseFoldKey } from '../manifest-schema.js';
 import {
   listEntryFiles,
@@ -618,6 +619,28 @@ export async function loadModelInputs(filePath: string): Promise<StoredModelInpu
 
 export async function saveModelInputs(filePath: string, values: StoredModelInputs): Promise<void> {
   await writeJsonAtomic(filePath, StoredModelInputsSchema.parse(values), { mode: 0o600 });
+}
+
+/**
+ * Mutually exclude concurrent read-modify-write cycles of one team values
+ * file. writeJsonAtomic makes a single write atomic, but the migration that
+ * creates the hash-only target does read-merge-write across what a
+ * concurrent configure or switch may be writing in the same window; holding
+ * the target's lock here lets every writer serialize that whole cycle. All
+ * team-target writers (the migration in loadTeamValues, `models configure`,
+ * and `models switch` key prompting) must go through it, or the lock only
+ * serializes against itself.
+ */
+export async function withTeamValuesLock<T>(filePath: string, run: () => Promise<T>): Promise<T> {
+  const lockPath = `${filePath}.lock`;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (await acquireLock(lockPath)) {
+      try { return await run(); }
+      finally { await releaseLock(lockPath); }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Another model operation is writing ${filePath}; retry shortly`);
 }
 
 /**
