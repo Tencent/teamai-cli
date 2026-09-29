@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
+import { execFileSync } from 'node:child_process';
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
@@ -96,6 +97,43 @@ describe.skipIf(process.platform === 'win32')('SkillsHandler.pullItem with skill
 
     expect((await fse.lstat(toolDir('claude'))).isDirectory()).toBe(true);
     expect(await fse.readFile(path.join(toolDir('claude'), 'SKILL.md'), 'utf8')).toContain('My edit');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('may hold your changes'));
+  });
+
+  it('replaces a copy of an older team version it never saw in the library', async () => {
+    // A per-tool copy from an earlier pull, and the team skill has moved on twice since.
+    const repo = path.join(tmpDir, 'team-repo');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+    git('init', '-q');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+    git('add', '.');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'v1');
+    await fse.outputFile(path.join(toolDir('codex'), 'SKILL.md'), SKILL_MD);
+    await fse.outputFile(path.join(toolDir('claude'), 'SKILL.md'), SKILL_MD);
+    await fse.outputFile(path.join(sourcePath, 'SKILL.md'), `${SKILL_MD}v2\n`);
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-am', 'v2');
+    await fse.outputFile(path.join(libraryPath, 'SKILL.md'), `${SKILL_MD}v2\n`);
+
+    await pull();
+
+    expect(await fse.pathExists(toolDir('codex'))).toBe(false);
+    expect((await fse.lstat(toolDir('claude'))).isSymbolicLink()).toBe(true);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps a copy that holds a file the team never had', async () => {
+    const repo = path.join(tmpDir, 'team-repo');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'ignore' });
+    git('init', '-q');
+    git('add', '.');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'v1');
+    await fse.outputFile(path.join(toolDir('claude'), 'SKILL.md'), SKILL_MD);
+    await fse.outputFile(path.join(toolDir('claude'), 'notes.md'), 'mine\n');
+    await fse.outputFile(path.join(sourcePath, 'SKILL.md'), `${SKILL_MD}v2\n`);
+
+    await pull();
+
+    expect(await fse.readFile(path.join(toolDir('claude'), 'notes.md'), 'utf8')).toBe('mine\n');
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('may hold your changes'));
   });
 

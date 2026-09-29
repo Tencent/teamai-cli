@@ -618,6 +618,21 @@ function stagedRecord(delivered: DeliveredHashes | undefined, dest: string, stag
   return staged;
 }
 
+/**
+ * Whether every file of the tool copy at `localDir` is a current or past
+ * version of the same file of the team skill `teamRelDir` in the team repo at
+ * `repoPath`, so deleting the copy loses nothing the team history lacks.
+ */
+async function isPastSkillInstall(repoPath: string, localDir: string, teamRelDir: string): Promise<boolean> {
+  if (teamRelDir.startsWith('..') || path.isAbsolute(teamRelDir)) return false;
+  const files = (await listFilesRecursive(localDir)).filter(rel => !rel.split('/').includes(CONTRIBUTORS_FILE));
+  if (files.length === 0) return false;
+  for (const rel of files) {
+    if (!await isPastVersionOf(repoPath, path.join(localDir, rel), `${teamRelDir}/${rel}`)) return false;
+  }
+  return true;
+}
+
 export class SkillsHandler extends ResourceHandler {
   readonly type = 'skills' as const;
 
@@ -1006,11 +1021,15 @@ export class SkillsHandler extends ResourceHandler {
       if (skillsDir !== null) targets.push({ tool, dest: path.join(skillsDir, item.name) });
     }
 
-    // A tool copy that matches the library copy before this update is an
-    // earlier TeamAI install; that is only decidable while the old copy is there.
+    // A tool copy that matches the library copy before this update, or whose
+    // every file is a version the team repo once had, is an earlier TeamAI
+    // install; the first is only decidable while the old copy is there.
+    const teamRelDir = path.relative(localConfig.repo.localPath, item.sourcePath).split(path.sep).join('/');
     const earlierInstalls = new Set<string>();
     for (const { dest } of targets) {
-      if (await readSymlinkTarget(dest) === null && await dirContentEqual(dest, libraryPath, [CONTRIBUTORS_FILE])) {
+      if (await readSymlinkTarget(dest) !== null || !(await fse.lstat(dest).catch(() => null))?.isDirectory()) continue;
+      if (await dirContentEqual(dest, libraryPath, [CONTRIBUTORS_FILE])
+        || await isPastSkillInstall(localConfig.repo.localPath, dest, teamRelDir)) {
         earlierInstalls.add(dest);
       }
     }
