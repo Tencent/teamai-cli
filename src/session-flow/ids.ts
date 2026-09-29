@@ -56,3 +56,28 @@ export function deriveTargetSessionId(
     hex.slice(20, 32),
   ].join('-');
 }
+
+const UUID_ANY_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SAFE_SESSION_FILE_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Id to write under `targetPlatform`.
+ * Same-platform archives always derive, so the original file is not overwritten.
+ * A dashed UUID from another platform is reused. `targetCwd` is hashed for
+ * stores that key sessions globally (Cursor, WorkBuddy, Codex).
+ */
+export function resolveWriteSessionId(
+  targetPlatform: string,
+  session: { sessionId: string; platform: string },
+  targetCwd?: string,
+): string {
+  if (session.platform === targetPlatform) {
+    return deriveTargetSessionId(targetPlatform, session.sessionId, targetCwd);
+  }
+  if (UUID_ANY_RE.test(session.sessionId)) return session.sessionId;
+  return deriveTargetSessionId(targetPlatform, session.sessionId, targetCwd);
+}
+
+export function isSafeSessionFileId(sessionId: string): boolean {
+  return SAFE_SESSION_FILE_ID_RE.test(sessionId);
+}

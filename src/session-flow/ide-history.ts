@@ -628,12 +628,17 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
       // 幂等：重跑迁移必须先清空 messages/。
       // 消息文件名 = 消息 id，旧版本残留的文件既不会被覆盖也不会被索引，
       // 会变成孤儿并让目录随迁移次数无上限增长。
-      if (fs.existsSync(msgDir)) {
+      const marker = path.join(msgDir, '.teamai-migrated');
+      if (fs.existsSync(msgDir) && !fs.existsSync(marker)) {
+        const backup = path.join(convDir, `messages.backup-${Date.now()}`);
+        fs.renameSync(msgDir, backup);
+      } else if (fs.existsSync(msgDir)) {
         for (const f of fs.readdirSync(msgDir)) {
           if (f.endsWith('.json')) fs.unlinkSync(path.join(msgDir, f));
         }
       }
       fs.mkdirSync(msgDir, { recursive: true });
+      fs.writeFileSync(marker, new Date().toISOString(), 'utf-8');
 
       // 落盘图片资源：与原生存储一致放 <convDir>/assets/，消息里用
       // codebuddy-asset://assets/<name> 相对引用。某个资源失败只降级该图片

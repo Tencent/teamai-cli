@@ -23,7 +23,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock, TextBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
-import { deriveTargetSessionId } from '../ids.js';
+import { resolveWriteSessionId } from '../ids.js';
 import { imagePlaceholderText } from '../ir.js';
 import {
   getClaudeCodeProjectsDir,
@@ -625,14 +625,10 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
-    // 确定 session_id（必须是 UUIDv4）：已是 v4 则沿用，否则确定性派生——
-    // 随机生成会让重复迁移产生 id 不同、内容相同的重复会话。
-    // 这里**故意不把 cwd 纳入派生**：本平台的会话按项目目录存放
-    // (`<storageRoot>/<encoded cwd>/<id>.jsonl`)，同一 id 落在两个目录就是两份
-    // 独立文件，不存在互相覆盖。加上 cwd 只会让已迁移的会话 id 漂移。
-    const sessionId = isUuidV4(session.sessionId)
-      ? session.sessionId
-      : deriveTargetSessionId(this.platform, session.sessionId);
+    // Same-platform archives derive a new id so the original jsonl is not overwritten.
+    // cwd is intentionally omitted: this store is per project directory, so one
+    // id in two directories is already two files.
+    const sessionId = resolveWriteSessionId(this.platform, session);
 
     // 确定目标目录
     const cwd = projectPath ?? session.cwd;

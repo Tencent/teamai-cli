@@ -39,6 +39,7 @@ import {
 } from '../fs.js';
 import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText, extractUserText, isRenderableText, visibleUserText } from '../title.js';
 import { registerCursorComposer, unregisterCursorComposer, type CursorComposerMessage, type CursorComposerTool } from '../cursor-store.js';
+import { resolveWriteSessionId } from '../ids.js';
 import { log } from '../../utils/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -449,9 +450,7 @@ export class CursorAdapter extends AgentAdapter {
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     const cwd = projectPath ?? session.cwd;
     // Deterministic id: re-migrations of the same source session hit the same composerId (no more per-run copies)
-    const sessionId = isUuid(session.sessionId)
-      ? session.sessionId
-      : deriveCursorId(session.platform || 'unknown', session.sessionId, cwd);
+    const sessionId = resolveWriteSessionId(this.platform, session, cwd);
     const projDir = path.join(getCursorProjectsDir(), encodeCwdGeneric(cwd));
     const transcriptDir = path.join(projDir, 'agent-transcripts', sessionId);
     const jsonlPath = path.join(transcriptDir, `${sessionId}.jsonl`);
