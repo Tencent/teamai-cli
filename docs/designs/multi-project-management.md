@@ -175,6 +175,12 @@ cd ~/work/hai-inference && teamai init <team-repo> --project hai-inference
 cd ~/work/billing       && teamai init <team-repo> --project billing
 ```
 
+When `init` has no `--project` flag and the manifest declares projects, it offers
+an optional multi-select after role selection. A blank answer and a non-interactive
+run keep `projects: []`; neither auto-activates a project. The non-interactive
+path prints the `teamai projects set <id>` follow-up, while an explicit flag
+continues to resolve through the manifest as before.
+
 There is deliberately **no `projects join/leave`** command. The tags analogy that
 suggested it does not hold: tags express a personal preference with no external
 basis and need an explicit toggle; a project has an external basis (cwd) and is

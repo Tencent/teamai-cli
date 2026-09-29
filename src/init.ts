@@ -92,9 +92,9 @@ import {
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { describeRoles, listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
-import { loadProjectsManifest, listProjectIds } from './projects.js';
+import { loadProjectsManifest, listProjectIds, type ProjectsManifest } from './projects.js';
 import { memberReadRoots, readMemberConfig, mergeMemberConfig } from './members.js';
-import { askQuestion, askConfirmation, askSelection, closePrompt, isInteractive } from './utils/prompt.js';
+import { askQuestion, askConfirmation, askSelection, closePrompt, isInteractive, parseSelection } from './utils/prompt.js';
 import {
   normalizeAgentList,
   detectHomeInstalledAgents,
@@ -364,6 +364,49 @@ export async function resolveActiveProjects(
   }
 
   return { projects: dedupeIds(requested) };
+}
+
+/**
+ * Resolve `init` project membership. An explicit flag always wins; otherwise an
+ * interactive init offers the manifest's projects, while a blank answer or a
+ * non-interactive run keeps the existing no-project default.
+ */
+async function resolveProjectsForInit(
+  repoPath: string,
+  projectFlag?: string,
+  manifestOverride?: ProjectsManifest | null,
+): Promise<Pick<LocalConfig, 'projects'>> {
+  if (projectFlag !== undefined) return resolveActiveProjects(repoPath, projectFlag);
+
+  const manifest = manifestOverride !== undefined ? manifestOverride : await loadProjectsManifest(repoPath);
+  if (!manifest || manifest.projects.length === 0) return { projects: [] };
+
+  log.info('Available projects:');
+  manifest.projects.forEach((project, index) => {
+    const name = project.name ? ` (${project.name})` : '';
+    log.info(`  ${index + 1}. ${project.id}${name}`);
+  });
+
+  const answer = await askQuestion(
+    'Project(s) for this directory (comma-separated numbers; press Enter for none): ',
+    '',
+  );
+  if (!answer.trim()) {
+    log.info(
+      `This team repo declares projects: ${listProjectIds(manifest).join(', ')}. ` +
+        'Run `teamai projects set <id>` to activate one.',
+    );
+    return { projects: [] };
+  }
+
+  const selected = parseSelection(answer, manifest.projects.length);
+  if (!selected) {
+    throw new Error(
+      `Invalid project selection. Choose numbers between 1 and ${manifest.projects.length}, separated by commas, or press Enter for none.`,
+    );
+  }
+
+  return { projects: selected.map((index) => manifest.projects[index].id) };
 }
 
 /**
@@ -650,7 +693,7 @@ export async function initHttp(
     const lenient = error instanceof RolesManifestNotFoundError || error instanceof NoRoleSelectedError;
     if (!lenient) throw error;
   }
-  Object.assign(localConfig, await resolveActiveProjects(localPath, options.project));
+  Object.assign(localConfig, await resolveProjectsForInit(localPath, options.project));
 
   // Persist --agent into enabledAgents (additive across runs)
   const requestedAgents = normalizeAgentList(options.agent);
@@ -1173,7 +1216,7 @@ export async function initSelfRepo(options: GlobalOptions & {
     const lenient = error instanceof RolesManifestNotFoundError || error instanceof NoRoleSelectedError;
     if (!lenient) throw error;
   }
-  Object.assign(localConfig, await resolveActiveProjects(localPath, options.project));
+  Object.assign(localConfig, await resolveProjectsForInit(localPath, options.project));
   // Which AI tools to set up in this repo (create skills dir + inject hooks +
   // commit their settings.json). Resolved from --agent, else HOME detection
   // (non-interactive), else an interactive picker. Written to enabledAgents,
@@ -1749,12 +1792,38 @@ export async function init(options: GlobalOptions & {
     }
   }
 
-  // Resolve active projects (non-interactive: --project flag only) so the roster
-  // records project membership. Role selection stays in its original place below
-  // (it may prompt) — the member file's project membership is the P3 goal here.
+  // Resolve projects before member registration so the reports branch records
+  // the same selection as the local config. Only prompt for a role early when a
+  // project picker will follow it; otherwise keep the existing prompt order.
+  let roleProfile: Awaited<ReturnType<typeof promptForRoleProfile>> | undefined;
+  let rolePromptedEarly = false;
+  let projectsManifest: ProjectsManifest | null | undefined;
+  if (options.project === undefined) {
+    try {
+      projectsManifest = await loadProjectsManifest(localPath);
+    } catch (error) {
+      log.error((error as Error).message);
+      process.exit(1);
+    }
+  }
+  if (projectsManifest?.projects.length) {
+    rolePromptedEarly = true;
+    try {
+      roleProfile = await promptForRoleProfile(localPath, options.role);
+    } catch (error) {
+      const msg = (error as Error).message;
+      if (msg.includes('Roles manifest not found')) {
+        log.debug('No roles manifest found — skipping role selection');
+      } else {
+        log.error(msg);
+        process.exit(1);
+      }
+    }
+  }
+
   let resolvedProjects: string[] = [];
   try {
-    resolvedProjects = (await resolveActiveProjects(localPath, options.project)).projects ?? [];
+    resolvedProjects = (await resolveProjectsForInit(localPath, options.project, projectsManifest)).projects ?? [];
   } catch (error) {
     // A bad --project is a user error on the main init path: fail loudly.
     log.error((error as Error).message);
@@ -1889,19 +1958,22 @@ export async function init(options: GlobalOptions & {
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
 
-  try {
-    Object.assign(localConfig, await promptForRoleProfile(localPath, options.role));
-  } catch (error) {
-    const msg = (error as Error).message;
-    if (msg.includes('Roles manifest not found')) {
-      log.debug('No roles manifest found — skipping role selection');
-    } else {
-      log.error(msg);
-      process.exit(1);
+  if (!rolePromptedEarly) {
+    try {
+      roleProfile = await promptForRoleProfile(localPath, options.role);
+    } catch (error) {
+      const msg = (error as Error).message;
+      if (msg.includes('Roles manifest not found')) {
+        log.debug('No roles manifest found — skipping role selection');
+      } else {
+        log.error(msg);
+        process.exit(1);
+      }
     }
   }
+  if (roleProfile) Object.assign(localConfig, roleProfile);
 
-  // Projects were already resolved (non-interactively) before member registration.
+  // Projects were resolved before member registration so both records agree.
   localConfig.projects = resolvedProjects;
 
   // Persist --agent into enabledAgents (additive across runs)

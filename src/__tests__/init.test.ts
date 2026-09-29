@@ -134,6 +134,12 @@ vi.mock('../builtin-skills.js', () => ({
   deployBuiltinSkills: (...args: unknown[]) => mockDeployBuiltinSkills(...args),
 }));
 
+const mockLoadProjectsManifest = vi.fn().mockResolvedValue(null);
+vi.mock('../projects.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../projects.js')>()),
+  loadProjectsManifest: (...args: unknown[]) => mockLoadProjectsManifest(...args),
+}));
+
 vi.mock('../roles.js', () => ({
   loadRolesManifest: vi.fn().mockResolvedValue({
     version: 1,
@@ -210,7 +216,8 @@ vi.mock('../types.js', async (importOriginal) => {
 
 // Mock prompt to auto-answer prompts
 let questionAnswers: string[] = [];
-vi.mock('../utils/prompt.js', () => ({
+vi.mock('../utils/prompt.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/prompt.js')>()),
   // Mirror the real predicate's TTY leg so tests that force `isTTY` keep
   // driving the interactive branch, independent of CI=true on the runner.
   isInteractive: () => Boolean(process.stdin.isTTY),
@@ -625,6 +632,85 @@ describe('init', () => {
         additionalRoles: ['thpc'],
         resourceProfileVersion: 1,
       }));
+    });
+  });
+
+  describe('interactive project selection', () => {
+    it('accepts multiple project numbers and persists them on init', async () => {
+      let cloneDone = false;
+      pathExistsFn = (p: string) => (p === localPath ? cloneDone : false);
+      mockGfRepoClone.mockImplementation(() => { cloneDone = true; });
+      vi.mocked(await import('../config.js')).loadTeamConfig.mockResolvedValue({
+        team: 'my-team',
+        repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+        provider: 'tgit',
+        reviewers: [],
+        sharing: { rules: { enforced: [] }, docs: {}, env: { injectShellProfile: true } },
+        toolPaths: {},
+      } as never);
+      mockLoadProjectsManifest.mockResolvedValueOnce({
+        version: 1,
+        projects: [
+          { id: 'inference', name: 'Inference', description: '', resources: {} },
+          { id: 'billing', name: 'Billing', description: '', resources: {} },
+        ],
+      });
+      questionAnswers = ['1', '2,1'];
+
+      await init({
+        repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+        scope: 'user',
+        force: true,
+        dryRun: true,
+      });
+
+      expect(mockLoadProjectsManifest).toHaveBeenCalledTimes(1);
+      const { askQuestion } = await import('../utils/prompt.js');
+      expect(askQuestion).toHaveBeenCalledWith(
+        'Project(s) for this directory (comma-separated numbers; press Enter for none): ',
+        '',
+      );
+      expect(questionAnswers).toHaveLength(0);
+      expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({
+        primaryRole: 'hai',
+        projects: ['inference', 'billing'],
+      }));
+    });
+
+    it('keeps an empty project set when the prompt is skipped and prints the follow-up command', async () => {
+      let cloneDone = false;
+      pathExistsFn = (p: string) => (p === localPath ? cloneDone : false);
+      mockGfRepoClone.mockImplementation(() => { cloneDone = true; });
+      vi.mocked(await import('../config.js')).loadTeamConfig.mockResolvedValue({
+        team: 'my-team',
+        repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+        provider: 'tgit',
+        reviewers: [],
+        sharing: { rules: { enforced: [] }, docs: {}, env: { injectShellProfile: true } },
+        toolPaths: {},
+      } as never);
+      mockLoadProjectsManifest.mockResolvedValueOnce({
+        version: 1,
+        projects: [
+          { id: 'inference', name: 'Inference', description: '', resources: {} },
+          { id: 'billing', name: 'Billing', description: '', resources: {} },
+        ],
+      });
+      questionAnswers = [];
+
+      await init({
+        repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+        scope: 'user',
+        role: 'hai',
+        force: true,
+        dryRun: true,
+      });
+
+      expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({ projects: [] }));
+      const { log } = await import('../utils/logger.js');
+      expect(log.info).toHaveBeenCalledWith(
+        'This team repo declares projects: inference, billing. Run `teamai projects set <id>` to activate one.',
+      );
     });
   });
 

@@ -197,7 +197,7 @@ GITHUB_TOKEN=ghp_... teamai init https://github.com/yourorg/yourrepo --scope pro
 | `--inherit-user-scope` | 仅 project scope：同时同步安全的 user 资源并检索 user 知识 |
 | `--no-inherit-user-scope` | 关闭当前项目先前配置的 user scope 继承 |
 | `--role <id>` | 直接指定 primaryRole，跳过角色交互选择 |
-| `--project <ids>` | 从 `manifest/projects.yaml` 激活的逻辑项目（逗号分隔）。决定本目录同步哪些项目的资源与 learnings。传 `all` 可激活 manifest 声明的全部项目。详见下方 [多项目](#多项目project-作为与-role-正交的维度) |
+| `--project <ids>` | 从 `manifest/projects.yaml` 激活的逻辑项目（逗号分隔）。决定本目录同步哪些项目的资源与 learnings。传 `all` 可激活 manifest 声明的全部项目；省略时，交互式 `init` 会显示可选项目。详见下方 [多项目](#多项目project-作为与-role-正交的维度) |
 | `--force` | 覆盖已有配置，跳过确认提示 |
 
 #### 多项目：`project` 作为与 `role` 正交的维度
@@ -215,6 +215,11 @@ cd ~/work/billing       && teamai init <team-repo> --project billing
 ```
 
 此后每个目录只同步自己项目的 skills/rules/CLAUDE.md 与 learnings。要点：
+
+当 `manifest/projects.yaml` 声明了项目且未传 `--project` 时，交互式
+`init` 会在角色选择后询问本目录所属项目。输入逗号分隔的编号可选择多个；
+直接回车则保持不属于任何项目。没有交互终端时会保留空项目集，并提示之后可运行
+`teamai projects set <id>`。显式传入 `--project` 时跳过选择提示。
 
 - **learnings 隔离。** 仓库 `learnings/` 根目录对全团队共享；项目私有经验放在
   `learnings/<project-id>/` 子目录下，只对该项目成员的 `teamai recall` 可见。

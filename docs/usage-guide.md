@@ -209,7 +209,7 @@ Without a terminal `init` never waits on a person: every prompt takes its defaul
 | `--inherit-user-scope` | Project scope only: also sync safe user resources and search user knowledge |
 | `--no-inherit-user-scope` | Disable previously configured user-scope inheritance for this project |
 | `--role <id>` | Directly specify the primary role, skipping the interactive role prompt |
-| `--project <ids>` | Active logical project(s) from `manifest/projects.yaml` (comma-separated). Scopes which project resources and learnings this directory syncs. Pass `all` to activate every project the manifest declares. See [Multi-project](#multi-project-project-as-a-dimension-orthogonal-to-role) below |
+| `--project <ids>` | Active logical project(s) from `manifest/projects.yaml` (comma-separated). Scopes which project resources and learnings this directory syncs. Pass `all` to activate every project the manifest declares. When omitted, an interactive `init` offers an optional project picker. See [Multi-project](#multi-project-project-as-a-dimension-orthogonal-to-role) below |
 | `--force` | Overwrite existing config, skipping confirmation prompts |
 
 #### Multi-project: `project` as a dimension orthogonal to `role`
@@ -230,6 +230,13 @@ cd ~/work/billing       && teamai init <team-repo> --project billing
 
 Each directory then syncs only its own project's skills/rules/CLAUDE.md and
 learnings. Key points:
+
+When `manifest/projects.yaml` declares projects and `--project` is omitted,
+interactive `init` asks which projects belong to this directory after role
+selection. Enter comma-separated numbers to choose several; press Enter to keep
+the directory project-less. Without an interactive terminal, init keeps the
+empty project set and prints `teamai projects set <id>` as the follow-up. An
+explicit `--project` skips the picker.
 
 - **Learnings isolation.** `learnings/` at the repo root is shared with the whole
   team; a project's private learnings live under `learnings/<project-id>/` and
