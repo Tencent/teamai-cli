@@ -209,7 +209,12 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
   const namedRemote = named !== undefined && (isRepoReference(named) || isProviderRelative(named));
   const source = namedRemote ? named
     : url && isRepoReference(url) ? url
-    : claim?.claim ?? (named ?? localPath);
+    : claim?.claim ?? localPath;
+  // The effective provider: the team's own `provider:` in teamai.yaml when it
+  // is read, else the global/local override, else the team default. Provider,
+  // remote, and claim survive a team rename, keeping the file bound to the
+  // repository rather than the display name.
+  const provider = claim?.provider ?? teamProvider(localPath) ?? localConfig.provider ?? 'tgit';
   let identity: string;
   if (isRepoReference(source)) {
     // Host-bearing: repoIdentity normalizes scheme family, host, and path.
@@ -219,16 +224,18 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
     // claim's own, else the local override, else the team default) qualifies
     // it. Claim and provider survive a team rename, keeping the file bound
     // to the repository rather than the display name.
-    identity = `${claim.provider ?? localConfig.provider ?? 'tgit'}:${source}`;
+    identity = `${provider}:${source}`;
   } else if (source === named) {
     // Provider-relative remote: the same ambiguity the path-shaped claim
     // handles, so the same provider qualification applies.
-    identity = `${localConfig.provider ?? 'tgit'}:${source}`;
+    identity = `${provider}:${source}`;
   } else {
-    // Path-only: no repository identity exists, so the team slug — the old
-    // scheme's discriminator — joins the hash to separate teams sharing a
-    // checkout path. Renaming such a team orphans its keys, as before.
-    identity = `${localConfig.provider ?? 'tgit'}:${legacyTeamSlug(localPath)}:${source}`;
+    // Path-only: no repository identity exists — and a bare remote alias
+    // like `fork` names no repository either — so the local path is the
+    // last resort and the team slug, the old scheme's discriminator, joins
+    // the hash to separate teams sharing a checkout path. Renaming such a
+    // team orphans its keys, as before.
+    identity = `${provider}:${legacyTeamSlug(localPath)}:${source}`;
   }
   const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
   return path.join(getTeamaiHomeDir(), 'models', 'teams', `${digest}.json`);
@@ -260,6 +267,20 @@ function repoClaim(localPath: string): { claim: string; provider?: string } | nu
     // teamai.yaml may be absent or unreadable.
   }
   return null;
+}
+
+/** The team's own `provider:` in teamai.yaml — authoritative for path-shaped identities even when the `repo:` claim is absent. */
+function teamProvider(localPath: string): string | undefined {
+  try {
+    const raw = YAML.parse(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8')) as unknown;
+    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+      const provider = (raw as { provider?: unknown }).provider;
+      if (typeof provider === 'string' && provider.trim()) return provider.trim();
+    }
+  } catch {
+    // teamai.yaml may be absent or unreadable.
+  }
+  return undefined;
 }
 
 /**
