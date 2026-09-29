@@ -405,6 +405,94 @@ describe('doctor — MCP servers delivered on disk', () => {
         // .mcp.json is listed, so nothing is left to fail on.
         if (check) expect(await check.check()).toBe(true);
       });
+
+      describe('recorded as tracked by a pull that found git tracking it', () => {
+        beforeEach(async () => {
+          const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+          await fse.outputJson(resolvedMcpFilesPath(localConfig) ?? '', {
+            version: 1, files: { [old()]: { tools: ['cursor'], tracked: true } }, earlierMappingsRead: true,
+          });
+        });
+
+        it('does not name it while git tracks it', async () => {
+          execFileSync('git', ['add', '-f', '.cursor/team-mcp.json'], { cwd: projectRoot });
+
+          const check = await excludeCheck();
+          if (check) expect(check.fix).not.toContain(old());
+          if (check) expect(await check.check()).toBe(true);
+        });
+
+        it('fails, naming it, once git no longer tracks it', async () => {
+          const check = await excludeCheck();
+          if (!check) throw new Error('no git exclude check');
+          expect(await check.check()).toBe(false);
+          expect((check.fix ?? '').split(old())).toHaveLength(2);
+        });
+      });
+    });
+
+    describe('a config written for a tool the team has since moved, that another tool\'s mapping still reaches', () => {
+      const file = (): string => path.join(projectRoot, '.mcp.json');
+
+      beforeEach(async () => {
+        const { trackResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+        teamConfig.toolPaths = {
+          claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: '.mcp.json' },
+          cursor: { skills: '.cursor/skills', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
+        };
+        await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+        // Claude's own entry, and the one a pull wrote there for Cursor with a token before the team moved it.
+        await fse.writeJson(file(), {
+          mcpServers: {
+            docs: { type: 'http', url: 'https://docs.example/mcp' },
+            gone: { type: 'http', url: 'https://gone.example/mcp', headers: { Authorization: 'Bearer t0ken' } },
+          },
+        });
+        await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+          [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'h', resolved: false }],
+        });
+        expect(await trackResolvedMcpFiles(localConfig, [{ tool: 'cursor', file: file() }])).toBe('written');
+      });
+
+      it('fails, naming it once, while it holds a server none of the tools mapping it own', async () => {
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(false);
+        expect((check.fix ?? '').split(file())).toHaveLength(2);
+      });
+
+      it('emits no check once only their servers are left', async () => {
+        await fse.writeJson(file(), { mcpServers: { docs: { type: 'http', url: 'https://docs.example/mcp' } } });
+
+        expect(await excludeCheck()).toBeUndefined();
+      });
+
+      describe('written by an older teamai under a mapping only an earlier teamai.yaml made, before a pull on this version', () => {
+        beforeEach(async () => {
+          const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+          await fse.remove(resolvedMcpFilesPath(localConfig) ?? '');
+          execFileSync('git', ['init', '-q'], { cwd: repoPath });
+          for (const cursorFile of ['.mcp.json', '.cursor/mcp.json']) {
+            const toolPaths = { ...teamConfig.toolPaths, cursor: { skills: '.cursor/skills', mcp: '.cursor/mcp.json', mcpProject: cursorFile } };
+            fse.writeFileSync(path.join(repoPath, 'teamai.yaml'), JSON.stringify({ team: 't', toolPaths }));
+            execFileSync('git', ['add', '-A'], { cwd: repoPath });
+            execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'toolPaths'], { cwd: repoPath });
+          }
+        });
+
+        it('fails, naming it once, while it holds a server none of the tools mapping it own', async () => {
+          const check = await excludeCheck();
+          if (!check) throw new Error('no git exclude check');
+          expect(await check.check()).toBe(false);
+          expect((check.fix ?? '').split(file())).toHaveLength(2);
+        });
+
+        it('emits no check once only their servers are left', async () => {
+          await fse.writeJson(file(), { mcpServers: { docs: { type: 'http', url: 'https://docs.example/mcp' } } });
+
+          expect(await excludeCheck()).toBeUndefined();
+        });
+      });
     });
 
     it('fails for a server that was in the file when a pull rebuilt the lost record, after it left mcp.yaml', async () => {

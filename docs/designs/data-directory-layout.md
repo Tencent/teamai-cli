@@ -75,6 +75,8 @@ directories do not authorize writes to rules excluded by the local configuration
 For Copilot updates that only change `paths`, it compares the entire local file
 with the rendered recorded versions before refreshing `applyTo`, preserving
 locally edited headers rather than overwriting them on a body match alone.
+Each copy it writes, in any format, is recorded in the checkout's `delivered`
+(#822), so the next pull does not keep it as the member's edit.
 A placed agent, which push does not
 sync, is held when the team file has changed since any of those revisions, or
 since it was added if one of them predates it (#823). That sync brings the
@@ -438,7 +440,7 @@ every checkout, so that is where they live now:
 └── workspaces/<managedMcpWorkspaceId(root)>/
     ├── managed-mcp.json                       managedMcpManifestPath, one per checkout
     ├── managed-mcp-files.json                 resolvedMcpFilesPath: project MCP configs teamai may have written a resolved ${VAR} to, and whether
-    │                                          the paths earlier teamai.yaml revisions mapped were read (#882)
+    │                                          the paths earlier teamai.yaml revisions mapped were read; one of those git tracks is marked tracked (#882)
     └── search-index.json                      getProjectSearchIndexPath, one per checkout
 <checkout>/.teamai/                            one per checkout: committed knowledge, knowledge-wt/
 ```

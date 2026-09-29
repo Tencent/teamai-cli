@@ -15,14 +15,18 @@ import { updateFileLocked, type ExcludeUpdate } from './mcp-git-exclude.js';
 //  it for, and the servers it found there when it rebuilt a lost record. It
 //  also says whether a pull has read the files earlier revisions of the team's
 //  teamai.yaml mapped, which a teamai from before this file wrote to without
-//  recording them. Nothing depends on it to keep a line: missing or unreadable,
-//  it reads as empty and the rules without it apply.
+//  recording them, and remembers one of those git tracked, which no line can
+//  protect until the member stops git tracking it. Nothing depends on it to
+//  keep a line: missing or unreadable, it reads as empty and the rules without
+//  it apply.
 
 export interface ResolvedMcpFile {
   /** The tools whose MCP format the file was written in. */
   tools: string[];
   /** Servers in the file when teamai rebuilt its lost record: teamai may have written them. */
   unverified?: string[];
+  /** Git tracked it when a pull found it under an earlier teamai.yaml mapping: judged once git no longer does. */
+  tracked?: true;
 }
 
 export interface ResolvedMcpFiles {
@@ -42,6 +46,10 @@ export interface McpFileObservation {
   holding: boolean;
   /** The server names managed-mcp.json records for it now. */
   owned: string[];
+  /** Whether git tracks it, for a file recorded (or to record) as one it tracked: kept, whatever it holds, while git does. */
+  tracked?: boolean;
+  /** `tool` does not map the file today, another tool does: `holding` says whether it holds what teamai may have written for `tool`. */
+  remapped?: true;
 }
 
 // Fields a later teamai adds are carried through a rewrite.
@@ -152,8 +160,13 @@ export function recordUnverifiedMcpServers(cfg: LocalConfig, found: Array<{ file
 /**
  * Bring the record up to date with what the files hold: forget a file that is
  * gone or holds no server, record one holding a resolved value it did not
- * list (written by an older teamai), and drop a noted server that left its
- * file or that teamai owns again. A file that does not parse stays as it is.
+ * list (written by an older teamai), keep a tool on the record of a file
+ * another tool now maps while the file holds what teamai may have written for
+ * it (adding it for one an older teamai wrote), and take it off after, and
+ * drop a noted server that left its file or that teamai owns again. A file
+ * that does not parse stays as it is, and so does one recorded as tracked
+ * until an observation says git no longer tracks it: a checkout brings back
+ * what git holds. A tool found in a file git tracks is added, marked tracked.
  * `earlierMappingsRead`: the observations cover the files earlier revisions
  * of teamai.yaml mapped, which later pulls need not read again.
  */
@@ -166,11 +179,36 @@ export function settleResolvedMcpFiles(
     const { files } = sidecar;
     let changed = options.earlierMappingsRead === true && sidecar.earlierMappingsRead !== true;
     if (changed) sidecar.earlierMappingsRead = true;
-    for (const { file, tool, state, holding, owned } of observations) {
+    for (const { file, tool, state, holding, owned, tracked, remapped } of observations) {
       const entry = files[file];
+      if (tracked === true) {
+        if (entry?.tools.includes(tool)) continue;
+        files[file] = entry ? { ...entry, tools: [...entry.tools, tool], tracked: true } : { tools: [tool], tracked: true };
+        changed = true;
+        continue;
+      }
       if (state.kind === 'missing' || (state.kind === 'parsed' && state.servers.length === 0)) {
-        if (entry) delete files[file];
-        changed ||= entry !== undefined;
+        const forget = entry !== undefined && (entry.tracked !== true || tracked === false);
+        if (forget) delete files[file];
+        changed ||= forget;
+        continue;
+      }
+      if (entry?.tracked === true && tracked === false) {
+        delete entry.tracked;
+        changed = true;
+      }
+      if (remapped && holding) {
+        if (entry?.tools.includes(tool)) continue;
+        files[file] = entry ? { ...entry, tools: [...entry.tools, tool] } : { tools: [tool] };
+        changed = true;
+        continue;
+      }
+      if (remapped) {
+        if (!entry?.tools.includes(tool)) continue;
+        const tools = entry.tools.filter((t) => t !== tool);
+        if (tools.length > 0 || entry.unverified) files[file] = { ...entry, tools };
+        else delete files[file];
+        changed = true;
         continue;
       }
       if (!entry) {

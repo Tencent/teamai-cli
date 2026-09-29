@@ -224,7 +224,8 @@ describe('pull reports what reached the tool directory (#585)', () => {
     expect(vi.mocked(log.warn).mock.calls.flat()).toContainEqual(expect.stringContaining('[project] Failed to sync docs:'));
     // The marker stays cleared for a retry, and the record keeps its rev.
     expect(state.lastPullRev).toBeNull();
-    expect(state.lastPullByWorkspace?.[key]).toEqual({ rev: 'old1234', targets: [], pushBaseRevs: ['abc1234'] });
+    // It also records what the pull delivered, docs failure or not (#822).
+    expect(state.lastPullByWorkspace?.[key]).toEqual({ rev: 'old1234', targets: [], pushBaseRevs: ['abc1234'], delivered: {} });
   });
 
   it.each(['empty', 'missing'])('prunes only stale empty directories when the team bundle is %s', async (state) => {

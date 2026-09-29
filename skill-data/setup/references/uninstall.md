@@ -61,7 +61,8 @@ and give it your team repo URL."*
   under a symlinked directory, the link's target (`/config/mcp.json` for
   `.cursor/` linking to `config/`). For one it cannot prove clean (including one written
   under a `toolPaths` mapping since changed, or in a nested repository's linked
-  worktree, that still holds servers) it keeps the line and warns, naming the
-  file and why: have the user remove teamai's servers from that
-  file, then delete the line (with the last one, the block's markers). Do not
+  worktree, that still holds servers, and one written for a tool since moved that
+  another tool maps, holding a server that tool did not write) it keeps the line
+  and warns, naming the file and why: have the user remove teamai's servers from
+  that file, then delete the line (with the last one, the block's markers). Do not
   delete a kept line while its file still holds a token.

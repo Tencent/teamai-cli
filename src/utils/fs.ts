@@ -384,7 +384,7 @@ export async function getDirLatestMtime(dirPath: string): Promise<number> {
 /**
  * Compute SHA-256 hash of a file's contents. Returns null if file does not exist.
  */
-async function fileHash(filePath: string): Promise<string | null> {
+export async function fileHash(filePath: string): Promise<string | null> {
   try {
     const content = await fse.readFile(filePath);
     return crypto.createHash('sha256').update(content).digest('hex');

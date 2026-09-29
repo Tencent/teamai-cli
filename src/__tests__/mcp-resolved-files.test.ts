@@ -201,5 +201,61 @@ describe('managed-mcp-files.json', () => {
         { file: other, tool: 'claude', state: { kind: 'parsed', servers: ['open'] }, holding: false, owned: ['open'] },
       ])).toBe('unchanged');
     });
+
+    it('records a file git tracks as tracked, and keeps it whatever it holds while git does', async () => {
+      const old = path.join(tmp, 'project', '.cursor', 'team-mcp.json');
+
+      await settleResolvedMcpFiles(cfg, [{ file: old, tool: 'cursor', state: { kind: 'parsed', servers: ['mine'] }, holding: false, owned: [], tracked: true }]);
+      await settleResolvedMcpFiles(cfg, [{ file: old, tool: 'cursor', state: { kind: 'missing' }, holding: false, owned: [], tracked: true }]);
+
+      expect((await readResolvedMcpFiles(cfg)).files[old]).toEqual({ tools: ['cursor'], tracked: true });
+    });
+
+    it('makes a tracked record an ordinary one once git no longer tracks the file', async () => {
+      await fse.outputJson(sidecar, { version: 1, files: { [custom()]: { tools: ['claude'], tracked: true } } });
+
+      await settleResolvedMcpFiles(cfg, [{ file: custom(), tool: 'claude', state: { kind: 'parsed', servers: ['jira'] }, holding: true, owned: [], tracked: false }]);
+
+      expect((await readResolvedMcpFiles(cfg)).files[custom()]).toEqual({ tools: ['claude'] });
+    });
+
+    it('takes a tool another now maps the file for off the record once it holds nothing of that tool\'s, and the file with its last one', async () => {
+      await fse.outputJson(sidecar, { version: 1, files: { [custom()]: { tools: ['claude', 'cursor'] }, [cursor()]: { tools: ['codebuddy'] } } });
+      const state = { kind: 'parsed', servers: ['open'] } as const;
+
+      await settleResolvedMcpFiles(cfg, [
+        { file: custom(), tool: 'cursor', state, holding: false, owned: ['open'], remapped: true },
+        { file: cursor(), tool: 'codebuddy', state, holding: false, owned: ['open'], remapped: true },
+      ]);
+      expect(await settleResolvedMcpFiles(cfg, [
+        { file: custom(), tool: 'claude', state, holding: true, owned: ['open'], remapped: true },
+      ])).toBe('unchanged');
+
+      expect((await readResolvedMcpFiles(cfg)).files).toEqual({ [custom()]: { tools: ['claude'] } });
+    });
+
+    it('adds a tool another now maps the file for to its record while it holds what teamai may have written for that tool', async () => {
+      await fse.outputJson(sidecar, { version: 1, files: { [custom()]: { tools: ['claude'] } } });
+      const other = path.join(tmp, 'project', '.mcp.json');
+      const state = { kind: 'parsed', servers: ['open', 'jira'] } as const;
+
+      await settleResolvedMcpFiles(cfg, [
+        { file: custom(), tool: 'cursor', state, holding: true, owned: ['open'], remapped: true },
+        { file: other, tool: 'cursor', state, holding: true, owned: ['open'], remapped: true },
+      ]);
+
+      expect((await readResolvedMcpFiles(cfg)).files).toEqual({ [custom()]: { tools: ['claude', 'cursor'] }, [other]: { tools: ['cursor'] } });
+    });
+
+    it('adds a tool git tracks the file for to its record, marked tracked, and forgets it only once git no longer tracks it', async () => {
+      await fse.outputJson(sidecar, { version: 1, files: { [custom()]: { tools: ['claude'] } } });
+
+      await settleResolvedMcpFiles(cfg, [{ file: custom(), tool: 'cursor', state: { kind: 'parsed', servers: ['jira'] }, holding: false, owned: [], tracked: true }]);
+      await settleResolvedMcpFiles(cfg, [{ file: custom(), tool: 'claude', state: { kind: 'missing' }, holding: false, owned: [] }]);
+      expect((await readResolvedMcpFiles(cfg)).files[custom()]).toEqual({ tools: ['claude', 'cursor'], tracked: true });
+
+      await settleResolvedMcpFiles(cfg, [{ file: custom(), tool: 'cursor', state: { kind: 'missing' }, holding: false, owned: [], tracked: false }]);
+      expect(Object.keys((await readResolvedMcpFiles(cfg)).files)).not.toContain(custom());
+    });
   });
 });

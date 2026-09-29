@@ -3,6 +3,7 @@ import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir, toolInstallRoot } 
 import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
+import type { DeliveryLedger } from './delivered-copies.js';
 
 const TOMBSTONE_FILE = '.removed';
 
@@ -71,11 +72,14 @@ export abstract class ResourceHandler {
 
   /**
    * Pull a resource item from the team repo and inject into local AI tool directories.
+   * With `ledger`, a skill, rule or agent copy the member changed since teamai
+   * delivered it is kept, and each write is recorded (#822).
    */
   abstract pullItem(
     item: ResourceItem,
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
+    ledger?: DeliveryLedger,
   ): Promise<void>;
 
   /**

@@ -54,10 +54,11 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { pull } from '../pull.js';
+import crypto from 'node:crypto';
+import { checkoutKey, pull } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope } from '../config.js';
 import { log } from '../utils/logger.js';
-import type { TeamaiConfig, LocalConfig } from '../types.js';
+import { StateSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
 
 const ROLES_YAML = `
 version: 1
@@ -423,6 +424,41 @@ describe('pull: an active namespace item replaces the root item of the same name
       expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
         `Kept ${path.join(homeDir, '.claude/skills/review/front-only.md')}`,
       ));
+    });
+
+    describe('with a record of what teamai delivered (#822)', () => {
+      const frontOnly = (): string => path.join(homeDir, '.claude/skills/review/front-only.md');
+      const recordDelivered = async (delivered: Record<string, string>): Promise<void> => {
+        vi.mocked(loadStateForScope).mockResolvedValue(StateSchema.parse({
+          lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: '', targets: [], delivered } },
+        }));
+      };
+      afterEach(() => {
+        vi.mocked(loadStateForScope).mockResolvedValue(StateSchema.parse({ lastPull: null }));
+      });
+
+      it('keeps a file the member added at a path another version has without naming it', async () => {
+        await recordDelivered({});
+        as(['devops'], { subscribedTags: ['ui'] });
+        await pull({});
+        await fse.outputFile(frontOnly(), 'my own notes\n');
+
+        await pull({ force: true });
+
+        expect(await read('.claude/skills/review/front-only.md')).toBe('my own notes\n');
+        expect(logged('warn', /front-only\.md/)).toBe(false);
+      });
+
+      it('removes a leftover teamai wrote there at an earlier delivery', async () => {
+        await fse.outputFile(frontOnly(), 'older front notes\n');
+        await recordDelivered({ [frontOnly()]: crypto.createHash('sha256').update('older front notes\n').digest('hex') });
+        as(['devops'], { subscribedTags: ['ui'] });
+
+        await pull({});
+
+        expect(await exists('.claude/skills/review/front-only.md')).toBe(false);
+        expect(logged('warn', /front-only\.md/)).toBe(false);
+      });
     });
 
     // A directory without SKILL.md is not a skill: it must neither replace the

@@ -120,6 +120,13 @@ generated reference below. Read it instead of guessing a flag.
 removing stale and local-only documents; an edited doc of a docs namespace you left
 is kept and named. Use a dedicated directory; preview with `--dry-run`.
 
+`teamai pull` keeps a skill, rule or agent copy the user changed since teamai
+delivered it, `--force` included, and names it (`Kept <path>: ...`). To share
+the change, `teamai push`; when pull or push says the team version has changed
+since, merge that change into the copy first, or the push replaces it. To take the team version instead, delete
+the copy and run `teamai pull --force`. The first pull after upgrading, and a
+new worktree's first pull, still overwrite: nothing is recorded yet.
+
 ## References
 
 In the files below, `{SKILL_DIR}` is the directory `teamai skill path core` prints; a reference file you open on its own writes that directory as `SKILL_DIR` in braces.

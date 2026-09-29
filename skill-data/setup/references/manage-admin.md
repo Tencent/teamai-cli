@@ -53,9 +53,13 @@ once its file no longer holds a resolved value; `teamai uninstall` does so in
 every worktree. A file written under a `toolPaths.<tool>.mcpProject` the team
 later changes or removes stays listed until it is deleted or holds no server;
 for one an older teamai wrote, the first pull finds the path in the team repo's
-history of `teamai.yaml`, or among the built-in paths teamai has since changed,
-and lists it while it holds any server (not one git tracks); `teamai doctor`
-checks those paths until that pull.
+history of `teamai.yaml`, or among the built-in paths teamai has since changed
+(not one the same tool maps today), and lists it while it holds any server; one
+git tracks is recorded instead and listed once the member runs `git rm --cached`
+on it. `teamai doctor` checks those paths until that pull. A file written for a
+tool the team moved elsewhere (recorded, or found in that history), that another
+tool still maps, stays listed while it holds a server that tool did not write,
+one of the member's own included.
 
 ## Invite a member
 

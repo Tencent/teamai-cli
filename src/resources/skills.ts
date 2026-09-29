@@ -3,7 +3,7 @@ import YAML from 'yaml';
 import { isToolInstalledForConfig, ResourceHandler } from './base.js';
 import type { ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { getPushignorePath, isAgentExcluded, resolveToolBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
-import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
+import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { getFileContentWhenAdded, isPastVersionOf } from '../utils/git.js';
 import { isCliOwnedSkillName } from '../builtin-skills.js';
@@ -16,6 +16,7 @@ import { loadProjectsManifest, resolveProjectResourceNamespaces } from '../proje
 import { assertSafeFallbackNamespaces } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 import { splitFrontmatter, stringifyFrontmatter } from '../utils/frontmatter.js';
+import { keepsEditedCopy, recordDelivered, type DeliveredHashes, type DeliveryLedger } from './delivered-copies.js';
 
 /** File name used to track who has contributed (pushed) a skill. */
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
@@ -158,27 +159,40 @@ export async function ensureSkillFrontmatter(skillDir: string, skillName: string
   const content = await readFileSafe(skillMdPath);
   if (!content) return false;
 
+  const { raw, valid } = splitFrontmatter(content);
+  if (raw && !valid) {
+    log.warn(`Could not repair malformed frontmatter in ${skillName}/SKILL.md; leaving it unchanged`);
+    return false;
+  }
+
+  const repaired = withSkillFrontmatter(content, skillName);
+  if (repaired === content) return false; // Already complete
+  await writeFile(skillMdPath, repaired);
+  log.debug(`Added missing frontmatter to ${skillName}/SKILL.md`);
+  return true;
+}
+
+/**
+ * The SKILL.md `ensureSkillFrontmatter` leaves from `content`: the same text
+ * when it is empty, already has `name` and `description`, or has frontmatter
+ * that does not parse.
+ */
+export function withSkillFrontmatter(content: string, skillName: string): string {
+  if (!content) return content;
   const { data, body, raw, valid } = splitFrontmatter(content);
 
   if (!raw) {
     // No frontmatter at all — derive description from first heading or first non-empty line
     const description = extractDescriptionFromContent(body, skillName);
-    const newContent = stringifyFrontmatter({ name: skillName, description }, body);
-    await writeFile(skillMdPath, newContent);
-    log.debug(`Injected YAML frontmatter into ${skillName}/SKILL.md`);
-    return true;
+    return stringifyFrontmatter({ name: skillName, description }, body);
   }
-
-  if (!valid) {
-    log.warn(`Could not repair malformed frontmatter in ${skillName}/SKILL.md; leaving it unchanged`);
-    return false;
-  }
+  if (!valid) return content;
 
   // Frontmatter exists — check for missing fields
   const hasName = typeof data['name'] === 'string' && String(data['name']).trim() !== '';
   const hasDescription = typeof data['description'] === 'string' && String(data['description']).trim() !== '';
 
-  if (hasName && hasDescription) return false; // Already complete
+  if (hasName && hasDescription) return content;
 
   const missingFields: Record<string, string> = {};
   if (!hasName) missingFields.name = skillName;
@@ -186,10 +200,7 @@ export async function ensureSkillFrontmatter(skillDir: string, skillName: string
 
   // Preserve existing comments, quoting, key order, and line endings. Re-serializing
   // the whole block would make an unrelated metadata repair unnecessarily lossy.
-  const newContent = appendFrontmatterFields(raw, missingFields) + body;
-  await writeFile(skillMdPath, newContent);
-  log.debug(`Added missing frontmatter fields to ${skillName}/SKILL.md`);
-  return true;
+  return appendFrontmatterFields(raw, missingFields) + body;
 }
 
 /**
@@ -404,8 +415,12 @@ async function otherVersionFiles(repoPath: string, item: ResourceItem): Promise<
  * one behind. Any other file is the member's own, and stays: push does not
  * count such an extra as a change, so it may never have been pushed. One at a
  * path another version has is named, since it may be an edited leftover.
+ * `delivered` tells them apart (#822): a file still as teamai recorded writing
+ * it is a leftover, and one it has no record of is the member's own.
  */
-async function removeLeftoverVersionFiles(source: string, dest: string, otherVersions: Map<string, string[]>): Promise<void> {
+async function removeLeftoverVersionFiles(
+  source: string, dest: string, otherVersions: Map<string, string[]>, delivered: DeliveredHashes | undefined,
+): Promise<void> {
   if (otherVersions.size === 0) return;
   const sourceFiles = new Set(await listFilesRecursive(source));
   let removed = false;
@@ -413,8 +428,11 @@ async function removeLeftoverVersionFiles(source: string, dest: string, otherVer
     const versions = otherVersions.get(file);
     if (sourceFiles.has(file) || !versions) continue;
     const installed = path.join(dest, file);
-    const leftover = (await Promise.all(versions.map((version) => fileContentEqual(installed, version)))).some(Boolean);
+    const recorded = delivered?.[installed];
+    const leftover = (recorded !== undefined && await fileHash(installed) === recorded)
+      || (await Promise.all(versions.map((version) => fileContentEqual(installed, version)))).some(Boolean);
     if (!leftover) {
+      if (delivered !== undefined && recorded === undefined) continue;
       log.warn(
         `Kept ${installed}: another team version of this skill has a file at that path with different content, `
         + 'so it may be yours or an edited copy. Delete it if you do not need it.',
@@ -736,13 +754,16 @@ export class SkillsHandler extends ResourceHandler {
   /**
    * Pull a skill from team repo to all configured AI tool directories.
    */
-  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig, ledger?: DeliveryLedger): Promise<void> {
     const otherVersions = await otherVersionFiles(localConfig.repo.localPath, item);
-    for (const { tool, dest } of await this.resolveTargets(teamConfig, localConfig, item, item.sourcePath)) {
+    for (const target of await this.resolveTargets(teamConfig, localConfig, item, item.sourcePath)) {
+      const { tool, dest } = target;
       try {
+        if (ledger && await keepsEditedCopy(ledger, item, target)) continue;
         await copyDir(item.sourcePath, dest);
-        await removeLeftoverVersionFiles(item.sourcePath, dest, otherVersions);
+        await removeLeftoverVersionFiles(item.sourcePath, dest, otherVersions, ledger?.previous);
         await ensureSkillFrontmatter(dest, item.name);
+        if (ledger) await recordDelivered(ledger.hashes, dest, item.sourcePath);
         log.debug(`Synced skill ${item.name} → ${tool}`);
       } catch (e) {
         log.warn(`Failed to sync skill ${item.name} to ${tool}: ${(e as Error).message}`);

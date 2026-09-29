@@ -37,6 +37,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { RulesHandler } from '../resources/rules.js';
 import { loadStateForScope } from '../config.js';
+import { openLedger, recordDelivered, type DeliveredHashes } from '../resources/delivered-copies.js';
 import type { TeamaiConfig, LocalConfig, State } from '../types.js';
 
 describe('RulesHandler.scanLocalForPush — modified rule detection', () => {
@@ -640,6 +641,28 @@ scope: 'user',
       expect(await fse.pathExists(delivered.dest)).toBe(false);
       expect(await fse.readFile(edited.dest, 'utf-8')).toBe('# Edited locally\n');
       expect(await fse.readFile(personal, 'utf-8')).toBe('# Mine\n');
+    });
+
+    it('drops a reclaimed copy from the delivered record and keeps the record of an edited one (#822)', async () => {
+      const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+      await fse.ensureDir(path.join(teamRulesDir, 'alpha'));
+      await fse.writeFile(path.join(teamRulesDir, 'alpha/alpha-rule.md'), '# Alpha rule\n');
+      await fse.writeFile(path.join(teamRulesDir, 'alpha/edited.md'), '# Team version\n');
+      const localRulesDir = path.join(homeDir, '.claude/rules');
+      const reclaimed = path.join(localRulesDir, 'alpha/alpha-rule.md');
+      const edited = path.join(localRulesDir, 'alpha/edited.md');
+      await fse.outputFile(reclaimed, '# Alpha rule\n');
+      await fse.outputFile(edited, '# Team version\n');
+      const previous: DeliveredHashes = {};
+      await recordDelivered(previous, reclaimed);
+      await recordDelivered(previous, edited);
+      await fse.writeFile(edited, '# Edited locally\n');
+      const ledger = openLedger(previous);
+
+      await handler.pullAllRules(teamConfig, localConfig, [], [], ledger);
+
+      expect(await fse.pathExists(reclaimed)).toBe(false);
+      expect(Object.keys(ledger.hashes)).toEqual([edited]);
     });
 
     it('removes a namespace directory it empties', async () => {

@@ -126,6 +126,38 @@ function describeProblems(problems: Map<string, string[]>, labels: readonly stri
     .join('; ');
 }
 
+/**
+ * The label for a copy pull keeps because the member changed it (#822). It is
+ * not a delivery problem, so it never fails a check, and `pull --force` would
+ * not replace it.
+ */
+const CHANGED_BY_YOU = 'changed by you (kept by pull)';
+/** The advice for CHANGED_BY_YOU, when a failing check lists it. */
+function changedByYouFix(delivery: ToolDelivery): string {
+  return delivery.problems.has(CHANGED_BY_YOU)
+    ? ' A copy changed by you is kept by pull: share it with `teamai push`, '
+      + 'or delete it and run `teamai pull --force` to take the team version.'
+    : '';
+}
+
+/** Whether a tool's delivery has a problem other than copies the member changed. */
+function hasDeliveryProblem(delivery: ToolDelivery): boolean {
+  return [...delivery.problems.keys()].some((label) => label !== CHANGED_BY_YOU);
+}
+
+/**
+ * What `pullItem` did not write at `target`: an older render, or a copy the
+ * member changed since teamai delivered it, which pull keeps.
+ */
+async function differingCopyLabel(
+  item: ResourceItem, target: DeliveryTarget, olderLabel: string, localConfig: LocalConfig,
+): Promise<string> {
+  const { deliveredHashes } = await import('./pull.js');
+  const { judgeCopy } = await import('./resources/delivered-copies.js');
+  const verdict = await judgeCopy(await deliveredHashes(localConfig), item, target);
+  return verdict.kind === 'keep' ? CHANGED_BY_YOU : olderLabel;
+}
+
 /** `a, b, c and 4 more` — a fix a human reads, not a wall of paths. */
 function nameList(names: string[]): string {
   if (names.length <= MAX_NAMED_IN_FIX) return names.join(', ');
@@ -222,22 +254,23 @@ export async function buildRulesDeliveryChecks(ctx: DoctorContext): Promise<Chec
   // that path is a stale or hand-edited copy. Cursor reads `globs` and
   // `alwaysApply` and Copilot reads `applyTo`; comparing against the render
   // catches a wrong value there, which checking the keys were present did not.
-  const ruleLabels = ['not delivered', 'delivered from an older copy'] as const;
+  const ruleLabels = ['not delivered', 'delivered from an older copy', CHANGED_BY_YOU] as const;
   const perTool: Check[] = [...(await walkDelivery(
     getHandler('rules'),
     ctx,
     items,
-    async ({ dest, content }) => {
+    async (target, item) => {
       // readFileSafe answers both questions at once: a directory or a dangling
       // link on the name reads as null, the same as nothing being there.
-      const delivered = await readFileSafe(dest);
+      const delivered = await readFileSafe(target.dest);
       if (delivered === null) return ruleLabels[0];
-      return content === undefined || delivered === content ? null : ruleLabels[1];
+      if (target.content === undefined || delivered === target.content) return null;
+      return differingCopyLabel(item, target, ruleLabels[1], localConfig);
     },
   )).byTool].map(([tool, delivery]) => ({
     name: `Rules delivered to ${tool}`,
     source: 'local',
-    check: async () => delivery.problems.size === 0,
+    check: async () => !hasDeliveryProblem(delivery),
     // The fix names the directory rather than the tool: a rule's delivered
     // filename carries a per-tool extension the reader would have to derive.
     fix: `In ${delivery.dir}, ${describeProblems(delivery.problems, ruleLabels)}. `
@@ -245,7 +278,7 @@ export async function buildRulesDeliveryChecks(ctx: DoctorContext): Promise<Chec
       + 'so it cannot restore this. An older copy is one whose bytes are no longer what teamai '
       + `renders for ${tool}, frontmatter included: a \`.mdc\` or \`.instructions.md\` whose `
       + '`globs`, `alwaysApply` or `applyTo` drifted from the team `.md` applies to the wrong '
-      + 'files while looking perfectly well-formed.',
+      + `files while looking perfectly well-formed.${changedByYouFix(delivery)}`,
   }));
 
   return [...activation, ...perTool];
@@ -360,7 +393,7 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
 
   // An agent whose spec reaches no tool at all is not a per-tool failure: the
   // file is in the team repo and nothing renders it anywhere.
-  const agentLabels = ['not delivered', 'delivered from an older spec'] as const;
+  const agentLabels = ['not delivered', 'delivered from an older spec', CHANGED_BY_YOU] as const;
   const { byTool, unreceived: unreachable } = await walkDelivery(
     handler,
     ctx,
@@ -368,22 +401,23 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
     // `pullItem` writes `content` verbatim, so anything else at that path is a
     // render of an older spec — a copy that landed and is still wrong, the
     // same class as a rule whose delivered copy no longer matches its render.
-    async ({ dest, content }) => {
+    async (target, item) => {
       // readFileSafe answers both questions at once: a directory or a dangling
       // link on the name reads as null, the same as nothing being there.
-      const delivered = await readFileSafe(dest);
+      const delivered = await readFileSafe(target.dest);
       if (delivered === null) return agentLabels[0];
-      return content === undefined || delivered === content ? null : agentLabels[1];
+      if (target.content === undefined || delivered === target.content) return null;
+      return differingCopyLabel(item, target, agentLabels[1], localConfig);
     },
   );
 
   const checks: Check[] = [...byTool].map(([tool, delivery]) => ({
     name: `Agents delivered to ${tool}`,
     source: 'local',
-    check: async () => delivery.problems.size === 0,
+    check: async () => !hasDeliveryProblem(delivery),
     fix: `In ${delivery.dir}, ${describeProblems(delivery.problems, agentLabels)}. `
       + 'Run `teamai pull --force`: a plain pull skips a scope whose team repo has not changed, '
-      + 'so it cannot restore this.',
+      + `so it cannot restore this.${changedByYouFix(delivery)}`,
   }));
 
   // Only worth reporting once a tool is there to receive agents: with none
@@ -531,7 +565,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
     earlierMappedMcpTargets, earlierMappedMcpFileEvidence,
   } = await import('./mcp-reconcile.js');
   const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
-  const { gitPathOf, gitTracking } = await import('./mcp-git-exclude.js');
+  const { gitPathOf, gitTracking, gitTracks } = await import('./mcp-git-exclude.js');
   const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
   const { resolveEntriesFor } = await import('./namespaced-entries.js');
   const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
@@ -563,17 +597,26 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
     const owned = manifest[managedMcpManifestKey(target.tool, true)] ?? [];
     if (await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, desired)) await hold(target.file);
   }
-  // And a file a pull wrote under a mapping the team has since changed.
-  for (const [file, group] of await recordedMcpTargets(localConfig, targets)) {
-    if (await recordedMcpFileEvidence(group)) await hold(file);
+  // And a file a pull wrote under a mapping the team has since changed, but one recorded as tracked while git
+  // tracks it: no line protects it. In a file another tool now maps, that tool's records tell its own servers.
+  for (const [file, { targets: group, mappedBy, tracked }] of await recordedMcpTargets(localConfig, targets)) {
+    if (holding.has(file) || (tracked && (await gitTracks(file)).kind === 'tracked')) continue;
+    manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
+    const owned = mappedBy.length === 0 ? undefined
+      : mappedBy.flatMap((tool) => manifest?.[managedMcpManifestKey(tool, true)] ?? []).map((record) => record.name);
+    if (await recordedMcpFileEvidence(group, owned)) await hold(file);
   }
   // And, until a pull on this version reads them, those an older teamai wrote under a mapping an earlier
   // teamai.yaml made. Read-only: the record of that read is pull's. Unreadable history skips them.
   if (!(await readResolvedMcpFiles(localConfig)).earlierMappingsRead) {
     const earlier = await earlierMappedMcpTargets(localConfig, targets).catch(() => null) ?? [];
-    for (const target of earlier) {
+    for (const { tracked, mappedBy, ...target } of earlier) {
+      if (tracked || holding.has(target.file)) continue;
       vars ??= await buildVarTable(localConfig);
-      if (!holding.has(target.file) && await earlierMappedMcpFileEvidence(target, teamDefs, vars, desired)) await hold(target.file);
+      manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
+      const owned = mappedBy.length === 0 ? undefined
+        : mappedBy.flatMap((tool) => manifest?.[managedMcpManifestKey(tool, true)] ?? []).map((record) => record.name);
+      if (await earlierMappedMcpFileEvidence(target, teamDefs, vars, desired, owned)) await hold(target.file);
     }
   }
   if (holding.size === 0) return [];

@@ -281,7 +281,9 @@ namespace) has and the new one lacks, when they match that version byte for
 byte, so switching versions leaves no team file behind; a file the member added
 or edited stays, because push never counts such extras as changes and they may
 never have been pushed, and one at a path another version has is named on each
-pull.
+pull. With a record of what teamai delivered (below), a file at such a path is
+also removed when it is still what teamai wrote there, and one teamai has no
+record of is the member's own and stays without a warning.
 
 An item that cannot be used replaces nothing. A skill directory without
 `SKILL.md` is not a skill: it is left out of the desired set, so the root skill
@@ -461,10 +463,36 @@ legacy mode each repeated name. `teamai env|mcp|hooks|models list`,
 `teamai list <env|hooks|mcp> --source repo` and `teamai status` show where each
 entry comes from.
 
+### Local edits (#822)
+
+Each checkout record (`lastPullByWorkspace[<checkout>]`, HOME's for the user
+scope) carries `delivered`: the sha256 of the bytes teamai last wrote at each
+skill, rule and agent file path. Pull and the pre-push sync update it when they
+write, through the same state save. A copy is the member's edit only when it
+has a record and no longer matches it. Pull keeps such a copy and names it: an
+info line when the team version is unchanged, a warning when it has moved.
+Push warns about such a copy as well (the SessionStart pull is silent), without
+holding it, since the member may have merged the team change already. A
+skill directory is one unit, and files only the member added are not recorded.
+Tombstone cleanup keeps an edited copy the same way, and so does the rules
+sweep of a rule no longer delivered (deleted from the team repo, or of a
+namespace the member left). `--force` keeps edits;
+deleting the copy and running `pull --force` takes the team version. A record
+without `delivered` (the first pull on this version, a new worktree) protects
+nothing, and a copy teamai never delivered to that path is overwritten as
+before. A forced full sync elsewhere keeps each checkout's `delivered`.
+`doctor` does not fail on a kept copy; next to another problem it lists one
+as "changed by you (kept by pull)".
+
 ### Known gaps
 
-- No pull protects a local edit from being overwritten, override transitions
-  included.
+- `teamai remove`'s rules refresh and local-agent installs deliver rules and
+  skills as before: they overwrite a changed copy and record nothing. If the
+  team changes a copy they wrote before the next pull, that pull keeps it as an
+  edit.
+- Step 3b and the inactive-namespace cleanup of skills and agents still compare
+  with the team source, not the record, so an untouched copy delivered at an
+  older revision stays there with a warning.
 
 ## Backward compatibility
 

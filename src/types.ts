@@ -699,11 +699,16 @@ export const StateSchema = z.object({
    * (`FORCED_FULL_SYNC_REV` in pull.ts). The user scope's entry is HOME's. An
    * inherited pull, and a pull whose docs mirror or submodule update fails, add
    * the revision they delivered to these bases and keep `rev` (#823).
+   * `delivered` is the sha256 of the bytes teamai last wrote at each skill,
+   * rule and agent file path of the checkout, which pull and the pre-push sync
+   * update. Pull keeps a copy that no longer matches it; without it, pull
+   * overwrites as before (#822). An older CLI that saves state drops it.
    */
   lastPullByWorkspace: z.record(z.string(), z.object({
     rev: z.string(),
     targets: z.array(z.string()),
     pushBaseRevs: z.array(z.string()).optional(),
+    delivered: z.record(z.string(), z.string()).optional(),
   })).optional(),
   /** Git commit hash synchronized through the safe user-resource inheritance channel. */
   lastInheritedPullRev: z.string().nullable().optional(),
