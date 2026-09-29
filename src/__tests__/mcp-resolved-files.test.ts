@@ -175,6 +175,21 @@ describe('managed-mcp-files.json', () => {
       expect((await readResolvedMcpFiles(cfg)).files[cursor()]).toEqual({ tools: ['cursor'], unverified: ['mine'] });
     });
 
+    it('settles a file tools of different formats share on what all of them see, not each alone', async () => {
+      // Cursor sees no server under mcpServers and owns wiki there; OpenCode sees jira and wiki under mcp.
+      await settleResolvedMcpFiles(cfg, [
+        { file: cursor(), tool: 'cursor', state: { kind: 'parsed', servers: ['wiki'] }, holding: false, owned: ['wiki'] },
+        { file: cursor(), tool: 'opencode', state: { kind: 'parsed', servers: ['jira', 'wiki'] }, holding: true, owned: [] },
+      ]);
+      expect((await readResolvedMcpFiles(cfg)).files[cursor()]).toEqual({ tools: ['cursor'], unverified: ['jira', 'wiki'] });
+
+      await settleResolvedMcpFiles(cfg, [
+        { file: cursor(), tool: 'cursor', state: { kind: 'parsed', servers: [] }, holding: false, owned: [] },
+        { file: cursor(), tool: 'opencode', state: { kind: 'parsed', servers: ['jira'] }, holding: true, owned: [] },
+      ]);
+      expect((await readResolvedMcpFiles(cfg)).files[cursor()]).toEqual({ tools: ['cursor'], unverified: ['jira'] });
+    });
+
     it('lists a file holding a resolved value it did not know of', async () => {
       const other = path.join(tmp, 'project', '.mcp.json');
 

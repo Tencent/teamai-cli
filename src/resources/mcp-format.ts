@@ -48,6 +48,12 @@ export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
   copilot: 'mcpServers',
 };
 
+/** Whether two formats keep their servers under one key of a shared file (Claude, Cursor and CodeBuddy all use `mcpServers`). */
+export function sameServerKey(a: McpFormat, b: McpFormat): boolean {
+  if (a === 'codex' || b === 'codex') return a === b;
+  return MCP_SERVER_KEY[a] === MCP_SERVER_KEY[b];
+}
+
 /** Transports each format can actually express. */
 const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
   claude: new Set<McpTransport>(['stdio', 'http', 'sse']),

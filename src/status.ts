@@ -24,7 +24,7 @@ import { envEntryReader } from './resources/env.js';
 import { envListing } from './env-listing.js';
 import { resolveTeamEnv } from './env-resolution.js';
 import {
-  describeEntryFailure, describeOrigin, describeOrigins, resolveEntriesFor,
+  describeEntryFailure, describeOrigin, describeOrigins, reportUndeliveredEntryNotices, resolveEntriesFor,
   type EntryResolution, type EntryType,
 } from './namespaced-entries.js';
 
@@ -110,6 +110,9 @@ export async function status(options: GlobalOptions): Promise<void> {
     counts[type] = resolution.kind === 'resolved' ? resolution.entries.length : 0;
     if (resolution.kind === 'failed') origins[type] = ' (cannot be resolved; run `teamai doctor`)';
     else if (resolution.entries.some((entry) => entry.namespace !== null)) origins[type] = ` (${describeOrigins(resolution.entries)})`;
+    // An entry an unknown or removed key takes out of the delivered set is
+    // invisible in the count, so name it here too (#822).
+    reportUndeliveredEntryNotices(resolution);
   };
   count('env', await resolveEntriesFor(envEntryReader, localConfig));
 
@@ -327,7 +330,10 @@ async function printRepoSection(
   // namespace: root plus the active namespace files. Env is the listing
   // `teamai env list` prints (env-listing.ts).
   if (t === 'env') {
-    const listing = envListing(await resolveTeamEnv(localConfig), options);
+    const teamEnv = await resolveTeamEnv(localConfig);
+    // An entry an unknown or removed key takes out of the delivered set never appears below (#822).
+    reportUndeliveredEntryNotices(teamEnv.variables);
+    const listing = envListing(teamEnv, options);
     for (const problem of listing.problems) console.log(`  ${problem}`);
     if (listing.lines.length === 0) {
       if (listing.problems.length === 0) console.log('  (none)');
@@ -341,9 +347,11 @@ async function printRepoSection(
   if (t === 'mcp') {
     const mcp = await resolveEntriesFor(mcpEntryReader, localConfig);
     if (mcp.kind === 'failed') {
+      reportUndeliveredEntryNotices(mcp);
       console.log(`  ${describeEntryFailure(mcp.failure)}`);
       return;
     }
+    reportUndeliveredEntryNotices(mcp);
     if (mcp.entries.length === 0) {
       console.log('  (none)');
       return;
@@ -364,9 +372,11 @@ async function printRepoSection(
   if (t === 'hooks') {
     const { resolution: hooks } = await resolveTeamHookEntries(localConfig);
     if (hooks.kind === 'failed') {
+      reportUndeliveredEntryNotices(hooks);
       console.log(`  ${describeEntryFailure(hooks.failure)}`);
       return;
     }
+    reportUndeliveredEntryNotices(hooks);
     if (hooks.entries.length === 0) {
       console.log('  (none)');
       return;

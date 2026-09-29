@@ -995,8 +995,9 @@ projects:
   repeats.
 - **Where a value comes from.** `teamai env list`, `teamai mcp list`,
   `teamai hooks list` and `teamai list <env|hooks|mcp> --source repo` show each
-  entry's namespace and whether it overrides the root; `teamai status` counts per
-  namespace; `teamai doctor` lists each override as a note. A variable takes your
+  entry's namespace and whether it overrides the root, and name every entry that
+  is not delivered, with why; `teamai status` counts per namespace and names
+  them too; `teamai doctor` lists each override as a note. A variable takes your
   value for this team when you set one with `teamai env set KEY`, else the file's;
   the environment doesn't override either, and `env.sh` exports that value (not one
   set with `--from-env`). `teamai env list` and `teamai list env` show that value
@@ -1010,18 +1011,21 @@ The per-entry keys these files replace:
 
 | Key | On | Now |
 |---|---|---|
-| `projects:` | env, hooks, MCP | removed: the entry reaches nobody, and each pull warns with the file to move it to |
+| `projects:` | env, hooks, MCP | removed: the entry reaches nobody; pull, the list commands and status warn with the file to move it to |
 | `roles:` | env | removed, the same way |
 | `roles:` | hooks, MCP | deprecated: still filters for one minor release, as in 0.25.0, including a name the root file repeats under different `roles:`; pull warns and `teamai doctor` has a check, both naming every target file |
 
 There is no automatic migration: move each entry into the namespace file the
 warning names, and drop the key.
+When `teamai env add` updates an existing variable that still carries a removed
+per-entry `projects:` or `roles:` key, it keeps that key and warns that pull
+will not deliver the variable, naming the namespace file to move it to.
 
 An entry with any other key its schema does not know, such as a mistyped `role:`,
-reaches nobody as well, and pull and `teamai doctor` name the file, the entry and
-the key. Correct the key or remove it. A key that a later teamai version adds is
-unknown to an older one too, so upgrade every member before the team uses a new
-entry key.
+reaches nobody as well, and pull, the list commands, status and `teamai doctor` name the
+file, the entry and the key. Correct the key or remove it. A key that a later
+teamai version adds is unknown to an older one too, so upgrade every member
+before the team uses a new entry key.
 
 A hooks or MCP file that has none of its top-level keys, such as `server:` for
 `servers:`, is treated like a file that does not parse: pull keeps the installed

@@ -421,12 +421,18 @@ declares one of the new axes.
 
 The per-entry keys go away. `projects:` on env, hooks and MCP, and `roles:` on
 env, existed only in the 0.26.0 betas: an entry that carries one reaches nobody,
-and pull warns with the namespace file to move it to, one per listed id.
+and pull, `status`, `env list`, `mcp list`, `hooks list` and
+`list <env|hooks|mcp> --source repo` warn with the namespace file to move it to,
+one per listed id.
+When `teamai env add` updates a variable still carrying one of these removed
+keys, it preserves the key and warns that pull will not deliver the variable,
+naming the namespace file to move it to.
 `roles:` on hooks and MCP shipped in 0.25.0 and keeps filtering for one more
 minor release; pull warns once per run and `doctor` has an informational check,
 both naming every target file. Model profiles are strict, so a per-entry key
 fails the file. An env, hook or MCP entry with any other key its schema does not
-know, such as a mistyped `role:`, reaches nobody too, and pull and `doctor` name
+know, such as a mistyped `role:`, reaches nobody too. Pull, `status`, `env list`,
+`mcp list`, `hooks list`, `list <env|hooks|mcp> --source repo` and `doctor` name
 the file, the entry and the key (#822); `env add`, `env remove` and `remove mcp`
 keep such a key when they rewrite the file. A key that a later version adds is
 unknown to this one as well, so an entry that uses it is not delivered to a member

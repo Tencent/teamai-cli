@@ -30,6 +30,7 @@ import {
   referencedVars,
   entryHash,
   MCP_SERVER_KEY,
+  sameServerKey,
   type McpFormat,
 } from './resources/mcp-format.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
@@ -1234,8 +1235,9 @@ async function protectProjectMcpConfigs(
       || [before, manifest].some((m) => m?.[managedMcpManifestKey(t.tool, true)]?.some((record) => record.unnoted))));
   const unclaimed = new Map<string, string[]>();
   const holds = async (target: McpTarget, owned: ManagedMcpRecord[]): Promise<boolean> => {
-    // One file two tools map: what either's record claims.
-    const claimed = targets.filter((t) => t.file === target.file)
+    // One file two tools map under one key: what either's record claims. A tool that reads another key of the
+    // file (OpenCode's `mcp` beside `mcpServers`) proves nothing of this one's.
+    const claimed = targets.filter((t) => t.file === target.file && sameServerKey(t.format, target.format))
       .flatMap((t) => manifest[managedMcpManifestKey(t.tool, true)] ?? []).map((record) => record.name);
     const names = unnoted(target.file) ? await unclaimedMcpServers(target, claimed) : [];
     // Tools of different formats sharing the file each find their own: every one is noted.

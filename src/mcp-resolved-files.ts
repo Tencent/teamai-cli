@@ -179,7 +179,14 @@ export function settleResolvedMcpFiles(
     const { files } = sidecar;
     let changed = options.earlierMappingsRead === true && sidecar.earlierMappingsRead !== true;
     if (changed) sidecar.earlierMappingsRead = true;
-    for (const { file, tool, state, holding, owned, tracked, remapped } of observations) {
+    // Tools of different formats read different keys of one file: it is empty only when every one of them
+    // finds it so, and a noted server stays while any of them finds it and does not own it.
+    const ofFile = (file: string): McpFileObservation[] => observations.filter((o) => o.file === file);
+    const empty = (file: string): boolean => ofFile(file).every(({ state: s }) => s.kind === 'missing' || (s.kind === 'parsed' && s.servers.length === 0));
+    const unparsable = (file: string): boolean => ofFile(file).some(({ state: s }) => s.kind === 'unparsable');
+    const stillNoted = (file: string, name: string): boolean =>
+      ofFile(file).some(({ state: s, owned: o }) => s.kind === 'parsed' && s.servers.includes(name) && !o.includes(name));
+    for (const { file, tool, holding, tracked, remapped } of observations) {
       const entry = files[file];
       if (tracked === true) {
         if (entry?.tools.includes(tool)) continue;
@@ -187,7 +194,7 @@ export function settleResolvedMcpFiles(
         changed = true;
         continue;
       }
-      if (state.kind === 'missing' || (state.kind === 'parsed' && state.servers.length === 0)) {
+      if (empty(file)) {
         const forget = entry !== undefined && (entry.tracked !== true || tracked === false);
         if (forget) delete files[file];
         changed ||= forget;
@@ -216,8 +223,8 @@ export function settleResolvedMcpFiles(
         changed ||= holding;
         continue;
       }
-      if (state.kind !== 'parsed' || !entry.unverified) continue;
-      const unverified = entry.unverified.filter((name) => state.servers.includes(name) && !owned.includes(name));
+      if (unparsable(file) || !entry.unverified) continue;
+      const unverified = entry.unverified.filter((name) => stillNoted(file, name));
       if (unverified.length === entry.unverified.length) continue;
       if (unverified.length > 0) entry.unverified = unverified;
       else delete entry.unverified;

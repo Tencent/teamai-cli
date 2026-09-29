@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
-import { describeEntryFailure, describeOrigin, resolveEntriesFor } from './namespaced-entries.js';
+import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices, resolveEntriesFor } from './namespaced-entries.js';
 import {
   reconcileMcpForConfig,
   releaseCleanMcpGitExcludes,
@@ -35,10 +35,14 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
   if (resolution.kind === 'failed') {
+    reportUndeliveredEntryNotices(resolution);
     log.error(describeEntryFailure(resolution.failure));
     process.exitCode = 1;
     return;
   }
+  // A server an unknown or removed key takes out of the delivered set never
+  // appears in the list below, so say why it is missing (#822).
+  reportUndeliveredEntryNotices(resolution);
   const servers = resolution.entries;
 
   // HTTP mode has no repo tree to declare secrets in.

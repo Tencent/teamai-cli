@@ -968,6 +968,28 @@ servers:
       expect(await excludeOf(projectRoot)).toMatch(/^\/opencode\.json$/m);
     });
 
+    it('never lets one format\'s record claim a server of the same name under another format\'s key', async () => {
+      const toolPaths = {
+        ...UNMOVED_TOOL_PATHS,
+        cursor: { ...TOOL_PATHS.cursor, mcpProject: '.mcp.json' },
+        opencode: { skills: '.opencode/skills', mcp: '.config/opencode/opencode.json', mcpProject: '.mcp.json' },
+      };
+      const shared = { ...teamConfig, toolPaths } as TeamaiConfig;
+      await fse.ensureDir(path.join(projectRoot, '.opencode', 'skills'));
+      // Cursor owns x under mcpServers, now a literal; OpenCode's x under mcp still holds a token, its record lost.
+      await writeMcpYaml('servers:\n  - name: x\n    transport: http\n    url: https://example.com/x\n    tools: [cursor]\n');
+      await reconcileMcpForConfig(shared, projectConfig);
+      const doc = await fse.readJson(path.join(projectRoot, '.mcp.json')) as Record<string, unknown>;
+      await fse.writeJson(path.join(projectRoot, '.mcp.json'), {
+        ...doc, mcp: { x: { type: 'remote', url: 'https://example.com/x', headers: { Authorization: 'Bearer stale-token-value' } } },
+      });
+      await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+
+      await reconcileMcpForConfig(shared, projectConfig);
+
+      expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+    });
+
     it('notes the unclaimed servers under each format of a file tools of different formats share', async () => {
       const toolPaths = {
         ...UNMOVED_TOOL_PATHS,

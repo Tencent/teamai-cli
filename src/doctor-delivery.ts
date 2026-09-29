@@ -566,6 +566,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   } = await import('./mcp-reconcile.js');
   const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
   const { gitPathOf, gitTracking, gitTracks } = await import('./mcp-git-exclude.js');
+  const { sameServerKey } = await import('./resources/mcp-format.js');
   const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
   const { resolveEntriesFor } = await import('./namespaced-entries.js');
   const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
@@ -600,7 +601,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
     const owned = manifest[managedMcpManifestKey(target.tool, true)] ?? [];
     // No managed-mcp.json at all, no record for this installed tool the team maps, or a record a pull wrote
     // without one whose note hasn't landed: any server no record claims may be teamai's, as pull judges it.
-    const claimed = targets.filter((t) => t.file === target.file)
+    const claimed = targets.filter((t) => t.file === target.file && sameServerKey(t.format, target.format))
       .flatMap((t) => manifest?.[managedMcpManifestKey(t.tool, true)] ?? []).map((record) => record.name);
     const unrecorded = unrecordedMcpTool(target, targets) && manifest[managedMcpManifestKey(target.tool, true)] === undefined;
     if (((Object.keys(manifest).length === 0 || unrecorded || owned.some((record) => record.unnoted))

@@ -25,6 +25,7 @@ vi.mock('../utils/logger.js', () => ({
     error: vi.fn(),
     debug: vi.fn(),
     dim: vi.fn(),
+    persist: vi.fn(),
   },
   spinner: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -50,6 +51,7 @@ import { resolveAnchors } from '../utils/git.js';
 import { projectDataHome } from '../utils/partition.js';
 import { resolveSecretDeclarations } from '../resources/secrets.js';
 import { log } from '../utils/logger.js';
+import { resetWarnOnce } from '../utils/warn-once.js';
 import { pullRepo } from '../utils/git.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -95,6 +97,9 @@ scope: 'user',
     vi.mocked(log.success).mockClear();
     vi.mocked(log.error).mockClear();
     vi.mocked(log.dim).mockClear();
+    vi.mocked(log.warn).mockClear();
+    vi.mocked(log.persist).mockClear();
+    resetWarnOnce();
     consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
@@ -727,6 +732,40 @@ scope: 'user',
       expect(logged()).toContain('GITHUB_TOKEN  missing  (root)');
       expect(logged()).not.toContain('fixture-repo-value');
     });
+
+    it('names the variable an unknown key takes out of the delivered set (#822)', async () => {
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [
+            { key: 'GOOD_URL', value: 'https://good.example' },
+            { key: 'CACHE_TTL', value: '60', role: ['frontend'] },
+          ],
+        }),
+      );
+
+      await envList({});
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('env/env.yaml: variable "CACHE_TTL" has unknown key `role:`, so this entry is not delivered.'));
+      const allOutput = consoleSpy.mock.calls.map(c => c[0]).join('\n');
+      expect(allOutput).toContain('GOOD_URL');
+      expect(allOutput).not.toContain('CACHE_TTL');
+    });
+
+    it('names the variable a removed per-entry key takes out of the delivered set (#822)', async () => {
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [
+            { key: 'DB_URL', value: 'postgres://db', roles: ['legacy'] },
+          ],
+        }),
+      );
+
+      await envList({});
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('env/env.yaml: variable "DB_URL" is scoped with per-entry `roles:`, which this version no longer reads, so it reaches nobody.'));
+    });
   });
 
   // ─── envAdd ──────────────────────────────────────────────
@@ -818,6 +857,71 @@ scope: 'user',
         roles: ['frontend'],
         projects: ['checkout'],
       });
+    });
+
+    it('says an updated variable it cannot deliver is undelivered, naming the namespace file to move it to (#822)', async () => {
+      // `roles:` on env is no longer read, so this update reaches nobody —
+      // "Updated" alone would read as success.
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [{ key: 'DB_URL', value: 'old', roles: ['legacy'] }],
+        }),
+      );
+
+      await envAdd('DB_URL', 'new', {});
+
+      // The remedy has to name the namespace file, as pull's notice does:
+      // dropping the key in env/env.yaml would deliver the secret to everyone.
+      // No role or project declares `legacy`, so the notice says which
+      // declaration makes env/legacy/env.yaml reach it.
+      expect(log.warn).toHaveBeenCalledWith(
+        'env/env.yaml: variable "DB_URL" is scoped with per-entry `roles:`, which this version no longer reads, '
+          + 'so pull does not deliver it. Move it to env/legacy/env.yaml (declare env: [legacy] for role legacy '
+          + 'in manifest/roles.yaml) and drop the key.',
+      );
+      expect(log.success).toHaveBeenCalledWith('Updated env variable: DB_URL=new');
+    });
+
+    // A role that declares the namespace names the file alone, as pull does.
+    it('names the declared namespace file an updated variable belongs in (#822)', async () => {
+      await fse.outputFile(path.join(repoPath, 'manifest', 'roles.yaml'), YAML.stringify({
+        version: 1,
+        roles: [{ id: 'legacy', description: '', resources: { knowledge: [], skills: [], env: ['legacy'] } }],
+      }));
+      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [{ key: 'DB_URL', value: 'old', roles: ['legacy'] }],
+        }),
+      );
+
+      await envAdd('DB_URL', 'new', {});
+
+      expect(log.warn).toHaveBeenCalledWith(
+        'env/env.yaml: variable "DB_URL" is scoped with per-entry `roles:`, which this version no longer reads, '
+          + 'so pull does not deliver it. Move it to env/legacy/env.yaml and drop the key.',
+      );
+      expect(log.success).toHaveBeenCalledWith('Updated env variable: DB_URL=new');
+    });
+
+    // The same guidance pull gives when no role or project declares the id:
+    // the namespace file the entry belongs in, with the declaration to add.
+    it('names the namespace file to declare when no role declares the removed key\'s id (#822)', async () => {      await fse.writeFile(
+        path.join(repoPath, 'env', 'env.yaml'),
+        YAML.stringify({
+          variables: [{ key: 'DB_URL', value: 'old', projects: ['checkout'], roles: ['legacy'] }],
+        }),
+      );
+
+      await envAdd('DB_URL', 'new', {});
+
+      expect(log.warn).toHaveBeenCalledWith(
+        'env/env.yaml: variable "DB_URL" is scoped with per-entry `projects:` and `roles:`, which this version '
+          + 'no longer reads, so pull does not deliver it. Copy it into each of env/checkout/env.yaml (declare env: '
+          + '[checkout] for project checkout in manifest/projects.yaml), env/legacy/env.yaml (declare env: [legacy] '
+          + 'for role legacy in manifest/roles.yaml) and drop the key.',
+      );
     });
 
     // A variable with a misspelled `roles:` reaches nobody (#822); a rewrite

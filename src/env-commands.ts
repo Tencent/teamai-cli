@@ -14,7 +14,7 @@ import { reportMissingSecrets } from './env-advisories.js';
 import { envListing } from './env-listing.js';
 import { resolveTeamEnv } from './env-resolution.js';
 import {
-  describeEntryFailure, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, resolveEntriesFor,
+  describeEntryFailure, entryFileAbsolutePath, entryFilePath, entryLayout, entryNamespaceFromFlags, moveTo, reportUndeliveredEntryNotices, resolveEntriesFor, TargetFiles,
   type EntryLayout, type EntryType,
 } from './namespaced-entries.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
@@ -33,6 +33,9 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
   const localConfig = await requireScope(true);
   if (!localConfig) return;
   const teamEnv = await resolveTeamEnv(localConfig);
+  // An entry an unknown or removed key takes out of the delivered set never
+  // appears in the list below, so say why it is missing (#822).
+  reportUndeliveredEntryNotices(teamEnv.variables);
   const listing = envListing(teamEnv, options);
   for (const problem of listing.problems) fail(problem);
   if (listing.lines.length === 0) {
@@ -349,6 +352,27 @@ export async function envAdd(
         `${relativePath}: variable "${key}" has unknown ${one ? 'key' : 'keys'} `
           + `${unknown.map((k) => `\`${k}:\``).join(', ')}, so pull does not deliver it. `
           + `Correct the ${one ? 'key' : 'keys'} or remove ${one ? 'it' : 'them'} in ${relativePath}.`,
+      );
+    }
+    // Same for a removed per-entry key, which the schema keeps so it can be
+    // detected rather than stripped: `roles:` on env and `projects:` reach nobody.
+    const updated = envConfig.variables[existingIdx];
+    const removed: string[] = [];
+    if (updated.projects !== undefined) removed.push('projects');
+    if (updated.roles !== undefined) removed.push('roles');
+    if (removed.length > 0) {
+      // The remediation has to name the namespace file, as pull's notice does:
+      // dropping a root-scoped key where it sits would deliver the secret to
+      // everyone — the outcome the per-entry key was scoping against.
+      const targets = new TargetFiles(repoPath, entryLayout('env'));
+      const files: string[] = [];
+      for (const key of removed) {
+        files.push(...await targets.forIds(key as 'roles' | 'projects', updated[key as 'roles' | 'projects'] ?? []));
+      }
+      log.warn(
+        `${relativePath}: variable "${key}" is scoped with per-entry `
+          + `${removed.map((k) => `\`${k}:\``).join(' and ')}, which this version no longer reads, `
+          + `so pull does not deliver it. ${moveTo(files)}`,
       );
     }
   } else {
