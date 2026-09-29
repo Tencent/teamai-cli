@@ -131,6 +131,10 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   // <project>/.kimi-code/skills, as well as the shared .agents/skills.
   { id: 'kimi', displayName: 'Kimi Code', category: 'coding', skillsPath: '.kimi-code/skills' },
 
+  // Devin reads ~/.config/devin/skills (user) and <project>/.devin/skills,
+  // as well as the shared .agents/skills.
+  { id: 'devin', displayName: 'Devin', category: 'coding', skillsPath: '.config/devin/skills' },
+
   // Central agent skills directory (codex / generic)
   { id: 'agents', displayName: 'Central (Agent Skills)', category: 'central', skillsPath: '.agents/skills' },
 ];

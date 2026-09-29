@@ -107,7 +107,14 @@ const DETECTORS: Record<string, VersionDetector> = {
   dsh: detectDshVersion,
   // Kimi Code: `kimi --version` prints e.g. "0.38.0".
   kimi: detectKimiVersion,
+  // Devin: `devin version` prints e.g. "devin 3000.10.21 (611c1cba)".
+  devin: detectDevinVersion,
 };
+
+async function detectDevinVersion(): Promise<string> {
+  const raw = await execVersion('devin', ['version']);
+  return raw.match(/(\d+(?:\.\d+)+)/)?.[1] ?? '';
+}
 
 async function detectKimiVersion(): Promise<string> {
   const raw = await execVersion('kimi');
