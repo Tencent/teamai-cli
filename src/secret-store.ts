@@ -78,21 +78,22 @@ const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly defaultPo
 /**
  * A team repo URL as the part of it that says which repo it is: scheme family
  * (ssh, https or http), the ssh user, lowercased host, a port other than the
- * scheme's default, and the path as written. An scp path that starts with
- * neither `/` nor `~` is in the ssh user's home, so it is keyed as `~/path`,
- * the path `ssh://host/~/path` names; `ssh://host/path` is from the root.
- * Only http(s) credentials, a trailing `.git` and slashes are dropped, so
- * `git@host:acme/team.git` and `ssh://git@host:22/~/acme/team` name one file,
- * while `ssh://git@host/acme/team` (from the root), two ssh users' repos on
- * one host, two repos on one host with different ports, or behind http and
- * https, never share values. Not `normalizeRepoUrlForCompare`: it drops the
- * port, and its callers compare loosely on purpose.
+ * scheme's default, and the path, query and fragment as written. An scp path
+ * that starts with neither `/` nor `~` is in the ssh user's home, so it is
+ * keyed as `~/path`, the path `ssh://host/~/path` names; `ssh://host/path` is
+ * from the root. Only http(s) credentials, and a trailing `.git` and slashes
+ * on the path, are dropped, so `git@host:acme/team.git` and
+ * `ssh://git@host:22/~/acme/team` name one file, while
+ * `ssh://git@host/acme/team` (from the root), two ssh users' repos on one
+ * host, two repos on one host with different ports or queries, or behind http
+ * and https, never share values. Not `normalizeRepoUrlForCompare`: it drops
+ * the port, and its callers compare loosely on purpose.
  */
 function repoIdentity(url: string): string {
   const trimmed = url.trim();
-  const key = (family: string, user: string, host: string, port: string, repoPath: string): string => {
+  const key = (family: string, user: string, host: string, port: string, repoPath: string, rest = ''): string => {
     const name = repoPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
-    return `${family}://${user ? `${user}@` : ''}${host.toLowerCase()}${port ? `:${port}` : ''}/${name}`;
+    return `${family}://${user ? `${user}@` : ''}${host.toLowerCase()}${port ? `:${port}` : ''}/${name}${rest}`;
   };
   // `[user@]host:path`, as git reads it: no `/` before the `:`, no `//` after it, not a Windows drive.
   const scp = /^[A-Za-z]:[\\/]/.test(trimmed) ? null : /^(?:([^/@]+)@)?([^:/]+):(?!\/\/)(.+)$/.exec(trimmed);
@@ -110,7 +111,8 @@ function repoIdentity(url: string): string {
   const known = SCHEMES.get(scheme);
   const family = known?.family ?? scheme;
   const user = family === 'ssh' ? decodeUser(parsed.username) : '';
-  return key(family, user, parsed.hostname, parsed.port === known?.defaultPort ? '' : parsed.port, parsed.pathname);
+  const port = parsed.port === known?.defaultPort ? '' : parsed.port;
+  return key(family, user, parsed.hostname, port, parsed.pathname, `${parsed.search}${parsed.hash}`);
 }
 
 /** A URL's percent-encoded user as the scp form writes it; one that does not decode stays as written. */

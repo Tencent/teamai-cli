@@ -154,6 +154,20 @@ describe('team secret values', () => {
         expect(fileFor('https://example.com:8443/acme/team.git')).not.toBe(getTeamSecretsPath(localConfig));
       });
 
+      it('gives URLs that differ only in the query or the fragment different files', () => {
+        expect(fileFor('https://example.com/acme/team?tenant=a')).not.toBe(fileFor('https://example.com/acme/team?tenant=b'));
+        expect(fileFor('https://example.com/acme/team?tenant=a')).not.toBe(getTeamSecretsPath(localConfig));
+        expect(fileFor('https://example.com/acme/team#a')).not.toBe(fileFor('https://example.com/acme/team#b'));
+        expect(fileFor('ssh://git@example.com/acme/team?tenant=a')).not.toBe(fileFor('ssh://git@example.com/acme/team?tenant=b'));
+      });
+
+      it('keeps the query while dropping the credentials, the default port and a trailing .git or slash before it', () => {
+        for (const remote of [
+          'https://user:fixture-pass@EXAMPLE.com/acme/team.git?tenant=a',
+          'https://example.com:443/acme/team/?tenant=a',
+        ]) expect(fileFor(remote)).toBe(fileFor('https://example.com/acme/team?tenant=a'));
+      });
+
       it('gives the ssh and https URLs of a repo different files', () => {
         expect(fileFor('git@example.com:acme/team.git')).not.toBe(getTeamSecretsPath(localConfig));
       });
