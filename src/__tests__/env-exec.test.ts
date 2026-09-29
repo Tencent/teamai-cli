@@ -301,6 +301,25 @@ describe('teamai env exec', () => {
     expect(text(stderr)).not.toMatch(/fixture-(repo|marked|hand)/);
   });
 
+  it.each([
+    ['env.yaml does not parse', { 'env/env.yaml': 'variables: [not yaml\n' }, false],
+    ['the values file cannot be read', { 'env/env.yaml': 'variables:\n  - key: REGION\n    value: eu\n' }, true],
+  ])('removes what a teamai env.sh exported when %s, keeps the member\'s own exports, and names the keys', async (_, files, corruptStore) => {
+    const { repoPath } = await team('personal', files);
+    const config = await userScope(repoPath);
+    if (corruptStore) await fse.outputFile(getTeamSecretsPath(config), '{"REGION": {"value": fixture-corrupt}}');
+    await fse.outputFile(path.join(home, '.teamai', 'env.sh'), "export GITHUB_TOKEN='fixture-repo-token'\n");
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-repo-token');
+    vi.stubEnv('SENTRY_TOKEN', 'fixture-hand-export');
+
+    const env = await childEnv(home);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.SENTRY_TOKEN).toBe('fixture-hand-export');
+    expect(text(stderr)).toContain('without GITHUB_TOKEN, whose values a teamai env.sh exported.');
+    expect(text(stderr)).not.toMatch(/fixture-(repo|hand|corrupt)/);
+  });
+
   it('keeps a legacy env.yaml value of a key that may be a secret from the command while the declarations fail', async () => {
     const { repoPath } = await team('personal', {
       'env/env.yaml': 'variables:\n  - key: GITHUB_TOKEN\n    value: fixture-legacy-repo\n',

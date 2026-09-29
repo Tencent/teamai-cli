@@ -165,7 +165,8 @@ function inheritedEnvironment(): NodeJS.ProcessEnv {
  * a secret. A variable takes the member's value for this team, else the
  * team's, as in MCP; the inherited value never overrides it (#875). While the
  * declarations fail, nothing is overlaid, and every inherited value that is
- * not the member's own (member-env.ts) is removed.
+ * not the member's own (member-env.ts) is removed; so is it while env.yaml
+ * fails or the values file cannot be read.
  */
 async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessEnv> {
   const env = inheritedEnvironment();
@@ -179,11 +180,14 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
     log.warn(`${failures.join(' ')} The command runs with the inherited environment, without team env variables or secrets${without}.`);
     return env;
   }
+  // Without this team's variables, one a teamai env.sh exported may be another team's: it is removed.
   if (variables.kind === 'failed') {
-    log.warn(`${describeEntryFailure(variables.failure)} The command runs without the team's env variables.`);
+    const without = exportedClause(withoutTeamExports(env, teamEnv.member));
+    log.warn(`${describeEntryFailure(variables.failure)} The command runs without the team's env variables${without}.`);
   }
   if (variableValues.kind === 'store-unreadable') {
-    log.warn(`${variableValues.reason} The command runs without the team's env variables.`);
+    const without = exportedClause(withoutTeamExports(env, teamEnv.member));
+    log.warn(`${variableValues.reason} The command runs without the team's env variables${without}.`);
   } else {
     for (const [key, variable] of variableValues.values) setKey(env, key, variable.value);
   }
