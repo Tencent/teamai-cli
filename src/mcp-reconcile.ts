@@ -678,28 +678,43 @@ async function readProjectMcpRecord(cfg: LocalConfig, projectRoot: string): Prom
  * the manifest is lost) is not: a server teamai wrote, since dropped from
  * mcp.yaml, with a value no longer set, looks like the member's own.
  * `before` is `localConfig`'s manifest as it stood before a reconcile rewrote it.
+ * With `otherWorktrees: 'empty'` another worktree's file is clean only when it
+ * holds no server at all: today's definitions and values cannot judge an entry
+ * that worktree's last pull wrote (a `${VAR}` since made a literal), only a
+ * pull there can.
  */
 export async function mcpConfigsNotProvenClean(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   files: string[],
-  before?: ProjectMcpRecord,
+  options: { before?: ProjectMcpRecord; otherWorktrees?: 'judged' | 'empty' } = {},
 ): Promise<Map<string, string>> {
+  const { before, otherWorktrees = 'judged' } = options;
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
   const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
   // Keyed by real path: the protected paths come from git, which resolves symlinks (macOS /var).
-  const targets = new Map<string, { target: McpTarget; owned: string[]; recorded: boolean }>();
+  const targets = new Map<string, { target: McpTarget; owned: string[]; recorded: boolean; foreign: boolean }>();
+  const realRoot = (root: string | undefined): Promise<string | undefined> =>
+    root ? fs.promises.realpath(root).catch(() => root) : Promise.resolve(undefined);
+  const ownRoot = await realRoot(localConfig.projectRoot);
   for (const cfg of await projectWorktreeConfigs(localConfig)) {
     const { manifest, recorded } = cfg === localConfig && before ? before
       : cfg.projectRoot ? await readProjectMcpRecord(cfg, cfg.projectRoot)
       : { manifest: {}, recorded: false };
+    // This checkout listed again under its real path is not another worktree.
+    const foreign = cfg !== localConfig && await realRoot(cfg.projectRoot) !== ownRoot;
     for (const target of await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true })) {
       const dir = await fs.promises.realpath(path.dirname(target.file)).catch(() => path.dirname(target.file));
       const key = path.join(dir, path.basename(target.file));
       const owned = (manifest[managedMcpManifestKey(target.tool, true)] ?? []).map((record) => record.name);
       // One file reached twice (two tools share it, or a checkout through a symlink) merges what each says.
       const seen = targets.get(key);
-      targets.set(key, { target, owned: [...seen?.owned ?? [], ...owned], recorded: recorded || seen?.recorded === true });
+      targets.set(key, {
+        target,
+        owned: [...seen?.owned ?? [], ...owned],
+        recorded: recorded || seen?.recorded === true,
+        foreign: foreign || seen?.foreign === true,
+      });
     }
   }
   // Short values, paths and the login name turn up in ordinary configs, so they prove nothing.
@@ -719,6 +734,7 @@ export async function mcpConfigsNotProvenClean(
     const why = !known ? 'no tool teamai knows reads it'
       : !installed ? 'it does not parse'
       : installed.size === 0 ? undefined
+      : known.foreign && otherWorktrees === 'empty' ? 'it holds MCP servers in another worktree, which only a pull there can judge'
       : !teamDefs ? 'the team\'s MCP servers cannot be read'
       : named ? `it holds the team's ${named}, which needs a resolved \${VAR}`
       : await resolvedValueEvidence(known.target, teamDefs, known.owned, vars).then((e) => e && `it holds ${e}`)
@@ -856,7 +872,7 @@ async function releaseMcpGitExcludes(
     teamConfig,
     localConfig,
     [...excludes.values()].flatMap((entries) => entries.flatMap((entry) => entry.files)),
-    before,
+    { before, otherWorktrees: 'empty' },
   );
   for (const [excludeFile, entries] of excludes) {
     const cleanEntries = entries.filter((entry) => entry.files.every((file) => !held.has(file) || exempt.has(file)));

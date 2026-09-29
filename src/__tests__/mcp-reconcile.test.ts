@@ -1146,6 +1146,43 @@ servers:
         expect(await fse.readFile(path.join(worktree, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
         expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
       });
+
+      describe('after a server\'s ${VAR} became a literal, judged from another worktree', () => {
+        const literal = withSecret.replace('${SECRET_TOKEN}', 'published-literal');
+        let worktree: string;
+
+        beforeEach(async () => {
+          git(projectRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+          // As git lists it (macOS /var is a symlink), so its manifest is found under the same key.
+          worktree = path.join(await fse.realpath(tmpDir), 'business-wt');
+          git(projectRoot, 'worktree', 'add', '-q', worktree);
+          await fse.ensureDir(path.join(worktree, '.claude', 'skills'));
+          const { resolveProjectDataHome } = await import('../config.js');
+          const other = { ...claudeOnly(), projectRoot: worktree, dataHome: await resolveProjectDataHome(worktree) } as LocalConfig;
+          await writeMcpYaml(withSecret);
+          await reconcileMcpForConfig(teamConfig, claudeOnly());
+          await reconcileMcpForConfig(teamConfig, other);
+          await writeMcpYaml(literal);
+          vi.stubEnv('SECRET_TOKEN', '');
+        });
+
+        it('keeps the shared line while that worktree\'s config still holds the stale entry', async () => {
+          await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+          expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('published-literal');
+          expect(await fse.readFile(path.join(worktree, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+          expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+          expect(git(worktree, 'status', '--porcelain', '--untracked-files=all')).not.toMatch(/\.mcp\.json/);
+        });
+
+        it('removes the line once that worktree\'s config is gone', async () => {
+          await fse.remove(path.join(worktree, '.mcp.json'));
+
+          await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+          expect(await excludeOf(projectRoot)).not.toContain('teamai');
+        });
+      });
     });
 
     it('lists the config again when a concurrent uninstall drops its line between the check and the write', async () => {
