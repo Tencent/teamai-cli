@@ -442,6 +442,11 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           const titleShown = title.length > 50 ? title.slice(0, 50) + '...' : title;
           console.log(`  [${i + 1}] ${m.sessionId.slice(0, 8)}  ${titleShown}  (${m.messageCount} msgs, ${formatBytes(m.sizeBytes)})`);
         }
+        // 只列 10 条却不说明还有更多、怎么选到更多，用户会以为一共就 10 条。
+        if (metas.length > recent.length) {
+          console.log(`\n  Showing the ${recent.length} most recent of ${metas.length}. To migrate older ones:`);
+          console.log(`    --all (every session, optionally --limit N)   or   migrate <session-id-prefix>`);
+        }
         const ans = await ask('\nSelect session (number) or Enter to cancel: ');
         const num = parseInt(ans, 10);
         if (!ans || Number.isNaN(num) || num < 1 || num > recent.length) {
