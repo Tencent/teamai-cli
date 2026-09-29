@@ -62,9 +62,9 @@ describe('model profiles', () => {
     const config = { repo: { localPath: '/tmp/example/hai', remote: 'origin', url: 'https://example.test/hai.git' } } as LocalConfig;
     expect(sameTeamIdentity(getTeamIdentity(config), config)).toBe(true);
     // A legacy name keyed by the URL digest names the same team.
-    expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/hai.git')}`, config)).toBe(true);      // A legacy name keyed by a non-origin remote digest names the same team.
+    expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/hai.git')}`, config)).toBe(true);      // A legacy name keyed by a non-origin REMOTE URL digest names the same team.
     const fork = { repo: { localPath: '/tmp/example/hai', remote: 'fork', url: 'https://example.test/hai.git' } } as LocalConfig;
-      expect(sameTeamIdentity(`hai-platform-${digest('fork')}`, fork)).toBe(true);
+      expect(sameTeamIdentity(`hai-${digest('https://example.test/hai.git')}`, fork)).toBe(true);
       // But a bare alias never names a file: two checkouts sharing it stay distinct.
       const forkA = getTeamValuesPath({ repo: { localPath: '/tmp/example/a', remote: 'fork', url: 'https://example.test/a' } } as LocalConfig);
       const forkB = getTeamValuesPath({ repo: { localPath: '/tmp/example/b', remote: 'fork', url: 'https://example.test/b' } } as LocalConfig);
@@ -89,6 +89,39 @@ describe('model profiles', () => {
     const pathOnly = { repo: { localPath: '/tmp/example/hai', remote: 'origin' } } as LocalConfig;
     expect(sameTeamIdentity(`hai-platform-${digest('/tmp/example/hai')}`, pathOnly)).toBe(true);
     expect(sameTeamIdentity(`hai-platform-${digest('/tmp/example/hai')}`, config)).toBe(false);
+  });
+
+  it('rejects an alias-digest switch record whose slug is another team\'s', async () => {
+    const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+    // Team A recorded switches as `team-a-<fork digest>`; team B shares the alias.
+    const teamB = { repo: { localPath: '/tmp/example/team-b', remote: 'fork', url: 'https://example.test/b.git' } } as LocalConfig;
+    expect(sameTeamIdentity(`team-a-${digest('fork')}`, teamB)).toBe(false);
+    expect(sameTeamIdentity(`team-b-${digest('fork')}`, teamB)).toBe(true);
+    // A repository-bound digest needs no slug check: a rename keeps the digest.
+    expect(sameTeamIdentity(`renamed-team-${digest('https://example.test/b.git')}`, teamB)).toBe(true);
+  });
+
+  it('matches the repo: claim, not the path, when the config has no url', async () => {
+    const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+    const claimRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-claim-nourl-'));
+    await fse.writeFile(path.join(claimRepo, 'teamai.yaml'), 'team: HAI\nrepo: https://git.example.test/canonical.git\n');
+    const config = { repo: { localPath: claimRepo, remote: 'origin' } } as LocalConfig;
+    try {
+      // The claim, not the path, is what the old implementation hashed here;
+      // the claim digest (post-repoIdentity) is a matching legacy candidate...
+      expect(sameTeamIdentity(`hai-${digest('https://git.example.test/canonical.git')}`, config)).toBe(true);
+      // ...and a path-digest record from another team at this path is not.
+      expect(sameTeamIdentity(`old-team-${digest(claimRepo)}`, config)).toBe(false);
+      const target = getTeamValuesPath(config);
+      const dir = path.dirname(target);
+      await fse.ensureDir(dir);
+      const oldTeam = path.join(dir, `old-team-${digest(claimRepo)}.json`);
+      await fse.writeFile(oldTeam, '{"team:old":{"API_KEY":{"value":"old"}}}');
+      expect(await findTeamValuesPath(config)).toBe(target);
+      expect(await fse.pathExists(oldTeam)).toBe(true);
+    } finally {
+      await fse.remove(claimRepo);
+    }
   });
 
   it('reads an alias-digest legacy file only under this team\'s slug', async () => {
