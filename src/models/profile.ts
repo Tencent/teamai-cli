@@ -168,12 +168,29 @@ export function getLocalValuesPath(): string {
   return path.join(getTeamaiHomeDir(), 'models', 'values.json');
 }
 
+/** Whether a value names a repository for `repoIdentity`: a URL or scp-like remote. A bare alias like `fork` names nothing on its own. */
+function isRepoReference(value: string): boolean {
+  if (/^[^/@]+@[^:/]+:.+$/.test(value)) return true;
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function getTeamValuesPath(localConfig: LocalConfig): string {
   // Team inputs may contain credentials. Keep them under the user home even
   // when project scope places dataHome inside a Git workspace.
   const { remote, url, localPath } = localConfig.repo;
-  const configured = remote && remote !== 'origin' && remote !== 'upstream' ? remote : url;
-  const identity = configured ? repoIdentity(configured) : localPath;
+  const named = remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined;
+  // Hash only what names a repository. A remote alias (`fork`) does not: two
+  // checkouts sharing the alias would share one values file and read each
+  // other's keys, so fall back to the URL and then the local path.
+  const source = named && isRepoReference(named) ? named
+    : url && isRepoReference(url) ? url
+    : localPath;
+  const identity = repoIdentity(source);
   const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
   return path.join(getTeamaiHomeDir(), 'models', 'teams', `${digest}.json`);
 }
@@ -199,11 +216,12 @@ function repoClaim(localPath: string): string | null {
 
 /**
  * The 10-hex digests older versions of `getTeamValuesPath` hashed for this
- * checkout: the non-origin/upstream remote, the URL, the `repo:` claim in
- * teamai.yaml (it overrode the identity there, so its digest is what the
- * stored file carries), or the local path. A legacy values file matches by
- * digest alone — its slug records the team's name when it was written, which
- * a rename silently changes, so it can never be required.
+ * checkout: the non-origin/upstream remote (the raw alias too — it never
+ * names a file any more, but an older file may carry its digest), the URL,
+ * the `repo:` claim in teamai.yaml (it overrode the identity there, so its
+ * digest is what the stored file carries), or the local path. A legacy values
+ * file matches by digest alone — its slug records the team's name when it was
+ * written, which a rename silently changes, so it can never be required.
  */
 function legacyTeamValueHashes(localConfig: LocalConfig): string[] {
   const { remote, url, localPath } = localConfig.repo;
@@ -236,18 +254,19 @@ export function sameTeamIdentity(stored: string | undefined, localConfig: LocalC
 /**
  * The team values file for `localConfig`, migrating a legacy
  * `<slug>-<digest>.json` to the hash-only name when (and only when) the
- * hash-only file does not exist yet. Returns the path either way, so callers
- * read and write the one file the current scheme uses. Pass `dryRun` from any
- * dry-run command: migration renames the legacy secrets file and must never
- * run in a dry run. When several legacy files match — a team renamed between
- * re-entering keys left stale copies — the newest one wins, so the latest
- * entered keys survive and older files are left behind, not silently adopted.
- * Matching is by digest alone: a file under an earlier team name (a rename
- * the user never re-entered keys after) is still this team's file.
+ * hash-only file does not exist yet. Returns the path the current scheme
+ * reads and writes. Under `dryRun` nothing is renamed and the newest legacy
+ * file's path is returned instead, so a dry run previews the real run exactly:
+ * it reads the same keys the real run would migrate and read. When several
+ * legacy files match — a team renamed between re-entering keys left stale
+ * copies — the newest one wins, so the latest entered keys survive and older
+ * files are left behind, not silently adopted. Matching is by digest alone: a
+ * file under an earlier team name (a rename the user never re-entered keys
+ * after) is still this team's file.
  */
 export async function migrateTeamValuesPath(localConfig: LocalConfig, options: { dryRun?: boolean } = {}): Promise<string> {
   const target = getTeamValuesPath(localConfig);
-  if (options.dryRun || fs.existsSync(target)) return target;
+  if (fs.existsSync(target)) return target;
   const candidates = new Set(legacyTeamValueHashes(localConfig));
   const dir = path.dirname(target);
   let entries: string[];
@@ -270,11 +289,18 @@ export async function migrateTeamValuesPath(localConfig: LocalConfig, options: {
   // newest first; equal timestamps take the lexicographically last name
   matching.sort((a, b) => b.mtime - a.mtime || b.entry.localeCompare(a.entry));
   for (const { entry } of matching) {
+    const source = path.join(dir, entry);
+    if (options.dryRun) return source; // preview: read what the real run would migrate
     try {
-      await fs.promises.rename(path.join(dir, entry), target);
+      // link + unlink, not rename: linking the target first fails with EEXIST
+      // when a concurrent process migrated another file there already, so this
+      // one never replaces newer keys with its older candidate.
+      await fs.promises.link(source, target);
+      await fs.promises.unlink(source);
       return target;
     } catch {
-      // Gone or renamed by a concurrent process; try the next-newest match.
+      // Gone, migrated by a concurrent process, or no link support; try the
+      // next-newest match, and read whatever is at target now.
     }
   }
   return target;

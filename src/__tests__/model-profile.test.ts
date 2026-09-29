@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ModelProfileSchema,
   ModelProfilesFileSchema,
@@ -61,10 +62,13 @@ describe('model profiles', () => {
     const config = { repo: { localPath: '/tmp/example/hai', remote: 'origin', url: 'https://example.test/hai.git' } } as LocalConfig;
     expect(sameTeamIdentity(getTeamIdentity(config), config)).toBe(true);
     // A legacy name keyed by the URL digest names the same team.
-    expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/hai.git')}`, config)).toBe(true);
-    // A legacy name keyed by a non-origin remote digest names the same team.
+    expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/hai.git')}`, config)).toBe(true);      // A legacy name keyed by a non-origin remote digest names the same team.
     const fork = { repo: { localPath: '/tmp/example/hai', remote: 'fork', url: 'https://example.test/hai.git' } } as LocalConfig;
-    expect(sameTeamIdentity(`hai-platform-${digest('fork')}`, fork)).toBe(true);
+      expect(sameTeamIdentity(`hai-platform-${digest('fork')}`, fork)).toBe(true);
+      // But a bare alias never names a file: two checkouts sharing it stay distinct.
+      const forkA = getTeamValuesPath({ repo: { localPath: '/tmp/example/a', remote: 'fork', url: 'https://example.test/a' } } as LocalConfig);
+      const forkB = getTeamValuesPath({ repo: { localPath: '/tmp/example/b', remote: 'fork', url: 'https://example.test/b' } } as LocalConfig);
+      expect(forkA).not.toBe(forkB);
     // A digest from another repository, or one this config never produced, must not match.
     expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/other.git')}`, config)).toBe(false);
     expect(sameTeamIdentity('hai-platform-0000000000', config)).toBe(false);
@@ -112,7 +116,7 @@ describe('model profiles', () => {
     }
   });
 
-  it('renames nothing when the caller passes dryRun', async () => {
+  it('previews the real run under dryRun by returning the newest legacy path', async () => {
     const previous = process.env.HOME;
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-dryrun-'));
     process.env.HOME = home;
@@ -124,9 +128,46 @@ describe('model profiles', () => {
       await fse.ensureDir(dir);
       const legacy = path.join(dir, `hai-platform-${digest('https://example.test/hai.git')}.json`);
       await fse.writeFile(legacy, '{"team:gw":{"API_KEY":{"value":"old"}}}');
-      expect(await migrateTeamValuesPath(config, { dryRun: true })).toBe(target);
+      // The dry run reads what the real run would migrate: the legacy file itself.
+      expect(await migrateTeamValuesPath(config, { dryRun: true })).toBe(legacy);
       expect(await fse.pathExists(target)).toBe(false);
       expect(await fse.readFile(legacy, 'utf8')).toBe('{"team:gw":{"API_KEY":{"value":"old"}}}');
+      // And the real run after it still migrates.
+      expect(await migrateTeamValuesPath(config)).toBe(target);
+      expect(JSON.parse(await fse.readFile(target, 'utf8'))['team:gw']['API_KEY'].value).toBe('old');
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
+  it('never overwrites keys a concurrent migration already placed at the target', async () => {
+    const previous = process.env.HOME;
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-race-'));
+    process.env.HOME = home;
+    try {
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      const config = { repo: { localPath: '/tmp/example/hai', remote: 'origin', url: 'https://example.test/hai.git' } } as LocalConfig;
+      const target = getTeamValuesPath(config);
+      const dir = path.dirname(target);
+      await fse.ensureDir(dir);
+      const older = path.join(dir, `hai-platform-${digest('https://example.test/hai.git')}.json`);
+      await fse.writeFile(older, '{"team:gw":{"API_KEY":{"value":"stale"}}}');
+      // A concurrent migration wins the link between our scan and our link:
+      // it writes the fresh keys and links them, so our link fails with EEXIST.
+      const realLink = fs.promises.link.bind(fs.promises);
+      const linkSpy = vi.spyOn(fs.promises, 'link').mockImplementation(async (src, dest) => {
+        await fse.writeFile(dest, '{"team:gw":{"API_KEY":{"value":"fresh"}}}');
+        return realLink(src, dest);
+      });
+      try {
+        expect(await migrateTeamValuesPath(config)).toBe(target);
+        expect(JSON.parse(await fse.readFile(target, 'utf8'))['team:gw']['API_KEY'].value).toBe('fresh');
+        expect(await fse.pathExists(older)).toBe(true);
+      } finally {
+        linkSpy.mockRestore();
+      }
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;
