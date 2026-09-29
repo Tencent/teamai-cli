@@ -1152,6 +1152,8 @@ teamai recall disable    # 关闭 recall，移除 subagent 和 rules
 teamai recall status     # 查看当前生效状态（团队默认 + 用户覆盖）
 ```
 
+在 `enable` 或 `disable` 后添加 `--dry-run`，可预览配置和托管文件的变化，不会写入磁盘。
+
 关闭后，`teamai pull` 将跳过部署 recall subagent、recall rules 注入块和 TodoWrite 提醒 hook。手动执行 `teamai recall <query>` 搜索不受此开关影响。
 
 ### 知识库维护

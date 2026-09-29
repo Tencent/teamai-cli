@@ -1249,6 +1249,8 @@ teamai recall disable    # Disable recall, remove the subagent and rules
 teamai recall status     # View the current effective status (team default + user override)
 ```
 
+Append `--dry-run` to `enable` or `disable` to preview the config and managed-artifact changes without writing them.
+
 When disabled, `teamai pull` skips deploying the recall subagent, the recall rules injection block, and the TodoWrite reminder hook. Manually running `teamai recall <query>` to search is not affected by this switch.
 
 ### Knowledge Base Maintenance

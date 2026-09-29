@@ -122,8 +122,13 @@ async function deployRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
   }
 }
 
-export async function recallDisable(_opts: GlobalOptions): Promise<void> {
-  const { localConfig, teamConfig } = await autoDetectInit();
+export async function recallDisable(opts: GlobalOptions): Promise<void> {
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: opts.dryRun });
+
+  if (opts.dryRun) {
+    log.info('[dry-run] Would set recallEnabled=false and remove managed Recall artifacts.');
+    return;
+  }
 
   const updated = { ...localConfig, recallEnabled: false };
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
@@ -132,8 +137,13 @@ export async function recallDisable(_opts: GlobalOptions): Promise<void> {
   log.success('Recall disabled. AI tools will no longer auto-search the knowledge base.');
 }
 
-export async function recallEnable(_opts: GlobalOptions): Promise<void> {
-  const { localConfig, teamConfig } = await autoDetectInit();
+export async function recallEnable(opts: GlobalOptions): Promise<void> {
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: opts.dryRun });
+
+  if (opts.dryRun) {
+    log.info('[dry-run] Would set recallEnabled=true and deploy managed Recall artifacts.');
+    return;
+  }
 
   const updated = { ...localConfig, recallEnabled: true };
   await saveLocalConfigForScope(updated, localConfig.scope, localConfig.projectRoot);
