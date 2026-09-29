@@ -3,7 +3,7 @@ import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler, maskEnvValue, ENV_KEY_RE, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
-import { describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, moveTo, reportEntryNotices, reportEntryResolution, resolveEntriesFor, TargetFiles } from './namespaced-entries.js';
+import { describeEntryFailure, describeOrigin, entryFileAbsolutePath, entryFilePath, entryNamespaceFromFlags, moveTo, reportUndeliveredEntryNotices, resolveEntriesFor, TargetFiles } from './namespaced-entries.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { isSelfMode } from './types.js';
 
@@ -21,14 +21,14 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
 
   const resolution = await resolveEntriesFor(envEntryReader, localConfig);
   if (resolution.kind === 'failed') {
-    reportEntryNotices(resolution);
+    reportUndeliveredEntryNotices(resolution);
     log.error(describeEntryFailure(resolution.failure));
     process.exitCode = 1;
     return;
   }
   // An entry an unknown or removed key takes out of the delivered set never
   // appears in the list below, so say why it is missing (#822).
-  reportEntryResolution(resolution);
+  reportUndeliveredEntryNotices(resolution);
   const variables = resolution.entries;
   if (variables.length === 0) {
     log.info('No env variables defined');

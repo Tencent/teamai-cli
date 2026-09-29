@@ -988,15 +988,18 @@ The per-entry keys these files replace:
 
 | Key | On | Now |
 |---|---|---|
-| `projects:` | env, hooks, MCP | removed: the entry reaches nobody, and each pull and the list commands warn with the file to move it to |
+| `projects:` | env, hooks, MCP | removed: the entry reaches nobody; pull, the list commands and status warn with the file to move it to |
 | `roles:` | env | removed, the same way |
 | `roles:` | hooks, MCP | deprecated: still filters for one minor release, as in 0.25.0, including a name the root file repeats under different `roles:`; pull warns and `teamai doctor` has a check, both naming every target file |
 
 There is no automatic migration: move each entry into the namespace file the
 warning names, and drop the key.
+When `teamai env add` updates an existing variable that still carries a removed
+per-entry `projects:` or `roles:` key, it keeps that key and warns that pull
+will not deliver the variable, naming the namespace file to move it to.
 
 An entry with any other key its schema does not know, such as a mistyped `role:`,
-reaches nobody as well, and pull, the list commands and `teamai doctor` name the
+reaches nobody as well, and pull, the list commands, status and `teamai doctor` name the
 file, the entry and the key. Correct the key or remove it. A key that a later
 teamai version adds is unknown to an older one too, so upgrade every member
 before the team uses a new entry key.

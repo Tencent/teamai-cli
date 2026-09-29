@@ -419,6 +419,9 @@ env, existed only in the 0.26.0 betas: an entry that carries one reaches nobody,
 and pull, `status`, `env list`, `mcp list`, `hooks list` and
 `list <env|hooks|mcp> --source repo` warn with the namespace file to move it to,
 one per listed id.
+When `teamai env add` updates a variable still carrying one of these removed
+keys, it preserves the key and warns that pull will not deliver the variable,
+naming the namespace file to move it to.
 `roles:` on hooks and MCP shipped in 0.25.0 and keeps filtering for one more
 minor release; pull warns once per run and `doctor` has an informational check,
 both naming every target file. Model profiles are strict, so a per-entry key

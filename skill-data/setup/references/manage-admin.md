@@ -175,6 +175,8 @@ and push it with git. `teamai doctor` lists each override.
   the list commands (`teamai env list`, `teamai mcp list`, `teamai hooks list`,
   `teamai list <env|hooks|mcp> --source repo`), `teamai status` and
   `teamai doctor` name the namespace file each entry belongs in; move it there.
+  When `teamai env add` updates a variable carrying either removed key, it keeps
+  the key and warns that pull will not deliver the variable, naming that file.
 - An env, hook or MCP entry with a key its schema does not know (a mistyped `role:`)
   also reaches nobody. Pull, the list commands, `teamai status` and
   `teamai doctor` name the file, entry and key; correct the key or remove it.

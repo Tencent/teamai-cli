@@ -526,16 +526,20 @@ export function describeEntryFailure(failure: EntryFailure): string {
  * stale entries.
  */
 export function reportEntryResolution(resolution: EntryResolution<unknown>): void {
-  reportEntryNotices(resolution);
+  reportNotices(resolution.notices);
   if (resolution.kind === 'failed') {
     const message = describeEntryFailure(resolution.failure);
     if (warnOnce(message)) log.persist(message);
   }
 }
 
-/** Report notices even when the caller displays a resolution failure separately. */
-export function reportEntryNotices(resolution: Pick<EntryResolution<unknown>, 'notices'>): void {
-  for (const notice of resolution.notices) {
+/** List/status report only entries omitted from delivery; pull reports every notice. */
+export function reportUndeliveredEntryNotices(resolution: Pick<EntryResolution<unknown>, 'notices'>): void {
+  reportNotices(resolution.notices.filter((notice) => notice.kind === 'unknown-key' || notice.kind === 'removed-key'));
+}
+
+function reportNotices(notices: readonly EntryNotice[]): void {
+  for (const notice of notices) {
     if (warnOnce(notice.message)) log.persist(notice.message);
   }
 }

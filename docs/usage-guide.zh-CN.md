@@ -908,14 +908,16 @@ projects:
 
 | Key | 适用于 | 现在 |
 |---|---|---|
-| `projects:` | env、hooks、MCP | 已移除：该条目不再下发给任何人，每次 pull 和各 list 命令都会警告并给出应迁往的文件 |
+| `projects:` | env、hooks、MCP | 已移除：该条目不再下发给任何人；pull、各 list 命令和 status 都会警告并给出应迁往的文件 |
 | `roles:` | env | 已移除，处理方式相同 |
 | `roles:` | hooks、MCP | 已弃用：在一个次版本内仍像 0.25.0 一样按角色过滤，根文件中以不同 `roles:` 重复的名字也照旧生效；pull 会警告，`teamai doctor` 有一项检查，两者都会列出每个目标文件 |
 
 没有自动迁移：把每个条目移到警告给出的 namespace 文件中，并删掉该 key。
+如果 `teamai env add` 更新的已有变量仍带有已移除的按条目 `projects:` 或 `roles:` key，
+命令会保留该 key，并警告 pull 不会下发这个变量，同时指出应迁往的 namespace 文件。
 
 条目若带有其 schema 不认识的其他 key（例如拼错的 `role:`），同样不会下发给任何人；
-pull、各 list 命令与 `teamai doctor` 会指出文件、条目和该 key。请改正或删除这个 key。
+pull、各 list 命令、status 与 `teamai doctor` 会指出文件、条目和该 key。请改正或删除这个 key。
 较新版本 teamai 新增的 key 对旧版本同样是未知 key，因此团队使用新的条目 key 之前，
 请先让所有成员升级。
 

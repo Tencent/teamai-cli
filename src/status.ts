@@ -23,7 +23,7 @@ import { mcpEntryReader } from './resources/mcp.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { envEntryReader } from './resources/env.js';
 import {
-  describeEntryFailure, describeOrigin, describeOrigins, reportEntryNotices, reportEntryResolution, resolveEntriesFor,
+  describeEntryFailure, describeOrigin, describeOrigins, reportUndeliveredEntryNotices, resolveEntriesFor,
   type EntryResolution, type EntryType,
 } from './namespaced-entries.js';
 
@@ -105,8 +105,7 @@ export async function status(options: GlobalOptions): Promise<void> {
     else if (resolution.entries.some((entry) => entry.namespace !== null)) origins[type] = ` (${describeOrigins(resolution.entries)})`;
     // An entry an unknown or removed key takes out of the delivered set is
     // invisible in the count, so name it here too (#822).
-    if (resolution.kind === 'resolved') reportEntryResolution(resolution);
-    else reportEntryNotices(resolution);
+    reportUndeliveredEntryNotices(resolution);
   };
   count('env', await resolveEntriesFor(envEntryReader, localConfig));
 
@@ -324,10 +323,10 @@ async function printRepoSection(
   if (t === 'env') {
     const env = await resolveEntriesFor(envEntryReader, localConfig);
     if (env.kind === 'failed') {
-      reportEntryNotices(env);
+      reportUndeliveredEntryNotices(env);
       console.log(`  ${describeEntryFailure(env.failure)}`);
     } else {
-      reportEntryResolution(env);
+      reportUndeliveredEntryNotices(env);
       if (env.entries.length === 0) {
         console.log('  (none)');
       } else {
@@ -349,11 +348,11 @@ async function printRepoSection(
   if (t === 'mcp') {
     const mcp = await resolveEntriesFor(mcpEntryReader, localConfig);
     if (mcp.kind === 'failed') {
-      reportEntryNotices(mcp);
+      reportUndeliveredEntryNotices(mcp);
       console.log(`  ${describeEntryFailure(mcp.failure)}`);
       return;
     }
-    reportEntryResolution(mcp);
+    reportUndeliveredEntryNotices(mcp);
     if (mcp.entries.length === 0) {
       console.log('  (none)');
       return;
@@ -374,11 +373,11 @@ async function printRepoSection(
   if (t === 'hooks') {
     const { resolution: hooks } = await resolveTeamHookEntries(localConfig);
     if (hooks.kind === 'failed') {
-      reportEntryNotices(hooks);
+      reportUndeliveredEntryNotices(hooks);
       console.log(`  ${describeEntryFailure(hooks.failure)}`);
       return;
     }
-    reportEntryResolution(hooks);
+    reportUndeliveredEntryNotices(hooks);
     if (hooks.entries.length === 0) {
       console.log('  (none)');
       return;

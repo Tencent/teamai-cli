@@ -125,6 +125,23 @@ describe('mcpList', () => {
     expect(text).toContain('good_server');
     expect(text).not.toContain('scoped_server');
   });
+
+  it('leaves delivered deprecated-role notices to pull and doctor', async () => {
+    mockedResolve.mockResolvedValue({
+      ...resolved([[
+        { name: 'scoped_server', transport: 'http', url: 'https://example.com/mcp', roles: ['worker'] },
+        'mcp/mcp.yaml', null,
+      ]]),
+      notices: [{
+        kind: 'deprecated-roles',
+        message: 'mcp/mcp.yaml: server "scoped_server" uses deprecated per-entry `roles:`.',
+      }],
+    });
+    const { log } = await import('../utils/logger.js');
+    vi.mocked(log.warn).mockClear();
+    await listOutput();
+    expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('deprecated per-entry `roles:`'));
+  });
 });
 
 describe('mcpInject', () => {
