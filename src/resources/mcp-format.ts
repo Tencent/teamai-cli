@@ -143,18 +143,20 @@ export interface ResolveResult {
   missing: string[];
 }
 
+/** The value `${name}` takes from `vars`: on Windows `${token}` names the `TOKEN` a table holds, one environment variable. */
+export function placeholderValue(vars: Record<string, string>, name: string): string | undefined {
+  if (Object.hasOwn(vars, name)) return vars[name];
+  const other = sameEnvName(Object.keys(vars), name);
+  return other === undefined ? undefined : vars[other];
+}
+
 /**
  * Substitute ${VAR} throughout a def. Unresolved vars are left as-is and
  * reported, so the caller can skip the server rather than inject a broken one.
  */
 export function resolvePlaceholders(def: McpServerDef, vars: Record<string, string>): ResolveResult {
   const missing = new Set<string>();
-  // On Windows `${token}` names the `TOKEN` a table holds: one environment variable.
-  const lookup = (name: string): string | undefined => {
-    if (Object.hasOwn(vars, name)) return vars[name];
-    const other = sameEnvName(Object.keys(vars), name);
-    return other === undefined ? undefined : vars[other];
-  };
+  const lookup = (name: string): string | undefined => placeholderValue(vars, name);
   const sub = (v: string): string =>
     v.replace(PLACEHOLDER_RE, (whole, name: string) => {
       const val = lookup(name);

@@ -131,6 +131,24 @@ describe('a missing declared secret tells the member what to run', () => {
     expect(vi.mocked(log.error)).toHaveBeenCalledWith(expect.stringContaining('env/secrets.yaml declares no secrets'));
   });
 
+  it('on Windows, mcp list matches ${github_token} to the declared GITHUB_TOKEN, missing or set', async () => {
+    await write('mcp/mcp.yaml', GITHUB_SERVER.replace('${GITHUB_TOKEN}', '${github_token}'));
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    let spy: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await quietly(() => mcpList({}));
+      expect(warned()).toContain(GITHUB_LINE);
+      vi.stubEnv('GITHUB_TOKEN', 'fixture-exported');
+      spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await mcpList({});
+      expect(spy.mock.calls.map(([line]) => String(line)).join('\n')).toContain('secrets:  github_token (all set)');
+    } finally {
+      spy?.mockRestore();
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    }
+  });
+
   it('env list prints the same line', async () => {
     await quietly(() => envList({}));
 

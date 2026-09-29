@@ -6,6 +6,7 @@
 import { keptMcpEntries } from './mcp-reconcile.js';
 import { resolveTeamEnv, secretState, type TeamEnv, type UnsetReference } from './env-resolution.js';
 import { referencedVars } from './resources/mcp-format.js';
+import { envName } from './resources/env-key.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { resolveEntriesFor } from './namespaced-entries.js';
@@ -55,7 +56,7 @@ export async function envAdvisories(
     .map((entry) => teamMcpToDef(entry.entry))
     .filter((server) => !excluded.has(server.name));
   const usedBy = (key: string): string[] =>
-    servers.filter((server) => referencedVars(server).includes(key)).map((server) => server.name);
+    servers.filter((server) => referencedVars(server).some((name) => envName(name) === envName(key))).map((server) => server.name);
 
   const advisories: EnvAdvisory[] = [];
   for (const secret of declarations.entries) {

@@ -12,7 +12,7 @@ import {
   type McpChange,
   type McpTarget,
 } from './mcp-reconcile.js';
-import { referencedVars } from './resources/mcp-format.js';
+import { placeholderValue, referencedVars } from './resources/mcp-format.js';
 import { reportMissingSecrets } from './env-advisories.js';
 import { resolveTeamEnv } from './env-resolution.js';
 import { carriesResolvedValue, ensureExcludedFromGit } from './mcp-git-exclude.js';
@@ -83,7 +83,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
 
     const needed = referencedVars(s);
     if (needed.length > 0) {
-      const missing = needed.filter((v) => !vars[v]);
+      const missing = needed.filter((v) => !placeholderValue(vars, v));
       const state = declarationsFailed ? 'not resolved' : missing.length === 0 ? 'all set' : `MISSING: ${missing.join(', ')}`;
       console.log(`    secrets:  ${needed.join(', ')} (${state})`);
     }
