@@ -311,6 +311,59 @@ describe('doctor — MCP servers delivered on disk', () => {
       expect((check.fix ?? '').split(path.join(projectRoot, '.mcp.json'))).toHaveLength(2);
     });
 
+    it.each([
+      ['notes it wrote a resolved value', { resolved: true }],
+      ['is an older teamai\'s, without that note', {}],
+    ])('still fails when the server\'s ${VAR} became a literal, its tool is disabled and the record %s', async (_label, note) => {
+      const { entryHash } = await import('../resources/mcp-format.js');
+      const { mcpServers } = await fse.readJson(path.join(projectRoot, '.mcp.json')) as { mcpServers: Record<string, unknown> };
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'jira', hash: entryHash(mcpServers.jira), ...note }],
+      });
+      await writeTeamMcp(
+        'servers:\n  - name: jira\n    transport: http\n    url: https://jira.example/mcp\n'
+        + '    headers:\n      Authorization: "Bearer published-literal"\n',
+      );
+      localConfig.disabledAgents = ['claude', 'tclaude'];
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain(path.join(projectRoot, '.mcp.json'));
+    });
+
+    it('fails, naming it once, for a config a pull wrote under a mcpProject the team has since changed', async () => {
+      const { trackResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+      const old = path.join(projectRoot, '.cursor', 'team-mcp.json');
+      await fse.outputJson(old, {
+        mcpServers: { jira: { type: 'http', url: 'https://jira.example/mcp', headers: { Authorization: 'Bearer t0ken' } } },
+      });
+      expect(await trackResolvedMcpFiles(localConfig, [{ tool: 'cursor', file: old }])).toBe('written');
+      await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), '/.mcp.json\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect((check.fix ?? '').split(old)).toHaveLength(2);
+      expect(check.fix).not.toContain(path.join(projectRoot, '.mcp.json'));
+    });
+
+    it('fails for a server that was in the file when a pull rebuilt the lost record, after it left mcp.yaml', async () => {
+      const { trackResolvedMcpFiles, recordUnverifiedMcpServers } = await import('../mcp-resolved-files.js');
+      const file = path.join(projectRoot, '.mcp.json');
+      await trackResolvedMcpFiles(localConfig, [{ tool: 'claude', file }]);
+      expect(await recordUnverifiedMcpServers(localConfig, [{ file, names: ['jira'] }])).toBe('written');
+      await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'h' }],
+      });
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain(file);
+    });
+
     it('names a file two tools share once', async () => {
       teamConfig.toolPaths = {
         claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: '.mcp.json' },

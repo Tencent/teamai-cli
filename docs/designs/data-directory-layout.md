@@ -436,6 +436,8 @@ every checkout, so that is where they live now:
 ├── reports-wt/                                (the side-branch locks sit beside them)
 ├── pending-learnings/                         pendingLearningsDir → <dataHome>/pending-learnings
 └── workspaces/<managedMcpWorkspaceId(root)>/
+    ├── managed-mcp.json                       managedMcpManifestPath, one per checkout
+    ├── managed-mcp-files.json                 resolvedMcpFilesPath: project MCP configs a pull wrote a resolved ${VAR} to (#882)
     └── search-index.json                      getProjectSearchIndexPath, one per checkout
 <checkout>/.teamai/                            one per checkout: committed knowledge, knowledge-wt/
 ```
@@ -652,8 +654,8 @@ the other repository, and `recall` rebuilds a missing index. `uninstall` lists, 
 how many unpublished learnings each queue in the data home holds, set-aside ones
 included, so the member can publish or copy them first.
 
-Every checkout keeps its `workspaces/<id>/` (search index, managed MCP,
-resource cache) in the shared data home. A full `pull` removes those of
+Every checkout keeps its `workspaces/<id>/` (search index, managed MCP and
+the MCP configs it wrote a resolved value to, resource cache) in the shared data home. A full `pull` removes those of
 checkouts `git worktree list` no longer shows; the fast path does not list
 worktrees.
 

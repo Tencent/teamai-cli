@@ -325,10 +325,10 @@ export async function capUsageEvents(config: LocalConfig): Promise<void> {
   }
 }
 
-/** A hook append waits at most ~250 ms for the usage lock, inside its foreground budget. */
-const APPEND_LOCK_WAIT = { attempts: 10, delayMs: 25 };
-/** A rewrite waits up to ~5 s for a peer's rewrite to finish. */
-const REWRITE_LOCK_WAIT = { attempts: 100, delayMs: 50 };
+/** A hook append waits at most ~250 ms of wall time for the usage lock, inside its foreground budget. */
+const APPEND_LOCK_WAIT = { budgetMs: 250, delayMs: 25 };
+/** A rewrite waits up to ~5 s of wall time for a peer's rewrite to finish. */
+const REWRITE_LOCK_WAIT = { budgetMs: 5_000, delayMs: 50 };
 
 /**
  * Run `fn` holding the lock every writer of this usage file takes (#788): hook
@@ -340,11 +340,14 @@ const REWRITE_LOCK_WAIT = { attempts: 100, delayMs: 50 };
  */
 async function withUsageLock(
   usagePath: string,
-  wait: { attempts: number; delayMs: number },
+  wait: { budgetMs: number; delayMs: number },
   fn: () => Promise<void>,
 ): Promise<boolean> {
   const lockPath = `${usagePath}.lock`;
-  for (let i = 0; i < wait.attempts; i++) {
+  // Wall clock, not an attempt count: a busy event loop runs each sleep late,
+  // and 100 late sleeps blow past the budget this wait promises.
+  const deadline = Date.now() + wait.budgetMs;
+  for (;;) {
     if (await acquireLock(lockPath)) {
       try {
         await foldPendingEvents(usagePath);
@@ -354,9 +357,10 @@ async function withUsageLock(
       }
       return true;
     }
-    await new Promise((r) => setTimeout(r, wait.delayMs));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise((r) => setTimeout(r, Math.min(wait.delayMs, remaining)));
   }
-  return false;
 }
 
 /** Name prefix of the side files an append writes while the usage lock is held. */

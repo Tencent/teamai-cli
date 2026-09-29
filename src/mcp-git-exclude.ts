@@ -203,7 +203,7 @@ export async function ensureExcludedFromGit(file: string, options: { dryRun?: bo
       if (add((await readFileSafe(excludeFile)) ?? '') !== null) return { kind: 'pending' };
       result = 'unchanged';
     } else {
-      result = await updateExclude(excludeFile, add);
+      result = await updateFileLocked(excludeFile, add);
     }
   } catch (e) {
     return { kind: 'failed', reason: `adding it to ${excludeFile} failed: ${e instanceof Error ? e.message : String(e)}`, fix: retry };
@@ -220,33 +220,38 @@ export async function ensureExcludedFromGit(file: string, options: { dryRun?: bo
 }
 
 /**
- * `ensureExcludedFromGit` for a file already on disk, warning when it fails
- * rather than failing the sync that wrote the file.
+ * `ensureExcludedFromGit` for a file already on disk that may hold a resolved
+ * value, warning when it fails rather than failing the sync that wrote the file.
  */
 export async function excludeFromGit(file: string): Promise<void> {
   if (!await pathExists(file)) return;
   const exclusion = await ensureExcludedFromGit(file);
   if (exclusion.kind === 'failed') {
     log.warn(
-      `${file} holds a resolved MCP variable, and teamai could not keep it out of git: ${exclusion.reason}. `
+      `${file} may hold a resolved MCP variable, and teamai could not keep it out of git: ${exclusion.reason}. `
       + `${exclusion.fix} Do not commit the file meanwhile.`,
     );
   }
 }
 
-/** How `updateExclude` left the file: `locked` wrote nothing, another command held it past the wait. */
+/** How `updateFileLocked` left the file: `locked` wrote nothing, another command held it past the wait. */
 export type ExcludeUpdate = 'written' | 'unchanged' | 'locked';
 
 /**
- * Rewrite `excludeFile` with `edit` (null: leave it as it is), holding a lock
- * across the read and an atomic write: the worktrees of a repository share the
- * file, so two commands adding different paths must not drop each other's.
+ * Rewrite `file` with `edit` (null: leave it as it is), holding a lock
+ * across the read and an atomic write: the worktrees of a repository share
+ * `.git/info/exclude`, so two commands adding different paths must not drop each other's.
  * A lock still held after the wait writes nothing: an unlocked write could drop
- * the holder's pattern, leaving that path unprotected.
+ * the holder's pattern, leaving that path unprotected. `mode` forces the file's
+ * mode; without it the file keeps its own.
  */
-async function updateExclude(excludeFile: string, edit: (content: string) => string | null): Promise<ExcludeUpdate> {
+export async function updateFileLocked(
+  file: string,
+  edit: (content: string) => string | null,
+  options: { mode?: number } = {},
+): Promise<ExcludeUpdate> {
   const { acquireLock, releaseLock } = await import('./update.js');
-  const lockPath = `${excludeFile}.teamai-lock`;
+  const lockPath = `${file}.teamai-lock`;
   let held = false;
   for (let attempt = 0; attempt < 25 && !held; attempt++) {
     held = await acquireLock(lockPath);
@@ -254,9 +259,9 @@ async function updateExclude(excludeFile: string, edit: (content: string) => str
   }
   if (!held) return 'locked';
   try {
-    const next = edit((await readFileSafe(excludeFile)) ?? '');
+    const next = edit((await readFileSafe(file)) ?? '');
     if (next === null) return 'unchanged';
-    await writeFileAtomic(excludeFile, next);
+    await writeFileAtomic(file, next, options);
     return 'written';
   } finally {
     await releaseLock(lockPath);
@@ -285,13 +290,17 @@ export async function findMcpGitExcludes(dirs: Iterable<string>): Promise<Map<st
     // Every checkout sharing the file, including a nested repository's linked worktrees elsewhere.
     const [anyCheckout] = checkouts;
     if (anyCheckout) for (const worktree of await listWorktrees(anyCheckout)) checkouts.add(worktree);
-    // Each pattern is `/<path from the root>`, glob characters escaped (see excludeFromGit).
     found.set(excludeFile, block.patterns.map((pattern) => {
-      const rel = pattern.replace(/^\//, '').replace(/\\(.)/g, '$1');
+      const rel = mcpExcludePatternPath(pattern);
       return { pattern, files: [...checkouts].map((root) => path.join(root, rel)) };
     }));
   }
   return found;
+}
+
+/** The path from its checkout's root one of teamai's patterns stands for: `/<path>`, glob characters escaped (see ensureExcludedFromGit). */
+export function mcpExcludePatternPath(pattern: string): string {
+  return pattern.replace(/^\//, '').replace(/\\(.)/g, '$1');
 }
 
 /**
@@ -299,7 +308,7 @@ export async function findMcpGitExcludes(dirs: Iterable<string>): Promise<Map<st
  * returned), and the block with its last pattern.
  */
 export async function removeMcpGitExclude(excludeFile: string, patterns: string[]): Promise<ExcludeUpdate> {
-  return updateExclude(excludeFile, (content) => {
+  return updateFileLocked(excludeFile, (content) => {
     const block = splitBlock(content);
     if (!block) return null;
     const kept = block.patterns.filter((p) => !patterns.includes(p));

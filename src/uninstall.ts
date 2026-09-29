@@ -720,10 +720,13 @@ async function buildRemovalPlan(
     if (localConfig.scope === 'project') {
       const { resolveMcpTargets, projectWorktreeConfigs } = await import('./mcp-reconcile.js');
       const { findMcpGitExcludes } = await import('./mcp-git-exclude.js');
+      const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
       const dirs: string[] = [];
       for (const cfg of await projectWorktreeConfigs(localConfig)) {
         if (cfg.projectRoot) dirs.push(cfg.projectRoot);
         for (const target of await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true })) dirs.push(path.dirname(target.file));
+        // A file a pull wrote under a toolPaths mapping since changed.
+        for (const file of Object.keys((await readResolvedMcpFiles(cfg)).files)) dirs.push(path.dirname(file));
       }
       plan.gitExcludes = await findMcpGitExcludes(dirs);
     }
@@ -1246,8 +1249,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
         // `git add -A` would commit a value teamai resolved.
         if (plan.gitExcludes.size > 0) {
           const { removeMcpGitExclude } = await import('./mcp-git-exclude.js');
-          const allFiles = [...plan.gitExcludes.values()].flatMap((entries) => entries.flatMap((entry) => entry.files));
-          const held = await mcpConfigsNotProvenClean(teamConfig, localConfig, allFiles);
+          const held = await mcpConfigsNotProvenClean(teamConfig, localConfig, [...plan.gitExcludes.values()].flat());
           for (const [excludeFile, entries] of plan.gitExcludes) {
             const clean: string[] = [];
             for (const { pattern, files } of entries) {

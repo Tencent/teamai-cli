@@ -47,7 +47,8 @@ as it was, warns, and `teamai mcp list` shows `withheld: <tool> — <reason>. <f
 Apply the fix it names (a tracked file: `git rm --cached <file>` and rotate the
 token), then run `teamai pull`. A pull or `teamai mcp remove` takes a line out
 once its file no longer holds a resolved value; `teamai uninstall` does so in
-every worktree.
+every worktree. A file written under a `toolPaths.<tool>.mcpProject` the team
+later changes or removes stays listed until it is deleted or holds no server.
 
 ## Invite a member
 

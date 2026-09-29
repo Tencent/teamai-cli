@@ -106,7 +106,13 @@ describe('viz with another repository\'s learnings checkout in the partition (#8
     git(['push', '-q', 'origin', 'main'], seed);
     const dataHome = path.join(home, '.teamai');
     const teamClone = path.join(dataHome, 'team-repo');
-    git(['clone', '-q', remote, teamClone], testRoot);
+    // `git init --bare` leaves HEAD on the runner's default branch. Coding CI's
+    // git 2.39 defaults to master, so a plain clone has no commit at HEAD and
+    // `worktree add` then dies with "invalid reference: HEAD". Check out main.
+    git(['clone', '-q', '-b', 'main', remote, teamClone], testRoot);
+    // The reports checkout commits in-process. A CI runner has no global identity.
+    git(['config', 'user.email', 't@t.co'], teamClone);
+    git(['config', 'user.name', 't'], teamClone);
     const otherSeed = path.join(testRoot, 'other-seed');
     git(['init', '-q', '-b', 'main', otherSeed], testRoot);
     fs.mkdirSync(path.join(otherSeed, 'learnings'), { recursive: true });

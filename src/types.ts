@@ -893,6 +893,11 @@ export interface ManagedMcpRecord {
   name: string;
   /** sha1 (first 16 hex) of the rendered entry; drives idempotent rewrites. */
   hash: string;
+  /**
+   * Project scope: whether the entry holds a `${VAR}` value teamai resolved
+   * (#882). Absent in records an older teamai wrote.
+   */
+  resolved?: boolean;
 }
 
 /** ~/.teamai/managed-mcp.json — team MCP servers injected per tool+scope key. */

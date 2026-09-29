@@ -8,6 +8,8 @@ import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
 import type { ResourceHandler } from './resources/base.js';
 import type { Check, DoctorContext } from './doctor.js';
+import type { DesiredMcpContext } from './mcp-reconcile.js';
+import type { ResolvedMcpFile } from './mcp-resolved-files.js';
 import {
   findEnvBlockFor,
   envBlockSourcesPath,
@@ -524,7 +526,10 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   const { projectRoot } = localConfig;
   if (!teamConfig || localConfig.scope !== 'project' || !projectRoot || localConfig.repo.kind === 'http') return [];
 
-  const { resolveMcpTargets, resolvedValueEvidence, buildVarTable } = await import('./mcp-reconcile.js');
+  const {
+    resolveMcpTargets, resolvedValueEvidence, buildVarTable, buildDesiredMcpContext, recordedMcpTargets, recordedMcpFileEvidence,
+  } = await import('./mcp-reconcile.js');
+  const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
   const { gitTracking } = await import('./mcp-git-exclude.js');
   const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
   const { resolveEntriesFor } = await import('./namespaced-entries.js');
@@ -535,20 +540,31 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
   let manifest: ManagedMcpManifest | undefined;
   let vars: Record<string, string> | undefined;
+  let ledger: Record<string, ResolvedMcpFile> | undefined;
+  let desiredContext: Promise<DesiredMcpContext> | undefined;
+  const desired = (): Promise<DesiredMcpContext> => desiredContext ??= buildDesiredMcpContext(teamConfig, localConfig);
 
   const holding = new Set<string>();
   const tracked: string[] = [];
+  const hold = async (file: string): Promise<void> => {
+    holding.add(file);
+    const tracking = await gitTracking(file);
+    if (tracking.kind === 'would-commit') tracked.push(file);
+    else if (tracking.kind === 'unknown') tracked.push(`${file} (git failed: ${tracking.error})`);
+  };
   // Every tool's file, delivery on or off, the same files and evidence pull protects. Two tools may share one.
-  for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })) {
+  const targets = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+  for (const target of targets) {
     if (holding.has(target.file) || !await pathExists(target.file)) continue;
     manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
     vars ??= await buildVarTable(localConfig);
-    const owned = (manifest[managedMcpManifestKey(target.tool, true)] ?? []).map((record) => record.name);
-    if (!await resolvedValueEvidence(target, teamDefs, owned, vars)) continue;
-    holding.add(target.file);
-    const tracking = await gitTracking(target.file);
-    if (tracking.kind === 'would-commit') tracked.push(target.file);
-    else if (tracking.kind === 'unknown') tracked.push(`${target.file} (git failed: ${tracking.error})`);
+    ledger ??= (await readResolvedMcpFiles(localConfig)).files;
+    const owned = manifest[managedMcpManifestKey(target.tool, true)] ?? [];
+    if (await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, desired)) await hold(target.file);
+  }
+  // And a file a pull wrote under a mapping the team has since changed.
+  for (const [file, group] of await recordedMcpTargets(localConfig, targets)) {
+    if (await recordedMcpFileEvidence(group)) await hold(file);
   }
   if (holding.size === 0) return [];
 
