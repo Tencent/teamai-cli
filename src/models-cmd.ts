@@ -496,6 +496,10 @@ export async function modelsSwitch(reference: string, options: SwitchOptions): P
     const answer = await askSecret(`API key for ${key}${gatewaySuffix(ref, 'at')}: `);
     if (!answer) throw new Error(`Profile ${key} needs an API key`);
     if (ref.source === 'team' && context.localConfig) await assertNoShadowingLegacyWrite(context.localConfig);
+    // Put the key in the copy the rest of this command resolves against first,
+    // so every save below already carries it (the lock re-read full the team
+    // snapshot from disk).
+    setStoredApiKey(ref, values, { value: answer });
     if (ref.source === 'team') {
       // Hold the target's lock and re-read inside it, like `configure`.
       await withTeamValuesLock(file, async () => {
@@ -506,9 +510,6 @@ export async function modelsSwitch(reference: string, options: SwitchOptions): P
     } else {
       await saveModelInputs(file, values);
     }
-    // Keep the copy the rest of this command resolves against in sync with
-    // what was saved (the lock re-read only fills `current`).
-    setStoredApiKey(ref, values, { value: answer });
   } else if (!isApiKeyConfigured(stored) && !stored?.env) {
     throw new Error(`Profile ${key} has no API key${gatewaySuffix(ref, 'for')}. Run \`teamai models configure ${key}\`.`);
   }

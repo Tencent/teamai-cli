@@ -4,9 +4,16 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsSwitch } from '../models-cmd.js';
 import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../models/profile.js';
+import { askSecret, isInteractive } from '../utils/prompt.js';
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../utils/prompt.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/prompt.js')>()),
+  isInteractive: vi.fn(() => false),
+  askSecret: vi.fn(),
 }));
 
 let home: string;
@@ -140,6 +147,21 @@ describe('models commands', () => {
     await addMine();
     await fse.writeJson(getLocalValuesPath(), {});
     await expect(modelsSwitch('mine', {})).rejects.toThrow(/has no API key. Run `teamai models configure local:mine`/);
+  });
+
+  it('persists the key asked for on the first interactive switch to a personal profile', async () => {
+    await fse.outputJson(path.join(home, '.claude', 'settings.json'), {});
+    await addMine();
+    await fse.writeJson(getLocalValuesPath(), {});
+    vi.mocked(isInteractive).mockReturnValue(true);
+    vi.mocked(askSecret).mockResolvedValue('sk-interactive');
+    try {
+      await captureOutput(() => modelsSwitch('mine', { agent: ['claude'] }));
+      expect(await loadModelInputs(getLocalValuesPath())).toEqual({ 'local:mine': { API_KEY: { value: 'sk-interactive' } } });
+      expect((await fse.readJson(path.join(home, '.claude', 'settings.json'))).model).toBe('glm-5.3');
+    } finally {
+      vi.mocked(isInteractive).mockReturnValue(false);
+    }
   });
 
   it('restores every managed agent by default and reports when nothing is managed', async () => {
