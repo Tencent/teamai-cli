@@ -255,19 +255,17 @@ export function sameTeamIdentity(stored: string | undefined, localConfig: LocalC
 }
 
 /**
- * The team values file for `localConfig`, migrating a legacy
- * `<slug>-<digest>.json` to the hash-only name when (and only when) the
- * hash-only file does not exist yet. Returns the path the current scheme
- * reads and writes. Under `dryRun` nothing is renamed and the newest legacy
- * file's path is returned instead, so a dry run previews the real run exactly:
- * it reads the same keys the real run would migrate and read. When several
- * legacy files match — a team renamed between re-entering keys left stale
- * copies — the newest one wins, so the latest entered keys survive and older
- * files are left behind, not silently adopted. Matching is by digest alone: a
- * file under an earlier team name (a rename the user never re-entered keys
- * after) is still this team's file.
+ * The file to read this team's values from, and where the next save lands:
+ * the hash-only name, or — when it does not exist yet — the newest legacy
+ * `<slug>-<digest>.json` an older version could have written for this
+ * checkout. Legacy files are read where they lie; nothing is renamed, linked,
+ * or copied, so a dry run needs no special casing and no filesystem quirk
+ * (races, unsupported hard links, partial targets) can strand the keys. The
+ * next save writes the hash-only file, which then shadows the legacy one.
+ * Matching is by digest alone: a file under an earlier team name (a rename
+ * the user never re-entered keys after) is still this team's file.
  */
-export async function migrateTeamValuesPath(localConfig: LocalConfig, options: { dryRun?: boolean } = {}): Promise<string> {
+export async function findTeamValuesPath(localConfig: LocalConfig): Promise<string> {
   const target = getTeamValuesPath(localConfig);
   if (fs.existsSync(target)) return target;
   const candidates = new Set(legacyTeamValueHashes(localConfig));
@@ -276,7 +274,7 @@ export async function migrateTeamValuesPath(localConfig: LocalConfig, options: {
   try {
     entries = await fs.promises.readdir(dir);
   } catch {
-    return target; // no teams directory yet — nothing to migrate
+    return target; // no teams directory yet — nothing to read
   }
   const matching: Array<{ entry: string; mtime: number }> = [];
   for (const entry of entries) {
@@ -286,62 +284,12 @@ export async function migrateTeamValuesPath(localConfig: LocalConfig, options: {
       const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
       matching.push({ entry, mtime: mtimeMs });
     } catch {
-      // Removed by a concurrent process between readdir and stat; nothing to migrate.
+      // Removed by a concurrent process between readdir and stat; nothing to read.
     }
   }
   // newest first; equal timestamps take the lexicographically last name
   matching.sort((a, b) => b.mtime - a.mtime || b.entry.localeCompare(a.entry));
-  for (const { entry } of matching) {
-    const source = path.join(dir, entry);
-    if (options.dryRun) return source; // preview: read what the real run would migrate
-    let migrated = false;
-    try {
-      // link + unlink, not rename: linking the target first fails with EEXIST
-      // when a concurrent process migrated another file there already, so this
-      // one never replaces newer keys with its older candidate.
-      await fs.promises.link(source, target);
-      migrated = true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') return target; // the concurrent migration won; ours stays put
-      // Filesystems that reject hard links (EPERM, ENOTSUP, ...) must not
-      // strand the keys: fall back to an exclusive, never-overwriting copy.
-      if (code !== 'ENOENT' && await copyNoClobber(source, target)) migrated = true;
-      // ENOENT (source gone) or a failed copy: try the next-newest candidate.
-    }
-    if (!migrated) continue;
-    await fs.promises.unlink(source).catch(() => {});
-    return target;
-  }
-  return target;
-}
-
-/**
- * Copy `source` to `target` for filesystems that reject hard links, never
- * overwriting and never exposing a partial file: the content is written to a
- * unique temp file first and then linked into place. The link claims creation
- * exclusively (a concurrent migration's temp file wins, ours is removed), and
- * until it succeeds the target does not exist, so a concurrent reader either
- * sees the complete previous file or none at all. True only when this call
- * created the target.
- */
-async function copyNoClobber(source: string, target: string): Promise<boolean> {
-  let content: string;
-  try {
-    content = await fs.promises.readFile(source, 'utf8');
-  } catch {
-    return false; // the source vanished; the caller tries its next candidate
-  }
-  const temp = `${target}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
-  try {
-    await fs.promises.writeFile(temp, content, { encoding: 'utf8', mode: 0o600 });
-    await fs.promises.link(temp, target);
-    return true;
-  } catch {
-    return false; // a concurrent migration claimed the target first, or the write failed
-  } finally {
-    await fs.promises.unlink(temp).catch(() => {}); // remove ours unless the link moved it
-  }
+  return matching.length > 0 ? path.join(dir, matching[0]?.entry ?? '') : target;
 }
 
 /** One profiles file, or why it cannot be used; null when it does not exist. `label` names it in the reason. */

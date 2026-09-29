@@ -10,6 +10,7 @@ import {
   ModelAgentSchema,
   ModelProfileSchema,
   ModelProtocolSchema,
+  findTeamValuesPath,
   getLocalValuesPath,
   gatewaySuffix,
   getTeamIdentity,
@@ -20,7 +21,6 @@ import {
   isApiKeyConfigured,
   loadLocalProfiles,
   loadModelInputs,
-  migrateTeamValuesPath,
   profileAgents,
   profileModels,
   profileOrigin,
@@ -80,21 +80,23 @@ async function teamContext(): Promise<TeamModelsContext | null> {
 }
 
 /**
- * This team's stored keys, with any key a 0.26.0 beta stored bound to its
- * gateway first (`bindLegacyTeamKeys`) and saved that way, unless `dryRun`.
- * The dry-run flag also keeps the legacy filename migration from renaming the
- * secrets file: a dry run never writes.
+ * This team's stored keys, read from the hash-only file or, while it does not
+ * exist yet, the newest legacy `<slug>-<digest>.json` an older version wrote —
+ * read where it lies, never renamed. Any key a 0.26.0 beta stored is bound to
+ * its gateway first (`bindLegacyTeamKeys`) and saved — to the hash-only file —
+ * unless `dryRun`.
  */
 async function loadTeamValues(
   localConfig: LocalConfig,
   team: TeamModelProfiles,
   options: { dryRun?: boolean } = {},
 ): Promise<StoredModelInputs> {
-  const file = await migrateTeamValuesPath(localConfig, options);
-  const values = await loadModelInputs(file);
+  const readFrom = await findTeamValuesPath(localConfig);
+  const values = await loadModelInputs(readFrom);
   const sentTo = await switchedGatewayOrigins(localConfig);
   if (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) && !options.dryRun) {
-    await saveModelInputs(file, values);
+    // Save to the current name, which then shadows the legacy file.
+    await saveModelInputs(getTeamValuesPath(localConfig), values);
   }
   return values;
 }

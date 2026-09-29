@@ -18,7 +18,7 @@ Model profiles let a team publish one gateway catalog that every supported agent
 | Team-profile API keys | `~/.teamai/models/teams/<repo-identity-hash>.json` | No, mode `0600` | Key or env-var name |
 | Ownership and restore state | `~/.teamai/models/managed.json` | No, mode `0600` | May hold previous and written keys |
 
-A key is either stored or referenced as an environment variable; it is never accepted as a command-line argument. `0600` is not encryption. The team-key file name is a hash of the repository identity; the sanitized `teamai.yaml` team name plays no part in it, so renaming the team never orphans the keys. A legacy `<slug>-<hash>.json` from an older version is migrated to the hash-only name on first read, and the identity is recorded with each `team:` switch so `pull` only re-applies the current team's profiles. Inside it, each key is stored under `team:<id>@<origin>`; see [Namespaces and key binding](#namespaces-and-key-binding).
+A key is either stored or referenced as an environment variable; it is never accepted as a command-line argument. `0600` is not encryption. The team-key file name is a hash of the repository identity; the sanitized `teamai.yaml` team name plays no part in it, so renaming the team never orphans the keys. While the hash-only file does not exist yet, a legacy `<slug>-<hash>.json` from an older version is read where it lies — nothing is renamed — and the next save writes the hash-only name. The identity is recorded with each `team:` switch so `pull` only re-applies the current team's profiles. Inside it, each key is stored under `team:<id>@<origin>`; see [Namespaces and key binding](#namespaces-and-key-binding).
 
 ## Catalog and protocols
 
