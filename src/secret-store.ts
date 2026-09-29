@@ -64,23 +64,23 @@ export function getTeamSecretsPath(localConfig: LocalConfig): string {
   return path.join(getTeamaiHomeDir(), 'secrets', 'teams', `${hash}.json`);
 }
 
-/** Each scheme's default port, and the family whose URLs of one repo share a file. */
+/** Each scheme's default port, and the family whose URLs of one repo share a file: http and https are not one. */
 const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly defaultPort: string }> = new Map([
   ['ssh', { family: 'ssh', defaultPort: '22' }],
   ['git+ssh', { family: 'ssh', defaultPort: '22' }],
   ['ssh+git', { family: 'ssh', defaultPort: '22' }],
-  ['https', { family: 'http', defaultPort: '443' }],
+  ['https', { family: 'https', defaultPort: '443' }],
   ['http', { family: 'http', defaultPort: '80' }],
   ['git', { family: 'git', defaultPort: '9418' }],
 ]);
 
 /**
  * A team repo URL as the part of it that says which repo it is: scheme family
- * (ssh or http(s)), lowercased host, a port other than the scheme's default,
+ * (ssh, https or http), lowercased host, a port other than the scheme's default,
  * and the path as written. Only credentials, the ssh user, a trailing `.git`
  * and slashes are dropped, so `git@host:acme/team.git` and
  * `ssh://git@host:22/acme/team` name one file, while two repos on one host
- * with different ports never share values. Not `normalizeRepoUrlForCompare`:
+ * with different ports, or behind http and https, never share values. Not `normalizeRepoUrlForCompare`:
  * it drops the port, and its callers compare loosely on purpose.
  */
 function repoIdentity(url: string): string {

@@ -113,12 +113,22 @@ describe('team secret values', () => {
         for (const remote of [
           'https://user:fixture-pass@EXAMPLE.com/acme/team/',
           'https://example.com:443/acme/team.git',
-          'http://example.com:80/acme/team',
         ]) expect(fileFor(remote)).toBe(getTeamSecretsPath(localConfig));
       });
 
+      it('gives the http and https URLs of a repo different files, each with its default port written or not', () => {
+        expect(fileFor('http://example.com/acme/team.git')).not.toBe(getTeamSecretsPath(localConfig));
+        expect(fileFor('http://example.com:80/acme/team')).toBe(fileFor('http://example.com/acme/team.git'));
+        expect(fileFor('http://example.com:443/acme/team.git')).not.toBe(getTeamSecretsPath(localConfig));
+      });
+
       it('gives the scp form and the ssh URL of one repo the same file, with the default port written or not', () => {
-        for (const remote of ['ssh://git@example.com/acme/team', 'ssh://git@EXAMPLE.com:22/acme/team.git/']) {
+        for (const remote of [
+          'ssh://git@example.com/acme/team',
+          'ssh://git@EXAMPLE.com:22/acme/team.git/',
+          'git+ssh://git@example.com/acme/team.git',
+          'ssh+git://git@example.com:22/acme/team.git',
+        ]) {
           expect(fileFor(remote)).toBe(fileFor('git@example.com:acme/team.git'));
         }
       });
