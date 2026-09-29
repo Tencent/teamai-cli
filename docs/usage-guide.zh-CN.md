@@ -270,6 +270,7 @@ Windows 与 macOS 的默认文件系统上它们是同一个目录，限定到�
 ```bash
 teamai projects list                 # 已定义的项目 + 本目录激活的项目
 teamai projects set hai-inference    # 设置本目录激活的项目（覆盖语义；逗号分隔或重复；留空清除）
+teamai projects set hai-inference --dry-run # 预览选择，不保存配置
 teamai projects members hai-inference # 查看某项目下注册了哪些成员
 
 # 管理员：修改 manifest/projects.yaml 并发起 PR（均支持 --dry-run）

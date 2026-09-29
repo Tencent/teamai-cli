@@ -81,9 +81,9 @@ export async function projectsList(_options: GlobalOptions): Promise<void> {
 
 export async function projectsSet(
   ids: string[],
-  _options: GlobalOptions,
+  options: GlobalOptions,
 ): Promise<void> {
-  const { localConfig } = await autoDetectInit();
+  const { localConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
   const repoPath = localConfig.repo.localPath;
 
   const manifest = await loadProjectsManifest(repoPath);
@@ -103,6 +103,12 @@ export async function projectsSet(
 
   // Overwrite semantics for this directory (contrast the member roster, which appends).
   const updatedConfig = { ...localConfig, projects: requested };
+
+  if (options.dryRun) {
+    const value = requested.length > 0 ? requested.join(', ') : '(none)';
+    log.info(`[dry-run] Would set active projects to: ${value}`);
+    return;
+  }
 
   if (localConfig.scope === 'project' && localConfig.projectRoot) {
     await saveLocalConfigForScope(updatedConfig, localConfig.scope, localConfig.projectRoot);

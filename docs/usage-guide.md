@@ -297,6 +297,7 @@ offending entry.
 ```bash
 teamai projects list                 # Defined projects + the ones active in this directory
 teamai projects set hai-inference    # Set active project(s) for this directory (overwrite; comma-separated or repeated; empty to clear)
+teamai projects set hai-inference --dry-run # Preview the selection without saving it
 teamai projects members hai-inference # Who is registered on a project
 
 # Admin: edit manifest/projects.yaml and open a PR (all support --dry-run)

@@ -64,6 +64,23 @@ function writeSkill(repoPath: string, namespace: string, name: string): void {
   );
 }
 
+function snapshotLocalConfigAndState(roots: string[]): string[] {
+  const snapshots: string[] = [];
+  const visit = (dir: string): void => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(fullPath);
+      } else if (entry.isFile() && (entry.name === 'config.yaml' || entry.name === 'state.json')) {
+        snapshots.push(`${fullPath}\0${fs.readFileSync(fullPath, 'utf8')}`);
+      }
+    }
+  };
+  for (const root of roots) visit(root);
+  return snapshots.sort();
+}
+
 describe('projects add/update/remove via the real CLI (issue #756)', () => {
   let sandbox: string;
   let home: string;
@@ -211,6 +228,21 @@ describe('projects add/update/remove via the real CLI (issue #756)', () => {
     expect(fs.existsSync(path.join(memberRoot, '.claude', 'rules', 'shared-rule.md'))).toBe(true);
     expect(fs.existsSync(path.join(memberRoot, '.claude', 'agents', 'alpha-agent.md'))).toBe(false);
   }, 60_000);
+
+  it('projects set --dry-run previews a selection without saving config or pull state', async () => {
+    const localDataRoots = [path.join(memberRoot, '.teamai'), path.join(home, '.teamai')];
+    const before = snapshotLocalConfigAndState(localDataRoots);
+
+    const set = await runCLI(['projects', 'set', 'beta', '--dry-run'], memberRoot, home);
+    expect(set.code, set.output).toBe(0);
+    expect(set.output).toContain('[dry-run] Would set active projects to: beta');
+    expect(snapshotLocalConfigAndState(localDataRoots)).toEqual(before);
+
+    const clear = await runCLI(['projects', 'set', '--dry-run'], memberRoot, home);
+    expect(clear.code, clear.output).toBe(0);
+    expect(clear.output).toContain('[dry-run] Would set active projects to: (none)');
+    expect(snapshotLocalConfigAndState(localDataRoots)).toEqual(before);
+  }, 30_000);
 });
 
 // ─── #802: the removed project's rule was the member's only team rule ───────
