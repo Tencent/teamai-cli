@@ -88,7 +88,7 @@ async function memberEnvironmentAt(
     if (exported.some((exports) => [...exports].some((entry) => sameName(entry) && entry[1] === value))) return undefined;
     const digest = exportDigest(key, value);
     if (recorded.some((exports) => [...exports].some((entry) => sameName(entry) && entry[1].has(digest)))) return undefined;
-    if (scope.secretKeys.has(key) && scope.envYaml.get(key) === value) return undefined;
+    if (scope.secretKeys.has(key) && [...scope.envYaml].some((entry) => sameName(entry) && entry[1] === value)) return undefined;
     return value;
   };
 }
