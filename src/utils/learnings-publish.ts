@@ -71,8 +71,11 @@ export async function publishQueuedLearnings(
   // the learnings stay queued and the run that holds the lock publishes them.
   // `pull` already holds the lock when it calls this, and the lock is not
   // reentrant, so it says so instead of deadlocking against itself.
+  // Under a preview no lock is taken: `acquireLock` reads its state and answers
+  // what a real run would get instead, so nothing is created and nothing is
+  // left behind (#866).
   const syncLock = options.holdsSyncLock ? null : syncLockPath(localConfig);
-  const locked = syncLock === null || await acquireLock(syncLock);
+  const locked = syncLock === null || await acquireLock(syncLock, { dryRun: options.dryRun });
   try {
     return await publishUnderSyncLock(localConfig, username, locked, options.dryRun === true);
   } finally {
@@ -90,7 +93,10 @@ async function publishUnderSyncLock(
   // two commands at once would each queue the same file.
   if (locked && !dryRun) await queueImportRemnants(localConfig);
 
-  const listing = await listPendingForInstall(localConfig);
+  // `dryRun` travels with it: listing takes the queue lock, and taking a lock is
+  // a write — the empty `locks/` directory a preview would otherwise leave on an
+  // install that has none yet (#866).
+  const listing = await listPendingForInstall(localConfig, { dryRun });
   switch (listing.status) {
     case 'listed':
       break;

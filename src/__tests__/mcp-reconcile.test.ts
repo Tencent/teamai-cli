@@ -1261,8 +1261,55 @@ servers:
         expect(await excludeOf(projectRoot)).not.toMatch(/team-mcp\.json/);
       });
 
-      it('leaves a file it does not find a resolved value in alone', async () => {
+      it.each([
+        ['removed its server', async () => {
+          await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
+        }],
+        ['renamed its server, whose variable is no longer set', async () => {
+          await writeMcpYaml(withSecret.replace('with-secret', 'renamed'));
+          vi.stubEnv('SECRET_TOKEN', '');
+        }],
+      ])('is listed and recorded when the team also %s', async (_label, arrange) => {
+        await arrange();
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await fse.readFile(customFile(), 'utf-8')).toContain('super-secret-value');
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/team-mcp\.json$/m);
+        expect((await ledger()).files[customFile()]).toEqual({ tools: ['cursor'] });
+        await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/team-mcp\.json$/m);
+      });
+
+      // No record describes that path any more, so a server of the member's own cannot be told from an older teamai's.
+      it('lists and records a file holding only a server of the member\'s own', async () => {
         await fse.writeJson(customFile(), { mcpServers: { mine: { type: 'http', url: 'https://mine.example/mcp' } } });
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/team-mcp\.json$/m);
+        expect((await ledger()).files[customFile()]).toEqual({ tools: ['cursor'] });
+      });
+
+      it('leaves a file git tracks alone: an exclude line does nothing for it', async () => {
+        await fse.writeJson(customFile(), { mcpServers: { mine: { type: 'http', url: 'https://mine.example/mcp' } } });
+        git(projectRoot, 'add', '-f', '.cursor/team-mcp.json');
+        git(projectRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'mine');
+        vi.mocked(log.warn).mockClear();
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).not.toMatch(/team-mcp\.json/);
+        expect(Object.keys((await ledger()).files)).not.toContain(customFile());
+        expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).not.toMatch(/team-mcp\.json/);
+        expect((await ledger()).earlierMappingsRead).toBe(true);
+      });
+
+      it('leaves a file that holds no server alone', async () => {
+        await fse.writeJson(customFile(), { mcpServers: {} });
 
         await reconcileMcpForConfig(teamConfig, projectConfig);
 

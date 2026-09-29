@@ -55,6 +55,7 @@ import {
   ensureExcludedFromGit,
   excludeFromGit,
   findMcpGitExcludes,
+  gitTracks,
   mcpExcludePatternPath,
   realFilePath,
   removeMcpGitExclude,
@@ -704,7 +705,8 @@ const EARLIER_BUILTIN_MCP_PROJECT = {
 /**
  * The files earlier revisions of the team's teamai.yaml mapped a tool's
  * project MCP config to (`toolPaths.<tool>.mcpProject`) that exist under the
- * project root, and that no target in `known` and no file `cfg`'s worktree
+ * project root, that git does not track (no exclude line applies to one it
+ * does), and that no target in `known` and no file `cfg`'s worktree
  * recorded is (#882): a teamai from before managed-mcp-files.json may have
  * written a resolved value there, under a mapping the team changed before
  * this member's first pull on a teamai that records one, plus those under a
@@ -749,7 +751,7 @@ export async function earlierMappedMcpTargets(cfg: LocalConfig, known: McpTarget
       const real = await realFilePath(file);
       const inside = path.relative(root, real);
       if (inside === '' || inside === '..' || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) continue;
-      if (reached.has(real) || !await pathExists(file)) continue;
+      if (reached.has(real) || !await pathExists(file) || (await gitTracks(file)).kind === 'tracked') continue;
       found.set(key, { tool, format, file, projectScope: true });
     }
   }
@@ -777,8 +779,23 @@ export async function recordedMcpFileEvidence(targets: McpTarget[]): Promise<str
   const state = await mcpFileState(targets);
   if (state.kind === 'unparsable') return 'it does not parse';
   return state.kind === 'parsed' && state.servers.length > 0
-    ? 'teamai wrote a resolved value to it under an earlier toolPaths mapping, and it still holds MCP servers'
+    ? 'teamai may have written a resolved value to it under an earlier toolPaths mapping, and it still holds MCP servers'
     : null;
+}
+
+/**
+ * Why a file `earlierMappedMcpTargets` returned may hold a value an older
+ * teamai resolved, or null: judged as a recorded file is, since the
+ * manifest's records for its tool describe the file today's mapping reaches,
+ * not this one, plus the value scan.
+ */
+export async function earlierMappedMcpFileEvidence(
+  target: McpTarget,
+  teamDefs: McpServerDef[] | null,
+  vars: Record<string, string>,
+  ctx: () => Promise<DesiredMcpContext>,
+): Promise<string | null> {
+  return await recordedMcpFileEvidence([target]) ?? await resolvedValueEvidence(target, teamDefs, { owned: [] }, vars, ctx);
 }
 
 /**
@@ -1047,8 +1064,8 @@ async function protectProjectMcpConfigs(
     return null;
   });
   for (const target of earlier ?? []) {
-    const owned = manifest[managedMcpManifestKey(target.tool, true)] ?? [];
-    observations.push({ file: target.file, tool: target.tool, state: await mcpFileState([target]), holding: await holds(target, owned), owned: [] });
+    const holding = await earlierMappedMcpFileEvidence(target, teamDefs, vars, ctx) !== null;
+    observations.push({ file: target.file, tool: target.tool, state: await mcpFileState([target]), holding, owned: [] });
   }
   const holding = new Set(observations.filter((o) => o.holding).map((o) => o.file));
   const unproven = new Set(observations.filter((o) => !o.holding).map((o) => o.file));

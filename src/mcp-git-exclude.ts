@@ -144,7 +144,7 @@ export async function gitTracking(file: string): Promise<GitTracking> {
  * it, and no exclude rule stops that. Read-only. `unknown` is git failing to
  * answer: never read it as untracked.
  */
-async function gitTracks(file: string): Promise<{ kind: 'tracked' } | { kind: 'untracked' } | { kind: 'unknown'; error: string }> {
+export async function gitTracks(file: string): Promise<{ kind: 'tracked' } | { kind: 'untracked' } | { kind: 'unknown'; error: string }> {
   file = await realFilePath(file);
   // The file, or even its directory, may be gone from disk and still be in the index.
   const dir = await existingAncestor(file);

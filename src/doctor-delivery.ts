@@ -528,6 +528,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
 
   const {
     resolveMcpTargets, resolvedValueEvidence, buildVarTable, buildDesiredMcpContext, recordedMcpTargets, recordedMcpFileEvidence,
+    earlierMappedMcpTargets, earlierMappedMcpFileEvidence,
   } = await import('./mcp-reconcile.js');
   const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
   const { gitPathOf, gitTracking } = await import('./mcp-git-exclude.js');
@@ -565,6 +566,15 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   // And a file a pull wrote under a mapping the team has since changed.
   for (const [file, group] of await recordedMcpTargets(localConfig, targets)) {
     if (await recordedMcpFileEvidence(group)) await hold(file);
+  }
+  // And, until a pull on this version reads them, those an older teamai wrote under a mapping an earlier
+  // teamai.yaml made. Read-only: the record of that read is pull's. Unreadable history skips them.
+  if (!(await readResolvedMcpFiles(localConfig)).earlierMappingsRead) {
+    const earlier = await earlierMappedMcpTargets(localConfig, targets).catch(() => null) ?? [];
+    for (const target of earlier) {
+      vars ??= await buildVarTable(localConfig);
+      if (!holding.has(target.file) && await earlierMappedMcpFileEvidence(target, teamDefs, vars, desired)) await hold(target.file);
+    }
   }
   if (holding.size === 0) return [];
 
