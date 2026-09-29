@@ -83,6 +83,12 @@ describe('model profiles', () => {
     } finally {
       await fse.remove(claimRepo);
     }
+    // The local path was hashed only when nothing better was configured: a
+    // path-only config still matches, but one with a URL must not — the same
+    // path can later hold a different team's checkout.
+    const pathOnly = { repo: { localPath: '/tmp/example/hai', remote: 'origin' } } as LocalConfig;
+    expect(sameTeamIdentity(`hai-platform-${digest('/tmp/example/hai')}`, pathOnly)).toBe(true);
+    expect(sameTeamIdentity(`hai-platform-${digest('/tmp/example/hai')}`, config)).toBe(false);
   });
 
   it('migrates the newest legacy file when several match, and renames nothing under dryRun', async () => {
@@ -135,6 +141,56 @@ describe('model profiles', () => {
       // And the real run after it still migrates.
       expect(await migrateTeamValuesPath(config)).toBe(target);
       expect(JSON.parse(await fse.readFile(target, 'utf8'))['team:gw']['API_KEY'].value).toBe('old');
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
+  it('copies instead of linking on filesystems that reject hard links', async () => {
+    const previous = process.env.HOME;
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-nolink-'));
+    process.env.HOME = home;
+    try {
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      const config = { repo: { localPath: '/tmp/example/hai', remote: 'origin', url: 'https://example.test/hai.git' } } as LocalConfig;
+      const target = getTeamValuesPath(config);
+      const dir = path.dirname(target);
+      await fse.ensureDir(dir);
+      const legacy = path.join(dir, `hai-platform-${digest('https://example.test/hai.git')}.json`);
+      await fse.writeFile(legacy, '{"team:gw":{"API_KEY":{"value":"copied"}}}');
+      const linkSpy = vi.spyOn(fs.promises, 'link').mockRejectedValue(Object.assign(new Error('no links'), { code: 'EPERM' }));
+      try {
+        expect(await migrateTeamValuesPath(config)).toBe(target);
+        expect(JSON.parse(await fse.readFile(target, 'utf8'))['team:gw']['API_KEY'].value).toBe('copied');
+        expect(await fse.pathExists(legacy)).toBe(false);
+      } finally {
+        linkSpy.mockRestore();
+      }
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
+  it('never adopts a local-path digest when a URL was configured', async () => {
+    const previous = process.env.HOME;
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-path-'));
+    process.env.HOME = home;
+    try {
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      const config = { repo: { localPath: '/tmp/example/hai', remote: 'origin', url: 'https://example.test/hai.git' } } as LocalConfig;
+      const target = getTeamValuesPath(config);
+      const dir = path.dirname(target);
+      await fse.ensureDir(dir);
+      // What a previous team keyed on the default path left behind.
+      const stale = path.join(dir, `old-team-${digest('/tmp/example/hai')}.json`);
+      await fse.writeFile(stale, '{"team:old":{"API_KEY":{"value":"old-team-key"}}}');
+      expect(await migrateTeamValuesPath(config)).toBe(target);
+      expect(await fse.pathExists(target)).toBe(false);
+      expect(await fse.pathExists(stale)).toBe(true);
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;

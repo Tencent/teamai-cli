@@ -216,22 +216,25 @@ function repoClaim(localPath: string): string | null {
 
 /**
  * The 10-hex digests older versions of `getTeamValuesPath` hashed for this
- * checkout: the non-origin/upstream remote (the raw alias too — it never
- * names a file any more, but an older file may carry its digest), the URL,
- * the `repo:` claim in teamai.yaml (it overrode the identity there, so its
- * digest is what the stored file carries), or the local path. A legacy values
- * file matches by digest alone — its slug records the team's name when it was
- * written, which a rename silently changes, so it can never be required.
+ * checkout. The old implementation hashed exactly one identity — the
+ * teamai.yaml `repo:` claim when present, else the configured remote, else
+ * the URL, else the local path — so the candidates cover the configs this
+ * checkout may have carried when the file was written. The local path is a
+ * candidate only when nothing better was configured: a default-path clone
+ * re-initialized for another team with a URL must never adopt the previous
+ * team's file. A legacy values file matches by digest alone — its slug
+ * records the team's name when it was written, which a rename silently
+ * changes, so it can never be required.
  */
 function legacyTeamValueHashes(localConfig: LocalConfig): string[] {
   const { remote, url, localPath } = localConfig.repo;
+  const configuredRemote = remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined;
   const candidates = [
-    remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined,
-    url,
-    // The identity the old implementation actually keyed on: a `repo:` claim
-    // in teamai.yaml overrode it, so its digest is what the stored file carries.
     repoClaim(localPath),
-    localPath,
+    configuredRemote,
+    url,
+    // Only when the old implementation would have keyed on the path itself.
+    configuredRemote === undefined && !url ? localPath : undefined,
   ];
   const identities = candidates.filter((value): value is string => typeof value === 'string' && value.length > 0);
   return [...new Set(identities.map((identity) => crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10)))];
@@ -291,19 +294,55 @@ export async function migrateTeamValuesPath(localConfig: LocalConfig, options: {
   for (const { entry } of matching) {
     const source = path.join(dir, entry);
     if (options.dryRun) return source; // preview: read what the real run would migrate
+    let migrated = false;
     try {
       // link + unlink, not rename: linking the target first fails with EEXIST
       // when a concurrent process migrated another file there already, so this
       // one never replaces newer keys with its older candidate.
       await fs.promises.link(source, target);
-      await fs.promises.unlink(source);
-      return target;
-    } catch {
-      // Gone, migrated by a concurrent process, or no link support; try the
-      // next-newest match, and read whatever is at target now.
+      migrated = true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') return target; // the concurrent migration won; ours stays put
+      // Filesystems that reject hard links (EPERM, ENOTSUP, ...) must not
+      // strand the keys: fall back to an exclusive, never-overwriting copy.
+      if (code !== 'ENOENT' && await copyNoClobber(source, target)) migrated = true;
+      // ENOENT (source gone) or a failed copy: try the next-newest candidate.
     }
+    if (!migrated) continue;
+    await fs.promises.unlink(source).catch(() => {});
+    return target;
   }
   return target;
+}
+
+/**
+ * Copy `source` to `target` for filesystems that reject hard links, never
+ * overwriting: the target is opened exclusively, and a failed write removes
+ * the partial file. True only when this call created the target.
+ */
+async function copyNoClobber(source: string, target: string): Promise<boolean> {
+  let content: string;
+  try {
+    content = await fs.promises.readFile(source, 'utf8');
+  } catch {
+    return false; // the source vanished; the caller tries its next candidate
+  }
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(target, 'wx', 0o600);
+  } catch {
+    return false; // a concurrent migration put a file there first
+  }
+  try {
+    await handle.writeFile(content);
+  } catch {
+    await handle.close().catch(() => {});
+    await fs.promises.unlink(target).catch(() => {}); // never leave a partial values file
+    return false;
+  }
+  await handle.close().catch(() => {});
+  return true;
 }
 
 /** One profiles file, or why it cannot be used; null when it does not exist. `label` names it in the reason. */
