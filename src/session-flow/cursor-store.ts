@@ -525,6 +525,25 @@ function esc(value: string): string {
   return value.replace(/'/g, "''");
 }
 
+const CURSOR_SESSION_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Null when `id` is a UUID; otherwise a reason. Callers must not interpolate it into SQL. */
+export function assertCursorSessionId(id: string): string | null {
+  return CURSOR_SESSION_ID_RE.test(id) ? null : 'invalid session id';
+}
+
+/**
+ * Indexed delete of one composer's bubbles. LIKE cannot use the unique index
+ * (it is case-insensitive) and treats `%` / `_` as wildcards.
+ * The upper bound bumps the separating `:` to `;`, which sorts after every
+ * `bubbleId:<id>:<bubble>`, including bubble ids that start with a-f.
+ */
+export function cursorBubbleCleanupWhere(composerId: string): string {
+  const id = esc(composerId);
+  return `key >= 'bubbleId:${id}:' AND key < 'bubbleId:${id};'`;
+}
+
 export interface RegisterResult {
   ok: boolean;
    /** Failure reason (ok=false; for the CLI debug log). */
@@ -539,6 +558,9 @@ export interface RegisterResult {
  * migration failure -- the transcript is on disk, a failed registration only
  */
 export function registerCursorComposer(args: RegisterCursorComposerArgs): RegisterResult {
+  const invalidId = assertCursorSessionId(args.composerId);
+  if (invalidId) return { ok: false, reason: invalidId };
+
   const dbPath = getCursorStateDbPath();
   if (!dbPath) return { ok: false, reason: 'unsupported platform' };
   if (!fs.existsSync(dbPath)) return { ok: false, reason: `state db not found: ${dbPath}` };
@@ -579,7 +601,7 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
       `VALUES ('${esc(args.composerId)}','${esc(ws.id)}',${createdMs},${recencyMs},0,0,${recencyMs},NULL,'${esc(JSON.stringify(head))}',NULL);`,
   );
    // Re-migrating the same session: clear the old bubbles to avoid leftovers
-  stmts.push(`DELETE FROM cursorDiskKV WHERE key LIKE 'bubbleId:${esc(args.composerId)}:%';`);
+  stmts.push(`DELETE FROM cursorDiskKV WHERE ${cursorBubbleCleanupWhere(args.composerId)};`);
   stmts.push(
     'INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES ' +
       `('composerData:${esc(args.composerId)}','${esc(JSON.stringify(composer))}');`,
@@ -603,7 +625,10 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
       timeout: 30_000,
     });
     if (r.status !== 0) {
-      return { ok: false, reason: (r.stderr?.toString() ?? '').trim().slice(0, 300) || `sqlite3 exit ${r.status}` };
+      const stderr = (r.stderr?.toString() ?? '').trim();
+      const signal = r.signal ? ` signal ${r.signal}` : '';
+      const err = r.error?.message ? ` ${r.error.message}` : '';
+      return { ok: false, reason: (stderr || `sqlite3 exit ${r.status}${signal}${err}`).slice(0, 300) };
     }
   } catch (e) {
     return { ok: false, reason: (e as Error).message };
@@ -617,15 +642,20 @@ export function registerCursorComposer(args: RegisterCursorComposerArgs): Regist
  * Only rows for our own composerId are touched; best-effort.
  */
 export function unregisterCursorComposer(composerId: string): RegisterResult {
+  const invalidId = assertCursorSessionId(composerId);
+  if (invalidId) return { ok: false, reason: invalidId };
+
   const dbPath = getCursorStateDbPath();
   if (!dbPath || !fs.existsSync(dbPath)) return { ok: false, reason: 'state db not found' };
   const sqlite3 = findSqlite3();
   if (!sqlite3) return { ok: false, reason: 'sqlite3 CLI not found' };
 
+  const id = esc(composerId);
   const sql =
     'BEGIN IMMEDIATE;\n' +
-    `DELETE FROM composerHeaders WHERE composerId='${esc(composerId)}';\n` +
-    `DELETE FROM cursorDiskKV WHERE key='composerData:${esc(composerId)}' OR key LIKE 'bubbleId:${esc(composerId)}:%';\n` +
+    `DELETE FROM composerHeaders WHERE composerId='${id}';\n` +
+    `DELETE FROM cursorDiskKV WHERE key='composerData:${id}';\n` +
+    `DELETE FROM cursorDiskKV WHERE ${cursorBubbleCleanupWhere(composerId)};\n` +
     'COMMIT;';
 
   try {
@@ -635,7 +665,10 @@ export function unregisterCursorComposer(composerId: string): RegisterResult {
       timeout: 30_000,
     });
     if (r.status !== 0) {
-      return { ok: false, reason: (r.stderr?.toString() ?? '').trim().slice(0, 300) || `sqlite3 exit ${r.status}` };
+      const stderr = (r.stderr?.toString() ?? '').trim();
+      const signal = r.signal ? ` signal ${r.signal}` : '';
+      const err = r.error?.message ? ` ${r.error.message}` : '';
+      return { ok: false, reason: (stderr || `sqlite3 exit ${r.status}${signal}${err}`).slice(0, 300) };
     }
   } catch (e) {
     return { ok: false, reason: (e as Error).message };

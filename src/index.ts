@@ -926,9 +926,16 @@ sessionCmd
     await saveSession({ ...globalOpts, ...cmdOpts });
   });
 
-// SessionFlow: cross-platform session migration / sync / search / resume
-const { registerSessionFlowCommands } = await import('./session-flow/session-cmd.js');
-registerSessionFlowCommands(sessionCmd);
+// Load session migration commands only for `teamai session`. A failure must
+// not skip digest, recall, and every command registered after this point.
+if (process.argv[2] === 'session') {
+  try {
+    const { registerSessionFlowCommands } = await import('./session-flow/session-cmd.js');
+    registerSessionFlowCommands(sessionCmd);
+  } catch (e) {
+    log.warn(`Session commands unavailable: ${(e as Error).message}`);
+  }
+}
 
 program
   .command('digest')
