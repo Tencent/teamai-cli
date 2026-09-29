@@ -212,6 +212,18 @@ describe('teamai block in .git/info/exclude (#882)', () => {
       });
     });
 
+    it('names the rule on a dry run too, before any line is written', async () => {
+      const file = path.join(repo, '.mcp.json');
+      const gitignore = path.join(await fse.realpath(repo), '.gitignore');
+
+      expect(await ensureExcludedFromGit(file, { dryRun: true })).toEqual({
+        kind: 'failed',
+        reason: `a rule in your git ignore files re-includes ${file}: \`!/.mcp.json\` (${gitignore}:2)`,
+        fix: `Remove \`!/.mcp.json\` from ${gitignore}, then run \`teamai pull\` again.`,
+      });
+      expect(await fse.readFile(path.join(repo, '.git', 'info', 'exclude'), 'utf-8').catch(() => '')).not.toContain('teamai');
+    });
+
     it('says so when git cannot name the rule', async () => {
       failVerboseCheckIgnore.on = true;
       const file = path.join(repo, '.mcp.json');

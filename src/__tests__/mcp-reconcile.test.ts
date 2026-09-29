@@ -945,7 +945,8 @@ servers:
       // OpenCode's config sits outside its root: uninstalled (.opencode gone), opencode.json stays.
       const withOpencode = { ...teamConfig, toolPaths: { ...TOOL_PATHS, opencode: { skills: '.opencode/skills', mcp: '.config/opencode/opencode.json', mcpProject: 'opencode.json' } } } as TeamaiConfig;
       await fse.ensureDir(path.join(projectRoot, '.opencode', 'skills'));
-      await writeMcpYaml(`${withSecret}    tools: [opencode]\n`);
+      // Claude's record stays: only OpenCode's is lost.
+      await writeMcpYaml(`${withSecret}    tools: [opencode]\n  - name: open\n    transport: http\n    url: https://example.com/open\n    tools: [claude]\n`);
       await reconcileMcpForConfig(withOpencode, projectConfig);
       const opencodeFile = path.join(projectRoot, 'opencode.json');
       expect(await fse.readFile(opencodeFile, 'utf-8')).toContain('super-secret-value');

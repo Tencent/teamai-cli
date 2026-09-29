@@ -238,7 +238,11 @@ export async function ensureExcludedFromGit(file: string, options: { dryRun?: bo
   let result: ExcludeUpdate;
   try {
     if (options.dryRun) {
-      if (add((await readFileSafe(excludeFile)) ?? '') !== null) return { kind: 'pending' };
+      if (add((await readFileSafe(excludeFile)) ?? '') !== null) {
+        // A negated rule in a .gitignore outranks .git/info/exclude: the line would change nothing.
+        const rule = await reincludingRule(landed);
+        return rule && path.basename(rule.source) === '.gitignore' ? reincluded(await gitPathOf(file), rule) : { kind: 'pending' };
+      }
       result = 'unchanged';
     } else {
       result = await updateFileLocked(excludeFile, add);
@@ -256,8 +260,11 @@ export async function ensureExcludedFromGit(file: string, options: { dryRun?: bo
   if (result === 'written') log.debug(`Added ${pattern} to ${excludeFile}`);
   if ((await gitTracking(file)).kind !== 'would-commit') return { kind: 'excluded', added: result === 'written' };
   // Untracked, as checked above: a rule git reads after teamai's line, or before it, re-includes the file.
-  const named = await gitPathOf(file);
-  const rule = await reincludingRule(landed);
+  return reincluded(await gitPathOf(file), await reincludingRule(landed));
+}
+
+/** The failure for a file a rule of the member's re-includes, naming `rule` when git could. */
+function reincluded(named: { label: string }, rule: { source: string; line: string; pattern: string } | null): GitExclusion {
   return rule
     ? {
       kind: 'failed',
