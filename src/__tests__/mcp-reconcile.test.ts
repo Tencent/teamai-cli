@@ -2969,6 +2969,23 @@ servers:
       }
     });
 
+    it('tightens a 0644 project config it protects without writing, as for a disabled tool', async () => {
+      const projectRoot = path.join(tmpDir, 'proj-mode-disabled');
+      for (const d of ['.claude', '.cursor']) await fse.ensureDir(path.join(projectRoot, d, 'skills'));
+      execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+      const project = { ...localConfig, scope: 'project', projectRoot } as unknown as LocalConfig;
+      await writeMcpYaml(SECRET_SERVER);
+      await reconcileMcpForConfig(teamConfig, project);
+      const cursorFile = path.join(projectRoot, '.cursor', 'mcp.json');
+      expect(await fse.readFile(cursorFile, 'utf-8')).toContain('super-secret-value');
+      await fse.chmod(cursorFile, 0o644);
+
+      await reconcileMcpForConfig(teamConfig, { ...project, disabledAgents: ['cursor'] } as LocalConfig);
+
+      expect(await fse.readFile(cursorFile, 'utf-8')).toContain('super-secret-value');
+      expect(await mode(cursorFile)).toBe(0o600);
+    });
+
     it('keeps the mode of an existing config whose servers hold no resolved value', async () => {
       const userFile = path.join(homeDir, '.claude.json');
       await fse.writeFile(userFile, '{}\n');

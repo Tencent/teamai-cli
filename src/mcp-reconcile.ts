@@ -1259,7 +1259,11 @@ async function protectProjectMcpConfigs(
   const holding = new Set(observations.filter((o) => o.holding).map((o) => o.file));
   const unproven = new Set(observations.filter((o) => !o.holding).map((o) => o.file));
   // Also a file listed before its write: a concurrent uninstall may have taken its line out since.
-  for (const file of holding) await excludeFromGit(file);
+  // And readable by this user only (#879), written this run or not: a disabled or moved tool's too.
+  for (const file of holding) {
+    await excludeFromGit(file);
+    await tightenMode(file).catch((e: unknown) => log.debug(`Could not make ${file} 0600: ${e instanceof Error ? e.message : String(e)}`));
+  }
   // A line this run added for a file it then did not write restores the file's state before the run.
   // One it wrote holds the value even when no scan finds it (shorter than eight characters).
   const addedNow = [...unproven].filter((file) => {
