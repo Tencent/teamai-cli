@@ -57,7 +57,9 @@ and give it your team repo URL."*
   that is the `--agent <tool>` form, not a full uninstall.
 - In a project, uninstall also takes teamai's lines out of `.git/info/exclude`
   (the `# [teamai:mcp-exclude:start]` block) for MCP configs it proves hold no
-  resolved `${VAR}` value. For one it cannot prove clean (including one written
+  resolved `${VAR}` value. A line names the path a write lands in: for a config
+  under a symlinked directory, the link's target (`/config/mcp.json` for
+  `.cursor/` linking to `config/`). For one it cannot prove clean (including one written
   under a `toolPaths` mapping since changed, or in a nested repository's linked
   worktree, that still holds servers) it keeps the line and warns, naming the
   file and why: have the user remove teamai's servers from that

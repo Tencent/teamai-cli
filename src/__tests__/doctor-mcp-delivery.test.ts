@@ -432,5 +432,50 @@ describe('doctor — MCP servers delivered on disk', () => {
       expect(check.fix).not.toContain('not the team\'s definition');
       expect(check.fix).not.toContain('pull --force');
     });
+    // The appliers replace the file itself but follow its directories (#886).
+    describe('for a config under a symlinked directory, judged where the write lands', () => {
+      const logical = (): string => path.join(projectRoot, 'cfg', 'mcp.json');
+
+      beforeEach(async () => {
+        teamConfig.toolPaths = { claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: 'cfg/mcp.json' } };
+        await fse.move(path.join(projectRoot, '.mcp.json'), path.join(projectRoot, 'config', 'mcp.json'));
+        await fse.symlink('config', path.join(projectRoot, 'cfg'), 'dir');
+      });
+
+      it('fails while git tracks the file it lands in, naming both paths', async () => {
+        execFileSync('git', ['add', 'config/mcp.json'], { cwd: projectRoot });
+
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(false);
+        expect(check.fix).toContain(`${path.join(await fse.realpath(projectRoot), 'config', 'mcp.json')} (where ${logical()} is written)`);
+      });
+
+      it.each([
+        ['passes once git ignores the file it lands in', '/config/mcp.json\n', true],
+        ['still fails when git ignores only the path it is reached by', '/cfg/mcp.json\n', false],
+      ])('%s', async (_label, line, ok) => {
+        await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), line);
+
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(ok);
+      });
+
+      it('passes when the directory links outside any repository', async () => {
+        const outside = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-no-repo-'));
+        await fse.move(path.join(projectRoot, 'config', 'mcp.json'), path.join(outside, 'mcp.json'));
+        await fse.remove(path.join(projectRoot, 'cfg'));
+        await fse.symlink(outside, path.join(projectRoot, 'cfg'), 'dir');
+
+        try {
+          const check = await excludeCheck();
+          if (!check) throw new Error('no git exclude check');
+          expect(await check.check()).toBe(true);
+        } finally {
+          await fse.remove(outside);
+        }
+      });
+    });
   });
 });

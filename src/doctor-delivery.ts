@@ -530,7 +530,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
     resolveMcpTargets, resolvedValueEvidence, buildVarTable, buildDesiredMcpContext, recordedMcpTargets, recordedMcpFileEvidence,
   } = await import('./mcp-reconcile.js');
   const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
-  const { gitTracking } = await import('./mcp-git-exclude.js');
+  const { gitPathOf, gitTracking } = await import('./mcp-git-exclude.js');
   const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
   const { resolveEntriesFor } = await import('./namespaced-entries.js');
   const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
@@ -549,8 +549,8 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   const hold = async (file: string): Promise<void> => {
     holding.add(file);
     const tracking = await gitTracking(file);
-    if (tracking.kind === 'would-commit') tracked.push(file);
-    else if (tracking.kind === 'unknown') tracked.push(`${file} (git failed: ${tracking.error})`);
+    if (tracking.kind === 'would-commit') tracked.push((await gitPathOf(file)).label);
+    else if (tracking.kind === 'unknown') tracked.push(`${(await gitPathOf(file)).label} (git failed: ${tracking.error})`);
   };
   // Every tool's file, delivery on or off, the same files and evidence pull protects. Two tools may share one.
   const targets = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });

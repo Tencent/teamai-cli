@@ -54,9 +54,9 @@ import {
   carriesResolvedValue,
   ensureExcludedFromGit,
   excludeFromGit,
-  existingAncestor,
   findMcpGitExcludes,
   mcpExcludePatternPath,
+  realFilePath,
   removeMcpGitExclude,
   resolvedVariableIn,
   type GitExclusion,
@@ -1128,13 +1128,6 @@ async function releaseMcpGitExcludes(
     // Left as it is: the next pull tries again.
     if (result === 'locked') log.debug(`Kept ${clean.join(', ')} in ${excludeFile}: another teamai command held it past the wait.`);
   }
-}
-
-/** `file` with the real path of its closest existing directory. */
-async function realFilePath(file: string): Promise<string> {
-  const dir = await existingAncestor(file);
-  const real = await fs.promises.realpath(dir).catch(() => dir);
-  return path.join(real, path.relative(dir, file));
 }
 
 async function reconcileTargets(

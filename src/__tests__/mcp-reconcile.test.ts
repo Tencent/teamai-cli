@@ -1793,6 +1793,70 @@ servers:
       expect(await fse.pathExists(resolvedMcpFilesPath(projectConfig) ?? '')).toBe(false);
     });
 
+    // The appliers replace the file itself but follow its directories (#886).
+    describe('a config under a symlinked directory is judged where the write lands', () => {
+      const cursorOnly = (): LocalConfig => ({ ...projectConfig, disabledAgents: ['claude'] } as LocalConfig);
+      const landed = async (): Promise<string> => path.join(await fse.realpath(projectRoot), 'config', 'mcp.json');
+
+      beforeEach(async () => {
+        vi.mocked(log.warn).mockClear();
+        await fse.remove(path.join(projectRoot, '.cursor'));
+        await fse.outputFile(path.join(projectRoot, 'config', 'skills', 'README.md'), 'cursor skills\n');
+        await fse.symlink('config', path.join(projectRoot, '.cursor'), 'dir');
+      });
+
+      it('withholds the servers from a file git tracks there, naming both paths', async () => {
+        await fse.writeJson(path.join(projectRoot, 'config', 'mcp.json'), { mcpServers: {} });
+        git(projectRoot, 'add', 'config', '.cursor');
+        git(projectRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'cursor config');
+        await writeMcpYaml(withSecret);
+
+        await reconcileMcpForConfig(teamConfig, cursorOnly());
+
+        expect(await fse.readFile(path.join(projectRoot, 'config', 'mcp.json'), 'utf-8')).not.toContain('super-secret-value');
+        const warning = vi.mocked(log.warn).mock.calls.map(([m]) => String(m)).find((m) => m.includes('git already tracks'));
+        expect(warning).toContain(path.join(projectRoot, '.cursor', 'mcp.json'));
+        expect(warning).toContain(`git rm --cached ${await landed()}\``);
+      });
+
+      it('lists the file it lands in, and releases that line once it holds no resolved value', async () => {
+        git(projectRoot, 'add', 'config', '.cursor');
+        git(projectRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'cursor config');
+        await writeMcpYaml(withSecret);
+
+        await reconcileMcpForConfig(teamConfig, cursorOnly());
+
+        expect(await fse.readFile(await landed(), 'utf-8')).toContain('super-secret-value');
+        expect(await excludeOf(projectRoot)).toMatch(/^\/config\/mcp\.json$/m);
+        expect(await excludeOf(projectRoot)).not.toContain('/.cursor/');
+        expect(git(projectRoot, 'status', '--porcelain', '--untracked-files=all')).not.toContain('config/mcp.json');
+
+        await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
+        await reconcileMcpForConfig(teamConfig, cursorOnly());
+
+        expect(await fse.readFile(await landed(), 'utf-8')).not.toContain('super-secret-value');
+        expect(await excludeOf(projectRoot)).not.toContain('/config/mcp.json');
+      });
+
+      it('writes, listing nothing and warning of nothing, when the directory links outside any repository', async () => {
+        const outside = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-no-repo-'));
+        await fse.copy(path.join(projectRoot, 'config'), outside);
+        await fse.remove(path.join(projectRoot, '.cursor'));
+        await fse.symlink(outside, path.join(projectRoot, '.cursor'), 'dir');
+        await writeMcpYaml(withSecret);
+
+        try {
+          await reconcileMcpForConfig(teamConfig, cursorOnly());
+
+          expect(await fse.readFile(path.join(outside, 'mcp.json'), 'utf-8')).toContain('super-secret-value');
+          expect(log.warn).not.toHaveBeenCalled();
+          expect(await excludeOf(projectRoot)).not.toContain('/.cursor/');
+        } finally {
+          await fse.remove(outside);
+        }
+      });
+    });
+
     it('records each config it writes a resolved value to, by path, before writing it', async () => {
       const { readResolvedMcpFiles, resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
       const sidecarAtWrite = new Map<string, boolean>();

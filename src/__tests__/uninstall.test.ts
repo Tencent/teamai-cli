@@ -1072,6 +1072,40 @@ describe('uninstall', () => {
       expect(await fse.readJson(path.join(projectRoot, '.mcp.json'))).toEqual({ mcpServers: { mine } });
       expect(await fse.readFile(excludeFile, 'utf8')).toBe('');
     });
+    // The appliers replace the file itself but follow its directories (#886).
+    describe('for a config under a symlinked directory, judged where the write lands', () => {
+      const landedBlock = block.replace('/.mcp.json', '/config/mcp.json');
+
+      async function setupLinked(servers: Record<string, unknown>): Promise<{ excludeFile: string }> {
+        const { projectRoot, excludeFile, localConfig } = await setup();
+        await fse.outputJson(path.join(projectRoot, 'config', 'mcp.json'), { mcpServers: servers });
+        await fse.symlink('config', path.join(projectRoot, 'cfg'), 'dir');
+        await fse.writeFile(excludeFile, landedBlock);
+        mockAutoDetectInit.mockResolvedValue({
+          localConfig,
+          teamConfig: makeTeamConfig({ toolPaths: { claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: 'cfg/mcp.json' } } }),
+        });
+        return { excludeFile };
+      }
+
+      it('keeps the landing path\'s line while the file there holds the token', async () => {
+        const { excludeFile } = await setupLinked({ jira });
+        const { log } = await import('../utils/logger.js');
+
+        await uninstall({ force: true });
+
+        expect(await fse.readFile(excludeFile, 'utf8')).toBe(landedBlock);
+        expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`Kept \`/config/mcp.json\` in ${await fse.realpath(excludeFile)}`));
+      });
+
+      it('removes it once the file there holds no server', async () => {
+        const { excludeFile } = await setupLinked({});
+
+        await uninstall({ force: true });
+
+        expect(await fse.readFile(excludeFile, 'utf8')).toBe('');
+      });
+    });
   });
 
   it('project-scope uninstall keeps a nested repository\'s block while its linked worktree holds a token (#882)', async () => {
