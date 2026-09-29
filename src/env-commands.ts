@@ -124,7 +124,8 @@ export async function envSet(
 
   // The kind the scope declares the key as now, so the value is never used as the other one (#879).
   const kind = isVariable ? 'variable' : 'secret';
-  const update = await updateSecretStore(file, (values) => ({ ...values, [key]: { ...entry, kind } }));
+  // On Windows an entry under another case of the key is this key's: it is replaced too.
+  const update = await updateSecretStore(file, (values) => ({ ...withoutKey(values, key), [key]: { ...entry, kind } }));
   if (update.kind === 'failed') return fail(`${update.reason} Nothing was changed.`);
   if ('env' in entry) {
     log.success(`${key} now reads ${entry.env} from your environment ${target} (${file}).`);
@@ -157,13 +158,7 @@ export async function envUnset(key: string, options: GlobalOptions & { global?: 
     return;
   }
   // On Windows the stored name may differ in case from the one typed: it is the same variable.
-  const update = await updateSecretStore(file, (values) => {
-    const stored = sameEnvName(Object.keys(values), key);
-    if (stored === undefined) return null;
-    const rest = { ...values };
-    delete rest[stored];
-    return rest;
-  });
+  const update = await updateSecretStore(file, (values) => (sameEnvName(Object.keys(values), key) === undefined ? null : withoutKey(values, key)));
   switch (update.kind) {
     case 'failed':
       return fail(`${update.reason} Nothing was changed.`);
@@ -505,6 +500,13 @@ async function removeSecret(
   log.success(`Removed secret${file.where}: ${key}${removedToo}`);
   log.info('Run `teamai push` to sync to team repo.');
   return 'removed';
+}
+
+/** `values` without `key`, in every case of it on Windows, where they are one environment variable. */
+function withoutKey<T>(values: Readonly<Record<string, T>>, key: string): Record<string, T> {
+  const rest = { ...values };
+  for (const other of Object.keys(rest)) if (envName(other) === envName(key)) delete rest[other];
+  return rest;
 }
 
 /** Whether a declaration's `key` is `key`: the same environment variable, so in any case on Windows. */
