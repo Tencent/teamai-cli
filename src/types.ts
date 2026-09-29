@@ -1662,7 +1662,7 @@ export interface SearchIndexEntry {
 }
 
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
-export const SEARCH_INDEX_VERSION = 6;
+export const SEARCH_INDEX_VERSION = 7;
 
 /** Shape of the search-index.json file. */
 export interface SearchIndex {
@@ -1678,6 +1678,9 @@ export interface SearchIndex {
    *  Used for IDF weighting in search(). Optional for backward compatibility
    *  with indexes built before this field was introduced. */
   df?: Record<string, number>;
+  /** Per-domain document-frequency maps, so unrelated knowledge domains do not
+   *  change the IDF score of an entry. Missing on indexes that need rebuilding. */
+  dfByDomain?: Partial<Record<KnowledgeDomain, Record<string, number>>>;
 }
 
 /** Per-user vote file (votes/<user>.yaml). */

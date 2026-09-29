@@ -23,6 +23,43 @@ function makeIndex(entryCount: number, withDf: boolean): SearchIndex {
   };
 }
 
+function makeDomainIndex(technicalCount: number, opsCount: number): SearchIndex {
+  const entries = [
+    ...Array.from({ length: technicalCount }, (_, i) => ({
+      filename: `tech-${i}.md`,
+      title: `Tech ${i}`,
+      author: 'test',
+      date: '2026-01-01',
+      tags: [],
+      tokens: ['token'],
+      votes: 0,
+      type: 'learnings' as const,
+      domain: 'technical' as const,
+    })),
+    ...Array.from({ length: opsCount }, (_, i) => ({
+      filename: `ops-${i}.md`,
+      title: `Ops ${i}`,
+      author: 'test',
+      date: '2026-01-01',
+      tags: [],
+      tokens: ['token'],
+      votes: 0,
+      type: 'learnings' as const,
+      domain: 'ops' as const,
+    })),
+  ];
+  return {
+    builtAt: '2026-01-01T00:00:00Z',
+    elapsedMs: 0,
+    entries,
+    df: { token: entries.length },
+    dfByDomain: {
+      technical: { token: technicalCount },
+      ops: { token: opsCount },
+    },
+  };
+}
+
 // ─── computeIdfBaseline ───────────────────────────────────
 
 describe('computeIdfBaseline', () => {
@@ -63,6 +100,20 @@ describe('computeIdfBaseline', () => {
     const modern = makeIndex(10, true);   // small but has df
     const expected = Math.log((10 + 1) / 2) + 1;
     expect(computeIdfBaseline([legacy, modern])).toBeCloseTo(expected, 5);
+  });
+
+  it('uses the matching domain corpus for a result baseline', () => {
+    const index = makeDomainIndex(25, 100);
+    expect(computeIdfBaseline([index], 'technical')).toBeCloseTo(Math.log(13) + 1, 5);
+    expect(computeIdfBaseline([index], 'ops')).toBeCloseTo(Math.log(101 / 2) + 1, 5);
+  });
+
+  it('does not let unrelated domains raise a result baseline', () => {
+    const technicalOnly = makeDomainIndex(25, 100);
+    const withMoreOps = makeDomainIndex(25, 1000);
+    const expected = Math.log(13) + 1;
+    expect(computeIdfBaseline([technicalOnly], 'technical')).toBeCloseTo(expected, 5);
+    expect(computeIdfBaseline([withMoreOps], 'technical')).toBeCloseTo(expected, 5);
   });
 });
 

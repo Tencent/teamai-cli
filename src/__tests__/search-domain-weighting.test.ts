@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 import { buildIndex, loadIndex, search } from '../utils/search-index.js';
+import { SEARCH_INDEX_VERSION } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // P1.4: Domain-weighted search ranking integration tests
@@ -184,7 +185,7 @@ describe('domain-weighted search scoring', () => {
     expect(results[0].entry.domain).toBe('support');
   });
 
-  it('built index carries domain field on every entry (version 5)', async () => {
+  it('built index carries domain fields and per-domain IDF stats', async () => {
     const learningsDir = path.join(tmpDir, 'learnings');
     await fse.ensureDir(learningsDir);
 
@@ -197,7 +198,8 @@ describe('domain-weighted search scoring', () => {
     const index = await loadIndex(indexPath);
 
     expect(index).not.toBeNull();
-    expect(index!.version).toBe(6);
+    expect(index!.version).toBe(SEARCH_INDEX_VERSION);
+    expect(index!.dfByDomain?.technical).toBeDefined();
 
     for (const entry of index!.entries) {
       expect(entry.domain).toBeDefined();
