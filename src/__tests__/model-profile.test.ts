@@ -155,6 +155,30 @@ describe('model profiles', () => {
     }
   });
 
+  it('separates provider-relative identities by provider', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-provider-'));
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-provider-repo-'));
+      // Same owner/repo claim, no URL anywhere: only the provider tells the teams apart.
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GH\nrepo: acme/widgets\n');
+      const onGithub = { repo: { localPath: repo, remote: 'origin' }, provider: 'github' } as LocalConfig;
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GC\nrepo: acme/widgets\n');
+      const onGitcode = { repo: { localPath: repo, remote: 'origin' }, provider: 'gitcode' } as LocalConfig;
+      const githubFile = getTeamValuesPath(onGithub);
+      const gitcodeFile = getTeamValuesPath(onGitcode);
+      expect(githubFile).not.toBe(gitcodeFile);
+      // A path-shaped identity is provider-qualified; a URL is not (it carries its host).
+      expect(sameTeamIdentity(path.basename(githubFile, '.json'), onGithub)).toBe(true);
+      expect(sameTeamIdentity(path.basename(githubFile, '.json'), onGitcode)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
   it('reads an alias-digest legacy file only under this team\'s slug', async () => {
     const previous = process.env.HOME;
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-alias-'));

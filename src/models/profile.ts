@@ -192,7 +192,12 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
   const source = named && isRepoReference(named) ? named
     : url && isRepoReference(url) ? url
     : repoClaim(localPath) ?? localPath;
-  const identity = repoIdentity(source);
+  // A path-shaped identity (`owner/repo`) is provider-relative: the same
+  // string is a different repository on GitHub and on GitCode, so the
+  // provider qualifies it. Host-bearing identities already carry the host.
+  const identity = isRepoReference(source)
+    ? repoIdentity(source)
+    : `${localConfig.provider ?? 'tgit'}:${source}`;
   const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
   return path.join(getTeamaiHomeDir(), 'models', 'teams', `${digest}.json`);
 }
