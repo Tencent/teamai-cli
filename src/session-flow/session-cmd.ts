@@ -212,7 +212,10 @@ function deriveArchiveIdentity(session: { cwd: string }, platform: string): stri
  * 获取团队仓根目录。
  * 优先用 --repo-root；否则用 cwd（假设 cwd 就是团队仓 clone）。
  */
-async function resolveRepoRoot(repoRoot?: string): Promise<string> {
+async function resolveRepoRoot(
+  repoRoot?: string,
+  options?: { materialize?: boolean },
+): Promise<string> {
   if (repoRoot?.trim()) return repoRoot.trim();
   const { detectProjectConfig } = await import('../config.js');
   const { getReportsDir, isSelfMode } = await import('../types.js');
@@ -224,7 +227,11 @@ async function resolveRepoRoot(repoRoot?: string): Promise<string> {
     );
   }
   if (isSelfMode(cfg)) {
-    await ensureReportsWorktree(cfg);
+    // Readers and --dry-run must not publish a brand-new teamai-reports branch.
+    // The default ensure() pushes the orphan branch as soon as it creates it.
+    if (options?.materialize !== false) {
+      await ensureReportsWorktree(cfg, { pushIfCreated: false });
+    }
     return getReportsDir(cfg);
   }
   return cfg.repo.localPath;
@@ -586,7 +593,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       // --push: 推送到团队仓
       if (opts.push && migrated > 0) {
-        const repoRoot = await resolveRepoRoot(opts.repoRoot);
+        const repoRoot = await resolveRepoRoot(opts.repoRoot, { materialize: !isDryRun() });
         // 跨目录展开时会话不属于 workCwd，author 应取自会话真实所在的仓库
         const authorCwd = migratedTargets.find((t) => t.cwd)?.cwd ?? workCwd;
         const author = getGitAuthor(authorCwd);
@@ -687,7 +694,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         process.exit(1);
       }
       const workCwd = opts.cwd ?? process.cwd();
-      const repoRoot = await resolveRepoRoot(opts.repoRoot);
+      const repoRoot = await resolveRepoRoot(opts.repoRoot, { materialize: !isDryRun() });
       const author = getGitAuthor(workCwd);
       const adapter = safeGetAdapter(source);
       // --all：listConversations() 无参即枚举该平台的全部工作区目录（P5），
@@ -831,7 +838,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--all', 'Rebuild indexes for every repo in the team repo (not just the current project)')
     .action(async (opts) => {
       const workCwd = opts.cwd ?? process.cwd();
-      const repoRoot = await resolveRepoRoot(opts.repoRoot);
+      const repoRoot = await resolveRepoRoot(opts.repoRoot, { materialize: !isDryRun() });
 
       const syncMgr = new SyncManager(repoRoot);
       if (isDryRun()) {
@@ -865,7 +872,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--all', 'List sessions across all projects in the team repo (not just the current one)')
     .action(async (opts) => {
       const workCwd = opts.cwd ?? process.cwd();
-      const repoRoot = await resolveRepoRoot(opts.repoRoot);
+      const repoRoot = await resolveRepoRoot(opts.repoRoot, { materialize: !isDryRun() });
       const repoIdentity = resolveRepoIdentity(workCwd);
 
       const syncMgr = new SyncManager(repoRoot);
@@ -924,7 +931,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--author <name>', 'Author of the session (if ambiguous)')
     .action(async (sessionName, opts) => {
       const workCwd = opts.cwd ?? process.cwd();
-      const repoRoot = await resolveRepoRoot(opts.repoRoot);
+      const repoRoot = await resolveRepoRoot(opts.repoRoot, { materialize: !isDryRun() });
       const repoIdentity = resolveRepoIdentity(workCwd);
 
       const syncMgr = new SyncManager(repoRoot);
@@ -973,7 +980,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--all', 'Search across all projects (not just current)')
     .action(async (query, opts) => {
       const workCwd = opts.cwd ?? process.cwd();
-      const repoRoot = await resolveRepoRoot(opts.repoRoot);
+      const repoRoot = await resolveRepoRoot(opts.repoRoot, { materialize: !isDryRun() });
       const repoIdentity = resolveRepoIdentity(workCwd);
       const limitRaw = parseInt(opts.limit, 10);
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10;
