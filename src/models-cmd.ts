@@ -90,10 +90,15 @@ async function teamContext(): Promise<TeamModelsContext | null> {
  * the old name never encoded the provider, so neither the slug nor any
  * machine-global artifact can attribute the file to this checkout across
  * providers. An interactive run asks the user once per candidate identity;
- * on "yes" the file is read and immediately migrated to the provider-qualified
- * hash-only name (which then shadows it — no re-ask, no ambiguity left).
- * Non-interactive and dry runs never adopt: they note the file and read
- * nothing it owns.
+ * on "yes" the file is read and immediately migrated — saved to the
+ * provider-qualified hash-only name of THAT config, which then shadows it (no
+ * re-ask, no ambiguity left). The adoption is keyed
+ * `<target>::<slug>-<digest>`, so it is scoped to this scope's provider
+ * identity: a user-scope confirmation never authorizes a project scope, even
+ * under the same slug and claim on a different provider. A declined candidate
+ * is read nothing and writes nothing — the empty hash-only file is never
+ * created, so the next run still offers it. Non-interactive and dry runs
+ * never adopt: they note the file and read nothing it owns.
  */
 const adoptedLegacyValues = new Set<string>();
 
@@ -102,6 +107,7 @@ async function loadTeamValues(
   team: TeamModelProfiles,
   options: { dryRun?: boolean } = {},
 ): Promise<StoredModelInputs> {
+  const target = getTeamValuesPath(localConfig);
   const pending = await unadoptedLegacyFiles(localConfig, adoptedLegacyValues);
   if (pending.length > 0) {
     if (!options.dryRun && isInteractive()) {
@@ -109,22 +115,21 @@ async function loadTeamValues(
         const adopt = await askConfirmation(
           `Legacy team values file '${file.entry}' names this team under a provider-ambiguous identity (${file.identity}). Adopt it as this team's keys (migrated to the provider-qualified name once read)? [y/N] `,
         );
-        if (adopt) adoptedLegacyValues.add(file.identity);
+        if (adopt) adoptedLegacyValues.add(`${target}::${file.identity}`);
       }
     } else {
       log.warn(
         `Legacy team values file(s) not adopted: ${pending.map((file) => file.entry).join(', ')}. ` +
-          `They are never read without an explicit opt-in; re-run interactively to adopt, or write the keys to ${getTeamValuesPath(localConfig)}.`,
+          `They are never read without an explicit opt-in; re-run interactively to adopt, or write the keys to ${target}.`,
       );
     }
   }
   const readFrom = await findTeamValuesPath(localConfig, { adopted: adoptedLegacyValues });
   const values = await loadModelInputs(readFrom);
   const sentTo = await switchedGatewayOrigins(localConfig);
-  const adoptMigrated = adoptedLegacyValues.size > 0;
-  if ((bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) || adoptMigrated) && !options.dryRun) {
+  if ((bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) || readFrom !== target) && !options.dryRun) {
     // Save to the current name, which then shadows the legacy file.
-    await saveModelInputs(getTeamValuesPath(localConfig), values);
+    await saveModelInputs(target, values);
   }
   return values;
 }

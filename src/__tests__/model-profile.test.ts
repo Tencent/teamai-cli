@@ -201,7 +201,7 @@ describe('model profiles', () => {
         expect.objectContaining({ entry: `gh-${digest('acme/widgets')}.json`, identity: `gh-${digest('acme/widgets')}` }),
       );
       // The user's explicit adoption of THIS exact identity reads it in place.
-      expect(await findTeamValuesPath(onGithub, { adopted: new Set([`gh-${digest('acme/widgets')}`]) })).toBe(legacy);
+      expect(await findTeamValuesPath(onGithub, { adopted: new Set([`${getTeamValuesPath(onGithub)}::gh-${digest('acme/widgets')}`]) })).toBe(legacy);
       // Switch records are not provenance: same slug matches, another team's doesn't.
       expect(sameTeamIdentity(`gc-${digest('acme/widgets')}`, onGithub)).toBe(false);
       expect(sameTeamIdentity(`gh-${digest('acme/widgets')}`, onGithub)).toBe(true);
@@ -211,7 +211,7 @@ describe('model profiles', () => {
       const renamed = { repo: { localPath: repo, remote: 'origin' } } as LocalConfig;
       expect(getTeamValuesPath(renamed)).toBe(getTeamValuesPath(onGithub));
       expect(await findTeamValuesPath(renamed)).toBe(getTeamValuesPath(renamed));
-      expect(await findTeamValuesPath(renamed, { adopted: new Set([`gh-${digest('acme/widgets')}`]) })).toBe(legacy);
+      expect(await findTeamValuesPath(renamed, { adopted: new Set([`${getTeamValuesPath(renamed)}::gh-${digest('acme/widgets')}`]) })).toBe(legacy);
       // Migration writes the provider-qualified target; from then on the legacy
       // file is shadowed and is never offered for adoption again — no re-prompts.
       await saveModelInputs(getTeamValuesPath(onGithub), { 'team:gw': { API_KEY: { value: 'legacy-key' } } });
@@ -247,7 +247,7 @@ describe('model profiles', () => {
       expect(await findTeamValuesPath(onGitcode)).toBe(getTeamValuesPath(onGitcode));
       expect(sameTeamIdentity(`alpha-${digest('acme/widgets')}`, onGitcode)).toBe(false);
       // Beta adopting its OWN identity only still never selects Alpha's file.
-      expect(await findTeamValuesPath(onGitcode, { adopted: new Set([`beta-${digest('acme/widgets')}`]) })).toBe(getTeamValuesPath(onGitcode));
+      expect(await findTeamValuesPath(onGitcode, { adopted: new Set([`${getTeamValuesPath(onGitcode)}::beta-${digest('acme/widgets')}`]) })).toBe(getTeamValuesPath(onGitcode));
       expect(sameTeamIdentity(`beta-${digest('acme/widgets')}`, onGitcode)).toBe(true);
       // Finding 1 regression: a GitCode team ALSO named Alpha shares the slug —
       // the slug is not provenance, so Alpha's file is still never auto-read.
@@ -255,6 +255,21 @@ describe('model profiles', () => {
       const alphaOnGitcode = { repo: { localPath: repo, remote: 'origin' }, provider: 'gitcode' } as LocalConfig;
       expect(await findTeamValuesPath(alphaOnGitcode)).toBe(getTeamValuesPath(alphaOnGitcode));
       expect(await fse.readFile(alphaLegacy, 'utf8')).toContain('alpha-key');
+      // Scope regression: adoption is keyed to the adopting scope's own
+      // provider-qualified target. A separate GitHub checkout (its own
+      // teamai.yaml) having adopted the same-basename file under ITS github
+      // target authorizes nothing for this GitCode checkout — the targets
+      // differ, so the key does not match.
+      const repoGithub = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-noleak-gh-'));
+      await fse.writeFile(path.join(repoGithub, 'teamai.yaml'), 'team: Alpha\nrepo: acme/widgets\nprovider: github\n');
+      const onGithubScope = { repo: { localPath: repoGithub, remote: 'origin' } } as LocalConfig;
+      expect(getTeamValuesPath(onGithubScope)).not.toBe(getTeamValuesPath(alphaOnGitcode));
+      const adoptedUnderGithub = new Set([`${getTeamValuesPath(onGithubScope)}::alpha-${digest('acme/widgets')}`]);
+      expect(await findTeamValuesPath(alphaOnGitcode, { adopted: adoptedUnderGithub })).toBe(getTeamValuesPath(alphaOnGitcode));
+      // The GitCode scope adopting the same basename under ITS OWN target does
+      // read it — that is the user's explicit consent — and next save migrates
+      // it to the gitcode-qualified name.
+      expect(await findTeamValuesPath(alphaOnGitcode, { adopted: new Set([`${getTeamValuesPath(alphaOnGitcode)}::alpha-${digest('acme/widgets')}`]) })).toBe(alphaLegacy);
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;
@@ -285,7 +300,7 @@ describe('model profiles', () => {
       expect(sameTeamIdentity(`gh-${digest('acme/widgets')}`, renamed)).toBe(false);
       // The user's explicit adoption of the former identity reads the file in
       // place; the next save migrates it to the provider-qualified name.
-      expect(await findTeamValuesPath(renamed, { adopted: new Set([`gh-${digest('acme/widgets')}`]) })).toBe(legacy);
+      expect(await findTeamValuesPath(renamed, { adopted: new Set([`${getTeamValuesPath(renamed)}::gh-${digest('acme/widgets')}`]) })).toBe(legacy);
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;
@@ -309,7 +324,7 @@ describe('model profiles', () => {
       // make GH's file readable without GH's identity being explicitly adopted.
       await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GC\nrepo: acme/widgets\nprovider: gitcode\n');
       const onGitcode = { repo: { localPath: repo, remote: 'origin' }, provider: 'gitcode' } as LocalConfig;
-      expect(await findTeamValuesPath(onGitcode, { adopted: new Set([`beta-${digest('acme/widgets')}`]) })).toBe(getTeamValuesPath(onGitcode));
+      expect(await findTeamValuesPath(onGitcode, { adopted: new Set([`${getTeamValuesPath(onGitcode)}::beta-${digest('acme/widgets')}`]) })).toBe(getTeamValuesPath(onGitcode));
       expect(sameTeamIdentity(`gh-${digest('acme/widgets')}`, onGitcode)).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.HOME;
@@ -354,7 +369,7 @@ describe('model profiles', () => {
       // Even our own slug needs the explicit opt-in: the alias never encoded
       // the provider, so the slug alone cannot prove ownership.
       expect(await findTeamValuesPath(config)).toBe(target);
-      expect(await findTeamValuesPath(config, { adopted: new Set([`hai-${digest('fork')}`]) })).toBe(ours);
+      expect(await findTeamValuesPath(config, { adopted: new Set([`${getTeamValuesPath(config)}::hai-${digest('fork')}`]) })).toBe(ours);
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;

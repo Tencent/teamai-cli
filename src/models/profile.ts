@@ -374,7 +374,7 @@ export async function unadoptedLegacyFiles(
     const candidate = candidates.find((match) => match.digest === digest);
     if (candidate === undefined || !candidate.fileNeedsSlug) continue;
     const identity = entry.replace(/\.json$/, '');
-    if (adopted.has(identity)) continue;
+    if (adopted.has(`${target}::${identity}`)) continue;
     try {
       const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
       files.push({ entry, identity, mtime: mtimeMs });
@@ -433,9 +433,12 @@ export function sameTeamIdentity(stored: string | undefined, localConfig: LocalC
  * so the slug cannot tell two providers' same-named teams apart and no
  * machine-global artifact can tell this checkout from another team. A file
  * under such a digest is read only when the user has explicitly adopted that
- * exact `<slug>-<digest>` identity for this team (`options.adopted`); the
- * caller surfaces the candidates via `unadoptedLegacyFiles` and turns the
- * user's word into that set. Without it the file is never guessed into read.
+ * exact `<slug>-<digest>` identity for THIS provider-qualified team
+ * (`options.adopted` — keyed `${target}::<slug>-<digest>`, so a same-named
+ * identity adopted in another scope or for another provider never
+ * authorizes this team); the caller surfaces the candidates via
+ * `unadoptedLegacyFiles` and turns the user's word into that set. Without it
+ * the file is never guessed into read.
  */
 export async function findTeamValuesPath(
   localConfig: LocalConfig,
@@ -458,7 +461,7 @@ export async function findTeamValuesPath(
     const digest = legacy[2] ?? '';
     const candidate = candidates.find((match) => match.digest === digest);
     if (candidate === undefined) continue;
-    if (candidate.fileNeedsSlug && !options.adopted?.has(entry.replace(/\.json$/, ''))) continue;
+    if (candidate.fileNeedsSlug && !options.adopted?.has(`${target}::${entry.replace(/\.json$/, '')}`)) continue;
     try {
       const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
       matching.push({ entry, mtime: mtimeMs });
