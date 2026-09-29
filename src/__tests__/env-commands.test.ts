@@ -1022,6 +1022,21 @@ scope: 'user',
       expect(declarations.kind === 'resolved' && declarations.entries.map((s) => s.name)).toEqual(['GITHUB_TOKEN']);
     });
 
+    it('on Windows, updates and removes a declaration typed in another case, rather than add a second one', async () => {
+      await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'TOKEN' }] }));
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        await envAdd('token', undefined, { secret: true, description: 'the token' });
+        expect(await secretsIn(rootSecrets())).toEqual([{ key: 'TOKEN', description: 'the token' }]);
+
+        await envRemove('Token', { secret: true });
+      } finally {
+        Object.defineProperty(process, 'platform', { value: original, configurable: true });
+      }
+      expect(await secretsIn(rootSecrets())).toEqual([]);
+    });
+
     it('declares a secret with the key alone', async () => {
       await envAdd('NPM_TOKEN', undefined, { secret: true });
 

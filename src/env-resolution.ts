@@ -11,6 +11,7 @@
 import { memberEnvironment, type MemberEnvironment } from './member-env.js';
 import { resolveEntries, resolveEntriesFor, type EntryResolution, type ResolvedEntry } from './namespaced-entries.js';
 import { envEntryReader, type EnvVariable } from './resources/env.js';
+import { sameEnvName } from './resources/env-key.js';
 import { declaredSecretKeys, resolveSecretDeclarations, type KnownNamespaces, type SecretDeclarations } from './resources/secrets.js';
 import {
   getMachineSecretsPath, getTeamSecretsPath, readSecretStore, storedEntryKind, storedSecretValue, type SecretStore,
@@ -119,7 +120,9 @@ export async function resolveTeamEnv(
 
 /** The entry for `key` when it is of this kind: a secret never resolves from a variable override, nor the reverse. */
 function storeEntry(store: SecretStore, key: string, kind: StoredEntryKind): StoredSecret | undefined {
-  const entry = Object.hasOwn(store, key) ? store[key] : undefined;
+  // On Windows a value stored as `token` is `TOKEN`'s: the same environment variable.
+  const stored = sameEnvName(Object.keys(store), key);
+  const entry = stored === undefined ? undefined : store[stored];
   return entry && storedEntryKind(entry) === kind ? entry : undefined;
 }
 
@@ -131,7 +134,8 @@ function staleEntries(
   const stale = new Map<string, StoredEntryKind>();
   if (!team.ok) return stale;
   const check = (key: string, kind: StoredEntryKind): void => {
-    const entry = Object.hasOwn(team.values, key) ? team.values[key] : undefined;
+    const stored = sameEnvName(Object.keys(team.values), key);
+    const entry = stored === undefined ? undefined : team.values[stored];
     if (entry && storedEntryKind(entry) !== kind) stale.set(key, storedEntryKind(entry));
   };
   for (const key of secretKeys) check(key, 'secret');

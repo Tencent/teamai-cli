@@ -3,7 +3,7 @@ import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
-import { ENV_KEY_RE, envValue, sameEnvName } from './resources/env-key.js';
+import { ENV_KEY_RE, envName, envValue, sameEnvName } from './resources/env-key.js';
 import {
   SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, unknownSecretDeclarationKeys,
   writeSecretsFile,
@@ -390,8 +390,10 @@ async function declareSecret(
   const secrets = await readSecretsFileForEdit(target);
   if (!secrets) return;
 
-  const index = secrets.findIndex((secret) => secret.key === key);
+  const index = secrets.findIndex((secret) => sameSecretKey(secret.key, key));
   const isUpdate = index !== -1;
+  // On Windows a key typed in another case is the declared one: it keeps its declared name.
+  if (isUpdate && typeof secrets[index]?.key === 'string') key = secrets[index].key;
   const declaration = {
     ...(isUpdate ? secrets[index] : {}),
     key,
@@ -489,7 +491,7 @@ async function removeSecret(
 ): Promise<'removed' | 'absent' | 'reported'> {
   const secrets = await readSecretsFileForEdit(file);
   if (!secrets) return 'reported';
-  const index = secrets.findIndex((secret) => secret.key === key);
+  const index = secrets.findIndex((secret) => sameSecretKey(secret.key, key));
   if (index === -1) return 'absent';
 
   // Every declaration of it: one left behind still declares the key.
@@ -505,12 +507,17 @@ async function removeSecret(
   return 'removed';
 }
 
+/** Whether a declaration's `key` is `key`: the same environment variable, so in any case on Windows. */
+function sameSecretKey(declared: unknown, key: string): boolean {
+  return typeof declared === 'string' && envName(declared) === envName(key);
+}
+
 /** Remove the declarations of `key` after the first `keep` of them from `secrets`; answers how many. */
 function dropDuplicateSecrets(secrets: Record<string, unknown>[], key: string, keep = 1): number {
   let seen = 0;
   let removed = 0;
   for (let i = 0; i < secrets.length; i++) {
-    if (secrets[i]?.key !== key || ++seen <= keep) continue;
+    if (!sameSecretKey(secrets[i]?.key, key) || ++seen <= keep) continue;
     secrets.splice(i--, 1);
     removed++;
   }
