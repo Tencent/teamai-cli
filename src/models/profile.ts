@@ -393,25 +393,26 @@ export async function unadoptedLegacyFiles(
  * alone — the identity is the repository, so the slug can drift with team
  * renames. A path-shaped claim, a path-shaped provider-relative remote, a
  * bare alias, or a path-only local path names no single repository — the
- * slug is the only attributor a record under them can carry, and the slug is
- * not provenance across providers. Such a record therefore matches only
- * under this checkout's exact slug; a record under a DIFFERENT slug is never
- * claimed from machine-global state — nothing in the record or any shared
- * store tells a renamed team from another team, so it is refused, and only
- * the values file's explicit adoption (which migrates it to the
- * provider-qualified name) re-establishes this team's presence.
+ * old name never encoded the provider, so NEITHER the slug nor any
+ * machine-global artifact can attribute a record under it to this checkout:
+ * a GitHub and a GitCode team both named `Alpha` on the bare claim
+ * `acme/widgets` share the exact `alpha-<digest>` form. A record under such
+ * a digest therefore never matches — the same reason a differently named
+ * team is refused (no shared store tells a renamed team from another team)
+ * closes an equal-slug claim too, because the slug proves nothing across
+ * providers. Only the values file's explicit adoption, which migrates the
+ * keys to the provider-qualified name, re-establishes this team's presence;
+ * its switched agents are re-recorded by the next `models switch`.
  */
 export function sameTeamIdentity(stored: string | undefined, localConfig: LocalConfig): boolean {
   if (!stored) return false;
   if (stored === getTeamIdentity(localConfig)) return true;
   const legacy = /^(.+)-([0-9a-f]{10})$/.exec(stored);
   if (legacy === null) return false;
-  const slug = legacy[1] ?? '';
   const digest = legacy[2] ?? '';
-  const mySlug = legacyTeamSlug(localConfig.repo.localPath);
   for (const candidate of legacyTeamValueHashes(localConfig)) {
     if (candidate.digest !== digest) continue;
-    if (!candidate.recordNeedsSlug || slug === mySlug) return true;
+    if (!candidate.recordNeedsSlug) return true;
     return false;
   }
   return false;

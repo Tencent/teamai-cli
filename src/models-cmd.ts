@@ -102,6 +102,24 @@ async function teamContext(): Promise<TeamModelsContext | null> {
  */
 const adoptedLegacyValues = new Set<string>();
 
+/**
+ * A values write to a team's hash-only target would permanently shadow any
+ * unadopted provider-ambiguous legacy file (the target's existence silences
+ * every future adoption prompt), so — unlike a pull, whose read-time save is
+ * migration — a command that writes the team target is refused while one
+ * remains. Adoption is intentional and is only possible interactively, so
+ * the refusal names that path.
+ */
+async function assertNoShadowingLegacyWrite(localConfig: LocalConfig): Promise<void> {
+  const pending = await unadoptedLegacyFiles(localConfig, adoptedLegacyValues);
+  if (pending.length === 0) return;
+  throw new Error(
+    `Unadopted legacy team values file(s) still exist for this team (${pending.map((file) => file.entry).join(', ')}); ` +
+      `writing ${getTeamValuesPath(localConfig)} would shadow and permanently orphan their keys. ` +
+      `Re-run interactively to adopt and migrate them first.`,
+  );
+}
+
 async function loadTeamValues(
   localConfig: LocalConfig,
   team: TeamModelProfiles,
@@ -387,6 +405,7 @@ export async function modelsConfigure(reference: string, options: ConfigureOptio
   }
 
   if (secret) {
+    if (ref.source === 'team' && context.localConfig) await assertNoShadowingLegacyWrite(context.localConfig);
     setStoredApiKey(ref, values, secret);
     await saveModelInputs(file, values);
   }
@@ -419,6 +438,7 @@ export async function modelsSwitch(reference: string, options: SwitchOptions): P
   if (!stored && !options.dryRun && isInteractive()) {
     const answer = await askSecret(`API key for ${key}${gatewaySuffix(ref, 'at')}: `);
     if (!answer) throw new Error(`Profile ${key} needs an API key`);
+    if (ref.source === 'team' && context.localConfig) await assertNoShadowingLegacyWrite(context.localConfig);
     setStoredApiKey(ref, values, { value: answer });
     await saveModelInputs(file, values);
   } else if (!isApiKeyConfigured(stored) && !stored?.env) {

@@ -84,21 +84,26 @@ describe('model profiles', () => {
     } finally {
       await fse.remove(claimRepo);
     }
-    // The local path was hashed only when nothing better was configured: a
-    // path-only config still matches, but one with a URL must not — the same
-    // path can later hold a different team's checkout.
+    // The local path was hashed only when nothing better was configured. It
+    // names no single repository (the path is reused), and — like every
+    // provider-ambiguous digest — no record under it is attributed by slug
+    // alone, because a same-named team on another provider shares the slug.
     const pathOnly = { repo: { localPath: '/tmp/example/hai', remote: 'origin' } } as LocalConfig;
-    expect(sameTeamIdentity(`hai-${digest('/tmp/example/hai')}`, pathOnly)).toBe(true);
+    expect(sameTeamIdentity(`hai-${digest('/tmp/example/hai')}`, pathOnly)).toBe(false);
     expect(sameTeamIdentity(`hai-platform-${digest('/tmp/example/hai')}`, pathOnly)).toBe(false);
   });
 
-  it('rejects an alias-digest switch record whose slug is another team\'s', async () => {
+  it('rejects every alias-digest switch record — the slug is not provenance', async () => {
     const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
-    // Team A recorded switches as `team-a-<fork digest>`; team B shares the alias.
+    // Two teams shared the bare alias `fork`; each keyed records under its own
+    // slug, but the old name never encoded the provider, so a same-named team
+    // on another provider would share team B's exact form. No alias record is
+    // attributed by slug alone — only the owner's explicit adoption and a
+    // re-switch re-records it under the provider-qualified identity.
     const teamB = { repo: { localPath: '/tmp/example/team-b', remote: 'fork', url: 'https://example.test/b.git' } } as LocalConfig;
     expect(sameTeamIdentity(`team-a-${digest('fork')}`, teamB)).toBe(false);
-    expect(sameTeamIdentity(`team-b-${digest('fork')}`, teamB)).toBe(true);
-    // A repository-bound digest needs no slug check: a rename keeps the digest.
+    expect(sameTeamIdentity(`team-b-${digest('fork')}`, teamB)).toBe(false);
+    // A repository-bound digest needs no slug check: the host is in the identity.
     expect(sameTeamIdentity(`renamed-team-${digest('https://example.test/b.git')}`, teamB)).toBe(true);
   });
 
@@ -202,9 +207,11 @@ describe('model profiles', () => {
       );
       // The user's explicit adoption of THIS exact identity reads it in place.
       expect(await findTeamValuesPath(onGithub, { adopted: new Set([`${getTeamValuesPath(onGithub)}::gh-${digest('acme/widgets')}`]) })).toBe(legacy);
-      // Switch records are not provenance: same slug matches, another team's doesn't.
+      // Switch records are never provenance: a different slug is another team,
+      // and the same slug could be a same-named team on another provider —
+      // the bare claim made both digests identical. So neither matches.
       expect(sameTeamIdentity(`gc-${digest('acme/widgets')}`, onGithub)).toBe(false);
-      expect(sameTeamIdentity(`gh-${digest('acme/widgets')}`, onGithub)).toBe(true);
+      expect(sameTeamIdentity(`gh-${digest('acme/widgets')}`, onGithub)).toBe(false);
       // A rename (same provider, new slug) keeps the same provider-qualified
       // target, and still needs the same explicit opt-in for the legacy file.
       await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GC\nrepo: acme/widgets\nprovider: github\n');
@@ -248,13 +255,21 @@ describe('model profiles', () => {
       expect(sameTeamIdentity(`alpha-${digest('acme/widgets')}`, onGitcode)).toBe(false);
       // Beta adopting its OWN identity only still never selects Alpha's file.
       expect(await findTeamValuesPath(onGitcode, { adopted: new Set([`${getTeamValuesPath(onGitcode)}::beta-${digest('acme/widgets')}`]) })).toBe(getTeamValuesPath(onGitcode));
-      expect(sameTeamIdentity(`beta-${digest('acme/widgets')}`, onGitcode)).toBe(true);
+      // Nor do Beta's own legacy records attribute Beta: the same slug on
+      // another provider shares the exact `beta-<digest>` form.
+      expect(sameTeamIdentity(`beta-${digest('acme/widgets')}`, onGitcode)).toBe(false);
       // Finding 1 regression: a GitCode team ALSO named Alpha shares the slug —
       // the slug is not provenance, so Alpha's file is still never auto-read.
       await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: Alpha\nrepo: acme/widgets\nprovider: gitcode\n');
       const alphaOnGitcode = { repo: { localPath: repo, remote: 'origin' }, provider: 'gitcode' } as LocalConfig;
       expect(await findTeamValuesPath(alphaOnGitcode)).toBe(getTeamValuesPath(alphaOnGitcode));
       expect(await fse.readFile(alphaLegacy, 'utf8')).toContain('alpha-key');
+      // Finding 2 regression: the same slug REALLY matches today — GitHub Alpha
+      // and GitCode Alpha share `alpha-<digest>`, so an agent GitCode "owns"
+      // must never be claimed from GitHub Alpha's record, even when GitCode
+      // has its own provider-qualified key around. The record is refused,
+      // same slug or not.
+      expect(sameTeamIdentity(`alpha-${digest('acme/widgets')}`, alphaOnGitcode)).toBe(false);
       // Scope regression: adoption is keyed to the adopting scope's own
       // provider-qualified target. A separate GitHub checkout (its own
       // teamai.yaml) having adopted the same-basename file under ITS github
