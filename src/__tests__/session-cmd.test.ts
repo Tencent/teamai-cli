@@ -483,6 +483,85 @@ describe('session push archive key (native cwd, not the run directory)', () => {
   });
 });
 
+describe('session migrate interactive picker', () => {
+  /**
+   * 预先把答案排进 ask() 的队列。
+   *
+   * readline 接口一个模块只建一次，所以 'line' 回调是复用的：答案可以直接
+   * 灌进去，ask() 会按序消费（ask 还没调到时先进 lineQueue）。
+   */
+  function feedAnswers(answers: string[]): void {
+    const push = () => {
+      for (const a of answers) mocks.lineCb?.(a);
+    };
+    if (mocks.lineCb) {
+      push();
+      return;
+    }
+    mocks.lineArmed = push; // 等第一次 createInterface
+  }
+
+  it('pages with n and migrates a session from the second page', async () => {
+    // 12 sessions: the picker shows 10, the 11th is reachable only after paging.
+    const sessions = Array.from({ length: 12 }, (_, i) =>
+      mkSession({
+        sessionId: `s-${String(i).padStart(2, '0')}`,
+        title: `task ${i}`,
+        updatedAt: `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`,
+      }),
+    );
+    // Newest first, so [11] is the 11th in the list = sessions[1].
+    const expected = sessions[1].sessionId;
+    fakeAdapter(sessions, 'fakeplat');
+    mocks.adaptersByPlatform['tgtplat'] = {
+      platform: 'tgtplat',
+      listConversations: vi.fn(async () => []),
+      readSession: vi.fn(async () => sessions[0]),
+    };
+    mocks.previewResult = {
+      sourcePlatform: 'fakeplat',
+      targetPlatform: 'tgtplat',
+      sessionTitle: 'task 1',
+      sessionId: expected,
+      cwd: '/run/dir',
+      messageCount: 1,
+      fidelity: { score: 1, mode: 1, preservedBlocks: 1, totalBlocks: 1, degradedBlocks: 0, degradations: [], warnings: [] },
+    };
+    mocks.migrateResult = {
+      success: true,
+      targetSessionId: 'tgt-1',
+      targetFilePath: '/tmp/tgt.jsonl',
+      preview: { fidelity: { score: 1 } },
+    };
+    const { MigrationEngine } = await import('../session-flow/migrate.js');
+    const previewSpy = vi.spyOn(MigrationEngine.prototype, 'preview');
+
+    feedAnswers(['n', '11']);
+    await runSession('migrate', '-s', 'fakeplat', '-t', 'tgtplat', '--cwd', '/run/dir');
+
+    // The picker is on page 2 by the time the number is entered, and the
+    // selected id is the 11th newest -- unreachable before paging existed.
+    expect(out.join('\n')).toContain('page 2/2');
+    expect(previewSpy).toHaveBeenCalledWith(expected, '/run/dir');
+  });
+
+  it('cancels on an empty answer instead of paging forever', async () => {
+    fakeAdapter([mkSession({ sessionId: 's-1' })], 'fakeplat');
+    mocks.adaptersByPlatform['tgtplat'] = {
+      platform: 'tgtplat',
+      listConversations: vi.fn(async () => []),
+      readSession: vi.fn(async () => mkSession()),
+    };
+
+    // EOF (piped input) reads as an empty answer: the picker must stop instead
+    // of paging forever.
+    feedAnswers(['']);
+    await runSession('migrate', '-s', 'fakeplat', '-t', 'tgtplat', '--cwd', '/run/dir');
+
+    expect(out.join('\n')).toContain('Cancelled.');
+  });
+});
+
 describe('session migrate --push archive key', () => {
   it('archives under the target session native cwd identity', async () => {
     mocks.previewResult = {
