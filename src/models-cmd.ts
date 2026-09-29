@@ -20,6 +20,7 @@ import {
   isApiKeyConfigured,
   loadLocalProfiles,
   loadModelInputs,
+  migrateTeamValuesPath,
   profileAgents,
   profileModels,
   profileOrigin,
@@ -29,6 +30,7 @@ import {
   modelsEntryReader,
   saveLocalProfiles,
   saveModelInputs,
+  sameTeamIdentity,
   setStoredApiKey,
   storedApiKey,
   teamProfilesFrom,
@@ -86,9 +88,9 @@ async function loadTeamValues(
   team: TeamModelProfiles,
   options: { dryRun?: boolean } = {},
 ): Promise<StoredModelInputs> {
-  const file = getTeamValuesPath(localConfig);
+  const file = await migrateTeamValuesPath(localConfig);
   const values = await loadModelInputs(file);
-  const sentTo = await switchedGatewayOrigins(getTeamIdentity(localConfig));
+  const sentTo = await switchedGatewayOrigins(localConfig);
   if (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) && !options.dryRun) {
     await saveModelInputs(file, values);
   }
@@ -158,10 +160,14 @@ async function loadValuesFor(ref: ProfileRef, context: TeamModelsContext): Promi
 function activeAgentsFor(
   ref: ProfileRef,
   active: Partial<Record<ModelAgent, ActiveModelProfile>>,
+  localConfig?: LocalConfig,
 ): ModelAgent[] {
   const name = profileRefName(ref);
   return (Object.entries(active) as Array<[ModelAgent, ActiveModelProfile]>)
-    .filter(([, state]) => state.profile === name && (ref.source === 'local' || !state.team || state.team === ref.team))
+    .filter(([, state]) => state.profile === name && (
+      ref.source === 'local' || !state.team
+      || (localConfig ? sameTeamIdentity(state.team, localConfig) : state.team === ref.team)
+    ))
     .map(([agent]) => agent);
 }
 
@@ -206,7 +212,7 @@ export async function modelsList(reference?: string): Promise<void> {
   refs.forEach((ref, index) => {
     if (index > 0) console.log('');
     const secret = storedApiKey(ref, values[ref.source]);
-    const activeAgents = activeAgentsFor(ref, active);
+    const activeAgents = activeAgentsFor(ref, active, context.localConfig);
     console.log(`${profileRefName(ref)} — ${ref.profile.name}`);
     if (ref.from) console.log(`  From: ${ref.from.source} (${describeOrigin(ref.from)})`);
     const missing = hasApiKeyForAnotherGateway(ref, values[ref.source])
@@ -349,7 +355,7 @@ export async function modelsConfigure(reference: string, options: ConfigureOptio
     local.profiles[local.profiles.findIndex((profile) => profile.id === edited!.id)] = edited;
     await saveLocalProfiles(local);
   }
-  const activeAgents = activeAgentsFor(ref, await activeModelProfiles());
+  const activeAgents = activeAgentsFor(ref, await activeModelProfiles(), context.localConfig);
   log.success(activeAgents.length
     ? `Configured ${key}${gatewaySuffix(ref, 'at')}. Run \`teamai models switch ${key}\` to apply it to ${activeAgents.join(', ')}.`
     : `Configured ${key}${gatewaySuffix(ref, 'at')}. Agent settings were not changed.`);
@@ -434,7 +440,7 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
   const identity = getTeamIdentity(localConfig);
   const groups = new Map<string, { profile: string; model?: string; agents: ModelAgent[] }>();
   for (const [agent, state] of Object.entries(await activeModelProfiles()) as Array<[ModelAgent, ActiveModelProfile]>) {
-    if (!state.profile.startsWith('team:') || state.team !== identity) continue;
+    if (!state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
     const groupKey = `${state.profile}\0${state.model ?? ''}`;
     const group = groups.get(groupKey) ?? { profile: state.profile, model: state.model, agents: [] };
     group.agents.push(agent);
@@ -484,7 +490,7 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
       continue;
     }
     const onlyIfActive = { profile: name, team: identity, ...(model ? { model } : {}) };
-    for (const result of await switchModelProfile(resolved, agents, { ...options, onlyIfActive })) {
+    for (const result of await switchModelProfile(resolved, agents, { ...options, onlyIfActive, localConfig })) {
       if (result.status === 'switched') {
         log.success(options.dryRun ? `Would update ${result.agent} to the latest ${name}` : `Updated ${result.agent} to the latest ${name}`);
       } else if (result.status !== 'unchanged' && result.status !== 'not-installed') {

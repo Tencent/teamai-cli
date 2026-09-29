@@ -5,6 +5,7 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
 import { getTeamaiHomeDir } from '../types.js';
+import { repoIdentity } from '../utils/git.js';
 import { writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { caseFoldKey } from '../manifest-schema.js';
 import {
@@ -170,35 +171,79 @@ export function getLocalValuesPath(): string {
 export function getTeamValuesPath(localConfig: LocalConfig): string {
   // Team inputs may contain credentials. Keep them under the user home even
   // when project scope places dataHome inside a Git workspace.
-  const remote = localConfig.repo.remote;
-  let identity = remote && remote !== 'origin' && remote !== 'upstream'
-    ? remote
-    : localConfig.repo.url || localConfig.repo.localPath;
-  let teamName = '';
-  try {
-    const raw = YAML.parse(fs.readFileSync(path.join(localConfig.repo.localPath, 'teamai.yaml'), 'utf8')) as unknown;
-    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-      const candidate = (raw as { team?: unknown; repo?: unknown }).team;
-      if (typeof candidate === 'string') teamName = candidate;
-      const repo = (raw as { repo?: unknown }).repo;
-      if (typeof repo === 'string' && repo.trim()) identity = repo.trim();
-    }
-  } catch {
-    // Older team repositories may not have teamai.yaml. Use the repository name.
-  }
-  const fallback = path.basename(localConfig.repo.localPath) || 'team';
-  const digest = crypto.createHash('sha256').update(identity).digest('hex');
-  const slug = (teamName || fallback).normalize('NFKC').toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40)
-    .replace(/-+$/g, '') || 'team';
-  return path.join(getTeamaiHomeDir(), 'models', 'teams', `${slug}-${digest.slice(0, 10)}.json`);
+  const { remote, url, localPath } = localConfig.repo;
+  const configured = remote && remote !== 'origin' && remote !== 'upstream' ? remote : url;
+  const identity = configured ? repoIdentity(configured) : localPath;
+  const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
+  return path.join(getTeamaiHomeDir(), 'models', 'teams', `${digest}.json`);
 }
 
 /** Stable identity of the team repository, recorded with `team:` switches. */
 export function getTeamIdentity(localConfig: LocalConfig): string {
   return path.basename(getTeamValuesPath(localConfig), '.json');
+}
+
+/**
+ * The 10-hex digests older versions of `getTeamValuesPath` derived from this
+ * member's own config (the non-origin/upstream remote, the URL, or the local
+ * path). A legacy values file `<slug>-<digest>.json` matches when its digest
+ * is one of these. A `repo:` claim in teamai.yaml is deliberately excluded:
+ * it is not this member's config and could point at a different repository,
+ * blinding migration to a file that shares a slug but not a team.
+ */
+function legacyTeamValueHashes(localConfig: LocalConfig): string[] {
+  const { remote, url, localPath } = localConfig.repo;
+  const candidates = [
+    remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined,
+    url,
+    localPath,
+  ];
+  const identities = candidates.filter((value): value is string => typeof value === 'string' && value.length > 0);
+  return [...new Set(identities.map((identity) => crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10)))];
+}
+
+/**
+ * Whether a stored team identity (the current hash-only name or a legacy
+ * `<slug>-<digest>` form) names the repository `localConfig` describes.
+ * Legacy names must carry a digest this member's own config could have
+ * produced, so a foreign team's values file is never treated as this team's.
+ */
+export function sameTeamIdentity(stored: string | undefined, localConfig: LocalConfig): boolean {
+  if (!stored) return false;
+  if (stored === getTeamIdentity(localConfig)) return true;
+  const legacy = /-([0-9a-f]{10})$/.exec(stored);
+  return legacy !== null && legacyTeamValueHashes(localConfig).includes(legacy[1]);
+}
+
+/**
+ * The team values file for `localConfig`, migrating a legacy
+ * `<slug>-<digest>.json` to the hash-only name when (and only when) the
+ * hash-only file does not exist yet. Returns the path either way, so callers
+ * read and write the one file the current scheme uses.
+ */
+export async function migrateTeamValuesPath(localConfig: LocalConfig): Promise<string> {
+  const target = getTeamValuesPath(localConfig);
+  if (fs.existsSync(target)) return target;
+  const candidates = new Set(legacyTeamValueHashes(localConfig));
+  const dir = path.dirname(target);
+  let entries: string[];
+  try {
+    entries = await fs.promises.readdir(dir);
+  } catch {
+    return target; // no teams directory yet — nothing to migrate
+  }
+  for (const entry of entries) {
+    const legacy = /-([0-9a-f]{10})\.json$/.exec(entry);
+    if (legacy === null || !candidates.has(legacy[1])) continue;
+    try {
+      await fs.promises.rename(path.join(dir, entry), target);
+    } catch {
+      // Gone or renamed by a concurrent process; reading target (which the
+      // caller does next) resolves the file either way.
+    }
+    return target;
+  }
+  return target;
 }
 
 /** One profiles file, or why it cannot be used; null when it does not exist. `label` names it in the reason. */

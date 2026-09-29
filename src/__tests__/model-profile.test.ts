@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,10 +6,13 @@ import { describe, expect, it } from 'vitest';
 import {
   ModelProfileSchema,
   ModelProfilesFileSchema,
+  getTeamIdentity,
   getTeamValuesPath,
   loadModelInputs,
+  migrateTeamValuesPath,
   profileAgents,
   profileRoutes,
+  sameTeamIdentity,
   saveLocalProfiles,
   resolveProfile,
   resolveProfileRef,
@@ -29,18 +33,95 @@ function profile(id: string) {
 }
 
 describe('model profiles', () => {
-  it('names local team secrets with a readable, collision-resistant team identity', async () => {
+  it('names team secrets by repo identity alone, surviving teamai.yaml renames', async () => {
     const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-team-'));
     try {
       await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: HAI Platform\n');
-      const file = getTeamValuesPath({ repo: { localPath: repo, remote: 'origin', url: 'https://example.test/hai' } } as LocalConfig);
-      expect(path.basename(file)).toMatch(/^hai-platform-[a-f0-9]{10}\.json$/);
+      const config = { repo: { localPath: repo, remote: 'origin', url: 'https://example.test/hai' } } as LocalConfig;
+      const file = getTeamValuesPath(config);
+      expect(path.basename(file)).toMatch(/^[a-f0-9]{10}\.json$/);
       expect(path.dirname(file)).toContain(path.join('models', 'teams'));
+      // The team display name and a repo: claim must not move the file (#894).
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: Relocated\nrepo: https://example.test/elsewhere\n');
+      expect(getTeamValuesPath(config)).toBe(file);
+      // A different repository URL names a different file.
       const other = getTeamValuesPath({ repo: { localPath: `${repo}-other`, remote: 'origin', url: 'https://example.test/other' } } as LocalConfig);
-      expect(path.basename(other).match(/-([a-f0-9]{10})\.json$/)?.[1])
-        .not.toBe(path.basename(file).match(/-([a-f0-9]{10})\.json$/)?.[1]);
+      expect(path.basename(other)).not.toBe(path.basename(file));
+      // scp and ssh URLs for the same repository name one file (#880 semantics).
+      const scp = getTeamValuesPath({ repo: { localPath: repo, remote: 'origin', url: 'git@example.test:acme/team.git' } } as LocalConfig);
+      const ssh = getTeamValuesPath({ repo: { localPath: repo, remote: 'origin', url: 'ssh://git@example.test:22/acme/team' } } as LocalConfig);
+      expect(scp).toBe(ssh);
     } finally {
       await fse.remove(repo);
+    }
+  });
+
+  it('matches the current hash name and only legacy digests this config could have produced', () => {
+    const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+    const config = { repo: { localPath: '/tmp/example/hai', remote: 'origin', url: 'https://example.test/hai.git' } } as LocalConfig;
+    expect(sameTeamIdentity(getTeamIdentity(config), config)).toBe(true);
+    // A legacy name keyed by the URL digest names the same team.
+    expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/hai.git')}`, config)).toBe(true);
+    // A legacy name keyed by a non-origin remote digest names the same team.
+    const fork = { repo: { localPath: '/tmp/example/hai', remote: 'fork', url: 'https://example.test/hai.git' } } as LocalConfig;
+    expect(sameTeamIdentity(`hai-platform-${digest('fork')}`, fork)).toBe(true);
+    // A digest from another repository, or one this config never produced, must not match.
+    expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/other.git')}`, config)).toBe(false);
+    expect(sameTeamIdentity('hai-platform-0000000000', config)).toBe(false);
+    expect(sameTeamIdentity(undefined, config)).toBe(false);
+  });
+
+  it('migrates a legacy slug-digest values file to the hash-only name', async () => {
+    const previous = process.env.HOME;
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-migrate-'));
+    process.env.HOME = home;
+    try {
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      const config = { repo: { localPath: '/tmp/example/hai', remote: 'origin', url: 'https://example.test/hai.git' } } as LocalConfig;
+      const target = getTeamValuesPath(config);
+      const dir = path.dirname(target);
+      await fse.ensureDir(dir);
+      const legacy = path.join(dir, `hai-platform-${digest('https://example.test/hai.git')}.json`);
+      await fse.writeFile(legacy, '{"team:gw":{"API_KEY":{"value":"old"}}}');
+      expect(await migrateTeamValuesPath(config)).toBe(target);
+      expect(await fse.pathExists(target)).toBe(true);
+      expect(await fse.pathExists(legacy)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
+  it('keeps the hash-only file when present and never migrates a foreign digest', async () => {
+    const previous = process.env.HOME;
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-migrate2-'));
+    process.env.HOME = home;
+    try {
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      const config = { repo: { localPath: '/tmp/example/hai', remote: 'origin', url: 'https://example.test/hai' } } as LocalConfig;
+      const target = getTeamValuesPath(config);
+      const dir = path.dirname(target);
+      await fse.ensureDir(dir);
+      await fse.writeFile(target, 'current');
+      const foreign = path.join(dir, `hai-platform-${digest('https://example.test/foreign.git')}.json`);
+      await fse.writeFile(foreign, 'foreign');
+      // Target exists: the foreign legacy file is left alone.
+      expect(await migrateTeamValuesPath(config)).toBe(target);
+      expect(await fse.readFile(target, 'utf8')).toBe('current');
+      expect(await fse.pathExists(foreign)).toBe(true);
+      // No matching legacy file: still returns the path without creating anything.
+      await fse.remove(target);
+      expect(await migrateTeamValuesPath(config)).toBe(target);
+      expect(await fse.pathExists(target)).toBe(false);
+      expect(await fse.pathExists(foreign)).toBe(true);
+      // Missing teams directory entirely: same graceful return.
+      await fse.remove(dir);
+      expect(await migrateTeamValuesPath(config)).toBe(target);
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
     }
   });
 

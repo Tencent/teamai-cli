@@ -6,7 +6,8 @@ import { getUserHome } from '../utils/home.js';
 import { pathExists, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
-import { ALL_MODEL_AGENTS, type ModelAgent, type ResolvedModelProfile } from './profile.js';
+import type { LocalConfig } from '../types.js';
+import { ALL_MODEL_AGENTS, type ModelAgent, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
 
 export { ALL_MODEL_AGENTS } from './profile.js';
 
@@ -697,6 +698,12 @@ export interface SwitchOptions {
    * to re-apply before taking the lock; a switch in between must win.
    */
   onlyIfActive?: ActiveModelProfile;
+  /**
+   * The repo the manifest is understood against. Lets `onlyIfActive` match a
+   * team recorded under its legacy identity, so a `pull` can update agents
+   * whose switch predates the hash-only team naming (#894).
+   */
+  localConfig?: LocalConfig;
 }
 
 export async function switchModelProfile(
@@ -733,7 +740,9 @@ async function switchModelProfileUnlocked(
       }
       const expected = options.onlyIfActive;
       const active = manifest.agents[agent];
-      if (expected && (active?.profile !== expected.profile || active.team !== expected.team || active.model !== expected.model)) {
+      const teamMatches = active?.team === expected?.team
+        || (expected?.team !== undefined && options.localConfig !== undefined && sameTeamIdentity(active?.team, options.localConfig));
+      if (expected && (active?.profile !== expected.profile || !teamMatches || active.model !== expected.model)) {
         results.push({ agent, status: 'unchanged', message: `${agent} no longer uses ${expected.profile}` });
         continue;
       }
@@ -936,16 +945,17 @@ export async function activeModelProfiles(): Promise<Partial<Record<ModelAgent, 
 }
 
 /**
- * For each `team:` profile of team `team` an agent is switched to, the gateway
- * origins TeamAI last wrote into those agents' settings: where the API key of
- * that profile has actually been sent.
+ * For each `team:` profile of the team `localConfig` describes, an agent is
+ * switched to: the gateway origins TeamAI last wrote into those agents'
+ * settings, where the API key of that profile has actually been sent. Agents
+ * recorded under a legacy team identity (#894) count toward the same team.
  */
-export async function switchedGatewayOrigins(team: string): Promise<Map<string, string[]>> {
+export async function switchedGatewayOrigins(localConfig: LocalConfig): Promise<Map<string, string[]>> {
   const manifest = await loadManifest();
   const byProfile = new Map<string, string[]>();
   for (const agent of ALL_MODEL_AGENTS) {
     const state = manifest?.agents[agent];
-    if (!state || !state.profile.startsWith('team:') || state.team !== team) continue;
+    if (!state || !state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
     const origins = writtenGatewayUrls(agent, state.lastWritten).flatMap((url) => {
       try {
         return [new URL(url).origin];
