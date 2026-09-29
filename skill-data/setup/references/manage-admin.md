@@ -67,7 +67,9 @@ holds a server that tool did not write. A file two tools map, with no pull on
 this version having recorded it, needs a `managed-mcp.json` record from each of
 them. While a worktree has no `managed-mcp.json` at all (lost, or before its
 first pull), an untracked config holding a server no record claims is listed,
-and that server noted: it keeps the line until it leaves the file.
+and that server noted: it keeps the line until it leaves the file. While that
+note cannot be written (another teamai command holds the record), the line stays
+until a later pull writes it.
 
 ## Invite a member
 

@@ -617,6 +617,19 @@ describe('doctor — MCP servers delivered on disk', () => {
       expect((check.fix ?? '').split(path.join(projectRoot, '.mcp.json'))).toHaveLength(2);
     });
 
+    it('fails the same way while the record a pull wrote without managed-mcp.json is still marked unnoted', async () => {
+      teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'fixture-hash', unnoted: true }],
+      });
+      await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect((check.fix ?? '').split(path.join(projectRoot, '.mcp.json'))).toHaveLength(2);
+    });
+
     it('emits no check when the server of that name is the member\'s own, not teamai\'s', async () => {
       // CodeBuddy at its built-in .mcp.json: dropped, any server there Claude's records don't own would hold it.
       teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };

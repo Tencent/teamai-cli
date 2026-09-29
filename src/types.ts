@@ -904,9 +904,10 @@ export interface ManagedMcpRecord {
    */
   resolved?: boolean;
   /**
-   * Project scope: this record was rebuilt after it was lost, and the other
-   * servers in its file could not be noted in managed-mcp-files.json (#882).
-   * Until a pull notes them, the file counts as having no record.
+   * Project scope: this record was rebuilt after it was lost, or written by a
+   * pull that found no managed-mcp.json, and the other servers in its file
+   * could not be noted in managed-mcp-files.json yet (#882). Until a pull
+   * notes them, the file counts as having no record.
    */
   unnoted?: true;
 }

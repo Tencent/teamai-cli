@@ -598,8 +598,10 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
     vars ??= await buildVarTable(localConfig);
     ledger ??= (await readResolvedMcpFiles(localConfig)).files;
     const owned = manifest[managedMcpManifestKey(target.tool, true)] ?? [];
-    // No managed-mcp.json at all: any server may be teamai's, as pull judges it.
-    if ((Object.keys(manifest).length === 0 && (await unclaimedMcpServers(target, [])).length > 0)
+    // No managed-mcp.json at all, or a record a pull wrote without one whose note hasn't landed: any
+    // server no record claims may be teamai's, as pull judges it.
+    if (((Object.keys(manifest).length === 0 || owned.some((record) => record.unnoted))
+      && (await unclaimedMcpServers(target, owned.map((record) => record.name))).length > 0)
       || await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, desired)) await hold(target.file);
   }
   // And a file a pull wrote under a mapping the team has since changed, but one recorded as tracked while git
