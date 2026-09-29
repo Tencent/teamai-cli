@@ -31,6 +31,7 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => ({
 
 import { contribute } from '../contribute.js';
 import { loadLocalConfigForScope } from '../config.js';
+import { mcpInject, mcpList } from '../mcp-cmd.js';
 import { pull } from '../pull.js';
 import { push } from '../push.js';
 import { recall } from '../recall.js';
@@ -252,6 +253,8 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
   const LOAD_ONLY_COMMANDS: Array<[string, () => Promise<void>]> = [
     ['pull --dry-run', () => pull({ dryRun: true })],
     ['push --dry-run', () => push({ dryRun: true })],
+    ['mcp inject --dry-run', () => mcpInject({ dryRun: true })],
+    ['mcp list', () => mcpList({})],
     ['status', () => status({})],
     ['list', () => list(undefined, {})],
   ];
@@ -286,6 +289,8 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
   // The issue report located these by code path only; they are run here.
   const PROJECT_SCOPE_COMMANDS: Array<[string, () => Promise<void>]> = [
     ['pull --dry-run', () => pull({ dryRun: true })],
+    ['mcp inject --dry-run', () => mcpInject({ dryRun: true })],
+    ['mcp list', () => mcpList({})],
     ['status', () => status({})],
     ['list', () => list(undefined, {})],
   ];
