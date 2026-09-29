@@ -76,21 +76,22 @@ const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly defaultPo
 
 /**
  * A team repo URL as the part of it that says which repo it is: scheme family
- * (ssh, https or http), lowercased host, a port other than the scheme's default,
- * and the path as written. Only credentials, the ssh user, a trailing `.git`
- * and slashes are dropped, so `git@host:acme/team.git` and
- * `ssh://git@host:22/acme/team` name one file, while two repos on one host
- * with different ports, or behind http and https, never share values. Not `normalizeRepoUrlForCompare`:
+ * (ssh, https or http), the ssh user, lowercased host, a port other than the
+ * scheme's default, and the path as written. Only http(s) credentials, a
+ * trailing `.git` and slashes are dropped, so `git@host:acme/team.git` and
+ * `ssh://git@host:22/acme/team` name one file, while two ssh users' repos on
+ * one host (a path relative to each user's home), two repos on one host with
+ * different ports, or behind http and https, never share values. Not `normalizeRepoUrlForCompare`:
  * it drops the port, and its callers compare loosely on purpose.
  */
 function repoIdentity(url: string): string {
   const trimmed = url.trim();
-  const key = (family: string, host: string, port: string, repoPath: string): string => {
+  const key = (family: string, user: string, host: string, port: string, repoPath: string): string => {
     const name = repoPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
-    return `${family}://${host.toLowerCase()}${port ? `:${port}` : ''}/${name}`;
+    return `${family}://${user ? `${user}@` : ''}${host.toLowerCase()}${port ? `:${port}` : ''}/${name}`;
   };
-  const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(trimmed);
-  if (scp) return key('ssh', scp[1] ?? '', '', scp[2] ?? '');
+  const scp = /^([^/@]+)@([^:/]+):(.+)$/.exec(trimmed);
+  if (scp) return key('ssh', scp[1] ?? '', scp[2] ?? '', '', scp[3] ?? '');
   let parsed: URL;
   try {
     parsed = new URL(trimmed);
@@ -99,7 +100,18 @@ function repoIdentity(url: string): string {
   }
   const scheme = parsed.protocol.slice(0, -1).toLowerCase();
   const known = SCHEMES.get(scheme);
-  return key(known?.family ?? scheme, parsed.hostname, parsed.port === known?.defaultPort ? '' : parsed.port, parsed.pathname);
+  const family = known?.family ?? scheme;
+  const user = family === 'ssh' ? decodeUser(parsed.username) : '';
+  return key(family, user, parsed.hostname, parsed.port === known?.defaultPort ? '' : parsed.port, parsed.pathname);
+}
+
+/** A URL's percent-encoded user as the scp form writes it; one that does not decode stays as written. */
+function decodeUser(user: string): string {
+  try {
+    return decodeURIComponent(user);
+  } catch {
+    return user;
+  }
 }
 
 /** The values file for every team on this machine (`teamai env set --global`). */

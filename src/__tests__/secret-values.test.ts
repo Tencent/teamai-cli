@@ -133,6 +133,13 @@ describe('team secret values', () => {
         }
       });
 
+      it('gives two ssh users on one host different files, in the scp form and the ssh URL alike', () => {
+        expect(fileFor('alice@example.com:team.git')).not.toBe(fileFor('bob@example.com:team.git'));
+        expect(fileFor('ssh://alice@example.com/team')).not.toBe(fileFor('ssh://bob@example.com/team'));
+        expect(fileFor('ssh://alice@example.com:22/team.git')).toBe(fileFor('alice@example.com:team.git'));
+        expect(fileFor('ssh://example.com/team')).not.toBe(fileFor('alice@example.com:team.git'));
+      });
+
       it('gives repos on one host with different ports different files', () => {
         expect(fileFor('ssh://git@example.com:2222/acme/team.git')).not.toBe(fileFor('ssh://git@example.com:2223/acme/team.git'));
         expect(fileFor('ssh://git@example.com:2222/acme/team.git')).not.toBe(fileFor('git@example.com:acme/team.git'));
