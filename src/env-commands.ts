@@ -332,7 +332,8 @@ export async function envAdd(
   if (!envConfig) return;
 
   // Check if key already exists
-  const existingIdx = envConfig.variables.findIndex(v => v.key === key);
+  // On Windows a key typed in another case is this variable: it is updated, not added a second time.
+  const existingIdx = envConfig.variables.findIndex(v => sameEntryKey(v.key, key));
   const isUpdate = existingIdx !== -1;
 
   if (isUpdate) {
@@ -385,7 +386,7 @@ async function declareSecret(
   const secrets = await readSecretsFileForEdit(target);
   if (!secrets) return;
 
-  const index = secrets.findIndex((secret) => sameSecretKey(secret.key, key));
+  const index = secrets.findIndex((secret) => sameEntryKey(secret.key, key));
   const isUpdate = index !== -1;
   // On Windows a key typed in another case is the declared one: it keeps its declared name.
   if (isUpdate && typeof secrets[index]?.key === 'string') key = secrets[index].key;
@@ -455,7 +456,7 @@ export async function envRemove(
 
   const envConfig = await readEnvFileForEdit(envYamlPath);
   if (!envConfig) return;
-  const idx = envConfig.variables.findIndex(v => v.key === key);
+  const idx = envConfig.variables.findIndex(v => sameEntryKey(v.key, key));
 
   if (idx === -1) {
     if (await removeSecret(key, secretsFile, options) === 'removed') return;
@@ -486,7 +487,7 @@ async function removeSecret(
 ): Promise<'removed' | 'absent' | 'reported'> {
   const secrets = await readSecretsFileForEdit(file);
   if (!secrets) return 'reported';
-  const index = secrets.findIndex((secret) => sameSecretKey(secret.key, key));
+  const index = secrets.findIndex((secret) => sameEntryKey(secret.key, key));
   if (index === -1) return 'absent';
 
   // Every declaration of it: one left behind still declares the key.
@@ -509,8 +510,8 @@ function withoutKey<T>(values: Readonly<Record<string, T>>, key: string): Record
   return rest;
 }
 
-/** Whether a declaration's `key` is `key`: the same environment variable, so in any case on Windows. */
-function sameSecretKey(declared: unknown, key: string): boolean {
+/** Whether an entry's `key` is `key`: the same environment variable, so in any case on Windows. */
+function sameEntryKey(declared: unknown, key: string): boolean {
   return typeof declared === 'string' && envName(declared) === envName(key);
 }
 
@@ -519,7 +520,7 @@ function dropDuplicateSecrets(secrets: Record<string, unknown>[], key: string, k
   let seen = 0;
   let removed = 0;
   for (let i = 0; i < secrets.length; i++) {
-    if (!sameSecretKey(secrets[i]?.key, key) || ++seen <= keep) continue;
+    if (!sameEntryKey(secrets[i]?.key, key) || ++seen <= keep) continue;
     secrets.splice(i--, 1);
     removed++;
   }

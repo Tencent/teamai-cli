@@ -1039,6 +1039,24 @@ scope: 'user',
       expect(declarations.kind === 'resolved' && declarations.entries.map((s) => s.name)).toEqual(['GITHUB_TOKEN']);
     });
 
+    it('on Windows, updates and removes an env.yaml variable typed in another case, before any secret of that name', async () => {
+      const envYaml = path.join(repoPath, 'env', 'env.yaml');
+      await fse.outputFile(envYaml, YAML.stringify({ variables: [{ key: 'TOKEN', value: 'a' }] }));
+      await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'token' }] }));
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        await envAdd('token', 'b', {});
+        expect((YAML.parse(await fse.readFile(envYaml, 'utf-8')) as { variables: unknown[] }).variables).toEqual([{ key: 'TOKEN', value: 'b' }]);
+
+        await envRemove('token', {});
+      } finally {
+        Object.defineProperty(process, 'platform', { value: original, configurable: true });
+      }
+      expect((YAML.parse(await fse.readFile(envYaml, 'utf-8')) as { variables?: unknown[] }).variables ?? []).toEqual([]);
+      expect(await secretsIn(rootSecrets())).toEqual([{ key: 'token' }]);
+    });
+
     it('on Windows, updates and removes a declaration typed in another case, rather than add a second one', async () => {
       await fse.outputFile(rootSecrets(), YAML.stringify({ secrets: [{ key: 'TOKEN' }] }));
       const original = process.platform;
