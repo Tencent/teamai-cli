@@ -18,6 +18,7 @@ import {
   resolveProfileRef,
   saveModelInputs,
   unadoptedLegacyFiles,
+  isRepoReference,
   type ModelProfilesFile,
 } from '../models/profile.js';
 import type { LocalConfig } from '../types.js';
@@ -359,6 +360,35 @@ describe('model profiles', () => {
     expect(getTeamValuesPath(onGithub)).not.toBe(getTeamValuesPath(onGitcode));
     // Same remote and provider name the same repository regardless of path.
     expect(getTeamValuesPath(onGithub)).toBe(getTeamValuesPath({ repo: { localPath: '/elsewhere', remote: 'owner/repo' }, provider: 'github' } as LocalConfig));
+  });
+
+  it('keys different provider-relative remotes separately and never Windows drive paths as URLs', async () => {
+    const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-remote-prec-'));
+    // The remote is the top identity: two checkouts with different
+    // provider-relative remotes must never share one file — even when both
+    // carry the same teamai.yaml claim and provider.
+    await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: T\nrepo: acme/widgets\n');
+    const remoteA = { repo: { localPath: repo, remote: 'acme/team-a' } } as LocalConfig;
+    const remoteB = { repo: { localPath: repo, remote: 'acme/team-b' } } as LocalConfig;
+    expect(getTeamValuesPath(remoteA)).not.toBe(getTeamValuesPath(remoteB));
+    // Same provider-relative remote and provider name the same repository
+    // regardless of checkout path.
+    expect(getTeamValuesPath(remoteA)).toBe(getTeamValuesPath({ repo: { localPath: '/elsewhere', remote: 'acme/team-a' } } as LocalConfig));
+    // A provider-relative remote outranks a DIFFERENT claim: the remote names
+    // the repo, the claim merely repeats it (matching remote keys the claim's).
+    await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: T\nrepo: acme/team-b\n');
+    expect(getTeamValuesPath(remoteB)).toBe(getTeamValuesPath({ repo: { localPath: repo, remote: 'acme/team-b' } } as LocalConfig));
+    // A bare alias is never mistaken for a URL: it falls through to the path
+    // form, whose provider-and-slug fallback keeps two teams at one path apart.
+    expect(getTeamValuesPath({ repo: { localPath: '/tmp/example/hai', remote: 'sharing' } } as LocalConfig))
+      .not.toBe(getTeamValuesPath({ repo: { localPath: '/tmp/example/hai' } } as LocalConfig));
+    // Windows drive paths are paths, not URL schemes: a path-only config must
+    // keep its provider-and-slug fallback instead of hashing a phantom URL.
+    expect(isRepoReference('C:\\teams\\repo')).toBe(false);
+    expect(isRepoReference('c:/teams/repo')).toBe(false);
+    expect(isRepoReference('D:\\teams\\repo')).toBe(false);
+    expect(isRepoReference('https://example.test/team.git')).toBe(true);
+    expect(isRepoReference('git@example.test:acme/team.git')).toBe(true);
   });
 
   it('reads an alias-digest legacy file only under this team\'s slug', async () => {

@@ -168,11 +168,20 @@ export function getLocalValuesPath(): string {
   return path.join(getTeamaiHomeDir(), 'models', 'values.json');
 }
 
-/** Whether a value names a repository for `repoIdentity`: a URL or scp-like remote. A bare alias like `fork` names nothing on its own. */
-function isRepoReference(value: string): boolean {
+/** A path-shaped `owner/repo`: not a URL, yet it names a single repository — together with its provider. */
+function isProviderRelative(value: string): boolean {
+  return /\//.test(value);
+}
+
+/** Whether a value names a repository for `repoIdentity`: a URL or scp-like remote. A bare alias like `fork` names nothing on its own, and a Windows drive path (`C:\teams\repo`) is no more a scheme than it is a repository. */
+export function isRepoReference(value: string): boolean {
   if (/^[^/@]+@[^:/]+:.+$/.test(value)) return true;
   try {
-    new URL(value);
+    const parsed = new URL(value);
+    // `new URL('C:\\teams\\repo')` accepts `c:` as a scheme; drive letters
+    // are paths, not hosts — reject them so a path-only config keeps the
+    // provider-and-team-slug fallback instead of hashing a phantom URL.
+    if (/^[a-z]:$/.test(parsed.protocol)) return false;
     return true;
   } catch {
     return false;
@@ -191,7 +200,14 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
   // path-shaped `repo:` claim. The same holds for the local path — it is
   // reused across teams, so it is the last resort and keeps the slug.
   const claim = repoClaim(localPath);
-  const source = named && isRepoReference(named) ? named
+  // A configured non-origin remote names the repository with the highest
+  // precedence — whether it is URL-shaped or a provider-relative `owner/repo`
+  // (which names one repository together with its provider). Two checkouts
+  // with DIFFERENT remotes therefore never share one file, even if they carry
+  // the same `repo:` claim; the claim decides only when it is the best
+  // identity the checkout actually has.
+  const namedRemote = named !== undefined && (isRepoReference(named) || isProviderRelative(named));
+  const source = namedRemote ? named
     : url && isRepoReference(url) ? url
     : claim?.claim ?? (named ?? localPath);
   let identity: string;
