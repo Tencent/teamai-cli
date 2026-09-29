@@ -616,6 +616,32 @@ scope: 'user',
       expect(await fse.readFile(path.join(localRulesDir, 'personal.md'), 'utf-8')).toBe('# Mine\n');
     });
 
+    it('reclaims delivered copies from a rule directory shared with user rules (JoyCode)', async () => {
+      teamConfig.toolPaths.joycode = { rules: '.joycode/rules' };
+      await fse.ensureDir(path.join(homeDir, '.joycode', 'rules'));
+      const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
+      await fse.ensureDir(path.join(teamRulesDir, 'alpha'));
+      await fse.writeFile(path.join(teamRulesDir, 'alpha/alpha-rule.md'), '# Alpha rule\n');
+      await fse.writeFile(path.join(teamRulesDir, 'alpha/edited.md'), '# Team version\n');
+      const items = await handler.scanTeamForPull(teamConfig, localConfig);
+      const joycode = async (name: string) => {
+        const item = items.find((i) => i.name === name)!;
+        return (await handler.deliveryTargets(teamConfig, localConfig, item)).find((t) => t.tool === 'joycode')!;
+      };
+      const delivered = await joycode('alpha/alpha-rule');
+      const edited = await joycode('alpha/edited');
+      await fse.outputFile(delivered.dest, delivered.content!);
+      await fse.outputFile(edited.dest, '# Edited locally\n');
+      const personal = path.join(homeDir, '.joycode', 'rules', 'personal.md');
+      await fse.writeFile(personal, '# Mine\n');
+
+      await handler.pullAllRules(teamConfig, localConfig, []);
+
+      expect(await fse.pathExists(delivered.dest)).toBe(false);
+      expect(await fse.readFile(edited.dest, 'utf-8')).toBe('# Edited locally\n');
+      expect(await fse.readFile(personal, 'utf-8')).toBe('# Mine\n');
+    });
+
     it('removes a namespace directory it empties', async () => {
       const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
       await fse.ensureDir(path.join(teamRulesDir, 'alpha'));

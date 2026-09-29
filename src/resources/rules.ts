@@ -653,22 +653,28 @@ export class RulesHandler extends ResourceHandler {
    * Remove the copies of team rules that no longer reach this directory when none
    * does — e.g. the last rule of a project the directory dropped, or of one an
    * admin removed. Only a file TeamAI provably wrote goes: it sits at a team rule's
-   * delivery path and is byte-identical to what delivery renders for that tool.
-   * A personal rule, a locally edited copy, the author's own copy of a rule they
-   * published, and every file in a directory shared with user-authored rules stay.
+   * delivery path and holds exactly what pull rendered for that tool, from the
+   * rule as it is now or as it was at a revision this checkout last pulled (the
+   * admin may have edited the rule before removing its project). That proof holds
+   * in rule directories shared with user-authored rules too, so JoyCode, OMP, Pi
+   * and Copilot are reclaimed like the rest. A personal rule, a locally edited
+   * copy and the author's own copy of a rule they published stay.
    */
   private async reclaimUnselectedTeamRules(
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
   ): Promise<void> {
     const teamRules = await this.scanTeamForPull(teamConfig, localConfig);
+    if (teamRules.length === 0) return;
+    const deliveredRevs = (
+      await (await import('../pull.js')).resolveCheckoutBases(localConfig, await loadStateForScope(localConfig))
+    ).revs;
     const touchedDirs = new Set<string>();
     for (const item of teamRules) {
-      for (const { tool, dest, content, supersedes } of await this.deliveryTargets(teamConfig, localConfig, item)) {
+      for (const { tool, dest, supersedes } of await this.deliveryTargets(teamConfig, localConfig, item)) {
         // `supersedes` marks the author's own root copy, not a delivered one.
-        if (supersedes || content === undefined) continue;
-        if (tool === 'joycode' || tool === 'omp' || tool === 'pi' || usesCopilotInstructions(tool)) continue;
-        if (await readFileSafe(dest) !== content) continue;
+        if (supersedes) continue;
+        if (!await isDeliveredRender(tool, dest, item, localConfig.repo.localPath, deliveredRevs)) continue;
         await remove(dest);
         touchedDirs.add(path.join(resolveToolBaseDir(tool, localConfig), scopedToolPaths(teamConfig, localConfig)[tool].rules!));
         log.debug(`Removed unselected team rule ${item.name} from ${tool}`);
