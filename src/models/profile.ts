@@ -348,13 +348,16 @@ export interface UnadoptedLegacyFile {
  * the same machine. Adopting such a file is therefore the user's explicit
  * choice, never a silent guess. Repository-bound legacy files (a URL or
  * URL-shaped identity) are not listed: the identity carries its host, so
- * matching by digest alone is safe.
+ * matching by digest alone is safe. When the provider-qualified hash-only
+ * target already exists it shadows every legacy file — a past adoption and
+ * migration is the permanent record, so nothing is offered again.
  */
 export async function unadoptedLegacyFiles(
   localConfig: LocalConfig,
   adopted: ReadonlySet<string>,
 ): Promise<UnadoptedLegacyFile[]> {
   const target = getTeamValuesPath(localConfig);
+  if (fs.existsSync(target)) return [];
   const candidates = legacyTeamValueHashes(localConfig);
   const dir = path.dirname(target);
   let entries: string[];

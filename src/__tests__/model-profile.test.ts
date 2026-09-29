@@ -212,6 +212,11 @@ describe('model profiles', () => {
       expect(getTeamValuesPath(renamed)).toBe(getTeamValuesPath(onGithub));
       expect(await findTeamValuesPath(renamed)).toBe(getTeamValuesPath(renamed));
       expect(await findTeamValuesPath(renamed, { adopted: new Set([`gh-${digest('acme/widgets')}`]) })).toBe(legacy);
+      // Migration writes the provider-qualified target; from then on the legacy
+      // file is shadowed and is never offered for adoption again — no re-prompts.
+      await saveModelInputs(getTeamValuesPath(onGithub), { 'team:gw': { API_KEY: { value: 'legacy-key' } } });
+      expect(await unadoptedLegacyFiles(onGithub, new Set())).toEqual([]);
+      expect(await findTeamValuesPath(onGithub)).toBe(getTeamValuesPath(onGithub));
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;
