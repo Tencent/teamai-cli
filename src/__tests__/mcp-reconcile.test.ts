@@ -968,6 +968,28 @@ servers:
       expect(await excludeOf(projectRoot)).toMatch(/^\/opencode\.json$/m);
     });
 
+    it('keeps suspect a tool managed-mcp-files.json lists as a writer, uninstalled since, though an installed tool maps the file', async () => {
+      const unmoved = { ...teamConfig, toolPaths: UNMOVED_TOOL_PATHS } as TeamaiConfig;
+      await fse.ensureDir(path.join(projectRoot, '.codebuddy', 'skills'));
+      await writeMcpYaml(`${withSecret}    tools: [codebuddy]\n  - name: open\n    transport: http\n    url: https://example.com/open\n    tools: [claude]\n`);
+      await reconcileMcpForConfig(unmoved, projectConfig);
+      expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+      const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+      const manifestFile = managedMcpManifestPath(getDataHome(projectConfig), projectRoot);
+      const manifest = await fse.readJson(manifestFile) as Record<string, unknown>;
+      delete manifest['codebuddy:project'];
+      await fse.writeJson(manifestFile, manifest);
+      await fse.remove(path.join(projectRoot, '.codebuddy'));
+      await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+      await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n    tools: [claude]\n');
+      vi.stubEnv('SECRET_TOKEN', '');
+
+      await reconcileMcpForConfig(unmoved, projectConfig);
+
+      expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+      expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+    });
+
     it('never lets one format\'s record claim a server of the same name under another format\'s key', async () => {
       const toolPaths = {
         ...UNMOVED_TOOL_PATHS,

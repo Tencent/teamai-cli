@@ -327,11 +327,13 @@ export async function resolveMcpTargets(
 
 /**
  * Whether a missing record of `target`'s tool makes its file's unclaimed servers suspect (#882): a tool the
- * team maps there, installed, or not installed while no installed tool maps that file.
+ * team maps there, installed, or not installed while no installed tool maps that file or while
+ * managed-mcp-files.json lists it as having written a resolved value there (`writers`).
  */
-export function unrecordedMcpTool(target: McpTarget, targets: McpTarget[]): boolean {
+export function unrecordedMcpTool(target: McpTarget, targets: McpTarget[], writers: readonly string[] = []): boolean {
   if (target.builtinFallback) return false;
-  return !target.undetected || !targets.some((other) => other.file === target.file && !other.undetected);
+  return !target.undetected || writers.includes(target.tool)
+    || !targets.some((other) => other.file === target.file && !other.undetected);
 }
 
 /**
@@ -1231,7 +1233,7 @@ async function protectProjectMcpConfigs(
   // one, or one uninstalled since that left the file behind, when no installed tool maps that file (CodeBuddy
   // never installed beside Claude's .mcp.json would otherwise hold every member's own servers there).
   const unnoted = (file: string): boolean => lost || targets.some((t) => t.file === file
-    && ((unrecordedMcpTool(t, targets) && (before ?? manifest)[managedMcpManifestKey(t.tool, true)] === undefined)
+    && ((unrecordedMcpTool(t, targets, ledger[t.file]?.tools) && (before ?? manifest)[managedMcpManifestKey(t.tool, true)] === undefined)
       || [before, manifest].some((m) => m?.[managedMcpManifestKey(t.tool, true)]?.some((record) => record.unnoted))));
   const unclaimed = new Map<string, string[]>();
   const holds = async (target: McpTarget, owned: ManagedMcpRecord[]): Promise<boolean> => {

@@ -603,7 +603,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
     // without one whose note hasn't landed: any server no record claims may be teamai's, as pull judges it.
     const claimed = targets.filter((t) => t.file === target.file && sameServerKey(t.format, target.format))
       .flatMap((t) => manifest?.[managedMcpManifestKey(t.tool, true)] ?? []).map((record) => record.name);
-    const unrecorded = unrecordedMcpTool(target, targets) && manifest[managedMcpManifestKey(target.tool, true)] === undefined;
+    const unrecorded = unrecordedMcpTool(target, targets, ledger[target.file]?.tools) && manifest[managedMcpManifestKey(target.tool, true)] === undefined;
     if (((Object.keys(manifest).length === 0 || unrecorded || owned.some((record) => record.unnoted))
       && (await unclaimedMcpServers(target, claimed)).length > 0)
       || await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, desired)) await hold(target.file);
