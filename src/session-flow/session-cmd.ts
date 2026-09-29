@@ -66,6 +66,9 @@ let sharedRl: readline.Interface | null = null;
 /** --all 批量迁移时，超过这个条数先列清单要求确认（-y 跳过）。 */
 const BATCH_CONFIRM_THRESHOLD = 10;
 
+/** 交互式选择会话时每页显示多少条（n/p 翻页）。 */
+const SESSION_PICKER_PAGE_SIZE = 10;
+
 
 function startLineReader(): void {
   if (lineReaderStarted) return;
@@ -433,27 +436,60 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         }
         targets = matches;
       } else {
-        // 交互式：列出最近的 10 个，让用户选号
-        const recent = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 10);
-        console.log('\nRecent sessions on ' + source + ':');
-        for (let i = 0; i < recent.length; i++) {
-          const m = recent[i];
-          const title = safeText(m.title);
-          const titleShown = title.length > 50 ? title.slice(0, 50) + '...' : title;
-          console.log(`  [${i + 1}] ${m.sessionId.slice(0, 8)}  ${titleShown}  (${m.messageCount} msgs, ${formatBytes(m.sizeBytes)})`);
+        // 交互式分页：10 条一屏，n/p 翻页，编号是全局序号（翻页后仍可直选）。
+        // 只显示前 10 条又不给翻页手段时，会话一多用户就以为只有 10 条。
+        const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+        const pageSize = SESSION_PICKER_PAGE_SIZE;
+        const pages = Math.max(1, Math.ceil(sorted.length / pageSize));
+        let page = 0;
+
+        for (;;) {
+          const start = page * pageSize;
+          const slice = sorted.slice(start, start + pageSize);
+          console.log(
+            `\nSessions on ${source} — ${pages > 1 ? `page ${page + 1}/${pages}, ` : ''}${sorted.length} total:`,
+          );
+          for (let i = 0; i < slice.length; i++) {
+            const m = slice[i];
+            const title = safeText(m.title);
+            const titleShown = title.length > 50 ? title.slice(0, 50) + '...' : title;
+            console.log(
+              `  [${start + i + 1}] ${m.sessionId.slice(0, 8)}  ${titleShown}  (${m.messageCount} msgs, ${formatBytes(m.sizeBytes)})`,
+            );
+          }
+
+          const ans = (
+            await ask(
+              pages > 1
+                ? '\nSelect a number, n = next page, p = previous page, Enter = cancel: '
+                : '\nSelect session (number) or Enter to cancel: ',
+            )
+          )
+            .trim()
+            .toLowerCase();
+          // Enter (and EOF, which reads as an empty answer) still cancels:
+          // a non-interactive run must never sit in a paging loop.
+          if (!ans || ans === 'q' || ans === 'quit' || ans === 'exit') {
+            console.log('Cancelled.');
+            return;
+          }
+          if (pages > 1 && (ans === 'n' || ans === 'next' || ans === 'd')) {
+            page = (page + 1) % pages;
+            continue;
+          }
+          if (pages > 1 && (ans === 'p' || ans === 'prev' || ans === 'previous' || ans === 'u')) {
+            page = (page - 1 + pages) % pages;
+            continue;
+          }
+          const num = parseInt(ans, 10);
+          if (!Number.isNaN(num) && num >= 1 && num <= sorted.length) {
+            targets = [sorted[num - 1]];
+            break;
+          }
+          console.log(
+            `Enter a number between 1 and ${sorted.length}${pages > 1 ? ', or n/p to change page' : ''}.`,
+          );
         }
-        // 只列 10 条却不说明还有更多、怎么选到更多，用户会以为一共就 10 条。
-        if (metas.length > recent.length) {
-          console.log(`\n  Showing the ${recent.length} most recent of ${metas.length}. To migrate older ones:`);
-          console.log(`    --all (every session, optionally --limit N)   or   migrate <session-id-prefix>`);
-        }
-        const ans = await ask('\nSelect session (number) or Enter to cancel: ');
-        const num = parseInt(ans, 10);
-        if (!ans || Number.isNaN(num) || num < 1 || num > recent.length) {
-          console.log('Cancelled.');
-          return;
-        }
-        targets = [recent[num - 1]];
       }
 
       const engine = new MigrationEngine(source, target);
