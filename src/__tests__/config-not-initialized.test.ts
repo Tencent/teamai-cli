@@ -9,7 +9,14 @@ vi.mock('../utils/logger.js', () => ({
   setStderrOnly: vi.fn(() => false),
 }));
 
-import { NotInitializedError, detectProjectConfig, findUnreadableProjectConfig, requireInit } from '../config.js';
+import {
+  autoDetectInit,
+  NotInitializedError,
+  detectProjectConfig,
+  findUnreadableProjectConfig,
+  requireInit,
+  UnreadableProjectConfigError,
+} from '../config.js';
 import { projectDataHome } from '../utils/partition.js';
 import { log } from '../utils/logger.js';
 
@@ -103,6 +110,49 @@ describe('requireInit: missing config versus unreadable config', () => {
     await expect(requireInit()).rejects.toThrow('the error is printed above');
     expect(vi.mocked(log.error)).toHaveBeenCalledWith(expect.stringMatching(/username: Expected string, received number/));
     expect(vi.mocked(log.error).mock.calls.flat().join('')).not.toContain('\n');
+  });
+});
+
+describe('autoDetectInit: unreadable project config', () => {
+  let sandbox: string;
+  let home: string;
+
+  beforeEach(() => {
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-auto-detect-config-'));
+    home = path.join(sandbox, 'home');
+    fs.mkdirSync(home);
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('reports a broken project partition instead of loading a valid user scope', async () => {
+    const userRepo = path.join(home, '.teamai', 'team-repo');
+    fs.mkdirSync(userRepo, { recursive: true });
+    fs.writeFileSync(path.join(userRepo, 'teamai.yaml'), 'team: user-team\nrepo: https://example.test/user-team.git\n');
+    const userConfigPath = path.join(home, '.teamai', 'config.yaml');
+    fs.writeFileSync(userConfigPath,
+      `repo:\n  localPath: ${userRepo}\n  remote: https://example.test/user-team.git\nusername: tester\nscope: user\n`);
+    const userConfigBefore = fs.readFileSync(userConfigPath, 'utf8');
+
+    const repo = path.join(sandbox, 'project');
+    fs.mkdirSync(repo);
+    for (const args of [['init', '-q'], ['config', 'user.email', 't@e'], ['config', 'user.name', 'T'], ['commit', '--allow-empty', '-q', '-m', 'init']]) {
+      execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+    }
+    const partitionConfig = path.join(projectDataHome(realpathSync(repo)), 'config.yaml');
+    fs.mkdirSync(path.dirname(partitionConfig), { recursive: true });
+    fs.writeFileSync(partitionConfig, 'repo: [unclosed\n');
+
+    const error = await autoDetectInit(repo).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(UnreadableProjectConfigError);
+    expect(String(error)).toContain(`${partitionConfig}:`);
+    expect(String(error)).toContain('Fix the file');
+    expect(fs.readFileSync(userConfigPath, 'utf8')).toBe(userConfigBefore);
   });
 });
 

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { autoDetectInit, saveLocalConfig, saveLocalConfigForScope } from './config.js';
+import { autoDetectInit, saveLocalConfig, saveLocalConfigForScope, UnreadableProjectConfigError } from './config.js';
 import { reconcileHooks, hasTeamaiHooks } from './hooks.js';
 import {
   removeOpenClawHooks,
@@ -1129,7 +1129,8 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     const result = await autoDetectInit();
     localConfig = result.localConfig;
     teamConfig = result.teamConfig;
-  } catch {
+  } catch (e) {
+    if (e instanceof UnreadableProjectConfigError) throw e;
     log.warn('teamai configuration not found or invalid');
   }
 

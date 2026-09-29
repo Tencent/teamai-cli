@@ -173,6 +173,13 @@ export function describeUnreadableConfig(problem: string): string {
   return `${problem.trim().split('\n')[0].trim().replace(/:$/, '')}. ${BROKEN_CONFIG_ADVICE}`;
 }
 
+export class UnreadableProjectConfigError extends Error {
+  constructor(problem: string) {
+    super(describeUnreadableConfig(problem));
+    this.name = 'UnreadableProjectConfigError';
+  }
+}
+
 /**
  * Require that teamai is initialized (local config exists)
  */
@@ -640,11 +647,17 @@ export async function requireInitForScope(
 
 /**
  * Auto-detect scope and return { localConfig, teamConfig }.
- * If cwd has a project-scope config, uses that; otherwise falls back to user scope.
+ * If cwd has a project-scope config, uses it. If a project config exists but
+ * cannot be read, throws instead of falling back to another team's config.
+ * Otherwise falls back to user scope.
  * This is the recommended entry point for commands that support both scopes.
  */
 export async function autoDetectInit(cwd?: string, options: LoadOptions = {}): Promise<TeamaiInit> {
-  const projectConfig = await detectProjectConfig(cwd, undefined, options);
+  let unreadable: string | undefined;
+  const projectConfig = await detectProjectConfig(cwd, (configPath, error) => {
+    unreadable ??= `${configPath}: ${error}`;
+  }, options);
+  if (unreadable) throw new UnreadableProjectConfigError(unreadable);
   if (projectConfig) {
     const teamConfig = await loadTeamConfig(projectConfig.repo.localPath);
     if (!teamConfig) return throwTeamConfigMissingOrInvalid(projectConfig.repo.localPath);
