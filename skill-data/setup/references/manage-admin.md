@@ -37,6 +37,18 @@ teamai mcp remove      # remove teamai-managed MCP servers
 MCP definitions travel with the team repo like skills/rules — edit, then the
 members pick them up on sync.
 
+A server with a `${VAR}` the tool cannot expand itself gets the resolved value
+written into its project config (`.mcp.json`, `.cursor/mcp.json`, ...). Before
+that write, teamai lists the file in the clone's `.git/info/exclude`, inside a
+`# [teamai:mcp-exclude:start]` block; the committed `.gitignore` is never touched.
+When it cannot (git already tracks the file, `.git/info` is not writable, the
+exclude file is held by another teamai command, or git errors), it leaves the file
+as it was, warns, and `teamai mcp list` shows `withheld: <tool> — <reason>. <fix>`.
+Apply the fix it names (a tracked file: `git rm --cached <file>` and rotate the
+token), then run `teamai pull`. A pull or `teamai mcp remove` takes a line out
+once its file no longer holds a resolved value; `teamai uninstall` does so in
+every worktree.
+
 ## Invite a member
 
 There is **no CLI invite flag.** Inviting is done on the Git platform's website:

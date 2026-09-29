@@ -931,6 +931,20 @@ describe('uninstall', () => {
       expect(warning).toContain(await fse.realpath(excludeFile));
     });
 
+    it.each([
+      ['empty', ''],
+      ['truncated', '{ "claude:project": [ { "name": "ji'],
+    ])('keeps the entry when managed-mcp.json is %s, the server left mcp.yaml and its value is not set', async (_label, content) => {
+      const { repoPath, projectRoot, excludeFile, localConfig } = await setup();
+      await fse.outputFile(path.join(repoPath, 'mcp', 'mcp.yaml'), 'servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+      await fse.writeJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { jira } });
+      await fse.outputFile(managedMcpManifestPath(getDataHome(localConfig), projectRoot), content);
+
+      await uninstall({ force: true });
+
+      expect(await fse.readFile(excludeFile, 'utf8')).toBe(block);
+    });
+
     it('removes the entry when the file holds no server, with no manifest', async () => {
       const { projectRoot, excludeFile } = await setup();
       await fse.writeJson(path.join(projectRoot, '.mcp.json'), { mcpServers: {} });

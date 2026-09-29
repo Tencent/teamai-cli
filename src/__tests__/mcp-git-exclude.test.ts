@@ -10,6 +10,7 @@ vi.mock('../utils/logger.js', () => ({
 
 // Git's own failure modes (unsafe repository, bad config) are hard to stage for one subcommand alone.
 const failCheckIgnore = vi.hoisted(() => ({ on: false }));
+const failLsFiles = vi.hoisted(() => ({ on: false }));
 vi.mock('../utils/exec.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/exec.js')>();
   return {
@@ -17,7 +18,9 @@ vi.mock('../utils/exec.js', async (importOriginal) => {
     execCommand: (cmd: string, args: string[], opts?: Parameters<typeof actual.execCommand>[2]) =>
       failCheckIgnore.on && args[0] === 'check-ignore'
         ? Promise.resolve({ code: 128, stdout: '', stderr: 'fatal: detected dubious ownership in repository' })
-        : actual.execCommand(cmd, args, opts),
+        : failLsFiles.on && args.includes('ls-files')
+          ? Promise.resolve({ code: 128, stdout: '', stderr: 'fatal: index file corrupt' })
+          : actual.execCommand(cmd, args, opts),
   };
 });
 
@@ -51,6 +54,7 @@ describe('teamai block in .git/info/exclude (#882)', () => {
 
   afterEach(async () => {
     failCheckIgnore.on = false;
+    failLsFiles.on = false;
     slowExcludeRead.on = false;
     vi.mocked(log.warn).mockClear();
     await fse.remove(repo);
@@ -64,6 +68,34 @@ describe('teamai block in .git/info/exclude (#882)', () => {
       await excludeFromGit(path.join(repo, '.mcp.json'));
 
       expect(await fse.readFile(excludeFile, 'utf8')).toMatch(/^\/\.mcp\.json$/m);
+    });
+
+    it('excludes a file git answers it does not track', async () => {
+      failCheckIgnore.on = true;
+
+      expect(await ensureExcludedFromGit(path.join(repo, '.mcp.json'))).toEqual({ kind: 'excluded', added: true });
+      expect(await fse.readFile(excludeFile, 'utf8')).toMatch(/^\/\.mcp\.json$/m);
+    });
+
+    it('fails for a file git tracks, and writes nothing', async () => {
+      const file = path.join(repo, '.mcp.json');
+      await fse.writeJson(file, {});
+      execFileSync('git', ['add', '.mcp.json'], { cwd: repo });
+      failCheckIgnore.on = true;
+
+      expect(await ensureExcludedFromGit(file)).toMatchObject({ kind: 'failed', reason: `git already tracks ${file}` });
+      expect(await fse.pathExists(excludeFile) ? await fse.readFile(excludeFile, 'utf8') : '').not.toContain('teamai');
+    });
+
+    it('fails with git\'s error, and writes nothing, when git cannot say whether it tracks the file either', async () => {
+      failCheckIgnore.on = true;
+      failLsFiles.on = true;
+
+      expect(await ensureExcludedFromGit(path.join(repo, '.mcp.json'))).toMatchObject({
+        kind: 'failed',
+        reason: expect.stringContaining('fatal: index file corrupt'),
+      });
+      expect(await fse.pathExists(excludeFile) ? await fse.readFile(excludeFile, 'utf8') : '').not.toContain('teamai');
     });
 
     it('warns with the file and git\'s error when it is not', async () => {

@@ -8,12 +8,23 @@ vi.mock('../namespaced-entries.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../namespaced-entries.js')>()),
   resolveEntriesFor: vi.fn(),
 }));
-vi.mock('../mcp-reconcile.js', () => ({
-  reconcileMcpForConfig: vi.fn(),
-  releaseCleanMcpGitExcludes: vi.fn(),
-  resolveMcpTargets: vi.fn().mockResolvedValue([]),
-  buildVarTable: vi.fn().mockResolvedValue({}),
-}));
+// The per-target delivery filters stay real: `withheld` must name only where a pull would write.
+vi.mock('../mcp-reconcile.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../mcp-reconcile.js')>();
+  return {
+    desiredMcpForTarget: actual.desiredMcpForTarget,
+    mcpTargetExcluded: actual.mcpTargetExcluded,
+    reconcileMcpForConfig: vi.fn(),
+    releaseCleanMcpGitExcludes: vi.fn(),
+    resolveMcpTargets: vi.fn().mockResolvedValue([]),
+    buildDesiredMcpContext: vi.fn().mockResolvedValue({
+      sharing: { autoApply: true, allowedCommands: [], allowedHosts: [] },
+      excluded: new Set(),
+      vars: { JIRA_TOKEN: 'jira-token-value' },
+      secrets: { kind: 'absent' },
+    }),
+  };
+});
 vi.mock('../mcp-git-exclude.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../mcp-git-exclude.js')>()),
   ensureExcludedFromGit: vi.fn(),
@@ -138,6 +149,26 @@ describe('mcpList', () => {
 
     expect(text).toContain('installed: claude');
     expect(text).toContain('withheld: claude — git already tracks /work/app/.mcp.json. Run `git rm --cached /work/app/.mcp.json`');
+  });
+
+  it('does not say a server is withheld from a tool delivery never writes it to (#882)', async () => {
+    mockedResolve.mockResolvedValue(resolved([
+      [{ name: 'jira', transport: 'http', url: 'https://jira.example/mcp', headers: { Authorization: 'Bearer ${JIRA_TOKEN}' }, tools: ['cursor'] }, 'mcp/mcp.yaml', null],
+    ]));
+    (resolveMcpTargets as Mock).mockResolvedValueOnce([
+      { tool: 'claude', format: 'claude', file: '/work/app/.mcp.json', projectScope: true },
+    ]);
+    (ensureExcludedFromGit as Mock).mockResolvedValue({
+      kind: 'failed',
+      reason: 'git already tracks /work/app/.mcp.json',
+      fix: 'Run `git rm --cached /work/app/.mcp.json`, then `teamai pull` again.',
+    });
+
+    try {
+      expect(await listOutput()).not.toContain('withheld');
+    } finally {
+      (ensureExcludedFromGit as Mock).mockReset();
+    }
   });
 
   it('reports a set that cannot be resolved instead of listing part of it', async () => {

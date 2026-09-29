@@ -1077,6 +1077,20 @@ servers:
         expect(vi.mocked(log.debug).mock.calls.flat().join('\n')).toMatch(/\/\.mcp\.json/);
       });
 
+      it('but one this pull listed stays when it wrote the value and then failed to record it', async () => {
+        // Shorter than eight characters: no scan of the file can find it again.
+        vi.stubEnv('SECRET_TOKEN', 'short');
+        await writeMcpYaml(withSecret);
+        beforeJsonWrite.run = async (file) => {
+          if (path.basename(file) === 'managed-mcp.json') throw new Error('disk full');
+        };
+
+        await expect(reconcileMcpForConfig(teamConfig, claudeOnly())).rejects.toThrow('disk full');
+
+        expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('Bearer short');
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+
       it('but one an earlier pull listed stays while the config cannot be proven clean', async () => {
         await writeMcpYaml(withSecret);
         await reconcileMcpForConfig(teamConfig, claudeOnly());
@@ -1103,6 +1117,51 @@ servers:
         expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('super-secret-value');
         expect(await fse.pathExists(managedMcpManifestPath(getDataHome(projectConfig), projectRoot))).toBe(true);
         expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+
+      describe.each([
+        ['empty', ''],
+        ['truncated', '{ "claude:project": [ { "name": "with-sec'],
+        ['recording nothing for this tool', '{ "cursor:project": [ { "name": "with-secret", "hash": "h" } ] }'],
+      ])('but one an earlier pull listed stays while managed-mcp.json is %s', (_label, content) => {
+        beforeEach(async () => {
+          await writeMcpYaml(withSecret);
+          await reconcileMcpForConfig(teamConfig, claudeOnly());
+          const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+          await fse.writeFile(managedMcpManifestPath(getDataHome(projectConfig), projectRoot), content);
+          vi.stubEnv('SECRET_TOKEN', '');
+        });
+
+        it('and a pull finds its server gone from mcp.yaml', async () => {
+          await writeMcpYaml(open);
+
+          await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+          expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('super-secret-value');
+          expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+        });
+
+        it('and `teamai mcp remove` runs after its server left mcp.yaml', async () => {
+          await writeMcpYaml('servers: []\n');
+
+          await reconcileMcpForConfig(teamConfig, claudeOnly(), { removeAll: true });
+          await releaseCleanMcpGitExcludes(teamConfig, claudeOnly());
+
+          expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('super-secret-value');
+          expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+        });
+      });
+
+      it('when `teamai mcp remove` takes teamai\'s servers out of a config that also holds the member\'s own', async () => {
+        await fse.writeJson(mcpJson(), { mcpServers: { mine: { type: 'http', url: 'https://mine.example/mcp' } } });
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        await reconcileMcpForConfig(teamConfig, claudeOnly(), { removeAll: true });
+        await releaseCleanMcpGitExcludes(teamConfig, claudeOnly());
+
+        expect(await fse.readJson(mcpJson())).toEqual({ mcpServers: { mine: { type: 'http', url: 'https://mine.example/mcp' } } });
+        expect(await excludeOf(projectRoot)).not.toContain('teamai');
       });
 
       it('when the last server with a resolved value leaves mcp.yaml', async () => {

@@ -108,16 +108,17 @@ export async function gitTracking(file: string): Promise<GitTracking> {
 
 /**
  * Whether git tracks `file` (#879): the next `git commit -a` commits a change to
- * it, and no exclude rule stops that. Read-only. A file outside any repository
- * is not tracked; nor is one in a repository git cannot answer for, where a
- * commit fails too.
+ * it, and no exclude rule stops that. Read-only. `unknown` is git failing to
+ * answer: never read it as untracked.
  */
-async function gitTracks(file: string): Promise<boolean> {
+async function gitTracks(file: string): Promise<{ kind: 'tracked' } | { kind: 'untracked' } | { kind: 'unknown'; error: string }> {
   // The file, or even its directory, may be gone from disk and still be in the index.
   const dir = await existingAncestor(file);
   const result = await execCommand('git', ['--literal-pathspecs', 'ls-files', '--error-unmatch', '--', path.relative(dir, file)], { cwd: dir, timeoutMs: 10_000 })
-    .catch(() => null);
-  return result?.code === 0;
+    .catch((e: unknown) => ({ code: -1, stdout: '', stderr: e instanceof Error ? e.message : String(e) }));
+  if (result.code === 0) return { kind: 'tracked' };
+  if (result.code === 1) return { kind: 'untracked' };
+  return { kind: 'unknown', error: result.stderr.trim() || `git exited with ${result.code}` };
 }
 
 /**
@@ -148,15 +149,25 @@ export type GitExclusion =
 /**
  * Add `file` to its repository's `.git/info/exclude` unless git ignores it
  * already, and whether git now leaves it out of a commit. Idempotent; a path
- * already ignored, or outside any repository, adds nothing, and one git cannot
- * answer for is added all the same, and one git tracks fails before anything
- * else is checked. `file` need not exist yet: pull calls this
+ * already ignored, or outside any repository, adds nothing. One git tracks
+ * fails before anything else is checked, and so does one git cannot say it
+ * does not track: an exclude rule does not apply to a tracked file, and a git
+ * error is never read as safe. `file` need not exist yet: pull calls this
  * before writing a resolved value into it. `dryRun` writes nothing and reports
  * what would stop the write.
  */
 export async function ensureExcludedFromGit(file: string, options: { dryRun?: boolean } = {}): Promise<GitExclusion> {
   const tracking = await gitTracking(file);
   if (tracking.kind === 'ignored' || tracking.kind === 'outside-repo') return { kind: 'excluded', added: false };
+  const repair = 'Fix the repository, or add the file to its .git/info/exclude yourself, then run `teamai pull` again.';
+  const tracked: GitExclusion = {
+    kind: 'failed',
+    reason: `git already tracks ${file}`,
+    fix: `Run \`git rm --cached ${file}\` (rotate any value a commit of it holds), then \`teamai pull\` again.`,
+  };
+  const inIndex = await gitTracks(file);
+  if (inIndex.kind === 'tracked') return tracked;
+  if (inIndex.kind === 'unknown') return { kind: 'failed', reason: inIndex.error, fix: repair };
   // `file` and its directory need not exist yet: git is asked from the nearest one that does.
   const dir = await existingAncestor(file);
   const location = await gitExcludeFile(dir);
@@ -164,20 +175,13 @@ export async function ensureExcludedFromGit(file: string, options: { dryRun?: bo
     return {
       kind: 'failed',
       reason: tracking.kind === 'unknown' ? tracking.error : 'git could not locate .git/info/exclude',
-      fix: 'Fix the repository, or add the file to its .git/info/exclude yourself, then run `teamai pull` again.',
+      fix: repair,
     };
   }
   const { excludeFile } = location;
   // Anchored at the working tree root, glob characters escaped.
   const rel = path.relative(dir, file).split(path.sep).join('/');
   const pattern = `/${location.prefix}${rel}`.replace(/[\\*?[\]!#]/g, '\\$&');
-  // An exclude rule does not apply to a file git tracks already: that fix comes first.
-  const tracked: GitExclusion = {
-    kind: 'failed',
-    reason: `git already tracks ${file}`,
-    fix: `Run \`git rm --cached ${file}\` (rotate any value a commit of it holds), then \`teamai pull\` again.`,
-  };
-  if (tracking.kind === 'would-commit' && await gitTracks(file)) return tracked;
   const retry = `Make it writable, or add \`${pattern}\` to it yourself, then run \`teamai pull\` again.`;
   // A read-only exclude file is the member's choice; the atomic write would replace it all the same.
   for (const writable of [path.dirname(excludeFile), ...(await pathExists(excludeFile) ? [excludeFile] : [])]) {

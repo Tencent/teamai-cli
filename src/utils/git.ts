@@ -869,14 +869,14 @@ async function readAnchors(cwd?: string): Promise<ProjectAnchors | null> {
 /**
  * List the realpath'd top-level directory of every worktree of the repo that
  * contains `cwd` (main checkout + all linked worktrees), from
- * `git worktree list --porcelain`. Returns [] outside a git repo, and for a
- * `cwd` that no longer exists (simple-git refuses one). Used by a
- * project-wide uninstall to clean each worktree's managed resources before the
- * shared partition is deleted (issue #374 P1-2C).
+ * `git worktree list --porcelain`. Returns [] outside a git repo, or when `cwd`
+ * does not exist. Used by a project-wide uninstall to clean each worktree's
+ * managed resources before the shared partition is deleted (issue #374 P1-2C).
  */
 export async function listWorktrees(cwd?: string): Promise<string[]> {
   let list: string;
   try {
+    // Inside the try: simple-git throws at once for a directory that does not exist.
     list = await createGit(cwd).raw(['worktree', 'list', '--porcelain']);
   } catch {
     return [];

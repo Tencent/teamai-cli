@@ -6,7 +6,9 @@ import {
   reconcileMcpForConfig,
   releaseCleanMcpGitExcludes,
   resolveMcpTargets,
-  buildVarTable,
+  buildDesiredMcpContext,
+  desiredMcpForTarget,
+  mcpTargetExcluded,
   type McpChange,
   type McpTarget,
 } from './mcp-reconcile.js';
@@ -55,7 +57,9 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   }
 
   const targets = await resolveMcpTargets(teamConfig, localConfig);
-  const vars = await buildVarTable(localConfig, teamEnv);
+  // The team env already resolved above: resolving it again repeats its warnings.
+  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv });
+  const { vars } = desiredContext;
   // Project scope reads THIS worktree's own per-worktree manifest; user the global file.
   const manifest = (await readJson<ManagedMcpManifest>(
     managedMcpManifestPath(
@@ -88,9 +92,11 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
     const installedIn = targets.filter(installed).map((t) => t.tool);
     console.log(`    installed: ${installedIn.length > 0 ? installedIn.join(', ') : '(none)'}`);
     // Pull writes a resolved value only into a file git leaves out of a commit
-    // (#882); an entry an earlier pull wrote there stays as it was.
+    // (#882); an entry an earlier pull wrote there stays as it was. Only where
+    // delivery would write it: its tools, transport, policy and requirements.
     for (const t of targets) {
-      if (!carriesResolvedValue(t, [s], [s.name])) continue;
+      if (mcpTargetExcluded(localConfig, t)) continue;
+      if (!carriesResolvedValue(t, [s], desiredMcpForTarget(t, [s], desiredContext).desired.keys())) continue;
       const exclusion = await ensureExcludedFromGit(t.file, { dryRun: true });
       if (exclusion.kind === 'failed') console.log(`    withheld: ${t.tool} — ${exclusion.reason}. ${exclusion.fix}`);
     }
