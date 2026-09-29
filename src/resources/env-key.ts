@@ -29,3 +29,10 @@ export function envValue(env: NodeJS.ProcessEnv, key: string): string | undefine
 export function envName(key: string): string {
   return process.platform === 'win32' ? key.toUpperCase() : key;
 }
+
+/** The name in `names` that is the same environment variable as `key` (in any case on Windows), if any. */
+export function sameEnvName(names: Iterable<string>, key: string): string | undefined {
+  const name = envName(key);
+  for (const other of names) if (envName(other) === name) return other;
+  return undefined;
+}

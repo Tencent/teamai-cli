@@ -368,6 +368,28 @@ scope: 'user',
       expect(process.exitCode).toBeUndefined();
     });
 
+    it('on Windows, sets and unsets a key under the name the team declares it by, in any case', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      try {
+        await envSet('github_token', { stdin: true });
+        await envSet('api_url', { stdin: true });
+        expect(await stored()).toEqual({
+          GITHUB_TOKEN: { value: 'fixture-token-value', kind: 'secret' },
+          API_URL: { value: 'fixture-token-value', kind: 'variable' },
+        });
+
+        await envUnset('github_token', {});
+        await envUnset('Api_Url', {});
+      } finally {
+        Object.defineProperty(process, 'platform', { value: original, configurable: true });
+      }
+      expect(await stored()).toEqual({});
+      expect(process.exitCode).toBeUndefined();
+    });
+
     it('says env.sh needs a pull too after unsetting a value for an env variable, and not for a secret', async () => {
       await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
       await writeSecretStore(storeFile(), { API_URL: { value: 'https://mine.example', kind: 'variable' }, GITHUB_TOKEN: { env: 'WORK_GITHUB_TOKEN' } });

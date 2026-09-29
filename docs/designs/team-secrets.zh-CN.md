@@ -92,7 +92,7 @@ teamai env unset GITHUB_TOKEN [--global]
 ```
 
 - 值从不通过命令行参数传入，因此不会进入 shell 历史。`--stdin` 拒绝终端输入。
-- `env set` 接受该 scope 声明为密钥的 key，不加 `--global` 时也接受它收到的 `env.yaml` 变量；`--global` 只用于密钥。声明或 `env.yaml` 无法读取时它不做任何修改，因为无法判断。项目配置存在但无法读取时，`env set`、`env unset` 和 `env list` 会报出该文件路径和原因并失败，而不是改用用户 scope，因为用户 scope 的团队未必是这个项目的团队。
+- `env set` 接受该 scope 声明为密钥的 key，不加 `--global` 时也接受它收到的 `env.yaml` 变量；`--global` 只用于密钥。在 Windows 上 key 可以用任意大小写输入：`env set` 和 `env unset` 使用该 scope 声明的名字。声明或 `env.yaml` 无法读取时它不做任何修改，因为无法判断。项目配置存在但无法读取时，`env set`、`env unset` 和 `env list` 会报出该文件路径和原因并失败，而不是改用用户 scope，因为用户 scope 的团队未必是这个项目的团队。
 - 不在任何 scope 中时（当前目录没有项目，也没有用户 scope），`env set --global` 接受任何合法的 key 名，并提示目前还没有团队声明它，方便成员提前设置在多个团队间复用的 token。`env unset` 接受任何已有值的 key。
 - `--from-env` 指定的变量在当前 shell 中未设置时会警告。变量未设置期间该密钥为 `missing`：不会改用[解析顺序](#解析顺序)中的下一个来源，因为那可能是另一个账号的 token。
 - 之后运行 `teamai pull` 更新 MCP server，变量还会更新 `env.sh`。

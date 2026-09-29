@@ -3,7 +3,7 @@ import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { EnvHandler, envEntryReader, unknownEnvVariableKeys, type EnvYaml } from './resources/env.js';
-import { ENV_KEY_RE, envValue } from './resources/env-key.js';
+import { ENV_KEY_RE, envValue, sameEnvName } from './resources/env-key.js';
 import {
   SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, unknownSecretDeclarationKeys,
   writeSecretsFile,
@@ -58,9 +58,11 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
  * stays out of shell history.
  */
 export async function envSet(
-  key: string,
+  typed: string,
   options: GlobalOptions & { stdin?: boolean; fromEnv?: string; global?: boolean },
 ): Promise<void> {
+  // Stored under the name the scope declares, which on Windows may differ in case from the one typed.
+  let key = typed;
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
   if (options.stdin && options.fromEnv !== undefined) return fail('Pass either --stdin or --from-env, not both. Nothing was changed.');
   if (options.fromEnv !== undefined && !ENV_KEY_RE.test(options.fromEnv)) {
@@ -78,6 +80,7 @@ export async function envSet(
       return fail(`Cannot tell whether ${key} is a secret this team declares. Nothing was changed.`);
     }
     const declared = declaredSecretKeys(declarations);
+    key = sameEnvName(declared, key) ?? key;
     if (!declared.has(key)) {
       if (options.global) {
         const list = declared.size > 0 ? ` It declares: ${[...declared].sort().join(', ')}.` : ' It declares none.';
@@ -93,6 +96,7 @@ export async function envSet(
         return fail(`Cannot tell whether ${key} is an env variable this team sets. Nothing was changed.`);
       }
       const variables = new Set(env.entries.map((variable) => variable.name).filter((name) => !declared.has(name)));
+      key = sameEnvName(variables, key) ?? key;
       if (!variables.has(key)) {
         const named = (keys: ReadonlySet<string>): string => (keys.size > 0 ? [...keys].sort().join(', ') : 'none');
         return fail(
@@ -147,14 +151,17 @@ export async function envUnset(key: string, options: GlobalOptions & { global?: 
   if (options.dryRun) {
     const store = await readSecretStore(file);
     if (!store.ok) return fail(`${store.reason} Nothing was changed.`);
-    if (!Object.hasOwn(store.values, key)) return hasNoValue();
-    log.info(`[dry-run] Would remove ${key}'s ${value} from ${file}`);
+    const stored = sameEnvName(Object.keys(store.values), key);
+    if (stored === undefined) return hasNoValue();
+    log.info(`[dry-run] Would remove ${stored}'s ${value} from ${file}`);
     return;
   }
+  // On Windows the stored name may differ in case from the one typed: it is the same variable.
   const update = await updateSecretStore(file, (values) => {
-    if (!Object.hasOwn(values, key)) return null;
+    const stored = sameEnvName(Object.keys(values), key);
+    if (stored === undefined) return null;
     const rest = { ...values };
-    delete rest[key];
+    delete rest[stored];
     return rest;
   });
   switch (update.kind) {
