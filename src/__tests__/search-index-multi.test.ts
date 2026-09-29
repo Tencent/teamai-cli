@@ -74,7 +74,7 @@ describe('buildIndex — Phase 1 multi-category', () => {
 
     // Recursive subdirectory paths preserved as filename id (rules/common/...)
     const rulesEntry = index!.entries.find((e) => e.type === 'rules');
-    expect(rulesEntry?.filename).toBe(path.join('common', 'coding-style.md'));
+    expect(rulesEntry?.filename).toBe(path.posix.join('common', 'coding-style.md'));
 
     // Skill entry uses skill name as id
     const skillEntry = index!.entries.find((e) => e.type === 'skills');

@@ -137,7 +137,17 @@ describe('recall --check precheck mode', () => {
     for (let i = 0; i < 100; i++) {
       await fse.writeFile(
         path.join(learningsDir, `unrelated-${i}.md`),
-        learningDoc(`Unrelated Background Record ${i}`),
+        [
+          '---',
+          `title: "Unrelated Background Record ${i}"`,
+          'author: tester',
+          'date: 2026-05-01',
+          'tags: [background]',
+          '---',
+          '',
+          'General onboarding notes with no query-specific terms.',
+          '',
+        ].join('\n'),
       );
     }
     await buildIndex({
