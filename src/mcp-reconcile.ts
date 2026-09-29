@@ -49,7 +49,7 @@ import { log } from './utils/logger.js';
 import { warnOnce } from './utils/warn-once.js';
 import { loadProjectMcpManifest } from './utils/mcp-manifest.js';
 import { isOnPath, SAFE_BIN_RE, type LookPathOptions } from './utils/lookpath.js';
-import { carriesResolvedValue, excludeFromGit, gitTracks, resolvedVariableIn } from './mcp-git-exclude.js';
+import { carriesResolvedValue, ensureExcludedFromGit, excludeFromGit, resolvedVariableIn, type GitExclusion } from './mcp-git-exclude.js';
 
 // ─── Reconcile engine ────────────────────────────────────────
 //
@@ -418,38 +418,21 @@ export interface DesiredMcpContext {
   vars: Record<string, string>;
   /** Which `${VAR}` names are declared secrets, whose missing value keeps an entry (#875). */
   secrets: SecretDeclarations;
-  /** The project MCP configs git tracks, which never get a declared secret's value (#879). */
-  tracked: ReadonlySet<string>;
   lookPath?: McpReconcileOptions['lookPath'];
 }
 
-/** Why a server is not written to `file`, a config git tracks, and what fixes it (#879). */
-export function trackedConfigReason(file: string, secrets: readonly string[]): string {
-  return `${file} is tracked by git, so the value of ${secrets.join(', ')} would be committed. `
-    + `Run \`git rm --cached ${file}\` and rotate the token, then \`teamai pull\``;
-}
-
-/** `targets` are the ones the caller will render for: which of them git tracks is asked here, once. */
 export async function buildDesiredMcpContext(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   options: McpReconcileOptions = {},
-  targets: readonly McpTarget[] = [],
 ): Promise<DesiredMcpContext> {
   // HTTP mode has no repo tree to declare secrets in.
   const teamEnv = localConfig.repo.kind === 'http' ? undefined : options.teamEnv ?? await resolveTeamEnv(localConfig);
-  const secrets: SecretDeclarations = teamEnv?.declarations ?? { kind: 'absent' };
-  // Declarations that failed may name any variable, so they are asked about too.
-  const mayHoldSecret = declaredSecretKeys(secrets)?.size !== 0;
-  const tracked = mayHoldSecret
-    ? await Promise.all(targets.filter((t) => t.projectScope).map(async (t) => (await gitTracks(t.file) ? [t.file] : [])))
-    : [];
   return {
     sharing: getMcpSharing(teamConfig),
     excluded: new Set(localConfig.excludedSkills ?? []),
     vars: await buildVarTable(localConfig, teamEnv),
-    secrets,
-    tracked: new Set(tracked.flat()),
+    secrets: teamEnv?.declarations ?? { kind: 'absent' },
     lookPath: options.lookPath,
   };
 }
@@ -468,20 +451,15 @@ export async function buildDesiredMcpContext(
  * a secret that lives in the member's shell is there for one pull and gone for
  * the next, and an entry an earlier pull wrote stays as it is. With
  * declarations that failed, every skipped server is kept.
- *
- * `withheld` names the servers skipped because `target` is a project config
- * git tracks and the entry would hold a declared secret's value (#879): git
- * would commit it. An entry an earlier pull wrote there stays as it is.
  */
 export function desiredMcpForTarget(
   target: McpTarget,
   teamDefs: McpServerDef[],
   ctx: DesiredMcpContext,
-): { desired: Map<string, DesiredMcpEntry>; skipped: McpChange[]; kept: Set<string>; withheld: Set<string> } {
+): { desired: Map<string, DesiredMcpEntry>; skipped: McpChange[]; kept: Set<string> } {
   const desired = new Map<string, DesiredMcpEntry>();
   const skipped: McpChange[] = [];
   const kept = new Set<string>();
-  const withheld = new Set<string>();
   // Declarations that failed can't say which variables are secrets, so every
   // missing one may be: pull keeps every installed entry then.
   const declared = declaredSecretKeys(ctx.secrets);
@@ -515,8 +493,7 @@ export function desiredMcpForTarget(
     // Pass ${VAR} through where the tool expands it itself, so the secret
     // never lands on disk; otherwise resolve and require every var to exist.
     // A resolved value is written verbatim into the target file; a project
-    // file holding one is kept out of git (#882), and one git already tracks
-    // never gets a declared secret's value.
+    // file gets one only once it is kept out of git (#882, reconcileTargets).
     const passthrough = supportsEnvExpansion(target.format, target.projectScope, raw);
     let def = raw;
     if (!passthrough) {
@@ -529,12 +506,6 @@ export function desiredMcpForTarget(
           reason: `unresolved variable(s): ${missing.join(', ')}`,
         });
         if (missing.every((key) => declared?.has(key) ?? true)) kept.add(raw.name);
-        continue;
-      }
-      const secrets = referencedVars(raw).filter((key) => declared?.has(key) ?? true);
-      if (secrets.length > 0 && ctx.tracked.has(target.file)) {
-        skipped.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: trackedConfigReason(target.file, secrets) });
-        withheld.add(raw.name);
         continue;
       }
       def = resolved;
@@ -552,7 +523,7 @@ export function desiredMcpForTarget(
     }
   }
 
-  return { desired, skipped, kept, withheld };
+  return { desired, skipped, kept };
 }
 
 /**
@@ -676,11 +647,13 @@ export async function reconcileMcpForConfig(
   localConfig: LocalConfig,
   options: McpReconcileOptions = {},
 ): Promise<McpReconcileResult> {
+  // Each project config's exclusion from git, established before a resolved value is written into it.
+  const exclusions = new Map<string, GitExclusion>();
   try {
-    return await reconcileTargets(teamConfig, localConfig, options);
+    return await reconcileTargets(teamConfig, localConfig, options, exclusions);
   } finally {
     // Also after a failed write: what earlier pulls wrote is on disk either way.
-    if (!options.removeAll && !options.dryRun) await protectResolvedMcpConfigs(teamConfig, localConfig);
+    if (!options.removeAll && !options.dryRun) await protectResolvedMcpConfigs(teamConfig, localConfig, exclusions);
   }
 }
 
@@ -690,11 +663,15 @@ export async function reconcileMcpForConfig(
  * run delivered to it: the file of a disabled or undetected tool, or one
  * written before the team turned delivery off, still holds what a pull wrote.
  */
-async function protectResolvedMcpConfigs(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+async function protectResolvedMcpConfigs(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  exclusions: Map<string, GitExclusion>,
+): Promise<void> {
   const { projectRoot } = localConfig;
   if (localConfig.scope !== 'project' || !projectRoot || localConfig.repo.kind === 'http') return;
   try {
-    await protectProjectMcpConfigs(teamConfig, localConfig, projectRoot);
+    await protectProjectMcpConfigs(teamConfig, localConfig, projectRoot, exclusions);
   } catch (e) {
     log.warn(
       `Could not check this project's MCP configs for resolved values to keep out of git: ${e instanceof Error ? e.message : String(e)}. `
@@ -703,12 +680,19 @@ async function protectResolvedMcpConfigs(teamConfig: TeamaiConfig, localConfig: 
   }
 }
 
-async function protectProjectMcpConfigs(teamConfig: TeamaiConfig, localConfig: LocalConfig, projectRoot: string): Promise<void> {
+async function protectProjectMcpConfigs(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  projectRoot: string,
+  exclusions: Map<string, GitExclusion>,
+): Promise<void> {
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
   const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
   const { manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
   const vars = await buildVarTable(localConfig);
   for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })) {
+    // Tried before its write this run, and reported there when it failed.
+    if (exclusions.has(target.file)) continue;
     const owned = (manifest[managedMcpManifestKey(target.tool, true)] ?? []).map((record) => record.name);
     if (await resolvedValueEvidence(target, teamDefs, owned, vars)) await excludeFromGit(target.file);
   }
@@ -718,6 +702,7 @@ async function reconcileTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   options: McpReconcileOptions,
+  exclusions: Map<string, GitExclusion>,
 ): Promise<McpReconcileResult> {
   const changes: McpChange[] = [];
   let wrote = false;
@@ -758,7 +743,7 @@ async function reconcileTargets(
   const nothingOwned = Object.values(manifest).every((r) => r.length === 0);
   if (teamDefs.length === 0 && nothingOwned) return { changes, wrote };
 
-  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, options, targets);
+  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, options);
   // A failed declaration is not "no secrets": read as none, every server whose
   // secret the member left in their shell would be removed. Keep what is
   // installed rather than guess which variables are secrets. `removeAll`
@@ -779,11 +764,26 @@ async function reconcileTargets(
     const nextRecords: ManagedMcpRecord[] = [];
 
     // Which of this team's servers apply to this tool, and in what rendered form.
-    const { desired, skipped, kept, withheld } = desiredMcpForTarget(target, teamDefs, desiredContext);
+    const { desired, skipped, kept } = desiredMcpForTarget(target, teamDefs, desiredContext);
     changes.push(...skipped);
-    for (const change of skipped) if (withheld.has(change.server)) log.warn(`MCP server ${change.server} not written: ${change.reason}.`);
     // Their old records, so a manifest this run writes still claims them.
-    const keep = new Map(owned.filter((r) => kept.has(r.name) || withheld.has(r.name)).map((r) => [r.name, r]));
+    const keep = new Map(owned.filter((r) => kept.has(r.name)).map((r) => [r.name, r]));
+
+    // A resolved value lands only in a file git leaves out of a commit (#882).
+    // Otherwise the file stays as it was, its manifest entry with it.
+    if (carriesResolvedValue(target, teamDefs, desired.keys())) {
+      const exclusion = exclusions.get(target.file) ?? await ensureExcludedFromGit(target.file, { dryRun: options.dryRun });
+      exclusions.set(target.file, exclusion);
+      if (exclusion.kind === 'failed') {
+        const reason = `${target.file} is not kept out of git: ${exclusion.reason}`;
+        for (const server of desired.keys()) changes.push({ tool: target.tool, server, action: 'skipped', reason });
+        log.warn(
+          `Did not write ${target.tool}'s MCP servers to ${target.file}: it would hold resolved values, and teamai could not `
+          + `keep it out of git first: ${exclusion.reason}. The file is left as it was. ${exclusion.fix}`,
+        );
+        continue;
+      }
+    }
 
     if (target.format === 'codex') {
       wrote = await applyCodex(target, desired, keep, ownedNames, nextRecords, changes, options) || wrote;

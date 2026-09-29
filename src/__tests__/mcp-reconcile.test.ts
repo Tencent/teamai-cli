@@ -21,7 +21,25 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
+// What .git/info/exclude held at the moment each JSON config was written (#882).
+const excludeAtWrite = vi.hoisted(() => new Map<string, string | null>());
+vi.mock('../utils/fs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/fs.js')>();
+  return {
+    ...actual,
+    writeJsonAtomic: async (...args: Parameters<typeof actual.writeJsonAtomic>) => {
+      const [file] = args;
+      const gitDir = path.join(path.dirname(String(file)), '.git');
+      if (await fse.pathExists(gitDir)) {
+        excludeAtWrite.set(String(file), await actual.readFileSafe(path.join(gitDir, 'info', 'exclude')));
+      }
+      return actual.writeJsonAtomic(...args);
+    },
+  };
+});
+
 import { reconcileMcpForConfig, resolveMcpTargets, spliceCodexBlock, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
@@ -1015,54 +1033,116 @@ servers:
       });
     });
 
-    describe('a config git already tracks never gets a declared secret (#879)', () => {
-      const claudeFile = (): string => path.join(projectRoot, '.mcp.json');
+    it('lists the config in .git/info/exclude before writing the value into it', async () => {
+      await writeMcpYaml(withSecret);
 
-      beforeEach(async () => {
-        await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: SECRET_TOKEN\n');
-        await writeMcpYaml(withSecret);
+      await reconcileMcpForConfig(teamConfig, projectConfig);
+
+      expect(excludeAtWrite.get(path.join(projectRoot, '.mcp.json'))).toMatch(/^\/\.mcp\.json$/m);
+      expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+    });
+
+    describe('when the config cannot be kept out of git first', () => {
+      const mcpJson = (): string => path.join(projectRoot, '.mcp.json');
+      const infoDir = (): string => path.join(projectRoot, '.git', 'info');
+      const claudeOnly = (): LocalConfig => ({ ...projectConfig, disabledAgents: ['cursor'] } as LocalConfig);
+
+      beforeEach(() => {
         vi.mocked(log.warn).mockClear();
       });
 
-      it('skips the server there, names the file and the fix, and still writes and excludes an untracked config', async () => {
-        await fse.writeJson(claudeFile(), { mcpServers: {} });
+      afterEach(async () => {
+        await fse.chmod(infoDir(), 0o755);
+        await fse.chmod(path.join(infoDir(), 'exclude'), 0o644);
+      });
+
+      it.skipIf(process.getuid?.() === 0).each([
+        ['.git/info/exclude is read-only', () => fse.chmod(path.join(infoDir(), 'exclude'), 0o444)],
+        ['.git/info is read-only', () => fse.chmod(infoDir(), 0o555)],
+      ])('writes no value when %s, and warns with the fix', async (_label, lockDown) => {
+        await writeMcpYaml(withSecret);
+        await lockDown();
+
+        const { changes } = await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await fse.pathExists(mcpJson())).toBe(false);
+        expect(changes).toContainEqual(expect.objectContaining({ tool: 'claude', server: 'with-secret', action: 'skipped' }));
+        expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(mcpJson()));
+        expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/not writable[\s\S]*teamai pull/));
+      });
+
+      it.skipIf(process.getuid?.() === 0)('keeps an earlier entry as it was', async () => {
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+        await fse.writeFile(path.join(infoDir(), 'exclude'), '');
+        const before = await fse.readFile(mcpJson(), 'utf-8');
+        await writeMcpYaml(withSecret.replace('https://example.com/mcp', 'https://example.com/v2'));
+        vi.stubEnv('SECRET_TOKEN', 'rotated-secret-value');
+        await fse.chmod(infoDir(), 0o555);
+
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await fse.readFile(mcpJson(), 'utf-8')).toBe(before);
+      });
+
+      it('writes no value while another command holds the exclude file\'s lock', async () => {
+        const lock = path.join(infoDir(), 'exclude.teamai-lock');
+        expect(await acquireLock(lock)).toBe(true);
+        await writeMcpYaml(withSecret);
+
+        try {
+          await reconcileMcpForConfig(teamConfig, claudeOnly());
+        } finally {
+          await releaseLock(lock);
+        }
+
+        expect(await fse.pathExists(mcpJson())).toBe(false);
+        expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(mcpJson()));
+        expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('teamai pull'));
+      });
+
+      it('writes no value into a file git already tracks, names the fix once, and still writes an untracked config', async () => {
+        await fse.writeJson(mcpJson(), { mcpServers: {} });
         git(projectRoot, 'add', '.mcp.json');
+        await writeMcpYaml(withSecret);
 
         const { changes } = await reconcileMcpForConfig(teamConfig, projectConfig);
 
-        expect(await fse.readFile(claudeFile(), 'utf-8')).not.toContain('super-secret-value');
+        expect(await fse.readFile(mcpJson(), 'utf-8')).not.toContain('super-secret-value');
         expect(changes).toContainEqual(expect.objectContaining({
-          tool: 'claude', server: 'with-secret', action: 'skipped', reason: expect.stringContaining(`git rm --cached ${claudeFile()}`),
+          tool: 'claude', server: 'with-secret', action: 'skipped', reason: expect.stringContaining(`git already tracks ${mcpJson()}`),
         }));
-        expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/tracked by git.*git rm --cached .*rotate/));
+        const warnings = vi.mocked(log.warn).mock.calls.map(([line]) => String(line)).filter((line) => line.includes(mcpJson()));
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toMatch(new RegExp(`git already tracks[\\s\\S]*git rm --cached ${mcpJson()}[\\s\\S]*rotate`));
         expect((await fse.readJson(path.join(projectRoot, '.cursor', 'mcp.json'))).mcpServers['with-secret'].headers.Authorization)
           .toBe('Bearer super-secret-value');
         expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
       });
 
-      it('keeps the entry an earlier pull wrote as it is, and updates it once the file is untracked', async () => {
-        await reconcileMcpForConfig(teamConfig, projectConfig);
+      it('keeps the entry an earlier pull wrote to a file git now tracks, and updates it once the file is untracked (#879)', async () => {
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
         git(projectRoot, 'add', '-f', '.mcp.json');
-        const before = await fse.readFile(claudeFile(), 'utf-8');
+        const before = await fse.readFile(mcpJson(), 'utf-8');
         vi.stubEnv('SECRET_TOKEN', 'rotated-secret-value');
 
-        await reconcileMcpForConfig(teamConfig, projectConfig);
-        expect(await fse.readFile(claudeFile(), 'utf-8')).toBe(before);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+        expect(await fse.readFile(mcpJson(), 'utf-8')).toBe(before);
 
         git(projectRoot, 'rm', '-q', '--cached', '.mcp.json');
-        const { changes } = await reconcileMcpForConfig(teamConfig, projectConfig);
+        const { changes } = await reconcileMcpForConfig(teamConfig, claudeOnly());
         expect(changes).toContainEqual({ tool: 'claude', server: 'with-secret', action: 'updated' });
-        expect(await fse.readFile(claudeFile(), 'utf-8')).toContain('rotated-secret-value');
+        expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('rotated-secret-value');
       });
 
-      it('writes a variable the team does not declare as a secret, as before', async () => {
-        await fse.remove(path.join(repoPath, 'env', 'secrets.yaml'));
-        await fse.writeJson(claudeFile(), { mcpServers: {} });
-        git(projectRoot, 'add', '.mcp.json');
+      it('still writes a config that carries no resolved value', async () => {
+        await fse.chmod(infoDir(), 0o555);
+        await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
 
-        await reconcileMcpForConfig(teamConfig, projectConfig);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
 
-        expect(await fse.readFile(claudeFile(), 'utf-8')).toContain('super-secret-value');
+        expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('https://example.com/open');
       });
     });
 

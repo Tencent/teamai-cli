@@ -75,6 +75,13 @@ async function gitExcludeFile(dir: string): Promise<{ excludeFile: string; root:
   return { excludeFile: path.resolve(base, gitPath), root, prefix };
 }
 
+/** The closest directory above `file` that exists. */
+async function existingAncestor(file: string): Promise<string> {
+  let dir = path.dirname(path.resolve(file));
+  while (!await pathExists(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+  return dir;
+}
+
 /**
  * Whether git would put a file in a commit. `unknown` is a repository git could
  * not answer for (unsafe ownership, a bad config): never read it as safe.
@@ -87,8 +94,8 @@ export type GitTracking =
 
 /** Whether git would put `file` in a commit: tracked, or untracked without an ignore rule. Read-only. */
 export async function gitTracking(file: string): Promise<GitTracking> {
-  const dir = path.dirname(file);
-  const result = await execCommand('git', ['check-ignore', '-q', '--', path.basename(file)], { cwd: dir, timeoutMs: 10_000 })
+  const dir = await existingAncestor(file);
+  const result = await execCommand('git', ['check-ignore', '-q', '--', path.relative(dir, file)], { cwd: dir, timeoutMs: 10_000 })
     .catch((e: unknown) => ({ code: -1, stdout: '', stderr: e instanceof Error ? e.message : String(e) }));
   if (result.code === 0) return { kind: 'ignored' };
   if (result.code === 1) return { kind: 'would-commit' };
@@ -105,10 +112,9 @@ export async function gitTracking(file: string): Promise<GitTracking> {
  * is not tracked; nor is one in a repository git cannot answer for, where a
  * commit fails too.
  */
-export async function gitTracks(file: string): Promise<boolean> {
+async function gitTracks(file: string): Promise<boolean> {
   // The file, or even its directory, may be gone from disk and still be in the index.
-  let dir = path.dirname(file);
-  while (!await pathExists(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+  const dir = await existingAncestor(file);
   const result = await execCommand('git', ['--literal-pathspecs', 'ls-files', '--error-unmatch', '--', path.relative(dir, file)], { cwd: dir, timeoutMs: 10_000 })
     .catch(() => null);
   return result?.code === 0;
@@ -130,48 +136,95 @@ function splitBlock(content: string): { before: string; patterns: string[]; afte
 }
 
 /**
+ * Whether `file` is kept out of git, or why teamai could not keep it out and
+ * what the member does about it. `pending`: a dry run found nothing in the way
+ * of listing it.
+ */
+export type GitExclusion =
+  | { kind: 'excluded' }
+  | { kind: 'pending' }
+  | { kind: 'failed'; reason: string; fix: string };
+
+/**
  * Add `file` to its repository's `.git/info/exclude` unless git ignores it
- * already. Idempotent; a path already ignored, or outside any repository, adds
- * nothing, and one git cannot answer for is added all the same. A failure warns
+ * already, and whether git now leaves it out of a commit. Idempotent; a path
+ * already ignored, or outside any repository, adds nothing, and one git cannot
+ * answer for is added all the same. `file` need not exist yet: pull calls this
+ * before writing a resolved value into it. `dryRun` writes nothing and reports
+ * what would stop the write.
+ */
+export async function ensureExcludedFromGit(file: string, options: { dryRun?: boolean } = {}): Promise<GitExclusion> {
+  const tracking = await gitTracking(file);
+  if (tracking.kind === 'ignored' || tracking.kind === 'outside-repo') return { kind: 'excluded' };
+  // `file` and its directory need not exist yet: git is asked from the nearest one that does.
+  const dir = await existingAncestor(file);
+  const location = await gitExcludeFile(dir);
+  if (!location) {
+    return {
+      kind: 'failed',
+      reason: tracking.kind === 'unknown' ? tracking.error : 'git could not locate .git/info/exclude',
+      fix: 'Fix the repository, or add the file to its .git/info/exclude yourself, then run `teamai pull` again.',
+    };
+  }
+  const { excludeFile } = location;
+  // Anchored at the working tree root, glob characters escaped.
+  const rel = path.relative(dir, file).split(path.sep).join('/');
+  const pattern = `/${location.prefix}${rel}`.replace(/[\\*?[\]!#]/g, '\\$&');
+  const retry = `Make it writable, or add \`${pattern}\` to it yourself, then run \`teamai pull\` again.`;
+  // A read-only exclude file is the member's choice; the atomic write would replace it all the same.
+  for (const writable of [path.dirname(excludeFile), ...(await pathExists(excludeFile) ? [excludeFile] : [])]) {
+    const denied = await fse.access(writable, fse.constants.W_OK).then(() => false, () => true);
+    if (denied) return { kind: 'failed', reason: `${writable} is not writable`, fix: retry };
+  }
+  const add = (content: string): string | null => {
+    const block = splitBlock(content);
+    if (block?.patterns.includes(pattern)) return null;
+    const head = block ? block.before : content;
+    const patterns = [...(block?.patterns ?? []), pattern];
+    const body = [MCP_EXCLUDE_START, ...patterns, MCP_EXCLUDE_END].join('\n');
+    const sep = head === '' || head.endsWith('\n') ? '' : '\n';
+    return `${head}${sep}${body}\n${block?.after ?? ''}`;
+  };
+  // An exclude rule does not apply to a file git tracks already.
+  const tracked: GitExclusion = {
+    kind: 'failed',
+    reason: `git already tracks ${file}`,
+    fix: `Run \`git rm --cached ${file}\` (rotate any value a commit of it holds), then \`teamai pull\` again.`,
+  };
+  let result: ExcludeUpdate;
+  try {
+    if (options.dryRun) {
+      // Nothing listed yet: only a tracked file would still stop the write.
+      if (add((await readFileSafe(excludeFile)) ?? '') !== null) return await gitTracks(file) ? tracked : { kind: 'pending' };
+      result = 'unchanged';
+    } else {
+      result = await updateExclude(excludeFile, add);
+    }
+  } catch (e) {
+    return { kind: 'failed', reason: `adding it to ${excludeFile} failed: ${e instanceof Error ? e.message : String(e)}`, fix: retry };
+  }
+  if (result === 'locked') {
+    return {
+      kind: 'failed',
+      reason: `another teamai command held ${excludeFile} past the wait`,
+      fix: 'Run `teamai pull` again.',
+    };
+  }
+  if (result === 'written') log.debug(`Added ${pattern} to ${excludeFile}`);
+  return (await gitTracking(file)).kind === 'would-commit' ? tracked : { kind: 'excluded' };
+}
+
+/**
+ * `ensureExcludedFromGit` for a file already on disk, warning when it fails
  * rather than failing the sync that wrote the file.
  */
 export async function excludeFromGit(file: string): Promise<void> {
   if (!await pathExists(file)) return;
-  const tracking = await gitTracking(file);
-  if (tracking.kind === 'ignored' || tracking.kind === 'outside-repo') return;
-  const location = await gitExcludeFile(path.dirname(file));
-  if (!location) {
-    const reason = tracking.kind === 'unknown' ? tracking.error : 'git could not locate .git/info/exclude';
+  const exclusion = await ensureExcludedFromGit(file);
+  if (exclusion.kind === 'failed') {
     log.warn(
-      `${file} holds a resolved MCP variable, and teamai could not keep it out of git: ${reason}. `
-      + 'Fix the repository, or add the file to its .git/info/exclude yourself, so git does not commit the value.',
-    );
-    return;
-  }
-  const { excludeFile } = location;
-  // Anchored at the working tree root, glob characters escaped.
-  const pattern = `/${location.prefix}${path.basename(file)}`.replace(/[\\*?[\]!#]/g, '\\$&');
-  try {
-    const result = await updateExclude(excludeFile, (content) => {
-      const block = splitBlock(content);
-      if (block?.patterns.includes(pattern)) return null;
-      const head = block ? block.before : content;
-      const patterns = [...(block?.patterns ?? []), pattern];
-      const body = [MCP_EXCLUDE_START, ...patterns, MCP_EXCLUDE_END].join('\n');
-      const sep = head === '' || head.endsWith('\n') ? '' : '\n';
-      return `${head}${sep}${body}\n${block?.after ?? ''}`;
-    });
-    if (result === 'written') log.debug(`Added ${pattern} to ${excludeFile}`);
-    if (result === 'locked') {
-      log.warn(
-        `${file} holds a resolved MCP variable and is not excluded from git yet: another teamai command held ${excludeFile} past the wait. `
-        + 'Run `teamai pull` again, and do not commit the file meanwhile.',
-      );
-    }
-  } catch (e) {
-    log.warn(
-      `${file} holds a resolved MCP variable, and adding it to ${excludeFile} failed: ${e instanceof Error ? e.message : String(e)}. `
-      + `Add \`${pattern}\` to that file yourself so git does not commit the value.`,
+      `${file} holds a resolved MCP variable, and teamai could not keep it out of git: ${exclusion.reason}. `
+      + `${exclusion.fix} Do not commit the file meanwhile.`,
     );
   }
 }

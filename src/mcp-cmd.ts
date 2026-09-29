@@ -5,13 +5,14 @@ import { describeEntryFailure, describeOrigin, resolveEntriesFor } from './names
 import {
   reconcileMcpForConfig,
   resolveMcpTargets,
-  buildDesiredMcpContext,
-  desiredMcpForTarget,
+  buildVarTable,
   type McpChange,
+  type McpTarget,
 } from './mcp-reconcile.js';
 import { referencedVars } from './resources/mcp-format.js';
 import { reportMissingSecrets } from './env-advisories.js';
 import { resolveTeamEnv } from './env-resolution.js';
+import { carriesResolvedValue, ensureExcludedFromGit } from './mcp-git-exclude.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 import { managedMcpManifestPath, managedMcpManifestKey, getDataHome } from './types.js';
@@ -53,16 +54,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   }
 
   const targets = await resolveMcpTargets(teamConfig, localConfig);
-  const context = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv }, targets);
-  const { vars } = context;
-  // Why each server is not written to a tool's config git tracks (#879), by server.
-  const withheld = new Map<string, string[]>();
-  for (const target of targets) {
-    const { skipped, withheld: names } = desiredMcpForTarget(target, servers.map((s) => teamMcpToDef(s.entry)), context);
-    for (const change of skipped) {
-      if (names.has(change.server)) withheld.set(change.server, [...withheld.get(change.server) ?? [], `${target.tool} — ${change.reason}`]);
-    }
-  }
+  const vars = await buildVarTable(localConfig, teamEnv);
   // Project scope reads THIS worktree's own per-worktree manifest; user the global file.
   const manifest = (await readJson<ManagedMcpManifest>(
     managedMcpManifestPath(
@@ -90,11 +82,17 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
       console.log(`    secrets:  ${needed.join(', ')} (${state})`);
     }
 
-    const installedIn = targets
-      .filter((t) => (manifest[managedMcpManifestKey(t.tool, t.projectScope)] ?? []).some((r) => r.name === s.name))
-      .map((t) => t.tool);
+    const installed = (t: McpTarget): boolean =>
+      (manifest[managedMcpManifestKey(t.tool, t.projectScope)] ?? []).some((r) => r.name === s.name);
+    const installedIn = targets.filter(installed).map((t) => t.tool);
     console.log(`    installed: ${installedIn.length > 0 ? installedIn.join(', ') : '(none)'}`);
-    for (const reason of withheld.get(s.name) ?? []) console.log(`    withheld: ${reason}`);
+    // Pull writes a resolved value only into a file git leaves out of a commit
+    // (#882); an entry an earlier pull wrote there stays as it was.
+    for (const t of targets) {
+      if (!carriesResolvedValue(t, [s], [s.name])) continue;
+      const exclusion = await ensureExcludedFromGit(t.file, { dryRun: true });
+      if (exclusion.kind === 'failed') console.log(`    withheld: ${t.tool} — ${exclusion.reason}. ${exclusion.fix}`);
+    }
     console.log('');
   }
 

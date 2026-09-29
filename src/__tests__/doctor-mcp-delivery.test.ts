@@ -344,22 +344,39 @@ describe('doctor — MCP servers delivered on disk', () => {
       expect(await excludeCheck()).toBeUndefined();
     });
 
+    it.skipIf(process.getuid?.() === 0)('says a server was withheld because its file cannot be kept out of git, and the fix', async () => {
+      await fse.remove(path.join(projectRoot, '.mcp.json'));
+      vi.stubEnv('JIRA_TOKEN', 'long-t0ken-value-7c1');
+      const excludeFile = path.join(projectRoot, '.git', 'info', 'exclude');
+      await fse.chmod(excludeFile, 0o444);
+
+      try {
+        const check = await mcpCheck();
+        expect(await check.check()).toBe(false);
+        expect(check.fix).toMatch(/\.git\/info\/exclude is not writable/);
+        expect(check.fix).toContain('teamai pull');
+        expect(check.fix).not.toContain('again..');
+      } finally {
+        await fse.chmod(excludeFile, 0o644);
+      }
+    });
+
     it('emits no check when the installed servers carry no resolved value', async () => {
       await writeTeamMcp('servers:\n  - name: jira\n    transport: http\n    url: https://jira.example/mcp\n');
 
       expect(await excludeCheck()).toBeUndefined();
     });
 
-    it('fails the delivery check for a declared secret withheld from a file git tracks, naming the file and the fix (#879)', async () => {
-      await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: JIRA_TOKEN\n');
+    it('fails the delivery check for a server withheld from a file git tracks, naming the file and the fix once (#879)', async () => {
       vi.stubEnv('JIRA_TOKEN', 'fixture-jira-token');
       execFileSync('git', ['add', '.mcp.json'], { cwd: projectRoot });
 
       const check = await mcpCheck();
       expect(await check.check()).toBe(false);
       const file = path.join(projectRoot, '.mcp.json');
-      expect(check.fix).toContain(`jira not written: ${file} is tracked by git, so the value of JIRA_TOKEN would be committed.`);
-      expect(check.fix).toContain(`git rm --cached ${file}`);
+      expect(check.fix).toContain(`In ${file}, withheld: jira, as git would commit the file: git already tracks ${file}.`);
+      expect(check.fix).toContain(`git rm --cached ${file}\` (rotate any value a commit of it holds)`);
+      expect(check.fix).not.toContain('not the team\'s definition');
       expect(check.fix).not.toContain('pull --force');
     });
   });

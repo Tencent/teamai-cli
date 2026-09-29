@@ -82,14 +82,17 @@ reference to VAR (`--from-env`) and VAR is unset in this environment. Ask the
 user whether to set VAR in their shell or replace the reference with the
 command in the line; do not choose for them.
 
-## "MCP server X not written: <file> is tracked by git"
+## "Did not write <tool>'s MCP servers to <file>" / `withheld:`
 
-`pull`, `teamai mcp list` (`withheld:`) and `teamai doctor` print this when a
-project MCP config git already tracks would get a declared secret's value.
-That server is skipped for that tool, and an entry an earlier pull wrote
-stays as it is. Tell the user: `git rm --cached <file>` (the file stays on
-disk), commit that, and rotate the token if the file was ever committed with
-it; then `teamai pull`. Do not run `git rm` or commit for them.
+`pull` prints this, and `teamai mcp list` (`withheld:`) and `teamai doctor`
+report it, when a project MCP config would get a resolved `${VAR}` value that
+git would commit: the file could not be kept out of git first. It is left as
+it was, and an entry an earlier pull wrote stays. The line names the reason and the
+fix. For `git already tracks <file>`, tell the user: `git rm --cached <file>`
+(the file stays on disk), commit that, and rotate the token if the file was
+ever committed with it; then `teamai pull`. Do not run `git rm` or commit for
+them. For an exclude file that is not writable, one another teamai command
+held, or a git error, relay the fix the line gives.
 
 ## Permission / access denied
 

@@ -11,8 +11,11 @@ vi.mock('../namespaced-entries.js', async (importOriginal) => ({
 vi.mock('../mcp-reconcile.js', () => ({
   reconcileMcpForConfig: vi.fn(),
   resolveMcpTargets: vi.fn().mockResolvedValue([]),
-  buildDesiredMcpContext: vi.fn().mockResolvedValue({ vars: {} }),
-  desiredMcpForTarget: vi.fn(),
+  buildVarTable: vi.fn().mockResolvedValue({}),
+}));
+vi.mock('../mcp-git-exclude.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../mcp-git-exclude.js')>()),
+  ensureExcludedFromGit: vi.fn(),
 }));
 vi.mock('../utils/fs.js', () => ({
   readJson: vi.fn().mockResolvedValue(null),
@@ -26,7 +29,8 @@ vi.mock('../utils/logger.js', () => ({
 import { autoDetectInit } from '../config.js';
 import { entryLayout, resolveEntriesFor } from '../namespaced-entries.js';
 import { mcpInject, mcpList } from '../mcp-cmd.js';
-import { reconcileMcpForConfig } from '../mcp-reconcile.js';
+import { reconcileMcpForConfig, resolveMcpTargets } from '../mcp-reconcile.js';
+import { ensureExcludedFromGit } from '../mcp-git-exclude.js';
 
 const mockedAutoDetectInit = autoDetectInit as Mock;
 const mockedResolve = resolveEntriesFor as Mock;
@@ -88,6 +92,25 @@ describe('mcpList', () => {
     expect(text).toContain('playwright  [stdio]');
     expect(text).toContain('roles:    frontend (deprecated)');
     expect(text.match(/roles:/g)).toHaveLength(1);
+  });
+
+  it('says where a server needing a resolved value is withheld because git would commit the file, and the fix (#882)', async () => {
+    mockedResolve.mockResolvedValue(resolved([
+      [{ name: 'jira', transport: 'http', url: 'https://jira.example/mcp', headers: { Authorization: 'Bearer ${JIRA_TOKEN}' } }, 'mcp/mcp.yaml', null],
+    ]));
+    (resolveMcpTargets as Mock).mockResolvedValueOnce([
+      { tool: 'claude', format: 'claude', file: '/work/app/.mcp.json', projectScope: true },
+    ]);
+    (ensureExcludedFromGit as Mock).mockResolvedValueOnce({
+      kind: 'failed',
+      reason: '/work/app/.git/info/exclude is not writable',
+      fix: 'Make it writable, then run `teamai pull` again.',
+    });
+
+    const text = await listOutput();
+
+    expect(ensureExcludedFromGit).toHaveBeenCalledWith('/work/app/.mcp.json', { dryRun: true });
+    expect(text).toContain('withheld: claude — /work/app/.git/info/exclude is not writable. Make it writable, then run `teamai pull` again.');
   });
 
   it('reports a set that cannot be resolved instead of listing part of it', async () => {

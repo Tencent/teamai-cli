@@ -327,8 +327,8 @@ describe('a missing declared secret tells the member what to run', () => {
       await mcpList({});
       const out = spy.mock.calls.map(([line]) => String(line)).join('\n');
       const file = path.join(projectRoot, '.mcp.json');
-      expect(out).toContain(`withheld: claude — ${file} is tracked by git, so the value of GITHUB_TOKEN would be committed.`);
-      expect(out).toContain(`git rm --cached ${file}`);
+      expect(out).toContain(`withheld: claude — git already tracks ${file}. Run \`git rm --cached ${file}\` (rotate any value a commit of it holds)`);
+      expect(out.match(/withheld:/g)).toHaveLength(1);
     } finally {
       spy.mockRestore();
     }

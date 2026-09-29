@@ -430,6 +430,7 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
     resolveMcpTargets, buildDesiredMcpContext, desiredMcpForTarget,
     mcpTargetExcluded, installedMcpEntries,
   } = await import('./mcp-reconcile.js');
+  const { carriesResolvedValue, ensureExcludedFromGit } = await import('./mcp-git-exclude.js');
   const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
   const { describeEntryFailure, resolveEntriesFor } = await import('./namespaced-entries.js');
 
@@ -451,23 +452,23 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
   if (teamDefs.length === 0) return [];
 
   const targets = await resolveMcpTargets(teamConfig, localConfig);
-  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv: ctx.teamEnv }, targets);
+  const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv: ctx.teamEnv });
   const excludedByUser = new Set(localConfig.excludedSkills ?? []);
 
   const checks: Check[] = [];
   for (const target of targets) {
     if (mcpTargetExcluded(localConfig, target)) continue;
 
-    const { desired, skipped, kept, withheld } = desiredMcpForTarget(target, teamDefs, desiredContext);
+    const { desired, skipped, kept } = desiredMcpForTarget(target, teamDefs, desiredContext);
     // A server skipped only for a missing declared secret (#875) is a note
     // doctor prints with the command that fixes it, not a failed delivery.
     const blocked = skipped
-      .filter((change) => !excludedByUser.has(change.server) && !kept.has(change.server) && !withheld.has(change.server))
+      .filter((change) => !excludedByUser.has(change.server) && !kept.has(change.server))
       .map((change) => `${change.server} (${change.reason ?? 'skipped'})`);
-    // Its reason says what fixes it (#879).
-    const withheldNotes = skipped.filter((change) => withheld.has(change.server)).map((change) => `${change.server} not written: ${change.reason}.`);
 
     const problems: string[] = [];
+    // Its fix is the exclusion's own, not another pull (#882).
+    let withheld: string | undefined;
     const installed = await installedMcpEntries(target);
     if (installed === null) {
       problems.push(`${target.file} could not be parsed, so no server was injected`);
@@ -481,12 +482,21 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
         // held by something else entirely, and a stale copy is equally undelivered.
         else if (!isDeepStrictEqual(installed.get(name), entry)) foreign.push(name);
       }
-      if (absent.length > 0) problems.push(`not injected: ${nameList(absent)}`);
-      if (foreign.length > 0) problems.push(`not the team's definition: ${nameList(foreign)}`);
+      // Pull writes a resolved value only into a file git leaves out of a
+      // commit (#882), and otherwise leaves the whole file as it was.
+      const exclusion = carriesResolvedValue(target, teamDefs, [...absent, ...foreign])
+        ? await ensureExcludedFromGit(target.file, { dryRun: true })
+        : undefined;
+      if (exclusion?.kind === 'failed') {
+        withheld = `In ${target.file}, withheld: ${nameList([...absent, ...foreign])}, as git would commit the file: ${exclusion.reason}. ${exclusion.fix}`;
+      } else {
+        if (absent.length > 0) problems.push(`not injected: ${nameList(absent)}`);
+        if (foreign.length > 0) problems.push(`not the team's definition: ${nameList(foreign)}`);
+      }
     }
     if (blocked.length > 0) problems.push(`skipped: ${nameList(blocked)}`);
 
-    if (problems.length === 0 && withheldNotes.length === 0 && desired.size === 0) continue;
+    if (problems.length === 0 && !withheld && desired.size === 0) continue;
 
     const delivery = problems.length === 0 ? [] : [`In ${target.file}, ${problems.join('; ')}. A server needing a variable reads it from `
       + '`env/env.yaml` or an active `env/<ns>/env.yaml`, whose top-level key is `variables:` — a plain `KEY: value` mapping '
@@ -496,8 +506,8 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
     checks.push({
       name: `MCP servers delivered to ${target.tool}`,
       source: 'local',
-      check: async () => problems.length === 0 && withheldNotes.length === 0,
-      fix: [...withheldNotes, ...delivery].join(' '),
+      check: async () => problems.length === 0 && !withheld,
+      fix: [...withheld ? [withheld] : [], ...delivery].join(' '),
     });
   }
 
