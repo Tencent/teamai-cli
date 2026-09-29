@@ -15,7 +15,7 @@ import { sameEnvName } from './env-key.js';
 //  Keeping the differences here — rather than in the reconcile engine — is the
 //  same split agents uses between agent-format.ts and its handler.
 
-export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi';
+export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi' | 'kimi';
 
 const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'qoder', 'qoder-cn', 'kiro', 'zcode', 'omp', 'trae', 'trae-cn']);
 const CURSOR_TOOLS = new Set(['cursor']);
@@ -23,6 +23,8 @@ const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 const BUDDY_TOOLS = new Set(['codebuddy', 'workbuddy']);
 const OPENCODE_TOOLS = new Set(['opencode']);
 const COPILOT_TOOLS = new Set(['copilot']);
+// `mcpServers` entries that name their transport in a `transport` key.
+const KIMI_TOOLS = new Set(['kimi', 'devin']);
 const COPILOT_ALL_TOOLS = '*';
 
 export function detectMcpFormat(tool: string): McpFormat | null {
@@ -33,6 +35,7 @@ export function detectMcpFormat(tool: string): McpFormat | null {
   if (BUDDY_TOOLS.has(tool)) return 'buddy';
   if (OPENCODE_TOOLS.has(tool)) return 'opencode';
   if (COPILOT_TOOLS.has(tool)) return 'copilot';
+  if (KIMI_TOOLS.has(tool)) return 'kimi';
   return null;
 }
 
@@ -48,6 +51,7 @@ export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
   buddy: 'mcpServers',
   opencode: 'mcp',
   copilot: 'mcpServers',
+  kimi: 'mcpServers',
 };
 
 /** Whether two formats keep their servers under one key of a shared file (Claude, Cursor and CodeBuddy all use `mcpServers`). */
@@ -69,6 +73,7 @@ const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
   // (streamable HTTP or SSE, negotiated by its client).
   opencode: new Set<McpTransport>(['stdio', 'http', 'sse']),
   copilot: new Set<McpTransport>(['stdio', 'http', 'sse']),
+  kimi: new Set<McpTransport>(['stdio', 'http', 'sse']),
 };
 
 export function supportsTransport(format: McpFormat, transport: McpTransport): boolean {
@@ -269,6 +274,20 @@ function renderCopilot(def: McpServerDef): McpJsonEntry {
   return e;
 }
 
+/** Kimi Code and Devin key the transport off `transport`, not `type`. */
+function renderKimi(def: McpServerDef): McpJsonEntry {
+  const e: McpJsonEntry = { transport: def.transport };
+  if (def.transport === 'stdio') {
+    e.command = def.command;
+    if (def.args?.length) e.args = def.args;
+    if (def.env && Object.keys(def.env).length) e.env = def.env;
+  } else {
+    e.url = def.url;
+    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
+  }
+  return e;
+}
+
 /**
  * OpenCode's shape is unlike the others: transport is expressed as
  * `type: "local"` (stdio) or `type: "remote"` (http/sse), a local server's command
@@ -306,6 +325,7 @@ export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpSer
   if (format === 'cursor') return renderCursor(def);
   if (format === 'opencode') return renderOpencode(def);
   if (format === 'copilot') return renderCopilot(def);
+  if (format === 'kimi') return renderKimi(def);
   return renderBuddy(def);
 }
 

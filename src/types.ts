@@ -612,10 +612,16 @@ export const TeamaiConfigBaseSchema = z.object({
       userScope: { rules: '.workbuddy/rules' },
     },
     // Kimi Code: skills in ~/.kimi-code/skills (user) and .kimi-code/skills (project).
-    kimi: { skills: '.kimi-code/skills' },
+    // No mcpProject: Kimi reads the project root's .mcp.json, which `claude` writes.
+    kimi: { skills: '.kimi-code/skills', mcp: '.kimi-code/mcp.json' },
     // Devin: user skills live under ~/.config/devin/ but project skills under
     // <root>/.devin/ — a different prefix, hence userScope.
-    devin: { skills: '.devin/skills', userScope: { skills: '.config/devin/skills' } },
+    devin: {
+      skills: '.devin/skills',
+      mcp: '.config/devin/mcp_config.json',
+      mcpProject: '.devin/mcp_config.json',
+      userScope: { skills: '.config/devin/skills' },
+    },
     // OpenCode reads project config from <root>/.opencode/ but user config from
     // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
     // read natively from .claude/skills, but we write .opencode/skills so an
