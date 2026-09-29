@@ -160,7 +160,13 @@ describe('model profiles', () => {
       await fse.ensureDir(dir);
       const legacy = path.join(dir, `hai-platform-${digest('https://example.test/hai.git')}.json`);
       await fse.writeFile(legacy, '{"team:gw":{"API_KEY":{"value":"copied"}}}');
-      const linkSpy = vi.spyOn(fs.promises, 'link').mockRejectedValue(Object.assign(new Error('no links'), { code: 'EPERM' }));
+      // The filesystem rejects linking the LEGACY file (EPERM), as ZFS and
+      // some FUSE mounts do; the temp→target publish link still works.
+      const realLink = fs.promises.link.bind(fs.promises);
+      const linkSpy = vi.spyOn(fs.promises, 'link').mockImplementation(async (src, dest) => {
+        if (String(src) === legacy) return Promise.reject(Object.assign(new Error('operation not permitted'), { code: 'EPERM' }));
+        return realLink(src, dest);
+      });
       try {
         expect(await migrateTeamValuesPath(config)).toBe(target);
         expect(JSON.parse(await fse.readFile(target, 'utf8'))['team:gw']['API_KEY'].value).toBe('copied');

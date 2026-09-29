@@ -318,8 +318,12 @@ export async function migrateTeamValuesPath(localConfig: LocalConfig, options: {
 
 /**
  * Copy `source` to `target` for filesystems that reject hard links, never
- * overwriting: the target is opened exclusively, and a failed write removes
- * the partial file. True only when this call created the target.
+ * overwriting and never exposing a partial file: the content is written to a
+ * unique temp file first and then linked into place. The link claims creation
+ * exclusively (a concurrent migration's temp file wins, ours is removed), and
+ * until it succeeds the target does not exist, so a concurrent reader either
+ * sees the complete previous file or none at all. True only when this call
+ * created the target.
  */
 async function copyNoClobber(source: string, target: string): Promise<boolean> {
   let content: string;
@@ -328,21 +332,16 @@ async function copyNoClobber(source: string, target: string): Promise<boolean> {
   } catch {
     return false; // the source vanished; the caller tries its next candidate
   }
-  let handle: fs.promises.FileHandle;
+  const temp = `${target}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
-    handle = await fs.promises.open(target, 'wx', 0o600);
+    await fs.promises.writeFile(temp, content, { encoding: 'utf8', mode: 0o600 });
+    await fs.promises.link(temp, target);
+    return true;
   } catch {
-    return false; // a concurrent migration put a file there first
+    return false; // a concurrent migration claimed the target first, or the write failed
+  } finally {
+    await fs.promises.unlink(temp).catch(() => {}); // remove ours unless the link moved it
   }
-  try {
-    await handle.writeFile(content);
-  } catch {
-    await handle.close().catch(() => {});
-    await fs.promises.unlink(target).catch(() => {}); // never leave a partial values file
-    return false;
-  }
-  await handle.close().catch(() => {});
-  return true;
 }
 
 /** One profiles file, or why it cannot be used; null when it does not exist. `label` names it in the reason. */
