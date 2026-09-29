@@ -83,8 +83,9 @@ const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly defaultPo
  * scheme's default, and the path, query and fragment as written. An scp path
  * that starts with neither `/` nor `~` is in the ssh user's home, so it is
  * keyed as `~/path`, the path `ssh://host/~/path` names; `ssh://host/path` is
- * from the root. Only http(s) credentials, and a trailing `.git` and slashes
- * on the path, are dropped, so `git@host:acme/team.git` and
+ * from the root. Only http(s) credentials, trailing slashes on the path and,
+ * for a repo served over ssh or http(s), a trailing `.git` are dropped (a
+ * `file://` URL's `team` and `team.git` are two directories), so `git@host:acme/team.git` and
  * `ssh://git@host:22/~/acme/team` name one file, while
  * `ssh://git@host/acme/team` (from the root), two ssh users' repos on one
  * host, two repos on one host with different ports or queries, or behind http
@@ -93,8 +94,9 @@ const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly defaultPo
  */
 function repoIdentity(url: string): string {
   const trimmed = url.trim();
-  const key = (family: string, user: string, host: string, port: string, repoPath: string, rest = ''): string => {
-    const name = repoPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
+  const key = (family: string, user: string, host: string, port: string, repoPath: string, rest = '', served = true): string => {
+    const trimmedPath = repoPath.replace(/^\/+/, '').replace(/\/+$/, '');
+    const name = served ? trimmedPath.replace(/\.git$/i, '') : trimmedPath;
     return `${family}://${user ? `${user}@` : ''}${host.toLowerCase()}${port ? `:${port}` : ''}/${name}${rest}`;
   };
   // `[user@]host:path`, as git reads it: no `/` before the `:`, no `//` after it, not a Windows drive.
@@ -114,7 +116,7 @@ function repoIdentity(url: string): string {
   const family = known?.family ?? scheme;
   const user = family === 'ssh' ? decodeUser(parsed.username) : '';
   const port = parsed.port === known?.defaultPort ? '' : parsed.port;
-  return key(family, user, parsed.hostname, port, parsed.pathname, `${parsed.search}${parsed.hash}`);
+  return key(family, user, parsed.hostname, port, parsed.pathname, `${parsed.search}${parsed.hash}`, known !== undefined);
 }
 
 /** A URL's percent-encoded user as the scp form writes it; one that does not decode stays as written. */

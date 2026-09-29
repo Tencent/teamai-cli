@@ -163,6 +163,11 @@ describe('team secret values', () => {
         expect(fileFor('https://example.com:8443/acme/team.git')).not.toBe(getTeamSecretsPath(localConfig));
       });
 
+      it('gives file:// repos that differ only by a .git suffix different files: they are two directories', () => {
+        expect(fileFor('file:///srv/team')).not.toBe(fileFor('file:///srv/team.git'));
+        expect(fileFor('file:///srv/team/')).toBe(fileFor('file:///srv/team'));
+      });
+
       it('gives URLs that differ only in the query or the fragment different files', () => {
         expect(fileFor('https://example.com/acme/team?tenant=a')).not.toBe(fileFor('https://example.com/acme/team?tenant=b'));
         expect(fileFor('https://example.com/acme/team?tenant=a')).not.toBe(getTeamSecretsPath(localConfig));
