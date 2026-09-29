@@ -735,10 +735,12 @@ If a skill shared by the team doesn't suit you, you can exclude it locally only 
 
 ```bash
 teamai skill exclude add using-superpowers
+teamai skill exclude add using-superpowers --dry-run # Preview without changing config or pull state
 teamai pull                    # Remove it from local AI tools
 teamai skill exclude list
 
 teamai skill exclude remove using-superpowers
+teamai skill exclude remove using-superpowers --dry-run # Preview without changing config or pull state
 teamai pull                    # Re-sync
 ```
 

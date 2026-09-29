@@ -27,6 +27,7 @@ import {
   saveStateForScope,
 } from '../config.js';
 import { excludeAdd, excludeRemove } from '../exclude.js';
+import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
 
 const userConfig: LocalConfig = {
@@ -101,6 +102,36 @@ describe('skill exclude commands', () => {
     await excludeAdd(['a-skill'], {});
 
     expect(saveLocalConfig).not.toHaveBeenCalled();
+    expect(saveStateForScope).not.toHaveBeenCalled();
+  });
+
+  it('previews additions without saving config or invalidating pull state', async () => {
+    await excludeAdd(['new-skill'], { dryRun: true });
+
+    expect(requireInit).toHaveBeenCalledWith({ dryRun: true });
+    expect(log.info).toHaveBeenCalledWith('[dry-run] Would exclude: new-skill');
+    expect(saveLocalConfig).not.toHaveBeenCalled();
+    expect(saveLocalConfigForScope).not.toHaveBeenCalled();
+    expect(loadStateForScope).not.toHaveBeenCalled();
+    expect(saveStateForScope).not.toHaveBeenCalled();
+  });
+
+  it('previews removals in project scope without saving config or state', async () => {
+    const projectConfig: LocalConfig = {
+      ...userConfig,
+      scope: 'project',
+      projectRoot: '/tmp/project',
+      excludedSkills: ['a-skill', 'b-skill'],
+    };
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+
+    await excludeRemove(['a-skill'], { dryRun: true });
+
+    expect(detectProjectConfig).toHaveBeenCalledWith(undefined, undefined, { dryRun: true });
+    expect(log.info).toHaveBeenCalledWith('[dry-run] Would remove from exclude list: a-skill');
+    expect(saveLocalConfig).not.toHaveBeenCalled();
+    expect(saveLocalConfigForScope).not.toHaveBeenCalled();
+    expect(loadStateForScope).not.toHaveBeenCalled();
     expect(saveStateForScope).not.toHaveBeenCalled();
   });
 });
