@@ -995,6 +995,8 @@ export async function mcpConfigsNotProvenClean(
   const targets = new Map<string, {
     target: McpTarget; owned: ManagedMcpRecord[]; unverified: string[]; recorded: boolean; foreign: boolean;
     mappers: Set<string>; mapsToday: Set<string>; proven: Set<string>; writers: Set<string>;
+    /** Every tool's target on this file: tools of different formats read different keys of it. */
+    all: McpTarget[];
   }>();
   const realRoot = (root: string | undefined): Promise<string | undefined> =>
     root ? fs.promises.realpath(root).catch(() => root) : Promise.resolve(undefined);
@@ -1043,6 +1045,7 @@ export async function mcpConfigsNotProvenClean(
         mapsToday,
         proven,
         writers,
+        all: [...seen?.all ?? [], target],
         foreign: foreign || seen?.foreign === true,
       });
     }
@@ -1087,23 +1090,33 @@ export async function mcpConfigsNotProvenClean(
         held.set(file, movedWhy);
         continue;
       }
-      const known = targets.get(file)
+      const mappedHere = targets.get(file);
+      const knownHere = mappedHere
         ?? (sibling && nested ? { target: { ...sibling.target, file }, owned: [], unverified: [], recorded: false, foreign: true, nested } : undefined);
-      const installed = known ? await installedMcpEntries(known.target) : null;
       const raw = (await readFileSafe(file)) ?? '';
-      const named = known && installed && teamDefs
-        ? [...installed.keys()].find((name) => carriesResolvedValue(known.target, teamDefs, [name]))
-        : undefined;
-      const why = !known ? 'no tool teamai knows reads it'
-        : !installed ? 'it does not parse'
-        : installed.size === 0 ? undefined
-        : 'nested' in known ? `it holds MCP servers in a linked worktree of the repository at ${known.nested}, which teamai cannot judge`
-        : known.foreign && otherWorktrees === 'empty' ? 'it holds MCP servers in another worktree, which only a pull there can judge'
-        : !teamDefs ? 'the team\'s MCP servers cannot be read'
-        : named ? `it holds the team's ${named}, which needs a resolved \${VAR}`
-        : await resolvedValueEvidence(known.target, teamDefs, known, vars, ctx).then((e) => e && `it holds ${e}`)
-          ?? values.filter(([, value]) => raw.includes(value)).map(([name]) => `it holds the value of $${name}`)[0]
-          ?? (known.recorded ? undefined : 'it holds MCP servers, and managed-mcp.json, teamai\'s record of which it wrote there, is gone, does not parse, has no entry for it or was rebuilt without noting its other servers');
+      // Judged in the format of every tool that maps it: one tool's key may hold what another's doesn't.
+      const judge = async (known: NonNullable<typeof knownHere>, target: McpTarget): Promise<string | undefined> => {
+        const installed = await installedMcpEntries(target);
+        const named = installed && teamDefs
+          ? [...installed.keys()].find((name) => carriesResolvedValue(target, teamDefs, [name]))
+          : undefined;
+        return !installed ? 'it does not parse'
+          : installed.size === 0 ? undefined
+          : 'nested' in known ? `it holds MCP servers in a linked worktree of the repository at ${known.nested}, which teamai cannot judge`
+          : known.foreign && otherWorktrees === 'empty' ? 'it holds MCP servers in another worktree, which only a pull there can judge'
+          : !teamDefs ? 'the team\'s MCP servers cannot be read'
+          : named ? `it holds the team's ${named}, which needs a resolved \${VAR}`
+          : await resolvedValueEvidence(target, teamDefs, known, vars, ctx).then((e) => e && `it holds ${e}`)
+            ?? values.filter(([, value]) => raw.includes(value)).map(([name]) => `it holds the value of $${name}`)[0]
+            ?? (known.recorded ? undefined : 'it holds MCP servers, and managed-mcp.json, teamai\'s record of which it wrote there, is gone, does not parse, has no entry for it or was rebuilt without noting its other servers');
+      };
+      let why = knownHere ? undefined : 'no tool teamai knows reads it';
+      const formats = mappedHere ? mappedHere.all.filter((t, i, all) => all.findIndex((o) => o.format === t.format) === i)
+        : knownHere ? [knownHere.target] : [];
+      for (const target of formats) {
+        why = knownHere && await judge(knownHere, target);
+        if (why) break;
+      }
       if (why) held.set(file, why);
     }
   }
@@ -1132,7 +1145,8 @@ export async function reconcileMcpForConfig(
   const exclusions = new Map<string, GitExclusion>();
   // The project configs this run wrote: a line it added for one stays, whatever fails after.
   const written = new Set<string>();
-  // The (file, tool) pairs managed-mcp-files.json first recorded this run, before their write.
+  // The (file, tool) pairs managed-mcp-files.json first recorded this run, before their write, until that
+  // tool's records hold a resolved value there: another tool's write to the same file proves nothing of it.
   const recorded: McpTarget[] = [];
   const protect = !options.removeAll && !options.dryRun;
   // Read before the reconcile records what it writes: a manifest it recreates says nothing of what came before.
@@ -1140,9 +1154,9 @@ export async function reconcileMcpForConfig(
   try {
     return await reconcileTargets(teamConfig, localConfig, options, exclusions, written, recorded);
   } finally {
-    // A record this run added for a file it then did not write goes, as its exclude line does. The settle
+    // A record this run added for a tool that then wrote no value goes, as its exclude line does. The settle
     // below records the file again if it holds a resolved value all the same (an earlier pull wrote it).
-    await forgetUnwrittenMcpConfigs(localConfig, recorded.filter((target) => !written.has(target.file)));
+    await forgetUnwrittenMcpConfigs(localConfig, recorded);
     // Also after a failed write: what earlier pulls wrote is on disk either way.
     if (protect) await protectResolvedMcpConfigs(teamConfig, localConfig, exclusions, written, before);
   }
@@ -1417,8 +1431,9 @@ async function reconcileTargets(
   const ledger = localConfig.scope === 'project' && !options.dryRun ? (await readResolvedMcpFiles(localConfig)).files : {};
   const listed = new Set(Object.keys(ledger));
   const rebuilt: Array<{ target: McpTarget; records: ManagedMcpRecord[] }> = [];
-  // No managed-mcp.json when this pull began (#882): its records are marked below.
-  const lost = localConfig.scope === 'project' && !options.dryRun && Object.keys(manifest).length === 0;
+  // The tools with no record in managed-mcp.json when this pull began (#882): theirs are marked below.
+  const unrecorded = new Set(localConfig.scope === 'project' && !options.dryRun
+    ? targets.filter((t) => manifest[managedMcpManifestKey(t.tool, true)] === undefined).map((t) => t.tool) : []);
 
   const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, options);
   // A failed declaration is not "no secrets": read as none, every server whose
@@ -1485,6 +1500,8 @@ async function reconcileTargets(
         if (marked) record.unnoted = true;
         else delete record.unnoted;
       }
+      const at = recorded.indexOf(target);
+      if (at >= 0 && nextRecords.some((record) => record.resolved === true)) recorded.splice(at, 1);
     }
     // Rebuilt this run, or by one that could not note what else was in the file.
     const unnoted = manifest[manifestKey] === undefined || manifest[manifestKey].some((record) => record.unnoted);
@@ -1496,9 +1513,9 @@ async function reconcileTargets(
     else delete manifest[manifestKey];
   }
 
-  // With no managed-mcp.json when this pull began, a record of a file holding a server no record claims is
+  // A record of a tool that had none when this pull began, of a file holding a server no record claims, is
   // unnoted until protectProjectMcpConfigs notes that server, after its settle records the file.
-  for (const target of lost ? targets : []) {
+  for (const target of targets.filter((t) => unrecorded.has(t.tool))) {
     const records = manifest[managedMcpManifestKey(target.tool, true)] ?? [];
     const claimed = targets.filter((t) => t.file === target.file)
       .flatMap((t) => manifest[managedMcpManifestKey(t.tool, true)] ?? []).map((record) => record.name);

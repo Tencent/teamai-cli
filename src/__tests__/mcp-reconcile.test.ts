@@ -922,6 +922,26 @@ servers:
       await fse.outputJson(managedMcpManifestPath(getDataHome(projectConfig), projectRoot), { 'claude:project': [], 'cursor:project': [] });
     };
 
+    it('keeps the line of a file tools of different formats share while a stale entry sits under any of their keys', async () => {
+      // Cursor (mcpServers) and OpenCode (mcp) both on .mcp.json, OpenCode last: judged in one format, the other hides.
+      const toolPaths = {
+        ...UNMOVED_TOOL_PATHS,
+        cursor: { ...TOOL_PATHS.cursor, mcpProject: '.mcp.json' },
+        opencode: { skills: '.opencode/skills', mcp: '.config/opencode/opencode.json', mcpProject: '.mcp.json' },
+      };
+      const shared = { ...teamConfig, toolPaths } as TeamaiConfig;
+      await writeMcpYaml(`${withSecret}    tools: [cursor]\n  - name: open\n    transport: http\n    url: https://example.com/open\n    tools: [claude]\n`);
+      await reconcileMcpForConfig(shared, projectConfig);
+      expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+      await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n    tools: [claude]\n');
+      vi.stubEnv('SECRET_TOKEN', '');
+
+      await reconcileMcpForConfig(shared, { ...projectConfig, disabledAgents: ['cursor'] } as LocalConfig);
+
+      expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+      expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+    });
+
     describe('a config two tools share (Claude and CodeBuddy on .mcp.json)', () => {
       const shared = { ...teamConfig, toolPaths: { ...TOOL_PATHS, codebuddy: { ...TOOL_PATHS.codebuddy, mcpProject: '.mcp.json' } } } as TeamaiConfig;
       const open = '  - name: open\n    transport: http\n    url: https://example.com/open\n';
@@ -2375,6 +2395,34 @@ servers:
       expect(git(projectRoot, 'status', '--porcelain', '--untracked-files=all')).not.toMatch(/\.cursor\/mcp\.json/);
     });
 
+    it('takes back a tool it recorded before a write it then skipped, in a file another tool wrote this pull', async () => {
+      const { readResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+      const mcpJson = path.join(projectRoot, '.mcp.json');
+      await fse.ensureDir(path.join(projectRoot, '.codebuddy', 'skills'));
+      await writeMcpYaml(withSecret);
+
+      // Claude writes with-secret first; CodeBuddy finds it there, not its own, and skips it.
+      const result = await reconcileMcpForConfig(unmovedConfig(), projectConfig);
+
+      expect(result.changes).toContainEqual(expect.objectContaining({ tool: 'codebuddy', server: 'with-secret', action: 'skipped' }));
+      expect((await readResolvedMcpFiles(projectConfig)).files[mcpJson]).toEqual({ tools: ['claude'] });
+    });
+
+    it('keeps a tool it records again whose entry with a resolved value is already in the file, with no write', async () => {
+      const { readResolvedMcpFiles, resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+      const mcpJson = path.join(projectRoot, '.mcp.json');
+      await fse.ensureDir(path.join(projectRoot, '.codebuddy', 'skills'));
+      await writeMcpYaml(`${withSecret}    tools: [codebuddy]\n${withSecret.replace('servers:\n', '').replace('with-secret', 'other-secret')}    tools: [claude]\n`);
+      await reconcileMcpForConfig(unmovedConfig(), projectConfig);
+      expect((await readResolvedMcpFiles(projectConfig)).files[mcpJson]?.tools.sort()).toEqual(['claude', 'codebuddy']);
+      await fse.writeJson(resolvedMcpFilesPath(projectConfig) ?? '', { version: 1, files: { [mcpJson]: { tools: ['claude'] } } });
+
+      const result = await reconcileMcpForConfig(unmovedConfig(), projectConfig);
+
+      expect(result.wrote).toBe(false);
+      expect((await readResolvedMcpFiles(projectConfig)).files[mcpJson]?.tools.sort()).toEqual(['claude', 'codebuddy']);
+    });
+
     it('takes back a tool it recorded before a write that did not happen, in a file another tool recorded', async () => {
       const { readResolvedMcpFiles } = await import('../mcp-resolved-files.js');
       const mcpJson = path.join(projectRoot, '.mcp.json');
@@ -2619,6 +2667,54 @@ servers:
 
           expect(await excludeOf(projectRoot)).not.toMatch(/\.cursor\/mcp\.json/);
           expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).not.toContain(cursorJson());
+        });
+      });
+
+      // Cursor's file, as above; Claude's record keeps managed-mcp.json from being empty.
+      describe('while one tool has no record in managed-mcp.json', () => {
+        const cursorJson = (): string => path.join(projectRoot, '.cursor', 'mcp.json');
+        const manifestFile = async (): Promise<string> => {
+          const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+          return managedMcpManifestPath(getDataHome(projectConfig), projectRoot);
+        };
+
+        it('lists a config holding a stale entry, and keeps it on the pulls after the one that rebuilds that tool\'s record', async () => {
+          const { readResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+          await writeMcpYaml(withSecret);
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+          const manifest = await fse.readJson(await manifestFile()) as Record<string, unknown>;
+          delete manifest['cursor:project'];
+          await fse.writeJson(await manifestFile(), manifest);
+          const sidecar = await fse.readJson(await sidecarFile()) as { files: Record<string, unknown> };
+          delete sidecar.files[cursorJson()];
+          await fse.writeJson(await sidecarFile(), sidecar);
+          await writeMcpYaml(open);
+          vi.stubEnv('SECRET_TOKEN', '');
+
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+
+          expect(await fse.readFile(cursorJson(), 'utf-8')).toContain('super-secret-value');
+          expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+          expect((await readResolvedMcpFiles(projectConfig)).files[cursorJson()]?.unverified).toEqual(['with-secret']);
+        });
+
+        // The cost, as with no managed-mcp.json at all: a tool's first delivery cannot tell a member's own server from a stale one.
+        it('lists a config holding only a server of the member\'s own at that tool\'s first delivery, until it leaves', async () => {
+          await fse.outputJson(await manifestFile(), { 'claude:project': [] });
+          await fse.writeJson(cursorJson(), { mcpServers: { mine: { type: 'http', url: 'https://mine.example/mcp' } } });
+          await writeMcpYaml(open);
+
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+          expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+          const doc = await fse.readJson(cursorJson()) as { mcpServers: Record<string, unknown> };
+          delete doc.mcpServers.mine;
+          await fse.writeJson(cursorJson(), doc);
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+
+          expect(await excludeOf(projectRoot)).not.toMatch(/\.cursor\/mcp\.json/);
         });
       });
 
