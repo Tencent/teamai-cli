@@ -159,6 +159,23 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(pushed).toContain('value: changed');
   });
 
+  // #879: `env add --secret` leaves env/secrets.yaml for push the same way.
+  it('pushes the secrets.yaml that env add --secret creates', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    await envAdd('GITHUB_TOKEN', undefined, { secret: true });
+    expect(await simpleGit(teamRepo).raw(['status', '--porcelain', '--untracked-files=all'])).toContain('env/secrets.yaml');
+
+    await push({ all: true });
+
+    expect(process.exitCode).toBe(previousExitCode);
+    const [branch] = await pushBranches(remote);
+    expect(branch).toBeDefined();
+    const pushed = await simpleGit(remote).show([`${branch}:env/secrets.yaml`]);
+    expect(pushed).toContain('key: GITHUB_TOKEN');
+    expect(pushed).not.toContain('value');
+  });
+
   it('keeps the env.yaml edit when the refresh fails after the reset', async () => {
     const { envAdd } = await import('../env-commands.js');
     const { push } = await import('../push.js');
