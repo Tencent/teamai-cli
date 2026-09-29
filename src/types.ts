@@ -611,6 +611,8 @@ export const TeamaiConfigBaseSchema = z.object({
       mcpProject: '.workbuddy/mcp.json',
       userScope: { rules: '.workbuddy/rules' },
     },
+    // Kimi Code: skills in ~/.kimi-code/skills (user) and .kimi-code/skills (project).
+    kimi: { skills: '.kimi-code/skills' },
     // OpenCode reads project config from <root>/.opencode/ but user config from
     // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
     // read natively from .claude/skills, but we write .opencode/skills so an
