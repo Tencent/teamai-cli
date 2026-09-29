@@ -931,7 +931,10 @@ export async function mcpConfigsNotProvenClean(
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
   const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
   // Keyed by real path: the protected paths come from git, which resolves symlinks (macOS /var).
-  const targets = new Map<string, { target: McpTarget; owned: ManagedMcpRecord[]; unverified: string[]; recorded: boolean; foreign: boolean }>();
+  const targets = new Map<string, {
+    target: McpTarget; owned: ManagedMcpRecord[]; unverified: string[]; recorded: boolean; foreign: boolean;
+    mappers: Set<string>; proven: Set<string>; writers: Set<string>;
+  }>();
   const realRoot = (root: string | undefined): Promise<string | undefined> =>
     root ? fs.promises.realpath(root).catch(() => root) : Promise.resolve(undefined);
   const ownRoot = await realRoot(localConfig.projectRoot);
@@ -953,12 +956,21 @@ export async function mcpConfigsNotProvenClean(
       // A rebuilt record whose file's other servers could not be noted says nothing of them yet.
       const recorded = Array.isArray(records) && !records.some((record) => record.unnoted);
       // One file reached twice (two tools share it, or a checkout through a symlink) merges what each says.
+      // It counts as recorded only while every tool managed-mcp-files.json says wrote a resolved value
+      // there still has its record: another tool's intact one proves nothing of that tool's entries.
+      // (A writer that no longer maps the file is judged by the remapped rule below.)
       const seen = targets.get(key);
+      const mappers = new Set([...seen?.mappers ?? [], target.tool]);
+      const proven = new Set([...seen?.proven ?? [], ...recorded ? [target.tool] : []]);
+      const writers = new Set([...seen?.writers ?? [], ...ledger[target.file]?.tools ?? []]);
       targets.set(key, {
         target,
         owned: [...seen?.owned ?? [], ...owned],
         unverified: [...seen?.unverified ?? [], ...ledger[target.file]?.unverified ?? []],
-        recorded: recorded || seen?.recorded === true,
+        recorded: proven.size > 0 && [...writers].every((tool) => proven.has(tool) || !mappers.has(tool)),
+        mappers,
+        proven,
+        writers,
         foreign: foreign || seen?.foreign === true,
       });
     }

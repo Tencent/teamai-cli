@@ -912,6 +912,42 @@ servers:
       vi.stubEnv('SECRET_TOKEN', 'super-secret-value');
     });
 
+    describe('a config two tools share (Claude and CodeBuddy on .mcp.json)', () => {
+      const shared = { ...teamConfig, toolPaths: { ...TOOL_PATHS, codebuddy: { ...TOOL_PATHS.codebuddy, mcpProject: '.mcp.json' } } } as TeamaiConfig;
+      const open = '  - name: open\n    transport: http\n    url: https://example.com/open\n';
+
+      it('keeps its line while a tool that wrote a resolved value there has lost its record, though the other tool\'s is intact', async () => {
+        await fse.ensureDir(path.join(projectRoot, '.codebuddy', 'skills'));
+        await writeMcpYaml(`${withSecret}    tools: [codebuddy]\n${open}    tools: [claude]\n`);
+        await reconcileMcpForConfig(shared, projectConfig);
+        expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+        const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+        const manifestFile = managedMcpManifestPath(getDataHome(projectConfig), projectRoot);
+        const manifest = await fse.readJson(manifestFile) as Record<string, unknown>;
+        delete manifest['codebuddy:project'];
+        await fse.writeJson(manifestFile, manifest);
+        await writeMcpYaml(`servers:\n${open}    tools: [claude]\n`);
+        vi.stubEnv('SECRET_TOKEN', '');
+
+        await reconcileMcpForConfig(shared, projectConfig);
+
+        expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+
+      it('releases its line once clean when only one of them ever wrote a resolved value there', async () => {
+        await writeMcpYaml(`${withSecret}    tools: [claude]\n${open}`);
+        await reconcileMcpForConfig(shared, projectConfig);
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+        await writeMcpYaml(`servers:\n${open}`);
+
+        await reconcileMcpForConfig(shared, projectConfig);
+
+        expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).not.toContain('super-secret-value');
+        expect(await excludeOf(projectRoot)).not.toMatch(/^\/\.mcp\.json$/m);
+      });
+    });
+
     it('adds every such config to .git/info/exclude once, inside a teamai block', async () => {
       await writeMcpYaml(withSecret);
 
