@@ -37,7 +37,7 @@ export function exportDigest(key: string, value: string): string {
  * the data home, so a shell that sourced the user's env.sh and a project's
  * keeps both.
  */
-const MARKER_RE = /^TEAMAI_ENV_SH_[0-9a-f]{10}$/i;
+const MARKER_RE = /^TEAMAI_ENV_SH_[0-9a-f]{64}$/i;
 const MARKED_DIGEST_LENGTH = 12;
 
 export function isEnvShMarker(key: string): boolean {
@@ -62,7 +62,7 @@ export function envShMarker(
   const digests = new Set([...exports].map(([key, value]) => markedDigest(key, value)));
   for (const kept of recorded.values()) for (const digest of kept) digests.add(digest.slice(0, MARKED_DIGEST_LENGTH));
   if (digests.size === 0) return null;
-  const name = `TEAMAI_ENV_SH_${crypto.createHash('sha256').update(path.resolve(dataHome)).digest('hex').slice(0, 10)}`;
+  const name = `TEAMAI_ENV_SH_${crypto.createHash('sha256').update(path.resolve(dataHome)).digest('hex')}`;
   return [name, [...digests].join(' ')];
 }
 

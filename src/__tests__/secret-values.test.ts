@@ -379,7 +379,7 @@ describe('team secret values', () => {
     // No scan finds every env.sh a shell may have loaded: a non-git project
     // keeps its own under `<dir>/.teamai/`. The marker each one exports says so.
     describe('an env.sh at a path no scan reaches', () => {
-      const MARKER_LINE = /^export (TEAMAI_ENV_SH_[0-9a-f]{10})='([^']*)'$/m;
+      const MARKER_LINE = /^export (TEAMAI_ENV_SH_[0-9a-f]{64})='([^']*)'$/m;
       /** The environment of a shell that sourced a project's env.sh in `<tmp>/elsewhere/.teamai`. */
       const sourcedProjectEnvSh = async (variables: EnvVariable[]): Promise<{ env: NodeJS.ProcessEnv; content: string }> => {
         const projectRoot = path.join(tmpDir, 'elsewhere');
