@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
@@ -40,7 +41,6 @@ import { isToolInstalledForConfig } from './resources/base.js';
 import { reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import {
   readJson,
-  writeFileAtomic,
   writeJsonAtomic,
   readFileSafe,
   pathExists,
@@ -1463,7 +1463,21 @@ async function tightenMode(file: string): Promise<void> {
   if ((mode & 0o077) !== 0) await fs.promises.chmod(file, 0o600);
 }
 
-/** Write a Codex config.toml atomically, readable by this user only: it may hold resolved values. */
+/**
+ * Write a Codex config.toml atomically, readable by this user only: it may
+ * hold resolved values. A symlink at `file` is replaced, as `writeJsonAtomic`
+ * does for the JSON configs: git protection judges `file`, so a value must
+ * never land in the file it links to (#882).
+ */
 export async function writeCodexAtomic(file: string, content: string): Promise<void> {
-  await writeFileAtomic(file, content, { mode: 0o600 });
+  await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    await fs.promises.writeFile(tmp, content, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
+    await fs.promises.chmod(tmp, 0o600);
+    await fs.promises.rename(tmp, file);
+  } catch (error) {
+    await fs.promises.rm(tmp, { force: true });
+    throw error;
+  }
 }

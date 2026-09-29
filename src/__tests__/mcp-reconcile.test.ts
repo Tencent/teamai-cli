@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -1177,6 +1178,25 @@ servers:
       expect(await excludeOf(projectRoot)).toMatch(/^\/\.codex\/config\.toml$/m);
     });
 
+    it('writes a symlinked Codex project config at its own path, never into the tracked file it links to', async () => {
+      const withCodex = { ...teamConfig, toolPaths: { ...TOOL_PATHS, codex: { ...TOOL_PATHS.codex, mcpProject: '.codex/config.toml' } } } as TeamaiConfig;
+      const tracked = path.join(projectRoot, 'config', 'codex.toml');
+      const link = path.join(projectRoot, '.codex', 'config.toml');
+      await fse.outputFile(tracked, 'model = "gpt-5"\n');
+      git(projectRoot, 'add', 'config/codex.toml');
+      git(projectRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'codex');
+      await fse.ensureDir(path.join(projectRoot, '.codex', 'skills'));
+      await fse.symlink(path.join('..', 'config', 'codex.toml'), link);
+      await writeMcpYaml(`${withSecret}    tools: [codex]\n`);
+
+      await reconcileMcpForConfig(withCodex, projectConfig);
+
+      expect(await fse.readFile(tracked, 'utf-8')).toBe('model = "gpt-5"\n');
+      expect((await fse.lstat(link)).isSymbolicLink()).toBe(false);
+      expect(await fse.readFile(link, 'utf-8')).toContain('super-secret-value');
+      expect(await excludeOf(projectRoot)).toMatch(/^\/\.codex\/config\.toml$/m);
+    });
+
     describe('a config an older teamai wrote under a mapping an earlier teamai.yaml made', () => {
       const custom = { ...TOOL_PATHS, cursor: { ...TOOL_PATHS.cursor, mcpProject: '.cursor/team-mcp.json' } };
       const customFile = (): string => path.join(projectRoot, '.cursor', 'team-mcp.json');
@@ -2177,14 +2197,14 @@ servers:
       await writeMcpYaml(`${SECRET_SERVER}    tools: [codex]\n`);
       const isCodexTemp = (file: string): boolean => path.basename(file).startsWith('config.toml.');
       const renamed: { file: string; mode: number }[] = [];
-      const rename = fse.rename.bind(fse);
-      vi.spyOn(fse, 'rename').mockImplementation(async (from: fse.PathLike, to: fse.PathLike) => {
+      const rename = fs.promises.rename.bind(fs.promises);
+      vi.spyOn(fs.promises, 'rename').mockImplementation(async (from: fs.PathLike, to: fs.PathLike) => {
         if (typeof from === 'string' && isCodexTemp(from)) renamed.push({ file: from, mode: await mode(from) });
         return rename(from, to);
       });
       const created: number[] = [];
-      const writeFile = fse.writeFile.bind(fse);
-      vi.spyOn(fse, 'writeFile').mockImplementation(async (...args: Parameters<typeof fse.writeFile>) => {
+      const writeFile = fs.promises.writeFile.bind(fs.promises);
+      vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (...args: Parameters<typeof fs.promises.writeFile>) => {
         await writeFile(...args);
         const [file] = args;
         if (typeof file === 'string' && isCodexTemp(file)) created.push(await mode(file));
