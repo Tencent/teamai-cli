@@ -176,7 +176,18 @@ async function loadTeamValues(
   }
   const sentTo = await switchedGatewayOrigins(localConfig);
   if (canMigrate && (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) || readFrom !== target) && !options.dryRun) {
-    // Save to the current name, which then shadows the legacy file.
+    // Save to the current name, which then shadows the legacy file. When this
+    // run is the migration that newly creates the hash-only target
+    // (readFrom !== target), another process may have written that target
+    // since we read the legacy file (writeJsonAtomic prevents torn files, not
+    // lost updates), so re-read and merge first: the concurrent content wins
+    // collisions and no key it added is silently discarded. When we are merely
+    // re-saving the file we already read (readFrom === target), the target is
+    // the same content, so merging would re-inject raw entries this bind just
+    // consumed — and there is no creation race to guard.
+    if (readFrom !== target) {
+      values = mergeModelInputs(values, await loadModelInputs(target));
+    }
     await saveModelInputs(target, values);
   }
   return values;
