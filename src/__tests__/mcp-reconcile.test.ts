@@ -1131,7 +1131,7 @@ servers:
 
       it('but not while another worktree\'s copy of the config still holds one', async () => {
         git(projectRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
-        const worktree = path.join(tmpDir, 'business-wt');
+        const worktree = path.join(await fse.realpath(tmpDir), 'business-wt');
         git(projectRoot, 'worktree', 'add', '-q', worktree);
         await fse.ensureDir(path.join(worktree, '.claude', 'skills'));
         const { resolveProjectDataHome } = await import('../config.js');
