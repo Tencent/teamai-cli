@@ -59,7 +59,11 @@ git tracks is recorded instead and listed once the member runs `git rm --cached`
 on it. `teamai doctor` checks those paths until that pull. A file written for a
 tool the team moved elsewhere (recorded, or found in that history), that another
 tool still maps, stays listed while it holds a server that tool did not write,
-one of the member's own included.
+one of the member's own included. The built-in location of a tool the team drops
+from `toolPaths` or moves elsewhere stays listed while it holds any server,
+unless another tool maps that path today (CodeBuddy's `.mcp.json`, which Claude
+maps), which then judges it. A file two tools map, with no pull on this version
+having recorded it, needs a `managed-mcp.json` record from each of them.
 
 ## Invite a member
 

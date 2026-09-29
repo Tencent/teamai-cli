@@ -251,6 +251,11 @@ export interface McpTarget {
   /** Absolute path of the config file to edit. */
   file: string;
   projectScope: boolean;
+  /**
+   * Added by `includeUndetected`: the built-in location of a tool the team maps
+   * elsewhere or not at all. No mapping of today's reaches it for this tool.
+   */
+  builtinFallback?: true;
 }
 
 /**
@@ -277,13 +282,13 @@ export async function resolveMcpTargets(
   // Skills/settings/agents probe paths must reflect the active scope: OpenCode's
   // user-scope resources live under ~/.config/opencode, not ~/.opencode.
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
-  const entries = Object.entries(toolPaths);
+  const entries: Array<[string, (typeof toolPaths)[string], boolean?]> = Object.entries(toolPaths);
   if (options.includeUndetected && projectScope) {
     for (const [tool, paths] of Object.entries(TeamaiConfigSchema.shape.toolPaths.parse(undefined))) {
-      if (paths.mcpProject && toolPaths[tool]?.mcpProject !== paths.mcpProject) entries.push([tool, paths]);
+      if (paths.mcpProject && toolPaths[tool]?.mcpProject !== paths.mcpProject) entries.push([tool, paths, true]);
     }
   }
-  for (const [tool, paths] of entries) {
+  for (const [tool, paths, builtinFallback] of entries) {
     const format = detectMcpFormat(tool);
     if (!format) continue;
 
@@ -305,9 +310,48 @@ export async function resolveMcpTargets(
       continue;
     }
 
-    targets.push({ tool, format, file, projectScope });
+    targets.push({ tool, format, file, projectScope, ...builtinFallback ? { builtinFallback: true as const } : {} });
   }
   return targets;
+}
+
+/**
+ * The built-in fallbacks among `targets` no current mapping of any tool
+ * reaches (#882): the team moved or dropped their tool, so its manifest
+ * records describe another file, or none, while an earlier pull may have
+ * written this one. One another tool maps today is left to that tool's rules.
+ */
+export async function unmappedMcpDefaults(targets: McpTarget[]): Promise<Set<McpTarget>> {
+  const mappedNow = await Promise.all(targets.filter((t) => !t.builtinFallback).map((t) => realFilePath(t.file)));
+  const unmapped = new Set<McpTarget>();
+  for (const target of targets) {
+    if (target.builtinFallback && !mappedNow.includes(await realFilePath(target.file))) unmapped.add(target);
+  }
+  return unmapped;
+}
+
+/**
+ * The files of `unmapped` (`unmappedMcpDefaults`) that exist and `cfg`'s
+ * worktree has not recorded for their tool, as `earlierMappedMcpTargets`
+ * returns its files: judged as one an earlier mapping reached. `known`: the
+ * other targets.
+ */
+export async function unrecordedUnmappedMcpDefaults(
+  cfg: LocalConfig,
+  unmapped: Iterable<McpTarget>,
+  known: McpTarget[],
+): Promise<Array<McpTarget & { tracked: boolean; mappedBy: string[] }>> {
+  const reach = await Promise.all(known.map(async ({ tool, file }) => ({ tool, real: await realFilePath(file) })));
+  const recorded = await Promise.all(Object.entries((await readResolvedMcpFiles(cfg)).files)
+    .flatMap(([file, { tools }]) => tools.map(async (tool) => ({ tool, real: await realFilePath(file) }))));
+  const found: Array<McpTarget & { tracked: boolean; mappedBy: string[] }> = [];
+  for (const target of unmapped) {
+    const real = await realFilePath(target.file);
+    if (recorded.some((r) => r.tool === target.tool && r.real === real) || !await pathExists(target.file)) continue;
+    const mappedBy = [...new Set(reach.filter((r) => r.real === real && r.tool !== target.tool).map((r) => r.tool))];
+    found.push({ ...target, tracked: (await gitTracks(target.file)).kind === 'tracked', mappedBy });
+  }
+  return found;
 }
 
 // ─── JSON target I/O ─────────────────────────────────────────
@@ -904,14 +948,16 @@ async function readProjectMcpManifest(cfg: LocalConfig, projectRoot: string): Pr
  * repository's linked worktree, read as the file of its line this project maps
  * is, that parses and holds none, and one a worktree recorded writing a
  * resolved value to under a toolPaths mapping since changed (managed-mcp-files.json)
- * that parses and holds none. One a tool reads holding servers is clean only when its worktree's manifest
+ * that parses and holds none, as is a tool's built-in location no mapping reaches today. One a tool reads
+ * holding servers is clean only when its worktree's manifest
  * records what teamai wrote to that tool's file (an empty list once teamai took
  * its last server out), and the file holds none of the team's servers that need
  * a resolved `${VAR}` there, none of teamai's own entries the manifest records
  * and cleanup left (their definition may have left mcp.yaml), and none of the
  * values of the variables set in this environment. Anything else (no tool reads
  * it, it does not parse, the team's servers cannot be read, the manifest is
- * lost, empty, does not parse, has no record for the tool, or a record rebuilt
+ * lost, empty, does not parse, has no record for the tool (for a file
+ * managed-mcp-files.json does not list, for any tool mapping it today), or a record rebuilt
  * without noting the file's other servers in managed-mcp-files.json) is not: a server
  * teamai wrote, since dropped from mcp.yaml, with a value no longer set, looks
  * like the member's own.
@@ -933,12 +979,14 @@ export async function mcpConfigsNotProvenClean(
   // Keyed by real path: the protected paths come from git, which resolves symlinks (macOS /var).
   const targets = new Map<string, {
     target: McpTarget; owned: ManagedMcpRecord[]; unverified: string[]; recorded: boolean; foreign: boolean;
-    mappers: Set<string>; proven: Set<string>; writers: Set<string>;
+    mappers: Set<string>; mapsToday: Set<string>; proven: Set<string>; writers: Set<string>;
   }>();
   const realRoot = (root: string | undefined): Promise<string | undefined> =>
     root ? fs.promises.realpath(root).catch(() => root) : Promise.resolve(undefined);
   const ownRoot = await realRoot(localConfig.projectRoot);
   const recordedBy = new Map<LocalConfig, McpTarget[]>();
+  // A built-in location no mapping reaches today, in each worktree: judged as a file an earlier mapping reached.
+  const unmappedBy = new Map<LocalConfig, McpTarget[]>();
   for (const cfg of await projectWorktreeConfigs(localConfig)) {
     const manifest = cfg === localConfig && before ? before
       : cfg.projectRoot ? await readProjectMcpManifest(cfg, cfg.projectRoot)
@@ -948,9 +996,13 @@ export async function mcpConfigsNotProvenClean(
     const cfgTargets: McpTarget[] = [];
     recordedBy.set(cfg, cfgTargets);
     const { files: ledger } = await readResolvedMcpFiles(cfg);
+    const unmapped = [...await unmappedMcpDefaults(await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true }))];
+    unmappedBy.set(cfg, unmapped);
     for (const target of await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true })) {
       const key = await realFilePath(target.file);
       cfgTargets.push(target);
+      // Judged below, as a file an earlier mapping reached.
+      if (unmapped.some((t) => t.tool === target.tool && t.file === target.file)) continue;
       const records = manifest[managedMcpManifestKey(target.tool, true)];
       const owned = Array.isArray(records) ? records : [];
       // A rebuilt record whose file's other servers could not be noted says nothing of them yet.
@@ -958,17 +1010,22 @@ export async function mcpConfigsNotProvenClean(
       // One file reached twice (two tools share it, or a checkout through a symlink) merges what each says.
       // It counts as recorded only while every tool managed-mcp-files.json says wrote a resolved value
       // there still has its record: another tool's intact one proves nothing of that tool's entries.
-      // (A writer that no longer maps the file is judged by the remapped rule below.)
+      // (A writer that no longer maps the file is judged by the remapped rule below.) With no such list
+      // (a file no pull on this version recorded), every tool whose mapping reaches it today needs one.
       const seen = targets.get(key);
       const mappers = new Set([...seen?.mappers ?? [], target.tool]);
+      const mapsToday = new Set([...seen?.mapsToday ?? [], ...target.builtinFallback ? [] : [target.tool]]);
       const proven = new Set([...seen?.proven ?? [], ...recorded ? [target.tool] : []]);
       const writers = new Set([...seen?.writers ?? [], ...ledger[target.file]?.tools ?? []]);
       targets.set(key, {
         target,
         owned: [...seen?.owned ?? [], ...owned],
         unverified: [...seen?.unverified ?? [], ...ledger[target.file]?.unverified ?? []],
-        recorded: proven.size > 0 && [...writers].every((tool) => proven.has(tool) || !mappers.has(tool)),
+        recorded: proven.size > 0 && (writers.size > 0
+          ? [...writers].every((tool) => proven.has(tool) || !mappers.has(tool))
+          : [...mapsToday].every((tool) => proven.has(tool))),
         mappers,
+        mapsToday,
         proven,
         writers,
         foreign: foreign || seen?.foreign === true,
@@ -980,10 +1037,12 @@ export async function mcpConfigsNotProvenClean(
   const recorded = new Map<string, McpTarget[]>();
   const remapped = new Map<string, McpTarget[]>();
   for (const [cfg, cfgTargets] of recordedBy) {
-    for (const [file, { targets: group }] of await recordedMcpTargets(cfg, cfgTargets)) {
-      const key = await realFilePath(file);
-      if (!targets.has(key)) recorded.set(key, group);
-      else remapped.set(key, [...remapped.get(key) ?? [], ...group]);
+    const groups = [...(await recordedMcpTargets(cfg, cfgTargets)).values()].map(({ targets: group }) => group);
+    for (const group of [...groups, ...[...unmappedBy.get(cfg) ?? []].map((target) => [target])]) {
+      const key = await realFilePath(group[0].file);
+      const map = targets.has(key) ? remapped : recorded;
+      const known = map.get(key) ?? [];
+      map.set(key, [...known, ...group.filter((t) => !known.some((k) => k.tool === t.tool && k.file === t.file))]);
     }
   }
   // Short values, paths and the login name turn up in ordinary configs, so they prove nothing.
@@ -1114,8 +1173,9 @@ async function protectProjectMcpConfigs(
   const vars = await buildVarTable(localConfig);
   const ctx = once(() => buildDesiredMcpContext(teamConfig, localConfig));
   const mapped = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+  const unmapped = await unmappedMcpDefaults(mapped);
   // Tried before its write this run, and reported there.
-  const targets = mapped.filter((target) => exclusions.get(target.file)?.kind !== 'failed');
+  const targets = mapped.filter((target) => !unmapped.has(target) && exclusions.get(target.file)?.kind !== 'failed');
   const { files: ledger, earlierMappingsRead } = await readResolvedMcpFiles(localConfig);
   const holds = async (target: McpTarget, owned: ManagedMcpRecord[]): Promise<boolean> =>
     await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, ctx) !== null;
@@ -1125,9 +1185,11 @@ async function protectProjectMcpConfigs(
     log.debug(`Did not read the MCP configs earlier toolPaths mappings reach: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   });
+  // And on every pull, a built-in location no mapping reaches today that no record of this version covers yet.
+  const fallbacks = await unrecordedUnmappedMcpDefaults(localConfig, unmapped, mapped.filter((target) => !unmapped.has(target)));
   // Held through the release, which reads only what was recorded before this run.
   const found: string[] = [];
-  for (const { tracked, mappedBy, ...target } of earlier ?? []) {
+  for (const { tracked, mappedBy, ...target } of [...earlier ?? [], ...fallbacks]) {
     const state = await mcpFileState([target]);
     // No line protects a file git tracks: recorded as tracked, whatever it holds, and judged once git no longer tracks it.
     if (tracked) {
@@ -1168,7 +1230,9 @@ export async function releaseCleanMcpGitExcludes(teamConfig: TeamaiConfig, local
   try {
     await releaseMcpGitExcludes(teamConfig, localConfig, projectRoot, []);
     const { manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
-    const targets = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+    const mapped = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+    const unmapped = await unmappedMcpDefaults(mapped);
+    const targets = mapped.filter((target) => !unmapped.has(target));
     await settleRecordedMcpConfigs(localConfig, await observeMcpConfigs(localConfig, targets, manifest, async () => false));
   } catch (e) {
     log.warn(

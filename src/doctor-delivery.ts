@@ -562,7 +562,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
 
   const {
     resolveMcpTargets, resolvedValueEvidence, buildVarTable, buildDesiredMcpContext, recordedMcpTargets, recordedMcpFileEvidence,
-    earlierMappedMcpTargets, earlierMappedMcpFileEvidence,
+    earlierMappedMcpTargets, earlierMappedMcpFileEvidence, unmappedMcpDefaults, unrecordedUnmappedMcpDefaults,
   } = await import('./mcp-reconcile.js');
   const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
   const { gitPathOf, gitTracking, gitTracks } = await import('./mcp-git-exclude.js');
@@ -588,7 +588,10 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
     else if (tracking.kind === 'unknown') tracked.push(`${(await gitPathOf(file)).label} (git failed: ${tracking.error})`);
   };
   // Every tool's file, delivery on or off, the same files and evidence pull protects. Two tools may share one.
-  const targets = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+  const mapped = await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true });
+  // A built-in location no mapping reaches today (its tool moved or dropped): its tool's records describe another file.
+  const unmapped = await unmappedMcpDefaults(mapped);
+  const targets = mapped.filter((target) => !unmapped.has(target));
   for (const target of targets) {
     if (holding.has(target.file) || !await pathExists(target.file)) continue;
     manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
@@ -608,16 +611,16 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
   }
   // And, until a pull on this version reads them, those an older teamai wrote under a mapping an earlier
   // teamai.yaml made. Read-only: the record of that read is pull's. Unreadable history skips them.
-  if (!(await readResolvedMcpFiles(localConfig)).earlierMappingsRead) {
-    const earlier = await earlierMappedMcpTargets(localConfig, targets).catch(() => null) ?? [];
-    for (const { tracked, mappedBy, ...target } of earlier) {
-      if (tracked || holding.has(target.file)) continue;
-      vars ??= await buildVarTable(localConfig);
-      manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
-      const owned = mappedBy.length === 0 ? undefined
-        : mappedBy.flatMap((tool) => manifest?.[managedMcpManifestKey(tool, true)] ?? []).map((record) => record.name);
-      if (await earlierMappedMcpFileEvidence(target, teamDefs, vars, desired, owned)) await hold(target.file);
-    }
+  // A built-in location no mapping reaches today, which no record covers, is judged as one of them.
+  const earlier = (await readResolvedMcpFiles(localConfig)).earlierMappingsRead ? []
+    : await earlierMappedMcpTargets(localConfig, mapped).catch(() => null) ?? [];
+  for (const { tracked, mappedBy, ...target } of [...earlier, ...await unrecordedUnmappedMcpDefaults(localConfig, unmapped, targets)]) {
+    if (tracked || holding.has(target.file)) continue;
+    vars ??= await buildVarTable(localConfig);
+    manifest ??= (await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true })).manifest;
+    const owned = mappedBy.length === 0 ? undefined
+      : mappedBy.flatMap((tool) => manifest?.[managedMcpManifestKey(tool, true)] ?? []).map((record) => record.name);
+    if (await earlierMappedMcpFileEvidence(target, teamDefs, vars, desired, owned)) await hold(target.file);
   }
   if (holding.size === 0) return [];
 

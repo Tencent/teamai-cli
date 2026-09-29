@@ -946,6 +946,45 @@ servers:
         expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).not.toContain('super-secret-value');
         expect(await excludeOf(projectRoot)).not.toMatch(/^\/\.mcp\.json$/m);
       });
+
+      describe('without managed-mcp-files.json, as an install from before it has none', () => {
+        const withoutSidecar = async (): Promise<void> => {
+          const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+          await fse.remove(resolvedMcpFilesPath(projectConfig) ?? '');
+        };
+
+        it('keeps its line while a tool that wrote a resolved value there has lost its record, though the other tool\'s is intact', async () => {
+          await fse.ensureDir(path.join(projectRoot, '.codebuddy', 'skills'));
+          await writeMcpYaml(`${withSecret}    tools: [codebuddy]\n${open}    tools: [claude]\n`);
+          await reconcileMcpForConfig(shared, projectConfig);
+          const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+          const manifestFile = managedMcpManifestPath(getDataHome(projectConfig), projectRoot);
+          const manifest = await fse.readJson(manifestFile) as Record<string, unknown>;
+          delete manifest['codebuddy:project'];
+          await fse.writeJson(manifestFile, manifest);
+          await withoutSidecar();
+          await writeMcpYaml(`servers:\n${open}    tools: [claude]\n`);
+          vi.stubEnv('SECRET_TOKEN', '');
+
+          await reconcileMcpForConfig(shared, projectConfig);
+
+          expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+          expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+        });
+
+        // Nothing says which of the two wrote there, so a tool mapping it with no record at all holds it too.
+        it('keeps its line while a tool mapping it has no record, until a pull records the file', async () => {
+          await writeMcpYaml(`${withSecret}    tools: [claude]\n${open}`);
+          await reconcileMcpForConfig(shared, projectConfig);
+          await withoutSidecar();
+          await writeMcpYaml(`servers:\n${open}`);
+
+          await reconcileMcpForConfig(shared, projectConfig);
+
+          expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).not.toContain('super-secret-value');
+          expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+        });
+      });
     });
 
     it('adds every such config to .git/info/exclude once, inside a teamai block', async () => {
@@ -1577,6 +1616,113 @@ servers:
           const moved = await earlierMappedMcpTargets(projectConfig, await resolveMcpTargets(teamConfig, projectConfig, { includeUndetected: true }));
           expect(moved?.map(({ tool, file }) => ({ tool, file }))).toContainEqual({ tool: 'cursor', file: mcpJson() });
         });
+      });
+    });
+
+    describe('a tool\'s built-in location, once the team moves or drops the tool', () => {
+      const moved = { ...teamConfig, toolPaths: { ...TOOL_PATHS, cursor: { ...TOOL_PATHS.cursor, mcpProject: '.cursor/team-mcp.json' } } } as TeamaiConfig;
+      const dropped = { ...teamConfig, toolPaths: { claude: TOOL_PATHS.claude, codebuddy: TOOL_PATHS.codebuddy } } as TeamaiConfig;
+      const cursorJson = (): string => path.join(projectRoot, '.cursor', 'mcp.json');
+      const open = 'servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n';
+      const ledger = async (): Promise<Record<string, unknown>> => {
+        const { readResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+        return (await readResolvedMcpFiles(projectConfig)).files;
+      };
+      // What a teamai from before managed-mcp-files.json leaves: no record of the path, nothing in the exclude.
+      const asOlderTeamai = async (): Promise<void> => {
+        const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+        const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+        await fse.remove(resolvedMcpFilesPath(projectConfig) ?? '');
+        await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+        const manifestFile = managedMcpManifestPath(getDataHome(projectConfig), projectRoot);
+        const manifest = await fse.readJson(manifestFile) as Record<string, Array<Record<string, unknown>>>;
+        await fse.writeJson(manifestFile, Object.fromEntries(Object.entries(manifest).map(([key, records]) =>
+          [key, records.map(({ name, hash }) => ({ name, hash }))])));
+      };
+
+      beforeEach(async () => {
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+        expect(await fse.readFile(cursorJson(), 'utf-8')).toContain('super-secret-value');
+        // Then the team drops that server; the token is no longer set.
+        await writeMcpYaml(open);
+        vi.stubEnv('SECRET_TOKEN', '');
+      });
+
+      // The pull that writes the moved file replaces Cursor's records: from the next one they describe that file.
+      it('keeps the line a pull on this version added when the team moves the tool', async () => {
+        await reconcileMcpForConfig(moved, projectConfig);
+        await reconcileMcpForConfig(moved, projectConfig);
+
+        expect(await fse.readFile(cursorJson(), 'utf-8')).toContain('super-secret-value');
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+        expect(git(projectRoot, 'status', '--porcelain', '--untracked-files=all')).not.toMatch(/\.cursor\/mcp\.json/);
+      });
+
+      it('is listed and recorded by the first pull on this version when an older teamai wrote it', async () => {
+        await asOlderTeamai();
+
+        await reconcileMcpForConfig(moved, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+        expect(git(projectRoot, 'status', '--porcelain', '--untracked-files=all')).not.toMatch(/\.cursor\/mcp\.json/);
+        expect((await ledger())[cursorJson()]).toEqual({ tools: ['cursor'] });
+      });
+
+      it('keeps its line on the pulls after, from the record', async () => {
+        await asOlderTeamai();
+        await reconcileMcpForConfig(moved, projectConfig);
+        await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+
+        await reconcileMcpForConfig(moved, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+      });
+
+      it('keeps its line when the team then drops the tool', async () => {
+        await asOlderTeamai();
+        await reconcileMcpForConfig(moved, projectConfig);
+        await asOlderTeamai();
+
+        await reconcileMcpForConfig(dropped, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+      });
+
+      // No record describes that path any more, so a server of the member's own cannot be told from an older teamai's.
+      it.each([
+        ['moves', moved],
+        ['drops', dropped],
+      ])('lists and records it while it holds only a server of the member\'s own, when the team %s the tool', async (_label, config) => {
+        await reconcileMcpForConfig(moved, projectConfig);
+        await fse.writeJson(cursorJson(), { mcpServers: { mine: { type: 'http', url: 'https://mine.example/mcp' } } });
+        await asOlderTeamai();
+
+        await reconcileMcpForConfig(config, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+        expect((await ledger())[cursorJson()]).toEqual({ tools: ['cursor'] });
+      });
+
+      it('lets its line go, and forgets it, once it holds no server', async () => {
+        await reconcileMcpForConfig(moved, projectConfig);
+        await fse.writeJson(cursorJson(), { mcpServers: {} });
+
+        await reconcileMcpForConfig(moved, projectConfig);
+
+        expect(await excludeOf(projectRoot)).not.toMatch(/\.cursor\/mcp\.json/);
+        expect(Object.keys(await ledger())).not.toContain(cursorJson());
+      });
+
+      // CodeBuddy's built-in location is .mcp.json, which Claude maps; TOOL_PATHS moves CodeBuddy.
+      it('leaves one another tool maps today to that tool\'s rules', async () => {
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+        await fse.writeJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { mine: { type: 'http', url: 'https://mine.example/mcp' } } });
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).not.toMatch(/^\/\.mcp\.json$/m);
+        expect((await ledger())[path.join(projectRoot, '.mcp.json')]).toEqual({ tools: ['claude'] });
       });
     });
 

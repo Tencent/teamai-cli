@@ -431,6 +431,42 @@ describe('doctor — MCP servers delivered on disk', () => {
       });
     });
 
+    describe('a tool\'s built-in location, once the team moved the tool, and its records describe the file it maps now', () => {
+      const old = (): string => path.join(projectRoot, '.cursor', 'mcp.json');
+
+      beforeEach(async () => {
+        teamConfig.toolPaths = {
+          claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: '.mcp.json' },
+          cursor: { skills: '.cursor/skills', mcp: '.cursor/mcp.json', mcpProject: '.cursor/team-mcp.json' },
+        };
+        // Its server left mcp.yaml since.
+        await fse.outputJson(old(), {
+          mcpServers: { gone: { type: 'http', url: 'https://gone.example/mcp', headers: { Authorization: 'Bearer t0ken' } } },
+        });
+        await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+          [managedMcpManifestKey('claude', true)]: [{ name: 'jira', hash: 'h' }],
+          [managedMcpManifestKey('cursor', true)]: [],
+        });
+        await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), '/.mcp.json\n');
+      });
+
+      it('fails, naming it once', async () => {
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(false);
+        expect((check.fix ?? '').split(old())).toHaveLength(2);
+        expect(check.fix).not.toContain(path.join(projectRoot, '.mcp.json'));
+      });
+
+      it('passes once it is kept out of git', async () => {
+        await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), '/.cursor/mcp.json\n');
+
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(true);
+      });
+    });
+
     describe('a config written for a tool the team has since moved, that another tool\'s mapping still reaches', () => {
       const file = (): string => path.join(projectRoot, '.mcp.json');
 
