@@ -258,28 +258,20 @@ function repoClaim(localPath: string): { claim: string; provider?: string } | nu
  * the same path by another team from adopting the previous team's file.
  * Repository-bound digests (a URL, a URL-shaped claim or remote) match by
  * digest alone — the identity carries its host, so the slug can drift with
- * team renames with no ambiguity. A path-shaped claim, a bare alias, or a
- * path-only local path names no single repository, so files and records
- * under them require this team's slug. A path-shaped claim digest remains
- * rename-repairable, but only when the candidate file stores keys bound to
- * this team's gateways (<#707> `team:<id>@<origin>`): a renamed team keeps
- * its gateway, a team on another provider does not.
+ * team renames with no ambiguity. A path-shaped claim, a provider-relative
+ * remote, a bare alias, or a path-only local path names no single repository,
+ * and — the old name scheme never encoded the provider — the slug cannot
+ * tell two providers' same-named teams apart. Files under such a digest are
+ * read only when the user explicitly adopts that exact identity
+ * (`unadoptedLegacyFiles` / `findTeamValuesPath`); switch records under it
+ * match only under this checkout's slug.
  */
 interface LegacyDigest {
   digest: string;
-  /** Files under this digest are read only when the slug also matches. */
+  /** Files under this digest are read only when the user adopted the exact identity. */
   fileNeedsSlug: boolean;
-  /** Switch records under this digest match only when the slug also matches. */
+  /** Switch records under this digest match only when this checkout's slug matches. */
   recordNeedsSlug: boolean;
-  /**
-   * A path-shaped `repo:` claim digest may yet be the current team's former
-   * identity: such a claim names no single repository without its provider,
-   * but a RENAMED team keeps its gateway, and its stored keys are bound to
-   * that gateway under `team:<id>@<origin>`. When the slug differs, a file or
-   * record under this digest is re-admitted only if that origin-based
-   * provenance holds — never by digest alone.
-   */
-  renameRepairable?: boolean;
 }
 
 function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
@@ -287,16 +279,16 @@ function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
   const configuredRemote = remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined;
   const claim = repoClaim(localPath);
   const urlShaped = (value?: string) => value !== undefined && isRepoReference(value);
-  const candidates: Array<{ identity?: string; fileNeedsSlug: boolean; recordNeedsSlug: boolean; renameRepairable?: boolean }> = [
+  const candidates: Array<{ identity?: string; fileNeedsSlug: boolean; recordNeedsSlug: boolean }> = [
     // A claim overrode everything below it; with a claim, the old
     // implementation never hashed the remote, URL, or path. A URL-shaped
     // claim names one repository (its host is in it) and matches by digest.
     // A path-shaped claim is provider-ambiguous — the legacy digest hashed
-    // the bare claim — so files and records need the slug, plus proven
-    // gateway-origin provenance to survive a rename.
-    { identity: claim?.claim, fileNeedsSlug: !urlShaped(claim?.claim), recordNeedsSlug: !urlShaped(claim?.claim), renameRepairable: claim?.claim !== undefined && !urlShaped(claim?.claim) },
+    // the bare claim — so files need the user's explicit adoption and switch
+    // records need this checkout's slug.
+    { identity: claim?.claim, fileNeedsSlug: !urlShaped(claim?.claim), recordNeedsSlug: !urlShaped(claim?.claim) },
     ...(claim === null ? [
-      { identity: configuredRemote, fileNeedsSlug: !urlShaped(configuredRemote), recordNeedsSlug: !urlShaped(configuredRemote), renameRepairable: configuredRemote !== undefined && !urlShaped(configuredRemote) },
+      { identity: configuredRemote, fileNeedsSlug: !urlShaped(configuredRemote), recordNeedsSlug: !urlShaped(configuredRemote) },
       { identity: url, fileNeedsSlug: false, recordNeedsSlug: false },
       // Only when the old implementation would have keyed on the path itself:
       // no repository identity exists there, so the slug separates teams.
@@ -305,12 +297,12 @@ function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
   ];
   const seen = new Set<string>();
   const digests: LegacyDigest[] = [];
-  for (const { identity, fileNeedsSlug, recordNeedsSlug, renameRepairable } of candidates) {
+  for (const { identity, fileNeedsSlug, recordNeedsSlug } of candidates) {
     if (!identity) continue;
     const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
     if (seen.has(digest)) continue;
     seen.add(digest);
-    digests.push({ digest, fileNeedsSlug, recordNeedsSlug, renameRepairable });
+    digests.push({ digest, fileNeedsSlug, recordNeedsSlug });
   }
   return digests;
 }
@@ -335,34 +327,59 @@ function legacyTeamSlug(localPath: string): string {
     .replace(/-+$/g, '') || 'team';
 }
 
+/** A provider-ambiguous legacy values file that only an explicit user confirmation may adopt. */
+export interface UnadoptedLegacyFile {
+  /** Basename including the `.json` extension, e.g. `alpha-a1b2c3d4e5.json`. */
+  entry: string;
+  /** The stored identity without the extension: `<slug>-<digest>` — what the user adopts. */
+  identity: string;
+  /** Last-modified time, used to order candidates newest-first. */
+  mtime: number;
+}
+
 /**
- * The team identities this machine has actually switched an agent to,
- * recorded in `managed.json`. These are the tool's own past switches, so a
- * legacy identity present here is this checkout's own former identity — the
- * one trustworthy, machine-local statement of who a legacy file or switch
- * record belonged to. Absent or unparsable manifests yield no evidence.
+ * The `<slug>-<digest>.json` files under a provider-ambiguous digest (a
+ * path-shaped `repo:` claim, a provider-relative remote, a bare alias, or a
+ * path-only local path) that this checkout could read but has not been told
+ * to. The old name scheme never encoded the provider, so the slug cannot
+ * prove ownership across providers — a GitHub and a GitCode team both named
+ * `Alpha` on the bare claim `acme/widgets` hash the same file — and no
+ * machine-global artifact distinguishes this checkout from another team on
+ * the same machine. Adopting such a file is therefore the user's explicit
+ * choice, never a silent guess. Repository-bound legacy files (a URL or
+ * URL-shaped identity) are not listed: the identity carries its host, so
+ * matching by digest alone is safe.
  */
-async function switchedStoredIdentities(): Promise<ReadonlySet<string>> {
-  let raw: string;
+export async function unadoptedLegacyFiles(
+  localConfig: LocalConfig,
+  adopted: ReadonlySet<string>,
+): Promise<UnadoptedLegacyFile[]> {
+  const target = getTeamValuesPath(localConfig);
+  const candidates = legacyTeamValueHashes(localConfig);
+  const dir = path.dirname(target);
+  let entries: string[];
   try {
-    raw = await fs.promises.readFile(path.join(getTeamaiHomeDir(), 'models', 'managed.json'), 'utf8');
+    entries = await fs.promises.readdir(dir);
   } catch {
-    return new Set();
+    return [];
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch {
-    return new Set();
+  const files: UnadoptedLegacyFile[] = [];
+  for (const entry of entries) {
+    const legacy = /^(.+)-([0-9a-f]{10})\.json$/.exec(entry);
+    if (legacy === null) continue;
+    const digest = legacy[2] ?? '';
+    const candidate = candidates.find((match) => match.digest === digest);
+    if (candidate === undefined || !candidate.fileNeedsSlug) continue;
+    const identity = entry.replace(/\.json$/, '');
+    if (adopted.has(identity)) continue;
+    try {
+      const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
+      files.push({ entry, identity, mtime: mtimeMs });
+    } catch {
+      // Removed by a concurrent process between readdir and stat.
+    }
   }
-  const manifest = parsed as { version?: unknown; agents?: Record<string, unknown> };
-  if (manifest.version !== 1 || typeof manifest.agents !== 'object' || manifest.agents === null) return new Set();
-  const identities = new Set<string>();
-  for (const state of Object.values(manifest.agents)) {
-    const record = state as { team?: unknown };
-    if (typeof record.team === 'string') identities.add(record.team);
-  }
-  return identities;
+  return files.sort((a, b) => b.mtime - a.mtime || b.entry.localeCompare(a.entry));
 }
 
 /**
@@ -373,17 +390,15 @@ async function switchedStoredIdentities(): Promise<ReadonlySet<string>> {
  * alone — the identity is the repository, so the slug can drift with team
  * renames. A path-shaped claim, a path-shaped provider-relative remote, a
  * bare alias, or a path-only local path names no single repository — the
- * slug keeps teams apart — so the record is accepted only when the stored
- * slug is this checkout's too. A record under a DIFFERENT slug is still this
- * team's only when this machine demonstrably switched to that identity:
- * `managed.json` records the exact `<slug>-<digest>` identity of each past
- * switch, so a renamed team's own legacy files and switches are recognised
- * without trusting anything guessable — a gateway a foreign team might share,
- * or a key binding that other-team files may also carry. Such a legacy
- * identity that this machine never switched to names another team and is
- * refused; another provider cannot fake this checkout's own switch history.
+ * slug is the only attributor a record under them can carry, and the slug is
+ * not provenance across providers. Such a record therefore matches only
+ * under this checkout's exact slug; a record under a DIFFERENT slug is never
+ * claimed from machine-global state — nothing in the record or any shared
+ * store tells a renamed team from another team, so it is refused, and only
+ * the values file's explicit adoption (which migrates it to the
+ * provider-qualified name) re-establishes this team's presence.
  */
-export async function sameTeamIdentity(stored: string | undefined, localConfig: LocalConfig): Promise<boolean> {
+export function sameTeamIdentity(stored: string | undefined, localConfig: LocalConfig): boolean {
   if (!stored) return false;
   if (stored === getTeamIdentity(localConfig)) return true;
   const legacy = /^(.+)-([0-9a-f]{10})$/.exec(stored);
@@ -394,39 +409,38 @@ export async function sameTeamIdentity(stored: string | undefined, localConfig: 
   for (const candidate of legacyTeamValueHashes(localConfig)) {
     if (candidate.digest !== digest) continue;
     if (!candidate.recordNeedsSlug || slug === mySlug) return true;
-    if (candidate.renameRepairable !== true) return false;
-    return (await switchedStoredIdentities()).has(stored);
+    return false;
   }
   return false;
 }
 
 /**
  * The file to read this team's values from, and where the next save lands:
- * the hash-only name, or — when it does not exist yet — the newest legacy
- * `<slug>-<digest>.json` an older version could have written for this
- * checkout. Legacy files are read where they lie; nothing is renamed, linked,
- * or copied, so a dry run needs no special casing and no filesystem quirk
- * (races, unsupported hard links, partial targets) can strand the keys. The
- * next save writes the hash-only file, which then shadows the legacy one.
- * Values files under a repository-bound digest (a URL, a URL-shaped remote,
- * a `repo:` claim) match by digest alone — the slug drifts with team
- * renames, and the identity carries its host with no ambiguity. A bare alias
- * digest or a path-only local path names no single repository — two
- * checkouts sharing `remote: fork` hashed the same — so a file keyed by one
- * is adopted only when its slug is this checkout's too, the discriminator
- * the old scheme kept those files apart by. A different slug under a
- * provider-ambiguous digest (a path-shaped claim, a path-shaped
- * provider-relative remote) is read only when this machine demonstrably
- * switched to that identity — the exact `<slug>-<digest>` recorded in this
- * checkout's own `managed.json` switch history. That is a renamed team's own
- * former file, recognised without trusting a gateway or key binding a
- * foreign team could also carry.
+ * the hash-only name, or — when it does not exist yet — a legacy
+ * `<slug>-<digest>.json` an older version wrote for this checkout. Legacy
+ * files are read where they lie; nothing is renamed, linked, or copied, so a
+ * dry run needs no special casing and no filesystem quirk (races, unsupported
+ * hard links, partial targets) can strand the keys. The next save writes the
+ * hash-only file, which then shadows the legacy one. Values files under a
+ * repository-bound digest (a URL, a URL-shaped remote, a `repo:` claim) match
+ * by digest alone — the slug drifts with team renames, and the identity
+ * carries its host with no ambiguity. A provider-ambiguous digest (a
+ * path-shaped claim, a path-shaped remote, a bare alias, a path-only local
+ * path) names no single repository: the old name never encoded the provider,
+ * so the slug cannot tell two providers' same-named teams apart and no
+ * machine-global artifact can tell this checkout from another team. A file
+ * under such a digest is read only when the user has explicitly adopted that
+ * exact `<slug>-<digest>` identity for this team (`options.adopted`); the
+ * caller surfaces the candidates via `unadoptedLegacyFiles` and turns the
+ * user's word into that set. Without it the file is never guessed into read.
  */
-export async function findTeamValuesPath(localConfig: LocalConfig): Promise<string> {
+export async function findTeamValuesPath(
+  localConfig: LocalConfig,
+  options: { adopted?: ReadonlySet<string> } = {},
+): Promise<string> {
   const target = getTeamValuesPath(localConfig);
   if (fs.existsSync(target)) return target;
   const candidates = legacyTeamValueHashes(localConfig);
-  const slug = legacyTeamSlug(localConfig.repo.localPath);
   const dir = path.dirname(target);
   let entries: string[];
   try {
@@ -434,30 +448,14 @@ export async function findTeamValuesPath(localConfig: LocalConfig): Promise<stri
   } catch {
     return target; // no teams directory yet — nothing to read
   }
-  const switched = await switchedStoredIdentities();
-  const repairable = candidates.find((candidate) => candidate.renameRepairable === true);
   const matching: Array<{ entry: string; mtime: number }> = [];
-  const renamed: Array<{ entry: string; mtime: number }> = [];
   for (const entry of entries) {
     const legacy = /^(.+)-([0-9a-f]{10})\.json$/.exec(entry);
     if (legacy === null) continue;
     const digest = legacy[2] ?? '';
     const candidate = candidates.find((match) => match.digest === digest);
     if (candidate === undefined) continue;
-    if (candidate.fileNeedsSlug && (legacy[1] ?? '') !== slug) {
-      // A different slug under a provider-ambiguous digest. Re-admit it only
-      // as a renamed team's own file, proven by this machine's own switch
-      // history; anything else is another team's and never read.
-      if (repairable !== undefined && candidate === repairable && switched.has(entry.replace(/\.json$/, ''))) {
-        try {
-          const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
-          renamed.push({ entry, mtime: mtimeMs });
-        } catch {
-          // Removed by a concurrent process between readdir and stat.
-        }
-      }
-      continue;
-    }
+    if (candidate.fileNeedsSlug && !options.adopted?.has(entry.replace(/\.json$/, ''))) continue;
     try {
       const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
       matching.push({ entry, mtime: mtimeMs });
@@ -465,12 +463,9 @@ export async function findTeamValuesPath(localConfig: LocalConfig): Promise<stri
       // Removed by a concurrent process between readdir and stat; nothing to read.
     }
   }
-  // This checkout's own slug always wins; a proven rename file only fills in
-  // when no same-slug file exists.
-  const pool = matching.length > 0 ? matching : renamed;
   // newest first; equal timestamps take the lexicographically last name
-  pool.sort((a, b) => b.mtime - a.mtime || b.entry.localeCompare(a.entry));
-  return pool.length > 0 ? path.join(dir, pool[0]?.entry ?? '') : target;
+  matching.sort((a, b) => b.mtime - a.mtime || b.entry.localeCompare(a.entry));
+  return matching.length > 0 ? path.join(dir, matching[0]?.entry ?? '') : target;
 }
 
 /** One profiles file, or why it cannot be used; null when it does not exist. `label` names it in the reason. */

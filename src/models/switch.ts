@@ -741,7 +741,7 @@ async function switchModelProfileUnlocked(
       const expected = options.onlyIfActive;
       const active = manifest.agents[agent];
       const teamMatches = active?.team === expected?.team
-        || (expected?.team !== undefined && options.localConfig !== undefined && await sameTeamIdentity(active?.team, options.localConfig));
+        || (expected?.team !== undefined && options.localConfig !== undefined && sameTeamIdentity(active?.team, options.localConfig));
       if (expected && (active?.profile !== expected.profile || !teamMatches || active.model !== expected.model)) {
         results.push({ agent, status: 'unchanged', message: `${agent} no longer uses ${expected.profile}` });
         continue;
@@ -955,7 +955,7 @@ export async function switchedGatewayOrigins(localConfig: LocalConfig): Promise<
   const byProfile = new Map<string, string[]>();
   for (const agent of ALL_MODEL_AGENTS) {
     const state = manifest?.agents[agent];
-    if (!state || !state.profile.startsWith('team:') || !await sameTeamIdentity(state.team, localConfig)) continue;
+    if (!state || !state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
     const origins = writtenGatewayUrls(agent, state.lastWritten).flatMap((url) => {
       try {
         return [new URL(url).origin];

@@ -3,7 +3,7 @@ import { autoDetectInit } from './config.js';
 import { describeEntryFailure, describeOrigin, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { askQuestion, askSecret, isInteractive } from './utils/prompt.js';
+import { askConfirmation, askQuestion, askSecret, isInteractive } from './utils/prompt.js';
 import type { LocalConfig } from './types.js';
 import {
   API_KEY_PLACEHOLDER,
@@ -34,6 +34,7 @@ import {
   setStoredApiKey,
   storedApiKey,
   teamProfilesFrom,
+  unadoptedLegacyFiles,
   type ModelAgent,
   type ModelGroup,
   type ModelProtocol,
@@ -84,17 +85,44 @@ async function teamContext(): Promise<TeamModelsContext | null> {
  * exist yet, the newest legacy `<slug>-<digest>.json` an older version wrote —
  * read where it lies, never renamed. Any key a 0.26.0 beta stored is bound to
  * its gateway first (`bindLegacyTeamKeys`) and saved — to the hash-only file —
- * unless `dryRun`.
+ * unless `dryRun`. A legacy file under a provider-ambiguous digest (a
+ * path-shaped claim, a bare alias, a path-only path) is never read silently:
+ * the old name never encoded the provider, so neither the slug nor any
+ * machine-global artifact can attribute the file to this checkout across
+ * providers. An interactive run asks the user once per candidate identity;
+ * on "yes" the file is read and immediately migrated to the provider-qualified
+ * hash-only name (which then shadows it — no re-ask, no ambiguity left).
+ * Non-interactive and dry runs never adopt: they note the file and read
+ * nothing it owns.
  */
+const adoptedLegacyValues = new Set<string>();
+
 async function loadTeamValues(
   localConfig: LocalConfig,
   team: TeamModelProfiles,
   options: { dryRun?: boolean } = {},
 ): Promise<StoredModelInputs> {
-  const readFrom = await findTeamValuesPath(localConfig);
+  const pending = await unadoptedLegacyFiles(localConfig, adoptedLegacyValues);
+  if (pending.length > 0) {
+    if (!options.dryRun && isInteractive()) {
+      for (const file of pending) {
+        const adopt = await askConfirmation(
+          `Legacy team values file '${file.entry}' names this team under a provider-ambiguous identity (${file.identity}). Adopt it as this team's keys (migrated to the provider-qualified name once read)? [y/N] `,
+        );
+        if (adopt) adoptedLegacyValues.add(file.identity);
+      }
+    } else {
+      log.warn(
+        `Legacy team values file(s) not adopted: ${pending.map((file) => file.entry).join(', ')}. ` +
+          `They are never read without an explicit opt-in; re-run interactively to adopt, or write the keys to ${getTeamValuesPath(localConfig)}.`,
+      );
+    }
+  }
+  const readFrom = await findTeamValuesPath(localConfig, { adopted: adoptedLegacyValues });
   const values = await loadModelInputs(readFrom);
   const sentTo = await switchedGatewayOrigins(localConfig);
-  if (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) && !options.dryRun) {
+  const adoptMigrated = adoptedLegacyValues.size > 0;
+  if ((bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) || adoptMigrated) && !options.dryRun) {
     // Save to the current name, which then shadows the legacy file.
     await saveModelInputs(getTeamValuesPath(localConfig), values);
   }
@@ -171,7 +199,7 @@ async function activeAgentsFor(
   for (const [agent, state] of Object.entries(active) as Array<[ModelAgent, ActiveModelProfile]>) {
     if (state.profile !== name) continue;
     if (ref.source !== 'local' && state.team
-      && !(localConfig ? await sameTeamIdentity(state.team, localConfig) : state.team === ref.team)) continue;
+      && !(localConfig ? sameTeamIdentity(state.team, localConfig) : state.team === ref.team)) continue;
     agents.push(agent);
   }
   return agents;
@@ -446,7 +474,7 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
   const identity = getTeamIdentity(localConfig);
   const groups = new Map<string, { profile: string; model?: string; agents: ModelAgent[] }>();
   for (const [agent, state] of Object.entries(await activeModelProfiles()) as Array<[ModelAgent, ActiveModelProfile]>) {
-    if (!state.profile.startsWith('team:') || !await sameTeamIdentity(state.team, localConfig)) continue;
+    if (!state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
     const groupKey = `${state.profile}\0${state.model ?? ''}`;
     const group = groups.get(groupKey) ?? { profile: state.profile, model: state.model, agents: [] };
     group.agents.push(agent);
