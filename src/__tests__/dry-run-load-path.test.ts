@@ -332,27 +332,26 @@ describe('--dry-run on a fresh self-mode clone (#866)', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  // Each command declares exactly which new entries it may leave behind. Both
-  // start empty: the point of #866 is that a preview writes nothing.
+  // Each command declares exactly which new entries it may leave behind, and
+  // both are empty: a preview writes nothing at all.
   //
-  // `pull` is allowed one, and it is not this change's. `pull` counts the
-  // contribution queue so it can report how many learnings it would publish, and
-  // `publishQueuedLearnings` lists it through `listPendingForInstall`
-  // (`utils/pending-learnings.ts`), which holds the queue lock — `acquireLock`
-  // creates the lock's parent, so an install with no `<getTeamaiHome>/locks/`
-  // gets one and keeps it. That call is unchanged here, and identical on the
-  // base commit; it only became reachable on a fresh self-mode clone once
-  // detection stopped aborting first (#850). Declared and counted rather than
-  // filtered out, so any OTHER new entry still fails this test.
-  const PULL_LOCK_DIR = `${path.join('home', '.teamai', 'locks')}/`;
+  // `pull` used to be allowed one — the empty `<getTeamaiHome>/locks/` its queue
+  // listing created. `pull` counts the contribution queue so it can report how
+  // many learnings it would publish, and `publishQueuedLearnings` lists it
+  // through `listPendingForInstall` (`utils/pending-learnings.ts`), which holds
+  // the queue lock. Taking that lock is a write: `acquireLock` creates the
+  // lock's parent, and `releaseLock` removes the lock file but not the
+  // directory. `dryRun` now reaches that `acquireLock` as it already reached the
+  // partition locks in `pull` and `push` (#866), so the preview creates neither
+  // and this list is empty.
+  const FETCH_HEAD = path.join('app', '.git', 'FETCH_HEAD');
   // `git fetch` — which the preview performs on purpose, so that its plan is
   // based on the same `origin/<default>` the real push would branch from —
   // leaves its own one-line record behind. It names no ref, changes no working
-  // tree, and git overwrites it on the next fetch. Same treatment as the entry
-  // above: declared and counted, so any other new entry still fails this test.
-  const FETCH_HEAD = path.join('app', '.git', 'FETCH_HEAD');
+  // tree, and git overwrites it on the next fetch. Declared and counted, so any
+  // other new entry still fails this test.
   const SELF_COMMANDS: Array<[string, () => Promise<void>, string[]]> = [
-    ['pull --dry-run', () => pull({ dryRun: true }), [PULL_LOCK_DIR]],
+    ['pull --dry-run', () => pull({ dryRun: true }), []],
     ['push --dry-run', () => push({ dryRun: true }), [FETCH_HEAD]],
   ];
 

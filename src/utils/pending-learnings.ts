@@ -59,11 +59,22 @@ const QUEUE_LOCK_RETRY_MS = 100;
  * Take the queue lock of `home`, retrying while another command holds it.
  * `acquired` is false when it still does after the wait; the caller must
  * release `lockPath` otherwise.
+ *
+ * Under `dryRun` no lock is taken: `acquireLock` reads the lock's state instead
+ * and reports the verdict a real run would get, so a preview takes exactly what
+ * the real command would and writes nothing else. Taking this lock is a write
+ * even when the queue behind it is only read — `acquireLock` creates the
+ * `locks/` directory that holds it, and `releaseLock` removes the lock file but
+ * not that directory, so a preview that took it would leave one behind on an
+ * install with no `locks/` yet (#866).
  */
-export async function acquireQueueLock(home: string): Promise<{ acquired: boolean; lockPath: string }> {
+export async function acquireQueueLock(
+  home: string,
+  options: { dryRun?: boolean } = {},
+): Promise<{ acquired: boolean; lockPath: string }> {
   const lockPath = await queueLockPath(home);
   for (let attempt = 1; ; attempt++) {
-    if (await acquireLock(lockPath)) return { acquired: true, lockPath };
+    if (await acquireLock(lockPath, options)) return { acquired: true, lockPath };
     if (attempt === QUEUE_LOCK_ATTEMPTS) return { acquired: false, lockPath };
     await new Promise((resolve) => setTimeout(resolve, QUEUE_LOCK_RETRY_MS));
   }
@@ -73,8 +84,9 @@ export async function acquireQueueLock(home: string): Promise<{ acquired: boolea
 export async function withQueueLock<T>(
   home: string,
   fn: () => Promise<T>,
+  options: { dryRun?: boolean } = {},
 ): Promise<{ status: 'done'; value: T } | { status: 'busy'; lockPath: string }> {
-  const { acquired, lockPath } = await acquireQueueLock(home);
+  const { acquired, lockPath } = await acquireQueueLock(home, options);
   if (!acquired) return { status: 'busy', lockPath };
   try {
     return { status: 'done', value: await fn() };
@@ -171,10 +183,12 @@ export async function savePendingLearning(
  * command loaded its config; had init switched the install meanwhile, the queue
  * would hold what the new install queued, and this one would publish it to the
  * previous repository. Listed under the queue lock, so nothing the switch
- * leaves in the queue is on the list.
+ * leaves in the queue is on the list. A preview passes `dryRun` through, so
+ * listing the queue for a count takes no lock and writes nothing.
  */
 export async function listPendingForInstall(
   localConfig: LocalConfig,
+  options: { dryRun?: boolean } = {},
 ): Promise<
   | { status: 'listed'; queued: string[] }
   | { status: 'busy'; lockPath: string }
@@ -184,7 +198,7 @@ export async function listPendingForInstall(
     const changed = await installChanged(localConfig);
     if (changed) return { status: 'changed' as const, ...changed };
     return { status: 'listed' as const, queued: await listPendingLearnings(localConfig) };
-  });
+  }, options);
   return locked.status === 'done' ? locked.value : locked;
 }
 
