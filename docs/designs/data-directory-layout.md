@@ -437,7 +437,8 @@ every checkout, so that is where they live now:
 ├── pending-learnings/                         pendingLearningsDir → <dataHome>/pending-learnings
 └── workspaces/<managedMcpWorkspaceId(root)>/
     ├── managed-mcp.json                       managedMcpManifestPath, one per checkout
-    ├── managed-mcp-files.json                 resolvedMcpFilesPath: project MCP configs a pull wrote a resolved ${VAR} to (#882)
+    ├── managed-mcp-files.json                 resolvedMcpFilesPath: project MCP configs a pull wrote a resolved ${VAR} to, and whether
+    │                                          the paths earlier teamai.yaml revisions mapped were read (#882)
     └── search-index.json                      getProjectSearchIndexPath, one per checkout
 <checkout>/.teamai/                            one per checkout: committed knowledge, knowledge-wt/
 ```

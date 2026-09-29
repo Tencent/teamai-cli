@@ -1177,6 +1177,144 @@ servers:
       expect(await excludeOf(projectRoot)).toMatch(/^\/\.codex\/config\.toml$/m);
     });
 
+    describe('a config an older teamai wrote under a mapping an earlier teamai.yaml made', () => {
+      const custom = { ...TOOL_PATHS, cursor: { ...TOOL_PATHS.cursor, mcpProject: '.cursor/team-mcp.json' } };
+      const customFile = (): string => path.join(projectRoot, '.cursor', 'team-mcp.json');
+      const commitTeamYaml = async (toolPaths: object, cwd = repoPath): Promise<void> => {
+        // JSON is YAML.
+        await fse.writeFile(path.join(cwd, 'teamai.yaml'), JSON.stringify({ team: 't', toolPaths }));
+        git(cwd, 'add', '-A');
+        git(cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'toolPaths');
+      };
+      const ledger = async (cfg = projectConfig): Promise<{ files: Record<string, unknown>; earlierMappingsRead?: true }> => {
+        const { readResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+        return readResolvedMcpFiles(cfg);
+      };
+      // What a teamai from before managed-mcp-files.json leaves: no record of the path, nothing in the exclude.
+      const asOlderTeamai = async (): Promise<void> => {
+        const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+        const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+        await fse.remove(resolvedMcpFilesPath(projectConfig) ?? '');
+        await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+        const manifestFile = managedMcpManifestPath(getDataHome(projectConfig), projectRoot);
+        const manifest = await fse.readJson(manifestFile) as Record<string, Array<Record<string, unknown>>>;
+        await fse.writeJson(manifestFile, Object.fromEntries(Object.entries(manifest).map(([key, records]) =>
+          [key, records.map(({ name, hash }) => ({ name, hash }))])));
+      };
+
+      beforeEach(async () => {
+        await writeMcpYaml(withSecret);
+        git(repoPath, 'init', '-q');
+        await commitTeamYaml(custom);
+        await reconcileMcpForConfig({ ...teamConfig, toolPaths: custom } as TeamaiConfig, projectConfig);
+        expect(await fse.readFile(customFile(), 'utf-8')).toContain('super-secret-value');
+        await commitTeamYaml(TOOL_PATHS);
+        await asOlderTeamai();
+      });
+
+      it('is listed and recorded by the first pull on this version', async () => {
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/team-mcp\.json$/m);
+        expect(git(projectRoot, 'status', '--porcelain', '--untracked-files=all')).not.toMatch(/team-mcp\.json/);
+        expect((await ledger()).files[customFile()]).toEqual({ tools: ['cursor'] });
+      });
+
+      it('keeps its line on the pulls after, from the record', async () => {
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+        await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/team-mcp\.json$/m);
+      });
+
+      it('reads the team repo\'s history once per worktree', async () => {
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+        expect((await ledger()).earlierMappingsRead).toBe(true);
+        const { updateResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+        await updateResolvedMcpFiles(projectConfig, (files) => delete files[customFile()]);
+        await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).not.toMatch(/team-mcp\.json/);
+      });
+
+      it('leaves a file it does not find a resolved value in alone', async () => {
+        await fse.writeJson(customFile(), { mcpServers: { mine: { type: 'http', url: 'https://mine.example/mcp' } } });
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).not.toMatch(/team-mcp\.json/);
+        expect(Object.keys((await ledger()).files)).not.toContain(customFile());
+      });
+
+      it('also finds one under a built-in default teamai has since changed (CodeBuddy\'s .codebuddy/mcp.json)', async () => {
+        const today = { ...TOOL_PATHS, codebuddy: { ...TOOL_PATHS.codebuddy, mcpProject: '.mcp.json' } };
+        await fse.remove(path.join(repoPath, '.git'));
+        git(repoPath, 'init', '-q');
+        await commitTeamYaml(today);
+        const oldDefault = path.join(projectRoot, '.codebuddy', 'mcp.json');
+        await fse.outputFile(oldDefault, await fse.readFile(customFile(), 'utf-8'));
+
+        await reconcileMcpForConfig({ ...teamConfig, toolPaths: today } as TeamaiConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.codebuddy\/mcp\.json$/m);
+        expect((await ledger()).files[oldDefault]).toEqual({ tools: ['codebuddy'] });
+      });
+
+      it('leaves a mapped path outside the project root alone', async () => {
+        const outside = path.join(tmpDir, 'outside', 'mcp.json');
+        await fse.outputFile(outside, await fse.readFile(customFile(), 'utf-8'));
+        await commitTeamYaml({ ...TOOL_PATHS, cursor: { ...TOOL_PATHS.cursor, mcpProject: '../outside/mcp.json' } });
+        await commitTeamYaml(TOOL_PATHS);
+        await fse.remove(customFile());
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(Object.keys((await ledger()).files)).not.toContain(outside);
+        expect(await excludeOf(projectRoot)).not.toMatch(/outside/);
+      });
+
+      it.each([
+        ['the team repo is a shallow clone without that revision', true, async (): Promise<LocalConfig> => {
+          const shallow = path.join(tmpDir, 'team-shallow');
+          execFileSync('git', ['clone', '-q', '--depth', '1', `file://${repoPath}`, shallow]);
+          return { ...projectConfig, repo: { ...projectConfig.repo, localPath: shallow } } as LocalConfig;
+        }],
+        ['teamai.yaml was never committed', true, async (): Promise<LocalConfig> => {
+          await fse.remove(path.join(repoPath, '.git'));
+          git(repoPath, 'init', '-q');
+          git(repoPath, 'add', 'mcp');
+          git(repoPath, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'mcp');
+          return projectConfig;
+        }],
+        ['the team repo has no commits', false, async (): Promise<LocalConfig> => {
+          await fse.remove(path.join(repoPath, '.git'));
+          git(repoPath, 'init', '-q');
+          return projectConfig;
+        }],
+        ['the team repo is not a git repository', false, async (): Promise<LocalConfig> => {
+          await fse.remove(path.join(repoPath, '.git'));
+          return projectConfig;
+        }],
+        ['git fails reading it', false, async (): Promise<LocalConfig> => {
+          await fse.emptyDir(path.join(repoPath, '.git', 'objects'));
+          return projectConfig;
+        }],
+      ])('protects as before when %s', async (_label, read, arrange) => {
+        const cfg = await arrange();
+
+        await expect(reconcileMcpForConfig(teamConfig, cfg)).resolves.toBeDefined();
+
+        expect(await excludeOf(projectRoot)).not.toMatch(/team-mcp\.json/);
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+        // Read as far as git could: a failure is tried again on the next pull.
+        expect((await ledger(cfg)).earlierMappingsRead).toBe(read ? true : undefined);
+      });
+    });
+
     it('lists the config in .git/info/exclude before writing the value into it', async () => {
       await writeMcpYaml(withSecret);
 
@@ -1275,6 +1413,40 @@ servers:
         expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('super-secret-value');
         expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
       });
+
+      it('and every pull after one that rewrote the manifest it had lost while another command held managed-mcp-files.json', async () => {
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+        const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+        const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+        await fse.remove(managedMcpManifestPath(getDataHome(projectConfig), projectRoot));
+        await writeMcpYaml(open);
+        vi.stubEnv('SECRET_TOKEN', '');
+        const lock = `${resolvedMcpFilesPath(projectConfig)}.teamai-lock`;
+        expect(await acquireLock(lock)).toBe(true);
+        try {
+          await reconcileMcpForConfig(teamConfig, claudeOnly());
+          expect(await fse.readJson(mcpJson())).toMatchObject({ mcpServers: { open: expect.anything() } });
+          // Still held: the note is still missing, and so the line stays.
+          await reconcileMcpForConfig(teamConfig, claudeOnly());
+          expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+        } finally {
+          await releaseLock(lock);
+        }
+
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('super-secret-value');
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+
+        // Noted at last: once the member takes the stale server out, the line goes.
+        const doc = await fse.readJson(mcpJson()) as { mcpServers: Record<string, unknown> };
+        delete doc.mcpServers['with-secret'];
+        await fse.writeJson(mcpJson(), doc);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+        expect(await excludeOf(projectRoot)).not.toContain('teamai');
+      }, 30_000);
 
       describe.each([
         ['empty', ''],
@@ -1621,6 +1793,41 @@ servers:
         [path.join(projectRoot, '.cursor', 'mcp.json')]: { tools: ['cursor'] },
       });
       expect((await fse.stat(resolvedMcpFilesPath(projectConfig) ?? '')).mode & 0o777).toBe(0o600);
+    });
+
+    describe('forgets a config it recorded before a write that did not happen', () => {
+      const custom = { ...TOOL_PATHS, cursor: { ...TOOL_PATHS.cursor, mcpProject: '.cursor/team-mcp.json' } };
+      const customFile = (): string => path.join(projectRoot, '.cursor', 'team-mcp.json');
+      const mine = { mcpServers: { mine: { type: 'http', url: 'https://mine.example/mcp' } } };
+
+      afterEach(async () => {
+        await fse.chmod(path.join(projectRoot, '.cursor'), 0o755);
+      });
+
+      // Root writes into a read-only directory.
+      it.skipIf(process.getuid?.() === 0).each([
+        ['its write fails', async () => {
+          await fse.writeJson(customFile(), mine);
+          await fse.chmod(path.join(projectRoot, '.cursor'), 0o555);
+          await expect(reconcileMcpForConfig({ ...teamConfig, toolPaths: custom } as TeamaiConfig, projectConfig)).rejects.toThrow();
+          await fse.chmod(path.join(projectRoot, '.cursor'), 0o755);
+        }],
+        ['it does not parse', async () => {
+          await fse.writeFile(customFile(), '{ "mcpServers": ');
+          await reconcileMcpForConfig({ ...teamConfig, toolPaths: custom } as TeamaiConfig, projectConfig);
+          await fse.writeJson(customFile(), mine);
+        }],
+      ])('so a config of the member\'s own there is not kept listed once the mapping changes, when %s', async (_label, arrange) => {
+        await writeMcpYaml(withSecret);
+        await arrange();
+        expect(await fse.readJson(customFile())).toEqual(mine);
+
+        await reconcileMcpForConfig(teamConfig, projectConfig);
+
+        expect(await excludeOf(projectRoot)).not.toMatch(/team-mcp\.json/);
+        const { readResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+        expect(Object.keys((await readResolvedMcpFiles(projectConfig)).files)).not.toContain(customFile());
+      });
     });
 
     describe('without a usable managed-mcp-files.json, as before it existed', () => {

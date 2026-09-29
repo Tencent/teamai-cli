@@ -898,6 +898,12 @@ export interface ManagedMcpRecord {
    * (#882). Absent in records an older teamai wrote.
    */
   resolved?: boolean;
+  /**
+   * Project scope: this record was rebuilt after it was lost, and the other
+   * servers in its file could not be noted in managed-mcp-files.json (#882).
+   * Until a pull notes them, the file counts as having no record.
+   */
+  unnoted?: true;
 }
 
 /** ~/.teamai/managed-mcp.json — team MCP servers injected per tool+scope key. */

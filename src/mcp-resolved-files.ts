@@ -12,9 +12,11 @@ import { updateFileLocked, type ExcludeUpdate } from './mcp-git-exclude.js';
 //  tell teamai's stale entries from the member's own (#882). This file, next
 //  to the worktree's managed-mcp.json, remembers both: each project MCP config
 //  a pull wrote a resolved value to, by absolute path, with the tools it wrote
-//  it for, and the servers it found there when it rebuilt a lost record.
-//  Nothing depends on it to keep a line: missing or unreadable, it reads as
-//  empty and the rules without it apply.
+//  it for, and the servers it found there when it rebuilt a lost record. It
+//  also says whether a pull has read the files earlier revisions of the team's
+//  teamai.yaml mapped, which a teamai from before this file wrote to without
+//  recording them. Nothing depends on it to keep a line: missing or unreadable,
+//  it reads as empty and the rules without it apply.
 
 export interface ResolvedMcpFile {
   /** The tools whose MCP format the file was written in. */
@@ -27,6 +29,8 @@ export interface ResolvedMcpFiles {
   version: 1;
   /** Keyed by the file's absolute path. */
   files: Record<string, ResolvedMcpFile>;
+  /** A pull has read the project MCP configs earlier revisions of teamai.yaml mapped. */
+  earlierMappingsRead?: true;
 }
 
 /** What a command found in a project MCP config, for `settleResolvedMcpFiles`. */
@@ -74,7 +78,9 @@ function parse(content: string): Sidecar {
 export async function readResolvedMcpFiles(cfg: LocalConfig): Promise<ResolvedMcpFiles> {
   const file = resolvedMcpFilesPath(cfg);
   const content = file === null ? null : await readFileSafe(file).catch(() => null);
-  return { version: 1, files: content === null ? {} : parse(content).files };
+  if (content === null) return { version: 1, files: {} };
+  const sidecar = parse(content);
+  return { version: 1, files: sidecar.files, ...sidecar.earlierMappingsRead === true ? { earlierMappingsRead: true } : {} };
 }
 
 /**
@@ -82,12 +88,16 @@ export async function readResolvedMcpFiles(cfg: LocalConfig): Promise<ResolvedMc
  * `edit` returns false to leave it as it is. One that does not parse is
  * rewritten from empty.
  */
-export async function updateResolvedMcpFiles(cfg: LocalConfig, edit: (files: Record<string, ResolvedMcpFile>) => boolean): Promise<ExcludeUpdate> {
+export function updateResolvedMcpFiles(cfg: LocalConfig, edit: (files: Record<string, ResolvedMcpFile>) => boolean): Promise<ExcludeUpdate> {
+  return updateSidecar(cfg, (sidecar) => edit(sidecar.files));
+}
+
+async function updateSidecar(cfg: LocalConfig, edit: (sidecar: Sidecar) => boolean): Promise<ExcludeUpdate> {
   const file = resolvedMcpFilesPath(cfg);
   if (file === null) return 'unchanged';
   return updateFileLocked(file, (content) => {
     const sidecar = parse(content);
-    return edit(sidecar.files) ? `${JSON.stringify(sidecar, null, 2)}\n` : null;
+    return edit(sidecar) ? `${JSON.stringify(sidecar, null, 2)}\n` : null;
   }, { mode: 0o600 });
 }
 
@@ -99,6 +109,22 @@ export function trackResolvedMcpFiles(cfg: LocalConfig, targets: Array<{ tool: s
       const entry = files[file];
       if (entry?.tools.includes(tool)) continue;
       files[file] = entry ? { ...entry, tools: [...entry.tools, tool] } : { tools: [tool] };
+      changed = true;
+    }
+    return changed;
+  });
+}
+
+/** Take back what `trackResolvedMcpFiles` recorded for a file it was not written to after all. */
+export function untrackResolvedMcpFiles(cfg: LocalConfig, targets: Array<{ tool: string; file: string }>): Promise<ExcludeUpdate> {
+  return updateResolvedMcpFiles(cfg, (files) => {
+    let changed = false;
+    for (const { tool, file } of targets) {
+      const entry = files[file];
+      if (!entry?.tools.includes(tool)) continue;
+      const tools = entry.tools.filter((t) => t !== tool);
+      if (tools.length > 0) files[file] = { ...entry, tools };
+      else delete files[file];
       changed = true;
     }
     return changed;
@@ -128,10 +154,18 @@ export function recordUnverifiedMcpServers(cfg: LocalConfig, found: Array<{ file
  * gone or holds no server, record one holding a resolved value it did not
  * list (written by an older teamai), and drop a noted server that left its
  * file or that teamai owns again. A file that does not parse stays as it is.
+ * `earlierMappingsRead`: the observations cover the files earlier revisions
+ * of teamai.yaml mapped, which later pulls need not read again.
  */
-export function settleResolvedMcpFiles(cfg: LocalConfig, observations: McpFileObservation[]): Promise<ExcludeUpdate> {
-  return updateResolvedMcpFiles(cfg, (files) => {
-    let changed = false;
+export function settleResolvedMcpFiles(
+  cfg: LocalConfig,
+  observations: McpFileObservation[],
+  options: { earlierMappingsRead?: boolean } = {},
+): Promise<ExcludeUpdate> {
+  return updateSidecar(cfg, (sidecar) => {
+    const { files } = sidecar;
+    let changed = options.earlierMappingsRead === true && sidecar.earlierMappingsRead !== true;
+    if (changed) sidecar.earlierMappingsRead = true;
     for (const { file, tool, state, holding, owned } of observations) {
       const entry = files[file];
       if (state.kind === 'missing' || (state.kind === 'parsed' && state.servers.length === 0)) {
