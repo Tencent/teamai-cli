@@ -1132,6 +1132,25 @@ servers:
       });
     });
 
+    it('keeps excluding a config whose entry a pull kept for a missing declared secret', async () => {
+      await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: SECRET_TOKEN\n');
+      await writeMcpYaml(withSecret);
+      await reconcileMcpForConfig(teamConfig, projectConfig);
+      await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+      vi.stubEnv('SECRET_TOKEN', undefined);
+      await writeMcpYaml(`${withSecret}  - name: open\n    transport: http\n    url: https://example.com/open\n`);
+
+      await reconcileMcpForConfig(teamConfig, { ...projectConfig, disabledAgents: ['cursor'] } as LocalConfig);
+
+      expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+      expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('https://example.com/open');
+      const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+      const manifest = await fse.readJson(managedMcpManifestPath(getDataHome(projectConfig), projectRoot));
+      expect(manifest['claude:project']).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'with-secret', resolved: true })]));
+      expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
+    });
+
     it('adds nothing for a disabled tool\'s config whose server never held a resolved value, after its definition changed', async () => {
       await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
       await reconcileMcpForConfig(teamConfig, projectConfig);
