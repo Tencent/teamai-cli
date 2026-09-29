@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { ENV_KEY_RE, envTable, envValue } from './resources/env-key.js';
+import { isRepoReference } from './models/profile.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { writeJsonAtomic } from './utils/fs.js';
@@ -58,7 +59,8 @@ export type SecretStoreRead =
  */
 export function getTeamSecretsPath(localConfig: LocalConfig): string {
   const { remote, url, localPath } = localConfig.repo;
-  const configured = remote && remote !== 'origin' && remote !== 'upstream' ? remote : url;
+  // A remote names the repo only when it is a URL; an alias (origin, fork) names nothing, so the URL does.
+  const configured = remote && isRepoReference(remote) ? remote : url;
   const identity = configured ? repoIdentity(configured) : localPath;
   // The full digest: the file name is all that keeps one team's values from another's.
   const hash = crypto.createHash('sha256').update(identity).digest('hex');

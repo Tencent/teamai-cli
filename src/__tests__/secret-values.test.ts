@@ -106,6 +106,15 @@ describe('team secret values', () => {
       expect(getTeamSecretsPath(copied)).not.toBe(getTeamSecretsPath(localConfig));
     });
 
+    it('keys the values by the repo URL when the remote is only an alias (fork), so two teams behind one alias stay apart', () => {
+      const behindFork = (url: string): LocalConfig => ({ ...localConfig, repo: { ...localConfig.repo, remote: 'fork', url } });
+
+      expect(getTeamSecretsPath(behindFork('https://example.com/acme/team.git')))
+        .not.toBe(getTeamSecretsPath(behindFork('https://example.com/other/team.git')));
+      expect(getTeamSecretsPath(behindFork('https://example.com/acme/team.git')))
+        .toBe(getTeamSecretsPath({ ...localConfig, repo: { ...localConfig.repo, remote: 'origin', url: 'https://example.com/acme/team.git' } }));
+    });
+
     describe('naming the file by the team repo URL', () => {
       const fileFor = (remote: string): string => getTeamSecretsPath({ ...localConfig, repo: { ...localConfig.repo, remote } });
 
