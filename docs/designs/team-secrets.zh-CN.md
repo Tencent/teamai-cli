@@ -100,7 +100,7 @@ teamai env unset GITHUB_TOKEN [--global]
 ## 存储
 
 - 每个团队仓库一个文件：`~/.teamai/secrets/teams/<hash>.json`，只由成员自己 `~/.teamai/config.yaml` 中团队仓库 URL 的哈希命名，所以修改 `teamai.yaml` 中的 `team:` 不会丢失成员的值。不使用 `teamai.yaml` 的 `repo:`：复制来的或恶意的团队仓库可以声称另一个团队的 `repo:`，从而拿到那个团队的值。使用同一团队的每个项目和 worktree 读取同一个文件，所以成员每个团队只需设置一次。
-- 文件由 URL 中标识仓库的部分命名：协议（ssh 的各种写法 `ssh://`、`git+ssh://`、`ssh+git://` 和 scp 形式算同一个；`https` 与 `http` 是两个）、ssh 用户名、不区分大小写的主机、非协议默认值（22、443、80）的端口，以及原样的路径。http(s) 凭据、结尾的 `.git` 和斜杠会被去掉，所以 `git@host:acme/team.git` 与 `ssh://git@host:22/acme/team` 共用一个文件，而 `alice@host:team.git` 与 `bob@host:team.git`（各自是该用户主目录下的路径），以及 `ssh://host:2222/acme/team` 与 `ssh://host:2223/acme/team`，都绝不共享值。同一仓库的 ssh、https 和 http URL 对应不同的文件，因此同一主机上的 http 与 https 端点绝不共享值。
+- 文件由 URL 中标识仓库的部分命名：协议（ssh 的各种写法 `ssh://`、`git+ssh://`、`ssh+git://` 和 scp 形式算同一个；`https` 与 `http` 是两个）、ssh 用户名、不区分大小写的主机、非协议默认值（22、443、80）的端口，以及原样的路径。scp 形式中既不以 `/` 也不以 `~` 开头的路径位于 ssh 用户的主目录下，因此按 `~/` 加该路径计算，即 `ssh://host/~/…` 所指的路径；以 `/` 开头的 scp 路径以及其他所有 `ssh://` 路径都从根目录算起。http(s) 凭据、结尾的 `.git` 和斜杠会被去掉，所以 `git@host:acme/team.git` 与 `ssh://git@host:22/~/acme/team` 共用一个文件，`git@host:/acme/team` 与 `ssh://git@host/acme/team` 也共用一个文件，而 `git@host:acme/team` 与 `ssh://git@host/acme/team`（一个在用户主目录下，一个从根目录算起）、`alice@host:team.git` 与 `bob@host:team.git`（各自是该用户主目录下的路径），以及 `ssh://host:2222/acme/team` 与 `ssh://host:2223/acme/team`，都绝不共享值。同一仓库的 ssh、https 和 http URL 对应不同的文件，因此同一主机上的 http 与 https 端点绝不共享值。
 - 本机一个文件：`~/.teamai/secrets/machine.json`，格式相同。每个 scope 都从中读取自己声明的密钥。
 - 始终位于 `~/.teamai` 下，绝不放在 scope 的数据目录中（单仓模式下该目录在业务仓库内）。不使用 `~/.teamai/env`：它是用户 scope 的 env 备份文件。
 - 以原子方式写入，权限 `0600`。这不是加密：能读取成员文件的人都能读到值。

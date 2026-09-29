@@ -77,12 +77,15 @@ const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly defaultPo
 /**
  * A team repo URL as the part of it that says which repo it is: scheme family
  * (ssh, https or http), the ssh user, lowercased host, a port other than the
- * scheme's default, and the path as written. Only http(s) credentials, a
- * trailing `.git` and slashes are dropped, so `git@host:acme/team.git` and
- * `ssh://git@host:22/acme/team` name one file, while two ssh users' repos on
- * one host (a path relative to each user's home), two repos on one host with
- * different ports, or behind http and https, never share values. Not `normalizeRepoUrlForCompare`:
- * it drops the port, and its callers compare loosely on purpose.
+ * scheme's default, and the path as written. An scp path that starts with
+ * neither `/` nor `~` is in the ssh user's home, so it is keyed as `~/path`,
+ * the path `ssh://host/~/path` names; `ssh://host/path` is from the root.
+ * Only http(s) credentials, a trailing `.git` and slashes are dropped, so
+ * `git@host:acme/team.git` and `ssh://git@host:22/~/acme/team` name one file,
+ * while `ssh://git@host/acme/team` (from the root), two ssh users' repos on
+ * one host, two repos on one host with different ports, or behind http and
+ * https, never share values. Not `normalizeRepoUrlForCompare`: it drops the
+ * port, and its callers compare loosely on purpose.
  */
 function repoIdentity(url: string): string {
   const trimmed = url.trim();
@@ -90,8 +93,12 @@ function repoIdentity(url: string): string {
     const name = repoPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
     return `${family}://${user ? `${user}@` : ''}${host.toLowerCase()}${port ? `:${port}` : ''}/${name}`;
   };
-  const scp = /^([^/@]+)@([^:/]+):(.+)$/.exec(trimmed);
-  if (scp) return key('ssh', scp[1] ?? '', scp[2] ?? '', '', scp[3] ?? '');
+  // `[user@]host:path`, as git reads it: no `/` before the `:`, no `//` after it, not a Windows drive.
+  const scp = /^[A-Za-z]:[\\/]/.test(trimmed) ? null : /^(?:([^/@]+)@)?([^:/]+):(?!\/\/)(.+)$/.exec(trimmed);
+  if (scp) {
+    const scpPath = scp[3] ?? '';
+    return key('ssh', scp[1] ?? '', scp[2] ?? '', '', /^[/~]/.test(scpPath) ? scpPath : `~/${scpPath}`);
+  }
   let parsed: URL;
   try {
     parsed = new URL(trimmed);

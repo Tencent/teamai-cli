@@ -124,19 +124,27 @@ describe('team secret values', () => {
 
       it('gives the scp form and the ssh URL of one repo the same file, with the default port written or not', () => {
         for (const remote of [
-          'ssh://git@example.com/acme/team',
-          'ssh://git@EXAMPLE.com:22/acme/team.git/',
-          'git+ssh://git@example.com/acme/team.git',
-          'ssh+git://git@example.com:22/acme/team.git',
+          'ssh://git@example.com/~/acme/team',
+          'ssh://git@EXAMPLE.com:22/~/acme/team.git/',
+          'git+ssh://git@example.com/~/acme/team.git',
+          'ssh+git://git@example.com:22/~/acme/team.git',
+          'git@example.com:~/acme/team.git',
         ]) {
           expect(fileFor(remote)).toBe(fileFor('git@example.com:acme/team.git'));
         }
+        expect(fileFor('ssh://git@example.com:22/acme/team.git')).toBe(fileFor('git@example.com:/acme/team.git'));
+        expect(fileFor('ssh://example.com/~/acme/team')).toBe(fileFor('example.com:acme/team'));
+      });
+
+      it('gives an scp path in the ssh user\'s home and the ssh URL of that path from the root different files', () => {
+        expect(fileFor('ssh://git@example.com/acme/team.git')).not.toBe(fileFor('git@example.com:acme/team.git'));
+        expect(fileFor('git@example.com:/acme/team.git')).not.toBe(fileFor('git@example.com:acme/team.git'));
       });
 
       it('gives two ssh users on one host different files, in the scp form and the ssh URL alike', () => {
         expect(fileFor('alice@example.com:team.git')).not.toBe(fileFor('bob@example.com:team.git'));
         expect(fileFor('ssh://alice@example.com/team')).not.toBe(fileFor('ssh://bob@example.com/team'));
-        expect(fileFor('ssh://alice@example.com:22/team.git')).toBe(fileFor('alice@example.com:team.git'));
+        expect(fileFor('ssh://alice@example.com:22/~/team.git')).toBe(fileFor('alice@example.com:team.git'));
         expect(fileFor('ssh://example.com/team')).not.toBe(fileFor('alice@example.com:team.git'));
       });
 
