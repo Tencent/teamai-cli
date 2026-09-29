@@ -1008,17 +1008,21 @@ export class SyncManager {
   }
 
   gitPush(remote = 'origin', branch?: string): void {
-    const args = ['push', remote];
-    if (branch) args.push(branch);
+    const ref = branch?.trim() || this.runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (!ref || ref === 'HEAD') {
+      throw new Error('Refusing to push without an explicit branch refspec.');
+    }
     // Errors must reach the caller: swallowing them here let `push` print
     // "✓ Pushed" after a rejected or unreachable remote.
-    this.runGit(args);
+    this.runGit(['push', remote, ref]);
   }
 
   gitPull(remote = 'origin', branch?: string): void {
-    const args = ['pull', remote];
-    if (branch) args.push(branch);
-    this.runGit(args);
+    const ref = branch?.trim() || this.runGit(['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (!ref || ref === 'HEAD') {
+      throw new Error('Refusing to pull without an explicit branch refspec.');
+    }
+    this.runGit(['pull', remote, ref]);
   }
 
   getSyncStatus(): { uncommitted: number; ahead: number; behind: number } {

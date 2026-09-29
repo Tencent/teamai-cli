@@ -44,7 +44,7 @@ import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock, TextBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
 import { imagePlaceholderText } from '../ir.js';
 import { titleFromUserText, visibleUserText } from '../title.js';
-import { deriveTargetSessionId } from '../ids.js';
+import { deriveTargetSessionId, resolveWriteSessionId } from '../ids.js';
 import { findSqlite3 } from '../sqlite.js';
 import { log } from '../../utils/logger.js';
 import {
@@ -647,9 +647,7 @@ export class CodexAdapter extends AgentAdapter {
     // cwd 参与派生：Codex rollout 的 sessionId 是全局键，同一源会话迁到两个
     // 工作区若共用 id，第二份会把第一份顶掉。
     const cwd = projectPath ?? session.cwd;
-    const sessionId = isUuidV7(session.sessionId)
-      ? session.sessionId
-      : deriveTargetSessionId(this.platform, session.sessionId, cwd);
+    const sessionId = resolveWriteSessionId(this.platform, session, cwd);
 
     // 损坏输入防御：session.createdAt 非法时 new Date(...) 得到 Invalid Date，
     // 直接 toISOString() 会抛 RangeError 让整个写入崩溃。
@@ -906,8 +904,13 @@ export class CodexAdapter extends AgentAdapter {
 
     let status = await runApply();
     if (status === 'migrated' || status === 'already_paginated') return;
-
-    // Not indexed (missing_sqlite_metadata etc.) -> register via app-server thread/list, retry
+    // A missing JSON report (timeout, incompatible CLI) must not scan every rollout.
+    if (status !== 'missing_sqlite_metadata') {
+      log.warn(
+        `Codex indexing skipped for ${sessionId}: ${status ?? 'no JSON report'}. The session may stay invisible until Codex reindexes.`,
+      );
+      return;
+    }
     await this.indexThreadViaAppServer(bin, codexHome);
     await runApply();
   }

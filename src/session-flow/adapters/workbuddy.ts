@@ -39,7 +39,7 @@ import {
   removeDirRecursive,
 } from '../fs.js';
 import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText } from '../title.js';
-import { deriveTargetSessionId } from '../ids.js';
+import { resolveWriteSessionId } from '../ids.js';
 import { registerWorkBuddySession, unregisterWorkBuddySession } from '../workbuddy-store.js';
 import { log } from '../../utils/logger.js';
 
@@ -512,9 +512,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     const cwd = projectPath ?? session.cwd;
     // 非 UUID 源 id 用确定性派生（同一源会话反复迁移命中同一个 id → 不产生重复会话）
     // cwd 参与派生：WorkBuddy 的会话记录是全局键，同名 id 迁到两个工作区会互相覆盖。
-    const sessionId = isUuidV4(session.sessionId)
-      ? session.sessionId
-      : deriveTargetSessionId('workbuddy', session.sessionId, cwd);
+    const sessionId = resolveWriteSessionId(this.platform, session, cwd);
     // WorkBuddy 与 CodeBuddy 同构：项目目录名**保留空格**（实测 CodeBuddy 落盘为
     // `Users-caiwenzhe-Desktop-Code-teamai cli`）。用 encodeCwdGeneric 会把空格也换成
     // `-`，目录名与客户端按当前 cwd 算出的不一致 → 会话不出现在该项目列表里。

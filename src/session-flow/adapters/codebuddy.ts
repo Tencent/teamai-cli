@@ -27,7 +27,7 @@ import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock, TextBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
 import { imagePlaceholderText } from '../ir.js';
-import { deriveTargetSessionId } from '../ids.js';
+import { resolveWriteSessionId } from '../ids.js';
 import {
   getCodeBuddyProjectsDir,
   encodeCwdCodeBuddy,
@@ -486,12 +486,9 @@ export class CodeBuddyAdapter extends AgentAdapter {
   }
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
-    // 非 UUID 源 id 用确定性派生（同一源会话反复迁移命中同一个 id → 不产生重复会话）
-    // 与 claude-code 同理，故意不纳入 cwd：会话文件按项目目录隔离，
-    // 同 id 不同目录各是一份，不会互相覆盖。
-    const sessionId = isUuid(session.sessionId)
-      ? session.sessionId
-      : deriveTargetSessionId('codebuddy', session.sessionId);
+    // Same-platform archives derive a new id. cwd stays out of the hash:
+    // sessions live under the project directory, so one id in two dirs is two files.
+    const sessionId = resolveWriteSessionId(this.platform, session);
 
     const cwd = projectPath ?? session.cwd;
     const projDir = path.join(getCodeBuddyProjectsDir(), encodeCwdCodeBuddy(cwd));
