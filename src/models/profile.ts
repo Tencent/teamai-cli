@@ -210,11 +210,13 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
   const source = namedRemote ? named
     : url && isRepoReference(url) ? url
     : claim?.claim ?? localPath;
-  // The effective provider: the team's own `provider:` in teamai.yaml when it
-  // is read, else the global/local override, else the team default. Provider,
-  // remote, and claim survive a team rename, keeping the file bound to the
-  // repository rather than the display name.
-  const provider = claim?.provider ?? teamProvider(localPath) ?? localConfig.provider ?? 'tgit';
+  // The effective provider: the member's own initializer/override wins — the
+  // provider a checkout was initialized with (`--provider`) overrides the
+  // team's declared one, as everywhere else in the CLI — then the team's own
+  // `provider:` in teamai.yaml, then the team default. Provider, remote, and
+  // claim survive a team rename, keeping the file bound to the repository
+  // rather than the display name.
+  const provider = localConfig.provider ?? teamProvider(localPath) ?? 'tgit';
   let identity: string;
   if (isRepoReference(source)) {
     // Host-bearing: repoIdentity normalizes scheme family, host, and path.
@@ -391,7 +393,7 @@ export interface UnadoptedLegacyFile {
  */
 export async function unadoptedLegacyFiles(
   localConfig: LocalConfig,
-  adopted: ReadonlySet<string>,
+  options: { adopted?: ReadonlySet<string>; declined?: ReadonlySet<string> } = {},
 ): Promise<UnadoptedLegacyFile[]> {
   const target = getTeamValuesPath(localConfig);
   if (fs.existsSync(target)) return [];
@@ -411,7 +413,8 @@ export async function unadoptedLegacyFiles(
     const candidate = candidates.find((match) => match.digest === digest);
     if (candidate === undefined || !candidate.fileNeedsSlug) continue;
     const identity = entry.replace(/\.json$/, '');
-    if (adopted.has(`${target}::${identity}`)) continue;
+    const key = `${target}::${identity}`;
+    if (options.adopted?.has(key) || options.declined?.has(key)) continue;
     try {
       const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
       files.push({ entry, identity, mtime: mtimeMs });
@@ -480,7 +483,7 @@ export function sameTeamIdentity(stored: string | undefined, localConfig: LocalC
  */
 export async function findTeamValuesPath(
   localConfig: LocalConfig,
-  options: { adopted?: ReadonlySet<string> } = {},
+  options: { adopted?: ReadonlySet<string>; declined?: ReadonlySet<string> } = {},
 ): Promise<string> {
   const target = getTeamValuesPath(localConfig);
   if (fs.existsSync(target)) return target;
@@ -499,7 +502,11 @@ export async function findTeamValuesPath(
     const digest = legacy[2] ?? '';
     const candidate = candidates.find((match) => match.digest === digest);
     if (candidate === undefined) continue;
-    if (candidate.fileNeedsSlug && !options.adopted?.has(`${target}::${entry.replace(/\.json$/, '')}`)) continue;
+    if (candidate.fileNeedsSlug) {
+      const key = `${target}::${entry.replace(/\.json$/, '')}`;
+      if (options.declined?.has(key)) continue;
+      if (!options.adopted?.has(key)) continue;
+    }
     try {
       const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
       matching.push({ entry, mtime: mtimeMs });

@@ -48,6 +48,8 @@ import {
 import {
   ALL_MODEL_AGENTS,
   activeModelProfiles,
+  refusedLegacyValueKeys,
+  refuseLegacyValue,
   switchedGatewayOrigins,
   restoreModelProfiles,
   switchModelProfile,
@@ -112,7 +114,8 @@ const adoptedLegacyValues = new Set<string>();
  * the refusal names that path.
  */
 async function assertNoShadowingLegacyWrite(localConfig: LocalConfig): Promise<void> {
-  const pending = await unadoptedLegacyFiles(localConfig, adoptedLegacyValues);
+  const declined = await refusedLegacyValueKeys();
+  const pending = await unadoptedLegacyFiles(localConfig, { adopted: adoptedLegacyValues, declined });
   if (pending.length === 0) return;
   throw new Error(
     `Unadopted legacy team values file(s) still exist for this team (${pending.map((file) => file.entry).join(', ')}); ` +
@@ -127,14 +130,24 @@ async function loadTeamValues(
   options: { dryRun?: boolean } = {},
 ): Promise<StoredModelInputs> {
   const target = getTeamValuesPath(localConfig);
-  const pending = await unadoptedLegacyFiles(localConfig, adoptedLegacyValues);
+  const declined = new Set(await refusedLegacyValueKeys());
+  const pending = await unadoptedLegacyFiles(localConfig, { adopted: adoptedLegacyValues, declined });
   if (pending.length > 0) {
     if (!options.dryRun && isInteractive()) {
       for (const file of pending) {
+        const key = `${target}::${file.identity}`;
         const adopt = await askConfirmation(
           `Legacy team values file '${file.entry}' names this team under a provider-ambiguous identity (${file.identity}). Adopt it as this team's keys (migrated to the provider-qualified name once read)? [y/N] `,
         );
-        if (adopt) adoptedLegacyValues.add(`${target}::${file.identity}`);
+        if (adopt) adoptedLegacyValues.add(key);
+        else {
+          // The decline is a durable, visible decision — recorded per target so
+          // the file is neither re-offered on every run nor silently shadowed
+          // and orphans when the migration proceeds. Its keys stay on disk; a
+          // foreign team's same-digest file no longer blocks this team's migration.
+          declined.add(key);
+          await refuseLegacyValue(key);
+        }
       }
     } else {
       log.warn(
@@ -146,12 +159,12 @@ async function loadTeamValues(
   // A declined or unprompted file must stay reachable: once the hash-only
   // target exists, its candidates are silenced, so those keys would be orphaned
   // permanently with no later prompt ever possible. The migration save below
-  // therefore happens only when every matching device-ambiguous file for this
-  // team is either adopted (merged into the values) or gone — never while one
-  // is left to decide on.
-  const remaining = await unadoptedLegacyFiles(localConfig, adoptedLegacyValues);
+  // therefore happens only when every matching ambiguous file for this team is
+  // either adopted (merged into the values), durably declined, or gone —
+  // never while one is still left to decide on.
+  const remaining = await unadoptedLegacyFiles(localConfig, { adopted: adoptedLegacyValues, declined });
   const canMigrate = remaining.length === 0;
-  const readFrom = await findTeamValuesPath(localConfig, { adopted: adoptedLegacyValues });
+  const readFrom = await findTeamValuesPath(localConfig, { adopted: adoptedLegacyValues, declined });
   const valuesDir = path.dirname(target);
   let values = await loadModelInputs(readFrom);
   // Adoption merges EVERY adopted identity's keys, not only the newest file a

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ModelProfileSchema, resolveProfile } from '../models/profile.js';
-import { activeModelProfiles, restoreModelProfiles, switchModelProfile } from '../models/switch.js';
+import { activeModelProfiles, refusedLegacyValueKeys, refuseLegacyValue, restoreModelProfiles, switchModelProfile } from '../models/switch.js';
 import { entryHash } from '../resources/mcp-format.js';
 
 let home: string;
@@ -627,5 +627,28 @@ describe('model switch bookkeeping', () => {
     process.env.CODEX_HOME = first;
     expect((await restoreModelProfiles(['codex']))[0].status).toBe('restored');
     expect(await fse.readFile(path.join(first, 'config.toml'), 'utf8')).toContain('model = "personal"');
+  });
+
+  it('records a legacy values decline durably and scoped to its target', async () => {
+    expect(await refusedLegacyValueKeys()).toEqual(new Set());
+    await refuseLegacyValue('/scope-a/teams/1234567890.json::alpha-abcdef1234');
+    await refuseLegacyValue('/scope-b/teams/1234567890.json::beta-abcdef1234');
+    // Both survive across reads, and a third write persists alongside them.
+    expect(await refusedLegacyValueKeys()).toEqual(new Set([
+      '/scope-a/teams/1234567890.json::alpha-abcdef1234',
+      '/scope-b/teams/1234567890.json::beta-abcdef1234',
+    ]));
+    await refuseLegacyValue('/scope-a/teams/1234567890.json::gamma-abcdef1234');
+    expect(await refusedLegacyValueKeys()).toEqual(new Set([
+      '/scope-a/teams/1234567890.json::alpha-abcdef1234',
+      '/scope-b/teams/1234567890.json::beta-abcdef1234',
+      '/scope-a/teams/1234567890.json::gamma-abcdef1234',
+    ]));
+    // A malformed declines record fails closed rather than being trusted.
+    const managed = path.join(home, '.teamai', 'models', 'managed.json');
+    const manifest = await fse.readJson(managed);
+    manifest.legacyValueDeclines = ['not-a-string', 7];
+    await fse.outputJson(managed, manifest);
+    await expect(refusedLegacyValueKeys()).rejects.toThrow(/Invalid legacy value declines/);
   });
 });

@@ -41,6 +41,14 @@ interface AgentState {
 interface ModelSwitchManifest {
   version: 1;
   agents: Partial<Record<ModelAgent, AgentState>>;
+  /**
+   * Legacy team values identities the user explicitly declined to adopt, as
+   * `${target}::<slug>-<digest>` keys scoped to the provider-qualified team
+   * target. A durable record — not silent shadowing — is what lets the
+   * migration proceed past a foreign team's same-digest file while keeping the
+   * choice visible and reversible (remove the key to re-offer the file).
+   */
+  legacyValueDeclines?: string[];
 }
 
 export interface ModelSwitchResult {
@@ -144,11 +152,33 @@ async function loadManifest(): Promise<ModelSwitchManifest | null> {
       throw new Error(`Invalid pending model ownership entry for ${agent}: ${file}`);
     }
   }
+  if (parsed.legacyValueDeclines !== undefined
+    && (!Array.isArray(parsed.legacyValueDeclines)
+      || parsed.legacyValueDeclines.some((key) => typeof key !== 'string'))) {
+    throw new Error(`Invalid legacy value declines: ${file}`);
+  }
   return parsed as unknown as ModelSwitchManifest;
 }
 
 async function saveManifest(manifest: ModelSwitchManifest): Promise<void> {
   await writeJsonAtomic(manifestPath(), manifest, { mode: 0o600 });
+}
+
+/** The legacy team values identities this machine declined to adopt, keyed `${target}::<slug>-<digest>`. */
+export async function refusedLegacyValueKeys(): Promise<ReadonlySet<string>> {
+  const manifest = await loadManifest();
+  return new Set(manifest?.legacyValueDeclines ?? []);
+}
+
+/** Record a durable, target-scoped decline so the file is neither re-offered on every run nor silently shadowed. */
+export async function refuseLegacyValue(key: string): Promise<void> {
+  await withManifestLock(async () => {
+    const manifest = await loadManifest() ?? { version: 1, agents: {} };
+    const declines = new Set(manifest.legacyValueDeclines ?? []);
+    declines.add(key);
+    manifest.legacyValueDeclines = [...declines].sort();
+    await saveManifest(manifest);
+  });
 }
 
 function hash(value: unknown): string {

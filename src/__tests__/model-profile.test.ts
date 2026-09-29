@@ -204,7 +204,7 @@ describe('model profiles', () => {
       // Same slug, same bare claim: the provider is missing from the identity,
       // so the file is NEVER auto-read — not even under this checkout's own slug.
       expect(await findTeamValuesPath(onGithub)).toBe(getTeamValuesPath(onGithub));
-      expect(await unadoptedLegacyFiles(onGithub, new Set())).toContainEqual(
+      expect(await unadoptedLegacyFiles(onGithub, { adopted: new Set() })).toContainEqual(
         expect.objectContaining({ entry: `gh-${digest('acme/widgets')}.json`, identity: `gh-${digest('acme/widgets')}` }),
       );
       // The user's explicit adoption of THIS exact identity reads it in place.
@@ -224,7 +224,7 @@ describe('model profiles', () => {
       // Migration writes the provider-qualified target; from then on the legacy
       // file is shadowed and is never offered for adoption again — no re-prompts.
       await saveModelInputs(getTeamValuesPath(onGithub), { 'team:gw': { API_KEY: { value: 'legacy-key' } } });
-      expect(await unadoptedLegacyFiles(onGithub, new Set())).toEqual([]);
+      expect(await unadoptedLegacyFiles(onGithub, { adopted: new Set() })).toEqual([]);
       expect(await findTeamValuesPath(onGithub)).toBe(getTeamValuesPath(onGithub));
     } finally {
       if (previous === undefined) delete process.env.HOME;
@@ -250,7 +250,7 @@ describe('model profiles', () => {
       await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: Beta\nrepo: acme/widgets\nprovider: gitcode\n');
       const onGitcode = { repo: { localPath: repo, remote: 'origin' }, provider: 'gitcode' } as LocalConfig;
       // The file surfaces in the disclosure but nothing is adopted silently.
-      expect(await unadoptedLegacyFiles(onGitcode, new Set())).toEqual([
+      expect(await unadoptedLegacyFiles(onGitcode, { adopted: new Set() })).toEqual([
         expect.objectContaining({ entry: `alpha-${digest('acme/widgets')}.json` }),
       ]);
       expect(await findTeamValuesPath(onGitcode)).toBe(getTeamValuesPath(onGitcode));
@@ -343,12 +343,12 @@ describe('model profiles', () => {
       await fse.writeFile(alpha, '{"team:gw":{"API_KEY":{"value":"alpha-key"}}}');
       await fse.writeFile(beta, '{"team:hw":{"API_KEY":{"value":"beta-key"}}}');
       // The migration guard sees BOTH before any target exists.
-      expect(await unadoptedLegacyFiles(config, new Set())).toHaveLength(2);
+      expect(await unadoptedLegacyFiles(config, { adopted: new Set() })).toHaveLength(2);
       // Adopting only alpha must not hide beta: it still surfaces to the next
       // run, so the caller will not create the hash-only target (whose very
       // existence silences candidates) and beta's keys stay recoverable.
       const adoptedAlpha = new Set([`${getTeamValuesPath(config)}::alpha-${digest('acme/widgets')}`]);
-      const afterPartial = await unadoptedLegacyFiles(config, adoptedAlpha);
+      const afterPartial = await unadoptedLegacyFiles(config, { adopted: adoptedAlpha });
       expect(afterPartial.map((file) => file.entry)).toEqual([`beta-${digest('acme/widgets')}.json`]);
       // Adopting beta too: no candidate remains; the read picks one file, and
       // merging the other keeps every identity's keys instead of dropping them.
@@ -356,13 +356,20 @@ describe('model profiles', () => {
         ...adoptedAlpha,
         `${getTeamValuesPath(config)}::beta-${digest('acme/widgets')}`,
       ]);
-      expect(await unadoptedLegacyFiles(config, adoptedBoth)).toEqual([]);
+      expect(await unadoptedLegacyFiles(config, { adopted: adoptedBoth })).toEqual([]);
       const readFrom = await findTeamValuesPath(config, { adopted: adoptedBoth });
       const values = mergeModelInputs(await loadModelInputs(alpha), await loadModelInputs(readFrom));
       expect(values).toMatchObject({
         'team:gw': { API_KEY: { value: 'alpha-key' } },
         'team:hw': { API_KEY: { value: 'beta-key' } },
       });
+      // A declining member records the file's identity durably instead of
+      // letting it block migration: with beta declined, no candidate remains
+      // (the guard proceeds) and the read skips beta — adopting alpha alone
+      // no longer forces this team to absorb a foreign team's keys.
+      const declinedBeta = new Set([`${getTeamValuesPath(config)}::beta-${digest('acme/widgets')}`]);
+      expect(await unadoptedLegacyFiles(config, { adopted: adoptedAlpha, declined: declinedBeta })).toEqual([]);
+      expect(await findTeamValuesPath(config, { adopted: adoptedAlpha, declined: declinedBeta })).toBe(alpha);
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;
@@ -413,6 +420,21 @@ describe('model profiles', () => {
     // Same provider-relative remote and provider name the same repository
     // regardless of path.
     expect(getTeamValuesPath(onGithub)).toBe(getTeamValuesPath({ repo: { localPath: '/elsewhere', remote: 'owner/repo' }, provider: 'github' } as LocalConfig));
+  });
+
+  it('a member\'s explicit provider overrides the team\'s declared provider', async () => {
+    const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-provider-override-'));
+    // The team declares GitHub; a member initialized with `--provider gitlab`
+    // must NOT receive the GitHub hash — the member's own initializer/override
+    // wins, as everywhere else in the CLI. Otherwise that member would share
+    // API keys and switch ownership with the actual GitHub checkout.
+    await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: T\nrepo: acme/widgets\nprovider: github\n');
+    const onGithub = { repo: { localPath: repo } } as LocalConfig;
+    const memberGitlab = { repo: { localPath: repo }, provider: 'gitlab' } as LocalConfig;
+    expect(getTeamValuesPath(memberGitlab)).not.toBe(getTeamValuesPath(onGithub));
+    // The override is the identity: another checkout with no declared provider
+    // but the same gitlab override shares the file with the member.
+    expect(getTeamValuesPath(memberGitlab)).toBe(getTeamValuesPath({ repo: { localPath: '/elsewhere', remote: 'acme/widgets' }, provider: 'gitlab' } as LocalConfig));
   });
 
   it('keys different provider-relative remotes separately and never Windows drive paths as URLs', async () => {
