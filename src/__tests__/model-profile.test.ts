@@ -124,6 +124,37 @@ describe('model profiles', () => {
     }
   });
 
+  it('separates teams that reuse a path when a repo: claim is available', async () => {
+    const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-reuse-'));
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-reuse-repo-'));
+      const teamA = { repo: { localPath: repo, remote: 'origin' } } as LocalConfig;
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: Alpha\nrepo: https://git.example.test/alpha.git\n');
+      const fileA = getTeamValuesPath(teamA);
+      expect(path.basename(fileA)).toBe(`${digest('https://git.example.test/alpha')}.json`);
+      // The same path, now checked out for team B with its own claim: no
+      // shared file, no adopted switches.
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: Beta\nrepo: https://git.example.test/beta.git\n');
+      const teamB = { repo: { localPath: repo, remote: 'origin' } } as LocalConfig;
+      const fileB = getTeamValuesPath(teamB);
+      expect(fileB).not.toBe(fileA);
+      expect(path.basename(fileB)).toBe(`${digest('https://git.example.test/beta')}.json`);
+      // Team A's file and switch record belong to team A alone.
+      await fse.ensureDir(path.dirname(fileA));
+      await saveModelInputs(fileA, { 'team:gw': { API_KEY: { value: 'alpha-key' } } });
+      expect(await findTeamValuesPath(teamB)).toBe(fileB);
+      expect(await fse.pathExists(fileB)).toBe(false);
+      expect(sameTeamIdentity(path.basename(fileA, '.json'), teamB)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
   it('reads an alias-digest legacy file only under this team\'s slug', async () => {
     const previous = process.env.HOME;
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-alias-'));

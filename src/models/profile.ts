@@ -186,10 +186,12 @@ export function getTeamValuesPath(localConfig: LocalConfig): string {
   const named = remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined;
   // Hash only what names a repository. A remote alias (`fork`) does not: two
   // checkouts sharing the alias would share one values file and read each
-  // other's keys, so fall back to the URL and then the local path.
+  // other's keys. The same holds for the local path — it is reused across
+  // teams — so when neither a remote URL nor repo.url exists, a `repo:` claim
+  // in teamai.yaml is the remaining repository identity before the path.
   const source = named && isRepoReference(named) ? named
     : url && isRepoReference(url) ? url
-    : localPath;
+    : repoClaim(localPath) ?? localPath;
   const identity = repoIdentity(source);
   const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
   return path.join(getTeamaiHomeDir(), 'models', 'teams', `${digest}.json`);
