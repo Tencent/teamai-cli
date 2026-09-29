@@ -111,12 +111,45 @@ export function shellQuoteValue(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-/** The TeamAI-managed block of a shell profile, or null when it is absent. */
-export function extractEnvBlock(profileContent: string): string | null {
-  const start = profileContent.indexOf(TEAMAI_ENV_START);
-  if (start === -1) return null;
-  const end = profileContent.indexOf(TEAMAI_ENV_END, start);
-  return end === -1 ? profileContent.slice(start) : profileContent.slice(start, end);
+/** One TeamAI-managed block of a shell profile. */
+export interface EnvBlock {
+  /** From the start marker up to the end marker, or to the end of the file when the block is never closed. */
+  text: string;
+  /** Offset of the start marker. */
+  start: number;
+  /** Offset just past the end marker; null when the block is never closed. */
+  end: number | null;
+}
+
+/**
+ * Every TeamAI-managed block of a shell profile, in file order. A profile
+ * carries one per scope that injected into it (#876): the user scope's, and
+ * a project scope's.
+ */
+export function findEnvBlocks(profileContent: string): EnvBlock[] {
+  const blocks: EnvBlock[] = [];
+  let from = 0;
+  for (;;) {
+    const start = profileContent.indexOf(TEAMAI_ENV_START, from);
+    if (start === -1) return blocks;
+    const endMarker = profileContent.indexOf(TEAMAI_ENV_END, start);
+    if (endMarker === -1) {
+      blocks.push({ text: profileContent.slice(start), start, end: null });
+      return blocks;
+    }
+    const end = endMarker + TEAMAI_ENV_END.length;
+    blocks.push({ text: profileContent.slice(start, endMarker), start, end });
+    from = end;
+  }
+}
+
+/**
+ * The block that belongs to the scope whose env file is `envShPath`, or null
+ * when no block in the profile sources it. Ownership, not correctness: see
+ * `envBlockReferencesDataHome`.
+ */
+export function findEnvBlockFor(profileContent: string, envShPath: string): EnvBlock | null {
+  return findEnvBlocks(profileContent).find((block) => envBlockReferencesDataHome(block.text, envShPath)) ?? null;
 }
 
 /**
@@ -176,6 +209,22 @@ function candidateSpellings(envShPath: string): string[] {
 }
 
 /**
+ * Whether `spelling` occurs in `text` as a whole path: starting at the start
+ * of the text or after whitespace or a quote, and ending at the end of the
+ * text or before whitespace, a quote or `;`. A longer path that merely ends
+ * or starts with it (`/data/home/me/.teamai/env.sh` or
+ * `/home/me/.teamai/env.sh.bak` for `/home/me/.teamai/env.sh`) names another
+ * file (#876).
+ */
+function includesAsPath(text: string, spelling: string): boolean {
+  for (let at = text.indexOf(spelling); at !== -1; at = text.indexOf(spelling, at + 1)) {
+    const after = at + spelling.length;
+    if ((at === 0 || /[\s'"]/.test(text[at - 1])) && (after === text.length || /[\s'";]/.test(text[after]))) return true;
+  }
+  return false;
+}
+
+/**
  * Whether a block's `source` line names `envShPath` under any spelling
  * teamai has ever written it in — current or legacy, quoted or not,
  * forward- or back-slashed, drive- or MSYS-form — regardless of whether that
@@ -192,7 +241,7 @@ function candidateSpellings(envShPath: string): string[] {
 export function envBlockReferencesDataHome(block: string, envShPath: string): boolean {
   for (const spelling of candidateSpellings(envShPath)) {
     if (
-      block.includes(spelling)
+      includesAsPath(block, spelling)
       || block.includes(shellQuoteValue(spelling))
       || block.includes(`"${spelling}"`)
     ) {
@@ -375,6 +424,12 @@ async function referencesCandidate(content: string, name: string): Promise<boole
  * following the chain it opens, injecting a second block there would leave
  * the still-loading `.bashrc` one reported as a stray leftover, even though
  * nothing ever stopped working.
+ *
+ * With no block of this scope's along the chain, the first file along it
+ * that holds another scope's block wins over the order-based pick, so
+ * injection orders the two in one file (#876). Appended after the `source`
+ * line in the order-based pick instead, a first user block would override the
+ * project on a shared key, and a second project's would leave the first live.
  */
 export async function resolveActiveShellProfile(
   envShPath: string,
@@ -385,15 +440,16 @@ export async function resolveActiveShellProfile(
 
   const visited = new Set<string>();
   const queue: string[] = [activePick];
+  let firstWithBlock: string | null = null;
   while (queue.length > 0) {
     const current = queue.shift() as string;
     if (visited.has(current)) continue;
     visited.add(current);
 
     const content = await readFileSafe(current);
-    const block = content ? extractEnvBlock(content) : null;
-    if (block && envBlockReferencesDataHome(block, envShPath)) return current;
     if (!content) continue;
+    if (findEnvBlockFor(content, envShPath)) return current;
+    if (firstWithBlock === null && findEnvBlocks(content).length > 0) firstWithBlock = current;
 
     for (const name of SHELL_PROFILE_CANDIDATE_NAMES) {
       const candidate = path.join(home, name);
@@ -403,5 +459,5 @@ export async function resolveActiveShellProfile(
     }
   }
 
-  return activePick;
+  return firstWithBlock ?? activePick;
 }

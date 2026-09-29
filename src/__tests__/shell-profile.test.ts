@@ -6,10 +6,12 @@ import {
   detectShellProfile,
   envBlockSourcesPath,
   envBlockReferencesDataHome,
+  findEnvBlockFor,
   resolveActiveShellProfile,
   sameFile,
   shellQuoteValue,
 } from '../utils/shell-profile.js';
+import { EnvHandler } from '../resources/env.js';
 
 /**
  * `platform` is passed explicitly to every call below rather than relying on
@@ -177,6 +179,24 @@ describe('resolveActiveShellProfile', () => {
     );
     await fse.writeFile(path.join(homeDir, '.profile'), '');
     expect(await resolveActiveShellProfile(envShPath, 'win32')).toBe(path.join(homeDir, '.profile'));
+  });
+
+  // #876: a user-scope block and a project-scope block can share one file,
+  // and this scope's may be the second of them.
+  it('finds this scope\'s block when another scope\'s block comes first in the file', async () => {
+    const otherBlock = new EnvHandler().generateShellBlock(path.join(homeDir, '.teamai', 'projects', 'api'));
+    await fse.writeFile(path.join(homeDir, '.bashrc'), `${otherBlock}\n${teamaiBlock()}`);
+    await fse.writeFile(path.join(homeDir, '.bash_profile'), 'test -f ~/.bashrc && . ~/.bashrc\n');
+    expect(await resolveActiveShellProfile(envShPath, 'win32')).toBe(path.join(homeDir, '.bashrc'));
+  });
+
+  // #876: with no block of its own anywhere along the chain, this scope goes
+  // where the other scope's block is, so injection can order the two.
+  it('picks the file along the chain holding another scope\'s block when this scope has none', async () => {
+    const otherBlock = new EnvHandler().generateShellBlock(path.join(homeDir, '.teamai', 'projects', 'api'));
+    await fse.writeFile(path.join(homeDir, '.bashrc'), `${otherBlock}\n`);
+    await fse.writeFile(path.join(homeDir, '.bash_profile'), 'test -f ~/.bashrc && . ~/.bashrc\n');
+    expect(await resolveActiveShellProfile(envShPath, 'win32')).toBe(path.join(homeDir, '.bashrc'));
   });
 
   // Regression (#693 review round 9): a bare substring search matched a
@@ -630,6 +650,38 @@ describe('envBlockReferencesDataHome', () => {
     const otherPosix = 'D:/some-other-project/.teamai/env.sh';
     const block = `[ -f ${shellQuoteValue(otherPosix)} ] && source ${shellQuoteValue(otherPosix)}`;
     expect(envBlockReferencesDataHome(block, envShPath)).toBe(false);
+  });
+
+  // #876: a longer path that merely ends in this one is another scope's.
+  it('does not match a path that only ends in this env.sh', () => {
+    const other = '/data/home/me/.teamai/env.sh';
+    const block = `[ -f ${shellQuoteValue(other)} ] && source ${shellQuoteValue(other)}`;
+    expect(envBlockReferencesDataHome(block, '/home/me/.teamai/env.sh')).toBe(false);
+    expect(envBlockReferencesDataHome(`[ -f ${other} ] && source ${other}`, '/home/me/.teamai/env.sh')).toBe(false);
+  });
+
+  it('does not match a path that only starts with this env.sh', () => {
+    const other = '/home/me/.teamai/env.sh.bak';
+    expect(envBlockReferencesDataHome(`[ -f ${other} ] && source ${other}`, '/home/me/.teamai/env.sh')).toBe(false);
+    expect(envBlockReferencesDataHome('[ -f /home/me/.teamai/env.sh ]; source /home/me/.teamai/env.sh', '/home/me/.teamai/env.sh')).toBe(true);
+  });
+});
+
+describe('findEnvBlockFor', () => {
+  const userEnvSh = '/home/me/.teamai/env.sh';
+  const projectEnvSh = '/home/me/.teamai/projects/api/env.sh';
+  const block = (envSh: string): string => new EnvHandler().generateShellBlock(path.posix.dirname(envSh));
+  const profile = `# mine\n${block(userEnvSh)}\n\n${block(projectEnvSh)}\n# tail\n`;
+
+  it('returns the block that sources the given env.sh, wherever it sits in the file', () => {
+    for (const envSh of [userEnvSh, projectEnvSh]) {
+      const found = findEnvBlockFor(profile, envSh);
+      expect(found && profile.slice(found.start, found.end ?? undefined)).toBe(block(envSh));
+    }
+  });
+
+  it('returns null when only another scope\'s block is present', () => {
+    expect(findEnvBlockFor(block(userEnvSh), projectEnvSh)).toBeNull();
   });
 });
 

@@ -51,7 +51,7 @@ async function readBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const url = new URL(req.url ?? '/', `http://localhost:${PORT}`);
   const json = (status, body) => {
     res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -95,6 +95,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   json(404, { error: 'not found' });
+}
+
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch((e) => {
+    console.error('[error]', e instanceof Error ? e.message : String(e));
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'internal error' }));
+    }
+  });
 });
 
 server.listen(PORT, '127.0.0.1', () => {

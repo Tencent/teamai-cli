@@ -5,6 +5,7 @@ import { assertNotReadOnly } from './read-only.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
 import { markContributed } from './contribute-check.js';
+import { agentSessionIdFromEnv } from './utils/session-id.js';
 import { pendingLearningsDir, queueWriteRefusal, savePendingLearning } from './utils/pending-learnings.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
@@ -248,7 +249,7 @@ export async function contribute(
   // it reaches origin: the queue always retries, and re-contributing the same
   // session would add a second copy of the same knowledge rather than fix
   // anything. `pull` and `doctor` are what tell the user it is still queued.
-  const sessionId = options.sessionId || process.env.CLAUDE_SESSION_ID || '';
+  const sessionId = options.sessionId || (await agentSessionIdFromEnv()) || '';
   if (sessionId) {
     await markContributed(sessionId);
   }

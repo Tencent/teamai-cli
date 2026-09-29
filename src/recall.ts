@@ -10,7 +10,7 @@ import { getProjectSearchIndexPath, getUserSearchIndexPath, getVotesDir } from '
 import { queryCodeKnowledge } from './code-knowledge-recall.js';
 import type { SourceAnchor } from './code-knowledge-recall.js';
 import { recordRecallQuality } from './recall-quality.js';
-import { deriveSessionId } from './utils/session-id.js';
+import { agentSessionIdFromEnv, deriveSessionId } from './utils/session-id.js';
 
 /** Relevance threshold for codebase graph hits.
  *  These are log-compressed to a bounded [0,10] range (see `queryCodeKnowledge`
@@ -91,11 +91,9 @@ export function isRelevantScore(
  * as absolute scores. Returns 1 for legacy indexes lacking a df map, which
  * makes `isRelevantScore` degrade to its previous absolute behavior.
  *
- * When multiple scopes are active, we take the entry count of whichever
- * df-bearing index is largest. This is a deliberately conservative approximation
- * (the resulting threshold is higher) — a more precise approach would carry each
- * index's own baseline through to the per-result scoring, which is left as a
- * known limitation (see P2-5).
+ * When a caller needs one aggregate baseline across multiple scopes, use the
+ * largest df-bearing index. Recall ranking instead carries each index's own
+ * baseline with its results so one scope's corpus size cannot distort another's.
  *
  * Legacy indexes (no df map) are excluded from the N computation because their
  * presence would otherwise inflate maxEntries and raise the threshold against
@@ -113,9 +111,24 @@ export function computeIdfBaseline(indexes: SearchIndex[]): number {
   return Math.log((maxEntries + 1) / 2) + 1;
 }
 
+/**
+ * Put learnings scores on the bounded scale used by codebase graph results.
+ * The relevance threshold is the corpus-aware reference point: a learnings
+ * hit at that threshold maps to 4, matching the codebase relevance threshold.
+ * This prevents corpus growth from changing which source wins the merged sort.
+ */
+export function normalizeLearningsScoreForRanking(score: number, idfBaseline: number): number {
+  if (score <= 0) return 0;
+  const baseline = idfBaseline > 0 ? idfBaseline : 1;
+  const threshold = Math.max(baseline * LEARNINGS_RELEVANCE_RATIO, LEARNINGS_ABSOLUTE_FLOOR);
+  return Math.min(10, Math.max(0, 4 + 2 * Math.log2(score / threshold)));
+}
+
 /** Search result with scope label for merged output. */
 interface ScopedSearchResult extends SearchResult {
   scope?: 'user' | 'project';
+  /** IDF baseline of the index that produced this result. */
+  idfBaseline?: number;
   /** Base path for learnings files (so AI can read the correct path). */
   learningsBase?: string;
   /** Source file anchors from codebase wiki frontmatter (codebase results only). */
@@ -566,6 +579,7 @@ export async function recall(
   const idfBaseline = computeIdfBaseline(scopeIndexes.map((s) => s.index));
 
   for (const { index, scope, learningsBase } of scopeIndexes) {
+    const scopeIdfBaseline = computeIdfBaseline([index]);
     const results = search(query, index);
     for (const r of results) {
       // A project entry shadows the same logical user entry even when the
@@ -575,7 +589,7 @@ export async function recall(
       if (scope === 'user' && projectEntryKeys.has(entryKey)) continue;
       if (!seenEntries.has(entryKey)) {
         seenEntries.add(entryKey);
-        allResults.push({ ...r, scope, learningsBase });
+        allResults.push({ ...r, scope, learningsBase, idfBaseline: scopeIdfBaseline });
       }
     }
   }
@@ -612,21 +626,20 @@ export async function recall(
     log.warn('recall: code graph retrieval unavailable, run teamai codebase --lint to diagnose');
   }
 
-  // Re-sort merged results by score descending, then date descending
-  // TODO(cross-scale): learnings scores are unbounded TF-IDF sums that grow with
-  // log(N), while codebase scores are log-compressed into [0,10]. Sorting them
-  // directly compares different scales — as the corpus grows, learnings hits
-  // increasingly crowd out codebase hits regardless of true relevance. Fixing
-  // this properly means normalizing learnings scores against the IDF baseline
-  // before the merge (related to the per-domain IDF work).
+  // Re-sort merged results by normalized score descending, then date descending.
+  // Keep each result's original score for --check, quality tracking, and output.
+  const rankingScore = (result: ScopedSearchResult): number => result.fromCodebase
+    ? result.score
+    : normalizeLearningsScoreForRanking(result.score, result.idfBaseline ?? idfBaseline);
   allResults.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
+    const scoreDelta = rankingScore(b) - rankingScore(a);
+    if (scoreDelta !== 0) return scoreDelta;
     return (b.entry.date || '').localeCompare(a.entry.date || '');
   });
 
   if (options.check) {
     const top = allResults.length > 0 ? allResults[0] : undefined;
-    emitCheckVerdict(top?.score ?? 0, top?.fromCodebase ?? false, idfBaseline, top);
+    emitCheckVerdict(top?.score ?? 0, top?.fromCodebase ?? false, top?.idfBaseline ?? idfBaseline, top);
     return;
   }
 
@@ -636,7 +649,7 @@ export async function recall(
   // Record quality signal for contribute-check's knowledge-gap detection.
   // Best-effort and independent of dry-run/verbosity — misses matter too.
   if (process.env.TEAMAI_RECALL_DISABLED !== '1') {
-    recordRecallQuality(deriveSessionId({}), topResults);
+    recordRecallQuality((await agentSessionIdFromEnv()) ?? deriveSessionId({}), topResults);
   }
 
   if (topResults.length === 0) {

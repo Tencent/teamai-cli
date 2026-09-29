@@ -1,3 +1,4 @@
+import { chmod, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
@@ -34,11 +35,11 @@ import { pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.
 import { brokenTeamProfileFiles } from './models/profile.js';
 
 /**
- * Filter a list of repo-root-relative paths (e.g. "rules/", "env/") down to
+ * Filter a list of repo-root-relative paths (e.g. "rules/", ".codebuddy-plugin/") down to
  * those that actually exist on disk. `git add` throws `pathspec did not match
  * any files` when any argument doesn't exist, so we guard against that when
  * passing "sweeper" directories that may or may not be present in a given
- * team repo (e.g. a pure-wiki team has no rules/ or env/).
+ * team repo (e.g. a pure-wiki team has no rules/).
  */
 export async function filterExistingTopLevelPaths(
   repoPath: string,
@@ -342,17 +343,31 @@ async function hasGitModeChange(
   }
 }
 
+/** A file's bytes and permission bits, or null when it cannot be read. */
+async function readFileSnapshot(filePath: string): Promise<{ content: Buffer; mode: number } | null> {
+  try {
+    const [content, stats] = await Promise.all([readFile(filePath), stat(filePath)]);
+    return { content, mode: stats.mode & 0o777 };
+  } catch {
+    return null;
+  }
+}
+
 function isTeamaiOwnedDirtyPath(
   filePath: string,
   pendingTeamConfig: string | null,
   modeChangedPaths: ReadonlySet<string>,
+  pendingEnvPaths: ReadonlySet<string>,
 ): boolean {
   const normalized = filePath.replaceAll('\\', '/');
   // The sync lock is disposable TeamAI state. teamai.yaml is different: it is
   // safe to restore only when its content was captured above and its mode is
   // unchanged. Deletion, mode-only, and content+mode changes must stop before
-  // reset --hard, or the user's change is silently lost (#690 review).
+  // reset --hard, or the user's change is silently lost (#690 review). The
+  // env files `env add` left for push follow the same rule; the caller only
+  // lists the ones it captured with an unchanged mode (#881).
   if (normalized === '.teamai/.sync-lock') return true;
+  if (pendingEnvPaths.has(normalized)) return true;
   return normalized === 'teamai.yaml'
     && pendingTeamConfig !== null
     && !modeChangedPaths.has(normalized);
@@ -362,9 +377,10 @@ export function collectUnsafeDirtyPaths(
   status: PushRepoStatus,
   pendingTeamConfig: string | null,
   modeChangedPaths: ReadonlySet<string> = new Set(),
+  pendingEnvPaths: ReadonlySet<string> = new Set(),
 ): string[] {
   return collectDirtyPaths(status)
-    .filter((filePath) => !isTeamaiOwnedDirtyPath(filePath, pendingTeamConfig, modeChangedPaths));
+    .filter((filePath) => !isTeamaiOwnedDirtyPath(filePath, pendingTeamConfig, modeChangedPaths, pendingEnvPaths));
 }
 
 /**
@@ -590,11 +606,12 @@ async function pushGroup(args: {
     }
 
     // Create branch, commit, and push.
-    // Only include "sweeper" directories (rules/, env/) that actually
-    // exist — otherwise `git add 'rules/'` throws `pathspec did not match
-    // any files` and the whole push aborts (BUG #1). A team may not have
-    // rules/ or env/ yet.
-    const sweeperCandidates = ['rules/', 'env/', '.codebuddy-plugin/'];
+    // Only include "sweeper" directories (rules/) that actually exist —
+    // otherwise `git add 'rules/'` throws `pathspec did not match any files`
+    // and the whole push aborts (BUG #1). A team may not have rules/ yet.
+    // env/ is not swept: each env item is its own file in pushedFiles, and a
+    // sweep would publish the env edits the user left out of the selection (#881).
+    const sweeperCandidates = ['rules/', '.codebuddy-plugin/'];
     const existingSweepers = await filterExistingTopLevelPaths(
       localConfig.repo.localPath,
       sweeperCandidates,
@@ -887,6 +904,36 @@ async function pushCore(
   // origin/<default>, so resetToCleanMaster/pullRepo (which assume a normal
   // clone on a branch) are neither needed nor safe — skip them.
   let pendingTeamConfig: string | null = initialPendingTeamConfig;
+  // The env edits captured before the refresh below. Their only copy is the
+  // clone's working tree, so every reset that can run before they are
+  // committed must be followed by this restore (#881).
+  // Bytes and permission bits: a hand edit need not be UTF-8, and git records
+  // no mode for an untracked file (a new env/<role>/env.yaml), so clean -fd
+  // plus a plain write would recreate a 0600 file under the umask.
+  const pendingEnvFiles = new Map<string, { content: Buffer; mode: number }>();
+  /** Write the captured env edits back; returns each one it could not, with the reason. */
+  const restorePendingEnvFiles = async (): Promise<string[]> => {
+    const lost: string[] = [];
+    for (const [relativePath, { content, mode }] of pendingEnvFiles) {
+      const target = path.join(localConfig.repo.localPath, ...relativePath.split('/'));
+      try {
+        await writeFile(target, content);
+        await chmod(target, mode);
+      } catch (e) {
+        lost.push(`${relativePath} (${(e as Error).message})`);
+      }
+    }
+    return lost;
+  };
+  const reportLostEnvFiles = (lost: string[]): void => {
+    log.error(
+      `Could not put back ${lost.join(', ')} after resetting the team repo, so that env edit is no longer in `
+      + 'the clone. Nothing more was pushed. Run `teamai env add` again for the variables it held, then push.',
+    );
+    process.exitCode = 1;
+  };
+  // Env files the refresh below could not put back; the push stops on any.
+  let lostEnvFiles: string[] = [];
   // Set when the pull below failed: everything read from the clone after this
   // point is the previous pull's, manifests included.
   let teamRepoStale = false;
@@ -918,10 +965,32 @@ async function pushCore(
       if (pendingTeamConfig !== null && await hasGitModeChange(git, 'teamai.yaml')) {
         modeChangedPaths.add('teamai.yaml');
       }
+      // `env add` edits env files in the clone and leaves the commit to push:
+      // capture what the env scan will push, to restore it after the refresh
+      // below as teamai.yaml is (#881). A mode change is not captured, so it
+      // stays dirty and stops the push. So does any index state: the snapshot
+      // holds only the working copy, and reset --hard would drop a staged,
+      // conflicted, deleted or renamed entry.
+      const status = await git.status();
+      const indexedPaths = new Set(collectDirtyPaths({
+        staged: status.staged,
+        created: status.created,
+        conflicted: status.conflicted,
+        deleted: status.deleted,
+        renamed: status.renamed,
+      }));
+      for (const item of await getHandler('env').scanLocalForPush(teamConfig, localConfig)) {
+        if (indexedPaths.has(item.relativePath)) continue;
+        const snapshot = await readFileSnapshot(item.sourcePath);
+        if (snapshot !== null && !await hasGitModeChange(git, item.relativePath)) {
+          pendingEnvFiles.set(item.relativePath, snapshot);
+        }
+      }
       const unsafeDirtyPaths = collectUnsafeDirtyPaths(
-        await git.status(),
+        status,
         pendingTeamConfig,
         modeChangedPaths,
+        new Set(pendingEnvFiles.keys()),
       );
       if (unsafeDirtyPaths.length > 0) {
         pullSpin.fail(
@@ -931,8 +1000,14 @@ async function pushCore(
         process.exitCode = 1;
         return;
       }
-      await resetToCleanMaster(git, repoPath);
-      await pullRepo(repoPath);
+      try {
+        await resetToCleanMaster(git, repoPath);
+        await pullRepo(repoPath);
+      } finally {
+        // Unlike teamai.yaml, nothing later in the run holds these edits, so
+        // they go back even when the refresh fails after reset --hard.
+        lostEnvFiles = await restorePendingEnvFiles();
+      }
       if (pendingTeamConfig !== null) {
         // Re-apply the TeamAI-owned config edit after refreshing the default branch.
         await writeFile(yamlPath, pendingTeamConfig);
@@ -941,6 +1016,10 @@ async function pushCore(
     } catch (e) {
       teamRepoStale = true;
       pullSpin.warn(`Pull failed: ${(e as Error).message}`);
+    }
+    if (lostEnvFiles.length > 0) {
+      reportLostEnvFiles(lostEnvFiles);
+      return;
     }
   }
 
@@ -1650,17 +1729,35 @@ async function pushCore(
       includeTeamConfig: groupIndex === configGroupIndex,
       branch: options.branch,
     });
+    // A failure can leave the clone on the group's local branch, where an
+    // unpushed commit holds the config and env edits: go back to the default
+    // branch first, where the next run finds them again.
+    const configPending = pendingTeamConfig !== null && groupIndex <= configGroupIndex;
+    if (outcome === 'failed' && (configPending || pendingEnvFiles.size > 0)) {
+      await checkoutMaster(localConfig.repo.localPath);
+    }
     // A preceding reuse group may take the metadata-only path in
     // pushRepoBranch(), which resets and cleans the clone. Re-apply the
     // captured config before the new explicit-branch group runs, or that
-    // cleanup would silently discard the user's edit (#800).
-    if (pendingTeamConfig !== null && groupIndex < configGroupIndex) {
+    // cleanup would silently discard the user's edit (#800). The same goes
+    // for the config group itself when it failed.
+    if (pendingTeamConfig !== null && configPending && (groupIndex < configGroupIndex || outcome === 'failed')) {
       await writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), pendingTeamConfig);
     }
-    if (outcome === 'failed') {
+    // A group that pushed a branch carries its own env files, so those are no
+    // longer pending. Any group may have reset and cleaned the clone on the way
+    // out (the rollback, or pushRepoBranch's no-change path, which a reuse group
+    // retrying its PR also takes before it reports pushed), so the rest go back
+    // whatever the outcome; rewriting a file still in place changes nothing.
+    if (outcome === 'pushed' || outcome === 'pr-failed') {
+      for (const item of group.items) pendingEnvFiles.delete(item.relativePath);
+    }
+    const lost = await restorePendingEnvFiles();
+    if (outcome === 'failed' || lost.length > 0) {
       // The branch/PR for earlier groups is already on the remote, so their
       // records must survive this failure or the next run would duplicate them.
       await saveStateForScope(pushState, localConfig);
+      if (lost.length > 0) reportLostEnvFiles(lost);
       process.exitCode = 1;
       return;
     }
@@ -1703,6 +1800,9 @@ async function pushCore(
       options,
       anyPrFailed ? undefined : result,
     );
+    // Its no-change path resets the clone too, and it commits teamai.yaml only.
+    const lost = await restorePendingEnvFiles();
+    if (lost.length > 0) reportLostEnvFiles(lost);
     return;
   }
 

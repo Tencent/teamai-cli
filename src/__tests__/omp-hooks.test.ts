@@ -23,6 +23,7 @@ import {
   OMP_HOOK_FILE,
 } from '../omp-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
+import { log } from '../utils/logger.js';
 
 describe('resolveOmpExtensionsDir', () => {
   it('always targets the user agent dir (single-copy policy)', () => {
@@ -108,6 +109,15 @@ describe('injectOmpHooks / removeOmpHooks', () => {
     const first = await fse.readFile(extFile(), 'utf8');
     await injectOmpHooks();
     expect(await fse.readFile(extFile(), 'utf8')).toBe(first);
+  });
+
+  it('reports the injection only when the extension changes', async () => {
+    await injectOmpHooks();
+    expect(log.success).toHaveBeenCalledWith(expect.stringContaining('Injected teamai OMP hook'));
+    vi.mocked(log.success).mockClear();
+
+    await injectOmpHooks();
+    expect(log.success).not.toHaveBeenCalled();
   });
 
   it('remove deletes the extension file; safe when absent', async () => {

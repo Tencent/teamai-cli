@@ -212,3 +212,221 @@ describe('projects add/update/remove via the real CLI (issue #756)', () => {
     expect(fs.existsSync(path.join(memberRoot, '.claude', 'agents', 'alpha-agent.md'))).toBe(false);
   }, 60_000);
 });
+
+// ─── #802: the removed project's rule was the member's only team rule ───────
+//
+// With no other team rule to deliver, pull's rule set is empty and the stale
+// sweep never runs, so the removed project's rule used to stay deployed. It
+// must be reclaimed while a personal rule in the same directory survives.
+describe('projects remove reclaims the last project rule (issue #802)', () => {
+  let sandbox: string;
+  let home: string;
+  let remote: string;
+  let memberRoot: string;
+
+  beforeAll(() => {
+    if (!fs.existsSync(CLI)) {
+      throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
+    }
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-projects-last-rule-e2e-'));
+    home = path.join(sandbox, 'home');
+    remote = path.join(sandbox, 'team.git');
+    memberRoot = path.join(sandbox, 'member');
+    const seed = path.join(sandbox, 'seed');
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(seed, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'teamai.yaml'), [
+      'team: projects-last-rule-e2e',
+      `repo: ${remote}`,
+      'provider: git',
+      'reviewers: []',
+      'toolPaths:',
+      '  claude:',
+      '    rules: .claude/rules',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(seed, 'manifest', 'projects.yaml'), [
+      'version: 1',
+      'projects:',
+      '  - id: alpha',
+      '    resources:',
+      '      knowledge: [alpha]',
+      '  - id: beta',
+      '    resources:',
+      '      knowledge: [beta]',
+      '',
+    ].join('\n'));
+    // alpha's rule is the only team rule a member of alpha receives.
+    fs.mkdirSync(path.join(seed, 'rules', 'alpha'), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'rules', 'alpha', 'alpha-rule.md'), '# Alpha rule\n');
+    git(['init', '-q', '-b', 'main'], seed);
+    git(['add', '-A'], seed);
+    git(['commit', '-q', '-m', 'seed'], seed);
+    git(['clone', '-q', '--bare', seed, remote], sandbox);
+
+    const teamRepo = path.join(memberRoot, '.teamai', 'team-repo');
+    fs.mkdirSync(path.join(memberRoot, '.claude', 'rules'), { recursive: true });
+    git(['clone', '-q', remote, teamRepo], sandbox);
+    fs.writeFileSync(path.join(memberRoot, '.teamai', 'config.yaml'), [
+      'repo:',
+      `  localPath: ${teamRepo}`,
+      `  remote: ${remote}`,
+      'username: member',
+      'updatePolicy: auto',
+      'scope: project',
+      `projectRoot: ${memberRoot}`,
+      '',
+    ].join('\n'));
+  });
+
+  afterAll(() => {
+    if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('removes the project rule and keeps the personal rule', async () => {
+    const rulesDir = path.join(memberRoot, '.claude', 'rules');
+
+    const set = await runCLI(['projects', 'set', 'alpha'], memberRoot, home);
+    expect(set.output).toContain('Active projects set to: alpha');
+    const pull = await runCLI(['pull', '--force'], memberRoot, home);
+    expect(pull.code, pull.output).toBe(0);
+    expect(fs.existsSync(path.join(rulesDir, 'alpha', 'alpha-rule.md'))).toBe(true);
+    // Written after that pull: while a team rule is selected, the stale sweep
+    // treats every unknown file in the directory as stale.
+    fs.writeFileSync(path.join(rulesDir, 'personal.md'), '# Mine\n');
+
+    // The admin's `projects remove alpha`, merged: the rule stays in the repo.
+    const clone = path.join(sandbox, 'admin-clone');
+    git(['clone', '-q', remote, clone], sandbox);
+    fs.writeFileSync(path.join(clone, 'manifest', 'projects.yaml'), [
+      'version: 1',
+      'projects:',
+      '  - id: beta',
+      '    resources:',
+      '      knowledge: [beta]',
+      '',
+    ].join('\n'));
+    git(['commit', '-q', '-am', 'remove project alpha'], clone);
+    git(['push', '-q', 'origin', 'main'], clone);
+
+    const after = await runCLI(['pull', '--force'], memberRoot, home);
+    expect(after.code, after.output).toBe(0);
+    expect(fs.existsSync(path.join(rulesDir, 'alpha', 'alpha-rule.md'))).toBe(false);
+    expect(fs.readFileSync(path.join(rulesDir, 'personal.md'), 'utf8')).toBe('# Mine\n');
+  }, 60_000);
+});
+
+// ─── #815 review: an edited rule, and a rule dir shared with the user ───────
+//
+// The admin edits the project's rule and removes the project before the member
+// pulls again, so the member's copy is the version of their last pull, not the
+// current one. It is still exactly what pull delivered, so it is reclaimed —
+// also from JoyCode, whose rule directory holds the member's own rules too.
+describe('projects remove reclaims an edited project rule from every tool (#815 review)', () => {
+  let sandbox: string;
+  let home: string;
+  let remote: string;
+  let memberRoot: string;
+
+  beforeAll(() => {
+    if (!fs.existsSync(CLI)) {
+      throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
+    }
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-projects-edited-rule-e2e-'));
+    home = path.join(sandbox, 'home');
+    remote = path.join(sandbox, 'team.git');
+    memberRoot = path.join(sandbox, 'member');
+    const seed = path.join(sandbox, 'seed');
+    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(path.join(seed, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'teamai.yaml'), [
+      'team: projects-edited-rule-e2e',
+      `repo: ${remote}`,
+      'provider: git',
+      'reviewers: []',
+      'toolPaths:',
+      '  claude:',
+      '    rules: .claude/rules',
+      '  joycode:',
+      '    rules: .joycode/rules',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(seed, 'manifest', 'projects.yaml'), [
+      'version: 1',
+      'projects:',
+      '  - id: alpha',
+      '    resources:',
+      '      knowledge: [alpha]',
+      '  - id: beta',
+      '    resources:',
+      '      knowledge: [beta]',
+      '',
+    ].join('\n'));
+    fs.mkdirSync(path.join(seed, 'rules', 'alpha'), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'rules', 'alpha', 'alpha-rule.md'), '# Alpha rule\n');
+    git(['init', '-q', '-b', 'main'], seed);
+    git(['add', '-A'], seed);
+    git(['commit', '-q', '-m', 'seed'], seed);
+    git(['clone', '-q', '--bare', seed, remote], sandbox);
+
+    const teamRepo = path.join(memberRoot, '.teamai', 'team-repo');
+    for (const dir of ['.claude/rules', '.joycode/rules']) fs.mkdirSync(path.join(memberRoot, dir), { recursive: true });
+    git(['clone', '-q', remote, teamRepo], sandbox);
+    fs.writeFileSync(path.join(memberRoot, '.teamai', 'config.yaml'), [
+      'repo:',
+      `  localPath: ${teamRepo}`,
+      `  remote: ${remote}`,
+      'username: member',
+      'updatePolicy: auto',
+      'scope: project',
+      `projectRoot: ${memberRoot}`,
+      '',
+    ].join('\n'));
+  });
+
+  afterAll(() => {
+    if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('removes the last-pulled copy from Claude and JoyCode and keeps the member\'s own JoyCode rule', async () => {
+    const set = await runCLI(['projects', 'set', 'alpha'], memberRoot, home);
+    expect(set.output).toContain('Active projects set to: alpha');
+    const pull = await runCLI(['pull', '--force'], memberRoot, home);
+    expect(pull.code, pull.output).toBe(0);
+    const delivered = [
+      ...fs.readdirSync(path.join(memberRoot, '.claude', 'rules'), { recursive: true }),
+      ...fs.readdirSync(path.join(memberRoot, '.joycode', 'rules'), { recursive: true }),
+    ].map(String);
+    expect(delivered.some((f) => f.includes('alpha-rule'))).toBe(true);
+    const claudeCopy = path.join(memberRoot, '.claude', 'rules', 'alpha', 'alpha-rule.md');
+    const joycodeCopy = fs.readdirSync(path.join(memberRoot, '.joycode', 'rules', 'alpha'))
+      .map((f) => path.join(memberRoot, '.joycode', 'rules', 'alpha', f))[0];
+    expect(fs.existsSync(claudeCopy)).toBe(true);
+    expect(joycodeCopy).toBeDefined();
+    const personal = path.join(memberRoot, '.joycode', 'rules', 'personal.md');
+    fs.writeFileSync(personal, '# Mine\n');
+
+    // The admin edits alpha's rule, then removes the project, before the
+    // member pulls again: the team file now differs from both copies.
+    const clone = path.join(sandbox, 'admin-clone');
+    git(['clone', '-q', remote, clone], sandbox);
+    fs.writeFileSync(path.join(clone, 'rules', 'alpha', 'alpha-rule.md'), '# Alpha rule v2\n');
+    git(['commit', '-q', '-am', 'edit alpha rule'], clone);
+    fs.writeFileSync(path.join(clone, 'manifest', 'projects.yaml'), [
+      'version: 1',
+      'projects:',
+      '  - id: beta',
+      '    resources:',
+      '      knowledge: [beta]',
+      '',
+    ].join('\n'));
+    git(['commit', '-q', '-am', 'remove project alpha'], clone);
+    git(['push', '-q', 'origin', 'main'], clone);
+
+    const after = await runCLI(['pull', '--force'], memberRoot, home);
+    expect(after.code, after.output).toBe(0);
+    expect(fs.existsSync(claudeCopy)).toBe(false);
+    expect(fs.existsSync(joycodeCopy)).toBe(false);
+    expect(fs.readFileSync(personal, 'utf8')).toBe('# Mine\n');
+  }, 60_000);
+});

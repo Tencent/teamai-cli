@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { injectOpenClawHooks, removeOpenClawHooks, OPENCLAW_HOOK_DIR } from '../openclaw-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
+import { log } from '../utils/logger.js';
 
 let tmpDir: string;
 let wsDir: string;
@@ -62,6 +63,20 @@ describe('injectOpenClawHooks', () => {
     await injectOpenClawHooks(wsDir, 'openclaw');
     const dir = path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR);
     expect(fs.existsSync(path.join(dir, 'HOOK.md'))).toBe(true);
+  });
+
+  it('reports the injection only when the hook files change', async () => {
+    const success = vi.spyOn(log, 'success').mockImplementation(() => {});
+    try {
+      await injectOpenClawHooks(wsDir, 'openclaw');
+      expect(success).toHaveBeenCalledWith(expect.stringContaining('Injected teamai OpenClaw hook'));
+      success.mockClear();
+
+      await injectOpenClawHooks(wsDir, 'openclaw');
+      expect(success).not.toHaveBeenCalled();
+    } finally {
+      success.mockRestore();
+    }
   });
 });
 

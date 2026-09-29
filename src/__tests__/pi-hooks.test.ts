@@ -180,6 +180,15 @@ describe('Pi hook extension', () => {
     expect(await fse.pathExists(file)).toBe(false);
   });
 
+  it('reports the global injection only when the extension changes', async () => {
+    await injectPiHooks();
+    expect(log.success).toHaveBeenCalledWith(expect.stringContaining('Injected teamai Pi hook'));
+    vi.mocked(log.success).mockClear();
+
+    await injectPiHooks();
+    expect(log.success).not.toHaveBeenCalled();
+  });
+
   it('preserves a same-named global extension without the TeamAI marker', async () => {
     const file = path.join(tmp, '.pi', 'agent', 'extensions', PI_HOOK_FILE);
     await fse.ensureDir(path.dirname(file));

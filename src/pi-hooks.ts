@@ -22,7 +22,7 @@
  */
 
 import path from 'node:path';
-import { writeFile, ensureDir, pathExists, remove, readFileSafe } from './utils/fs.js';
+import { writeFile, writeIfChanged, ensureDir, pathExists, remove, readFileSafe } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 
@@ -135,9 +135,11 @@ export async function injectPiHooks(): Promise<void> {
     log.warn(`Skipping Pi hook injection: ${file} exists without the TeamAI marker`);
     return;
   }
-  await ensureDir(dir);
-  await writeFile(file, buildPiExtensionSource());
-  log.success(`Injected teamai Pi hook into ${file}`);
+  if (await writeIfChanged(file, buildPiExtensionSource())) {
+    log.success(`Injected teamai Pi hook into ${file}`);
+  } else {
+    log.debug(`teamai Pi hook already up-to-date in ${file}`);
+  }
 }
 
 /** Remove the generated global Pi extension if present. */

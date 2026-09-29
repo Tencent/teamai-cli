@@ -111,8 +111,8 @@ export function prefixFromEntryPath(entry: string, posix: boolean): { prefix: st
  * Resolve the install target the running CLI lives in
  * (<prefix>/[lib/]node_modules/<pkg>/...) so a self-update reinstalls into
  * the same location. Returns null when the entry cannot be attributed to an
- * npm-managed install (e.g. a linked checkout) — callers then keep the
- * default global install behavior.
+ * npm-managed install (e.g. a linked checkout) — callers must not install
+ * then, since npm's default global prefix is where `npm link` put its symlink.
  */
 function resolveInstallPrefix(): { prefix: string; global: boolean } | null {
   return prefixFromEntryPath(fileURLToPath(import.meta.url), process.platform !== 'win32');
@@ -537,6 +537,40 @@ export async function doUpdate(): Promise<void> {
     return;
   }
 
+  // Refuse unsupported install layouts before prompting, so nobody confirms
+  // an update that is then skipped.
+  const pkgName = getCurrentPackageName();
+  const registry = resolveRegistryForPackage(pkgName);
+  const target = resolveInstallPrefix();
+  if (!target) {
+    // A prefix-less `npm install -g` would land in npm's default global
+    // prefix — for an `npm link` checkout that replaces the symlink with the
+    // registry copy, so the checkout silently stops being the CLI that runs.
+    // Hooks discard stderr, so debug.log keeps the record.
+    const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+    const message =
+      `Self-update skipped: teamai is running from ${root}, which is not an npm install ` +
+      'it can update in place (for example an `npm link` checkout). For a checkout, pull ' +
+      'and rebuild it; to switch to the published package, run ' +
+      `"npm install -g ${pkgName} --registry=${registry}".`;
+    log.warn(message);
+    log.persist(message);
+    return;
+  }
+  if (!target.global) {
+    // POSIX vendored (flat) layouts cannot be reinstalled by npm without
+    // destroying the tree: a non-global install reconciles <prefix> as a
+    // project and prunes every undeclared sibling in <prefix>/node_modules
+    // (including a co-located npm), while -g always lands in
+    // <prefix>/lib. Stay out and let the user update manually.
+    const message =
+      `Self-update is not supported for the vendored install at ${target.prefix} ` +
+      '(npm would relocate or prune the runtime tree) — update manually.';
+    log.warn(message);
+    log.persist(message);
+    return;
+  }
+
   if (policy === 'prompt') {
     if (!isInteractive()) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
@@ -559,28 +593,13 @@ export async function doUpdate(): Promise<void> {
   }
 
   try {
-    const pkgName = getCurrentPackageName();
-    const registry = resolveRegistryForPackage(pkgName);
     const npm = resolveNpmCommand();
-    const target = resolveInstallPrefix();
-    if (target && !target.global) {
-      // POSIX vendored (flat) layouts cannot be reinstalled by npm without
-      // destroying the tree: a non-global install reconciles <prefix> as a
-      // project and prunes every undeclared sibling in <prefix>/node_modules
-      // (including a co-located npm), while -g always lands in
-      // <prefix>/lib. Stay out and let the user update manually.
-      log.warn(
-        `Self-update is not supported for the vendored install at ${target.prefix} ` +
-        '(npm would relocate or prune the runtime tree) — update manually.',
-      );
-      return;
-    }
     await execFileAsync(
       npm.cmd,
       [
         ...npm.args,
         'install', '-g', pkgName,
-        ...(target ? [`--prefix=${target.prefix}`] : []),
+        `--prefix=${target.prefix}`,
         `--registry=${registry}`,
       ],
       { timeout: INSTALL_TIMEOUT, windowsHide: true },
@@ -589,10 +608,8 @@ export async function doUpdate(): Promise<void> {
 
     const entry = resolveTeamaiEntryScript();
 
-    // Verify the RUNNING install actually changed. A null target (linked
-    // checkout, exotic layout) updates npm's default global prefix — which is
-    // not necessarily where this process runs from — and a stale success
-    // message here is exactly how self-update silently stops working.
+    // Verify the RUNNING install actually changed: a stale success message
+    // here is exactly how self-update silently stops working.
     if (entry) {
       try {
         const installed = JSON.parse(fs.readFileSync(

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isRelevantScore, computeIdfBaseline } from '../recall.js';
+import { isRelevantScore, computeIdfBaseline, normalizeLearningsScoreForRanking } from '../recall.js';
 import type { SearchIndex } from '../types.js';
 
 // ─── Helpers ──────────────────────────────────────────────
@@ -63,6 +63,37 @@ describe('computeIdfBaseline', () => {
     const modern = makeIndex(10, true);   // small but has df
     const expected = Math.log((10 + 1) / 2) + 1;
     expect(computeIdfBaseline([legacy, modern])).toBeCloseTo(expected, 5);
+  });
+});
+
+// ─── cross-source ranking normalization ──────────────────
+
+describe('normalizeLearningsScoreForRanking', () => {
+  it('maps the corpus-aware learnings relevance threshold to the codebase threshold', () => {
+    for (const baseline of [1, 8]) {
+      const threshold = Math.max(baseline * 1.35, 4.0);
+      expect(normalizeLearningsScoreForRanking(threshold, baseline)).toBeCloseTo(4.0, 5);
+    }
+  });
+
+  it('keeps equivalent relevance ratios on the same scale as the corpus grows', () => {
+    const smallCorpus = normalizeLearningsScoreForRanking(8, 1); // 2x the cold-start threshold
+    const largeCorpus = normalizeLearningsScoreForRanking(21.6, 8); // 2x the relative threshold
+    expect(largeCorpus).toBeCloseTo(smallCorpus, 5);
+  });
+
+  it('is monotonic and bounded, with irrelevant learnings below the relevance threshold', () => {
+    const threshold = Math.max(8 * 1.35, 4.0);
+    const below = normalizeLearningsScoreForRanking(threshold - 1, 8);
+    const at = normalizeLearningsScoreForRanking(threshold, 8);
+    const above = normalizeLearningsScoreForRanking(threshold * 8, 8);
+    expect(below).toBeLessThan(4);
+    expect(at).toBeCloseTo(4, 5);
+    expect(above).toBe(10);
+  });
+
+  it('uses the cold-start baseline for missing or invalid IDF baselines', () => {
+    expect(normalizeLearningsScoreForRanking(8, 0)).toBeCloseTo(6, 5);
   });
 });
 

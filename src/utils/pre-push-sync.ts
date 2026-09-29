@@ -57,7 +57,7 @@ export async function syncTeamUpdatesToLocal(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   baseRevs: string | readonly string[] | null,
-  placedRules: Record<string, string> | undefined = undefined,
+  placedRules?: Record<string, string>,
 ): Promise<void> {
   const bases = (typeof baseRevs === 'string' ? [baseRevs] : baseRevs ?? []).filter((rev) => rev !== '');
   if (bases.length === 0) {

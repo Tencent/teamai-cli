@@ -28,7 +28,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --deny-warnings --report-unused-disable-directives",
+    "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives",
     "release": "standard-version",
     "prepublishOnly": "npm run build"
   },
@@ -84,6 +84,7 @@
     "fast-check": "^4.10.2",
     "opencode-ai": "1.18.23",
     "oxlint": "1.85.0",
+    "oxlint-tsgolint": "7.0.2003",
     "standard-version": "^9.5.0",
     "tsup": "^8.3.0",
     "typescript": "^5.7.0",

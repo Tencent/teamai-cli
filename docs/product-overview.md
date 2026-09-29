@@ -128,7 +128,7 @@ teamai codebase --lint --output /path/to/repo # check the locally extracted grap
 
 Extract writes `teamwiki/evidence/code/<project>/_manifest.json` even when AI enrichment is skipped or produces nothing, so `--deep-enrich` can start.
 
-The graph stores components, interfaces, configs, and cross-repo import edges. `teamai recall` uses it for graph-boosted re-ranking.
+The graph stores components, interfaces, configs, and cross-repo import edges. `teamai recall` ranks graph-boosted hits with learnings on a shared relevance scale.
 When a recall hit comes from a codebase page, the result includes a `Sources:` line listing the relevant source file paths — giving agents a direct starting point for code changes instead of re-exploring the repo.
 
 Edges come from two tracks that run together, with AST results taking precedence on overlap:

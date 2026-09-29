@@ -25,6 +25,7 @@ import {
   OPENCODE_HOOK_FILE,
 } from '../opencode-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
+import { log } from '../utils/logger.js';
 
 describe('resolveOpencodePluginDir', () => {
   it('project scope → <base>/.opencode/plugin', () => {
@@ -149,6 +150,15 @@ describe('injectOpencodeHooks / removeOpencodeHooks', () => {
     const first = await fse.readFile(file, 'utf8');
     await injectOpencodeHooks(tmp, 'project');
     expect(await fse.readFile(file, 'utf8')).toBe(first);
+  });
+
+  it('reports the injection only when the plugin changes', async () => {
+    await injectOpencodeHooks(tmp, 'project');
+    expect(log.success).toHaveBeenCalledWith(expect.stringContaining('Injected teamai OpenCode hook'));
+    vi.mocked(log.success).mockClear();
+
+    await injectOpencodeHooks(tmp, 'project');
+    expect(log.success).not.toHaveBeenCalled();
   });
 
   it('remove deletes the plugin file; safe when absent', async () => {

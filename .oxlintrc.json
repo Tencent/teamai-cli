@@ -8,6 +8,28 @@
         "varsIgnorePattern": "^_",
         "ignoreRestSiblings": true
       }
-    ]
-  }
+    ],
+    "typescript/no-floating-promises": "warn",
+    "typescript/no-misused-promises": "warn",
+    "typescript/no-base-to-string": "off",
+    "typescript/no-duplicate-type-constituents": "off",
+    "typescript/no-implied-eval": "off",
+    "typescript/no-meaningless-void-operator": "off",
+    "typescript/no-redundant-type-constituents": "off",
+    "typescript/await-thenable": "off",
+    "typescript/require-array-sort-compare": "off",
+    "typescript/restrict-template-expressions": "off",
+    "typescript/unbound-method": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/__tests__/**"],
+      "rules": {
+        "typescript/no-misused-promises": [
+          "warn",
+          { "checksVoidReturn": { "arguments": false } }
+        ]
+      }
+    }
+  ]
 }

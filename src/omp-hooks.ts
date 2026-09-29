@@ -32,7 +32,7 @@
  */
 
 import path from 'node:path';
-import { writeFile, ensureDir, pathExists, remove } from './utils/fs.js';
+import { writeIfChanged, pathExists, remove } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
 
@@ -133,16 +133,18 @@ export default function teamaiHooks(pi) {
 }
 
 /**
- * Inject (or refresh) the teamai OMP extension. Idempotent — rewrites the
- * extension file each time. The install gate (~/.omp must exist) lives in the
- * reconcile caller, so this never creates an OMP config dir on its own.
+ * Inject (or refresh) the teamai OMP extension. Idempotent — writes and
+ * reports the extension file only when its content changes. The install gate
+ * (~/.omp must exist) lives in the reconcile caller, so this never creates an
+ * OMP config dir on its own.
  */
 export async function injectOmpHooks(): Promise<void> {
-  const dir = resolveOmpExtensionsDir();
-  await ensureDir(dir);
-  const file = path.join(dir, OMP_HOOK_FILE);
-  await writeFile(file, buildOmpExtensionSource());
-  log.success(`Injected teamai OMP hook into ${file}`);
+  const file = path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE);
+  if (await writeIfChanged(file, buildOmpExtensionSource())) {
+    log.success(`Injected teamai OMP hook into ${file}`);
+  } else {
+    log.debug(`teamai OMP hook already up-to-date in ${file}`);
+  }
 }
 
 /** Remove the teamai OMP extension if present. */

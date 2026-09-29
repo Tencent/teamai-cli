@@ -178,11 +178,12 @@ interface AllowlistFile {
  * @param event - The hook event name (e.g. `on_session_start`).
  * @param entry - Hook descriptor; `matcher` and `timeout` are omitted when
  *   undefined so the YAML does not contain null values.
+ * @returns Whether config.yaml was written.
  */
 export async function upsertHermesHook(
   event: string,
   entry: { command: string; matcher?: string; timeout?: number },
-): Promise<void> {
+): Promise<boolean> {
   const doc = await readConfigDoc();
 
   // Get current hooks[event] as a plain JS array.
@@ -198,10 +199,11 @@ export async function upsertHermesHook(
 
   const newArr = [...untouched, cleanEntry];
 
-  if (JSON.stringify(arr) === JSON.stringify(newArr)) return;
+  if (JSON.stringify(arr) === JSON.stringify(newArr)) return false;
 
   doc.setIn(['hooks', event], newArr);
   await writeConfigDoc(doc);
+  return true;
 }
 
 /**
@@ -258,18 +260,20 @@ export async function removeHermesHookByCommand(command: string): Promise<void> 
  *
  * @param event   - Hook event name.
  * @param command - Absolute path to the approved script.
+ * @returns Whether the allowlist was written.
  */
-export async function addHermesAllowlist(event: string, command: string): Promise<void> {
+export async function addHermesAllowlist(event: string, command: string): Promise<boolean> {
   const filePath = getHermesAllowlistPath();
   const raw = await readJson<AllowlistFile>(filePath);
   const data: AllowlistFile =
     raw && Array.isArray(raw.approvals) ? raw : { approvals: [] };
 
   const exists = data.approvals.some((a) => a.event === event && a.command === command);
-  if (exists) return;
+  if (exists) return false;
 
   data.approvals.push({ event, command });
   await writeJson(filePath, data);
+  return true;
 }
 
 /**

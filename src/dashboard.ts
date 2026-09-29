@@ -76,24 +76,29 @@ export async function startDashboard(port?: number): Promise<void> {
   const clients: Set<SSEClient> = new Set();
 
   // Watch events file and push updates to SSE clients
+  const pushSessions = async () => {
+    try {
+      const events = await readEvents(eventsPath);
+      const workspaces = await getWorkspaces(events);
+      const sessions = rebuildSessions(events);
+      const data = JSON.stringify(sessions);
+      for (const client of clients) {
+        const workspace = workspaces.find(w => w.id === clientScopes.get(client));
+        client.write(`data: ${workspace ? JSON.stringify(rebuildSessions(workspaceEvents(events, workspace, workspaces))) : data}\n\n`);
+      }
+    } catch (e) {
+      log.debug(`dashboard: SSE push error: ${(e as Error).message}`);
+    }
+  };
   let watchDebounce: ReturnType<typeof setTimeout> | null = null;
-  const watcher = fs.watch(eventsPath, () => {
+  // Compaction atomically replaces events.jsonl. Watching the file itself
+  // follows the old inode on Linux and macOS, so watch its directory instead.
+  const eventsFileName = path.basename(eventsPath);
+  const watcher = fs.watch(path.dirname(eventsPath), (_eventType, filename) => {
+    if (filename && filename.toString() !== eventsFileName) return;
     // Debounce rapid file changes (multiple hooks firing near-simultaneously)
     if (watchDebounce) clearTimeout(watchDebounce);
-    watchDebounce = setTimeout(async () => {
-      try {
-        const events = await readEvents(eventsPath);
-        const workspaces = await getWorkspaces(events);
-        const sessions = rebuildSessions(events);
-        const data = JSON.stringify(sessions);
-        for (const client of clients) {
-          const workspace = workspaces.find(w => w.id === clientScopes.get(client));
-          client.write(`data: ${workspace ? JSON.stringify(rebuildSessions(workspaceEvents(events, workspace, workspaces))) : data}\n\n`);
-        }
-      } catch (e) {
-        log.debug(`dashboard: SSE push error: ${(e as Error).message}`);
-      }
-    }, 200);
+    watchDebounce = setTimeout(() => void pushSessions(), 200);
   });
 
   // ─── PID liveness monitor ────────────────────────────
@@ -106,7 +111,7 @@ export async function startDashboard(port?: number): Promise<void> {
   //  This complements the Stop hook (which only means "LLM finished
   //  responding") by detecting actual process exit.
   //
-  const pidCheckInterval = setInterval(async () => {
+  const checkPids = async () => {
     try {
       const events = await readEvents(eventsPath);
       const sessions = rebuildSessions(events);
@@ -139,9 +144,10 @@ export async function startDashboard(port?: number): Promise<void> {
     } catch (e) {
       log.debug(`dashboard: PID check error: ${(e as Error).message}`);
     }
-  }, DASHBOARD_PID_CHECK_INTERVAL_MS);
+  };
+  const pidCheckInterval = setInterval(() => void checkPids(), DASHBOARD_PID_CHECK_INTERVAL_MS);
 
-  const server = http.createServer(async (req, res) => {
+  const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://localhost:${serverPort}`);
 
     // CORS headers for local development
@@ -287,6 +293,16 @@ export async function startDashboard(port?: number): Promise<void> {
     // 404 for everything else
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not Found');
+  };
+
+  const server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((e: unknown) => {
+      log.debug(`dashboard: request error: ${e instanceof Error ? e.message : String(e)}`);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal error' }));
+      }
+    });
   });
 
   // Handle port conflict

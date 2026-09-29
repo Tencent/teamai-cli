@@ -10,7 +10,7 @@
 
 import path from 'node:path';
 import { chmod } from 'node:fs/promises';
-import { writeFile, ensureDir, pathExists, remove } from './utils/fs.js';
+import { writeIfChanged, pathExists, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { getHermesHome } from './hermes-home.js';
 import {
@@ -53,16 +53,19 @@ function buildReportScript(): string {
  */
 export async function injectHermesHooks(): Promise<void> {
   const scriptPath = getReportScriptPath();
-  await ensureDir(path.dirname(scriptPath));
-  await writeFile(scriptPath, buildReportScript());
+  const scriptChanged = await writeIfChanged(scriptPath, buildReportScript());
   try {
     await chmod(scriptPath, 0o755);
   } catch (e) {
     log.warn(`Failed to chmod Hermes hook script: ${(e as Error).message}`);
   }
-  await upsertHermesHook(REPORT_EVENT, { command: scriptPath, timeout: 60 });
-  await addHermesAllowlist(REPORT_EVENT, scriptPath);
-  log.success('Injected teamai Hermes hook into ' + scriptPath);
+  const hookChanged = await upsertHermesHook(REPORT_EVENT, { command: scriptPath, timeout: 60 });
+  const allowlistChanged = await addHermesAllowlist(REPORT_EVENT, scriptPath);
+  if (scriptChanged || hookChanged || allowlistChanged) {
+    log.success('Injected teamai Hermes hook into ' + scriptPath);
+  } else {
+    log.debug(`teamai Hermes hook already up-to-date in ${scriptPath}`);
+  }
 }
 
 /**

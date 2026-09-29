@@ -128,7 +128,7 @@ teamai codebase --lint --output /path/to/repo # 检查本地提取的图谱
 
 只要 extract 发现了组件，就会写入 `teamwiki/evidence/code/<project>/_manifest.json`（包括跳过 AI 增强或增强没有产出的情况），因此 `--deep-enrich` 可以接着跑。
 
-图谱存储组件、接口、配置和跨仓库依赖边。`teamai recall` 利用图谱进行增强排名。
+图谱存储组件、接口、配置和跨仓库依赖边。`teamai recall` 会将图谱增强命中与 learnings 放到同一相关性尺度上排序。
 当召回命中 codebase 页面时，结果会附带一行 `Sources:`，列出相关源文件路径，供 agent 直接作为代码改动的入口，无需重新探索代码库。
 
 依赖边来自两条并行的提取轨道，重叠时以 AST 结果优先：

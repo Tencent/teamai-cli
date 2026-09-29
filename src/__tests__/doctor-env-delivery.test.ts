@@ -19,6 +19,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
+import { EnvHandler } from '../resources/env.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 
@@ -75,6 +76,19 @@ describe('doctor — env variables reach a shell', () => {
     );
   }
 
+  /**
+   * Resolve this scope's data home to a Windows path, the only place #661
+   * happens. On a POSIX host `path.join` still appends `/env.sh`, and the
+   * path is relative, so the test runs from tempDir and env.sh is written
+   * under it.
+   */
+  async function useWindowsDataHome(dataHome: string, overrides: Partial<LocalConfig> = {}): Promise<void> {
+    process.chdir(tempDir);
+    vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, ...overrides, dataHome });
+    envShPath = path.join(dataHome, 'env.sh');
+    await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
+  }
+
   async function envCheck(): Promise<Check> {
     const ctx = await resolveDoctorContext();
     if (!ctx) throw new Error('expected a resolved doctor context');
@@ -129,7 +143,10 @@ describe('doctor — env variables reach a shell', () => {
     vi.mocked(loadTeamConfig).mockResolvedValue(teamConfig);
   });
 
+  const originalCwd = process.cwd();
+
   afterEach(async () => {
+    process.chdir(originalCwd);
     vi.unstubAllEnvs();
     vi.clearAllMocks();
     await fse.remove(tempDir);
@@ -142,10 +159,11 @@ describe('doctor — env variables reach a shell', () => {
     expect(await (await envCheck()).check()).toBe(true);
   });
 
-  it('fails when the block points at a path a POSIX shell cannot read (#661)', async () => {
-    await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
-    const windowsStyle = envShPath.replace(/\//g, '\\');
-    await writeProfile(`[ -f ${windowsStyle} ] && source ${windowsStyle}`);
+  // Skipped on Windows, where the data home below is a real absolute path.
+  it.skipIf(process.platform === 'win32')('fails when the block points at a path a POSIX shell cannot read (#661)', async () => {
+    await useWindowsDataHome('D:\\Users\\me\\.teamai');
+    // Raw and unquoted, as a pre-#661 CLI wrote it.
+    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
@@ -327,6 +345,61 @@ describe('doctor — env variables reach a shell', () => {
     const check = await envCheck();
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('carries no TeamAI env block');
+  });
+
+  // #876: a member with a user scope and a project scope carries one block
+  // for each in the same profile. Each scope's doctor reads its own block,
+  // not the first one in the file.
+  describe('with a user-scope and a project-scope block in one profile', () => {
+    let userEnvSh: string;
+    let projectEnvSh: string;
+
+    const scopeBlock = (envSh: string): string => `${new EnvHandler().generateShellBlock(path.dirname(envSh))}\n`;
+
+    function useProjectScope(): void {
+      const projectRoot = path.join(tempDir, 'work', 'api');
+      const dataHome = path.join(homeDir, '.teamai', 'projects', 'api');
+      vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, scope: 'project', projectRoot, dataHome });
+      envShPath = path.join(dataHome, 'env.sh');
+    }
+
+    beforeEach(async () => {
+      userEnvSh = envShPath;
+      projectEnvSh = path.join(homeDir, '.teamai', 'projects', 'api', 'env.sh');
+      for (const envSh of [userEnvSh, projectEnvSh]) {
+        await fse.outputFile(envSh, "export JIRA_PASSWORD='s3cret'\n");
+      }
+    });
+
+    it('passes in each scope', async () => {
+      await fse.writeFile(profilePath, scopeBlock(userEnvSh) + scopeBlock(projectEnvSh));
+
+      expect(await (await envCheck()).check()).toBe(true);
+      useProjectScope();
+      expect(await (await envCheck()).check()).toBe(true);
+    });
+
+    it('reports a missing block for this env.sh, not a backslash, when only the other scope\'s block is present', async () => {
+      await fse.writeFile(profilePath, scopeBlock(userEnvSh));
+      useProjectScope();
+
+      const check = await envCheck();
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain(`${profilePath} carries no TeamAI env block for ${projectEnvSh}`);
+      expect(check.fix).not.toContain('backslash');
+    });
+
+    it.skipIf(process.platform === 'win32')('still reports the backslash for this scope\'s own legacy block behind the other scope\'s (#661)', async () => {
+      await useWindowsDataHome('D:\\work\\api\\.teamai', { scope: 'project', projectRoot: 'D:\\work\\api' });
+      await fse.writeFile(
+        profilePath,
+        `${scopeBlock(userEnvSh)}# [teamai:env:start]\n[ -f ${envShPath} ] && source ${envShPath}\n# [teamai:env:end]\n`,
+      );
+
+      const check = await envCheck();
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain(`does not load ${envShPath}`);
+    });
   });
 
   it('passes when the team opted out of shell-profile injection', async () => {

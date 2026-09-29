@@ -134,7 +134,7 @@ export async function importFromRepoList(
     }
 
     // 并发控制循环
-    const inFlight: Promise<void>[] = [];
+    const inFlight = new Set<Promise<void>>();
 
     for (const entry of queue) {
         while (semaphore.running >= concurrency) {
@@ -145,10 +145,9 @@ export async function importFromRepoList(
         semaphore.running++;
         const task = processEntry(entry).finally(() => {
             semaphore.running--;
-            const idx = inFlight.indexOf(task);
-            if (idx !== -1) inFlight.splice(idx, 1);
+            inFlight.delete(task);
         });
-        inFlight.push(task);
+        inFlight.add(task);
     }
 
     // 等待全部完成

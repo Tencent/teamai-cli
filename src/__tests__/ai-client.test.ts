@@ -151,7 +151,7 @@ describe('callClaudeParallel', () => {
         close: (code: number | null) => void;
       };
       // 在下一个微任务触发
-      Promise.resolve().then(() => {
+      queueMicrotask(() => {
         emitters.stdout(Buffer.from(response));
         emitters.close(0);
       });
@@ -184,7 +184,7 @@ describe('callClaudeParallel', () => {
       };
 
       // 立即完成，不阻塞
-      Promise.resolve().then(() => {
+      queueMicrotask(() => {
         running--;
         emitters.stdout(Buffer.from('done'));
         emitters.close(0);

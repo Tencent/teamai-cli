@@ -272,7 +272,7 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai session` — Record and inspect coding-session summaries
   - `teamai session save` — Record a privacy-scrubbed summary of a coding session to a local monthly log
-    - `--session-id <id>` — Session to record (default: most recent, or $CLAUDE_SESSION_ID)
+    - `--session-id <id>` — Session to record (default: the agent's session, e.g. $CLAUDE_CODE_SESSION_ID, or the most recent)
     - `--push` — Also push the summary to the team repo (feeds `teamai digest`)
     - `--force` — Push even if the session is not flagged as valuable
     - `--include-prompt` — Include the redacted first-prompt line in the pushed summary (default: off)

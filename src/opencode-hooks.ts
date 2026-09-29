@@ -23,7 +23,7 @@
  */
 
 import path from 'node:path';
-import { writeFile, ensureDir, pathExists, remove } from './utils/fs.js';
+import { writeFile, writeIfChanged, ensureDir, pathExists, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
 /** Plugin directory name under an OpenCode config dir. OpenCode scans both
@@ -164,14 +164,15 @@ export const TeamaiHooks = async ({ directory, worktree }) => {
 
 /**
  * Inject (or refresh) the teamai OpenCode plugin for a scope.
- * Idempotent — rewrites the plugin file each time.
+ * Idempotent — writes and reports the plugin file only when its content changes.
  */
 export async function injectOpencodeHooks(baseDir: string, scope: 'project' | 'user'): Promise<void> {
-  const dir = resolveOpencodePluginDir(baseDir, scope);
-  await ensureDir(dir);
-  const file = path.join(dir, OPENCODE_HOOK_FILE);
-  await writeFile(file, buildPluginSource());
-  log.success(`Injected teamai OpenCode hook into ${file}`);
+  const file = path.join(resolveOpencodePluginDir(baseDir, scope), OPENCODE_HOOK_FILE);
+  if (await writeIfChanged(file, buildPluginSource())) {
+    log.success(`Injected teamai OpenCode hook into ${file}`);
+  } else {
+    log.debug(`teamai OpenCode hook already up-to-date in ${file}`);
+  }
 }
 
 /** Remove the teamai OpenCode plugin for a scope if present. */

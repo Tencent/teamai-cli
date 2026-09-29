@@ -2,8 +2,9 @@ import path from 'node:path';
 import { z } from 'zod';
 import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
-import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
-import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, isSelfMode } from '../types.js';
+import type { ResourceItem, TeamaiConfig, LocalConfig, Scope } from '../types.js';
+import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, getTeamaiHome, getUserConfigPath, isSelfMode } from '../types.js';
+import { loadLocalConfigForScope } from '../config.js';
 import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { envShMarker, isEnvShMarker, recordEnvShExports } from '../env-sh-exports.js';
@@ -17,6 +18,9 @@ import {
   resolveActiveShellProfile,
   shellQuoteValue,
   isWindowsFormPath,
+  findEnvBlocks,
+  envBlockReferencesDataHome,
+  type EnvBlock,
 } from '../utils/shell-profile.js';
 
 // ─── Schema for env.yaml ────────────────────────────────
@@ -201,6 +205,22 @@ function envPushItem(relativePath: string, sourcePath: string): ResourceItem {
   return { name: relativePath.slice('env/'.length), type: 'env', sourcePath, relativePath };
 }
 
+/** A `source` or `.` command naming a file called env.sh. */
+const SOURCES_ENV_SH = /(?:^|[\s;&|])(?:source|\.)\s[^\n;&|]*env\.sh/m;
+
+/**
+ * The env.sh a user-scope pull writes, or null when no user scope is
+ * configured. How a project pull recognises the user scope's profile block,
+ * which it must keep (#876).
+ */
+async function userScopeEnvShPath(): Promise<string | null> {
+  const userConfig = await loadLocalConfigForScope('user');
+  if (userConfig) return path.join(getDataHome(userConfig), 'env.sh');
+  // A config that exists but does not parse is still a configured user scope:
+  // keep the block at its default env.sh rather than taking it over.
+  return await pathExists(getUserConfigPath()) ? path.join(getTeamaiHome('user'), 'env.sh') : null;
+}
+
 // ─── Handler ─────────────────────────────────────────────
 
 export class EnvHandler extends ResourceHandler {
@@ -272,13 +292,13 @@ export class EnvHandler extends ResourceHandler {
   }
 
   async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    // Non-self modes: env files already live in the repo dir; push.ts commits
-    // them via the env/ sweeper — nothing to copy.
+    // Non-self modes: env files already live in the repo dir; push.ts stages
+    // each selected one by its path — nothing to copy.
     //
     // Single-repo mode: the source is the ACTIVE tree's .teamai/env/ file, but
     // the commit happens in the knowledge worktree (localConfig.repo.localPath).
     // Copy the active copy into the worktree so the PR actually carries the change;
-    // otherwise the env/ sweeper would commit the stale baseline. (Guarded on the
+    // otherwise staging that path would commit the stale baseline. (Guarded on the
     // paths differing so non-self stays a no-op.)
     if (isSelfMode(localConfig)) {
       const dest = path.join(localConfig.repo.localPath, ...item.relativePath.split('/'));
@@ -341,7 +361,7 @@ export class EnvHandler extends ResourceHandler {
         : await this.detectShellProfile(envShPath);
 
       const shellBlock = this.generateShellBlock(teamaiHome);
-      await this.injectShellProfile(profilePath, shellBlock);
+      await this.injectShellProfile(profilePath, shellBlock, envShPath, localConfig.scope);
     }
     return true;
   }
@@ -469,20 +489,39 @@ export class EnvHandler extends ResourceHandler {
   }
 
   /**
-   * Inject the shell block into the profile file (idempotent).
+   * Inject this scope's shell block into the profile file (idempotent).
+   *
+   * The profile keeps the user scope's block plus at most one project block,
+   * the user's first so a project value wins on a key both define (#876). A
+   * scope replaces its own block. Otherwise a project takes over another
+   * project's block, never the user scope's, which keeps the project block
+   * last-wins; a user scope goes in right before the project block. Any other
+   * blocks (a hand-edited profile) are left alone.
    */
-  private async injectShellProfile(profilePath: string, block: string): Promise<void> {
+  private async injectShellProfile(profilePath: string, block: string, envShPath: string, scope: Scope): Promise<void> {
     const original = await readFileSafe(profilePath) ?? '';
     let content = original;
 
-    const startIdx = content.indexOf(TEAMAI_ENV_START);
-    const endIdx = content.indexOf(TEAMAI_ENV_END);
+    // An unclosed block has no end to replace up to, so it is left as it is.
+    const blocks = findEnvBlocks(content).filter((b): b is EnvBlock & { end: number } => b.end !== null);
+    let target = blocks.find((b) => envBlockReferencesDataHome(b.text, envShPath));
+    if (!target) {
+      // Only now does a project pull need the user config, so a steady-state
+      // pull never reads it.
+      const userEnvShPath = scope === 'user' ? envShPath : await userScopeEnvShPath();
+      // A block that sources no env.sh is the inline-export format from before
+      // env.sh and project scopes existed: the user scope's too.
+      const isUserBlock = (b: EnvBlock): boolean => !SOURCES_ENV_SH.test(b.text)
+        || (userEnvShPath !== null && envBlockReferencesDataHome(b.text, userEnvShPath));
+      target = blocks.find((b) => (scope === 'user' ? isUserBlock(b) : !isUserBlock(b)));
+    }
 
-    if (startIdx !== -1 && endIdx !== -1) {
+    if (target) {
       // Replace existing block
-      const before = content.substring(0, startIdx);
-      const after = content.substring(endIdx + TEAMAI_ENV_END.length);
-      content = before + block + after;
+      content = content.substring(0, target.start) + block + content.substring(target.end);
+    } else if (scope === 'user' && blocks.length > 0) {
+      // Every block left is a project's: go in before it
+      content = content.substring(0, blocks[0].start) + block + '\n\n' + content.substring(blocks[0].start);
     } else {
       // Append block
       if (content.length > 0 && !content.endsWith('\n')) {

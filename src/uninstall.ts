@@ -16,8 +16,6 @@ import {
   TEAMAI_CLAUDEMD_END,
   TEAMAI_RECALL_RULES_START,
   TEAMAI_RECALL_RULES_END,
-  TEAMAI_ENV_START,
-  TEAMAI_ENV_END,
   getDataHome,
   getManagedHooksPath,
   isAgentExcluded,
@@ -68,8 +66,7 @@ import { askConfirmation } from './utils/prompt.js';
 import { getUserHome } from './utils/home.js';
 import {
   detectShellProfile,
-  extractEnvBlock,
-  envBlockReferencesDataHome,
+  findEnvBlockFor,
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
 
@@ -687,8 +684,8 @@ async function buildRemovalPlan(
     // the current resolution no longer points at, and a plain uninstall would
     // silently leave that managed block behind.
     //
-    // A candidate only counts if its block actually names THIS scope's
-    // env.sh (envBlockReferencesDataHome) — matching on the marker alone
+    // A candidate only counts if one of its blocks names THIS scope's
+    // env.sh (findEnvBlockFor) — matching on the marker alone
     // would let this uninstall delete a different scope's still-active block
     // just because it also happens to live in one of the candidate
     // filenames. This check is deliberately looser than doctor's "does it
@@ -706,8 +703,7 @@ async function buildRemovalPlan(
     ]));
     for (const candidate of candidateProfilePaths) {
       const profileContent = await readFileSafe(candidate);
-      const block = profileContent ? extractEnvBlock(profileContent) : null;
-      if (block && envBlockReferencesDataHome(block, envShPath)) {
+      if (profileContent && findEnvBlockFor(profileContent, envShPath)) {
         plan.shellProfiles.push(candidate);
       }
     }
@@ -1091,15 +1087,16 @@ async function executeRemoval(plan: RemovalPlan): Promise<void> {
 
   // (e) Clean shell profile env block(s) — every file discovered in
   // buildRemovalPlan, not just the one detectShellProfile() resolves to today.
+  // Only this scope's own block: another scope's may share the file (#876).
+  const envShPath = path.join(plan.teamaiHome, 'env.sh');
   for (const profilePath of plan.shellProfiles) {
     try {
       const content = await readFileSafe(profilePath);
       if (content) {
-        const startIdx = content.indexOf(TEAMAI_ENV_START);
-        const endIdx = content.indexOf(TEAMAI_ENV_END);
-        if (startIdx !== -1 && endIdx !== -1) {
-          const before = content.substring(0, startIdx).replace(/\n+$/, '\n');
-          const after = content.substring(endIdx + TEAMAI_ENV_END.length).replace(/^\n+/, '\n');
+        const block = findEnvBlockFor(content, envShPath);
+        if (block && block.end !== null) {
+          const before = content.substring(0, block.start).replace(/\n+$/, '\n');
+          const after = content.substring(block.end).replace(/^\n+/, '\n');
           await writeFile(profilePath, before + after);
           log.success(`Cleaned shell profile: ${profilePath}`);
         }

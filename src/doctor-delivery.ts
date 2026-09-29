@@ -9,9 +9,8 @@ import { splitFrontmatter } from './utils/frontmatter.js';
 import type { ResourceHandler } from './resources/base.js';
 import type { Check, DoctorContext } from './doctor.js';
 import {
-  extractEnvBlock,
+  findEnvBlockFor,
   envBlockSourcesPath,
-  envBlockReferencesDataHome,
   sameFile,
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
@@ -794,12 +793,14 @@ async function envDeliveryProblems(
   const profilePath = expandHome(
     teamConfig?.sharing?.env?.shellProfilePath ?? await envHandler.detectShellProfile(envShPath),
   );
+  // This scope's own block: the profile can also carry another scope's
+  // (#876), and that one is not this scope's to judge.
   const profile = await readFileSafe(profilePath);
-  const block = profile === null ? null : extractEnvBlock(profile);
+  const block = profile === null ? null : findEnvBlockFor(profile, envShPath);
 
   if (block === null) {
-    problems.push(`${profilePath} carries no TeamAI env block`);
-  } else if (envSh !== null && !envBlockSourcesPath(block, envShPath)) {
+    problems.push(`${profilePath} carries no TeamAI env block for ${envShPath}`);
+  } else if (envSh !== null && !envBlockSourcesPath(block.text, envShPath)) {
     problems.push(
       `the block in ${profilePath} does not load ${envShPath}: a POSIX shell reads an unquoted `
       + 'backslash as an escape, so the `[ -f ... ]` test fails and `source` never runs',
@@ -817,10 +818,7 @@ async function envDeliveryProblems(
     const candidate = path.join(home, name);
     if (sameFile(candidate, profilePath)) continue;
     const content = await readFileSafe(candidate);
-    const strayBlock = content ? extractEnvBlock(content) : null;
-    if (strayBlock && envBlockReferencesDataHome(strayBlock, envShPath)) {
-      staleProfiles.push(candidate);
-    }
+    if (content && findEnvBlockFor(content, envShPath)) staleProfiles.push(candidate);
   }
 
   return { problems, staleProfiles };

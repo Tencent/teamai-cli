@@ -27,6 +27,7 @@ import {
 } from './session-collector.js';
 import { log, spinner } from './utils/logger.js';
 import { withTimeout } from './utils/async.js';
+import { agentSessionIdFromEnv } from './utils/session-id.js';
 import { getSessionLogsDir, usesBranchWorktree } from './types.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 
@@ -58,7 +59,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
   }
 
   const sessionId =
-    options.sessionId || process.env.CLAUDE_SESSION_ID || mostRecentSessionId(events);
+    options.sessionId || (await agentSessionIdFromEnv()) || mostRecentSessionId(events);
   if (!sessionId) {
     log.error('Could not determine a session id. Pass --session-id <id>.');
     return;

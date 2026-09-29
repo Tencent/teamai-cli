@@ -20,7 +20,7 @@
  */
 
 import path from 'node:path';
-import { writeFile, ensureDir, pathExists, readFileSafe, readJson, writeJsonAtomic, remove } from './utils/fs.js';
+import { writeFile, writeIfChanged, ensureDir, pathExists, readFileSafe, readJson, writeJsonAtomic, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
 
@@ -101,8 +101,9 @@ export default async function handler(ctx: { event?: string } = {}): Promise<voi
  * Writes into the resolved OpenClaw workspace directory (the same location
  * skills sync to and the engine reads from), NOT the HOME-relative
  * `~/.<tool>/hooks` — writing there left the hook where the engine never
- * looks, so status reporting silently stopped. Idempotent — rewrites the two
- * files each time. Skips (no-op) when the workspace dir cannot be resolved.
+ * looks, so status reporting silently stopped. Idempotent — writes and reports
+ * the two files only when their content changes. Skips (no-op) when the
+ * workspace dir cannot be resolved.
  *
  * @param workspacePath optional server-sent workspace path (highest priority)
  * @param tool          claw variant (openclaw/qclaw/easyclaw/autoclaw)
@@ -114,10 +115,13 @@ export async function injectOpenClawHooks(workspacePath?: string, tool = 'opencl
     return;
   }
   const dir = path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR);
-  await ensureDir(dir);
-  await writeFile(path.join(dir, 'HOOK.md'), buildHookMd(tool));
-  await writeFile(path.join(dir, 'handler.ts'), buildHandlerTs(tool));
-  log.success(`Injected teamai OpenClaw hook into ${dir}`);
+  const hookMdChanged = await writeIfChanged(path.join(dir, 'HOOK.md'), buildHookMd(tool));
+  const handlerChanged = await writeIfChanged(path.join(dir, 'handler.ts'), buildHandlerTs(tool));
+  if (hookMdChanged || handlerChanged) {
+    log.success(`Injected teamai OpenClaw hook into ${dir}`);
+  } else {
+    log.debug(`teamai OpenClaw hook already up-to-date in ${dir}`);
+  }
   await enableOpenClawInternalHooks(tool);
 }
 

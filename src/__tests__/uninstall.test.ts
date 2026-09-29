@@ -48,6 +48,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { uninstall } from '../uninstall.js';
+import { EnvHandler } from '../resources/env.js';
 import { TeamaiConfigSchema, getDataHome, managedMcpManifestKey, managedMcpManifestPath } from '../types.js';
 import { ModelProfileSchema, resolveProfile } from '../models/profile.js';
 import { switchModelProfile } from '../models/switch.js';
@@ -204,6 +205,7 @@ describe('uninstall', () => {
 
   beforeEach(async () => {
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-uninstall-test-'));
+    vi.stubEnv('CLAUDE_CONFIG_DIR', undefined);
     mockAutoDetectInit.mockReset();
     mockReconcileHooks.mockReset();
     mockSaveLocalConfig.mockReset();
@@ -365,6 +367,63 @@ describe('uninstall', () => {
     // The unrelated project-scope block must survive intact.
     const bashrcAfter = await fse.readFile(path.join(homeDir, '.bashrc'), 'utf-8');
     expect(bashrcAfter).toBe(bashrc);
+  });
+
+  // #876: a user-scope block and a project-scope block share ~/.zshrc.
+  // Uninstalling either scope removes its own block and leaves the other one
+  // exactly as it was, wherever each sits in the file.
+  describe('with a user-scope and a project-scope block in one profile', () => {
+    const scopeBlock = (envSh: string): string => new EnvHandler().generateShellBlock(path.dirname(envSh));
+
+    async function setupTwoBlocks() {
+      const fixture = await setupFixture(tmpDir);
+      vi.stubEnv('HOME', fixture.homeDir);
+      vi.stubEnv('SHELL', '/bin/zsh');
+      const projectRoot = path.join(tmpDir, 'work', 'api');
+      const userBlock = scopeBlock(path.join(fixture.teamaiHome, 'env.sh'));
+      const projectBlock = scopeBlock(path.join(projectRoot, '.teamai', 'env.sh'));
+      await fse.writeFile(
+        path.join(fixture.homeDir, '.zshrc'),
+        ['# My zshrc config', '', userBlock, '', projectBlock, '', '# More user config'].join('\n'),
+      );
+      return { ...fixture, projectRoot, userBlock, projectBlock };
+    }
+
+    it('project uninstall removes only the project block', async () => {
+      const { homeDir, projectRoot, userBlock, projectBlock } = await setupTwoBlocks();
+      const localConfig = makeLocalConfig(projectRoot, path.join(projectRoot, '.teamai', 'team-repo'), {
+        scope: 'project',
+        projectRoot,
+      });
+      mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig() });
+
+      await uninstall({ force: true });
+
+      const zshrc = await fse.readFile(path.join(homeDir, '.zshrc'), 'utf-8');
+      expect(zshrc).toContain(userBlock);
+      expect(zshrc).not.toContain(projectBlock);
+      expect(zshrc).toContain('# More user config');
+    });
+
+    it('user uninstall removes only the user block', async () => {
+      const { homeDir, repoPath, teamaiHome, userBlock, projectBlock } = await setupTwoBlocks();
+      const teamConfig = makeTeamConfig({
+        sharing: {
+          skills: {},
+          rules: { enforced: [] },
+          docs: { localDir: `${teamaiHome}/docs` },
+          env: { injectShellProfile: true },
+        },
+      });
+      mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig });
+
+      await uninstall({ force: true });
+
+      const zshrc = await fse.readFile(path.join(homeDir, '.zshrc'), 'utf-8');
+      expect(zshrc).toContain(projectBlock);
+      expect(zshrc).not.toContain(userBlock);
+      expect(zshrc).toContain('# My zshrc config');
+    });
   });
 
   // Regression (#693 hardware review by @CarlosWonMore): a pre-#661 CLI wrote

@@ -450,13 +450,16 @@ export class RulesHandler extends ResourceHandler {
     // early return so removing the last rule also removes the glob.
     await this.activateOpencodeInstructions(teamConfig, localConfig, rules.length > 0);
 
-    // Empty set = the team has no rules right now. We deliberately do NOT run the
-    // aggressive stale-file cleanup below in that case, because it would treat a
-    // user's own personal rule files as stale and delete them. Explicit team
+    // Empty set = no team rule reaches this directory right now. We deliberately do
+    // NOT run the aggressive stale-file cleanup below in that case, because it would
+    // treat a user's own personal rule files as stale and delete them. Explicit team
     // removals are handled by the tombstone cleanup in pull.ts instead. The
     // OpenCode glob deactivation above still runs, so the (now unmanaged) rules
     // stop being auto-loaded.
-    if (rules.length === 0) return;
+    if (rules.length === 0) {
+      await this.reclaimUnselectedTeamRules(teamConfig, localConfig);
+      return;
+    }
 
     // 1. Distribute rule files to each tool's rules/ directory
     for (const rule of rules) {
@@ -646,6 +649,40 @@ export class RulesHandler extends ResourceHandler {
   /**
    * Recursively remove empty subdirectories under a given directory.
    */
+  /**
+   * Remove the copies of team rules that no longer reach this directory when none
+   * does — e.g. the last rule of a project the directory dropped, or of one an
+   * admin removed. Only a file TeamAI provably wrote goes: it sits at a team rule's
+   * delivery path and holds exactly what pull rendered for that tool, from the
+   * rule as it is now or as it was at a revision this checkout last pulled (the
+   * admin may have edited the rule before removing its project). That proof holds
+   * in rule directories shared with user-authored rules too, so JoyCode, OMP, Pi
+   * and Copilot are reclaimed like the rest. A personal rule, a locally edited
+   * copy and the author's own copy of a rule they published stay.
+   */
+  private async reclaimUnselectedTeamRules(
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+  ): Promise<void> {
+    const teamRules = await this.scanTeamForPull(teamConfig, localConfig);
+    if (teamRules.length === 0) return;
+    const deliveredRevs = (
+      await (await import('../pull.js')).resolveCheckoutBases(localConfig, await loadStateForScope(localConfig))
+    ).revs;
+    const touchedDirs = new Set<string>();
+    for (const item of teamRules) {
+      for (const { tool, dest, supersedes } of await this.deliveryTargets(teamConfig, localConfig, item)) {
+        // `supersedes` marks the author's own root copy, not a delivered one.
+        if (supersedes) continue;
+        if (!await isDeliveredRender(tool, dest, item, localConfig.repo.localPath, deliveredRevs)) continue;
+        await remove(dest);
+        touchedDirs.add(path.join(resolveToolBaseDir(tool, localConfig), scopedToolPaths(teamConfig, localConfig)[tool].rules!));
+        log.debug(`Removed unselected team rule ${item.name} from ${tool}`);
+      }
+    }
+    for (const dir of touchedDirs) await this.removeEmptyDirs(dir);
+  }
+
   private async removeEmptyDirs(dir: string): Promise<void> {
     if (!await pathExists(dir)) return;
     const subdirs = await listDirs(dir);
