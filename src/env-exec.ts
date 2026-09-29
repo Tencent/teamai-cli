@@ -22,7 +22,7 @@ import { memberEnvironmentWithoutScope, type MemberEnvironment } from './member-
 import { describeEntryFailure } from './namespaced-entries.js';
 import { envTable } from './resources/env-key.js';
 import { declaredSecretKeys } from './resources/secrets.js';
-import type { GlobalOptions, LocalConfig } from './types.js';
+import { getDataHome, type GlobalOptions, type LocalConfig } from './types.js';
 import { log, setStderrOnly } from './utils/logger.js';
 
 /** How the command ended. */
@@ -133,14 +133,20 @@ async function commandEnvironment(cwd: string, dryRun: boolean | undefined): Pro
       + 'file, or run `teamai init` again in this project.');
     return env;
   }
+  // No scope delivers team values here, so as above, a value a teamai env.sh exported is removed.
   if (!localConfig) {
-    log.warn('No teamai config applies to this directory, so the command runs with the inherited environment and no team '
-      + 'env variables or secrets.');
-    return inheritedEnvironment();
+    const env = inheritedEnvironment();
+    const removed = withoutTeamExports(env, await memberEnvironmentWithoutScope([]));
+    log.warn('No teamai config applies to this directory, so no team env variables or secrets were applied; the command '
+      + `runs with the inherited environment${exportedClause(removed)}.`);
+    return env;
   }
   if (localConfig.repo.kind === 'http') {
-    log.warn('An HTTP team repo delivers no env variables or secrets here, so the command runs with the inherited environment.');
-    return inheritedEnvironment();
+    const env = inheritedEnvironment();
+    const removed = withoutTeamExports(env, await memberEnvironmentWithoutScope([getDataHome(localConfig)]));
+    log.warn('An HTTP team repo delivers no env variables or secrets here, so the command runs with the inherited '
+      + `environment${exportedClause(removed)}.`);
+    return env;
   }
   return overlayTeamEnv(localConfig);
 }

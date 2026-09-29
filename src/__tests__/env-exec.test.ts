@@ -384,6 +384,38 @@ describe('teamai env exec', () => {
     expect(stdout).toEqual([]);
   });
 
+  it("with no config, removes what a teamai env.sh exported, keeps the member's own exports, and names the keys", async () => {
+    await fse.outputFile(path.join(home, '.teamai', 'projects', 'other-0123456789', 'env.sh'), "export GITHUB_TOKEN='fixture-other-team'\n");
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-other-team');
+    vi.stubEnv('SENTRY_TOKEN', 'fixture-hand-export');
+    const nowhere = path.join(tmpDir, 'nowhere');
+    await fse.ensureDir(nowhere);
+
+    const env = await childEnv(nowhere);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.SENTRY_TOKEN).toBe('fixture-hand-export');
+    expect(text(stderr)).toContain('No teamai config');
+    expect(text(stderr)).toContain('without GITHUB_TOKEN, whose values a teamai env.sh exported');
+    expect(text(stderr)).not.toMatch(/fixture-(other|hand)/);
+  });
+
+  it("in an HTTP-backed scope, removes what another team's env.sh exported, keeps the member's own exports, and names the keys", async () => {
+    const { repoPath } = await team('http', {});
+    await userScope(repoPath, { repo: { localPath: repoPath, remote: 'https://team.example/api', kind: 'http', url: 'https://team.example/api' } });
+    await fse.outputFile(path.join(home, '.teamai', 'projects', 'other-0123456789', 'env.sh'), "export GITHUB_TOKEN='fixture-other-team'\n");
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-other-team');
+    vi.stubEnv('SENTRY_TOKEN', 'fixture-hand-export');
+
+    const env = await childEnv(home);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.SENTRY_TOKEN).toBe('fixture-hand-export');
+    expect(text(stderr)).toContain('HTTP team repo');
+    expect(text(stderr)).toContain('without GITHUB_TOKEN, whose values a teamai env.sh exported');
+    expect(text(stderr)).not.toMatch(/fixture-(other|hand)/);
+  });
+
   // Without `--`, a flag of the command (`gh pr list --dry-run`) would be read as teamai's.
   it('rejects a command without -- before it, with exit code 2, and runs nothing', async () => {
     const marker = path.join(tmpDir, 'ran');
