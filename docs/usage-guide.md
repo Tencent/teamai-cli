@@ -236,8 +236,13 @@ learnings. Key points:
   only surface in `teamai recall` for members of that project. A directory with
   no active project sees the shared root only.
 - **Not auto-activated.** Unlike a lone role, a lone project is not auto-selected
-  — a member may legitimately belong to no project (they still get `common` and
-  the shared learnings root).
+  — a member may legitimately belong to no project (they get the shared
+  learnings root and the namespaces their role lists, such as `common`; with no
+  role, no skills).
+- **Root skills arrive through a tag.** While the team uses roles or projects,
+  the root `skills/` is the tag catalog: `teamai tags subscribe <tag>` delivers
+  a root skill. When a pull removes skills that are no longer delivered, for
+  example after picking a role or project, it names them in one line.
 - **Activate everything at once.** `--project all` is a reserved value: it
   expands to every id the manifest declares and persists that snapshot, so a
   monorepo's onboarding docs carry one line instead of a list that drifts

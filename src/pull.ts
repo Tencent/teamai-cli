@@ -241,7 +241,8 @@ export async function cleanupInactiveNamespaceSkills(
   retainedSkillNames: Set<string>,
   inactiveSkillNames: Set<string>,
   inactiveSkillSources?: Map<string, string>,
-): Promise<void> {
+): Promise<Set<string>> {
+  const removed = new Set<string>();
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (isAgentExcluded(localConfig, tool)) continue;
     // Ask where delivery writes, not where the tool root sits: OpenClaw keeps
@@ -270,9 +271,11 @@ export async function cleanupInactiveNamespaceSkills(
       }
 
       await remove(localSkillDir);
+      removed.add(skillName);
       log.debug(`[${localConfig.scope}] Removed inactive role-scoped skill ${skillName} from ${tool}`);
     }
   }
+  return removed;
 }
 
 /**
@@ -1269,19 +1272,25 @@ async function pullForScope(
     totalSynced += items.length;
   }
 
+  // Skills this pull removes because they are no longer delivered here, named
+  // in one line at the end of Step 3b so a member learns where they went (#911).
+  const undeliveredSkills = new Set<string>();
+  let rootSkillUndelivered = false;
+
   // Step 3: Clean up tombstoned resources
   if (!options.dryRun) {
     await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, ledger);
 
     if (roleContext) {
       if (!skillsHeld) {
-        await cleanupInactiveNamespaceSkills(
+        const removed = await cleanupInactiveNamespaceSkills(
           freshConfig,
           localConfig,
           desiredSkillNames ?? roleContext.activeSkillNames,
           roleContext.inactiveSkillNames,
           roleContext.inactiveSkillSources,
         );
+        for (const name of removed) undeliveredSkills.add(name);
       }
       // Same revocation for agents: a role change must remove the previous
       // role's agents, not just stop deploying them.
@@ -1318,7 +1327,13 @@ async function pullForScope(
           continue;
         }
         await remove(skillDir);
-        log.debug(`Removed excluded skill ${dir} from ${tool}`);
+        if (excludedSkills.has(dir)) {
+          log.debug(`Removed excluded skill ${dir} from ${tool}`);
+        } else {
+          undeliveredSkills.add(dir);
+          rootSkillUndelivered = true;
+          log.debug(`Removed skill ${dir} from ${tool}: no longer delivered here`);
+        }
       }
 
       // Old releases could leave namespace-nested copies behind. Pull now
@@ -1338,6 +1353,13 @@ async function pullForScope(
         }
       }
     }
+  }
+
+  if (undeliveredSkills.size > 0) {
+    const hint = roleContext && rootSkillUndelivered
+      ? ' While the team uses roles or projects, root skills arrive only through a tag: `teamai tags subscribe <tag>`.'
+      : '';
+    log.info(`[${scopeLabel}] Removed ${undeliveredSkills.size} skill(s) no longer delivered here: ${[...undeliveredSkills].join(', ')}.${hint}`);
   }
 
   if (totalSynced === 0 && !docsSyncFailed) {

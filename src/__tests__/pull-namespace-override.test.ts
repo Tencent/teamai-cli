@@ -104,7 +104,7 @@ describe('pull: an active namespace item replaces the root item of the same name
   const read = (rel: string): Promise<string> => fse.readFile(path.join(homeDir, rel), 'utf8');
   const exists = (rel: string): Promise<boolean> => fse.pathExists(path.join(homeDir, rel));
   const team = (rel: string, content: string): Promise<void> => fse.outputFile(path.join(repoPath, rel), content);
-  const logged = (level: 'warn' | 'error', pattern: RegExp): boolean => (
+  const logged = (level: 'info' | 'warn' | 'error', pattern: RegExp): boolean => (
     vi.mocked(log[level]).mock.calls.some((args) => pattern.test(args.map(String).join(' ')))
   );
 
@@ -409,6 +409,33 @@ describe('pull: an active namespace item replaces the root item of the same name
       // And nothing of the namespace version, while the member's own file stays.
       expect(await exists('.claude/skills/review/front-only.md')).toBe(false);
       expect(await read('.claude/skills/review/my-notes.md')).toBe('mine\n');
+    });
+
+    // #911: a root skill that stops arriving is removed, and pull says so
+    // instead of leaving only a debug line and "No resources to sync".
+    it('names a root skill it removes once it is no longer delivered, and how to get it back', async () => {
+      as(['devops'], { subscribedTags: ['ui'] });
+      await pull({});
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Shared review');
+
+      vi.mocked(log.info).mockClear();
+      as(['devops']);
+      await pull({ force: true });
+
+      expect(await exists('.claude/skills/review')).toBe(false);
+      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: review\. .*`teamai tags subscribe <tag>`/)).toBe(true);
+    });
+
+    it('names a namespace skill it removes when the namespace deactivates, without the tag hint', async () => {
+      await pull({});
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Front review');
+
+      vi.mocked(log.info).mockClear();
+      as(['devops']);
+      await pull({ force: true });
+
+      expect(await exists('.claude/skills/review')).toBe(false);
+      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: review\.$/)).toBe(true);
     });
 
     // A path another team version has is not enough to call a file a leftover:

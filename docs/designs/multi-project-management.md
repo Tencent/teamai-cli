@@ -226,7 +226,7 @@ experience) both need it, without affecting the single-project main path.
 Every resource type uses one layout and one rule:
 
 ```text
-<type>/                 root, shared with everyone
+<type>/                 root, shared with everyone (skills: through a tag, see below)
 <type>/<ns>/            delivered only where <ns> is active in resources.<type>
 namespace vs root       the namespace item replaces the root item, whole, no merge
 namespace vs namespace  conflict when both would take one slot (see below)
