@@ -26,7 +26,7 @@ import {
   resolveDesiredDocs, resolveDocsDestination,
 } from './resources/docs.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
-import { CODEX_TOOL, SHARED_AGENT_SKILLS_PATH, skillOrigin, skillsDirForTool } from './resources/skills.js';
+import { CODEX_TOOL, SHARED_AGENT_SKILLS_PATH, isSkillLibraryLink, listDeployedSkillNames, skillLibraryDir, skillOrigin, skillsDirForTool } from './resources/skills.js';
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
 import {
@@ -317,6 +317,10 @@ export async function cleanupInactiveNamespaceSkills(
   ledger?: DeliveryLedger,
 ): Promise<Set<string>> {
   const removed = new Set<string>();
+  // With `skillLibrary` on, the shared `.agents/skills` is the library: it is
+  // swept as its own root below, so Codex's shared-copy sweep stays off.
+  const library = skillLibraryDir(localConfig);
+  const sweeps: [string, string][] = [];
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (isAgentExcluded(localConfig, tool)) continue;
     // Ask where delivery writes, not where the tool root sits: OpenClaw keeps
@@ -324,19 +328,31 @@ export async function cleanupInactiveNamespaceSkills(
     // directory a pull never wrote to and leaves the real one untouched (#624).
     const skillsDir = await skillsDirForTool(tool, toolPath.skills, localConfig);
     if (skillsDir === null) continue;
-    if (tool === CODEX_TOOL) {
+    if (tool === CODEX_TOOL && library === null) {
       const swept = (name: string): boolean => !retainedSkillNames.has(name) && inactiveSkillNames.has(name);
       for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, localConfig.scope)) removed.add(name);
     }
+    sweeps.push([tool, skillsDir]);
+  }
+  // The library last, after the links into it (see Step 3b in pullForScope).
+  if (library && !sweeps.some(([, dir]) => path.resolve(dir) === path.resolve(library))) {
+    sweeps.push(['skill library', library]);
+  }
+
+  for (const [tool, skillsDir] of sweeps) {
     if (!await pathExists(skillsDir)) continue;
 
-    const localSkillNames = await listDirs(skillsDir);
+    const localSkillNames = await listDeployedSkillNames(skillsDir, localConfig);
     for (const skillName of localSkillNames) {
       if (BUILTIN_SKILL_NAMES.has(skillName)) continue;
       if (retainedSkillNames.has(skillName)) continue;
       if (!inactiveSkillNames.has(skillName)) continue;
 
       const localSkillDir = path.join(skillsDir, skillName);
+      if (await isSkillLibraryLink(localSkillDir, skillName, localConfig) && !await pathExists(localSkillDir)) {
+        await remove(localSkillDir);
+        continue;
+      }
 
       // Data-safety guard: only delete a deployed skill when it is byte-identical
       // to its team-repo source. If the user modified SKILL.md or added unpushed
@@ -611,6 +627,10 @@ async function cleanupTombstonedResources(
       for (const name of tombstones) {
         for (const extension of tombstoneExtensions(type, tool)) {
           const localPath = path.join(baseDir, dir, `${name}${extension}`);
+          if (type === 'skills' && await isSkillLibraryLink(localPath, name, localConfig)) {
+            await remove(localPath);
+            continue;
+          }
           if (!await pathExists(localPath)) continue;
           // teamai-context in a rules directory is teamai's instruction file
           // now (#945): a tombstone of a team rule by that name, from before,
@@ -644,9 +664,23 @@ async function cleanupTombstonedResources(
           log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
         }
       }
-      if (type === 'skills' && tool === CODEX_TOOL) {
+      if (type === 'skills' && tool === CODEX_TOOL && skillLibraryDir(localConfig) === null) {
         await sweepSharedSkillCopies(localConfig, (name) => tombstones.has(name), ledger, scopeLabel);
       }
+    }
+
+    // The library copy goes too, once no link is left pointing at it.
+    const library = type === 'skills' ? skillLibraryDir(localConfig) : null;
+    if (!library) continue;
+    for (const name of tombstones) {
+      const libraryPath = path.join(library, name);
+      if (!await pathExists(libraryPath)) continue;
+      if (await hasVcsMetadataRecursive(libraryPath)) {
+        log.warn(`[${scopeLabel}] Kept tombstoned skill "${name}" (skill library): it has local VCS metadata (.git) that may hold unpushed history. Back it up, then delete it manually.`);
+        continue;
+      }
+      await remove(libraryPath);
+      log.debug(`[${scopeLabel}] Cleaned up tombstoned skill ${name} from the skill library`);
     }
   }
 }
@@ -1868,11 +1902,15 @@ async function pullForScope(
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
     const baseDir = resolveBaseDir(localConfig);
 
+    // The library sweeps last, after every link into it: a library copy that
+    // must stay (local edits) keeps the links that already pointed at it.
+    const library = skillLibraryDir(localConfig);
+    const sweeps: [string, string][] = [];
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
       if (isAgentExcluded(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
       if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
-      if (tool === CODEX_TOOL) {
+      if (tool === CODEX_TOOL && library === null) {
         const swept = (name: string): boolean => !desiredSkillNames.has(name) && knownRepoSkillNames.has(name);
         for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, scopeLabel)) {
           if (excludedSkills.has(name)) continue;
@@ -1880,15 +1918,25 @@ async function pullForScope(
           if (rootRepoSkillNames?.has(name)) rootSkillUndelivered = true;
         }
       }
-      const skillsDir = path.join(baseDir, toolPath.skills);
+      sweeps.push([tool, path.join(baseDir, toolPath.skills)]);
+    }
+    if (library && !sweeps.some(([, dir]) => path.resolve(dir) === path.resolve(library))) {
+      sweeps.push(['skill library', library]);
+    }
+
+    for (const [tool, skillsDir] of sweeps) {
       if (!await pathExists(skillsDir)) continue;
 
-      const localDirs = await listDirs(skillsDir);
+      const localDirs = await listDeployedSkillNames(skillsDir, localConfig);
       for (const dir of localDirs) {
         if (BUILTIN_SKILL_NAMES.has(dir)) continue;
         if (desiredSkillNames.has(dir)) continue;
         if (!knownRepoSkillNames.has(dir)) continue;
         const skillDir = path.join(skillsDir, dir);
+        if (await isSkillLibraryLink(skillDir, dir, localConfig) && !await pathExists(skillDir)) {
+          await remove(skillDir);
+          continue;
+        }
         // Same data-safety gate as cleanupInactiveNamespaceSkills: never delete a
         // deployed skill that differs from its team-repo source (local edits or
         // unpushed files). Keep + warn instead of silently destroying work.

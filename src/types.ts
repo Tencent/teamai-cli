@@ -730,6 +730,13 @@ export const LocalConfigSchema = z.object({
   subscribedTags: z.array(z.string()).optional(),
   /** Skills to exclude from local sync (per-user, does not affect team repo). */
   excludedSkills: z.array(z.string()).optional(),
+  /**
+   * Opt-in (`init --skill-library`): pull installs each team skill once into
+   * the shared `.agents/skills` library and links every other tool's skill
+   * directory to it, instead of copying the skill into each tool. Unset keeps
+   * the per-tool copies.
+   */
+  skillLibrary: z.boolean().optional(),
   /** User-level override for recall feature. When set, takes precedence over team config. */
   recallEnabled: z.boolean().optional(),
   /** Per-machine override of the team's `sharing.gitExclude.enabled` (#915),

@@ -242,6 +242,47 @@ export async function copyDir(
 }
 
 /**
+ * Replace the directory `dest` in one rename. `build` fills a staging directory
+ * next to `dest`, starting from a copy of the current `dest` when there is one;
+ * if it throws, the previous `dest` is left whole.
+ */
+export async function replaceDirAtomic(dest: string, build: (staging: string) => Promise<void>): Promise<void> {
+  const destExpanded = expandHome(dest);
+  const parent = path.dirname(destExpanded);
+  await fse.ensureDir(parent);
+  const staging = path.join(parent, `.tmp-${path.basename(destExpanded)}-${process.pid}-${Date.now()}`);
+  const previous = `${staging}-old`;
+  try {
+    if (await fse.pathExists(destExpanded)) await fse.copy(destExpanded, staging);
+    else await fse.ensureDir(staging);
+    await build(staging);
+    const existed = await fse.pathExists(destExpanded);
+    if (existed) await fse.rename(destExpanded, previous);
+    try {
+      await fse.rename(staging, destExpanded);
+    } catch (error) {
+      if (existed) await fse.rename(previous, destExpanded);
+      throw error;
+    }
+    await fse.remove(previous);
+  } catch (error) {
+    await fse.remove(staging).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** The target `link` resolves to, or null when `link` is not a symlink. */
+export async function readSymlinkTarget(link: string): Promise<string | null> {
+  const expanded = expandHome(link);
+  try {
+    if (!(await fse.lstat(expanded)).isSymbolicLink()) return null;
+    return path.resolve(path.dirname(expanded), await fse.readlink(expanded));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Recursively delete directories under `target` that contain no files at any
  * depth, and `target` itself when it ends up empty.
  *

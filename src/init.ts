@@ -1503,6 +1503,7 @@ export async function init(options: GlobalOptions & {
   http?: string;
   token?: string;
   inheritUserScope?: boolean;
+  skillLibrary?: boolean;
   self?: boolean;
   provider?: string;
 }): Promise<void> {
@@ -2047,6 +2048,9 @@ export async function init(options: GlobalOptions & {
     ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
+  // Carried across a re-init like the agent lists: the links pull made rely on it.
+  const skillLibrary = options.skillLibrary ?? carriedConfig?.skillLibrary;
+  if (skillLibrary) localConfig.skillLibrary = true;
 
   if (!rolePromptedEarly) {
     try {
