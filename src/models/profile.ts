@@ -613,6 +613,16 @@ export async function saveModelInputs(filePath: string, values: StoredModelInput
   await writeJsonAtomic(filePath, StoredModelInputsSchema.parse(values), { mode: 0o600 });
 }
 
+/**
+ * Union of two stored-inputs maps for the migration save. Legacy values files
+ * under one provider-ambiguous digest can differ in which team gateways they
+ * carry keys for, so adopting several of them must keep every identity's keys:
+ * the later map wins when both hold the same gateway key.
+ */
+export function mergeModelInputs(into: StoredModelInputs, later: StoredModelInputs): StoredModelInputs {
+  return { ...into, ...later };
+}
+
 export function resolveProfileRef(
   reference: string,
   team: TeamModelProfiles,

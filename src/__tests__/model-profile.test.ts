@@ -10,6 +10,7 @@ import {
   getTeamValuesPath,
   findTeamValuesPath,
   loadModelInputs,
+  mergeModelInputs,
   profileAgents,
   profileRoutes,
   sameTeamIdentity,
@@ -317,6 +318,51 @@ describe('model profiles', () => {
       // The user's explicit adoption of the former identity reads the file in
       // place; the next save migrates it to the provider-qualified name.
       expect(await findTeamValuesPath(renamed, { adopted: new Set([`${getTeamValuesPath(renamed)}::gh-${digest('acme/widgets')}`]) })).toBe(legacy);
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
+  it('a declined legacy file stays reachable and adoption merges every adopted identity\'s keys', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-partial-'));
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-partial-repo-'));
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: T\nrepo: acme/widgets\nprovider: github\n');
+      const config = { repo: { localPath: repo, remote: 'origin' } } as LocalConfig;
+      const dir = path.dirname(getTeamValuesPath(config));
+      await fse.ensureDir(dir);
+      // Two provider-ambiguous files share this checkout's digest — two teams'
+      // former lives that both keyed on the bare claim, each with its own keys.
+      const alpha = path.join(dir, `alpha-${digest('acme/widgets')}.json`);
+      const beta = path.join(dir, `beta-${digest('acme/widgets')}.json`);
+      await fse.writeFile(alpha, '{"team:gw":{"API_KEY":{"value":"alpha-key"}}}');
+      await fse.writeFile(beta, '{"team:hw":{"API_KEY":{"value":"beta-key"}}}');
+      // The migration guard sees BOTH before any target exists.
+      expect(await unadoptedLegacyFiles(config, new Set())).toHaveLength(2);
+      // Adopting only alpha must not hide beta: it still surfaces to the next
+      // run, so the caller will not create the hash-only target (whose very
+      // existence silences candidates) and beta's keys stay recoverable.
+      const adoptedAlpha = new Set([`${getTeamValuesPath(config)}::alpha-${digest('acme/widgets')}`]);
+      const afterPartial = await unadoptedLegacyFiles(config, adoptedAlpha);
+      expect(afterPartial.map((file) => file.entry)).toEqual([`beta-${digest('acme/widgets')}.json`]);
+      // Adopting beta too: no candidate remains; the read picks one file, and
+      // merging the other keeps every identity's keys instead of dropping them.
+      const adoptedBoth = new Set([
+        ...adoptedAlpha,
+        `${getTeamValuesPath(config)}::beta-${digest('acme/widgets')}`,
+      ]);
+      expect(await unadoptedLegacyFiles(config, adoptedBoth)).toEqual([]);
+      const readFrom = await findTeamValuesPath(config, { adopted: adoptedBoth });
+      const values = mergeModelInputs(await loadModelInputs(alpha), await loadModelInputs(readFrom));
+      expect(values).toMatchObject({
+        'team:gw': { API_KEY: { value: 'alpha-key' } },
+        'team:hw': { API_KEY: { value: 'beta-key' } },
+      });
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;

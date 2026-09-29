@@ -21,6 +21,7 @@ import {
   isApiKeyConfigured,
   loadLocalProfiles,
   loadModelInputs,
+  mergeModelInputs,
   profileAgents,
   profileModels,
   profileOrigin,
@@ -142,10 +143,26 @@ async function loadTeamValues(
       );
     }
   }
+  // A declined or unprompted file must stay reachable: once the hash-only
+  // target exists, its candidates are silenced, so those keys would be orphaned
+  // permanently with no later prompt ever possible. The migration save below
+  // therefore happens only when every matching device-ambiguous file for this
+  // team is either adopted (merged into the values) or gone — never while one
+  // is left to decide on.
+  const remaining = await unadoptedLegacyFiles(localConfig, adoptedLegacyValues);
+  const canMigrate = remaining.length === 0;
   const readFrom = await findTeamValuesPath(localConfig, { adopted: adoptedLegacyValues });
-  const values = await loadModelInputs(readFrom);
+  const valuesDir = path.dirname(target);
+  let values = await loadModelInputs(readFrom);
+  // Adoption merges EVERY adopted identity's keys, not only the newest file a
+  // single read selects: several files can share this checkout's digest, and
+  // their unique keys must all reach the migrated target.
+  for (const file of pending) {
+    if (!adoptedLegacyValues.has(`${target}::${file.identity}`)) continue;
+    values = mergeModelInputs(await loadModelInputs(path.join(valuesDir, file.entry)), values);
+  }
   const sentTo = await switchedGatewayOrigins(localConfig);
-  if ((bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) || readFrom !== target) && !options.dryRun) {
+  if (canMigrate && (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) || readFrom !== target) && !options.dryRun) {
     // Save to the current name, which then shadows the legacy file.
     await saveModelInputs(target, values);
   }
