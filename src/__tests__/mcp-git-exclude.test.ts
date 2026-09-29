@@ -35,7 +35,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
   };
 });
 
-import { MCP_EXCLUDE_END, MCP_EXCLUDE_START, excludeFromGit, removeMcpGitExclude } from '../mcp-git-exclude.js';
+import { MCP_EXCLUDE_END, MCP_EXCLUDE_START, ensureExcludedFromGit, excludeFromGit, removeMcpGitExclude } from '../mcp-git-exclude.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 
@@ -126,6 +126,39 @@ describe('teamai block in .git/info/exclude (#882)', () => {
 
     expect(await removeMcpGitExclude(excludeFile, ['/b.json'])).toBe('written');
     expect(await fse.readFile(excludeFile, 'utf8')).toBe('mine/\n');
+  });
+
+  describe('for a file git already tracks', () => {
+    beforeEach(async () => {
+      await fse.writeJson(path.join(repo, '.mcp.json'), {});
+      execFileSync('git', ['add', '.mcp.json'], { cwd: repo });
+    });
+
+    it('says so on a dry run before any pull has listed it, and writes nothing', async () => {
+      const file = path.join(repo, '.mcp.json');
+
+      expect(await ensureExcludedFromGit(file, { dryRun: true })).toEqual({
+        kind: 'failed',
+        reason: `git already tracks ${file}`,
+        fix: `Run \`git rm --cached ${file}\` (rotate any value a commit of it holds), then \`teamai pull\` again.`,
+      });
+      expect(await fse.pathExists(excludeFile) ? await fse.readFile(excludeFile, 'utf8') : '').not.toContain('teamai');
+    });
+
+    it.skipIf(process.getuid?.() === 0).each([
+      ['a pull', {}],
+      ['a dry run', { dryRun: true }],
+    ])('names the tracked file first on %s when .git/info is not writable either', async (_label, options) => {
+      const info = path.join(repo, '.git', 'info');
+      await fse.chmod(info, 0o555);
+
+      try {
+        const exclusion = await ensureExcludedFromGit(path.join(repo, '.mcp.json'), options);
+        expect(exclusion).toMatchObject({ kind: 'failed', reason: `git already tracks ${path.join(repo, '.mcp.json')}` });
+      } finally {
+        await fse.chmod(info, 0o755);
+      }
+    });
   });
 
   it('stays quiet outside any repository', async () => {

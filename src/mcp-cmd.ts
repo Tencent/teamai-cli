@@ -4,6 +4,7 @@ import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
 import { describeEntryFailure, describeOrigin, resolveEntriesFor } from './namespaced-entries.js';
 import {
   reconcileMcpForConfig,
+  releaseCleanMcpGitExcludes,
   resolveMcpTargets,
   buildVarTable,
   type McpChange,
@@ -139,6 +140,8 @@ export async function mcpInject(
 export async function mcpRemove(_options: GlobalOptions): Promise<void> {
   const { localConfig, teamConfig } = await autoDetectInit();
   const { changes, wrote } = await reconcileMcpForConfig(teamConfig, localConfig, { removeAll: true });
+  // Nothing of teamai's is left for .git/info/exclude to protect (#882).
+  await releaseCleanMcpGitExcludes(teamConfig, localConfig);
 
   console.log('MCP remove:');
   reportChanges(changes);

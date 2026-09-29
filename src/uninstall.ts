@@ -1,5 +1,4 @@
 import path from 'node:path';
-import fs from 'node:fs/promises';
 import { autoDetectInit, saveLocalConfig, saveLocalConfigForScope } from './config.js';
 import { reconcileHooks, hasTeamaiHooks } from './hooks.js';
 import {
@@ -20,7 +19,6 @@ import {
   TEAMAI_ENV_START,
   TEAMAI_ENV_END,
   getDataHome,
-  managedMcpManifestKey,
   getManagedHooksPath,
   isAgentExcluded,
   managedMcpManifestPath,
@@ -35,7 +33,6 @@ import {
   type Scope,
   type ManagedMcpManifest,
 } from './types.js';
-import type { McpTarget } from './mcp-reconcile.js';
 import { BUILTIN_RULE_NAMES } from './builtin-rules.js';
 import { ruleStemFromFilename } from './resources/rule-format.js';
 import { agentStemFromFilename } from './resources/agent-format.js';
@@ -494,89 +491,6 @@ async function discoverToolResources(
   return res;
 }
 
-/**
- * `localConfig` and, in project scope, one config per other linked worktree:
- * each worktree has its own MCP configs and managed-mcp manifest.
- */
-async function projectWorktreeConfigs(localConfig: LocalConfig): Promise<LocalConfig[]> {
-  const configs: LocalConfig[] = [localConfig];
-  if (localConfig.scope === 'project' && localConfig.projectRoot) {
-    const { listWorktrees } = await import('./utils/git.js');
-    const { resolveProjectDataHome } = await import('./config.js');
-    for (const wt of await listWorktrees(localConfig.projectRoot)) {
-      if (wt === localConfig.projectRoot) continue;
-      configs.push({ ...localConfig, projectRoot: wt, dataHome: await resolveProjectDataHome(wt) });
-    }
-  }
-  return configs;
-}
-
-/**
- * The `files` not proven free of a value teamai resolved (#882), each with why.
- * A missing file is clean; so is one a tool reads that parses and holds no
- * server at all. One holding servers is clean only when its worktree's manifest
- * is there to say what teamai wrote, and the file holds none of the team's
- * servers that need a resolved `${VAR}` there, none of teamai's own entries the
- * manifest records and cleanup left (their definition may have left mcp.yaml),
- * and none of the values of the variables set in this environment. Anything
- * else (no tool reads it, it does not parse, the team's servers cannot be read,
- * the manifest is lost) is not: a server teamai wrote, since dropped from
- * mcp.yaml, with a value no longer set, looks like the member's own.
- */
-async function mcpConfigsNotProvenClean(teamConfig: TeamaiConfig, localConfig: LocalConfig, files: string[]): Promise<Map<string, string>> {
-  const { resolveMcpTargets, installedMcpEntries, buildVarTable, resolvedValueEvidence } = await import('./mcp-reconcile.js');
-  const { carriesResolvedValue } = await import('./mcp-git-exclude.js');
-  const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
-  const { resolveEntriesFor } = await import('./namespaced-entries.js');
-  const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
-  const teamDefs = resolution.kind === 'failed' ? null : resolution.entries.map((entry) => teamMcpToDef(entry.entry));
-  // Keyed by real path: the protected paths come from git, which resolves symlinks (macOS /var).
-  const targets = new Map<string, { target: McpTarget; owned: string[]; recorded: boolean }>();
-  for (const cfg of await projectWorktreeConfigs(localConfig)) {
-    let manifest: ManagedMcpManifest = {};
-    let recorded = false;
-    if (cfg.projectRoot) {
-      const loaded = await loadProjectMcpManifest(getDataHome(cfg), cfg.projectRoot, { dryRun: true });
-      manifest = loaded.manifest;
-      recorded = Object.keys(manifest).length > 0 || await pathExists(loaded.manifestPath);
-    }
-    for (const target of await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true })) {
-      const dir = await fs.realpath(path.dirname(target.file)).catch(() => path.dirname(target.file));
-      const key = path.join(dir, path.basename(target.file));
-      const owned = (manifest[managedMcpManifestKey(target.tool, true)] ?? []).map((record) => record.name);
-      // One file reached twice (two tools share it, or a checkout through a symlink) merges what each says.
-      const seen = targets.get(key);
-      targets.set(key, { target, owned: [...seen?.owned ?? [], ...owned], recorded: recorded || seen?.recorded === true });
-    }
-  }
-  // Short values, paths and the login name turn up in ordinary configs, so they prove nothing.
-  const identity = new Set(['USER', 'LOGNAME', 'USERNAME']);
-  const vars = await buildVarTable(localConfig);
-  const values = Object.entries(vars)
-    .filter(([name, value]) => value.length >= 8 && !identity.has(name) && !/^([/~]|[A-Za-z]:[\\/])/.test(value));
-  const held = new Map<string, string>();
-  for (const file of files) {
-    if (!await pathExists(file)) continue;
-    const known = targets.get(file);
-    const installed = known ? await installedMcpEntries(known.target) : null;
-    const raw = (await readFileSafe(file)) ?? '';
-    const named = known && installed && teamDefs
-      ? [...installed.keys()].find((name) => carriesResolvedValue(known.target, teamDefs, [name]))
-      : undefined;
-    const why = !known ? 'no tool teamai knows reads it'
-      : !installed ? 'it does not parse'
-      : installed.size === 0 ? undefined
-      : !teamDefs ? 'the team\'s MCP servers cannot be read'
-      : named ? `it holds the team's ${named}, which needs a resolved \${VAR}`
-      : await resolvedValueEvidence(known.target, teamDefs, known.owned, vars).then((e) => e && `it holds ${e}`)
-        ?? values.filter(([, value]) => raw.includes(value)).map(([name]) => `it holds the value of $${name}`)[0]
-        ?? (known.recorded ? undefined : 'it holds MCP servers, and managed-mcp.json, teamai\'s record of which it wrote there, is gone');
-    if (why) held.set(file, why);
-  }
-  return held;
-}
-
 async function buildRemovalPlan(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
@@ -808,7 +722,7 @@ async function buildRemovalPlan(
     // that of any nested repository an MCP config sits in. It counts on its
     // own: a clone whose other resources are gone still gets it removed.
     if (localConfig.scope === 'project') {
-      const { resolveMcpTargets } = await import('./mcp-reconcile.js');
+      const { resolveMcpTargets, projectWorktreeConfigs } = await import('./mcp-reconcile.js');
       const { findMcpGitExcludes } = await import('./mcp-git-exclude.js');
       const dirs: string[] = [];
       for (const cfg of await projectWorktreeConfigs(localConfig)) {
@@ -1315,7 +1229,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     // must leave the remaining tools' MCP servers intact.
     if (plan.includeShared) {
       try {
-        const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
+        const { reconcileMcpForConfig, projectWorktreeConfigs, mcpConfigsNotProvenClean } = await import('./mcp-reconcile.js');
         // Project scope: the managed-mcp manifests are PER-WORKTREE under the
         // shared partition (#374 P1-2C), and each worktree's MCP config lives in
         // its own checkout. Since executeRemoval deletes the whole shared

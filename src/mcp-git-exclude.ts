@@ -76,7 +76,7 @@ async function gitExcludeFile(dir: string): Promise<{ excludeFile: string; root:
 }
 
 /** The closest directory above `file` that exists. */
-async function existingAncestor(file: string): Promise<string> {
+export async function existingAncestor(file: string): Promise<string> {
   let dir = path.dirname(path.resolve(file));
   while (!await pathExists(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
   return dir;
@@ -137,11 +137,11 @@ function splitBlock(content: string): { before: string; patterns: string[]; afte
 
 /**
  * Whether `file` is kept out of git, or why teamai could not keep it out and
- * what the member does about it. `pending`: a dry run found nothing in the way
- * of listing it.
+ * what the member does about it. `added`: this call listed it. `pending`: a dry
+ * run found nothing in the way of listing it.
  */
 export type GitExclusion =
-  | { kind: 'excluded' }
+  | { kind: 'excluded'; added: boolean }
   | { kind: 'pending' }
   | { kind: 'failed'; reason: string; fix: string };
 
@@ -149,13 +149,14 @@ export type GitExclusion =
  * Add `file` to its repository's `.git/info/exclude` unless git ignores it
  * already, and whether git now leaves it out of a commit. Idempotent; a path
  * already ignored, or outside any repository, adds nothing, and one git cannot
- * answer for is added all the same. `file` need not exist yet: pull calls this
+ * answer for is added all the same, and one git tracks fails before anything
+ * else is checked. `file` need not exist yet: pull calls this
  * before writing a resolved value into it. `dryRun` writes nothing and reports
  * what would stop the write.
  */
 export async function ensureExcludedFromGit(file: string, options: { dryRun?: boolean } = {}): Promise<GitExclusion> {
   const tracking = await gitTracking(file);
-  if (tracking.kind === 'ignored' || tracking.kind === 'outside-repo') return { kind: 'excluded' };
+  if (tracking.kind === 'ignored' || tracking.kind === 'outside-repo') return { kind: 'excluded', added: false };
   // `file` and its directory need not exist yet: git is asked from the nearest one that does.
   const dir = await existingAncestor(file);
   const location = await gitExcludeFile(dir);
@@ -170,6 +171,13 @@ export async function ensureExcludedFromGit(file: string, options: { dryRun?: bo
   // Anchored at the working tree root, glob characters escaped.
   const rel = path.relative(dir, file).split(path.sep).join('/');
   const pattern = `/${location.prefix}${rel}`.replace(/[\\*?[\]!#]/g, '\\$&');
+  // An exclude rule does not apply to a file git tracks already: that fix comes first.
+  const tracked: GitExclusion = {
+    kind: 'failed',
+    reason: `git already tracks ${file}`,
+    fix: `Run \`git rm --cached ${file}\` (rotate any value a commit of it holds), then \`teamai pull\` again.`,
+  };
+  if (tracking.kind === 'would-commit' && await gitTracks(file)) return tracked;
   const retry = `Make it writable, or add \`${pattern}\` to it yourself, then run \`teamai pull\` again.`;
   // A read-only exclude file is the member's choice; the atomic write would replace it all the same.
   for (const writable of [path.dirname(excludeFile), ...(await pathExists(excludeFile) ? [excludeFile] : [])]) {
@@ -185,17 +193,10 @@ export async function ensureExcludedFromGit(file: string, options: { dryRun?: bo
     const sep = head === '' || head.endsWith('\n') ? '' : '\n';
     return `${head}${sep}${body}\n${block?.after ?? ''}`;
   };
-  // An exclude rule does not apply to a file git tracks already.
-  const tracked: GitExclusion = {
-    kind: 'failed',
-    reason: `git already tracks ${file}`,
-    fix: `Run \`git rm --cached ${file}\` (rotate any value a commit of it holds), then \`teamai pull\` again.`,
-  };
   let result: ExcludeUpdate;
   try {
     if (options.dryRun) {
-      // Nothing listed yet: only a tracked file would still stop the write.
-      if (add((await readFileSafe(excludeFile)) ?? '') !== null) return await gitTracks(file) ? tracked : { kind: 'pending' };
+      if (add((await readFileSafe(excludeFile)) ?? '') !== null) return { kind: 'pending' };
       result = 'unchanged';
     } else {
       result = await updateExclude(excludeFile, add);
@@ -211,7 +212,7 @@ export async function ensureExcludedFromGit(file: string, options: { dryRun?: bo
     };
   }
   if (result === 'written') log.debug(`Added ${pattern} to ${excludeFile}`);
-  return (await gitTracking(file)).kind === 'would-commit' ? tracked : { kind: 'excluded' };
+  return (await gitTracking(file)).kind === 'would-commit' ? tracked : { kind: 'excluded', added: result === 'written' };
 }
 
 /**

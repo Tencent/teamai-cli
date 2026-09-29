@@ -367,7 +367,7 @@ describe('doctor — MCP servers delivered on disk', () => {
       expect(await excludeCheck()).toBeUndefined();
     });
 
-    it('fails the delivery check for a server withheld from a file git tracks, naming the file and the fix once (#879)', async () => {
+    it('fails the delivery check for a server withheld from a file git tracks, naming the file and the fix once', async () => {
       vi.stubEnv('JIRA_TOKEN', 'fixture-jira-token');
       execFileSync('git', ['add', '.mcp.json'], { cwd: projectRoot });
 

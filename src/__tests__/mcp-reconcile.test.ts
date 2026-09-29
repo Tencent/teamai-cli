@@ -23,12 +23,15 @@ vi.mock('../utils/logger.js', () => ({
 
 // What .git/info/exclude held at the moment each JSON config was written (#882).
 const excludeAtWrite = vi.hoisted(() => new Map<string, string | null>());
+// Runs just before each JSON config write, as a concurrent command would.
+const beforeJsonWrite = vi.hoisted(() => ({ run: null as null | ((file: string) => Promise<void>) }));
 vi.mock('../utils/fs.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/fs.js')>();
   return {
     ...actual,
     writeJsonAtomic: async (...args: Parameters<typeof actual.writeJsonAtomic>) => {
       const [file] = args;
+      await beforeJsonWrite.run?.(String(file));
       const gitDir = path.join(path.dirname(String(file)), '.git');
       if (await fse.pathExists(gitDir)) {
         excludeAtWrite.set(String(file), await actual.readFileSafe(path.join(gitDir, 'info', 'exclude')));
@@ -38,7 +41,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
   };
 });
 
-import { reconcileMcpForConfig, resolveMcpTargets, spliceCodexBlock, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
+import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets, spliceCodexBlock, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
@@ -1040,6 +1043,128 @@ servers:
 
       expect(excludeAtWrite.get(path.join(projectRoot, '.mcp.json'))).toMatch(/^\/\.mcp\.json$/m);
       expect(await fse.readFile(path.join(projectRoot, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+    });
+
+    describe('the line of a config left without a resolved value goes', () => {
+      const mcpJson = (): string => path.join(projectRoot, '.mcp.json');
+      const claudeOnly = (): LocalConfig => ({ ...projectConfig, disabledAgents: ['cursor'] } as LocalConfig);
+      const open = 'servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n';
+
+      beforeEach(() => {
+        vi.mocked(log.info).mockClear();
+        vi.mocked(log.debug).mockClear();
+      });
+
+      afterEach(() => {
+        beforeJsonWrite.run = null;
+      });
+
+      it.each([
+        ['it does not parse', () => fse.writeFile(mcpJson(), '{ "mcpServers": ')],
+        ['it holds a server of the member\'s own under the team\'s name', () => fse.writeJson(mcpJson(), {
+          mcpServers: { 'with-secret': { type: 'http', url: 'https://mine.example/mcp' } },
+        })],
+      ])('when this pull listed it and then wrote nothing, as %s', async (_label, arrange) => {
+        await arrange();
+        await writeMcpYaml(withSecret);
+
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await fse.readFile(mcpJson(), 'utf-8')).not.toContain('super-secret-value');
+        expect(await excludeOf(projectRoot)).not.toContain('teamai');
+        // The member never saw the line go in, so its rollback is not news.
+        expect(vi.mocked(log.info).mock.calls.flat().join('\n')).not.toMatch(/Removed/);
+        expect(vi.mocked(log.debug).mock.calls.flat().join('\n')).toMatch(/\/\.mcp\.json/);
+      });
+
+      it('but one an earlier pull listed stays while the config cannot be proven clean', async () => {
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+        const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+        await fse.remove(managedMcpManifestPath(getDataHome(projectConfig), projectRoot));
+        await fse.writeFile(mcpJson(), '{ "mcpServers": ');
+        vi.stubEnv('SECRET_TOKEN', 'rotated-secret-value');
+
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+
+      it('but one an earlier pull listed stays when this pull rewrote the manifest it had lost', async () => {
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+        const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+        await fse.remove(managedMcpManifestPath(getDataHome(projectConfig), projectRoot));
+        await writeMcpYaml(open);
+        vi.stubEnv('SECRET_TOKEN', '');
+
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('super-secret-value');
+        expect(await fse.pathExists(managedMcpManifestPath(getDataHome(projectConfig), projectRoot))).toBe(true);
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+
+      it('when the last server with a resolved value leaves mcp.yaml', async () => {
+        await writeMcpYaml(`${withSecret}  - name: open\n    transport: http\n    url: https://example.com/open\n`);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+        await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), 'mine/\n');
+        await writeMcpYaml(open);
+
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await fse.readFile(mcpJson(), 'utf-8')).toContain('https://example.com/open');
+        expect(await excludeOf(projectRoot)).not.toContain('teamai');
+        expect(await excludeOf(projectRoot)).toMatch(/^mine\/$/m);
+        expect(log.info).toHaveBeenCalledWith(expect.stringMatching(/^Removed \/\.mcp\.json from /));
+      });
+
+      it('when `teamai mcp remove` takes teamai\'s servers out', async () => {
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        await reconcileMcpForConfig(teamConfig, claudeOnly(), { removeAll: true });
+        await releaseCleanMcpGitExcludes(teamConfig, claudeOnly());
+
+        expect(await excludeOf(projectRoot)).not.toContain('teamai');
+      });
+
+      it('but not while another worktree\'s copy of the config still holds one', async () => {
+        git(projectRoot, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+        const worktree = path.join(tmpDir, 'business-wt');
+        git(projectRoot, 'worktree', 'add', '-q', worktree);
+        await fse.ensureDir(path.join(worktree, '.claude', 'skills'));
+        const { resolveProjectDataHome } = await import('../config.js');
+        const other = { ...claudeOnly(), projectRoot: worktree, dataHome: await resolveProjectDataHome(worktree) } as LocalConfig;
+        await writeMcpYaml(withSecret);
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+        await reconcileMcpForConfig(teamConfig, other);
+        await writeMcpYaml(open);
+
+        await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await fse.readFile(path.join(worktree, '.mcp.json'), 'utf-8')).toContain('super-secret-value');
+        expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
+      });
+    });
+
+    it('lists the config again when a concurrent uninstall drops its line between the check and the write', async () => {
+      const { findMcpGitExcludes, removeMcpGitExclude } = await import('../mcp-git-exclude.js');
+      beforeJsonWrite.run = async () => {
+        for (const [excludeFile, entries] of await findMcpGitExcludes([projectRoot])) {
+          await removeMcpGitExclude(excludeFile, entries.map((entry) => entry.pattern));
+        }
+      };
+      await writeMcpYaml(withSecret);
+
+      try {
+        await reconcileMcpForConfig(teamConfig, { ...projectConfig, disabledAgents: ['cursor'] } as LocalConfig);
+      } finally {
+        beforeJsonWrite.run = null;
+      }
+
+      expect(excludeAtWrite.get(path.join(projectRoot, '.mcp.json'))).not.toContain('teamai');
+      expect(await excludeOf(projectRoot)).toMatch(/^\/\.mcp\.json$/m);
     });
 
     describe('when the config cannot be kept out of git first', () => {
