@@ -888,8 +888,7 @@ export async function mcpConfigsNotProvenClean(
     recordedBy.set(cfg, cfgTargets);
     const { files: ledger } = await readResolvedMcpFiles(cfg);
     for (const target of await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true })) {
-      const dir = await fs.promises.realpath(path.dirname(target.file)).catch(() => path.dirname(target.file));
-      const key = path.join(dir, path.basename(target.file));
+      const key = await realFilePath(target.file);
       cfgTargets.push(target);
       const records = manifest[managedMcpManifestKey(target.tool, true)];
       const owned = Array.isArray(records) ? records : [];
