@@ -60,26 +60,26 @@ describe('model profiles', () => {
   it('matches the current hash name and only legacy digests this config could have produced', async () => {
     const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
     const config = { repo: { localPath: '/tmp/example/hai', remote: 'origin', url: 'https://example.test/hai.git' } } as LocalConfig;
-    expect(sameTeamIdentity(getTeamIdentity(config), config)).toBe(true);
+    expect(await sameTeamIdentity(getTeamIdentity(config), config)).toBe(true);
     // A legacy name keyed by the URL digest names the same team.
-    expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/hai.git')}`, config)).toBe(true);      // A legacy name keyed by a non-origin REMOTE URL digest names the same team.
+    expect(await sameTeamIdentity(`hai-platform-${digest('https://example.test/hai.git')}`, config)).toBe(true);      // A legacy name keyed by a non-origin REMOTE URL digest names the same team.
     const fork = { repo: { localPath: '/tmp/example/hai', remote: 'fork', url: 'https://example.test/hai.git' } } as LocalConfig;
-      expect(sameTeamIdentity(`hai-${digest('https://example.test/hai.git')}`, fork)).toBe(true);
+      expect(await sameTeamIdentity(`hai-${digest('https://example.test/hai.git')}`, fork)).toBe(true);
       // But a bare alias never names a file: two checkouts sharing it stay distinct.
       const forkA = getTeamValuesPath({ repo: { localPath: '/tmp/example/a', remote: 'fork', url: 'https://example.test/a' } } as LocalConfig);
       const forkB = getTeamValuesPath({ repo: { localPath: '/tmp/example/b', remote: 'fork', url: 'https://example.test/b' } } as LocalConfig);
       expect(forkA).not.toBe(forkB);
     // A digest from another repository, or one this config never produced, must not match.
-    expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/other.git')}`, config)).toBe(false);
-    expect(sameTeamIdentity('hai-platform-0000000000', config)).toBe(false);
-    expect(sameTeamIdentity(undefined, config)).toBe(false);
+    expect(await sameTeamIdentity(`hai-platform-${digest('https://example.test/other.git')}`, config)).toBe(false);
+    expect(await sameTeamIdentity('hai-platform-0000000000', config)).toBe(false);
+    expect(await sameTeamIdentity(undefined, config)).toBe(false);
     // The repo: claim in teamai.yaml overrode the identity in the old implementation,
     // so the stored digest is its: it must match (src/models/profile.ts).
     const claimRepo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-claim-'));
     await fse.writeFile(path.join(claimRepo, 'teamai.yaml'), 'team: HAI Platform\nrepo: https://git.example.test/acme/team.git\n');
     const withClaim = { repo: { localPath: claimRepo, remote: 'origin', url: 'https://example.test/hai.git' } } as LocalConfig;
     try {
-      expect(sameTeamIdentity(`hai-platform-${digest('https://git.example.test/acme/team.git')}`, withClaim)).toBe(true);
+      expect(await sameTeamIdentity(`hai-platform-${digest('https://git.example.test/acme/team.git')}`, withClaim)).toBe(true);
     } finally {
       await fse.remove(claimRepo);
     }
@@ -87,18 +87,18 @@ describe('model profiles', () => {
     // path-only config still matches, but one with a URL must not — the same
     // path can later hold a different team's checkout.
     const pathOnly = { repo: { localPath: '/tmp/example/hai', remote: 'origin' } } as LocalConfig;
-    expect(sameTeamIdentity(`hai-${digest('/tmp/example/hai')}`, pathOnly)).toBe(true);
-    expect(sameTeamIdentity(`hai-platform-${digest('/tmp/example/hai')}`, pathOnly)).toBe(false);
+    expect(await sameTeamIdentity(`hai-${digest('/tmp/example/hai')}`, pathOnly)).toBe(true);
+    expect(await sameTeamIdentity(`hai-platform-${digest('/tmp/example/hai')}`, pathOnly)).toBe(false);
   });
 
   it('rejects an alias-digest switch record whose slug is another team\'s', async () => {
     const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
     // Team A recorded switches as `team-a-<fork digest>`; team B shares the alias.
     const teamB = { repo: { localPath: '/tmp/example/team-b', remote: 'fork', url: 'https://example.test/b.git' } } as LocalConfig;
-    expect(sameTeamIdentity(`team-a-${digest('fork')}`, teamB)).toBe(false);
-    expect(sameTeamIdentity(`team-b-${digest('fork')}`, teamB)).toBe(true);
+    expect(await sameTeamIdentity(`team-a-${digest('fork')}`, teamB)).toBe(false);
+    expect(await sameTeamIdentity(`team-b-${digest('fork')}`, teamB)).toBe(true);
     // A repository-bound digest needs no slug check: a rename keeps the digest.
-    expect(sameTeamIdentity(`renamed-team-${digest('https://example.test/b.git')}`, teamB)).toBe(true);
+    expect(await sameTeamIdentity(`renamed-team-${digest('https://example.test/b.git')}`, teamB)).toBe(true);
   });
 
   it('matches the repo: claim, not the path, when the config has no url', async () => {
@@ -109,9 +109,9 @@ describe('model profiles', () => {
     try {
       // The claim, not the path, is what the old implementation hashed here;
       // the claim digest (post-repoIdentity) is a matching legacy candidate...
-      expect(sameTeamIdentity(`hai-${digest('https://git.example.test/canonical.git')}`, config)).toBe(true);
+      expect(await sameTeamIdentity(`hai-${digest('https://git.example.test/canonical.git')}`, config)).toBe(true);
       // ...and a path-digest record from another team at this path is not.
-      expect(sameTeamIdentity(`old-team-${digest(claimRepo)}`, config)).toBe(false);
+      expect(await sameTeamIdentity(`old-team-${digest(claimRepo)}`, config)).toBe(false);
       const target = getTeamValuesPath(config);
       const dir = path.dirname(target);
       await fse.ensureDir(dir);
@@ -147,7 +147,7 @@ describe('model profiles', () => {
       await saveModelInputs(fileA, { 'team:gw': { API_KEY: { value: 'alpha-key' } } });
       expect(await findTeamValuesPath(teamB)).toBe(fileB);
       expect(await fse.pathExists(fileB)).toBe(false);
-      expect(sameTeamIdentity(path.basename(fileA, '.json'), teamB)).toBe(false);
+      expect(await sameTeamIdentity(path.basename(fileA, '.json'), teamB)).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;
@@ -170,8 +170,8 @@ describe('model profiles', () => {
       const gitcodeFile = getTeamValuesPath(onGitcode);
       expect(githubFile).not.toBe(gitcodeFile);
       // A path-shaped identity is provider-qualified; a URL is not (it carries its host).
-      expect(sameTeamIdentity(path.basename(githubFile, '.json'), onGithub)).toBe(true);
-      expect(sameTeamIdentity(path.basename(githubFile, '.json'), onGitcode)).toBe(false);
+      expect(await sameTeamIdentity(path.basename(githubFile, '.json'), onGithub)).toBe(true);
+      expect(await sameTeamIdentity(path.basename(githubFile, '.json'), onGitcode)).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;
@@ -207,8 +207,116 @@ describe('model profiles', () => {
       // identity, a legacy record under it must carry this checkout's slug.
       await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GH\nrepo: acme/widgets\nprovider: github\n');
       const onGithub = { repo: { localPath: repo, remote: 'origin' } } as LocalConfig;
-      expect(sameTeamIdentity(`gc-${digest('acme/widgets')}`, onGithub)).toBe(false);
-      expect(sameTeamIdentity(`gh-${digest('acme/widgets')}`, onGithub)).toBe(true);
+      expect(await sameTeamIdentity(`gc-${digest('acme/widgets')}`, onGithub)).toBe(false);
+      expect(await sameTeamIdentity(`gh-${digest('acme/widgets')}`, onGithub)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
+  it('never reads another provider\'s path-shaped claim file, keys or switches', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-noleak-'));
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-noleak-repo-'));
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      // GitHub team Alpha keyed its values on the bare claim digest and bound
+      // the key to its own gateway (#707).
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: Alpha\nrepo: acme/widgets\nprovider: github\n');
+      const alphaFile = getTeamValuesPath({ repo: { localPath: repo, remote: 'origin' } } as LocalConfig);
+      await fse.ensureDir(path.dirname(alphaFile));
+      const alphaLegacy = path.join(path.dirname(alphaFile), `alpha-${digest('acme/widgets')}.json`);
+      await fse.writeFile(alphaLegacy, '{"team:gw@https://github-gw.example.test":{"API_KEY":{"value":"alpha-key"}}}');
+      // GitCode team Beta has the same claim: the same old digest, a foreign file.
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: Beta\nrepo: acme/widgets\nprovider: gitcode\n');
+      const onGitcode = { repo: { localPath: repo, remote: 'origin' }, provider: 'gitcode' } as LocalConfig;
+      const gitcodeTeam = {
+        version: 1,
+        profiles: [{ ...profile('gw'), name: 'GitCode gateway', base_url: 'https://gitcode-gw.example.test' }],
+      } as ModelProfilesFile;
+      // The foreign file is never read — the slug guards it, and the keys are
+      // bound to GitHub's gateway, not GitCode's.
+      expect(await findTeamValuesPath(onGitcode)).toBe(getTeamValuesPath(onGitcode));
+      expect(await findTeamValuesPath(onGitcode, gitcodeTeam)).toBe(getTeamValuesPath(onGitcode));
+      // Nor are its switches adopted, with or without the team's profiles.
+      expect(await sameTeamIdentity(`alpha-${digest('acme/widgets')}`, onGitcode)).toBe(false);
+      expect(await sameTeamIdentity(`alpha-${digest('acme/widgets')}`, onGitcode, gitcodeTeam)).toBe(false);
+      expect(await fse.readFile(alphaLegacy, 'utf8')).toContain('alpha-key');
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
+  it('repairs a renamed path-shaped claim team by gateway provenance only', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-rename-'));
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-rename-repo-'));
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      const githubTeam = {
+        version: 1,
+        profiles: [{ ...profile('gw'), name: 'GitHub gateway', base_url: 'https://github-gw.example.test' }],
+      } as ModelProfilesFile;
+      // Team GH keyed its values on the bare claim digest, bound to its gateway.
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GH\nrepo: acme/widgets\nprovider: github\n');
+      const dir = path.dirname(getTeamValuesPath({ repo: { localPath: repo, remote: 'origin' } } as LocalConfig));
+      const legacy = path.join(dir, `gh-${digest('acme/widgets')}.json`);
+      await fse.ensureDir(dir);
+      await fse.writeFile(legacy, '{"team:gw@https://github-gw.example.test":{"API_KEY":{"value":"gh-key"}}}');
+      // A rename keeps the provider and gateway: with the team's profiles the
+      // legacy file and its switches are provably this team's and are read.
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GC\nrepo: acme/widgets\nprovider: github\n');
+      const renamed = { repo: { localPath: repo, remote: 'origin' }, provider: 'github' } as LocalConfig;
+      expect(await findTeamValuesPath(renamed, githubTeam)).toBe(legacy);
+      expect(await sameTeamIdentity(`gh-${digest('acme/widgets')}`, renamed, githubTeam)).toBe(true);
+      // Without the profiles the provenance cannot be established: the bare
+      // digest alone must not adopt another team's file or switch.
+      expect(await findTeamValuesPath(renamed)).toBe(getTeamValuesPath(renamed));
+      expect(await sameTeamIdentity(`gh-${digest('acme/widgets')}`, renamed)).toBe(false);
+      // A foreign provider pointing at the same claim fails the gateway check.
+      const gitcodeTeam = {
+        version: 1,
+        profiles: [{ ...profile('gw'), name: 'GitCode gateway', base_url: 'https://gitcode-gw.example.test' }],
+      } as ModelProfilesFile;
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GC\nrepo: acme/widgets\nprovider: gitcode\n');
+      const onGitcode = { repo: { localPath: repo, remote: 'origin' }, provider: 'gitcode' } as LocalConfig;
+      expect(await findTeamValuesPath(onGitcode, gitcodeTeam)).toBe(getTeamValuesPath(onGitcode));
+      expect(await sameTeamIdentity(`gh-${digest('acme/widgets')}`, onGitcode, gitcodeTeam)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
+  it('keeps rename-repair refused when a legacy file\'s keys are unbound', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-unbound-'));
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-unbound-repo-'));
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      // A beta-era file stores keys by profile id alone, bound to no gateway:
+      // there is no provenance, so a rename must not guess it is this team's.
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GH\nrepo: acme/widgets\nprovider: github\n');
+      const dir = path.dirname(getTeamValuesPath({ repo: { localPath: repo, remote: 'origin' } } as LocalConfig));
+      const legacy = path.join(dir, `gh-${digest('acme/widgets')}.json`);
+      await fse.ensureDir(dir);
+      await fse.writeFile(legacy, '{"team:gw":{"API_KEY":{"value":"beta-key"}}}');
+      await fse.writeFile(path.join(repo, 'teamai.yaml'), 'team: GC\nrepo: acme/widgets\nprovider: github\n');
+      const renamed = { repo: { localPath: repo, remote: 'origin' }, provider: 'github' } as LocalConfig;
+      const githubTeam = {
+        version: 1,
+        profiles: [{ ...profile('gw'), name: 'GitHub gateway', base_url: 'https://github-gw.example.test' }],
+      } as ModelProfilesFile;
+      expect(await findTeamValuesPath(renamed, githubTeam)).toBe(getTeamValuesPath(renamed));
+      expect(await sameTeamIdentity(`gh-${digest('acme/widgets')}`, renamed, githubTeam)).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;
@@ -313,7 +421,7 @@ describe('model profiles', () => {
       expect(await findTeamValuesPath(config)).toBe(target);
       expect(await fse.pathExists(target)).toBe(false);
       expect(await fse.pathExists(foreign)).toBe(true);
-      expect(sameTeamIdentity(`hai-platform-${digest('https://example.test/foreign.git')}`, config)).toBe(false);
+      expect(await sameTeamIdentity(`hai-platform-${digest('https://example.test/foreign.git')}`, config)).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;

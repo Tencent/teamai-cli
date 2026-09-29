@@ -91,9 +91,9 @@ async function loadTeamValues(
   team: TeamModelProfiles,
   options: { dryRun?: boolean } = {},
 ): Promise<StoredModelInputs> {
-  const readFrom = await findTeamValuesPath(localConfig);
+  const readFrom = await findTeamValuesPath(localConfig, team);
   const values = await loadModelInputs(readFrom);
-  const sentTo = await switchedGatewayOrigins(localConfig);
+  const sentTo = await switchedGatewayOrigins(localConfig, team);
   if (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) && !options.dryRun) {
     // Save to the current name, which then shadows the legacy file.
     await saveModelInputs(getTeamValuesPath(localConfig), values);
@@ -161,18 +161,21 @@ async function loadValuesFor(ref: ProfileRef, context: TeamModelsContext, option
   return loadModelInputs(valuesPathFor(ref, context));
 }
 
-function activeAgentsFor(
+async function activeAgentsFor(
   ref: ProfileRef,
   active: Partial<Record<ModelAgent, ActiveModelProfile>>,
   localConfig?: LocalConfig,
-): ModelAgent[] {
+  team?: TeamModelProfiles,
+): Promise<ModelAgent[]> {
   const name = profileRefName(ref);
-  return (Object.entries(active) as Array<[ModelAgent, ActiveModelProfile]>)
-    .filter(([, state]) => state.profile === name && (
-      ref.source === 'local' || !state.team
-      || (localConfig ? sameTeamIdentity(state.team, localConfig) : state.team === ref.team)
-    ))
-    .map(([agent]) => agent);
+  const agents: ModelAgent[] = [];
+  for (const [agent, state] of Object.entries(active) as Array<[ModelAgent, ActiveModelProfile]>) {
+    if (state.profile !== name) continue;
+    if (ref.source !== 'local' && state.team
+      && !(localConfig ? await sameTeamIdentity(state.team, localConfig, team) : state.team === ref.team)) continue;
+    agents.push(agent);
+  }
+  return agents;
 }
 
 function printResults(results: ModelSwitchResult[], explicitAgents: boolean): void {
@@ -213,10 +216,10 @@ export async function modelsList(reference?: string): Promise<void> {
     team: context.localConfig && refs.some((ref) => ref.source === 'team') ? await loadTeamValues(context.localConfig, context.team) : {},
     local: refs.some((ref) => ref.source === 'local') ? await loadModelInputs(getLocalValuesPath()) : {},
   };
-  refs.forEach((ref, index) => {
+  for (const [index, ref] of refs.entries()) {
     if (index > 0) console.log('');
     const secret = storedApiKey(ref, values[ref.source]);
-    const activeAgents = activeAgentsFor(ref, active, context.localConfig);
+    const activeAgents = await activeAgentsFor(ref, active, context.localConfig, context.team);
     console.log(`${profileRefName(ref)} — ${ref.profile.name}`);
     if (ref.from) console.log(`  From: ${ref.from.source} (${describeOrigin(ref.from)})`);
     const missing = hasApiKeyForAnotherGateway(ref, values[ref.source])
@@ -230,7 +233,7 @@ export async function modelsList(reference?: string): Promise<void> {
     }
     console.log(`  Agents: ${profileAgents(ref.profile).join(', ')}`);
     console.log(`  Active: ${activeAgents.length ? activeAgents.join(', ') : 'none'}`);
-  });
+  }
 }
 
 interface AddOptions extends ApiKeyOptions {
@@ -359,7 +362,7 @@ export async function modelsConfigure(reference: string, options: ConfigureOptio
     local.profiles[local.profiles.findIndex((profile) => profile.id === edited!.id)] = edited;
     await saveLocalProfiles(local);
   }
-  const activeAgents = activeAgentsFor(ref, await activeModelProfiles(), context.localConfig);
+  const activeAgents = await activeAgentsFor(ref, await activeModelProfiles(), context.localConfig, context.team);
   log.success(activeAgents.length
     ? `Configured ${key}${gatewaySuffix(ref, 'at')}. Run \`teamai models switch ${key}\` to apply it to ${activeAgents.join(', ')}.`
     : `Configured ${key}${gatewaySuffix(ref, 'at')}. Agent settings were not changed.`);
@@ -392,7 +395,7 @@ export async function modelsSwitch(reference: string, options: SwitchOptions): P
   const resolved = resolveProfile(ref, values, options.model);
   const explicit = collectAgents(options.agent ?? []);
   const agents = explicit.length > 0 ? explicit : profileAgents(ref.profile);
-  printResults(await switchModelProfile(resolved, agents, { dryRun: options.dryRun }), explicit.length > 0);
+  printResults(await switchModelProfile(resolved, agents, { dryRun: options.dryRun, team: context.team }), explicit.length > 0);
 }
 
 export async function modelsRestore(options: SwitchOptions): Promise<void> {
@@ -442,9 +445,15 @@ function warnAndPersist(message: string): void {
  */
 export async function syncTeamModelProfiles(localConfig: LocalConfig, options: { dryRun?: boolean } = {}): Promise<string | undefined> {
   const identity = getTeamIdentity(localConfig);
+  const resolution = await resolveEntriesFor(modelsEntryReader, localConfig);
+  if (resolution.kind === 'failed') {
+    reportEntryResolution(resolution);
+    return undefined;
+  }
+  const team = teamProfilesFrom(resolution.entries);
   const groups = new Map<string, { profile: string; model?: string; agents: ModelAgent[] }>();
   for (const [agent, state] of Object.entries(await activeModelProfiles()) as Array<[ModelAgent, ActiveModelProfile]>) {
-    if (!state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
+    if (!state.profile.startsWith('team:') || !await sameTeamIdentity(state.team, localConfig, team)) continue;
     const groupKey = `${state.profile}\0${state.model ?? ''}`;
     const group = groups.get(groupKey) ?? { profile: state.profile, model: state.model, agents: [] };
     group.agents.push(agent);
@@ -453,12 +462,6 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
   // Nothing to update or offer: skip reading the manifests.
   if (groups.size === 0 && !await pathExists(path.join(localConfig.repo.localPath, 'models'))) return undefined;
 
-  const resolution = await resolveEntriesFor(modelsEntryReader, localConfig);
-  if (resolution.kind === 'failed') {
-    reportEntryResolution(resolution);
-    return undefined;
-  }
-  const team = teamProfilesFrom(resolution.entries);
   // Before anything reads a key: a key a beta stored is bound at the first pull.
   const values = await loadTeamValues(localConfig, team, options);
   if (groups.size === 0) {
@@ -494,7 +497,7 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
       continue;
     }
     const onlyIfActive = { profile: name, team: identity, ...(model ? { model } : {}) };
-    for (const result of await switchModelProfile(resolved, agents, { ...options, onlyIfActive, localConfig })) {
+    for (const result of await switchModelProfile(resolved, agents, { ...options, onlyIfActive, localConfig, team })) {
       if (result.status === 'switched') {
         log.success(options.dryRun ? `Would update ${result.agent} to the latest ${name}` : `Updated ${result.agent} to the latest ${name}`);
       } else if (result.status !== 'unchanged' && result.status !== 'not-installed') {

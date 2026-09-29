@@ -251,12 +251,14 @@ function repoClaim(localPath: string): { claim: string; provider?: string } | nu
  * candidate only when the old implementation would have keyed on it (no
  * claim, no configured remote, no URL). That keeps a checkout replaced at
  * the same path by another team from adopting the previous team's file.
- * Repository-bound digests (a URL, a URL-shaped claim) match by digest
- * alone. Provider-ambiguous digests (a bare alias, a path-shaped claim, the
- * local path of a path-only config) name no single repository, so records
- * under them require this team's slug; values FILES under a path-shaped
- * claim digest are the rename-repair exception — read by digest, since the
- * keys inside stay gateway-origin-bound.
+ * Repository-bound digests (a URL, a URL-shaped claim or remote) match by
+ * digest alone — the identity carries its host, so the slug can drift with
+ * team renames with no ambiguity. A path-shaped claim, a bare alias, or a
+ * path-only local path names no single repository, so files and records
+ * under them require this team's slug. A path-shaped claim digest remains
+ * rename-repairable, but only when the candidate file stores keys bound to
+ * this team's gateways (<#707> `team:<id>@<origin>`): a renamed team keeps
+ * its gateway, a team on another provider does not.
  */
 interface LegacyDigest {
   digest: string;
@@ -264,6 +266,15 @@ interface LegacyDigest {
   fileNeedsSlug: boolean;
   /** Switch records under this digest match only when the slug also matches. */
   recordNeedsSlug: boolean;
+  /**
+   * A path-shaped `repo:` claim digest may yet be the current team's former
+   * identity: such a claim names no single repository without its provider,
+   * but a RENAMED team keeps its gateway, and its stored keys are bound to
+   * that gateway under `team:<id>@<origin>`. When the slug differs, a file or
+   * record under this digest is re-admitted only if that origin-based
+   * provenance holds — never by digest alone.
+   */
+  renameRepairable?: boolean;
 }
 
 function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
@@ -271,10 +282,14 @@ function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
   const configuredRemote = remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined;
   const claim = repoClaim(localPath);
   const urlShaped = (value?: string) => value !== undefined && isRepoReference(value);
-  const candidates: Array<{ identity?: string; fileNeedsSlug: boolean; recordNeedsSlug: boolean }> = [
+  const candidates: Array<{ identity?: string; fileNeedsSlug: boolean; recordNeedsSlug: boolean; renameRepairable?: boolean }> = [
     // A claim overrode everything below it; with a claim, the old
-    // implementation never hashed the remote, URL, or path.
-    { identity: claim?.claim, fileNeedsSlug: false, recordNeedsSlug: !urlShaped(claim?.claim) },
+    // implementation never hashed the remote, URL, or path. A URL-shaped
+    // claim names one repository (its host is in it) and matches by digest.
+    // A path-shaped claim is provider-ambiguous — the legacy digest hashed
+    // the bare claim — so files and records need the slug, plus proven
+    // gateway-origin provenance to survive a rename.
+    { identity: claim?.claim, fileNeedsSlug: !urlShaped(claim?.claim), recordNeedsSlug: !urlShaped(claim?.claim), renameRepairable: claim?.claim !== undefined && !urlShaped(claim?.claim) },
     ...(claim === null ? [
       { identity: configuredRemote, fileNeedsSlug: !urlShaped(configuredRemote), recordNeedsSlug: !urlShaped(configuredRemote) },
       { identity: url, fileNeedsSlug: false, recordNeedsSlug: false },
@@ -285,12 +300,12 @@ function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
   ];
   const seen = new Set<string>();
   const digests: LegacyDigest[] = [];
-  for (const { identity, fileNeedsSlug, recordNeedsSlug } of candidates) {
+  for (const { identity, fileNeedsSlug, recordNeedsSlug, renameRepairable } of candidates) {
     if (!identity) continue;
     const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
     if (seen.has(digest)) continue;
     seen.add(digest);
-    digests.push({ digest, fileNeedsSlug, recordNeedsSlug });
+    digests.push({ digest, fileNeedsSlug, recordNeedsSlug, renameRepairable });
   }
   return digests;
 }
@@ -315,6 +330,51 @@ function legacyTeamSlug(localPath: string): string {
     .replace(/-+$/g, '') || 'team';
 }
 
+/** The gateway origins this team's profiles serve; the renamed-team discriminator below. */
+function teamProfileOrigins(team: TeamModelProfiles): ReadonlySet<string> {
+  return new Set(team.profiles.map((profile) => profileOrigin(profile)));
+}
+
+/** The gateway origins stored team keys are bound to (the `@<origin>` of `team:<id>@<origin>` names). */
+function boundKeyOrigins(values: StoredModelInputs): string[] {
+  const origins: string[] = [];
+  for (const name of Object.keys(values)) {
+    const at = name.lastIndexOf('@');
+    if (name.startsWith('team:') && at > 'team:'.length) origins.push(name.slice(at + 1));
+  }
+  return origins;
+}
+
+/**
+ * Whether a legacy `<slug>-<digest>.json` file under a provider-ambiguous
+ * digest is provably this team's former file: it must exist and store at
+ * least one key bound to THIS team's gateway. A renamed team keeps its
+ * gateway, so the binding survives; a team on another provider binds to
+ * another gateway and cannot pass. Unreadable or malformed files are not
+ * evidence one way or the other — a later non-provenance read surfaces the
+ * error where the file would actually be used.
+ */
+async function legacyFileBoundToTeam(
+  filePath: string,
+  origins: ReadonlySet<string>,
+): Promise<boolean> {
+  let content: string;
+  try {
+    content = await fs.promises.readFile(filePath, 'utf8');
+  } catch {
+    return false;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content) as unknown;
+  } catch {
+    return false;
+  }
+  const parsed = StoredModelInputsSchema.safeParse(raw);
+  if (!parsed.success) return false;
+  return boundKeyOrigins(parsed.data).some((origin) => origins.has(origin));
+}
+
 /**
  * Whether a stored team identity (the current hash-only name or a legacy
  * `<slug>-<digest>` form) names the repository `localConfig` describes, and
@@ -322,21 +382,32 @@ function legacyTeamSlug(localPath: string): string {
  * single repository (a URL, a URL-shaped claim or remote) match by digest
  * alone — the identity is the repository, so the slug can drift with team
  * renames. A path-shaped claim, a bare alias, or a path-only local path
- * names no single repository — two teams sharing `remote: fork` hashed the
- * same — so the record is accepted only when the stored slug is this
- * checkout's too, the same rule `findTeamValuesPath` applies before
- * reading an alias-digest values file.
+ * names no single repository — the slug keeps teams apart — so the record is
+ * accepted only when the stored slug is this checkout's too. A path-shaped
+ * claim record under a DIFFERENT slug is still this team's when `team` is
+ * given and its `<slug>-<digest>.json` values file provably holds keys bound
+ * to this team's gateways: that is precisely a renamed team, whose legacy
+ * keys and switches must keep working; another provider's keys bind to
+ * another gateway and are rejected.
  */
-export function sameTeamIdentity(stored: string | undefined, localConfig: LocalConfig): boolean {
+export async function sameTeamIdentity(stored: string | undefined, localConfig: LocalConfig, team?: TeamModelProfiles): Promise<boolean> {
   if (!stored) return false;
   if (stored === getTeamIdentity(localConfig)) return true;
   const legacy = /^(.+)-([0-9a-f]{10})$/.exec(stored);
   if (legacy === null) return false;
   const slug = legacy[1] ?? '';
   const digest = legacy[2] ?? '';
-  return legacyTeamValueHashes(localConfig).some((candidate) =>
-    candidate.digest === digest &&
-    (candidate.recordNeedsSlug ? slug === legacyTeamSlug(localConfig.repo.localPath) : true));
+  const mySlug = legacyTeamSlug(localConfig.repo.localPath);
+  for (const candidate of legacyTeamValueHashes(localConfig)) {
+    if (candidate.digest !== digest) continue;
+    if (!candidate.recordNeedsSlug || slug === mySlug) return true;
+    if (candidate.renameRepairable !== true || team === undefined) return false;
+    return legacyFileBoundToTeam(
+      path.join(path.dirname(getTeamValuesPath(localConfig)), `${stored}.json`),
+      teamProfileOrigins(team),
+    );
+  }
+  return false;
 }
 
 /**
@@ -349,13 +420,17 @@ export function sameTeamIdentity(stored: string | undefined, localConfig: LocalC
  * next save writes the hash-only file, which then shadows the legacy one.
  * Values files under a repository-bound digest (a URL, a URL-shaped remote,
  * a `repo:` claim) match by digest alone — the slug drifts with team
- * renames, and a path-shaped claim still names the checkout its keys are
- * gateway-origin-bound to. A bare alias digest or a path-only local path
- * names no single repository — two checkouts sharing `remote: fork` hashed
- * the same — so a file keyed by one is adopted only when its slug is this
- * checkout's too, the discriminator the old scheme kept those files apart by.
+ * renames, and the identity carries its host with no ambiguity. A bare alias
+ * digest or a path-only local path names no single repository — two
+ * checkouts sharing `remote: fork` hashed the same — so a file keyed by one
+ * is adopted only when its slug is this checkout's too, the discriminator
+ * the old scheme kept those files apart by. A path-shaped claim digest falls
+ * on the same side: it names no single repository without its provider, so a
+ * foreign-slug file is read only when `team` proves it — the file holds keys
+ * bound to this team's gateways, which a rename keeps and another provider
+ * cannot produce.
  */
-export async function findTeamValuesPath(localConfig: LocalConfig): Promise<string> {
+export async function findTeamValuesPath(localConfig: LocalConfig, team?: TeamModelProfiles): Promise<string> {
   const target = getTeamValuesPath(localConfig);
   if (fs.existsSync(target)) return target;
   const candidates = legacyTeamValueHashes(localConfig);
@@ -367,14 +442,31 @@ export async function findTeamValuesPath(localConfig: LocalConfig): Promise<stri
   } catch {
     return target; // no teams directory yet — nothing to read
   }
+  const origins = team === undefined ? undefined : teamProfileOrigins(team);
+  const repairable = candidates.find((candidate) => candidate.renameRepairable === true);
   const matching: Array<{ entry: string; mtime: number }> = [];
+  const renamed: Array<{ entry: string; mtime: number }> = [];
   for (const entry of entries) {
     const legacy = /^(.+)-([0-9a-f]{10})\.json$/.exec(entry);
     if (legacy === null) continue;
     const digest = legacy[2] ?? '';
     const candidate = candidates.find((match) => match.digest === digest);
     if (candidate === undefined) continue;
-    if (candidate.fileNeedsSlug && (legacy[1] ?? '') !== slug) continue; // an alias or path digest is this team's only under its own slug
+    if (candidate.fileNeedsSlug && (legacy[1] ?? '') !== slug) {
+      // A different slug under a provider-ambiguous digest. Re-admit it only
+      // as a renamed team's own file, proven by gateway-bound keys; anything
+      // else is another team's (or another provider's) and never read.
+      if (repairable !== undefined && candidate === repairable && origins !== undefined
+        && await legacyFileBoundToTeam(path.join(dir, entry), origins)) {
+        try {
+          const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
+          renamed.push({ entry, mtime: mtimeMs });
+        } catch {
+          // Removed by a concurrent process between readdir and stat.
+        }
+      }
+      continue;
+    }
     try {
       const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
       matching.push({ entry, mtime: mtimeMs });
@@ -382,9 +474,12 @@ export async function findTeamValuesPath(localConfig: LocalConfig): Promise<stri
       // Removed by a concurrent process between readdir and stat; nothing to read.
     }
   }
+  // This checkout's own slug always wins; a proven rename file only fills in
+  // when no same-slug file exists.
+  const pool = matching.length > 0 ? matching : renamed;
   // newest first; equal timestamps take the lexicographically last name
-  matching.sort((a, b) => b.mtime - a.mtime || b.entry.localeCompare(a.entry));
-  return matching.length > 0 ? path.join(dir, matching[0]?.entry ?? '') : target;
+  pool.sort((a, b) => b.mtime - a.mtime || b.entry.localeCompare(a.entry));
+  return pool.length > 0 ? path.join(dir, pool[0]?.entry ?? '') : target;
 }
 
 /** One profiles file, or why it cannot be used; null when it does not exist. `label` names it in the reason. */
