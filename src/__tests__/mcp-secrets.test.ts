@@ -24,6 +24,8 @@ import { requireInit } from '../config.js';
 import { envSet, envUnset } from '../env-commands.js';
 import { readStdin } from '../utils/prompt.js';
 import { buildVarTable, reconcileMcpForConfig } from '../mcp-reconcile.js';
+import { resolvePlaceholders } from '../resources/mcp-format.js';
+import type { McpServerDef } from '../types.js';
 import { envShMarker } from '../env-sh-exports.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { log } from '../utils/logger.js';
@@ -174,6 +176,21 @@ describe('MCP servers and declared secrets', () => {
     expect((await buildVarTable(localConfig)).API_URL).toBe('team-url');
     await reconcileMcpForConfig(teamConfig, localConfig);
     expect(await githubAuthorization()).toBe('Bearer exported-token');
+  });
+
+  it('on Windows, fills ${token} with the value of TOKEN, the same environment variable', () => {
+    const def = { name: 'github', transport: 'http', url: 'https://api.example.com/mcp', headers: { Authorization: 'Bearer ${github_token}' } } as McpServerDef;
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    let resolved: ReturnType<typeof resolvePlaceholders>;
+    try {
+      resolved = resolvePlaceholders(def, { GITHUB_TOKEN: 'fixture-token' });
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    }
+    expect(resolved.missing).toEqual([]);
+    expect(resolved.def.headers?.Authorization).toBe('Bearer fixture-token');
+    expect(resolvePlaceholders(def, { GITHUB_TOKEN: 'fixture-token' }).missing).toEqual(['github_token']);
   });
 
   it('on Windows, never lets an inherited value under another case of a team variable\'s name in', async () => {

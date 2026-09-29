@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { McpServerDef, McpTransport } from '../types.js';
+import { sameEnvName } from './env-key.js';
 
 // ─── Per-tool rendering ──────────────────────────────────────
 //
@@ -148,9 +149,15 @@ export interface ResolveResult {
  */
 export function resolvePlaceholders(def: McpServerDef, vars: Record<string, string>): ResolveResult {
   const missing = new Set<string>();
+  // On Windows `${token}` names the `TOKEN` a table holds: one environment variable.
+  const lookup = (name: string): string | undefined => {
+    if (Object.hasOwn(vars, name)) return vars[name];
+    const other = sameEnvName(Object.keys(vars), name);
+    return other === undefined ? undefined : vars[other];
+  };
   const sub = (v: string): string =>
     v.replace(PLACEHOLDER_RE, (whole, name: string) => {
-      const val = vars[name];
+      const val = lookup(name);
       if (val === undefined || val === '') {
         missing.add(name);
         return whole;
