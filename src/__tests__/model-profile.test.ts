@@ -91,6 +91,35 @@ describe('model profiles', () => {
     expect(sameTeamIdentity(`hai-platform-${digest('/tmp/example/hai')}`, config)).toBe(false);
   });
 
+  it('reads an alias-digest legacy file only under this team\'s slug', async () => {
+    const previous = process.env.HOME;
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-alias-'));
+    process.env.HOME = home;
+    try {
+      const digest = (value: string) => crypto.createHash('sha256').update(value).digest('hex').slice(0, 10);
+      // Two teams keyed files on the same bare alias; only the slug told them apart.
+      const config = { repo: { localPath: '/tmp/example/hai', remote: 'fork', url: 'https://example.test/hai.git' } } as LocalConfig;
+      const target = getTeamValuesPath(config);
+      const dir = path.dirname(target);
+      await fse.ensureDir(dir);
+      const foreign = path.join(dir, `other-team-${digest('fork')}.json`);
+      await fse.writeFile(foreign, '{"team:other":{"API_KEY":{"value":"other-team-key"}}}');
+      // Newest file, wrong slug: must not be adopted.
+      await fse.utimes(foreign, new Date(2_000_000_000), new Date(2_000_000_000));
+      expect(await findTeamValuesPath(config)).toBe(target);
+      // No teamai.yaml here, so the old scheme fell back to the basename slug.
+      const ours = path.join(dir, `hai-${digest('fork')}.json`);
+      await fse.writeFile(ours, '{"team:gw":{"API_KEY":{"value":"our-key"}}}');
+      await fse.utimes(ours, new Date(1_000_000_000), new Date(1_000_000_000));
+      // Our slug exists now; it is read even though the foreign file is newer.
+      expect(await findTeamValuesPath(config)).toBe(ours);
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+      await fse.remove(home);
+    }
+  });
+
   it('reads the newest legacy file in place when several match', async () => {
     const previous = process.env.HOME;
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-model-legacy-'));

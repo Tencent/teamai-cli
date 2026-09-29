@@ -216,28 +216,61 @@ function repoClaim(localPath: string): string | null {
 
 /**
  * The 10-hex digests older versions of `getTeamValuesPath` hashed for this
- * checkout. The old implementation hashed exactly one identity — the
- * teamai.yaml `repo:` claim when present, else the configured remote, else
- * the URL, else the local path — so the candidates cover the configs this
- * checkout may have carried when the file was written. The local path is a
- * candidate only when nothing better was configured: a default-path clone
- * re-initialized for another team with a URL must never adopt the previous
- * team's file. A legacy values file matches by digest alone — its slug
- * records the team's name when it was written, which a rename silently
- * changes, so it can never be required.
+ * checkout, and whether each identity named a repository. The old
+ * implementation hashed exactly one identity — the teamai.yaml `repo:` claim
+ * when present, else the configured remote, else the URL, else the local
+ * path — so the candidates cover the configs this checkout may have carried
+ * when the file was written. The local path is a candidate only when nothing
+ * better was configured: a default-path clone re-initialized for another team
+ * with a URL must never adopt the previous team's file. A bare alias (`fork`)
+ * names no repository — two checkouts sharing it hashed to the same digest —
+ * so a file keyed by an alias digest is identified by the slug as well.
  */
-function legacyTeamValueHashes(localConfig: LocalConfig): string[] {
+interface LegacyDigest {
+  digest: string;
+  repoBound: boolean;
+}
+
+function legacyTeamValueHashes(localConfig: LocalConfig): LegacyDigest[] {
   const { remote, url, localPath } = localConfig.repo;
   const configuredRemote = remote && remote !== 'origin' && remote !== 'upstream' ? remote : undefined;
-  const candidates = [
-    repoClaim(localPath),
-    configuredRemote,
-    url,
+  const candidates: Array<{ identity?: string; repoBound: boolean }> = [
+    { identity: repoClaim(localPath) ?? undefined, repoBound: true },
+    { identity: configuredRemote, repoBound: configuredRemote !== undefined && isRepoReference(configuredRemote) },
+    { identity: url, repoBound: url !== undefined && isRepoReference(url) },
     // Only when the old implementation would have keyed on the path itself.
-    configuredRemote === undefined && !url ? localPath : undefined,
+    { identity: configuredRemote === undefined && !url ? localPath : undefined, repoBound: true },
   ];
-  const identities = candidates.filter((value): value is string => typeof value === 'string' && value.length > 0);
-  return [...new Set(identities.map((identity) => crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10)))];
+  const seen = new Set<string>();
+  const digests: LegacyDigest[] = [];
+  for (const { identity, repoBound } of candidates) {
+    if (!identity) continue;
+    const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 10);
+    if (seen.has(digest)) continue;
+    seen.add(digest);
+    digests.push({ digest, repoBound });
+  }
+  return digests;
+}
+
+/** The team slug the old implementation prefixed, as this checkout computes it now. */
+function legacyTeamSlug(localPath: string): string {
+  let teamName = '';
+  try {
+    const raw = YAML.parse(fs.readFileSync(path.join(localPath, 'teamai.yaml'), 'utf8')) as unknown;
+    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+      const candidate = (raw as { team?: unknown }).team;
+      if (typeof candidate === 'string') teamName = candidate;
+    }
+  } catch {
+    // Older team repositories may not have a readable teamai.yaml.
+  }
+  const fallback = path.basename(localPath) || 'team';
+  return (teamName || fallback).normalize('NFKC').toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/g, '') || 'team';
 }
 
 /**
@@ -251,7 +284,7 @@ export function sameTeamIdentity(stored: string | undefined, localConfig: LocalC
   if (!stored) return false;
   if (stored === getTeamIdentity(localConfig)) return true;
   const legacy = /-([0-9a-f]{10})$/.exec(stored);
-  return legacy !== null && legacyTeamValueHashes(localConfig).includes(legacy[1] ?? '');
+  return legacy !== null && legacyTeamValueHashes(localConfig).some((candidate) => candidate.digest === (legacy[1] ?? ''));
 }
 
 /**
@@ -262,13 +295,19 @@ export function sameTeamIdentity(stored: string | undefined, localConfig: LocalC
  * or copied, so a dry run needs no special casing and no filesystem quirk
  * (races, unsupported hard links, partial targets) can strand the keys. The
  * next save writes the hash-only file, which then shadows the legacy one.
- * Matching is by digest alone: a file under an earlier team name (a rename
- * the user never re-entered keys after) is still this team's file.
+ * Repository-bound digests (a URL, a `repo:` claim, the local path) match by
+ * digest alone, since the slug drifts when a team renames. A bare alias
+ * digest names no repository — two checkouts sharing `remote: fork` hashed
+ * the same — so a file keyed by one is adopted only when its slug is this
+ * checkout's too, the discriminator the old scheme kept those files apart by.
  */
 export async function findTeamValuesPath(localConfig: LocalConfig): Promise<string> {
   const target = getTeamValuesPath(localConfig);
   if (fs.existsSync(target)) return target;
-  const candidates = new Set(legacyTeamValueHashes(localConfig));
+  const candidates = legacyTeamValueHashes(localConfig);
+  const repoBound = new Set(candidates.filter((candidate) => candidate.repoBound).map((candidate) => candidate.digest));
+  const aliasBound = new Set(candidates.filter((candidate) => !candidate.repoBound).map((candidate) => candidate.digest));
+  const slug = legacyTeamSlug(localConfig.repo.localPath);
   const dir = path.dirname(target);
   let entries: string[];
   try {
@@ -278,8 +317,16 @@ export async function findTeamValuesPath(localConfig: LocalConfig): Promise<stri
   }
   const matching: Array<{ entry: string; mtime: number }> = [];
   for (const entry of entries) {
-    const legacy = /-([0-9a-f]{10})\.json$/.exec(entry);
-    if (legacy === null || !candidates.has(legacy[1] ?? '')) continue;
+    const legacy = /^(.+)-([0-9a-f]{10})\.json$/.exec(entry);
+    if (legacy === null) continue;
+    const digest = legacy[2] ?? '';
+    if (repoBound.has(digest)) {
+      // The slug drifts with team renames; a repository-bound digest is enough.
+    } else if (aliasBound.has(digest) && (legacy[1] ?? '') === slug) {
+      // An alias digest is this team's only under its own slug.
+    } else {
+      continue;
+    }
     try {
       const { mtimeMs } = await fs.promises.stat(path.join(dir, entry));
       matching.push({ entry, mtime: mtimeMs });
