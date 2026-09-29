@@ -1228,7 +1228,8 @@ async function protectProjectMcpConfigs(
     const claimed = targets.filter((t) => t.file === target.file)
       .flatMap((t) => manifest[managedMcpManifestKey(t.tool, true)] ?? []).map((record) => record.name);
     const names = unnoted(target.file) ? await unclaimedMcpServers(target, claimed) : [];
-    if (names.length > 0) unclaimed.set(target.file, names);
+    // Tools of different formats sharing the file each find their own: every one is noted.
+    if (names.length > 0) unclaimed.set(target.file, [...new Set([...unclaimed.get(target.file) ?? [], ...names])]);
     return names.length > 0
       || await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, ctx) !== null;
   };

@@ -941,6 +941,53 @@ servers:
       expect(await excludeOf(projectRoot)).toMatch(/^\/\.cursor\/mcp\.json$/m);
     });
 
+    it('lists again the config an uninstalled tool left, its record lost, while it holds a server no record claims', async () => {
+      // OpenCode's config sits outside its root: uninstalled (.opencode gone), opencode.json stays.
+      const withOpencode = { ...teamConfig, toolPaths: { ...TOOL_PATHS, opencode: { skills: '.opencode/skills', mcp: '.config/opencode/opencode.json', mcpProject: 'opencode.json' } } } as TeamaiConfig;
+      await fse.ensureDir(path.join(projectRoot, '.opencode', 'skills'));
+      await writeMcpYaml(`${withSecret}    tools: [opencode]\n`);
+      await reconcileMcpForConfig(withOpencode, projectConfig);
+      const opencodeFile = path.join(projectRoot, 'opencode.json');
+      expect(await fse.readFile(opencodeFile, 'utf-8')).toContain('super-secret-value');
+      const { getDataHome, managedMcpManifestPath } = await import('../types.js');
+      const manifestFile = managedMcpManifestPath(getDataHome(projectConfig), projectRoot);
+      const manifest = await fse.readJson(manifestFile) as Record<string, unknown>;
+      delete manifest['opencode:project'];
+      await fse.writeJson(manifestFile, manifest);
+      const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+      await fse.remove(resolvedMcpFilesPath(projectConfig) ?? '');
+      await fse.remove(path.join(projectRoot, '.opencode'));
+      await fse.writeFile(path.join(projectRoot, '.git', 'info', 'exclude'), '');
+      await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n');
+      vi.stubEnv('SECRET_TOKEN', '');
+
+      await reconcileMcpForConfig(withOpencode, projectConfig);
+
+      expect(await fse.readFile(opencodeFile, 'utf-8')).toContain('super-secret-value');
+      expect(await excludeOf(projectRoot)).toMatch(/^\/opencode\.json$/m);
+    });
+
+    it('notes the unclaimed servers under each format of a file tools of different formats share', async () => {
+      const toolPaths = {
+        ...UNMOVED_TOOL_PATHS,
+        cursor: { ...TOOL_PATHS.cursor, mcpProject: '.mcp.json' },
+        opencode: { skills: '.opencode/skills', mcp: '.config/opencode/opencode.json', mcpProject: '.mcp.json' },
+      };
+      const shared = { ...teamConfig, toolPaths } as TeamaiConfig;
+      await fse.ensureDir(path.join(projectRoot, '.opencode', 'skills'));
+      await fse.writeJson(path.join(projectRoot, '.mcp.json'), {
+        mcpServers: { 'stale-cursor': { type: 'http', url: 'https://a.example/mcp' } },
+        mcp: { 'stale-opencode': { type: 'remote', url: 'https://b.example/mcp' } },
+      });
+      await writeMcpYaml('servers:\n  - name: open\n    transport: http\n    url: https://example.com/open\n    tools: [claude]\n');
+
+      await reconcileMcpForConfig(shared, projectConfig);
+
+      const { readResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+      const unverified = (await readResolvedMcpFiles(projectConfig)).files[path.join(projectRoot, '.mcp.json')]?.unverified ?? [];
+      expect(unverified).toEqual(expect.arrayContaining(['stale-cursor', 'stale-opencode']));
+    });
+
     it('keeps the line of a file tools of different formats share while a stale entry sits under any of their keys', async () => {
       // Cursor (mcpServers) and OpenCode (mcp) both on .mcp.json, OpenCode last: judged in one format, the other hides.
       const toolPaths = {
