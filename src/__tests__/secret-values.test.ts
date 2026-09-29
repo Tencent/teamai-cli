@@ -320,6 +320,21 @@ describe('team secret values', () => {
       expect([...teamEnv.staleEntries]).toEqual([['GITHUB_TOKEN', 'variable']]);
     });
 
+    it('on Windows, treats an env.yaml variable as the secret declared under the same name in another case', async () => {
+      const original = process.platform;
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      let teamEnv: TeamEnv;
+      try {
+        teamEnv = await resolveTeamEnvWith(keys('GITHUB_TOKEN'), [variable('github_token', 'fixture-repo-token')]);
+      } finally {
+        Object.defineProperty(process, 'platform', { value: original, configurable: true });
+      }
+      expect(variableSources(teamEnv)).toEqual({});
+
+      teamEnv = await resolveTeamEnvWith(keys('GITHUB_TOKEN'), [variable('github_token', 'repo-value')]);
+      expect(variableSources(teamEnv)).toEqual({ github_token: 'env.yaml:repo-value' });
+    });
+
     it("resolves a variable from the member's override and a secret from its value, each by its kind", async () => {
       await writeSecretStore(getTeamSecretsPath(localConfig), {
         API_URL: { value: 'member-url', kind: 'variable' }, GITHUB_TOKEN: { value: 'team-token', kind: 'secret' },

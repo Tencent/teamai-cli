@@ -138,7 +138,7 @@ teamai env unset GITHUB_TOKEN [--global]
 - 团队没有设置的 `${VAR}` 仍从环境解析。
 - 成员的值文件无法读取时，MCP server 保留上一次 pull 写入的值，`pull` 保持 `env.sh` 不变，`teamai doctor` 的 `Your team secret values can be read` 检查失败并给出原因。
 
-**同一个 key 出现两次。** 某个 key 既声明为密钥、又在 `env.yaml` 中设置为变量时，按密钥解析，仓库中的值在所有地方都被忽略：不写入 `env.sh` 和 env 备份（每次 pull 都如此，包括 `Already synced`），不出现在 `env list` 和 `list env` 中（`--reveal` 也一样），也不进入 MCP server。旧版 CLI 在团队删除该值之前继续使用该变量。
+**同一个 key 出现两次。** 某个 key 既声明为密钥、又在 `env.yaml` 中设置为变量时（在 Windows 上不区分大小写，`token` 和 `TOKEN` 是同一个变量），按密钥解析，仓库中的值在所有地方都被忽略：不写入 `env.sh` 和 env 备份（每次 pull 都如此，包括 `Already synced`），不出现在 `env list` 和 `list env` 中（`--reveal` 也一样），也不进入 MCP server。旧版 CLI 在团队删除该值之前继续使用该变量。
 
 **不绑定主机。** 密钥会发往 `mcp.yaml` 中指定的任何 server，与 `${VAR}` 一贯的行为相同。与模型配置的密钥不同，它不绑定网关，因此能修改 `mcp.yaml` 或添加 namespace 的人决定成员的 token 发往哪里。能推送到团队仓库的人本来就能下发在每个成员机器上运行的 hooks。
 

@@ -138,7 +138,7 @@ the member's value for this team   teamai env set KEY [--from-env VAR]
 - A `${VAR}` the team sets nothing for still resolves from the environment.
 - When the member's value file can't be read, MCP servers keep the values the last pull wrote, `pull` leaves `env.sh` as it is, and `teamai doctor` fails the `Your team secret values can be read` check with the reason.
 
-**Same key twice.** A key declared as a secret and also set as a variable in `env.yaml` resolves as the secret, and the repo value is ignored everywhere: it is left out of `env.sh` and the env backup (on every pull, `Already synced` included), out of `env list` and `list env`, `--reveal` included, and out of MCP servers. An older CLI keeps using the variable while the team removes the value.
+**Same key twice.** A key declared as a secret and also set as a variable in `env.yaml` (in any case on Windows, where `token` and `TOKEN` are one variable) resolves as the secret, and the repo value is ignored everywhere: it is left out of `env.sh` and the env backup (on every pull, `Already synced` included), out of `env list` and `list env`, `--reveal` included, and out of MCP servers. An older CLI keeps using the variable while the team removes the value.
 
 **Not bound to a host.** A secret reaches whatever server `mcp.yaml` names, as `${VAR}` always has. Unlike model profile keys, it is not tied to a gateway, so whoever can change `mcp.yaml` or add a namespace decides where members' tokens go. Whoever can push to the team repo already ships hooks that run on every member's machine.
 

@@ -18,7 +18,7 @@ import {
 } from '../namespaced-entries.js';
 import type { LocalConfig } from '../types.js';
 import { ensureDir, readFileSafe, writeFile } from '../utils/fs.js';
-import { ENV_KEY_RE } from './env-key.js';
+import { ENV_KEY_RE, envName } from './env-key.js';
 
 const SecretDeclarationSchema = z.object({
   key: z.string().regex(ENV_KEY_RE, 'must be a shell variable name: letters, digits and underscores, not starting with a digit'),
@@ -145,10 +145,16 @@ export async function resolveSecretDeclarations(
   return resolution.kind === 'resolved' && !found ? { kind: 'absent' } : resolution;
 }
 
-/** The keys `declarations` declares, or null when they failed: a failed file is never "no secrets". */
+/**
+ * The keys `declarations` declares, or null when they failed: a failed file is
+ * never "no secrets". Its `has` matches a key in any case on Windows, where
+ * `token` in env.yaml is the same environment variable as a declared `TOKEN`.
+ */
 export function declaredSecretKeys(declarations: Exclude<SecretDeclarations, { kind: 'failed' }>): ReadonlySet<string>;
 export function declaredSecretKeys(declarations: SecretDeclarations): ReadonlySet<string> | null;
 export function declaredSecretKeys(declarations: SecretDeclarations): ReadonlySet<string> | null {
   if (declarations.kind === 'failed') return null;
-  return new Set(declarations.kind === 'resolved' ? declarations.entries.map((entry) => entry.name) : []);
+  const keys = new Set(declarations.kind === 'resolved' ? declarations.entries.map((entry) => entry.name) : []);
+  const names = new Set([...keys].map(envName));
+  return Object.assign(keys, { has: (key: string): boolean => names.has(envName(key)) });
 }
