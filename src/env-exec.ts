@@ -12,11 +12,13 @@
  */
 import { execFile } from 'node:child_process';
 import os from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import crossSpawn from 'cross-spawn';
 import { resolveConfigForDir } from './config.js';
 import { reportMissingSecrets } from './env-advisories.js';
 import { resolveTeamEnv } from './env-resolution.js';
+import { memberEnvironmentWithoutScope, type MemberEnvironment } from './member-env.js';
 import { describeEntryFailure } from './namespaced-entries.js';
 import { envTable } from './resources/env-key.js';
 import { declaredSecretKeys } from './resources/secrets.js';
@@ -120,16 +122,16 @@ export function exitLike(outcome: ExecOutcome): void {
 
 /** The environment the command runs with, reporting on stderr whatever it leaves out. */
 async function commandEnvironment(cwd: string, dryRun: boolean | undefined): Promise<NodeJS.ProcessEnv> {
-  const unreadable: string[] = [];
-  const localConfig = await resolveConfigForDir(
-    cwd,
-    (configPath, error) => { unreadable.push(`${configPath} could not be read: ${error}.`); },
-    { dryRun },
-  );
+  const unreadable: { configPath: string; error: string }[] = [];
+  const localConfig = await resolveConfigForDir(cwd, (configPath, error) => { unreadable.push({ configPath, error }); }, { dryRun });
   if (unreadable.length > 0) {
-    log.warn(`${unreadable.join(' ')} No team env variables or secrets were applied; the command runs with the inherited `
-      + 'environment. Fix the file, or run `teamai init` again in this project.');
-    return inheritedEnvironment();
+    // The project's config is unknown, so as while its declarations fail, a value a teamai env.sh exported is removed.
+    const env = inheritedEnvironment();
+    const removed = withoutTeamExports(env, await memberEnvironmentWithoutScope(unreadable.map(({ configPath }) => path.dirname(configPath))));
+    log.warn(`${unreadable.map(({ configPath, error }) => `${configPath} could not be read: ${error}.`).join(' ')} No team env `
+      + `variables or secrets were applied; the command runs with the inherited environment${exportedClause(removed)}. Fix the `
+      + 'file, or run `teamai init` again in this project.');
+    return env;
   }
   if (!localConfig) {
     log.warn('No teamai config applies to this directory, so the command runs with the inherited environment and no team '
@@ -167,9 +169,7 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
     // Any env.yaml key may be a secret the file declares, so no team value is applied (#879 Conflict 14),
     // and one a teamai env.sh exported is a team value, not the member's: it is removed.
     const failures = [variables, declarations].flatMap((entries) => entries.kind === 'failed' ? [describeEntryFailure(entries.failure)] : []);
-    const removed = Object.keys(env).filter((key) => env[key] !== '' && teamEnv.member(key) === undefined);
-    for (const key of removed) delete env[key];
-    const without = removed.length > 0 ? `, and without ${removed.join(', ')}, whose values a teamai env.sh exported` : '';
+    const without = exportedClause(withoutTeamExports(env, teamEnv.member));
     log.warn(`${failures.join(' ')} The command runs with the inherited environment, without team env variables or secrets${without}.`);
     return env;
   }
@@ -194,6 +194,18 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
   }
   if (secrets.kind === 'resolved') await reportMissingSecrets(localConfig, teamEnv);
   return env;
+}
+
+/** Remove from `env` every value that is not the member's own (member-env.ts), and return the keys removed. */
+function withoutTeamExports(env: NodeJS.ProcessEnv, member: MemberEnvironment): string[] {
+  const removed = Object.keys(env).filter((key) => env[key] !== '' && member(key) === undefined);
+  for (const key of removed) delete env[key];
+  return removed;
+}
+
+/** The warning's clause naming the keys `withoutTeamExports` removed, never their values. */
+function exportedClause(removed: readonly string[]): string {
+  return removed.length > 0 ? `, and without ${removed.join(', ')}, whose values a teamai env.sh exported` : '';
 }
 
 /**

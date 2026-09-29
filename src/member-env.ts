@@ -27,8 +27,8 @@ import { readFileSafe } from './utils/fs.js';
 /** A key's value in the member's own environment, or undefined. */
 export type MemberEnvironment = (key: string) => string | undefined;
 
-/** Every teamai env.sh on this machine that a shell may have loaded. */
-async function teamaiEnvShPaths(localConfig: LocalConfig): Promise<string[]> {
+/** Every teamai env.sh on this machine that a shell may have loaded, with the one in each of `dataHomes`. */
+async function teamaiEnvShPaths(dataHomes: readonly string[]): Promise<string[]> {
   const home = getTeamaiHomeDir();
   const projects = path.join(home, 'projects');
   let partitions: string[] = [];
@@ -37,7 +37,7 @@ async function teamaiEnvShPaths(localConfig: LocalConfig): Promise<string[]> {
   } catch {
     // No project partitions on this machine.
   }
-  return [...new Set([path.join(home, 'env.sh'), path.join(getDataHome(localConfig), 'env.sh'), ...partitions])];
+  return [...new Set([path.join(home, 'env.sh'), ...dataHomes.map((dataHome) => path.join(dataHome, 'env.sh')), ...partitions])];
 }
 
 /**
@@ -52,9 +52,27 @@ export async function memberEnvironment(
   scope: { secretKeys: ReadonlySet<string>; envYaml: ReadonlyMap<string, string> },
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<MemberEnvironment> {
+  return memberEnvironmentAt([getDataHome(localConfig)], scope, env);
+}
+
+/**
+ * The member's own environment where the config that governs the directory
+ * cannot be read: no scope declares anything, and `dataHomes` are the
+ * directories of the configs that could not be read, whose env.sh a shell may
+ * have loaded.
+ */
+export function memberEnvironmentWithoutScope(dataHomes: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<MemberEnvironment> {
+  return memberEnvironmentAt(dataHomes, { secretKeys: new Set(), envYaml: new Map() }, env);
+}
+
+async function memberEnvironmentAt(
+  dataHomes: readonly string[],
+  scope: { secretKeys: ReadonlySet<string>; envYaml: ReadonlyMap<string, string> },
+  env: NodeJS.ProcessEnv,
+): Promise<MemberEnvironment> {
   const exported: ReadonlyMap<string, string>[] = [];
   const recorded: EnvShExports[] = [];
-  for (const envSh of await teamaiEnvShPaths(localConfig)) {
+  for (const envSh of await teamaiEnvShPaths(dataHomes)) {
     const content = await readFileSafe(envSh);
     if (content !== null) exported.push(parseEnvFile(content));
     recorded.push(await readEnvShExports(envSh));

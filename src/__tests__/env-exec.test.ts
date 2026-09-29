@@ -315,6 +315,33 @@ describe('teamai env exec', () => {
     expect(text(stderr)).not.toContain('No teamai config');
   });
 
+  it("removes what another scope's env.sh exported when a project config cannot be read, keeps the member's own exports, and names the keys", async () => {
+    const personal = await team('personal', { 'env/secrets.yaml': GITHUB_SECRET });
+    await userScope(personal.repoPath);
+    const work = await team('work', {});
+    const { root, partition } = await project(work.repoPath);
+    await fse.outputFile(path.join(partition, 'config.yaml'), 'repo: [not a config\n');
+    await fse.outputFile(path.join(home, '.teamai', 'env.sh'), "export GITHUB_TOKEN='fixture-user-scope'\n");
+    await fse.outputFile(path.join(partition, 'env.sh'), "export API_URL='fixture-work-scope'\n");
+    const [marker, digests] = envShMarker(path.join(tmpDir, 'unscanned', '.teamai'), [['GITLAB_TOKEN', 'fixture-marked']]) ?? [];
+    if (!marker || !digests) throw new Error('no marker for the fixture export');
+    vi.stubEnv(marker, digests);
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-user-scope');
+    vi.stubEnv('API_URL', 'fixture-work-scope');
+    vi.stubEnv('GITLAB_TOKEN', 'fixture-marked');
+    vi.stubEnv('SENTRY_TOKEN', 'fixture-hand-export');
+
+    const env = await childEnv(root);
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.API_URL).toBeUndefined();
+    expect(env.GITLAB_TOKEN).toBeUndefined();
+    expect(env.SENTRY_TOKEN).toBe('fixture-hand-export');
+    expect(text(stderr)).toContain(path.join(partition, 'config.yaml'));
+    expect(text(stderr)).toMatch(/without (?=.*GITHUB_TOKEN)(?=.*API_URL)(?=.*GITLAB_TOKEN)[A-Z_, ]+, whose values a teamai env\.sh exported/);
+    expect(text(stderr)).not.toMatch(/fixture-(user|work|marked|hand)/);
+  });
+
   it('with no config at all, runs with the inherited environment, applies no machine value, and says so', async () => {
     await writeSecretStore(getMachineSecretsPath(), { GITHUB_TOKEN: { value: 'fixture-machine' } });
     vi.stubEnv('UNRELATED', 'kept');
