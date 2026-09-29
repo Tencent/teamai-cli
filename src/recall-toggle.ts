@@ -143,7 +143,8 @@ export async function recallEnable(_opts: GlobalOptions): Promise<void> {
 }
 
 export async function recallStatus(_opts: GlobalOptions): Promise<void> {
-  const { localConfig, teamConfig } = await autoDetectInit();
+  // Read-only: the load never persists a migration (#893).
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
 
   const effective = isRecallEnabled(localConfig, teamConfig);
   const teamSetting = teamConfig.sharing?.recall?.enabled ?? false;

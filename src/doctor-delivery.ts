@@ -562,7 +562,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
 
   const {
     resolveMcpTargets, resolvedValueEvidence, buildVarTable, buildDesiredMcpContext, recordedMcpTargets, recordedMcpFileEvidence,
-    earlierMappedMcpTargets, earlierMappedMcpFileEvidence, unmappedMcpDefaults, unrecordedUnmappedMcpDefaults,
+    earlierMappedMcpTargets, earlierMappedMcpFileEvidence, unmappedMcpDefaults, unrecordedUnmappedMcpDefaults, unclaimedMcpServers,
   } = await import('./mcp-reconcile.js');
   const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
   const { gitPathOf, gitTracking, gitTracks } = await import('./mcp-git-exclude.js');
@@ -598,7 +598,9 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
     vars ??= await buildVarTable(localConfig);
     ledger ??= (await readResolvedMcpFiles(localConfig)).files;
     const owned = manifest[managedMcpManifestKey(target.tool, true)] ?? [];
-    if (await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, desired)) await hold(target.file);
+    // No managed-mcp.json at all: any server may be teamai's, as pull judges it.
+    if ((Object.keys(manifest).length === 0 && (await unclaimedMcpServers(target, [])).length > 0)
+      || await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, desired)) await hold(target.file);
   }
   // And a file a pull wrote under a mapping the team has since changed, but one recorded as tracked while git
   // tracks it: no line protects it. In a file another tool now maps, that tool's records tell its own servers.

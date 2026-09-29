@@ -35,7 +35,7 @@ export async function remove(
   }
 
   // Auto-detect scope
-  const { localConfig, teamConfig } = await autoDetectInit();
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
   assertNotReadOnly(localConfig, 'teamai remove');
 
   // Single-repo mode: run the removal PR in an isolated knowledge worktree so the

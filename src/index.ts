@@ -106,7 +106,7 @@ program
     // A learning queued in this checkout would go with it when the worktree is
     // removed (#808).
     if (needsQueueOutOfCheckout(actionCommand)) {
-      const kept = await queueKeptInCheckout(migration);
+      const kept = await queueKeptInCheckout(migration, { dryRun: !!opts.dryRun });
       if (kept) {
         log.error(kept);
         process.exit(1);
@@ -132,7 +132,7 @@ program
   // comma-separated (`--agent a,b`, split later by normalizeAgentList) both work,
   // WITHOUT the greedy `<name...>` variadic that would swallow the `[repo]`
   // positional (e.g. `init --agent claude .` must keep `.` as the repo arg).
-  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [] as string[])
+  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml\'s toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [] as string[])
   .option('--force', 'Overwrite existing config without confirmation')
   .action(async (repoArg, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
@@ -1289,7 +1289,11 @@ recallCmd
   .option('--confidence-writeback', 'Update frontmatter confidence scores')
   .option('--update-quality', 'Find stale docs/rules/skills and suggest updates')
   .option('--dry-run', 'Show what would be done without making changes')
-  .action(async (cmdOpts) => {
+  .action(async (localOpts) => {
+    // The root program takes `--dry-run` wherever it is written, so this
+    // command's own declaration never sets it: read it merged, as the other
+    // actions do (#900).
+    const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
     if (!cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.updateQuality) {
       const { log } = await import('./utils/logger.js');
       log.info('Usage: teamai recall maintenance --prune | --confidence-writeback | --update-quality');
@@ -1297,7 +1301,7 @@ recallCmd
     }
 
     const { autoDetectInit } = await import('./config.js');
-    const { localConfig } = await autoDetectInit();
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
     const paths = await maintenancePathsOrExit(localConfig);
     if (!paths) return;
     const {
@@ -1307,8 +1311,8 @@ recallCmd
     if (cmdOpts.confidenceWriteback) {
       const { computeAllConfidence, writeBackConfidence } = await import('./maintenance/index.js');
       const map = await computeAllConfidence(votesDir);
-      const written = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir);
-      if (written.length > 0) {
+      const written = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir, { dryRun: cmdOpts.dryRun });
+      if (written.length > 0 && !cmdOpts.dryRun) {
         await publishMaintenance(localConfig, `[teamai] Update confidence for ${written.length} learning(s)`, written);
       }
       return;
@@ -1376,9 +1380,11 @@ recallCmd
   .description('Promote a high-confidence learning to formal knowledge (docs/skills/rules)')
   .option('--category <cat>', 'Target category: skills | rules | docs')
   .option('--dry-run', 'Show what would be done without making changes')
-  .action(async (learningId, cmdOpts) => {
+  .action(async (learningId, localOpts) => {
+    // As in `recall maintenance`: `--dry-run` reaches the root's options only (#900).
+    const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
     const { autoDetectInit } = await import('./config.js');
-    const { localConfig } = await autoDetectInit();
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
     const {
       findPromotionCandidates,
       executePromotion,

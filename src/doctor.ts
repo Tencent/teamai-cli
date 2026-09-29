@@ -314,8 +314,9 @@ async function hasInstalledCodexHooks(toolPaths: TeamaiConfig['toolPaths'], base
  * when TeamAI is not initialized here — the caller decides how to report that.
  */
 export async function resolveDoctorContext(): Promise<DoctorContext | null> {
-  const projectConfig = await detectProjectConfig();
-  const localConfig = projectConfig ?? (await loadLocalConfig());
+  // Read-only: the load never persists a migration (#893).
+  const projectConfig = await detectProjectConfig(undefined, undefined, { dryRun: true });
+  const localConfig = projectConfig ?? (await loadLocalConfig({ dryRun: true }));
   if (!localConfig) return null;
 
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);

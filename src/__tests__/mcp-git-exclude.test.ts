@@ -11,12 +11,13 @@ vi.mock('../utils/logger.js', () => ({
 // Git's own failure modes (unsafe repository, bad config) are hard to stage for one subcommand alone.
 const failCheckIgnore = vi.hoisted(() => ({ on: false }));
 const failLsFiles = vi.hoisted(() => ({ on: false }));
+const failVerboseCheckIgnore = vi.hoisted(() => ({ on: false }));
 vi.mock('../utils/exec.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/exec.js')>();
   return {
     ...actual,
     execCommand: (cmd: string, args: string[], opts?: Parameters<typeof actual.execCommand>[2]) =>
-      failCheckIgnore.on && args[0] === 'check-ignore'
+      (failCheckIgnore.on || (failVerboseCheckIgnore.on && args.includes('-v'))) && args[0] === 'check-ignore'
         ? Promise.resolve({ code: 128, stdout: '', stderr: 'fatal: detected dubious ownership in repository' })
         : failLsFiles.on && args.includes('ls-files')
           ? Promise.resolve({ code: 128, stdout: '', stderr: 'fatal: index file corrupt' })
@@ -55,6 +56,7 @@ describe('teamai block in .git/info/exclude (#882)', () => {
   afterEach(async () => {
     failCheckIgnore.on = false;
     failLsFiles.on = false;
+    failVerboseCheckIgnore.on = false;
     slowExcludeRead.on = false;
     vi.mocked(log.warn).mockClear();
     await fse.remove(repo);
@@ -190,6 +192,35 @@ describe('teamai block in .git/info/exclude (#882)', () => {
       } finally {
         await fse.chmod(info, 0o755);
       }
+    });
+  });
+
+  // A rule after teamai's line, or in a .gitignore, which git reads first, can re-include the file.
+  describe('for a file a rule of the member\'s re-includes', () => {
+    beforeEach(async () => {
+      await fse.writeFile(path.join(repo, '.gitignore'), 'node_modules/\n!/.mcp.json\n');
+    });
+
+    it('names the rule, and says to remove it rather than untrack the file', async () => {
+      const file = path.join(repo, '.mcp.json');
+      const gitignore = path.join(await fse.realpath(repo), '.gitignore');
+
+      expect(await ensureExcludedFromGit(file)).toEqual({
+        kind: 'failed',
+        reason: `a rule in your git ignore files re-includes ${file}: \`!/.mcp.json\` (${gitignore}:2)`,
+        fix: `Remove \`!/.mcp.json\` from ${gitignore}, then run \`teamai pull\` again.`,
+      });
+    });
+
+    it('says so when git cannot name the rule', async () => {
+      failVerboseCheckIgnore.on = true;
+      const file = path.join(repo, '.mcp.json');
+
+      expect(await ensureExcludedFromGit(file)).toEqual({
+        kind: 'failed',
+        reason: `a rule in your git ignore files re-includes ${file}`,
+        fix: 'Remove the rule in .gitignore, .git/info/exclude or core.excludesFile that re-includes it (`git check-ignore -v` names it), then run `teamai pull` again.',
+      });
     });
   });
 

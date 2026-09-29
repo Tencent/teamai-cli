@@ -237,6 +237,43 @@ export function remotesMatch(a: string, b: string): boolean {
   return normalizeRepoUrlForCompare(a) === normalizeRepoUrlForCompare(b);
 }
 
+export const SCHEMES: ReadonlyMap<string, { readonly family: string; readonly defaultPort: string }> = new Map([
+  ['ssh', { family: 'ssh', defaultPort: '22' }],
+  ['git+ssh', { family: 'ssh', defaultPort: '22' }],
+  ['ssh+git', { family: 'ssh', defaultPort: '22' }],
+  ['https', { family: 'https', defaultPort: '443' }],
+  ['http', { family: 'http', defaultPort: '80' }],
+  ['git', { family: 'git', defaultPort: '9418' }],
+]);
+
+/**
+ * A team repo URL as the part of it that says which repo it is: scheme family
+ * (ssh, https or http), lowercased host, a port other than the scheme's default,
+ * and the path as written. Only credentials, the ssh user, a trailing `.git`
+ * and slashes are dropped, so `git@host:acme/team.git` and
+ * `ssh://git@host:22/acme/team` name one file, while two repos on one host
+ * with different ports, or behind http and https, never share values. Not `normalizeRepoUrlForCompare`:
+ * it drops the port, and its callers compare loosely on purpose.
+ */
+export function repoIdentity(url: string): string {
+  const trimmed = url.trim();
+  const key = (family: string, host: string, port: string, repoPath: string): string => {
+    const name = repoPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.git$/i, '');
+    return `${family}://${host.toLowerCase()}${port ? `:${port}` : ''}/${name}`;
+  };
+  const scp = /^[^/@]+@([^:/]+):(.+)$/.exec(trimmed);
+  if (scp) return key('ssh', scp[1] ?? '', '', scp[2] ?? '');
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return trimmed;
+  }
+  const scheme = parsed.protocol.slice(0, -1).toLowerCase();
+  const known = SCHEMES.get(scheme);
+  return key(known?.family ?? scheme, parsed.hostname, parsed.port === known?.defaultPort ? '' : parsed.port, parsed.pathname);
+}
+
 /**
  * Whether the repo at localPath has at least one commit reachable from HEAD.
  * A freshly `git init`'d repo (HEAD points at an unborn branch) returns false.

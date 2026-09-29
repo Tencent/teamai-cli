@@ -975,8 +975,22 @@ describe('uninstall', () => {
       ].join('\n'));
     });
 
+    // CodeBuddy stays at its built-in .mcp.json: moved or dropped, any server there Claude's records don't own holds it.
+    const withCodeBuddy = (localConfig: LocalConfig): void => {
+      mockAutoDetectInit.mockResolvedValue({
+        localConfig,
+        teamConfig: makeTeamConfig({
+          toolPaths: {
+            claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: '.mcp.json' },
+            codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' },
+          },
+        }),
+      });
+    };
+
     it('names the variable whose value keeps the block', async () => {
-      const { projectRoot, excludeFile } = await setup();
+      const { projectRoot, excludeFile, localConfig } = await setup();
+      withCodeBuddy(localConfig);
       vi.stubEnv('TEAM_BASE_URL', 'https://base.example');
       await fse.writeJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { mine: { url: 'https://base.example/mcp' } } });
       const { log } = await import('../utils/logger.js');
@@ -1063,8 +1077,10 @@ describe('uninstall', () => {
       vi.stubEnv('USER', 'longusername1');
       const mine = { command: path.join(homeDir, 'bin', 'mine'), env: { OWNER: 'longusername1' } };
       await fse.writeJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { jira, mine } });
+      withCodeBuddy(localConfig);
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
         [managedMcpManifestKey('claude', true)]: [{ name: 'jira', hash: 'h' }],
+        [managedMcpManifestKey('codebuddy', true)]: [],
       });
 
       await uninstall({ force: true });

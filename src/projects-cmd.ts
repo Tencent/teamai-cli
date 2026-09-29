@@ -43,7 +43,8 @@ function parseIds(input: string[]): string[] {
 // ─── projects list ──────────────────────────────────────
 
 export async function projectsList(_options: GlobalOptions): Promise<void> {
-  const { localConfig } = await autoDetectInit();
+  // Read-only: the load never persists a migration (#893).
+  const { localConfig } = await autoDetectInit(undefined, { dryRun: true });
   const repoPath = localConfig.repo.localPath;
 
   const manifest = await loadProjectsManifest(repoPath);
@@ -134,7 +135,8 @@ export async function projectsMembers(
   projectId: string,
   _options: GlobalOptions,
 ): Promise<void> {
-  const { localConfig } = await autoDetectInit();
+  // Read-only: the load never persists a migration (#893).
+  const { localConfig } = await autoDetectInit(undefined, { dryRun: true });
 
   // Members live on the teamai-reports orphan branch for non-HTTP repos; the
   // projects manifest is knowledge on the default branch. Split the two roots:
@@ -240,7 +242,7 @@ async function editProjectsManifest(
   } | null,
   afterWrite?: () => void,
 ): Promise<void> {
-  const { localConfig, teamConfig } = await autoDetectInit();
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
   await runManifestEdit(localConfig, 'Projects', async (repoPath, editConfig) => {
     if (editConfig.repo.kind !== 'self') await pullLatest(repoPath);

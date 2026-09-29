@@ -49,7 +49,8 @@ async function saveTagsScopeConfig(localConfig: LocalConfig): Promise<void> {
  * Shows tag name, skill count, and rule count.
  */
 export async function tagsList(): Promise<void> {
-    const localConfig = await resolveTagsScope();
+    // Read-only: the load never persists a migration (#893).
+    const localConfig = await resolveTagsScope({ dryRun: true });
     const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
 
     if (!tagsConfig) {
@@ -186,7 +187,7 @@ export async function tagsAdd(
         return;
     }
 
-    const localConfig = await resolveTagsScope();
+    const localConfig = await resolveTagsScope(options);
     const repoPath = localConfig.repo.localPath;
 
     let tagsConfig = await loadTagsConfig(repoPath);
@@ -225,7 +226,7 @@ export async function tagsRemove(
         return;
     }
 
-    const localConfig = await resolveTagsScope();
+    const localConfig = await resolveTagsScope(options);
     const repoPath = localConfig.repo.localPath;
 
     const tagsConfig = await loadTagsConfig(repoPath);

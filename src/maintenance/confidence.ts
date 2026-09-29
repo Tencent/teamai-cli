@@ -89,11 +89,13 @@ export async function computeAllConfidence(votesDir: string): Promise<Map<string
  * Write confidence scores back into learning document frontmatter.
  * Only updates docs whose confidence changed by > 0.05.
  * Returns the files it wrote, which are what a publish may stage (#823).
+ * Under `dryRun` it writes nothing and returns the files it would write (#900).
  */
 export async function writeBackConfidence(
   learningsDirs: readonly string[],
   confidenceMap: Map<string, number>,
   writeRoot?: string,
+  options: { dryRun?: boolean } = {},
 ): Promise<string[]> {
   const written: string[] = [];
   const files = await listLearningFiles(learningsDirs);
@@ -121,8 +123,10 @@ export async function writeBackConfidence(
       const target = writeRoot && !isInWriteRoot(absPath, writeRoot)
         ? path.join(writeRoot, file)
         : absPath;
-      await ensureDir(path.dirname(target));
-      await writeFile(target, newContent);
+      if (!options.dryRun) {
+        await ensureDir(path.dirname(target));
+        await writeFile(target, newContent);
+      }
       written.push(target);
     } catch {
       log.debug(`confidence: failed to update frontmatter for: ${file}`);
@@ -130,7 +134,7 @@ export async function writeBackConfidence(
   }
 
   if (written.length > 0) {
-    log.info(`Updated confidence scores for ${written.length} learning(s)`);
+    log.info(`${options.dryRun ? '[dry-run] Would update' : 'Updated'} confidence scores for ${written.length} learning(s)`);
   }
   return written;
 }

@@ -31,7 +31,8 @@ function displayPath(p: string): string {
 
 /** Print team MCP servers, their secret requirements, and where they are installed. */
 export async function mcpList(_options: GlobalOptions): Promise<void> {
-  const { localConfig, teamConfig } = await autoDetectInit();
+  // Read-only: the load never persists a migration (#893).
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
   const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
   if (resolution.kind === 'failed') {
     log.error(describeEntryFailure(resolution.failure));
@@ -125,7 +126,7 @@ function reportChanges(changes: McpChange[]): void {
 export async function mcpInject(
   options: GlobalOptions & { dryRun?: boolean; force?: boolean },
 ): Promise<void> {
-  const { localConfig, teamConfig } = await autoDetectInit();
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
   const { changes, wrote, unresolved } = await reconcileMcpForConfig(teamConfig, localConfig, {
     dryRun: options.dryRun,
     force: options.force,

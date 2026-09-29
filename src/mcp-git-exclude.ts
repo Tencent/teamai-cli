@@ -254,7 +254,31 @@ export async function ensureExcludedFromGit(file: string, options: { dryRun?: bo
     };
   }
   if (result === 'written') log.debug(`Added ${pattern} to ${excludeFile}`);
-  return (await gitTracking(file)).kind === 'would-commit' ? tracked() : { kind: 'excluded', added: result === 'written' };
+  if ((await gitTracking(file)).kind !== 'would-commit') return { kind: 'excluded', added: result === 'written' };
+  // Untracked, as checked above: a rule git reads after teamai's line, or before it, re-includes the file.
+  const named = await gitPathOf(file);
+  const rule = await reincludingRule(landed);
+  return rule
+    ? {
+      kind: 'failed',
+      reason: `a rule in your git ignore files re-includes ${named.label}: \`${rule.pattern}\` (${rule.source}:${rule.line})`,
+      fix: `Remove \`${rule.pattern}\` from ${rule.source}, then run \`teamai pull\` again.`,
+    }
+    : {
+      kind: 'failed',
+      reason: `a rule in your git ignore files re-includes ${named.label}`,
+      fix: 'Remove the rule in .gitignore, .git/info/exclude or core.excludesFile that re-includes it (`git check-ignore -v` names it), then run `teamai pull` again.',
+    };
+}
+
+/** The negated rule `git check-ignore -v` says decides `file`, or null when it names none. */
+async function reincludingRule(file: string): Promise<{ source: string; line: string; pattern: string } | null> {
+  const dir = await existingAncestor(file);
+  const result = await execCommand('git', ['check-ignore', '-v', '--', path.relative(dir, file)], { cwd: dir, timeoutMs: 10_000 })
+    .catch(() => null);
+  // <source>:<line>:<pattern><TAB><path>, the source as git names it from `dir`.
+  const match = result?.code === 0 ? /^(.*):(\d+):(!.*)\t/.exec(result.stdout) : null;
+  return match ? { source: path.resolve(dir, match[1]), line: match[2], pattern: match[3] } : null;
 }
 
 /**

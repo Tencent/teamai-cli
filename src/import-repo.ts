@@ -287,7 +287,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     let mrLocalConfig: { repo: { remote: string; localPath: string }; username: string; provider?: string } | null = null;
     try {
         const { autoDetectInit } = await import('./config.js');
-        const { localConfig: lc, teamConfig: tc } = await autoDetectInit();
+        const { localConfig: lc, teamConfig: tc } = await autoDetectInit(undefined, { dryRun });
         teamRepoDir = lc.repo.localPath;
         teamRepoRemote = lc.repo.remote;
         mrTeamConfig = { repo: tc.repo, provider: tc.provider, reviewers: tc.reviewers };

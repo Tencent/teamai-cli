@@ -1153,7 +1153,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
   let teamConfig: TeamaiConfig | null = null;
 
   try {
-    const result = await autoDetectInit();
+    const result = await autoDetectInit(undefined, { dryRun: opts.dryRun });
     localConfig = result.localConfig;
     teamConfig = result.teamConfig;
   } catch {

@@ -2021,3 +2021,61 @@ describe('local-agent: per-worktree claudemd isolation (issue #374 P1-2C)', () =
     await fse.remove(wtBReal).catch(() => {});
   });
 });
+
+describe('local-agent: loadLocalAgentConfig({ dryRun: true }) writes nothing (#893)', () => {
+  const configPath = () => path.join(tmpDir, '.teamai', 'local-agent', 'config.json');
+
+  it('drops a legacy group binding in memory and leaves config.json as it was', async () => {
+    await setupConfig({ '/ws/legacy': { groupId: 7, boundAt: 'x' } });
+    const before = await fse.readFile(configPath(), 'utf8');
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig({ dryRun: true });
+
+    expect(config!.workspaceBindings).toEqual({});
+    expect(await fse.readFile(configPath(), 'utf8')).toBe(before);
+  });
+
+  it('collapses path aliases in memory and leaves config.json as it was', async () => {
+    const realWs = path.join(tmpDir, 'ws-real');
+    const aliasWs = path.join(tmpDir, 'ws-alias');
+    await fse.ensureDir(realWs);
+    await fse.symlink(realWs, aliasWs, 'dir');
+    await setupConfig({
+      [realWs]: { projectId: 11, projectName: 'real', boundAt: 'x', ideType: 'codebuddy' },
+      [aliasWs]: { projectId: 11, projectName: 'alias', boundAt: 'x', ideType: 'codebuddy' },
+    });
+    const before = await fse.readFile(configPath(), 'utf8');
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig({ dryRun: true });
+
+    expect(Object.keys(config!.workspaceBindings)).toEqual([fse.realpathSync(realWs)]);
+    expect(await fse.readFile(configPath(), 'utf8')).toBe(before);
+  });
+
+  it('backfills from an http config.yaml in memory without creating config.json', async () => {
+    await fse.ensureDir(path.join(tmpDir, '.teamai'));
+    await fse.writeFile(
+      path.join(tmpDir, '.teamai', 'config.yaml'),
+      [
+        'username: tester',
+        'repo:',
+        '  kind: http',
+        '  url: https://team.example/api',
+        `  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}`,
+        '  remote: https://team.example/api',
+        '',
+      ].join('\n'),
+    );
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+    const dry = await loadLocalAgentConfig({ dryRun: true });
+    expect(dry?.endpoint).toBe('https://team.example/api');
+    expect(await fse.pathExists(configPath())).toBe(false);
+
+    // Positive control: the same load without the flag persists the backfill.
+    await loadLocalAgentConfig();
+    expect(await fse.pathExists(configPath())).toBe(true);
+  });
+});

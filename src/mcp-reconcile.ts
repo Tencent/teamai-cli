@@ -316,16 +316,18 @@ export async function resolveMcpTargets(
 }
 
 /**
- * The built-in fallbacks among `targets` no current mapping of any tool
- * reaches (#882): the team moved or dropped their tool, so its manifest
+ * The built-in fallbacks among `targets` their own tool's current mapping does
+ * not reach (#882): the team moved or dropped the tool, so its manifest
  * records describe another file, or none, while an earlier pull may have
- * written this one. One another tool maps today is left to that tool's rules.
+ * written this one. In one another tool maps today (CodeBuddy's `.mcp.json`,
+ * which Claude maps), that tool's records tell its own servers.
  */
 export async function unmappedMcpDefaults(targets: McpTarget[]): Promise<Set<McpTarget>> {
-  const mappedNow = await Promise.all(targets.filter((t) => !t.builtinFallback).map((t) => realFilePath(t.file)));
   const unmapped = new Set<McpTarget>();
   for (const target of targets) {
-    if (target.builtinFallback && !mappedNow.includes(await realFilePath(target.file))) unmapped.add(target);
+    if (!target.builtinFallback) continue;
+    const own = await Promise.all(targets.filter((t) => t.tool === target.tool && !t.builtinFallback).map((t) => realFilePath(t.file)));
+    if (!own.includes(await realFilePath(target.file))) unmapped.add(target);
   }
   return unmapped;
 }
@@ -712,6 +714,17 @@ export async function resolvedValueEvidence(
   }
   const variable = resolvedVariableIn(target, teamDefs, vars, raw);
   return variable ? `the value of $${variable}` : null;
+}
+
+/**
+ * The servers in `target`'s file that none of `claimed` names, in a file git
+ * does not track (#882): judged while the worktree has no managed-mcp.json
+ * (`claimed`: the records a pull wrote there since, if any), when any of them
+ * may be one teamai wrote. None for a file git tracks: no line protects it.
+ */
+export async function unclaimedMcpServers(target: McpTarget, claimed: readonly string[]): Promise<string[]> {
+  const unclaimed = [...(await installedMcpEntries(target))?.keys() ?? []].filter((name) => !claimed.includes(name));
+  return unclaimed.length === 0 || (await gitTracks(target.file)).kind === 'tracked' ? [] : unclaimed;
 }
 
 /** `load`, run once, on the first call. */
@@ -1177,8 +1190,19 @@ async function protectProjectMcpConfigs(
   // Tried before its write this run, and reported there.
   const targets = mapped.filter((target) => !unmapped.has(target) && exclusions.get(target.file)?.kind !== 'failed');
   const { files: ledger, earlierMappingsRead } = await readResolvedMcpFiles(localConfig);
-  const holds = async (target: McpTarget, owned: ManagedMcpRecord[]): Promise<boolean> =>
-    await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, ctx) !== null;
+  // No managed-mcp.json when this pull began: a server no record it wrote claims may be one teamai wrote.
+  // Noted after the settle, as a rebuild of a lost record notes the servers it did not write.
+  const lost = Object.keys(before ?? manifest).length === 0;
+  const unclaimed = new Map<string, string[]>();
+  const holds = async (target: McpTarget, owned: ManagedMcpRecord[]): Promise<boolean> => {
+    // One file two tools map: what either's record claims.
+    const claimed = targets.filter((t) => t.file === target.file)
+      .flatMap((t) => manifest[managedMcpManifestKey(t.tool, true)] ?? []).map((record) => record.name);
+    const names = lost ? await unclaimedMcpServers(target, claimed) : [];
+    if (names.length > 0) unclaimed.set(target.file, names);
+    return names.length > 0
+      || await resolvedValueEvidence(target, teamDefs, { owned, unverified: ledger[target.file]?.unverified }, vars, ctx) !== null;
+  };
   const observations = await observeMcpConfigs(localConfig, targets, manifest, holds);
   // Once per worktree, what a teamai that kept no record of paths wrote under a mapping the team has since changed.
   const earlier = earlierMappingsRead ? [] : await earlierMappedMcpTargets(localConfig, mapped).catch((e: unknown) => {
@@ -1216,6 +1240,25 @@ async function protectProjectMcpConfigs(
   await releaseMcpGitExcludes(teamConfig, localConfig, projectRoot, addedNow, before, found);
   // After the release, which reads the files recorded before this run; also lists one an older teamai wrote.
   await settleRecordedMcpConfigs(localConfig, observations, { earlierMappingsRead: !earlierMappingsRead && earlier !== null });
+  if (unclaimed.size > 0) await noteUnclaimedMcpServers(localConfig, unclaimed);
+}
+
+/**
+ * Note the servers no record claimed in each config a pull that found no
+ * managed-mcp.json listed for them (#882): once its manifest is back, a stale
+ * entry teamai wrote looks like the member's own. After the settle, which
+ * records the file.
+ */
+async function noteUnclaimedMcpServers(localConfig: LocalConfig, unclaimed: Map<string, string[]>): Promise<void> {
+  const found = [...unclaimed].map(([file, names]) => ({ file, names }));
+  const result = await recordUnverifiedMcpServers(localConfig, found).catch((e: unknown) => e instanceof Error ? e.message : String(e));
+  if (result !== 'written' && result !== 'unchanged') {
+    log.debug(
+      `Did not note the MCP servers teamai found in ${found.map((f) => f.file).join(', ')} with no managed-mcp.json: `
+      + `${result === 'locked' ? 'another teamai command held managed-mcp-files.json past the wait' : result}. `
+      + 'Once this pull\'s record is back, a stale entry among them looks like the member\'s own.',
+    );
+  }
 }
 
 /**

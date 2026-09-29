@@ -399,11 +399,14 @@ export async function resolveConfigForDir(
  * the project was set up. Readers that hold no resolved config (the local
  * agent, import, usage tracking) go through here.
  */
-export async function resolveMemberToolRoots(dir?: string): Promise<Record<string, string> | undefined> {
+export async function resolveMemberToolRoots(
+  dir?: string,
+  options: LoadOptions = {},
+): Promise<Record<string, string> | undefined> {
   // A hook can report a directory that no longer exists (a deleted worktree);
   // git probing there throws, so it means user scope — as resolveConfigForDir.
-  const project = dir === undefined || await pathExists(dir) ? await detectProjectConfig(dir) : null;
-  return project?.toolRoots ?? (await loadLocalConfig())?.toolRoots;
+  const project = dir === undefined || await pathExists(dir) ? await detectProjectConfig(dir, undefined, options) : null;
+  return project?.toolRoots ?? (await loadLocalConfig(options))?.toolRoots;
 }
 
 /**
@@ -619,9 +622,9 @@ function describeConfigError(e: unknown): string {
  * the wrong one. So a broken higher-priority file is reported even when a later
  * candidate loads.
  */
-export async function findUnreadableProjectConfig(cwd?: string): Promise<string | null> {
+export async function findUnreadableProjectConfig(cwd?: string, options: LoadOptions = {}): Promise<string | null> {
   let problem: string | null = null;
-  await detectProjectConfig(cwd, (configPath, error) => { problem ??= `${configPath}: ${error}`; });
+  await detectProjectConfig(cwd, (configPath, error) => { problem ??= `${configPath}: ${error}`; }, options);
   return problem;
 }
 

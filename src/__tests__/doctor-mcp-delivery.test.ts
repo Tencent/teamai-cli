@@ -467,6 +467,38 @@ describe('doctor — MCP servers delivered on disk', () => {
       });
     });
 
+    // The toolPaths here drop CodeBuddy, whose built-in location is Claude's .mcp.json.
+    describe('a tool\'s built-in location another tool maps today, once the team moved or dropped the tool', () => {
+      const file = (): string => path.join(projectRoot, '.mcp.json');
+
+      beforeEach(async () => {
+        await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+        // Claude's own entry, and one an older teamai wrote there for CodeBuddy, whose record is lost.
+        await fse.writeJson(file(), {
+          mcpServers: {
+            docs: { type: 'http', url: 'https://docs.example/mcp' },
+            gone: { type: 'http', url: 'https://gone.example/mcp', headers: { Authorization: 'Bearer t0ken' } },
+          },
+        });
+        await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+          [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'h', resolved: false }],
+        });
+      });
+
+      it('fails, naming it once, while it holds a server none of the tools mapping it own', async () => {
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(false);
+        expect((check.fix ?? '').split(file())).toHaveLength(2);
+      });
+
+      it('emits no check once only their servers are left', async () => {
+        await fse.writeJson(file(), { mcpServers: { docs: { type: 'http', url: 'https://docs.example/mcp' } } });
+
+        expect(await excludeCheck()).toBeUndefined();
+      });
+    });
+
     describe('a config written for a tool the team has since moved, that another tool\'s mapping still reaches', () => {
       const file = (): string => path.join(projectRoot, '.mcp.json');
 
@@ -574,8 +606,22 @@ describe('doctor — MCP servers delivered on disk', () => {
       expect(await check.check()).toBe(false);
     });
 
-    it('emits no check when the server of that name is the member\'s own, not teamai\'s', async () => {
+    it('fails, naming it, while this worktree has no managed-mcp.json and the file holds a server since dropped from mcp.yaml', async () => {
+      teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };
       await fse.remove(managedMcpManifestPath(getDataHome(localConfig), projectRoot));
+      await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect((check.fix ?? '').split(path.join(projectRoot, '.mcp.json'))).toHaveLength(2);
+    });
+
+    it('emits no check when the server of that name is the member\'s own, not teamai\'s', async () => {
+      // CodeBuddy at its built-in .mcp.json: dropped, any server there Claude's records don't own would hold it.
+      teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };
+      // teamai owns nothing there. With no managed-mcp.json at all, any server would hold it.
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('claude', true)]: [] });
 
       expect(await excludeCheck()).toBeUndefined();
     });

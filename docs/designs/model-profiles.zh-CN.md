@@ -15,10 +15,10 @@
 | 团队配置 | `<团队仓库>/models/models.yaml`，以及每个 namespace 的 `models/<ns>/models.yaml` | 是 | 否 |
 | 个人配置 | `~/.teamai/models/models.yaml` | 否 | 否 |
 | 个人配置的 API key | `~/.teamai/models/values.json` | 否，权限 `0600` | 密钥或环境变量名 |
-| 团队配置的 API key | `~/.teamai/models/teams/<团队名>-<哈希>.json` | 否，权限 `0600` | 密钥或环境变量名 |
+| 团队配置的 API key | `~/.teamai/models/teams/<仓库身份哈希>.json` | 否，权限 `0600` | 密钥或环境变量名 |
 | ownership 与恢复状态 | `~/.teamai/models/managed.json` | 否，权限 `0600` | 可能包含原值和写入的密钥 |
 
-密钥要么保存在本地，要么引用环境变量，不接受命令行参数传入。`0600` 并非加密。团队密钥文件名由 `teamai.yaml` 中清理后的团队名和仓库身份哈希组成；每次切换 `team:` 配置时也会记录这个身份，`pull` 只会重新应用当前团队的配置。文件内每个密钥保存在 `team:<id>@<origin>` 下，见 [Namespace 与密钥绑定](#namespace-与密钥绑定)。
+密钥要么保存在本地，要么引用环境变量，不接受命令行参数传入。`0600` 并非加密。团队密钥文件名只是仓库身份的哈希，`teamai.yaml` 中的团队名不参与其中，因此重命名团队不会导致密钥失效。当完全不存在仓库身份（可用的 remote、URL 或 `repo:` claim 都没有）时，文件名改为哈希团队 slug 与路径的组合——此时没有任何仓库形态的信息可以依赖，靠 slug 区分共享同一检出路径、名字不同的团队；旧版本遗留的 `<团队名>-<哈希>.json` 会在纯哈希文件尚不存在时被原位读取，不做任何改名，下一次保存才会写入纯哈希文件名。在 provider 可确定的 digest（URL 或 URL 形态的 `repo:` claim/remote）下写出的遗留文件，identity 自带主机，直接按 digest 读取；在 **provider 不明确** 的 digest（形如 `owner/repo` 的 `repo:` claim、provider 相对的 remote、裸 alias，或没有仓库身份）下写出的遗留文件既不指向唯一仓库——旧命名从未编码 provider，两个 provider 的同名团队会哈希出同一个文件，slug 无法在 provider 之间证明归属。这类文件绝不按静默规则读取：CLI 会展示一次，由用户显式确认采用这个确切的 `<团队名>-<哈希>` identity 后才读取，随后下一次保存会把密钥迁移到 provider 限定的纯哈希文件名下。非交互与 `--dry-run` 运行一律不采用：只报告该文件并保持不读。provider 不明确 identity 下的 switch 记录同样绝不采用——旧命名从未编码 provider，任何 slug（即使与本 checkout 完全相同的 slug）都无法证明归属：GitHub 与 GitCode 上都叫 `Alpha`、裸 claim 同为 `acme/widgets` 的两支团队会共享完全相同的 `alpha-<digest>` 形式。绝不把任何机器级记录当作归属证明，因为同一机器上被各 checkout 共享的记录对别的团队同样成立；只有对遗留 values 文件的显式采用才能重新确立本团队的存在，其已切换的 agent 随后通过下一次 `models switch` 以 provider 限定的 identity 重新记录。provider 可确切的 switch 记录仍按 digest 直接匹配。每次切换 `team:` 配置时也会记录这个身份，`pull` 只会重新应用当前团队的配置。文件内每个密钥保存在 `team:<id>@<origin>` 下，见 [Namespace 与密钥绑定](#namespace-与密钥绑定)。
 
 模型配置的密钥不是[团队密钥](team-secrets.zh-CN.md)：`teamai env set` 不配置它们，`env/secrets.yaml` 也不能声明它们，两者只共享代码、不共享文件。
 

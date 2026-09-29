@@ -50,6 +50,22 @@ describe('maintenance across the write root and the inherited root', () => {
     expect(fs.readFileSync(path.join(inherited, 'old.md'), 'utf8')).toContain('confidence: 0.1');
   });
 
+  it('under dryRun names the files it would write and writes none (#900)', async () => {
+    // Its own content: gray-matter caches a parse by its input string.
+    fs.writeFileSync(path.join(inherited, 'old.md'), '---\ntitle: preview\nconfidence: 0.1\n---\nbody');
+
+    const written = await writeBackConfidence(
+      [writeRoot, inherited],
+      new Map([['old', 0.9]]),
+      writeRoot,
+      { dryRun: true },
+    );
+
+    expect(written).toEqual([path.join(writeRoot, 'old.md')]);
+    expect(fs.existsSync(path.join(writeRoot, 'old.md'))).toBe(false);
+    expect(fs.readFileSync(path.join(inherited, 'old.md'), 'utf8')).toContain('confidence: 0.1');
+  });
+
   it('updates a learning already in the write root in place', async () => {
     fs.writeFileSync(path.join(writeRoot, 'new.md'), '---\ntitle: new\nconfidence: 0.1\n---\nbody');
 

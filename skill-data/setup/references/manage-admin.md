@@ -44,11 +44,12 @@ that write, teamai lists the file in the clone's `.git/info/exclude`, inside a
 A file under a symlinked directory is listed and checked where the write lands
 (`.cursor/` linking to `config/`: `/config/mcp.json`); a symlink at the file
 itself is replaced by the write.
-When it cannot (git already tracks the file, `.git/info` is not writable, the
-exclude file is held by another teamai command, or git errors), it leaves the file
-as it was, warns, and `teamai mcp list` shows `withheld: <tool> — <reason>. <fix>`.
-Apply the fix it names (a tracked file: `git rm --cached <file>` and rotate the
-token), then run `teamai pull`. A pull or `teamai mcp remove` takes a line out
+When it cannot (git already tracks the file, a rule in the member's git ignore
+files re-includes it, `.git/info` is not writable, the exclude file is held by
+another teamai command, or git errors), it leaves the file as it was, warns, and
+`teamai mcp list` shows `withheld: <tool> — <reason>. <fix>`. Apply the fix it
+names (a tracked file: `git rm --cached <file>` and rotate the token; a
+re-including rule such as `!/.mcp.json`: remove it), then run `teamai pull`. A pull or `teamai mcp remove` takes a line out
 once its file no longer holds a resolved value; `teamai uninstall` does so in
 every worktree. A file written under a `toolPaths.<tool>.mcpProject` the team
 later changes or removes stays listed until it is deleted or holds no server;
@@ -60,10 +61,13 @@ on it. `teamai doctor` checks those paths until that pull. A file written for a
 tool the team moved elsewhere (recorded, or found in that history), that another
 tool still maps, stays listed while it holds a server that tool did not write,
 one of the member's own included. The built-in location of a tool the team drops
-from `toolPaths` or moves elsewhere stays listed while it holds any server,
-unless another tool maps that path today (CodeBuddy's `.mcp.json`, which Claude
-maps), which then judges it. A file two tools map, with no pull on this version
-having recorded it, needs a `managed-mcp.json` record from each of them.
+from `toolPaths` or moves elsewhere stays listed while it holds any server; one
+another tool maps today (CodeBuddy's `.mcp.json`, which Claude maps) while it
+holds a server that tool did not write. A file two tools map, with no pull on
+this version having recorded it, needs a `managed-mcp.json` record from each of
+them. While a worktree has no `managed-mcp.json` at all (lost, or before its
+first pull), an untracked config holding a server no record claims is listed,
+and that server noted: it keeps the line until it leaves the file.
 
 ## Invite a member
 

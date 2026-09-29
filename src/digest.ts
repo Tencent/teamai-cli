@@ -407,8 +407,9 @@ export function formatTrendLines(periods: { current: TrendPeriod; previous: Tren
  */
 export async function generateDigest(): Promise<void> {
   try {
-    const projectConfig = await detectProjectConfig();
-    const localConfig = projectConfig ?? (await requireInit()).localConfig;
+    // Read-only: the load never persists a migration (#893).
+    const projectConfig = await detectProjectConfig(undefined, undefined, { dryRun: true });
+    const localConfig = projectConfig ?? (await requireInit({ dryRun: true })).localConfig;
     const repoPath = localConfig.repo.localPath;
 
     // Knowledge (learnings, skill git-log) lives under localPath on the default

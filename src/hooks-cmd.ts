@@ -130,7 +130,8 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
  * and team (B) hook definitions.
  */
 export async function hooksList(_options: GlobalOptions): Promise<void> {
-    const { localConfig, teamConfig } = await autoDetectInit();
+    // Read-only: the load never persists a migration (#893).
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
     const { baseDir, scope: hookScope } = resolveHookScope(localConfig);
     // The settings file must be resolved at the scope hooks were injected into,
     // not at the config's scope: a non-self project scope injects into HOME, and a

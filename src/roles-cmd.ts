@@ -22,7 +22,7 @@ function parseNamespaces(input: string): string[] {
 // ─── roles init ─────────────────────────────────────────
 
 export async function rolesInit(options: GlobalOptions): Promise<void> {
-    const { localConfig, teamConfig } = await autoDetectInit();
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
     const repoPath = localConfig.repo.localPath;
     const selfMode = localConfig.repo.kind === 'self';
 
@@ -140,7 +140,8 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
 // ─── roles list ─────────────────────────────────────────
 
 export async function rolesList(): Promise<void> {
-    const { localConfig } = await autoDetectInit();
+    // Read-only: the load never persists a migration (#893).
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: true });
     const repoPath = localConfig.repo.localPath;
 
     let manifest;
@@ -257,7 +258,7 @@ export async function rolesAdd(
         return;
     }
 
-    const { localConfig, teamConfig } = await autoDetectInit();
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
     await runManifestEdit(localConfig, 'Roles', async (repoPath, editConfig) => {
         if (editConfig.repo.kind !== 'self') await pullLatest(repoPath);
@@ -317,7 +318,7 @@ export async function rolesRemove(
     roleId: string,
     options: GlobalOptions,
 ): Promise<void> {
-    const { localConfig, teamConfig } = await autoDetectInit();
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
     await runManifestEdit(localConfig, 'Roles', async (repoPath, editConfig) => {
         if (editConfig.repo.kind !== 'self') await pullLatest(repoPath);
@@ -386,7 +387,7 @@ export async function rolesUpdate(
         return;
     }
 
-    const { localConfig, teamConfig } = await autoDetectInit();
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
     await runManifestEdit(localConfig, 'Roles', async (repoPath, editConfig) => {
         if (editConfig.repo.kind !== 'self') await pullLatest(repoPath);

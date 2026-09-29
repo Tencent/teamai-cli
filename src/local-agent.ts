@@ -581,7 +581,7 @@ function mergeWorkspaceBindings(
   return base;
 }
 
-export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
+export async function loadLocalAgentConfig(options: { dryRun?: boolean } = {}): Promise<LocalAgentConfig | null> {
   const fileConfig = await readJson<LocalAgentConfig>(getConfigPath());
   if (fileConfig?.endpoint) {
     const config = {
@@ -597,7 +597,9 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
         removedLegacyPaths.push(wsPath);
       }
     }
-    if (removedLegacyPaths.length > 0) {
+    if (removedLegacyPaths.length > 0 && options.dryRun) {
+      log.info(`[dry-run] Would remove ${removedLegacyPaths.length} legacy group-based workspace binding(s).`);
+    } else if (removedLegacyPaths.length > 0) {
       log.warn(
         `Removed ${removedLegacyPaths.length} legacy group-based workspace binding(s); ` +
           `you will be prompted to re-bind on the next session.`,
@@ -619,7 +621,7 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
       migrated[canonicalKey] = mergeWorkspaceBindings(migrated[canonicalKey], binding, canonicalKey);
     }
     config.workspaceBindings = migrated;
-    if (migrationChanged) {
+    if (migrationChanged && !options.dryRun) {
       await saveLocalAgentConfig(config);
     }
     return config;
@@ -629,7 +631,8 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
   // an HTTP team repo, auto-create config.json so v0.17.x upgraders keep capability.
   const { loadLocalConfig } = await import('./config.js');
   const { resolveApiKey } = await import('./api-key.js');
-  const legacy = await loadLocalConfig();
+  // Under `dryRun` the migrations above and this backfill stay in memory: nothing is written.
+  const legacy = await loadLocalConfig(options);
   if (legacy?.repo?.kind === 'http' && legacy.repo.url) {
     const endpoint = normalizeEndpoint(legacy.repo.url);
     const token = resolveApiKey() ?? undefined;
@@ -639,6 +642,7 @@ export async function loadLocalAgentConfig(): Promise<LocalAgentConfig | null> {
       createdAt: new Date().toISOString(),
       workspaceBindings: {},
     };
+    if (options.dryRun) return backfilled;
     try {
       await saveLocalAgentConfig(backfilled);
       log.debug('local-agent: backfilled config.json from legacy ~/.teamai/config.yaml (http repo)');
@@ -3358,8 +3362,8 @@ export interface LocalAgentSummary {
  * none is configured. Used by `teamai source list` to show the HTTP side channel
  * alongside git cross-team sources.
  */
-export async function describeLocalAgent(): Promise<LocalAgentSummary | null> {
-  const config = await loadLocalAgentConfig();
+export async function describeLocalAgent(options: { dryRun?: boolean } = {}): Promise<LocalAgentSummary | null> {
+  const config = await loadLocalAgentConfig(options);
   if (!config) return null;
 
   const boundProjects = Object.entries(config.workspaceBindings)

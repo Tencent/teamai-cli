@@ -159,8 +159,6 @@ export async function executePromotion(
 ): Promise<{ targetPath: string; marked: string | null }> {
   const category = options.category ?? candidate.suggestedCategory;
   const targetDir = path.join(repoPath, category);
-  await ensureDir(targetDir);
-
   const targetPath = path.join(targetDir, candidate.filename);
 
   if (options.dryRun) {
