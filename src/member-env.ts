@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { exportDigest, markedAsExported, readEnvShExports, type EnvShExports } from './env-sh-exports.js';
 import { parseEnvFile } from './resources/env.js';
-import { envValue } from './resources/env-key.js';
+import { envName, envValue } from './resources/env-key.js';
 import { getDataHome, getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 
@@ -82,9 +82,12 @@ async function memberEnvironmentAt(
     const value = envValue(env, key);
     if (value === undefined || value === '') return undefined;
     if (marked(key, value)) return undefined;
-    if (exported.some((exports) => exports.get(key) === value)) return undefined;
+    // On Windows another scope's `token` is this key's `TOKEN`: compare names as the platform does.
+    const name = envName(key);
+    const sameName = ([other]: readonly [string, unknown]): boolean => envName(other) === name;
+    if (exported.some((exports) => [...exports].some((entry) => sameName(entry) && entry[1] === value))) return undefined;
     const digest = exportDigest(key, value);
-    if (recorded.some((exports) => exports.get(key)?.has(digest))) return undefined;
+    if (recorded.some((exports) => [...exports].some((entry) => sameName(entry) && entry[1].has(digest)))) return undefined;
     if (scope.secretKeys.has(key) && scope.envYaml.get(key) === value) return undefined;
     return value;
   };

@@ -441,6 +441,57 @@ describe('team secret values', () => {
       });
     });
 
+    // Windows compares environment names case-insensitively, so `github_token`
+    // another scope exported is the member's GITHUB_TOKEN there.
+    describe('a key exported in another case', () => {
+      const original = process.platform;
+      const onPlatform = (platform: NodeJS.Platform): void => {
+        Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+      };
+      afterEach(() => onPlatform(original));
+
+      const exportedInLowerCase = async (): Promise<void> => {
+        await fse.outputFile(path.join(home, '.teamai', 'projects', 'other-slug', 'env.sh'), "export github_token='other-team-token'\n");
+      };
+      const recordedInLowerCase = async (): Promise<void> => {
+        const write = (exports: EnvVariable[]): Promise<boolean> => new EnvHandler().writeResolvedEnv(exports, teamConfig, localConfig);
+        await write([variable('github_token', 'repo-token')]);
+        await write([]);
+      };
+      /** A shell that sourced a project's env.sh no scan finds, exporting github_token. */
+      const markedInLowerCase = async (): Promise<NodeJS.ProcessEnv> => {
+        const projectRoot = path.join(tmpDir, 'elsewhere');
+        await new EnvHandler().writeResolvedEnv([variable('github_token', 'project-token')], teamConfig, { ...localConfig, scope: 'project', projectRoot });
+        const content = await fse.readFile(path.join(projectRoot, '.teamai', 'env.sh'), 'utf8');
+        const marker = /^export (TEAMAI_ENV_SH_[0-9a-f]{64})='([^']*)'$/m.exec(content);
+        expect(marker).not.toBeNull();
+        return marker?.[1] ? { [marker[1]]: marker[2] } : {};
+      };
+
+      it('on Windows, leaves out a value another env.sh exports, has recorded or has marked in any case', async () => {
+        onPlatform('win32');
+        await exportedInLowerCase();
+        await recordedInLowerCase();
+        const marker = await markedInLowerCase();
+
+        expect(await resolve({ GITHUB_TOKEN: 'other-team-token' })).toEqual({});
+        expect(await resolve({ GITHUB_TOKEN: 'repo-token' })).toEqual({});
+        expect(await resolve({ ...marker, GITHUB_TOKEN: 'project-token' })).toEqual({});
+        expect(await resolve({ ...marker, GITHUB_TOKEN: 'hand-export' })).toEqual({ GITHUB_TOKEN: 'environment:hand-export' });
+      });
+
+      it('elsewhere, counts a value exported, recorded or marked only under another case as the member\'s', async () => {
+        onPlatform('linux');
+        await exportedInLowerCase();
+        await recordedInLowerCase();
+        const marker = await markedInLowerCase();
+
+        expect(await resolve({ GITHUB_TOKEN: 'other-team-token' })).toEqual({ GITHUB_TOKEN: 'environment:other-team-token' });
+        expect(await resolve({ GITHUB_TOKEN: 'repo-token' })).toEqual({ GITHUB_TOKEN: 'environment:repo-token' });
+        expect(await resolve({ ...marker, GITHUB_TOKEN: 'project-token' })).toEqual({ GITHUB_TOKEN: 'environment:project-token' });
+      });
+    });
+
     it('records what env.sh exported as hashes beside it, readable by the member only, and forgets the oldest', async () => {
       const write = (value: string): Promise<boolean> =>
         new EnvHandler().writeResolvedEnv([{ key: 'GITHUB_TOKEN', value }], teamConfig, localConfig);

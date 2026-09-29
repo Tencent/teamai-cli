@@ -24,3 +24,8 @@ export function envTable<V>(entries: Iterable<readonly [string, V]> = []): Recor
 export function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
   return Object.hasOwn(env, key) ? env[key] : undefined;
 }
+
+/** `key` as the platform compares environment names: case-insensitively on Windows. */
+export function envName(key: string): string {
+  return process.platform === 'win32' ? key.toUpperCase() : key;
+}

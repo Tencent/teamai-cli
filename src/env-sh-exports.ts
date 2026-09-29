@@ -13,6 +13,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
+import { envName } from './resources/env-key.js';
 import { readFileSafe, writeJsonAtomic } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -24,8 +25,9 @@ const RecordSchema = z.record(z.string(), z.array(z.string()));
 /** Per key, the digests of the values an env.sh exported. */
 export type EnvShExports = ReadonlyMap<string, ReadonlySet<string>>;
 
+/** Of the key as the platform compares it (`envName`), so on Windows `token` and `TOKEN` hash alike. */
 export function exportDigest(key: string, value: string): string {
-  return crypto.createHash('sha256').update(`${key}=${value}`).digest('hex');
+  return crypto.createHash('sha256').update(`${envName(key)}=${value}`).digest('hex');
 }
 
 /**
