@@ -176,6 +176,21 @@ describe('MCP servers and declared secrets', () => {
     expect(await githubAuthorization()).toBe('Bearer exported-token');
   });
 
+  it('on Windows, never lets an inherited value under another case of a team variable\'s name in', async () => {
+    await write('env/env.yaml', 'variables:\n  - key: API_URL\n    value: team-url\n');
+    vi.stubEnv('api_url', 'exported-url');
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    let vars: Record<string, string>;
+    try {
+      vars = await buildVarTable(localConfig);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    }
+    expect(vars.API_URL).toBe('team-url');
+    expect(Object.hasOwn(vars, 'api_url')).toBe(false);
+  });
+
   // #875 (#879 S9): one order for a variable, member team value > env.yaml,
   // with no environment override and no machine value.
   it("resolves a variable from the member's value for this team, then env.yaml, never the environment", async () => {
