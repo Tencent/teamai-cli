@@ -234,4 +234,8 @@ describe('listWorktrees', () => {
     expect(await listWorktrees(plain)).toEqual([]);
     fs.rmSync(plain, { recursive: true, force: true });
   });
+
+  it('returns [] for a directory that no longer exists', async () => {
+    expect(await listWorktrees(path.join(os.tmpdir(), 'teamai-gone-', String(process.pid), 'project'))).toEqual([]);
+  });
 });
