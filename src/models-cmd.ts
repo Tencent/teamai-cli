@@ -504,9 +504,11 @@ export async function modelsSwitch(reference: string, options: SwitchOptions): P
         await saveModelInputs(file, current);
       });
     } else {
-      setStoredApiKey(ref, values, { value: answer });
       await saveModelInputs(file, values);
     }
+    // Keep the copy the rest of this command resolves against in sync with
+    // what was saved (the lock re-read only fills `current`).
+    setStoredApiKey(ref, values, { value: answer });
   } else if (!isApiKeyConfigured(stored) && !stored?.env) {
     throw new Error(`Profile ${key} has no API key${gatewaySuffix(ref, 'for')}. Run \`teamai models configure ${key}\`.`);
   }
