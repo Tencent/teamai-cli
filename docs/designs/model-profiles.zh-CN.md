@@ -15,10 +15,10 @@
 | 团队配置 | `<团队仓库>/models/models.yaml`，以及每个 namespace 的 `models/<ns>/models.yaml` | 是 | 否 |
 | 个人配置 | `~/.teamai/models/models.yaml` | 否 | 否 |
 | 个人配置的 API key | `~/.teamai/models/values.json` | 否，权限 `0600` | 密钥或环境变量名 |
-| 团队配置的 API key | `~/.teamai/models/teams/<团队名>-<哈希>.json` | 否，权限 `0600` | 密钥或环境变量名 |
+| 团队配置的 API key | `~/.teamai/models/teams/<仓库身份哈希>.json` | 否，权限 `0600` | 密钥或环境变量名 |
 | ownership 与恢复状态 | `~/.teamai/models/managed.json` | 否，权限 `0600` | 可能包含原值和写入的密钥 |
 
-密钥要么保存在本地，要么引用环境变量，不接受命令行参数传入。`0600` 并非加密。团队密钥文件名由 `teamai.yaml` 中清理后的团队名和仓库身份哈希组成；每次切换 `team:` 配置时也会记录这个身份，`pull` 只会重新应用当前团队的配置。文件内每个密钥保存在 `team:<id>@<origin>` 下，见 [Namespace 与密钥绑定](#namespace-与密钥绑定)。
+密钥要么保存在本地，要么引用环境变量，不接受命令行参数传入。`0600` 并非加密。团队密钥文件名只是仓库身份的哈希，`teamai.yaml` 中的团队名不参与其中，因此重命名团队不会导致密钥失效；旧版本遗留的 `<团队名>-<哈希>.json` 会在首次读取时迁移为纯哈希文件名。每次切换 `team:` 配置时也会记录这个身份，`pull` 只会重新应用当前团队的配置。文件内每个密钥保存在 `team:<id>@<origin>` 下，见 [Namespace 与密钥绑定](#namespace-与密钥绑定)。
 
 ## 目录与协议
 

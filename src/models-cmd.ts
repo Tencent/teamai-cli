@@ -82,13 +82,15 @@ async function teamContext(): Promise<TeamModelsContext | null> {
 /**
  * This team's stored keys, with any key a 0.26.0 beta stored bound to its
  * gateway first (`bindLegacyTeamKeys`) and saved that way, unless `dryRun`.
+ * The dry-run flag also keeps the legacy filename migration from renaming the
+ * secrets file: a dry run never writes.
  */
 async function loadTeamValues(
   localConfig: LocalConfig,
   team: TeamModelProfiles,
   options: { dryRun?: boolean } = {},
 ): Promise<StoredModelInputs> {
-  const file = await migrateTeamValuesPath(localConfig);
+  const file = await migrateTeamValuesPath(localConfig, options);
   const values = await loadModelInputs(file);
   const sentTo = await switchedGatewayOrigins(localConfig);
   if (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) && !options.dryRun) {
@@ -152,8 +154,8 @@ function valuesPathFor(ref: ProfileRef, context: TeamModelsContext): string {
 }
 
 /** The stored keys `ref` reads its key from; `loadTeamValues` for a team profile. */
-async function loadValuesFor(ref: ProfileRef, context: TeamModelsContext): Promise<StoredModelInputs> {
-  if (ref.source === 'team' && context.localConfig) return loadTeamValues(context.localConfig, context.team);
+async function loadValuesFor(ref: ProfileRef, context: TeamModelsContext, options: { dryRun?: boolean } = {}): Promise<StoredModelInputs> {
+  if (ref.source === 'team' && context.localConfig) return loadTeamValues(context.localConfig, context.team, options);
   return loadModelInputs(valuesPathFor(ref, context));
 }
 
@@ -373,7 +375,7 @@ export async function modelsSwitch(reference: string, options: SwitchOptions): P
   const { ref, context } = found;
   const key = profileRefName(ref);
   const file = valuesPathFor(ref, context);
-  const values = await loadValuesFor(ref, context);
+  const values = await loadValuesFor(ref, context, options);
   const stored = storedApiKey(ref, values);
   // First use of a profile, or of its current gateway: ask for the key here
   // instead of requiring a separate `configure` step.
