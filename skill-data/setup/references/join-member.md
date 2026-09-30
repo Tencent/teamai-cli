@@ -69,6 +69,15 @@ to add them to the repo.
 
 ## Step 4 — Initialize with the URL (you run it)
 
+Before running `init`, ask whether the user wants to activate any logical
+projects this team repo declares. If `init` lists **Available projects**, show
+the names/IDs and ask which belong to this setup; enter the corresponding
+comma-separated numbers. Press Enter for none only when the user explicitly
+chooses no project. If the IDs are already known, pass `--project id1,id2` to
+skip the picker. For a non-interactive run, ask first and pass `--project`:
+without it, init keeps `projects: []` and prints a `teamai projects set <id>`
+follow-up instead of waiting for a choice.
+
 ```bash
 # this project only (run from inside the project)
 teamai init https://<platform>/<org>/<repo>
