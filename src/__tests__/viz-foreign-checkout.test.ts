@@ -28,7 +28,7 @@ describe('viz with another repository\'s learnings checkout in the partition (#8
   let testRoot: string;
 
   beforeEach(() => {
-    testRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-viz-808-')));
+    testRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-viz-808-')));
   });
 
   afterEach(() => {

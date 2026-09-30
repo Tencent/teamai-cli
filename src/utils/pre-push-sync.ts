@@ -23,6 +23,7 @@ import { teamRuleToCopilotInstructions, copilotInstructionsBodyEqualsTeamMd } fr
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { log } from './logger.js';
 import { placedResourcePath } from '../push-namespaces.js';
+import { recordDelivered, type DeliveredHashes } from '../resources/delivered-copies.js';
 
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
 
@@ -52,12 +53,17 @@ const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
  * without this map the three-way check below would skip it and the scanner —
  * which DOES follow the map — would then read the stale root copy as a local
  * modification and push it over a teammate's newer version.
+ *
+ * `delivered` is the checkout record's map of what teamai wrote (#822). Each
+ * copy the sync writes is recorded there, or the next pull after a further
+ * team change would read it as the member's edit and keep it.
  */
 export async function syncTeamUpdatesToLocal(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   baseRevs: string | readonly string[] | null,
   placedRules?: Record<string, string>,
+  delivered?: DeliveredHashes,
 ): Promise<void> {
   const bases = (typeof baseRevs === 'string' ? [baseRevs] : baseRevs ?? []).filter((rev) => rev !== '');
   if (bases.length === 0) {
@@ -68,8 +74,8 @@ export async function syncTeamUpdatesToLocal(
   const repoPath = localConfig.repo.localPath;
   const baseDir = resolveBaseDir(localConfig);
 
-  await syncRulesToLocal(teamConfig, localConfig, repoPath, bases, placedRules);
-  await syncSkillsToLocal(teamConfig, localConfig, repoPath, baseDir, bases);
+  await syncRulesToLocal(teamConfig, localConfig, repoPath, bases, placedRules, delivered);
+  await syncSkillsToLocal(teamConfig, localConfig, repoPath, baseDir, bases, delivered);
 }
 
 /**
@@ -82,6 +88,7 @@ async function syncRulesToLocal(
   repoPath: string,
   bases: readonly string[],
   placedRules: Record<string, string> | undefined,
+  delivered: DeliveredHashes | undefined,
 ): Promise<void> {
   const teamRulesDir = path.join(repoPath, 'rules');
   if (!await pathExists(teamRulesDir)) return;
@@ -160,6 +167,7 @@ async function syncRulesToLocal(
           ? localRaw === render(old.toString('utf-8'))
           : bodyEquals(localRaw, old.toString('utf-8')))) {
           await writeFile(localFilePath, render(teamRaw));
+          if (delivered) await recordDelivered(delivered, localFilePath);
           log.debug(`Pre-push sync: updated ${tool} rule ${name} to match team repo`);
         }
         continue;
@@ -181,6 +189,7 @@ async function syncRulesToLocal(
       if (matchesBase) {
         // Local matches old team version → team updated, user didn't → sync
         await copyFile(teamFilePath, localFilePath);
+        if (delivered) await recordDelivered(delivered, localFilePath);
         log.debug(`Pre-push sync: updated ${tool} rule ${name} to match team repo`);
       }
       // else: local differs from old version too → user edited → leave alone
@@ -198,6 +207,7 @@ async function syncSkillsToLocal(
   repoPath: string,
   baseDir: string,
   bases: readonly string[],
+  delivered: DeliveredHashes | undefined,
 ): Promise<void> {
   const teamSkillsDir = path.join(repoPath, 'skills');
   if (!await pathExists(teamSkillsDir)) return;
@@ -245,6 +255,7 @@ async function syncSkillsToLocal(
         if (await skillAtBase(repoPath, localSkillDir, teamSkillDir, teamFiles, base)) {
           // All differing files match that base → team updated, user didn't → sync
           await replaceSkillDir(teamSkillDir, localSkillDir);
+          if (delivered) await recordDelivered(delivered, localSkillDir, teamSkillDir);
           log.debug(`Pre-push sync: updated ${tool} skill ${skillName} to match team repo`);
           break;
         }

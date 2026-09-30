@@ -430,7 +430,7 @@ export const TeamaiConfigSchema = z.object({
     // path — the adapter in omp-hooks.ts writes the single user-root extension
     // (~/.omp/agent/extensions/teamai-hooks.ts). Profiles (OMP_PROFILE /
     // PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move the agent dir and are not
-    // supported.
+    // supported for hooks.
     omp: {
       skills: '.omp/skills',
       rules: '.omp/rules',
@@ -451,7 +451,8 @@ export const TeamaiConfigSchema = z.object({
     // TypeScript extensions rather than a settings hook list, so the adapter
     // keeps one user extension and forwards the active cwd to hook-dispatch.
     // Profile overrides (PI_CODING_AGENT_DIR / PI_CONFIG_DIR) that relocate
-    // the agent dir are not supported, same as the OMP adapter.
+    // the agent dir are not supported for hooks, same as the OMP adapter;
+    // model profiles do read PI_CODING_AGENT_DIR.
     pi: {
       skills: '.pi/skills',
       rules: '.pi/rules',
@@ -699,11 +700,16 @@ export const StateSchema = z.object({
    * (`FORCED_FULL_SYNC_REV` in pull.ts). The user scope's entry is HOME's. An
    * inherited pull, and a pull whose docs mirror or submodule update fails, add
    * the revision they delivered to these bases and keep `rev` (#823).
+   * `delivered` is the sha256 of the bytes teamai last wrote at each skill,
+   * rule and agent file path of the checkout, which pull and the pre-push sync
+   * update. Pull keeps a copy that no longer matches it; without it, pull
+   * overwrites as before (#822). An older CLI that saves state drops it.
    */
   lastPullByWorkspace: z.record(z.string(), z.object({
     rev: z.string(),
     targets: z.array(z.string()),
     pushBaseRevs: z.array(z.string()).optional(),
+    delivered: z.record(z.string(), z.string()).optional(),
   })).optional(),
   /** Git commit hash synchronized through the safe user-resource inheritance channel. */
   lastInheritedPullRev: z.string().nullable().optional(),
@@ -893,6 +899,18 @@ export interface ManagedMcpRecord {
   name: string;
   /** sha1 (first 16 hex) of the rendered entry; drives idempotent rewrites. */
   hash: string;
+  /**
+   * Project scope: whether the entry holds a `${VAR}` value teamai resolved
+   * (#882). Absent in records an older teamai wrote.
+   */
+  resolved?: boolean;
+  /**
+   * Project scope: this record was rebuilt after it was lost, or written by a
+   * pull that found no managed-mcp.json, and the other servers in its file
+   * could not be noted in managed-mcp-files.json yet (#882). Until a pull
+   * notes them, the file counts as having no record.
+   */
+  unnoted?: true;
 }
 
 /** ~/.teamai/managed-mcp.json — team MCP servers injected per tool+scope key. */

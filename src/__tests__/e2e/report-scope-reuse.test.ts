@@ -27,7 +27,7 @@ afterEach(async () => {
 
 /** A git project P whose data home lives in the project, and the real CLI to drive it. */
 function fixture() {
-  sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-scope-reuse-')));
+  sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-scope-reuse-')));
   const home = path.join(sandbox, 'home');
   const project = path.join(sandbox, 'project');
   const dataHome = path.join(project, '.teamai');

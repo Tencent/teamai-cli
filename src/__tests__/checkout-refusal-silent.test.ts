@@ -25,7 +25,7 @@ describe('a checkout refusal during a silent publish (#808)', () => {
   const originalHome = process.env.HOME;
 
   beforeEach(() => {
-    testRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-refusal-silent-')));
+    testRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-refusal-silent-')));
     process.env.HOME = testRoot;
     _setLogFilePath(path.join(testRoot, 'debug.log'));
   });

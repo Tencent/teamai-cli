@@ -25,7 +25,8 @@ vi.mock('../config.js', async (importOriginal) => ({
   saveStateForScope: vi.fn(),
 }));
 
-vi.mock('../utils/git.js', () => ({
+vi.mock('../utils/git.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/git.js')>()),
   pullRepo: vi.fn().mockResolvedValue('Already up to date.'),
 }));
 
@@ -55,10 +56,17 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../utils/prompt.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/prompt.js')>()),
+  isInteractive: vi.fn(() => false),
+  askSecret: vi.fn(),
+}));
+
 import { pull } from '../pull.js';
 import { modelsConfigure, modelsList, modelsSwitch } from '../models-cmd.js';
 import { getTeamValuesPath, saveModelInputs } from '../models/profile.js';
 import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig, requireInit } from '../config.js';
+import { askSecret, isInteractive } from '../utils/prompt.js';
 import { log } from '../utils/logger.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -332,6 +340,17 @@ describe('pull: team model profiles by namespace', () => {
     expect(await claude()).toEqual({ url: `${COMPANY}/checkout`, token: 'company-secret', model: 'checkout-model' });
   });
 
+  it('models list reads a key stored before namespaces existed bound, and leaves the file as it was (#893)', async () => {
+    const file = getTeamValuesPath(configFor([]));
+    await saveModelInputs(file, { 'team:gw': { API_KEY: { env: 'COMPANY_KEY' } } });
+    const before = await fse.readFile(file, 'utf8');
+
+    const output = await captureOutput(() => modelsList('team:gw'));
+
+    expect(output).toContain('  API key: environment COMPANY_KEY');
+    expect(await fse.readFile(file, 'utf8')).toBe(before);
+  });
+
   it('binds a beta key to the gateway its agent was switched to, so a root profile that moved since never gets it', async () => {
     const beta = { 'team:gw': { API_KEY: { env: 'COMPANY_KEY' } } };
     await saveModelInputs(getTeamValuesPath(configFor([])), beta);
@@ -357,6 +376,20 @@ describe('pull: team model profiles by namespace', () => {
     await expect(modelsSwitch('team:gw', { agent: ['claude'] })).rejects.toThrow(/no API key for https:\/\/gw\.elsewhere\.test/);
     const output = await captureOutput(() => modelsList('team:gw'));
     expect(output).toContain('  API key: not configured for https://gw.elsewhere.test (one is stored for another gateway)');
+  });
+
+  it('stores a key on the first interactive switch to a team profile and resolves it in the same run', async () => {
+    // No stored key: the first `switch` must ask for one, save it under its
+    // own origin lock, and resolve the profile the same run — not fail with
+    // "has no API key" and demand a rerun for the key to take effect.
+    vi.mocked(isInteractive).mockReturnValue(true);
+    vi.mocked(askSecret).mockResolvedValue('switched-secret');
+    try {
+      await captureOutput(() => modelsSwitch('team:gw', { agent: ['claude'] }));
+      expect(await claude()).toEqual({ url: COMPANY, token: 'switched-secret', model: 'company-model' });
+    } finally {
+      vi.mocked(isInteractive).mockReturnValue(false);
+    }
   });
 
   it('reads the root catalog only in legacy mode', async () => {

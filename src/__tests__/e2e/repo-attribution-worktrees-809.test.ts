@@ -102,7 +102,7 @@ describe('one repo, many worktrees (#809)', () => {
       throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
     }
 
-    sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue809-e2e-')));
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue809-e2e-')));
     home = path.join(sandbox, 'home');
     repo = path.join(sandbox, 'my-repo');
     worktree = path.join(sandbox, 'wt-demo');

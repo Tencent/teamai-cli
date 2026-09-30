@@ -59,7 +59,7 @@ function sessionStartPayload(cwd: string): Record<string, unknown> {
 }
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dash-gate-')));
+  tmpDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dash-gate-')));
   originalHome = process.env.HOME ?? '';
   process.env.HOME = tmpDir;
   _setLogFilePath(path.join(tmpDir, '.teamai', 'debug.log'));

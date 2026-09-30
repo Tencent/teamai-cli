@@ -21,6 +21,9 @@ import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { skillsDirForTool } from './resources/skills.js';
 import { ruleFileExtensionForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
+import {
+  forgetDelivered, judgeCopy, openLedger, removedCopyChanged, reportKept, type DeliveredHashes, type DeliveryLedger,
+} from './resources/delivered-copies.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import type { GlobalOptions, ResourceType, ResourceItem, TeamaiConfig, LocalConfig, State } from './types.js';
 import {
@@ -46,9 +49,12 @@ import {
 } from './types.js';
 import type { CultureFrontmatter } from './types.js';
 import { deliversEveryNamespace } from './resource-namespaces.js';
-import { reportEntryResolution, resolveEntries } from './namespaced-entries.js';
+import { reportEntryResolution } from './namespaced-entries.js';
 import { resetWarnOnce } from './utils/warn-once.js';
-import { envEntryReader } from './resources/env.js';
+import type { EnvVariable } from './resources/env.js';
+import { declaredSecretKeys } from './resources/secrets.js';
+import { envShVariables, resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
+import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
@@ -238,7 +244,8 @@ export async function cleanupInactiveNamespaceSkills(
   retainedSkillNames: Set<string>,
   inactiveSkillNames: Set<string>,
   inactiveSkillSources?: Map<string, string>,
-): Promise<void> {
+): Promise<Set<string>> {
+  const removed = new Set<string>();
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (isAgentExcluded(localConfig, tool)) continue;
     // Ask where delivery writes, not where the tool root sits: OpenClaw keeps
@@ -267,9 +274,11 @@ export async function cleanupInactiveNamespaceSkills(
       }
 
       await remove(localSkillDir);
+      removed.add(skillName);
       log.debug(`[${localConfig.scope}] Removed inactive role-scoped skill ${skillName} from ${tool}`);
     }
   }
+  return removed;
 }
 
 /**
@@ -303,6 +312,24 @@ async function getExistingLocalNames(
   }
 
   return existing;
+}
+
+/** `--dry-run`: name each copy the sync would keep because the member changed it (#822). */
+async function reportWouldKeep(
+  handler: ResourceHandler,
+  items: readonly ResourceItem[],
+  freshConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  ledger: DeliveryLedger,
+  scopeLabel: string,
+): Promise<void> {
+  for (const item of items) {
+    for (const target of await handler.deliveryTargets(freshConfig, localConfig, item)) {
+      if ((await judgeCopy(ledger.previous, item, target)).kind === 'keep') {
+        log.info(`[${scopeLabel}] [dry-run] Would keep ${target.dest}: you changed it since teamai delivered it.`);
+      }
+    }
+  }
 }
 
 /**
@@ -399,11 +426,13 @@ function tombstoneExtensions(type: ResourceType, tool: string): readonly string[
  * Called from the full sync and from the "already synced" fast path: a CLI
  * upgrade that widens the extensions above must still reach a machine whose
  * team repo HEAD has not moved since it pulled the tombstone (issue #576).
+ * A copy the member changed since teamai delivered it is kept (#822).
  */
 async function cleanupTombstonedResources(
   freshConfig: TeamaiConfig,
   localConfig: LocalConfig,
   scopeLabel: string,
+  ledger: DeliveryLedger,
 ): Promise<void> {
   // Each entry maps a resource type to the field on toolPath that names the
   // tool-side directory; `tombstoneExtensions` supplies the filename suffixes.
@@ -440,7 +469,12 @@ async function cleanupTombstonedResources(
             log.warn(`[${scopeLabel}] Kept tombstoned skill "${name}" (${tool}): it has local VCS metadata (.git) that may hold unpushed history. Back it up, then delete it manually.`);
             continue;
           }
+          if (await removedCopyChanged(ledger.previous, localPath)) {
+            log.warn(`[${scopeLabel}] Kept ${localPath}: the team removed ${name}, but you changed this copy. Delete it when you no longer need it.`);
+            continue;
+          }
           await remove(localPath);
+          forgetDelivered(ledger.hashes, localPath);
           log.debug(`[${scopeLabel}] Cleaned up tombstoned ${type} ${name} from ${dir}`);
         }
       }
@@ -451,6 +485,43 @@ async function cleanupTombstonedResources(
 /** The env namespaces active for this member, or null in legacy mode. */
 function activeEnvNamespaces(roleContext: RolePullContext | null): string[] | null {
   return roleContext ? roleContext.activeNamespaces.env ?? [] : null;
+}
+
+/**
+ * This scope's env for this pull, in the role context's namespaces. Kept in
+ * `teamEnvs` so the MCP and advisory stages use the same resolution rather
+ * than read every file again.
+ */
+async function resolvePullEnv(
+  localConfig: LocalConfig,
+  roleContext: RolePullContext | null,
+  teamEnvs: Map<LocalConfig, TeamEnv> | undefined,
+): Promise<TeamEnv> {
+  const teamEnv = await resolveTeamEnv(localConfig, { active: activeEnvNamespaces(roleContext) });
+  teamEnvs?.set(localConfig, teamEnv);
+  return teamEnv;
+}
+
+/**
+ * The env variables to write to env.sh, or null to leave it as it is. A key
+ * the team also declares as a secret (#875) resolves as the secret, so its
+ * repo value is left out; secret declarations that cannot be used are
+ * reported and, like an env file that cannot be, keep env.sh as it is. A
+ * variable the member set for this team exports their value, so a new shell
+ * follows the order MCP does; one set with `--from-env` is left out, so env.sh
+ * holds no copy of a value the member keeps elsewhere. A values file that cannot be read
+ * keeps env.sh as it is too.
+ */
+function deliverableEnvVariables(teamEnv: TeamEnv): EnvVariable[] | null {
+  const { variables, declarations } = teamEnv;
+  reportEntryResolution(variables);
+  if (declarations.kind !== 'absent') reportEntryResolution(declarations);
+  if (variables.kind === 'failed' || !declaredSecretKeys(declarations)) return null;
+  if (teamEnv.variableValues.kind === 'store-unreadable') {
+    log.warn(variablesKeptWarning(teamEnv.variableValues.reason));
+    return null;
+  }
+  return envShVariables(variables.entries, teamEnv.variableValues.values);
 }
 
 /**
@@ -476,13 +547,12 @@ async function reconcileEnvForUnchangedRepo(
   freshConfig: TeamaiConfig,
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
+  teamEnvs: Map<LocalConfig, TeamEnv> | undefined,
 ): Promise<void> {
   try {
-    const resolution = await resolveEntries(envEntryReader, localConfig, activeEnvNamespaces(roleContext));
-    reportEntryResolution(resolution);
-    if (resolution.kind === 'failed') return;
-    const envHandler = new EnvHandler();
-    await envHandler.writeResolvedEnv(resolution.entries.map((entry) => entry.entry), freshConfig, localConfig);
+    const variables = deliverableEnvVariables(await resolvePullEnv(localConfig, roleContext, teamEnvs));
+    if (!variables) return;
+    await new EnvHandler().writeResolvedEnv(variables, freshConfig, localConfig);
   } catch (e) {
     // Visible rather than debug-only, and still not rethrown. This is the path
     // that REMOVES a variable the member is no longer scoped to, so a failed
@@ -661,11 +731,30 @@ export async function userScopeRecord(state: State): Promise<CheckoutRecord> {
   return record;
 }
 
-/** `records` after a forced full sync: see FORCED_FULL_SYNC_REV. */
+/**
+ * What teamai last wrote at each skill, rule and agent file of the checkout
+ * `localConfig`'s pulls deliver into, or undefined when nothing is recorded
+ * yet (#822).
+ */
+export async function deliveredHashes(localConfig: LocalConfig, state?: State): Promise<DeliveredHashes | undefined> {
+  const key = await checkoutRecordKey(localConfig);
+  if (!key) return undefined;
+  return (state ?? await loadStateForScope(localConfig)).lastPullByWorkspace?.[key]?.delivered;
+}
+
+/**
+ * `records` after a forced full sync: see FORCED_FULL_SYNC_REV. Each keeps
+ * what teamai delivered into its checkout, or that checkout's next pull would
+ * overwrite the copies its member changed.
+ */
 function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<string, CheckoutRecord> {
   return Object.fromEntries(Object.entries(records).map(([key, record]) => {
     const pushBaseRevs = checkoutBaseRevs(record).slice(0, MAX_PUSH_BASE_REVS);
-    const reset: CheckoutRecord = { rev: FORCED_FULL_SYNC_REV, targets: record.targets };
+    const reset: CheckoutRecord = {
+      rev: FORCED_FULL_SYNC_REV,
+      targets: record.targets,
+      ...(record.delivered ? { delivered: record.delivered } : {}),
+    };
     return [key, pushBaseRevs.length === 0 ? reset : { ...reset, pushBaseRevs }];
   }));
 }
@@ -686,6 +775,8 @@ async function pullForScope(
   } = {},
   /** Set to `{ completed: true }` on a real (non-dry-run) sync. See pull(). */
   result?: { completed: boolean; docsSyncFailed: boolean },
+  /** Collects this scope's env resolution for the stages after it (see resolvePullEnv). */
+  teamEnvs?: Map<LocalConfig, TeamEnv>,
 ): Promise<void> {
   const scopeLabel = localConfig.scope;
   const revisionField = policy.revisionField ?? 'lastPullRev';
@@ -1019,12 +1110,12 @@ async function pullForScope(
           // Same reason: a machine that already pulled a tombstone with an older
           // CLI keeps the copies that CLI failed to delete, and its stored rev
           // never moves again. Re-run the cleanup so the upgrade reaches it (#576).
-          await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel);
+          await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, openLedger(await deliveredHashes(localConfig, state)));
           // A repo that has not moved can still carry a malformed env.yaml, or
           // scope a variable this CLI version now withholds; the Step 2 env
           // branch below is unreachable from here.
           if (resourceTypes.includes('env')) {
-            await reconcileEnvForUnchangedRepo(freshConfig, localConfig, roleContext);
+            await reconcileEnvForUnchangedRepo(freshConfig, localConfig, roleContext, teamEnvs);
           }
           // The knowledge branch has its own history: a teammate's contribution
           // moves teamai-learnings without touching main, so main's revision is
@@ -1049,6 +1140,10 @@ async function pullForScope(
 
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
 
+  // What teamai last wrote into this checkout: a copy changed since is kept,
+  // and this pull's writes are recorded when the state is saved (#822).
+  const ledger = openLedger(await deliveredHashes(localConfig));
+
   // Step 2: Sync each resource type
   let totalSynced = 0;
   let docsSyncFailed = false;
@@ -1061,6 +1156,9 @@ async function pullForScope(
   let knownRepoSkillNames: Set<string> | null = null;
   // name → team-repo source dir, for the data-safety check in Step 3b cleanup.
   let knownRepoSkillSources: Map<string, string> | null = null;
+  // Root skills (no namespace) are the tag catalog: one of them removed by
+  // either cleanup phase still means `tags subscribe` brings it back (#911).
+  let rootRepoSkillNames: Set<string> | null = null;
 
   for (const type of resourceTypes) {
     const handler = getHandler(type);
@@ -1072,15 +1170,17 @@ async function pullForScope(
         if (items.length > 0) {
           log.info(`[${scopeLabel}] [dry-run] Would sync ${items.length} rule(s)${skippedByTags > 0 ? ` (skipped ${skippedByTags} by tags)` : ''}`);
         }
+        await reportWouldKeep(rulesHandler, items, freshConfig, localConfig, ledger, scopeLabel);
       } else {
         // Always call pullAllRules, even with an empty set: it also cleans up
         // stale local rule files and deactivates the OpenCode instructions glob
         // when the team's last rule is removed. Guarding on items.length > 0
         // would leak those artifacts on the machine after upstream deletion.
-        await rulesHandler.pullAllRules(freshConfig, localConfig, items, replaced);
+        await rulesHandler.pullAllRules(freshConfig, localConfig, items, replaced, ledger);
         if (items.length > 0) {
           log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skippedByTags > 0 ? ` (skipped ${skippedByTags} by tags)` : ''}`);
         }
+        reportKept(ledger, scopeLabel);
       }
       totalSynced += items.length;
       continue;
@@ -1091,10 +1191,8 @@ async function pullForScope(
       // even when the root file is absent or empty: rewriting env.sh from the
       // resolved set is what removes a deactivated namespace's variables. A
       // file that cannot be used, or a name defined twice, keeps env.sh as is.
-      const resolution = await resolveEntries(envEntryReader, localConfig, activeEnvNamespaces(roleContext));
-      reportEntryResolution(resolution);
-      if (resolution.kind === 'failed') continue;
-      const variables = resolution.entries.map((entry) => entry.entry);
+      const variables = deliverableEnvVariables(await resolvePullEnv(localConfig, roleContext, teamEnvs));
+      if (!variables) continue;
       const countLabel = `${variables.length} env variable(s)`;
 
       if (options.dryRun) {
@@ -1153,6 +1251,7 @@ async function pullForScope(
       desiredSkillNames = new Set(items.map((i) => i.name));
       knownRepoSkillNames = new Set(desired.teamItems.map((i) => i.name));
       knownRepoSkillSources = new Map(desired.teamItems.map((i) => [i.name, i.sourcePath]));
+      rootRepoSkillNames = new Set(desired.teamItems.filter((i) => !i.namespace).map((i) => i.name));
     } else if (type === 'agents') {
       const desired = await resolveDesiredAgents(freshConfig, localConfig, roleContext);
       if (desired.kind === 'conflict') {
@@ -1186,6 +1285,7 @@ async function pullForScope(
           log.dim(`  ${item.name}`);
         }
       }
+      await reportWouldKeep(handler, items, freshConfig, localConfig, ledger, scopeLabel);
     } else {
       // Skills and agents land in a tool's own directory, which a brand-new
       // member may not have yet. The handler skips such a tool by design and
@@ -1199,7 +1299,7 @@ async function pullForScope(
         || (await getInstalledResourceTargets(freshConfig, localConfig, type)).length > 0;
 
       for (const item of items) {
-        await handler.pullItem(item, freshConfig, localConfig);
+        await handler.pullItem(item, freshConfig, localConfig, ledger);
       }
 
       if (canReceive) {
@@ -1209,24 +1309,38 @@ async function pullForScope(
           log.success(`[${scopeLabel}] Synced ${items.length} ${type}`);
         }
       }
+      reportKept(ledger, scopeLabel);
     }
 
     totalSynced += items.length;
   }
 
+  // Skills this pull removes because they are no longer delivered here, named
+  // in one line at the end of Step 3b so a member learns where they went (#911).
+  const undeliveredSkills = new Set<string>();
+  let rootSkillUndelivered = false;
+
   // Step 3: Clean up tombstoned resources
   if (!options.dryRun) {
-    await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel);
+    await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, ledger);
 
     if (roleContext) {
       if (!skillsHeld) {
-        await cleanupInactiveNamespaceSkills(
+        const removed = await cleanupInactiveNamespaceSkills(
           freshConfig,
           localConfig,
           desiredSkillNames ?? roleContext.activeSkillNames,
           roleContext.inactiveSkillNames,
           roleContext.inactiveSkillSources,
         );
+        // A directory byte-identical to its inactive-namespace source is
+        // removed here, before Step 3b can see it. When the repo also holds
+        // that skill at the root, the tag channel can bring it back, so the
+        // recovery hint must fire for this removal too, not only Step 3b's.
+        for (const name of removed) {
+          undeliveredSkills.add(name);
+          if (rootRepoSkillNames?.has(name)) rootSkillUndelivered = true;
+        }
       }
       // Same revocation for agents: a role change must remove the previous
       // role's agents, not just stop deploying them.
@@ -1263,7 +1377,13 @@ async function pullForScope(
           continue;
         }
         await remove(skillDir);
-        log.debug(`Removed excluded skill ${dir} from ${tool}`);
+        if (excludedSkills.has(dir)) {
+          log.debug(`Removed excluded skill ${dir} from ${tool}`);
+        } else {
+          undeliveredSkills.add(dir);
+          if (rootRepoSkillNames?.has(dir)) rootSkillUndelivered = true;
+          log.debug(`Removed skill ${dir} from ${tool}: no longer delivered here`);
+        }
       }
 
       // Old releases could leave namespace-nested copies behind. Pull now
@@ -1283,6 +1403,13 @@ async function pullForScope(
         }
       }
     }
+  }
+
+  if (undeliveredSkills.size > 0) {
+    const hint = roleContext && rootSkillUndelivered
+      ? ' While the team uses roles or projects, root skills arrive only through a tag: `teamai tags subscribe <tag>`.'
+      : '';
+    log.info(`[${scopeLabel}] Removed ${undeliveredSkills.size} skill(s) no longer delivered here: ${[...undeliveredSkills].join(', ')}.${hint}`);
   }
 
   if (totalSynced === 0 && !docsSyncFailed) {
@@ -1391,6 +1518,7 @@ async function pullForScope(
         ? await userScopeRecord(state)
         : state.lastPullByWorkspace?.[recordKey] ?? { rev: FORCED_FULL_SYNC_REV, targets: syncedTargets };
       addPushBaseRev(record, deliveredRev);
+      record.delivered = ledger.hashes;
       state.lastPullByWorkspace = { ...state.lastPullByWorkspace, [recordKey]: record };
     } else if (recordKey && deliveredRev) {
       // A forced full sync (lastPullRev cleared) leaves every other checkout
@@ -1404,7 +1532,7 @@ async function pullForScope(
         ? await liveCheckoutRecords(localConfig.projectRoot, state.lastPullByWorkspace)
         : undefined;
       const others = previousRev === null && live ? awaitingFullSync(live) : live;
-      const record: CheckoutRecord = { rev: deliveredRev, targets: syncedTargets };
+      const record: CheckoutRecord = { rev: deliveredRev, targets: syncedTargets, delivered: ledger.hashes };
       state.lastPullByWorkspace = {
         ...others,
         [recordKey]: keptBases.length > 0 ? { ...record, pushBaseRevs: keptBases } : record,
@@ -1835,6 +1963,8 @@ export async function pull(
   const reported = new Set<string>();
   // A later successful scope must not hide an earlier docs failure (or vice versa).
   const syncResult = { completed: false, docsSyncFailed: false };
+  // Each scope's env, resolved once by its env stage (resolvePullEnv).
+  const teamEnvs = new Map<LocalConfig, TeamEnv>();
 
   // Whether HOME's settings.json still has the pre-dispatch hook format. Read now
   // (HOME-only, no shared clone), but the actual reinject runs later under the
@@ -1936,7 +2066,7 @@ export async function pull(
         } else {
           activeUserConfig = loadedUserConfig;
           if (await lockScope(activeUserConfig)) {
-            await pullForScope(activeUserConfig, options, reported, {}, syncResult);
+            await pullForScope(activeUserConfig, options, reported, {}, syncResult, teamEnvs);
           }
         }
       } else if (inheritUserScope) {
@@ -1953,7 +2083,7 @@ export async function pull(
   if (projectConfig) {
     try {
       if (await lockScope(projectConfig)) {
-        await pullForScope(projectConfig, options, reported, {}, syncResult);
+        await pullForScope(projectConfig, options, reported, {}, syncResult, teamEnvs);
       }
     } catch (e) {
       log.warn(`Project-scope pull error: ${(e as Error).message}`);
@@ -2000,7 +2130,12 @@ export async function pull(
 
   // 3.6. Reconcile team MCP servers. Outside pullForScope for the same reason as
   // hooks. User-scope MCP remains isolated in project mode.
-  await reconcileMcpAllScopes(reconcileUser, reconcileProject, options);
+  await reconcileMcpAllScopes(reconcileUser, reconcileProject, options, teamEnvs);
+
+  // 3.6b. What the member should run for a team secret with no value (#875).
+  // Not on the silent session-start pull: its output is discarded, and it runs
+  // on every session.
+  if (!options.silent) await reportEnvAdvisories(reconcileUser, reconcileProject, teamEnvs);
 
   // 3.7. Reconcile the team co-author policy (does an AI tool stamp a
   // Co-Authored-By / attribution trailer on its commits?). Outside pullForScope
@@ -2274,6 +2409,7 @@ async function reconcileMcpAllScopes(
   userConfig: LocalConfig | null,
   projectConfig: LocalConfig | null,
   options: GlobalOptions,
+  teamEnvs: Map<LocalConfig, TeamEnv>,
 ): Promise<void> {
   // Same contract as the hooks stage: resolve and report the entry warnings on
   // a dry run, skip the writes. `reconcileMcpForConfig` already gates every
@@ -2285,7 +2421,9 @@ async function reconcileMcpAllScopes(
       const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
       if (!teamConfig) continue;
       const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
-      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, { force: options.force, dryRun: options.dryRun });
+      const { changes } = await reconcileMcpForConfig(teamConfig, localConfig, {
+        force: options.force, dryRun: options.dryRun, teamEnv: await scopeEnv(localConfig, teamEnvs),
+      });
 
       const applied = changes.filter((c) => c.action !== 'skipped');
       for (const c of changes) {
@@ -2306,6 +2444,42 @@ async function reconcileMcpAllScopes(
       log.debug(`[${localConfig.scope}] MCP reconcile skipped: ${(e as Error).message}`);
     }
   }
+}
+
+/**
+ * Print each scope's env advisories (env-advisories.ts): a declared secret with
+ * no value and the command that sets it, an MCP entry kept for it, a key both
+ * declared as a secret and set in env.yaml. After the MCP reconcile, so a kept
+ * entry is the one this pull left.
+ */
+async function reportEnvAdvisories(
+  userConfig: LocalConfig | null,
+  projectConfig: LocalConfig | null,
+  teamEnvs: Map<LocalConfig, TeamEnv>,
+): Promise<void> {
+  const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
+  for (const localConfig of scopes) {
+    try {
+      const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+      const teamEnv = await scopeEnv(localConfig, teamEnvs);
+      for (const advisory of await envAdvisories(localConfig, teamConfig, teamEnv)) log.warn(describeEnvAdvisory(advisory));
+    } catch (e) {
+      log.debug(`[${localConfig.scope}] Env advisories skipped: ${(e as Error).message}`);
+    }
+  }
+}
+
+/**
+ * The env this pull resolved for the scope, or a fresh resolution when its env
+ * stage did not run (HTTP mode delivers none). Kept for the next stage.
+ */
+async function scopeEnv(localConfig: LocalConfig, teamEnvs: Map<LocalConfig, TeamEnv>): Promise<TeamEnv | undefined> {
+  if (localConfig.repo.kind === 'http') return undefined;
+  const known = teamEnvs.get(localConfig);
+  if (known) return known;
+  const teamEnv = await resolveTeamEnv(localConfig);
+  teamEnvs.set(localConfig, teamEnv);
+  return teamEnv;
 }
 
 /**

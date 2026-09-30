@@ -28,6 +28,27 @@ export interface AstCallSite {
   line: number;
   calleeText: string;
   receiver?: string;
+  /**
+   * Swift only. The names that could bind this call's callee (or receiver),
+   * gathered from the top-level declaration that encloses the call site:
+   * function and closure parameters, local `let`/`var`, and whatever a
+   * `for` / `if let` / `guard let` / `catch let` / `case let` introduces, plus
+   * stored properties, generic parameters and closure capture lists.
+   *
+   * A call whose callee (or receiver) is one of these names refers to that
+   * binding, so a module-wide lookup must not claim it: `run(work:) { work() }`
+   * calls the parameter, not a sibling file's `func work()`. Only the syntax
+   * tree knows this, which is why it is recorded here and not recomputed in the
+   * resolver.
+   *
+   * Collected per declaration rather than per call site, so it is deliberately
+   * coarse: the declaration is read whole, and a name that merely occurs in it —
+   * passed around as an argument rather than bound — counts. Both directions of
+   * error are not equal here: an extra name costs a resolution, a missing one
+   * invents a cross-file edge. Absent for non-Swift files and for sites with no
+   * such binding.
+   */
+  localBindings?: string[];
   resolvedTargetId?: string;
   resolvedTargetFile?: string;
   confidence: ManifestConfidence;

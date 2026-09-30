@@ -226,7 +226,7 @@ experience) both need it, without affecting the single-project main path.
 Every resource type uses one layout and one rule:
 
 ```text
-<type>/                 root, shared with everyone
+<type>/                 root, shared with everyone (skills: through a tag, see below)
 <type>/<ns>/            delivered only where <ns> is active in resources.<type>
 namespace vs root       the namespace item replaces the root item, whole, no merge
 namespace vs namespace  conflict when both would take one slot (see below)
@@ -241,6 +241,7 @@ directory's projects list under `resources.<type>`.
 | Type | `resources:` key | Replaced by name | Two active namespaces, one name |
 |---|---|---|---|
 | env | `env` | variable `key` | conflict |
+| secrets (`env/<ns>/secrets.yaml`, [#875](team-secrets.md)) | `env` | secret `key` | conflict |
 | hooks | `hooks` | hook `id` | conflict |
 | mcp | `mcp` | server `name` (`command`, `args`, `env` and `tools:` together) | conflict |
 | models | `models` | profile `id` | conflict |
@@ -266,7 +267,8 @@ active, the next pull delivers the root item again and removes items that only
 the namespace had; for env, hooks and MCP that happens on an `Already synced`
 pull too, and `env.sh` is regenerated from the resolved set even when
 `env/env.yaml` is missing or declares nothing. MCP `${VAR}` lookup reads the same
-resolved env set.
+resolved env set, with the member's value for this team (`teamai env set KEY`)
+first; the environment no longer overrides a team variable ([Team secrets](team-secrets.md#variables)).
 
 Skills keep one difference: in role/project mode the root `skills/` stays the tag
 catalog and is not delivered by default. A root skill that arrives through a
@@ -279,7 +281,9 @@ namespace) has and the new one lacks, when they match that version byte for
 byte, so switching versions leaves no team file behind; a file the member added
 or edited stays, because push never counts such extras as changes and they may
 never have been pushed, and one at a path another version has is named on each
-pull.
+pull. With a record of what teamai delivered (below), a file at such a path is
+also removed when it is still what teamai wrote there, and one teamai has no
+record of is the member's own and stays without a warning.
 
 An item that cannot be used replaces nothing. A skill directory without
 `SKILL.md` is not a skill: it is left out of the desired set, so the root skill
@@ -318,13 +322,14 @@ copy is not a duplicate: each copy that passes the role filter is delivered, as
 | Type | Effect of a failure |
 |---|---|
 | env | `env.sh` and the shell profile keep what they had |
+| secrets | the declared secrets are not resolved, and `env.sh`, the env backup and the MCP servers keep what they had; `teamai env list` and `teamai doctor` fail naming the file |
 | hooks | installed team hooks and the managed-hooks record stay as they are. The built-in hooks are still installed in each tool that misses one (a tool with all of them is not rewritten), so a first install gets the session-start pull that heals it: with the root file's `builtin:` overrides whenever `hooks/hooks.yaml` parses (a broken namespace file or a clash does not hide them), and when the root file itself does not parse, with their defaults and only in a tool that has no teamai hook yet. `teamai init` and bootstrap say the team hooks were not installed; `teamai hooks inject` exits 1 |
 | mcp | no tool's MCP config changes |
 | models | no switched agent is updated; `teamai models` commands fail with the same message; `teamai push` refuses any invalid models file, active or not |
 | skills, agents | that type is neither installed nor swept; the other types and the search index still sync |
 | rules, claudemd, docs, learnings | no conflict case |
 
-For env, hooks, MCP and models the warning is also written to
+For env, secrets, hooks, MCP and models the warning is also written to
 `~/.teamai/debug.log`, so a silent session-start pull leaves a trace. This
 replaces two earlier behaviours: an invalid hooks or MCP file reconciled to the
 empty set and removed every managed entry, and a skills or agents collision
@@ -416,12 +421,18 @@ declares one of the new axes.
 
 The per-entry keys go away. `projects:` on env, hooks and MCP, and `roles:` on
 env, existed only in the 0.26.0 betas: an entry that carries one reaches nobody,
-and pull warns with the namespace file to move it to, one per listed id.
+and pull, `status`, `env list`, `mcp list`, `hooks list` and
+`list <env|hooks|mcp> --source repo` warn with the namespace file to move it to,
+one per listed id.
+When `teamai env add` updates a variable still carrying one of these removed
+keys, it preserves the key and warns that pull will not deliver the variable,
+naming the namespace file to move it to.
 `roles:` on hooks and MCP shipped in 0.25.0 and keeps filtering for one more
 minor release; pull warns once per run and `doctor` has an informational check,
 both naming every target file. Model profiles are strict, so a per-entry key
 fails the file. An env, hook or MCP entry with any other key its schema does not
-know, such as a mistyped `role:`, reaches nobody too, and pull and `doctor` name
+know, such as a mistyped `role:`, reaches nobody too. Pull, `status`, `env list`,
+`mcp list`, `hooks list`, `list <env|hooks|mcp> --source repo` and `doctor` name
 the file, the entry and the key (#822); `env add`, `env remove` and `remove mcp`
 keep such a key when they rewrite the file. A key that a later version adds is
 unknown to this one as well, so an entry that uses it is not delivered to a member
@@ -442,8 +453,9 @@ a root one is written to its namespace file, never to the root. The agents
 source order is active namespace, then this machine's placement record, then the
 shared root; in role/project mode a same-stem root file no longer withdraws the
 placement record (legacy mode still does). The skills push scan uses role ∪
-project namespaces, and `push` picks up a change to any `env/<ns>/env.yaml`.
-`teamai env add|remove` take `--role` / `--project`. `teamai remove mcp <name>`
+project namespaces, and `push` picks up a change to any `env/<ns>/env.yaml` or `env/<ns>/secrets.yaml`.
+`teamai env add|remove` take `--role` / `--project`, and `--secret` for that namespace's `secrets.yaml`.
+`teamai remove mcp <name>`
 removes from the root file when it defines the name, otherwise from the one
 namespace file that does, and asks for `--role` / `--project` only when several
 namespace files and not the root define it, and removes nothing by a bare name
@@ -457,10 +469,36 @@ legacy mode each repeated name. `teamai env|mcp|hooks|models list`,
 `teamai list <env|hooks|mcp> --source repo` and `teamai status` show where each
 entry comes from.
 
+### Local edits (#822)
+
+Each checkout record (`lastPullByWorkspace[<checkout>]`, HOME's for the user
+scope) carries `delivered`: the sha256 of the bytes teamai last wrote at each
+skill, rule and agent file path. Pull and the pre-push sync update it when they
+write, through the same state save. A copy is the member's edit only when it
+has a record and no longer matches it. Pull keeps such a copy and names it: an
+info line when the team version is unchanged, a warning when it has moved.
+Push warns about such a copy as well (the SessionStart pull is silent), without
+holding it, since the member may have merged the team change already. A
+skill directory is one unit, and files only the member added are not recorded.
+Tombstone cleanup keeps an edited copy the same way, and so does the rules
+sweep of a rule no longer delivered (deleted from the team repo, or of a
+namespace the member left). `--force` keeps edits;
+deleting the copy and running `pull --force` takes the team version. A record
+without `delivered` (the first pull on this version, a new worktree) protects
+nothing, and a copy teamai never delivered to that path is overwritten as
+before. A forced full sync elsewhere keeps each checkout's `delivered`.
+`doctor` does not fail on a kept copy; next to another problem it lists one
+as "changed by you (kept by pull)".
+
 ### Known gaps
 
-- No pull protects a local edit from being overwritten, override transitions
-  included.
+- `teamai remove`'s rules refresh and local-agent installs deliver rules and
+  skills as before: they overwrite a changed copy and record nothing. If the
+  team changes a copy they wrote before the next pull, that pull keeps it as an
+  edit.
+- Step 3b and the inactive-namespace cleanup of skills and agents still compare
+  with the team source, not the record, so an untouched copy delivered at an
+  older revision stays there with a warning.
 
 ## Backward compatibility
 

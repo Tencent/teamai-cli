@@ -68,7 +68,7 @@ describe('data-layout auto-migration via the real CLI (issue #374)', () => {
 
     // realpath the base so the anchor the CLI computes (realpath of show-toplevel)
     // matches the slug we compute here — macOS /tmp and /var are symlinks.
-    sandbox = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-datalayout-e2e-')));
+    sandbox = realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-datalayout-e2e-')));
     home = path.join(sandbox, 'home');
     projectRoot = path.join(sandbox, 'project');
     const remoteRepo = path.join(sandbox, 'remote');

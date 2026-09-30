@@ -34,7 +34,7 @@ let originalHome: string | undefined;
 let originalCwd: string;
 
 beforeEach(() => {
-  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dispatch-scope-')));
+  tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dispatch-scope-')));
   originalHome = process.env.HOME;
   originalCwd = process.cwd();
   process.env.HOME = path.join(tmp, 'home');

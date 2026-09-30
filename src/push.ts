@@ -229,6 +229,47 @@ async function resolveNamespaceForNew(
 }
 
 /**
+ * Warn about each copy of a modified item that pull kept because the member
+ * changed it, when the team version has moved on since teamai delivered it:
+ * pushing it as it is would replace that change (#822). The pull that kept it
+ * may have been the silent SessionStart one, so push is where the member hears
+ * of it. A warning, not a hold: the member may have merged the change already.
+ */
+async function warnKeptCopiesTheTeamChanged(
+  items: readonly ResourceItem[],
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<void> {
+  const { deliveredHashes } = await import('./pull.js');
+  const previous = await deliveredHashes(localConfig);
+  if (previous === undefined) return;
+  const { judgeCopy } = await import('./resources/delivered-copies.js');
+  for (const item of items) {
+    if (item.status !== 'modified' || !(item.type === 'skills' || item.type === 'rules' || item.type === 'agents')) continue;
+    const teamItem: ResourceItem = {
+      name: item.name,
+      type: item.type,
+      sourcePath: path.join(localConfig.repo.localPath, item.relativePath),
+      relativePath: item.relativePath,
+    };
+    try {
+      for (const target of await getHandler(item.type).deliveryTargets(teamConfig, localConfig, teamItem)) {
+        const verdict = await judgeCopy(previous, teamItem, target);
+        if (verdict.kind === 'keep' && verdict.teamChanged) {
+          log.warn(
+            `[${item.type}] The team changed ${item.relativePath} since teamai delivered ${target.dest}; `
+            + 'pushing replaces that change unless you merged it. Merge the team version first, '
+            + 'or delete your copy and run `teamai pull --force`.',
+          );
+        }
+      }
+    } catch (e) {
+      log.debug(`Could not compare ${item.relativePath} with what teamai delivered: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+
+/**
  * Create a PR/MR via the configured provider with standard error handling.
  * Returns the PR URL on success, or null if creation failed (branch is still pushed).
  */
@@ -1119,15 +1160,19 @@ async function pushCore(
     // Compare with the revisions THIS checkout synced: state.json is shared by
     // every worktree, and a pull in another checkout moves the shared
     // lastPullRev past a copy this checkout still holds unedited (#812).
-    const { resolveCheckoutBases, addPushBaseRev, userScopeRecord } = await import('./pull.js');
+    const { resolveCheckoutBases, addPushBaseRev, userScopeRecord, deliveredHashes } = await import('./pull.js');
     const bases = await resolveCheckoutBases(localConfig, state);
+    // What the sync writes is recorded as delivered, like a pull's writes, or
+    // the next pull after a further team change keeps those copies (#822).
+    const delivered = await deliveredHashes(localConfig, state);
+    const deliveredBefore = JSON.stringify(delivered);
     unrecordedCheckout = bases.source === 'shared' && bases.unrecorded;
     placedRules = state.placedRules;
     try {
       // placedRules redirects a root-authored rule to the rules/<ns>/ file push
       // put it in, so a teammate's newer version syncs down instead of being
       // overwritten by the stale root copy the scan would otherwise call modified.
-      await syncTeamUpdatesToLocal(teamConfig, localConfig, bases.revs, state.placedRules);
+      await syncTeamUpdatesToLocal(teamConfig, localConfig, bases.revs, state.placedRules, delivered);
     } catch (e) {
       preSyncFailure = e instanceof Error ? e.message : String(e);
     }
@@ -1142,8 +1187,8 @@ async function pushCore(
     const syncedRev = recordsBase && !teamRepoStale
       ? await getHeadCommit(localConfig.repo.localPath)
       : null;
-    if (syncedRev) {
-      addPushBaseRev(bases.source === 'checkout' ? bases.record : await userScopeRecord(state), syncedRev);
+    if (syncedRev) addPushBaseRev(bases.source === 'checkout' ? bases.record : await userScopeRecord(state), syncedRev);
+    if (syncedRev || JSON.stringify(delivered) !== deliveredBefore) {
       try {
         await saveStateForScope(state, localConfig);
       } catch (e) {
@@ -1613,6 +1658,8 @@ async function pushCore(
     }
     return false;
   });
+
+  await warnKeptCopiesTheTeamChanged(allItems, scanTeamConfig, localConfig);
 
   // ── Step 1: Display ALL scanned items with numbers ─────────────────
   console.log('');

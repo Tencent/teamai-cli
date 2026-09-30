@@ -185,7 +185,7 @@ export async function pkgInstall(
   target: string | undefined,
   options: GlobalOptions,
 ): Promise<void> {
-  const { localConfig } = await autoDetectInit();
+  const { localConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
   const manifest = await loadPackageManifest(localConfig.repo.localPath);
   const cwd = process.cwd();
   const lockDir = getTeamaiHome(localConfig.scope, localConfig.projectRoot);

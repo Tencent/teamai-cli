@@ -106,7 +106,7 @@ program
     // A learning queued in this checkout would go with it when the worktree is
     // removed (#808).
     if (needsQueueOutOfCheckout(actionCommand)) {
-      const kept = await queueKeptInCheckout(migration);
+      const kept = await queueKeptInCheckout(migration, { dryRun: !!opts.dryRun });
       if (kept) {
         log.error(kept);
         process.exit(1);
@@ -132,7 +132,7 @@ program
   // comma-separated (`--agent a,b`, split later by normalizeAgentList) both work,
   // WITHOUT the greedy `<name...>` variadic that would swallow the `[repo]`
   // positional (e.g. `init --agent claude .` must keep `.` as the repo arg).
-  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [] as string[])
+  .option('--agent <name>', 'AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml\'s toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.', (val: string, acc: string[]) => acc.concat(val), [] as string[])
   .option('--force', 'Overwrite existing config without confirmation')
   .action(async (repoArg, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
@@ -669,10 +669,12 @@ envCmd
   });
 
 envCmd
-  .command('add <key> <value>')
-  .description('Add or update a team environment variable')
-  .option('-d, --description <desc>', 'Description for the variable')
-  .option('--role <ns>', 'Write to env/<ns>/env.yaml instead of env/env.yaml')
+  .command('add <key> [value]')
+  .description('Add or update a team environment variable, or declare a secret with --secret')
+  .option('-d, --description <desc>', 'Description for the variable or secret')
+  .option('--secret', 'Declare a secret in env/secrets.yaml: no value, each member sets their own')
+  .option('--url <url>', 'Where a member gets a value for the secret (with --secret)')
+  .option('--role <ns>', 'Write to env/<ns>/ instead of env/ (env.yaml, or secrets.yaml with --secret)')
   .option('--project <id>', "Write to the project's env namespace (resources.env in manifest/projects.yaml)")
   .action(async (key, value, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
@@ -682,13 +684,47 @@ envCmd
 
 envCmd
   .command('remove <key>')
-  .description('Remove a team environment variable')
-  .option('--role <ns>', 'Remove from env/<ns>/env.yaml instead of env/env.yaml')
+  .description('Remove a team environment variable or declared secret')
+  .option('--secret', 'Remove the declared secret only (env/secrets.yaml), for a key env.yaml also sets')
+  .option('--role <ns>', 'Remove from env/<ns>/ instead of env/')
   .option('--project <id>', "Remove from the project's env namespace (resources.env in manifest/projects.yaml)")
   .action(async (key, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { envRemove } = await import('./env-commands.js');
     await envRemove(key, { ...globalOpts, ...cmdOpts });
+  });
+
+envCmd
+  .command('set <key>')
+  .description("Set your value for a secret the team declares, or an env variable it sets, for this directory's team, on this machine (prompts without echo)")
+  .option('--stdin', 'Read the value from piped stdin')
+  .option('--from-env <var>', 'Read the value from this environment variable each time it is used; no copy is stored')
+  .option('--global', 'Set a secret for every team on this machine; a value set for a team still wins')
+  .action(async (key, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { envSet } = await import('./env-commands.js');
+    await envSet(key, { ...globalOpts, ...cmdOpts });
+  });
+
+envCmd
+  .command('unset <key>')
+  .description("Remove your value for a secret or env variable, for this directory's team, from this machine")
+  .option('--global', 'Remove the value set for every team on this machine instead')
+  .action(async (key, cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { envUnset } = await import('./env-commands.js');
+    await envUnset(key, { ...globalOpts, ...cmdOpts });
+  });
+
+envCmd
+  .command('exec <command...>')
+  .description("Run a command with this directory's team env variables and secrets (put -- before the command)")
+  .action(async () => {
+    const globalOpts = program.opts() as GlobalOptions;
+    const { envExec, exitLike } = await import('./env-exec.js');
+    // What was typed after `exec`, `--` included: Commander drops it.
+    const argv = process.argv.slice(2);
+    exitLike(await envExec(argv.slice(argv.indexOf('exec', argv.indexOf('env')) + 1), globalOpts));
   });
 
 // ─── Hooks commands ─────────────────────────────────────
@@ -1253,7 +1289,11 @@ recallCmd
   .option('--confidence-writeback', 'Update frontmatter confidence scores')
   .option('--update-quality', 'Find stale docs/rules/skills and suggest updates')
   .option('--dry-run', 'Show what would be done without making changes')
-  .action(async (cmdOpts) => {
+  .action(async (localOpts) => {
+    // The root program takes `--dry-run` wherever it is written, so this
+    // command's own declaration never sets it: read it merged, as the other
+    // actions do (#900).
+    const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
     if (!cmdOpts.confidenceWriteback && !cmdOpts.prune && !cmdOpts.updateQuality) {
       const { log } = await import('./utils/logger.js');
       log.info('Usage: teamai recall maintenance --prune | --confidence-writeback | --update-quality');
@@ -1261,7 +1301,7 @@ recallCmd
     }
 
     const { autoDetectInit } = await import('./config.js');
-    const { localConfig } = await autoDetectInit();
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
     const paths = await maintenancePathsOrExit(localConfig);
     if (!paths) return;
     const {
@@ -1271,8 +1311,8 @@ recallCmd
     if (cmdOpts.confidenceWriteback) {
       const { computeAllConfidence, writeBackConfidence } = await import('./maintenance/index.js');
       const map = await computeAllConfidence(votesDir);
-      const written = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir);
-      if (written.length > 0) {
+      const written = await writeBackConfidence(learningsReadDirs, map, learningsWriteDir, { dryRun: cmdOpts.dryRun });
+      if (written.length > 0 && !cmdOpts.dryRun) {
         await publishMaintenance(localConfig, `[teamai] Update confidence for ${written.length} learning(s)`, written);
       }
       return;
@@ -1340,9 +1380,11 @@ recallCmd
   .description('Promote a high-confidence learning to formal knowledge (docs/skills/rules)')
   .option('--category <cat>', 'Target category: skills | rules | docs')
   .option('--dry-run', 'Show what would be done without making changes')
-  .action(async (learningId, cmdOpts) => {
+  .action(async (learningId, localOpts) => {
+    // As in `recall maintenance`: `--dry-run` reaches the root's options only (#900).
+    const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
     const { autoDetectInit } = await import('./config.js');
-    const { localConfig } = await autoDetectInit();
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
     const {
       findPromotionCandidates,
       executePromotion,

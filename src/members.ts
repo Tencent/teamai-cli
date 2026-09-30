@@ -87,8 +87,9 @@ export function mergeMemberConfig(
 }
 
 export async function listMembers(options: GlobalOptions): Promise<void> {
-  const projectConfig = await detectProjectConfig();
-  const localConfig = projectConfig ?? (await requireInit()).localConfig;
+  // Read-only: the load never persists a migration (#893).
+  const projectConfig = await detectProjectConfig(undefined, undefined, { dryRun: true });
+  const localConfig = projectConfig ?? (await requireInit({ dryRun: true })).localConfig;
 
   // Members live on the teamai-reports orphan branch for non-HTTP repos; read
   // them from the reports worktree (refreshed from origin). Members registered

@@ -137,6 +137,8 @@ describe('executePromotion', () => {
     expect(targetPath).toContain('skills/candidate.md');
     expect(marked).toBeNull();
     expect(fs.existsSync(path.join(tmpDir, 'skills', 'candidate.md'))).toBe(false);
+    // Not even the category directory: a preview creates nothing (#900).
+    expect(fs.existsSync(path.join(tmpDir, 'skills'))).toBe(false);
   });
 
   it('copies file and marks original with promoted_to', async () => {

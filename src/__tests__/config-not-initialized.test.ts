@@ -207,7 +207,7 @@ describe('findUnreadableProjectConfig', () => {
       for (const args of [['init', '-q'], ['config', 'user.email', 't@e'], ['config', 'user.name', 'T'], ['commit', '--allow-empty', '-q', '-m', 'init']]) {
         execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
       }
-      const anchor = realpathSync(repo);
+      const anchor = realpathSync.native(repo);
       const partitionConfig = path.join(projectDataHome(anchor), 'config.yaml');
       fs.mkdirSync(path.dirname(partitionConfig), { recursive: true });
       fs.writeFileSync(partitionConfig, 'repo: [unclosed\n');

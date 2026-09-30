@@ -15,8 +15,9 @@ vi.mock('../config.js', async (importOriginal) => ({
 vi.mock('../utils/fs.js', () => ({
     pathExists: vi.fn(),
     readFileSafe: vi.fn(),
-    // Manifest loaders read through this one; no manifest exists on this machine.
+    // Manifest loaders read through these; no manifest exists on this machine.
     readFileIfExists: vi.fn().mockResolvedValue(null),
+    readJson: vi.fn().mockResolvedValue(null),
     // The delivery checks walk the team repo through resolveDesiredSkills,
     // resolveDesiredRules, resolveDesiredAgents and DocsHandler. This machine
     // has none of those; delivery on a real disk is covered by
@@ -355,7 +356,11 @@ describe('doctor — hook checks', () => {
                 copilot: { hooks: '.github/hooks/teamai.json' },
             },
         });
-        mockedPathExists.mockImplementation(async (filePath: string) => filePath !== copilotHome);
+        // No project MCP config exists: one at a tool's built-in location that cannot be read would fail the git exclude check.
+        const { TeamaiConfigSchema } = await import('../types.js');
+        const mcpConfigs = Object.values(TeamaiConfigSchema.shape.toolPaths.parse(undefined))
+            .flatMap((paths) => paths.mcpProject ? [path.join(projectRoot, paths.mcpProject)] : []);
+        mockedPathExists.mockImplementation(async (filePath: string) => filePath !== copilotHome && !mcpConfigs.includes(filePath));
 
         let allPassed: boolean;
         try {

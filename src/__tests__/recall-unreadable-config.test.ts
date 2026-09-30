@@ -32,7 +32,7 @@ let stdout: string;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-recall-unreadable-')));
+  tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-recall-unreadable-')));
   originalCwd = process.cwd();
   originalExitCode = process.exitCode;
   vi.stubEnv('HOME', path.join(tmp, 'home'));

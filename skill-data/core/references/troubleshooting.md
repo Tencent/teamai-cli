@@ -64,6 +64,36 @@ This is the #1 onboarding issue. In order:
    `recall` refuses the same way with `Nothing was searched: <file>: <reason>`:
    no team knowledge was searched, so do not report that the team has none.
 
+## "KEY is not set. Run `teamai env set KEY`"
+
+`pull`, `teamai mcp list`, `teamai env list`, `teamai doctor` and
+`teamai env exec` (on stderr) print this for a secret the team declares in
+`env/secrets.yaml` that has no value on this machine, naming the MCP servers
+that need it and where to get one. It is a note, not a failure: `doctor` exits
+as it would without it. The value is the user's: ask them to run
+`teamai env set KEY` in their own terminal (it prompts without echo), then
+`teamai pull` to update the MCP servers; a CLI run through `teamai env exec`
+gets it on its next run. Never ask for the value in chat or pipe one to
+`teamai env set --stdin`. A note that an entry "may hold an old" value means an earlier pull wrote
+it and it stays until a pull finds the value.
+
+`KEY reads VAR, which is not set` means the user's value for KEY is a
+reference to VAR (`--from-env`) and VAR is unset in this environment. Ask the
+user whether to set VAR in their shell or replace the reference with the
+command in the line; do not choose for them.
+
+## "Did not write <tool>'s MCP servers to <file>" / `withheld:`
+
+`pull` prints this, and `teamai mcp list` (`withheld:`) and `teamai doctor`
+report it, when a project MCP config would get a resolved `${VAR}` value that
+git would commit: the file could not be kept out of git first. It is left as
+it was, and an entry an earlier pull wrote stays. The line names the reason and the
+fix. For `git already tracks <file>`, tell the user: `git rm --cached <file>`
+(the file stays on disk), commit that, and rotate the token if the file was
+ever committed with it; then `teamai pull`. Do not run `git rm` or commit for
+them. For an exclude file that is not writable, one another teamai command
+held, or a git error, relay the fix the line gives.
+
 ## Permission / access denied
 
 `init`, `pull`, or `push` failing with a permission error usually means the user

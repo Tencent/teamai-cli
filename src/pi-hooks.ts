@@ -19,6 +19,9 @@
  * adapter's current scope. Pi profile overrides (`PI_CODING_AGENT_DIR` /
  * `PI_CONFIG_DIR`), which relocate the agent directory, are not supported —
  * same as the OMP adapter — and the default `~/.pi/agent/` layout is used.
+ * That limit is this adapter's alone: model profiles read
+ * `PI_CODING_AGENT_DIR`, so `teamai models switch` follows it even though
+ * hooks do not.
  */
 
 import path from 'node:path';

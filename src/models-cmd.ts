@@ -3,13 +3,14 @@ import { autoDetectInit } from './config.js';
 import { describeEntryFailure, describeOrigin, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { askQuestion, askSecret, isInteractive } from './utils/prompt.js';
+import { askConfirmation, askQuestion, askSecret, isInteractive, readStdin } from './utils/prompt.js';
 import type { LocalConfig } from './types.js';
 import {
   API_KEY_PLACEHOLDER,
   ModelAgentSchema,
   ModelProfileSchema,
   ModelProtocolSchema,
+  findTeamValuesPath,
   getLocalValuesPath,
   gatewaySuffix,
   getTeamIdentity,
@@ -20,6 +21,7 @@ import {
   isApiKeyConfigured,
   loadLocalProfiles,
   loadModelInputs,
+  mergeModelInputs,
   profileAgents,
   profileModels,
   profileOrigin,
@@ -29,9 +31,12 @@ import {
   modelsEntryReader,
   saveLocalProfiles,
   saveModelInputs,
+  sameTeamIdentity,
   setStoredApiKey,
   storedApiKey,
   teamProfilesFrom,
+  unadoptedLegacyFiles,
+  withTeamValuesLock,
   type ModelAgent,
   type ModelGroup,
   type ModelProtocol,
@@ -44,6 +49,8 @@ import {
 import {
   ALL_MODEL_AGENTS,
   activeModelProfiles,
+  refusedLegacyValueKeys,
+  refuseLegacyValue,
   switchedGatewayOrigins,
   restoreModelProfiles,
   switchModelProfile,
@@ -61,10 +68,10 @@ interface TeamModelsContext {
  * (a broken file, one id in two active namespaces): that is reported here as
  * the command's error, and the command stops.
  */
-async function teamContext(): Promise<TeamModelsContext | null> {
+async function teamContext(options: { dryRun?: boolean } = {}): Promise<TeamModelsContext | null> {
   let initialized: Awaited<ReturnType<typeof autoDetectInit>>;
   try {
-    initialized = await autoDetectInit();
+    initialized = await autoDetectInit(undefined, options);
   } catch {
     return { team: { version: 1, profiles: [] } };
   }
@@ -78,19 +85,116 @@ async function teamContext(): Promise<TeamModelsContext | null> {
 }
 
 /**
- * This team's stored keys, with any key a 0.26.0 beta stored bound to its
- * gateway first (`bindLegacyTeamKeys`) and saved that way, unless `dryRun`.
+ * This team's stored keys, read from the hash-only file or, while it does not
+ * exist yet, the newest legacy `<slug>-<digest>.json` an older version wrote —
+ * read where it lies, never renamed. Any key a 0.26.0 beta stored is bound to
+ * its gateway first (`bindLegacyTeamKeys`) and saved — to the hash-only file —
+ * unless `dryRun`. A legacy file under a provider-ambiguous digest (a
+ * path-shaped claim, a bare alias, a path-only path) is never read silently:
+ * the old name never encoded the provider, so neither the slug nor any
+ * machine-global artifact can attribute the file to this checkout across
+ * providers. An interactive run asks the user once per candidate identity;
+ * on "yes" the file is read and immediately migrated — saved to the
+ * provider-qualified hash-only name of THAT config, which then shadows it (no
+ * re-ask, no ambiguity left). The adoption is keyed
+ * `<target>::<slug>-<digest>`, so it is scoped to this scope's provider
+ * identity: a user-scope confirmation never authorizes a project scope, even
+ * under the same slug and claim on a different provider. A declined candidate
+ * is read nothing and writes nothing — the empty hash-only file is never
+ * created, so the next run still offers it. Non-interactive and dry runs
+ * never adopt: they note the file and read nothing it owns.
  */
+const adoptedLegacyValues = new Set<string>();
+
+/**
+ * A values write to a team's hash-only target would permanently shadow any
+ * unadopted provider-ambiguous legacy file (the target's existence silences
+ * every future adoption prompt), so — unlike a pull, whose read-time save is
+ * migration — a command that writes the team target is refused while one
+ * remains. Adoption is intentional and is only possible interactively, so
+ * the refusal names that path.
+ */
+async function assertNoShadowingLegacyWrite(localConfig: LocalConfig): Promise<void> {
+  const declined = await refusedLegacyValueKeys();
+  const pending = await unadoptedLegacyFiles(localConfig, { adopted: adoptedLegacyValues, declined });
+  if (pending.length === 0) return;
+  throw new Error(
+    `Unadopted legacy team values file(s) still exist for this team (${pending.map((file) => file.entry).join(', ')}); ` +
+      `writing ${getTeamValuesPath(localConfig)} would shadow and permanently orphan their keys. ` +
+      `Re-run interactively to adopt and migrate them first.`,
+  );
+}
+
 async function loadTeamValues(
   localConfig: LocalConfig,
   team: TeamModelProfiles,
   options: { dryRun?: boolean } = {},
 ): Promise<StoredModelInputs> {
-  const file = getTeamValuesPath(localConfig);
-  const values = await loadModelInputs(file);
-  const sentTo = await switchedGatewayOrigins(getTeamIdentity(localConfig));
-  if (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) && !options.dryRun) {
-    await saveModelInputs(file, values);
+  const target = getTeamValuesPath(localConfig);
+  const declined = new Set(await refusedLegacyValueKeys());
+  const pending = await unadoptedLegacyFiles(localConfig, { adopted: adoptedLegacyValues, declined });
+  if (pending.length > 0) {
+    if (!options.dryRun && isInteractive()) {
+      for (const file of pending) {
+        const key = `${target}::${file.identity}`;
+        const adopt = await askConfirmation(
+          `Legacy team values file '${file.entry}' names this team under a provider-ambiguous identity (${file.identity}). Adopt it as this team's keys (migrated to the provider-qualified name once read)? [y/N] `,
+        );
+        if (adopt) adoptedLegacyValues.add(key);
+        else {
+          // The decline is a durable, visible decision — recorded per target so
+          // the file is neither re-offered on every run nor silently shadowed
+          // and orphans when the migration proceeds. Its keys stay on disk; a
+          // foreign team's same-digest file no longer blocks this team's migration.
+          declined.add(key);
+          await refuseLegacyValue(key);
+        }
+      }
+    } else {
+      log.warn(
+        `Legacy team values file(s) not adopted: ${pending.map((file) => file.entry).join(', ')}. ` +
+          `They are never read without an explicit opt-in; re-run interactively to adopt, or write the keys to ${target}.`,
+      );
+    }
+  }
+  // A declined or unprompted file must stay reachable: once the hash-only
+  // target exists, its candidates are silenced, so those keys would be orphaned
+  // permanently with no later prompt ever possible. The migration save below
+  // therefore happens only when every matching ambiguous file for this team is
+  // either adopted (merged into the values), durably declined, or gone —
+  // never while one is still left to decide on.
+  const remaining = await unadoptedLegacyFiles(localConfig, { adopted: adoptedLegacyValues, declined });
+  const canMigrate = remaining.length === 0;
+  const readFrom = await findTeamValuesPath(localConfig, { adopted: adoptedLegacyValues, declined });
+  const valuesDir = path.dirname(target);
+  let values = await loadModelInputs(readFrom);
+  // Adoption merges EVERY adopted identity's keys, not only the newest file a
+  // single read selects: several files can share this checkout's digest, and
+  // their unique keys must all reach the migrated target.
+  for (const file of pending) {
+    if (!adoptedLegacyValues.has(`${target}::${file.identity}`)) continue;
+    values = mergeModelInputs(await loadModelInputs(path.join(valuesDir, file.entry)), values);
+  }
+  const sentTo = await switchedGatewayOrigins(localConfig);
+  if (canMigrate && (bindLegacyTeamKeys(values, team, (id) => sentTo.get(`team:${id}`) ?? []) || readFrom !== target) && !options.dryRun) {
+    if (readFrom !== target) {
+      // Save to the current name, which then shadows the legacy file. The
+      // migration creates the hash-only target, so another process may be
+      // writing it in the same window (writeJsonAtomic prevents torn files,
+      // not lost updates). Hold the target's lock and re-read it inside the
+      // critical section: the concurrent content wins collisions, no key it
+      // added is silently discarded, and the read-merge-write cannot be
+      // interleaved with another writer's. When we are merely re-saving the
+      // file we already read (readFrom === target), the target holds the same
+      // content this bind just consumed — merging would re-inject raw entries
+      // the bind renamed, and there is no creation race to guard.
+      await withTeamValuesLock(target, async () => {
+        values = mergeModelInputs(values, await loadModelInputs(target));
+        await saveModelInputs(target, values);
+      });
+    } else {
+      await saveModelInputs(target, values);
+    }
   }
   return values;
 }
@@ -113,9 +217,7 @@ function parseProtocols(value: string | undefined): ModelProtocol[] {
 
 async function readSecretStdin(): Promise<string> {
   if (process.stdin.isTTY) throw new Error('--api-key-stdin expects piped stdin');
-  let value = '';
-  for await (const chunk of process.stdin) value += String(chunk);
-  value = value.replace(/[\r\n]+$/, '');
+  const value = await readStdin();
   if (!value) throw new Error('No API key was provided on stdin');
   return value;
 }
@@ -131,12 +233,12 @@ async function apiKeyFromOptions(options: ApiKeyOptions): Promise<StoredModelInp
   return undefined;
 }
 
-async function findProfile(reference: string): Promise<{
+async function findProfile(reference: string, options: { dryRun?: boolean } = {}): Promise<{
   ref: ProfileRef;
   local: ModelProfilesFile;
   context: TeamModelsContext;
 } | null> {
-  const [context, local] = await Promise.all([teamContext(), loadLocalProfiles()]);
+  const [context, local] = await Promise.all([teamContext(options), loadLocalProfiles()]);
   if (!context) return null;
   const ref = resolveProfileRef(reference, context.team, local);
   if (ref.source === 'team' && context.localConfig) ref.team = getTeamIdentity(context.localConfig);
@@ -150,19 +252,25 @@ function valuesPathFor(ref: ProfileRef, context: TeamModelsContext): string {
 }
 
 /** The stored keys `ref` reads its key from; `loadTeamValues` for a team profile. */
-async function loadValuesFor(ref: ProfileRef, context: TeamModelsContext): Promise<StoredModelInputs> {
-  if (ref.source === 'team' && context.localConfig) return loadTeamValues(context.localConfig, context.team);
+async function loadValuesFor(ref: ProfileRef, context: TeamModelsContext, options: { dryRun?: boolean } = {}): Promise<StoredModelInputs> {
+  if (ref.source === 'team' && context.localConfig) return loadTeamValues(context.localConfig, context.team, options);
   return loadModelInputs(valuesPathFor(ref, context));
 }
 
-function activeAgentsFor(
+async function activeAgentsFor(
   ref: ProfileRef,
   active: Partial<Record<ModelAgent, ActiveModelProfile>>,
-): ModelAgent[] {
+  localConfig?: LocalConfig,
+): Promise<ModelAgent[]> {
   const name = profileRefName(ref);
-  return (Object.entries(active) as Array<[ModelAgent, ActiveModelProfile]>)
-    .filter(([, state]) => state.profile === name && (ref.source === 'local' || !state.team || state.team === ref.team))
-    .map(([agent]) => agent);
+  const agents: ModelAgent[] = [];
+  for (const [agent, state] of Object.entries(active) as Array<[ModelAgent, ActiveModelProfile]>) {
+    if (state.profile !== name) continue;
+    if (ref.source !== 'local' && state.team
+      && !(localConfig ? sameTeamIdentity(state.team, localConfig) : state.team === ref.team)) continue;
+    agents.push(agent);
+  }
+  return agents;
 }
 
 function printResults(results: ModelSwitchResult[], explicitAgents: boolean): void {
@@ -181,7 +289,10 @@ function printResults(results: ModelSwitchResult[], explicitAgents: boolean): vo
  * pass a profile to see just that one. API keys are never printed.
  */
 export async function modelsList(reference?: string): Promise<void> {
-  const [context, local, active] = await Promise.all([teamContext(), loadLocalProfiles(), activeModelProfiles()]);
+  // Read-only: the load never persists a migration (#893).
+  const [context, local, active] = await Promise.all([
+    teamContext({ dryRun: true }), loadLocalProfiles(), activeModelProfiles(),
+  ]);
   if (!context) return;
   const team = context.localConfig ? getTeamIdentity(context.localConfig) : undefined;
   let refs: ProfileRef[];
@@ -200,13 +311,13 @@ export async function modelsList(reference?: string): Promise<void> {
     return;
   }
   const values: Record<ProfileRef['source'], StoredModelInputs> = {
-    team: context.localConfig && refs.some((ref) => ref.source === 'team') ? await loadTeamValues(context.localConfig, context.team) : {},
+    team: context.localConfig && refs.some((ref) => ref.source === 'team') ? await loadTeamValues(context.localConfig, context.team, { dryRun: true }) : {},
     local: refs.some((ref) => ref.source === 'local') ? await loadModelInputs(getLocalValuesPath()) : {},
   };
-  refs.forEach((ref, index) => {
+  for (const [index, ref] of refs.entries()) {
     if (index > 0) console.log('');
     const secret = storedApiKey(ref, values[ref.source]);
-    const activeAgents = activeAgentsFor(ref, active);
+    const activeAgents = await activeAgentsFor(ref, active, context.localConfig);
     console.log(`${profileRefName(ref)} — ${ref.profile.name}`);
     if (ref.from) console.log(`  From: ${ref.from.source} (${describeOrigin(ref.from)})`);
     const missing = hasApiKeyForAnotherGateway(ref, values[ref.source])
@@ -220,7 +331,7 @@ export async function modelsList(reference?: string): Promise<void> {
     }
     console.log(`  Agents: ${profileAgents(ref.profile).join(', ')}`);
     console.log(`  Active: ${activeAgents.length ? activeAgents.join(', ') : 'none'}`);
-  });
+  }
 }
 
 interface AddOptions extends ApiKeyOptions {
@@ -342,14 +453,25 @@ export async function modelsConfigure(reference: string, options: ConfigureOptio
   }
 
   if (secret) {
-    setStoredApiKey(ref, values, secret);
-    await saveModelInputs(file, values);
+    if (ref.source === 'team' && context.localConfig) await assertNoShadowingLegacyWrite(context.localConfig);
+    if (ref.source === 'team') {
+      // Hold the target's lock and re-read inside it, so this write cannot
+      // clobber a migration or another configure this window holds.
+      await withTeamValuesLock(file, async () => {
+        const current = await loadModelInputs(file);
+        setStoredApiKey(ref, current, secret);
+        await saveModelInputs(file, current);
+      });
+    } else {
+      setStoredApiKey(ref, values, secret);
+      await saveModelInputs(file, values);
+    }
   }
   if (edited) {
     local.profiles[local.profiles.findIndex((profile) => profile.id === edited!.id)] = edited;
     await saveLocalProfiles(local);
   }
-  const activeAgents = activeAgentsFor(ref, await activeModelProfiles());
+  const activeAgents = await activeAgentsFor(ref, await activeModelProfiles(), context.localConfig);
   log.success(activeAgents.length
     ? `Configured ${key}${gatewaySuffix(ref, 'at')}. Run \`teamai models switch ${key}\` to apply it to ${activeAgents.join(', ')}.`
     : `Configured ${key}${gatewaySuffix(ref, 'at')}. Agent settings were not changed.`);
@@ -362,20 +484,33 @@ interface SwitchOptions {
 }
 
 export async function modelsSwitch(reference: string, options: SwitchOptions): Promise<void> {
-  const found = await findProfile(reference);
+  const found = await findProfile(reference, { dryRun: options.dryRun });
   if (!found) return;
   const { ref, context } = found;
   const key = profileRefName(ref);
   const file = valuesPathFor(ref, context);
-  const values = await loadValuesFor(ref, context);
+  const values = await loadValuesFor(ref, context, options);
   const stored = storedApiKey(ref, values);
   // First use of a profile, or of its current gateway: ask for the key here
   // instead of requiring a separate `configure` step.
   if (!stored && !options.dryRun && isInteractive()) {
     const answer = await askSecret(`API key for ${key}${gatewaySuffix(ref, 'at')}: `);
     if (!answer) throw new Error(`Profile ${key} needs an API key`);
+    if (ref.source === 'team' && context.localConfig) await assertNoShadowingLegacyWrite(context.localConfig);
+    // Put the key in the copy the rest of this command resolves against first,
+    // so every save below already carries it (the lock re-read full the team
+    // snapshot from disk).
     setStoredApiKey(ref, values, { value: answer });
-    await saveModelInputs(file, values);
+    if (ref.source === 'team') {
+      // Hold the target's lock and re-read inside it, like `configure`.
+      await withTeamValuesLock(file, async () => {
+        const current = await loadModelInputs(file);
+        setStoredApiKey(ref, current, { value: answer });
+        await saveModelInputs(file, current);
+      });
+    } else {
+      await saveModelInputs(file, values);
+    }
   } else if (!isApiKeyConfigured(stored) && !stored?.env) {
     throw new Error(`Profile ${key} has no API key${gatewaySuffix(ref, 'for')}. Run \`teamai models configure ${key}\`.`);
   }
@@ -434,7 +569,7 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
   const identity = getTeamIdentity(localConfig);
   const groups = new Map<string, { profile: string; model?: string; agents: ModelAgent[] }>();
   for (const [agent, state] of Object.entries(await activeModelProfiles()) as Array<[ModelAgent, ActiveModelProfile]>) {
-    if (!state.profile.startsWith('team:') || state.team !== identity) continue;
+    if (!state.profile.startsWith('team:') || !sameTeamIdentity(state.team, localConfig)) continue;
     const groupKey = `${state.profile}\0${state.model ?? ''}`;
     const group = groups.get(groupKey) ?? { profile: state.profile, model: state.model, agents: [] };
     group.agents.push(agent);
@@ -484,7 +619,7 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
       continue;
     }
     const onlyIfActive = { profile: name, team: identity, ...(model ? { model } : {}) };
-    for (const result of await switchModelProfile(resolved, agents, { ...options, onlyIfActive })) {
+    for (const result of await switchModelProfile(resolved, agents, { ...options, onlyIfActive, localConfig })) {
       if (result.status === 'switched') {
         log.success(options.dryRun ? `Would update ${result.agent} to the latest ${name}` : `Updated ${result.agent} to the latest ${name}`);
       } else if (result.status !== 'unchanged' && result.status !== 'not-installed') {

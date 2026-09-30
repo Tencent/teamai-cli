@@ -29,7 +29,7 @@ describe('indexableVotesDir (#808)', () => {
   let dataHome: string;
 
   beforeEach(() => {
-    testRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-votes-808-')));
+    testRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-votes-808-')));
     businessRoot = path.join(testRoot, 'business');
     dataHome = path.join(testRoot, 'partition');
     fs.mkdirSync(businessRoot, { recursive: true });

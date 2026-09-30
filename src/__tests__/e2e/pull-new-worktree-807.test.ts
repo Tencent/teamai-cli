@@ -69,7 +69,7 @@ describe('pull in a new linked worktree (#807)', () => {
       throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
     }
 
-    sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue807-e2e-')));
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue807-e2e-')));
     home = path.join(sandbox, 'home');
     projectRoot = path.join(sandbox, 'project');
     sameTargets = path.join(sandbox, 'wt-same');

@@ -11,7 +11,7 @@ import { writeInstallConfig } from './helpers/install-config.js';
 // extraction (network + AI) are faked; the queue, the checkout and the publish
 // are the real code.
 
-const testRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-import-mr-808-')));
+const testRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-import-mr-808-')));
 const businessRoot = path.join(testRoot, 'business');
 const remote = path.join(testRoot, 'remote.git');
 const dataHome = path.join(testRoot, 'partition');

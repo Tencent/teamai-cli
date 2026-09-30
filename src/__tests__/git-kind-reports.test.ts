@@ -648,7 +648,7 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
     const base = path.join(tmp, name);
     const { origin, clone } = await seedBareOrigin(base);
     fs.mkdirSync(path.join(base, 'project'));
-    const root = fs.realpathSync(path.join(base, 'project'));
+    const root = fs.realpathSync.native(path.join(base, 'project'));
     const git = simpleGit(root);
     await git.init(['--initial-branch=main']);
     await configureGit(root);

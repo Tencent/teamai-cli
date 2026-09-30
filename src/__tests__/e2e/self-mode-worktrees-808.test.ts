@@ -70,7 +70,7 @@ const sandboxes: string[] = [];
  * pre-partition install left it: the first pull moves it into the partition.
  */
 function setUpProject(): Project {
-  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue808-e2e-')));
+  const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue808-e2e-')));
   sandboxes.push(sandbox);
   const project: Project = {
     sandbox,
@@ -1285,7 +1285,7 @@ describe('self mode with a linked worktree (#808)', () => {
  * install an older teamai left.
  */
 function setUpGitInstall(): Project & { teamRemote: string } {
-  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue808-git-e2e-')));
+  const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue808-git-e2e-')));
   sandboxes.push(sandbox);
   const install = {
     sandbox,

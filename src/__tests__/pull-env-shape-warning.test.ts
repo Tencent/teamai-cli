@@ -180,6 +180,50 @@ describe('env.yaml shape warning on a real pull', () => {
     expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining(SHAPE_WARNING));
   });
 
+  // #875 (#879 Conflict 14): a failed declaration is never "no secrets", so env.sh stays as it is.
+  it('warns about a secrets file that does not parse, in secret wording, and leaves env.sh and the backup as they are', async () => {
+    await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), 'variables:\n  - key: FOO\n    value: bar\n');
+    await pull({ force: true });
+    const envSh = await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8');
+    const backup = await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf8');
+
+    await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), 'variables:\n  - key: FOO\n    value: changed\n');
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secret:\n  - key: GITHUB_TOKEN\n');
+    await pull({ force: true });
+
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
+      'env/secrets.yaml declares no secrets: it has no top-level `secrets:` key, only `secret`. '
+        + 'Team secrets were not resolved this run; env variables and MCP servers stay as they are.',
+    ));
+    expect(await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8')).toBe(envSh);
+    expect(await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf8')).toBe(backup);
+  });
+
+  // #875 (#879 Conflict 13): a key declared as a secret and set in env.yaml resolves as the secret.
+  it.each([
+    ['a full pull', false],
+    ['the unchanged-rev fast path', true],
+  ])('leaves the env.yaml value of a key declared as a secret out of env.sh and the backup, on %s', async (_name, fastPath) => {
+    await fse.outputFile(
+      path.join(repoPath, 'env', 'env.yaml'),
+      'variables:\n  - key: FOO\n    value: bar\n  - key: GITHUB_TOKEN\n    value: repo-token\n',
+    );
+    await pull({});
+    expect(await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8')).toContain('repo-token');
+
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GITHUB_TOKEN\n');
+    vi.mocked(log.success).mockClear();
+    await pull(fastPath ? {} : { force: true });
+
+    if (fastPath) expect(log.success).toHaveBeenCalledWith(expect.stringContaining('Already synced'));
+    const envSh = await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8');
+    const backup = await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf8');
+    expect(envSh).toContain("export FOO='bar'");
+    expect(backup).toContain('FOO=bar');
+    expect(envSh).not.toContain('repo-token');
+    expect(backup).not.toContain('repo-token');
+  });
+
   it('warns from the unchanged-rev fast path too', async () => {
     // The machine pulled once while the CLI still accepted a bad shape, so it
     // stored the rev. The repo has not moved since — every later pull takes the

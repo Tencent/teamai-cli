@@ -27,7 +27,7 @@ describe('setAsideQueueOnModeSwitch (#808)', () => {
   let project: string;
 
   beforeEach(() => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-mode-switch-')));
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-mode-switch-')));
     partition = path.join(root, 'partition');
     project = path.join(root, 'project');
     fs.mkdirSync(partition, { recursive: true });

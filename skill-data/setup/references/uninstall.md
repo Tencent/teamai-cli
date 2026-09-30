@@ -55,3 +55,16 @@ and give it your team repo URL."*
   and neither should you.
 - If the user only wants to stop auto-sync for one tool but keep TeamAI otherwise,
   that is the `--agent <tool>` form, not a full uninstall.
+- In a project, uninstall also takes teamai's lines out of `.git/info/exclude`
+  (the `# [teamai:mcp-exclude:start]` block) for MCP configs it proves hold no
+  resolved `${VAR}` value. A line names the path a write lands in: for a config
+  under a symlinked directory, the link's target (`/config/mcp.json` for
+  `.cursor/` linking to `config/`). For one it cannot prove clean (including one written
+  under a `toolPaths` mapping since changed, at the built-in location of a tool
+  the team dropped or moved that no other tool maps, or in a nested repository's
+  linked worktree, that still holds servers, and one written for a tool since moved
+  (or at its built-in location) that another tool maps, holding a server that tool
+  did not write) it keeps the line
+  and warns, naming the file and why: have the user remove teamai's servers from
+  that file, then delete the line (with the last one, the block's markers). Do not
+  delete a kept line while its file still holds a token.

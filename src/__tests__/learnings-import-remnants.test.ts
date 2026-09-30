@@ -24,7 +24,7 @@ let originalHome: string;
 
 beforeEach(() => {
   // Real path: git lists worktrees by it, and the warnings name those paths.
-  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-import-remnants-')));
+  tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-import-remnants-')));
   originalHome = process.env.HOME ?? '';
   process.env.HOME = path.join(tmp, 'home');
   fs.mkdirSync(process.env.HOME, { recursive: true });

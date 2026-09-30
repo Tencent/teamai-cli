@@ -16,6 +16,7 @@ import { loadStateForScope } from '../config.js';
 import { placedResourcePath } from '../push-namespaces.js';
 import { deliversEveryNamespace } from '../resource-namespaces.js';
 import { getFileContentAtRev, isPastVersionOf } from '../utils/git.js';
+import { forgetDelivered, keepsEditedCopy, recordDelivered, removedCopyChanged, type DeliveryLedger } from './delivered-copies.js';
 import {
   ruleFileExtensionForTool,
   ruleStemFromFilename,
@@ -308,8 +309,9 @@ export class RulesHandler extends ResourceHandler {
   /**
    * Pull a single rule file to all configured AI tool rules/ directories.
    */
-  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
-    for (const { tool, dest, content, supersedes } of await this.deliveryTargets(teamConfig, localConfig, item)) {
+  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig, ledger?: DeliveryLedger): Promise<void> {
+    for (const target of await this.deliveryTargets(teamConfig, localConfig, item)) {
+      const { tool, dest, content, supersedes } = target;
       const destDir = path.dirname(dest);
       try {
         if (content === undefined) {
@@ -317,7 +319,10 @@ export class RulesHandler extends ResourceHandler {
           throw new Error(`Cannot read rule source ${item.sourcePath}`);
         }
         await ensureDir(destDir);
-        await writeFile(dest, content);
+        if (!ledger || !await keepsEditedCopy(ledger, item, target)) {
+          await writeFile(dest, content);
+          if (ledger) await recordDelivered(ledger.hashes, dest);
+        }
         // Drop the `.md` copy left by an older layout; a tool that reads a
         // derived extension does not read it, and it would outlive the rule.
         const legacyCopy = path.join(destDir, `${path.basename(dest, path.extname(dest))}.md`);
@@ -430,6 +435,7 @@ export class RulesHandler extends ResourceHandler {
     localConfig: LocalConfig,
     filteredRules?: ResourceItem[],
     replacedRoots: readonly ResourceItem[] = [],
+    ledger?: DeliveryLedger,
   ): Promise<void> {
     const rules = filteredRules ?? await this.scanTeamForPull(teamConfig, localConfig);
 
@@ -457,13 +463,13 @@ export class RulesHandler extends ResourceHandler {
     // OpenCode glob deactivation above still runs, so the (now unmanaged) rules
     // stop being auto-loaded.
     if (rules.length === 0) {
-      await this.reclaimUnselectedTeamRules(teamConfig, localConfig);
+      await this.reclaimUnselectedTeamRules(teamConfig, localConfig, ledger);
       return;
     }
 
     // 1. Distribute rule files to each tool's rules/ directory
     for (const rule of rules) {
-      await this.pullItem(rule, teamConfig, localConfig);
+      await this.pullItem(rule, teamConfig, localConfig, ledger);
     }
 
     // 1.5. Clean up stale local rule files not present in team repo
@@ -557,7 +563,16 @@ export class RulesHandler extends ResourceHandler {
         if (EXCLUDED_RULE_NAMES.has(ruleName)) continue;
         if (!teamRuleNames.has(ruleName)) {
           const fullPath = path.join(destDir, localFile);
+          // A copy the member changed since teamai delivered it stays (#822);
+          // the tombstone cleanup names one of a rule the team removed.
+          if (await removedCopyChanged(ledger?.previous, fullPath)) {
+            if (!tombstones.has(ruleName)) {
+              log.warn(`Kept ${fullPath}: teamai no longer delivers ${ruleName} here, but you changed this copy. Delete it when you no longer need it.`);
+            }
+            continue;
+          }
           await remove(fullPath);
+          if (ledger) forgetDelivered(ledger.hashes, fullPath);
           log.debug(`Removed stale rule ${localFile} from ${tool}`);
         }
       }
@@ -663,6 +678,7 @@ export class RulesHandler extends ResourceHandler {
   private async reclaimUnselectedTeamRules(
     teamConfig: TeamaiConfig,
     localConfig: LocalConfig,
+    ledger: DeliveryLedger | undefined,
   ): Promise<void> {
     const teamRules = await this.scanTeamForPull(teamConfig, localConfig);
     if (teamRules.length === 0) return;
@@ -676,6 +692,7 @@ export class RulesHandler extends ResourceHandler {
         if (supersedes) continue;
         if (!await isDeliveredRender(tool, dest, item, localConfig.repo.localPath, deliveredRevs)) continue;
         await remove(dest);
+        if (ledger) forgetDelivered(ledger.hashes, dest);
         touchedDirs.add(path.join(resolveToolBaseDir(tool, localConfig), scopedToolPaths(teamConfig, localConfig)[tool].rules!));
         log.debug(`Removed unselected team rule ${item.name} from ${tool}`);
       }

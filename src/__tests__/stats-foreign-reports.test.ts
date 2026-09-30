@@ -31,7 +31,7 @@ describe('stats with another repository\'s reports checkout in the partition (#8
   let originalHome: string | undefined;
 
   beforeEach(() => {
-    testRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-stats-foreign-808-')));
+    testRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-stats-foreign-808-')));
     originalHome = process.env.HOME;
     process.env.HOME = path.join(testRoot, 'home');
   });

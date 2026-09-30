@@ -28,7 +28,7 @@ function git(cwd: string, ...args: string[]): void {
 let base: string, main: string, home: string;
 
 beforeEach(() => {
-  base = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'self-wt-')));
+  base = realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'self-wt-')));
   main = path.join(base, 'main-repo');
   fs.mkdirSync(main);
   git(main, 'init', '-q');
@@ -61,7 +61,7 @@ describe('P2 self cross-worktree rebind', () => {
     const partition = seedSharedSelfConfig();
     const feat0 = path.join(base, 'feature-wt');
     git(main, 'worktree', 'add', '-q', feat0, '-b', 'feature');
-    const feat = realpathSync(feat0);
+    const feat = realpathSync.native(feat0);
     fse.ensureDirSync(path.join(feat, '.teamai'));
 
     const detected = await detectProjectConfig(feat);
@@ -94,7 +94,7 @@ describe('P2 self cross-worktree rebind', () => {
     }));
     const feat0 = path.join(base, 'feature-wt');
     git(main, 'worktree', 'add', '-q', feat0, '-b', 'feature');
-    const feat = realpathSync(feat0);
+    const feat = realpathSync.native(feat0);
 
     const detected = await detectProjectConfig(feat);
     expect(detected!.repo.localPath).toBe(clonePath);

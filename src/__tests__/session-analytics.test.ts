@@ -100,7 +100,7 @@ describe('repoLabel (#809)', () => {
 describe('repoName (#809)', () => {
   let base = '';
   beforeAll(() => {
-    base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-repo-name-')));
+    base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-repo-name-')));
   });
   afterAll(() => {
     if (base) fs.rmSync(base, { recursive: true, force: true });

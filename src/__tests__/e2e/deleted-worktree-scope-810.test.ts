@@ -91,7 +91,7 @@ interface ScenarioOptions {
  * prompt and a skill use, `b` is removed, and the session keeps sending hooks.
  */
 function scenario({ userScope, breakProjectConfig = false, bare = false, projectHintOff = false, movedOn = false }: ScenarioOptions) {
-  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue810-e2e-')));
+  const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue810-e2e-')));
   const home = path.join(sandbox, 'home');
   // The checkout the project was set up in, and the repo's anchor (its main worktree).
   const repo = bare ? path.join(sandbox, 'proj', 'main') : path.join(sandbox, 'repo');

@@ -12,7 +12,7 @@ describe('dropAllSearchIndexes (#808)', () => {
   let dataHome: string;
 
   beforeEach(() => {
-    dataHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-drop-indexes-')));
+    dataHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-drop-indexes-')));
   });
 
   afterEach(() => {

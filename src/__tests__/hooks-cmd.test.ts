@@ -35,6 +35,7 @@ vi.mock('../utils/logger.js', () => ({
         warn: vi.fn(),
         error: vi.fn(),
         debug: vi.fn(),
+        persist: vi.fn(),
     },
 }));
 
@@ -45,6 +46,7 @@ import { getHookStatus, reconcileHooks, reconcileHooksToAllTools, reconcileTeamH
 import { resolveTeamHookEntries } from '../resources/hooks.js';
 import { log } from '../utils/logger.js';
 import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
+import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema } from '../types.js';
 
 const mockedAutoDetectInit = autoDetectInit as Mock;
@@ -60,13 +62,13 @@ const mockedParseTeamHooks = resolveTeamHookEntries as Mock;
  * The resolved team hooks (B), as `[hook, source, replaces]` or a bare hook
  * from hooks/hooks.yaml, plus the optional builtin override.
  */
-function hooksYaml(hooks: (Record<string, unknown> | [Record<string, unknown>, string, string | null])[], builtin?: unknown) {
+function hooksYaml(hooks: (Record<string, unknown> | [Record<string, unknown>, string, string | null])[], builtin?: unknown, notices?: { kind: 'unknown-key' | 'removed-key' | 'deprecated-roles' | 'file-note'; message: string }[]) {
     const entries = hooks.map((hook) => {
         const [entry, source, replaces] = Array.isArray(hook) ? hook : [hook, 'hooks/hooks.yaml', null];
         const namespace = source === 'hooks/hooks.yaml' ? null : source.split('/')[1];
         return { entry, name: entry.id, source, namespace, replaces };
     });
-    return { resolution: { kind: 'resolved', entries, active: [], notices: [], repeated: [] }, builtin: { known: true, override: builtin } };
+    return { resolution: { kind: 'resolved', entries, active: [], notices: notices ?? [], repeated: [] }, builtin: { known: true, override: builtin } };
 }
 const mockedLog = log as unknown as { info: Mock; success: Mock; warn: Mock; error: Mock; debug: Mock };
 
@@ -272,6 +274,29 @@ describe('hooksList', () => {
         const text = out.join('\n');
         expect(text).toContain('[lint] Stop  →  npm run lint:checkout  (tools: all)  from checkout, overrides root');
         expect(text).toContain('[orders] Stop  →  echo orders  (tools: all)  from checkout');
+    });
+
+    it('names the hook an unknown key takes out of the delivered set (#822)', async () => {
+        resetWarnOnce();
+        mockedParseTeamHooks.mockResolvedValue(hooksYaml([
+            { id: 'good-hook', event: 'SessionStart', command: 'echo good', description: 'ok' },
+        ], undefined, [{
+            kind: 'unknown-key',
+            message: 'hooks/hooks.yaml: hook "scoped-hook" has unknown key `role:`, so this entry is not delivered. '
+                + 'Correct the key or remove it.',
+        }]));
+
+        const out: string[] = [];
+        const spy = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
+        try {
+            await hooksList({});
+        } finally {
+            spy.mockRestore();
+        }
+        expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('hook "scoped-hook" has unknown key `role:`, so this entry is not delivered.'));
+        const text = out.join('\n');
+        expect(text).toContain('[good-hook] SessionStart');
+        expect(text).not.toContain('scoped-hook]');
     });
 });
 

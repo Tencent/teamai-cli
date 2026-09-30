@@ -18,7 +18,7 @@ let home = '';
 let originalHome: string | undefined;
 
 beforeEach(() => {
-  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hook-config-810-')));
+  tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hook-config-810-')));
   home = path.join(tmp, 'home');
   fs.mkdirSync(path.join(home, '.teamai', 'dashboard'), { recursive: true });
   originalHome = process.env.HOME;

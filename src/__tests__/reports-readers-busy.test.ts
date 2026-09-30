@@ -32,7 +32,7 @@ describe('stats and viz while a write holds the reports lock (#808)', () => {
   let partition: string;
 
   beforeEach(async () => {
-    testRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-reports-busy-808-')));
+    testRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-reports-busy-808-')));
     originalHome = process.env.HOME;
     process.env.HOME = path.join(testRoot, 'home');
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
