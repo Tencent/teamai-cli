@@ -670,13 +670,13 @@ packages:
 如果团队共享的某个 skill 不适合你，可以只在本地将它排除，无需修改团队仓库，也不会影响其他成员：
 
 ```bash
-teamai skill exclude add using-superpowers
 teamai skill exclude add using-superpowers --dry-run # 预览操作，不修改配置或 pull 状态
+teamai skill exclude add using-superpowers
 teamai pull                    # 从本地 AI 工具中删除
 teamai skill exclude list
 
-teamai skill exclude remove using-superpowers
 teamai skill exclude remove using-superpowers --dry-run # 预览操作，不修改配置或 pull 状态
+teamai skill exclude remove using-superpowers
 teamai pull                    # 重新同步
 ```
 
