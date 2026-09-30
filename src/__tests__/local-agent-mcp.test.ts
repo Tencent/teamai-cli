@@ -72,6 +72,23 @@ async function runResponse(
 
 describe('local-agent: MCP install/uninstall commands', () => {
 
+  it('installs and removes Pi MCP with native transport and timeout units', async () => {
+    const file = path.join(tmpDir, '.pi', 'agent', 'mcp.json');
+    const acks = await runResponse({ cmds: [{
+      id: 8980, type: 'install_mcp', scope: 'user', slug: 'pi-fixture', version: '1',
+      mcp_config: { transport: 'http', url: 'https://example.com/mcp', timeout: 1500 },
+    }] }, 'pi');
+    expect(acks[0].status).toBe('success');
+    expect((await fse.readJson(file)).mcpServers['pi-fixture']).toEqual({
+      type: 'http', url: 'https://example.com/mcp', timeout: 1.5,
+    });
+    const removed = await runResponse({ cmds: [{
+      id: 8981, type: 'uninstall_mcp', scope: 'user', slug: 'pi-fixture', version: '1',
+    }] }, 'pi');
+    expect(removed[0].status).toBe('success');
+    expect((await fse.readJson(file)).mcpServers).toEqual({});
+  });
+
   it('uses COPILOT_HOME for user-scope install and uninstall', async () => {
     const copilotHome = path.join(tmpDir, 'custom-copilot-home');
     const configFile = path.join(copilotHome, 'mcp-config.json');

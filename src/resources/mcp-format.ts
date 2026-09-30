@@ -15,7 +15,7 @@ import { sameEnvName } from './env-key.js';
 //  Keeping the differences here — rather than in the reconcile engine — is the
 //  same split agents uses between agent-format.ts and its handler.
 
-export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot';
+export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi';
 
 const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'qoder', 'qoder-cn', 'kiro', 'zcode', 'omp']);
 const CURSOR_TOOLS = new Set(['cursor']);
@@ -26,6 +26,7 @@ const COPILOT_TOOLS = new Set(['copilot']);
 const COPILOT_ALL_TOOLS = '*';
 
 export function detectMcpFormat(tool: string): McpFormat | null {
+  if (tool === 'pi') return 'pi';
   if (CLAUDE_TOOLS.has(tool)) return 'claude';
   if (CURSOR_TOOLS.has(tool)) return 'cursor';
   if (CODEX_TOOLS.has(tool)) return 'codex';
@@ -41,6 +42,7 @@ export function detectMcpFormat(tool: string): McpFormat | null {
  * has no entry here.
  */
 export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
+  pi: 'mcpServers',
   claude: 'mcpServers',
   cursor: 'mcpServers',
   buddy: 'mcpServers',
@@ -56,6 +58,7 @@ export function sameServerKey(a: McpFormat, b: McpFormat): boolean {
 
 /** Transports each format can actually express. */
 const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
+  pi: new Set<McpTransport>(['stdio', 'http']),
   claude: new Set<McpTransport>(['stdio', 'http', 'sse']),
   cursor: new Set<McpTransport>(['stdio', 'http', 'sse']),
   buddy: new Set<McpTransport>(['stdio', 'http', 'sse']),
@@ -292,6 +295,13 @@ function renderOpencode(def: McpServerDef): McpJsonEntry {
 
 /** Render the JSON-shaped entry for a format. Codex is handled separately (TOML). */
 export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpServerDef): McpJsonEntry {
+  if (format === 'pi') {
+    const entry = renderClaude(def);
+    // Pi uses seconds (including fractions); team definitions use milliseconds.
+    if (def.timeout !== undefined) entry.timeout = def.timeout / 1000;
+    // Omit exposure to keep Pi's native codemode default.
+    return entry;
+  }
   if (format === 'claude') return renderClaude(def);
   if (format === 'cursor') return renderCursor(def);
   if (format === 'opencode') return renderOpencode(def);

@@ -1114,6 +1114,7 @@ namespace 文件；只有当根文件未定义、而多个 namespace 文件都�
 | kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 | omp | `~/.omp/agent/mcp.json` | `<project>/.omp/mcp.json` |
+| pi | `~/.pi/agent/mcp.json` | `<project>/.pi/mcp.json` |
 
 
 CodeBuddy Code 的 [MCP 文档](https://www.codebuddy.cn/docs/cli/mcp)
@@ -1805,7 +1806,8 @@ GitHub Copilot CLI 已支持其官方自定义指令、Rules、Skills、自定�
 - **Hooks。** TeamAI 只在用户级 `~/.pi/agent/extensions/` 生成一份 `teamai-hooks.ts`，把 `session_start` 映射为 session-start、`before_agent_start` 映射为 prompt-submit、`agent_settled` 映射为 stop；`tool_execution_start` 缓存工具输入，`tool_execution_end` 派发 post-tool-use 时把缓存的输入转发为 `tool_input`（不带单独的结果/输出字段，与 OMP 适配器的 post-tool-use payload 一致）。Pi 会同时加载用户级与项目级扩展目录，因此 TeamAI 不创建项目副本——第二份副本会导致每个事件被派发两次，这与 OMP 适配器的单副本策略一致。早期版本遗留且带 TeamAI 标记的项目副本会在下次同步时移除，注入逻辑也不会覆盖没有 TeamAI 标记的同名文件。Pi 没有可供 self mode 提交的设置文件，所以 fresh clone 仍需在该机器上手动跑一次 `teamai init`/`pull` 才能激活 Pi hooks。任何一次显式移除——`teamai hooks remove`，或者某个 scope 下的 `teamai uninstall --agent pi`——都会直接删除这份共享扩展，和 OMP 适配器的单文件删除语义完全一致：Pi 没有办法把一份共享文件限定在某一个项目里，所以不会假装"为其他项目保留"却让这份扩展继续对当前项目触发；没有 TeamAI 标记的同名文件不会被删除。`teamai hooks list` 始终显示这个全局路径。Pi 的 profile 覆盖项（`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`，会迁移 agent 目录）在 hooks 中暂不支持，与 OMP 适配器一致，使用默认的 `~/.pi/agent/` 布局。模型配置是另一回事，会读取 `PI_CODING_AGENT_DIR`。由于这份扩展是机器级共享的单个文件而非按项目隔离，某个 scope 下的移除在多项目场景中并不持久：只要 Pi 在其他任意 scope 仍处于启用状态，下一次在那里执行 `teamai init`/`pull` 就会把它重新生成，而 hook 派发本身没有按项目排除的检查，因此刚被卸载的项目里 hooks 仍可能重新触发。这与 OMP 适配器早已上线的取舍完全一致。
 - **团队 Hooks 边界。** Pi 适配器只安装内置生命周期桥接。`hooks/hooks.yaml` 声明的自定义团队 Hooks 和内置 Hook 覆盖会被跳过并给出警告。完整团队 Hooks 与逐项目归属语义需要单独的跨适配器设计，留待后续 PR。
 - **服务端下发的 Agent Hooks。** HTTP source hooks 会以同一用户级扩展目录中的 `teamai-agent-<slug>.ts` 形式安装。不支持的生命周期事件会警告并跳过。
-- **MCP 与 Subagents。** 本阶段没有为 Pi 接入 MCP 或 TeamAI 自定义 subagent 文件适配器。
+- **MCP（Pi 0.99.0+）。** 支持 stdio 和 streamable HTTP；SSE 会跳过。用户级写入 `~/.pi/agent/mcp.json`，项目级写入 `.pi/mcp.json`；项目配置需要 Pi 信任项目后才加载。保留原生 `codemode` 默认值，不强制 direct；`mcp.yaml` 的 timeout 从毫秒转换成秒。受管条目的本地 exposure/启用状态在团队定义不变时保留，团队定义更新时会被替换；doctor 按完整条目比较，会报告这些本地差异。接管 `/mcp` 的扩展可能禁用内置 MCP；使用内置支持需移除此类扩展。
+- **Subagents。** 暂不支持 TeamAI 自定义 subagent 文件。
 
 ### Qoder
 

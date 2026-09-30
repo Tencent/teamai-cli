@@ -6,6 +6,8 @@ describe('Pi adapter configuration', () => {
   it('declares native project and user resource paths', () => {
     const config = TeamaiConfigSchema.parse({ team: 'test', repo: 'test/repo' });
     expect(config.toolPaths.pi).toEqual({
+      mcp: '.pi/agent/mcp.json',
+      mcpProject: '.pi/mcp.json',
       skills: '.pi/skills',
       rules: '.pi/rules',
       claudemd: 'AGENTS.md',

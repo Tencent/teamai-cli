@@ -451,9 +451,11 @@ export const TeamaiConfigSchema = z.object({
     // TypeScript extensions rather than a settings hook list, so the adapter
     // keeps one user extension and forwards the active cwd to hook-dispatch.
     // Profile overrides (PI_CODING_AGENT_DIR / PI_CONFIG_DIR) that relocate
-    // the agent dir are not supported for hooks, same as the OMP adapter;
+    // the agent dir are not supported for hooks or MCP, same as the OMP adapter;
     // model profiles do read PI_CODING_AGENT_DIR.
     pi: {
+      mcp: '.pi/agent/mcp.json',
+      mcpProject: '.pi/mcp.json',
       skills: '.pi/skills',
       rules: '.pi/rules',
       claudemd: 'AGENTS.md',
