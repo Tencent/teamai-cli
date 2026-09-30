@@ -174,6 +174,17 @@ describe('webhook', () => {
   }
 
   describe('testWebhook', () => {
+    it('previews matching endpoints without sending a request or migrating config', async () => {
+      const { testWebhook } = await import('../webhook.js');
+      const { log } = await import('../utils/logger.js');
+
+      await testWebhook('https://open.feishu.cn/open-apis/bot/v2/hook/test', { dryRun: true });
+
+      expect(mockAutoDetectInit).toHaveBeenCalledWith(undefined, { dryRun: true });
+      expect(log.info).toHaveBeenCalledWith('[dry-run] Would send a test webhook to 1 endpoint(s).');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it('should send test event to all endpoints', async () => {
       const { testWebhook } = await import('../webhook.js');
 

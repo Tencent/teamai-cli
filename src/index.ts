@@ -828,8 +828,9 @@ webhookCmd
   .description('Send test event to webhook endpoints')
   .option('--url <url>', 'Test specific endpoint URL')
   .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
     const { testWebhook } = await import('./webhook.js');
-    await testWebhook(cmdOpts.url);
+    await testWebhook(cmdOpts.url, { dryRun: globalOpts.dryRun });
   });
 
 // ─── Model profile commands ─────────────────────────────
