@@ -595,8 +595,10 @@ export const TeamaiConfigBaseSchema = z.object({
     hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
     // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
     // provider scans as user-dsh root (rank 400). dsh discovers both directory
-    // bundles (<name>/SKILL.md) and flat Markdown files there natively.
-    dsh: { skills: '.dsh/skills' },
+    // bundles (<name>/SKILL.md) and flat Markdown files there natively. MCP servers
+    // go into the home-level patch layer every dsh profile applies. No mcpProject:
+    // dsh has no project-scope patch file.
+    dsh: { skills: '.dsh/skills', mcp: '.dsh/cordis.patch.yml' },
     // WorkBuddy runs CodeBuddy's engine: in a project it reads CodeBuddy's
     // .codebuddy/rules, which the two share (one copy), and in user scope its
     // own ~/.workbuddy/rules (#946). Its install probe stays .workbuddy

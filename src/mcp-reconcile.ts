@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+
 import type {
   LocalConfig,
   TeamaiConfig,
@@ -30,12 +31,15 @@ import {
   supportsEnvExpansion,
   renderJsonEntry,
   renderCodexBlock,
+  renderDshEntry,
   resolvePlaceholders,
   referencedVars,
   entryHash,
   MCP_SERVER_KEY,
   sameServerKey,
+  DSH_MCP_PLUGIN_PACKAGE,
   type McpFormat,
+  type JsonMcpFormat,
 } from './resources/mcp-format.js';
 import { mcpEntryReader, parseTeamMcpServers, teamMcpToDef } from './resources/mcp.js';
 import { historicalContents } from './utils/team-history.js';
@@ -54,6 +58,7 @@ import {
   readFileIfExists,
   pathExists,
   expandHome,
+  writeFileAtomic,
 } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
@@ -716,6 +721,87 @@ async function removeCreatedMcpFile(file: string): Promise<void> {
   await fs.promises.rm(await symlinkTarget(file), { force: true });
 }
 
+// ─── DeepSeek Harness patch I/O ──────────────────────────────
+//
+//  dsh reads ~/.dsh/cordis.patch.yml, a top-level list of loader patches. Each
+//  MCP server is one `dsh-mcp-client` entry inside an `insert:` patch. The file
+//  is edited through a YAML Document so the user's comments, other patches and
+//  `!!js` expressions survive byte-for-byte.
+
+export interface DshPatchDoc {
+  doc: YAML.Document;
+  /** Every dsh-mcp-client entry an `insert:` patch holds, keyed by serverName. */
+  servers: Record<string, unknown>;
+}
+
+interface DshInsertedEntry {
+  list: YAML.YAMLSeq;
+  node: unknown;
+  serverName: string;
+}
+
+function dshInsertedEntries(doc: YAML.Document): DshInsertedEntry[] {
+  const found: DshInsertedEntry[] = [];
+  if (!YAML.isSeq(doc.contents)) return found;
+  for (const patch of doc.contents.items) {
+    if (!YAML.isMap(patch)) continue;
+    const list = patch.get('insert');
+    if (!YAML.isSeq(list)) continue;
+    for (const node of list.items) {
+      if (!YAML.isMap(node) || node.get('name') !== DSH_MCP_PLUGIN_PACKAGE) continue;
+      const serverName = node.getIn(['config', 'serverName']);
+      if (typeof serverName === 'string') found.push({ list, node, serverName });
+    }
+  }
+  return found;
+}
+
+/**
+ * Read the dsh patch file. Null when it exists but is not a YAML list of
+ * patches — the same "do not clobber what we do not understand" rule as JSON.
+ */
+export async function readDshPatchDoc(file: string): Promise<DshPatchDoc | null> {
+  const raw = await readFileSafe(file);
+  // dsh's own `!!js` tag is unknown here; it is kept as written, so do not warn.
+  const doc = YAML.parseDocument(raw ?? '', { logLevel: 'error' });
+  if (doc.errors.length > 0) return null;
+  if (doc.contents === null) doc.contents = doc.createNode([]) as YAML.YAMLSeq.Parsed;
+  if (!YAML.isSeq(doc.contents)) return null;
+  const servers: Record<string, unknown> = {};
+  for (const { node, serverName } of dshInsertedEntries(doc)) {
+    servers[serverName] = (node as YAML.YAMLMap).toJSON();
+  }
+  return { doc, servers };
+}
+
+/**
+ * Write `servers` back. An entry whose value is unchanged stays where it is;
+ * a changed or deleted one is taken out of its `insert:` list (dropping a list
+ * left empty), and every new or changed value lands in one appended `insert:`.
+ */
+export async function writeDshPatchDoc(file: string, patch: DshPatchDoc): Promise<void> {
+  const { doc, servers } = patch;
+  const root = doc.contents as YAML.YAMLSeq;
+  const kept = new Set<string>();
+  for (const { list, node, serverName } of dshInsertedEntries(doc)) {
+    if (!kept.has(serverName) && isDeepStrictEqual((node as YAML.YAMLMap).toJSON(), servers[serverName])) {
+      kept.add(serverName);
+      continue;
+    }
+    list.items.splice(list.items.indexOf(node), 1);
+  }
+  root.items = root.items.filter((item) => {
+    if (!YAML.isMap(item)) return true;
+    const list = item.get('insert');
+    return !(YAML.isSeq(list) && list.items.length === 0 && item.items.length === 1);
+  });
+  const added = Object.entries(servers).filter(([name]) => !kept.has(name)).map(([, entry]) => entry);
+  if (added.length > 0) root.items.push(doc.createNode({ insert: added }));
+  // An empty file parses to a flow `[]`; entries read better as a block list.
+  if (root.items.length > 0) root.flow = false;
+  await writeFileAtomic(file, doc.toString());
+}
+
 // ─── Codex TOML target I/O ───────────────────────────────────
 
 /**
@@ -910,6 +996,10 @@ function renderMcpEntry(
     const block = renderCodexBlock(def);
     return { entry: { entry: block, hash: entryHash(block), block, resolvedValue }, passthrough };
   }
+  if (target.format === 'dsh') {
+    const entry = renderDshEntry(def);
+    return { entry: { entry, hash: entryHash(entry), resolvedValue }, passthrough };
+  }
   const entry = renderJsonEntry(target.format, def);
   return { entry: { entry, hash: entryHash(entry), resolvedValue }, passthrough };
 }
@@ -1042,7 +1132,11 @@ export async function installedMcpEntries(
     if (raw === null) return new Map();
     return new Map(codexServerNames(raw).map((name) => [name, codexBlockIn(raw, name)]));
   }
-  const serverKey = MCP_SERVER_KEY[target.format as Exclude<McpFormat, 'codex'>];
+  if (target.format === 'dsh') {
+    const patch = await readDshPatchDoc(target.file);
+    return patch === null ? null : new Map(Object.entries(patch.servers));
+  }
+  const serverKey = MCP_SERVER_KEY[target.format];
   const allowBare = target.format === 'copilot' && target.projectScope;
   const doc = await readJsonDoc(target.file, serverKey, allowBare, target.projectKey);
   if (doc === null) return null;
@@ -1263,7 +1357,7 @@ export async function judgeTeamaiOnlyMcpConfigs(
     }
     // The names teamai's records claim in this file, for the tools keeping their servers under `key`.
     const claimed = (key: string | null): Set<string> => new Set(writers
-      .filter((t) => (t.format === 'codex' ? null : MCP_SERVER_KEY[t.format as Exclude<McpFormat, 'codex'>]) === key)
+      .filter((t) => (t.format === 'codex' || t.format === 'dsh' ? null : MCP_SERVER_KEY[t.format as JsonMcpFormat]) === key)
       .flatMap((t) => manifest[managedMcpManifestKey(t.tool, true)] ?? [])
       .map((record) => record.name));
     if (writers.every((t) => t.format === 'codex')) {
@@ -2502,9 +2596,14 @@ async function applyJson(
   options: McpReconcileOptions,
   restoreConfigs: Map<string, () => Promise<void>>,
 ): Promise<boolean | null> {
-  const serverKey = MCP_SERVER_KEY[target.format as Exclude<McpFormat, 'codex'>];
+  // dsh keeps its servers in a Cordis patch list, not a JSON map; the ownership
+  // logic below only sees the name → entry map either way.
+  const dshPatch = target.format === 'dsh' ? await readDshPatchDoc(target.file) : undefined;
+  const serverKey = target.format === 'dsh' ? '' : MCP_SERVER_KEY[target.format as JsonMcpFormat];
   const allowBare = target.format === 'copilot' && target.projectScope;
-  const doc = await readJsonDoc(target.file, serverKey, allowBare, target.projectKey);
+  const doc = dshPatch !== undefined
+    ? dshPatch && { data: {}, servers: dshPatch.servers, bare: false }
+    : await readJsonDoc(target.file, serverKey, allowBare, target.projectKey);
   if (!doc) {
     log.warn(`Could not parse ${target.file} — skipping MCP injection for ${target.tool}`);
     return null;
@@ -2598,10 +2697,13 @@ async function applyJson(
   // A file that holds a resolved value is the member's alone, an existing one tightened.
   // Keyed by real path: two tools' paths may reach one file, which keeps the state before its first write.
   const snapshotKey = await realFilePath(target.file);
-  await writeJsonDoc(target.file, serverKey, doc, holdsResolvedValue ? { mode: 0o600 } : undefined);
+  // The dsh patch file is YAML: its rollback writes the text it held, never JSON.
+  const previousRaw = dshPatch ? await readFileSafe(target.file) : null;
+  if (dshPatch) await writeDshPatchDoc(target.file, dshPatch);
+  else await writeJsonDoc(target.file, serverKey, doc, holdsResolvedValue ? { mode: 0o600 } : undefined);
   if (!restoreConfigs.has(snapshotKey)) {
     restoreConfigs.set(snapshotKey, existed
-      ? () => writeMcpJson(target.file, previousData)
+      ? (dshPatch ? () => writeFileAtomic(target.file, previousRaw ?? '') : () => writeMcpJson(target.file, previousData))
       : () => removeCreatedMcpFile(target.file));
   }
   return true;
@@ -2950,7 +3052,7 @@ async function leaveFormerMcpFile(
     }
   }
   if (!next) return null;
-  const serverKey = MCP_SERVER_KEY[target.format as Exclude<McpFormat, 'codex'>];
+  const serverKey = MCP_SERVER_KEY[target.format as JsonMcpFormat];
   const doc = await readJsonDoc(former, serverKey);
   if (!doc || Object.keys(doc.data).some((key) => key !== serverKey)) return null;
   const adopted: ManagedMcpRecord[] = [];
@@ -2978,7 +3080,7 @@ async function deleteLeftMcpFile(
   // Never a link, and never the file `target.file` writes to through one.
   if (await fs.promises.lstat(former).then((stat) => stat.isSymbolicLink(), () => false)
     || await sameMcpFile(former, target.file)) return false;
-  const serverKey = MCP_SERVER_KEY[target.format as Exclude<McpFormat, 'codex'>];
+  const serverKey = MCP_SERVER_KEY[target.format as JsonMcpFormat];
   const raw = await readFileSafe(former);
   const doc = await readJsonDoc(former, serverKey);
   if (!options.dryRun && (raw === null || !doc || Object.keys(doc.servers).length > 0

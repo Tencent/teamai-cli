@@ -19,6 +19,7 @@ import {
   readJson,
   remove,
   writeFile,
+  writeFileAtomic,
   writeJson,
   writeJsonAtomic,
 } from './utils/fs.js';
@@ -39,6 +40,7 @@ import {
   supportsTransport,
   renderJsonEntry,
   renderCodexBlock,
+  renderDshEntry,
   entryHash,
   MCP_SERVER_KEY,
 } from './resources/mcp-format.js';
@@ -48,6 +50,8 @@ import {
   ownsJsonMcpEntry,
   writeJsonDoc,
   writeMcpJson,
+  readDshPatchDoc,
+  writeDshPatchDoc,
   writeCodexAtomic,
   spliceCodexBlock,
   codexServerNames,
@@ -3941,6 +3945,19 @@ async function installMcpServer(
     await save();
     source = spliceCodexBlock(source, slug, block);
     await writeCodexAtomic(targetFile, source);
+  } else if (format === 'dsh') {
+    const entry = renderDshEntry(def);
+    const patch = await readDshPatchDoc(targetFile);
+    if (!patch) {
+      throw new Error(`install_mcp: cannot parse ${targetFile}`);
+    }
+    if (patch.servers[slug] !== undefined && !ownedNames.has(slug)) {
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
+    }
+    updateManifestRecord(manifest, manifestKey, slug, entryHash(entry));
+    await writeJsonAtomic(manifestPath, manifest);
+    patch.servers[slug] = entry;
+    await writeDshPatchDoc(targetFile, patch);
   } else {
     const entry = renderJsonEntry(format, def);
     const serverKey = MCP_SERVER_KEY[format];
@@ -4126,6 +4143,16 @@ async function uninstallMcpServer(
       if (next !== source) {
         await writeCodexAtomic(targetFile, next);
         restoreConfig = () => writeCodexAtomic(targetFile, source);
+      }
+    } else if (format === 'dsh') {
+      const patch = await readDshPatchDoc(targetFile);
+      if (patch === null) throw new Error(`uninstall_mcp: cannot parse ${targetFile}. Ownership was kept; repair the config and uninstall the server again.`);
+      if (patch.servers[slug] !== undefined) {
+        // The rollback writes the YAML text the file held, never JSON.
+        const previousRaw = await readFileSafe(targetFile);
+        delete patch.servers[slug];
+        await writeDshPatchDoc(targetFile, patch);
+        restoreConfig = () => writeFileAtomic(targetFile, previousRaw ?? '');
       }
     } else {
       const serverKey = MCP_SERVER_KEY[format];
@@ -4501,7 +4528,7 @@ async function moveToLocalScope(
   const treeKey = mcpManifestKey(tree);
   const localKey = mcpManifestKey(local);
   const records = manifest[treeKey] ?? [];
-  if (records.length === 0 || tree.format === 'codex') return;
+  if (records.length === 0 || tree.format === 'codex' || tree.format === 'dsh') return;
   const serverKey = MCP_SERVER_KEY[tree.format];
   const there = describeMcpLocation(local);
   const from = await readJsonDoc(tree.file, serverKey);
