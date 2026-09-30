@@ -260,13 +260,55 @@ Generated: do not edit by hand. Regenerate with
 
 ## session
 
-- `teamai session` — Record and inspect coding-session summaries
+- `teamai session` — Session recording, cross-platform migration, and team sync
   - `teamai session save` — Record a privacy-scrubbed summary of a coding session to a local monthly log
     - `--session-id <id>` — Session to record (default: the agent's session, e.g. $CLAUDE_CODE_SESSION_ID, or the most recent)
     - `--push` — Also push the summary to the team repo (feeds `teamai digest`)
     - `--force` — Push even if the session is not flagged as valuable
     - `--include-prompt` — Include the redacted first-prompt line in the pushed summary (default: off)
     - `--scope <scope>` — Config scope for --push: user | project (default: auto-detect)
+  - `teamai session platforms` — List supported and installed AI agent platforms
+  - `teamai session migrate [sessionId]` — Migrate a session from one platform to another (or archive to same platform)
+    - `-s, --source <platform>` — Source platform (e.g. claude-code, codebuddy)
+    - `-t, --target <platform>` — Target platform
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--target-cwd <path>` — Override cwd for the target session
+    - `--push` — Also push the migrated session to the team repo
+    - `--repo-root <path>` — Team repo root (for --push)
+    - `--scrub` — Redact secrets (tokens/keys/passwords) from the session before writing it
+    - `--all` — Migrate every session from source (not just the 5 most recent)
+    - `--limit <n>` — Max sessions to migrate (only caps --all; ignored otherwise)
+    - `-y, --yes` — Skip confirmation prompt
+  - `teamai session push` — Push local sessions to the team repo
+    - `--source <platform>` — Source platform to read sessions from
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--limit <n>` — Max sessions to push (default: 5; ignored with --all)
+    - `--all` — Push every session of the platform across all workspace directories (ignores --limit)
+    - `-y, --yes` — Skip the confirmation prompt for large batches (--all)
+    - `--scrub` — Redact secrets before archiving (archived sessions are team-readable)
+  - `teamai session pull` — Pull team sessions for the current project
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--all` — Rebuild indexes for every repo in the team repo (not just the current project)
+  - `teamai session list` — List team sessions for the current project
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--author <name>` — Filter by author
+    - `--all` — List sessions across all projects in the team repo (not just the current one)
+  - `teamai session resume <sessionName>` — Restore a team session to a local platform
+    - `--platform <platform>` — Target platform to restore into
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory for the restored session (defaults to current directory)
+    - `--author <name>` — Author of the session (if ambiguous)
+  - `teamai session search <query>` — Search team session content
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--limit <n>` — Max results (default: 10)
+    - `--all` — Search across all projects (not just current)
+  - `teamai session rollback <sessionId>` — Rollback a migration (delete the target session)
+    - `--platform <platform>` — Platform where the session was written
+    - `--cwd <cwd>` — Only roll back the copy under this project path (default: all)
 
 ## digest
 

@@ -7,6 +7,7 @@ import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
 import { registerPackagesCommand } from './pkg/register-command.js';
+import { shouldRegisterSessionFlowCommands } from './session-flow/register-gate.js';
 
 // Commands that migrate a legacy `<repo>/.teamai/` into the partition on first
 // run (issue #374 P1-3). Only write commands trigger it; read-only commands rely
@@ -910,7 +911,7 @@ program
 // ─── Session subcommands ──────────────────────────────────
 const sessionCmd = program
   .command('session')
-  .description('Record and inspect coding-session summaries');
+  .description('Session recording, cross-platform migration, and team sync');
 
 sessionCmd
   .command('save')
@@ -925,6 +926,19 @@ sessionCmd
     const { saveSession } = await import('./save-session.js');
     await saveSession({ ...globalOpts, ...cmdOpts });
   });
+
+// Load session migration commands when this process is actually about session,
+// or when another tool is only reading the command table.
+// `argv[2] === 'session'` misses `teamai --dry-run session …`, `teamai -v session …`,
+// and `teamai help session`. Digest, recall, push, and pull still skip this import.
+if (shouldRegisterSessionFlowCommands()) {
+  try {
+    const { registerSessionFlowCommands } = await import('./session-flow/session-cmd.js');
+    registerSessionFlowCommands(sessionCmd);
+  } catch (e) {
+    log.warn(`Session commands unavailable: ${(e as Error).message}`);
+  }
+}
 
 program
   .command('digest')
