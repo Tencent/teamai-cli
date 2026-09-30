@@ -70,14 +70,6 @@ export interface IdeSyncResult {
 // 工具
 // ---------------------------------------------------------------------------
 
-function uuidV4(): string {
-  return crypto.randomUUID();
-}
-
-function hex32(): string {
-  return uuidV4().replace(/-/g, '');
-}
-
 /**
  * IDE 的 workspace 哈希：md5(cwd) 的 32 位小写 hex。
  * cwd 先 resolve 再去掉尾部斜杠，保证与 IDE 内部算法一致。
@@ -264,7 +256,7 @@ function resolveTimestamps(session: Session): string[] {
   });
   known.sort((a, b) => a.i - b.i);
 
-  const ts = new Array<number>(n);
+  const ts: number[] = Array.from({ length: n });
   for (const p of known) {
     if (p.i >= 0 && p.i < n) ts[p.i] = p.t;
   }

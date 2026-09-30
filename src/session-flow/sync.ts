@@ -171,6 +171,7 @@ function sanitizePathSegment(name: string): string {
     // `\` is a separator on Windows: an author name of `..\..\evil` would
     // otherwise escape the author directory when the archive is checked out
     // there (git author names are free-form).
+    // oxlint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f<>:"|?*]/g, '_')
     .replace(/[/\\]/g, '_')
     .replace(/^\.+$|^\.\.$/g, '_')

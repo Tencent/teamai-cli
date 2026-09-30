@@ -44,8 +44,8 @@ function formatBytes(bytes: number): string {
  * 会进入别人的终端。ANSI/OSC 序列能移动光标、清屏、改标题，甚至把输出伪装成
  * 别的命令的结果（同源的 `\r` 覆写）。显示前一律剥掉控制字符。
  */
-// eslint-disable-next-line no-control-regex
-const CONTROL_SEQ_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-9;?]*[ -\/]*[@-~]/g;
+// oxlint-disable-next-line no-control-regex
+const CONTROL_SEQ_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 
 function safeText(value: string): string {
   return String(value ?? '').replace(CONTROL_SEQ_RE, ' ');

@@ -22,7 +22,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
-import type { Session, Message, ContentBlock, TextBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
+import type { Session, Message, ContentBlock } from '../ir.js';
 import { resolveWriteSessionId } from '../ids.js';
 import { imagePlaceholderText } from '../ir.js';
 import {
@@ -35,16 +35,13 @@ import {
   writeJsonl,
   fileExists,
   dirExists,
-  scanFiles,
   removeDirRecursive,
   mayReadLocalImageFile,
 } from '../fs.js';
 import {
   cleanTitleText,
   fallbackTitle,
-  isInjectedText,
   titleFromCandidates,
-  titleFromUserText,
 } from '../title.js';
 
 // ---------------------------------------------------------------------------
@@ -121,12 +118,6 @@ const SKIP_TYPES = new Set([
 // ---------------------------------------------------------------------------
 // UUID / 时间戳工具
 // ---------------------------------------------------------------------------
-
-const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function isUuidV4(s: string): boolean {
-  return UUID_V4_RE.test(s);
-}
 
 function uuidV4(): string {
   return crypto.randomUUID();

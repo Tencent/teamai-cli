@@ -28,7 +28,6 @@ import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, Tool
 import { imagePlaceholderText } from '../ir.js';
 import {
   getWorkBuddyProjectsDir,
-  encodeCwdGeneric,
   encodeCwdCodeBuddy,
   decodeCwdGeneric,
   readJsonl,
@@ -131,12 +130,6 @@ function argumentsDisplayText(name: string, args: Record<string, unknown> | unde
 // ---------------------------------------------------------------------------
 // UUID / 时间戳工具
 // ---------------------------------------------------------------------------
-
-const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function isUuidV4(s: string): boolean {
-  return UUID_V4_RE.test(s);
-}
 
 function uuidV4(): string {
   return crypto.randomUUID();

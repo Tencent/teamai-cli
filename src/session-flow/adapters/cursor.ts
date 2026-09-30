@@ -19,11 +19,10 @@
  * - tool_result 降级处理
  */
 
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
-import type { Session, Message, ContentBlock, TextBlock, ToolCallBlock, ToolResultBlock, ThinkingBlock } from '../ir.js';
+import type { Session, Message, ContentBlock } from '../ir.js';
 import { imagePlaceholderText } from '../ir.js';
 import {
   getCursorProjectsDir,
@@ -35,9 +34,8 @@ import {
   fileExists,
   dirExists,
   removeDirRecursive,
-  resolveRealCwd,
 } from '../fs.js';
-import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText, extractUserText, isRenderableText, visibleUserText } from '../title.js';
+import { cleanTitleText, fallbackTitle, titleFromCandidates, titleFromUserText, isRenderableText, visibleUserText } from '../title.js';
 import { registerCursorComposer, unregisterCursorComposer, type CursorComposerMessage, type CursorComposerTool } from '../cursor-store.js';
 import { resolveWriteSessionId } from '../ids.js';
 import { log } from '../../utils/logger.js';
@@ -113,48 +111,6 @@ function denormalizeToolName(irName: string): string {
 // ---------------------------------------------------------------------------
 // UUID 工具
 // ---------------------------------------------------------------------------
-
-// 任意合法 UUID 形状（不校验 version 位）。收紧到 v4 会让 codex v7 等来源的
-// sessionId 每次写入都被换成新随机 id：同一会话反复迁移各生成一份副本，
-// 既不幂等也无法按源 sessionId 回滚。与 codebuddy.ts 的放宽策略保持一致。
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isUuid(s: string): boolean {
-  return UUID_RE.test(s);
-}
-
-function uuidV4(): string {
-  return crypto.randomUUID();
-}
-
-/**
- * 由源会话 id 确定性派生一个 Cursor composerId（UUID v8 形状）。
- *
- * 非 UUID 的源 id（如 codebuddy 的 60062279ff104372bc110594720a8016）若每次随机生成，
- * 同一会话反复迁移会各留一份副本：transcript 与 composerHeaders 都堆积重复条目，
- * 而且无法按源 id 回滚。派生后同一源会话永远命中同一个 composerId（重迁移=覆盖）。
- */
-function deriveCursorId(sourcePlatform: string, sourceId: string, targetCwd?: string): string {
-  // The composerId is a global key in state.vscdb: without the target cwd,
-  // migrating one source session into two workspaces reuses one id and the
-  // second copy overwrites the first.
-  // Resolved, like the ids.ts derivation: `/tmp/x` and `/private/tmp/x` are
-  // one workspace, and two spellings would register two composerHeaders rows
-  // for one session in Cursor's Agents list.
-  const scope = targetCwd ? `:${resolveRealCwd(targetCwd)}` : '';
-  const hex = crypto
-    .createHash('sha256')
-    .update(`teamai:cursor:${sourcePlatform}${scope}:${sourceId}`)
-    .digest('hex');
-  const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    `8${hex.slice(13, 16)}`,
-    `${variant}${hex.slice(17, 20)}`,
-    hex.slice(20, 32),
-  ].join('-');
-}
 
 // ---------------------------------------------------------------------------
 // CursorAdapter

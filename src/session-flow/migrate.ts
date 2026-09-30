@@ -173,7 +173,7 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
     warnings.push(`tool_not_in_target: ${toolName}`);
   }
 
-  const score = totalBlocks === 0 ? 1.0 : (preservedBlocks + 0.7 * degradedBlocks + 0 * lostBlocks) / totalBlocks;
+  const score = totalBlocks === 0 ? 1.0 : (preservedBlocks + 0.7 * degradedBlocks) / totalBlocks;
 
   return {
     score,

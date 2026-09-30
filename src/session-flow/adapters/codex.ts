@@ -41,10 +41,10 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { AgentAdapter, type SessionMeta } from './base.js';
-import type { Session, Message, ContentBlock, TextBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
+import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
 import { imagePlaceholderText } from '../ir.js';
 import { titleFromUserText, visibleUserText } from '../title.js';
-import { deriveTargetSessionId, resolveWriteSessionId } from '../ids.js';
+import { resolveWriteSessionId } from '../ids.js';
 import { findSqlite3 } from '../sqlite.js';
 import { log } from '../../utils/logger.js';
 import {
@@ -159,43 +159,6 @@ function readCodexModelProvider(configPath: string): string {
   } catch {
     return 'openai';
   }
-}
-
-/**
- * "Pure metadata" blocks injected by source platforms. They are not real user
- * input, and Codex builds title/list preview from the first UserMessage item --
- * if that first message is metadata it is dropped wholesale -> no
- * title/preview -> the session never shows up.
- *
- * Notes: 1) only pure-metadata tags are listed here; <user_query>-style
- * wrappers around real questions are handled separately by extractUserText;
- * 2) not line-anchored -- after stripping one block the rest often starts with
- * \n\n<rules>, and line anchors would miss the following blocks; 3)
- * system_reminder covers both the underscore (CodeBuddy) and hyphen (Claude
- * Code) spellings.
- */
-const META_BLOCK_RE =
-  /<(user_info|rules|environment_context|system-reminder|system_reminder|system_instructions|available_skills|agent_request|local-command-caveat|uploaded_documents|additional_data|timestamp)[^>]*>[\s\S]*?<\/\1>[ \t]*\r?\n?/gi;
-
-function stripMetaBlocks(text: string): string {
-  let out = text;
-  for (let i = 0; i < 10; i++) {
-    const next = out.replace(META_BLOCK_RE, '');
-    if (next === out) break;
-    out = next;
-  }
-  return out.trim();
-}
-
-/**
- * Extract the real user input from a user message.
- * CodeBuddy / Cursor wrap the actual question in <user_query>...</user_query>
- * (with large <user_info>/<rules> metadata outside), so unwrapping is the
- * cleanest path; platforms without the wrapper fall back to metadata stripping.
- */
-function extractUserText(text: string): string {
-  const qm = text.match(/<user_query[^>]*>([\s\S]*?)<\/user_query>/i);
-  return stripMetaBlocks(qm ? qm[1] : text);
 }
 
 /**
@@ -458,7 +421,7 @@ export class CodexAdapter extends AgentAdapter {
     return metas;
   }
 
-  async readSession(sessionId: string, projectPath?: string): Promise<Session> {
+  async readSession(sessionId: string, _projectPath?: string): Promise<Session> {
     const f = this.findSessionFile(sessionId);
     if (!f) throw new Error(`Codex session not found: ${sessionId}`);
 

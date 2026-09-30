@@ -44,7 +44,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('node:os', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown> & { default?: object };
   const patched: Record<string, unknown> = { ...actual, homedir: () => mocks.home };
-  patched.default = { ...(actual.default ?? {}), homedir: () => mocks.home };
+  patched.default = { ...actual.default, homedir: () => mocks.home };
   return patched;
 });
 

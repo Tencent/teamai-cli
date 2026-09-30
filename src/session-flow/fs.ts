@@ -279,6 +279,7 @@ export function mayReadLocalImageFile(
 export function safeFileName(raw: string, fallback = 'image.png'): string {
   const base = path
     .basename(String(raw ?? '').replace(/\\/g, '/'))
+    // oxlint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f<>:"|?*]/g, '_')
     .replace(/^\.+/, '_')
     .trim();
