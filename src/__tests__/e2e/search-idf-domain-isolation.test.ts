@@ -131,4 +131,33 @@ describe('recall CLI domain-isolated IDF', () => {
     expect(index.dfByDomain.technical?.timeout).toBe(1);
     expect(index.dfByDomain.ops?.timeout).toBe(12);
   }, 30_000);
+
+  it('keeps a relevant technical hit after the raw top-five cutoff', async () => {
+    const entry = (filename: string, title: string, domain: 'technical' | 'ops', tokens: string[]) => ({
+      filename, title, domain, tokens, author: 'test', date: '2026-09-29',
+      tags: [], votes: 0, type: 'learnings',
+    });
+    const index = {
+      version: SEARCH_INDEX_VERSION,
+      builtAt: new Date().toISOString(),
+      elapsedMs: 0,
+      entries: [
+        entry('technical.md', 'API Technical Reference', 'technical', ['title:api', 'tag:api', 'api']),
+        ...Array.from({ length: 5 }, (_, i) => entry(`ops-hit-${i}.md`, `API Ops ${i}`, 'ops', ['title:api'])),
+        ...Array.from({ length: 195 }, (_, i) => entry(`ops-other-${i}.md`, `Ops Other ${i}`, 'ops', [])),
+      ],
+      df: { 'title:api': 6, 'tag:api': 1, api: 1 },
+      dfByDomain: {
+        technical: { 'title:api': 1, 'tag:api': 1, api: 1 },
+        ops: { 'title:api': 5 },
+      },
+    };
+    fs.writeFileSync(path.join(homeDir, '.teamai', 'search-index.json'), JSON.stringify(index));
+
+    const result = await runCli(['recall', '--check', 'api'], { HOME: homeDir, USERPROFILE: homeDir }, projectRoot);
+
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toMatch(/^RELEVANT /);
+    expect(result.output).toContain('title="API Technical Reference"');
+  }, 30_000);
 });

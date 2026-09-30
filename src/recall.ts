@@ -592,7 +592,8 @@ export async function recall(
   const idfBaseline = computeIdfBaseline(scopeIndexes.map((s) => s.index));
 
   for (const { index, scope, learningsBase } of scopeIndexes) {
-    const results = search(query, index);
+    // Keep every candidate until domain-specific scores are normalized below.
+    const results = search(query, index, index.entries.length);
     for (const r of results) {
       // A project entry shadows the same logical user entry even when the
       // project version does not match this particular query. This prevents a

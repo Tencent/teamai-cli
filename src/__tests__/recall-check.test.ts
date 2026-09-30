@@ -20,7 +20,7 @@ import { recall } from '../recall.js';
 import { detectProjectConfig } from '../config.js';
 import { queryCodeKnowledge } from '../code-knowledge-recall.js';
 import { buildIndex } from '../utils/search-index.js';
-import { getTeamaiHome, type LocalConfig } from '../types.js';
+import { getTeamaiHome, SEARCH_INDEX_VERSION, type LocalConfig, type SearchIndex } from '../types.js';
 import { readRecallQuality } from '../recall-quality.js';
 
 const CHECK_LEARNING_TITLE = 'Deployment Timeout Retry Policy';
@@ -162,6 +162,36 @@ describe('recall --check precheck mode', () => {
     expect(graphPosition).toBeGreaterThanOrEqual(0);
     expect(learningPosition).toBeGreaterThanOrEqual(0);
     expect(graphPosition).toBeLessThan(learningPosition);
+  });
+
+  it('keeps a relevant technical hit beyond five higher raw-scoring ops hits', async () => {
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+
+    const entry = (filename: string, title: string, domain: 'technical' | 'ops', tokens: string[]): SearchIndex['entries'][number] => ({
+      filename, title, domain, tokens, author: 'tester', date: '2026-05-01',
+      tags: [], votes: 0, type: 'learnings',
+    });
+    const index: SearchIndex = {
+      version: SEARCH_INDEX_VERSION,
+      builtAt: new Date().toISOString(),
+      elapsedMs: 0,
+      entries: [
+        entry('technical.md', 'API Technical Reference', 'technical', ['title:api', 'tag:api', 'api']),
+        ...Array.from({ length: 5 }, (_, i) => entry(`ops-hit-${i}.md`, `API Ops ${i}`, 'ops', ['title:api'])),
+        ...Array.from({ length: 195 }, (_, i) => entry(`ops-other-${i}.md`, `Ops Other ${i}`, 'ops', [])),
+      ],
+      df: { 'title:api': 6, 'tag:api': 1, api: 1 },
+      dfByDomain: {
+        technical: { 'title:api': 1, 'tag:api': 1, api: 1 },
+        ops: { 'title:api': 5 },
+      },
+    };
+    await fse.writeJson(path.join(getTeamaiHome('project', projectRoot), 'search-index.json'), index);
+
+    await recall('api', { check: true });
+
+    expect(captured).toMatch(/^RELEVANT /);
+    expect(captured).toContain('title="API Technical Reference"');
   });
 
   it('check mode does not record recall quality (no side effects)', async () => {
