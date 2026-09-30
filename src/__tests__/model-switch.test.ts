@@ -15,7 +15,7 @@ const SHELL_KEYS = (key: string) => key.startsWith('ANTHROPIC_') || key.startsWi
   || key === 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY';
 
 beforeEach(async () => {
-  const keys = ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'TEAMAI_TEST_MODEL_KEY',
+  const keys = ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'PI_CODING_AGENT_DIR', 'TEAMAI_TEST_MODEL_KEY',
     ...Object.keys(process.env).filter(SHELL_KEYS)];
   originalEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -61,6 +61,7 @@ function routed(
 const claudeFile = () => path.join(home, '.claude', 'settings.json');
 const codexFile = () => path.join(home, '.codex', 'config.toml');
 const openCodeFile = () => path.join(home, '.config', 'opencode', 'opencode.json');
+const piFile = () => path.join(home, '.pi', 'agent', 'models.json');
 
 describe('Claude model switching', () => {
   it('offers all Anthropic route models in modelPicker and restores prior settings', async () => {
@@ -339,6 +340,166 @@ describe('OpenCode model switching', () => {
     await fse.outputJson(openCodeFile(), { provider: { 'teamai-chat': { npm: 'mine' } } });
     expect((await switchModelProfile(routed({ 'openai-chat-completions': ['deepseek-v4-flash'] }), ['opencode']))[0].status).toBe('skipped');
     expect(await fse.readJson(openCodeFile())).toEqual({ provider: { 'teamai-chat': { npm: 'mine' } } });
+  });
+});
+
+describe('Pi model switching', () => {
+  // Pi's directory only exists once Pi is installed, and TeamAI never creates
+  // a config dir for a tool that is not there.
+  beforeEach(() => fse.ensureDir(path.dirname(piFile())));
+
+  it('registers every model under one provider, tags each with its api, and restores', async () => {
+    const original = {
+      providers: { HAIHUB: { baseUrl: 'https://personal.example/v1', api: 'openai-completions', apiKey: 'sk-personal' } },
+    };
+    await fse.outputJson(piFile(), original);
+    const profile = routed({
+      'openai-chat-completions': ['glm-5.3', 'deepseek-v4-flash'],
+      'openai-responses': ['deepseek-v4-flash'],
+    });
+    expect((await switchModelProfile(profile, ['pi']))[0].status).toBe('switched');
+    const active = await fse.readJson(piFile());
+    // The catalog id is the provider key and its name is the display name; the
+    // api of the protocol a model was reached through first becomes the default.
+    const provider = active.providers['team:tokenhub'];
+    expect(provider.name).toBe('TokenHub');
+    expect(provider.baseUrl).toBe('https://gateway.example.test/v1');
+    expect(provider.api).toBe('openai-completions');
+    expect(provider.apiKey).toBe('local-secret');
+    // Both models match the provider default, so neither repeats the fields.
+    expect(provider.models).toEqual([{ id: 'glm-5.3' }, { id: 'deepseek-v4-flash' }]);
+    // The member's own provider is untouched.
+    expect(active.providers.HAIHUB).toEqual(original.providers.HAIHUB);
+    expect((await restoreModelProfiles(['pi']))[0].status).toBe('restored');
+    expect(await fse.readJson(piFile())).toEqual(original);
+  });
+
+  it('serves an Anthropic-only catalog over anthropic-messages', async () => {
+    const profile = routed({ anthropic: ['claude-opus-4-8'] });
+    expect((await switchModelProfile(profile, ['pi']))[0].status).toBe('switched');
+    const provider = (await fse.readJson(piFile())).providers['team:tokenhub'];
+    // Anthropic keeps the gateway root; the OpenAI protocols append /v1.
+    expect(provider.baseUrl).toBe('https://gateway.example.test');
+    expect(provider.api).toBe('anthropic-messages');
+    // The provider default already is anthropic-messages at the root.
+    expect(provider.models).toEqual([{ id: 'claude-opus-4-8' }]);
+  });
+
+  it('selects the chosen default model and references an environment key', async () => {
+    await fse.ensureDir(path.dirname(piFile()));
+    process.env.TEAMAI_TEST_MODEL_KEY = 'from-env';
+    const profile = routed({ 'openai-chat-completions': ['glm-5.3', 'deepseek-v4-flash'] }, { env: 'TEAMAI_TEST_MODEL_KEY', model: 'deepseek-v4-flash' });
+    await switchModelProfile(profile, ['pi']);
+    const provider = (await fse.readJson(piFile())).providers['team:tokenhub'];
+    // Pi expands $VAR, so the key stays in the environment.
+    expect(provider.apiKey).toBe('$TEAMAI_TEST_MODEL_KEY');
+    expect(provider.api).toBe('openai-completions');
+  });
+
+  it('never writes the default-model selection', async () => {
+    await fse.outputJson(piFile(), { providers: {} });
+    const settings = path.join(home, '.pi', 'agent', 'settings.json');
+    const original = { theme: 'dark', defaultProvider: 'HAIHUB', defaultModel: 'DeepSeek-V4-Flash' };
+    await fse.outputJson(settings, original);
+    expect((await switchModelProfile(routed({ 'openai-chat-completions': ['glm-5.3'] }), ['pi']))[0].status).toBe('switched');
+    // The default model stays the member's choice, the Claude `/model` rule.
+    expect(await fse.readJson(settings)).toEqual(original);
+    expect((await restoreModelProfiles(['pi']))[0].status).toBe('restored');
+    expect(await fse.readJson(settings)).toEqual(original);
+  });
+
+  it('does not overwrite a user-owned provider under the profile ref', async () => {
+    const taken = { providers: { 'team:tokenhub': { baseUrl: 'https://mine.example/v1', api: 'openai-completions' } } };
+    await fse.outputJson(piFile(), taken);
+    expect((await switchModelProfile(routed({ 'openai-chat-completions': ['deepseek-v4-flash'] }), ['pi']))[0].status).toBe('skipped');
+    expect(await fse.readJson(piFile())).toEqual(taken);
+  });
+
+  it('serves a catalog mixing Anthropic with an OpenAI protocol as one provider', async () => {
+    // A Pi provider carries one baseUrl and one api, but a model may override
+    // both, so the two protocols coexist: the OpenAI route is the provider
+    // default and the Anthropic model repeats the fields it departs from.
+    const profile = routed({ anthropic: ['claude-opus-4-8'], 'openai-chat-completions': ['glm-5.3'] });
+    expect((await switchModelProfile(profile, ['pi']))[0].status).toBe('switched');
+    const provider = (await fse.readJson(piFile())).providers['team:tokenhub'];
+    expect(provider.api).toBe('openai-completions');
+    expect(provider.baseUrl).toBe('https://gateway.example.test/v1');
+    expect(provider.models).toEqual([
+      { id: 'glm-5.3' },
+      { id: 'claude-opus-4-8', api: 'anthropic-messages', baseUrl: 'https://gateway.example.test' },
+    ]);
+  });
+
+  it('prefers an OpenAI protocol when a model is served both ways', async () => {
+    // A gateway that serves one model over both protocols is spoken to over
+    // its OpenAI-compatible endpoint; a group declared `anthropic` alone is
+    // what pins a model to Anthropic Messages.
+    const profile = routed({ anthropic: ['shared'], 'openai-chat-completions': ['shared'] });
+    await switchModelProfile(profile, ['pi']);
+    const provider = (await fse.readJson(piFile())).providers['team:tokenhub'];
+    expect(provider.api).toBe('openai-completions');
+    // It matches the provider default, so it carries no override of its own.
+    expect(provider.models).toEqual([{ id: 'shared' }]);
+  });
+
+  it('keys the provider by the ref, so a display name can hold anything', async () => {
+    const profile = routed({ 'openai-chat-completions': ['glm-5.3'] }, { id: 'spaced', baseUrl: 'https://gateway.example.test' });
+    // A display name may hold spaces and punctuation; the key stays the ref.
+    const named = { ...profile, profile: { ...profile.profile, name: 'Tencent TokenHub / 腾讯' } };
+    expect((await switchModelProfile(named, ['pi']))[0].status).toBe('switched');
+    const providers = (await fse.readJson(piFile())).providers;
+    expect(Object.keys(providers)).toEqual(['team:spaced']);
+    expect(providers['team:spaced'].name).toBe('Tencent TokenHub / 腾讯');
+    expect((await restoreModelProfiles(['pi']))[0].status).toBe('restored');
+    expect(await fse.readJson(piFile())).toEqual({});
+  });
+
+  it('restores the key a previous switch wrote after the catalog id changes', async () => {
+    const profile = routed({ 'openai-chat-completions': ['glm-5.3'] });
+    expect((await switchModelProfile(profile, ['pi']))[0].status).toBe('switched');
+    expect(Object.keys((await fse.readJson(piFile())).providers)).toEqual(['team:tokenhub']);
+    // A profile `id` is the profile's identity within its catalog, so
+    // re-pointing an agent at a different one is a different provider: the new
+    // key is written and the restore removes the key the previous switch
+    // actually created, keyed off the snapshot TeamAI recorded rather than off
+    // the profile it now sees.
+    const renamed = { ...profile, ref: 'team:renamed', profile: { ...profile.profile, id: 'renamed' } };
+    expect((await switchModelProfile(renamed, ['pi']))[0].status).toBe('switched');
+    expect(Object.keys((await fse.readJson(piFile())).providers)).toEqual(['team:renamed']);
+    expect((await restoreModelProfiles(['pi']))[0].status).toBe('restored');
+    expect(await fse.readJson(piFile())).toEqual({});
+  });
+
+  it('keys a local and a team profile with the same id apart, since ids are unique per file only', async () => {
+    // `ModelProfilesFileSchema` rejects a duplicate id within one file, but
+    // `models/models.yaml` and `models/<ns>/models.yaml` are separate files, so
+    // a local and a team profile may both be `tokenhub`. A bare id would make
+    // the second switch silently overwrite the first gateway's provider.
+    const local = { ...routed({ 'openai-chat-completions': ['glm-5.3'] }), ref: 'local:tokenhub', source: 'local' as const };
+    expect((await switchModelProfile(local, ['pi']))[0].status).toBe('switched');
+    const team = routed({ 'openai-chat-completions': ['deepseek-v4-flash'] });
+    await switchModelProfile(team, ['pi']);
+    const providers = (await fse.readJson(piFile())).providers;
+    // The team switch replaces the local one (TeamAI tracks one profile per
+    // agent), and it must do so under its own key.
+    expect(Object.keys(providers)).toEqual(['team:tokenhub']);
+    expect(providers['team:tokenhub'].baseUrl).toBe('https://gateway.example.test/v1');
+  });
+
+  it('honors PI_CODING_AGENT_DIR and does not restore into a different one', async () => {
+    const first = path.join(home, 'first-pi');
+    const second = path.join(home, 'second-pi');
+    process.env.PI_CODING_AGENT_DIR = first;
+    await fse.outputJson(path.join(first, 'models.json'), { providers: { Mine: { baseUrl: 'https://mine.example/v1' } } });
+    expect((await switchModelProfile(routed({ 'openai-chat-completions': ['team-model'] }), ['pi']))[0].status).toBe('switched');
+    expect((await fse.readJson(path.join(first, 'models.json'))).providers['team:tokenhub']).toBeDefined();
+    process.env.PI_CODING_AGENT_DIR = second;
+    await fse.outputJson(path.join(second, 'models.json'), { providers: { Other: { baseUrl: 'https://other.example/v1' } } });
+    expect((await restoreModelProfiles(['pi']))[0].status).toBe('skipped');
+    expect(Object.keys((await fse.readJson(path.join(second, 'models.json'))).providers)).toEqual(['Other']);
+    process.env.PI_CODING_AGENT_DIR = first;
+    expect((await restoreModelProfiles(['pi']))[0].status).toBe('restored');
+    expect(Object.keys((await fse.readJson(path.join(first, 'models.json'))).providers)).toEqual(['Mine']);
   });
 });
 

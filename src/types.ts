@@ -430,7 +430,7 @@ export const TeamaiConfigSchema = z.object({
     // path — the adapter in omp-hooks.ts writes the single user-root extension
     // (~/.omp/agent/extensions/teamai-hooks.ts). Profiles (OMP_PROFILE /
     // PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move the agent dir and are not
-    // supported.
+    // supported for hooks.
     omp: {
       skills: '.omp/skills',
       rules: '.omp/rules',
@@ -451,7 +451,8 @@ export const TeamaiConfigSchema = z.object({
     // TypeScript extensions rather than a settings hook list, so the adapter
     // keeps one user extension and forwards the active cwd to hook-dispatch.
     // Profile overrides (PI_CODING_AGENT_DIR / PI_CONFIG_DIR) that relocate
-    // the agent dir are not supported, same as the OMP adapter.
+    // the agent dir are not supported for hooks, same as the OMP adapter;
+    // model profiles do read PI_CODING_AGENT_DIR.
     pi: {
       skills: '.pi/skills',
       rules: '.pi/rules',

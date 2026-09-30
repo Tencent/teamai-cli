@@ -1738,7 +1738,7 @@ GitHub Copilot CLI 已支持其官方自定义指令、Rules、Skills、自定�
 
 - **作用域。** 项目级 Skills 和 TeamAI 管理的 Rules 写入 `.pi/skills/`、`.pi/rules/`；用户级副本写入 `~/.pi/agent/skills/`、`~/.pi/agent/rules/`。
 - **指令文件。** 项目级使用 `AGENTS.md`，用户级使用 `~/.pi/agent/AGENTS.md`。Pi 也接受项目级 `CLAUDE.md`，但 TeamAI 将规范的 TeamAI 区块保留在 `AGENTS.md`。
-- **Hooks。** TeamAI 只在用户级 `~/.pi/agent/extensions/` 生成一份 `teamai-hooks.ts`，把 `session_start` 映射为 session-start、`before_agent_start` 映射为 prompt-submit、`agent_settled` 映射为 stop；`tool_execution_start` 缓存工具输入，`tool_execution_end` 派发 post-tool-use 时把缓存的输入转发为 `tool_input`（不带单独的结果/输出字段，与 OMP 适配器的 post-tool-use payload 一致）。Pi 会同时加载用户级与项目级扩展目录，因此 TeamAI 不创建项目副本——第二份副本会导致每个事件被派发两次，这与 OMP 适配器的单副本策略一致。早期版本遗留且带 TeamAI 标记的项目副本会在下次同步时移除，注入逻辑也不会覆盖没有 TeamAI 标记的同名文件。Pi 没有可供 self mode 提交的设置文件，所以 fresh clone 仍需在该机器上手动跑一次 `teamai init`/`pull` 才能激活 Pi hooks。任何一次显式移除——`teamai hooks remove`，或者某个 scope 下的 `teamai uninstall --agent pi`——都会直接删除这份共享扩展，和 OMP 适配器的单文件删除语义完全一致：Pi 没有办法把一份共享文件限定在某一个项目里，所以不会假装"为其他项目保留"却让这份扩展继续对当前项目触发；没有 TeamAI 标记的同名文件不会被删除。`teamai hooks list` 始终显示这个全局路径。Pi 的 profile 覆盖项（`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`，会迁移 agent 目录）暂不支持，与 OMP 适配器一致，使用默认的 `~/.pi/agent/` 布局。由于这份扩展是机器级共享的单个文件而非按项目隔离，某个 scope 下的移除在多项目场景中并不持久：只要 Pi 在其他任意 scope 仍处于启用状态，下一次在那里执行 `teamai init`/`pull` 就会把它重新生成，而 hook 派发本身没有按项目排除的检查，因此刚被卸载的项目里 hooks 仍可能重新触发。这与 OMP 适配器早已上线的取舍完全一致。
+- **Hooks。** TeamAI 只在用户级 `~/.pi/agent/extensions/` 生成一份 `teamai-hooks.ts`，把 `session_start` 映射为 session-start、`before_agent_start` 映射为 prompt-submit、`agent_settled` 映射为 stop；`tool_execution_start` 缓存工具输入，`tool_execution_end` 派发 post-tool-use 时把缓存的输入转发为 `tool_input`（不带单独的结果/输出字段，与 OMP 适配器的 post-tool-use payload 一致）。Pi 会同时加载用户级与项目级扩展目录，因此 TeamAI 不创建项目副本——第二份副本会导致每个事件被派发两次，这与 OMP 适配器的单副本策略一致。早期版本遗留且带 TeamAI 标记的项目副本会在下次同步时移除，注入逻辑也不会覆盖没有 TeamAI 标记的同名文件。Pi 没有可供 self mode 提交的设置文件，所以 fresh clone 仍需在该机器上手动跑一次 `teamai init`/`pull` 才能激活 Pi hooks。任何一次显式移除——`teamai hooks remove`，或者某个 scope 下的 `teamai uninstall --agent pi`——都会直接删除这份共享扩展，和 OMP 适配器的单文件删除语义完全一致：Pi 没有办法把一份共享文件限定在某一个项目里，所以不会假装"为其他项目保留"却让这份扩展继续对当前项目触发；没有 TeamAI 标记的同名文件不会被删除。`teamai hooks list` 始终显示这个全局路径。Pi 的 profile 覆盖项（`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`，会迁移 agent 目录）在 hooks 中暂不支持，与 OMP 适配器一致，使用默认的 `~/.pi/agent/` 布局。模型配置是另一回事，会读取 `PI_CODING_AGENT_DIR`。由于这份扩展是机器级共享的单个文件而非按项目隔离，某个 scope 下的移除在多项目场景中并不持久：只要 Pi 在其他任意 scope 仍处于启用状态，下一次在那里执行 `teamai init`/`pull` 就会把它重新生成，而 hook 派发本身没有按项目排除的检查，因此刚被卸载的项目里 hooks 仍可能重新触发。这与 OMP 适配器早已上线的取舍完全一致。
 - **团队 Hooks 边界。** Pi 适配器只安装内置生命周期桥接。`hooks/hooks.yaml` 声明的自定义团队 Hooks 和内置 Hook 覆盖会被跳过并给出警告。完整团队 Hooks 与逐项目归属语义需要单独的跨适配器设计，留待后续 PR。
 - **服务端下发的 Agent Hooks。** HTTP source hooks 会以同一用户级扩展目录中的 `teamai-agent-<slug>.ts` 形式安装。不支持的生命周期事件会警告并跳过。
 - **MCP 与 Subagents。** 本阶段没有为 Pi 接入 MCP 或 TeamAI 自定义 subagent 文件适配器。
@@ -2153,7 +2153,7 @@ toolRoots:                     # 可选，每机器的工具根目录（见下�
 
 ## 模型配置
 
-模型配置让 Claude Code、Codex、OpenCode、CodeBuddy 和 WorkBuddy 使用同一个模型网关。只有执行 `teamai models switch` 才会修改 Agent 配置；切换之后，`teamai pull` 会让已切换的 Agent 跟随团队目录的最新内容。
+模型配置让 Claude Code、Codex、OpenCode、CodeBuddy、WorkBuddy 和 Pi 使用同一个模型网关。只有执行 `teamai models switch` 才会修改 Agent 配置；切换之后，`teamai pull` 会让已切换的 Agent 跟随团队目录的最新内容。
 
 配置有两个来源，格式完全相同：
 
@@ -2191,6 +2191,7 @@ profiles:
 | Codex | `openai-responses` | `~/.codex/config.toml`：默认模型和 `[model_providers.teamai]` 块 |
 | OpenCode | 任意 | `opencode.json`：每种协议一个 provider，包含全部模型 |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json`：每个模型一个条目 |
+| Pi | 任意 | `~/.pi/agent/models.json`：一个以 profile 引用为键的 provider，包含全部模型。不改动 `settings.json`，默认模型由你用 `/model` 选择 |
 
 上例没有 `openai-responses` 分组，因此不会修改 Codex；确认网关的 Responses 接口支持这些模型后，再加上该协议即可。
 

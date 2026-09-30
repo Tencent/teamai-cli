@@ -30,6 +30,7 @@ export const ModelAgentSchema = z.enum([
   'opencode',
   'codebuddy',
   'workbuddy',
+  'pi',
 ]);
 export type ModelAgent = z.infer<typeof ModelAgentSchema>;
 
@@ -96,7 +97,8 @@ export function profileAgents(profile: ModelProfile): ModelAgent[] {
   return ALL_MODEL_AGENTS.filter((agent) => {
     if (agent === 'claude') return !!routes.anthropic;
     if (agent === 'codex') return !!routes['openai-responses'];
-    if (agent === 'opencode') return true;
+    // OpenCode and Pi name an api per model, so either can serve any protocol.
+    if (agent === 'opencode' || agent === 'pi') return true;
     return !!routes['openai-chat-completions'];
   });
 }

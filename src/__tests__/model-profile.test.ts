@@ -677,8 +677,8 @@ describe('model profiles', () => {
       'openai-chat-completions': ['glm-5.3'],
       'openai-responses': ['glm-5.3'],
     });
-    expect(profileAgents(parsed)).toEqual(['claude', 'codex', 'opencode', 'codebuddy', 'workbuddy']);
-    expect(profileAgents(profile('tokenhub'))).toEqual(['claude', 'opencode', 'codebuddy', 'workbuddy']);
+    expect(profileAgents(parsed)).toEqual(['claude', 'codex', 'opencode', 'codebuddy', 'workbuddy', 'pi']);
+    expect(profileAgents(profile('tokenhub'))).toEqual(['claude', 'opencode', 'codebuddy', 'workbuddy', 'pi']);
   });
 
   it('keeps api_key as a placeholder and rejects secrets or placeholders elsewhere', () => {

@@ -2,7 +2,7 @@
 
 ## Goals and boundaries
 
-Model profiles let a team publish one gateway catalog that every supported agent (Claude Code, Codex, OpenCode, CodeBuddy, WorkBuddy) can use, and let an individual keep personal gateways, without turning the team Git repository into a secret store.
+Model profiles let a team publish one gateway catalog that every supported agent (Claude Code, Codex, OpenCode, CodeBuddy, WorkBuddy, Pi) can use, and let an individual keep personal gateways, without turning the team Git repository into a secret store.
 
 - The catalog format stays small: `id`, `name`, `base_url`, `api_key: ${API_KEY}` (a placeholder), and `model_groups`. There are no per-agent sections; agent support follows from protocols.
 - Agents change only after an explicit `teamai models switch`. From then on `teamai pull` re-applies the team's latest catalog to the agents switched to it. Agents never switched are never touched.
@@ -58,8 +58,9 @@ An override can move a profile to another gateway, so a team key is bound to the
 | Codex | `openai-responses` | Top-level `model`, `model_provider`, and `[model_providers.teamai]`; `auth.json` is never touched |
 | OpenCode | any | Top-level `model` and providers `teamai-anthropic`, `teamai-chat`, `teamai-responses`; a model served over several protocols is registered once, preferring Chat Completions |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | One `models.json` entry per model; a non-empty `availableModels` gets the managed IDs |
+| Pi | any | One `models.json` provider, keyed by the profile ref; a model served over several protocols is registered once, preferring an OpenAI one. `settings.json` is never touched |
 
-Claude family aliases point at the first gateway model whose ID contains `opus`, `sonnet`, or `haiku`, else the default, so background work and subagents never request a model the gateway lacks. Keys referenced by environment variable are written as `env_key` (Codex), `{env:VAR}` (OpenCode), and `${VAR}` (CodeBuddy/WorkBuddy); Claude has no such syntax and receives the resolved key.
+Claude family aliases point at the first gateway model whose ID contains `opus`, `sonnet`, or `haiku`, else the default, so background work and subagents never request a model the gateway lacks. Keys referenced by environment variable are written as `env_key` (Codex), `{env:VAR}` (OpenCode), `${VAR}` (CodeBuddy/WorkBuddy), and `$VAR` (Pi); Claude has no such syntax and receives the resolved key.
 
 Codex is edited line by line to keep comments and formatting. The result is parsed and compared with the intended values before writing; an unusual layout the edit cannot handle fails without touching the file.
 
@@ -69,6 +70,6 @@ Before the first switch TeamAI records the managed fields' values. When a later 
 
 Claude is refused while `settings.json` enables Bedrock, Vertex, or Foundry. Shell `ANTHROPIC_*` values that differ from what TeamAI writes produce a warning, not a refusal: host apps such as the Claude Code desktop app set them for their own sessions.
 
-Writes are ordered to survive interruption: a pending record is saved, the agent file is replaced atomically, and the pending mark is cleared. The next command settles an interrupted operation only when the managed fields match either side; otherwise the agent is skipped. A write that fails removes its pending record. The record pins the agent's config path (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `OPENCODE_CONFIG` are honored), so a later path change never redirects a restore. A lock serializes model operations; `pull` confirms under that lock that an agent still uses the profile it decided to re-apply.
+Writes are ordered to survive interruption: a pending record is saved, the agent file is replaced atomically, and the pending mark is cleared. The next command settles an interrupted operation only when the managed fields match either side; otherwise the agent is skipped. A write that fails removes its pending record. The record pins the agent's config path (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `OPENCODE_CONFIG`, `PI_CODING_AGENT_DIR` are honored), so a later path change never redirects a restore. A lock serializes model operations; `pull` confirms under that lock that an agent still uses the profile it decided to re-apply.
 
 While a profile is active on an agent, the local-agent server model delivery pauses for it. A full user-scope uninstall restores model settings before removing MCP servers and stops, keeping the record, if any agent cannot be restored; project-scope uninstall leaves these machine-wide settings alone.

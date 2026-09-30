@@ -7,7 +7,7 @@ import { pathExists, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
 import type { LocalConfig } from '../types.js';
-import { ALL_MODEL_AGENTS, type ModelAgent, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
+import { ALL_MODEL_AGENTS, type ModelAgent, type ModelProtocol, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
 
 export { ALL_MODEL_AGENTS } from './profile.js';
 
@@ -94,10 +94,22 @@ function openCodeSettingsPath(): string {
   return path.join(process.env.XDG_CONFIG_HOME?.trim() || path.join(getUserHome(), '.config'), 'opencode', 'opencode.json');
 }
 
+/**
+ * Pi relocates its whole agent directory with `PI_CODING_AGENT_DIR`, the same
+ * way Codex honors `CODEX_HOME`. The file TeamAI manages inside it is
+ * models.json; Pi's own settings.json holds the default-model selection and is
+ * deliberately never written.
+ */
+function piSettingsPath(): string {
+  const dir = process.env.PI_CODING_AGENT_DIR?.trim() || path.join(getUserHome(), '.pi', 'agent');
+  return path.join(dir, 'models.json');
+}
+
 function agentSettingsPath(agent: ModelAgent): string {
   if (agent === 'claude') return claudeSettingsPath();
   if (agent === 'codex') return codexSettingsPath();
   if (agent === 'opencode') return openCodeSettingsPath();
+  if (agent === 'pi') return piSettingsPath();
   return path.join(getUserHome(), `.${agent}`, 'models.json');
 }
 
@@ -205,6 +217,15 @@ function equal(a: unknown, b: unknown): boolean {
  * top-level model never decides ownership.
  */
 function sameManaged(agent: ModelAgent, a: unknown, b: unknown): boolean {
+  // `id` keys Pi's provider for TeamAI and is never written to the file, so it
+  // is compared out: the recorded snapshot carries it, the one read back off
+  // disk cannot, and an exact-equality check would report the agent as taken
+  // over on every restore.
+  if (agent === 'pi') {
+    const { id: _left, ...left } = (a ?? {}) as Record<string, unknown>;
+    const { id: _right, ...right } = (b ?? {}) as Record<string, unknown>;
+    return equal(left, right);
+  }
   if (agent !== 'claude') return equal(a, b);
   const { model: _left, ...left } = a as ClaudeSnapshot;
   const { model: _right, ...right } = b as ClaudeSnapshot;
@@ -248,8 +269,141 @@ async function installed(agent: ModelAgent): Promise<boolean> {
 function supportedRoute(agent: ModelAgent, profile: ResolvedModelProfile): boolean {
   if (agent === 'claude') return !!profile.routes.anthropic;
   if (agent === 'codex') return !!profile.routes['openai-responses'];
-  if (agent === 'opencode') return Object.keys(profile.routes).length > 0;
+  // OpenCode and Pi name an api per model, so either serves any protocol.
+  if (agent === 'opencode' || agent === 'pi') return Object.keys(profile.routes).length > 0;
   return !!profile.routes['openai-chat-completions'];
+}
+
+// ─── Pi ───────────────────────────────────────────────────
+
+/**
+ * The protocols Pi can serve, in the order a model reachable through several of
+ * them is registered: an OpenAI protocol wins over Anthropic, so a gateway that
+ * serves one model both ways is used over its OpenAI-compatible endpoint and
+ * only a group declared `anthropic` alone is spoken to as Anthropic Messages.
+ * Declare a model such as `claude-opus-4-8` in a group of its own to pin it.
+ */
+const PI_APIS = [
+  ['openai-chat-completions', 'openai-completions'],
+  ['openai-responses', 'openai-responses'],
+  ['anthropic', 'anthropic-messages'],
+] as const satisfies ReadonlyArray<readonly [ModelProtocol, string]>;
+
+/**
+ * The provider key TeamAI writes, and the one a later restore removes. It is
+ * the profile's qualified ref — `team:<id>` / `local:<id>` — and not the bare
+ * `id`: an `id` is unique only within one catalog file, so `local:tokenhub` and
+ * `team:tokenhub` can both exist, and keying by the bare id would make the
+ * second silently overwrite the first gateway's provider. The ref is also what
+ * the rest of the CLI already names a profile by, and it is stable while the
+ * gateway is, unlike the display `name`.
+ */
+function piProviderKey(profile: ResolvedModelProfile): string {
+  return profile.ref;
+}
+
+interface PiProvider {
+  /** Provider-level api and url; a model may override both. */
+  api: string;
+  baseUrl: string;
+  models: Array<Record<string, unknown>>;
+}
+
+/**
+ * The single provider TeamAI writes into Pi's models.json, or null when the
+ * catalog has no protocol Pi can serve.
+ *
+ * Pi resolves `api` and `baseUrl` per model before falling back to the
+ * provider's, so a catalog whose protocols disagree on the URL — Anthropic
+ * takes the gateway root, the OpenAI protocols `<root>/v1` — is still one
+ * provider: the first protocol in `PI_APIS` becomes the provider default and
+ * every model reached through another carries both fields itself.
+ */
+function piProvider(profile: ResolvedModelProfile): PiProvider | null {
+  const models: Array<Record<string, unknown>> = [];
+  const of = new Map<string, { api: string; baseUrl: string }>();
+  let fallback: { api: string; baseUrl: string } | undefined;
+  for (const [protocol, api] of PI_APIS) {
+    const route = profile.routes[protocol];
+    if (!route) continue;
+    fallback ??= { api, baseUrl: route.base_url };
+    for (const model of route.models) {
+      if (of.has(model)) continue;
+      of.set(model, { api, baseUrl: route.base_url });
+    }
+  }
+  if (fallback === undefined) return null;
+  for (const [model, route] of of) {
+    // Only a model that departs from the provider default repeats the fields.
+    models.push(route.api === fallback.api && route.baseUrl === fallback.baseUrl
+      ? { id: model }
+      : { id: model, api: route.api, baseUrl: route.baseUrl });
+  }
+  return { api: fallback.api, baseUrl: fallback.baseUrl, models };
+}
+
+/** The provider entry TeamAI owns, or null when it owns none. */
+type PiSnapshot = Record<string, unknown> | null;
+
+/**
+ * Read the provider TeamAI manages. Its key is the profile ref, which is not
+ * part of the snapshot, so `reference` names it — the snapshot last written for
+ * this agent, and the same role OpenCode's constant `teamai` key plays there.
+ */
+function piSnapshot(doc: Record<string, unknown>, reference?: unknown): PiSnapshot {
+  const id = piKeyOf(reference);
+  if (id === null) return null;
+  const provider = (isRecord(doc.providers) ? doc.providers : {})[id];
+  return isRecord(provider) ? provider : null;
+}
+
+/**
+ * The key a written snapshot is stored under, read back off the snapshot
+ * itself. `id` rides along in the manifest's `lastWritten` but never reaches
+ * Pi's file, so it is the one record of the key — shared by the switch that
+ * wrote the entry and the restore that later removes it, with no second copy to
+ * keep in step.
+ */
+function piKeyOf(reference: unknown): string | null {
+  const id = isRecord(reference) ? reference.id : undefined;
+  return typeof id === 'string' ? id : null;
+}
+
+async function piDoc(): Promise<Record<string, unknown>> {
+  const file = piSettingsPath();
+  const doc = await jsonObject(file);
+  if (doc.providers !== undefined && !isRecord(doc.providers)) {
+    throw new Error(`Cannot update ${file}: providers must be an object`);
+  }
+  return doc;
+}
+
+/**
+ * Write TeamAI's one provider entry, or remove it. `snapshot` is the desired
+ * provider — carrying, under `id`, the profile ref it is keyed by — or null on
+ * a restore, which writes back whatever the agent had before TeamAI and so
+ * names no provider of its own. `previousManaged` is the entry the last switch
+ * wrote: its key is used when `snapshot` has none, and dropped when this write
+ * does not use it, so re-pointing a profile at a different ref leaves no orphan.
+ */
+async function writePi(snapshot: PiSnapshot, previousManaged?: unknown): Promise<void> {
+  const file = piSettingsPath();
+  const doc = await piDoc();
+  const providers = { ...(isRecord(doc.providers) ? doc.providers : {}) };
+  const managed = piKeyOf(previousManaged);
+  const id = piKeyOf(snapshot) ?? managed;
+  if (id === null) return;
+  if (snapshot === null) delete providers[id];
+  else {
+    // `id` keys the entry for TeamAI and is not part of Pi's provider schema,
+    // so it is held back from the file.
+    const { id: _key, ...provider } = snapshot;
+    providers[id] = provider;
+  }
+  if (managed !== null && managed !== id) delete providers[managed];
+  if (Object.keys(providers).length === 0) delete doc.providers;
+  else doc.providers = providers;
+  await writeAgentJson(file, doc);
 }
 
 // ─── Claude ───────────────────────────────────────────────
@@ -557,6 +711,7 @@ async function currentSnapshot(agent: ModelAgent, reference?: unknown): Promise<
   if (agent === 'claude') return claudeSnapshot(await jsonObject(claudeSettingsPath()));
   if (agent === 'codex') return codexSnapshot((await readOptionalFile(codexSettingsPath())) ?? '');
   if (agent === 'opencode') return openCodeSnapshot(await jsonObject(openCodeSettingsPath()));
+  if (agent === 'pi') return piSnapshot(await piDoc(), reference);
   const written = reference as BuddySnapshot | undefined;
   const { models, availableModels } = await buddyDoc(agent);
   const entries = written?.entries ?? {};
@@ -576,6 +731,7 @@ async function writeSnapshot(
   if (agent === 'claude') return writeClaude(snapshot as ClaudeSnapshot);
   if (agent === 'codex') return writeCodex(snapshot as CodexSnapshot);
   if (agent === 'opencode') return writeOpenCode(snapshot as OpenCodeSnapshot);
+  if (agent === 'pi') return writePi(snapshot as PiSnapshot, previousManaged);
   return replaceBuddy(agent, previousManaged as BuddySnapshot | undefined, snapshot as BuddySnapshot, keepAppMetadata, released);
 }
 
@@ -644,6 +800,21 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
     const defaultModel = profile.model ?? catalog[0];
     return { model: `${providerOf.get(defaultModel)}/${defaultModel}`, providers } satisfies OpenCodeSnapshot;
   }
+  if (agent === 'pi') {
+    const provider = piProvider(profile)!;
+    return {
+      // The provider key, read back by currentSnapshot and writePi, which have
+      // the snapshot but not the profile.
+      id: piProviderKey(profile),
+      name: profile.profile.name,
+      baseUrl: provider.baseUrl,
+      // Pi expands $VAR and ${VAR} in apiKey, the same indirection TeamAI
+      // writes elsewhere, so a key held in the environment stays there.
+      apiKey: envRef ? `$${envRef}` : profile.api_key_value ?? '',
+      api: provider.api,
+      models: provider.models,
+    } satisfies Record<string, unknown>;
+  }
   const route = profile.routes['openai-chat-completions']!;
   return {
     entries: Object.fromEntries(route.models.map((model) => [model, {
@@ -690,7 +861,7 @@ async function recoverPending(manifest: ModelSwitchManifest, agent: ModelAgent):
   return true;
 }
 
-async function firstSwitchCollision(agent: ModelAgent): Promise<string | undefined> {
+async function firstSwitchCollision(agent: ModelAgent, profile: ResolvedModelProfile): Promise<string | undefined> {
   if (agent === 'codex') {
     const source = (await readOptionalFile(codexSettingsPath())) ?? '';
     const providers = parseCodex(source).model_providers;
@@ -704,6 +875,14 @@ async function firstSwitchCollision(agent: ModelAgent): Promise<string | undefin
     const providers = openCodeProviders(await jsonObject(openCodeSettingsPath()));
     const taken = OPENCODE_PROVIDER_IDS.find((id) => providers[id] !== undefined);
     return taken ? `opencode already has a user-owned provider named ${taken}` : undefined;
+  }
+  if (agent === 'pi') {
+    // The provider key is the profile ref, so a member who already has a
+    // provider under that ref is refused rather than silently overwritten.
+    const id = piProviderKey(profile);
+    const doc = await piDoc();
+    const providers = isRecord(doc.providers) ? doc.providers : {};
+    return providers[id] !== undefined ? `pi already has a user-owned provider named ${id}` : undefined;
   }
   return undefined;
 }
@@ -851,7 +1030,7 @@ async function switchModelProfileUnlocked(
 
       const collision = agent === 'codebuddy' || agent === 'workbuddy'
         ? await buddyCollision(agent, desired as BuddySnapshot, state)
-        : state ? undefined : await firstSwitchCollision(agent);
+        : state ? undefined : await firstSwitchCollision(agent, profile);
       if (collision) {
         results.push({ agent, status: 'skipped', message: collision });
         continue;
@@ -1020,6 +1199,7 @@ function writtenGatewayUrls(agent: ModelAgent, snapshot: unknown): string[] {
         : []
     ));
   }
+  if (agent === 'pi') return typeof snapshot.baseUrl === 'string' ? [snapshot.baseUrl] : [];
   const entries = isRecord(snapshot.entries) ? Object.values(snapshot.entries) : [];
   return entries.flatMap((entry) => (isRecord(entry) && typeof entry.url === 'string' ? [entry.url] : []));
 }
