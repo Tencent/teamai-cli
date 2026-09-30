@@ -18,7 +18,8 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, default: actual, execFileSync: boom };
 });
 
-import { getDispatchCommand, findGitBashWindows, _resetShellCache } from '../builtin-hooks.js';
+import { getDispatchCommand, _resetShellCache } from '../builtin-hooks.js';
+import { findGitBashWindows } from '../bundled-runtime.js';
 
 // Windows resolves a bare `bash` to System32's WSL launcher before any PATH
 // entry, and the WSL side has a different $HOME and no npm-global teamai — the

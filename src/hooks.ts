@@ -19,7 +19,7 @@ import {
 } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig, Scope } from './types.js';
 import { isSelfMode } from './types.js';
-import { builtinHookDefs, applyBuiltinOverride, skipToolsWithoutShell, toolUsesCmdShell } from './builtin-hooks.js';
+import { builtinHookDefs, applyBuiltinOverride, skipToolsWithoutShell } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
 import { getUserHome } from './utils/home.js';
@@ -304,6 +304,11 @@ function cmdLiteral(value: string): string {
  * cmd.exe equivalent of the POSIX project gate, as a prefix that resolves to
  * true only inside `root`.
  *
+ * Read-only: this gate is only ever matched against (isGatedForProject), never
+ * rendered. 0.26.0 wrote it for CodeBuddy on Windows; those entries are still
+ * on disk, and recognising them is what lets a re-render replace the gate
+ * instead of stacking a second one.
+ *
  * The cwd is read with a bare `cd`, whose output goes straight into the pipe:
  * unlike `echo %CD%`, the directory name is never part of a parsed command, so
  * `&`, `%` and `^` in it cannot be re-interpreted. `cd` prints no trailing
@@ -326,27 +331,20 @@ function cmdProjectGate(root: string): string {
 
 /**
  * Keep a project-scope team hook from firing in every project on the machine.
- * The gate is rendered in the syntax of the shell that will actually run it:
- * cmd.exe for tools whose Windows hook runner is cmd.exe — a POSIX
- * `if [ "$PWD" ... ]` there is a syntax error that kills the whole command,
- * gate and payload alike, before it ever runs — and POSIX sh for every other
- * tool.
  *
- * Exit-status contract, identical for both renderings: outside the project the
- * gate is a no-op that exits 0, and inside it the command's own status is
- * passed through. A gate mismatch that returned non-zero would make CodeBuddy
- * read the hook as `allowed:false` and BLOCK every UserPromptSubmit outside the
- * project, so the cmd form must not inherit `findstr`'s failure status. That is
- * also why the cmd form is not `${gate} || exit /b 0 && (…)`: the `||` would
- * swallow a genuine payload failure along with the mismatch, losing the
- * pass-through the POSIX `if …; then …; fi` gives for free.
+ * Every tool runs hook commands through a POSIX shell on every platform
+ * (WorkBuddy's bundled MSYS sh, CodeBuddy's required Git Bash, `bash -lc` for
+ * the rest), so the gate is always the POSIX form. Outside the project it is a
+ * no-op that exits 0 and inside it the payload's own status is passed through:
+ * a gate mismatch that returned non-zero would make CodeBuddy read the hook as
+ * `allowed:false` and BLOCK every UserPromptSubmit outside the project.
+ *
+ * Legacy cmd.exe gates are still recognised on read by isGatedForProject(), so
+ * a re-render replaces 0.26.0's cmd gate instead of stacking a second one.
  */
-function gateTeamHookCommand(command: string, projectRoot: string | undefined, tool: string): string {
+function gateTeamHookCommand(command: string, projectRoot: string | undefined): string {
   if (!projectRoot) return command;
   const root = canonicalProjectRoot(projectRoot);
-  if (toolUsesCmdShell(tool)) {
-    return `${cmdProjectGate(root)} & if not errorlevel 1 (${command}) else exit /b 0`;
-  }
   const quoted = shellQuote(root);
   return `if [ "$PWD" = ${quoted} ] || case "$PWD" in ${quoted}/*) true;; *) false;; esac; then (${command}); fi`;
 }
@@ -362,14 +360,14 @@ function isProjectGatedCommand(command: string): boolean {
   return command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ');
 }
 
-function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string): HookDef[] {
+function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined): HookDef[] {
   if (!projectRoot) return teamDefs;
-  return teamDefs.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, tool) }));
+  return teamDefs.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot) }));
 }
 
 function manifestRecordsForTool(teamDefs: HookDef[], tool: string, removeAll: boolean, projectRoot?: string): ManagedHookRecord[] {
   if (removeAll) return [];
-  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool), tool).map((d) => ({
+  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot), tool).map((d) => ({
     id: d.key,
     event: d.event,
     ...(d.matcher && d.matcher !== '*' ? { matcher: d.matcher } : {}),
@@ -1102,7 +1100,7 @@ export async function reconcileHooks(
     ? allPriorRecords.filter((r) => isGatedForProject(r.command, opts.teamHookProjectRoot!))
     : allPriorRecords;
   const priorTeamCommands = new Set(priorRecords.map((r) => r.command));
-  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool);
+  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot);
   const desiredTeamCommands = new Set(scopedDefs.filter((d) => !d.tools || d.tools.includes(tool)).map((d) => d.command));
 
   const format = detectFormat(tool);
