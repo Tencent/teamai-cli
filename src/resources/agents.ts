@@ -14,6 +14,7 @@ import { loadStateForScope } from '../config.js';
 import { placedResourcePath } from '../push-namespaces.js';
 import { itemCandidate, resolveNamespacedItems, type NamespaceResolution } from '../namespace-resolver.js';
 import { getFileContentAtRev, getFileContentWhenAdded, isPastVersionOf } from '../utils/git.js';
+import { keepsEditedCopy, recordDelivered, type DeliveryLedger } from './delivered-copies.js';
 import {
   parseAgentYaml,
   serializeAgentYaml,
@@ -638,7 +639,7 @@ export class AgentsHandler extends ResourceHandler {
    * New format (.yaml): parses spec, respects spec.targets, renders per-tool native format.
    * Legacy format (.md): copies .md as-is to Claude-compatible tools.
    */
-  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+  async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig, ledger?: DeliveryLedger): Promise<void> {
     const agentItem = item as AgentResourceItem;
 
     // Determine format: explicit flag takes precedence; fall back to extension detection
@@ -661,6 +662,7 @@ export class AgentsHandler extends ResourceHandler {
     for (const { tool, dest, render } of await this.resolveRenders(teamConfig, localConfig, item)) {
       const destDir = path.dirname(dest);
       try {
+        if (ledger && await keepsEditedCopy(ledger, item, { tool, dest, content: render.content })) continue;
         await ensureDir(destDir);
         // Only a rendered spec can leave a sibling behind: its extension follows
         // the tool's format and changes when `targets` does. A legacy `.md` is
@@ -671,6 +673,7 @@ export class AgentsHandler extends ResourceHandler {
           await removeStaleAgentSiblings(destDir, item.name, render.ext);
         }
         await writeFile(dest, render.content);
+        if (ledger) await recordDelivered(ledger.hashes, dest);
         log.debug(`Rendered agent ${item.name} → ${tool} (${render.ext})`);
       } catch (e) {
         log.warn(`Failed to sync agent ${item.name} to ${tool}: ${(e as Error).message}`);
@@ -963,9 +966,9 @@ type TeamAgentFile = { path: string; ext: '.yaml' | '.md'; namespace?: string };
  * edit made before the author's next pull would otherwise be overwritten by the
  * stale local copy (#649 review). The copy stays at the revision pull delivered
  * while push bases move on (push records the team HEAD before the scan), so a
- * difference from any of those versions counts. A guard, not a merge: `pull`
- * delivers the recorded agent and resets the bases, after which the edit can be
- * pushed.
+ * difference from any of those versions counts. A guard, not a merge: pull
+ * keeps the edited copy (#822), so the member takes the team version by
+ * deleting it and pulling, which resets the bases, then reapplies the edit.
  */
 async function recordedAgentMovedOn(repoPath: string, relPath: string, bases: readonly string[]): Promise<boolean> {
   const current = await readFileSafe(path.join(repoPath, relPath));
@@ -984,8 +987,8 @@ async function recordedAgentMovedOn(repoPath: string, relPath: string, bases: re
 
 function staleRecordedAgentReason(stem: string, relPath: string): string {
   return `Agent "${stem}" (${relPath}) changed on the team since this checkout last synced it, `
-    + 'so pushing your copy would overwrite that change. `teamai pull` replaces your copy with the team version, '
-    + 'so first copy your edit aside, then pull, reapply it, and push again.';
+    + 'so pushing your copy would overwrite that change. `teamai pull` keeps a copy you changed, '
+    + 'so copy your edit aside, delete your copy, run `teamai pull --force`, reapply the edit, and push again.';
 }
 
 /**

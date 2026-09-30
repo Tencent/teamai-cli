@@ -37,6 +37,42 @@ teamai mcp remove      # remove teamai-managed MCP servers
 MCP definitions travel with the team repo like skills/rules — edit, then the
 members pick them up on sync.
 
+A server with a `${VAR}` the tool cannot expand itself gets the resolved value
+written into its project config (`.mcp.json`, `.cursor/mcp.json`, ...). Before
+that write, teamai lists the file in the clone's `.git/info/exclude`, inside a
+`# [teamai:mcp-exclude:start]` block; the committed `.gitignore` is never touched.
+A file under a symlinked directory is listed and checked where the write lands
+(`.cursor/` linking to `config/`: `/config/mcp.json`); a symlink at the file
+itself is replaced by the write.
+When it cannot (git already tracks the file, a rule in the member's git ignore
+files re-includes it, `.git/info` is not writable, the exclude file is held by
+another teamai command, or git errors), it leaves the file as it was, warns, and
+`teamai mcp list` shows `withheld: <tool> — <reason>. <fix>`. Apply the fix it
+names (a tracked file: `git rm --cached <file>` and rotate the token; a
+re-including rule such as `!/.mcp.json`: remove it), then run `teamai pull`. A pull or `teamai mcp remove` takes a line out
+once its file no longer holds a resolved value; `teamai uninstall` does so in
+every worktree. A file written under a `toolPaths.<tool>.mcpProject` the team
+later changes or removes stays listed until it is deleted or holds no server;
+for one an older teamai wrote, the first pull finds the path in the team repo's
+history of `teamai.yaml`, or among the built-in paths teamai has since changed
+(not one the same tool maps today), and lists it while it holds any server; one
+git tracks is recorded instead and listed once the member runs `git rm --cached`
+on it. `teamai doctor` checks those paths until that pull. A file written for a
+tool the team moved elsewhere (recorded, or found in that history), that another
+tool still maps, stays listed while it holds a server that tool did not write,
+one of the member's own included. The built-in location of a tool the team drops
+from `toolPaths` or moves elsewhere stays listed while it holds any server; one
+another tool maps today (CodeBuddy's `.mcp.json`, which Claude maps) while it
+holds a server that tool did not write. A file two tools map, with no pull on
+this version having recorded it, needs a `managed-mcp.json` record from each of
+them. While a worktree has no `managed-mcp.json` at all (lost, or before its
+first pull), an untracked config holding a server no record claims is listed,
+and that server noted: it keeps the line until it leaves the file. So is the
+file of a tool `managed-mcp.json` has no record for, when a pull writes that
+tool's first record (its record lost, or teamai's first delivery to it). While that
+note cannot be written (another teamai command holds the record), the line stays
+until a later pull writes it.
+
 ## Invite a member
 
 There is **no CLI invite flag.** Inviting is done on the Git platform's website:
@@ -150,10 +186,12 @@ teamai push                                 # share the updated teamai.yaml
 
 ```bash
 teamai env list              # what reaches this directory, each with its namespace (values masked)
-teamai env list --reveal     # show values in plaintext
+teamai env list --reveal     # show variable values in plaintext (never a secret's)
 teamai env add <KEY> <VALUE> # add or update in env/env.yaml
 teamai env add <KEY> <VALUE> --project <id>   # or --role <ns>: in that namespace's env/<ns>/env.yaml (warns if nothing declares <ns>)
 teamai env remove <KEY>      # remove (same --role / --project)
+teamai env add <KEY> --secret -d "<what it is for>" --url <where to get one>   # declare a secret in env/secrets.yaml, no value (same --role / --project)
+teamai env remove <KEY> --secret   # remove a declared secret (plain `env remove` does too when env.yaml does not set <KEY>)
 teamai remove mcp <name>     # root mcp/mcp.yaml if it has the name, else the one namespace file; --role / --project pick a namespace
 ```
 
@@ -171,17 +209,38 @@ and push it with git. `teamai doctor` lists each override.
   state is kept. Fix the file the warning names. A hooks or MCP file with none of
   its top-level keys (`server:` for `servers:`) counts as one that does not parse.
 - Per-entry `projects:` (and `roles:` on env) no longer works: such an entry reaches
-  nobody. `roles:` on hooks and MCP still filters for one more minor release. Pull
-  and `teamai doctor` name the namespace file each entry belongs in; move it there.
+  nobody. `roles:` on hooks and MCP still filters for one more minor release. Pull,
+  the list commands (`teamai env list`, `teamai mcp list`, `teamai hooks list`,
+  `teamai list <env|hooks|mcp> --source repo`), `teamai status` and
+  `teamai doctor` name the namespace file each entry belongs in; move it there.
+  When `teamai env add` updates a variable carrying either removed key, it keeps
+  the key and warns that pull will not deliver the variable, naming that file.
 - An env, hook or MCP entry with a key its schema does not know (a mistyped `role:`)
-  also reaches nobody. Pull and `teamai doctor` name the file, entry and key; correct
-  the key or remove it. A key a later teamai version adds is unknown to an older one,
-  so upgrade every member before the team uses a new entry key.
+  also reaches nobody. Pull, the list commands, `teamai status` and
+  `teamai doctor` name the file, entry and key; correct the key or remove it.
+  A key a later teamai version adds is unknown to an older one, so upgrade every
+  member before the team uses a new entry key.
 - Team model profiles work the same way: `models/<ns>/models.yaml`, declared under
   `resources.models`, replaces the root profile with the same `id` for members who
   have `<ns>` active. A member's API key is bound to the profile's gateway origin:
   when an override points at another host, their pull leaves the agent alone and
   asks them to run `teamai models switch team:<id>` to set the key for it.
+- Secrets are declared with no value in `env/secrets.yaml` or `env/<ns>/secrets.yaml`
+  (active through `resources.env`; a namespace entry replaces the root entry with the
+  same key): a `secrets:` list of `key`, optional `description` and optional `url`
+  (where a member gets one). Never put a value there: `teamai env add <KEY> --secret`
+  takes none and rejects one. Declare with it or edit the file in the team repo;
+  `teamai push` picks it up. Each member sets their own value with `teamai env set KEY`
+  in their terminal (`--global` for every team on their machine; a team value still
+  wins). `teamai env list` shows each secret as `team`, `global`, `environment`,
+  `missing` or `unreadable` and never shows a value, `--reveal` included. The `description` is what
+  agents see: the session-start hook lists each declared key with it and tells the
+  agent to run the CLIs that need them through `teamai env exec --`, so say which
+  tool or server uses the key. As the agent, run `teamai env add <KEY> --secret`
+  yourself and leave the value to each member's own terminal. A key declared as a secret
+  and also set in `env.yaml` is a secret: its `env.yaml` value is not delivered. A
+  secrets file that does not parse keeps `env.sh` and MCP servers as they were, and
+  `teamai doctor` fails a check naming the file.
 - Have every member upgrade before declaring `env`, `hooks`, `mcp`, `models` or `docs` in a
   manifest: teamai 0.25.0 and the 0.26.0 betas reject those keys and their pull stops.
 

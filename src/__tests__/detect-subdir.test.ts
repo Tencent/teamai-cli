@@ -38,7 +38,7 @@ let repoRoot: string;
 let worktreeRoot: string;
 
 beforeAll(() => {
-  base = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-detect-')));
+  base = realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-detect-')));
   repoRoot = path.join(base, 'repo');
   fs.mkdirSync(repoRoot);
   git(repoRoot, 'init', '-q');
@@ -152,7 +152,7 @@ describe('resolveDataHomeForScope — desync guard', () => {
       git(pRepo, 'config', 'user.email', 't@e');
       git(pRepo, 'config', 'user.name', 'T');
       git(pRepo, 'commit', '--allow-empty', '-q', '-m', 'init');
-      const anchorReal = realpathSync(pRepo);
+      const anchorReal = realpathSync.native(pRepo);
       const partition = projectDataHome(anchorReal);
       fs.mkdirSync(partition, { recursive: true });
       fs.writeFileSync(path.join(partition, 'config.yaml'), YAML.stringify({
@@ -184,7 +184,7 @@ describe('resolveDataHomeForScope — desync guard', () => {
       git(pRepo, 'config', 'user.email', 't@e');
       git(pRepo, 'config', 'user.name', 'T');
       git(pRepo, 'commit', '--allow-empty', '-q', '-m', 'init');
-      const anchorReal = realpathSync(pRepo);
+      const anchorReal = realpathSync.native(pRepo);
       const legacyPartition = path.join(home, '.teamai', 'projects', legacyProjectSlug(anchorReal));
       fs.mkdirSync(legacyPartition, { recursive: true });
       fs.writeFileSync(path.join(legacyPartition, 'config.yaml'), YAML.stringify({

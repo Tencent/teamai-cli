@@ -97,7 +97,7 @@ export type TeamDetection =
   | { kind: 'none' }
   | { kind: 'unusable'; detail: string };
 
-export async function detectTeam(cwd?: string): Promise<TeamDetection> {
+export async function detectTeam(cwd?: string, options: { dryRun?: boolean } = {}): Promise<TeamDetection> {
   const { autoDetectInit, findUnreadableProjectConfig, requireInit, NotInitializedError, describeUnreadableConfig } =
     await import('./config.js');
   // Loading the config can migrate it and say so with `log.info`. That line
@@ -114,14 +114,14 @@ export async function detectTeam(cwd?: string): Promise<TeamDetection> {
         // other failure (no permission, a path through a file) leaves the
         // project unknown, not absent.
         if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') {
-          return { kind: 'team', init: await requireInit() };
+          return { kind: 'team', init: await requireInit(options) };
         }
         return { kind: 'unusable', detail: `${cwd} cannot be checked: ${e instanceof Error ? e.message : String(e)}` };
       }
     }
-    const unreadable = await findUnreadableProjectConfig(cwd);
+    const unreadable = await findUnreadableProjectConfig(cwd, options);
     if (unreadable) return { kind: 'unusable', detail: describeUnreadableConfig(unreadable) };
-    return { kind: 'team', init: await autoDetectInit(cwd) };
+    return { kind: 'team', init: await autoDetectInit(cwd, options) };
   } catch (e) {
     if (e instanceof NotInitializedError) return { kind: 'none' };
     return { kind: 'unusable', detail: firstLine(e instanceof Error ? e.message : String(e)) };
@@ -141,8 +141,8 @@ export async function detectTeam(cwd?: string): Promise<TeamDetection> {
  * writable, is then unknown, and the workflow would fail at `teamai contribute`.
  * Any failure past loading the config is a fault here and propagates.
  */
-export async function shareGate(cwd?: string): Promise<ShareGate> {
-  return gateFor(await detectTeam(cwd));
+export async function shareGate(cwd?: string, options: { dryRun?: boolean } = {}): Promise<ShareGate> {
+  return gateFor(await detectTeam(cwd, options));
 }
 
 /** The share gate on a team already detected, for a command that needs the team too. */
@@ -196,7 +196,8 @@ export async function contributeHintAllowed(cwd?: string): Promise<boolean> {
 /** What makes this skill unusable right now, or null. */
 async function blockReason(name: string, team?: TeamDetection): Promise<SkillBlock | null> {
   if (!RECALL_DEPENDENT_SKILLS.has(name)) return null;
-  return (team ? await gateFor(team) : await shareGate()).block;
+  // `skill get` / `skill path` only read; the Stop hook asks shareGate without options (#893).
+  return (team ? await gateFor(team) : await shareGate(undefined, { dryRun: true })).block;
 }
 
 /** A skill directory that ships inside the npm package. */

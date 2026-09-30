@@ -28,7 +28,7 @@ let nonGitDir: string;
 
 beforeAll(() => {
   // realpath so macOS /tmp -> /private/tmp matches resolveAnchors' own realpath.
-  base = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-anchors-')));
+  base = realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-anchors-')));
   repoRoot = path.join(base, 'main-repo');
   fs.mkdirSync(repoRoot);
   git(repoRoot, 'init', '-q');
@@ -230,8 +230,12 @@ describe('listWorktrees', () => {
   });
 
   it('returns [] outside a git repo', async () => {
-    const plain = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-nogit-')));
+    const plain = realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-nogit-')));
     expect(await listWorktrees(plain)).toEqual([]);
     fs.rmSync(plain, { recursive: true, force: true });
+  });
+
+  it('returns [] for a directory that no longer exists', async () => {
+    expect(await listWorktrees(path.join(os.tmpdir(), 'teamai-gone-', String(process.pid), 'project'))).toEqual([]);
   });
 });

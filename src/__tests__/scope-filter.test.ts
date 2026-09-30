@@ -296,7 +296,7 @@ describe('filterEventsByScope', () => {
     });
 
     it('matches a data home reached through a symlink', async () => {
-      const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-scope-key-')));
+      const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-scope-key-')));
       try {
         fs.mkdirSync(path.join(tmp, 'real', '.teamai'), { recursive: true });
         fs.symlinkSync(path.join(tmp, 'real'), path.join(tmp, 'link'), 'dir');
@@ -309,7 +309,7 @@ describe('filterEventsByScope', () => {
     });
 
     it('keeps what a project recorded in its in-repo .teamai after migration removed it', async () => {
-      const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-scope-gone-')));
+      const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-scope-gone-')));
       try {
         fs.mkdirSync(path.join(tmp, 'real', '.teamai'), { recursive: true });
         fs.symlinkSync(path.join(tmp, 'real'), path.join(tmp, 'link'), 'dir');

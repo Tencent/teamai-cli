@@ -90,7 +90,7 @@ describe('pre-push sync in single-repo mode (#823 items 2 and 10)', () => {
 
   beforeEach(() => {
     requireCli();
-    sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-self-e2e-')));
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-self-e2e-')));
     home = path.join(sandbox, 'home');
     projectRoot = path.join(sandbox, 'project');
     teammate = path.join(sandbox, 'teammate');
@@ -259,7 +259,7 @@ describe('push base in user scope (#823 item 4)', () => {
 
   beforeEach(() => {
     requireCli();
-    sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-user-e2e-')));
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-user-e2e-')));
     home = path.join(sandbox, 'home');
     work = path.join(sandbox, 'work');
     teammate = path.join(sandbox, 'teammate');
@@ -472,7 +472,7 @@ describe('placed agent in a stale linked worktree (#823 item 3)', () => {
 
   beforeEach(() => {
     requireCli();
-    sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-agent-e2e-')));
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-agent-e2e-')));
     home = path.join(sandbox, 'home');
     projectRoot = path.join(sandbox, 'project');
     worktree = path.join(sandbox, 'wt-b');
@@ -614,7 +614,7 @@ describe('skills a pull held on a namespace collision (#823)', () => {
 
   beforeEach(() => {
     requireCli();
-    sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-held-e2e-')));
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-held-e2e-')));
     home = path.join(sandbox, 'home');
     teammate = path.join(sandbox, 'teammate');
     const seed = path.join(sandbox, 'seed');

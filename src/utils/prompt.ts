@@ -145,6 +145,16 @@ export function askSecret(prompt: string): Promise<string> {
 }
 
 /**
+ * Read piped stdin to the end, without its trailing line breaks. Callers
+ * refuse a TTY first, in their own wording.
+ */
+export async function readStdin(): Promise<string> {
+  let value = '';
+  for await (const chunk of process.stdin) value += String(chunk);
+  return value.replace(/[\r\n]+$/, '');
+}
+
+/**
  * Ask a yes/no confirmation question.
  *
  * In non-interactive mode, returns `defaultValue` (defaults to `false`).

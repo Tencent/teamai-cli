@@ -371,15 +371,23 @@ export async function resolveDataHomeForScope(scope: Scope, projectRoot?: string
  * longer exists (a hook payload naming a deleted worktree) holds no project
  * config; git refuses to open it, so it is not asked. Hooks go through
  * resolveHookConfig (dashboard-collector.ts), which gives such a payload the
- * scope its session last recorded (#810).
+ * scope its session last recorded (#810). `onUnreadable` is told which file
+ * could not be read, for a caller that names it.
  */
-export async function resolveConfigForDir(dir?: string): Promise<LocalConfig | null> {
+export async function resolveConfigForDir(
+  dir?: string,
+  onUnreadable?: UnreadableConfigSink,
+  options: LoadOptions = {},
+): Promise<LocalConfig | null> {
   const target = dir ?? process.cwd();
-  if (!(await pathExists(target))) return loadLocalConfig();
+  if (!(await pathExists(target))) return loadLocalConfig(options);
   let unreadable = false;
-  const project = await detectProjectConfig(target, () => { unreadable = true; });
+  const project = await detectProjectConfig(target, (configPath, error) => {
+    unreadable = true;
+    onUnreadable?.(configPath, error);
+  }, options);
   if (unreadable) return null;
-  return project ?? loadLocalConfig();
+  return project ?? loadLocalConfig(options);
 }
 
 /**
@@ -391,11 +399,14 @@ export async function resolveConfigForDir(dir?: string): Promise<LocalConfig | n
  * the project was set up. Readers that hold no resolved config (the local
  * agent, import, usage tracking) go through here.
  */
-export async function resolveMemberToolRoots(dir?: string): Promise<Record<string, string> | undefined> {
+export async function resolveMemberToolRoots(
+  dir?: string,
+  options: LoadOptions = {},
+): Promise<Record<string, string> | undefined> {
   // A hook can report a directory that no longer exists (a deleted worktree);
   // git probing there throws, so it means user scope — as resolveConfigForDir.
-  const project = dir === undefined || await pathExists(dir) ? await detectProjectConfig(dir) : null;
-  return project?.toolRoots ?? (await loadLocalConfig())?.toolRoots;
+  const project = dir === undefined || await pathExists(dir) ? await detectProjectConfig(dir, undefined, options) : null;
+  return project?.toolRoots ?? (await loadLocalConfig(options))?.toolRoots;
 }
 
 /**
@@ -611,9 +622,9 @@ function describeConfigError(e: unknown): string {
  * the wrong one. So a broken higher-priority file is reported even when a later
  * candidate loads.
  */
-export async function findUnreadableProjectConfig(cwd?: string): Promise<string | null> {
+export async function findUnreadableProjectConfig(cwd?: string, options: LoadOptions = {}): Promise<string | null> {
   let problem: string | null = null;
-  await detectProjectConfig(cwd, (configPath, error) => { problem ??= `${configPath}: ${error}`; });
+  await detectProjectConfig(cwd, (configPath, error) => { problem ??= `${configPath}: ${error}`; }, options);
   return problem;
 }
 

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -19,7 +20,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
-import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { getDataHome, managedMcpManifestKey, managedMcpManifestPath, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 /**
  * The MCP half of the delivery check (#624). A server lands as an entry inside
@@ -228,5 +229,522 @@ describe('doctor — MCP servers delivered on disk', () => {
     await (await mcpCheck()).check();
 
     expect(await fse.readFile(file, 'utf8')).toBe(before);
+  });
+
+  describe('project MCP config holding a resolved value (#882)', () => {
+    const NAME = 'Project MCP configs with resolved values are kept out of git';
+    let projectRoot: string;
+
+    beforeEach(async () => {
+      projectRoot = path.join(tempDir, 'business-repo');
+      await fse.ensureDir(path.join(projectRoot, '.claude', 'skills'));
+      execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+      Object.assign(localConfig, { scope: 'project', projectRoot });
+      teamConfig.toolPaths = { claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: '.mcp.json' } };
+      await writeTeamMcp(
+        'servers:\n  - name: jira\n    transport: http\n    url: https://jira.example/mcp\n'
+        + '    headers:\n      Authorization: "Bearer ${JIRA_TOKEN}"\n',
+      );
+      await fse.writeJson(path.join(projectRoot, '.mcp.json'), {
+        mcpServers: { jira: { type: 'http', url: 'https://jira.example/mcp', headers: { Authorization: 'Bearer t0ken' } } },
+      });
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'jira', hash: 'h' }],
+      });
+    });
+
+    async function excludeCheck(): Promise<Check | undefined> {
+      return (await checks()).find((c) => c.name === NAME);
+    }
+
+    it('fails while git would track the file, and names it', async () => {
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain(path.join(projectRoot, '.mcp.json'));
+      expect(check.fix).toContain('teamai pull');
+    });
+
+    it('passes once git ignores the file', async () => {
+      await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), '/.mcp.json\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(true);
+    });
+
+    it.each([
+      ['its tool is disabled', async () => { localConfig.disabledAgents = ['claude', 'tclaude']; }],
+      ['its tool is no longer detected', async () => { await fse.remove(path.join(projectRoot, '.claude')); }],
+      ['it does not parse', async () => {
+        await fse.writeFile(path.join(projectRoot, '.mcp.json'), '{ "mcpServers": { "jira": { "headers": { "Authorization": "Bearer t0ken" } } },\n');
+      }],
+      ['git cannot say whether it would commit it', async () => {
+        await fse.writeFile(path.join(projectRoot, '.git', 'config'), '[core\nbroken\n');
+      }],
+    ])('still fails while git would track the file when %s', async (_label, arrange) => {
+      await arrange();
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain(path.join(projectRoot, '.mcp.json'));
+    });
+
+    it.each([
+      ['its server has left mcp.yaml and its tool is disabled', async () => {
+        await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+        localConfig.disabledAgents = ['claude', 'tclaude'];
+      }],
+      ['the team dropped its tool from toolPaths', async () => {
+        teamConfig.toolPaths = { cursor: { skills: '.cursor/skills', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' } };
+      }],
+      ['the team\'s mcp.yaml does not parse', async () => {
+        await writeTeamMcp('servers: [unclosed\n');
+      }],
+    ])('still fails, naming the file once, when %s', async (_label, arrange) => {
+      await arrange();
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect((check.fix ?? '').split(path.join(projectRoot, '.mcp.json'))).toHaveLength(2);
+    });
+
+    it.each([
+      ['notes it wrote a resolved value', { resolved: true }],
+      ['is an older teamai\'s, without that note', {}],
+    ])('still fails when the server\'s ${VAR} became a literal, its tool is disabled and the record %s', async (_label, note) => {
+      const { entryHash } = await import('../resources/mcp-format.js');
+      const { mcpServers } = await fse.readJson(path.join(projectRoot, '.mcp.json')) as { mcpServers: Record<string, unknown> };
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'jira', hash: entryHash(mcpServers.jira), ...note }],
+      });
+      await writeTeamMcp(
+        'servers:\n  - name: jira\n    transport: http\n    url: https://jira.example/mcp\n'
+        + '    headers:\n      Authorization: "Bearer published-literal"\n',
+      );
+      localConfig.disabledAgents = ['claude', 'tclaude'];
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain(path.join(projectRoot, '.mcp.json'));
+    });
+
+    it('fails, naming it once, for a config a pull wrote under a mcpProject the team has since changed', async () => {
+      const { trackResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+      const old = path.join(projectRoot, '.cursor', 'team-mcp.json');
+      await fse.outputJson(old, {
+        mcpServers: { jira: { type: 'http', url: 'https://jira.example/mcp', headers: { Authorization: 'Bearer t0ken' } } },
+      });
+      expect(await trackResolvedMcpFiles(localConfig, [{ tool: 'cursor', file: old }])).toBe('written');
+      await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), '/.mcp.json\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect((check.fix ?? '').split(old)).toHaveLength(2);
+      expect(check.fix).not.toContain(path.join(projectRoot, '.mcp.json'));
+    });
+
+    describe('a config an older teamai wrote under a mapping an earlier teamai.yaml made, before a pull on this version', () => {
+      const old = (): string => path.join(projectRoot, '.cursor', 'team-mcp.json');
+      const commitTeamYaml = (toolPaths: object): void => {
+        fse.writeFileSync(path.join(repoPath, 'teamai.yaml'), JSON.stringify({ team: 't', toolPaths }));
+        execFileSync('git', ['add', '-A'], { cwd: repoPath });
+        execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'toolPaths'], { cwd: repoPath });
+      };
+
+      beforeEach(async () => {
+        execFileSync('git', ['init', '-q'], { cwd: repoPath });
+        commitTeamYaml({ ...teamConfig.toolPaths, cursor: { skills: '.cursor/skills', mcp: '.cursor/mcp.json', mcpProject: '.cursor/team-mcp.json' } });
+        commitTeamYaml(teamConfig.toolPaths ?? {});
+        // Its server left mcp.yaml since, and no record names the file.
+        await fse.outputJson(old(), {
+          mcpServers: { gone: { type: 'http', url: 'https://gone.example/mcp', headers: { Authorization: 'Bearer t0ken' } } },
+        });
+        await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), '/.mcp.json\n');
+      });
+
+      it('fails, naming it, without writing managed-mcp-files.json', async () => {
+        const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(false);
+        expect((check.fix ?? '').split(old())).toHaveLength(2);
+        expect(check.fix).not.toContain(path.join(projectRoot, '.mcp.json'));
+        expect(await fse.pathExists(resolvedMcpFilesPath(localConfig) ?? '')).toBe(false);
+      });
+
+      it('passes once it is kept out of git', async () => {
+        await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), '/.cursor/team-mcp.json\n');
+
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(true);
+      });
+
+      it.each([
+        ['a pull on this version has read those mappings', async () => {
+          const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+          await fse.outputJson(resolvedMcpFilesPath(localConfig) ?? '', { version: 1, files: {}, earlierMappingsRead: true });
+        }],
+        ['git tracks it', async () => {
+          execFileSync('git', ['add', '-f', '.cursor/team-mcp.json'], { cwd: projectRoot });
+        }],
+        ['git cannot read the team repo\'s history', async () => {
+          await fse.emptyDir(path.join(repoPath, '.git', 'objects'));
+        }],
+      ])('does not name it when %s', async (_label, arrange) => {
+        await arrange();
+
+        const check = await excludeCheck();
+        if (check) expect(check.fix).not.toContain(old());
+        // .mcp.json is listed, so nothing is left to fail on.
+        if (check) expect(await check.check()).toBe(true);
+      });
+
+      describe('recorded as tracked by a pull that found git tracking it', () => {
+        beforeEach(async () => {
+          const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+          await fse.outputJson(resolvedMcpFilesPath(localConfig) ?? '', {
+            version: 1, files: { [old()]: { tools: ['cursor'], tracked: true } }, earlierMappingsRead: true,
+          });
+        });
+
+        it('does not name it while git tracks it', async () => {
+          execFileSync('git', ['add', '-f', '.cursor/team-mcp.json'], { cwd: projectRoot });
+
+          const check = await excludeCheck();
+          if (check) expect(check.fix).not.toContain(old());
+          if (check) expect(await check.check()).toBe(true);
+        });
+
+        it('fails, naming it, once git no longer tracks it', async () => {
+          const check = await excludeCheck();
+          if (!check) throw new Error('no git exclude check');
+          expect(await check.check()).toBe(false);
+          expect((check.fix ?? '').split(old())).toHaveLength(2);
+        });
+      });
+    });
+
+    describe('a tool\'s built-in location, once the team moved the tool, and its records describe the file it maps now', () => {
+      const old = (): string => path.join(projectRoot, '.cursor', 'mcp.json');
+
+      beforeEach(async () => {
+        teamConfig.toolPaths = {
+          claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: '.mcp.json' },
+          cursor: { skills: '.cursor/skills', mcp: '.cursor/mcp.json', mcpProject: '.cursor/team-mcp.json' },
+        };
+        // Its server left mcp.yaml since.
+        await fse.outputJson(old(), {
+          mcpServers: { gone: { type: 'http', url: 'https://gone.example/mcp', headers: { Authorization: 'Bearer t0ken' } } },
+        });
+        await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+          [managedMcpManifestKey('claude', true)]: [{ name: 'jira', hash: 'h' }],
+          [managedMcpManifestKey('cursor', true)]: [],
+        });
+        await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), '/.mcp.json\n');
+      });
+
+      it('fails, naming it once', async () => {
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(false);
+        expect((check.fix ?? '').split(old())).toHaveLength(2);
+        expect(check.fix).not.toContain(path.join(projectRoot, '.mcp.json'));
+      });
+
+      it('passes once it is kept out of git', async () => {
+        await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), '/.cursor/mcp.json\n');
+
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(true);
+      });
+    });
+
+    // The toolPaths here drop CodeBuddy, whose built-in location is Claude's .mcp.json.
+    describe('a tool\'s built-in location another tool maps today, once the team moved or dropped the tool', () => {
+      const file = (): string => path.join(projectRoot, '.mcp.json');
+
+      beforeEach(async () => {
+        await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+        // Claude's own entry, and one an older teamai wrote there for CodeBuddy, whose record is lost.
+        await fse.writeJson(file(), {
+          mcpServers: {
+            docs: { type: 'http', url: 'https://docs.example/mcp' },
+            gone: { type: 'http', url: 'https://gone.example/mcp', headers: { Authorization: 'Bearer t0ken' } },
+          },
+        });
+        await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+          [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'h', resolved: false }],
+        });
+      });
+
+      it('fails, naming it once, while it holds a server none of the tools mapping it own', async () => {
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(false);
+        expect((check.fix ?? '').split(file())).toHaveLength(2);
+      });
+
+      it('emits no check once only their servers are left', async () => {
+        await fse.writeJson(file(), { mcpServers: { docs: { type: 'http', url: 'https://docs.example/mcp' } } });
+
+        expect(await excludeCheck()).toBeUndefined();
+      });
+    });
+
+    describe('a config written for a tool the team has since moved, that another tool\'s mapping still reaches', () => {
+      const file = (): string => path.join(projectRoot, '.mcp.json');
+
+      beforeEach(async () => {
+        const { trackResolvedMcpFiles } = await import('../mcp-resolved-files.js');
+        teamConfig.toolPaths = {
+          claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: '.mcp.json' },
+          cursor: { skills: '.cursor/skills', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
+        };
+        await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+        // Claude's own entry, and the one a pull wrote there for Cursor with a token before the team moved it.
+        await fse.writeJson(file(), {
+          mcpServers: {
+            docs: { type: 'http', url: 'https://docs.example/mcp' },
+            gone: { type: 'http', url: 'https://gone.example/mcp', headers: { Authorization: 'Bearer t0ken' } },
+          },
+        });
+        await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+          [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'h', resolved: false }],
+        });
+        expect(await trackResolvedMcpFiles(localConfig, [{ tool: 'cursor', file: file() }])).toBe('written');
+      });
+
+      it('fails, naming it once, while it holds a server none of the tools mapping it own', async () => {
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(false);
+        expect((check.fix ?? '').split(file())).toHaveLength(2);
+      });
+
+      it('emits no check once only their servers are left', async () => {
+        await fse.writeJson(file(), { mcpServers: { docs: { type: 'http', url: 'https://docs.example/mcp' } } });
+
+        expect(await excludeCheck()).toBeUndefined();
+      });
+
+      describe('written by an older teamai under a mapping only an earlier teamai.yaml made, before a pull on this version', () => {
+        beforeEach(async () => {
+          const { resolvedMcpFilesPath } = await import('../mcp-resolved-files.js');
+          await fse.remove(resolvedMcpFilesPath(localConfig) ?? '');
+          execFileSync('git', ['init', '-q'], { cwd: repoPath });
+          for (const cursorFile of ['.mcp.json', '.cursor/mcp.json']) {
+            const toolPaths = { ...teamConfig.toolPaths, cursor: { skills: '.cursor/skills', mcp: '.cursor/mcp.json', mcpProject: cursorFile } };
+            fse.writeFileSync(path.join(repoPath, 'teamai.yaml'), JSON.stringify({ team: 't', toolPaths }));
+            execFileSync('git', ['add', '-A'], { cwd: repoPath });
+            execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'toolPaths'], { cwd: repoPath });
+          }
+        });
+
+        it('fails, naming it once, while it holds a server none of the tools mapping it own', async () => {
+          const check = await excludeCheck();
+          if (!check) throw new Error('no git exclude check');
+          expect(await check.check()).toBe(false);
+          expect((check.fix ?? '').split(file())).toHaveLength(2);
+        });
+
+        it('emits no check once only their servers are left', async () => {
+          await fse.writeJson(file(), { mcpServers: { docs: { type: 'http', url: 'https://docs.example/mcp' } } });
+
+          expect(await excludeCheck()).toBeUndefined();
+        });
+      });
+    });
+
+    it('fails for a server that was in the file when a pull rebuilt the lost record, after it left mcp.yaml', async () => {
+      const { trackResolvedMcpFiles, recordUnverifiedMcpServers } = await import('../mcp-resolved-files.js');
+      const file = path.join(projectRoot, '.mcp.json');
+      await trackResolvedMcpFiles(localConfig, [{ tool: 'claude', file }]);
+      expect(await recordUnverifiedMcpServers(localConfig, [{ file, names: ['jira'] }])).toBe('written');
+      await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'h' }],
+      });
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain(file);
+    });
+
+    it('names a file two tools share once', async () => {
+      teamConfig.toolPaths = {
+        claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: '.mcp.json' },
+        codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' },
+      };
+      vi.stubEnv('JIRA_TOKEN', 'long-t0ken-value-7c1');
+      await fse.writeJson(path.join(projectRoot, '.mcp.json'), {
+        mcpServers: { jira: { type: 'http', url: 'https://jira.example/mcp', headers: { Authorization: 'Bearer long-t0ken-value-7c1' } } },
+      });
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect((check.fix ?? '').split(path.join(projectRoot, '.mcp.json'))).toHaveLength(2);
+    });
+
+    it('still fails when the manifest is gone but the resolved value is in the file', async () => {
+      vi.stubEnv('JIRA_TOKEN', 'long-t0ken-value-7c1');
+      await fse.writeJson(path.join(projectRoot, '.mcp.json'), {
+        mcpServers: { jira: { type: 'http', url: 'https://jira.example/mcp', headers: { Authorization: 'Bearer long-t0ken-value-7c1' } } },
+      });
+      await fse.remove(managedMcpManifestPath(getDataHome(localConfig), projectRoot));
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+    });
+
+    it('fails, naming it, while this worktree has no managed-mcp.json and the file holds a server since dropped from mcp.yaml', async () => {
+      teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };
+      await fse.remove(managedMcpManifestPath(getDataHome(localConfig), projectRoot));
+      await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect((check.fix ?? '').split(path.join(projectRoot, '.mcp.json'))).toHaveLength(2);
+    });
+
+    it('fails the same way while an installed tool mapping the file has no record, though another tool\'s is there', async () => {
+      teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };
+      await fse.ensureDir(path.join(projectRoot, '.codebuddy', 'skills'));
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'fixture-hash', resolved: false }],
+      });
+      await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+    });
+
+    it('fails the same way for the config an uninstalled tool left, its record lost, though another tool\'s is there', async () => {
+      teamConfig.toolPaths = { ...teamConfig.toolPaths, opencode: { skills: '.opencode/skills', mcp: '.config/opencode/opencode.json', mcpProject: 'opencode.json' } };
+      await fse.outputJson(path.join(projectRoot, 'opencode.json'), { mcp: { stale: { type: 'remote', url: 'https://stale.example/mcp' } } });
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'fixture-hash', resolved: false }],
+      });
+      await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect(check.fix ?? '').toContain(path.join(projectRoot, 'opencode.json'));
+    });
+
+    it('fails the same way while the record a pull wrote without managed-mcp.json is still marked unnoted', async () => {
+      teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
+        [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'fixture-hash', unnoted: true }],
+      });
+      await writeTeamMcp('servers:\n  - name: docs\n    transport: http\n    url: https://docs.example/mcp\n');
+
+      const check = await excludeCheck();
+      if (!check) throw new Error('no git exclude check');
+      expect(await check.check()).toBe(false);
+      expect((check.fix ?? '').split(path.join(projectRoot, '.mcp.json'))).toHaveLength(2);
+    });
+
+    it('emits no check when the server of that name is the member\'s own, not teamai\'s', async () => {
+      // CodeBuddy at its built-in .mcp.json: dropped, any server there Claude's records don't own would hold it.
+      teamConfig.toolPaths = { ...teamConfig.toolPaths, codebuddy: { skills: '.codebuddy/skills', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' } };
+      // teamai owns nothing there. With no managed-mcp.json at all, any server would hold it.
+      await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), { [managedMcpManifestKey('claude', true)]: [] });
+
+      expect(await excludeCheck()).toBeUndefined();
+    });
+
+    it.skipIf(process.getuid?.() === 0)('says a server was withheld because its file cannot be kept out of git, and the fix', async () => {
+      await fse.remove(path.join(projectRoot, '.mcp.json'));
+      vi.stubEnv('JIRA_TOKEN', 'long-t0ken-value-7c1');
+      const excludeFile = path.join(projectRoot, '.git', 'info', 'exclude');
+      await fse.chmod(excludeFile, 0o444);
+
+      try {
+        const check = await mcpCheck();
+        expect(await check.check()).toBe(false);
+        expect(check.fix).toMatch(/\.git\/info\/exclude is not writable/);
+        expect(check.fix).toContain('teamai pull');
+        expect(check.fix).not.toContain('again..');
+      } finally {
+        await fse.chmod(excludeFile, 0o644);
+      }
+    });
+
+    it('emits no check when the installed servers carry no resolved value', async () => {
+      await writeTeamMcp('servers:\n  - name: jira\n    transport: http\n    url: https://jira.example/mcp\n');
+
+      expect(await excludeCheck()).toBeUndefined();
+    });
+
+    it('fails the delivery check for a server withheld from a file git tracks, naming the file and the fix once', async () => {
+      vi.stubEnv('JIRA_TOKEN', 'fixture-jira-token');
+      execFileSync('git', ['add', '.mcp.json'], { cwd: projectRoot });
+
+      const check = await mcpCheck();
+      expect(await check.check()).toBe(false);
+      const file = path.join(projectRoot, '.mcp.json');
+      expect(check.fix).toContain(`In ${file}, withheld: jira, as git would commit the file: git already tracks ${file}.`);
+      expect(check.fix).toContain(`git rm --cached ${file}\` (rotate any value a commit of it holds)`);
+      expect(check.fix).not.toContain('not the team\'s definition');
+      expect(check.fix).not.toContain('pull --force');
+    });
+    // The appliers replace the file itself but follow its directories (#886).
+    describe('for a config under a symlinked directory, judged where the write lands', () => {
+      const logical = (): string => path.join(projectRoot, 'cfg', 'mcp.json');
+
+      beforeEach(async () => {
+        teamConfig.toolPaths = { claude: { skills: '.claude/skills', mcp: '.claude.json', mcpProject: 'cfg/mcp.json' } };
+        await fse.move(path.join(projectRoot, '.mcp.json'), path.join(projectRoot, 'config', 'mcp.json'));
+        await fse.symlink('config', path.join(projectRoot, 'cfg'), 'dir');
+      });
+
+      it('fails while git tracks the file it lands in, naming both paths', async () => {
+        execFileSync('git', ['add', 'config/mcp.json'], { cwd: projectRoot });
+
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(false);
+        expect(check.fix).toContain(`${path.join(await fse.realpath(projectRoot), 'config', 'mcp.json')} (where ${logical()} is written)`);
+      });
+
+      it.each([
+        ['passes once git ignores the file it lands in', '/config/mcp.json\n', true],
+        ['still fails when git ignores only the path it is reached by', '/cfg/mcp.json\n', false],
+      ])('%s', async (_label, line, ok) => {
+        await fse.appendFile(path.join(projectRoot, '.git', 'info', 'exclude'), line);
+
+        const check = await excludeCheck();
+        if (!check) throw new Error('no git exclude check');
+        expect(await check.check()).toBe(ok);
+      });
+
+      it('passes when the directory links outside any repository', async () => {
+        const outside = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-no-repo-'));
+        await fse.move(path.join(projectRoot, 'config', 'mcp.json'), path.join(outside, 'mcp.json'));
+        await fse.remove(path.join(projectRoot, 'cfg'));
+        await fse.symlink(outside, path.join(projectRoot, 'cfg'), 'dir');
+
+        try {
+          const check = await excludeCheck();
+          if (!check) throw new Error('no git exclude check');
+          expect(await check.check()).toBe(true);
+        } finally {
+          await fse.remove(outside);
+        }
+      });
+    });
   });
 });

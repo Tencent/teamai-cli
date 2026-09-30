@@ -80,7 +80,9 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
     } else {
         try {
             const { autoDetectInit } = await import('./config.js');
-            const { localConfig: lc } = await autoDetectInit();
+            // `--lint` alone only reads, so it never persists a migration (#893).
+            const readOnly = !opts.reconcile && !opts.deepEnrich;
+            const { localConfig: lc } = await autoDetectInit(undefined, { dryRun: opts.dryRun || readOnly });
             teamwikiDir = path.join(lc.repo.localPath, 'teamwiki');
         } catch {
             teamwikiDir = path.join(cwd, '.teamai', 'team-repo', 'teamwiki');
@@ -200,7 +202,8 @@ async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
     } else {
         try {
             const { autoDetectInit } = await import('./config.js');
-            const { localConfig: lc } = await autoDetectInit();
+            // Read-only: the load never persists a migration (#893).
+            const { localConfig: lc } = await autoDetectInit(undefined, { dryRun: true });
             teamwikiDir = path.join(lc.repo.localPath, 'teamwiki');
         } catch {
             teamwikiDir = path.join(cwd, '.teamai', 'team-repo', 'teamwiki');

@@ -25,7 +25,9 @@ let origCopilotHome: string | undefined;
 const TEST_SESSION_ID = `test-session-${randomUUID()}`;
 
 beforeEach(async () => {
-  tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-test-'));
+  tmpDir = fs.realpathSync.native(
+    await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-test-')),
+  );
   origHome = process.env.HOME;
   origCopilotHome = process.env.COPILOT_HOME;
   process.env.HOME = tmpDir;
@@ -149,14 +151,14 @@ describe('local-agent: project MCP report is per-worktree (issue #374 P1-2C)', (
     const { managedMcpWorkspaceId } = await import('../types.js');
 
     // Real git repo + linked worktree → same projectAnchor → same partition.
-    const repo = realpathSync(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-wt-')));
+    const repo = realpathSync.native(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-wt-')));
     const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, stdio: 'pipe' });
     git(repo, 'init', '-q');
     git(repo, 'config', 'user.email', 't@e'); git(repo, 'config', 'user.name', 'T');
     git(repo, 'commit', '--allow-empty', '-q', '-m', 'init');
     const wtB = path.join(repo, '..', path.basename(repo) + '-wtB');
     git(repo, 'worktree', 'add', '-q', wtB, 'HEAD');
-    const wtBReal = realpathSync(wtB);
+    const wtBReal = realpathSync.native(wtB);
 
     // Partition manifest (shared): A owns `a-only`, B owns `b-only`, each under
     // its own workspace-scoped key.
@@ -1951,14 +1953,14 @@ describe('local-agent: per-worktree claudemd isolation (issue #374 P1-2C)', () =
 
     // Real git repo + linked worktree → shared partition data home. The resource
     // cache used to be shared, so syncClaudemd merged A's + B's fragments.
-    const repo = realpathSync(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-cmd-wt-')));
+    const repo = realpathSync.native(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-cmd-wt-')));
     const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, stdio: 'pipe' });
     git(repo, 'init', '-q');
     git(repo, 'config', 'user.email', 't@e'); git(repo, 'config', 'user.name', 'T');
     git(repo, 'commit', '--allow-empty', '-q', '-m', 'init');
     const wtB = path.join(repo, '..', path.basename(repo) + '-B');
     git(repo, 'worktree', 'add', '-q', wtB, 'HEAD');
-    const wtBReal = realpathSync(wtB);
+    const wtBReal = realpathSync.native(wtB);
     // codebuddy is the "installed" tool in each worktree.
     for (const wt of [repo, wtBReal]) await fse.ensureDir(path.join(wt, '.codebuddy', 'skills'));
 
@@ -2019,5 +2021,63 @@ describe('local-agent: per-worktree claudemd isolation (issue #374 P1-2C)', () =
 
     await fse.remove(repo).catch(() => {});
     await fse.remove(wtBReal).catch(() => {});
+  });
+});
+
+describe('local-agent: loadLocalAgentConfig({ dryRun: true }) writes nothing (#893)', () => {
+  const configPath = () => path.join(tmpDir, '.teamai', 'local-agent', 'config.json');
+
+  it('drops a legacy group binding in memory and leaves config.json as it was', async () => {
+    await setupConfig({ '/ws/legacy': { groupId: 7, boundAt: 'x' } });
+    const before = await fse.readFile(configPath(), 'utf8');
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig({ dryRun: true });
+
+    expect(config!.workspaceBindings).toEqual({});
+    expect(await fse.readFile(configPath(), 'utf8')).toBe(before);
+  });
+
+  it('collapses path aliases in memory and leaves config.json as it was', async () => {
+    const realWs = path.join(tmpDir, 'ws-real');
+    const aliasWs = path.join(tmpDir, 'ws-alias');
+    await fse.ensureDir(realWs);
+    await fse.symlink(realWs, aliasWs, 'dir');
+    await setupConfig({
+      [realWs]: { projectId: 11, projectName: 'real', boundAt: 'x', ideType: 'codebuddy' },
+      [aliasWs]: { projectId: 11, projectName: 'alias', boundAt: 'x', ideType: 'codebuddy' },
+    });
+    const before = await fse.readFile(configPath(), 'utf8');
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig({ dryRun: true });
+
+    expect(Object.keys(config!.workspaceBindings)).toEqual([fse.realpathSync(realWs)]);
+    expect(await fse.readFile(configPath(), 'utf8')).toBe(before);
+  });
+
+  it('backfills from an http config.yaml in memory without creating config.json', async () => {
+    await fse.ensureDir(path.join(tmpDir, '.teamai'));
+    await fse.writeFile(
+      path.join(tmpDir, '.teamai', 'config.yaml'),
+      [
+        'username: tester',
+        'repo:',
+        '  kind: http',
+        '  url: https://team.example/api',
+        `  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}`,
+        '  remote: https://team.example/api',
+        '',
+      ].join('\n'),
+    );
+
+    const { loadLocalAgentConfig } = await import('../local-agent.js');
+    const dry = await loadLocalAgentConfig({ dryRun: true });
+    expect(dry?.endpoint).toBe('https://team.example/api');
+    expect(await fse.pathExists(configPath())).toBe(false);
+
+    // Positive control: the same load without the flag persists the backfill.
+    await loadLocalAgentConfig();
+    expect(await fse.pathExists(configPath())).toBe(true);
   });
 });

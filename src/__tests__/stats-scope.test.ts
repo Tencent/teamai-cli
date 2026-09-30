@@ -202,7 +202,7 @@ async function showStatsFromPlainDir(dir: string): Promise<string[]> {
 }
 
 beforeEach(() => {
-  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-stats-scope-')));
+  tmpDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-stats-scope-')));
   originalHome = process.env.HOME ?? '';
   process.env.HOME = tmpDir;
   _setLogFilePath(path.join(tmpDir, '.teamai', 'debug.log'));

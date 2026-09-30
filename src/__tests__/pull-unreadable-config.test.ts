@@ -54,7 +54,7 @@ let originalExitCode: typeof process.exitCode;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-pull-unreadable-')));
+  tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-pull-unreadable-')));
   originalHome = process.env.HOME;
   originalCwd = process.cwd();
   originalExitCode = process.exitCode;

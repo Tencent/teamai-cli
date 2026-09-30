@@ -3,7 +3,7 @@ import { autoDetectInit } from './config.js';
 import { reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, getHookStatus, hasInstalledCodexTrustGatedTool, codexTrustReminder, type HookStatus } from './hooks.js';
 import { applyBuiltinOverride, installedBuiltinHookDefs } from './builtin-hooks.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
-import { describeEntryFailure, describeOrigin } from './namespaced-entries.js';
+import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices } from './namespaced-entries.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, HookDef } from './types.js';
 import {
@@ -130,7 +130,8 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
  * and team (B) hook definitions.
  */
 export async function hooksList(_options: GlobalOptions): Promise<void> {
-    const { localConfig, teamConfig } = await autoDetectInit();
+    // Read-only: the load never persists a migration (#893).
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
     const { baseDir, scope: hookScope } = resolveHookScope(localConfig);
     // The settings file must be resolved at the scope hooks were injected into,
     // not at the config's scope: a non-self project scope injects into HOME, and a
@@ -142,6 +143,9 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
     // reconcile engine applies it, so the listing must too or it shows hooks
     // that were just removed from the settings files.
     const { resolution: teamHooks, builtin } = await resolveTeamHookEntries(localConfig);
+    // A hook an unknown or removed key takes out of the delivered set never
+    // appears in the team-hooks section below, so say why it is missing (#822).
+    reportUndeliveredEntryNotices(teamHooks);
     const builtinOverride = builtin.known ? builtin.override : undefined;
     const rows: HookListRow[] = [];
     // One settings file is one install, so list it once, for the target that owns

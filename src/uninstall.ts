@@ -110,6 +110,8 @@ interface RemovalPlan {
   shellProfiles: string[];
   /** Docs directory (null if doesn't exist). */
   docsDir: string | null;
+  /** The .git/info/exclude files holding teamai's MCP config block (#882), each with its patterns and the paths each protects. */
+  gitExcludes: Map<string, Array<{ pattern: string; files: string[] }>>;
   /** The .teamai home directory path. */
   teamaiHome: string;
   /** Whether teamaiHome exists on disk. */
@@ -616,6 +618,7 @@ async function buildRemovalPlan(
     mcpServers: [],
     shellProfiles: [],
     docsDir: null,
+    gitExcludes: new Map(),
     teamaiHome,
     teamaiHomeExists: includeShared && await pathExists(teamaiHome),
     unpublishedQueues: includeShared ? await listQueuesIn(teamaiHome) : [],
@@ -710,6 +713,23 @@ async function buildRemovalPlan(
     if (await pathExists(docsDir)) {
       plan.docsDir = docsDir;
     }
+
+    // (g) teamai's block in .git/info/exclude (#882): the project's own, and
+    // that of any nested repository an MCP config sits in. It counts on its
+    // own: a clone whose other resources are gone still gets it removed.
+    if (localConfig.scope === 'project') {
+      const { resolveMcpTargets, projectWorktreeConfigs } = await import('./mcp-reconcile.js');
+      const { findMcpGitExcludes } = await import('./mcp-git-exclude.js');
+      const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
+      const dirs: string[] = [];
+      for (const cfg of await projectWorktreeConfigs(localConfig)) {
+        if (cfg.projectRoot) dirs.push(cfg.projectRoot);
+        for (const target of await resolveMcpTargets(teamConfig, cfg, { includeUndetected: true })) dirs.push(path.dirname(target.file));
+        // A file a pull wrote under a toolPaths mapping since changed.
+        for (const file of Object.keys((await readResolvedMcpFiles(cfg)).files)) dirs.push(path.dirname(file));
+      }
+      plan.gitExcludes = await findMcpGitExcludes(dirs);
+    }
   }
 
   return plan;
@@ -732,6 +752,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.mcpServers.length === 0 &&
     plan.shellProfiles.length === 0 &&
     plan.docsDir === null &&
+    plan.gitExcludes.size === 0 &&
     !plan.teamaiHomeExists
   );
 }
@@ -843,6 +864,12 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
   if (plan.docsDir) {
     console.log('   Docs directory:');
     console.log(`     ${plan.docsDir}`);
+    console.log('');
+  }
+
+  if (plan.gitExcludes.size > 0) {
+    console.log('   Git exclude entries for MCP configs (teamai\'s block):');
+    for (const [file, entries] of plan.gitExcludes) console.log(`     ${file} (${entries.map((entry) => entry.pattern).join(', ')})`);
     console.log('');
   }
 
@@ -1126,7 +1153,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
   let teamConfig: TeamaiConfig | null = null;
 
   try {
-    const result = await autoDetectInit();
+    const result = await autoDetectInit(undefined, { dryRun: opts.dryRun });
     localConfig = result.localConfig;
     teamConfig = result.teamConfig;
   } catch {
@@ -1202,7 +1229,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     // must leave the remaining tools' MCP servers intact.
     if (plan.includeShared) {
       try {
-        const { reconcileMcpForConfig } = await import('./mcp-reconcile.js');
+        const { reconcileMcpForConfig, projectWorktreeConfigs, mcpConfigsNotProvenClean } = await import('./mcp-reconcile.js');
         // Project scope: the managed-mcp manifests are PER-WORKTREE under the
         // shared partition (#374 P1-2C), and each worktree's MCP config lives in
         // its own checkout. Since executeRemoval deletes the whole shared
@@ -1210,23 +1237,43 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
         // linked worktree — otherwise a sibling worktree is left with an injected
         // server whose ownership record just got deleted (orphaned). User scope
         // has a single global manifest, so the current config is enough.
-        const configs: LocalConfig[] = [localConfig];
-        if (localConfig.scope === 'project' && localConfig.projectRoot) {
-          const { listWorktrees } = await import('./utils/git.js');
-          const { resolveProjectDataHome } = await import('./config.js');
-          const worktrees = await listWorktrees(localConfig.projectRoot);
-          for (const wt of worktrees) {
-            if (wt === localConfig.projectRoot) continue;
-            const dataHome = await resolveProjectDataHome(wt);
-            configs.push({ ...localConfig, projectRoot: wt, dataHome });
-          }
-        }
         let removedTotal = 0;
-        for (const cfg of configs) {
+        for (const cfg of await projectWorktreeConfigs(localConfig)) {
           const { changes } = await reconcileMcpForConfig(teamConfig, cfg, { removeAll: true });
           removedTotal += changes.filter((c) => c.action === 'removed').length;
         }
         if (removedTotal > 0) log.info(`Removed ${removedTotal} teamai-managed MCP server(s)`);
+        // Worktrees share one info/exclude, so it goes once they are all clean,
+        // judged by what the files hold, not by what the cleanup reported: a
+        // lost manifest cleans nothing and reports nothing. Without the block,
+        // `git add -A` would commit a value teamai resolved.
+        if (plan.gitExcludes.size > 0) {
+          const { removeMcpGitExclude } = await import('./mcp-git-exclude.js');
+          const held = await mcpConfigsNotProvenClean(teamConfig, localConfig, [...plan.gitExcludes.values()].flat());
+          for (const [excludeFile, entries] of plan.gitExcludes) {
+            const clean: string[] = [];
+            for (const { pattern, files } of entries) {
+              const still = files.flatMap((file) => {
+                const why = held.get(file);
+                return why ? [`${file} (${why})`] : [];
+              });
+              if (still.length === 0) {
+                clean.push(pattern);
+                continue;
+              }
+              log.warn(
+                `Kept \`${pattern}\` in ${excludeFile}, so git still ignores ${still.join('; ')}: it may hold MCP values teamai resolved to plaintext. `
+                + `Remove teamai's MCP servers from it (or delete the file), then delete that line from ${excludeFile} yourself, and the block's two marker lines with its last one.`,
+              );
+            }
+            if (clean.length === 0) continue;
+            const result = await removeMcpGitExclude(excludeFile, clean);
+            if (result === 'written') log.info(`Removed teamai's MCP config entries ${clean.join(', ')} from ${excludeFile}`);
+            if (result === 'locked') {
+              log.warn(`Kept teamai's block in ${excludeFile}: another teamai command held it past the wait. Delete the block's ${clean.join(', ')} lines yourself.`);
+            }
+          }
+        }
       } catch (e) {
         log.warn(`Failed to remove MCP servers: ${(e as Error).message}`);
       }

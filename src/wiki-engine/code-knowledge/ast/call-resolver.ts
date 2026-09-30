@@ -1,5 +1,7 @@
 import type { AstCallSite, AstImport, AstSymbol } from "./types.js";
 import type { ResolvedImport } from "./import-resolver.js";
+import type { SwiftModuleSymbolIndex } from "./module-scope.js";
+import { findSwiftModuleSymbol } from "./module-scope.js";
 
 export interface ImportBindingMap {
   /** Local name → exported symbol id in target file */
@@ -51,7 +53,8 @@ export function resolveCallSites(
   callSites: AstCallSite[],
   imports: AstImport[],
   resolved: Map<string, ResolvedImport | undefined>,
-  symbolsByFile: Map<string, AstSymbol[]>
+  symbolsByFile: Map<string, AstSymbol[]>,
+  swiftModules?: SwiftModuleSymbolIndex
 ): AstCallSite[] {
   const bindingsByFile = new Map<string, ImportBindingMap>();
   return callSites.map((site) => {
@@ -60,14 +63,15 @@ export function resolveCallSites(
       bindings = buildImportBindingsForFile(site.fromFile, imports, resolved, symbolsByFile);
       bindingsByFile.set(site.fromFile, bindings);
     }
-    return resolveOneCall(site, symbolsByFile, bindings);
+    return resolveOneCall(site, symbolsByFile, bindings, swiftModules);
   });
 }
 
 function resolveOneCall(
   site: AstCallSite,
   symbolsByFile: Map<string, AstSymbol[]>,
-  bindings: ImportBindingMap
+  bindings: ImportBindingMap,
+  swiftModules?: SwiftModuleSymbolIndex
 ): AstCallSite {
   const callee = site.calleeText;
 
@@ -97,6 +101,27 @@ function resolveOneCall(
       return { ...site, resolvedTargetFile: importedFile, confidence: "INFERRED" };
     }
 
+    // Swift module scope: a symbol declared elsewhere in the same module is
+    // visible without any import, so the same-file and import lookups above
+    // cannot be the only ones. INFERRED rather than EXTRACTED because the
+    // module boundary itself is read off the directory layout, not the syntax.
+    //
+    // A name bound by an enclosing scope wins over every module-level one, and
+    // the walker reports those bindings per site: `run(work:) { work() }` calls
+    // its parameter, so claiming a sibling file's `func work()` here would
+    // invent an edge. Missing a resolution is the better failure.
+    if (swiftModules && !site.localBindings?.includes(callee)) {
+      const moduleSymbol = findSwiftModuleSymbol(swiftModules, site.fromFile, callee, ["function", "class"]);
+      if (moduleSymbol) {
+        return {
+          ...site,
+          resolvedTargetId: moduleSymbol.id,
+          resolvedTargetFile: moduleSymbol.file,
+          confidence: "INFERRED"
+        };
+      }
+    }
+
     return site;
   }
 
@@ -123,6 +148,21 @@ function resolveOneCall(
   const localClass = localSymbols.find((s) => s.name === recv && s.kind === "class");
   if (localClass) {
     return { ...site, resolvedTargetFile: site.fromFile, confidence: "INFERRED" };
+  }
+
+  // `Service.make()` where `Service` is declared in another file of the same
+  // Swift module. Swift convention capitalises type names, so a receiver that
+  // matches a module-local class declaration is a type reference and not a
+  // local value — the same heuristic the same-file branch above already uses.
+  //
+  // The heuristic is a convention, not a rule, so it still has to yield to the
+  // scopes that actually bind the name: a parameter or local called `Service`
+  // shadows the type, and the receiver then has nothing to do with this module.
+  if (swiftModules && !site.localBindings?.includes(recv)) {
+    const moduleClass = findSwiftModuleSymbol(swiftModules, site.fromFile, recv, ["class"]);
+    if (moduleClass) {
+      return { ...site, resolvedTargetFile: moduleClass.file, receiver: recv, confidence: "INFERRED" };
+    }
   }
 
   return site;

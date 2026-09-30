@@ -32,7 +32,7 @@ function git(cwd: string, ...args: string[]): void {
 let base: string, home: string;
 
 beforeEach(() => {
-  base = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'p3-')));
+  base = realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'p3-')));
   home = path.join(base, 'home');
   fs.mkdirSync(home);
   vi.stubEnv('HOME', home);
@@ -92,7 +92,7 @@ describe('P3 saveLocalConfigForScope writes an anchor into a partition', () => {
     git(repo, 'config', 'user.email', 't@e.com');
     git(repo, 'config', 'user.name', 'T');
     git(repo, 'commit', '--allow-empty', '-q', '-m', 'init');
-    const realRepo = realpathSync(repo);
+    const realRepo = realpathSync.native(repo);
 
     const { saveLocalConfigForScope } = await import('../config.js');
     const { projectDataHome, readAnchorFile } = await import('../utils/partition.js');

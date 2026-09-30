@@ -11,8 +11,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const CLI = path.join(ROOT, 'dist/index.js');
 
 it('push refreshes an unedited Copilot rule instead of pushing a rollback, and preserves real edits', () => {
-  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-copilot-push-')));
-  if (path.dirname(sandbox) !== fs.realpathSync(os.tmpdir())
+  const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-copilot-push-')));
+  if (path.dirname(sandbox) !== fs.realpathSync.native(os.tmpdir())
     || !path.basename(sandbox).startsWith('teamai-copilot-push-')) {
     throw new Error('Unexpected test cleanup path');
   }
@@ -108,6 +108,15 @@ it('push refreshes an unedited Copilot rule instead of pushing a rollback, and p
     expect(run(['push', '--all'])).not.toContain('[rules] api (modified)');
     expect(fs.readFileSync(deployed, 'utf8')).toBe(teamRuleToCopilotInstructions(pathsOnlyUpdate));
     expect(git(['for-each-ref', '--format=%(refname)', 'refs/heads/teamai/push/'], remote)).toBe('');
+
+    // Push recorded the copy it refreshed (#822), so pull updates it rather
+    // than keeping it as the member's edit.
+    const v3 = pathsOnlyUpdate.replace('Use the new endpoint.', 'Use the v3 endpoint.');
+    put(path.join(teammate, 'rules/api.md'), v3);
+    git(['commit', '-q', '-am', 'Teammate updates rule again'], teammate);
+    git(['push', '-q', 'origin', 'main'], teammate);
+    expect(run(['pull'])).not.toContain('Kept');
+    expect(fs.readFileSync(deployed, 'utf8')).toBe(teamRuleToCopilotInstructions(v3));
 
     const edited = `${fs.readFileSync(deployed, 'utf8')}\nMy local addition.\n`;
     put(deployed, edited);

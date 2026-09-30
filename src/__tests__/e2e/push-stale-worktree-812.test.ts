@@ -85,7 +85,7 @@ describe('push from a stale linked worktree (#812)', () => {
       throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
     }
 
-    sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue812-e2e-')));
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue812-e2e-')));
     home = path.join(sandbox, 'home');
     projectRoot = path.join(sandbox, 'project');
     worktree = path.join(sandbox, 'wt-b');
@@ -450,7 +450,7 @@ describe('forced full sync in single-repo mode, worktrees at an older commit (#8
 
     // In single-repo mode each checkout's revision is its own HEAD, so two
     // worktrees can both be at an older commit than the main checkout.
-    sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue812-self-e2e-')));
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue812-self-e2e-')));
     home = path.join(sandbox, 'home');
     projectRoot = path.join(sandbox, 'project');
     worktreeB = path.join(sandbox, 'wt-b');

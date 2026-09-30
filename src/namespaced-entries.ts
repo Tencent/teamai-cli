@@ -4,6 +4,9 @@
  *   <type>/<type>.yaml         root, shared
  *   <type>/<ns>/<type>.yaml    read only where <ns> is active in resources.<type>
  *
+ * A reader may declare its own directory, file and activation key instead
+ * (`EntryLayout`), for a second file under a type's directory.
+ *
  * Each file is a list of named entries. An active namespace entry replaces the
  * root entry of the same name, whole; the rule itself is `namespace-resolver`.
  * This module adds what is particular to list files: reading them, the failure
@@ -44,14 +47,49 @@ const INSTALLED: Record<EntryType, string> = {
   models: 'agent model settings',
 };
 
+/**
+ * Where a reader's files are, which namespaces are active for it, and how its
+ * messages name what it reads. A reader that declares none has its type's.
+ */
+export interface EntryLayout {
+  /** `<dir>/<file>` at the root, `<dir>/<ns>/<file>` in a namespace. */
+  readonly dir: string;
+  readonly file: string;
+  /** The `resources.<key>` that lists the active namespaces. */
+  readonly activation: EntryType;
+  /** What messages call the whole set, as `env` or `secrets`. */
+  readonly label: string;
+  /** What one entry is called, for messages. */
+  readonly noun: string;
+  /** What a failure leaves unchanged, as a sentence, for messages. */
+  readonly kept: string;
+}
+
+/** A type's own layout: `<type>/<type>.yaml`, active through `resources.<type>`. */
+export function entryLayout(type: EntryType): EntryLayout {
+  return {
+    dir: type,
+    file: ENTRY_FILE[type],
+    activation: type,
+    label: type,
+    noun: ENTRY_NOUN[type],
+    kept: `${type} was not applied this run, so your ${INSTALLED[type]} are unchanged.`,
+  };
+}
+
+function asLayout(where: EntryType | EntryLayout): EntryLayout {
+  return typeof where === 'string' ? entryLayout(where) : where;
+}
+
 /** Repo-relative (`/`-separated) path of a type's file in the root (`null`) or a namespace. */
-export function entryFilePath(type: EntryType, namespace: string | null): string {
-  return namespace === null ? `${type}/${ENTRY_FILE[type]}` : `${type}/${namespace}/${ENTRY_FILE[type]}`;
+export function entryFilePath(where: EntryType | EntryLayout, namespace: string | null): string {
+  const { dir, file } = asLayout(where);
+  return namespace === null ? `${dir}/${file}` : `${dir}/${namespace}/${file}`;
 }
 
 /** `entryFilePath` under a checkout. */
-export function entryFileAbsolutePath(repoPath: string, type: EntryType, namespace: string | null): string {
-  return path.join(repoPath, ...entryFilePath(type, namespace).split('/'));
+export function entryFileAbsolutePath(repoPath: string, where: EntryType | EntryLayout, namespace: string | null): string {
+  return path.join(repoPath, ...entryFilePath(where, namespace).split('/'));
 }
 
 /** One of a type's files that exists in a checkout. */
@@ -66,12 +104,12 @@ export interface EntryFile {
  * Every file of `type` in a checkout, active here or not: the root file, then
  * each `<type>/<ns>/` file in name order. Absent files are left out.
  */
-export async function listEntryFiles(repoPath: string, type: EntryType): Promise<EntryFile[]> {
-  const namespaces = (await listDirs(path.join(repoPath, type))).sort();
+export async function listEntryFiles(repoPath: string, where: EntryType | EntryLayout): Promise<EntryFile[]> {
+  const namespaces = (await listDirs(path.join(repoPath, asLayout(where).dir))).sort();
   const files: EntryFile[] = [];
   for (const namespace of [null, ...namespaces]) {
-    const absolutePath = entryFileAbsolutePath(repoPath, type, namespace);
-    if (await pathExists(absolutePath)) files.push({ namespace, relativePath: entryFilePath(type, namespace), absolutePath });
+    const absolutePath = entryFileAbsolutePath(repoPath, where, namespace);
+    if (await pathExists(absolutePath)) files.push({ namespace, relativePath: entryFilePath(where, namespace), absolutePath });
   }
   return files;
 }
@@ -161,6 +199,8 @@ export async function readEntryFileText(
 
 export interface EntryReader<E> {
   readonly type: EntryType;
+  /** Defaults to `entryLayout(type)`. */
+  readonly layout?: EntryLayout;
   /** null when the file does not exist. */
   read(absolutePath: string, relativePath: string): Promise<EntryFileRead<E> | null>;
   nameOf(entry: E): string;
@@ -181,7 +221,7 @@ export interface ResolvedEntry<E> {
 }
 
 /** Why a type was not applied this run. */
-export type EntryFailure =
+export type EntryFailure = (
   | { readonly kind: 'broken-file'; readonly type: EntryType; readonly source: string; readonly reason: string }
   | { readonly kind: 'duplicate'; readonly type: EntryType; readonly name: string; readonly source: string }
   | {
@@ -191,7 +231,11 @@ export type EntryFailure =
     readonly first: string;
     readonly second: string;
   }
-  | { readonly kind: 'namespaces-unresolved'; readonly type: EntryType; readonly reason: string };
+  | { readonly kind: 'namespaces-unresolved'; readonly type: EntryType; readonly reason: string }
+) & {
+  /** How the failed reader's messages name what it reads. */
+  readonly layout: EntryLayout;
+};
 
 /** A warning about an entry that still resolves, worded for the admin who can fix it. */
 export interface EntryNotice {
@@ -218,15 +262,16 @@ export type EntryResolution<E> =
  */
 export async function activeEntryNamespaces(
   localConfig: LocalConfig,
-  type: EntryType,
+  layout: EntryLayout,
 ): Promise<{ ok: true; active: string[] | null } | { ok: false; failure: EntryFailure }> {
+  const type = layout.activation;
   try {
     const resolved = await resolveResourceNamespaces(localConfig);
     return { ok: true, active: resolved ? resolved.activeNamespaces[type] ?? [] : null };
   } catch (error) {
     return {
       ok: false,
-      failure: { kind: 'namespaces-unresolved', type, reason: error instanceof Error ? error.message : String(error) },
+      failure: { kind: 'namespaces-unresolved', type, reason: error instanceof Error ? error.message : String(error), layout },
     };
   }
 }
@@ -253,29 +298,30 @@ export async function resolveEntries<E>(
   active: readonly string[] | null,
 ): Promise<EntryResolution<E>> {
   const { type } = reader;
+  const layout = asLayout(reader.layout ?? type);
   const repoPath = localConfig.repo.localPath;
   const places: (string | null)[] = [null, ...(active ?? [])];
   const notices: EntryNotice[] = [];
-  const targets = new TargetFiles(repoPath, type);
+  const targets = new TargetFiles(repoPath, layout);
 
-  const dirs = active && active.length > 0 ? await listDirs(path.join(repoPath, type)) : [];
+  const dirs = active && active.length > 0 ? await listDirs(path.join(repoPath, layout.dir)) : [];
 
   const candidates: NamespaceCandidate<E>[] = [];
   // Entries still scoped by the deprecated per-entry `roles:`.
   const roleScoped = new Set<NamespaceCandidate<E>>();
   for (const namespace of places) {
     const dir = namespace === null ? null : namespaceDir(dirs, namespace);
-    const source = entryFilePath(type, dir);
-    const read = await reader.read(entryFileAbsolutePath(repoPath, type, dir), source);
+    const source = entryFilePath(layout, dir);
+    const read = await reader.read(entryFileAbsolutePath(repoPath, layout, dir), source);
     if (read === null) continue;
-    if (!read.ok) return { kind: 'failed', failure: { kind: 'broken-file', type, source, reason: read.reason }, notices };
+    if (!read.ok) return { kind: 'failed', failure: { kind: 'broken-file', type, source, reason: read.reason, layout }, notices };
     for (const note of read.notes ?? []) notices.push({ kind: 'file-note', message: note });
 
     for (const entry of read.entries) {
       const name = reader.nameOf(entry);
       const scope = reader.scopeOf(entry);
       const unknownKeys = read.unknownKeys?.get(entry) ?? [];
-      if (!await keepScopedEntry(type, name, source, scope, unknownKeys, localConfig, targets, notices)) continue;
+      if (!await keepScopedEntry(type, layout.noun, name, source, scope, unknownKeys, localConfig, targets, notices)) continue;
       const candidate = { name, source, namespace, value: entry };
       candidates.push(candidate);
       if (scope.roles !== undefined) roleScoped.add(candidate);
@@ -322,8 +368,10 @@ export async function resolveEntries<E>(
   const resolution = resolveNamespacedItems(candidates.filter((candidate) => !laterCopies.has(candidate)), active);
   if (resolution.kind === 'conflict') {
     const failure: EntryFailure = resolution.reason === 'duplicate'
-      ? { kind: 'duplicate', type, name: resolution.name, source: resolution.first.source }
-      : { kind: 'two-namespaces', type, name: resolution.name, first: resolution.first.source, second: resolution.second.source };
+      ? { kind: 'duplicate', type, name: resolution.name, source: resolution.first.source, layout }
+      : {
+        kind: 'two-namespaces', type, name: resolution.name, first: resolution.first.source, second: resolution.second.source, layout,
+      };
     return { kind: 'failed', failure, notices };
   }
 
@@ -358,7 +406,8 @@ export async function resolveEntriesFor<E>(
   reader: EntryReader<E>,
   localConfig: LocalConfig,
 ): Promise<EntryResolution<E>> {
-  const namespaces = await activeEntryNamespaces(localConfig, reader.type);
+  const layout = asLayout(reader.layout ?? reader.type);
+  const namespaces = await activeEntryNamespaces(localConfig, layout);
   if (!namespaces.ok) return { kind: 'failed', failure: namespaces.failure, notices: [] };
   return resolveEntries(reader, localConfig, namespaces.active);
 }
@@ -377,6 +426,7 @@ export async function resolveEntriesFor<E>(
  */
 async function keepScopedEntry(
   type: EntryType,
+  noun: string,
   name: string,
   source: string,
   scope: EntryScopeKeys,
@@ -385,7 +435,7 @@ async function keepScopedEntry(
   targets: TargetFiles,
   notices: EntryNotice[],
 ): Promise<boolean> {
-  const label = `${source}: ${ENTRY_NOUN[type]} "${name}"`;
+  const label = `${source}: ${noun} "${name}"`;
   if (unknownKeys.length > 0) {
     const one = unknownKeys.length === 1;
     const keys = unknownKeys.map((key) => `\`${key}:\``).join(', ');
@@ -423,33 +473,39 @@ async function keepScopedEntry(
   return roles === null || scope.roles.some((role) => roles.includes(role));
 }
 
-function moveTo(files: string[]): string {
+/**
+ * Where an entry carrying a removed per-entry key belongs: the namespace files
+ * its listed ids declare, or the removal. Shared with the write path (`env
+ * add`), whose remediation has to name the same file — telling a user to drop
+ * a root-scoped key where it sits would deliver the value to the whole team.
+ */
+export function moveTo(files: readonly string[]): string {
   if (files.length === 0) return 'It lists no id: remove it, or move it to the namespace file it is meant for.';
   if (files.length === 1) return `Move it to ${files[0]} and drop the key.`;
   return `Copy it into each of ${files.join(', ')} and drop the key.`;
 }
-
 /**
  * The namespace files an id's entries belong in: the namespaces its role or
  * project declares for the type, or `<type>/<id>/` with the declaration to add
  * when it declares none. The manifests are read at most once, and only when an
  * entry carries a per-entry key.
  */
-class TargetFiles {
+export class TargetFiles {
   private roles: ReturnType<typeof loadRolesManifestIfPresent> | null = null;
   private projects: ReturnType<typeof loadProjectsManifest> | null = null;
 
-  constructor(private readonly repoPath: string, private readonly type: EntryType) {}
+  constructor(private readonly repoPath: string, private readonly layout: EntryLayout) {}
 
   async forIds(axis: 'roles' | 'projects', ids: readonly string[]): Promise<string[]> {
     const files: string[] = [];
     for (const id of ids) {
       const declared = await this.declared(axis, id);
       if (declared.length > 0) {
-        files.push(...declared.map((namespace) => entryFilePath(this.type, namespace)));
+        files.push(...declared.map((namespace) => entryFilePath(this.layout, namespace)));
       } else {
         const owner = axis === 'roles' ? `role ${id}` : `project ${id}`;
-        files.push(`${entryFilePath(this.type, id)} (declare ${this.type}: [${id}] for ${owner} in manifest/${axis}.yaml)`);
+        const key = this.layout.activation;
+        files.push(`${entryFilePath(this.layout, id)} (declare ${key}: [${id}] for ${owner} in manifest/${axis}.yaml)`);
       }
     }
     return [...new Set(files)];
@@ -460,11 +516,11 @@ class TargetFiles {
       if (axis === 'roles') {
         this.roles ??= loadRolesManifestIfPresent(this.repoPath);
         const manifest = await this.roles;
-        return (manifest ? findRole(manifest, id)?.resources[this.type] : undefined) ?? [];
+        return (manifest ? findRole(manifest, id)?.resources[this.layout.activation] : undefined) ?? [];
       }
       this.projects ??= loadProjectsManifest(this.repoPath);
       const manifest = await this.projects;
-      return (manifest ? findProject(manifest, id)?.resources[this.type] : undefined) ?? [];
+      return (manifest ? findProject(manifest, id)?.resources[this.layout.activation] : undefined) ?? [];
     } catch {
       // A manifest that does not load names no namespace; the fallback path
       // still tells the admin where the entry goes.
@@ -491,8 +547,7 @@ async function isDeclaredNamespace(repoPath: string, type: EntryType, namespace:
 
 /** The failure as one actionable line: what happened, what it left alone, what to do. */
 export function describeEntryFailure(failure: EntryFailure): string {
-  const kept = `${failure.type} was not applied this run, so your ${INSTALLED[failure.type]} are unchanged.`;
-  const noun = ENTRY_NOUN[failure.type];
+  const { kept, noun } = failure.layout;
   switch (failure.kind) {
     case 'broken-file':
       // The reader's reason already names the file.
@@ -521,10 +576,21 @@ export function describeEntryFailure(failure: EntryFailure): string {
  * stale entries.
  */
 export function reportEntryResolution(resolution: EntryResolution<unknown>): void {
-  const messages = resolution.notices.map((notice) => notice.message);
-  if (resolution.kind === 'failed') messages.push(describeEntryFailure(resolution.failure));
-  for (const message of messages) {
+  reportNotices(resolution.notices);
+  if (resolution.kind === 'failed') {
+    const message = describeEntryFailure(resolution.failure);
     if (warnOnce(message)) log.persist(message);
+  }
+}
+
+/** List/status report only entries omitted from delivery; pull reports every notice. */
+export function reportUndeliveredEntryNotices(resolution: Pick<EntryResolution<unknown>, 'notices'>): void {
+  reportNotices(resolution.notices.filter((notice) => notice.kind === 'unknown-key' || notice.kind === 'removed-key'));
+}
+
+function reportNotices(notices: readonly EntryNotice[]): void {
+  for (const notice of notices) {
+    if (warnOnce(notice.message)) log.persist(notice.message);
   }
 }
 
@@ -552,17 +618,19 @@ export function describeOrigins(entries: readonly ResolvedEntry<unknown>[]): str
  * contributes any, each override, and in legacy mode each name the root file
  * repeats. None is a problem, so none is a failing check.
  */
-export function describeEntryNotes(type: EntryType, resolution: EntryResolution<unknown>): string[] {
+export function describeEntryNotes(where: EntryType | EntryLayout, resolution: EntryResolution<unknown>): string[] {
   if (resolution.kind !== 'resolved') return [];
+  const layout = asLayout(where);
+  const { label } = layout;
   const lines = resolution.entries.some((entry) => entry.namespace !== null)
-    ? [`${type}: ${resolution.entries.length} received here (${describeOrigins(resolution.entries)})`]
+    ? [`${label}: ${resolution.entries.length} received here (${describeOrigins(resolution.entries)})`]
     : [];
   for (const entry of resolution.entries) {
-    if (entry.replaces) lines.push(describeOverride(type, { name: entry.name, source: entry.source, replaces: entry.replaces }));
+    if (entry.replaces) lines.push(describeOverride(label, { name: entry.name, source: entry.source, replaces: entry.replaces }));
   }
   if (resolution.active === null) {
     for (const name of resolution.repeated) {
-      lines.push(`${type}: "${name}" is defined more than once in ${entryFilePath(type, null)} (legacy mode does not check this; keep one of them)`);
+      lines.push(`${label}: "${name}" is defined more than once in ${entryFilePath(layout, null)} (legacy mode does not check this; keep one of them)`);
     }
   }
   return lines;
@@ -579,9 +647,11 @@ export function describeEntryNotes(type: EntryType, resolution: EntryResolution<
  */
 export async function entryNamespaceFromFlags(
   repoPath: string,
-  type: EntryType,
+  where: EntryType | EntryLayout,
   flags: { role?: string; project?: string },
 ): Promise<{ ok: true; namespace: string | null } | { ok: false; message: string }> {
+  const layout = asLayout(where);
+  const type = layout.activation;
   if (flags.role !== undefined && flags.project !== undefined) {
     return { ok: false, message: 'Use either --role or --project, not both.' };
   }
@@ -591,12 +661,12 @@ export async function entryNamespaceFromFlags(
     }
     if (await isDeclaredNamespace(repoPath, type, flags.role) === false) {
       log.warn(
-        `No role or project declares ${type} namespace "${flags.role}", so ${entryFilePath(type, flags.role)} reaches nobody. `
+        `No role or project declares ${type} namespace "${flags.role}", so ${entryFilePath(layout, flags.role)} reaches nobody. `
         + `Add \`${type}: [${flags.role}]\` to the resources of a role in manifest/roles.yaml or of a project in `
         + 'manifest/projects.yaml.',
       );
     }
-    return { ok: true, namespace: namespaceDir(await listDirs(path.join(repoPath, type)), flags.role) };
+    return { ok: true, namespace: namespaceDir(await listDirs(path.join(repoPath, layout.dir)), flags.role) };
   }
   if (flags.project === undefined) return { ok: true, namespace: null };
 
@@ -611,7 +681,7 @@ export async function entryNamespaceFromFlags(
   if (!project) return { ok: false, message: unknownProjectMessage(manifest, flags.project) };
   const namespaces = project.resources[type] ?? [];
   if (namespaces.length === 1 && namespaces[0] !== undefined) {
-    return { ok: true, namespace: namespaceDir(await listDirs(path.join(repoPath, type)), namespaces[0]) };
+    return { ok: true, namespace: namespaceDir(await listDirs(path.join(repoPath, layout.dir)), namespaces[0]) };
   }
   return {
     ok: false,

@@ -90,6 +90,16 @@ says so and why.)
    session, use the name of **this** tool — do not assume Claude Code or Cursor.
    Some hosts need extra manual steps for hooks — see the troubleshooting
    reference ("Agent-specific caveats").
+5. **Team secrets: the user types the value, you run the CLI.** When the team
+   declares secrets (the session-start context lists them; `teamai env list`
+   shows them), run the CLIs that use them through `teamai env exec -- <command>`,
+   `--` first, so they get this team's value. It is for CLIs, not for starting
+   an agent: a secret named like a model profile's (`ANTHROPIC_*`) overrides it.
+   When a secret is missing, ask the user to run `teamai env set KEY` in their
+   own terminal. Never ask for a value in chat, pass one to `--stdin` or
+   `--secret`, read the files under `~/.teamai/secrets/`, or print one
+   (`teamai env exec -- env` and `printenv` do). Declaring a secret with
+   `teamai env add KEY --secret` takes no value, so you can run it.
 
 ## Daily commands
 
@@ -100,6 +110,7 @@ teamai status      # Show local vs team differences
 teamai doctor      # Diagnose configuration and hook problems
 teamai list        # List resources (skills|rules|docs|env|agents|hooks|mcp)
 teamai recall <q>  # Search what the team has already learned
+teamai env exec -- <cmd>  # Run a CLI with this directory's team env and secrets
 ```
 
 Every other command, every flag, and the flags `--help` hides live in the
@@ -108,6 +119,13 @@ generated reference below. Read it instead of guessing a flag.
 `teamai pull` mirrors the non-hidden docs you receive into `sharing.docs.localDir`,
 removing stale and local-only documents; an edited doc of a docs namespace you left
 is kept and named. Use a dedicated directory; preview with `--dry-run`.
+
+`teamai pull` keeps a skill, rule or agent copy the user changed since teamai
+delivered it, `--force` included, and names it (`Kept <path>: ...`). To share
+the change, `teamai push`; when pull or push says the team version has changed
+since, merge that change into the copy first, or the push replaces it. To take the team version instead, delete
+the copy and run `teamai pull --force`. The first pull after upgrading, and a
+new worktree's first pull, still overwrite: nothing is recorded yet.
 
 ## References
 

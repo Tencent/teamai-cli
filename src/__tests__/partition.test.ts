@@ -152,7 +152,7 @@ describe('resolvePartitionDir (legacy partition adoption)', () => {
   const legacy = () => path.join(projectsRoot(), legacyProjectSlug(anchor));
 
   beforeEach(() => {
-    base = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-adopt-')));
+    base = realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-adopt-')));
     home = path.join(base, 'home');
     fs.mkdirSync(home, { recursive: true });
     process.env.HOME = home;

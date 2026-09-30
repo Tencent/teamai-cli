@@ -256,8 +256,8 @@ describe("init --project all activates every project in the manifest (issue #509
     // Project scope stores the clone under the project dataHome, not ~/.teamai.
     // realpathSync both sides: macOS aliases /var to /private/var, which
     // path.resolve() alone does not reconcile.
-    expect(fs.realpathSync(teamRepo)).toBe(
-      fs.realpathSync(path.join(projectRoot, '.teamai', 'team-repo')),
+    expect(fs.realpathSync.native(teamRepo)).toBe(
+      fs.realpathSync.native(path.join(projectRoot, '.teamai', 'team-repo')),
     );
 
     // Point push at the bare remote so pull can see upcoming updates without a

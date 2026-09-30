@@ -23,12 +23,14 @@ vi.mock('../utils/logger.js', () => ({
     error: vi.fn(),
     debug: vi.fn(),
     dim: vi.fn(),
+    persist: vi.fn(),
   },
 }));
 
 import { list, status } from '../status.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 import { log } from '../utils/logger.js';
+import { resetWarnOnce } from '../utils/warn-once.js';
 
 function makeTeamConfig(): TeamaiConfig {
   return {
@@ -61,10 +63,12 @@ describe('teamai list / status resource coverage', () => {
   let tmpDir: string;
   let homeDir: string;
   let repoPath: string;
+  let localConfig: LocalConfig;
   let lines: string[];
   let spy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
+    resetWarnOnce();
     tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-list-'));
     homeDir = path.join(tmpDir, 'home');
     repoPath = path.join(tmpDir, 'repo');
@@ -102,7 +106,7 @@ describe('teamai list / status resource coverage', () => {
     );
     await fse.writeFile(path.join(repoPath, 'agents', 'reviewer.md'), '# Reviewer\n');
 
-    const localConfig: LocalConfig = {
+    localConfig = {
       repo: { localPath: repoPath, remote: 'https://example.com/repo.git' },
       username: 'u',
       updatePolicy: 'auto',
@@ -144,6 +148,61 @@ describe('teamai list / status resource coverage', () => {
     expect(out).toContain('SECRET_TOKEN=super-secret-value');
   });
 
+  // #875: a declared secret shows where its value comes from, never the value.
+  it('list env shows each declared secret with its state and never its value, --reveal included', async () => {
+    await fse.writeFile(
+      path.join(repoPath, 'env', 'secrets.yaml'),
+      'secrets:\n  - key: GITHUB_TOKEN\n    description: GitHub token\n  - key: GITLAB_TOKEN\n',
+    );
+    vi.stubEnv('GITHUB_TOKEN', 'fixture-github-value');
+    vi.stubEnv('GITLAB_TOKEN', '');
+
+    await list('env', { source: 'repo', reveal: true, verbose: true });
+    const out = lines.join('\n');
+    expect(out).toContain('SECRET_TOKEN=super-secret-value');
+    expect(out).toContain('GITHUB_TOKEN  environment  (root)');
+    expect(out).toContain('    GitHub token');
+    expect(out).toContain('GITLAB_TOKEN  missing  (root)');
+    expect(out).not.toContain('fixture-github-value');
+  });
+
+  // #875 (#879 Conflict 13): a key declared twice is listed only as a secret.
+  it('list env --reveal leaves out the env.yaml value of a key declared as a secret, and shows a team value as team', async () => {
+    await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: SECRET_TOKEN\n');
+    const { getTeamSecretsPath, writeSecretStore } = await import('../secret-store.js');
+    const { localConfig } = await mockAutoDetectInit() as { localConfig: LocalConfig };
+    await writeSecretStore(getTeamSecretsPath(localConfig), { SECRET_TOKEN: { value: 'fixture-team-value' } });
+
+    await list('env', { source: 'repo', reveal: true });
+    const out = lines.join('\n');
+    expect(out).not.toContain('super-secret-value');
+    expect(out).not.toContain('fixture-team-value');
+    expect(out).toContain('SECRET_TOKEN  team  (root)');
+  });
+
+  // #875: list env is the listing env list prints, so it shows a member's override too.
+  it('list env shows the member\'s value of an overridden variable, as team', async () => {
+    const { getTeamSecretsPath, writeSecretStore } = await import('../secret-store.js');
+    const { localConfig } = await mockAutoDetectInit() as { localConfig: LocalConfig };
+    await writeSecretStore(getTeamSecretsPath(localConfig), { SECRET_TOKEN: { value: 'fixture-member-value', kind: 'variable' } });
+
+    await list('env', { source: 'repo', reveal: true });
+    const out = lines.join('\n');
+    expect(out).toContain('SECRET_TOKEN=fixture-member-value  team  (root)');
+    expect(out).not.toContain('super-secret-value');
+  });
+
+  it('list env still lists the variables when the secrets file is broken, without their values, and names it', async () => {
+    await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secret:\n  - key: GITHUB_TOKEN\n');
+
+    await list('env', { source: 'repo', reveal: true });
+    const out = lines.join('\n');
+    expect(out).toContain('SECRET_TOKEN  (root)');
+    expect(out).not.toContain('super-secret-value');
+    expect(out).toContain('env/secrets.yaml declares no secrets');
+    expect(out).toContain('Team secrets were not resolved this run');
+  });
+
   it('list rejects unknown types', async () => {
     await list('widgets', { source: 'repo' });
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Unknown resource type'));
@@ -155,6 +214,47 @@ describe('teamai list / status resource coverage', () => {
     expect(out).toMatch(/agents:\s*1/);
     expect(out).toMatch(/hooks:\s*1/);
     expect(out).toMatch(/mcp:\s*1/);
+  });
+
+  it('names an undelivered MCP entry even when another entry makes resolution fail', async () => {
+    localConfig.primaryRole = 'worker';
+    await fse.outputFile(path.join(repoPath, 'manifest', 'roles.yaml'), [
+      'version: 1',
+      'roles:',
+      '  - id: worker',
+      '    resources:',
+      '      knowledge: []',
+      '      skills: []',
+      '      agents: []',
+      '      mcp: [one, two]',
+    ].join('\n'));
+    await fse.writeFile(path.join(repoPath, 'mcp', 'mcp.yaml'), [
+      'servers:',
+      '  - name: hidden',
+      '    transport: http',
+      '    url: https://example.com/hidden',
+      '    role: worker',
+    ].join('\n'));
+    for (const namespace of ['one', 'two']) {
+      await fse.outputFile(path.join(repoPath, 'mcp', namespace, 'mcp.yaml'), [
+        'servers:',
+        '  - name: duplicate',
+        '    transport: http',
+        `    url: https://example.com/${namespace}`,
+      ].join('\n'));
+    }
+
+    vi.mocked(log.warn).mockClear();
+    await status({});
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('server "hidden" has unknown key `role:`'));
+    expect(lines.join('\n')).toContain('mcp: 0 (cannot be resolved; run `teamai doctor`)');
+
+    resetWarnOnce();
+    vi.mocked(log.warn).mockClear();
+    lines.length = 0;
+    await list('mcp', { source: 'repo' });
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('server "hidden" has unknown key `role:`'));
+    expect(lines.join('\n')).toContain('server "duplicate" is defined in both');
   });
 
   it('status counts nested rule files', async () => {

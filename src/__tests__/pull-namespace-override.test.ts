@@ -54,10 +54,11 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { pull } from '../pull.js';
+import crypto from 'node:crypto';
+import { checkoutKey, pull } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope } from '../config.js';
 import { log } from '../utils/logger.js';
-import type { TeamaiConfig, LocalConfig } from '../types.js';
+import { StateSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
 
 const ROLES_YAML = `
 version: 1
@@ -103,7 +104,7 @@ describe('pull: an active namespace item replaces the root item of the same name
   const read = (rel: string): Promise<string> => fse.readFile(path.join(homeDir, rel), 'utf8');
   const exists = (rel: string): Promise<boolean> => fse.pathExists(path.join(homeDir, rel));
   const team = (rel: string, content: string): Promise<void> => fse.outputFile(path.join(repoPath, rel), content);
-  const logged = (level: 'warn' | 'error', pattern: RegExp): boolean => (
+  const logged = (level: 'info' | 'warn' | 'error', pattern: RegExp): boolean => (
     vi.mocked(log[level]).mock.calls.some((args) => pattern.test(args.map(String).join(' ')))
   );
 
@@ -410,6 +411,71 @@ describe('pull: an active namespace item replaces the root item of the same name
       expect(await read('.claude/skills/review/my-notes.md')).toBe('mine\n');
     });
 
+    // #911: a root skill that stops arriving is removed, and pull says so
+    // instead of leaving only a debug line and "No resources to sync".
+    it('names a root skill it removes once it is no longer delivered, and how to get it back', async () => {
+      as(['devops'], { subscribedTags: ['ui'] });
+      await pull({});
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Shared review');
+
+      vi.mocked(log.info).mockClear();
+      as(['devops']);
+      await pull({ force: true });
+
+      expect(await exists('.claude/skills/review')).toBe(false);
+      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: review\. .*`teamai tags subscribe <tag>`/)).toBe(true);
+    });
+
+    // #917 follow-up: the hint follows the repo, not the cleanup phase. Root
+    // `review` exists and is tagged `ui`, so even a namespace copy removed on
+    // deactivation leaves `tags subscribe` a way to bring the name back.
+    it('names a namespace skill it removes when the namespace deactivates, with the tag hint when the root copy is tag-recoverable', async () => {
+      await pull({});
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Front review');
+
+      vi.mocked(log.info).mockClear();
+      as(['devops']);
+      await pull({ force: true });
+
+      expect(await exists('.claude/skills/review')).toBe(false);
+      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: review\. .*`teamai tags subscribe <tag>`/)).toBe(true);
+    });
+
+    it('names a namespace-only skill it removes without the tag hint: no root copy exists to subscribe to', async () => {
+      await team('skills/frontend/only-front/SKILL.md', skillMd('only-front', 'Front only'));
+
+      as(['frontend'], { excludedSkills: ['review'] });
+      await pull({});
+      expect(await read('.claude/skills/only-front/SKILL.md')).toContain('Front only');
+
+      vi.mocked(log.info).mockClear();
+      as(['devops'], { excludedSkills: ['review'] });
+      await pull({ force: true });
+
+      expect(await exists('.claude/skills/only-front')).toBe(false);
+      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: only-front\.$/)).toBe(true);
+    });
+
+    // The inactive namespace copy is byte-identical to the root skill, so the
+    // namespace cleanup phase removes the directory before the desired-union
+    // sweep can. The tag hint must survive that routing (#917 review).
+    it('keeps the tag hint when the removed root skill is byte-identical to its inactive namespace copy', async () => {
+      await team('tags.yaml', 'skills:\n  twin: [ui]\n');
+      await team('skills/twin/SKILL.md', skillMd('twin', 'Twin review'));
+      await team('skills/frontend/twin/SKILL.md', skillMd('twin', 'Twin review'));
+
+      as(['devops'], { subscribedTags: ['ui'] });
+      await pull({});
+      expect(await read('.claude/skills/twin/SKILL.md')).toContain('Twin review');
+
+      vi.mocked(log.info).mockClear();
+      as(['devops']);
+      await pull({ force: true });
+
+      expect(await exists('.claude/skills/twin')).toBe(false);
+      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: twin\. .*`teamai tags subscribe <tag>`/)).toBe(true);
+    });
+
     // A path another team version has is not enough to call a file a leftover:
     // the member may have added a file of that name, in a namespace they never had.
     it('keeps a file the member added at a path another version has, and names it', async () => {
@@ -423,6 +489,41 @@ describe('pull: an active namespace item replaces the root item of the same name
       expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(
         `Kept ${path.join(homeDir, '.claude/skills/review/front-only.md')}`,
       ));
+    });
+
+    describe('with a record of what teamai delivered (#822)', () => {
+      const frontOnly = (): string => path.join(homeDir, '.claude/skills/review/front-only.md');
+      const recordDelivered = async (delivered: Record<string, string>): Promise<void> => {
+        vi.mocked(loadStateForScope).mockResolvedValue(StateSchema.parse({
+          lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: '', targets: [], delivered } },
+        }));
+      };
+      afterEach(() => {
+        vi.mocked(loadStateForScope).mockResolvedValue(StateSchema.parse({ lastPull: null }));
+      });
+
+      it('keeps a file the member added at a path another version has without naming it', async () => {
+        await recordDelivered({});
+        as(['devops'], { subscribedTags: ['ui'] });
+        await pull({});
+        await fse.outputFile(frontOnly(), 'my own notes\n');
+
+        await pull({ force: true });
+
+        expect(await read('.claude/skills/review/front-only.md')).toBe('my own notes\n');
+        expect(logged('warn', /front-only\.md/)).toBe(false);
+      });
+
+      it('removes a leftover teamai wrote there at an earlier delivery', async () => {
+        await fse.outputFile(frontOnly(), 'older front notes\n');
+        await recordDelivered({ [frontOnly()]: crypto.createHash('sha256').update('older front notes\n').digest('hex') });
+        as(['devops'], { subscribedTags: ['ui'] });
+
+        await pull({});
+
+        expect(await exists('.claude/skills/review/front-only.md')).toBe(false);
+        expect(logged('warn', /front-only\.md/)).toBe(false);
+      });
     });
 
     // A directory without SKILL.md is not a skill: it must neither replace the

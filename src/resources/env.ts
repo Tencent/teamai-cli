@@ -7,9 +7,12 @@ import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, getTea
 import { loadLocalConfigForScope } from '../config.js';
 import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { envShMarker, isEnvShMarker, recordEnvShExports } from '../env-sh-exports.js';
+import { ENV_KEY_RE } from './env-key.js';
+import { SECRETS_LAYOUT } from './secrets.js';
 import {
-  entryFileAbsolutePath, listEntryFiles, readEntryFileText, reportEntryResolution, resolveEntriesFor,
-  unknownEntryKeys, writtenList, type EntryReader,
+  listEntryFiles, readEntryFileText, reportEntryResolution, resolveEntriesFor,
+  unknownEntryKeys, writtenList, type EntryFile, type EntryReader,
 } from '../namespaced-entries.js';
 import {
   resolveActiveShellProfile,
@@ -127,15 +130,6 @@ export function maskEnvValue(value: string): string {
 }
 
 /**
- * A key this module will write into env.sh, and the only shape it reads back.
- *
- * Shared by `parseEnvFile` and `generateEnvFile` on purpose: the write side has
- * to reject exactly what the read side skips, or a variable can exist in env.sh
- * that the CLI can never see again.
- */
-export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/**
  * Read back the assignments `generateEnvFile` writes, as key → value.
  *
  * The inverse of the generator, and it has to be: a YAML block scalar is a
@@ -152,7 +146,8 @@ export function parseEnvFile(content: string): Map<string, string> {
   while (i < content.length) {
     const eq = content.startsWith(PREFIX, i) ? content.indexOf('=', i + PREFIX.length) : -1;
     const key = eq === -1 ? '' : content.slice(i + PREFIX.length, eq);
-    if (eq === -1 || !ENV_KEY_RE.test(key) || content[eq + 1] !== "'") {
+    // The marker is not a team variable (env-sh-exports.ts), and fits on its line.
+    if (eq === -1 || !ENV_KEY_RE.test(key) || content[eq + 1] !== "'" || isEnvShMarker(key)) {
       const nl = content.indexOf('\n', i);
       if (nl === -1) break;
       i = nl + 1;
@@ -232,10 +227,13 @@ export class EnvHandler extends ResourceHandler {
   readonly type = 'env' as const;
 
   /**
-   * Scan for local env changes that need to be pushed: `env/env.yaml` and every
-   * `env/<ns>/env.yaml`, one item per changed file.
+   * Scan for local env changes that need to be pushed: `env/env.yaml`, every
+   * `env/<ns>/env.yaml`, and the same for `secrets.yaml`, one item per changed file.
    */
   async scanLocalForPush(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
+    const listEnvFiles = async (root: string): Promise<EntryFile[]> =>
+      [...await listEntryFiles(root, 'env'), ...await listEntryFiles(root, SECRETS_LAYOUT)];
+
     // Single-repo mode: users edit team env directly at <repo>/.teamai/env/
     // (it lives in their own repo). push runs in the knowledge worktree, so
     // localConfig.repo.localPath here is the origin/<default> checkout — diff the
@@ -244,8 +242,8 @@ export class EnvHandler extends ResourceHandler {
     if (isSelfMode(localConfig) && localConfig.projectRoot) {
       const activeRoot = path.join(localConfig.projectRoot, '.teamai');
       const items: ResourceItem[] = [];
-      for (const { namespace, relativePath, absolutePath: activeEnv } of await listEntryFiles(activeRoot, 'env')) {
-        const baseEnv = entryFileAbsolutePath(localConfig.repo.localPath, 'env', namespace);
+      for (const { relativePath, absolutePath: activeEnv } of await listEnvFiles(activeRoot)) {
+        const baseEnv = path.join(localConfig.repo.localPath, ...relativePath.split('/'));
         // Not in the baseline → new; present but different → modified; equal → skip.
         if (await pathExists(baseEnv) && await fileContentEqual(activeEnv, baseEnv)) continue;
         items.push(envPushItem(relativePath, activeEnv));
@@ -274,7 +272,7 @@ export class EnvHandler extends ResourceHandler {
     }
 
     const items: ResourceItem[] = [];
-    for (const { relativePath, absolutePath } of await listEntryFiles(repoPath, 'env')) {
+    for (const { relativePath, absolutePath } of await listEnvFiles(repoPath)) {
       if (changed && !changed.has(relativePath)) continue;
       items.push(envPushItem(relativePath, absolutePath));
     }
@@ -344,8 +342,15 @@ export class EnvHandler extends ResourceHandler {
     await ensureDir(teamaiHome);
     await writeFile(getEnvBackupPath(localConfig), backupLines.join('\n') + '\n');
 
-    // <teamaiHome>/env.sh (sourceable export file)
-    await writeFile(envShPath, this.generateEnvFile(variables));
+    // <teamaiHome>/env.sh (sourceable export file). What it exported before
+    // and after is recorded first: a shell opened before this rewrite still
+    // carries those values, and they are the team's, not the member's (#879
+    // Conflict 10). The old ones are there too for an env.sh an older CLI wrote.
+    const previous = parseEnvFile(await readFileSafe(envShPath) ?? '');
+    const recorded = await recordEnvShExports(envShPath, [...previous, ...variables.map((v): [string, string] => [v.key, v.value])]);
+    const envSh = this.generateEnvFile(variables);
+    const marker = envShMarker(teamaiHome, parseEnvFile(envSh), recorded);
+    await writeFile(envShPath, marker ? `${envSh}export ${marker[0]}='${marker[1]}'\n` : envSh);
 
     // Inject source line into shell profile if enabled
     const inject = teamConfig.sharing.env.injectShellProfile !== false;

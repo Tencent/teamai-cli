@@ -52,7 +52,7 @@ async function setUp(opts: {
   branchLearnings?: Record<string, string>;
   votes?: string;
 } = {}) {
-  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-remnants-')));
+  const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-remnants-')));
   sandboxes.push(sandbox);
   const home = path.join(sandbox, 'home');
   const remote = path.join(sandbox, 'team.git');

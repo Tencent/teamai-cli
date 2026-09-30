@@ -4,7 +4,7 @@ import os from 'node:os';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 import { execFileSync } from 'node:child_process';
-import { EnvHandler, describeEnvYamlShapeProblem } from '../resources/env.js';
+import { EnvHandler, describeEnvYamlShapeProblem, parseEnvFile } from '../resources/env.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 import type { TeamaiConfig, LocalConfig, ResourceItem } from '../types.js';
@@ -116,6 +116,20 @@ scope: 'user',
       const items = await handler.scanLocalForPush(teamConfig, localConfig);
       expect(items.map((item) => item.relativePath)).toEqual(['env/billing/env.yaml', 'env/checkout/env.yaml']);
       expect(items.map((item) => item.name)).toEqual(['billing/env.yaml', 'checkout/env.yaml']);
+    });
+
+    // #875: a declared secret is published by push like a variable.
+    it('reports a changed secrets file, root and namespace', async () => {
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), 'variables: []\n');
+      run(['init', '-q', '-b', 'main']);
+      run(['add', '-A']);
+      run(['commit', '-q', '-m', 'seed']);
+
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GITHUB_TOKEN\n');
+      await fse.outputFile(path.join(repoPath, 'env', 'checkout', 'secrets.yaml'), 'secrets:\n  - key: NPM_TOKEN\n');
+
+      const items = await handler.scanLocalForPush(teamConfig, localConfig);
+      expect(items.map((item) => item.relativePath)).toEqual(['env/secrets.yaml', 'env/checkout/secrets.yaml']);
     });
 
     // git quotes a non-ASCII path in its default output, so it never matched.
@@ -650,7 +664,9 @@ scope: 'user',
       expect(await envSh()).toContain('CHECKOUT_ONLY');
 
       await handler.pullItem(item, teamConfig, { ...localConfig, projects: ['billing'] });
-      expect((await envSh()).trim()).toBe('');
+      // Only the marker of what it exported before is left (env-sh-exports.ts).
+      expect(await envSh()).not.toContain('CHECKOUT_ONLY');
+      expect([...parseEnvFile(await envSh()).keys()]).toEqual([]);
       const backup = await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf-8');
       expect(backup).not.toContain('CHECKOUT_ONLY');
     });

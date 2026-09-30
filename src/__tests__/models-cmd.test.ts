@@ -1,12 +1,20 @@
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsSwitch } from '../models-cmd.js';
 import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../models/profile.js';
+import { askSecret, isInteractive } from '../utils/prompt.js';
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../utils/prompt.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/prompt.js')>()),
+  isInteractive: vi.fn(() => false),
+  askSecret: vi.fn(),
 }));
 
 let home: string;
@@ -79,7 +87,7 @@ describe('models commands', () => {
       '  Gateway: https://gateway.example.test',
       '  Models:',
       '    anthropic, openai-chat-completions: glm-5.3, deepseek-v4-flash',
-      '  Agents: claude, opencode, codebuddy, workbuddy',
+      '  Agents: claude, opencode, codebuddy, workbuddy, pi',
       '  Active: none',
     ];
     expect(await captureOutput(() => modelsList())).toEqual([
@@ -90,7 +98,7 @@ describe('models commands', () => {
       '  Gateway: https://other.example.test',
       '  Models:',
       '    openai-responses: glm-5.3',
-      '  Agents: codex, opencode',
+      '  Agents: codex, opencode, pi',
       '  Active: none',
     ]);
     expect(await captureOutput(() => modelsList('mine'))).toEqual(mine);
@@ -121,6 +129,27 @@ describe('models commands', () => {
     expect((await loadLocalProfiles()).profiles[0].name).toBe('Renamed');
   });
 
+  it('stores a key piped with --api-key-stdin and refuses a terminal or empty input', async () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+    const pipeStdin = (chunks: string[], isTTY?: true) => Object.defineProperty(process, 'stdin', {
+      value: Object.assign(Readable.from(chunks), { isTTY }), configurable: true,
+    });
+    try {
+      await addMine();
+      pipeStdin(['sk-pi', 'ped\r\n']);
+      await modelsConfigure('local:mine', { apiKeyStdin: true });
+      expect(Object.values(await loadModelInputs(getLocalValuesPath())).map((entry) => entry.API_KEY))
+        .toEqual([{ value: 'sk-piped' }]);
+
+      pipeStdin([], true);
+      await expect(modelsConfigure('local:mine', { apiKeyStdin: true })).rejects.toThrow('--api-key-stdin expects piped stdin');
+      pipeStdin(['\n']);
+      await expect(modelsConfigure('local:mine', { apiKeyStdin: true })).rejects.toThrow('No API key was provided on stdin');
+    } finally {
+      if (original) Object.defineProperty(process, 'stdin', original);
+    }
+  });
+
   it('switches every compatible installed agent by default and lists where a profile is active', async () => {
     await fse.outputJson(path.join(home, '.claude', 'settings.json'), {});
     await fse.outputJson(path.join(home, '.codebuddy', 'models.json'), { models: [] });
@@ -140,6 +169,21 @@ describe('models commands', () => {
     await addMine();
     await fse.writeJson(getLocalValuesPath(), {});
     await expect(modelsSwitch('mine', {})).rejects.toThrow(/has no API key. Run `teamai models configure local:mine`/);
+  });
+
+  it('persists the key asked for on the first interactive switch to a personal profile', async () => {
+    await fse.outputJson(path.join(home, '.claude', 'settings.json'), {});
+    await addMine();
+    await fse.writeJson(getLocalValuesPath(), {});
+    vi.mocked(isInteractive).mockReturnValue(true);
+    vi.mocked(askSecret).mockResolvedValue('sk-interactive');
+    try {
+      await captureOutput(() => modelsSwitch('mine', { agent: ['claude'] }));
+      expect(await loadModelInputs(getLocalValuesPath())).toEqual({ 'local:mine': { API_KEY: { value: 'sk-interactive' } } });
+      expect((await fse.readJson(path.join(home, '.claude', 'settings.json'))).model).toBe('glm-5.3');
+    } finally {
+      vi.mocked(isInteractive).mockReturnValue(false);
+    }
   });
 
   it('restores every managed agent by default and reports when nothing is managed', async () => {

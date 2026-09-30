@@ -19,9 +19,11 @@ vi.mock('../utils/logger.js', () => ({
   setStderrOnly: vi.fn(),
 }));
 
-import { loadLocalConfig, loadTeamConfig } from '../config.js';
+import crypto from 'node:crypto';
+import { loadLocalConfig, loadStateForScope, loadTeamConfig } from '../config.js';
 import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
-import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { checkoutKey } from '../pull.js';
+import { StateSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 /**
  * The rules half of the delivery check (#624). A rule changes both its filename
@@ -199,6 +201,29 @@ describe('doctor — rules delivered on disk', () => {
     const claude = await rulesCheck('claude');
     expect(await claude.check()).toBe(false);
     expect(claude.fix).toContain('delivered from an older copy: reviews');
+  });
+
+  it('passes a copy the member changed since teamai delivered it, which pull keeps (#822)', async () => {
+    const edited = path.join(homeDir, CLAUDE_RULES, 'reviews.md');
+    await fse.writeFile(edited, 'My own version\n');
+    await deliverMdc('coding-style');
+    await deliverMdc('reviews');
+    const delivered = { [edited]: crypto.createHash('sha256').update('Body of reviews\n').digest('hex') };
+    vi.mocked(loadStateForScope).mockResolvedValue(StateSchema.parse({
+      lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: 'r1', targets: [], delivered } },
+    }));
+    try {
+      const withMissing = await rulesCheck('claude');
+      expect(await withMissing.check()).toBe(false);
+      expect(withMissing.fix).toContain('not delivered: coding-style; changed by you (kept by pull): reviews.');
+      expect(withMissing.fix).not.toContain('delivered from an older copy: reviews');
+
+      // Only the member's change is left: nothing is wrong with the delivery.
+      await deliverPlain(CLAUDE_RULES, 'coding-style');
+      expect(await (await rulesCheck('claude')).check()).toBe(true);
+    } finally {
+      vi.mocked(loadStateForScope).mockResolvedValue(StateSchema.parse({}));
+    }
   });
 
   it('treats a plain .md rule as applicable without frontmatter', async () => {

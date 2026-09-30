@@ -212,6 +212,7 @@ async function persistSession(session: ImportSession, sessionPath: string): Prom
 export async function scanCandidates(opts: {
   dir?: string;
   fromClaude?: boolean;
+  dryRun?: boolean;
 }): Promise<Array<{ path: string; rawContent: string }>> {
   const results: Array<{ path: string; rawContent: string }> = [];
 
@@ -247,7 +248,7 @@ export async function scanCandidates(opts: {
     // Claude's rules follow a relocated root (CLAUDE_CONFIG_DIR); Cursor's do not move.
     const { resolveMemberToolRoots } = await import('./config.js');
     const { resolveToolRootDir, CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT } = await import('./types.js');
-    const claudeRoot = resolveToolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, await resolveMemberToolRoots());
+    const claudeRoot = resolveToolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, await resolveMemberToolRoots(undefined, { dryRun: opts.dryRun }));
     const rulesBaseDirs = [
       path.join(claudeRoot, 'rules'),
       expandHome('~/.cursor/rules'),

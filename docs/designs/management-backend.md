@@ -50,7 +50,8 @@ plane accepts identity-bound events with separate retention and write permission
 | `skills/` | SkillsHandler, namespaces and marketplace metadata | Resource bundles with immutable files, dependencies and generated marketplace views |
 | `rules/` | RulesHandler and enforced-rule selection | Versioned rules with separately enforced policy constraints |
 | `docs/` | DocsHandler and indexed documentation | Versioned documents, authorized materialization and recall indexing |
-| `env/env.yaml` | EnvHandler, local overrides and environment injection | Non-secret templates plus secret references; secret resolution has separate authorization |
+| `env/env.yaml` | EnvHandler, local overrides and environment injection; values in plaintext | Non-secret templates plus secret references; secret resolution has separate authorization |
+| `env/secrets.yaml` | Secret declarations with no value ([team secrets](team-secrets.md)); v1 resolves each member's value on their machine | Secret references; the encrypted secret service below stays future work |
 | `agents/` | AgentsHandler and tool-format conversion | Versioned agent definitions rendered through the existing tool adapters |
 | `hooks/hooks.yaml` | HooksHandler plus hook reconciliation; no general per-item push | Reviewed declarative hooks, client consent and typed validation |
 | `mcp/mcp.yaml` | McpHandler plus MCP reconciliation; direct YAML editing for contributions | Reviewed server definitions, transport policy and secret references |

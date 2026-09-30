@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import type { McpServerDef, McpTransport } from '../types.js';
+import { sameEnvName } from './env-key.js';
 
 // ─── Per-tool rendering ──────────────────────────────────────
 //
@@ -46,6 +47,12 @@ export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
   opencode: 'mcp',
   copilot: 'mcpServers',
 };
+
+/** Whether two formats keep their servers under one key of a shared file (Claude, Cursor and CodeBuddy all use `mcpServers`). */
+export function sameServerKey(a: McpFormat, b: McpFormat): boolean {
+  if (a === 'codex' || b === 'codex') return a === b;
+  return MCP_SERVER_KEY[a] === MCP_SERVER_KEY[b];
+}
 
 /** Transports each format can actually express. */
 const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
@@ -142,15 +149,23 @@ export interface ResolveResult {
   missing: string[];
 }
 
+/** The value `${name}` takes from `vars`: on Windows `${token}` names the `TOKEN` a table holds, one environment variable. */
+export function placeholderValue(vars: Record<string, string>, name: string): string | undefined {
+  if (Object.hasOwn(vars, name)) return vars[name];
+  const other = sameEnvName(Object.keys(vars), name);
+  return other === undefined ? undefined : vars[other];
+}
+
 /**
  * Substitute ${VAR} throughout a def. Unresolved vars are left as-is and
  * reported, so the caller can skip the server rather than inject a broken one.
  */
 export function resolvePlaceholders(def: McpServerDef, vars: Record<string, string>): ResolveResult {
   const missing = new Set<string>();
+  const lookup = (name: string): string | undefined => placeholderValue(vars, name);
   const sub = (v: string): string =>
     v.replace(PLACEHOLDER_RE, (whole, name: string) => {
-      const val = vars[name];
+      const val = lookup(name);
       if (val === undefined || val === '') {
         missing.add(name);
         return whole;

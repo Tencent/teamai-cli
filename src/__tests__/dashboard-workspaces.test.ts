@@ -77,7 +77,7 @@ describe('dashboardWorkspaces discovery (#809)', () => {
   });
 
   it('finds a project from the anchor its events recorded, after the worktree they ran in is gone', async () => {
-    home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-ws-discovery-')));
+    home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-ws-discovery-')));
     vi.stubEnv('HOME', home);
     // A project installed in its main checkout (no partition), named only by the events' anchor.
     const main = path.join(home, 'repo');
@@ -95,7 +95,7 @@ describe('dashboardWorkspaces discovery (#809)', () => {
   });
 
   it('still finds a legacy config kept in a linked worktree, which its anchor does not hold', async () => {
-    home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-ws-discovery-')));
+    home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-ws-discovery-')));
     vi.stubEnv('HOME', home);
     const main = path.join(home, 'repo');
     const worktree = path.join(home, 'repo-wt');

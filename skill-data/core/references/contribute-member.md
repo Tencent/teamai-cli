@@ -123,6 +123,7 @@ edit: unedited old instructions update in native format, including under
 Rule pre-sync leaves tools excluded by `enabledAgents` or `disabledAgents` untouched.
 When only team `paths` change, `applyTo` refreshes if the local file still matches
 a recorded version's generated copy; locally edited headers are kept.
+The copies push refreshes are recorded, so a later `teamai pull` still updates them.
 
 ## If push is denied
 

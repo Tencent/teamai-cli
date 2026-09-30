@@ -123,6 +123,11 @@ vi.mock('../pkg/pkg-hint.js', () => ({
   takePendingPackageHint: mockTakePendingPackageHint,
 }));
 
+const mockMrHintOutput = vi.fn().mockResolvedValue(null);
+vi.mock('../mr-hint.js', () => ({
+  computeMrHintOutput: mockMrHintOutput,
+}));
+
 vi.mock('../transcript-parser.js', () => ({
   parseTranscriptForVotes: mockParseTranscriptForVotes,
 }));
@@ -1018,7 +1023,7 @@ describe('hook-handlers registry', () => {
   describe("votes-judge and the learnings checkout's owner (#808)", () => {
     let root: string;
     beforeEach(() => {
-      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-judge-808-')));
+      root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-judge-808-')));
     });
     afterEach(() => {
       fs.rmSync(root, { recursive: true, force: true });
@@ -1377,6 +1382,69 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
     await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'foreground');
     // dashboard-report parses the event and appends locally — it must stay inline.
     expect(mockParseHookEvent).toHaveBeenCalled();
+  });
+});
+
+describe('session-start secrets hint (#875)', () => {
+  let teamRepo: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    teamRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-secrets-hint-'));
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: https://example.test/acme/team.git\n');
+    const sessionStart = (context: string) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } });
+    mockMrHintOutput.mockResolvedValueOnce(sessionStart('MR context'));
+    mockClaimPackageHint.mockResolvedValueOnce(sessionStart('Package context'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(teamRepo, { recursive: true, force: true });
+  });
+
+  async function sessionContext(): Promise<string[]> {
+    const localConfig: LocalConfig = { ...scope, repo: { localPath: teamRepo, remote: '' } };
+    const dispatcher = createDispatcher({ handlers: filterHandlersForConfig(buildHandlerRegistry(), localConfig), localConfig });
+    const result = await dispatcher.dispatch('session-start', '*', { session_id: 'sid-secrets', cwd: teamRepo }, 'claude', 'foreground');
+    expect(result.errors).toEqual([]);
+    return (JSON.parse(result.output ?? '{}').hookSpecificOutput.additionalContext as string).split('\n');
+  }
+
+  it('tells the agent once which secrets the scope declares and to run their CLIs through env exec', async () => {
+    fs.mkdirSync(path.join(teamRepo, 'env'));
+    fs.writeFileSync(path.join(teamRepo, 'env', 'secrets.yaml'), [
+      'secrets:',
+      '  - { key: GITHUB_TOKEN, description: "gh and the github MCP server" }',
+      '  - { key: SENTRY_AUTH_TOKEN }',
+      '',
+    ].join('\n'));
+
+    const lines = await sessionContext();
+
+    const secretLines = lines.filter((line) => line.includes('GITHUB_TOKEN'));
+    expect(secretLines).toHaveLength(1);
+    expect(secretLines[0]).toContain('GITHUB_TOKEN (gh and the github MCP server)');
+    expect(secretLines[0]).toContain('SENTRY_AUTH_TOKEN');
+    expect(secretLines[0]).toContain('teamai env exec --');
+    expect(secretLines[0]).toContain('teamai env set KEY');
+    expect(lines.filter((line) => line !== secretLines[0])).toEqual(['MR context', 'Package context']);
+  });
+
+  it('adds nothing when the scope declares no secrets', async () => {
+    expect(await sessionContext()).toEqual(['MR context', 'Package context']);
+  });
+
+  it('adds nothing when the secrets file cannot be read', async () => {
+    fs.mkdirSync(path.join(teamRepo, 'env'));
+    fs.writeFileSync(path.join(teamRepo, 'env', 'secrets.yaml'), 'secrets: [\n');
+
+    expect(await sessionContext()).toEqual(['MR context', 'Package context']);
+  });
+
+  it('is a foreground team handler, so a directory without teamai never gets the line', () => {
+    const registration = buildHandlerRegistry().find((r) => r.handler.name === 'secrets-hint');
+    expect(registration).toMatchObject({ event: 'session-start', matcher: '*', requiresConfig: true });
+    expect(registration?.background).not.toBe(true);
+    expect(filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name)).not.toContain('secrets-hint');
   });
 });
 

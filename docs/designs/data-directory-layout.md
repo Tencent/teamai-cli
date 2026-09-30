@@ -75,6 +75,8 @@ directories do not authorize writes to rules excluded by the local configuration
 For Copilot updates that only change `paths`, it compares the entire local file
 with the rendered recorded versions before refreshing `applyTo`, preserving
 locally edited headers rather than overwriting them on a body match alone.
+Each copy it writes, in any format, is recorded in the checkout's `delivered`
+(#822), so the next pull does not keep it as the member's edit.
 A placed agent, which push does not
 sync, is held when the team file has changed since any of those revisions, or
 since it was added if one of them predates it (#823). That sync brings the
@@ -397,8 +399,9 @@ stays in the checkout's `.teamai/`.
   self-heal bootstrap — which now writes the config into the PARTITION — then reads
   it back FROM the partition (`selfHealAndReadPartition`). A pre-P2 install whose
   config still sits in `<repo>/.teamai` is read via the legacy branch (double-read
-  compat) until migration relocates it. A `--dry-run` detection
-  (`roles set`, `tags subscribe`, `tags unsubscribe`) previews the bootstrap
+  compat) until migration relocates it. A `--dry-run` detection (a command that
+  forwards `--dry-run` to its loader, or a read-only one such as `status`, `list`,
+  `doctor` or `mcp list`, which loads this way unconditionally) previews the bootstrap
   instead (`previewSelfBootstrap`): it builds the config it would write, keeps it
   in memory, and prints `[dry-run] Would bootstrap ...` without locking, writing,
   injecting hooks or registering the member. It makes no provider auth call
@@ -436,6 +439,9 @@ every checkout, so that is where they live now:
 ├── reports-wt/                                (the side-branch locks sit beside them)
 ├── pending-learnings/                         pendingLearningsDir → <dataHome>/pending-learnings
 └── workspaces/<managedMcpWorkspaceId(root)>/
+    ├── managed-mcp.json                       managedMcpManifestPath, one per checkout
+    ├── managed-mcp-files.json                 resolvedMcpFilesPath: project MCP configs teamai may have written a resolved ${VAR} to, and whether
+    │                                          the paths earlier teamai.yaml revisions mapped were read; one of those git tracks is marked tracked (#882)
     └── search-index.json                      getProjectSearchIndexPath, one per checkout
 <checkout>/.teamai/                            one per checkout: committed knowledge, knowledge-wt/
 ```
@@ -652,8 +658,8 @@ the other repository, and `recall` rebuilds a missing index. `uninstall` lists, 
 how many unpublished learnings each queue in the data home holds, set-aside ones
 included, so the member can publish or copy them first.
 
-Every checkout keeps its `workspaces/<id>/` (search index, managed MCP,
-resource cache) in the shared data home. A full `pull` removes those of
+Every checkout keeps its `workspaces/<id>/` (search index, managed MCP and
+the MCP configs it wrote a resolved value to, resource cache) in the shared data home. A full `pull` removes those of
 checkouts `git worktree list` no longer shows; the fast path does not list
 worktrees.
 
@@ -902,3 +908,29 @@ user finds partitions safe to `rm -rf` by hand.
 `teamai migrate` / `gc` / `--revert` commands; cross-project shared team-repo clone.
 Downgrade to an older teamai after
 P1 migration is not supported (`.teamai.bak/` is the manual rollback path).
+
+## Team secret values (#875)
+
+A member's values for their teams' declared secrets live in `~/.teamai/secrets/`,
+a class-A2 (machine-level) directory: `teams/<hash>.json`, one file per
+team repo, named by the full SHA-256 hex digest (64 characters, never shortened) of the team repo URL in `~/.teamai/config.yaml` (never
+`teamai.yaml`'s `repo:`), without the team name, so renaming `team:` keeps the values;
+the hash covers the URL's scheme (the ssh forms count as one; https and http are two),
+ssh user, host, non-default port and path (an scp-style path not starting with `/` or `~`
+is in the user's home, as `ssh://host/~/path`; `ssh://host/path` is from the root), so an
+scp path in the home and the `ssh://` path from the root, two ssh users' repos on one host, two
+repos on one host with different ports, or repos behind http and https, get different files,
+and `machine.json`, the values set with `teamai env set --global` for every team.
+Every scope that uses the same team, and every worktree of it, reads the same file.
+Each entry records whether it is a secret's value or the member's value for an
+`env.yaml` variable (`kind`), so one is never used as the other.
+It never goes to a partition or to `<dataHome>`, which in single-repo mode is inside
+the business repo, and it is not `~/.teamai/env`, which is already the user scope's
+env backup file. Files are written atomically with mode `0600`. Uninstalling a
+project scope removes only its partition, so the values stay; uninstalling the user
+scope removes `~/.teamai` and them with it. See [Team secrets](team-secrets.md#storage).
+
+Beside each scope's `env.sh`, in `<dataHome>`, `env.sh.exports.json` records what
+that `env.sh` has exported: per key, a SHA-256 of `KEY=VALUE` for the last 20
+values, never a value, mode `0600`. It is machine data like `env.sh` and is
+removed with it. See [Team secrets](team-secrets.md#resolution).

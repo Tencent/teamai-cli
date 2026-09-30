@@ -189,7 +189,7 @@ const SUPERSEDED_ENTRIES = [
  * and the legacy dir holds its knowledge. A partition config that exists but
  * cannot be read skips.
  */
-export async function planMigration(cwd?: string): Promise<MigrationPlan | null> {
+export async function planMigration(cwd?: string, options: { dryRun?: boolean } = {}): Promise<MigrationPlan | null> {
   const anchors = await resolveAnchors(cwd ?? process.cwd());
   if (!anchors) return null;
 
@@ -199,7 +199,8 @@ export async function planMigration(cwd?: string): Promise<MigrationPlan | null>
   // adopting (renaming) it FIRST is what keeps the "partition already built"
   // checks below honest — otherwise an upgraded CLI would see "no partition"
   // and re-copy a retired workspace's data into a second, empty partition.
-  const partitionDir = await resolvePartitionDir(anchors.projectAnchor);
+  // A dry run adopts nothing: the preview reads the partition where it is (#893).
+  const partitionDir = await resolvePartitionDir(anchors.projectAnchor, options);
   const legacyConfig = path.join(legacyDir, 'config.yaml');
 
   // Gate on scope/kind read from config.yaml. It is normally in the repo, but a
@@ -528,7 +529,7 @@ export async function runMigration(
  * not silently proceed on stale legacy data), but never crash a dry-run preview.
  */
 export async function maybeMigrate(opts: { dryRun?: boolean } = {}): Promise<MigrationResult | undefined> {
-  const plan = await planMigration();
+  const plan = await planMigration(undefined, opts);
   if (plan) return runMigration(plan, opts);
   if (!opts.dryRun) await settleOrphanQueue();
   return undefined;
@@ -560,7 +561,10 @@ async function settleOrphanQueue(): Promise<void> {
  * its data home is still that directory, or an old queue there could not move.
  * Outside a git repo `.teamai/` is where the data belongs.
  */
-export async function queueKeptInCheckout(migration: MigrationResult | undefined): Promise<string | null> {
+export async function queueKeptInCheckout(
+  migration: MigrationResult | undefined,
+  options: { dryRun?: boolean } = {},
+): Promise<string | null> {
   switch (migration) {
     case 'dry-run':
       return null;
@@ -582,10 +586,10 @@ export async function queueKeptInCheckout(migration: MigrationResult | undefined
   // home, and the queue there is the user scope's.
   const home = getUserHome();
   if (anchors.workspaceRoot === (await realpath(home).catch(() => home))) return null;
-  const config = await detectProjectConfig(anchors.workspaceRoot);
+  const config = await detectProjectConfig(anchors.workspaceRoot, undefined, options);
   const queueDir = config ? pendingLearningsDir(config) : null;
   if (queueDir && isInside(queueDir, legacyDir)) {
-    const partitionDir = await resolvePartitionDir(anchors.projectAnchor);
+    const partitionDir = await resolvePartitionDir(anchors.projectAnchor, options);
     const partition = await readPartitionState(partitionDir, anchors.workspaceRoot);
     switch (partition.state) {
       case 'unreadable':

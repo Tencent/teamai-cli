@@ -135,7 +135,7 @@ async function seedLegacyLayout(): Promise<void> {
 }
 
 beforeEach(() => {
-  base = realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-migrate-')));
+  base = realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-migrate-')));
   repoRoot = path.join(base, 'business-repo');
   fs.mkdirSync(repoRoot);
   git(repoRoot, 'init', '-q');

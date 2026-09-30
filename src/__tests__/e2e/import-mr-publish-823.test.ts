@@ -69,7 +69,7 @@ function git(args: string[], cwd: string): string {
  * has it active.
  */
 function scenario(opts: { project?: string } = {}) {
-  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-e2e-')));
+  const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-e2e-')));
   const home = path.join(sandbox, 'home');
   const bin = path.join(sandbox, 'bin');
   const remote = path.join(sandbox, 'team.git');
