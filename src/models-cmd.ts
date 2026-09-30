@@ -3,7 +3,7 @@ import { autoDetectInit } from './config.js';
 import { describeEntryFailure, describeOrigin, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { askConfirmation, askQuestion, askSecret, isInteractive, readStdin } from './utils/prompt.js';
+import { askConfirmation, askQuestion, askSecret, isInteractive, parseSelection, readStdin } from './utils/prompt.js';
 import type { LocalConfig } from './types.js';
 import {
   API_KEY_PLACEHOLDER,
@@ -233,14 +233,18 @@ async function apiKeyFromOptions(options: ApiKeyOptions): Promise<StoredModelInp
   return undefined;
 }
 
-async function findProfile(reference: string, options: { dryRun?: boolean } = {}): Promise<{
+/**
+ * The profile `reference` names, or one already chosen from a list, with the
+ * local file and team context a command needs alongside it.
+ */
+async function findProfile(reference: string | ProfileRef, options: { dryRun?: boolean } = {}): Promise<{
   ref: ProfileRef;
   local: ModelProfilesFile;
   context: TeamModelsContext;
 } | null> {
   const [context, local] = await Promise.all([teamContext(options), loadLocalProfiles()]);
   if (!context) return null;
-  const ref = resolveProfileRef(reference, context.team, local);
+  const ref = typeof reference === 'string' ? resolveProfileRef(reference, context.team, local) : reference;
   if (ref.source === 'team' && context.localConfig) ref.team = getTeamIdentity(context.localConfig);
   return { ref, local, context };
 }
@@ -483,8 +487,60 @@ interface SwitchOptions {
   dryRun?: boolean;
 }
 
-export async function modelsSwitch(reference: string, options: SwitchOptions): Promise<void> {
-  const found = await findProfile(reference, { dryRun: options.dryRun });
+/**
+ * The profile named on the command line, or the one chosen from a numbered
+ * list when it was omitted. A cancelled pick is not an error.
+ */
+async function chooseProfile(
+  reference: string | undefined,
+  options: { dryRun?: boolean },
+): Promise<ProfileRef | null | undefined> {
+  const [context, local] = await Promise.all([teamContext(options), loadLocalProfiles()]);
+  if (!context) return undefined;
+  if (reference) return resolveProfileRef(reference, context.team, local);
+
+  const team = context.localConfig ? getTeamIdentity(context.localConfig) : undefined;
+  // Team profiles first, in the order `models list` shows them.
+  const refs: ProfileRef[] = [
+    ...context.team.profiles.map((profile) => ({ ...resolveProfileRef(`team:${profile.id}`, context.team, local), team })),
+    ...local.profiles.map((profile): ProfileRef => ({ source: 'local', profile })),
+  ];
+  if (refs.length === 0) throw new Error('No model profiles found. Add one with `teamai models add <id>`.');
+  if (!isInteractive()) {
+    throw new Error('Cannot prompt in non-interactive mode: "Select a profile". Run `teamai models switch <profile>`.');
+  }
+  console.log('');
+  refs.forEach((ref, index) => {
+    console.log(`  ${index + 1}. ${profileRefName(ref)} — ${ref.profile.name}${ref.source === 'local' ? ' (personal)' : ''}`);
+  });
+  console.log('');
+  // `switch` points each agent at exactly one gateway, so the pick is a single
+  // profile. An answer that names several, or none it can use, is asked again
+  // rather than silently resolved to the first.
+  const prompt = `Select a profile [1-${refs.length}, or "none" to cancel]: `;
+  for (;;) {
+    const answer = await askQuestion(prompt);
+    if (answer.toLowerCase() === 'none' || answer === '0') {
+      log.info('Cancelled');
+      return null;
+    }
+    const indices = parseSelection(answer, refs.length);
+    if (!indices) {
+      log.warn(`Enter one number from 1 to ${refs.length}, or "none" to cancel.`);
+      continue;
+    }
+    if (indices.length > 1) {
+      log.warn(`switch takes one profile; you named ${indices.length}. Enter a single number.`);
+      continue;
+    }
+    return refs[indices[0]];
+  }
+}
+
+export async function modelsSwitch(reference: string | undefined, options: SwitchOptions): Promise<void> {
+  const chosen = await chooseProfile(reference, { dryRun: options.dryRun });
+  if (!chosen) return;
+  const found = await findProfile(chosen, { dryRun: options.dryRun });
   if (!found) return;
   const { ref, context } = found;
   const key = profileRefName(ref);

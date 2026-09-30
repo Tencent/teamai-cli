@@ -5,7 +5,8 @@ import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsSwitch } from '../models-cmd.js';
 import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../models/profile.js';
-import { askSecret, isInteractive } from '../utils/prompt.js';
+import { askQuestion, askSecret, isInteractive } from '../utils/prompt.js';
+import { log } from '../utils/logger.js';
 
 vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -15,6 +16,7 @@ vi.mock('../utils/prompt.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/prompt.js')>()),
   isInteractive: vi.fn(() => false),
   askSecret: vi.fn(),
+  askQuestion: vi.fn(),
 }));
 
 let home: string;
@@ -28,6 +30,7 @@ beforeEach(async () => {
   home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-models-cmd-'));
   process.env.HOME = home;
   process.env.MY_MODEL_KEY = 'sk-from-env';
+  vi.clearAllMocks();
 });
 
 afterEach(async () => {
@@ -169,6 +172,86 @@ describe('models commands', () => {
     await addMine();
     await fse.writeJson(getLocalValuesPath(), {});
     await expect(modelsSwitch('mine', {})).rejects.toThrow(/has no API key. Run `teamai models configure local:mine`/);
+  });
+
+  it('lists the profiles and switches to the one picked when no profile is given', async () => {
+    await fse.outputJson(path.join(home, '.claude', 'settings.json'), {});
+    await addMine();
+    await modelsAdd('other', { name: 'Other', protocol: 'anthropic', baseUrl: 'https://other.example.test', model: 'glm-5.3', fromEnv: 'MY_MODEL_KEY' });
+    vi.mocked(isInteractive).mockReturnValue(true);
+    vi.mocked(askQuestion).mockResolvedValue('2');
+    try {
+      const output = await captureOutput(() => modelsSwitch(undefined, { agent: ['claude'] }));
+      expect(output).toContain('  1. local:mine — Mine (personal)');
+      expect(output).toContain('  2. local:other — Other (personal)');
+      expect(output.filter((line) => line.startsWith('switched')).length).toBe(1);
+      expect((await fse.readJson(path.join(home, '.claude', 'settings.json'))).model).toBe('glm-5.3');
+    } finally {
+      vi.mocked(isInteractive).mockReturnValue(false);
+    }
+  });
+
+  it('leaves agents alone when the pick is cancelled', async () => {
+    await fse.outputJson(path.join(home, '.claude', 'settings.json'), { model: 'keep' });
+    await addMine();
+    vi.mocked(isInteractive).mockReturnValue(true);
+    vi.mocked(askQuestion).mockResolvedValue('none');
+    try {
+      const output = await captureOutput(() => modelsSwitch(undefined, {}));
+      expect(output.some((line) => line.startsWith('switched'))).toBe(false);
+      expect(await fse.readJson(path.join(home, '.claude', 'settings.json'))).toEqual({ model: 'keep' });
+    } finally {
+      vi.mocked(isInteractive).mockReturnValue(false);
+    }
+  });
+
+  it('asks again when the pick names more than one profile, instead of taking the first', async () => {
+    await fse.outputJson(path.join(home, '.claude', 'settings.json'), {});
+    await addMine();
+    await modelsAdd('other', { name: 'Other', protocol: 'anthropic', baseUrl: 'https://other.example.test', model: 'glm-5.3', fromEnv: 'MY_MODEL_KEY' });
+    vi.mocked(isInteractive).mockReturnValue(true);
+    vi.mocked(askQuestion).mockResolvedValueOnce('1,2').mockResolvedValueOnce('2');
+    try {
+      const output = await captureOutput(() => modelsSwitch(undefined, { agent: ['claude'] }));
+      expect(vi.mocked(log.warn)).toHaveBeenCalledWith(expect.stringMatching(/takes one profile/));
+      // The second answer decides: profile 2 (Other), not the first of "1,2".
+      expect((await fse.readJson(path.join(home, '.claude', 'settings.json'))).env.ANTHROPIC_BASE_URL)
+        .toBe('https://other.example.test');
+      expect(output.filter((line) => line.startsWith('switched')).length).toBe(1);
+    } finally {
+      vi.mocked(isInteractive).mockReturnValue(false);
+    }
+  });
+
+  it('asks again when the pick cannot be used at all', async () => {
+    await fse.outputJson(path.join(home, '.claude', 'settings.json'), {});
+    await addMine();
+    vi.mocked(isInteractive).mockReturnValue(true);
+    vi.mocked(askQuestion).mockResolvedValueOnce('banana').mockResolvedValueOnce('9').mockResolvedValueOnce('1');
+    try {
+      const output = await captureOutput(() => modelsSwitch(undefined, { agent: ['claude'] }));
+      // Both unusable answers (a word, and a number out of range) are asked again.
+      expect(vi.mocked(log.warn).mock.calls.filter(([line]) => /Enter one number from 1 to 1/.test(line)).length).toBe(2);
+      expect((await fse.readJson(path.join(home, '.claude', 'settings.json'))).env.ANTHROPIC_BASE_URL)
+        .toBe('https://gateway.example.test');
+      expect(output.filter((line) => line.startsWith('switched')).length).toBe(1);
+    } finally {
+      vi.mocked(isInteractive).mockReturnValue(false);
+    }
+  });
+
+  it('names the profile argument when there is no terminal to pick one with', async () => {
+    await addMine();
+    await expect(modelsSwitch(undefined, {})).rejects.toThrow(/non-interactive.*teamai models switch <profile>/s);
+  });
+
+  it('reports when there is no profile to pick from', async () => {
+    vi.mocked(isInteractive).mockReturnValue(true);
+    try {
+      await expect(modelsSwitch(undefined, {})).rejects.toThrow(/No model profiles found/);
+    } finally {
+      vi.mocked(isInteractive).mockReturnValue(false);
+    }
   });
 
   it('persists the key asked for on the first interactive switch to a personal profile', async () => {

@@ -253,7 +253,7 @@ Generated: do not edit by hand. Regenerate with
     - `--base-url <url>` — Personal profiles: new gateway root URL
     - `--protocol <protocols>` — Personal profiles: serve models over these protocols too
     - `--model <ids>` — Personal profiles: add model IDs
-  - `teamai models switch <profile>` — Point agents at a model profile (every compatible agent by default)
+  - `teamai models switch [profile]` — Point agents at a model profile (every compatible agent by default); omit the profile to pick one
     - `--agent <name>` — Only switch this agent. Repeatable or comma-separated.
     - `--model <id>` — Default model to select (defaults to the first in the profile)
     - `--dry-run` — Show what would change without writing

@@ -2517,7 +2517,10 @@ profiles:
 teamai models list                     # 全部配置：来源文件、密钥来源、网关、模型、Agent 及生效位置
 teamai models list tokenhub            # 只看一个配置
 teamai models switch tokenhub          # 首次使用时提示输入密钥
+teamai models switch                   # 列出全部配置，询问使用哪一个
 ```
+
+`switch` 不带配置名时会列出全部配置（团队配置在前），并切换到你所选的那个；输入 `none` 可取消。它一次只接受一个配置，因此填了多个会重新询问，而不会静默取第一个。没有终端时无处可选，因此此时必须给出配置名。
 
 `switch` 会更新所有已安装且兼容的 Agent。可以用 `--agent claude`（可重复）缩小范围，用 `--model deepseek-v4-flash` 指定默认模型，用 `--dry-run` 预览。
 

@@ -879,12 +879,12 @@ modelsCmd
   .action((profile: string, cmdOpts) => runModelsCommand((m) => m.modelsConfigure(profile, cmdOpts)));
 
 modelsCmd
-  .command('switch <profile>')
-  .description('Point agents at a model profile (every compatible agent by default)')
+  .command('switch [profile]')
+  .description('Point agents at a model profile (every compatible agent by default); omit the profile to pick one')
   .option('--agent <name>', 'Only switch this agent. Repeatable or comma-separated.', collectRepeatable, [] as string[])
   .option('--model <id>', 'Default model to select (defaults to the first in the profile)')
   .option('--dry-run', 'Show what would change without writing')
-  .action((profile: string, cmdOpts) => {
+  .action((profile: string | undefined, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     return runModelsCommand((m) => m.modelsSwitch(profile, { ...globalOpts, ...cmdOpts }));
   });
