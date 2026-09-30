@@ -150,7 +150,7 @@ class BM25Okapi {
   }
 
   getScores(queryTokens: string[]): number[] {
-    const scores = new Array(this.corpus.length).fill(0);
+    const scores = Array.from({ length: this.corpus.length }, () => 0);
 
     for (let i = 0; i < this.corpus.length; i++) {
       const doc = this.corpus[i];

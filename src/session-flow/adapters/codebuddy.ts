@@ -25,7 +25,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
-import type { Session, Message, ContentBlock, TextBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
+import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
 import { imagePlaceholderText } from '../ir.js';
 import { resolveWriteSessionId } from '../ids.js';
 import {
@@ -123,12 +123,6 @@ function argumentsDisplayText(name: string, args: Record<string, unknown> | unde
 // 不校验 version 位：源平台的 sessionId 可能是 UUID v7（codex / codex-internal / tcodex）。
 // 只认 v4 会让这些会话每次迁移都重新生成一个 v4 ID —— 既不幂等（反复迁移堆积副本），
 // 也无法再按源 sessionId 追踪或回滚。放宽到「任意合法 UUID 形状」即可复用源 ID。
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function isUuid(s: string): boolean {
-  return UUID_RE.test(s);
-}
-
 function uuidV4(): string {
   return crypto.randomUUID();
 }
