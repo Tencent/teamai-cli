@@ -2345,7 +2345,10 @@ The example above has no `openai-responses` group, so Codex is left alone; add t
 teamai models list                     # every profile: file it comes from, key source, gateway, models, agents, where it is active
 teamai models list tokenhub            # just one profile
 teamai models switch tokenhub          # asks for the key the first time
+teamai models switch                   # lists the profiles and asks which one to use
 ```
+
+Run `switch` with no profile and it lists every profile, team ones first, and switches the one you pick; answer `none` to cancel. It takes a single profile, so an answer naming several is asked again rather than silently narrowed. Without a terminal there is nothing to pick from, so the profile is required there.
 
 `switch` updates every installed, compatible agent. Narrow it with `--agent claude` (repeatable), pick the default model with `--model deepseek-v4-flash`, or preview with `--dry-run`.
 
