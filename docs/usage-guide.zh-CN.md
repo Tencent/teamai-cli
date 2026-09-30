@@ -1147,7 +1147,7 @@ Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互�
 ```bash
 teamai mcp list              # 查看 server、各自来自哪个文件、密钥状态与安装位置
 teamai mcp inject            # 立即注入；--dry-run 预览，--force 覆盖同名
-teamai mcp remove            # 移除所有 teamai 管理的 server
+teamai mcp remove            # 移除所有 teamai 管理的 server；--dry-run 预览
 ```
 
 

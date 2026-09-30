@@ -8,8 +8,9 @@ import { fileURLToPath } from 'node:url';
 // ─── MCP uninstall end-to-end ─────────────────────────────────
 //
 // Offline fixture (no TEAMAI_TEST_TOKEN). Drives the real CLI binary:
-//   mcp inject → servers land in ~/.claude.json
-//   uninstall  → teamai-managed servers are removed; hand-added ones stay
+//   mcp inject          → servers land in ~/.claude.json
+//   mcp remove --dry-run → previews removal without changing config or manifest
+//   uninstall           → teamai-managed servers are removed; hand-added ones stay
 //
 // Catches the order bug where removeAll ran after ~/.teamai/ (and thus
 // managed-mcp.json) had already been deleted.
@@ -121,7 +122,17 @@ describe('MCP uninstall (e2e)', () => {
       url: 'https://example.com/api/mcp',
     });
     expect(afterInject.mcpServers['my-own']).toEqual({ command: 'my-server' });
-    expect(fs.existsSync(path.join(teamaiHome, 'managed-mcp.json'))).toBe(true);
+    const manifestPath = path.join(teamaiHome, 'managed-mcp.json');
+    expect(fs.existsSync(manifestPath)).toBe(true);
+
+    const configBeforePreview = fs.readFileSync(claudeJson);
+    const manifestBeforePreview = fs.readFileSync(manifestPath);
+    const preview = await runCLI(['mcp', 'remove', '--dry-run'], env, homeDir);
+    expect(preview.code).toBe(0);
+    expect(preview.output).toContain('MCP remove (dry run):');
+    expect(preview.output).toMatch(/removed\s+claude\/team-mcp/);
+    expect(fs.readFileSync(claudeJson)).toEqual(configBeforePreview);
+    expect(fs.readFileSync(manifestPath)).toEqual(manifestBeforePreview);
 
     const uninstall = await runCLI(['uninstall', '--force'], env, homeDir);
     expect(uninstall.code).toBe(0);

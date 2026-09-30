@@ -148,15 +148,18 @@ export async function mcpInject(
   else if (!options.dryRun) log.info('Already up to date.');
 }
 
-export async function mcpRemove(_options: GlobalOptions): Promise<void> {
-  const { localConfig, teamConfig } = await autoDetectInit();
-  const { changes, wrote } = await reconcileMcpForConfig(teamConfig, localConfig, { removeAll: true });
+export async function mcpRemove(options: GlobalOptions): Promise<void> {
+  const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
+  const { changes, wrote } = await reconcileMcpForConfig(teamConfig, localConfig, {
+    removeAll: true,
+    dryRun: options.dryRun,
+  });
   // Nothing of teamai's is left for .git/info/exclude to protect (#882).
-  await releaseCleanMcpGitExcludes(teamConfig, localConfig);
+  if (!options.dryRun) await releaseCleanMcpGitExcludes(teamConfig, localConfig);
 
-  console.log('MCP remove:');
+  console.log(options.dryRun ? 'MCP remove (dry run):' : 'MCP remove:');
   reportChanges(changes);
 
   if (wrote) log.success('teamai-managed MCP servers removed.');
-  else log.info('Nothing to remove.');
+  else if (!options.dryRun) log.info('Nothing to remove.');
 }

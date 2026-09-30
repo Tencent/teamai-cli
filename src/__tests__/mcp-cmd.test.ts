@@ -272,8 +272,28 @@ describe('mcpRemove', () => {
       spy.mockRestore();
     }
 
-    expect(reconcileMcpForConfig).toHaveBeenCalledWith(init.teamConfig, init.localConfig, { removeAll: true });
+    expect(reconcileMcpForConfig).toHaveBeenCalledWith(init.teamConfig, init.localConfig, { removeAll: true, dryRun: undefined });
     expect(releaseCleanMcpGitExcludes).toHaveBeenCalledWith(init.teamConfig, init.localConfig);
     expect(order).toEqual(['reconcile', 'release']);
+  });
+
+  it('previews removal without changing MCP configs, migration state, or git exclusions', async () => {
+    const init = { localConfig: { repo: { localPath: '/repo' }, scope: 'project', projectRoot: '/work/app' }, teamConfig: { toolPaths: {} } };
+    mockedAutoDetectInit.mockResolvedValue(init);
+    vi.mocked(releaseCleanMcpGitExcludes).mockClear();
+    (reconcileMcpForConfig as Mock).mockResolvedValueOnce({ changes: [{ action: 'removed', tool: 'claude', server: 'team-mcp' }], wrote: false });
+    const output: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((line?: unknown) => { output.push(String(line)); });
+    try {
+      await mcpRemove({ dryRun: true });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(mockedAutoDetectInit).toHaveBeenCalledWith(undefined, { dryRun: true });
+    expect(reconcileMcpForConfig).toHaveBeenCalledWith(init.teamConfig, init.localConfig, { removeAll: true, dryRun: true });
+    expect(releaseCleanMcpGitExcludes).not.toHaveBeenCalled();
+    expect(output.join('\n')).toContain('MCP remove (dry run):');
+    expect(output.join('\n')).toContain('removed');
   });
 });

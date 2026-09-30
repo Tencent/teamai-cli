@@ -1267,7 +1267,7 @@ Claude Code may show project `.mcp.json` servers as pending approval until you a
 ```bash
 teamai mcp list              # servers, the file each comes from, secret status, and where they are installed
 teamai mcp inject            # apply now; --dry-run to preview, --force to override collisions
-teamai mcp remove            # remove every teamai-managed server
+teamai mcp remove            # remove every teamai-managed server; --dry-run to preview
 ```
 
 
