@@ -238,7 +238,7 @@ learnings. Key points:
 - **Not auto-activated.** Unlike a lone role, a lone project is not auto-selected
   — a member may legitimately belong to no project (they get the shared
   learnings root and the namespaces their role lists, such as `common`; with no
-  role, no skills).
+  role, no namespace skills).
 - **Root skills arrive through a tag.** While the team uses roles or projects,
   the root `skills/` is the tag catalog: `teamai tags subscribe <tag>` delivers
   a root skill. When a pull removes skills that are no longer delivered, for

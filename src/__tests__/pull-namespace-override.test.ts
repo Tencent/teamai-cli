@@ -426,7 +426,10 @@ describe('pull: an active namespace item replaces the root item of the same name
       expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: review\. .*`teamai tags subscribe <tag>`/)).toBe(true);
     });
 
-    it('names a namespace skill it removes when the namespace deactivates, without the tag hint', async () => {
+    // #917 follow-up: the hint follows the repo, not the cleanup phase. Root
+    // `review` exists and is tagged `ui`, so even a namespace copy removed on
+    // deactivation leaves `tags subscribe` a way to bring the name back.
+    it('names a namespace skill it removes when the namespace deactivates, with the tag hint when the root copy is tag-recoverable', async () => {
       await pull({});
       expect(await read('.claude/skills/review/SKILL.md')).toContain('Front review');
 
@@ -435,7 +438,42 @@ describe('pull: an active namespace item replaces the root item of the same name
       await pull({ force: true });
 
       expect(await exists('.claude/skills/review')).toBe(false);
-      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: review\.$/)).toBe(true);
+      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: review\. .*`teamai tags subscribe <tag>`/)).toBe(true);
+    });
+
+    it('names a namespace-only skill it removes without the tag hint: no root copy exists to subscribe to', async () => {
+      await team('skills/frontend/only-front/SKILL.md', skillMd('only-front', 'Front only'));
+
+      as(['frontend'], { excludedSkills: ['review'] });
+      await pull({});
+      expect(await read('.claude/skills/only-front/SKILL.md')).toContain('Front only');
+
+      vi.mocked(log.info).mockClear();
+      as(['devops'], { excludedSkills: ['review'] });
+      await pull({ force: true });
+
+      expect(await exists('.claude/skills/only-front')).toBe(false);
+      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: only-front\.$/)).toBe(true);
+    });
+
+    // The inactive namespace copy is byte-identical to the root skill, so the
+    // namespace cleanup phase removes the directory before the desired-union
+    // sweep can. The tag hint must survive that routing (#917 review).
+    it('keeps the tag hint when the removed root skill is byte-identical to its inactive namespace copy', async () => {
+      await team('tags.yaml', 'skills:\n  twin: [ui]\n');
+      await team('skills/twin/SKILL.md', skillMd('twin', 'Twin review'));
+      await team('skills/frontend/twin/SKILL.md', skillMd('twin', 'Twin review'));
+
+      as(['devops'], { subscribedTags: ['ui'] });
+      await pull({});
+      expect(await read('.claude/skills/twin/SKILL.md')).toContain('Twin review');
+
+      vi.mocked(log.info).mockClear();
+      as(['devops']);
+      await pull({ force: true });
+
+      expect(await exists('.claude/skills/twin')).toBe(false);
+      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: twin\. .*`teamai tags subscribe <tag>`/)).toBe(true);
     });
 
     // A path another team version has is not enough to call a file a leftover:

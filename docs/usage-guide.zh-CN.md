@@ -221,7 +221,7 @@ cd ~/work/billing       && teamai init <team-repo> --project billing
   未激活任何项目的目录只能看到共享的根目录。
 - **不自动激活。** 与「唯一 role 会被自动选中」不同，唯一的 project 不会自动选中
   —— 成员可以不属于任何项目（能获得共享的 learnings 根，以及其 role 列出的
-  namespace，例如 `common`；没有 role 时不会收到任何 skill）。
+  namespace，例如 `common`；没有 role 时不会通过 namespace 收到任何 skill）。
 - **根 skill 通过 tag 获取。** 团队启用 roles 或 projects 后，根目录 `skills/`
   是 tag 目录：用 `teamai tags subscribe <tag>` 获取根 skill。pull 删除不再下发的
   skill 时（例如选择 role 或 project 之后），会用一行输出列出它们的名字。
