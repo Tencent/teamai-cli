@@ -272,8 +272,11 @@ partition on the next write command, so the workspace ends up with zero residue.
   `contribute --scope user` (the user install's queue) and `import --from-mr
   --output` (drafts only) do not write this project's queue, so they do not
   migrate either.
-  Read-only commands (`status`, `recall`, …) keep using the double-read fallback
-  and never move data.
+  Read-only commands (`status`, `recall`, …) never move data. They can still read
+  a valid legacy project config through the double-read fallback, but an existing
+  unreadable project config is not treated as absent: scope resolution stops
+  with a config error instead of falling back to another project's or the user
+  scope (#899).
 - `hook-dispatch` is excluded outright (via `TEAMAI_HOOK_SUBCOMMANDS`): it is a
   high-frequency silent path and must never move 12 MB.
 - `--dry-run` (the existing global flag) previews without writing.
