@@ -222,6 +222,9 @@ SessionEnd, or at the next `teamai pull`.
 
 ## Still stuck
 
+- `teamai update --dry-run` checks the CLI version without installing it,
+  refreshing hooks, taking an update lock or saving TeamAI's version-check state.
+  It uses a valid cached check when one exists, just like `--check`.
 - Re-run the failing command with `-v` / `--verbose` for detail.
 - `teamai status` shows exactly how local differs from the team repo.
 - Report unexpected behavior at https://github.com/Tencent/teamai-cli/issues

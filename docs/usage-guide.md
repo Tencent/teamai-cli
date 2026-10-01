@@ -2226,6 +2226,7 @@ teamai doctor          # Config diagnostics
 teamai doctor --json   # Same diagnostics as JSON on stdout (CI, hooks, agents)
 teamai stats           # Skill usage stats
 teamai update --check  # Check for a CLI update without installing it
+teamai update --dry-run # Check without installing, taking a lock or saving TeamAI update state
 teamai update          # Check for and install a CLI update
 teamai digest          # Generate the weekly team activity digest
 teamai remove skills <name>   # Remove a resource (asks for confirmation)

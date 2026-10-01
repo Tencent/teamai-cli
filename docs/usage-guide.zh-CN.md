@@ -2089,6 +2089,7 @@ teamai doctor          # 配置诊断
 teamai doctor --json   # 同样的诊断结果，以 JSON 输出到 stdout（CI、hook、agent 可直接消费）
 teamai stats           # skill 使用统计
 teamai update --check  # 仅检查 CLI 更新，不安装
+teamai update --dry-run # 仅检查，不安装、不获取锁、不保存 TeamAI 更新状态
 teamai update          # 检查并安装 CLI 更新
 teamai digest          # 生成团队活动周报
 teamai remove skills <name>   # 删除资源（需要确认）
