@@ -1,6 +1,6 @@
-import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { getUserHome } from './home.js';
 
 /**
  * Assert that a resolved target path is within one of the allowed root directories.
@@ -62,7 +62,7 @@ export function assertWithinRoot(root: string, candidate: string, message?: stri
  * @returns  Resolved absolute path string.
  */
 function resolveReal(p: string): string {
-  const expanded = p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p;
+  const expanded = p.startsWith('~') ? path.join(getUserHome(), p.slice(1)) : p;
   const abs = path.resolve(expanded);
   try {
     return fs.realpathSync(abs);
@@ -79,7 +79,7 @@ function resolveReal(p: string): string {
  * @returns Array of two resolved paths: [cwd, homedir].
  */
 export function defaultAllowedRoots(): string[] {
-  return [process.cwd(), os.homedir()];
+  return [process.cwd(), getUserHome()];
 }
 
 /**

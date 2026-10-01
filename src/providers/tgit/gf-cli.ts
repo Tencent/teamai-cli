@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ensureDir } from '../../utils/fs.js';
+import { getUserHome } from '../../utils/home.js';
 import { log, spinner } from '../../utils/logger.js';
 import { isInteractive } from '../../utils/prompt.js';
 import { getTeamaiHomeDir } from '../../types.js';
@@ -356,7 +357,7 @@ export function ensureAuthenticated(): string {
  */
 export function gfGetOAuthToken(): string | null {
   try {
-    const netrcPath = path.join(os.homedir(), '.netrc');
+    const netrcPath = path.join(getUserHome(), '.netrc');
     if (!fs.existsSync(netrcPath)) return null;
 
     const content = fs.readFileSync(netrcPath, 'utf-8');

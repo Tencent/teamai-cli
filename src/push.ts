@@ -1367,9 +1367,9 @@ async function pushCore(
     }
 
     // Normalize the input path (expand ~, resolve to absolute)
-    const os = await import('node:os');
+    const { getUserHome } = await import('./utils/home.js');
     const skillPath = options.skill.startsWith('~')
-      ? path.join(os.homedir(), options.skill.slice(1))
+      ? path.join(getUserHome(), options.skill.slice(1))
       : path.resolve(options.skill);
 
     // Try to find matching skill from scan results first
@@ -1391,7 +1391,7 @@ async function pushCore(
       }
 
       // Match by partial path (e.g., "skills/namespace/skillname" in sourcePath)
-      const skillInput = options.skill.replace(/^~/, os.homedir());
+      const skillInput = options.skill.replace(/^~/, getUserHome());
       if (item.sourcePath.endsWith(skillInput) || item.sourcePath.includes(path.sep + skillInput)) {
         matchedItem = item;
         break;

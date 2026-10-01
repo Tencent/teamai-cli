@@ -76,6 +76,10 @@ describe('GitCode token resolution', () => {
     delete process.env.GC_TOKEN;
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gitcode-netrc-'));
     homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    // getUserHome() reads HOME/USERPROFILE before os.homedir(), so the spy
+    // alone would still resolve to the machine's real profile.
+    process.env.HOME = tmpHome;
+    delete process.env.USERPROFILE;
   });
 
   afterEach(() => {

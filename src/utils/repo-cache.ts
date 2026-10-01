@@ -1,7 +1,8 @@
 import path from 'node:path';
-import os from 'node:os';
 
 import fs from 'fs-extra';
+
+import { getUserHome } from './home.js';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -13,7 +14,7 @@ const LAST_SYNC_FILE = 'LAST_SYNC';
  * 返回缓存根目录（可通过 TEAMAI_CACHE_DIR 环境变量覆盖）。
  */
 function getCacheRoot(): string {
-    return process.env.TEAMAI_CACHE_DIR ?? path.join(os.homedir(), '.teamai', 'cache', 'repos');
+    return process.env.TEAMAI_CACHE_DIR ?? path.join(getUserHome(), '.teamai', 'cache', 'repos');
 }
 
 // ─── Public API ─────────────────────────────────────────

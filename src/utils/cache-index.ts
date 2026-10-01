@@ -1,8 +1,8 @@
 import path from 'node:path';
-import os from 'node:os';
 
 import fs from 'fs-extra';
 
+import { getUserHome } from './home.js';
 import { log } from './logger.js';
 
 // ─── Constants ───────────────────────────────────────────
@@ -71,7 +71,7 @@ export function parsePositiveInteger(value: string): number | undefined {
  * 读取 cache root（与 repo-cache.ts 行为完全一致：env TEAMAI_CACHE_DIR 优先，否则 ~/.teamai/cache/repos）。
  */
 export function getCacheRoot(): string {
-    return process.env.TEAMAI_CACHE_DIR ?? path.join(os.homedir(), '.teamai', 'cache', 'repos');
+    return process.env.TEAMAI_CACHE_DIR ?? path.join(getUserHome(), '.teamai', 'cache', 'repos');
 }
 
 /**

@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { GITCODE_HOST } from './repo-url.js';
+import { getUserHome } from '../../utils/home.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
 
 /**
@@ -71,7 +71,7 @@ function authHeaders(token: string): Record<string, string> {
 // Entry format: `machine gitcode.com login oauth2 password <token>`.
 
 function netrcPath(): string {
-  return path.join(os.homedir(), '.netrc');
+  return path.join(getUserHome(), '.netrc');
 }
 
 /** Read the gitcode.com token from ~/.netrc, or null when absent/unreadable. */
