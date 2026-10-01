@@ -95,17 +95,22 @@ async function adapterHookArtifacts(tool: string): Promise<string[] | null> {
  * Reconciles built-in (A) + team (B) hooks into all configured AI tool settings.
  */
 export async function hooksInject(options: GlobalOptions): Promise<void> {
-    const { localConfig, teamConfig } = await autoDetectInit();
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
     // Explicit user action → not gated by sharing.hooks.autoApply (auto: false).
     const { baseDir } = resolveHookScope(localConfig);
     const reconciled = await reconcileTeamHooksForConfig(teamConfig, localConfig, {
         auto: false,
         silent: options.silent,
+        dryRun: options.dryRun,
     });
     // The reason is already reported; the installed team hooks were left as they were.
     if (!reconciled.ok) {
         process.exitCode = 1;
+        return;
+    }
+    if (options.dryRun) {
+        if (!options.silent) log.info('[dry-run] Would inject hooks into configured AI tool settings.');
         return;
     }
     let codexTrustGated = false;

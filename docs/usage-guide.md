@@ -1912,6 +1912,7 @@ Hooks automatically injected by `teamai init`:
 
 ```bash
 teamai hooks list      # Show effective built-in and team hooks
+teamai hooks inject --dry-run # Preview without changing settings or managed-hook records
 teamai hooks inject    # Re-inject
 teamai hooks remove    # Remove
 ```
@@ -2844,6 +2845,7 @@ That is expected for a built-in tool: `init` does not know which agent you will 
 
 ```bash
 teamai doctor        # Diagnose
+teamai hooks inject --dry-run # Preview first
 teamai hooks inject  # Re-inject
 ```
 

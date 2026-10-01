@@ -125,6 +125,10 @@ both: `teamai init <url> --provider git` uses their existing Git authentication.
 
 ## Which tools actually get hooks
 
+Run `teamai hooks inject --dry-run` to resolve the team's hooks without changing
+tool settings, managed-hook records or local config. A preview reports what
+would be injected; it is not an installation or a Codex trust step.
+
 `teamai hooks inject` prints **"Hooks injected into all AI tool settings"** even
 for tools where it wrote nothing. **Do not take that line as proof.** (When the
 team hooks cannot be resolved it exits 1 with the reason instead: the built-in
