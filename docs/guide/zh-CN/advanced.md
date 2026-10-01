@@ -584,6 +584,8 @@ Cursor 的项目规则必须以 **`.mdc`** 文件形式放在 `.cursor/rules/` �
 
 ### 其他
 
+`teamai update --dry-run` 只检查是否有新版 CLI，不安装、不刷新 hooks、不获取更新锁，也不保存 TeamAI 的版本检查状态。与 `--check` 同时使用时也保持只读。
+
 ```bash
 teamai doctor          # 配置诊断
 teamai doctor --json   # 同样的诊断结果，以 JSON 输出到 stdout（CI、hook、agent 可直接消费）

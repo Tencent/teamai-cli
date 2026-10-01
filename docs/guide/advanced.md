@@ -599,6 +599,8 @@ Upgrading from an earlier version: `.cursor/rules/*.md` copies written by the ol
 
 ### Miscellaneous
 
+`teamai update --dry-run` checks for a newer CLI version without installing it, refreshing hooks, acquiring the update lock or saving TeamAI's version-check state. Combining it with `--check` is also read-only.
+
 ```bash
 teamai doctor          # Config diagnostics
 teamai doctor --json   # Same diagnostics as JSON on stdout (CI, hooks, agents)

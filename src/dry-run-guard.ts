@@ -29,6 +29,7 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
   'packages',
   'packages install',
   'doctor',
+  'update',
   'roles',
   'roles list',
   'roles init',
@@ -103,7 +104,6 @@ export const NO_DRY_RUN_PREVIEW: Readonly<Record<string, string>> = {
   'models remove': 'deletes the personal profile and its key',
   'bind-project': 'writes the local-agent binding',
   'hooks remove': 'edits every AI tool settings file',
-  update: 'no preview until #951 lands',
   dashboard: 'a long-running server that creates its events file',
   'deep-enrich': 'hidden; writes the docs that `codebase --deep-enrich` previews',
   // Hidden commands that hooks run, never with --dry-run.

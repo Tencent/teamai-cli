@@ -481,7 +481,7 @@ export interface CheckResult {
  * Check if a newer version is available.
  * Uses cached result if within TTL unless force is true.
  */
-export async function checkForUpdate(options?: { force?: boolean }): Promise<CheckResult> {
+export async function checkForUpdate(options?: { force?: boolean; dryRun?: boolean }): Promise<CheckResult> {
   const state = await loadState();
   const current = getCurrentVersion();
 
@@ -502,11 +502,13 @@ export async function checkForUpdate(options?: { force?: boolean }): Promise<Che
 
   // Compare and save state
   const available = compareVersions(current, latest) < 0;
-  await saveState({
-    ...state,
-    lastUpdateCheck: new Date().toISOString(),
-    availableUpdate: available ? latest : null,
-  });
+  if (!options?.dryRun) {
+    await saveState({
+      ...state,
+      lastUpdateCheck: new Date().toISOString(),
+      availableUpdate: available ? latest : null,
+    });
+  }
 
   return { available, current, latest };
 }
@@ -667,11 +669,12 @@ export interface UpdateOptions {
 /**
  * Main entry point for `teamai update` command.
  * --check: only check and print whether an update is available
+ * --dry-run: check without installing or saving the version-check state
  * default: full update flow (check + install)
  */
 export async function update(options: UpdateOptions): Promise<void> {
-  if (options.check) {
-    const result = await checkForUpdate();
+  if (options.check || options.dryRun) {
+    const result = await checkForUpdate({ dryRun: options.dryRun });
     if (result.available) {
       log.info(`Update available: v${result.current} → v${result.latest}. Run "teamai update" to upgrade.`);
     } else {
