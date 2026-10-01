@@ -96,7 +96,7 @@ async function adapterHookArtifacts(tool: string): Promise<string[] | null> {
  * Reconciles built-in (A) + team (B) hooks into all configured AI tool settings.
  */
 export async function hooksInject(options: GlobalOptions): Promise<void> {
-    const { localConfig, teamConfig } = await autoDetectInit();
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
     // Explicit user action → not gated by sharing.hooks.autoApply (auto: false).
     let reconciled: Awaited<ReturnType<typeof reconcileTeamHooksForConfig>>;
@@ -104,15 +104,23 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         reconciled = await reconcileTeamHooksForConfig(teamConfig, localConfig, {
             auto: false,
             silent: options.silent,
+            dryRun: options.dryRun,
         });
     } finally {
         // Git-hook installation can fail after the Codex hooks were written.
-        const codexTrust = await trustCodexForScope(teamConfig, localConfig, { force: true });
-        if (!options.silent) reportCodexTrust(codexTrust, 'all');
+        if (!options.dryRun) {
+            const codexTrust = await trustCodexForScope(teamConfig, localConfig, { force: true });
+            if (!options.silent) reportCodexTrust(codexTrust, 'all');
+        }
     }
     // The reason is already reported; the installed team hooks were left as they were.
     if (!reconciled.ok) {
         process.exitCode = 1;
+        return;
+    }
+    if (options.dryRun) {
+        if (!options.silent) log.info('[dry-run] Would inject hooks into configured AI tool settings.');
+        return;
     }
     if (!options.silent && reconciled.ok) log.success('Hooks injected into all AI tool settings');
 }

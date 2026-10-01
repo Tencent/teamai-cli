@@ -140,6 +140,56 @@ beforeEach(() => {
 });
 
 describe('hooksInject', () => {
+    it('forwards dry-run to both config loading and reconciliation without claiming injection', async () => {
+        await hooksInject({ dryRun: true });
+
+        expect(mockedAutoDetectInit).toHaveBeenCalledWith(undefined, { dryRun: true });
+        expect(mockedReconcileForConfig).toHaveBeenCalledWith(
+            mockTeamConfig,
+            mockLocalConfig,
+            { auto: false, silent: undefined, dryRun: true },
+        );
+        expect(mockedLog.info).toHaveBeenCalledWith('[dry-run] Would inject hooks into configured AI tool settings.');
+        expect(mockedLog.success).not.toHaveBeenCalled();
+        expect(mockedTrustCodex).not.toHaveBeenCalled();
+    });
+
+    it('suppresses the dry-run summary with --silent', async () => {
+        await hooksInject({ dryRun: true, silent: true });
+
+        expect(mockedReconcileForConfig).toHaveBeenCalledWith(
+            mockTeamConfig,
+            mockLocalConfig,
+            { auto: false, silent: true, dryRun: true },
+        );
+        expect(mockedLog.info).not.toHaveBeenCalled();
+        expect(mockedLog.success).not.toHaveBeenCalled();
+        expect(mockedTrustCodex).not.toHaveBeenCalled();
+    });
+
+    it('fails a dry-run when team hooks cannot be resolved', async () => {
+        mockedReconcileForConfig.mockResolvedValue({ ok: false });
+        try {
+            await hooksInject({ dryRun: true });
+            expect(process.exitCode).toBe(1);
+            expect(mockedLog.info).not.toHaveBeenCalled();
+            expect(mockedLog.success).not.toHaveBeenCalled();
+            expect(mockedTrustCodex).not.toHaveBeenCalled();
+        } finally {
+            process.exitCode = undefined;
+        }
+    });
+
+    it('propagates a dry-run reconciliation error without trusting Codex', async () => {
+        const failure = new Error('Could not resolve hooks for preview');
+        mockedReconcileForConfig.mockRejectedValue(failure);
+
+        await expect(hooksInject({ dryRun: true })).rejects.toBe(failure);
+
+        expect(mockedTrustCodex).not.toHaveBeenCalled();
+        expect(mockedLog.success).not.toHaveBeenCalled();
+    });
+
     it('reconciles built-in + team hooks across all tools (user scope)', async () => {
         await hooksInject({});
 

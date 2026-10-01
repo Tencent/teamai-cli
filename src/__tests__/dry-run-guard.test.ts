@@ -60,6 +60,12 @@ describe('--dry-run guard decisions', () => {
     expect(dryRunRefusal(command(path))).toBeUndefined();
   });
 
+  it('allows the hooks injection preview', () => {
+    expect(DRY_RUN_PREVIEW.has('hooks inject')).toBe(true);
+    expect(NO_DRY_RUN_PREVIEW).not.toHaveProperty('hooks inject');
+    expect(dryRunRefusal(command('hooks inject'))).toBeUndefined();
+  });
+
   it.each([
     'remove', 'roles init', 'roles add', 'roles remove', 'roles update',
     'projects add', 'projects update', 'projects remove',
