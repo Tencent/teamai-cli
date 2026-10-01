@@ -407,6 +407,15 @@ export { deriveDispatchSessionId };
  *   again (prevents recursion), `stdinFile` carries the payload the Windows
  *   spawn path cannot pipe.
  */
+/**
+ * True when this dispatch is the Claude settings copy Cursor also runs.
+ * Cursor's own hooks pass `--tool cursor` and must still run. Claude Code
+ * does not set CURSOR_VERSION. An empty value does not count.
+ */
+export function claudeHookRunsInsideCursor(tool: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return tool === 'claude' && !!env.CURSOR_VERSION;
+}
+
 export async function hookDispatchCli(
   event: string,
   tool: string,
@@ -415,6 +424,10 @@ export async function hookDispatchCli(
 ): Promise<void> {
   const { bgOnly = false, stdinFile } = options;
   setStderrOnly(true);
+  if (claudeHookRunsInsideCursor(tool)) {
+    log.debug('hook-dispatch: skipping claude hooks because Cursor sets CURSOR_VERSION and runs its own copy');
+    return;
+  }
   try {
     const raw = stdinFile ? readStdinFile(stdinFile) : await readStdin();
     const stdin = parseStdin(raw, event);

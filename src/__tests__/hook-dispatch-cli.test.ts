@@ -20,7 +20,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: mockSpawn,
 }));
 
-const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli } =
+const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInsideCursor } =
   await import('../hook-dispatch-cli.js');
 const { log } = await import('../utils/logger.js');
 
@@ -55,6 +55,38 @@ describe('deriveDispatchSessionId', () => {
 });
 
 describe('hookDispatchCli', () => {
+  it('skips claude hooks when Cursor sets CURSOR_VERSION and still runs cursor hooks', async () => {
+    expect(claudeHookRunsInsideCursor('claude', { CURSOR_VERSION: '1.2.3' })).toBe(true);
+    expect(claudeHookRunsInsideCursor('claude', {})).toBe(false);
+    expect(claudeHookRunsInsideCursor('claude', { CURSOR_VERSION: '' })).toBe(false);
+    expect(claudeHookRunsInsideCursor('cursor', { CURSOR_VERSION: '1.2.3' })).toBe(false);
+
+    const previous = process.env.CURSOR_VERSION;
+    const stdinFile = path.join(os.tmpdir(), `cursor-hook-${process.pid}-${Date.now()}.json`);
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'Stop', session_id: 's', cwd: process.cwd() }));
+    mockDispatcher.dispatch.mockClear();
+    mockSpawn.mockClear();
+    process.env.CURSOR_VERSION = '1.2.3';
+    try {
+      await hookDispatchCli('stop', 'claude', '*');
+      expect(mockDispatcher.dispatch).not.toHaveBeenCalled();
+      expect(mockSpawn).not.toHaveBeenCalled();
+
+      mockSpawn.mockReturnValue({
+        on: vi.fn(),
+        stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) },
+        unref: vi.fn(),
+      });
+      await hookDispatchCli('stop', 'cursor', '*', { stdinFile });
+    } finally {
+      fs.rmSync(stdinFile, { force: true });
+      if (previous === undefined) delete process.env.CURSOR_VERSION;
+      else process.env.CURSOR_VERSION = previous;
+    }
+    // cursor still enters dispatch. The missing stdin file is logged and treated as empty.
+    expect(mockDispatcher.dispatch).toHaveBeenCalled();
+  });
+
   it('starts the background pass from the temp dir when the payload cwd no longer exists', async () => {
     // spawn() fails on a missing cwd, and that error is swallowed: no background
     // handler (session-start pull, webhook, update check) would run at all.

@@ -1922,6 +1922,8 @@ The inject and remove commands only touch tools you actually have installed (i.e
 
 On Windows, the built-in hook dispatch commands that shell out through bash (e.g. Claude, Codex, Cursor, Copilot CLI) reference Git Bash by absolute path — standard install locations first, then the `HKLM\SOFTWARE\GitForWindows` registry as fallback — so they never resolve to the WSL `bash.exe` launcher; if Git Bash cannot be found they degrade to bare `bash`.
 
+Cursor also loads `~/.claude/settings.json`. When both `claude` and `cursor` are enabled, `hook-dispatch --tool claude` exits immediately if `CURSOR_VERSION` is set, and team hook commands written for `claude` do the same. Cursor then runs only the copy in `~/.cursor/hooks.json`. Claude Code does not set `CURSOR_VERSION`, so its hooks still run. Run `teamai pull` or `teamai hooks inject` again so an already installed team hook picks up the guard.
+
 > **Codex trust gate** — Codex (the OpenAI / ChatGPT Codex app, tool id `codex`) gates non-managed hooks behind an explicit user trust step. After teamai writes `~/.codex/hooks.json`, Codex may skip a newly added or changed hook until you review/trust it in `/hooks` or Settings → Hooks. `teamai hooks inject` and `teamai doctor` print a reminder when Codex hooks are installed; teamai never edits Codex's `[hooks.state]` to auto-trust — trusting is left to you.
 
 ### Team Hooks Declaration

@@ -363,9 +363,26 @@ function isProjectGatedCommand(command: string): boolean {
   return command.startsWith('if [ "$PWD" = ') || command.startsWith('cd| findstr ');
 }
 
+/**
+ * Cursor also runs `~/.claude/settings.json`. Team commands written for the
+ * `claude` tool exit when that happens; the `~/.cursor/hooks.json` copy does
+ * not get this prefix, so it still runs. Claude Code never sets CURSOR_VERSION.
+ * Built-in hooks take the same exit inside hook-dispatch instead of here.
+ */
+export const CLAUDE_HOOK_CURSOR_SKIP = 'if [ -n "$CURSOR_VERSION" ]; then exit 0; fi; ';
+
+function skipWhenCursorLoadsClaudeSettings(command: string, tool: string): string {
+  if (tool !== 'claude') return command;
+  return `${CLAUDE_HOOK_CURSOR_SKIP}${command}`;
+}
+
 function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string): HookDef[] {
-  if (!projectRoot) return teamDefs;
-  return teamDefs.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, tool) }));
+  const prepared = teamDefs.map((def) => ({
+    ...def,
+    command: skipWhenCursorLoadsClaudeSettings(def.command, tool),
+  }));
+  if (!projectRoot) return prepared;
+  return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, tool) }));
 }
 
 function manifestRecordsForTool(teamDefs: HookDef[], tool: string, removeAll: boolean, projectRoot?: string): ManagedHookRecord[] {
