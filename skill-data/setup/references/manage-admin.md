@@ -31,6 +31,7 @@ run `teamai pull`).
 ```bash
 teamai mcp list        # team MCP servers + per-tool install status
 teamai mcp inject      # push team MCP servers into every AI tool's config
+teamai mcp remove --dry-run # preview removal without changing tool configs or managed records
 teamai mcp remove      # remove teamai-managed MCP servers
 ```
 
