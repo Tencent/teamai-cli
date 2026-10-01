@@ -185,6 +185,23 @@ describe('webhook', () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
+    it.each(['unmatched URL', 'no configured endpoints'])('previews zero endpoints for %s', async (scenario) => {
+      const { testWebhook } = await import('../webhook.js');
+      const { log } = await import('../utils/logger.js');
+      if (scenario === 'no configured endpoints') {
+        const config = singleEndpointConfig(0);
+        config.teamConfig.sharing.webhooks.endpoints = [];
+        mockAutoDetectInit.mockResolvedValueOnce(config);
+      }
+
+      await testWebhook('https://example.com/unmatched', { dryRun: true });
+
+      expect(mockAutoDetectInit).toHaveBeenCalledWith(undefined, { dryRun: true });
+      expect(log.info).toHaveBeenCalledWith('[dry-run] Would send a test webhook to 0 endpoint(s).');
+      expect(log.warn).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it('should send test event to all endpoints', async () => {
       const { testWebhook } = await import('../webhook.js');
 

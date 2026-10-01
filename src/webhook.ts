@@ -164,13 +164,13 @@ export async function testWebhook(url?: string, options: { dryRun?: boolean } = 
     ? config.endpoints.filter((ep) => ep.url === url)
     : config.endpoints;
 
-  if (endpoints.length === 0) {
-    log.warn('No webhook endpoints configured.');
+  if (options.dryRun) {
+    log.info(`[dry-run] Would send a test webhook to ${endpoints.length} endpoint(s).`);
     return;
   }
 
-  if (options.dryRun) {
-    log.info(`[dry-run] Would send a test webhook to ${endpoints.length} endpoint(s).`);
+  if (endpoints.length === 0) {
+    log.warn('No webhook endpoints configured.');
     return;
   }
 
