@@ -20,7 +20,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: mockSpawn,
 }));
 
-const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInsideCursor } =
+const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
   await import('../hook-dispatch-cli.js');
 const { log } = await import('../utils/logger.js');
 
@@ -55,36 +55,59 @@ describe('deriveDispatchSessionId', () => {
 });
 
 describe('hookDispatchCli', () => {
-  it('skips claude hooks when Cursor sets CURSOR_VERSION and still runs cursor hooks', async () => {
-    expect(claudeHookRunsInsideCursor('claude', { CURSOR_VERSION: '1.2.3' })).toBe(true);
-    expect(claudeHookRunsInsideCursor('claude', {})).toBe(false);
-    expect(claudeHookRunsInsideCursor('claude', { CURSOR_VERSION: '' })).toBe(false);
-    expect(claudeHookRunsInsideCursor('cursor', { CURSOR_VERSION: '1.2.3' })).toBe(false);
+  it('skips claude hooks when Cursor or Copilot CLI runs them, and still runs their own hooks', async () => {
+    expect(claudeHookRunsInAnotherHost('claude', { CURSOR_VERSION: '1.2.3' })).toBe(true);
+    expect(claudeHookRunsInAnotherHost('claude', { COPILOT_PROJECT_DIR: '/repo', COPILOT_CLI: '1' })).toBe(true);
+    // A claude session started from Copilot's bash tool: COPILOT_CLI only.
+    expect(claudeHookRunsInAnotherHost('claude', { COPILOT_CLI: '1' })).toBe(false);
+    expect(claudeHookRunsInAnotherHost('claude', {})).toBe(false);
+    expect(claudeHookRunsInAnotherHost('claude', { CURSOR_VERSION: '', COPILOT_PROJECT_DIR: '' })).toBe(false);
+    expect(claudeHookRunsInAnotherHost('cursor', { CURSOR_VERSION: '1.2.3' })).toBe(false);
+    expect(claudeHookRunsInAnotherHost('copilot', { COPILOT_PROJECT_DIR: '/repo' })).toBe(false);
 
-    const previous = process.env.CURSOR_VERSION;
-    const stdinFile = path.join(os.tmpdir(), `cursor-hook-${process.pid}-${Date.now()}.json`);
+    const previousCursor = process.env.CURSOR_VERSION;
+    const previousCopilotDir = process.env.COPILOT_PROJECT_DIR;
+    const previousCopilotCli = process.env.COPILOT_CLI;
+    const stdinFile = path.join(os.tmpdir(), `host-hook-${process.pid}-${Date.now()}.json`);
     fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'Stop', session_id: 's', cwd: process.cwd() }));
+    const child = {
+      on: vi.fn(),
+      stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) },
+      unref: vi.fn(),
+    };
     mockDispatcher.dispatch.mockClear();
     mockSpawn.mockClear();
-    process.env.CURSOR_VERSION = '1.2.3';
+    mockSpawn.mockReturnValue(child);
+    delete process.env.COPILOT_CLI;
     try {
+      process.env.CURSOR_VERSION = '1.2.3';
+      delete process.env.COPILOT_PROJECT_DIR;
       await hookDispatchCli('stop', 'claude', '*');
       expect(mockDispatcher.dispatch).not.toHaveBeenCalled();
-      expect(mockSpawn).not.toHaveBeenCalled();
 
-      mockSpawn.mockReturnValue({
-        on: vi.fn(),
-        stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) },
-        unref: vi.fn(),
-      });
-      await hookDispatchCli('stop', 'cursor', '*', { stdinFile });
+      delete process.env.CURSOR_VERSION;
+      process.env.COPILOT_PROJECT_DIR = '/repo';
+      await hookDispatchCli('stop', 'claude', '*');
+      expect(mockDispatcher.dispatch).not.toHaveBeenCalled();
+
+      delete process.env.COPILOT_PROJECT_DIR;
+      process.env.COPILOT_CLI = '1';
+      await hookDispatchCli('stop', 'claude', '*', { stdinFile });
+      expect(mockDispatcher.dispatch).toHaveBeenCalledTimes(1);
+
+      mockDispatcher.dispatch.mockClear();
+      process.env.COPILOT_PROJECT_DIR = '/repo';
+      await hookDispatchCli('stop', 'copilot', '*', { stdinFile });
+      expect(mockDispatcher.dispatch).toHaveBeenCalledTimes(1);
     } finally {
       fs.rmSync(stdinFile, { force: true });
-      if (previous === undefined) delete process.env.CURSOR_VERSION;
-      else process.env.CURSOR_VERSION = previous;
+      if (previousCursor === undefined) delete process.env.CURSOR_VERSION;
+      else process.env.CURSOR_VERSION = previousCursor;
+      if (previousCopilotDir === undefined) delete process.env.COPILOT_PROJECT_DIR;
+      else process.env.COPILOT_PROJECT_DIR = previousCopilotDir;
+      if (previousCopilotCli === undefined) delete process.env.COPILOT_CLI;
+      else process.env.COPILOT_CLI = previousCopilotCli;
     }
-    // cursor still enters dispatch. The missing stdin file is logged and treated as empty.
-    expect(mockDispatcher.dispatch).toHaveBeenCalled();
   });
 
   it('starts the background pass from the temp dir when the payload cwd no longer exists', async () => {

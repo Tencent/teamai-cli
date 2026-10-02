@@ -400,6 +400,18 @@ async function runDispatch(
 export { deriveDispatchSessionId };
 
 /**
+ * True when this dispatch is the Claude settings copy that Cursor or Copilot
+ * CLI also runs. Their own hooks pass `--tool cursor` / `--tool copilot` and
+ * must still run. Claude Code sets neither CURSOR_VERSION nor
+ * COPILOT_PROJECT_DIR. COPILOT_CLI is not a signal: Copilot sets it on every
+ * subprocess, including a `claude` started from its shell. An empty value
+ * does not count.
+ */
+export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return tool === 'claude' && (!!env.CURSOR_VERSION || !!env.COPILOT_PROJECT_DIR);
+}
+
+/**
  * Main CLI handler for hook-dispatch.
  *
  * @param options Internal-only switches, set by the detached child's own spawn
@@ -407,15 +419,6 @@ export { deriveDispatchSessionId };
  *   again (prevents recursion), `stdinFile` carries the payload the Windows
  *   spawn path cannot pipe.
  */
-/**
- * True when this dispatch is the Claude settings copy Cursor also runs.
- * Cursor's own hooks pass `--tool cursor` and must still run. Claude Code
- * does not set CURSOR_VERSION. An empty value does not count.
- */
-export function claudeHookRunsInsideCursor(tool: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  return tool === 'claude' && !!env.CURSOR_VERSION;
-}
-
 export async function hookDispatchCli(
   event: string,
   tool: string,
@@ -424,8 +427,8 @@ export async function hookDispatchCli(
 ): Promise<void> {
   const { bgOnly = false, stdinFile } = options;
   setStderrOnly(true);
-  if (claudeHookRunsInsideCursor(tool)) {
-    log.debug('hook-dispatch: skipping claude hooks because Cursor sets CURSOR_VERSION and runs its own copy');
+  if (claudeHookRunsInAnotherHost(tool)) {
+    log.debug('hook-dispatch: skipping claude hooks because Cursor or Copilot CLI runs them and runs its own copy too');
     return;
   }
   try {

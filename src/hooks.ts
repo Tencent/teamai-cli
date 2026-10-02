@@ -364,22 +364,23 @@ function isProjectGatedCommand(command: string): boolean {
 }
 
 /**
- * Cursor also runs `~/.claude/settings.json`. Team commands written for the
- * `claude` tool exit when that happens; the `~/.cursor/hooks.json` copy does
- * not get this prefix, so it still runs. Claude Code never sets CURSOR_VERSION.
+ * Cursor also runs `~/.claude/settings.json`, and Copilot CLI runs a trusted
+ * project's `.claude/settings.json`. Team commands written for the `claude`
+ * tool exit when that happens; the Cursor and Copilot copies do not get this
+ * prefix, so they still run. Claude Code sets neither variable.
  * Built-in hooks take the same exit inside hook-dispatch instead of here.
  */
-export const CLAUDE_HOOK_CURSOR_SKIP = 'if [ -n "$CURSOR_VERSION" ]; then exit 0; fi; ';
+export const CLAUDE_HOOK_OTHER_HOST_SKIP = 'if [ -n "$CURSOR_VERSION" ] || [ -n "$COPILOT_PROJECT_DIR" ]; then exit 0; fi; ';
 
-function skipWhenCursorLoadsClaudeSettings(command: string, tool: string): string {
+function skipWhenAnotherHostLoadsClaudeSettings(command: string, tool: string): string {
   if (tool !== 'claude') return command;
-  return `${CLAUDE_HOOK_CURSOR_SKIP}${command}`;
+  return `${CLAUDE_HOOK_OTHER_HOST_SKIP}${command}`;
 }
 
 function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string): HookDef[] {
   const prepared = teamDefs.map((def) => ({
     ...def,
-    command: skipWhenCursorLoadsClaudeSettings(def.command, tool),
+    command: skipWhenAnotherHostLoadsClaudeSettings(def.command, tool),
   }));
   if (!projectRoot) return prepared;
   return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot, tool) }));
