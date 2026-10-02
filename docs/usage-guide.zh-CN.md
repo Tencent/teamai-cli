@@ -1762,6 +1762,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 需要 AI 的步骤（`--deep-enrich`、知识增强）复用本机已安装的 AI 编码 CLI，而不是直接调用模型 API。teamai 按 `claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw` 的顺序探测，取第一个可用者。macOS / Linux 上探测经由 login shell，因此装在 `~/.nvm/` 下的 CLI 也能找到；Windows 上改用原生命令 `where`，拿到的是 Windows 真正能启动的 npm shim（`%APPDATA%\npm\claude.cmd`）——Git Bash 或 WSL 的 `bash` 只会返回 `/c/Users/...` 这类 MSYS 路径，Windows 无法启动。
 
+使用 `--from-org --dry-run` 时，CLI 展示本次过滤条件选中的仓库及白名单目标路径，不读取旧草稿、不写入白名单、不克隆仓库、不获取导入锁，也不运行 AI 增强。`--skip-import` 只预览白名单条目。CLI 原有的诊断日志记录仍会执行。
+
 对于 API 网关后的 GitLab，先设置 `GITLAB_URL` 和 `GITLAB_API_PREFIX=api/gitlab`，再运行 `teamai import --from-org https://gitlab.example.com/myorg`。组织仓库列表的每一页请求都会使用配置的前缀；未设置或为空时默认使用 `api/v4`。
 
 图谱存储组件、接口、配置和跨仓库依赖关系。`teamai recall` 会将 learnings 与图谱 BM25 命中转换到有界的相关性分数尺度后合并排序。
