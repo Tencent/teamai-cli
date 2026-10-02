@@ -58,7 +58,7 @@ Session in progress → the AI uses tools, converses
         mark pushable    keep locally only
             │
             ▼
-    ~/.teamai/sessions/<year-month>.md (append)
+    ~/.teamai/session-logs/<year-month>.md (append)
 ```
 
 **Value evaluation rules (v1):**
@@ -66,7 +66,9 @@ Session in progress → the AI uses tools, converses
 - Valuable: a new pattern or creative solution was found
 - Not valuable: pure chat, simple file operations, routine edits
 
-**Storage:** `~/.teamai/sessions/<year-month>.md`, aggregated by month.
+**Storage:** `~/.teamai/session-logs/<year-month>.md`, aggregated by month.
+
+The monthly file's read, full-session-ID deduplication and atomic replacement are serialized with a cross-process lock. A busy lock is retried for up to five seconds; a read failure preserves the existing log. Team summaries use the same transaction.
 
 #### 2. Skill Usage Tracker (Local)
 **What:** A PostToolUse hook detects Claude Code Skill tool calls and appends to the scope's `<dataHome>/usage.jsonl` (the configured project the session directory belongs to, otherwise user scope's `~/.teamai/user-usage.jsonl`; a directory without teamai configured records nothing, #748; a deleted directory keeps the scope the session last recorded, #810).
