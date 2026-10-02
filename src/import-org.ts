@@ -182,6 +182,16 @@ export async function importFromOrg(opts: ImportFromOrgOptions): Promise<void> {
 
     log.info(`${filteredRepos.length} repos after filtering, generating whitelist...`);
 
+    if (opts.dryRun) {
+        log.info(`[dry-run] Would write whitelist: ${WHITELIST_DRAFT_PATH} (${filteredRepos.length} repos)`);
+        for (const repo of filteredRepos) {
+            log.info(opts.skipImport
+                ? `[dry-run] Whitelist entry: ${repo.url}`
+                : `[dry-run] Would import ${repo.url}`);
+        }
+        return;
+    }
+
     // 4. 生成白名单（跳过 AI 聚类，知识图谱通过 nodes/edges 自动组织关系）
     const whitelistDraftPath = path.join(cwd, WHITELIST_DRAFT_PATH);
     if (!opts.dryRun) {
