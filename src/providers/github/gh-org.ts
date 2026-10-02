@@ -126,7 +126,7 @@ export async function ghListOrgRepos(
 
   if (isGhInstalled()) {
     // 使用 gh CLI 分页拉取
-    const tryEndpointPrefix = async (prefix: string): Promise<boolean> => {
+    const tryEndpointPrefix = async (prefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;
       while (results.length < maxRepos) {
         // 不加 type=public，依赖调用者认证（gh CLI）可见范围；GitHub API 默认 type=all
@@ -135,8 +135,7 @@ export async function ghListOrgRepos(
         try {
           items = ghApiPage(endpoint);
         } catch (err) {
-          if (page === 1) {
-            // 第一页失败，说明此 endpoint 不通
+          if (page === 1 && allowFallback) {
             log.debug(`gh api ${prefix} failed: ${String(err)}`);
             return false;
           }
@@ -152,7 +151,7 @@ export async function ghListOrgRepos(
       return true;
     };
 
-    const orgSuccess = await tryEndpointPrefix(`/orgs/${encodeURIComponent(org)}/repos`);
+    const orgSuccess = await tryEndpointPrefix(`/orgs/${encodeURIComponent(org)}/repos`, true);
     if (!orgSuccess) {
       // fallback: user repos
       await tryEndpointPrefix(`/users/${encodeURIComponent(org)}/repos`);
@@ -167,7 +166,7 @@ export async function ghListOrgRepos(
     }
 
     const BASE = 'https://api.github.com';
-    const tryUrl = async (urlPrefix: string): Promise<boolean> => {
+    const tryUrl = async (urlPrefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;
       while (results.length < maxRepos) {
         // 不加 type=public，依赖 GITHUB_TOKEN 可见范围；GitHub API 默认 type=all
@@ -176,7 +175,7 @@ export async function ghListOrgRepos(
         try {
           items = await fetchApiPage(url, token);
         } catch (err) {
-          if (page === 1) {
+          if (page === 1 && allowFallback) {
             log.debug(`fetch ${urlPrefix} failed: ${String(err)}`);
             return false;
           }
@@ -192,7 +191,7 @@ export async function ghListOrgRepos(
       return true;
     };
 
-    const orgSuccess = await tryUrl(`${BASE}/orgs/${encodeURIComponent(org)}/repos`);
+    const orgSuccess = await tryUrl(`${BASE}/orgs/${encodeURIComponent(org)}/repos`, true);
     if (!orgSuccess) {
       await tryUrl(`${BASE}/users/${encodeURIComponent(org)}/repos`);
     }

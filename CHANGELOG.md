@@ -107,6 +107,7 @@ All notable changes to this project will be documented in this file. See [standa
 - Course-correction detection matches keywords in space-separated scripts as whole words, so Spanish "segundo" no longer counts as `undo` (for [#564](https://github.com/Tencent/teamai-cli/issues/564)).
 - `teamai doctor` no longer assumes TGit before initialization and now exits with code 1 when any diagnostic check fails.
 - MCP `requires` is resolved from `PATH` (including Windows `PATHEXT`), so `teamai mcp inject` no longer skips servers such as `uvx` on Windows ([#540](https://github.com/Tencent/teamai-cli/pull/540), for [#539](https://github.com/Tencent/teamai-cli/issues/539)).
+- GitHub organization import now propagates a failed user-list fallback through both `gh` and the direct token API, instead of reporting zero repositories and exiting successfully after both lookups fail. Successful empty lists and organization-to-user fallback remain unchanged.
 - The GitHub and CNB providers resolve their CLI to a launchable absolute path and start it through cross-spawn, so on Windows they no longer answer "installed" while every call fails silently ([#520](https://github.com/Tencent/teamai-cli/pull/520)).
 - `enabledAgents` now also gates CLI builtin deploy, CLAUDE.md-class injects, and last-pull skip-sync targets, so an already-installed tool outside the whitelist is not written to ([#510](https://github.com/Tencent/teamai-cli/issues/510)).
 - `teamai status` counts rule files in subdirectories recursively ([#437](https://github.com/Tencent/teamai-cli/pull/437)).

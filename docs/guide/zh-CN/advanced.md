@@ -115,6 +115,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 使用 `--from-org --dry-run` 时，CLI 展示本次过滤条件选中的仓库及白名单目标路径，不读取旧草稿、不写入白名单、不克隆仓库、不获取导入锁，也不运行 AI 增强。`--skip-import` 只预览白名单条目。CLI 原有的诊断日志记录仍会执行。
 
+对于 GitHub，`--from-org` 先查询组织仓库列表；首次请求失败或返回空列表时，再查询用户仓库列表。若后者也失败，导入会报告错误并以非零状态退出，不再将失败当成空列表。`gh` 和直接使用 `GITHUB_TOKEN` / `GH_TOKEN` 的 API 路径均如此；成功返回空列表仍表示没有可导入的仓库。
+
 对于 API 网关后的 GitLab，先设置 `GITLAB_URL` 和 `GITLAB_API_PREFIX=api/gitlab`，再运行 `teamai import --from-org https://gitlab.example.com/myorg`。组织仓库列表的每一页请求都会使用配置的前缀；未设置或为空时默认使用 `api/v4`。
 
 图谱存储组件、接口、配置和跨仓库依赖关系。`teamai recall` 会将 learnings 与图谱 BM25 命中转换到有界的相关性分数尺度后合并排序。

@@ -128,6 +128,8 @@ AI-backed steps (`--deep-enrich`, knowledge enrichment) shell out to an AI codin
 
 With `--from-org --dry-run`, the CLI lists the repositories selected by this request's filters and previews the whitelist destination. It does not read an older draft, write the whitelist, clone repositories, acquire import locks or run AI enrichment. `--skip-import` previews only the whitelist entries. Normal CLI diagnostic logging still applies.
 
+For GitHub, `--from-org` tries the organization repo list first, then the user repo list if the first request fails or returns no repos. If the fallback request fails too, the import reports the error and exits nonzero rather than treating it as an empty list. This applies to both `gh` and the direct `GITHUB_TOKEN` / `GH_TOKEN` API path; a successful empty response still means there are no repos to import.
+
 For GitLab behind an API gateway, set `GITLAB_URL` and `GITLAB_API_PREFIX=api/gitlab` before running `teamai import --from-org https://gitlab.example.com/myorg`. Organization listing uses the configured prefix on every page; an unset or blank prefix defaults to `api/v4`.
 
 The graph stores components, interfaces, configs, and cross-repo dependencies. `teamai recall` combines learnings with graph BM25 hits on a bounded, relevance-normalized score scale.
