@@ -1792,6 +1792,8 @@ When the draft overlaps existing learnings, from the shared root or your active 
 
 AI-backed steps (`--deep-enrich`, knowledge enrichment) shell out to an AI coding CLI already installed on the machine instead of calling a model API directly. teamai probes `claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw` and uses the first one it finds. On macOS and Linux the probe runs through a login shell, so a CLI installed under `~/.nvm/` is found too. On Windows it uses the native `where`, which returns the npm shim (`%APPDATA%\npm\claude.cmd`) that Windows can actually launch — a Git Bash or WSL `bash` only reports MSYS paths such as `/c/Users/...`, which Windows cannot start.
 
+For GitHub, `--from-org` tries the organization repo list first, then the user repo list if the first request fails or returns no repos. If the fallback request fails too, the import reports the error and exits nonzero rather than treating it as an empty list. This applies to both `gh` and the direct `GITHUB_TOKEN` / `GH_TOKEN` API path; a successful empty response still means there are no repos to import.
+
 For GitLab behind an API gateway, set `GITLAB_URL` and `GITLAB_API_PREFIX=api/gitlab` before running `teamai import --from-org https://gitlab.example.com/myorg`. Organization listing uses the configured prefix on every page; an unset or blank prefix defaults to `api/v4`.
 
 The graph stores components, interfaces, configs, and cross-repo dependencies. `teamai recall` combines learnings with graph BM25 hits on a bounded, relevance-normalized score scale.

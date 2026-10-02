@@ -3,6 +3,14 @@
 Load this whenever a step fails, `teamai doctor` flags something, or team
 resources don't show up. It is shared by all four scenarios.
 
+## GitHub organization import fails
+
+`teamai import --from-org` tries the organization repo list, then the user repo
+list if the first request fails or is empty. A failed fallback reports an error
+and exits nonzero, through either `gh` or the direct token API. Check the
+reported authentication, access or network error before retrying; a failed
+request does not mean the organization has no repositories.
+
 ## First move: run doctor
 
 ```bash
