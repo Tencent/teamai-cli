@@ -220,6 +220,12 @@ session's runs, recalled docs and adopted docs. Per agent:
 A read after the session's last Stop is credited at SubagentStop, at Copilot CLI's
 SessionEnd, or at the next `teamai pull`.
 
+For manual feedback, use `teamai recall feedback --positive <docId>` or
+`--negative <docId>`. With the global `--dry-run`, it only previews the requested
+feedback: votes and config stay unchanged, including legacy migrations. It does
+not check whether a negative vote can reduce the count. Ordinary diagnostic
+logging still applies; a preview is not a recorded vote.
+
 ## Still stuck
 
 - Re-run the failing command with `-v` / `--verbose` for detail.

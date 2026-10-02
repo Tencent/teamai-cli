@@ -1280,7 +1280,8 @@ recallCmd
   .option('--negative <docId>', 'Record negative signal for a document')
   .action(async (cmdOpts) => {
     const { recallFeedback } = await import('./votes.js');
-    await recallFeedback({ positive: cmdOpts.positive, negative: cmdOpts.negative });
+    const globalOpts = program.opts() as GlobalOptions;
+    await recallFeedback({ positive: cmdOpts.positive, negative: cmdOpts.negative, dryRun: globalOpts.dryRun });
   });
 
 recallCmd
