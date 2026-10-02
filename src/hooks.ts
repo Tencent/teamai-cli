@@ -23,6 +23,9 @@ import { builtinHookDefs, applyBuiltinOverride, skipToolsWithoutShell, toolUsesC
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { resolveTeamHooks } from './resources/hooks.js';
 import { getUserHome } from './utils/home.js';
+import { CLAUDE_HOOK_OTHER_HOST_SKIP } from './claude-hook-host.js';
+
+export { CLAUDE_HOOK_OTHER_HOST_SKIP };
 
 /**
  * Lobster-family agents (OpenClaw engine) that use HOOK.md + handler.ts instead
@@ -364,14 +367,11 @@ function isProjectGatedCommand(command: string): boolean {
 }
 
 /**
- * Cursor also runs `~/.claude/settings.json`, and Copilot CLI runs a trusted
- * project's `.claude/settings.json`. Team commands written for the `claude`
- * tool exit when that happens; the Cursor and Copilot copies do not get this
- * prefix, so they still run. Claude Code sets neither variable.
- * Built-in hooks take the same exit inside hook-dispatch instead of here.
+ * Team commands written for `claude` exit when Cursor or Copilot CLI runs them
+ * and that host's own teamai hooks are installed. The prefix checks the hook
+ * file; it does not skip a claude-only setup. Built-in hooks take the same
+ * exit inside hook-dispatch instead of here.
  */
-export const CLAUDE_HOOK_OTHER_HOST_SKIP = 'if [ -n "$CURSOR_VERSION" ] || [ -n "$COPILOT_PROJECT_DIR" ]; then exit 0; fi; ';
-
 function skipWhenAnotherHostLoadsClaudeSettings(command: string, tool: string): string {
   if (tool !== 'claude') return command;
   return `${CLAUDE_HOOK_OTHER_HOST_SKIP}${command}`;

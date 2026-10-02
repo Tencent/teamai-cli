@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +23,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 
 const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
   await import('../hook-dispatch-cli.js');
+const { CLAUDE_HOOK_OTHER_HOST_SKIP } = await import('../claude-hook-host.js');
 const { log } = await import('../utils/logger.js');
 
 describe('readStdin', () => {
@@ -55,19 +57,54 @@ describe('deriveDispatchSessionId', () => {
 });
 
 describe('hookDispatchCli', () => {
-  it('skips claude hooks when Cursor or Copilot CLI runs them, and still runs their own hooks', async () => {
-    expect(claudeHookRunsInAnotherHost('claude', { CURSOR_VERSION: '1.2.3' })).toBe(true);
-    expect(claudeHookRunsInAnotherHost('claude', { COPILOT_PROJECT_DIR: '/repo', COPILOT_CLI: '1' })).toBe(true);
+  it('skips claude hooks only when the other host has its own teamai hooks', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'host-hooks-'));
+    const home = path.join(root, 'home');
+    const project = path.join(root, 'project');
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.mkdirSync(path.join(project, '.cursor'), { recursive: true });
+    fs.mkdirSync(path.join(project, '.github', 'hooks'), { recursive: true });
+    const cursorHooks = path.join(home, '.cursor', 'hooks.json');
+    const projectCursorHooks = path.join(project, '.cursor', 'hooks.json');
+    const copilotHooks = path.join(project, '.github', 'hooks', 'teamai.json');
+    fs.writeFileSync(cursorHooks, '{"hooks":{"stop":[{"command":"teamai hook-dispatch stop --tool cursor"}]}}');
+    fs.writeFileSync(projectCursorHooks, '{"hooks":{"stop":[{"command":"teamai hook-dispatch stop --tool cursor"}]}}');
+    fs.writeFileSync(copilotHooks, '{"hooks":{"sessionStart":[{"bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
+
+    const bare = path.join(root, 'bare-home');
+    fs.mkdirSync(bare);
+    expect(claudeHookRunsInAnotherHost('claude', { CURSOR_VERSION: '1.2.3', HOME: bare })).toBe(false);
+    expect(claudeHookRunsInAnotherHost('claude', { CURSOR_VERSION: '1.2.3', HOME: home })).toBe(true);
+    expect(claudeHookRunsInAnotherHost('claude', { CURSOR_VERSION: '1.2.3', HOME: bare, CURSOR_PROJECT_DIR: project })).toBe(true);
+    expect(claudeHookRunsInAnotherHost('claude', { COPILOT_PROJECT_DIR: project, COPILOT_CLI: '1' })).toBe(true);
     // A claude session started from Copilot's bash tool: COPILOT_CLI only.
-    expect(claudeHookRunsInAnotherHost('claude', { COPILOT_CLI: '1' })).toBe(false);
+    expect(claudeHookRunsInAnotherHost('claude', { COPILOT_CLI: '1', HOME: home })).toBe(false);
+    expect(claudeHookRunsInAnotherHost('claude', { COPILOT_PROJECT_DIR: project, HOME: home })).toBe(true);
+    fs.writeFileSync(copilotHooks, '{}');
+    expect(claudeHookRunsInAnotherHost('claude', { COPILOT_PROJECT_DIR: project })).toBe(false);
+    fs.writeFileSync(copilotHooks, '{"hooks":{"sessionStart":[{"bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
     expect(claudeHookRunsInAnotherHost('claude', {})).toBe(false);
-    expect(claudeHookRunsInAnotherHost('claude', { CURSOR_VERSION: '', COPILOT_PROJECT_DIR: '' })).toBe(false);
-    expect(claudeHookRunsInAnotherHost('cursor', { CURSOR_VERSION: '1.2.3' })).toBe(false);
-    expect(claudeHookRunsInAnotherHost('copilot', { COPILOT_PROJECT_DIR: '/repo' })).toBe(false);
+    expect(claudeHookRunsInAnotherHost('claude', { CURSOR_VERSION: '', COPILOT_PROJECT_DIR: '', HOME: home })).toBe(false);
+    expect(claudeHookRunsInAnotherHost('cursor', { CURSOR_VERSION: '1.2.3', HOME: home })).toBe(false);
+    expect(claudeHookRunsInAnotherHost('copilot', { COPILOT_PROJECT_DIR: project })).toBe(false);
+
+    const runPrefix = (extra: NodeJS.ProcessEnv): string => execFileSync(
+      'sh',
+      ['-c', `${CLAUDE_HOOK_OTHER_HOST_SKIP}echo RAN`],
+      { env: { PATH: process.env.PATH ?? '', HOME: bare, ...extra }, encoding: 'utf8' },
+    );
+    expect(runPrefix({ CURSOR_VERSION: '1.2.3' })).toBe('RAN\n');
+    expect(runPrefix({ CURSOR_VERSION: '1.2.3', HOME: home })).toBe('');
+    expect(runPrefix({ CURSOR_VERSION: '1.2.3', CURSOR_PROJECT_DIR: project })).toBe('');
+    expect(runPrefix({ COPILOT_PROJECT_DIR: project })).toBe('');
+    expect(runPrefix({ COPILOT_CLI: '1' })).toBe('RAN\n');
+    expect(runPrefix({})).toBe('RAN\n');
 
     const previousCursor = process.env.CURSOR_VERSION;
+    const previousProjectDir = process.env.CURSOR_PROJECT_DIR;
     const previousCopilotDir = process.env.COPILOT_PROJECT_DIR;
     const previousCopilotCli = process.env.COPILOT_CLI;
+    const previousHome = process.env.HOME;
     const stdinFile = path.join(os.tmpdir(), `host-hook-${process.pid}-${Date.now()}.json`);
     fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'Stop', session_id: 's', cwd: process.cwd() }));
     const child = {
@@ -79,34 +116,52 @@ describe('hookDispatchCli', () => {
     mockSpawn.mockClear();
     mockSpawn.mockReturnValue(child);
     delete process.env.COPILOT_CLI;
+    delete process.env.CURSOR_PROJECT_DIR;
     try {
+      process.env.HOME = home;
       process.env.CURSOR_VERSION = '1.2.3';
       delete process.env.COPILOT_PROJECT_DIR;
       await hookDispatchCli('stop', 'claude', '*');
       expect(mockDispatcher.dispatch).not.toHaveBeenCalled();
 
+      process.env.HOME = bare;
+      await hookDispatchCli('stop', 'claude', '*', { stdinFile });
+      expect(mockDispatcher.dispatch).toHaveBeenCalledTimes(1);
+
+      mockDispatcher.dispatch.mockClear();
       delete process.env.CURSOR_VERSION;
-      process.env.COPILOT_PROJECT_DIR = '/repo';
+      process.env.COPILOT_PROJECT_DIR = project;
       await hookDispatchCli('stop', 'claude', '*');
       expect(mockDispatcher.dispatch).not.toHaveBeenCalled();
 
+      fs.writeFileSync(copilotHooks, '{}');
+      await hookDispatchCli('stop', 'claude', '*', { stdinFile });
+      expect(mockDispatcher.dispatch).toHaveBeenCalledTimes(1);
+
+      mockDispatcher.dispatch.mockClear();
       delete process.env.COPILOT_PROJECT_DIR;
       process.env.COPILOT_CLI = '1';
       await hookDispatchCli('stop', 'claude', '*', { stdinFile });
       expect(mockDispatcher.dispatch).toHaveBeenCalledTimes(1);
 
       mockDispatcher.dispatch.mockClear();
-      process.env.COPILOT_PROJECT_DIR = '/repo';
+      fs.writeFileSync(copilotHooks, '{"hooks":{"sessionStart":[{"bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
+      process.env.COPILOT_PROJECT_DIR = project;
       await hookDispatchCli('stop', 'copilot', '*', { stdinFile });
       expect(mockDispatcher.dispatch).toHaveBeenCalledTimes(1);
     } finally {
       fs.rmSync(stdinFile, { force: true });
+      fs.rmSync(root, { recursive: true, force: true });
       if (previousCursor === undefined) delete process.env.CURSOR_VERSION;
       else process.env.CURSOR_VERSION = previousCursor;
+      if (previousProjectDir === undefined) delete process.env.CURSOR_PROJECT_DIR;
+      else process.env.CURSOR_PROJECT_DIR = previousProjectDir;
       if (previousCopilotDir === undefined) delete process.env.COPILOT_PROJECT_DIR;
       else process.env.COPILOT_PROJECT_DIR = previousCopilotDir;
       if (previousCopilotCli === undefined) delete process.env.COPILOT_CLI;
       else process.env.COPILOT_CLI = previousCopilotCli;
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
     }
   });
 

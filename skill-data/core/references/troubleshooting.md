@@ -143,8 +143,8 @@ broken machine):
 |-----------------------|---------------------------|---------------------------------------------------------------------|
 | Claude Code (`claude`)| Installed                 | Fully supported — this is the main, working path                    |
 | Codex                 | Written but **trust-gated** or skipped | Codex gates non-managed hooks behind an explicit trust step; `teamai doctor` prints a reminder to trust them |
-| Cursor                | Installed                 | Also runs `~/.claude/settings.json`; that copy exits when `CURSOR_VERSION` is set. Re-inject team hooks after upgrading |
-| Copilot CLI           | Installed in self mode    | Also runs a trusted project's `.claude/settings.json`; that copy exits when `COPILOT_PROJECT_DIR` is set. `COPILOT_CLI` alone does not skip |
+| Cursor                | Installed                 | Also runs `~/.claude/settings.json`. That copy exits only when `~/.cursor/hooks.json` or the project `.cursor/hooks.json` contains `--tool cursor` |
+| Copilot CLI           | Installed in self mode    | Also runs a trusted project's `.claude/settings.json`. That copy exits only when `.github/hooks/teamai.json` contains `--tool copilot`. `COPILOT_CLI` alone does not skip |
 | CodeBuddy / WorkBuddy | Installed                 | Claude-format hooks in their own `settings.json`                    |
 
 Practical rule: if you set up with `--agent claude`, expect **only** Claude to show
@@ -169,11 +169,11 @@ user to trust the teamai hooks in Codex, then reopen a session. Until then, run
 
 ### Cursor
 
-Cursor writes hooks to `~/.cursor/hooks.json` and also runs `~/.claude/settings.json`. When both `claude` and `cursor` are enabled, `hook-dispatch --tool claude` exits as soon as `CURSOR_VERSION` is set, and team hook commands written for `claude` do the same, so only the Cursor copy runs. Claude Code does not set `CURSOR_VERSION`. An already installed team hook picks up the guard on the next `teamai pull` or `teamai hooks inject`. If `teamai hooks list` shows Cursor without hooks, run `teamai pull` at the start of the session.
+Cursor writes hooks to `~/.cursor/hooks.json` and also runs `~/.claude/settings.json`. `hook-dispatch --tool claude` and team hook commands written for `claude` exit only when `CURSOR_VERSION` is set and `~/.cursor/hooks.json` or `$CURSOR_PROJECT_DIR/.cursor/hooks.json` contains `--tool cursor`. A setup with only Claude has no second copy, so those hooks still run inside Cursor. Claude Code does not set `CURSOR_VERSION`. An already installed team hook picks up the guard on the next `teamai pull` or `teamai hooks inject`. If `teamai hooks list` shows Cursor without hooks, run `teamai pull` at the start of the session.
 
 ### Copilot CLI
 
-In self mode, teamai writes hooks into the project, and Copilot CLI runs a trusted project's `.claude/settings.json` as well as its own `.github/hooks/teamai.json`. `hook-dispatch --tool claude` exits when `COPILOT_PROJECT_DIR` is set, and team hook commands written for `claude` do the same. `COPILOT_CLI` is not a signal: Copilot sets it on every subprocess, including a Claude session started from its shell. Copilot does not run `~/.claude/settings.json`, so this duplicate does not happen outside self mode. Re-run `teamai pull` or `teamai hooks inject` so an already installed team hook picks up the guard.
+In self mode, teamai writes hooks into the project, and Copilot CLI runs a trusted project's `.claude/settings.json` as well as its own `.github/hooks/teamai.json`. `hook-dispatch --tool claude` and team hook commands written for `claude` exit only when `COPILOT_PROJECT_DIR` is set and that file contains `--tool copilot`. `COPILOT_CLI` is not a signal: Copilot sets it on every subprocess, including a Claude session started from its shell. Copilot does not run `~/.claude/settings.json`, so this duplicate does not happen outside self mode. Re-run `teamai pull` or `teamai hooks inject` so an already installed team hook picks up the guard.
 
 ### ChatGPT App
 

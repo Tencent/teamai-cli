@@ -28,6 +28,9 @@ import { resolveHookCwd } from './utils/hook-cwd.js';
 import { windowsPowerShell } from './utils/powershell.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { deriveDispatchSessionId } from './utils/session-id.js';
+import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
+
+export { claudeHookRunsInAnotherHost };
 
 /**
  * Max time to wait for STDIN EOF before proceeding with whatever was received.
@@ -400,18 +403,6 @@ async function runDispatch(
 export { deriveDispatchSessionId };
 
 /**
- * True when this dispatch is the Claude settings copy that Cursor or Copilot
- * CLI also runs. Their own hooks pass `--tool cursor` / `--tool copilot` and
- * must still run. Claude Code sets neither CURSOR_VERSION nor
- * COPILOT_PROJECT_DIR. COPILOT_CLI is not a signal: Copilot sets it on every
- * subprocess, including a `claude` started from its shell. An empty value
- * does not count.
- */
-export function claudeHookRunsInAnotherHost(tool: string, env: NodeJS.ProcessEnv = process.env): boolean {
-  return tool === 'claude' && (!!env.CURSOR_VERSION || !!env.COPILOT_PROJECT_DIR);
-}
-
-/**
  * Main CLI handler for hook-dispatch.
  *
  * @param options Internal-only switches, set by the detached child's own spawn
@@ -428,7 +419,7 @@ export async function hookDispatchCli(
   const { bgOnly = false, stdinFile } = options;
   setStderrOnly(true);
   if (claudeHookRunsInAnotherHost(tool)) {
-    log.debug('hook-dispatch: skipping claude hooks because Cursor or Copilot CLI runs them and runs its own copy too');
+    log.debug('hook-dispatch: skipping claude hooks because Cursor or Copilot CLI has its own teamai hooks');
     return;
   }
   try {
