@@ -1895,6 +1895,8 @@ teamai session save --push --include-prompt  # also include the (redacted) first
 
 **Local (always):** appends to `~/.teamai/session-logs/<year-month>.md`. Idempotent per session (a session already recorded that month is skipped), and logs older than 90 days are pruned automatically. Each entry names the session's repo as `Project:`, the same for every worktree of the repo, and its working directory as `Directory:`.
 
+Concurrent saves to the same monthly file are serialized, including duplicate checks, and each completed update replaces the file atomically. If its lock remains unavailable after five seconds, the command reports an error; retry `teamai session save` later. Read or replacement failures preserve the existing log.
+
 **Team (`--push`, opt-in):** commits the summary directly (no PR) to `sessions/<user>/<year-month>.md` on the `teamai-reports` branch — the exact path `teamai digest` reads, so the session shows up under **Session Highlights**. Only a **valuable** session is pushed by default: one that shows friction (an interrupt / tool-reject / correction) or substantial tool use (≥ 3 distinct tools). Trivial sessions stay local unless you pass `--force`. On a read-only (HTTP-mode) team, `--push` fails gracefully and the local log is still kept.
 
 > Privacy: the team-pushed payload is **counts + tool names only** by default. The first-ask prompt line is opt-in via `--include-prompt`, and even then it is run through the same secret redaction (`ghp_…` → `<REDACTED:…>`) used elsewhere. Local logs keep the redacted first-ask line since they never leave your machine.

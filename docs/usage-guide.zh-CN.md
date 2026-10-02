@@ -1760,6 +1760,8 @@ teamai session save --push --include-prompt  # 额外带上（脱敏后的）首
 
 **本地（始终执行）：** 追加到 `~/.teamai/session-logs/<年-月>.md`。按会话幂等（当月已记录的会话会跳过），且超过 90 天的日志会自动清理。每条记录用 `Project:` 标出会话所属的仓库（同一仓库的所有 worktree 相同），用 `Directory:` 标出其工作目录。
 
+同时保存到同一月度文件的操作会串行执行，包括重复会话检查；完成的更新通过原子替换写入。如果等待五秒后仍无法获取锁，命令会报错，请稍后重试 `teamai session save`。读取或替换失败时保留已有日志。
+
 **团队（`--push`，需显式开启）：** 直接提交（不走 PR）到 `teamai-reports` 分支的 `sessions/<user>/<年-月>.md`——正是 `teamai digest` 读取的路径，于是该会话会出现在 **Session Highlights** 板块。默认只推送**有价值**的会话：出现摩擦（interrupt / tool-reject / correction）或工具使用充分（≥ 3 种不同工具）。琐碎会话除非加 `--force`，否则只留本地。对只读（HTTP 模式）的团队，`--push` 会优雅失败并保留本地日志。
 
 > 隐私：推送到团队的内容默认**只含计数 + 工具名**。首个 prompt 行需通过 `--include-prompt` 显式开启，且即便开启也会经过与别处一致的密钥脱敏（`ghp_…` → `<REDACTED:…>`）。本地日志因为不出本机，会保留脱敏后的首个 prompt 行。

@@ -58,7 +58,7 @@ Transform TeamAI from a simple skill-sharing CLI into a **Team Intelligence Plat
         标记可推送        仅本地保留
             │
             ▼
-    ~/.teamai/sessions/<year-month>.md (追加)
+    ~/.teamai/session-logs/<year-month>.md (追加)
 ```
 
 **Value evaluation rules (v1):**
@@ -66,7 +66,9 @@ Transform TeamAI from a simple skill-sharing CLI into a **Team Intelligence Plat
 - 有价值：发现新模式、创造性解法
 - 无价值：纯聊天、简单文件操作、常规编辑
 
-**Storage:** `~/.teamai/sessions/<year-month>.md` 按月聚合。
+**Storage:** `~/.teamai/session-logs/<year-month>.md` 按月聚合。
+
+同一月度文件的读取、完整会话 ID 去重与写入使用跨进程锁串行执行，最多等待五秒，失败后提示重试；更新通过原子替换保留完整文件，读取失败时不覆盖原记录。团队月度摘要也复用这一写入事务。
 
 #### 2. Skill Usage Tracker (Local)
 **What:** PostToolUse hook 检测 Claude Code 的 Skill 工具调用，追加写入该 scope 的 `<dataHome>/usage.jsonl`（会话所在目录对应的已配置项目，否则 user scope 的 `~/.teamai/user-usage.jsonl`；未配置 teamai 的目录不记录，#748；目录已删除时沿用该会话最后记录的 scope，#810）。
