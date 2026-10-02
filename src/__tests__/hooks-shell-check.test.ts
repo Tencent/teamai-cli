@@ -25,6 +25,20 @@ vi.mock('node:fs', async () => {
   };
 });
 
+// CodeBuddy's shell resolver falls back to the HKLM GitForWindows key, so on a
+// developer machine that has Git for Windows installed the "Git Bash absent"
+// case is unreachable. Fail the registry probe here and the case behaves the
+// same on Windows as it does on ubuntu CI.
+vi.mock('node:child_process', async () => {
+  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  return {
+    ...actual,
+    execFileSync: () => {
+      throw new Error('Git for Windows registry is not available in tests');
+    },
+  };
+});
+
 import { hasShell, _resetShellCache } from '../builtin-hooks.js';
 import { injectHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
@@ -156,25 +170,43 @@ describe('injectHooksToAllTools — workbuddy bundled PortableGit sh (win32)', (
   });
 });
 
-describe('injectHooksToAllTools — codebuddy runs hooks through cmd.exe (win32)', () => {
+describe('injectHooksToAllTools — codebuddy runs hooks through Git Bash (win32)', () => {
   let tmp: string;
   let platformSpy: ReturnType<typeof vi.spyOn>;
+  // findGitBashWindows() reads these off the real environment; clear them so the
+  // only candidate is the one under the mocked home, and the case is the same on
+  // a developer's Windows box as on ubuntu CI.
+  const winEnvKeys = ['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA'];
+  let savedEnv: Record<string, string | undefined>;
+
+  const fakeGitBash = (home: string): string =>
+    path.join(home, 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe');
 
   beforeEach(async () => {
+    tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'cb-sh-'));
+    homeState.home = tmp;
+    savedEnv = {};
+    for (const key of winEnvKeys) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
     platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     _resetShellCache();
-    tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'cb-cmd-'));
-    homeState.home = tmp;
     vi.mocked(log.warn).mockClear();
   });
 
   afterEach(async () => {
     platformSpy.mockRestore();
+    for (const key of winEnvKeys) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
     await fse.remove(tmp);
   });
 
-  it('injects codebuddy hooks without /bin/sh, because its hook runner is %ComSpec%', async () => {
+  it('injects codebuddy hooks in POSIX syntax, without /bin/sh', async () => {
     shellExists = false;
+    await fse.ensureFile(fakeGitBash(tmp));
     await fse.ensureDir(path.join(tmp, '.codebuddy'));
 
     await injectHooksToAllTools({ codebuddy: { settings: '.codebuddy/settings.json' } }, tmp);
@@ -182,18 +214,18 @@ describe('injectHooksToAllTools — codebuddy runs hooks through cmd.exe (win32)
     expect(vi.mocked(log.warn)).not.toHaveBeenCalled();
     const settings = await fse.readJson(path.join(tmp, '.codebuddy', 'settings.json'));
     const command: string = settings.hooks.SessionStart[0].hooks[0].command;
-    // Must point at the SAME bin dir the wrapper writer resolved through
-    // getUserHome() (HOME wins over USERPROFILE) — a %USERPROFILE% literal could
-    // name a different directory and the hook would silently miss the shim.
-    expect(command).toContain(`set "PATH=${path.join(tmp, '.teamai', 'bin')};%PATH%"`);
-    expect(command).not.toContain('%USERPROFILE%');
-    expect(command).toContain('2>nul || exit /b 0');
-    // The POSIX form never runs under cmd.exe (no VAR=value prefix, no /dev/null).
-    expect(command).not.toContain('/dev/null');
+    expect(command).toBe(
+      'PATH="$HOME/.teamai/bin:$PATH" teamai hook-dispatch session-start --tool codebuddy 2>/dev/null || true',
+    );
+    // The cmd.exe form 0.26.0 wrote made Git Bash create a file literally named
+    // `nul` in the hook's cwd on every invocation.
+    expect(command).not.toContain('2>nul');
+    expect(command).not.toContain('set "PATH=');
   });
 
-  it('renders the per-matcher variant in cmd syntax too', async () => {
+  it('renders the per-matcher variant in POSIX syntax too', async () => {
     shellExists = false;
+    await fse.ensureFile(fakeGitBash(tmp));
     await fse.ensureDir(path.join(tmp, '.codebuddy'));
 
     await injectHooksToAllTools({ codebuddy: { settings: '.codebuddy/settings.json' } }, tmp);
@@ -201,6 +233,18 @@ describe('injectHooksToAllTools — codebuddy runs hooks through cmd.exe (win32)
     const settings = await fse.readJson(path.join(tmp, '.codebuddy', 'settings.json'));
     const todoWrite = settings.hooks.PostToolUse.find((g: { matcher: string }) => g.matcher === 'TodoWrite');
     expect(todoWrite.hooks[0].command).toContain('hook-dispatch post-tool-use --tool codebuddy --matcher TodoWrite');
-    expect(todoWrite.hooks[0].command).toContain('2>nul || exit /b 0');
+    expect(todoWrite.hooks[0].command).toContain('2>/dev/null || true');
+  });
+
+  it('skips codebuddy hook injection and warns when Git Bash is absent', async () => {
+    shellExists = false;
+    await fse.ensureDir(path.join(tmp, '.codebuddy'));
+
+    await injectHooksToAllTools({ codebuddy: { settings: '.codebuddy/settings.json' } }, tmp);
+
+    expect(vi.mocked(log.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('Skipping hook injection for codebuddy'),
+    );
+    expect(await fse.pathExists(path.join(tmp, '.codebuddy', 'settings.json'))).toBe(false);
   });
 });

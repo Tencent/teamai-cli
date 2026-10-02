@@ -1,11 +1,12 @@
 // Bundled-runtime resolution: where GUI tools (WorkBuddy, CodeBuddy) ship
 // their own Node and shell, and which of them provide a shell their hook
-// commands can execute with — either a POSIX shell they bundle themselves
-// (WorkBuddy's PortableGit) or one the OS guarantees (CodeBuddy's cmd.exe on
-// Windows). All layout knowledge for these runtimes lives here so hook
-// injection can stay tool-agnostic.
+// commands can execute with. Both provide a POSIX shell on Windows — WorkBuddy
+// the MSYS sh in its bundled PortableGit, CodeBuddy the Git Bash it requires —
+// so every hook command teamai renders is POSIX. All layout knowledge for
+// these runtimes lives here so hook injection can stay tool-agnostic.
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { getUserHome } from './utils/home.js';
 import { isOnPath, pathDirs } from './utils/lookpath.js';
 import { log } from './utils/logger.js';
@@ -126,21 +127,72 @@ function resolveWorkbuddyShell(): string | null {
 }
 
 /**
- * The shell CodeBuddy runs hook commands with on Windows.
+ * Read the machine-wide InstallPath the Git for Windows installer records
+ * in HKLM. Exported so tests stub it at the module boundary instead of
+ * shelling out to a real reg.exe. Returns null on any failure — an
+ * unreadable registry just means "no extra candidate".
+ */
+export function queryGitInstallPath(): string | null {
+  try {
+    const out = execFileSync(
+      'reg.exe',
+      ['query', 'HKLM\\SOFTWARE\\GitForWindows', '/v', 'InstallPath'],
+      { timeout: 5000, windowsHide: true, encoding: 'utf8' },
+    );
+    const match = out.match(/InstallPath\s+REG_SZ\s+(.+)/);
+    return match?.[1]?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Locate Git Bash on Windows. CreateProcess resolves a bare `bash` to
+ * System32's WSL launcher before any PATH entry (the rationale already
+ * documented for ZCode in hooks.ts), and the ZCode cmd fallback is not
+ * available to rendered shell-string commands, so on Windows the
+ * interpreter has to be an absolute path. Standard install locations
+ * first; the HKLM `GitForWindows` key covers custom InstallPath.
+ * Returns the exe path, or null when Git is not found.
+ */
+export function findGitBashWindows(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = getUserHome(),
+  readInstallPath: () => string | null = queryGitInstallPath,
+): string | null {
+  const candidates: string[] = [];
+  if (env.ProgramFiles) candidates.push(path.join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'));
+  if (env['ProgramFiles(x86)']) candidates.push(path.join(env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'));
+  if (env.LOCALAPPDATA) candidates.push(path.join(env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'));
+  candidates.push(path.join(home, 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe'));
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  const installPath = readInstallPath();
+  if (installPath) {
+    const candidate = path.join(installPath, 'bin', 'bash.exe');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * The shell CodeBuddy runs hook commands with on Windows: Git Bash.
  *
- * CodeBuddy's hook runner executes a hook's `command` string through
- * `child_process.spawn(command, [], { shell: true })` (genie's
- * HookExecutorImpl), which on Windows goes through %ComSpec% — cmd.exe, a shell
- * the OS always provides — and NOT /bin/sh. Windows builds of the CodeBuddy IDE
- * ship no POSIX shell at all (no sh.exe/bash.exe anywhere in the install tree),
- * so gating the tool on /bin/sh is a false negative there. POSIX builds keep
- * the conservative /bin/sh check. Memoized like its WorkBuddy sibling.
+ * CodeBuddy requires Git for Windows there — without it the CLI refuses to run
+ * hook commands and tells the user to install it — and it runs each hook's
+ * `command` string through that Git Bash, not cmd.exe. The rendered command
+ * must therefore be POSIX. This resolver answers the same question WorkBuddy's
+ * does: "does the tool provide a shell its hook commands can execute with?"
+ * Null when Git Bash is absent, which correctly skips injection (the hooks
+ * could never run) rather than gating the tool on /bin/sh — a false negative on
+ * Windows, because the CLI's own Node build has no /bin/sh. Memoized like its
+ * WorkBuddy sibling.
  */
 function resolveCodebuddyShell(): string | null {
   if (_cbShellCache === undefined) {
-    _cbShellCache = process.platform === 'win32'
-      ? (process.env.ComSpec?.trim() || 'cmd.exe')
-      : null;
+    _cbShellCache = process.platform === 'win32' ? findGitBashWindows() : null;
   }
   return _cbShellCache;
 }

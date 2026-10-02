@@ -16,8 +16,8 @@ because shell detection (`fs.existsSync('/bin/sh')`) is always false on Windows.
 Current `teamai` handles Windows itself, so the user-side workaround below is
 only needed on an older version: hook commands launch through an absolute Git
 Bash path, and each GUI tool resolves its own hook shell — WorkBuddy through its
-bundled PortableGit `sh.exe`, and **CodeBuddy through cmd.exe** (`%ComSpec%`),
-which every Windows install provides. Neither tool is skipped.
+bundled PortableGit `sh.exe`, and **CodeBuddy through the Git Bash it requires**
+on Windows. Neither tool is skipped.
 
 The durable user-side fix combines two mechanisms so hooks fire no matter what
 `teamai` writes:
@@ -80,11 +80,11 @@ export function hasShell(): boolean {
 all** on Windows, even when everything else worked.
 
 That skip is gone: gating now asks each tool for its own hook shell first
-(`hasShellFor()` → `bundledShellFor()`). `workbuddy` resolves through the
-PortableGit `sh.exe` it ships; `codebuddy` resolves through cmd.exe, because
-CodeBuddy's Windows hook runner is `%ComSpec%` — it executes a hook's `command`
-via `child_process.spawn(command, [], { shell: true })` — and every Windows
-install provides cmd.exe. Only a tool with no resolvable shell is skipped.
+(`hasShellFor()` → `bundledShellFor()`). Both resolve to a **POSIX** shell —
+`workbuddy` to the PortableGit `sh.exe` it ships, `codebuddy` to the Git Bash it
+requires on Windows and runs every hook's `command` through — so the rendered
+hook commands are POSIX for both. Only a tool with no resolvable shell is
+skipped.
 
 ---
 

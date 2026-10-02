@@ -1,13 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import type { HookDef } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
-import { bundledShellFor, resetBundledRuntimeCache, resolveCodebuddyNode, resolveWorkbuddyNode } from './bundled-runtime.js';
+import { bundledShellFor, findGitBashWindows, resetBundledRuntimeCache, resolveCodebuddyNode, resolveWorkbuddyNode } from './bundled-runtime.js';
 
 // ─── Built-in (A) operational hooks as data ─────────────────
 //
@@ -25,13 +24,11 @@ import { bundledShellFor, resetBundledRuntimeCache, resolveCodebuddyNode, resolv
 //  WorkBuddy and CodeBuddy use bundled Node runtimes and their hook
 //  subprocesses may lack the user's PATH, so `teamai` is not found.
 //  We write a thin wrapper at `~/.teamai/bin/teamai` — plus a `teamai.cmd`
-//  next to it on Windows, because cmd.exe cannot execute the extensionless sh
-//  script — that invokes the real entry script with the best available Node,
-//  then prepend `~/.teamai/bin` to PATH in hook commands for WorkBuddy and
-//  CodeBuddy. The POSIX PATH is expressed as `$HOME/.teamai/bin` (shell
-//  literal) so that the golden fixture output is stable across machines; the
-//  cmd.exe variant embeds the same bin dir resolved through getUserHome(), the
-//  resolver the wrapper writer uses, so write and lookup cannot diverge.
+//  next to it on Windows, so a cmd.exe host can still launch the CLI — that
+//  invokes the real entry script with the best available Node, then prepend
+//  `~/.teamai/bin` to PATH in hook commands for WorkBuddy and CodeBuddy.
+//  The PATH is expressed as `$HOME/.teamai/bin` (a shell literal) so that the
+//  golden fixture output stays stable across machines.
 //  Other tools keep the plain `bash -lc "teamai ..."` form.
 
 const TEAMAI_BIN_DIR = '.teamai/bin';
@@ -47,28 +44,13 @@ const WRAPPER_NAME = 'teamai';
 export const SHELL_DEPENDENT_TOOLS = new Set(['workbuddy', 'codebuddy']);
 
 /**
- * Shell-dependent tools whose Windows hook runner is cmd.exe rather than a
- * POSIX shell, so their rendered command must be cmd syntax. WorkBuddy is NOT
- * here: its Windows hook runner is the MSYS shell from its bundled
- * PortableGit, which executes the POSIX wrapper form.
- */
-const WINDOWS_CMD_TOOLS = new Set(['codebuddy']);
-
-/**
- * True when the tool's hook runner on this platform is cmd.exe, so every
- * command rendered for it — built-in dispatch and team-hook project gate alike
- * — must be cmd syntax.
- */
-export function toolUsesCmdShell(tool: string): boolean {
-  return process.platform === 'win32' && WINDOWS_CMD_TOOLS.has(tool);
-}
-
-/**
  * Check whether /bin/sh exists.  Remote containers (e.g. CloudStudio AI
  * inference nodes) may lack it, causing a POSIX hook runner's
  * `spawn('/bin/sh', ['-c', command])` to fail with ENOENT on every hook
- * invocation.  Tools whose runner is cmd.exe on Windows are exempt — they are
- * covered by their bundledShellFor entry instead.  Exported so the injection
+ * invocation.  Shell-dependent tools are exempt — each is covered by its own
+ * bundledShellFor entry instead, because the POSIX shell it runs hooks through
+ * is not reachable from this process's namespace (WorkBuddy's bundled MSYS sh,
+ * CodeBuddy's Git Bash, both on Windows).  Exported so the injection
  * entry points can skip hook installation and warn the user.
  */
 let _hasShellCache: boolean | undefined;
@@ -199,57 +181,6 @@ export function skipToolsWithoutShell(tools: string[]): Set<string> {
   return skipped;
 }
 
-/**
- * Read the machine-wide InstallPath the Git for Windows installer records
- * in HKLM. Exported so tests stub it at the module boundary instead of
- * shelling out to a real reg.exe. Returns null on any failure — an
- * unreadable registry just means "no extra candidate".
- */
-export function queryGitInstallPath(): string | null {
-  try {
-    const out = execFileSync(
-      'reg.exe',
-      ['query', 'HKLM\\SOFTWARE\\GitForWindows', '/v', 'InstallPath'],
-      { timeout: 5000, windowsHide: true, encoding: 'utf8' },
-    );
-    const match = out.match(/InstallPath\s+REG_SZ\s+(.+)/);
-    return match?.[1]?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Locate Git Bash on Windows. CreateProcess resolves a bare `bash` to
- * System32's WSL launcher before any PATH entry (the rationale already
- * documented for ZCode in hooks.ts), and the ZCode cmd fallback is not
- * available to rendered shell-string commands, so on Windows the
- * interpreter has to be an absolute path. Standard install locations
- * first; the HKLM `GitForWindows` key covers custom InstallPath.
- * Returns the exe path, or null when Git is not found.
- */
-export function findGitBashWindows(
-  env: NodeJS.ProcessEnv = process.env,
-  home: string = getUserHome(),
-  readInstallPath: () => string | null = queryGitInstallPath,
-): string | null {
-  const candidates: string[] = [];
-  if (env.ProgramFiles) candidates.push(path.join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'));
-  if (env['ProgramFiles(x86)']) candidates.push(path.join(env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'));
-  if (env.LOCALAPPDATA) candidates.push(path.join(env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'));
-  candidates.push(path.join(home, 'AppData', 'Local', 'Programs', 'Git', 'bin', 'bash.exe'));
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-
-  const installPath = readInstallPath();
-  if (installPath) {
-    const candidate = path.join(installPath, 'bin', 'bash.exe');
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
 let _winBashLauncherCache: string | undefined;
 
 /**
@@ -302,32 +233,6 @@ export function getRawDispatchCommand(event: string, tool: string, matcher?: str
 function getWrapperDispatchCommand(event: string, tool: string, matcher?: string): string {
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
   return `PATH="$HOME/${TEAMAI_BIN_DIR}:$PATH" teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null || true`;
-}
-
-/**
- * cmd.exe counterpart of getWrapperDispatchCommand, for tools whose Windows
- * hook runner is cmd.exe rather than a POSIX shell. cmd.exe has no
- * `VAR=value command` prefix, no /dev/null and no `|| true`, so the POSIX form
- * above can never run there — it fails on its first token, whose `PATH=...`
- * assignment cmd reads as a command name. Emit the cmd equivalent: prepend the
- * wrapper dir to PATH (cmd resolves `teamai` to `teamai.cmd` through PATHEXT,
- * falling through to the npm shim further down PATH) and force exit 0 on
- * failure, mirroring the POSIX `|| true` — CodeBuddy reads a non-zero hook
- * status as `allowed:false`, which would BLOCK a UserPromptSubmit instead of
- * failing open.
- *
- * The PATH value is the bin dir resolved through getUserHome() — the SAME
- * resolver ensureTeamaiWrapper() writes `teamai.cmd` through — embedded as a
- * concrete path. A `%USERPROFILE%` literal here would disagree with the writer
- * whenever HOME wins (Git Bash, a custom environment) or USERPROFILE is absent:
- * the shim would land in one directory while the hook searched another, and the
- * hook would silently fail to find the CLI. The POSIX form keeps its `$HOME`
- * literal because getUserHome() prefers HOME and the shell expands it.
- */
-function getCmdWrapperDispatchCommand(event: string, tool: string, matcher?: string): string {
-  const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
-  const binDir = path.join(getUserHome(), TEAMAI_BIN_DIR);
-  return `set "PATH=${binDir};%PATH%" && teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>nul || exit /b 0`;
 }
 
 /** Canonical, ordered description of each built-in hook. Order is load-bearing
@@ -409,8 +314,10 @@ const SUBAGENT_STOP_TOOLS = new Set([
  * same HookDef into each tool's on-disk shape.
  *
  * GUI tools (WorkBuddy, CodeBuddy) use the wrapper dispatch command so their
- * hook subprocesses can find `teamai` even without the user's full PATH. On
- * Windows the tools in WINDOWS_CMD_TOOLS get the cmd.exe syntax variant.
+ * hook subprocesses can find `teamai` even without the user's full PATH. Both
+ * run hook commands through a POSIX shell on every platform — WorkBuddy
+ * through the MSYS sh in its bundled PortableGit, CodeBuddy through Git Bash,
+ * which it requires on Windows — so the POSIX wrapper form always applies.
  */
 const WRAPPER_TOOLS = SHELL_DEPENDENT_TOOLS;
 
@@ -425,7 +332,7 @@ export function builtinHookDefs(tool: string): HookDef[] {
   const buildCommand = tool === 'zcode'
     ? getRawDispatchCommand
     : WRAPPER_TOOLS.has(tool)
-      ? (toolUsesCmdShell(tool) ? getCmdWrapperDispatchCommand : getWrapperDispatchCommand)
+      ? getWrapperDispatchCommand
       : getDispatchCommand;
   const specs = [
     ...BUILTIN_HOOK_SPECS,

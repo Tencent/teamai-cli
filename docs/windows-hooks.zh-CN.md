@@ -14,8 +14,8 @@
 
 当前版本的 `teamai` 已自行处理 Windows，因此下文的用户侧绕行方案仅在旧版本上需要：
 钩子命令通过 Git Bash 的绝对路径启动，且每个 GUI 工具都会解析各自的钩子 shell——
-WorkBuddy 使用其自带的 PortableGit `sh.exe`，**CodeBuddy 使用 cmd.exe**
-（`%ComSpec%`），任何 Windows 安装都提供 cmd.exe。两者都不再被跳过。
+WorkBuddy 使用其自带的 PortableGit `sh.exe`，**CodeBuddy 使用它在 Windows 上必需
+的 Git Bash**。两者都不再被跳过。
 
 持久化的用户侧修复结合两种机制，无论 `teamai` 写入什么都能让钩子触发：
 
@@ -75,10 +75,9 @@ export function hasShell(): boolean {
 
 该跳过已不再存在：门控会先向每个工具询问其自身的钩子 shell
 （`hasShellFor()` → `bundledShellFor()`）。`workbuddy` 通过其自带的 PortableGit
-`sh.exe` 解析；`codebuddy` 通过 cmd.exe 解析——CodeBuddy 在 Windows 上的钩子运行器
-是 `%ComSpec%`（它通过 `child_process.spawn(command, [], { shell: true })` 执行钩子
-的 `command`），而任何 Windows 安装都提供 cmd.exe。只有无法解析出 shell 的工具才会
-被跳过。
+`sh.exe` 解析；`codebuddy` 解析到它在 Windows 上必需、并用来执行每条钩子 `command`
+的 Git Bash。两者都是 **POSIX** shell，因此渲染出的钩子命令一律是 POSIX。只有无法
+解析出 shell 的工具才会被跳过。
 
 ---
 
