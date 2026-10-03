@@ -1272,6 +1272,8 @@ teamai recall "GPU 内存不足"
 
 ### Recall 采纳与 upvote
 
+手动反馈使用 `teamai recall feedback --positive <docId>` 或 `--negative <docId>`，作用于当前 scope。在命令前后添加全局参数 `--dry-run`，只预览请求的反馈，不修改投票，也不迁移配置或投票文件。预览会验证当前 scope 的配置，但不检查负面反馈能否减少票数；普通诊断日志仍会记录。
+
 recall 会为返回的每篇文档计数（`recalled_count`）。运行 recall 的会话在 run 之后 24 小时内打开某篇返回的文档，该文档即被**采纳**，并获得一次 upvote（`upvoted_count`）。采纳指打开文档：如果 `teamai-recall` subagent 总结了某篇文档，而主 agent 只依据这段总结工作，就没有打开任何文档，也不会投票。只有可选开启的评判（`TEAMAI_UPVOTE_JUDGE=1`，见[开启 / 关闭 Recall](#开启--关闭-recall)）能为这种使用计分。
 
 **recall 日志。** 每次 run 都写入当前 scope 的本地 recall 日志 `<data home>/dashboard/recall.jsonl`，该日志仅所有者可读写，从不推送。run 记录环境中的 agent 会话，以及每篇返回文档的 id、scope 和打印出的 `File:` 路径；没有命中的搜索也会记录。PostToolUse hook 追加运行 `teamai recall` 的 shell 调用，以及每次读取团队知识根目录下文件的调用。日志从不包含查询词、prompt、工具输出或文件内容。`teamai pull` 会清理日志：先删除超过 30 天的行，再从最旧的开始删到只剩 5,000 行，但从不删除最近 24 小时内尚未投票的读取，也不删除它投票所需的行。`--check`、`--dry-run` 和 `TEAMAI_RECALL_DISABLED=1` 不记录任何内容。

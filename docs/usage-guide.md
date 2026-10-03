@@ -1414,6 +1414,8 @@ teamai recall "GPU out of memory"
 
 ### Recall adoption and upvotes
 
+Manual feedback uses `teamai recall feedback --positive <docId>` or `--negative <docId>` in the current scope. Add the global `--dry-run` before or after the command to preview the requested feedback without changing votes or migrating config or vote files. The preview validates the scope's config but does not check whether a negative vote can reduce the count; ordinary diagnostic logging still applies.
+
 Recall counts every doc it returns (`recalled_count`). A returned doc is **adopted**, and upvoted once (`upvoted_count`), when the session that ran the recall opens it within 24 hours after the run. Adoption means opening the doc: when the `teamai-recall` subagent summarizes a doc and the main agent works from that summary alone, nothing is opened and no vote follows. Only the opt-in judge (`TEAMAI_UPVOTE_JUDGE=1`, see [Enabling / Disabling Recall](#enabling--disabling-recall)) can credit that use.
 
 **The recall log.** Each run goes to the active scope's local recall log, `<data home>/dashboard/recall.jsonl`, which is owner-only and never pushed. The run holds the agent session from the environment and, for each returned doc, its id, scope and printed `File:` path; a search with no hits is recorded too. The PostToolUse hook adds the shell call that ran `teamai recall` and each read of a file under the team knowledge roots. The log never holds the query, the prompt, tool output or file content. `teamai pull` prunes it: lines older than 30 days go, then the oldest beyond 5,000, but never a read from the last 24 hours that has not voted yet, nor what it needs to vote. `--check`, `--dry-run` and `TEAMAI_RECALL_DISABLED=1` record nothing.
