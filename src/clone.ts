@@ -133,39 +133,17 @@ async function gitCmd(
     return stdout.trim();
 }
 
-// ─── Public API ─────────────────────────────────────────
-
 /**
- * Shallow clone 远端仓库到指定本地目录。
- *
- * 三层认证策略：
- *   1. forceSsh=true 或 url 是 SSH 形式 → 直接走 SSH
- *   2. github 且能拿到 token → HTTPS + x-access-token 注入
- *   3. 其他 provider 交给 Git credential helper / ~/.netrc 处理；github 无 token 则匿名 HTTPS
- *
- * @param url        仓库 URL（https/ssh 任一）
- * @param localPath  目标目录（存在则先 rm 再 clone）
- * @param provider   Provider name such as 'github', 'tgit', 'cnb', or 'git'
- * @param opts       克隆选项
+ * The URL and auth a clone of `url` uses: SSH, an `http.extraHeader` token, or
+ * the URL as given for Git's own credential helper. Shared with
+ * {@link remoteHeadSha}, so a dry run asks the remote the way the clone would.
  */
-export async function shallowClone(
+function resolveCloneAuth(
     url: string,
-    localPath: string,
     provider: string,
-    opts?: CloneOpts,
-): Promise<CloneResult> {
-    const depth = opts?.depth ?? 1;
-    const forceSsh = opts?.forceSsh ?? false;
-    const forceAnonymous = opts?.forceAnonymous ?? false;
-    const timeoutMs = opts?.timeoutMs ?? 180_000;
-
-    // 清理已存在目录
-    if (await fs.pathExists(localPath)) {
-        await fs.remove(localPath);
-    }
-    await fs.ensureDir(localPath);
-
-    // 确定克隆 URL 和认证方式
+    opts: { forceSsh: boolean; forceAnonymous: boolean },
+): { cloneUrl: string; cloneMethod: CloneResult['cloneMethod']; extraAuthHeader?: string } {
+    const { forceSsh, forceAnonymous } = opts;
     let cloneUrl = url;
     let cloneMethod: CloneResult['cloneMethod'];
     let extraAuthHeader: string | undefined;
@@ -239,6 +217,43 @@ export async function shallowClone(
         cloneMethod = 'https-anonymous';
         log.debug(`shallowClone: 使用 HTTPS (Git credential helper / ~/.netrc) 克隆 ${provider} 仓库`);
     }
+
+    return { cloneUrl, cloneMethod, extraAuthHeader };
+}
+
+// ─── Public API ─────────────────────────────────────────
+
+/**
+ * Shallow clone 远端仓库到指定本地目录。
+ *
+ * 三层认证策略：
+ *   1. forceSsh=true 或 url 是 SSH 形式 → 直接走 SSH
+ *   2. github 且能拿到 token → HTTPS + x-access-token 注入
+ *   3. 其他 provider 交给 Git credential helper / ~/.netrc 处理；github 无 token 则匿名 HTTPS
+ *
+ * @param url        仓库 URL（https/ssh 任一）
+ * @param localPath  目标目录（存在则先 rm 再 clone）
+ * @param provider   Provider name such as 'github', 'tgit', 'cnb', or 'git'
+ * @param opts       克隆选项
+ */
+export async function shallowClone(
+    url: string,
+    localPath: string,
+    provider: string,
+    opts?: CloneOpts,
+): Promise<CloneResult> {
+    const depth = opts?.depth ?? 1;
+    const forceSsh = opts?.forceSsh ?? false;
+    const forceAnonymous = opts?.forceAnonymous ?? false;
+    const timeoutMs = opts?.timeoutMs ?? 180_000;
+
+    // 清理已存在目录
+    if (await fs.pathExists(localPath)) {
+        await fs.remove(localPath);
+    }
+    await fs.ensureDir(localPath);
+
+    const { cloneUrl, cloneMethod, extraAuthHeader } = resolveCloneAuth(url, provider, { forceSsh, forceAnonymous });
 
     // 构建 clone 参数：若有 token 则通过 http.extraHeader 注入，避免 token 出现在 URL 中
     const cloneArgs: string[] = [];
@@ -334,4 +349,29 @@ export async function shallowFetch(
 
     const sha = await gitCmd(['rev-parse', 'HEAD'], localPath);
     return { sha };
+}
+
+/**
+ * The commit the remote's default branch (HEAD) points at, read with
+ * `git ls-remote` and the same auth {@link shallowClone} would use. Nothing is
+ * written locally, which is what a dry run needs.
+ */
+export async function remoteHeadSha(
+    url: string,
+    provider: string,
+    opts?: Pick<CloneOpts, 'forceSsh' | 'forceAnonymous' | 'timeoutMs'>,
+): Promise<string> {
+    const { cloneUrl, extraAuthHeader } = resolveCloneAuth(url, provider, {
+        forceSsh: opts?.forceSsh ?? false,
+        forceAnonymous: opts?.forceAnonymous ?? false,
+    });
+    const args = extraAuthHeader ? ['-c', `http.extraHeader=${extraAuthHeader}`] : [];
+    args.push('ls-remote', cloneUrl, 'HEAD');
+    const { stdout, stderr, code } = await runCommand('git', args, { timeoutMs: opts?.timeoutMs ?? 60_000 });
+    if (code !== 0) {
+        throw new Error(`git ls-remote failed (exit ${code}): ${redactToken(stderr.trim())}`);
+    }
+    const sha = stdout.trim().split(/\s+/)[0];
+    if (!sha) throw new Error(`git ls-remote found no HEAD at ${sanitizeGitUrl(url)}`);
+    return sha;
 }

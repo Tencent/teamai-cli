@@ -1767,6 +1767,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 如果核心知识图谱提取或写入失败，导入会报错，且不会将该提交标记为已同步。下次增量导入会重试该提交。
 
+加 `--dry-run` 时，`--from-repo` 与 `--from-repo-list` 用 `git ls-remote` 读取每个仓库的最新提交，打印 `Would import <owner>/<repo> at <commit>` 以及本地缓存是否最新，然后停止：不会 clone 或 fetch 到缓存，不会获取导入锁，也不会运行任何 AI 步骤。
+
 `--from-mr` 与 `teamai contribute` 一样，把提取的经验发布到 `teamai-learnings` 分支：恰好一个激活项目声明了 learnings namespace 时放在 `learnings/<namespace>/` 下，否则放在共享的 `learnings/` 根目录。发布失败时，经验留在本机队列中，下次 `teamai pull` 会发布它；若阻止发布的是 teamai 拒绝使用的 learnings 检出，则在你按提示处理该检出之前，任何 pull 都无法发布它。
 
 如果草稿与已有经验（共享根目录或当前激活项目的 namespace 中的）高度重叠，命令会列出这些文件（`Possible duplicate: this learning overlaps N existing learning(s): <files>.`），使用 `--all` 时同样如此。这只是提示：不会标记或替换任何已有经验。`manifest/projects.yaml` 无法读取时，只与共享根目录比较，并给出提示。

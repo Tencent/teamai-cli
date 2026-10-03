@@ -1922,6 +1922,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 If core graph extraction or writing fails, the import reports an error without marking the commit as synced. The next incremental run retries that commit.
 
+With `--dry-run`, `--from-repo` and `--from-repo-list` read each repo's head with `git ls-remote`, print `Would import <owner>/<repo> at <commit>` and whether the local cache is current, and stop there: nothing is cloned or fetched into the cache, the import lock is not taken, and no AI step runs.
+
 `--from-mr` publishes its learning the way `teamai contribute` does, on the `teamai-learnings` branch: under `learnings/<namespace>/` when exactly one active project declares a learnings namespace, otherwise at the shared `learnings/` root. If that fails, the learning stays queued on this machine and the next `teamai pull` publishes it; when a learnings checkout teamai refuses stopped it, no pull can until you deal with that checkout as the message says.
 
 When the draft overlaps existing learnings, from the shared root or your active projects' namespaces, the command names them (`Possible duplicate: this learning overlaps N existing learning(s): <files>.`), with `--all` too. It is a notice only: nothing is marked or replaced. When `manifest/projects.yaml` cannot be read, the check compares the shared root only and says so.
