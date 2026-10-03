@@ -171,6 +171,12 @@ namespace, their next pull removes its docs that still match the team copy and
 keeps (and names) the ones they edited. Recall and `teamai doctor` follow the
 same filter.
 
+Wiki codebase slugs follow the same rule under `resources.wiki`: once any role
+or project lists a `teamwiki/evidence/code/<slug>/` slug there, `recall` only
+surfaces it for members with that namespace active; an undeclared slug stays
+shared. The slug is whatever `teamai codebase --project <slug>` wrote, not
+necessarily the project's manifest id.
+
 ## Team dashboard (web UI)
 
 ```bash

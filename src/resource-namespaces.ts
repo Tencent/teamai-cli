@@ -130,7 +130,17 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig) {
   const activeDocs = new Set(activeNamespaces.docs ?? []);
   const inactiveDocsNamespaces = [...declaredDocsNamespaces].filter((namespace) => !activeDocs.has(namespace));
 
-  return { activeNamespaces, allSkillNamespaces, inactiveDocsNamespaces };
+  // Wiki codebase slugs follow the same declared-vs-active rule as docs (#912):
+  // a slug ANY role or project lists under `resources.wiki` reaches only the
+  // members who have it active; an undeclared slug stays shared.
+  const declaredWikiNamespaces = new Set<string>([
+    ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.wiki ?? []),
+    ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.wiki ?? []),
+  ]);
+  const activeWiki = new Set(activeNamespaces.wiki ?? []);
+  const inactiveWikiNamespaces = [...declaredWikiNamespaces].filter((namespace) => !activeWiki.has(namespace));
+
+  return { activeNamespaces, allSkillNamespaces, inactiveDocsNamespaces, inactiveWikiNamespaces };
 }
 
 /**
