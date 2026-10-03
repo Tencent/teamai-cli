@@ -12,13 +12,6 @@ teamai doctor
 It checks provider config, hooks, paths, and package/plugin status. Fix what it
 reports before anything else.
 
-## Organization import preview
-
-For an organization import, use `teamai import --from-org <org> --dry-run` to
-inspect the current filtered selection without cloning, import locks or AI
-enrichment. The preview does not read or replace an existing whitelist draft;
-`--skip-import` previews only its entries. Normal CLI diagnostic logging remains.
-
 ## "My skills / rules aren't showing up"
 
 This is the #1 onboarding issue. In order:
