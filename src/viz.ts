@@ -10,7 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { loadIndex, buildIndex } from './utils/search-index.js';
-import { loadUserVotes } from './votes.js';
+import { readUserVotes } from './votes.js';
 import { BROKEN_CONFIG_ADVICE, findUnreadableProjectConfig, resolveConfigForDir } from './config.js';
 import {
   getTeamaiHomeDir,
@@ -275,7 +275,7 @@ export async function aggregateTeamVotes(votesDir: string): Promise<{
 
   for (const file of files) {
     const fullPath = path.join(votesDir, file);
-    const userVotes = await loadUserVotes(fullPath);
+    const userVotes = await readUserVotes(fullPath);
     let userHasRecall = false;
     for (const [docId, entry] of Object.entries(userVotes.votes)) {
       if (!byDoc[docId]) {
