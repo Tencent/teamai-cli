@@ -1022,7 +1022,7 @@ describe('init', () => {
         toolPaths: {},
       } as never);
 
-      await init({ repo: '.', dryRun: true });
+      await init({ repo: '.' });
 
       const errorCalls = vi.mocked(log.error).mock.calls.map(([message]) => String(message));
       const debugCalls = vi.mocked(log.debug).mock.calls.map(([message]) => String(message));
@@ -1037,6 +1037,23 @@ describe('init', () => {
         'project',
         process.cwd(),
       );
+    });
+
+    // Loading the config bootstraps a clone whose teamai.yaml says `mode: self`
+    // (#852), so a dry run must stop before it (#900).
+    it.each([{ repo: '.' }, { self: true }])('refuses --dry-run before loading any config: %o', async (target) => {
+      pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
+      vi.mocked(loadLocalConfigForScope).mockClear();
+      const { log } = await import('../utils/logger.js');
+      const { saveLocalConfigForScope } = await import('../config.js');
+      vi.mocked(saveLocalConfigForScope).mockClear();
+
+      await init({ ...target, dryRun: true });
+
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(log.error).toHaveBeenCalledWith('teamai init has no --dry-run preview, nothing was run');
+      expect(loadLocalConfigForScope).not.toHaveBeenCalled();
+      expect(saveLocalConfigForScope).not.toHaveBeenCalled();
     });
 
     it('aborts on a malformed roles manifest instead of initializing role-less', async () => {
@@ -1056,7 +1073,7 @@ describe('init', () => {
 
       // The error leaves init, so the CLI prints it and exits non-zero; nothing
       // is written for the scope.
-      await expect(init({ repo: '.', dryRun: true })).rejects.toThrow(/Invalid roles manifest/);
+      await expect(init({ repo: '.' })).rejects.toThrow(/Invalid roles manifest/);
       expect(saveLocalConfigForScope).not.toHaveBeenCalled();
     });
 
@@ -1072,7 +1089,7 @@ describe('init', () => {
       const { saveLocalConfigForScope } = await import('../config.js');
       vi.mocked(saveLocalConfigForScope).mockClear();
 
-      await init({ repo: '.', dryRun: true });
+      await init({ repo: '.' });
 
       expect(saveLocalConfigForScope).toHaveBeenCalledWith(
         expect.not.objectContaining({ primaryRole: expect.anything() }),
@@ -1523,7 +1540,7 @@ describe('init --provider', () => {
       toolPaths: {},
     } as never);
 
-    await init({ repo: '.', provider: 'git', role: 'hai', dryRun: true });
+    await init({ repo: '.', provider: 'git', role: 'hai' });
 
     expect(mockExit).not.toHaveBeenCalled();
     expect(GitLabProvider.prototype.authenticate).not.toHaveBeenCalled();
@@ -1545,7 +1562,7 @@ describe('init --provider', () => {
     const { writeFile } = await import('../utils/fs.js');
     const { log } = await import('../utils/logger.js');
 
-    await init({ repo: '.', provider: 'git', role: 'hai', dryRun: true });
+    await init({ repo: '.', provider: 'git', role: 'hai' });
 
     expect(mockExit).toHaveBeenCalledWith(1);
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Set GITLAB_URL=https://gitlab.example.test'));

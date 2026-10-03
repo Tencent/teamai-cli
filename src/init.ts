@@ -96,6 +96,7 @@ import { getUserHome } from './utils/home.js';
 import { describeRoles, listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
 import { loadProjectsManifest, listProjectIds, type ProjectsManifest } from './projects.js';
 import { memberReadRoots, readMemberConfig, mergeMemberConfig } from './members.js';
+import { noDryRunPreview } from './dry-run-guard.js';
 import { askQuestion, askConfirmation, askSelection, closePrompt, isInteractive, parseSelection } from './utils/prompt.js';
 import {
   normalizeAgentList,
@@ -1104,6 +1105,14 @@ export async function initSelfRepo(options: GlobalOptions & {
   force?: boolean;
   inheritUserScope?: boolean;
 }): Promise<void> {
+  // No preview yet, and loading the config below already bootstraps a clone
+  // whose teamai.yaml says `mode: self` (#852), so stop before anything (#900).
+  if (options.dryRun) {
+    log.error(noDryRunPreview('init'));
+    process.exit(1);
+    return;
+  }
+
   log.info('Initializing teamai (single-repo mode)...');
 
   const cwd = process.cwd();

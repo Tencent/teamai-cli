@@ -7,6 +7,7 @@ import type { GlobalOptions, LocalConfig } from './types.js';
 import type { MaintenancePaths } from './maintenance/paths.js';
 import { GLOBAL_OPTIONS } from './global-options.js';
 import { TEAMAI_HOOK_SUBCOMMANDS } from './hooks.js';
+import { dryRunRefusal } from './dry-run-guard.js';
 import { registerPackagesCommand } from './pkg/register-command.js';
 
 // Commands that migrate a legacy `<repo>/.teamai/` into the partition on first
@@ -82,6 +83,13 @@ program
   .hook('preAction', async (thisCommand, actionCommand) => {
     const opts = thisCommand.opts();
     if (opts.verbose) setVerbose(true);
+
+    // A command with no --dry-run preview refuses the flag rather than run for
+    // real (#900). First, so neither migration nor a hook command slips past.
+    if (opts.dryRun) {
+      const refusal = dryRunRefusal(actionCommand);
+      if (refusal) thisCommand.error(refusal, { exitCode: 1 });
+    }
 
     // Auto-migrate a legacy `<repo>/.teamai/` into the partition before the
     // command runs, so the trigger commands (and every path resolver they call)
