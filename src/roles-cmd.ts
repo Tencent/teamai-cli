@@ -29,8 +29,9 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
     // In self mode the manifest is knowledge on main; the on-disk .teamai already
     // reflects main, so we read the existence check from there and only run the
     // actual write+PR inside an isolated worktree (below). Non-self modes pull the
-    // team repo clone first.
-    if (!selfMode) await pullLatest(repoPath);
+    // team repo clone first, except on a dry run: the pull can reset a clone with
+    // unpushed commits (#900), so the preview checks the clone as it is.
+    if (!selfMode && !options.dryRun) await pullLatest(repoPath);
 
     // Check if manifest already exists
     const manifestPath = path.join(repoPath, 'manifest', 'roles.yaml');
@@ -261,8 +262,6 @@ export async function rolesAdd(
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
     await runManifestEdit(localConfig, 'Roles', async (repoPath, editConfig) => {
-        if (editConfig.repo.kind !== 'self') await pullLatest(repoPath);
-
         let manifest: RolesManifest;
         try {
             manifest = await loadRolesManifest(repoPath);
@@ -309,7 +308,7 @@ export async function rolesAdd(
             commitMsg,
             prDescription: `Add role "${roleId}" with namespaces: ${namespaces.join(', ')}${options.description ? `\nDescription: ${options.description}` : ''}`,
         });
-    });
+    }, { dryRun: options.dryRun });
 }
 
 // ─── roles remove ───────────────────────────────────────
@@ -321,8 +320,6 @@ export async function rolesRemove(
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
     await runManifestEdit(localConfig, 'Roles', async (repoPath, editConfig) => {
-        if (editConfig.repo.kind !== 'self') await pullLatest(repoPath);
-
         let manifest: RolesManifest;
         try {
             manifest = await loadRolesManifest(repoPath);
@@ -365,7 +362,7 @@ export async function rolesRemove(
             commitMsg,
             prDescription: `Remove role "${roleId}". Remaining roles: ${remaining.map((r) => r.id).join(', ')}`,
         });
-    });
+    }, { dryRun: options.dryRun });
 }
 
 // ─── roles update ───────────────────────────────────────
@@ -390,8 +387,6 @@ export async function rolesUpdate(
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
     await runManifestEdit(localConfig, 'Roles', async (repoPath, editConfig) => {
-        if (editConfig.repo.kind !== 'self') await pullLatest(repoPath);
-
         let manifest: RolesManifest;
         try {
             manifest = await loadRolesManifest(repoPath);
@@ -471,5 +466,5 @@ export async function rolesUpdate(
             commitMsg,
             prDescription: `Update role "${roleId}": ${changes.join(', ')}`,
         });
-    });
+    }, { dryRun: options.dryRun });
 }

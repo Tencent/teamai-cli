@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { isToolInstalledForConfig, ResourceHandler } from './base.js';
+import { isToolInstalledForConfig, ResourceHandler, type PlacementRecords } from './base.js';
 import type { ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, listDirs, readFileSafe, writeFile, pruneEmptyDirs, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -351,9 +351,9 @@ export class RulesHandler extends ResourceHandler {
    * `my-rule` when push placed it at `rules/fe-know/my-rule.md`: the author
    * types the name their local copy has, which is the bare one.
    */
-  async publishedNameFor(name: string, localConfig: LocalConfig): Promise<string | null> {
+  async publishedNameFor(name: string, localConfig: LocalConfig, records: PlacementRecords): Promise<string | null> {
     const placed = placedResourcePath(
-      (await loadStateForScope(localConfig)).placedRules, 'rules', name,
+      records.placedRules, 'rules', name,
     );
     if (!placed) return null;
     if (!await pathExists(path.join(localConfig.repo.localPath, placed))) return null;

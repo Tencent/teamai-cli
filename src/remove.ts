@@ -6,7 +6,7 @@ import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './
 import { createPrWithFallback, filterExistingTopLevelPaths } from './push.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
-import type { GlobalOptions, ResourceType, LocalConfig, TeamaiConfig } from './types.js';
+import type { GlobalOptions, ResourceType, LocalConfig, TeamaiConfig, State } from './types.js';
 import { askConfirmation } from './utils/prompt.js';
 
 const REMOVABLE_TYPES: ResourceType[] = ['skills', 'rules', 'agents', 'mcp'];
@@ -39,11 +39,14 @@ export async function remove(
   assertNotReadOnly(localConfig, 'teamai remove');
 
   // Single-repo mode: run the removal PR in an isolated knowledge worktree so the
-  // branch/commit never touches the user's active tree.
-  if (localConfig.repo.kind === 'self') {
-    const { withKnowledgeWorktree, EmptyRepoError } = await import('./utils/reports-branch.js');
+  // branch/commit never touches the user's active tree. A dry run reads a
+  // throwaway checkout of origin/<default> instead, in either mode: the pull
+  // below can reset a clone with unpushed commits (#900).
+  if (options.dryRun || localConfig.repo.kind === 'self') {
+    const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError } = await import('./utils/reports-branch.js');
+    const withCheckout = options.dryRun ? withDefaultBranchPreview : withKnowledgeWorktree;
     try {
-      await withKnowledgeWorktree(localConfig, (wtConfig) => removeCore(type, names, options, wtConfig, teamConfig));
+      await withCheckout(localConfig, (checkoutConfig) => removeCore(type, names, options, checkoutConfig, teamConfig));
     } catch (e) {
       if (e instanceof EmptyRepoError) {
         log.error(e.message);
@@ -64,15 +67,13 @@ async function removeCore(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
 ): Promise<void> {
-  const selfMode = localConfig.repo.kind === 'self';
-
-  // Pull latest before making changes. In self mode the worktree is already a
-  // fresh checkout of origin/<default>, so skip the pull.
+  // Pull latest before making changes. In self mode and on a dry run the
+  // checkout is already a fresh copy of origin/<default>, so skip the pull.
   // A clone that could not be refreshed is not the default branch: a placement
   // merged since the last pull is not recorded there, so the bare name the
   // author types falls back to the stem and removes that agent from every
   // namespace (#649 review). Removing is a write, so stop instead of guessing.
-  if (!selfMode) {
+  if (localConfig.repo.kind !== 'self' && !options.dryRun) {
     try {
       await pullRepo(localConfig.repo.localPath);
     } catch (e) {
@@ -89,12 +90,15 @@ async function removeCore(
   // `publishedNameFor` below resolves the bare name the author types through
   // the placement record, and a placement becomes a record only once it has
   // landed on the default branch — which this may be the first command to see.
-  // Not best-effort here: `publishedNameFor` reads the records back from disk,
-  // so a placement that merged but could not be saved as a record resolves to
-  // the bare stem — and that removes the agent from every namespace.
+  // The reconciled records are handed to `publishedNameFor` rather than read
+  // back from disk, so a dry run resolves the same names without saving them.
+  // Not best-effort here: a placement that merged but is not a record resolves
+  // to the bare stem — and that removes the agent from every namespace.
+  let recordsState: State;
   try {
-    const recordsState = await loadStateForScope(localConfig);
-    if (await reconcilePlacementRecords(localConfig.repo.localPath, recordsState, undefined, () => deliversEveryNamespace(localConfig))) {
+    recordsState = await loadStateForScope(localConfig);
+    if (await reconcilePlacementRecords(localConfig.repo.localPath, recordsState, undefined, () => deliversEveryNamespace(localConfig))
+      && !options.dryRun) {
       await saveStateForScope(recordsState, localConfig);
     }
   } catch (e) {
@@ -133,7 +137,7 @@ async function removeCore(
     // contributes that bare name whenever their copy has edits. Taking the
     // bare match would delete the local copy, report success, and leave the
     // namespaced team file published (#649 review).
-    const published = await handler.publishedNameFor(name, localConfig);
+    const published = await handler.publishedNameFor(name, localConfig, recordsState);
     if (published) {
       // Not cross-checked against `allNames`: `publishedNameFor` has already
       // proved the file is in the team repo, and the scans do not all spell a

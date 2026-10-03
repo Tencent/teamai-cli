@@ -5,7 +5,7 @@ import chalk from 'chalk';
 import { generateCodebaseMd } from './codebase.js';
 import { extractCodebase } from './codebase-extract.js';
 import { detectProvider, getProvider } from './providers/registry.js';
-import { shallowClone, shallowFetch } from './clone.js';
+import { remoteHeadSha, shallowClone, shallowFetch } from './clone.js';
 import {
     getRepoCacheDir,
     getRepoSlug,
@@ -30,7 +30,7 @@ export interface ImportFromRepoOptions {
     forceAnonymous?: boolean;
     /** Skip AI recommendation when --domain is explicitly set */
     explicitDomain?: string;
-    /** Dry-run mode: skip writing to disk but still execute clone+scan */
+    /** Dry-run mode: read the remote head with ls-remote and stop before the clone, the lock and the LLM scan */
     dryRun?: boolean;
     /** Custom output root directory; defaults to .teamai/team-repo/teamwiki */
     output?: string;
@@ -182,6 +182,9 @@ export function detectCrossRepoEdges(
  *  5. Append AI narrative to teamwiki/evidence/code/<slug>/overview.md
  *  6. Write LAST_SYNC
  *
+ * A dry run stops after step 1: it reads the remote head with `git ls-remote`
+ * and reports whether the cache is current.
+ *
  * @throws Error on clone failure, scan failure, or IO failure
  */
 export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void> {
@@ -204,12 +207,26 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     log.info(`Importing remote repo: ${owner}/${repoName} (provider: ${providerName})`);
 
     // 2. Shallow clone or incremental fetch+reset
-    await ensureCacheRoot();
     const cacheDir = getRepoCacheDir(providerName, owner, repoName);
     const slug = getRepoSlug(providerName, owner, repoName);
 
     const lastSync = await readLastSync(cacheDir);
     const cacheExists = await fs.pathExists(path.join(cacheDir, '.git'));
+
+    // A preview asks the remote for its head and stops: the clone replaces the
+    // cache (or fetches and resets it), and the lock and LLM scan follow (#900).
+    if (dryRun) {
+        const head = await remoteHeadSha(url, providerName, { forceSsh, forceAnonymous });
+        const cache = !cacheExists
+            ? `not cached yet, a real run would clone it into ${cacheDir}`
+            : lastSync?.sha === head
+                ? `cache is current at ${head.slice(0, 8)}${incremental ? ', so an incremental run would skip it' : ''}`
+                : `cache would be refreshed from ${lastSync ? lastSync.sha.slice(0, 8) : 'an unrecorded commit'} to ${head.slice(0, 8)}`;
+        log.info(`[dry-run] Would import ${owner}/${repoName} at ${head.slice(0, 8)} into teamwiki/evidence/code/${slug}; ${cache}`);
+        return;
+    }
+
+    await ensureCacheRoot();
     const useIncremental = incremental && cacheExists && lastSync !== null;
 
     let cloneSha: string;

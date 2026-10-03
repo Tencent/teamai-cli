@@ -371,19 +371,15 @@ projects:
   it('resolves the bare agent name to the namespace push recorded for it', async () => {
     await fse.outputFile(path.join(repoPath, 'agents/fe/vr.yaml'),
       'name: vr\ndescription: Mine\ninstructions: Read it.\n');
-    await fse.outputJson(path.join(getDataHome(localConfig), 'state.json'), {
+    expect(await handler.publishedNameFor('vr', localConfig, {
       placedAgents: { vr: 'agents/fe/vr.yaml' },
-    });
-
-    expect(await handler.publishedNameFor('vr', localConfig)).toBe('fe/vr');
+    })).toBe('fe/vr');
   });
 
   it('does not resolve an agent record whose team file is gone', async () => {
-    await fse.outputJson(path.join(getDataHome(localConfig), 'state.json'), {
+    expect(await handler.publishedNameFor('vr', localConfig, {
       placedAgents: { vr: 'agents/fe/vr.yaml' },
-    });
-
-    expect(await handler.publishedNameFor('vr', localConfig)).toBeNull();
+    })).toBeNull();
   });
 
   it('removes only the named namespace, leaving the same stem elsewhere', async () => {

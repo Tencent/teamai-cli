@@ -5,12 +5,15 @@
  * The branch machinery itself lives in `branch-worktree.ts`; reports are one
  * instance of it and learnings are the other. What stays here is the reports
  * spec, the names its callers already import, and the knowledge worktree, which
- * is not a side branch at all: it is a throwaway checkout of the default branch.
+ * is not a side branch at all: it is a throwaway checkout of the default branch,
+ * as is the preview checkout a dry run reads instead.
  */
+import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { createGit, getDefaultBranch, hasCommits } from './git.js';
+import { createGit, getDefaultBranch, getHeadCommit, hasCommits } from './git.js';
 import { pathExists } from './fs.js';
+import { log } from './logger.js';
 import {
   ForeignCheckoutError,
   createBranchWorktree,
@@ -223,5 +226,54 @@ export async function withKnowledgeWorktree<T>(
       await fse.remove(wt);
       try { await git.raw(['worktree', 'prune']); } catch { /* best effort */ }
     }
+  }
+}
+
+/**
+ * Run `fn` against a throwaway checkout of origin/<default>: the tree a real
+ * `remove` or manifest edit reads after its pull (or, in single-repo mode, in
+ * its knowledge worktree), for a `--dry-run` that must not change anything.
+ *
+ * Only a fetch touches the member's repo. Pulling there can reset a clone
+ * that diverged from origin and discard its commits, and `withKnowledgeWorktree`
+ * adds a worktree (#900). The checkout is a `--shared` clone in the OS temp
+ * dir, so history reads work and nothing is written under the repo. `fn`
+ * receives a clone of localConfig pointed at it, laid out as the real run's.
+ */
+export async function withDefaultBranchPreview<T>(
+  localConfig: LocalConfig,
+  fn: (previewConfig: LocalConfig) => Promise<T>,
+): Promise<T> {
+  const selfMode = localConfig.repo.kind === 'self';
+  const repoRoot = selfMode ? getBusinessRoot(localConfig) : localConfig.repo.localPath;
+  const git = createGit(repoRoot);
+  const defaultBranch = await getDefaultBranch(repoRoot);
+  try {
+    await git.fetch(['origin', defaultBranch]);
+  } catch (e) {
+    log.warn(`Could not fetch origin/${defaultBranch} (${(e as Error).message}); previewing against the copy fetched last.`);
+  }
+  // origin/<default> may not exist locally (fresh repo); fall back to HEAD, as the worktree does.
+  const base = await getHeadCommit(repoRoot, `origin/${defaultBranch}`) ?? await getHeadCommit(repoRoot);
+  if (!base) throw new EmptyRepoError(repoRoot);
+
+  const dir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-preview-'));
+  try {
+    await git.raw(['clone', '--quiet', '--shared', '--no-checkout', repoRoot, dir]);
+    const preview = createGit(dir);
+    await preview.raw(['checkout', '--quiet', '--detach', base]);
+    // The clone's origin/* are the member's local branches; point the default
+    // branch at what origin has, as it is in the member's repo.
+    await preview.raw(['update-ref', `refs/remotes/origin/${defaultBranch}`, base]);
+    await preview.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${defaultBranch}`]);
+    const previewConfig: LocalConfig = {
+      ...localConfig,
+      repo: selfMode
+        ? { ...localConfig.repo, localPath: path.join(dir, '.teamai'), businessRepoRoot: dir }
+        : { ...localConfig.repo, localPath: dir },
+    };
+    return await fn(previewConfig);
+  } finally {
+    await fse.remove(dir);
   }
 }

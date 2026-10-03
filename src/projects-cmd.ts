@@ -17,7 +17,7 @@ import {
   PROJECT_RESOURCE_TYPES,
 } from './projects.js';
 import type { ProjectsManifest, TeamProject } from './projects.js';
-import { pullLatest, runManifestEdit, pushManifestChange } from './manifest-edit.js';
+import { runManifestEdit, pushManifestChange } from './manifest-edit.js';
 import { readFileSafe, listFiles } from './utils/fs.js';
 import { pullRepo } from './utils/git.js';
 import { log } from './utils/logger.js';
@@ -251,8 +251,6 @@ async function editProjectsManifest(
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
 
   await runManifestEdit(localConfig, 'Projects', async (repoPath, editConfig) => {
-    if (editConfig.repo.kind !== 'self') await pullLatest(repoPath);
-
     let current: ProjectsManifest | null;
     try {
       current = await loadProjectsManifest(repoPath);
@@ -288,7 +286,7 @@ async function editProjectsManifest(
       commitMsg: result.commitMsg,
       prDescription: done,
     });
-  });
+  }, { dryRun: options.dryRun });
 }
 
 export async function projectsAdd(

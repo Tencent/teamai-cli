@@ -1,6 +1,9 @@
 import path from 'node:path';
 import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir, toolInstallRoot } from '../types.js';
-import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
+import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig, State } from '../types.js';
+
+/** The placement records `publishedNameFor` resolves a bare name through. */
+export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
 import type { DeliveryLedger } from './delivered-copies.js';
@@ -98,9 +101,10 @@ export abstract class ResourceHandler {
    * placed resource lives at `<root>/<ns>/<name>`; the author's local copy is
    * still at the resource root, so they know it by its bare name and `remove`
    * would answer "not found". Handlers that keep a placement record resolve it
-   * here. Returns null when there is nothing to translate.
+   * here, from `records` as the caller reconciled them. Returns null when there
+   * is nothing to translate.
    */
-  async publishedNameFor(_name: string, _localConfig: LocalConfig): Promise<string | null> {
+  async publishedNameFor(_name: string, _localConfig: LocalConfig, _records: PlacementRecords): Promise<string | null> {
     return null;
   }
 
