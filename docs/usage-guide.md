@@ -936,7 +936,7 @@ teamai roles remove devops
 teamai roles add test --namespaces common,test --dry-run
 ```
 
-The `--namespaces` list is applied to `knowledge`, `skills` and `agents` alike. The commands above automatically push a branch and create an MR; the change takes effect team-wide once merged.
+The `--namespaces` list is applied to `knowledge`, `skills` and `agents` alike. The commands above automatically push a branch and create an MR; the change takes effect team-wide once merged. With `--dry-run`, `teamai roles add/update/remove` and `teamai projects add/update/remove` fetch and read the manifest on origin's default branch; they do not pull the team repo or, in single-repo mode, create a worktree, so commits you have not pushed stay.
 
 **Member operations:**
 

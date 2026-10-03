@@ -837,7 +837,7 @@ teamai roles remove devops
 teamai roles add test --namespaces common,test --dry-run
 ```
 
-`--namespaces` 列表会同时应用到 `knowledge`、`skills` 与 `agents`。以上命令会自动 push 分支并创建 MR，合并后对全团队生效。
+`--namespaces` 列表会同时应用到 `knowledge`、`skills` 与 `agents`。以上命令会自动 push 分支并创建 MR，合并后对全团队生效。加 `--dry-run` 时，`teamai roles add/update/remove` 与 `teamai projects add/update/remove` 只 fetch 并读取 origin 默认分支上的 manifest，不会 pull 团队仓库，单仓模式下也不会创建 worktree，因此尚未推送的提交会保留。
 
 **成员操作：**
 

@@ -2,12 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const reportsMocks = vi.hoisted(() => {
   class EmptyRepoError extends Error {}
-  return { withKnowledgeWorktree: vi.fn(), EmptyRepoError };
+  return { withKnowledgeWorktree: vi.fn(), withDefaultBranchPreview: vi.fn(), EmptyRepoError };
 });
 vi.mock('../utils/reports-branch.js', () => reportsMocks);
 
+const gitMocks = vi.hoisted(() => ({ pullRepo: vi.fn().mockResolvedValue('already up to date') }));
+vi.mock('../utils/git.js', () => gitMocks);
+
 const logMocks = vi.hoisted(() => ({ info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
-vi.mock('../utils/logger.js', () => ({ log: logMocks, spinner: vi.fn() }));
+const spin = vi.hoisted(() => ({ succeed: vi.fn(), warn: vi.fn() }));
+vi.mock('../utils/logger.js', () => ({ log: logMocks, spinner: vi.fn(() => ({ start: () => spin })) }));
 
 import { runManifestEdit } from '../manifest-edit.js';
 import type { LocalConfig } from '../types.js';
@@ -25,13 +29,30 @@ function config(kind: 'self' | undefined, localPath: string): LocalConfig {
 describe('runManifestEdit', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('edits the team repo clone directly outside single-repo mode', async () => {
+  it('pulls and edits the team repo clone directly outside single-repo mode', async () => {
     const fn = vi.fn().mockResolvedValue(undefined);
     const localConfig = config(undefined, '/team-repo');
 
     await runManifestEdit(localConfig, 'Projects', fn);
 
+    expect(gitMocks.pullRepo).toHaveBeenCalledWith('/team-repo');
     expect(fn).toHaveBeenCalledWith('/team-repo', localConfig);
+    expect(reportsMocks.withKnowledgeWorktree).not.toHaveBeenCalled();
+  });
+
+  // The pull can reset a clone with unpushed commits, and the worktree is a
+  // write to the member's repo (#900).
+  it.each([undefined, 'self'] as const)('previews from origin without pulling or a worktree (kind %s)', async (kind) => {
+    const previewConfig = config(kind, '/tmp/preview');
+    reportsMocks.withDefaultBranchPreview.mockImplementation(
+      async (_config: LocalConfig, body: (preview: LocalConfig) => Promise<void>) => body(previewConfig),
+    );
+    const fn = vi.fn().mockResolvedValue(undefined);
+
+    await runManifestEdit(config(kind, '/team-repo'), 'Roles', fn, { dryRun: true });
+
+    expect(fn).toHaveBeenCalledWith('/tmp/preview', previewConfig);
+    expect(gitMocks.pullRepo).not.toHaveBeenCalled();
     expect(reportsMocks.withKnowledgeWorktree).not.toHaveBeenCalled();
   });
 

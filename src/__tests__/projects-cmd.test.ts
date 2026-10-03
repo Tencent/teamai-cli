@@ -9,17 +9,17 @@ vi.mock('../config.js', () => ({
 }));
 
 const editMocks = vi.hoisted(() => ({
-  pullLatest: vi.fn().mockResolvedValue(undefined),
   pushManifestChange: vi.fn().mockResolvedValue(undefined),
-}));
-vi.mock('../manifest-edit.js', () => ({
-  pullLatest: editMocks.pullLatest,
-  pushManifestChange: editMocks.pushManifestChange,
-  runManifestEdit: async (
+  runManifestEdit: vi.fn(async (
     localConfig: { repo: { localPath: string } },
     _label: string,
     fn: (repoPath: string, editConfig: unknown) => Promise<void>,
-  ) => fn(localConfig.repo.localPath, localConfig),
+    _options?: { dryRun?: boolean },
+  ) => fn(localConfig.repo.localPath, localConfig)),
+}));
+vi.mock('../manifest-edit.js', () => ({
+  pushManifestChange: editMocks.pushManifestChange,
+  runManifestEdit: editMocks.runManifestEdit,
 }));
 
 const logMocks = vi.hoisted(() => ({
@@ -91,7 +91,9 @@ describe('projects add / update / remove (#756)', () => {
           },
         }],
       });
-      expect(editMocks.pullLatest).toHaveBeenCalledWith(repoDir);
+      expect(editMocks.runManifestEdit).toHaveBeenCalledWith(
+        expect.anything(), 'Projects', expect.any(Function), { dryRun: undefined },
+      );
       expect(editMocks.pushManifestChange).toHaveBeenCalledWith(expect.objectContaining({
         repoPath: repoDir,
         commitMsg: '[teamai] Add project "checkout"',
