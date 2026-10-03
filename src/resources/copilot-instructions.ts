@@ -1,5 +1,6 @@
 import { splitFrontmatter, stringifyFrontmatter } from '../utils/frontmatter.js';
-import { rulePaths } from './rule-format.js';
+import type { RuleFormat } from './rule-format.js';
+import { rulePaths, teamRuleData } from './team-rule.js';
 
 const ALL_FILES_GLOB = '**';
 
@@ -9,8 +10,9 @@ function normalizeBody(body: string): string {
 
 /** Convert a tool-neutral team rule into Copilot's native instructions format. */
 export function teamRuleToCopilotInstructions(rawTeamRule: string): string {
-  const { data, body } = splitFrontmatter(rawTeamRule);
-  const paths = rulePaths(data);
+  const { body } = splitFrontmatter(rawTeamRule);
+  // `paths:` is read the one way every render reads it (team-rule.ts).
+  const paths = rulePaths(teamRuleData(rawTeamRule));
   return stringifyFrontmatter(
     { applyTo: paths.length > 0 ? paths.join(', ') : ALL_FILES_GLOB },
     `\n${normalizeBody(body)}\n`,
@@ -43,3 +45,12 @@ export function copilotInstructionsBodyEqualsTeamMd(
   return normalizeBody(splitFrontmatter(rawCopilotInstructions).body)
     === normalizeBody(splitFrontmatter(rawTeamRule).body);
 }
+
+/** GitHub Copilot's instructions format. */
+export const COPILOT_INSTRUCTIONS_FORMAT: RuleFormat = {
+  extension: '.instructions.md',
+  render: teamRuleToCopilotInstructions,
+  bodyEquals: copilotInstructionsBodyEqualsTeamMd,
+  mergeBodyIntoTeam: mergeCopilotBodyIntoTeamMd,
+  scopeFields: ['applyTo'],
+};

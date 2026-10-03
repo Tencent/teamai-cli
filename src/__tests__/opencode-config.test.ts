@@ -7,7 +7,7 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
-import { reconcileOpencodeInstructions, opencodeRulesGlob } from '../resources/opencode-config.js';
+import { reconcileOpencodeInstructions, reconcileOpencodeInstructionSet, opencodeProjectRuleGlobs, opencodeRuleGlobs, opencodeRulesGlob } from '../resources/opencode-config.js';
 
 describe('opencodeRulesGlob', () => {
   it('project scope: config at root, rules under .opencode/rules', () => {
@@ -18,6 +18,66 @@ describe('opencodeRulesGlob', () => {
   it('user scope: both under ~/.config/opencode', () => {
     const glob = opencodeRulesGlob('/home/u/.config/opencode/opencode.json', '/home/u/.config/opencode/rules');
     expect(glob).toBe('rules/*.md');
+  });
+});
+
+describe('opencodeRuleGlobs (#946)', () => {
+  const config = '/home/u/.config/opencode/opencode.json';
+  const rules = '/home/u/.config/opencode/rules';
+
+  it('user scope: the absolute root glob plus one per namespace directory, root first', () => {
+    const { globs } = opencodeRuleGlobs(config, rules, [`${rules}/fe`, rules, `${rules}/be/api`, `${rules}/fe`], []);
+    expect(globs).toEqual([`${rules}/*.md`, `${rules}/be/api/*.md`, `${rules}/fe/*.md`]);
+  });
+
+  it('user scope: owns its globs, every team namespace\'s and the old relative one, not the member\'s', () => {
+    const { owns } = opencodeRuleGlobs(config, rules, [], [`${rules}/fe`]);
+    expect(owns(`${rules}/*.md`)).toBe(true);
+    expect(owns(`${rules}/fe/*.md`)).toBe(true);
+    expect(owns('rules/*.md')).toBe(true);
+    expect(owns(`${rules}/mine/*.md`)).toBe(false);
+    expect(owns('CONVENTIONS.md')).toBe(false);
+  });
+});
+
+describe('opencodeProjectRuleGlobs (#946)', () => {
+  it('one recursive glob from the project root, in .opencode/opencode.json', () => {
+    const { configFile, globs, owns } = opencodeProjectRuleGlobs('/repo', '/repo/.opencode/rules', '/repo/opencode.json');
+    expect(configFile).toBe(path.join('/repo', '.opencode', 'opencode.json'));
+    expect(globs).toEqual(['.opencode/rules/**/*.md']);
+    expect(owns('.opencode/rules/**/*.md')).toBe(true);
+    expect(owns('.opencode/rules/*.md')).toBe(false);
+  });
+
+  it('retires the glob earlier releases wrote to the root opencode.json', () => {
+    const { retired } = opencodeProjectRuleGlobs('/repo', '/repo/.opencode/rules', '/repo/opencode.json');
+    expect(retired?.configFile).toBe('/repo/opencode.json');
+    expect(retired?.owns('.opencode/rules/*.md')).toBe(true);
+    expect(retired?.owns('.opencode/rules/**/*.md')).toBe(false);
+    expect(opencodeProjectRuleGlobs('/repo', '/repo/.opencode/rules', null).retired).toBeNull();
+  });
+});
+
+describe('reconcileOpencodeInstructionSet (#946)', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-oc-set-'));
+    configFile = path.join(tmpDir, 'opencode.json');
+  });
+
+  afterEach(async () => {
+    await fse.remove(tmpDir);
+  });
+
+  it('replaces owned entries with the desired ones in place of nothing else, and is idempotent', async () => {
+    await fse.writeJson(configFile, { model: 'm', instructions: ['A.md', 'old/*.md', { x: 1 }, 'keep.md'] });
+    const owns = (entry: string): boolean => entry.endsWith('/*.md');
+
+    expect(await reconcileOpencodeInstructionSet(configFile, ['/abs/*.md', '/abs/ns/*.md'], owns)).toBe(true);
+    expect(await fse.readJson(configFile)).toEqual({ model: 'm', instructions: ['A.md', { x: 1 }, 'keep.md', '/abs/*.md', '/abs/ns/*.md'] });
+    expect(await reconcileOpencodeInstructionSet(configFile, ['/abs/*.md', '/abs/ns/*.md'], owns)).toBe(false);
   });
 });
 

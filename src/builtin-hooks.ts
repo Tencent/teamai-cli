@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
-import { CODEX_TOOL_IDS } from './utils/tool-names.js';
+import { CODEX_TOOL_IDS, isCodexTool } from './utils/tool-names.js';
 import type { HookDef } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
@@ -414,9 +414,6 @@ const SUBAGENT_STOP_TOOLS = new Set([
  */
 const WRAPPER_TOOLS = SHELL_DEPENDENT_TOOLS;
 
-function isCodexTool(tool: string): boolean {
-  return (CODEX_TOOL_IDS as readonly string[]).includes(tool);
-}
 
 export function builtinHookDefs(tool: string): HookDef[] {
   // ZCode renders per-event timeouts from the ZCODE_TIMEOUT_MS table in its own
@@ -492,8 +489,9 @@ const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }>
       'Hook dispatch prompt-submit',
     ],
   },
-  // openclaw-hooks.ts EVENT_MAP maps session:start and command:new only, and
-  // its generated handler spawns the dispatcher with argv. Only `openclaw`:
+  // openclaw-hooks.ts EVENT_MAP maps OpenClaw's events onto session-start and
+  // prompt-submit only, and its generated handler spawns the dispatcher with
+  // argv. Only `openclaw`:
   // the other claw variants share its workspace resolver, so reconciliation
   // does not route them (see reconcileHooksToAllTools).
   openclaw: { keys: ['Hook dispatch session-start', 'Hook dispatch prompt-submit'] },

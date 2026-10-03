@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 
 import type { TeamaiConfig } from '../types.js';
 
@@ -59,29 +61,17 @@ function teamConfig(postPull?: { path: string }): TeamaiConfig {
   return { scripts: postPull ? { postPull } : undefined } as TeamaiConfig;
 }
 
-/** A spawned script child that reports the given outcome once its listeners attach. */
+/** A script child whose output always arrives before close, regardless of worker load. */
 function fakeScript(code: number, output = '') {
-  const handlers = new Map<string, ((...args: unknown[]) => void)[]>();
-  let scheduled = false;
-  const fire = (event: string, arg: unknown) => handlers.get(event)?.forEach((cb) => cb(arg));
-  const stream = {
-    on(event: string, cb: (chunk: Buffer) => void) {
-      if (event === 'data' && output) setTimeout(() => cb(Buffer.from(output)), 0);
-      return stream;
-    },
-  };
-  const child = {
-    stdout: stream,
-    stderr: stream,
-    on(event: string, cb: (...args: unknown[]) => void) {
-      handlers.set(event, [...(handlers.get(event) ?? []), cb]);
-      if (!scheduled) {
-        scheduled = true;
-        setTimeout(() => fire('close', code), 5);
-      }
-      return child;
-    },
-  };
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  });
+  queueMicrotask(() => {
+    child.stdout.end(output);
+    child.stderr.end();
+    child.emit('close', code);
+  });
   return child;
 }
 
@@ -119,7 +109,7 @@ describe('runDeclaredPostPull (interactive)', () => {
 
 describe('runPostPull (in-process)', () => {
   it('launches with the repo cwd/env and default budget, and records a clean exit', async () => {
-    mockSpawn.mockReturnValueOnce(fakeScript(0) as never);
+    mockSpawn.mockImplementationOnce(() => fakeScript(0) as never);
 
     await runPostPull(path.join(dir, 'ok.mjs'), dir);
 
@@ -134,7 +124,7 @@ describe('runPostPull (in-process)', () => {
   });
 
   it('records a non-zero exit together with the output tail', async () => {
-    mockSpawn.mockReturnValueOnce(fakeScript(3, 'boom: missing config\n') as never);
+    mockSpawn.mockImplementationOnce(() => fakeScript(3, 'boom: missing config\n') as never);
 
     await runPostPull(path.join(dir, 'fail.mjs'), dir, 30);
 
@@ -178,7 +168,7 @@ describe('runDeclaredPostPull', () => {
   it('runs a declared script, resolved against the repo root', async () => {
     writeScript('nested/post.mjs', 'export {};\n');
     mockLoadTeamConfig.mockResolvedValue(teamConfig({ path: 'nested/post.mjs' }));
-    mockSpawn.mockReturnValueOnce(fakeScript(0) as never);
+    mockSpawn.mockImplementationOnce(() => fakeScript(0) as never);
 
     await runDeclaredPostPull(dir);
 

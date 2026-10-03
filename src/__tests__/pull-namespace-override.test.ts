@@ -245,6 +245,8 @@ describe('pull: an active namespace item replaces the root item of the same name
       if (!base) throw new Error('no team config');
       vi.mocked(loadTeamConfig).mockResolvedValue({
         ...base,
+        // A team entry that keeps a user rules directory for JoyCode, shared
+        // with the member's own rules; the default reads none since #946.
         toolPaths: { ...base.toolPaths, joycode: { skills: '.joycode/skills', rules: '.joycode/rules', agents: '.joycode/agents' } },
       });
       await fse.ensureDir(path.join(homeDir, '.joycode', 'rules'));
@@ -269,6 +271,33 @@ describe('pull: an active namespace item replaces the root item of the same name
       expect(await read('.joycode/rules/mine.mdc')).toBe('my own rule\n');
     });
 
+    // Before #946 JoyCode got Cursor's render: that copy is what teamai
+    // delivered, not a member edit, so it goes without a warning.
+    it('withdraws a replaced root rule\'s copy still in the render an older teamai wrote for the tool (#946)', async () => {
+      const base = await loadTeamConfig(repoPath);
+      if (!base) throw new Error('no team config');
+      vi.mocked(loadTeamConfig).mockResolvedValue({
+        ...base,
+        // A team entry that keeps a user rules directory for JoyCode, shared
+        // with the member's own rules; the default reads none since #946.
+        toolPaths: { ...base.toolPaths, joycode: { skills: '.joycode/skills', rules: '.joycode/rules', agents: '.joycode/agents' } },
+      });
+      await fse.ensureDir(path.join(homeDir, '.joycode', 'rules'));
+      await team('rules/scoped.md', '---\npaths: ["src/**", "test/**"]\n---\n\n# Shared scoped\n');
+      await team('rules/frontend/scoped.md', '# Front scoped\n');
+      await fse.outputFile(
+        path.join(homeDir, '.joycode/rules/scoped.mdc'),
+        '---\nglobs: "src/**, test/**"\nalwaysApply: false\n---\n\n# Shared scoped\n',
+      );
+
+      as(['frontend']);
+      await pull({});
+
+      expect(await exists('.joycode/rules/scoped.mdc')).toBe(false);
+      expect(await exists('.joycode/rules/frontend/scoped.mdc')).toBe(true);
+      expect(logged('warn', /scoped\.mdc/)).toBe(false);
+    });
+
     // The admin edits the root rule and adds its namespace override in one push:
     // the member's copy is the version of the last pull, not a member edit.
     // HOME's copy may come from a project pull that inherits the user scope,
@@ -281,6 +310,8 @@ describe('pull: an active namespace item replaces the root item of the same name
       if (!base) throw new Error('no team config');
       vi.mocked(loadTeamConfig).mockResolvedValue({
         ...base,
+        // A team entry that keeps a user rules directory for JoyCode, shared
+        // with the member's own rules; the default reads none since #946.
         toolPaths: { ...base.toolPaths, joycode: { skills: '.joycode/skills', rules: '.joycode/rules', agents: '.joycode/agents' } },
       });
       await fse.ensureDir(path.join(homeDir, '.joycode', 'rules'));

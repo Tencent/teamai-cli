@@ -4,7 +4,9 @@ import { autoDetectInit, saveLocalConfig, saveLocalConfigForScope, UnreadablePro
 import { reconcileHooks, hasTeamaiHooks, mainCheckoutHookFile, resolveMainCheckoutHooks } from './hooks.js';
 import {
   removeOpenClawHooks,
+  removeOpenClawHookEntry,
   OPENCLAW_HOOK_DIR,
+  OPENCLAW_HOOK_KEY,
   resolveOpenClawHooksDir,
   resolveOpenclawWorkspaceDir,
 } from './openclaw-hooks.js';
@@ -35,7 +37,7 @@ import {
   type ManagedMcpManifest,
 } from './types.js';
 import { BUILTIN_RULE_NAMES, TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
-import { ruleStemFromFilename, writesInstructionBlock, type InstructionBlock } from './resources/rule-format.js';
+import { keptLegacyCopiesWarning, ruleStemFromFilename, type InstructionBlock, type LegacyRuleDir } from './resources/rule-format.js';
 import { agentStemFromFilename } from './resources/agent-format.js';
 import { resolveDocsDestination } from './resources/docs.js';
 import { listTeamAgentDirs } from './resources/agents.js';
@@ -55,7 +57,7 @@ import {
 import { getHermesHome } from './hermes-home.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import { CODEX_TOOL, SHARED_AGENT_SKILLS_PATH } from './resources/skills.js';
-import { clearInstructionFile, instructionTargetFile, retiredInstructionFiles, resolveInstructionTargets } from './instruction-targets.js';
+import { clearInstructionFile, instructionTargetFile, readsTeamRulesFromFile, retiredInstructionFiles, resolveInstructionTargets, userRulesFile } from './instruction-targets.js';
 import {
   pathExists,
   readFileSafe,
@@ -112,8 +114,12 @@ interface RemovalPlan {
   skillDirs: SkillDirEntry[];
   /** Rule .md files synced from team repo (plus CLI built-in rules). */
   ruleFiles: string[];
-  /** Copies in a tool's legacy rules directory the member edited: never removed, only named. */
-  keptRuleFiles: string[];
+  /** Copies in a tool's legacy rules directory the member edited, by directory: never removed, only named. */
+  keptRuleFiles: { files: string[]; entry: LegacyRuleDir }[];
+  /** OMP's flat copies of namespaced rules the member edited after delivery: never removed, only named (#946). */
+  keptFlatCopies: string[];
+  /** The rules globs teamai owns in OpenCode's opencode.json `instructions`, per file (#946). */
+  opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   /** Built-in agent .md files deployed by the CLI (e.g. teamai-recall). */
   agentFiles: string[];
   /** teamai-managed MCP servers from managed-mcp.json (`tool/server` or `tool:project/server`). */
@@ -176,8 +182,17 @@ interface ToolResources {
   keptGlobal: string[];
   skillDirs: SkillDirEntry[];
   ruleFiles: string[];
-  keptRuleFiles: string[];
+  keptRuleFiles: { files: string[]; entry: LegacyRuleDir }[];
+  opencodeOwnedGlobs: OpencodeRuleGlobEntries[];
   agentFiles: string[];
+}
+
+/** The `instructions` entries teamai owns in one opencode.json. */
+interface OpencodeRuleGlobEntries {
+  configFile: string;
+  entries: string[];
+  /** A file teamai creates (a project's `.opencode/opencode.json`): deleted once nothing else is left in it. */
+  deleteIfEmpty: boolean;
 }
 
 function hasToolResources(r: ToolResources): boolean {
@@ -193,6 +208,7 @@ function hasToolResources(r: ToolResources): boolean {
     r.opencodeInstructions.length > 0 ||
     r.skillDirs.length > 0 ||
     r.ruleFiles.length > 0 ||
+    r.opencodeOwnedGlobs.length > 0 ||
     r.agentFiles.length > 0
   );
 }
@@ -218,12 +234,13 @@ const INSTRUCTION_BLOCK_STARTS: Record<InstructionBlock, string> = {
  * Start markers of the blocks a pull writes into a tool's instruction target
  * (#945): culture, claudemd and recall always (a tool without the
  * `teamai-recall` subagent gets the direct variant, under the same markers),
- * and team rules where `writesInstructionBlock` says so. Nobody writes the
+ * and team rules for a tool that reads them from a file of its own
+ * (`readsTeamRulesFromFile`). Nobody writes the
  * legacy `[teamai:rules]` block any more.
  */
-function instructionBlocksWrittenBy(tool: string, toolPath: TeamaiConfig['toolPaths'][string]): string[] {
+function instructionBlocksWrittenBy(tool: string): string[] {
   return (Object.keys(INSTRUCTION_BLOCK_STARTS) as InstructionBlock[])
-    .filter((block) => block !== 'team-rules' || writesInstructionBlock(tool, toolPath, block))
+    .filter((block) => block !== 'team-rules' || readsTeamRulesFromFile(tool))
     .map((block) => INSTRUCTION_BLOCK_STARTS[block]);
 }
 
@@ -358,7 +375,7 @@ async function discoverToolResources(
 ): Promise<ToolResources> {
   const res: ToolResources = {
     hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], ompHookFile: null, piHookFiles: [], dshHookFile: null,
-    claudeMdFiles: [], retiredInstructionFiles: [], opencodeInstructions: [], keptGlobal: [], skillDirs: [], ruleFiles: [], keptRuleFiles: [], agentFiles: [],
+    claudeMdFiles: [], retiredInstructionFiles: [], opencodeInstructions: [], keptGlobal: [], skillDirs: [], ruleFiles: [], keptRuleFiles: [], opencodeOwnedGlobs: [], agentFiles: [],
   };
 
   // (a) Hooks — settings.json / hooks.json
@@ -476,9 +493,9 @@ async function discoverToolResources(
   } else {
     // OpenClaw-style agents (no settings file) inject a HOOK.md + handler.ts
     // under <hooksDir>/<OPENCLAW_HOOK_DIR>. Check the default path, the
-    // OPENCLAW_STATE_DIR override (imate containers), and the resolved
-    // workspace dir — injection now targets `<workspace>/hooks`, so teardown
-    // must cover it too, otherwise the hook is orphaned on uninstall.
+    // resolved state dir (OPENCLAW_STATE_DIR or OPENCLAW_PROFILE), and the
+    // resolved workspace dir — injection now targets `<workspace>/hooks`, so
+    // teardown must cover it too, otherwise the hook is orphaned on uninstall.
     const defaultHooksDir = path.join(baseDir, `.${tool}`, 'hooks');
     const resolvedHooksDir = resolveOpenClawHooksDir(tool);
     const dirsToCheck = new Set([defaultHooksDir, resolvedHooksDir]);
@@ -494,7 +511,7 @@ async function discoverToolResources(
   }
 
   // (b) CLAUDE.md teamai section blocks
-  const instructionFile = instructionTargetFile(tool, toolPath, scope);
+  const instructionFile = await instructionTargetFile(tool, toolPath, scope);
   if (instructionFile) {
     const claudeMdPath = path.resolve(baseDir, instructionFile);
     const content = await readFileSafe(claudeMdPath);
@@ -504,7 +521,7 @@ async function discoverToolResources(
   }
   // OpenCode's instructions entry goes only when teamai recorded adding it
   // (buildRemovalPlan): an entry the member listed is theirs, whatever the file holds.
-  for (const retired of retiredInstructionFiles(tool, toolPath, scope)) {
+  for (const retired of await retiredInstructionFiles(tool, toolPath, scope)) {
     const file = path.resolve(baseDir, retired);
     const content = await readFileSafe(file);
     if (content && CLAUDEMD_MARKER_PAIRS.some(([start]) => content.includes(start))) {
@@ -704,7 +721,7 @@ async function buildRemovalPlan(
   if (opencodeRes) {
     const { loadStateForScope } = await import('./config.js');
     const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
-    const contextFile = toolPaths.opencode && instructionTargetFile('opencode', toolPaths.opencode, localConfig.scope);
+    const contextFile = toolPaths.opencode && await instructionTargetFile('opencode', toolPaths.opencode, localConfig.scope);
     // Worktrees share state.json: only this checkout's own record counts.
     const own = contextFile
       ? opencodeContextReference(path.resolve(resolveToolBaseDir('opencode', localConfig), contextFile), localConfig.scope, resolveToolBaseDir('opencode', localConfig))
@@ -722,13 +739,53 @@ async function buildRemovalPlan(
   // directory, before its rules moved into its instructions file, which a pull
   // may not have reclaimed yet. A name is no proof there: only the copies a
   // pull would reclaim go, and the ones the member edited stay, named.
-  const legacyCopies = await new RulesHandler()
+  const rulesHandler = new RulesHandler();
+  const legacyCopies = await rulesHandler
     .legacyRuleCopies(teamConfig, localConfig, await deliveredHashes(localConfig));
-  for (const { tool, owned, edited } of legacyCopies) {
-    const res = perTool.get(tool);
+  for (const { entry, owned, edited } of legacyCopies) {
+    // A directory the tool reads is its rules directory, collected above.
+    if (entry.copiedFrom !== undefined) continue;
+    const res = perTool.get(entry.tool);
     if (!res) continue;
     res.ruleFiles.push(...owned);
-    res.keptRuleFiles.push(...edited);
+    if (edited.length > 0) res.keptRuleFiles.push({ files: edited, entry });
+  }
+
+  // (d) continued: OMP's flat copies of namespaced rules (`fe.style.md`),
+  // which a member's own file can share a name with: only those holding what
+  // was recorded or the render go; an edited one stays, named (#946).
+  const teamRules = await rulesHandler.scanTeamForPull(teamConfig, localConfig);
+  const flatCopies = await rulesHandler.ownedFlatCopies(teamConfig, localConfig, teamRules, await deliveredHashes(localConfig));
+  for (const { tool, file } of flatCopies.owned) perTool.get(tool)?.ruleFiles.push(file);
+
+  // (b) continued: the team-rules block in the user file a tool with no
+  // rules format reads them from (#938, #946), when that is not its
+  // instruction file already.
+  for (const [tool, toolPath] of Object.entries(toolPaths)) {
+    const res = perTool.get(tool);
+    const file = (await userRulesFile(tool, toolPath, localConfig))?.file;
+    if (!res || file === undefined || res.claudeMdFiles.includes(file)) continue;
+    if ((await readFileSafe(file))?.includes(TEAMAI_TEAM_RULES_START)) res.claudeMdFiles.push(file);
+  }
+
+  // (d) continued: OpenCode loads its rules through globs in opencode.json,
+  // which would point at nothing once the copies go (#946).
+  const opencodeTarget = opencodeRes
+    ? await rulesHandler.opencodeInstructionsTarget(teamConfig, localConfig, [])
+    : null;
+  if (opencodeRes && opencodeTarget) {
+    const { readOpencodeInstructionList } = await import('./resources/opencode-config.js');
+    // In a project, also the root opencode.json glob an earlier release wrote.
+    const { retired } = opencodeTarget;
+    const files = [
+      { configFile: opencodeTarget.configFile, owns: opencodeTarget.owns, deleteIfEmpty: localConfig.scope === 'project' },
+      ...(retired ? [{ ...retired, deleteIfEmpty: false }] : []),
+    ];
+    for (const { configFile, owns, deleteIfEmpty } of files) {
+      const entries = ((await readOpencodeInstructionList(configFile)) ?? [])
+        .filter((entry): entry is string => typeof entry === 'string' && owns(entry));
+      if (entries.length > 0) opencodeRes.opencodeOwnedGlobs.push({ configFile, entries, deleteIfEmpty });
+    }
   }
 
   // A tool only still "uses" a shared resource (AGENTS.md, .teamai/) if it is
@@ -783,6 +840,9 @@ async function buildRemovalPlan(
     skillDirs: [],
     ruleFiles: [],
     keptRuleFiles: [],
+    // Only the tools being uninstalled: another tool's copy is not touched, so not "kept".
+    keptFlatCopies: flatCopies.edited.filter(({ tool }) => toolsToMerge.includes(tool)).map(({ file }) => file),
+    opencodeOwnedGlobs: [],
     agentFiles: [],
     mcpServers: [],
     shellProfiles: [],
@@ -807,12 +867,20 @@ async function buildRemovalPlan(
   const retainedBlocks = new Map<string, Set<string>>();
   for (const [tool, resources] of perTool) {
     if (toolsToMerge.includes(tool) || !activeTools.has(tool)) continue;
-    const written = instructionBlocksWrittenBy(tool, toolPaths[tool]);
+    const written = instructionBlocksWrittenBy(tool);
     for (const file of resources.claudeMdFiles) {
       const kept = retainedBlocks.get(file) ?? new Set<string>();
       for (const start of written) kept.add(start);
       retainedBlocks.set(file, kept);
     }
+  }
+
+  // A rule file another enabled, installed tool reads stays: in a project
+  // CodeBuddy and WorkBuddy share `.codebuddy/rules` (#946).
+  const retainedRuleFiles = new Set<string>();
+  for (const [tool, resources] of perTool) {
+    if (toolsToMerge.includes(tool) || !activeTools.has(tool)) continue;
+    for (const file of resources.ruleFiles) retainedRuleFiles.add(file);
   }
 
   // Merge tool-specific resources for selected tools
@@ -834,7 +902,7 @@ async function buildRemovalPlan(
       const blocks = CLAUDEMD_MARKER_PAIRS
         .filter(([start]) => content.includes(start) && !kept?.has(start));
       // The configured `claudemd` (no `rules`) is the member's, whatever its name.
-      const owned = instructionTargetFile(tool, toolPaths[tool], localConfig.scope) !== toolPaths[tool].claudemd;
+      const owned = await instructionTargetFile(tool, toolPaths[tool], localConfig.scope) !== toolPaths[tool].claudemd;
       if (blocks.length > 0) plan.claudeMdFiles.push({ path: file, blocks, owned });
     }
     // A retired file keeps only the blocks a remaining tool still writes
@@ -848,8 +916,9 @@ async function buildRemovalPlan(
       if (blocks.length > 0) plan.claudeMdFiles.push({ path: file, blocks, owned: false });
     }
     plan.skillDirs.push(...res.skillDirs);
-    plan.ruleFiles.push(...res.ruleFiles);
+    plan.ruleFiles.push(...res.ruleFiles.filter((file) => !retainedRuleFiles.has(file) && !plan.ruleFiles.includes(file)));
     plan.keptRuleFiles.push(...res.keptRuleFiles);
+    plan.opencodeOwnedGlobs.push(...res.opencodeOwnedGlobs);
     plan.agentFiles.push(...res.agentFiles);
   }
 
@@ -955,6 +1024,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
     plan.opencodeInstructions.length === 0 &&
     plan.skillDirs.length === 0 &&
     plan.ruleFiles.length === 0 &&
+    plan.opencodeOwnedGlobs.length === 0 &&
     plan.agentFiles.length === 0 &&
     plan.mcpServers.length === 0 &&
     plan.shellProfiles.length === 0 &&
@@ -1048,6 +1118,11 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
 
   if (plan.ruleFiles.length > 0) {
     console.log(`   Rules (${plan.ruleFiles.length} files)`);
+    console.log('');
+  }
+
+  for (const { configFile, entries } of plan.opencodeOwnedGlobs) {
+    console.log(`   OpenCode rules globs (${entries.length}) in ${configFile}`);
     console.log('');
   }
 
@@ -1161,12 +1236,21 @@ async function executeRemoval(plan: RemovalPlan): Promise<RemovalPlan['opencodeI
     }
   }
 
-  // (a2) Remove OpenClaw-style hook dirs
+  // (a2) Remove OpenClaw-style hook dirs, and OpenClaw's entry enabling ours
   for (const { hooksDir } of plan.openclawHookDirs) {
     try {
       await removeOpenClawHooks(hooksDir);
     } catch (e) {
       log.warn(`Failed to remove OpenClaw hook from ${hooksDir}: ${(e as Error).message}`);
+    }
+  }
+  if (plan.openclawHookDirs.some(({ tool }) => tool === 'openclaw')) {
+    try {
+      await removeOpenClawHookEntry();
+    } catch (e) {
+      log.warn(`Failed to remove the teamai hook entry from OpenClaw's config: ${(e as Error).message}. `
+        + 'OpenClaw keeps it, and while it is there OpenClaw loads only the hooks openclaw.json names. '
+        + `Run \`openclaw hooks disable ${OPENCLAW_HOOK_KEY}\`, or remove it from openclaw.json by hand.`);
     }
   }
 
@@ -1315,6 +1399,18 @@ async function executeRemoval(plan: RemovalPlan): Promise<RemovalPlan['opencodeI
   if (plan.ruleFiles.length > 0) {
     log.success(`Removed ${plan.ruleFiles.length} rule files`);
   }
+  for (const { configFile, entries, deleteIfEmpty } of plan.opencodeOwnedGlobs) {
+    try {
+      const { reconcileOpencodeInstructionSet } = await import('./resources/opencode-config.js');
+      if (await reconcileOpencodeInstructionSet(configFile, [], (entry) => entries.includes(entry), undefined, { deleteIfEmpty })) {
+        log.success(`Removed ${entries.length} OpenCode rules globs from ${configFile}`);
+      }
+    } catch (e) {
+      log.warn(`Failed to remove the OpenCode rules globs from ${configFile}: ${(e as Error).message}. `
+        + `They stay listed in its \`instructions\` and point at rule files uninstall deleted. `
+        + `Remove ${entries.map((entry) => `\`${entry}\``).join(', ')} from that list by hand.`);
+    }
+  }
 
   // (d2) Remove built-in agent files (e.g. teamai-recall)
   for (const agentFile of plan.agentFiles) {
@@ -1371,7 +1467,7 @@ async function executeRemoval(plan: RemovalPlan): Promise<RemovalPlan['opencodeI
     }
   }
 
-  // (h) Hermes: clear teamai-managed entries — the SOUL.md rules block, the
+  // (h) Hermes: clear teamai-managed entries — the SOUL.md rules block (user scope), the
   // status-report hook (config.yaml + allowlist + script). Gated on hermesCleanup
   // so a targeted `--agent <other>` uninstall never touches ~/.hermes. No-op safe.
   if (plan.hermesCleanup) {
@@ -1379,7 +1475,8 @@ async function executeRemoval(plan: RemovalPlan): Promise<RemovalPlan['opencodeI
       const { removeHermesHooks } = await import('./hermes-hooks.js');
       const { removeSoulRules } = await import('./hermes-config.js');
       await removeHermesHooks();
-      await removeSoulRules();
+      // SOUL.md is global and only a user-scope pull writes its rules block (#946).
+      if (plan.scope === 'user') await removeSoulRules();
     } catch (e) {
       log.debug(`Hermes uninstall cleanup skipped: ${(e as Error).message}`);
     }
@@ -1425,13 +1522,11 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     }
     const plan = await buildRemovalPlan(localConfig, teamConfig, agentKey);
     // Uninstall never removes these, so they are named whatever happens next.
-    if (plan.keptRuleFiles.length > 0) {
-      const one = plan.keptRuleFiles.length === 1;
-      log.warn(
-        `Kept ${plan.keptRuleFiles.join(', ')}: teamai could not verify that ${one ? 'it matches' : 'they match'} what it delivered there. `
-        + 'Codex does not read .md files in its rules directory; '
-        + `delete ${one ? 'it' : 'them'} once you have saved what you need.`,
-      );
+    for (const { files, entry } of plan.keptRuleFiles) log.warn(keptLegacyCopiesWarning(files, entry));
+    if (plan.keptFlatCopies.length > 0) {
+      const one = plan.keptFlatCopies.length === 1;
+      log.warn(`Kept ${plan.keptFlatCopies.join(', ')}: you edited ${one ? 'it' : 'them'} after teamai delivered ${one ? 'it' : 'them'}. `
+        + `Delete ${one ? 'it' : 'them'} once you have saved what you need.`);
     }
 
     const exclusionOnly = isPlanEmpty(plan) && agentKey && localConfig.scope === 'project'

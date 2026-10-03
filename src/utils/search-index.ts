@@ -5,6 +5,7 @@ import matter from 'gray-matter';
 import { readFileSafe, readJson, writeJsonAtomic, listFiles, listFilesRecursive, listDirs, pathExists } from './fs.js';
 import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
+import { teamRuleBody, teamRuleData } from '../resources/team-rule.js';
 import {
   SEARCH_INDEX_VERSION,
   getDataHome,
@@ -296,33 +297,34 @@ export function parseLearningDoc(
 ): { meta: LearningDocMeta; bodyExcerpt: string } | null {
   if (!content.trim()) return null;
 
+  let data: Record<string, unknown>;
+  let body: string;
   try {
-    const { data, content: body } = matter(content);
-    const meta: LearningDocMeta = {
-      title: typeof data.title === 'string' ? data.title : undefined,
-      author: typeof data.author === 'string' ? data.author : undefined,
-      date: typeof data.date === 'string'
-        ? data.date
-        : data.date instanceof Date
-          ? data.date.toISOString().slice(0, 10)
-          : undefined,
-      tags: Array.isArray(data.tags)
-        ? data.tags.filter((t: unknown) => typeof t === 'string')
-        : typeof data.Tags === 'string'
-          ? data.Tags.split(/[,，]\s*/).map((t: string) => t.trim()).filter(Boolean)
-          : undefined,
-    };
-
-    const bodyExcerpt = body;
-    return { meta, bodyExcerpt };
+    ({ data, content: body } = matter(content));
   } catch {
-    // Fallback: treat entire content as body, derive title from filename
-    log.error(`Failed to parse frontmatter for ${filename}, using fallback`);
-    return {
-      meta: {},
-      bodyExcerpt: content,
-    };
+    // A rule glob such as `paths: **/*.ts` is not strict YAML: read the
+    // frontmatter the way the rule renders do, and keep it out of the body (#946).
+    log.debug(`Frontmatter of ${filename} is not strict YAML; read it tolerantly`);
+    data = teamRuleData(content);
+    body = teamRuleBody(content);
   }
+
+  const meta: LearningDocMeta = {
+    title: typeof data.title === 'string' ? data.title : undefined,
+    author: typeof data.author === 'string' ? data.author : undefined,
+    date: typeof data.date === 'string'
+      ? data.date
+      : data.date instanceof Date
+        ? data.date.toISOString().slice(0, 10)
+        : undefined,
+    tags: Array.isArray(data.tags)
+      ? data.tags.filter((t: unknown) => typeof t === 'string')
+      : typeof data.Tags === 'string'
+        ? data.Tags.split(/[,，]\s*/).map((t: string) => t.trim()).filter(Boolean)
+        : undefined,
+  };
+
+  return { meta, bodyExcerpt: body };
 }
 
 /**

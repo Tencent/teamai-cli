@@ -203,6 +203,7 @@ vi.mock('../utils/fs.js', () => ({
     return p;
   },
   readFileSafe: vi.fn().mockResolvedValue(null),
+  readJsonObject: vi.fn().mockResolvedValue({ kind: 'missing' }),
   remove: (p: string) => mockRemove(p),
 }));
 
@@ -813,6 +814,46 @@ describe('init', () => {
 
       const warned = vi.mocked(log.warn).mock.calls.map((call) => String(call[0])).join('\n');
       expect(warned).toContain('Fix hooks/hooks.yaml in the team repo');
+    });
+  });
+
+  // #946 project rules use the hooks automatically trusted by #955.
+  describe('the Codex trust result', () => {
+    async function initWithCodex(enabledAgents: string[]): Promise<string> {
+      const { log } = await import('../utils/logger.js');
+      const { TeamaiConfigSchema } = await import('../types.js');
+      const { toolPaths } = TeamaiConfigSchema.parse({ team: 'my-team', repo: 'https://git.woa.com/HyperAI/teamai-test.git' });
+      let cloneDone = false;
+      pathExistsFn = (p: string) => (p === localPath ? cloneDone : p === path.join(HOME, '.codex'));
+      mockGfRepoClone.mockImplementation(() => {
+        cloneDone = true;
+      });
+      vi.mocked(await import('../config.js')).loadTeamConfig.mockResolvedValue({
+        team: 'my-team',
+        repo: 'https://git.woa.com/HyperAI/teamai-test.git',
+        provider: 'tgit',
+        reviewers: [],
+        sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '~/.teamai/docs' }, env: { injectShellProfile: true } },
+        toolPaths: { codex: toolPaths.codex, claude: toolPaths.claude },
+      } as never);
+      questionAnswers = ['n', '1'];
+      await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git', scope: 'user', agent: enabledAgents.join(',') });
+      return vi.mocked(log.warn).mock.calls.map((call) => String(call[0])).join('\n');
+    }
+
+    it('reports automatic trust without an unconditional manual-trust warning', async () => {
+      const { reportCodexTrust, trustCodexForScope } = await import('../hooks.js');
+      const warned = await initWithCodex(['codex', 'claude']);
+
+      expect(trustCodexForScope).toHaveBeenCalledWith(expect.anything(), expect.anything(), { filterAgents: ['codex', 'claude'], force: true });
+      expect(reportCodexTrust).toHaveBeenCalledWith(undefined, 'all');
+      expect(warned).not.toContain('open /hooks');
+    });
+
+    it('is not printed when Codex is not enabled', async () => {
+      const warned = await initWithCodex(['claude']);
+
+      expect(warned).not.toContain('open /hooks');
     });
   });
 

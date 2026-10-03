@@ -179,6 +179,45 @@ describe('doctor — skills delivered on disk', () => {
     expect(await installed!.check()).toBe(true);
   });
 
+  describe('OpenClaw hook enabled', () => {
+    const NAME = 'OpenClaw hook enabled';
+    const stateDir = (): string => path.join(homeDir, '.openclaw');
+
+    async function hookCheck(): Promise<Check | undefined> {
+      const ctx = await resolveDoctorContext();
+      if (!ctx) throw new Error('expected a resolved doctor context');
+      return (await buildChecks(ctx)).find((c) => c.name === NAME);
+    }
+
+    beforeEach(async () => {
+      for (const v of ['OPENCLAW_STATE_DIR', 'OPENCLAW_PROFILE', 'OPENCLAW_CONFIG_PATH', 'OPENCLAW_WORKSPACE_DIR']) vi.stubEnv(v, '');
+      teamConfig.toolPaths = { openclaw: { skills: '.openclaw/skills' } };
+      // The hook teamai injected, in the default workspace.
+      await fse.ensureDir(path.join(stateDir(), 'workspace', 'hooks', 'teamai-status-report'));
+    });
+
+    it.each([
+      ['the entry is missing', { hooks: { internal: { enabled: true } } }, false],
+      ['the entry is disabled', { hooks: { internal: { entries: { 'teamai-status-report': { enabled: false } } } } }, false],
+      ['internal hooks are off', { hooks: { internal: { enabled: false, entries: { 'teamai-status-report': { enabled: true } } } } }, false],
+      ['the entry is enabled', { hooks: { internal: { enabled: true, entries: { 'teamai-status-report': { enabled: true } } } } }, true],
+    ])('reports %s', async (_label, cfg, ok) => {
+      await fse.writeJson(path.join(stateDir(), 'openclaw.json'), cfg);
+
+      const check = await hookCheck();
+
+      expect(check).toBeDefined();
+      expect(await check!.check()).toBe(ok);
+      expect(check!.fix).toContain('openclaw hooks enable teamai-status-report');
+    });
+
+    it('is not built when teamai has no hook in the workspace', async () => {
+      await fse.remove(path.join(stateDir(), 'workspace', 'hooks'));
+
+      expect(await hookCheck()).toBeUndefined();
+    });
+  });
+
   it('reports each installed tool separately', async () => {
     teamConfig.toolPaths = {
       claude: { skills: '.claude/skills' },

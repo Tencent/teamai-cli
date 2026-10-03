@@ -11,7 +11,7 @@ import path from 'node:path';
 import { reconcileHooks } from './hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import type { HookDef } from './types.js';
-import { getUserHome } from './utils/home.js';
+import { expandHome, getUserHome } from './utils/home.js';
 import { pathExists, remove, writeIfChanged } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -19,6 +19,23 @@ export const DSH_HOOK_CONFIG_FILE = 'hooks.json';
 export const DSH_PATCH_FILE = 'cordis.patch.yml';
 export const DSH_HOOK_PLUGIN_ID = 'teamai-hooks-claude-code';
 export const DSH_HOOK_PLUGIN_PACKAGE = '@deepseek-ai/dsh-hooks-claude-code';
+
+/**
+ * DeepSeek Harness's own home, where it reads the user `AGENTS.md`:
+ * `DSH_HOME`, else `~/.dsh` (dsh `config.ts` `dshHome`).
+ */
+export function resolveDshHome(): string {
+  const configured = process.env.DSH_HOME?.trim();
+  return configured ? path.resolve(expandHome(configured)) : path.join(getUserHome(), '.dsh');
+}
+
+/**
+ * Whether DeepSeek Harness is installed: its home (`resolveDshHome`) exists.
+ * The hook bridge, the user-scope rules file, doctor and init all ask here.
+ */
+export async function isDshInstalled(): Promise<boolean> {
+  return pathExists(resolveDshHome());
+}
 
 /** The TeamAI-managed DSH bridge directory under the resolved user home. */
 export function resolveDshHooksDir(): string {

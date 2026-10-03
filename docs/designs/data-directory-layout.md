@@ -104,9 +104,9 @@ resets nothing, since a checkout recorded at an older revision already misses
 the fast path. `push` needs that entry too: before scanning, it syncs each rule
 and skill the member never edited, and "never edited" means equal to the
 version at a revision *this* checkout synced, not the shared `lastPullRev`
-another checkout may have moved (#812). Cursor and Copilot rules compare bodies
-against those revisions, ignoring derived frontmatter, and render refreshed
-copies in the tool's native format. Rule sync uses the same tool root as the
+another checkout may have moved (#812). Rules of a tool with its own rules
+format (every tool in `RULE_FORMATS`, `rule-format.ts`) compare bodies against those revisions, ignoring derived frontmatter,
+and render refreshed copies in the tool's native format. Rule sync uses the same tool root as the
 scanner, including `COPILOT_HOME` for user-scope Copilot instructions.
 It checks `isAgentExcluded` before installation detection, so retained tool
 directories do not authorize writes to rules excluded by the local configuration.
@@ -174,6 +174,24 @@ its copy still has the bytes `delivered` records but not the current render (an
 older CLI's render, such as Claude extras in a Qoder copy). Without a
 `delivered` entry for the copy nothing tells that render from an edit, so it
 is left alone.
+
+Rules get the same treatment for a render change (#946): when a CLI upgrade
+gives a tool its own rules format (a `RuleFormat` with `previousRenders`: Kiro,
+Qoder, CodeBuddy, WorkBuddy, Oh My Pi, and JoyCode, which had Cursor's render), the fast
+path rewrites each rule copy that still has the bytes `delivered` records but
+is not the current render, records the new bytes, and of a copy without an
+entry rewrites only one that is the team rule verbatim, which is what the older
+CLI wrote. A copy the member changed is kept and named when teamai would now
+deliver other bytes there. A destination that moved (WorkBuddy's project rules,
+from `.workbuddy/rules` to `.codebuddy/rules`) has no entry at its new path, so
+the fast path first reclaims the old copies (`LEGACY_RULE_DIRS`), writes the
+new path where it is missing, and records the change. The flat names of Oh My Pi
+and Kiro (`RuleFormat.flat`: `<ns>/<name>.md` became `<ns>.<name>.md`, in the
+same directory) work the same
+way through `movedFrom`: the copy at the old path is what lets the fast path
+write the new one, with or without a `delivered` file; the old copy goes while
+it has the recorded bytes or, with no entry, the team rule verbatim, and is
+named otherwise, since the tool does not read it.
 
 ### Why the main worktree, not `git-common-dir` (verified)
 

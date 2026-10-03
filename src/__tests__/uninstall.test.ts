@@ -1198,6 +1198,63 @@ describe('uninstall', () => {
     expect(await fse.pathExists(path.join(cursorRules, 'my-own-rule.mdc'))).toBe(true);
   });
 
+  it.each([
+    ['omp', true],
+    ['claude', false],
+  ])('names an edited flat OMP copy as kept only when uninstalling %s (#946)', async (agent, named) => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.outputFile(path.join(repoPath, 'rules', 'fe', 'style.md'), 'Frontend rule.\n');
+    const flat = path.join(homeDir, '.omp', 'agent', 'rules', 'fe.style.md');
+    await fse.outputFile(flat, '---\nalwaysApply: true\n---\n\nFrontend rule.\n');
+    await fse.ensureDir(path.join(homeDir, '.claude', 'rules'));
+    const localConfig = makeLocalConfig(homeDir, repoPath, { enabledAgents: ['omp', 'claude'] });
+    const { checkoutKey } = await import('../pull.js');
+    const delivered: Record<string, string> = {};
+    const { recordDelivered } = await import('../resources/delivered-copies.js');
+    await recordDelivered(delivered, flat);
+    await saveStateForScope({
+      ...await loadStateForScope(localConfig),
+      lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: 'r1', targets: [], delivered } },
+    }, localConfig);
+    await fse.writeFile(flat, '---\nalwaysApply: true\n---\n\nMy own wording.\n');
+    const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'owner/repo' }).toolPaths;
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths: { omp: defaults.omp, claude: defaults.claude } }) });
+    const warn = vi.mocked(log.warn);
+    warn.mockClear();
+
+    await uninstall({ force: true, agent });
+
+    expect(await fse.readFile(flat, 'utf8')).toContain('My own wording.');
+    expect(warn.mock.calls.some(([message]) => String(message).startsWith(`Kept ${flat}`))).toBe(named);
+  });
+
+  it("removes the flat OMP copy of a namespaced team rule on uninstall, not a member's file of that name (#946)", async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.outputFile(path.join(repoPath, 'rules', 'fe', 'style.md'), 'Frontend rule.\n');
+    const ompRules = path.join(homeDir, '.omp', 'agent', 'rules');
+    await fse.outputFile(path.join(ompRules, 'fe.style.md'), '---\nalwaysApply: true\n---\n\nFrontend rule.\n');
+    await fse.outputFile(path.join(ompRules, 'my-own.rule.md'), 'Mine.\n');
+    // The flat name of a team rule, but the member's own file: no record, not the render.
+    await fse.outputFile(path.join(repoPath, 'rules', 'be', 'api.md'), 'Backend rule.\n');
+    await fse.outputFile(path.join(ompRules, 'be.api.md'), 'My own backend notes.\n');
+
+    const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'owner/repo' }).toolPaths;
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: ['omp'] }),
+      teamConfig: makeTeamConfig({ toolPaths: { omp: defaults.omp } }),
+    });
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(path.join(ompRules, 'fe.style.md'))).toBe(false);
+    expect(await fse.readFile(path.join(ompRules, 'my-own.rule.md'), 'utf8')).toBe('Mine.\n');
+    expect(await fse.readFile(path.join(ompRules, 'be.api.md'), 'utf8')).toBe('My own backend notes.\n');
+  });
+
   // Regression: MCP cleanup used to run after ~/.teamai/ was deleted, so the
   // ownership manifest was already gone and removeAll became a no-op.
   it('卸载时移除 teamai 管理的 MCP server，并保留用户自建的', async () => {
@@ -1345,6 +1402,72 @@ describe('uninstall', () => {
 
     expect(await fse.readFile(excludeFile, 'utf8')).toBe(block);
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`Kept \`/.mcp.json\` in ${await fse.realpath(excludeFile)}`));
+  });
+
+  describe('CodeBuddy and WorkBuddy share a project\'s .codebuddy/rules (#946)', () => {
+    async function sharedFixture(agent: 'codebuddy' | 'workbuddy' | undefined, others: { disabled?: boolean } = {}) {
+      const { homeDir, repoPath } = await setupFixture(tmpDir);
+      const projectRoot = path.join(tmpDir, 'business-repo');
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('SHELL', '/bin/zsh');
+      const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' }).toolPaths;
+      const teamConfig = makeTeamConfig({ toolPaths: { codebuddy: defaults.codebuddy, workbuddy: defaults.workbuddy } });
+      const other = agent === 'codebuddy' ? 'workbuddy' : 'codebuddy';
+      const localConfig = makeLocalConfig(homeDir, repoPath, {
+        scope: 'project',
+        projectRoot,
+        ...(others.disabled ? { disabledAgents: [other] } : {}),
+        repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+      });
+      mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+      await fse.ensureDir(path.join(projectRoot, '.workbuddy'));
+      const copy = path.join(projectRoot, '.codebuddy', 'rules', 'team-rule.md');
+      await fse.outputFile(copy, '---\nalwaysApply: true\n---\n\n# Team Rule\n');
+      return copy;
+    }
+
+    it.each(['codebuddy', 'workbuddy'] as const)('uninstall --agent %s keeps the copy the other still reads', async (agent) => {
+      const copy = await sharedFixture(agent);
+
+      await uninstall({ force: true, agent });
+
+      expect(await fse.pathExists(copy)).toBe(true);
+    });
+
+    it.each(['codebuddy', 'workbuddy'] as const)('uninstall --agent %s removes the copy once the other is excluded', async (agent) => {
+      const copy = await sharedFixture(agent, { disabled: true });
+
+      await uninstall({ force: true, agent });
+
+      expect(await fse.pathExists(copy)).toBe(false);
+    });
+
+    it('removes an unedited copy an older pull left in .workbuddy/rules, and names an edited one with why', async () => {
+      const copy = await sharedFixture('workbuddy');
+      const legacy = (file: string) => path.join(path.dirname(path.dirname(path.dirname(copy))), '.workbuddy', 'rules', file);
+      await fse.outputFile(legacy('team-rule.md'), '# Team Rule');
+      await fse.outputFile(path.join(tmpDir, 'team-repo', 'rules', 'other.md'), 'Other rule.\n');
+      await fse.outputFile(legacy('other.md'), 'Other rule.\nMy own note.\n');
+
+      await uninstall({ force: true, agent: 'workbuddy' });
+
+      expect(await fse.pathExists(legacy('team-rule.md'))).toBe(false);
+      expect(await fse.readFile(legacy('other.md'), 'utf8')).toBe('Other rule.\nMy own note.\n');
+      const kept = vi.mocked(log.warn).mock.calls.map(([message]) => String(message))
+        .filter((message) => message.includes(legacy('other.md')));
+      expect(kept).toHaveLength(1);
+      expect(kept[0]).toContain('WorkBuddy reads a project\'s rules from .codebuddy/rules');
+      expect(kept[0]).not.toContain('Codex');
+    });
+
+    it('a full uninstall removes the copy, counted once', async () => {
+      const copy = await sharedFixture(undefined);
+
+      await uninstall({ force: true });
+
+      expect(await fse.pathExists(copy)).toBe(false);
+      expect(log.success).toHaveBeenCalledWith('Removed 1 rule files');
+    });
   });
 
   describe('the block protects a config holding a resolved value (#882)', () => {
@@ -1757,6 +1880,11 @@ describe('uninstall', () => {
     await fse.ensureDir(ocHookDir);
     await fse.writeFile(path.join(ocHookDir, 'HOOK.md'), '---\nname: [teamai] status-report\n---\n');
     await fse.writeFile(path.join(ocHookDir, 'handler.ts'), '// teamai');
+    // The entry teamai added to enable the hook, beside one of the user's.
+    const ocConfig = path.join(homeDir, '.openclaw', 'openclaw.json');
+    await fse.writeJson(ocConfig, {
+      hooks: { internal: { entries: { 'teamai-status-report': { enabled: true }, mine: { enabled: true } } } },
+    });
 
     const teamConfig = makeTeamConfig({
       toolPaths: {
@@ -1777,6 +1905,7 @@ describe('uninstall', () => {
 
     // The OpenClaw HOOK.md dir must be removed (regression: previously leaked).
     expect(await fse.pathExists(ocHookDir)).toBe(false);
+    expect(await fse.readJson(ocConfig)).toEqual({ hooks: { internal: { entries: { mine: { enabled: true } } } } });
   });
 
   it('project scope 卸载同时清掉用户级和项目级的 OpenCode plugin', async () => {
@@ -1935,6 +2064,145 @@ describe('uninstall', () => {
     await uninstall({ force: true, ...(scenario !== 'full uninstall' ? { agent: 'opencode' } : {}) });
     expect((await fse.readJson(config)).instructions).toBeUndefined();
     if (scenario === 'other tool') expect((await loadStateForScope(localConfig)).opencodeContextEntries).toEqual([]);
+  });
+
+  it('removes the OpenCode rules globs teamai owns from the user opencode.json, keeping the member\'s entries (#946)', async () => {
+    const homeDir = path.join(tmpDir, 'oc-home');
+    const repoPath = path.join(tmpDir, 'oc-team-repo');
+    await fse.ensureDir(path.join(repoPath, 'rules', 'fe'));
+    await fse.writeFile(path.join(repoPath, 'rules', 'team-rule.md'), '# Team Rule');
+    await fse.writeFile(path.join(repoPath, 'rules', 'fe', 'style.md'), '# FE');
+    const rulesDir = path.join(homeDir, '.config', 'opencode', 'rules');
+    await fse.ensureDir(path.join(rulesDir, 'fe'));
+    await fse.writeFile(path.join(rulesDir, 'team-rule.md'), '# Team Rule');
+    await fse.writeFile(path.join(rulesDir, 'fe', 'style.md'), '# FE');
+    const configFile = path.join(homeDir, '.config', 'opencode', 'opencode.json');
+    // `mine/` is no team namespace: its glob is the member's own entry.
+    await fse.writeJson(configFile, {
+      model: 'mine',
+      instructions: ['CONVENTIONS.md', `${rulesDir}/*.md`, `${rulesDir}/fe/*.md`, `${rulesDir}/mine/*.md`, 'rules/*.md'],
+    });
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        opencode: {
+          skills: '.opencode/skills', rules: '.opencode/rules',
+          mcp: '.config/opencode/opencode.json', mcpProject: 'opencode.json',
+          userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules' },
+        },
+      },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig });
+
+    await uninstall({ force: true });
+
+    expect(await fse.readJson(configFile)).toEqual({ model: 'mine', instructions: ['CONVENTIONS.md', `${rulesDir}/mine/*.md`] });
+  });
+
+  it('removes the project rules glob from .opencode/opencode.json and the old one from the root opencode.json (#946)', async () => {
+    const homeDir = path.join(tmpDir, 'oc-home');
+    const repoPath = path.join(tmpDir, 'oc-team-repo');
+    const projectRoot = path.join(tmpDir, 'oc-project');
+    await fse.ensureDir(path.join(repoPath, 'rules'));
+    await fse.writeFile(path.join(repoPath, 'rules', 'team-rule.md'), '# Team Rule');
+    await fse.ensureDir(path.join(projectRoot, '.opencode', 'rules'));
+    await fse.writeFile(path.join(projectRoot, '.opencode', 'rules', 'team-rule.md'), '# Team Rule');
+    const dotConfig = path.join(projectRoot, '.opencode', 'opencode.json');
+    const rootConfig = path.join(projectRoot, 'opencode.json');
+    await fse.writeJson(dotConfig, { instructions: ['docs/style.md', '.opencode/rules/**/*.md'] });
+    await fse.writeJson(rootConfig, { theme: 'dark', instructions: ['.opencode/rules/*.md'] });
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        opencode: {
+          skills: '.opencode/skills', rules: '.opencode/rules',
+          mcp: '.config/opencode/opencode.json', mcpProject: 'opencode.json',
+          userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules' },
+        },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'opencode' });
+
+    expect(await fse.readJson(dotConfig)).toEqual({ instructions: ['docs/style.md'] });
+    expect(await fse.readJson(rootConfig)).toEqual({ theme: 'dark' });
+  });
+
+  it('deletes the .opencode/opencode.json the rules glob alone filled, and keeps the root opencode.json (#946)', async () => {
+    const homeDir = path.join(tmpDir, 'oc-home');
+    const repoPath = path.join(tmpDir, 'oc-team-repo');
+    const projectRoot = path.join(tmpDir, 'oc-project');
+    await fse.ensureDir(path.join(repoPath, 'rules'));
+    await fse.writeFile(path.join(repoPath, 'rules', 'team-rule.md'), '# Team Rule');
+    await fse.ensureDir(path.join(projectRoot, '.opencode', 'rules'));
+    await fse.writeFile(path.join(projectRoot, '.opencode', 'rules', 'team-rule.md'), '# Team Rule');
+    const dotConfig = path.join(projectRoot, '.opencode', 'opencode.json');
+    const rootConfig = path.join(projectRoot, 'opencode.json');
+    // OpenCode adds `$schema` to a config it loads.
+    await fse.writeJson(dotConfig, { $schema: 'https://opencode.ai/config.json', instructions: ['.opencode/rules/**/*.md'] });
+    await fse.writeJson(rootConfig, { instructions: ['.opencode/rules/*.md'] });
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const teamConfig = makeTeamConfig({
+      toolPaths: {
+        opencode: {
+          skills: '.opencode/skills', rules: '.opencode/rules',
+          mcp: '.config/opencode/opencode.json', mcpProject: 'opencode.json',
+          userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules' },
+        },
+      },
+    });
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true, agent: 'opencode' });
+
+    expect(await fse.pathExists(dotConfig)).toBe(false);
+    expect(await fse.readJson(rootConfig)).toEqual({});
+  });
+
+  it('keeps a project .opencode/opencode.json that held only $schema and the recorded team instructions entry (#945, #946)', async () => {
+    const homeDir = path.join(tmpDir, 'oc-home');
+    const repoPath = path.join(tmpDir, 'oc-team-repo');
+    const projectRoot = path.join(tmpDir, 'oc-project');
+    await fse.ensureDir(repoPath);
+    const contextFile = path.join(projectRoot, '.opencode', 'teamai-context.md');
+    await fse.outputFile(contextFile, '<!-- [teamai:culture:start] -->\nBe kind.\n<!-- [teamai:culture:end] -->\n');
+    const dotConfig = path.join(projectRoot, '.opencode', 'opencode.json');
+    // OpenCode adds `$schema` to a config it loads.
+    await fse.writeJson(dotConfig, { $schema: 'https://opencode.ai/config.json', instructions: ['.opencode/teamai-context.md'] });
+
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const { toolPaths } = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' });
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig({ toolPaths }) });
+    await saveStateForScope({ ...await loadStateForScope(localConfig), opencodeContextEntries: [{ config: dotConfig, entry: '.opencode/teamai-context.md' }] }, localConfig);
+
+    await uninstall({ force: true, agent: 'opencode' });
+
+    expect(await fse.pathExists(contextFile)).toBe(false);
+    // Only the entry pull recorded goes; the file is not proven teamai's (#945).
+    expect(await fse.readJson(dotConfig)).toEqual({ $schema: 'https://opencode.ai/config.json' });
   });
 
   // A relocated Claude Code root (toolRoots) moves the HOME hook file, but the
@@ -2714,6 +2982,27 @@ describe('uninstall', () => {
     await uninstall({ force: true });
 
     expect(await fse.pathExists(stub)).toBe(false);
+  });
+
+  it('a project-scope uninstall leaves the SOUL.md rules block, which only a user-scope pull writes (#946)', async () => {
+    const projectRoot = path.join(tmpDir, 'hermes-project');
+    const homeDir = path.join(tmpDir, 'home');
+    const repoPath = path.join(projectRoot, '.teamai', 'team-repo');
+    await fse.ensureDir(path.join(repoPath, 'rules'));
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const hermesHome = path.join(tmpDir, 'hermes');
+    vi.stubEnv('HERMES_HOME', hermesHome);
+    const soul = path.join(hermesHome, 'SOUL.md');
+    const userBlock = `my own soul\n\n${TEAMAI_RULES_START}\nUser rule\n${TEAMAI_RULES_END}\n`;
+    await fse.outputFile(soul, userBlock);
+
+    const teamConfig = makeTeamConfig();
+    teamConfig.toolPaths.hermes = { skills: '.hermes/skills' };
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(projectRoot, repoPath, { scope: 'project', projectRoot }), teamConfig });
+    await uninstall({ force: true });
+
+    expect(await fse.readFile(soul, 'utf-8')).toBe(userBlock);
   });
 
   it('removes the stub Codex kept in the shared .agents/skills root, and nothing else there', async () => {

@@ -25,6 +25,8 @@ interface DoctorReport { ok: boolean; checks: CheckResult[] }
 describe('teamai doctor delivery checks (e2e)', () => {
   let sandbox: string;
   let home: string;
+  // Absolute: OpenCode resolves a relative entry from the session's cwd (#946).
+  const opencodeUserGlob = (): string => `${path.join(home, '.config', 'opencode', 'rules').split(path.sep).join('/')}/*.md`;
   let repo: string;
 
   function runDoctor(): DoctorReport {
@@ -169,11 +171,11 @@ describe('teamai doctor delivery checks (e2e)', () => {
     // the delivered copy with the render, so a placeholder is a stale copy.
     write(path.join(home, '.claude/agents/reviewer.md'), CLAUDE_AGENT_MD);
     write(path.join(home, '.codex/agents/reviewer.toml'), CODEX_AGENT_TOML);
-    write(path.join(home, '.codebuddy/rules/coding-style.md'), 'Coding style body\n');
+    write(path.join(home, '.codebuddy/rules/coding-style.md'), '---\nalwaysApply: true\n---\n\nCoding style body\n');
     write(path.join(home, '.codebuddy/agents/reviewer.md'), CLAUDE_AGENT_MD);
     write(path.join(home, '.config/opencode/rules/coding-style.md'), 'Coding style body\n');
     // The glob the pull adds; without it every .md above is inert.
-    write(path.join(home, '.config', 'opencode', 'opencode.json'), JSON.stringify({ instructions: ['rules/*.md'] }));
+    write(path.join(home, '.config', 'opencode', 'opencode.json'), JSON.stringify({ instructions: [opencodeUserGlob()] }));
     // The entry teamai renders for claude, placeholder resolved — the check
     // compares the value, so a hand-shaped entry of the same name is not it.
     write(path.join(home, '.claude.json'), JSON.stringify({
@@ -275,7 +277,7 @@ describe('teamai doctor delivery checks (e2e)', () => {
     expect(active.ok).toBe(false);
     expect(active.fix).toContain('inert');
 
-    write(path.join(home, '.config', 'opencode', 'opencode.json'), JSON.stringify({ instructions: ['rules/*.md'] }));
+    write(path.join(home, '.config', 'opencode', 'opencode.json'), JSON.stringify({ instructions: [opencodeUserGlob()] }));
   });
 
   it('passes a multiline env value the shell quotes across several lines', () => {

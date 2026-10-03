@@ -47,6 +47,11 @@ export function normalizeAgentType(name: string): string {
  */
 export const CODEX_TOOL_IDS = ['codex', 'codex-internal', 'tcodex'] as const satisfies readonly ToolName[];
 
+/** Whether `tool` runs Codex (`CODEX_TOOL_IDS`). */
+export function isCodexTool(tool: string): boolean {
+  return (CODEX_TOOL_IDS as readonly string[]).includes(tool);
+}
+
 /**
  * Tools whose Stop hook cannot deliver non-blocking model context.
  * CodeBuddy/WorkBuddy ignore stdout; Codex rejects Stop additionalContext.

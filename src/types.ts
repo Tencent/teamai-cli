@@ -39,11 +39,15 @@ export const ToolPathsSchema = z.object({
    * the hooks/MCP config file, so a tool whose user config lives under a different
    * prefix than its project config needs it too (Qoder CN: user `~/.qoder-cn/`,
    * project `<root>/.qoder/`). Tools whose two scopes share a prefix omit it.
+   *
+   * `rules: null` says the tool reads no rules directory in user scope, while
+   * its project scope keeps one (JoyCode, Pi): its user rules come from a file
+   * of its own (`userRulesFile`, #946).
    */
   userScope: z
     .object({
       skills: z.string().optional(),
-      rules: z.string().optional(),
+      rules: z.string().nullable().optional(),
       settings: z.string().optional(),
       agents: z.string().optional(),
       hooks: z.string().optional(),
@@ -395,8 +399,9 @@ export const TeamaiConfigSchema = z.object({
     // JoyCode currently does not provide a lifecycle hooks system or startup
     // adapter, so it intentionally has no `settings` path. Hook reconciliation
     // skips JoyCode cleanly without generating ghost files; users must sync
-    // manually via `teamai pull`.
-    joycode: { skills: '.joycode/skills', rules: '.joycode/rules', agents: '.joycode/agents' },
+    // manually via `teamai pull`. In user scope it reads no rules directory:
+    // its team rules are a block in ~/.joycode/rules.txt (#946).
+    joycode: { skills: '.joycode/skills', rules: '.joycode/rules', agents: '.joycode/agents', userScope: { rules: null } },
     qoder: {
       skills: '.qoder/skills',
       rules: '.qoder/rules',
@@ -489,27 +494,42 @@ export const TeamaiConfigSchema = z.object({
     // keeps one user extension and forwards the active cwd to hook-dispatch.
     // Profile overrides (PI_CODING_AGENT_DIR / PI_CONFIG_DIR) that relocate
     // the agent dir are not supported for hooks or MCP, same as the OMP adapter;
-    // model profiles do read PI_CODING_AGENT_DIR.
+    // model profiles do read PI_CODING_AGENT_DIR. Pi reads no rules
+    // directory: its user team rules are a block in ~/.pi/agent/AGENTS.md, and
+    // in a project teamai's extension adds them to the system prompt (#946).
     pi: {
       mcp: '.pi/agent/mcp.json',
       mcpProject: '.pi/mcp.json',
       skills: '.pi/skills',
-      rules: '.pi/rules',
       claudemd: 'AGENTS.md',
       userScope: {
         skills: '.pi/agent/skills',
-        rules: '.pi/agent/rules',
         claudemd: '.pi/agent/AGENTS.md',
       },
     },
     codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' },
-    openclaw: { skills: '.openclaw/skills', rules: '.openclaw/rules', claudemd: '.openclaw/workspace/AGENTS.md' },
+    // OpenClaw reads no rules directory: in user scope its team rules are a
+    // block in the workspace AGENTS.md, and a project gets none (#946).
+    openclaw: { skills: '.openclaw/skills', claudemd: '.openclaw/workspace/AGENTS.md' },
     hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
     // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
     // provider scans as user-dsh root (rank 400). dsh discovers both directory
     // bundles (<name>/SKILL.md) and flat Markdown files there natively.
     dsh: { skills: '.dsh/skills' },
-    workbuddy: { skills: '.workbuddy/skills', rules: '.workbuddy/rules', settings: '.workbuddy/settings.json', claudemd: 'AGENTS.md', agents: '.workbuddy/agents', mcp: '.workbuddy/mcp.json', mcpProject: '.workbuddy/mcp.json' },
+    // WorkBuddy runs CodeBuddy's engine: in a project it reads CodeBuddy's
+    // .codebuddy/rules, which the two share (one copy), and in user scope its
+    // own ~/.workbuddy/rules (#946). Its install probe stays .workbuddy
+    // (`isToolInstalledForConfig`), whatever directory its rules land in.
+    workbuddy: {
+      skills: '.workbuddy/skills',
+      rules: '.codebuddy/rules',
+      settings: '.workbuddy/settings.json',
+      claudemd: 'AGENTS.md',
+      agents: '.workbuddy/agents',
+      mcp: '.workbuddy/mcp.json',
+      mcpProject: '.workbuddy/mcp.json',
+      userScope: { rules: '.workbuddy/rules' },
+    },
     // OpenCode reads project config from <root>/.opencode/ but user config from
     // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
     // read natively from .claude/skills, but we write .opencode/skills so an
@@ -902,6 +922,19 @@ export interface DeliveryTarget {
    * rule twice.
    */
   supersedes?: string;
+  /**
+   * The other tools that read this same `dest`, served by the one copy: in a
+   * project CodeBuddy and WorkBuddy both read `.codebuddy/rules` (#946).
+   */
+  sharedWith?: string[];
+  /**
+   * Where an older teamai delivered this copy for the same tool, before the
+   * tool's file name changed: OMP's `<ns>/<name>.md`, now `<ns>.<name>.md`.
+   * `dest` has no record yet, so the "Already synced" pull writes it while
+   * the old copy is there, and reclaims that copy while it is unedited: on
+   * record, or the team rule verbatim (a full sync's stale sweep does too).
+   */
+  movedFrom?: string;
   /**
    * The exact bytes `pullItem` writes at `dest`, for a handler that renders
    * its destination rather than copying a tree there. It is what tells a copy
@@ -2176,7 +2209,8 @@ function relocateToolPaths(
     const userScope: NonNullable<z.infer<typeof ToolPathsSchema>['userScope']> = {};
     for (const field of USER_SCOPE_ROOT_FIELDS) {
       const value = paths.userScope[field];
-      if (value !== undefined) userScope[field] = moved(value);
+      if (value === null) userScope.rules = null;
+      else if (value !== undefined) userScope[field] = moved(value);
     }
     out.userScope = userScope;
   }
@@ -2256,15 +2290,18 @@ export function scopedToolPaths(
       out[tool] = paths;
       continue;
     }
-    out[tool] = {
+    const scoped = {
       ...paths,
       ...(us.skills !== undefined ? { skills: us.skills } : {}),
-      ...(us.rules !== undefined ? { rules: us.rules } : {}),
+      ...(typeof us.rules === 'string' ? { rules: us.rules } : {}),
       ...(us.settings !== undefined ? { settings: us.settings } : {}),
       ...(us.agents !== undefined ? { agents: us.agents } : {}),
       ...(us.hooks !== undefined ? { hooks: us.hooks } : {}),
       ...(us.claudemd !== undefined ? { claudemd: us.claudemd } : {}),
     };
+    // `rules: null`: no rules directory in user scope.
+    if (us.rules === null) delete scoped.rules;
+    out[tool] = scoped;
   }
   return out;
 }

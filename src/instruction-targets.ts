@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { isToolInstalledForConfig } from './resources/base.js';
+import { getsRulesFromExtension } from './resources/rule-format.js';
 import { pathExists, readFileSafe, remove, writeFile } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
@@ -39,13 +40,21 @@ import {
 
 type ToolPaths = TeamaiConfig['toolPaths'][string];
 
+/**
+ * A file of a tool, relative to the tool's base dir for the scope
+ * (`resolveToolBaseDir`) or absolute; undefined when it has none.
+ */
+type ToolFile = (paths: ToolPaths) => string | undefined | Promise<string | undefined>;
+
 interface TargetEntry {
+  /** The file this tool reads the blocks from in this scope. */
+  readonly file: ToolFile;
   /**
-   * The file this tool reads the blocks from, relative to the tool's base dir
-   * for the scope (`resolveToolBaseDir`) or absolute. Undefined when the tool
-   * takes no file in this scope.
+   * For a tool with no rules format, in user scope: the file it reads the
+   * team rules from (#938, #946), the blocks' `file` unless `file` is given,
+   * and how doctor names it.
    */
-  readonly file: (paths: ToolPaths) => string | undefined;
+  readonly teamRules?: { readonly label: string; readonly file?: ToolFile };
   /** The tool gets this scope's blocks from teamai's session hook or extension instead of a file. */
   readonly hook?: boolean;
   /** The most characters the hook channel takes; the tool drops a larger text whole. */
@@ -65,6 +74,26 @@ interface TargetEntry {
 
 /** The tool's `claudemd` path from the team's `toolPaths` (honors `toolRoots`). */
 const configured = (paths: ToolPaths): string | undefined => paths.claudemd;
+
+/**
+ * OpenClaw's workspace AGENTS.md, in the workspace its hooks resolve
+ * (`resolveOpenclawWorkspaceDir`); none when no workspace resolves, which is
+ * also what says OpenClaw is not installed here (`isInstructionToolInstalled`).
+ */
+const openclawWorkspace = async (): Promise<string | undefined> => {
+  const { resolveOpenclawWorkspace } = await import('./openclaw-hooks.js');
+  const workspace = await resolveOpenclawWorkspace();
+  // An openclaw.json teamai cannot read may name another workspace: guess none (#946).
+  return workspace.kind === 'found' ? path.join(workspace.dir, 'AGENTS.md') : undefined;
+};
+
+/** DeepSeek Harness reads `$DSH_HOME/AGENTS.md` (`~/.dsh` by default) in its first request. */
+const dshAgentsMd = async (): Promise<string> => {
+  const { resolveDshHome } = await import('./dsh-hooks.js');
+  return path.join(resolveDshHome(), 'AGENTS.md');
+};
+
+const codexUser: TargetEntry = { file: configured, teamRules: { label: 'Codex AGENTS.md' }, retired: [] };
 
 /**
  * teamai's own always-applied file in the tool's rules directory. A team's
@@ -105,11 +134,24 @@ const USER_TARGETS: Readonly<Record<string, TargetEntry>> = {
   // RULES.md is an always-applied rule beside OMP's single user context file,
   // which ~/.omp/agent/AGENTS.md would take from ~/.agents/AGENTS.md.
   omp: { file: () => '.omp/agent/RULES.md', retired: ['.omp/agent/AGENTS.md'] },
-  pi: { file: configured, retired: [] },
+  // Pi reads no user rules directory: the team rules sit beside the blocks.
+  pi: { file: configured, teamRules: { label: 'Pi AGENTS.md' }, retired: [] },
+  // $CODEX_HOME/AGENTS.md (a `toolRoots` entry moves the claudemd path).
+  codex: codexUser,
+  'codex-internal': codexUser,
+  tcodex: codexUser,
+  // ZCode reads ~/.zcode/AGENTS.md as its user context; teamai writes it only the team rules.
+  zcode: { file: () => undefined, teamRules: { label: 'ZCode AGENTS.md', file: () => '.zcode/AGENTS.md' }, retired: [] },
+  dsh: { file: () => undefined, teamRules: { label: 'DeepSeek Harness AGENTS.md', file: dshAgentsMd }, retired: [] },
+  // JoyCode reads its user rules from one plain text file.
+  joycode: { file: () => undefined, teamRules: { label: 'JoyCode rules.txt', file: () => '.joycode/rules.txt' }, retired: [] },
   // WorkBuddy reads user rules from ~/.workbuddy/rules; nothing else reads them.
   workbuddy: { file: contextRule('.md'), header: ALWAYS_APPLY, owned: true, retired: ['AGENTS.md'] },
   codebuddy: { file: configured, retired: [] },
-  openclaw: { file: configured, retired: [] },
+  // A profile or OPENCLAW_WORKSPACE_DIR moves the workspace off the default
+  // path. The default workspace is not retired: OpenClaw's default profile
+  // still reads it.
+  openclaw: { file: openclawWorkspace, teamRules: { label: 'OpenClaw workspace AGENTS.md' }, retired: [] },
   // Registered in the user opencode.json `instructions`; AGENTS.md beside it stays the member's.
   opencode: { file: () => '.config/opencode/teamai-context.md', owned: true, retired: [] },
 };
@@ -135,7 +177,9 @@ const PROJECT_TARGETS: Readonly<Record<string, TargetEntry>> = {
   pi: { file: () => undefined, hook: true, retired: ['AGENTS.md'] },
   workbuddy: { file: codebuddyProjectRule, header: ALWAYS_APPLY, owned: true, retired: ['AGENTS.md'] },
   codebuddy: { file: codebuddyProjectRule, header: ALWAYS_APPLY, owned: true, retired: ['.codebuddy/CODEBUDDY.md'] },
-  openclaw: { file: configured, retired: [] },
+  // OpenClaw's only project file is the shared AGENTS.md; it reads no
+  // project .openclaw/workspace (#946).
+  openclaw: { file: () => undefined, retired: ['.openclaw/workspace/AGENTS.md'] },
   // Codex reads no project file only it reads; its session-start and
   // subagent-start hooks add the blocks (#938, #940).
   codex: codexHook,
@@ -215,7 +259,7 @@ export interface InstructionBlocks {
  * dir or absolute (see `TargetEntry.file`). Tools absent from the table keep
  * their configured `claudemd` path.
  */
-export function instructionTargetFile(tool: string, paths: ToolPaths, scope: Scope): string | undefined {
+export async function instructionTargetFile(tool: string, paths: ToolPaths, scope: Scope): Promise<string | undefined> {
   return (entryFor(tool, scope)?.file ?? configured)(paths);
 }
 
@@ -224,10 +268,12 @@ export function instructionTargetFile(tool: string, paths: ToolPaths, scope: Sco
  * `tool`'s blocks to in `scope`: the defaults, and the `claudemd` the team's
  * `toolPaths` gives a tool whose target moved off it.
  */
-export function retiredInstructionFiles(tool: string, paths: ToolPaths, scope: Scope): readonly string[] {
+export async function retiredInstructionFiles(tool: string, paths: ToolPaths, scope: Scope): Promise<readonly string[]> {
   const entry = entryFor(tool, scope);
   if (!entry) return [];
-  const previous = paths.claudemd === instructionTargetFile(tool, paths, scope) ? undefined : paths.claudemd;
+  // OpenClaw's default workspace stays read by its default profile (#946).
+  if (tool === 'openclaw') return entry.retired;
+  const previous = paths.claudemd === await instructionTargetFile(tool, paths, scope) ? undefined : paths.claudemd;
   return previous === undefined || entry.retired.includes(previous) ? entry.retired : [...entry.retired, previous];
 }
 
@@ -298,7 +344,9 @@ export async function instructionHookChannel(
     const expected = tool === 'omp' ? buildOmpExtensionSource() : buildPiExtensionSource();
     return {
       ready: await readFileSafe(file) === expected,
-      fix: `${file} is missing or out of date, so ${tool} sessions in this project get no team instructions. ${rerun}`,
+      // Pi's extension also carries a project's team rules (#946); OMP reads its own rules files.
+      fix: `${file} is missing or out of date, so ${tool} sessions in this project get no team instructions`
+        + `${getsRulesFromExtension(tool) ? ' or rules' : ''}. ${rerun}`,
     };
   }
   if (tool === 'hermes') {
@@ -386,13 +434,67 @@ function managedBlockBody(block: string): string {
 }
 
 /** Absolute instruction file of `tool` in the active scope, or undefined when it takes none. */
-export function instructionTargetPath(
+export async function instructionTargetPath(
   tool: string,
   paths: ToolPaths,
   localConfig: LocalConfig,
-): string | undefined {
-  const file = instructionTargetFile(tool, paths, localConfig.scope);
+): Promise<string | undefined> {
+  const file = await instructionTargetFile(tool, paths, localConfig.scope);
   return file === undefined ? undefined : path.resolve(resolveToolBaseDir(tool, localConfig), file);
+}
+
+/** The file a tool with no rules format reads the team rules from in user scope (`userRulesFile`). */
+export interface UserRulesFile {
+  /** Absolute; undefined when the tool has none here (the team's `toolPaths` gives it no `claudemd`, or no OpenClaw workspace resolves). */
+  readonly file: string | undefined;
+  /** Whether the tool is installed, probed the way its instruction blocks are, so pull writes the block. */
+  readonly installed: boolean;
+  /** How doctor names the file: "Team rules are inlined in <label>". */
+  readonly label: string;
+  /** The tool's config, which names the file, could not be read: pull writes no block and doctor fails (OpenClaw's openclaw.json). */
+  readonly unreadable?: { readonly config: string; readonly error: string };
+}
+
+/**
+ * What happened and what to do when `tool`'s config, which names its rules
+ * file, cannot be read (`UserRulesFile.unreadable`): pull warns with it and
+ * doctor's fix says it.
+ */
+export function unreadableRulesFileMessage(tool: string, unreadable: NonNullable<UserRulesFile['unreadable']>): string {
+  return `teamai cannot read ${unreadable.config} as plain JSON (${unreadable.error}), so it cannot tell which `
+    + `workspace ${tool} reads: it writes no team-rules block, and ${tool} gets none of the team rules from teamai. `
+    + 'Make that file plain JSON (no comments or trailing commas), then run `teamai pull`.';
+}
+
+/** Whether `tool` reads the team rules from a file of its own in user scope. */
+export function readsTeamRulesFromFile(tool: string): boolean {
+  return entryFor(tool, 'user')?.teamRules !== undefined;
+}
+
+/**
+ * The file `tool` reads the team rules from in this scope: one only it reads,
+ * in its home, for a tool with no rules format in user scope (#938, #946);
+ * undefined for every other tool and scope. The rules writer, doctor and
+ * uninstall all ask here.
+ */
+export async function userRulesFile(tool: string, paths: ToolPaths, localConfig: LocalConfig): Promise<UserRulesFile | undefined> {
+  if (localConfig.scope !== 'user') return undefined;
+  const entry = entryFor(tool, 'user');
+  if (entry?.teamRules === undefined) return undefined;
+  const { label } = entry.teamRules;
+  if (tool === 'openclaw') {
+    // Installed where its workspace resolves, or where openclaw.json says
+    // where it is in a form teamai cannot read.
+    const { resolveOpenclawWorkspace } = await import('./openclaw-hooks.js');
+    const workspace = await resolveOpenclawWorkspace();
+    if (workspace.kind === 'unreadable-config') {
+      return { file: undefined, installed: true, label, unreadable: { config: workspace.file, error: workspace.error } };
+    }
+    return { file: workspace.kind === 'found' ? path.join(workspace.dir, 'AGENTS.md') : undefined, installed: workspace.kind === 'found', label };
+  }
+  const relative = await (entry.teamRules.file ?? entry.file)(paths);
+  const file = relative === undefined ? undefined : path.resolve(resolveToolBaseDir(tool, localConfig), relative);
+  return { file, installed: await isInstructionToolInstalled(tool, paths, localConfig), label };
 }
 
 /**
@@ -400,12 +502,12 @@ export function instructionTargetPath(
  * ownership its entry declares. Only teamai's `teamai-context` file takes
  * them; a configured file is the member's.
  */
-export function instructionTargetAt(tool: string, file: string, scope: Scope, paths: ToolPaths): InstructionTarget {
+export async function instructionTargetAt(tool: string, file: string, scope: Scope, paths: ToolPaths): Promise<InstructionTarget> {
   const entry = entryFor(tool, scope);
   // teamai's file is the one its entry generates; the team's configured
   // `claudemd` (the fallback without `rules`) is the member's, whatever its name.
   const own = path.basename(file).startsWith(`${TEAMAI_CONTEXT_RULE_NAME}.`)
-    && instructionTargetFile(tool, paths, scope) !== paths.claudemd;
+    && await instructionTargetFile(tool, paths, scope) !== paths.claudemd;
   return { path: file, tools: [], recall: false, header: own ? entry?.header : undefined, owned: own ? entry?.owned : undefined };
 }
 
@@ -414,13 +516,13 @@ export function instructionTargetAt(tool: string, file: string, scope: Scope, pa
  * A tool's current target is not among them: a tool that is not installed
  * here may still be installed by a teammate who shares the file (#945).
  */
-function retiredTargets(toolPaths: Record<string, ToolPaths>, localConfig: LocalConfig): Map<string, InstructionTarget> {
-  const current = new Set(Object.entries(toolPaths).map(([tool, paths]) => instructionTargetPath(tool, paths, localConfig)));
+async function retiredTargets(toolPaths: Record<string, ToolPaths>, localConfig: LocalConfig): Promise<Map<string, InstructionTarget>> {
+  const current = new Set(await Promise.all(Object.entries(toolPaths).map(([tool, paths]) => instructionTargetPath(tool, paths, localConfig))));
   const known = new Map<string, InstructionTarget>();
   const table = localConfig.scope === 'user' ? USER_TARGETS : PROJECT_TARGETS;
   for (const tool of Object.keys(table)) {
     const baseDir = resolveToolBaseDir(tool, localConfig);
-    for (const retired of retiredInstructionFiles(tool, toolPaths[tool] ?? {}, localConfig.scope)) {
+    for (const retired of await retiredInstructionFiles(tool, toolPaths[tool] ?? {}, localConfig.scope)) {
       const file = path.resolve(baseDir, retired);
       if (!current.has(file) && !known.has(file)) known.set(file, { path: file, tools: [], recall: false });
     }
@@ -441,6 +543,14 @@ export async function isInstructionToolInstalled(tool: string, paths: ToolPaths,
   // teamai installs the OMP extension only where ~/.omp exists; a project's
   // own .omp/ says nothing about this member using OMP.
   if (tool === 'omp') return pathExists(path.join(getUserHome(), '.omp'));
+  // OpenClaw is installed where its workspace resolves, whatever ~/.openclaw
+  // holds; its target file is there only then (`openclawWorkspace`).
+  if (tool === 'openclaw') return true;
+  // DeepSeek Harness runs from $DSH_HOME (`~/.dsh` by default), whatever ~/.dsh holds.
+  if (tool === 'dsh') {
+    const { isDshInstalled } = await import('./dsh-hooks.js');
+    return isDshInstalled();
+  }
   // teamai installs the Pi extension in ~/.pi/agent/extensions when ~/.pi
   // exists, so a project needs no .pi/ of its own.
   if (tool === 'pi' && await pathExists(path.join(getUserHome(), '.pi'))) return true;
@@ -463,10 +573,10 @@ export async function resolveInstructionTargets(
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
   for (const [tool, paths] of Object.entries(toolPaths)) {
     const entry = entryFor(tool, localConfig.scope);
-    const file = instructionTargetPath(tool, paths, localConfig);
+    const file = await instructionTargetPath(tool, paths, localConfig);
     if (isAgentExcluded(localConfig, tool)) {
       if (file) inUse.add(file);
-      for (const retired of retiredInstructionFiles(tool, paths, localConfig.scope)) {
+      for (const retired of await retiredInstructionFiles(tool, paths, localConfig.scope)) {
         inUse.add(path.resolve(resolveToolBaseDir(tool, localConfig), retired));
       }
       continue;
@@ -492,13 +602,13 @@ export async function resolveInstructionTargets(
     }
     if (!file || !await isInstructionToolInstalled(tool, paths, localConfig)) continue;
     inUse.add(file);
-    const target = targets.get(file) ?? instructionTargetAt(tool, file, localConfig.scope, paths);
+    const target = targets.get(file) ?? await instructionTargetAt(tool, file, localConfig.scope, paths);
     // The subagent block only where every tool reading the file has the subagent.
     target.recall = Boolean(paths.agents) && (target.tools.length === 0 || target.recall);
     target.tools.push(tool);
     targets.set(file, target);
   }
-  const stale = [...retiredTargets(toolPaths, localConfig).values()].filter((t) => !inUse.has(t.path));
+  const stale = [...(await retiredTargets(toolPaths, localConfig)).values()].filter((t) => !inUse.has(t.path));
   // OpenCode reads ~/.claude/CLAUDE.md while its own user AGENTS.md does not
   // exist; when Claude's blocks are there, a second copy would duplicate them.
   // That holds for blocks an excluded Claude left there too: OpenCode reads
@@ -526,7 +636,10 @@ export async function retiredFilesOfReached(
   const writers = new Map<string, string[]>();
   for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!hooks.some((hook) => hook.tool === tool) && !await isInstructionToolInstalled(tool, paths, localConfig)) continue;
-    for (const file of retiredInstructionFiles(tool, paths, localConfig.scope)) {
+    // A tool with no file and no hook channel here (OpenClaw in a project, #946)
+    // has no replacement to wait for; a hook tool whose hook is not installed does.
+    if (!entryFor(tool, localConfig.scope)?.hook && await instructionTargetPath(tool, paths, localConfig) === undefined) continue;
+    for (const file of await retiredInstructionFiles(tool, paths, localConfig.scope)) {
       const absolute = path.resolve(resolveToolBaseDir(tool, localConfig), file);
       writers.set(absolute, [...writers.get(absolute) ?? [], tool]);
     }
@@ -549,7 +662,7 @@ export async function registerOpencodeContext(
   files: readonly InstructionFileResult[],
 ): Promise<string | null> {
   const paths = scopedToolPaths(teamConfig, localConfig).opencode;
-  const contextFile = paths && instructionTargetPath('opencode', paths, localConfig);
+  const contextFile = paths && await instructionTargetPath('opencode', paths, localConfig);
   if (!contextFile) return null;
   const wanted = resolved.targets.some((target) => target.path === contextFile);
   if (!wanted && !resolved.stale.some((target) => target.path === contextFile)) return null;
