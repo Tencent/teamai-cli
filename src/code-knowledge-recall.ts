@@ -12,6 +12,7 @@ import matter from 'gray-matter';
 
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { tokenize, tokenCount, MAX_TOKENIZE_CHARS } from './utils/tokenizer.js';
+import { caseFoldKey } from './manifest-schema.js';
 
 export interface SourceAnchor {
   path: string;
@@ -227,7 +228,11 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
   return snippet;
 }
 
-async function loadWikiPages(wikiRoot: string, depth: 'route' | 'context' | 'lookup'): Promise<PageDoc[]> {
+async function loadWikiPages(
+  wikiRoot: string,
+  depth: 'route' | 'context' | 'lookup',
+  withheldCodebases: string[] = [],
+): Promise<PageDoc[]> {
   const pages: PageDoc[] = [];
 
   if (depth === 'route') {
@@ -257,6 +262,15 @@ async function loadWikiPages(wikiRoot: string, depth: 'route' | 'context' | 'loo
     projectDirs = entries.filter(e => e.isDirectory()).map(e => e.name);
   } catch {
     return pages;
+  }
+
+  // A codebase slug a role or project declared under `resources.wiki` but did
+  // not select stays out of recall for this directory (#912), the same way an
+  // inactive docs namespace stays out. Case-folded: `evidence/code/Payments/`
+  // and a declared `payments` are the same slug on a case-insensitive filesystem.
+  if (withheldCodebases.length > 0) {
+    const withheld = new Set(withheldCodebases.map(caseFoldKey));
+    projectDirs = projectDirs.filter((project) => !withheld.has(caseFoldKey(project)));
   }
 
   for (const project of projectDirs) {
@@ -436,15 +450,17 @@ export interface QueryCodeKnowledgeOptions {
   limit?: number;
   /** route: 只返回路由建议；context: 搜索 overview+modules+docs；lookup: 全量搜索 */
   depth?: 'route' | 'context' | 'lookup';
+  /** Codebase slugs (evidence/code/<slug>/) a role or project declared under `resources.wiki` but did not activate (#912). */
+  withheldCodebases?: string[];
 }
 
 export async function queryCodeKnowledge(
   query: string,
   options: QueryCodeKnowledgeOptions,
 ): Promise<CodeKnowledgeResult[]> {
-  const { wikiRoot, limit = 5, depth = 'context' } = options;
+  const { wikiRoot, limit = 5, depth = 'context', withheldCodebases = [] } = options;
 
-  const pages = await loadWikiPages(wikiRoot, depth);
+  const pages = await loadWikiPages(wikiRoot, depth, withheldCodebases);
   if (pages.length === 0) return [];
 
   if (depth === 'route') {

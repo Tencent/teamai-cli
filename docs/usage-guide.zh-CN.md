@@ -1791,6 +1791,18 @@ teamai codebase --lint --output /path/to/repo
 
 `.teamai/pending-review.jsonl` 中的待审改动可用 `teamai review` 查看。用 `teamai review <id> --apply --dry-run`、`teamai review <id> --reject --dry-run` 或 `teamai review --all-apply --max-risk medium --dry-run` 预览处理决定。应用预览会执行与真实应用相同的目标文件和托管章节校验，但不会修改文档或移除待审项；批量预览保留相同的类型与风险筛选。处理预览的 `--json` 输出包含 `dryRun: true`，其中 `ok` 表示通过校验，不表示已写入。去掉 `--dry-run` 才会执行处理。
 
+**按 namespace 分发 wiki。** 在带有 `manifest/projects.yaml` 的团队仓库中，`recall` 对 `teamwiki/evidence/code/<slug>/` 采用与 docs 相同的作用域规则：只要有任一角色或项目在 `resources.wiki` 中列出某个 codebase slug，它就只分发给激活了它的成员；未声明的 slug 仍然共享：
+
+```yaml
+# manifest/projects.yaml
+projects:
+  - id: svc-a
+    resources:
+      wiki: [svc-a]     # 只有激活 svc-a 时才能看到 evidence/code/svc-a/
+```
+
+这个 slug 就是 `teamai codebase --project <slug>`（或 `teamai import`）写入 `evidence/code/` 时用的那个值，它与 manifest 的 project id 没有必然关系，按实际提取时用的那个值声明即可。旧式用法（没有角色、没有 `projects.yaml`）会搜索所有 codebase，和之前一样。
+
 ### Dashboard
 
 ```bash

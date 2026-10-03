@@ -71,7 +71,7 @@ export const NamespaceSegmentSchema = z.string().min(1).refine(isSafeNamespaceSe
  * writes back carries one only when an admin declared it. A new type is one
  * entry here plus one line in the shape below.
  */
-export const HAND_DECLARED_RESOURCE_TYPES = ['env', 'hooks', 'mcp', 'models', 'docs'] as const;
+export const HAND_DECLARED_RESOURCE_TYPES = ['env', 'hooks', 'mcp', 'models', 'docs', 'wiki'] as const;
 
 export type HandDeclaredResourceType = typeof HAND_DECLARED_RESOURCE_TYPES[number];
 
@@ -99,6 +99,12 @@ export const HandDeclaredNamespacesShape = {
   mcp: OptionalNamespaceList,
   models: OptionalNamespaceList,
   docs: DocsNamespaceList,
+  // Scopes `teamwiki/evidence/code/<slug>/` recall by project/role (#912), the
+  // same way `docs` already scopes `docs/<namespace>/`. The slug is a `teamai
+  // codebase --project <slug>` output directory name, unrelated to a manifest
+  // project id — a team picks one it already uses so declaring it needs no
+  // new convention.
+  wiki: OptionalNamespaceList,
 } satisfies Record<HandDeclaredResourceType, z.ZodOptional<z.ZodArray<z.ZodType<string>>>>;
 
 /**
