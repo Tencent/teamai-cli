@@ -1,5 +1,5 @@
 /**
- * E2E (#900 C5): a dry run of `roles add/remove/update` and
+ * E2E (#900 C1, C5): a dry run of `remove`, `roles add/remove/update` and
  * `projects add/update/remove` leaves the team clone exactly as it was.
  *
  * These commands used to pull before their dry-run guard, and `pullRepo` falls
@@ -316,4 +316,15 @@ describe.each([
     expect(removed.output).toContain('[dry-run] Would remove project "alpha"');
   });
 
+  it('remove keeps the local commits and state, and resolves names against origin', async () => {
+    const fixture = setUp();
+
+    // fresh.md exists only on origin, so a stale checkout would answer "not found".
+    const result = await dryRun(fixture, ['remove', 'rules', 'fresh', 'doomed']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('Will remove 2 rules:');
+    expect(result.output).toContain('  - fresh');
+    expect(result.output).toContain('  - doomed');
+    expect(result.output).toContain('Dry run — no changes made');
+  });
 });
