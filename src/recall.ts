@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { requireInit, detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope } from './config.js';
-import { loadIndex, buildIndex, search, isLegacyIndex } from './utils/search-index.js';
+import { loadIndex, buildIndex, indexInMemory, search, isLegacyIndex } from './utils/search-index.js';
 import type { BuildIndexOptions, SearchResult } from './utils/search-index.js';
 import { ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
@@ -370,11 +370,12 @@ async function recordRun(
  *
  * 返回索引和 learnings 文件的实际基础路径（供 formatResults 输出正确的 File: 路径）。
  * `build-failed` when there was nothing to load and the build failed, which it
- * has already said.
+ * has already said. With `dryRun`, a rebuild is searched in memory, not saved.
  */
 async function loadOrBuildScopeIndex(
   localConfig: LocalConfig,
   scopeLabel: 'user' | 'project',
+  dryRun = false,
 ): Promise<{ index: SearchIndex; learningsBase: string } | 'build-failed' | null> {
   // Route the project branch through getProjectSearchIndexPath (partition-aware,
   // per checkout in self mode), but preserve the historical fallback to ~/.teamai
@@ -468,7 +469,7 @@ async function loadOrBuildScopeIndex(
       // this project's would (#808). The probe runs only here, when an index
       // is built, never on a plain recall.
       const { indexableLearningsRoots } = await import('./utils/learnings-roots.js');
-      await buildIndex({
+      const buildOptions: BuildIndexOptions = {
         learningsDirs: [pendingLearningsDir(localConfig), ...await indexableLearningsRoots(localConfig)],
         learningsNamespaces,
         docsDir: await pathExists(docsDir) ? docsDir : undefined,
@@ -479,8 +480,13 @@ async function loadOrBuildScopeIndex(
         votesDir: votesExist ? votesDir : undefined,
         indexPath,
         partial,
-      });
-      index = await loadIndex(indexPath);
+      };
+      if (dryRun) {
+        index = await indexInMemory(buildOptions);
+      } else {
+        await buildIndex(buildOptions);
+        index = await loadIndex(indexPath);
+      }
     } catch (e) {
       const cause = e instanceof Error ? e.message : String(e);
       if (partial && index) {
@@ -600,7 +606,7 @@ export async function recall(
   if (projectConfig) {
     // Project mode: project scope first.
     try {
-      const result = await loadOrBuildScopeIndex(projectConfig, 'project');
+      const result = await loadOrBuildScopeIndex(projectConfig, 'project', options.dryRun);
       if (result === 'build-failed') indexBuildFailed = true;
       else if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'project', config: projectConfig, learningsBase: result.learningsBase });
@@ -613,7 +619,7 @@ export async function recall(
       try {
         const userConfig = await loadLocalConfigForScope('user', undefined, { dryRun: options.dryRun });
         if (userConfig) {
-          const result = await loadOrBuildScopeIndex(userConfig, 'user');
+          const result = await loadOrBuildScopeIndex(userConfig, 'user', options.dryRun);
           if (result === 'build-failed') indexBuildFailed = true;
           else if (result && result.index.entries.length > 0) {
             scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
@@ -627,7 +633,7 @@ export async function recall(
     // User mode: user scope only.
     try {
       const { localConfig: userConfig } = await requireInit({ dryRun: options.dryRun });
-      const result = await loadOrBuildScopeIndex(userConfig, 'user');
+      const result = await loadOrBuildScopeIndex(userConfig, 'user', options.dryRun);
       if (result === 'build-failed') indexBuildFailed = true;
       else if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
@@ -737,17 +743,17 @@ export async function recall(
   // Limit to top 5
   const topResults = allResults.slice(0, 5);
 
-  // Record quality signal for contribute-check's knowledge-gap detection.
-  // Best-effort and independent of dry-run/verbosity — misses matter too.
-  // The run, a miss included, goes to the active scope's recall log, where the
-  // hooks join it to the docs the session then opens (#884). Not under
-  // --dry-run, nor where votes must not reach the team (#787).
+  // Record quality signal for contribute-check's knowledge-gap detection,
+  // misses included. The run, a miss included, goes to the active scope's
+  // recall log, where the hooks join it to the docs the session then opens
+  // (#884). Neither under --dry-run (#900); the log not where votes must not
+  // reach the team (#787).
   let runId: string | undefined;
-  if (process.env.TEAMAI_RECALL_DISABLED !== '1') {
+  if (process.env.TEAMAI_RECALL_DISABLED !== '1' && !options.dryRun) {
     const session = await agentSessionFromEnv();
     recordRecallQuality(session.id ?? deriveSessionId({}), topResults);
     const activeConfig = projectConfig ?? scopeIndexes[0]?.config;
-    if (activeConfig && !options.dryRun && !projectUnreadable) {
+    if (activeConfig && !projectUnreadable) {
       runId = await recordRun(activeConfig, topResults, session, options.caller, projectConfig !== null);
     }
   }

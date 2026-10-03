@@ -941,8 +941,9 @@ program
   .option('--by-repo', 'Break the local event log down per repository')
   .option('--by-time', 'Show local event log activity by hour of day')
   .action(async (cmdOpts) => {
+    const globalOpts = program.opts() as GlobalOptions;
     const { showStats } = await import('./stats.js');
-    await showStats({ byRepo: cmdOpts.byRepo, byTime: cmdOpts.byTime });
+    await showStats({ byRepo: cmdOpts.byRepo, byTime: cmdOpts.byTime, dryRun: globalOpts.dryRun });
   });
 
 // ─── Session subcommands ──────────────────────────────────

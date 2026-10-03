@@ -1274,7 +1274,7 @@ teamai recall "GPU 内存不足"
 
 recall 会为返回的每篇文档计数（`recalled_count`）。运行 recall 的会话在 run 之后 24 小时内打开某篇返回的文档，该文档即被**采纳**，并获得一次 upvote（`upvoted_count`）。采纳指打开文档：如果 `teamai-recall` subagent 总结了某篇文档，而主 agent 只依据这段总结工作，就没有打开任何文档，也不会投票。只有可选开启的评判（`TEAMAI_UPVOTE_JUDGE=1`，见[开启 / 关闭 Recall](#开启--关闭-recall)）能为这种使用计分。
 
-**recall 日志。** 每次 run 都写入当前 scope 的本地 recall 日志 `<data home>/dashboard/recall.jsonl`，该日志仅所有者可读写，从不推送。run 记录环境中的 agent 会话，以及每篇返回文档的 id、scope 和打印出的 `File:` 路径；没有命中的搜索也会记录。PostToolUse hook 追加运行 `teamai recall` 的 shell 调用，以及每次读取团队知识根目录下文件的调用。日志从不包含查询词、prompt、工具输出或文件内容。`teamai pull` 会清理日志：先删除超过 30 天的行，再从最旧的开始删到只剩 5,000 行，但从不删除最近 24 小时内尚未投票的读取，也不删除它投票所需的行。`--check`、`--dry-run` 和 `TEAMAI_RECALL_DISABLED=1` 不记录任何内容。
+**recall 日志。** 每次 run 都写入当前 scope 的本地 recall 日志 `<data home>/dashboard/recall.jsonl`，该日志仅所有者可读写，从不推送。run 记录环境中的 agent 会话，以及每篇返回文档的 id、scope 和打印出的 `File:` 路径；没有命中的搜索也会记录。PostToolUse hook 追加运行 `teamai recall` 的 shell 调用，以及每次读取团队知识根目录下文件的调用。日志从不包含查询词、prompt、工具输出或文件内容。`teamai pull` 会清理日志：先删除超过 30 天的行，再从最旧的开始删到只剩 5,000 行，但从不删除最近 24 小时内尚未投票的读取，也不删除它投票所需的行。`--check`、`--dry-run` 和 `TEAMAI_RECALL_DISABLED=1` 不记录任何内容，既不写这份日志，也不写 `contribute-check` 读取的会话 recall 质量缓存。需要构建索引（尚无索引或索引格式过旧）的 `--dry-run` 在内存中构建并搜索，不保存索引。
 
 **run 归属哪个会话。** run 归属于自身直接运行 `teamai recall` 的 shell 调用所在的会话，因此一个 agent 运行另一个 agent 时（如 Claude 运行 `codex exec`），run 归内层 agent 的会话；只是打印了 recall 输出的调用不算。没有这样的调用时，只有环境中只设置了一个 agent 会话，run 才归该会话；否则该 run 从不投票。
 
@@ -2207,7 +2207,7 @@ teamai remove mcp <name>
 teamai remove rules <name> --force   # 跳过确认，用于脚本和 CI
 ```
 
-`teamai stats` 显示当前 scope 的 skill 使用情况与会话统计；当该 scope 的 recall 日志中有 run 时，还会显示一个 recall 小节（见 [Recall 采纳与 upvote](#recall-采纳与-upvote)）。
+`teamai stats` 显示当前 scope 的 skill 使用情况与会话统计；当该 scope 的 recall 日志中有 run 时，还会显示一个 recall 小节（见 [Recall 采纳与 upvote](#recall-采纳与-upvote)）。`teamai stats --dry-run` 不写入任何内容：它按现状读取 reports checkout，不刷新也不创建，并会说明这一点。
 
 仅当所有检查通过时，`teamai doctor` 才以状态码 0 退出；任一检查失败时以状态码 1 退出。尚未初始化时，它只报告缺少配置，不会臆测 Git 托管平台。手动执行 `teamai pull` 结束时会运行同一批检查（不含托管平台相关的检查，也不含本次 pull 已经自行报告过的检查）。被标记为 informational 的检查——目前只有 `No stale env blocks left behind`——仍会计入 `doctor` 的退出码，但 pull 不会把它的失败并入 `Pull finished, but N check(s) failed`：早期安装留下的遗留文件属于清理事项，不代表这次 pull 弄坏了什么，因此依旧会被点名，只是单独用一行更轻的提示呈现。
 

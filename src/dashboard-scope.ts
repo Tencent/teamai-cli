@@ -27,11 +27,13 @@ import { REPORTED_SNAPSHOTS, readSessionOwners, snapshotPathIn } from './session
  * clone under a project is not the project's; one with no cwd, or a cwd gone
  * since, is no scope's. A tool's own session ID a scope has recorded as its
  * own (see `session-owners.jsonl`) is that scope's, whatever the log still
- * holds. A caller without a scope config reads the whole log.
+ * holds. A caller without a scope config reads the whole log. With `dryRun`,
+ * the owners index is not seeded on disk (see {@link readSessionOwners}).
  */
 export async function filterEventsByScope(
   events: DashboardEvent[],
   config?: LocalConfig,
+  options: { dryRun?: boolean } = {},
 ): Promise<DashboardEvent[]> {
   if (!config) return events;
   const ownKey = await dataHomeKey(getDataHome(config));
@@ -41,7 +43,9 @@ export async function filterEventsByScope(
     const legacy = await dataHomeKey(path.join(config.projectRoot, '.teamai'));
     if (legacy !== (await dataHomeKey(path.join(getUserHome(), '.teamai')))) keys.add(legacy);
   }
-  const { resolveConfigForDir } = await import('./config.js');
+  // Read paths: another directory's config is loaded, never migrated.
+  const { resolveConfigForDir: resolve } = await import('./config.js');
+  const resolveConfigForDir = (dir: string) => resolve(dir, undefined, { dryRun: true });
   const resolvesHere = new Map<string, Promise<boolean>>();
   const ownsCwd = (cwd: string): Promise<boolean> => {
     let owns = resolvesHere.get(cwd);
@@ -56,7 +60,7 @@ export async function filterEventsByScope(
   };
   const eventKeys = await keysOf(events);
   const { runOf, runIds, deciding } = splitRuns(events, eventKeys);
-  const owners = await readSessionOwners();
+  const owners = await readSessionOwners(options);
   const transcripts = new Map<number, string[]>();
   events.forEach((e, i) => {
     const run = runOf[i];

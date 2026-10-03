@@ -79,7 +79,8 @@ async function knownDataHomes(): Promise<string[]> {
   const { resolveConfigForDir } = await import('./config.js');
   const cwds = new Set((await readEvents()).flatMap((e) => (typeof e.cwd === 'string' ? [e.cwd] : [])));
   for (const cwd of cwds) {
-    const config = (await pathExists(cwd)) ? await resolveConfigForDir(cwd) : null;
+    // A read: the config is loaded, never migrated.
+    const config = (await pathExists(cwd)) ? await resolveConfigForDir(cwd, undefined, { dryRun: true }) : null;
     if (config) homes.push(getDataHome(config));
   }
   return [...new Set(homes.map((home) => path.resolve(home)))];
@@ -281,9 +282,13 @@ export async function readOwnerCredits(): Promise<Map<string, OwnerCredit>> {
   return credits;
 }
 
-export async function readSessionOwners(): Promise<Map<string, string>> {
-  const owners = new Map<string, string>();
+/**
+ * The owner of each tool's own session ID, the file seeded first when missing.
+ * With `dryRun`, a missing file is not written: the seed is read in memory.
+ */
+export async function readSessionOwners(options: { dryRun?: boolean } = {}): Promise<Map<string, string>> {
   if (!(await pathExists(sessionOwnersPath()))) {
+    if (options.dryRun) return parseSessionOwners(await ownersFromSnapshots());
     try {
       await ensureDir(path.dirname(sessionOwnersPath()));
       // Exclusive: a report in another scope may be writing it too.
@@ -292,7 +297,11 @@ export async function readSessionOwners(): Promise<Map<string, string>> {
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') log.debug(`Could not seed session owners: ${(e as Error).message}`);
     }
   }
-  const content = await readFileSafe(sessionOwnersPath());
+  return parseSessionOwners(await readFileSafe(sessionOwnersPath()));
+}
+
+function parseSessionOwners(content: string | null): Map<string, string> {
+  const owners = new Map<string, string>();
   for (const line of (content ?? '').split('\n')) {
     if (!line.trim()) continue;
     try {
@@ -354,7 +363,7 @@ export async function creditedPrompts(credit: OwnerCredit, transcripts: string[]
     let key = keys.get(cwd);
     if (!key) {
       key = pathExists(cwd).then(async (exists) => {
-        const config = exists ? await resolveConfigForDir(cwd) : null;
+        const config = exists ? await resolveConfigForDir(cwd, undefined, { dryRun: true }) : null;
         return config ? dataHomeKey(getDataHome(config)) : undefined;
       });
       keys.set(cwd, key);

@@ -83,7 +83,15 @@ export function refreshReportsWorktree(
  * reader must not add or remove it (#808). Throws ForeignCheckoutError when
  * that copy is another repository's.
  */
-export async function readableReportsWorktree(localConfig: LocalConfig): Promise<string> {
+export async function readableReportsWorktree(
+  localConfig: LocalConfig,
+  options: { dryRun?: boolean } = {},
+): Promise<string> {
+  // A dry run reads the local copy as it is: neither refreshed nor created.
+  if (options.dryRun) {
+    await reportsBranch.checkOwner(localConfig);
+    return reportsBranch.dir(localConfig);
+  }
   let refreshed = await reportsBranch.refresh(localConfig, { pushIfCreated: false });
   // Failed: try once more, under the lock like every creation, and throw the
   // cause if it fails again. An `ensure` here would create the checkout without

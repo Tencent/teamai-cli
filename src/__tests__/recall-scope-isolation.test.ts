@@ -267,7 +267,7 @@ describe('recall scope isolation (issue #73)', () => {
     vi.stubEnv('CLAUDE_SESSION_ID', 'recall-quality-hit-session');
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
 
-    await recall('deployment timeout', { dryRun: true });
+    await recall('deployment timeout', {});
 
     expect(readRecallQuality('recall-quality-hit-session')).toEqual(
       expect.objectContaining({ hitCount: 1, missCount: 0 }),
@@ -278,11 +278,21 @@ describe('recall scope isolation (issue #73)', () => {
     vi.stubEnv('CLAUDE_SESSION_ID', 'recall-quality-miss-session');
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
 
-    await recall('completely unrelated gibberish query xyzzy', { dryRun: true });
+    await recall('completely unrelated gibberish query xyzzy', {});
 
     expect(readRecallQuality('recall-quality-miss-session')).toEqual(
       expect.objectContaining({ hitCount: 0, missCount: 1 }),
     );
+  });
+
+  it('records no recall quality under --dry-run (#900)', async () => {
+    vi.stubEnv('CLAUDE_SESSION_ID', 'recall-quality-dry-run-session');
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+
+    await recall('deployment timeout', { dryRun: true });
+
+    expect(captured).toContain(PROJECT_TITLE);
+    expect(readRecallQuality('recall-quality-dry-run-session')).toBeNull();
   });
 
   it('records recall quality under the agent session, where contribute-check reads it for the Stop hook (#883)', async () => {
@@ -291,7 +301,7 @@ describe('recall scope isolation (issue #73)', () => {
     vi.stubEnv('CLAUDE_CODE_SESSION_ID', hookSessionId);
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
 
-    await recall('completely unrelated gibberish query xyzzy', { dryRun: true });
+    await recall('completely unrelated gibberish query xyzzy', {});
 
     expect(readRecallQuality(hookSessionId)).toEqual(
       expect.objectContaining({ hitCount: 0, missCount: 1 }),
@@ -310,7 +320,7 @@ describe('recall scope isolation (issue #73)', () => {
     ].map((e) => JSON.stringify(e)).join('\n') + '\n');
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
 
-    await recall('completely unrelated gibberish query xyzzy', { dryRun: true });
+    await recall('completely unrelated gibberish query xyzzy', {});
 
     expect(readRecallQuality('outer-claude')).toBeNull();
     expect(readRecallQuality('pi-session')).toEqual(expect.objectContaining({ hitCount: 0, missCount: 1 }));
