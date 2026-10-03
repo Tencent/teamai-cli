@@ -12,13 +12,6 @@ teamai doctor
 It checks provider config, hooks, paths, and package/plugin status. Fix what it
 reports before anything else.
 
-## Session log save failed
-
-Concurrent `teamai session save` calls wait up to five seconds for the monthly
-log's lock. If the command reports `Cannot lock session log`, retry later;
-do not remove a lock held by another process. Duplicate checks and writes run
-together under the lock. Read or replacement failures preserve the existing log.
-
 ## "My skills / rules aren't showing up"
 
 This is the #1 onboarding issue. In order:
