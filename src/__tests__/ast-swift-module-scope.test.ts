@@ -318,6 +318,24 @@ describe('Swift module-scope resolution (web-tree-sitter WASM)', () => {
     expect(references[0]?.to).toBe('Sources/App/Global.swift');
   });
 
+  it('still resolves a call no type encloses when an unrelated type declares the name', async () => {
+    const { result } = await extractFiles([
+      ['Sources/App/Helper.swift', 'struct Helper {\n  func work() {}\n}\n'],
+      ['Sources/App/Global.swift', 'func work() {}\n'],
+      ['Sources/App/Runner.swift', 'func run() {\n  work()\n}\n'],
+    ]);
+
+    // `run()` is a free function: there is no `self` for a bare `work` to be
+    // read off, so `Helper.work` cannot be what the call means and the
+    // module-level `work` is the only candidate. The member names are
+    // module-wide, which is why the veto has to be asked per call site —
+    // applied to every call, this one loses an edge nothing shadows.
+    const references = result.edges.filter((e) => e.relation === 'REFERENCES');
+    expect(references).toHaveLength(1);
+    expect(references[0]?.from).toBe('Sources/App/Runner.swift');
+    expect(references[0]?.to).toBe('Sources/App/Global.swift');
+  });
+
   it('does not resolve a type nested inside another file', async () => {
     const { result } = await extractFiles([
       [

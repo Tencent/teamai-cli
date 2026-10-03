@@ -157,12 +157,14 @@ export function walkFile(file: CodeCollectedFile): FileWalkResult {
         const calleeText = callee ?? (receiver && member ? `${receiver}.${member}` : callNode.text);
         const localBindings =
           swiftShadowedNames === undefined ? [] : swiftShadowedNamesAt(callNode, swiftShadowedNames);
+        const enclosedByType = variant === "swift" && isInsideSwiftTypeBody(callNode);
         callSites.push({
           fromFile: file.relativePath,
           line,
           calleeText,
           receiver,
           ...(localBindings.length > 0 ? { localBindings } : {}),
+          ...(enclosedByType ? { enclosedByType } : {}),
           confidence: "INFERRED"
         });
         continue;
@@ -283,6 +285,28 @@ function collectSwiftMemberNames(node: Node, names: Set<string>): void {
   for (const child of namedChildrenOf(node)) {
     collectSwiftMemberNames(child, names);
   }
+}
+
+/**
+ * Whether a call sits lexically inside the body of a type.
+ *
+ * Swift reads an unqualified `work()` as `self.work()` only inside a type; in a
+ * free function or at the top level of a file there is no `self`, so the same
+ * call can only be the module-level `work`. The member names the index carries
+ * are module-wide, so without this the veto reaches a call no type encloses and
+ * drops an edge that nothing shadows.
+ *
+ * Lexical enclosure is all that is asked, and all this can answer: whether the
+ * enclosing type is the one that *declares* the member needs the module's
+ * inheritance and conformance graph, which this layer does not build.
+ */
+function isInsideSwiftTypeBody(node: Node): boolean {
+  for (let scope = node.parent; scope !== null; scope = scope.parent) {
+    if (SWIFT_TYPE_BODIES.has(scope.type)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function symbolId(file: string, kind: AstSymbolKind, name: string): string {

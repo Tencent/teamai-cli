@@ -143,10 +143,14 @@ export function buildSwiftModuleSymbolIndex(
  * Answering the question per type would need the inheritance and conformance
  * graph of the whole module, which this layer does not build. Asking it of the
  * module — does *any* type declare this member? — needs only the names already
- * extracted, and errs the way the rest of the layer errs: a call that does turn
- * out to be the module-level one, made from a module where some unrelated type
- * declares a member of the same name, loses its edge. A missing edge still shows
- * up as a gap; an invented one is read as a fact.
+ * extracted, and errs the way the rest of the layer errs: a call *inside a type*
+ * that does turn out to be the module-level one, made from a module where some
+ * unrelated type declares a member of the same name, loses its edge. A missing
+ * edge still shows up as a gap; an invented one is read as a fact.
+ *
+ * The caller decides which calls the question is put for, and puts it only for
+ * those a type lexically encloses: outside a type there is no `self` for a bare
+ * name to be read off, so no member can answer it.
  */
 export function swiftModuleDeclaresMember(
   index: SwiftModuleSymbolIndex,
