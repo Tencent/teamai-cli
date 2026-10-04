@@ -30,7 +30,9 @@ URLs, paths and code identifiers stay as they are.
    - Which tools or skills proved especially useful
    - Pitfalls and things to watch out for
 3. **Save it**: write the document to a temporary file
-4. **Push it to the team**: run `teamai contribute --file <path> --title "<title>"`
+4. **Choose the destination**: in the directory you worked in, run `teamai projects list`.
+   Keep the displayed default or choose one of its accepted namespaces; see `teamai contribute --help` for options.
+5. **Push it to the team**: run `teamai contribute --file <path> --title "<title>"` in that directory, using the destination you chose.
 
 ## Document Template
 
@@ -47,7 +49,7 @@ teamai contribute --file /tmp/session-summary.md --title "Debugging K8s pod star
 
 ## Important
 
-- Run this as a **sub-agent** (Agent tool) to avoid polluting the main session's context
+- Run this as a **sub-agent** (Agent tool) to avoid polluting the main session's context; pass it the directory you worked in so it uses that directory's destinations
 - The document is pushed to the team repo's `teamai-learnings` branch, under `learnings/`, with no pull request
 - Team members will see it on their next `teamai pull`
 - Keep summaries concise and actionable — this is a knowledge base, not a diary

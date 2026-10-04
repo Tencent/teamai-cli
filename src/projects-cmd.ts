@@ -15,6 +15,7 @@ import {
   listProjectIds,
   unknownProjectMessage,
   PROJECT_RESOURCE_TYPES,
+  resolveActiveLearningsNamespaces,
 } from './projects.js';
 import type { ProjectsManifest, TeamProject } from './projects.js';
 import { pullLatest, runManifestEdit, pushManifestChange } from './manifest-edit.js';
@@ -48,9 +49,13 @@ export async function projectsList(_options: GlobalOptions): Promise<void> {
   const repoPath = localConfig.repo.localPath;
 
   const manifest = await loadProjectsManifest(repoPath);
+  const namespaces = await resolveActiveLearningsNamespaces(repoPath, localConfig.projects ?? []);
+  const destination = namespaces.length === 1 ? `learnings/${namespaces[0]}/` : 'learnings/ (shared root)';
+  const contributionTarget = `Contributes to: ${destination}   --namespace accepts: ${namespaces.join(', ') || '(none)'}`;
   if (!manifest) {
     log.info('This team repo defines no projects (no manifest/projects.yaml).');
     log.info('Projects are optional — resources fall back to roles + shared learnings.');
+    console.log(contributionTarget);
     return;
   }
 
@@ -76,6 +81,7 @@ export async function projectsList(_options: GlobalOptions): Promise<void> {
   } else {
     console.log('No active projects in this directory. Run `teamai projects set <id>` to set them.');
   }
+  console.log(contributionTarget);
 }
 
 // ─── projects set ───────────────────────────────────────

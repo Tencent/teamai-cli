@@ -537,7 +537,10 @@ as "changed by you (kept by pull)".
   skills/rules/claudemd by the union; namespace-aware learnings sync + cleanup
   (`src/pull.ts:687-745`, which today copies the whole flat `learnings/`).
 - `src/push.ts` — `--project` landing point.
-- `src/contribute.ts` — landing-point priority (active project namespace → root).
+- `src/contribute.ts` — explicit `--namespace` must belong to the active projects'
+  learnings namespaces; otherwise default to the only active namespace or the
+  shared root. Persist the chosen relative path in the existing pending queue
+  so retries keep their destination. `projects list` shows the default and choices.
 - `src/utils/search-index.ts` — a namespace-aware learnings collector (root +
   active project subdirs), replacing the flat `collectFlatMdEntries` call at
   `src/utils/search-index.ts:549`.
@@ -604,8 +607,11 @@ works.
 5. **Learnings isolation (P2 core).** A learning contributed under `hai-inference`
    does **not** appear in dir B's `teamai recall`; a root-level learning appears in
    both.
-6. **Contribute landing.** `teamai contribute` in dir A lands under
-   `learnings/hai-inference/`; with no active project it lands at the root.
+6. **Contribute landing.** `teamai contribute` defaults to the only active
+   learnings namespace, or the root when there are none or several. With
+   `--namespace`, it accepts only an active learnings namespace (not necessarily
+   a project id); unavailable paths are refused before queueing. Preview and
+   offline retry retain the selected destination.
 7. **Namespace-aware index.** `teamai recall` in dir A scans root + `hai-inference/`
    subdir (proves the flat→recursive collector change).
 8. **Member roster append.** `init` in both dirs → `members/<user>.yaml` lists

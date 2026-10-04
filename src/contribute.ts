@@ -24,9 +24,8 @@ import { getProjectSearchIndexPath, isSelfMode } from './types.js';
  * - Zero (no project, or the active projects declare no learnings namespace) →
  *   the shared root (empty string).
  * - Multiple active learnings namespaces → the shared root, because the
- *   contribution's ownership is ambiguous; a member on several projects can still
- *   target one explicitly by contributing from that project's directory. This
- *   favors the safe default (visible to all) over silently guessing a namespace.
+ *   contribution's ownership is ambiguous. `contribute --namespace` lets the
+ *   member choose one of these namespaces without changing this default.
  */
 export async function resolveLearningsSubdir(localConfig: LocalConfig): Promise<string> {
   const namespaces = await resolveActiveLearningsNamespaces(
@@ -146,11 +145,11 @@ export function generateFilename(title?: string): string {
  * dealt with.
  */
 export async function contribute(
-  options: GlobalOptions & { file?: string; title?: string; sessionId?: string; scope?: string },
+  options: GlobalOptions & { file?: string; title?: string; sessionId?: string; scope?: string; namespace?: string },
 ): Promise<void> {
   // Validate file
   if (!options.file) {
-    log.error('Usage: teamai contribute --file <path> [--title <title>]');
+    log.error('Usage: teamai contribute --file <path> [--title <title>] [--namespace <ns>]');
     return;
   }
 
@@ -188,9 +187,22 @@ export async function contribute(
   const username = localConfig.username;
 
   const filename = generateFilename(options.title);
-  // Route into an active-project subdir when there is exactly one, else the
-  // shared root. `relPath` is the learnings-relative path used everywhere.
-  const learningsSubdir = await resolveLearningsSubdir(localConfig);
+  const namespaces = await resolveActiveLearningsNamespaces(
+    localConfig.repo.localPath,
+    localConfig.projects ?? [],
+  );
+  // Validate before saving the queue, creating worktrees or rebuilding indexes.
+  if (options.namespace !== undefined &&
+      (!isSafeNamespaceSegment(options.namespace) || !namespaces.includes(options.namespace))) {
+    log.error(`Cannot contribute to namespace "${options.namespace}". Allowed learnings namespaces: ${namespaces.join(', ') || '(none)'}.`);
+    process.exitCode = 1;
+    return;
+  }
+  const learningsSubdir = options.namespace ?? (namespaces.length === 1 ? namespaces[0] : '');
+  if (options.namespace === undefined && namespaces.length > 1) {
+    log.info(`Contributing to learnings/ (shared root). To choose a namespace, pass --namespace <ns>: ${namespaces.join(', ')}.`);
+  }
+  // Keep the chosen path in the queue so retries publish to the same namespace.
   const relPath = learningsSubdir ? path.posix.join(learningsSubdir, filename) : filename;
 
   if (options.dryRun) {

@@ -323,8 +323,10 @@ explicit `--project` skips the picker.
 - **Backward compatible.** A repo without `manifest/projects.yaml` behaves exactly
   as before; existing flat `learnings/*.md` stay shared with everyone (zero
   migration).
-- **`teamai contribute`** lands a learning under the active project's subdirectory
-  when exactly one project is active, otherwise at the shared root.
+- **`teamai contribute`** defaults to `learnings/<namespace>/` when the active
+  projects resolve to exactly one learnings namespace, otherwise to the shared
+  root. Pass `--namespace <ns>` to choose one of those active namespaces;
+  `teamai projects list` shows the default destination and accepted namespaces.
 
 `manifest/projects.yaml` example:
 
@@ -1387,7 +1389,15 @@ You can also specify a file manually:
 ```bash
 teamai contribute --file /tmp/session.md
 teamai contribute --file /tmp/session.md --scope project
+teamai contribute --file /tmp/session.md --namespace payments
 ```
+
+`--namespace` accepts only the selected scope's active learnings namespaces from
+`manifest/projects.yaml`, which can differ from project ids. An unavailable or
+unsafe namespace is rejected before the learning is queued. Without the flag,
+the default above is unchanged; when several namespaces are active the command
+lists them and explains how to choose one. `--dry-run` previews the selected
+path without writing, and an offline contribution keeps that path when retried.
 
 #### Turning the hint off
 
@@ -1922,7 +1932,7 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 If core graph extraction or writing fails, the import reports an error without marking the commit as synced. The next incremental run retries that commit.
 
-`--from-mr` publishes its learning the way `teamai contribute` does, on the `teamai-learnings` branch: under `learnings/<namespace>/` when exactly one active project declares a learnings namespace, otherwise at the shared `learnings/` root. If that fails, the learning stays queued on this machine and the next `teamai pull` publishes it; when a learnings checkout teamai refuses stopped it, no pull can until you deal with that checkout as the message says.
+`--from-mr` publishes its learning the way `teamai contribute` does by default, on the `teamai-learnings` branch: under `learnings/<namespace>/` when the active projects resolve to exactly one learnings namespace, otherwise at the shared `learnings/` root. If that fails, the learning stays queued on this machine and the next `teamai pull` publishes it; when a learnings checkout teamai refuses stopped it, no pull can until you deal with that checkout as the message says.
 
 When the draft overlaps existing learnings, from the shared root or your active projects' namespaces, the command names them (`Possible duplicate: this learning overlaps N existing learning(s): <files>.`), with `--all` too. It is a notice only: nothing is marked or replaced. When `manifest/projects.yaml` cannot be read, the check compares the shared root only and says so.
 
