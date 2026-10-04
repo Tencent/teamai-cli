@@ -278,32 +278,38 @@ export async function withDefaultBranchPreview<T>(
   }
   const defaultBranch = await getDefaultBranch(repoRoot);
   const branch = selfMode ? defaultBranch : (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
-  let fetched = true;
-  try {
-    await git.fetch(['origin', branch]);
-  } catch (e) {
-    if (!options.allowStale) throw new PreviewFetchError(e);
-    fetched = false;
-    log.warn(`Could not fetch origin/${branch} (${(e as Error).message}); ${selfMode ? 'previewing against the copy fetched last.' : 'previewing against the local checkout.'}`);
-  }
   const head = await getHeadCommit(repoRoot);
-  // Self mode really creates a default-branch worktree. Clone mode pulls the
-  // active branch: ff-only retains an ahead HEAD, advances a behind HEAD,
-  // and pullRepo's divergence fallback resets to origin/<active branch>.
-  let base = await getHeadCommit(repoRoot, `origin/${branch}`) ?? head;
-  if (!selfMode) {
-    if (!fetched) {
-      base = head; // pullLatest warns and continues with this unchanged checkout.
+  let base: string | null = null;
+  try {
+    if (selfMode) {
+      await git.fetch(['origin', branch]);
+      base = await getHeadCommit(repoRoot, `origin/${branch}`) ?? head;
     } else {
-      const upstream = await getHeadCommit(repoRoot, '@{upstream}');
-      if (head && upstream) {
-        try {
-          const common = (await git.raw(['merge-base', head, upstream])).trim();
-          if (common === upstream) base = head;
-          else if (common === head) base = upstream;
-        } catch { /* no common ancestor: pullRepo resets to origin/<branch> */ }
+      // pullRepo first pulls the configured upstream. FETCH_HEAD also works
+      // when the remote or its branch has a different name from origin/local.
+      try {
+        const remote = (await git.getConfig(`branch.${branch}.remote`)).value;
+        const merge = (await git.getConfig(`branch.${branch}.merge`)).value;
+        if (remote && merge) {
+          await git.fetch([remote, merge]);
+          const upstream = await getHeadCommit(repoRoot, 'FETCH_HEAD');
+          if (head && upstream) {
+            const common = (await git.raw(['merge-base', head, upstream])).trim();
+            if (common === upstream) base = head;
+            else if (common === head) base = upstream;
+          }
+        }
+      } catch { /* failed ff-only pull: model pullRepo's origin/local fallback */ }
+      if (!base) {
+        await git.fetch(['origin', branch]);
+        base = await getHeadCommit(repoRoot, `origin/${branch}`);
+        if (!base) throw new Error(`Cannot resolve origin/${branch} after fetching; the pull reset would fail.`);
       }
     }
+  } catch (e) {
+    if (!options.allowStale) throw new PreviewFetchError(e);
+    log.warn(`Could not fetch origin/${branch} (${(e as Error).message}); ${selfMode ? 'previewing against the copy fetched last.' : 'previewing against the local checkout.'}`);
+    base = selfMode ? await getHeadCommit(repoRoot, `origin/${branch}`) ?? head : head;
   }
   if (!base) throw new EmptyRepoError(repoRoot);
 

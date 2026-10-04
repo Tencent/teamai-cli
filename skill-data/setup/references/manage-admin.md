@@ -145,9 +145,10 @@ what lets their next pull clean up the copies they deployed.
 
 `roles init/add/update/remove` and `projects add/update/remove` previews, and resource removal
 previews, refuse a team clone with uncommitted changes. Commit or stash them before retrying. Single-repo
-previews still work with dirty business files because they read origin. Removal
-previews fetch the active branch explicitly and refuse a local-only branch with
-no matching remote branch, just like the real refresh.
+previews still work with dirty business files because they read origin. Clone
+previews refresh the configured upstream first, even when its branch or remote
+name differs. A failed fast-forward or missing upstream uses origin/current-branch
+for the real reset fallback. Removal refuses when that refresh also fails.
 
 Every namespace that names a directory — `knowledge`, `skills`, `agents`, `env`,
 `hooks`, `mcp`, `models` and `docs` in either manifest, and `learnings` in `projects.yaml` (a role's `learnings:` is

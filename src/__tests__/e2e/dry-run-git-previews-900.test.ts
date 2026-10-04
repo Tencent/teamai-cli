@@ -396,6 +396,65 @@ describe('dirty preview checkouts', () => {
 
 
 describe('post-pull branch previews', () => {
+  it.each(['origin', 'upstream'])('follows differently named %s/main tracking before origin/release fallback', async (remote) => {
+    const fixture = setUpClone();
+    git(['reset', '--hard', 'HEAD^'], fixture.checkout);
+    const writer = path.join(path.dirname(fixture.home), 'upstream');
+    fs.appendFileSync(path.join(writer, 'manifest', 'projects.yaml'), '  - id: fresh-project\n    resources:\n      knowledge: [fresh]\n      skills: [fresh]\n      agents: [fresh]\n');
+    git(['add', '-A'], writer);
+    git(['commit', '-q', '-m', 'upstream project'], writer);
+    git(['push', '-q', 'origin', 'main'], writer);
+    if (remote !== 'origin') {
+      git(['remote', 'add', remote, git(['remote', 'get-url', 'origin'], fixture.checkout).trim()], fixture.checkout);
+      git(['fetch', '-q', remote], fixture.checkout);
+      // Keep the configured upstream behind so preview must refresh it.
+      git(['update-ref', `refs/remotes/${remote}/main`, git(['rev-parse', 'HEAD'], fixture.checkout).trim()], fixture.checkout);
+      git(['remote', 'set-url', 'origin', path.join(fixture.home, 'missing-origin.git')], fixture.checkout);
+    }
+    git(['checkout', '-q', '--no-track', '-b', 'release'], fixture.checkout);
+    git(['branch', `--set-upstream-to=${remote}/main`, 'release'], fixture.checkout);
+    const roles = await dryRun(fixture, ['roles', 'add', 'remote-role', '--namespaces', 'remote']);
+    expect(roles.code, roles.output).toBe(0);
+    expect(roles.output).toContain('Role "remote-role" already exists');
+    expect(roles.output).not.toContain('Could not fetch');
+    const removal = await dryRun(fixture, ['remove', 'rules', 'fresh']);
+    expect(removal.code, removal.output).toBe(0);
+    expect(removal.output).toContain('Will remove 1');
+    const projects = await dryRun(fixture, ['projects', 'add', 'fresh-project', '--namespaces', 'fresh']);
+    expect(projects.output).toContain('Project "fresh-project" already exists');
+    const real = await runCLI(['roles', 'add', 'remote-role', '--namespaces', 'remote'], fixture.cwd, fixture.home);
+    expect(real.output).toContain('Role "remote-role" already exists');
+    expect(git(['branch', '--show-current'], fixture.checkout).trim()).toBe('release');
+    expect(git(['rev-parse', 'HEAD'], fixture.checkout).trim()).toBe(git(['rev-parse', `${remote}/main`], fixture.checkout).trim());
+  });
+
+  it('uses origin/local-branch only after the configured upstream diverges', async () => {
+    const fixture = setUpClone();
+    git(['checkout', '-q', '--no-track', '-b', 'release'], fixture.checkout);
+    git(['branch', '--set-upstream-to=origin/main', 'release'], fixture.checkout);
+    const writer = path.join(path.dirname(fixture.home), 'upstream');
+    git(['checkout', '-q', '-b', 'release'], writer);
+    fs.appendFileSync(path.join(writer, 'manifest', 'roles.yaml'), '  - id: fallback-role\n    description: fallback\n    resources:\n      knowledge: [fallback]\n      skills: [fallback]\n      agents: [fallback]\n');
+    git(['add', '-A'], writer);
+    git(['commit', '-q', '-m', 'fallback role'], writer);
+    git(['push', '-q', '-u', 'origin', 'release'], writer);
+    const preview = await dryRun(fixture, ['roles', 'add', 'fallback-role', '--namespaces', 'fallback']);
+    expect(preview.output).toContain('Role "fallback-role" already exists');
+    const real = await runCLI(['roles', 'add', 'fallback-role', '--namespaces', 'fallback'], fixture.cwd, fixture.home);
+    expect(real.output).toContain('Role "fallback-role" already exists');
+    expect(git(['rev-parse', 'HEAD'], fixture.checkout).trim()).toBe(git(['rev-parse', 'origin/release'], fixture.checkout).trim());
+  });
+
+  it('uses the origin/current-branch fallback when no upstream is configured', async () => {
+    const fixture = setUpClone();
+    git(['branch', '--unset-upstream'], fixture.checkout);
+    const preview = await dryRun(fixture, ['roles', 'add', 'remote-role', '--namespaces', 'remote']);
+    expect(preview.output).toContain('Role "remote-role" already exists');
+    const real = await runCLI(['roles', 'add', 'remote-role', '--namespaces', 'remote'], fixture.cwd, fixture.home);
+    expect(real.output).toContain('Role "remote-role" already exists');
+    expect(git(['rev-parse', 'HEAD'], fixture.checkout).trim()).toBe(git(['rev-parse', 'origin/main'], fixture.checkout).trim());
+  });
+
   it('refuses removal on a local-only branch just as the real refresh does', async () => {
     const fixture = setUpClone();
     git(['checkout', '-q', '--no-track', '-b', 'local-only'], fixture.checkout);
