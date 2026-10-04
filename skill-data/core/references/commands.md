@@ -295,9 +295,10 @@ Generated: do not edit by hand. Regenerate with
 
 ## contribute
 
-- `teamai contribute` — Contribute session knowledge to team repo
+- `teamai contribute` — Contribute session knowledge to team repo; projects list shows the default destination and allowed namespaces
   - `--file <path>` — Path to the contribution document
   - `--title <title>` — Title for the contribution document
+  - `--namespace <ns>` — Write to an active learnings namespace (default: the only active namespace, or the shared root when none or several are active)
   - `--session-id <id>` — Session ID for dedup tracking
   - `--scope <scope>` — Target scope: user or project
 
