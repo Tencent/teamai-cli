@@ -357,3 +357,39 @@ describe('unreachable origin', () => {
     }
   });
 });
+
+
+describe('dirty preview checkouts', () => {
+  it('refuses dirty clone previews where the real pull preserves the local manifest', async () => {
+    const fixture = setUpClone();
+    git(['fetch', '-q', 'origin'], fixture.checkout);
+    git(['reset', '--hard', 'origin/main'], fixture.checkout);
+    const rolesPath = path.join(fixture.checkout, 'manifest', 'roles.yaml');
+    fs.appendFileSync(rolesPath, '  - id: x\n    description: local edit\n    resources:\n      knowledge: [x]\n      skills: [x]\n      agents: [x]\n');
+    const dirtyManifest = fs.readFileSync(rolesPath, 'utf8');
+    const before = snapshot(fixture);
+
+    const real = await runCLI(['roles', 'add', 'x', '--namespaces', 'x'], fixture.cwd, fixture.home);
+    expect(real.output).toContain('Role "x" already exists');
+    expect(snapshot(fixture)).toEqual(before);
+
+    for (const args of [['roles', 'add', 'x', '--namespaces', 'x'], ['projects', 'add', 'beta', '--namespaces', 'beta'], ['remove', 'rules', 'doomed']]) {
+      const result = await dryRun(fixture, args);
+      expect(result.code, result.output).toBe(1);
+      expect(result.output).toContain('Cannot preview a team repo with uncommitted changes');
+      expect(result.output).toContain('Commit or stash the changes');
+      expect(result.output).not.toContain('[dry-run] Would add');
+      expect(result.output).not.toContain('Will remove');
+      expect(fs.readFileSync(rolesPath, 'utf8')).toBe(dirtyManifest);
+    }
+  });
+
+  it('still previews self-mode knowledge while business files are dirty', async () => {
+    const fixture = setUpSelf();
+    fs.appendFileSync(path.join(fixture.checkout, 'app.txt'), 'local business edit\n');
+    const result = await dryRun(fixture, ['roles', 'add', 'x', '--namespaces', 'x']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('[dry-run] Would add role "x"');
+    expect(fs.readFileSync(path.join(fixture.checkout, 'app.txt'), 'utf8')).toContain('local business edit');
+  });
+});

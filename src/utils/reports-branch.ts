@@ -245,6 +245,14 @@ export class PreviewFetchError extends Error {
   }
 }
 
+/** A clone's dirty files may survive a real pull but are absent from origin. */
+export class DirtyPreviewError extends Error {
+  constructor(repoRoot: string) {
+    super(`Cannot preview a team repo with uncommitted changes at ${repoRoot}. Commit or stash the changes, then retry --dry-run. Nothing was changed.`);
+    this.name = 'DirtyPreviewError';
+  }
+}
+
 /**
  * Run `fn` against a throwaway checkout of origin/<default>: the tree a real
  * `remove` or manifest edit reads after its pull (or, in single-repo mode, in
@@ -264,6 +272,11 @@ export async function withDefaultBranchPreview<T>(
   const selfMode = localConfig.repo.kind === 'self';
   const repoRoot = selfMode ? getBusinessRoot(localConfig) : localConfig.repo.localPath;
   const git = createGit(repoRoot);
+  // A successful clone pull may preserve dirty manifests/resources. Do not
+  // silently replace that view with origin; self mode really reads a worktree.
+  if (!selfMode && (await git.raw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'])).trim()) {
+    throw new DirtyPreviewError(repoRoot);
+  }
   const defaultBranch = await getDefaultBranch(repoRoot);
   try {
     await git.fetch(['origin', defaultBranch]);

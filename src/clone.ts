@@ -354,24 +354,39 @@ export async function shallowFetch(
 /**
  * The commit the remote's default branch (HEAD) points at, read with
  * `git ls-remote` and the same auth {@link shallowClone} would use. Nothing is
- * written locally, which is what a dry run needs.
+ * written locally, which is what a dry run needs. With `cachedRepoPath`, query
+ * the cached branch at its origin using shallowFetch's auth instead.
  */
 export async function remoteHeadSha(
     url: string,
     provider: string,
-    opts?: Pick<CloneOpts, 'forceSsh' | 'forceAnonymous' | 'timeoutMs'>,
+    opts?: Pick<CloneOpts, 'forceSsh' | 'forceAnonymous' | 'timeoutMs'> & { cachedRepoPath?: string },
 ): Promise<string> {
-    const { cloneUrl, extraAuthHeader } = resolveCloneAuth(url, provider, {
-        forceSsh: opts?.forceSsh ?? false,
-        forceAnonymous: opts?.forceAnonymous ?? false,
-    });
-    const args = extraAuthHeader ? ['-c', `http.extraHeader=${extraAuthHeader}`] : [];
-    args.push('ls-remote', cloneUrl, 'HEAD');
-    const { stdout, stderr, code } = await runCommand('git', args, { timeoutMs: opts?.timeoutMs ?? 60_000 });
+    const timeoutMs = opts?.timeoutMs ?? 60_000;
+    const cachedRepoPath = opts?.cachedRepoPath;
+    let ref = 'HEAD';
+    let auth: { cloneUrl: string; extraAuthHeader?: string };
+    if (cachedRepoPath) {
+        let branch = await gitCmd(['rev-parse', '--abbrev-ref', 'HEAD'], cachedRepoPath, timeoutMs);
+        if (branch === 'HEAD') {
+            branch = (await gitCmd(['symbolic-ref', 'refs/remotes/origin/HEAD'], cachedRepoPath, timeoutMs))
+                .replace('refs/remotes/origin/', '');
+        }
+        ref = `refs/heads/${branch}`;
+        auth = { cloneUrl: 'origin', extraAuthHeader: fetchAuthHeader(provider) ?? undefined };
+    } else {
+        auth = resolveCloneAuth(url, provider, {
+            forceSsh: opts?.forceSsh ?? false,
+            forceAnonymous: opts?.forceAnonymous ?? false,
+        });
+    }
+    const args = auth.extraAuthHeader ? ['-c', `http.extraHeader=${auth.extraAuthHeader}`] : [];
+    args.push('ls-remote', auth.cloneUrl, ref);
+    const { stdout, stderr, code } = await runCommand('git', args, { cwd: cachedRepoPath, timeoutMs });
     if (code !== 0) {
         throw new Error(`git ls-remote failed (exit ${code}): ${redactToken(stderr.trim())}`);
     }
     const sha = stdout.trim().split(/\s+/)[0];
-    if (!sha) throw new Error(`git ls-remote found no HEAD at ${sanitizeGitUrl(url)}`);
+    if (!sha) throw new Error(`git ls-remote found no ${ref} at ${cachedRepoPath ? 'the cached origin' : sanitizeGitUrl(url)}`);
     return sha;
 }

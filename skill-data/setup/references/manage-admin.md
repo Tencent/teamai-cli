@@ -140,6 +140,10 @@ refuse `--dry-run` before pulling the team repo. After `projects remove`,
 keep the project's content in the team repo until members have pulled: that is
 what lets their next pull clean up the copies they deployed.
 
+`roles` and `projects` add/update/remove previews, and resource removal
+previews, refuse a team clone with uncommitted changes. Commit or stash them before retrying. Single-repo
+previews still work with dirty business files because they read origin.
+
 Every namespace that names a directory — `knowledge`, `skills`, `agents`, `env`,
 `hooks`, `mcp`, `models` and `docs` in either manifest, and `learnings` in `projects.yaml` (a role's `learnings:` is
 ignored and unchecked) — must be a single path segment: no `/`, `\`, `:` or control character, no trailing

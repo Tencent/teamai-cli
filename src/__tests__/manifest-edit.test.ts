@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const reportsMocks = vi.hoisted(() => {
   class EmptyRepoError extends Error {}
-  return { withKnowledgeWorktree: vi.fn(), withDefaultBranchPreview: vi.fn(), EmptyRepoError };
+  class DirtyPreviewError extends Error {}
+  return { withKnowledgeWorktree: vi.fn(), withDefaultBranchPreview: vi.fn(), EmptyRepoError, DirtyPreviewError };
 });
 vi.mock('../utils/reports-branch.js', () => reportsMocks);
 

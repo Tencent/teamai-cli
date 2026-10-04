@@ -36,7 +36,7 @@ export async function runManifestEdit(
         await fn(localConfig.repo.localPath, localConfig);
         return;
     }
-    const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError } = await import('./utils/reports-branch.js');
+    const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError, DirtyPreviewError } = await import('./utils/reports-branch.js');
     const body = (checkoutConfig: LocalConfig) => fn(checkoutConfig.repo.localPath, checkoutConfig);
     try {
         if (options.dryRun) {
@@ -46,7 +46,10 @@ export async function runManifestEdit(
             await withKnowledgeWorktree(localConfig, body);
         }
     } catch (e) {
-        if (e instanceof EmptyRepoError) {
+        if (e instanceof DirtyPreviewError) {
+            log.error(e.message);
+            process.exitCode = 1;
+        } else if (e instanceof EmptyRepoError) {
             log.error(e.message);
         } else {
             log.error(`${label} update failed: ${(e as Error).message}`);

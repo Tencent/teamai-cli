@@ -182,7 +182,7 @@ export function detectCrossRepoEdges(
  *  5. Append AI narrative to teamwiki/evidence/code/<slug>/overview.md
  *  6. Write LAST_SYNC
  *
- * A dry run stops after step 1: it reads the remote head with `git ls-remote`
+ * A dry run stops after step 1: it reads the target remote commit with `git ls-remote`
  * and reports whether the cache is current.
  *
  * @throws Error on clone failure, scan failure, or IO failure
@@ -212,22 +212,33 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
 
     const lastSync = await readLastSync(cacheDir);
     const cacheExists = await fs.pathExists(path.join(cacheDir, '.git'));
+    const useIncremental = incremental && cacheExists && lastSync !== null;
 
-    // A preview asks the remote for its head and stops: the clone replaces the
+    // A preview asks for the target remote commit and stops: the clone replaces the
     // cache (or fetches and resets it), and the lock and LLM scan follow (#900).
     if (dryRun) {
-        const head = await remoteHeadSha(url, providerName, { forceSsh, forceAnonymous });
+        let head: string;
+        let previewIncremental = useIncremental;
+        try {
+            head = await remoteHeadSha(url, providerName, {
+                forceSsh, forceAnonymous, cachedRepoPath: useIncremental ? cacheDir : undefined,
+            });
+        } catch (error) {
+            if (!useIncremental) throw error;
+            log.warn(`[incremental] preview refresh failed, previewing a full clone instead: ${(error as Error).message}`);
+            head = await remoteHeadSha(url, providerName, { forceSsh, forceAnonymous });
+            previewIncremental = false;
+        }
         const cache = !cacheExists
             ? `not cached yet, a real run would clone it into ${cacheDir}`
             : lastSync?.sha === head
-                ? `cache is current at ${head.slice(0, 8)}${incremental ? ', so an incremental run would skip it' : ''}`
+                ? `cache is current at ${head.slice(0, 8)}${previewIncremental ? ', so an incremental run would skip it' : ''}`
                 : `cache would be refreshed from ${lastSync ? lastSync.sha.slice(0, 8) : 'an unrecorded commit'} to ${head.slice(0, 8)}`;
         log.info(`[dry-run] Would import ${owner}/${repoName} at ${head.slice(0, 8)} into teamwiki/evidence/code/${slug}; ${cache}`);
         return;
     }
 
     await ensureCacheRoot();
-    const useIncremental = incremental && cacheExists && lastSync !== null;
 
     let cloneSha: string;
     let cloneBranch: string;

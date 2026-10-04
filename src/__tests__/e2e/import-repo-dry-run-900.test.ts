@@ -166,6 +166,70 @@ describe('import --from-repo --dry-run (#900 C3)', () => {
     expect(result.output).toContain(`cache would be refreshed from 00000000 to ${head.slice(0, 8)}`);
   });
 
+  function changeDefaultAfterCachingMaster(): string {
+    git(['branch', 'master', head], remote);
+    git(['symbolic-ref', 'HEAD', 'refs/heads/master'], remote);
+    seedCache(head);
+    const seed = path.join(sandbox, 'seed');
+    fs.appendFileSync(path.join(seed, 'index.ts'), 'export const newer = 2;\n');
+    git(['add', '-A'], seed);
+    git(['commit', '-q', '-m', 'main moves on'], seed);
+    git(['push', '-q', remote, 'main'], seed);
+    git(['symbolic-ref', 'HEAD', 'refs/heads/main'], remote);
+    return git(['rev-parse', 'main'], remote).trim();
+  }
+
+  it('incremental preview follows cached master after remote HEAD changes to main', async () => {
+    const main = changeDefaultAfterCachingMaster();
+    expect(main).not.toBe(head);
+    expect(git(['branch', '--show-current'], cacheDir).trim()).toBe('master');
+    const result = await dryRun(['import', '--from-repo', URL, '--incremental']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain(`Would import acme/widget at ${head.slice(0, 8)}`);
+    expect(result.output).toContain('so an incremental run would skip it');
+    expect(result.output).not.toContain(main.slice(0, 8));
+    const real = await runCLI(['import', '--from-repo', URL, '--incremental']);
+    expect(real.code, real.output).toBe(0);
+    expect(real.output).toContain(`SHA unchanged (${head.slice(0, 8)})`);
+    expect(git(['rev-parse', 'HEAD'], cacheDir).trim()).toBe(head);
+  });
+
+  it('full-clone preview follows remote HEAD even when the cache is on master', async () => {
+    const main = changeDefaultAfterCachingMaster();
+    const result = await dryRun(['import', '--from-repo', URL]);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain(`Would import acme/widget at ${main.slice(0, 8)}`);
+  });
+
+  it.each(['cache', 'LAST_SYNC'])('incremental preview follows remote HEAD without %s', async (missing) => {
+    const main = changeDefaultAfterCachingMaster();
+    if (missing === 'cache') fs.rmSync(cacheDir, { recursive: true });
+    else fs.rmSync(path.join(cacheDir, 'LAST_SYNC'));
+    const result = await dryRun(['import', '--from-repo', URL, '--incremental']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain(`Would import acme/widget at ${main.slice(0, 8)}`);
+    expect(result.output).not.toContain('so an incremental run would skip it');
+  });
+
+  it('previews the full-clone fallback when the cached origin is unreachable', async () => {
+    const main = changeDefaultAfterCachingMaster();
+    git(['remote', 'set-url', 'origin', path.join(sandbox, 'missing-origin.git')], cacheDir);
+    const result = await dryRun(['import', '--from-repo', URL, '--incremental']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('preview refresh failed, previewing a full clone instead');
+    expect(result.output).toContain(`Would import acme/widget at ${main.slice(0, 8)}`);
+    expect(result.output).not.toContain('so an incremental run would skip it');
+  });
+
+  it('reads the cached origin HEAD branch for a detached incremental cache', async () => {
+    const main = changeDefaultAfterCachingMaster();
+    git(['checkout', '-q', '--detach'], cacheDir);
+    const result = await dryRun(['import', '--from-repo', URL, '--incremental']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain(`Would import acme/widget at ${head.slice(0, 8)}`);
+    expect(result.output).not.toContain(main.slice(0, 8));
+  });
+
   it('previews every entry of --from-repo-list', async () => {
     const list = path.join(sandbox, 'repos.yaml');
     fs.writeFileSync(list, `repos:\n  - url: ${URL}\n`);

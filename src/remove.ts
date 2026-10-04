@@ -43,7 +43,7 @@ export async function remove(
   // throwaway checkout of origin/<default> instead, in either mode: the pull
   // below can reset a clone with unpushed commits (#900).
   if (options.dryRun || localConfig.repo.kind === 'self') {
-    const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError, PreviewFetchError } = await import('./utils/reports-branch.js');
+    const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError, PreviewFetchError, DirtyPreviewError } = await import('./utils/reports-branch.js');
     const body = (checkoutConfig: LocalConfig) => removeCore(type, names, options, checkoutConfig, teamConfig);
     try {
       if (options.dryRun) {
@@ -52,7 +52,10 @@ export async function remove(
         await withKnowledgeWorktree(localConfig, body);
       }
     } catch (e) {
-      if (e instanceof PreviewFetchError) {
+      if (e instanceof DirtyPreviewError) {
+        log.error(e.message);
+        process.exitCode = 1;
+      } else if (e instanceof PreviewFetchError) {
         refuseUnrefreshedRemoval(names, e);
       } else if (e instanceof EmptyRepoError) {
         log.error(e.message);
