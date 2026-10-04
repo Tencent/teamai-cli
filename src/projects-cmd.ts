@@ -15,6 +15,7 @@ import {
   listProjectIds,
   unknownProjectMessage,
   PROJECT_RESOURCE_TYPES,
+  resolveActiveLearningsNamespaces,
 } from './projects.js';
 import type { ProjectsManifest, TeamProject } from './projects.js';
 import { pullLatest, runManifestEdit, pushManifestChange } from './manifest-edit.js';
@@ -75,6 +76,18 @@ export async function projectsList(_options: GlobalOptions): Promise<void> {
     console.log(`Your active projects (this directory): ${active.join(', ')}`);
   } else {
     console.log('No active projects in this directory. Run `teamai projects set <id>` to set them.');
+  }
+
+  // Where `contribute` files learnings from this directory: the single active
+  // namespace, or the shared root when none or several are active — several is
+  // exactly the case `--namespace` resolves (#916).
+  const learningsNamespaces = await resolveActiveLearningsNamespaces(repoPath, active);
+  const destination = learningsNamespaces.length === 1
+    ? `learnings/${learningsNamespaces[0]}/`
+    : 'learnings/ (shared root)';
+  console.log(`Contribute destination for this directory: ${destination}`);
+  if (learningsNamespaces.length > 1) {
+    console.log(`Namespaces read here: ${learningsNamespaces.join(', ')} — pass \`teamai contribute --namespace <ns>\` to file under one.`);
   }
 }
 

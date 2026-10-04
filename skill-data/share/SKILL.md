@@ -31,6 +31,9 @@ URLs, paths and code identifiers stay as they are.
    - Pitfalls and things to watch out for
 3. **Save it**: write the document to a temporary file
 4. **Push it to the team**: run `teamai contribute --file <path> --title "<title>"`
+   — if `teamai projects list` shows several learnings namespaces for this
+   directory, pass `--namespace <ns>` (one it lists) to file the learning under
+   one of them instead of the shared root
 
 ## Document Template
 

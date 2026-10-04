@@ -324,7 +324,11 @@ explicit `--project` skips the picker.
   as before; existing flat `learnings/*.md` stay shared with everyone (zero
   migration).
 - **`teamai contribute`** lands a learning under the active project's subdirectory
-  when exactly one project is active, otherwise at the shared root.
+  when exactly one project is active, otherwise at the shared root. When several
+  learnings namespaces are active, `--namespace <ns>` files it under one of them —
+  restricted to the namespaces this directory reads, so a learning never lands
+  where its author's `recall` would not find it. `teamai projects list` shows the
+  default destination and the accepted namespaces.
 
 `manifest/projects.yaml` example:
 

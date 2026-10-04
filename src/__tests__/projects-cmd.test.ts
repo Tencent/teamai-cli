@@ -32,7 +32,7 @@ const logMocks = vi.hoisted(() => ({
 }));
 vi.mock('../utils/logger.js', () => ({ log: logMocks }));
 
-import { projectsAdd, projectsUpdate, projectsRemove } from '../projects-cmd.js';
+import { projectsAdd, projectsUpdate, projectsRemove, projectsList } from '../projects-cmd.js';
 import { autoDetectInit } from '../config.js';
 
 describe('projects add / update / remove (#756)', () => {
@@ -260,5 +260,61 @@ describe('projects add / update / remove (#756)', () => {
 
       expect(errors()).toContain('This team repo defines no projects');
     });
+  });
+});
+
+describe('projects list destination (#916)', () => {
+  let repoDir: string;
+  const logLines = () => logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+  beforeEach(async () => {
+    repoDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-projects-list-'));
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await fse.remove(repoDir);
+  });
+
+  async function mockActive(projects: string[]): Promise<void> {
+    vi.mocked(autoDetectInit).mockResolvedValue({
+      localConfig: {
+        repo: { localPath: repoDir, remote: 'https://github.com/team/repo.git' },
+        username: 'member',
+        projects,
+        scope: 'user',
+      },
+    } as unknown as Awaited<ReturnType<typeof autoDetectInit>>);
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'projects.yaml'), YAML.stringify({
+      version: 1,
+      projects: [
+        { id: 'svc-a', resources: { learnings: ['svc-a'] } },
+        { id: 'payments', resources: { learnings: ['payments'] } },
+      ],
+    }));
+  }
+
+  it('names the single active namespace as the contribute destination', async () => {
+    await mockActive(['svc-a']);
+    await projectsList({});
+    expect(logLines()).toContain('Contribute destination for this directory: learnings/svc-a/');
+  });
+
+  it('shows the shared root and the --namespace escape hatch for several', async () => {
+    await mockActive(['svc-a', 'payments']);
+    await projectsList({});
+    const lines = logLines();
+    expect(lines).toContain('Contribute destination for this directory: learnings/ (shared root)');
+    expect(lines).toContain(
+      'Namespaces read here: svc-a, payments — pass `teamai contribute --namespace <ns>` to file under one.',
+    );
+  });
+
+  it('shows the shared root when no namespace is active', async () => {
+    await mockActive([]);
+    await projectsList({});
+    expect(logLines()).toContain('Contribute destination for this directory: learnings/ (shared root)');
   });
 });

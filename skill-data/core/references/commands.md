@@ -300,6 +300,7 @@ Generated: do not edit by hand. Regenerate with
   - `--title <title>` — Title for the contribution document
   - `--session-id <id>` — Session ID for dedup tracking
   - `--scope <scope>` — Target scope: user or project
+  - `--namespace <ns>` — File the learning under this learnings namespace; must be one this directory reads (`teamai projects list` shows them)
 
 ## recall
 

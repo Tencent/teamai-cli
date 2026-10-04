@@ -280,7 +280,9 @@ cd ~/work/billing       && teamai init <team-repo> --project billing
 - **向后兼容。** 没有 `manifest/projects.yaml` 的仓库行为与之前完全一致；现存扁平
   的 `learnings/*.md` 继续对所有人共享（零迁移）。
 - **`teamai contribute`** 在恰好激活一个项目时，把经验落到该项目子目录，否则落到
-  共享的根目录。
+  共享的根目录。激活了多个 learnings 命名空间时，`--namespace <ns>` 可以把经验落到
+  其中一个——只接受本目录会读取的命名空间，经验不会落到作者 `recall` 不到的地方。
+  `teamai projects list` 会显示默认落点与可选命名空间。
 
 `manifest/projects.yaml` 示例：
 

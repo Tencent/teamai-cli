@@ -1086,6 +1086,7 @@ program
   .option('--title <title>', 'Title for the contribution document')
   .option('--session-id <id>', 'Session ID for dedup tracking')
   .option('--scope <scope>', 'Target scope: user or project')
+  .option('--namespace <ns>', 'File the learning under this learnings namespace; must be one this directory reads (`teamai projects list` shows them)')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { contribute } = await import('./contribute.js');

@@ -15,6 +15,17 @@ import type { GlobalOptions, LocalConfig } from './types.js';
 import { getProjectSearchIndexPath, isSelfMode } from './types.js';
 
 /**
+ * Where a contribution lands, and every learnings namespace the directory
+ * reads — the same resolution `contribute` routes by and hints from.
+ */
+export interface LearningsDestination {
+  /** The learnings-relative subdirectory: a namespace name, or '' for the shared root. */
+  subdir: string;
+  /** All namespaces the active projects read; `--namespace` must be one of them. */
+  namespaces: string[];
+}
+
+/**
  * Decide which learnings subdirectory a contribution lands in — resolved from
  * the manifest's `resources.learnings`, the SAME mapping `pull` indexes by (NOT
  * the raw project id, which the schema allows to differ). Async because it reads
@@ -24,15 +35,34 @@ import { getProjectSearchIndexPath, isSelfMode } from './types.js';
  * - Zero (no project, or the active projects declare no learnings namespace) →
  *   the shared root (empty string).
  * - Multiple active learnings namespaces → the shared root, because the
- *   contribution's ownership is ambiguous; a member on several projects can still
- *   target one explicitly by contributing from that project's directory. This
- *   favors the safe default (visible to all) over silently guessing a namespace.
+ *   contribution's ownership is ambiguous; `--namespace` targets one of them
+ *   explicitly, restricted to what this directory reads so a learning never
+ *   lands somewhere its author's `recall` would not find it (#916). This favors
+ *   the safe default (visible to all) over silently guessing a namespace.
  */
-export async function resolveLearningsSubdir(localConfig: LocalConfig): Promise<string> {
+export async function resolveLearningsDestination(
+  localConfig: LocalConfig,
+  requestedNamespace?: string,
+): Promise<LearningsDestination> {
   const namespaces = await resolveActiveLearningsNamespaces(
     localConfig.repo.localPath,
     localConfig.projects ?? [],
   );
+
+  if (requestedNamespace !== undefined) {
+    // Refuse an unknown namespace rather than fall back to the shared root: the
+    // caller asked for a specific destination, and landing elsewhere would hide
+    // the mistake while still publishing the learning.
+    if (!namespaces.includes(requestedNamespace)) {
+      throw new Error(
+        namespaces.length === 0
+          ? 'This directory reads no learnings namespace, so --namespace has nothing to target.'
+          : `Unknown learnings namespace "${requestedNamespace}". Valid namespaces: ${namespaces.join(', ')}`,
+      );
+    }
+    return { subdir: requestedNamespace, namespaces };
+  }
+
   const sub = namespaces.length === 1 ? namespaces[0] : '';
   // Defense-in-depth: the namespace is a path component here. It is validated at
   // the manifest boundary, but refuse anything that isn't a safe single segment
@@ -40,7 +70,12 @@ export async function resolveLearningsSubdir(localConfig: LocalConfig): Promise<
   if (sub && !isSafeNamespaceSegment(sub)) {
     throw new Error(`Invalid learnings namespace "${sub}": must not contain path separators or '..'`);
   }
-  return sub;
+  return { subdir: sub, namespaces };
+}
+
+/** The subdirectory alone — for callers that only route, never hint. */
+export async function resolveLearningsSubdir(localConfig: LocalConfig): Promise<string> {
+  return (await resolveLearningsDestination(localConfig)).subdir;
 }
 
 /**
@@ -146,7 +181,7 @@ export function generateFilename(title?: string): string {
  * dealt with.
  */
 export async function contribute(
-  options: GlobalOptions & { file?: string; title?: string; sessionId?: string; scope?: string },
+  options: GlobalOptions & { file?: string; title?: string; sessionId?: string; scope?: string; namespace?: string },
 ): Promise<void> {
   // Validate file
   if (!options.file) {
@@ -189,9 +224,23 @@ export async function contribute(
 
   const filename = generateFilename(options.title);
   // Route into an active-project subdir when there is exactly one, else the
-  // shared root. `relPath` is the learnings-relative path used everywhere.
-  const learningsSubdir = await resolveLearningsSubdir(localConfig);
-  const relPath = learningsSubdir ? path.posix.join(learningsSubdir, filename) : filename;
+  // shared root; --namespace targets one of the namespaces this directory
+  // reads (#916). `relPath` is the learnings-relative path used everywhere.
+  let destination: LearningsDestination;
+  try {
+    destination = await resolveLearningsDestination(localConfig, options.namespace);
+  } catch (e) {
+    log.error((e as Error).message);
+    log.info('Run `teamai projects list` to see the learnings namespaces this directory reads.');
+    return;
+  }
+  if (destination.subdir === '' && destination.namespaces.length > 1) {
+    log.info(
+      `This directory reads several learnings namespaces (${destination.namespaces.join(', ')}); `
+      + 'contributing to the shared root. Pass --namespace <ns> to file this under one of them.',
+    );
+  }
+  const relPath = destination.subdir ? path.posix.join(destination.subdir, filename) : filename;
 
   if (options.dryRun) {
     log.info(`[dry-run] Would push: learnings/${relPath} (${content.length} bytes)`);
