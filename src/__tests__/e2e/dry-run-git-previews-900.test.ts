@@ -8,7 +8,7 @@
  * reconciled placement records, and in single-repo mode both commands created
  * the knowledge worktree. A preview may fetch; it must not move HEAD, touch the
  * working tree, save state or add a worktree. It still resolves names against
- * the default branch on origin, as the real run does.
+ * the post-pull clone branch, or origin/default in self mode.
  */
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
@@ -352,7 +352,7 @@ describe('unreachable origin', () => {
     for (const args of [['roles', 'add', 'x', '--namespaces', 'x'], ['projects', 'add', 'beta', '--namespaces', 'beta']]) {
       const result = await dryRun(fixture, args);
       expect(result.code, result.output).toBe(0);
-      expect(result.output).toContain('previewing against the copy fetched last.');
+      expect(result.output).toContain('previewing against the local checkout.');
       expect(result.output).toContain('[dry-run] Would add');
     }
   });
@@ -391,5 +391,68 @@ describe('dirty preview checkouts', () => {
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain('[dry-run] Would add role "x"');
     expect(fs.readFileSync(path.join(fixture.checkout, 'app.txt'), 'utf8')).toContain('local business edit');
+  });
+});
+
+
+describe('post-pull branch previews', () => {
+  function addRole(repo: string, id: string): void {
+    fs.appendFileSync(path.join(repo, 'manifest', 'roles.yaml'), `  - id: ${id}\n    description: branch role\n    resources:\n      knowledge: [branch]\n      skills: [branch]\n      agents: [branch]\n`);
+    git(['add', '-A'], repo);
+    git(['commit', '-q', '-m', id], repo);
+  }
+
+  it.each(['pushed', 'ahead', 'behind', 'diverged'])('matches the real pull on a %s feature branch without changing the member checkout', async (state) => {
+    const fixture = setUpClone();
+    git(['fetch', '-q', 'origin'], fixture.checkout);
+    git(['checkout', '-q', '-b', 'leftover-pr', 'origin/main'], fixture.checkout);
+    fs.writeFileSync(path.join(fixture.checkout, 'rules', 'feature-rule.md'), '# Feature rule\n');
+    fs.appendFileSync(path.join(fixture.checkout, 'manifest', 'projects.yaml'), '  - id: feature-project\n    resources:\n      knowledge: [feature]\n      skills: [feature]\n      agents: [feature]\n');
+    addRole(fixture.checkout, 'feature-role');
+    git(['push', '-q', '-u', 'origin', 'leftover-pr'], fixture.checkout);
+    let target = 'feature-role';
+    if (state === 'ahead' || state === 'diverged') {
+      addRole(fixture.checkout, 'local-role');
+      target = 'local-role';
+    }
+    if (state === 'behind' || state === 'diverged') {
+      const writer = path.join(path.dirname(fixture.home), 'writer');
+      git(['clone', '-q', '-b', 'leftover-pr', git(['remote', 'get-url', 'origin'], fixture.checkout).trim(), writer], fixture.home);
+      addRole(writer, 'remote-role-2');
+      git(['push', '-q', 'origin', 'leftover-pr'], writer);
+      target = 'remote-role-2';
+    }
+    const preview = await dryRun(fixture, ['roles', 'add', target, '--namespaces', 'branch']);
+    expect(preview.code, preview.output).toBe(0);
+    expect(preview.output).toContain(`Role "${target}" already exists`);
+    const projects = await dryRun(fixture, ['projects', 'add', 'feature-project', '--namespaces', 'feature']);
+    expect(projects.output).toContain('Project "feature-project" already exists');
+    const removal = await dryRun(fixture, ['remove', 'rules', 'feature-rule']);
+    expect(removal.output).toContain('Will remove 1 rules:');
+    const real = await runCLI(['roles', 'add', target, '--namespaces', 'branch'], fixture.cwd, fixture.home);
+    expect(real.output).toContain(`Role "${target}" already exists`);
+    expect(git(['branch', '--show-current'], fixture.checkout).trim()).toBe('leftover-pr');
+  });
+
+  it('roles init preview sees an upstream manifest and declines overwrite without changing the stale clone', async () => {
+    const fixture = setUpClone();
+    git(['fetch', '-q', 'origin'], fixture.checkout);
+    git(['reset', '--hard', 'origin/main'], fixture.checkout);
+    git(['rm', 'manifest/roles.yaml'], fixture.checkout);
+    git(['commit', '-q', '-m', 'before roles initialization'], fixture.checkout);
+    git(['push', '-q', '-u', 'origin', 'main'], fixture.checkout);
+    const writer = path.join(path.dirname(fixture.home), 'writer');
+    git(['clone', '-q', git(['remote', 'get-url', 'origin'], fixture.checkout).trim(), writer], fixture.home);
+    fs.writeFileSync(path.join(writer, 'manifest', 'roles.yaml'), ROLES_YAML);
+    git(['add', '-A'], writer);
+    git(['commit', '-q', '-m', 'another admin initializes roles'], writer);
+    git(['push', '-q', 'origin', 'main'], writer);
+
+    const result = await dryRun(fixture, ['roles', 'init']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('Roles manifest already exists');
+    expect(result.output).toContain('Aborted. Existing manifest is unchanged.');
+    expect(result.output).not.toContain('Define team roles');
+    expect(fs.existsSync(path.join(fixture.checkout, 'manifest', 'roles.yaml'))).toBe(false);
   });
 });

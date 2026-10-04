@@ -40,7 +40,7 @@ export async function remove(
 
   // Single-repo mode: run the removal PR in an isolated knowledge worktree so the
   // branch/commit never touches the user's active tree. A dry run reads a
-  // throwaway checkout of origin/<default> instead, in either mode: the pull
+  // throwaway checkout of the post-pull branch contents instead: the pull
   // below can reset a clone with unpushed commits (#900).
   if (options.dryRun || localConfig.repo.kind === 'self') {
     const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError, PreviewFetchError, DirtyPreviewError } = await import('./utils/reports-branch.js');
@@ -86,7 +86,7 @@ async function removeCore(
   teamConfig: TeamaiConfig,
 ): Promise<void> {
   // Pull latest before making changes. In self mode and on a dry run the
-  // checkout is already a fresh copy of origin/<default>, so skip the pull.
+  // checkout already models the refreshed contents, so skip the pull.
   // A clone that could not be refreshed is not the default branch: a placement
   // merged since the last pull is not recorded there, so the bare name the
   // author types falls back to the stem and removes that agent from every

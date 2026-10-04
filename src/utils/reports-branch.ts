@@ -6,7 +6,7 @@
  * instance of it and learnings are the other. What stays here is the reports
  * spec, the names its callers already import, and the knowledge worktree, which
  * is not a side branch at all: it is a throwaway checkout of the default branch,
- * as is the preview checkout a dry run reads instead.
+ * while a dry-run checkout models the contents after a real refresh.
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -254,9 +254,8 @@ export class DirtyPreviewError extends Error {
 }
 
 /**
- * Run `fn` against a throwaway checkout of origin/<default>: the tree a real
- * `remove` or manifest edit reads after its pull (or, in single-repo mode, in
- * its knowledge worktree), for a `--dry-run` that must not change anything.
+ * Run `fn` against a throwaway checkout of the post-pull clone branch, or
+ * origin/<default> in self mode, without changing the member checkout.
  *
  * Only a fetch touches the member's repo. Pulling there can reset a clone
  * that diverged from origin and discard its commits, and `withKnowledgeWorktree`
@@ -278,14 +277,34 @@ export async function withDefaultBranchPreview<T>(
     throw new DirtyPreviewError(repoRoot);
   }
   const defaultBranch = await getDefaultBranch(repoRoot);
+  const branch = selfMode ? defaultBranch : (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+  let fetched = true;
   try {
-    await git.fetch(['origin', defaultBranch]);
+    await git.fetch(selfMode ? ['origin', branch] : ['origin']);
   } catch (e) {
     if (!options.allowStale) throw new PreviewFetchError(e);
-    log.warn(`Could not fetch origin/${defaultBranch} (${(e as Error).message}); previewing against the copy fetched last.`);
+    fetched = false;
+    log.warn(`Could not fetch origin/${branch} (${(e as Error).message}); ${selfMode ? 'previewing against the copy fetched last.' : 'previewing against the local checkout.'}`);
   }
-  // origin/<default> may not exist locally (fresh repo); fall back to HEAD, as the worktree does.
-  const base = await getHeadCommit(repoRoot, `origin/${defaultBranch}`) ?? await getHeadCommit(repoRoot);
+  const head = await getHeadCommit(repoRoot);
+  // Self mode really creates a default-branch worktree. Clone mode pulls the
+  // active branch: ff-only retains an ahead HEAD, advances a behind HEAD,
+  // and pullRepo's divergence fallback resets to origin/<active branch>.
+  let base = await getHeadCommit(repoRoot, `origin/${branch}`) ?? head;
+  if (!selfMode) {
+    if (!fetched) {
+      base = head; // pullLatest warns and continues with this unchanged checkout.
+    } else {
+      const upstream = await getHeadCommit(repoRoot, '@{upstream}');
+      if (head && upstream) {
+        try {
+          const common = (await git.raw(['merge-base', head, upstream])).trim();
+          if (common === upstream) base = head;
+          else if (common === head) base = upstream;
+        } catch { /* no common ancestor: pullRepo resets to origin/<branch> */ }
+      }
+    }
+  }
   if (!base) throw new EmptyRepoError(repoRoot);
 
   const dir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-preview-'));
@@ -293,9 +312,14 @@ export async function withDefaultBranchPreview<T>(
     await git.raw(['clone', '--quiet', '--shared', '--no-checkout', repoRoot, dir]);
     const preview = createGit(dir);
     await preview.raw(['checkout', '--quiet', '--detach', base]);
-    // The clone's origin/* are the member's local branches; point the default
-    // branch at what origin has, as it is in the member's repo.
-    await preview.raw(['update-ref', `refs/remotes/origin/${defaultBranch}`, base]);
+    // A shared clone's origin/* initially name the member's local branches.
+    // History/name resolution must instead see the member's fetched refs,
+    // including an ahead HEAD that differs from origin/<active branch>.
+    const refs = await git.raw(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes/origin/']);
+    for (const entry of refs.trim().split('\n').filter(Boolean)) {
+      const [ref, commit] = entry.split(' ');
+      if (ref !== 'refs/remotes/origin/HEAD') await preview.raw(['update-ref', ref, commit]);
+    }
     await preview.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${defaultBranch}`]);
     const previewConfig: LocalConfig = {
       ...localConfig,

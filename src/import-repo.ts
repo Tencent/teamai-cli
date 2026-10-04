@@ -213,6 +213,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     const lastSync = await readLastSync(cacheDir);
     const cacheExists = await fs.pathExists(path.join(cacheDir, '.git'));
     const useIncremental = incremental && cacheExists && lastSync !== null;
+    const outputWikiRoot = output ? path.resolve(output, '..', 'teamwiki') : undefined;
 
     // A preview asks for the target remote commit and stops: the clone replaces the
     // cache (or fetches and resets it), and the lock and LLM scan follow (#900).
@@ -234,7 +235,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             : lastSync?.sha === head
                 ? `cache is current at ${head.slice(0, 8)}${previewIncremental ? ', so an incremental run would skip it' : ''}`
                 : `cache would be refreshed from ${lastSync ? lastSync.sha.slice(0, 8) : 'an unrecorded commit'} to ${head.slice(0, 8)}`;
-        log.info(`[dry-run] Would import ${owner}/${repoName} at ${head.slice(0, 8)} into teamwiki/evidence/code/${slug}; ${cache}`);
+        log.info(`[dry-run] Would import ${owner}/${repoName} at ${head.slice(0, 8)} into ${path.join(outputWikiRoot ?? 'teamwiki', 'evidence', 'code', slug)}; ${cache}`);
         return;
     }
 
@@ -328,9 +329,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     const releaseImportLock = await acquireImportLock(teamRepoDir);
     try {
     // 4. Generate teamwiki/ knowledge graph artifacts + append AI narrative to overview.md
-    const teamwikiRoot = output
-        ? path.resolve(output, '..', 'teamwiki')
-        : path.join(teamRepoDir, 'teamwiki');
+    const teamwikiRoot = outputWikiRoot ?? path.join(teamRepoDir, 'teamwiki');
     if (!dryRun) {
         const cacheWiki = path.join(cacheDir, 'teamwiki');
         try {

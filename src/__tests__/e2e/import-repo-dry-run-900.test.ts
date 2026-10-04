@@ -230,10 +230,25 @@ describe('import --from-repo --dry-run (#900 C3)', () => {
     expect(result.output).not.toContain(main.slice(0, 8));
   });
 
+  it('reports the actual --output destination without creating it', async () => {
+    const output = path.join(sandbox, 'custom', 'summary.md');
+    const before = tree(path.dirname(output));
+    const result = await dryRun(['import', '--from-repo', URL, '--output', output]);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain(path.join(path.resolve(output, '..', 'teamwiki'), 'evidence', 'code', 'git__acme__widget'));
+    expect(tree(path.dirname(output))).toEqual(before);
+  });
+
+  it('selects a remote repo before lower-priority unsafe sources', async () => {
+    const result = await dryRun(['import', '--from-repo', URL, '--from-iwiki', 'page', '--from-claude']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('Would import acme/widget');
+  });
+
   it('previews every entry of --from-repo-list', async () => {
     const list = path.join(sandbox, 'repos.yaml');
     fs.writeFileSync(list, `repos:\n  - url: ${URL}\n`);
-    const result = await dryRun(['import', '--from-repo-list', list]);
+    const result = await dryRun(['import', '--from-repo-list', list, '--from-iwiki', 'page', '--from-claude']);
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain(`[dry-run] Would import acme/widget at ${head.slice(0, 8)}`);
   });

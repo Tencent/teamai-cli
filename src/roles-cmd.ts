@@ -6,7 +6,7 @@ import type { RolesManifest, TeamRole } from './roles.js';
 import { pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { pullLatest, runManifestEdit, pushManifestChange } from './manifest-edit.js';
-import type { GlobalOptions } from './types.js';
+import type { GlobalOptions, LocalConfig, TeamaiConfig } from './types.js';
 import { askQuestion, askConfirmation } from './utils/prompt.js';
 
 /**
@@ -23,15 +23,18 @@ function parseNamespaces(input: string): string[] {
 
 export async function rolesInit(options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
-    const repoPath = localConfig.repo.localPath;
-    const selfMode = localConfig.repo.kind === 'self';
+    if (options.dryRun && localConfig.repo.kind !== 'self') {
+        await runManifestEdit(localConfig, 'Roles', async (_repoPath, previewConfig) => {
+            await initializeRoles(options, previewConfig, teamConfig);
+        }, { dryRun: true });
+        return;
+    }
+    if (!options.dryRun && localConfig.repo.kind !== 'self') await pullLatest(localConfig.repo.localPath);
+    await initializeRoles(options, localConfig, teamConfig);
+}
 
-    // In self mode the manifest is knowledge on main; the on-disk .teamai already
-    // reflects main, so we read the existence check from there and only run the
-    // actual write+PR inside an isolated worktree (below). Non-self modes pull the
-    // team repo clone first, except on a dry run: the pull can reset a clone with
-    // unpushed commits (#900), so the preview checks the clone as it is.
-    if (!selfMode && !options.dryRun) await pullLatest(repoPath);
+async function initializeRoles(options: GlobalOptions, localConfig: LocalConfig, teamConfig: TeamaiConfig): Promise<void> {
+    const repoPath = localConfig.repo.localPath;
 
     // Check if manifest already exists
     const manifestPath = path.join(repoPath, 'manifest', 'roles.yaml');

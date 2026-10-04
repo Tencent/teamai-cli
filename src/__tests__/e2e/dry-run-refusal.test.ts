@@ -179,7 +179,6 @@ describe('--dry-run on a command with no preview', () => {
 
   it.each([
     ['stats'], ['digest'], ['recall', 'query'],
-    ['import', '--from-repo', TEAM_URL], ['import', '--from-repo-list', 'repos.yaml'],
     ['import', '--from-iwiki', 'page', '--from-mr', 'url'], ['import', '--from-claude'],
   ])('refuses unsafe preview %j before writing', (...args) => {
     const before = snapshot(home);
@@ -201,6 +200,8 @@ describe('--dry-run on a command with no preview', () => {
       'username: tester', 'scope: user', 'provider: git', '',
     ].join('\n'));
     const seed = path.join(sandbox, 'seed');
+    fs.mkdirSync(path.join(seed, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: existing\n    description: Existing\n    resources:\n      knowledge: [common]\n      skills: [common]\n      agents: [common]\n');
     fs.writeFileSync(path.join(seed, 'remote-ahead.txt'), 'new commit\n');
     execFileSync('git', ['add', '-A'], { cwd: seed, env });
     execFileSync('git', ['commit', '-qm', 'remote ahead'], { cwd: seed, env });
@@ -212,10 +213,13 @@ describe('--dry-run on a command with no preview', () => {
 
     const result = cli(['roles', 'add', 'x', '--namespaces', 'x', '--dry-run']);
 
-    expect(result.code, result.output).toBe(1);
-    expect(result.output).toContain('teamai roles add has no --dry-run preview, nothing was run');
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('[dry-run] Would add role');
     expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' })).toBe(head);
-    expect(snapshot(home)).toEqual(before);
+    const applicationFiles = (files: Record<string, string>) => Object.fromEntries(
+      Object.entries(files).filter(([name]) => !name.includes(`${path.sep}.git${path.sep}`)),
+    );
+    expect(applicationFiles(snapshot(home))).toEqual(applicationFiles(before));
   });
 
   it('refuses CI artifact output before provider access and preserves no-output previews', () => {

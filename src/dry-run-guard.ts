@@ -10,6 +10,7 @@ import type { Command } from 'commander';
  * guards its writes) or only reads.
  */
 export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
+  'remove',
   'push',
   'pull',
   'status',
@@ -30,9 +31,16 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
   'doctor',
   'roles',
   'roles list',
+  'roles init',
+  'roles add',
+  'roles remove',
+  'roles update',
   'roles set',
   'projects',
   'projects list',
+  'projects add',
+  'projects update',
+  'projects remove',
   'projects set',
   'projects members',
   'tags',
@@ -85,14 +93,6 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
  * on a command that is in neither.
  */
 export const NO_DRY_RUN_PREVIEW: Readonly<Record<string, string>> = {
-  'remove': 'pulls the team repo before its preview until #971 lands',
-  'roles init': 'pulls the team repo before its preview until #971 lands',
-  'roles add': 'pulls the team repo before its preview until #971 lands',
-  'roles remove': 'pulls the team repo before its preview until #971 lands',
-  'roles update': 'pulls the team repo before its preview until #971 lands',
-  'projects add': 'pulls the team repo before its preview until #971 lands',
-  'projects update': 'pulls the team repo before its preview until #971 lands',
-  'projects remove': 'pulls the team repo before its preview until #971 lands',
   stats: 'creates or refreshes the reports worktree until #970 lands',
   recall: 'writes recall quality and the search index until #970 lands',
   digest: 'creates or refreshes the reports worktree; #900 C11',
@@ -132,9 +132,7 @@ export function dryRunRefusal(command: Command): string | undefined {
   if (path === 'import') {
     const opts = command.opts();
     // Match importCmd's source precedence. #960 made --from-org preview-safe.
-    if (!opts.fromOrg) {
-      if (opts.fromRepo) return noDryRunPreview('import --from-repo'); // clones/fetches the cache until #971 lands
-      if (opts.fromRepoList) return noDryRunPreview('import --from-repo-list'); // same cache writes until #971 lands
+    if (!opts.fromOrg && !opts.fromRepo && !opts.fromRepoList) {
       if (opts.fromIwiki) return noDryRunPreview('import --from-iwiki'); // persists the review session
       if (!opts.fromMr && !opts.dir && opts.fromClaude) return noDryRunPreview('import --from-claude'); // persists the review session
     }
