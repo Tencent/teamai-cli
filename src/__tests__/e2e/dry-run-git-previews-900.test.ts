@@ -396,6 +396,23 @@ describe('dirty preview checkouts', () => {
 
 
 describe('post-pull branch previews', () => {
+  it('refuses removal on a local-only branch just as the real refresh does', async () => {
+    const fixture = setUpClone();
+    git(['checkout', '-q', '--no-track', '-b', 'local-only'], fixture.checkout);
+    const preview = await dryRun(fixture, ['remove', 'rules', 'doomed']);
+    expect(preview.code, preview.output).toBe(1);
+    expect(preview.output).toContain('The team repo could not be refreshed');
+    expect(preview.output).not.toContain('Will remove');
+    const before = snapshot(fixture);
+    const real = await runCLI(['remove', 'rules', 'doomed'], fixture.cwd, fixture.home);
+    expect(real.code, real.output).toBe(1);
+    expect(real.output).toContain('The team repo could not be refreshed');
+    expect(snapshot(fixture)).toEqual(before);
+    const manifest = await dryRun(fixture, ['roles', 'add', 'x', '--namespaces', 'x']);
+    expect(manifest.code, manifest.output).toBe(0);
+    expect(manifest.output).toContain('[dry-run] Would add role');
+  });
+
   function addRole(repo: string, id: string): void {
     fs.appendFileSync(path.join(repo, 'manifest', 'roles.yaml'), `  - id: ${id}\n    description: branch role\n    resources:\n      knowledge: [branch]\n      skills: [branch]\n      agents: [branch]\n`);
     git(['add', '-A'], repo);

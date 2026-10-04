@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { shallowFetch } from '../../clone.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -192,6 +193,36 @@ describe('import --from-repo --dry-run (#900 C3)', () => {
     expect(real.code, real.output).toBe(0);
     expect(real.output).toContain(`SHA unchanged (${head.slice(0, 8)})`);
     expect(git(['rev-parse', 'HEAD'], cacheDir).trim()).toBe(head);
+  });
+
+  it('incremental preview retains a deleted cached branch when a non-pruning fetch does', async () => {
+    const main = changeDefaultAfterCachingMaster();
+    git(['branch', '-D', 'master'], remote);
+    const result = await dryRun(['import', '--from-repo', URL, '--incremental']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain(`Would import acme/widget at ${head.slice(0, 8)}`);
+    expect(result.output).toContain('so an incremental run would skip it');
+    expect(result.output).not.toContain(main.slice(0, 8));
+    const real = await runCLI(['import', '--from-repo', URL, '--incremental']);
+    expect(real.code, real.output).toBe(0);
+    expect(real.output).toContain(`SHA unchanged (${head.slice(0, 8)})`);
+    expect(git(['rev-parse', 'HEAD'], cacheDir).trim()).toBe(head);
+    const full = await dryRun(['import', '--from-repo', URL]);
+    expect(full.output).toContain(`Would import acme/widget at ${main.slice(0, 8)}`);
+  });
+
+  it.each(['pruning', 'single-branch', 'missing origin ref'])('previews the full-clone fallback after branch deletion with %s', async (setting) => {
+    const main = changeDefaultAfterCachingMaster();
+    git(['branch', '-D', 'master'], remote);
+    if (setting === 'pruning') git(['config', 'remote.origin.prune', 'true'], cacheDir);
+    else if (setting === 'single-branch') git(['config', 'remote.origin.fetch', '+refs/heads/master:refs/remotes/origin/master'], cacheDir);
+    else git(['update-ref', '-d', 'refs/remotes/origin/master'], cacheDir);
+    const result = await dryRun(['import', '--from-repo', URL, '--incremental']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('preview refresh failed, previewing a full clone instead');
+    expect(result.output).toContain(`Would import acme/widget at ${main.slice(0, 8)}`);
+    expect(result.output).not.toContain('so an incremental run would skip it');
+    await expect(shallowFetch(cacheDir, { provider: 'git' })).rejects.toThrow();
   });
 
   it('full-clone preview follows remote HEAD even when the cache is on master', async () => {

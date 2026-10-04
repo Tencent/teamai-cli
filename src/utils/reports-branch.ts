@@ -280,7 +280,7 @@ export async function withDefaultBranchPreview<T>(
   const branch = selfMode ? defaultBranch : (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
   let fetched = true;
   try {
-    await git.fetch(selfMode ? ['origin', branch] : ['origin']);
+    await git.fetch(['origin', branch]);
   } catch (e) {
     if (!options.allowStale) throw new PreviewFetchError(e);
     fetched = false;

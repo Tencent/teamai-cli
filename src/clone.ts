@@ -387,6 +387,23 @@ export async function remoteHeadSha(
         throw new Error(`git ls-remote failed (exit ${code}): ${redactToken(stderr.trim())}`);
     }
     const sha = stdout.trim().split(/\s+/)[0];
+    if (!sha && cachedRepoPath) {
+        // shallowFetch does not request pruning. A wildcard fetch can retain a
+        // deleted branch's origin ref, which its reset still uses. An explicit
+        // branch refspec instead fails fetching the deleted branch; configured
+        // pruning removes the ref. Both must keep the full-clone fallback.
+        const config = await runCommand('git', ['config', '--get-regexp', '^remote\\.origin\\.fetch$'], { cwd: cachedRepoPath, timeoutMs });
+        if (config.code !== 0 && config.code !== 1) throw new Error(`Could not read cached fetch settings: ${redactToken(config.stderr.trim())}`);
+        const entries = config.stdout.trim().split('\n').map((line) => line.split(/\s+/));
+        let prune = await runCommand('git', ['config', '--type=bool', '--get', 'remote.origin.prune'], { cwd: cachedRepoPath, timeoutMs });
+        if (prune.code === 1) prune = await runCommand('git', ['config', '--type=bool', '--get', 'fetch.prune'], { cwd: cachedRepoPath, timeoutMs });
+        if (prune.code !== 0 && prune.code !== 1) throw new Error(`Could not read cached prune setting: ${redactToken(prune.stderr.trim())}`);
+        const requiresDeletedBranch = entries.some(([key, value]) => key === 'remote.origin.fetch'
+            && value?.replace(/^\+/, '').split(':')[0] === ref);
+        if (!requiresDeletedBranch && prune.stdout.trim() !== 'true') {
+            return await gitCmd(['rev-parse', '--verify', ref.replace('refs/heads/', 'refs/remotes/origin/')], cachedRepoPath, timeoutMs);
+        }
+    }
     if (!sha) throw new Error(`git ls-remote found no ${ref} at ${cachedRepoPath ? 'the cached origin' : sanitizeGitUrl(url)}`);
     return sha;
 }

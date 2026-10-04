@@ -779,7 +779,7 @@ Choose namespace [1-3] (default: 1 = common):
 - 当有多个 namespace 可接收新资源、且没有可供询问的终端（CI、hook、`TEAMAI_NONINTERACTIVE`）时，push 会以退出码 2 停止，列出这些 namespace，并要求使用 `--role <ns>`
 - `--role`/`--project` 只放置新资源。对共享根目录 rule 或 agent 的修改仍留在共享根目录，push 会给出提示
 - 已落点的资源在发布它的机器上仍可维护：PR 未合并期间，待评审 PR 记录会把作者对自己副本的修改带回该 PR；文件进入默认分支后，`state.json` 会记录 push 的落点，因此修改仍会写回同一个文件；即使 agent 落在本目录未激活的 namespace，也不会被当作“无活跃源”跳过
-- `teamai remove rules <name>` 同时接受作者副本的简名和发布名 `<namespace>/<name>`：会打印实际解析到的名字，并同时删除带 namespace 的团队文件和作者在 rules 根目录的副本。若无法先刷新团队仓库，或本机的落点记录无法更新并保存，`remove` 会以退出码 1 停止且不删除任何内容，因为两者都可能把名字解析到错误的文件。`--dry-run` 只执行 fetch：按真实 pull 后的克隆当前分支内容解析名字（单仓模式使用 origin 默认分支），且不保存任何落点记录。克隆模式下 fetch 失败时，预览会使用与真实删除相同的拒绝消息，并以退出码 1 停止。克隆存在未提交更改时，预览也会以退出码 1 拒绝运行，请先 commit 或 stash。业务文件的未提交更改不会阻止单仓模式预览。
+- `teamai remove rules <name>` 同时接受作者副本的简名和发布名 `<namespace>/<name>`：会打印实际解析到的名字，并同时删除带 namespace 的团队文件和作者在 rules 根目录的副本。若无法先刷新团队仓库，或本机的落点记录无法更新并保存，`remove` 会以退出码 1 停止且不删除任何内容，因为两者都可能把名字解析到错误的文件。`--dry-run` 只执行 fetch：按真实 pull 后的克隆当前分支内容解析名字（单仓模式使用 origin 默认分支），且不保存任何落点记录。删除预览会显式 fetch 当前分支，因此没有对应远程分支的本地分支会像真实刷新一样被拒绝。克隆模式下 fetch 失败时，预览会使用与真实删除相同的拒绝消息，并以退出码 1 停止。克隆存在未提交更改时，预览也会以退出码 1 拒绝运行，请先 commit 或 stash。业务文件的未提交更改不会阻止单仓模式预览。
 - 本地 agent 被视为其来源团队 agent 的编辑：优先是活跃 namespace 中的 agent，其次是本机放置的 agent，最后是被二者替换的共享根目录 agent。只有三者都不存在时，才由 `--role`/`--project` 决定，此时该 agent 在该 namespace 中是新的；若该 namespace 已有同名 agent，则跳过该 agent 而不是覆盖它，与 rule 的处理一致。两个活跃的同名 agent 无论是否指定参数都视为有歧义并跳过。同名 agent 允许存在于多个 namespace，因此你未指定的非活跃 namespace 中的同名副本不会阻止你发布。本机放置的 agent 若在当前检出上次同步后被团队修改，会暂缓推送，因为 agents 没有推送前同步。pull 会保留你修改过的副本，因此请先另存你的修改，删除该副本，执行 `teamai pull --force`，重新应用修改后再 push。单仓库模式下，`.teamai/` 中的根目录副本若与其落点文件的某个旧版本相同，也会暂缓推送：没有任何操作会刷新它，因此它是旧副本而不是编辑
 - 新资源绝不会覆盖已存在的资源：若解析出的 namespace 下已有同名文件，命令会报错并指出该文件：请先 pull 并修改已有副本、重命名自己的资源，或用 `--role <ns>` 换一个 namespace
 - 本目录未激活的 namespace 下的 agent 可通过落点记录继续编辑，`pull` 也会基于同一记录下发它，使本地副本与团队文件保持同步；它会像活跃 namespace 中的 agent 一样替换共享根目录的同名 agent。若已激活的 namespace 中已有同名 agent，则以它为准
@@ -1767,7 +1767,7 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 如果核心知识图谱提取或写入失败，导入会报错，且不会将该提交标记为已同步。下次增量导入会重试该提交。
 
-加 `--dry-run` 时，`--from-repo` 与 `--from-repo-list` 用 `git ls-remote` 读取每个仓库的目标提交，打印 `Would import <owner>/<repo> at <commit>` 以及本地缓存是否最新，然后停止：不会 clone 或 fetch 到缓存，不会获取导入锁，也不会运行任何 AI 步骤。使用 `--incremental` 且缓存含 `LAST_SYNC` 时，预览会查询该缓存配置的 origin 上当前分支的提交，与真实 fetch/reset 一致。完整克隆预览（包括缺少缓存或 `LAST_SYNC`）跟随远端 HEAD。若缓存分支查询失败，预览会警告并预览完整克隆回退。 指定 `--output` 时，预览会显示与真实导入相同的输出文件旁 `teamwiki/evidence/code/<slug>` 目标目录。
+加 `--dry-run` 时，`--from-repo` 与 `--from-repo-list` 用 `git ls-remote` 读取每个仓库的目标提交，打印 `Would import <owner>/<repo> at <commit>` 以及本地缓存是否最新，然后停止：不会 clone 或 fetch 到缓存，不会获取导入锁，也不会运行任何 AI 步骤。使用 `--incremental` 且缓存含 `LAST_SYNC` 时，预览会查询该缓存配置的 origin 上当前分支的提交，与真实 fetch/reset 一致。完整克隆预览（包括缺少缓存或 `LAST_SYNC`）跟随远端 HEAD。若缓存分支已从远端删除，不执行 prune 的通配 fetch 会保留缓存 origin 引用，增量预览也使用该保留提交。启用 prune、显式 fetch 已删除分支或缺少缓存 origin 引用时，仍预览完整克隆回退。其他缓存分支查询失败时，预览会警告并预览完整克隆回退。 指定 `--output` 时，预览会显示与真实导入相同的输出文件旁 `teamwiki/evidence/code/<slug>` 目标目录。
 
 `--from-mr` 与 `teamai contribute` 一样，把提取的经验发布到 `teamai-learnings` 分支：恰好一个激活项目声明了 learnings namespace 时放在 `learnings/<namespace>/` 下，否则放在共享的 `learnings/` 根目录。发布失败时，经验留在本机队列中，下次 `teamai pull` 会发布它；若阻止发布的是 teamai 拒绝使用的 learnings 检出，则在你按提示处理该检出之前，任何 pull 都无法发布它。
 
