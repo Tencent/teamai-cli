@@ -509,7 +509,7 @@ export async function recallFeedback(opts: { positive?: string; negative?: strin
       // team already holds count too: that file plus the deltas not yet pushed.
       const team: UserVotesV2 = teamVotesDir === undefined
         ? { version: 2, votes: {}, deltas: {} }
-        : await loadUserVotes(path.join(teamVotesDir, `${localConfig.username}.yaml`));
+        : await readUserVotes(path.join(teamVotesDir, `${localConfig.username}.yaml`));
       const teamEntry = team.votes[opts.negative!];
       const known = data.votes[opts.negative!] ?? teamEntry;
       if (!known) return 'missing' as const;
