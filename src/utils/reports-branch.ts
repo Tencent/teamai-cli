@@ -237,6 +237,14 @@ export async function withKnowledgeWorktree<T>(
   }
 }
 
+/** A failed refresh, distinct from errors while reading the preview checkout. */
+export class PreviewFetchError extends Error {
+  constructor(cause: unknown) {
+    super((cause as Error).message, { cause });
+    this.name = 'PreviewFetchError';
+  }
+}
+
 /**
  * Run `fn` against a throwaway checkout of origin/<default>: the tree a real
  * `remove` or manifest edit reads after its pull (or, in single-repo mode, in
@@ -251,6 +259,7 @@ export async function withKnowledgeWorktree<T>(
 export async function withDefaultBranchPreview<T>(
   localConfig: LocalConfig,
   fn: (previewConfig: LocalConfig) => Promise<T>,
+  options: { allowStale?: boolean } = {},
 ): Promise<T> {
   const selfMode = localConfig.repo.kind === 'self';
   const repoRoot = selfMode ? getBusinessRoot(localConfig) : localConfig.repo.localPath;
@@ -259,6 +268,7 @@ export async function withDefaultBranchPreview<T>(
   try {
     await git.fetch(['origin', defaultBranch]);
   } catch (e) {
+    if (!options.allowStale) throw new PreviewFetchError(e);
     log.warn(`Could not fetch origin/${defaultBranch} (${(e as Error).message}); previewing against the copy fetched last.`);
   }
   // origin/<default> may not exist locally (fresh repo); fall back to HEAD, as the worktree does.

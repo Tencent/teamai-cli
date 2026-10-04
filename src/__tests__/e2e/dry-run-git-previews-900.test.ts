@@ -328,3 +328,32 @@ describe.each([
     expect(result.output).toContain('Dry run — no changes made');
   });
 });
+
+
+describe('unreachable origin', () => {
+  it('remove refuses with exit 1 and leaves the checkout and state unchanged', async () => {
+    const fixture = setUpClone();
+    git(['remote', 'set-url', 'origin', path.join(fixture.home, 'missing-origin.git')], fixture.checkout);
+    const before = snapshot(fixture);
+
+    const result = await dryRun(fixture, ['remove', 'rules', 'doomed']);
+
+    expect(result.code, result.output).toBe(1);
+    expect(result.output).toContain('The team repo could not be refreshed');
+    expect(result.output).toContain('names cannot be resolved against the current default branch. Nothing was removed.');
+    expect(result.output).toContain('Fix the pull (run `teamai pull` to see why) and retry.');
+    expect(result.output).not.toContain('Will remove');
+    expect(snapshot(fixture)).toEqual(before);
+  });
+
+  it('roles and projects warn and preview the last fetched copy without writing', async () => {
+    const fixture = setUpClone();
+    git(['remote', 'set-url', 'origin', path.join(fixture.home, 'missing-origin.git')], fixture.checkout);
+    for (const args of [['roles', 'add', 'x', '--namespaces', 'x'], ['projects', 'add', 'beta', '--namespaces', 'beta']]) {
+      const result = await dryRun(fixture, args);
+      expect(result.code, result.output).toBe(0);
+      expect(result.output).toContain('previewing against the copy fetched last.');
+      expect(result.output).toContain('[dry-run] Would add');
+    }
+  });
+});

@@ -43,12 +43,18 @@ export async function remove(
   // throwaway checkout of origin/<default> instead, in either mode: the pull
   // below can reset a clone with unpushed commits (#900).
   if (options.dryRun || localConfig.repo.kind === 'self') {
-    const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError } = await import('./utils/reports-branch.js');
-    const withCheckout = options.dryRun ? withDefaultBranchPreview : withKnowledgeWorktree;
+    const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError, PreviewFetchError } = await import('./utils/reports-branch.js');
+    const body = (checkoutConfig: LocalConfig) => removeCore(type, names, options, checkoutConfig, teamConfig);
     try {
-      await withCheckout(localConfig, (checkoutConfig) => removeCore(type, names, options, checkoutConfig, teamConfig));
+      if (options.dryRun) {
+        await withDefaultBranchPreview(localConfig, body, { allowStale: localConfig.repo.kind === 'self' });
+      } else {
+        await withKnowledgeWorktree(localConfig, body);
+      }
     } catch (e) {
-      if (e instanceof EmptyRepoError) {
+      if (e instanceof PreviewFetchError) {
+        refuseUnrefreshedRemoval(names, e);
+      } else if (e instanceof EmptyRepoError) {
         log.error(e.message);
       } else {
         log.error(`Remove failed: ${(e as Error).message}`);
@@ -58,6 +64,15 @@ export async function remove(
   }
 
   await removeCore(type, names, options, localConfig, teamConfig);
+}
+
+function refuseUnrefreshedRemoval(names: string[], error: unknown): void {
+  log.error(
+    `The team repo could not be refreshed (${(error as Error).message}), so what "${names.join(', ')}" `
+    + 'names cannot be resolved against the current default branch. Nothing was removed. '
+    + 'Fix the pull (run `teamai pull` to see why) and retry.',
+  );
+  process.exitCode = 1;
 }
 
 async function removeCore(
@@ -77,12 +92,7 @@ async function removeCore(
     try {
       await pullRepo(localConfig.repo.localPath);
     } catch (e) {
-      log.error(
-        `The team repo could not be refreshed (${(e as Error).message}), so what "${names.join(', ')}" `
-        + 'names cannot be resolved against the current default branch. Nothing was removed. '
-        + 'Fix the pull (run `teamai pull` to see why) and retry.',
-      );
-      process.exitCode = 1;
+      refuseUnrefreshedRemoval(names, e);
       return;
     }
   }

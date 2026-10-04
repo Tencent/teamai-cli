@@ -29,17 +29,22 @@ export async function runManifestEdit(
     localConfig: LocalConfig,
     label: string,
     fn: (repoPath: string, editConfig: LocalConfig) => Promise<void>,
-    options: { dryRun?: boolean } = {},
+    options: { dryRun?: boolean; skipPull?: boolean } = {},
 ): Promise<void> {
     if (!options.dryRun && localConfig.repo.kind !== 'self') {
-        await pullLatest(localConfig.repo.localPath);
+        if (!options.skipPull) await pullLatest(localConfig.repo.localPath);
         await fn(localConfig.repo.localPath, localConfig);
         return;
     }
     const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError } = await import('./utils/reports-branch.js');
-    const withCheckout = options.dryRun ? withDefaultBranchPreview : withKnowledgeWorktree;
+    const body = (checkoutConfig: LocalConfig) => fn(checkoutConfig.repo.localPath, checkoutConfig);
     try {
-        await withCheckout(localConfig, (checkoutConfig) => fn(checkoutConfig.repo.localPath, checkoutConfig));
+        if (options.dryRun) {
+            // Real manifest edits also warn and proceed when their pull fails.
+            await withDefaultBranchPreview(localConfig, body, { allowStale: true });
+        } else {
+            await withKnowledgeWorktree(localConfig, body);
+        }
     } catch (e) {
         if (e instanceof EmptyRepoError) {
             log.error(e.message);

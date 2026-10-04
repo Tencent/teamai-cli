@@ -135,7 +135,7 @@ export async function rolesInit(options: GlobalOptions): Promise<void> {
             commitMsg,
             prDescription: `Initialize roles manifest:\n${roles.map((r) => `- ${r.id} (namespaces: ${r.resources.skills.join(', ')})`).join('\n')}`,
         });
-    });
+    }, { skipPull: true }); // Keep the checkout checked before the interactive questions.
 }
 
 // ─── roles list ─────────────────────────────────────────
