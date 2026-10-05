@@ -139,7 +139,7 @@ keep the project's content in the team repo until members have pulled: that is
 what lets their next pull clean up the copies they deployed.
 
 Every namespace that names a directory — `knowledge`, `skills`, `agents`, `env`,
-`hooks`, `mcp`, `models` and `docs` in either manifest, and `learnings` in `projects.yaml` (a role's `learnings:` is
+`hooks`, `mcp`, `models`, `docs` and `wiki` in either manifest, and `learnings` in `projects.yaml` (a role's `learnings:` is
 ignored and unchecked) — must be a single path segment: no `/`, `\`, `:` or control character, no trailing
 `.` or space, and not a Windows device name (`CON`, `NUL`, `COM1`, …). `team-codebase`
 cannot be a `docs` namespace (`docs/team-codebase/` is the legacy codebase output). Two
@@ -257,7 +257,7 @@ and push it with git. `teamai doctor` lists each override.
   and also set in `env.yaml` is a secret: its `env.yaml` value is not delivered. A
   secrets file that does not parse keeps `env.sh` and MCP servers as they were, and
   `teamai doctor` fails a check naming the file.
-- Have every member upgrade before declaring `env`, `hooks`, `mcp`, `models` or `docs` in a
+- Have every member upgrade before declaring `env`, `hooks`, `mcp`, `models`, `docs` or `wiki` in a
   manifest: teamai 0.25.0 and the 0.26.0 betas reject those keys and their pull stops.
 
 ## When sync fails
