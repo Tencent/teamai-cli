@@ -665,6 +665,29 @@ describe('aggregateGlobalGraph', () => {
       expect(graph).toBeNull();
     });
 
+    it("fails closed the same way for a legacy, fully untagged import-iwiki.ts MAPS_TO edge into a contested fact-level slug — the check isn't scoped to DEPENDS_ON (#974 review round 16 P1)", async () => {
+      const globalDir = path.join(tmpDir, '.indices');
+      fs.ensureDirSync(globalDir);
+      fs.writeFileSync(path.join(globalDir, 'graph-index.json'), JSON.stringify({
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'component/App', title: 'NewApp', type: 'component', confidence: 'high' }],
+        edges: [{ from: 'iwiki/p/1', to: 'component/App', relation: 'MAPS_TO', term: 'App', confidence: 0.8 }],
+      }));
+      writeRepoGraph('svc-old', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'component/App', title: 'OldApp', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-new', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'component/App', title: 'NewApp', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-old']));
+      expect(graph).toBeNull();
+    });
+
     it("keeps a cross-repo edge that remains independently producible by a fully-allowed repo pair, even though withholding one repo removes ITS pair's claim on the identical edge identity (#974 review round 15 P2)", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',

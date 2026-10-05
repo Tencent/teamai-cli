@@ -323,19 +323,21 @@ export async function scopeGlobalGraph(
 
     // A legacy (not tag-covered) withheld codebase's contested slug is kept
     // because an allowed repo also legitimately claims it — correct for the
-    // node itself. But a synthesized cross-repo edge that predates
-    // `origin`/`crossOriginPairs` tagging entirely never lived in any per-repo
-    // file (cross edges are written straight to the global graph at
-    // aggregation time), so the fallback scan above has no way to discover,
-    // let alone subtract, one touching this slug. Silently trusting that no
-    // such edge exists would risk exposing a withheld-only relationship
-    // with no path left to remove it — fail closed instead (#974 review
-    // round 14 P1).
-    const looksLikeUntaggedCrossEdge = (edge: { relation: string; origin?: string; crossOriginPairs?: string[][]; source?: string }) =>
-        edge.relation === 'DEPENDS_ON' && !edge.origin && !edge.crossOriginPairs && !edge.source;
+    // node itself. But an edge written straight to the global graph outside
+    // any per-repo file — a synthesized cross-repo `DEPENDS_ON` edge, or
+    // `import-iwiki.ts`'s own untagged `MAPS_TO` edge into a bare fact-level
+    // slug like `component/App` (#974 review round 16 P1) — has no way to
+    // be discovered by the fallback scan above at all, let alone subtracted,
+    // if it predates `origin`/`crossOriginPairs` tagging. Not scoped to any
+    // one relation: the risk is the same regardless of which direct-write
+    // mechanism produced it. Silently trusting that no such edge exists
+    // would risk exposing a withheld-only relationship with no path left to
+    // remove it — fail closed instead.
+    const looksLikeUnattributableEdge = (edge: { origin?: string; crossOriginPairs?: string[][]; source?: string }) =>
+        !edge.origin && !edge.crossOriginPairs && !edge.source;
     for (const slug of contestedSlugs) {
         if (!fallbackWithheldIds.has(slug)) continue;
-        const unverifiable = globalGraph.edges.some((e) => (e.from === slug || e.to === slug) && looksLikeUntaggedCrossEdge(e));
+        const unverifiable = globalGraph.edges.some((e) => (e.from === slug || e.to === slug) && looksLikeUnattributableEdge(e));
         if (unverifiable) return null;
     }
 
