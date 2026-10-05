@@ -383,7 +383,7 @@ teamai projects remove checkout
 `--namespaces` sets the same namespaces on every project resource type
 (`knowledge`, `skills`, `learnings`, `agents`); `update` adds or removes them on
 each type's own list, so a hand-edited per-type layout survives. Neither touches
-`env`, `hooks`, `mcp`, `models` or `docs`: declare those by hand (see
+`env`, `hooks`, `mcp`, `models`, `docs` or `wiki`: declare those by hand (see
 [Env, hooks and MCP servers by namespace](#env-hooks-and-mcp-servers-by-namespace)),
 because a member on an older CLI cannot read them. After
 `projects remove`, a directory that still has the project active warns on its

@@ -332,7 +332,7 @@ teamai projects remove checkout
 
 `--namespaces` 会把同一组 namespace 写入项目的每种资源类型（`knowledge`、`skills`、
 `learnings`、`agents`）；`update` 在每种类型各自的列表上增删，因此手工编辑过的按类型
-布局会被保留。两者都不会改动 `env`、`hooks`、`mcp`、`models` 或 `docs`：这些请手动声明（见
+布局会被保留。两者都不会改动 `env`、`hooks`、`mcp`、`models`、`docs` 或 `wiki`：这些请手动声明（见
 [Env、hooks 与 MCP server 按 namespace 划分](#envhooks-与-mcp-server-按-namespace-划分)），因为旧版 CLI 的成员读不了它们。执行 `projects remove` 后，仍激活该项目的目录在下一次 pull 时会提示警告、
 回退为仅按角色过滤，并清理已部署的该项目 skills、rules 和 agents——前提是该项目的内容
 仍在团队仓库中，因为正是靠它识别已部署的副本。请在成员都 pull 过之后，再用单独的变更删除这些内容。

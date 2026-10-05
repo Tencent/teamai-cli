@@ -147,8 +147,12 @@ describe('aggregateGlobalGraph', () => {
       await aggregateGlobalGraph(tmpDir);
 
       const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
-      const crossEdges = (graph?.edges ?? []).filter((e: { relation: string }) => e.relation === 'DEPENDS_ON');
-      expect(crossEdges).toHaveLength(0);
+      // Not a relation-based filter: `loadGraphIndex` normalizes the legacy
+      // `imports` relation to `DEPENDS_ON` too, so the surviving, unrelated
+      // import edge (a/client -> libs/balance_service.py) would false-match.
+      const intoWithheld = (graph?.edges ?? []).filter((e: { to: string }) => e.to === 'b/service');
+      expect(intoWithheld).toHaveLength(0);
+      expect(graph?.edges).toHaveLength(1);
     });
 
     it("keeps content that lives only in the global file (e.g. --reconcile's MAPS_TO edges) when the withheld project is unrelated to it", async () => {
@@ -177,6 +181,47 @@ describe('aggregateGlobalGraph', () => {
       const slugs = graph?.nodes.map((n: { slug: string }) => n.slug) ?? [];
       expect(slugs).toContain('docs/product/billing');
       expect(graph?.edges).toContainEqual({ from: 'docs/product/billing', to: 'a/svc', relation: 'MAPS_TO' });
+    });
+
+    it("keeps an allowed repo's file-to-file edge whose endpoints are not graph nodes at all (#912 review round 3 P1)", async () => {
+      // AST/heuristic edges are commonly file-to-file with neither endpoint
+      // present in nodes[] — requiring both endpoints to "survive as nodes"
+      // (an earlier version of this filter) deleted these for every allowed
+      // repo too, the moment anything was withheld.
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [{ from: 'src/a.ts', to: 'src/b.ts', relation: 'DEPENDS_ON' }],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph?.edges).toContainEqual(expect.objectContaining({ from: 'src/a.ts', to: 'src/b.ts' }));
+    });
+
+    it("does not remove an allowed repo's node when a withheld repo happens to mint the same unqualified slug (#912 review round 3 P2)", async () => {
+      // Fact-level slugs are not repo-qualified (buildCodeGraph mints
+      // `component/App` the same way for any repo), so two unrelated repos
+      // can legitimately collide on one slug after merging.
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'component/App', title: 'AppA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'component/App', title: 'AppB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toContain('component/App');
     });
 
     it('excludes case-foldedly, matching the evidence/code/<slug>/ directory on a case-insensitive filesystem', async () => {
