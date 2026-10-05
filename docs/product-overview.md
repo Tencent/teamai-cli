@@ -69,6 +69,8 @@ Each resource is delivered to every agent:
 
 Skills, rules, CLAUDE.md, agents, env, hooks, MCP, models and docs can also live under a `<namespace>/` subdirectory, which ships only to the roles and projects that list it in `resources:` (rules and CLAUDE.md under `knowledge:`). A namespace item replaces the root item of the same name; a docs namespace replaces nothing. With roles or projects set, root skills reach a member only through a tag subscription.
 
+The Team Context knowledge base below is scoped the same way: a `teamwiki/evidence/code/<slug>/` codebase reaches only the roles and projects that list it under `resources.wiki`, and an undeclared slug stays shared — see [Wiki by namespace](usage-guide.md#codebase-knowledge-graph).
+
 For file formats and full workflows, see the [Usage Guide](usage-guide.md).
 
 ## Team Context (beta)

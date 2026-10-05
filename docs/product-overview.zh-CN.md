@@ -69,6 +69,8 @@ teamai push → 创建分支 + MR → reviewer 审批合并
 
 Skills、rules、CLAUDE.md、agents、env、hooks、MCP、models 和 docs 也可以放在 `<namespace>/` 子目录下，只同步给在 `resources:` 中列出它的角色和项目（rules 与 CLAUDE.md 列在 `knowledge:` 下）。namespace 中的条目会替换根目录中同名的条目；docs namespace 不替换任何内容。配置了角色或项目后，根目录的 skills 只通过标签订阅送达成员。
 
+下方的 Team Context 知识库采用同样的作用域规则：`teamwiki/evidence/code/<slug>/` 代码库只分发给在 `resources.wiki` 中列出它的角色和项目，未声明的 slug 仍然共享——详见[按命名空间分发 wiki](usage-guide.zh-CN.md#代码知识图谱)。
+
 文件格式与完整工作流见[使用指南](usage-guide.zh-CN.md)。
 
 ## Team Context (beta)
