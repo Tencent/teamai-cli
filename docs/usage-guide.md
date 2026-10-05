@@ -1946,7 +1946,7 @@ When extract finds components, it writes `teamwiki/evidence/code/<project>/_mani
 
 Without `--project`, `<project>` is the directory's name. At the root of a checkout, the main one or a linked git worktree, it is the repo's name: the main checkout's real name (also when opened through a symlink), or a bare repo's (`repo/.bare` or `repo.git` → `repo`). Every checkout of a repo writes the same entry. `teamai import --dir` picks its slug the same way.
 
-**Wiki by namespace.** In a team repo with `manifest/projects.yaml`, `recall` scopes `teamwiki/evidence/code/<slug>/` the same way it scopes docs: once any role or project lists a codebase slug under `resources.wiki`, it reaches only the members who have it active, and an undeclared slug stays shared:
+**Wiki by namespace.** `recall` scopes `teamwiki/evidence/code/<slug>/` the same way it scopes docs: once any role (in `manifest/roles.yaml`) or project (in `manifest/projects.yaml`) lists a codebase slug under `resources.wiki`, it reaches only the members who have it active, and an undeclared slug stays shared:
 
 ```yaml
 # manifest/projects.yaml

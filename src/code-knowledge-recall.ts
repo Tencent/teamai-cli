@@ -246,10 +246,19 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
  * to filter it by, still naming the withheld domain. So this groups lines
  * into sections at each markdown header first: a section whose links are
  * ALL withheld (at least one found, none allowed) is dropped whole, header
- * included — which also drops any bare, unlinked line in that same section,
- * since nothing in an all-withheld section could plausibly belong to an
- * allowed codebase. A section mixing allowed and withheld links keeps the
- * header and only drops the withheld lines, as before.
+ * included.
+ *
+ * A mixed section — some links allowed, some withheld — keeps its header
+ * and drops only the withheld-linked lines, same as before. But an
+ * unresolved component's bare `- <name>` fallback line carries no link at
+ * all, so `lineSlug` can never attribute it to either side; nothing marks
+ * it as the withheld codebase's own stray line versus the allowed one's.
+ * This function only ever runs when at least one codebase IS withheld (the
+ * caller skips it otherwise), so that ambiguity can't be resolved safely —
+ * failing closed means dropping every such unattributable bullet
+ * unconditionally, the same rule `scopeGlobalGraph` applies to graph
+ * ownership it cannot verify, rather than trusting an unlinked line is
+ * innocent just because something else nearby has an allowed link.
  */
 function filterRouterContent(content: string, withheldCodebases: string[]): string {
   const withheld = new Set(withheldCodebases.map(caseFoldKey));
@@ -276,6 +285,7 @@ function filterRouterContent(content: string, withheldCodebases: string[]): stri
       if (line.startsWith('<!-- search-anchor:')) continue;
       const slug = lineSlug(line);
       if (slug && withheld.has(slug)) continue;
+      if (slug === null && /^-\s/.test(line)) continue;
       kept.push(line);
     }
   }

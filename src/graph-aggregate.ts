@@ -77,11 +77,22 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
  * (`buildCodeGraph` mints `component/App` the same way for any repo), so two
  * unrelated repos can legitimately collide on one slug after merging. In
  * that case withholding one must not also take down the other's node — but
- * an edge is a pair, not a single identifier: if the withheld repo ALSO has
- * an edge directly between two such colliding names, that edge is tracked
- * and cleared/subtracted by the exact `from|to` pair instead, so a
- * relationship that only ever existed in the withheld repo cannot survive
- * merely because both of its endpoint names happen to be shared.
+ * two things still need handling for a colliding slug:
+ * - An edge is a PAIR, not a single identifier, and `relation` is part of
+ *   its identity: if the withheld repo has its own edge directly between two
+ *   such colliding names (e.g. a withheld `App -DEPENDS_ON-> Config` beside
+ *   an allowed `App -REFERENCES-> Config`), that edge is tracked and cleared
+ *   by the exact `from|to|relation` tuple, so a relationship — of that
+ *   specific kind — that only ever existed in the withheld repo cannot
+ *   survive merely because both endpoint names, or some OTHER relation
+ *   between them, happen to be shared.
+ * - `mergeGraphs` lets the later-processed repo's node win outright on a
+ *   colliding slug (no field-level merge), so the slug kept in the global
+ *   graph can still carry the WITHHELD repo's title/domain rather than the
+ *   allowed one's, if the withheld repo happened to merge last. The allowed
+ *   repo's own copy of that node (read in the same per-repo scan) is
+ *   re-attached onto the surviving node so its metadata is actually
+ *   attributable to an allowed source.
  *
  * Per-repo files alone are not the whole story either: `teamai codebase
  * --reconcile` adds code-page nodes (`evidence/code/<slug>/<page>`) and their
@@ -119,8 +130,14 @@ export async function scopeGlobalGraph(
     const allowedIds = new Set<string>();
     const withheldEdgeKeys = new Set<string>();
     const allowedEdgeKeys = new Set<string>();
-    const edgeKey = (from: string, to: string) => `${from}|${to}`;
+    // `relation` is part of the edge's identity: an allowed REFERENCES edge
+    // and a withheld DEPENDS_ON edge between the same two endpoints are two
+    // different edges, not one — omitting it would let the allowed one clear
+    // the withheld one out of withheldEdgeKeys even though it never claimed it.
+    const edgeKey = (from: string, to: string, relation?: string) => `${from}|${to}|${relation ?? ''}`;
     const accountedWithheld = new Set<string>();
+    type RepoNode = { slug?: string; id?: string; [key: string]: unknown };
+    const allowedNodeBySlug = new Map<string, RepoNode>();
     const projectDirs = await readdir(evidenceBase, { withFileTypes: true }).catch(() => []);
     for (const dir of projectDirs) {
         if (!dir.isDirectory()) continue;
@@ -129,19 +146,21 @@ export async function scopeGlobalGraph(
         const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
         try {
             const repoGraph = JSON.parse(await fs.readFile(graphPath, 'utf8')) as {
-                nodes?: Array<{ slug?: string; id?: string }>;
-                edges?: Array<{ from?: string; to?: string }>;
+                nodes?: RepoNode[];
+                edges?: Array<{ from?: string; to?: string; relation?: string }>;
             };
             const ids = isWithheld ? withheldIds : allowedIds;
             const edgeKeys = isWithheld ? withheldEdgeKeys : allowedEdgeKeys;
             for (const node of repoGraph.nodes ?? []) {
                 const slug = node.slug ?? node.id;
-                if (slug) ids.add(slug);
+                if (!slug) continue;
+                ids.add(slug);
+                if (!isWithheld) allowedNodeBySlug.set(slug, node);
             }
             for (const edge of repoGraph.edges ?? []) {
                 if (edge.from) ids.add(edge.from);
                 if (edge.to) ids.add(edge.to);
-                if (edge.from && edge.to) edgeKeys.add(edgeKey(edge.from, edge.to));
+                if (edge.from && edge.to) edgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
             }
             if (isWithheld) accountedWithheld.add(foldedName);
         } catch { /* handled below: an unreadable file leaves this withheld project unaccounted for */ }
@@ -152,6 +171,16 @@ export async function scopeGlobalGraph(
     // subtract" — that would silently leave its content exposed.
     for (const withheldSlug of withheldProjects) {
         if (!accountedWithheld.has(withheldSlug)) return null;
+    }
+
+    // A slug both sets claim needs its global metadata restored to the
+    // allowed repo's own even though nothing about it gets removed — so this
+    // is captured BEFORE allowedIds clears it out of withheldIds below, and
+    // used on its own to decide whether the fast path a few lines down may
+    // still return the graph completely untouched.
+    const contestedSlugs = new Set<string>();
+    for (const id of withheldIds) {
+        if (allowedNodeBySlug.has(id)) contestedSlugs.add(id);
     }
 
     for (const id of allowedIds) withheldIds.delete(id);
@@ -169,11 +198,20 @@ export async function scopeGlobalGraph(
         if (match && withheldProjects.has(caseFoldKey(match[1]))) withheldIds.add(node.slug);
     }
 
-    if (withheldIds.size === 0 && withheldEdgeKeys.size === 0) return globalGraph;
+    if (withheldIds.size === 0 && withheldEdgeKeys.size === 0 && contestedSlugs.size === 0) return globalGraph;
 
-    const nodes = globalGraph.nodes.filter((n) => !withheldIds.has(n.slug));
+    // `mergeGraphs` lets the later-processed repo's node win outright on a
+    // colliding slug (no field-level merge) — so a slug kept here because an
+    // ALLOWED repo also claims it can still carry a WITHHELD repo's title or
+    // domain, if that withheld repo happened to aggregate after the allowed
+    // one. Re-attaching the allowed repo's own copy of that node (read in the
+    // same scan above) makes the surviving node's metadata actually
+    // attributable to an allowed source, not whichever repo's write won.
+    const nodes = globalGraph.nodes
+        .filter((n) => !withheldIds.has(n.slug))
+        .map((n) => (contestedSlugs.has(n.slug) ? { ...n, ...allowedNodeBySlug.get(n.slug) } : n));
     const edges = globalGraph.edges.filter((e) =>
-        !withheldIds.has(e.from) && !withheldIds.has(e.to) && !withheldEdgeKeys.has(edgeKey(e.from, e.to)));
+        !withheldIds.has(e.from) && !withheldIds.has(e.to) && !withheldEdgeKeys.has(edgeKey(e.from, e.to, e.relation)));
 
     return { ...globalGraph, nodes, edges } satisfies GraphIndex;
 }

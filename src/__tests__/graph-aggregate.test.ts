@@ -218,6 +218,61 @@ describe('aggregateGlobalGraph', () => {
       expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toEqual(['a/svc']);
     });
 
+    it("restores an allowed repo's own title/domain for a colliding slug, even when the withheld repo's version won the merge (#912 review round 6 P1)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'component/App', title: 'AppA', domain: 'svc-a', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'component/App', title: 'AppB', domain: 'svc-b', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      // mergeGraphs lets the later-processed repo's node win outright; force
+      // the deterministic outcome where the WITHHELD repo's version is the
+      // one that survived the merge, regardless of actual readdir order.
+      const globalPath = path.join(tmpDir, '.indices', 'graph-index.json');
+      const global = JSON.parse(await fs.readFile(globalPath, 'utf8'));
+      const node = global.nodes.find((n: { slug: string }) => n.slug === 'component/App');
+      node.title = 'AppB';
+      node.domain = 'svc-b';
+      await fs.writeFile(globalPath, JSON.stringify(global));
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      const survivor = graph?.nodes.find((n: { slug: string }) => n.slug === 'component/App') as { title?: string; domain?: string } | undefined;
+      expect(survivor?.title).toBe('AppA');
+      expect(survivor?.domain).toBe('svc-a');
+    });
+
+    it('subtracts a withheld-only edge by its exact relation, keeping an allowed edge between the same two colliding endpoints under a different relation (#912 review round 6 P2)', async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [
+          { slug: 'component/App', title: 'AppA', type: 'component', confidence: 'high' },
+          { slug: 'component/Config', title: 'ConfigA', type: 'config', confidence: 'high' },
+        ],
+        edges: [{ from: 'component/App', to: 'component/Config', relation: 'REFERENCES' }],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [
+          { slug: 'component/App', title: 'AppB', type: 'component', confidence: 'high' },
+          { slug: 'component/Config', title: 'ConfigB', type: 'config', confidence: 'high' },
+        ],
+        edges: [{ from: 'component/App', to: 'component/Config', relation: 'DEPENDS_ON' }],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      const betweenAppAndConfig = (graph?.edges ?? []).filter(
+        (e: { from: string; to: string }) => e.from === 'component/App' && e.to === 'component/Config',
+      );
+      expect(betweenAppAndConfig.map((e: { relation: string }) => e.relation)).toEqual(['REFERENCES']);
+    });
+
     it("subtracts an edge that only exists in the withheld repo's own graph, even when both endpoint names collide with an allowed repo's (#912 review round 5 P2)", async () => {
       // svc-a and svc-b both define component/App and component/Config
       // (unqualified slugs collide across repos), but only svc-b's graph

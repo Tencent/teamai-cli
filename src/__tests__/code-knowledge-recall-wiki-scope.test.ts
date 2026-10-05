@@ -213,5 +213,23 @@ describe('queryCodeKnowledge: withheldCodebases', () => {
       expect(result.snippet).toContain('svc-a');
       expect(result.snippet).not.toContain('svc-b');
     });
+
+    it("drops an unresolved component's bare, unlinked fallback line in a MIXED domain too, since it can't be attributed to either side (#912 review round 6 P1)", async () => {
+      writeFileSync(
+        path.join(wikiRoot, 'router.md'),
+        '# Team Wiki Router\n\n'
+        + '### Platform (5 APIs)\n\n'
+        + '- [[evidence/code/svc-a/index]] — Svc A desc [alpha]\n'
+        + '- svc-b-unmatched\n',
+        'utf-8',
+      );
+
+      const [result] = await queryCodeKnowledge('router', {
+        wikiRoot, depth: 'route', withheldCodebases: ['svc-b'],
+      });
+      expect(result.snippet).toContain('Platform');
+      expect(result.snippet).toContain('svc-a');
+      expect(result.snippet).not.toContain('svc-b-unmatched');
+    });
   });
 });
