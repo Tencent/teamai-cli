@@ -76,7 +76,12 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
  * file also claims it: fact-level node slugs are not repo-qualified
  * (`buildCodeGraph` mints `component/App` the same way for any repo), so two
  * unrelated repos can legitimately collide on one slug after merging. In
- * that case withholding one must not also take down the other's.
+ * that case withholding one must not also take down the other's node — but
+ * an edge is a pair, not a single identifier: if the withheld repo ALSO has
+ * an edge directly between two such colliding names, that edge is tracked
+ * and cleared/subtracted by the exact `from|to` pair instead, so a
+ * relationship that only ever existed in the withheld repo cannot survive
+ * merely because both of its endpoint names happen to be shared.
  *
  * Per-repo files alone are not the whole story either: `teamai codebase
  * --reconcile` adds code-page nodes (`evidence/code/<slug>/<page>`) and their
@@ -84,9 +89,21 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
  * are caught by a second pass over the global graph's own nodes, matched by
  * the `evidence/code/<slug>/` prefix instead of per-repo membership.
  *
+ * None of this works without a per-repo graph file to read ownership from in
+ * the first place. `teamai codebase --extract` run directly (outside
+ * `teamai import`'s cache-then-copy orchestration) writes only the global
+ * `teamwiki/.indices/graph-index.json` and never populates
+ * `evidence/code/<slug>/.indices/graph-index.json` at all — so a withheld
+ * codebase extracted that way has no per-repo file for this function to read
+ * ownership from, and would otherwise fail open: its fact-level nodes and
+ * edges would stay in the "scoped" graph, fully exposed. So whenever a
+ * withheld codebase's per-repo file is missing or unreadable, this fails
+ * closed instead — returning `null` (no graph at all for this query) rather
+ * than a result it cannot vouch for.
+ *
  * @param teamwikiRoot teamwiki/ 根目录
  * @param withheldProjects 排除的 codebase slug（大小写不敏感）
- * @returns 过滤后的图；没有全局图时返回 null
+ * @returns 过滤后的图；没有全局图、或任一被排除 codebase 的归属无法确认时返回 null
  */
 export async function scopeGlobalGraph(
     teamwikiRoot: string,
@@ -100,28 +117,45 @@ export async function scopeGlobalGraph(
     const evidenceBase = path.join(teamwikiRoot, 'evidence', 'code');
     const withheldIds = new Set<string>();
     const allowedIds = new Set<string>();
+    const withheldEdgeKeys = new Set<string>();
+    const allowedEdgeKeys = new Set<string>();
+    const edgeKey = (from: string, to: string) => `${from}|${to}`;
+    const accountedWithheld = new Set<string>();
     const projectDirs = await readdir(evidenceBase, { withFileTypes: true }).catch(() => []);
     for (const dir of projectDirs) {
         if (!dir.isDirectory()) continue;
-        const isWithheld = withheldProjects.has(caseFoldKey(dir.name));
+        const foldedName = caseFoldKey(dir.name);
+        const isWithheld = withheldProjects.has(foldedName);
         const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
         try {
             const repoGraph = JSON.parse(await fs.readFile(graphPath, 'utf8')) as {
                 nodes?: Array<{ slug?: string; id?: string }>;
                 edges?: Array<{ from?: string; to?: string }>;
             };
-            const target = isWithheld ? withheldIds : allowedIds;
+            const ids = isWithheld ? withheldIds : allowedIds;
+            const edgeKeys = isWithheld ? withheldEdgeKeys : allowedEdgeKeys;
             for (const node of repoGraph.nodes ?? []) {
                 const slug = node.slug ?? node.id;
-                if (slug) target.add(slug);
+                if (slug) ids.add(slug);
             }
             for (const edge of repoGraph.edges ?? []) {
-                if (edge.from) target.add(edge.from);
-                if (edge.to) target.add(edge.to);
+                if (edge.from) ids.add(edge.from);
+                if (edge.to) ids.add(edge.to);
+                if (edge.from && edge.to) edgeKeys.add(edgeKey(edge.from, edge.to));
             }
-        } catch { /* no per-repo graph for this project; nothing to subtract */ }
+            if (isWithheld) accountedWithheld.add(foldedName);
+        } catch { /* handled below: an unreadable file leaves this withheld project unaccounted for */ }
     }
+
+    // Fail closed, not open: a withheld codebase this function could not load
+    // ownership for (see doc comment) must not be treated as "nothing to
+    // subtract" — that would silently leave its content exposed.
+    for (const withheldSlug of withheldProjects) {
+        if (!accountedWithheld.has(withheldSlug)) return null;
+    }
+
     for (const id of allowedIds) withheldIds.delete(id);
+    for (const key of allowedEdgeKeys) withheldEdgeKeys.delete(key);
 
     // `teamai codebase --reconcile` adds code-page nodes (e.g.
     // `evidence/code/svc-b/overview`) and their MAPS_TO edges straight to the
@@ -135,10 +169,11 @@ export async function scopeGlobalGraph(
         if (match && withheldProjects.has(caseFoldKey(match[1]))) withheldIds.add(node.slug);
     }
 
-    if (withheldIds.size === 0) return globalGraph;
+    if (withheldIds.size === 0 && withheldEdgeKeys.size === 0) return globalGraph;
 
     const nodes = globalGraph.nodes.filter((n) => !withheldIds.has(n.slug));
-    const edges = globalGraph.edges.filter((e) => !withheldIds.has(e.from) && !withheldIds.has(e.to));
+    const edges = globalGraph.edges.filter((e) =>
+        !withheldIds.has(e.from) && !withheldIds.has(e.to) && !withheldEdgeKeys.has(edgeKey(e.from, e.to)));
 
     return { ...globalGraph, nodes, edges } satisfies GraphIndex;
 }

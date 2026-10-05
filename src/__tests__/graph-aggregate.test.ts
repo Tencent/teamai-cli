@@ -183,6 +183,73 @@ describe('aggregateGlobalGraph', () => {
       expect(graph?.edges).toContainEqual({ from: 'docs/product/billing', to: 'a/svc', relation: 'MAPS_TO' });
     });
 
+    it("fails closed (returns null) when a withheld codebase's per-repo graph file is missing — e.g. extracted via `teamai codebase --extract` directly, which never writes one (#912 review round 5 P1)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      // svc-b has evidence pages (and so is a legitimate wiki namespace) but
+      // no evidence/code/svc-b/.indices/graph-index.json — simulating a
+      // codebase that was extracted directly, not through `teamai import`.
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph).toBeNull();
+    });
+
+    it("does not fail closed when EVERY withheld codebase's per-repo graph file is readable, even if other (allowed) codebases have none", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      // svc-c is allowed and has no per-repo graph file at all — must not
+      // block scoping, since only withheld codebases need accounting for.
+      fs.ensureDirSync(path.join(tmpDir, 'evidence', 'code', 'svc-c'));
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toEqual(['a/svc']);
+    });
+
+    it("subtracts an edge that only exists in the withheld repo's own graph, even when both endpoint names collide with an allowed repo's (#912 review round 5 P2)", async () => {
+      // svc-a and svc-b both define component/App and component/Config
+      // (unqualified slugs collide across repos), but only svc-b's graph
+      // has an edge directly between them.
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [
+          { slug: 'component/App', title: 'AppA', type: 'component', confidence: 'high' },
+          { slug: 'component/Config', title: 'ConfigA', type: 'config', confidence: 'high' },
+        ],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [
+          { slug: 'component/App', title: 'AppB', type: 'component', confidence: 'high' },
+          { slug: 'component/Config', title: 'ConfigB', type: 'config', confidence: 'high' },
+        ],
+        edges: [{ from: 'component/App', to: 'component/Config', relation: 'DEPENDS_ON' }],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      // Both colliding slugs survive (an allowed repo also claims them)...
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toContain('component/App');
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toContain('component/Config');
+      // ...but the edge that only ever existed in the withheld repo is gone.
+      expect(graph?.edges ?? []).not.toContainEqual(
+        expect.objectContaining({ from: 'component/App', to: 'component/Config' }),
+      );
+    });
+
     it("removes a --reconcile-added code-page node and its MAPS_TO edge for a withheld codebase, even though neither ever lived in a per-repo file (#912 review round 4 P1)", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
