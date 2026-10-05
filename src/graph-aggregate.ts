@@ -4,6 +4,19 @@ import { readdir } from 'node:fs/promises';
 import fs from 'fs-extra';
 import { log } from './utils/logger.js';
 import { caseFoldKey } from './manifest-schema.js';
+import { RELATION_TYPES, LEGACY_RELATIONS, type RelationType } from './wiki-engine/core/graph-index.schema.js';
+
+/**
+ * The same relation normalization `loadGraphIndex`'s schema applies on load
+ * (legacy `imports` → `DEPENDS_ON`), needed here because `scopeGlobalGraph`
+ * reads a per-repo graph file with a raw `JSON.parse`, bypassing that
+ * normalization — so an edge-ownership key computed from the raw relation
+ * would never match the already-normalized relation on the corresponding
+ * edge in the loaded global graph.
+ */
+function normalizeRelation(relation: string): string {
+    return RELATION_TYPES.includes(relation as RelationType) ? relation : (LEGACY_RELATIONS[relation] ?? relation);
+}
 
 /**
  * 聚合 teamwiki/evidence/code/ 下所有仓库的 per-repo graph。
@@ -133,8 +146,11 @@ export async function scopeGlobalGraph(
     // `relation` is part of the edge's identity: an allowed REFERENCES edge
     // and a withheld DEPENDS_ON edge between the same two endpoints are two
     // different edges, not one — omitting it would let the allowed one clear
-    // the withheld one out of withheldEdgeKeys even though it never claimed it.
-    const edgeKey = (from: string, to: string, relation?: string) => `${from}|${to}|${relation ?? ''}`;
+    // the withheld one out of withheldEdgeKeys even though it never claimed
+    // it. `JSON.stringify` (not `|`-concatenation) avoids aliasing `a|b -> c`
+    // with `a -> b|c` were an identifier ever to contain the separator —
+    // matching `graphEdgeKey`'s own approach in graph-index.schema.ts.
+    const edgeKey = (from: string, to: string, relation?: string) => JSON.stringify([from, to, relation ?? '']);
     const accountedWithheld = new Set<string>();
     type RepoNode = { slug?: string; id?: string; [key: string]: unknown };
     const allowedNodeBySlug = new Map<string, RepoNode>();
@@ -145,25 +161,38 @@ export async function scopeGlobalGraph(
         const isWithheld = withheldProjects.has(foldedName);
         const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
         try {
-            const repoGraph = JSON.parse(await fs.readFile(graphPath, 'utf8')) as {
-                nodes?: RepoNode[];
-                edges?: Array<{ from?: string; to?: string; relation?: string }>;
+            const parsed = JSON.parse(await fs.readFile(graphPath, 'utf8')) as {
+                nodes?: unknown;
+                edges?: unknown;
+            };
+            // A syntactically valid but structurally wrong file (`{}`, a
+            // truncated write, ...) must not count as "successfully read
+            // ownership from" just because JSON.parse didn't throw — that
+            // would mark this withheld project accounted for while
+            // contributing zero identifiers, silently exposing whatever the
+            // global graph still has for it. Treat it the same as unreadable.
+            if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
+                throw new Error(`${graphPath} is not a valid graph-index.json (missing nodes[]/edges[])`);
+            }
+            const repoGraph = parsed as {
+                nodes: RepoNode[];
+                edges: Array<{ from?: string; to?: string; relation?: string }>;
             };
             const ids = isWithheld ? withheldIds : allowedIds;
             const edgeKeys = isWithheld ? withheldEdgeKeys : allowedEdgeKeys;
-            for (const node of repoGraph.nodes ?? []) {
+            for (const node of repoGraph.nodes) {
                 const slug = node.slug ?? node.id;
                 if (!slug) continue;
                 ids.add(slug);
                 if (!isWithheld) allowedNodeBySlug.set(slug, node);
             }
-            for (const edge of repoGraph.edges ?? []) {
+            for (const edge of repoGraph.edges) {
                 if (edge.from) ids.add(edge.from);
                 if (edge.to) ids.add(edge.to);
-                if (edge.from && edge.to) edgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
+                if (edge.from && edge.to) edgeKeys.add(edgeKey(edge.from, edge.to, normalizeRelation(edge.relation ?? '')));
             }
             if (isWithheld) accountedWithheld.add(foldedName);
-        } catch { /* handled below: an unreadable file leaves this withheld project unaccounted for */ }
+        } catch { /* handled below: an unreadable or structurally invalid file leaves this withheld project unaccounted for */ }
     }
 
     // Fail closed, not open: a withheld codebase this function could not load

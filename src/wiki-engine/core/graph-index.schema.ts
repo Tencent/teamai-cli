@@ -73,7 +73,8 @@ const LEGACY_WIKI_CONFIDENCES: Record<string, WikiConfidence> = {
   medium: "INFERRED",
   low: "AMBIGUOUS",
 };
-const LEGACY_RELATIONS: Record<string, RelationType> = {
+/** A relation name `loadGraphIndex` normalizes to a current `RelationType` on load. */
+export const LEGACY_RELATIONS: Record<string, RelationType> = {
   imports: "DEPENDS_ON",
 };
 const LEGACY_WIKI_CATEGORIES: Record<string, WikiCategory> = {

@@ -198,6 +198,28 @@ describe('aggregateGlobalGraph', () => {
       expect(graph).toBeNull();
     });
 
+    it("fails closed when a withheld codebase's per-repo graph file is syntactically valid JSON but structurally wrong (#912 review round 7 P1)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      // A truncated or otherwise corrupted write can leave valid JSON that
+      // is not a valid graph (no nodes[]/edges[] at all) — JSON.parse alone
+      // would not catch this.
+      fs.writeFileSync(path.join(tmpDir, 'evidence', 'code', 'svc-b', '.indices', 'graph-index.json'), '{}');
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph).toBeNull();
+    });
+
     it("does not fail closed when EVERY withheld codebase's per-repo graph file is readable, even if other (allowed) codebases have none", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
@@ -263,6 +285,36 @@ describe('aggregateGlobalGraph', () => {
           { slug: 'component/Config', title: 'ConfigB', type: 'config', confidence: 'high' },
         ],
         edges: [{ from: 'component/App', to: 'component/Config', relation: 'DEPENDS_ON' }],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      const betweenAppAndConfig = (graph?.edges ?? []).filter(
+        (e: { from: string; to: string }) => e.from === 'component/App' && e.to === 'component/Config',
+      );
+      expect(betweenAppAndConfig.map((e: { relation: string }) => e.relation)).toEqual(['REFERENCES']);
+    });
+
+    it("subtracts a withheld-only edge even when its per-repo file uses the legacy `imports` relation name loadGraphIndex normalizes to DEPENDS_ON (#912 review round 7 P1)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [
+          { slug: 'component/App', title: 'AppA', type: 'component', confidence: 'high' },
+          { slug: 'component/Config', title: 'ConfigA', type: 'config', confidence: 'high' },
+        ],
+        edges: [{ from: 'component/App', to: 'component/Config', relation: 'REFERENCES' }],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [
+          { slug: 'component/App', title: 'AppB', type: 'component', confidence: 'high' },
+          { slug: 'component/Config', title: 'ConfigB', type: 'config', confidence: 'high' },
+        ],
+        // "imports" is the legacy relation name loadGraphIndex normalizes to
+        // DEPENDS_ON on read; scopeGlobalGraph reads this raw per-repo file
+        // with a plain JSON.parse, so it must normalize it the same way
+        // itself or this key will never match the normalized global edge.
+        edges: [{ from: 'component/App', to: 'component/Config', relation: 'imports' }],
       });
       await aggregateGlobalGraph(tmpDir);
 
