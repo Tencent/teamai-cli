@@ -36,18 +36,24 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
         try {
             const overlay = JSON.parse(await fs.readFile(graphPath, 'utf8')) as GraphIndex;
             // Stamp ownership onto the data itself before it ever enters the
-            // global graph (#912 review): a cross-repo edge detected below
-            // spans two codebases and is intentionally left untagged, but
-            // every node and edge this ONE per-repo file contributed is
-            // unambiguously this project's. Once merged, that tag travels
-            // with the node/edge forever — scoping later reads it straight
-            // off the global graph instead of re-reading this per-repo file
-            // and trusting its CURRENT content still matches what was
-            // merged, which it may no longer if the file was since emptied,
-            // rewritten by a newer extraction, or deleted outright.
+            // global graph (#912 review): every node and edge this ONE
+            // per-repo file contributed is unambiguously this project's.
+            // Once merged, that tag travels with the node/edge forever —
+            // scoping later reads it straight off the global graph instead
+            // of re-reading this per-repo file and trusting its CURRENT
+            // content still matches what was merged, which it may no longer
+            // if the file was since emptied, rewritten by a newer
+            // extraction, or deleted outright.
             for (const node of overlay.nodes) node.origin = dir.name;
             for (const edge of overlay.edges) edge.origin = dir.name;
             if (globalGraph) {
+                // A cross-repo edge spans two codebases, but
+                // detectCrossRepoEdges tags each one with the origin of
+                // whichever side it matched by label against the OTHER
+                // graph (see its own doc comment) — the specific codebase
+                // this edge's existence actually depends on, captured at
+                // the moment of the match rather than re-derived later from
+                // whichever node ends up winning a slug collision.
                 const crossEdges = detectCrossRepoEdges(overlay, globalGraph);
                 globalGraph = mergeGraphs(globalGraph, overlay);
                 if (crossEdges.length > 0) {
@@ -289,9 +295,23 @@ export async function scopeGlobalGraph(
     // slug, this prefix unambiguously names the codebase it came from (it IS
     // the directory a withheld codebase declares), so there is no allowed/
     // withheld collision risk to guard against here the way there is above.
+    //
+    // `import-iwiki.ts`'s own reconciler writes a MAPS_TO edge straight to
+    // the global graph's edges[] too, but for its "term appears in the page
+    // body" match it points `to` at the code PAGE's path
+    // (`evidence/code/<slug>/<page>.md`) directly, with no corresponding
+    // node ever created for that path — so scanning only `nodes[]` above
+    // misses it exactly the same way scanning only per-repo files would.
+    // Edge endpoints get the identical prefix check for that reason.
     for (const node of globalGraph.nodes) {
         const match = node.slug.match(/^evidence\/code\/([^/]+)\//);
         if (match && withheldProjects.has(caseFoldKey(match[1]))) withheldIds.add(node.slug);
+    }
+    for (const edge of globalGraph.edges) {
+        for (const slug of [edge.from, edge.to]) {
+            const match = slug.match(/^evidence\/code\/([^/]+)\//);
+            if (match && withheldProjects.has(caseFoldKey(match[1]))) withheldIds.add(slug);
+        }
     }
 
     if (withheldIds.size === 0 && withheldEdgeKeys.size === 0 && contestedSlugs.size === 0) return globalGraph;

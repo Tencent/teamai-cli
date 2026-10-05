@@ -75,6 +75,46 @@ describe('detectCrossRepoEdges with GraphIndex format (slug/title)', () => {
     expect(edges.length).toBeGreaterThan(0);
   });
 
+  it('tags a cross-repo edge with the MATCHED (existing-side) node\'s own origin, not the overlay side\'s (#974 review round 12 P2)', () => {
+    const repoA = {
+      nodes: [
+        { slug: 'hai-api/balance-client', title: 'BalanceClient', type: 'component', origin: 'svc-a' },
+      ],
+      edges: [],
+    };
+    const repoB = {
+      nodes: [
+        { slug: 'hai-flow/flow-engine', title: 'FlowCaller', type: 'component', origin: 'svc-b' },
+      ],
+      edges: [
+        { from: 'hai-flow/flow-engine', to: 'api/balance_client.py', relation: 'imports' },
+      ],
+    };
+
+    // repoB (overlay) imports balance_client → matches repoA's (existing) BalanceClient.
+    // The edge depends on repoA's component existing, not repoB's own node, so it must
+    // carry repoA's origin ('svc-a') — withholding svc-a should remove this edge even
+    // though it was detected while processing svc-b.
+    const edges = detectCrossRepoEdges(repoB, repoA);
+    const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
+    expect(depEdge?.origin).toBe('svc-a');
+  });
+
+  it('leaves a cross-repo edge\'s origin undefined when the matched node predates origin tagging', () => {
+    const repoA = {
+      nodes: [{ slug: 'hai-api/balance-client', title: 'BalanceClient', type: 'component' }],
+      edges: [],
+    };
+    const repoB = {
+      nodes: [{ slug: 'hai-flow/flow-engine', title: 'FlowCaller', type: 'component', origin: 'svc-b' }],
+      edges: [{ from: 'hai-flow/flow-engine', to: 'api/balance_client.py', relation: 'imports' }],
+    };
+
+    const edges = detectCrossRepoEdges(repoB, repoA);
+    const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
+    expect(depEdge?.origin).toBeUndefined();
+  });
+
   it('returns empty for repos with no shared names', () => {
     const repoA = {
       nodes: [{ slug: 'a/foo', title: 'FooService', type: 'component' }],

@@ -504,6 +504,73 @@ describe('aggregateGlobalGraph', () => {
       );
     });
 
+    it("removes a cross-repo edge whose matched node was the withheld repo's, even after a later allowed repo wins the slug collision and the node itself survives (#974 review round 12 P1)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/client', title: 'BalanceClient', type: 'component', confidence: 'high' }],
+        edges: [{ from: 'a/client', to: 'libs/balance_service.py', relation: 'imports' }],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/service', title: 'BalanceService', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      // svc-c is processed after svc-b (alphabetically) and mints the exact
+      // same unqualified slug svc-b's matched node used — `mergeGraphs`
+      // lets svc-c's write win, so the surviving `b/service` node ends up
+      // allowed, even though the cross-repo edge below was detected because
+      // of svc-b's (withheld) component, not svc-c's.
+      writeRepoGraph('svc-c', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/service', title: 'UnrelatedService', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const global = JSON.parse(await fs.readFile(path.join(tmpDir, '.indices', 'graph-index.json'), 'utf8'));
+      const crossEdge = global.edges.find((e: { relation: string }) => e.relation === 'DEPENDS_ON');
+      expect(crossEdge).toBeDefined();
+      expect(crossEdge.origin).toBe('svc-b');
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      // The slug survives — svc-c (allowed) also claims it.
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toContain('b/service');
+      // But the cross-repo edge, tied to svc-b's own component at detection
+      // time, must not survive just because the node it points at was later
+      // reattributed to an allowed repo. (svc-a's own imports->DEPENDS_ON
+      // edge into libs/balance_service.py is unrelated and must stay.)
+      expect(graph?.edges ?? []).not.toContainEqual(expect.objectContaining({ to: 'b/service' }));
+      expect(graph?.edges ?? []).toContainEqual(expect.objectContaining({ to: 'libs/balance_service.py' }));
+    });
+
+    it("removes an originless MAPS_TO edge pointing at evidence/code/<withheld>/<page>.md even when no node was ever created for that page (#974 review round 12 P2)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      // Simulate import-iwiki.ts's own reconciler: it writes a MAPS_TO edge
+      // straight to the global graph's edges[] pointing at a code PAGE path
+      // (not a graph node slug) whenever a doc term merely appears in that
+      // page's body — no node is ever created for the page itself.
+      const globalPath = path.join(tmpDir, '.indices', 'graph-index.json');
+      const global = JSON.parse(await fs.readFile(globalPath, 'utf8'));
+      global.edges.push({ from: 'iwiki/p/123', to: 'evidence/code/svc-b/component.md', relation: 'MAPS_TO', term: 'ServiceB', confidence: 0.6 });
+      await fs.writeFile(globalPath, JSON.stringify(global));
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph?.edges ?? []).not.toContainEqual(
+        expect.objectContaining({ to: 'evidence/code/svc-b/component.md' }),
+      );
+    });
+
     it("keeps an allowed repo's file-to-file edge whose endpoints are not graph nodes at all (#912 review round 3 P1)", async () => {
       // AST/heuristic edges are commonly file-to-file with neither endpoint
       // present in nodes[] — requiring both endpoints to "survive as nodes"

@@ -101,7 +101,15 @@ export interface GraphEdge {
   /** Fine-grained semantic predicate (e.g. G6 CALLS_HTTP, USES_TABLE). */
   predicate?: string;
   source?: GraphEdgeSource;
-  /** Same provenance as `GraphNode.origin`; absent on a synthesized cross-repo edge, which spans two codebases. */
+  /**
+   * Same provenance as `GraphNode.origin`. A synthesized cross-repo edge
+   * carries the origin of whichever side was matched by label lookup against
+   * the OTHER graph at the moment of detection (see `detectCrossRepoEdges`)
+   * — not the side whose own edge produced the match — since that is the
+   * specific codebase this edge's existence actually depends on; it is
+   * absent only when that matched node itself had no origin (data merged
+   * before this field existed).
+   */
   origin?: string;
 }
 

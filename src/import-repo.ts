@@ -51,11 +51,17 @@ interface SimpleGraphNode {
     kind?: string; type?: string;
     label?: string; title?: string;
     file?: string;
+    origin?: string;
 }
 
 interface SimpleGraphIndex {
     nodes: SimpleGraphNode[];
     edges: Array<{ from: string; to: string; relation: string }>;
+}
+
+interface LabelMatch {
+    id: string;
+    origin?: string;
 }
 
 /**
@@ -70,26 +76,30 @@ interface SimpleGraphIndex {
 export function detectCrossRepoEdges(
     overlay: SimpleGraphIndex,
     existing: SimpleGraphIndex,
-): Array<{ from: string; to: string; relation: 'DEPENDS_ON' }> {
-    const crossEdges: Array<{ from: string; to: string; relation: 'DEPENDS_ON' }> = [];
+): Array<{ from: string; to: string; relation: 'DEPENDS_ON'; origin?: string }> {
+    const crossEdges: Array<{ from: string; to: string; relation: 'DEPENDS_ON'; origin?: string }> = [];
     const edgeSet = new Set<string>();
 
     const nodeId = (n: SimpleGraphNode): string => n.id ?? n.slug ?? '';
     const nodeLabel = (n: SimpleGraphNode): string => n.label ?? n.title ?? '';
     const nodeKind = (n: SimpleGraphNode): string => n.kind ?? n.type ?? '';
 
-    // Build label index for the existing graph's components/interfaces
-    const existingIndex = new Map<string, string>();
+    // Build label index for the existing graph's components/interfaces. Each
+    // entry's `origin` is the matched node's AT THIS MOMENT — the only time
+    // it's unambiguous, since a later-aggregated repo can still mint a
+    // colliding unqualified slug and win the merge, silently reattributing
+    // the final node without updating an edge created from this match.
+    const existingIndex = new Map<string, LabelMatch>();
     for (const node of existing.nodes) {
         const label = nodeLabel(node);
-        if (label) existingIndex.set(label.toLowerCase(), nodeId(node));
+        if (label) existingIndex.set(label.toLowerCase(), { id: nodeId(node), origin: node.origin });
     }
 
     // Build label index for the new graph's components/interfaces
-    const overlayIndex = new Map<string, string>();
+    const overlayIndex = new Map<string, LabelMatch>();
     for (const node of overlay.nodes) {
         const label = nodeLabel(node);
-        if (label) overlayIndex.set(label.toLowerCase(), nodeId(node));
+        if (label) overlayIndex.set(label.toLowerCase(), { id: nodeId(node), origin: node.origin });
     }
 
     // Check if import edge targets in the new repo match component names in the existing repo
@@ -104,10 +114,10 @@ export function detectCrossRepoEdges(
             const fromNode = overlay.nodes.find(n => (n.file ?? n.id ?? n.slug ?? '') === edge.from);
             if (fromNode) {
                 const fromId = nodeId(fromNode);
-                const key = `${fromId}|${match}`;
+                const key = `${fromId}|${match.id}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromId, to: match, relation: 'DEPENDS_ON' });
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', origin: match.origin });
                 }
             }
         }
@@ -125,10 +135,10 @@ export function detectCrossRepoEdges(
             const fromNode = existing.nodes.find(n => (n.file ?? n.id ?? n.slug ?? '') === edge.from);
             if (fromNode) {
                 const fromId = nodeId(fromNode);
-                const key = `${fromId}|${match}`;
+                const key = `${fromId}|${match.id}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromId, to: match, relation: 'DEPENDS_ON' });
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', origin: match.origin });
                 }
             }
         }
@@ -144,10 +154,10 @@ export function detectCrossRepoEdges(
         const cfgId = nodeId(cfg);
         const match = existingIndex.get(cfgName);
         if (match) {
-            const key = `${match}|${cfgId}`;
+            const key = `${match.id}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match, to: cfgId, relation: 'DEPENDS_ON' });
+                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', origin: match.origin });
             }
         }
     }
@@ -158,10 +168,10 @@ export function detectCrossRepoEdges(
         const cfgId = nodeId(cfg);
         const match = overlayIndex.get(cfgName);
         if (match) {
-            const key = `${match}|${cfgId}`;
+            const key = `${match.id}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match, to: cfgId, relation: 'DEPENDS_ON' });
+                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', origin: match.origin });
             }
         }
     }
