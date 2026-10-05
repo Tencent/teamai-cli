@@ -4,19 +4,6 @@ import { readdir } from 'node:fs/promises';
 import fs from 'fs-extra';
 import { log } from './utils/logger.js';
 import { caseFoldKey } from './manifest-schema.js';
-import { RELATION_TYPES, LEGACY_RELATIONS, type RelationType } from './wiki-engine/core/graph-index.schema.js';
-
-/**
- * The same relation normalization `loadGraphIndex`'s schema applies on load
- * (legacy `imports` → `DEPENDS_ON`), needed here because `scopeGlobalGraph`
- * reads a per-repo graph file with a raw `JSON.parse`, bypassing that
- * normalization — so an edge-ownership key computed from the raw relation
- * would never match the already-normalized relation on the corresponding
- * edge in the loaded global graph.
- */
-function normalizeRelation(relation: string): string {
-    return RELATION_TYPES.includes(relation as RelationType) ? relation : (LEGACY_RELATIONS[relation] ?? relation);
-}
 
 /**
  * 聚合 teamwiki/evidence/code/ 下所有仓库的 per-repo graph。
@@ -121,9 +108,14 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
  * codebase extracted that way has no per-repo file for this function to read
  * ownership from, and would otherwise fail open: its fact-level nodes and
  * edges would stay in the "scoped" graph, fully exposed. So whenever a
- * withheld codebase's per-repo file is missing or unreadable, this fails
- * closed instead — returning `null` (no graph at all for this query) rather
- * than a result it cannot vouch for.
+ * withheld codebase's per-repo file is missing, unreadable, or fails to
+ * validate against the same `GraphIndexSchema` the global graph is loaded
+ * with (`parseGraphIndex`, not a loose "are nodes/edges arrays" check — that
+ * alone would wave through a schema-invalid node and, separately, leave its
+ * `label`/`id`/`kind` legacy fields unnormalized to `title`/`slug`/`type`,
+ * so a restored node below would carry the wrong field name instead of just
+ * the wrong value), this fails closed instead — returning `null` (no graph
+ * at all for this query) rather than a result it cannot vouch for.
  *
  * @param teamwikiRoot teamwiki/ 根目录
  * @param withheldProjects 排除的 codebase slug（大小写不敏感）
@@ -133,8 +125,9 @@ export async function scopeGlobalGraph(
     teamwikiRoot: string,
     withheldProjects: Set<string>,
 ) {
-    const { loadGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
+    const { loadGraphIndex, parseGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
     type GraphIndex = NonNullable<Awaited<ReturnType<typeof loadGraphIndex>>>;
+    type GraphNode = GraphIndex['nodes'][number];
     const globalGraph = await loadGraphIndex(teamwikiRoot);
     if (!globalGraph || withheldProjects.size === 0) return globalGraph;
 
@@ -152,8 +145,7 @@ export async function scopeGlobalGraph(
     // matching `graphEdgeKey`'s own approach in graph-index.schema.ts.
     const edgeKey = (from: string, to: string, relation?: string) => JSON.stringify([from, to, relation ?? '']);
     const accountedWithheld = new Set<string>();
-    type RepoNode = { slug?: string; id?: string; [key: string]: unknown };
-    const allowedNodeBySlug = new Map<string, RepoNode>();
+    const allowedNodeBySlug = new Map<string, GraphNode>();
     const projectDirs = await readdir(evidenceBase, { withFileTypes: true }).catch(() => []);
     for (const dir of projectDirs) {
         if (!dir.isDirectory()) continue;
@@ -161,38 +153,37 @@ export async function scopeGlobalGraph(
         const isWithheld = withheldProjects.has(foldedName);
         const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
         try {
-            const parsed = JSON.parse(await fs.readFile(graphPath, 'utf8')) as {
-                nodes?: unknown;
-                edges?: unknown;
-            };
-            // A syntactically valid but structurally wrong file (`{}`, a
-            // truncated write, ...) must not count as "successfully read
-            // ownership from" just because JSON.parse didn't throw — that
-            // would mark this withheld project accounted for while
-            // contributing zero identifiers, silently exposing whatever the
-            // global graph still has for it. Treat it the same as unreadable.
-            if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
-                throw new Error(`${graphPath} is not a valid graph-index.json (missing nodes[]/edges[])`);
-            }
-            const repoGraph = parsed as {
-                nodes: RepoNode[];
-                edges: Array<{ from?: string; to?: string; relation?: string }>;
-            };
+            const raw = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+            // `parseGraphIndex` is the exact schema `loadGraphIndex` validates
+            // the global graph with — reusing it here, instead of a loose
+            // shape check, is what catches a schema-invalid node (missing
+            // required fields, wrong types, ...) that `Array.isArray(nodes)`
+            // alone would wave through. It also normalizes legacy fields
+            // (`id`→slug, `label`→title, `kind`→type, the `imports`→
+            // `DEPENDS_ON` relation) the same way the global graph already
+            // was, so a node collected from here matches its global
+            // counterpart's shape — both for ownership-key comparison and
+            // for the metadata restored below. A per-repo file that doesn't
+            // validate, same as one that doesn't parse at all, must not
+            // count as "successfully read ownership from": that would mark
+            // this withheld project accounted for while contributing zero
+            // identifiers, silently exposing whatever the global graph
+            // still has for it.
+            const repoGraph = parseGraphIndex(raw);
+            if (!repoGraph) throw new Error(`${graphPath} does not validate as a graph-index.json`);
             const ids = isWithheld ? withheldIds : allowedIds;
             const edgeKeys = isWithheld ? withheldEdgeKeys : allowedEdgeKeys;
             for (const node of repoGraph.nodes) {
-                const slug = node.slug ?? node.id;
-                if (!slug) continue;
-                ids.add(slug);
-                if (!isWithheld) allowedNodeBySlug.set(slug, node);
+                ids.add(node.slug);
+                if (!isWithheld) allowedNodeBySlug.set(node.slug, node);
             }
             for (const edge of repoGraph.edges) {
-                if (edge.from) ids.add(edge.from);
-                if (edge.to) ids.add(edge.to);
-                if (edge.from && edge.to) edgeKeys.add(edgeKey(edge.from, edge.to, normalizeRelation(edge.relation ?? '')));
+                ids.add(edge.from);
+                ids.add(edge.to);
+                edgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
             }
             if (isWithheld) accountedWithheld.add(foldedName);
-        } catch { /* handled below: an unreadable or structurally invalid file leaves this withheld project unaccounted for */ }
+        } catch { /* handled below: an unreadable or schema-invalid file leaves this withheld project unaccounted for */ }
     }
 
     // Fail closed, not open: a withheld codebase this function could not load

@@ -220,6 +220,58 @@ describe('aggregateGlobalGraph', () => {
       expect(graph).toBeNull();
     });
 
+    it("fails closed when a withheld codebase's per-repo graph file has nodes[]/edges[] arrays but a node that doesn't validate against the graph schema (#912 review round 8 P1)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      // Array.isArray(nodes) && Array.isArray(edges) alone would wave this
+      // through: the node object is missing every field GraphNodeSchema
+      // requires (type, confidence, title), so it is not a valid node even
+      // though the file is syntactically and shape-wise fine.
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ bogus: true }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph).toBeNull();
+    });
+
+    it("restores the allowed repo's title even when its own per-repo file used the legacy `label` field instead of `title` (#912 review round 8 P1)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        // Legacy node shape: id/label/kind instead of slug/title/type.
+        // GraphNodeSchema's preprocess step normalizes this to slug/title/
+        // type on load — restoring from the RAW per-repo object instead of
+        // the schema-normalized one would carry `label`, not `title`, and
+        // never actually override the surviving global node's title.
+        nodes: [{ id: 'component/App', label: 'AppA', kind: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'component/App', title: 'AppB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      // Force the deterministic outcome where the WITHHELD repo's version
+      // is the one that survived the merge.
+      const globalPath = path.join(tmpDir, '.indices', 'graph-index.json');
+      const global = JSON.parse(await fs.readFile(globalPath, 'utf8'));
+      const node = global.nodes.find((n: { slug: string }) => n.slug === 'component/App');
+      node.title = 'AppB';
+      await fs.writeFile(globalPath, JSON.stringify(global));
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      const survivor = graph?.nodes.find((n: { slug: string }) => n.slug === 'component/App') as { title?: string } | undefined;
+      expect(survivor?.title).toBe('AppA');
+    });
+
     it("does not fail closed when EVERY withheld codebase's per-repo graph file is readable, even if other (allowed) codebases have none", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',

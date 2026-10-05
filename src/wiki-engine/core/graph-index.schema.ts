@@ -184,7 +184,8 @@ const GraphIndexSchema = z.object({
   edges: z.array(GraphEdgeSchema),
 }).passthrough();
 
-function parseGraphIndex(value: unknown): GraphIndex | null {
+/** Validates and normalizes `value` as a full `GraphIndex` (legacy field fallbacks, relation/confidence normalization included); `null` if it doesn't conform. */
+export function parseGraphIndex(value: unknown): GraphIndex | null {
   const result = GraphIndexSchema.safeParse(value);
   return result.success ? result.data as GraphIndex : null;
 }
