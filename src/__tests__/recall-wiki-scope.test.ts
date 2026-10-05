@@ -100,4 +100,12 @@ describe('recall: scopes codebase knowledge by the active project\'s wiki namesp
     const call = vi.mocked(queryCodeKnowledge).mock.calls[0]?.[1];
     expect(call?.withheldCodebases).toEqual([]);
   });
+
+  it('skips code recall instead of rejecting the whole call when the projects manifest is unreadable (#912 review round 2)', async () => {
+    await fse.outputFile(path.join(teamRepo, 'manifest', 'projects.yaml'), '{ not: valid: yaml');
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig(['svc-a']));
+
+    await expect(recall('narwhal', { dryRun: true })).resolves.not.toThrow();
+    expect(queryCodeKnowledge).not.toHaveBeenCalled();
+  });
 });

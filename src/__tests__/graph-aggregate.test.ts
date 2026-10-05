@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'fs-extra';
 import os from 'node:os';
-import { aggregateGlobalGraph, buildAggregatedGraph } from '../graph-aggregate.js';
+import { aggregateGlobalGraph, scopeGlobalGraph } from '../graph-aggregate.js';
 
 describe('aggregateGlobalGraph', () => {
   let tmpDir: string;
@@ -114,8 +114,8 @@ describe('aggregateGlobalGraph', () => {
     expect(result).toBeNull();
   });
 
-  describe('buildAggregatedGraph: excludeProjects (#912)', () => {
-    it("omits an excluded project's nodes and edges entirely", async () => {
+  describe('scopeGlobalGraph (#912 review round 2)', () => {
+    it("subtracts a withheld project's nodes and its dangling edges from the real global graph", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
         nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
@@ -126,24 +126,14 @@ describe('aggregateGlobalGraph', () => {
         nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
         edges: [{ from: 'b/svc', to: 'b/other', relation: 'DEPENDS_ON' }],
       });
+      await aggregateGlobalGraph(tmpDir);
 
-      const graph = await buildAggregatedGraph(tmpDir, new Set(['svc-b']));
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
       expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toEqual(['a/svc']);
       expect(graph?.edges).toHaveLength(0);
     });
 
-    it('excludes case-foldedly, matching the evidence/code/<slug>/ directory on a case-insensitive filesystem', async () => {
-      writeRepoGraph('Svc-B', {
-        schemaVersion: 1, generatedAt: '2026-01-01',
-        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
-        edges: [],
-      });
-
-      const graph = await buildAggregatedGraph(tmpDir, new Set(['svc-b']));
-      expect(graph).toBeNull();
-    });
-
-    it('does not run cross-repo edge detection against an excluded project', async () => {
+    it('removes a cross-repo edge into a withheld node as a dangling edge, even though the edge only ever lived in the merged file', async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
         nodes: [{ slug: 'a/client', title: 'BalanceClient', type: 'component', confidence: 'high' }],
@@ -154,10 +144,68 @@ describe('aggregateGlobalGraph', () => {
         nodes: [{ slug: 'b/service', title: 'BalanceService', type: 'component', confidence: 'high' }],
         edges: [],
       });
+      await aggregateGlobalGraph(tmpDir);
 
-      const graph = await buildAggregatedGraph(tmpDir, new Set(['svc-b']));
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
       const crossEdges = (graph?.edges ?? []).filter((e: { relation: string }) => e.relation === 'DEPENDS_ON');
       expect(crossEdges).toHaveLength(0);
+    });
+
+    it("keeps content that lives only in the global file (e.g. --reconcile's MAPS_TO edges) when the withheld project is unrelated to it", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      // Simulate `teamai codebase --reconcile`: it reads+writes the global
+      // graph directly, adding a product-page node and a MAPS_TO edge that
+      // never exist in any per-repo file.
+      const globalPath = path.join(tmpDir, '.indices', 'graph-index.json');
+      const global = JSON.parse(await fs.readFile(globalPath, 'utf8'));
+      global.nodes.push({ slug: 'docs/product/billing', title: 'Billing product page', type: 'architecture', confidence: 'high' });
+      global.edges.push({ from: 'docs/product/billing', to: 'a/svc', relation: 'MAPS_TO' });
+      await fs.writeFile(globalPath, JSON.stringify(global));
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      const slugs = graph?.nodes.map((n: { slug: string }) => n.slug) ?? [];
+      expect(slugs).toContain('docs/product/billing');
+      expect(graph?.edges).toContainEqual({ from: 'docs/product/billing', to: 'a/svc', relation: 'MAPS_TO' });
+    });
+
+    it('excludes case-foldedly, matching the evidence/code/<slug>/ directory on a case-insensitive filesystem', async () => {
+      writeRepoGraph('Svc-B', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph?.nodes).toHaveLength(0);
+    });
+
+    it('returns the graph unchanged when nothing is withheld', async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set());
+      expect(graph?.nodes).toHaveLength(1);
+    });
+
+    it('returns null when there is no global graph to scope', async () => {
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph).toBeNull();
     });
   });
 });

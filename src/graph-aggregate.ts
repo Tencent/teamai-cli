@@ -6,25 +6,18 @@ import { log } from './utils/logger.js';
 import { caseFoldKey } from './manifest-schema.js';
 
 /**
- * 聚合 teamwiki/evidence/code/ 下仓库的 per-repo graph。
+ * 聚合 teamwiki/evidence/code/ 下所有仓库的 per-repo graph。
  *
- * 串行合并避免竞态；对每对仓库执行跨仓 edge 检测。`excludeProjects` 跳过的仓库
- * 既不贡献节点/边，也不参与跨仓 edge 检测——这是 #912 wiki 命名空间收紧 recall
- * 时重建“仅含已激活 codebase”的图所复用的同一条聚合逻辑（而不是在消费端按前缀
- * 猜测节点归属，因为 AST/heuristic 节点的 slug 本来就不带项目前缀）。
+ * 串行合并避免竞态；对每对仓库执行跨仓 edge 检测。
  *
  * 注意：每次调用都会重新扫描所有 per-repo graph（O(n)）。
  * 单仓 import 时也会触发全量重聚合。仓库数量增大（>50）后
  * 可考虑增量聚合优化。
  *
  * @param teamwikiRoot teamwiki/ 根目录
- * @param excludeProjects 跳过的 codebase slug（大小写不敏感）
  * @returns 聚合后的图，无产出时返回 null
  */
-export async function buildAggregatedGraph(
-    teamwikiRoot: string,
-    excludeProjects: Set<string> = new Set(),
-) {
+export async function buildAggregatedGraph(teamwikiRoot: string) {
     const evidenceBase = path.join(teamwikiRoot, 'evidence', 'code');
     if (!(await fs.pathExists(evidenceBase))) return null;
 
@@ -37,7 +30,6 @@ export async function buildAggregatedGraph(
 
     for (const dir of projectDirs) {
         if (!dir.isDirectory()) continue;
-        if (excludeProjects.has(caseFoldKey(dir.name))) continue;
         const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
         if (!(await fs.pathExists(graphPath))) continue;
 
@@ -58,6 +50,61 @@ export async function buildAggregatedGraph(
     }
 
     return globalGraph;
+}
+
+/**
+ * The merged `.indices/graph-index.json` minus a withheld codebase's own
+ * content (#912 review round 2).
+ *
+ * Rebuilding the graph from only the allowed per-repo files (the first
+ * attempt at this) silently dropped anything that only ever lived in the
+ * global file — `teamai codebase --reconcile`'s product↔code MAPS_TO edges
+ * chief among them, since the reconciler reads and writes the global graph
+ * directly and never a per-repo one. So this instead starts from the real
+ * global graph and subtracts: a withheld codebase's own per-repo graph file
+ * names exactly the node slugs it contributed (its AST/heuristic fact nodes,
+ * which carry no `evidence/code/<slug>/` prefix, as well as its overlay hub
+ * node, which does) — remove those by slug, then drop any edge left dangling
+ * from a removed endpoint. That dangling-edge pass is what also removes a
+ * cross-repo `DEPENDS_ON` edge into a withheld node and a reconciler MAPS_TO
+ * edge into a withheld code page, without needing to know those edges came
+ * from aggregation/reconcile rather than a per-repo file.
+ *
+ * @param teamwikiRoot teamwiki/ 根目录
+ * @param withheldProjects 排除的 codebase slug（大小写不敏感）
+ * @returns 过滤后的图；没有全局图时返回 null
+ */
+export async function scopeGlobalGraph(
+    teamwikiRoot: string,
+    withheldProjects: Set<string>,
+) {
+    const { loadGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
+    type GraphIndex = NonNullable<Awaited<ReturnType<typeof loadGraphIndex>>>;
+    const globalGraph = await loadGraphIndex(teamwikiRoot);
+    if (!globalGraph || withheldProjects.size === 0) return globalGraph;
+
+    const evidenceBase = path.join(teamwikiRoot, 'evidence', 'code');
+    const withheldNodeSlugs = new Set<string>();
+    const projectDirs = await readdir(evidenceBase, { withFileTypes: true }).catch(() => []);
+    for (const dir of projectDirs) {
+        if (!dir.isDirectory() || !withheldProjects.has(caseFoldKey(dir.name))) continue;
+        const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
+        try {
+            const repoGraph = JSON.parse(await fs.readFile(graphPath, 'utf8')) as { nodes?: Array<{ slug?: string; id?: string }> };
+            for (const node of repoGraph.nodes ?? []) {
+                const slug = node.slug ?? node.id;
+                if (slug) withheldNodeSlugs.add(slug);
+            }
+        } catch { /* no per-repo graph for this project; nothing to subtract */ }
+    }
+
+    if (withheldNodeSlugs.size === 0) return globalGraph;
+
+    const nodes = globalGraph.nodes.filter((n) => !withheldNodeSlugs.has(n.slug));
+    const keptSlugs = new Set(nodes.map((n) => n.slug));
+    const edges = globalGraph.edges.filter((e) => keptSlugs.has(e.from) && keptSlugs.has(e.to));
+
+    return { ...globalGraph, nodes, edges } satisfies GraphIndex;
 }
 
 /**

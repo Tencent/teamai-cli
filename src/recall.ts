@@ -687,12 +687,16 @@ export async function recall(
   }
 
   // ── Codebase knowledge graph recall ──────────────────────
-  // A wiki codebase slug declared under `resources.wiki` but not active for
-  // this directory stays out of recall, the same way docs are scoped (#912).
-  const withheldCodebases = hasWiki && wikiConfig
-    ? (await resolveResourceNamespaces(wikiConfig))?.inactiveWikiNamespaces ?? []
-    : [];
   try {
+    // A wiki codebase slug declared under `resources.wiki` but not active for
+    // this directory stays out of recall, the same way docs are scoped
+    // (#912). Resolved inside this try: an unreadable or malformed manifest
+    // must not reject the whole recall when a valid learnings index above
+    // was already searched safely — it should just skip code recall, same
+    // as a `queryCodeKnowledge` failure already does below.
+    const withheldCodebases = hasWiki && wikiConfig
+      ? (await resolveResourceNamespaces(wikiConfig))?.inactiveWikiNamespaces ?? []
+      : [];
     const codeResults = await queryCodeKnowledge(query, { wikiRoot, limit: 3, depth: options.depth, withheldCodebases });
     // B11 fix: log-dampening instead of min-max normalization
     // Codebase BM25 scores (0-50+) mapped to learnings scale (0-10) via log curve

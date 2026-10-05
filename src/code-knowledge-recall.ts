@@ -229,18 +229,21 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
 }
 
 /**
- * `router.md` (routerTemplate in wiki-engine/adapters/templates.ts) lists
- * every codebase as a `- [[evidence/code/<slug>/index]] — desc [keywords]`
- * bullet, plus a `<!-- search-anchor: ... -->` comment aggregating every
- * codebase's keywords. At `--depth route`, that single global file is the
- * whole result, so a withheld codebase's name/link/description/keywords
- * must be stripped from it the same way its evidence directory is excluded
- * from `context`/`lookup` (#912).
+ * `router.md` lists every codebase, one per line, in either of the two
+ * formats production code generates: `routerTemplate` (wiki-engine/adapters/
+ * templates.ts) writes bullets linking `[[evidence/code/<slug>/index]]`;
+ * `rebuildWikiIndex` (the path taken after an import) writes table rows
+ * linking `[[code/<slug>/index]]` instead, carrying the slug's domain, name,
+ * description and keywords in the same row. Plus a `<!-- search-anchor:
+ * ... -->` comment aggregating every codebase's keywords. At `--depth
+ * route`, that single global file is the whole result, so a withheld
+ * codebase's line must be stripped from it the same way its evidence
+ * directory is excluded from `context`/`lookup` (#912).
  */
 function filterRouterContent(content: string, withheldCodebases: string[]): string {
   const withheld = new Set(withheldCodebases.map(caseFoldKey));
   const isWithheldLine = (line: string): boolean => {
-    const match = line.match(/evidence\/code\/([^/\]]+)/);
+    const match = line.match(/(?:evidence\/)?code\/([^/\]]+)/);
     return !!match && withheld.has(caseFoldKey(match[1]));
   };
   return content
@@ -465,22 +468,25 @@ async function loadPagesRecursive(
 
 // B7: Use protocol loadGraphIndex instead of local implementation
 //
-// A withheld codebase's graph nodes never carry an `evidence/code/<slug>/`
-// prefix at the fact level (AST/heuristic nodes are keyed by raw file path,
-// see wiki-engine/code-knowledge/code-graph.ts), so there is no reliable
-// string to filter the already-merged `.indices/graph-index.json` by. The
-// aggregation step (graph-aggregate.ts) is the one place that still knows,
-// per per-repo graph file, which codebase it came from — so a withheld
-// codebase is excluded by reusing that same aggregation (#912) rather than
-// by guessing node ownership here.
+// A withheld codebase must not reach recall through the graph either (#912):
+// its nodes could otherwise still match as BM25 entry nodes, boost an
+// allowed page's score via a graph neighbor, or surface through
+// `relatedFiles` via a cross-repo edge. Rebuilding the graph from only the
+// allowed per-repo files (the first fix) turned out to silently drop
+// anything that lives only in the global file, e.g. `--reconcile`'s
+// product<->code MAPS_TO edges — so this instead takes the real global
+// graph and subtracts the withheld codebase's own content; see
+// scopeGlobalGraph's doc comment in graph-aggregate.ts for why that also
+// closes the cross-repo-edge leak despite fact-level nodes carrying no
+// `evidence/code/<slug>/` prefix to filter by.
 async function loadGraph(wikiRoot: string, withheldCodebases: string[] = []): Promise<GraphIndex | null> {
   if (withheldCodebases.length === 0) {
     const { loadGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
     return loadGraphIndex(wikiRoot);
   }
-  const { buildAggregatedGraph } = await import('./graph-aggregate.js');
-  const excluded = new Set(withheldCodebases.map((slug) => caseFoldKey(slug)));
-  return (await buildAggregatedGraph(wikiRoot, excluded)) as GraphIndex | null;
+  const { scopeGlobalGraph } = await import('./graph-aggregate.js');
+  const withheld = new Set(withheldCodebases.map((slug) => caseFoldKey(slug)));
+  return (await scopeGlobalGraph(wikiRoot, withheld)) as GraphIndex | null;
 }
 
 export interface QueryCodeKnowledgeOptions {
