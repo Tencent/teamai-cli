@@ -229,27 +229,57 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
 }
 
 /**
- * `router.md` lists every codebase, one per line, in either of the two
- * formats production code generates: `routerTemplate` (wiki-engine/adapters/
- * templates.ts) writes bullets linking `[[evidence/code/<slug>/index]]`;
- * `rebuildWikiIndex` (the path taken after an import) writes table rows
- * linking `[[code/<slug>/index]]` instead, carrying the slug's domain, name,
- * description and keywords in the same row. Plus a `<!-- search-anchor:
+ * `router.md` lists every codebase in either of the two formats production
+ * code generates: `routerTemplate` (wiki-engine/adapters/templates.ts)
+ * writes bullets linking `[[evidence/code/<slug>/index]]` — grouped under a
+ * `### <domain>` header when AI domain classification ran, with an
+ * unresolved component falling back to a bare `- <name>` line with no link
+ * at all; `rebuildWikiIndex` (the path taken after an import) writes table
+ * rows linking `[[code/<slug>/index]]` instead. Plus a `<!-- search-anchor:
  * ... -->` comment aggregating every codebase's keywords. At `--depth
  * route`, that single global file is the whole result, so a withheld
- * codebase's line must be stripped from it the same way its evidence
- * directory is excluded from `context`/`lookup` (#912).
+ * codebase must be stripped from it the same way its evidence directory is
+ * excluded from `context`/`lookup` (#912).
+ *
+ * A line-only filter leaves an all-withheld domain's `### <domain>` header
+ * (and any unlinked fallback line under it) behind with nothing linked left
+ * to filter it by, still naming the withheld domain. So this groups lines
+ * into sections at each markdown header first: a section whose links are
+ * ALL withheld (at least one found, none allowed) is dropped whole, header
+ * included — which also drops any bare, unlinked line in that same section,
+ * since nothing in an all-withheld section could plausibly belong to an
+ * allowed codebase. A section mixing allowed and withheld links keeps the
+ * header and only drops the withheld lines, as before.
  */
 function filterRouterContent(content: string, withheldCodebases: string[]): string {
   const withheld = new Set(withheldCodebases.map(caseFoldKey));
-  const isWithheldLine = (line: string): boolean => {
+  const lineSlug = (line: string): string | null => {
     const match = line.match(/(?:evidence\/)?code\/([^/\]]+)/);
-    return !!match && withheld.has(caseFoldKey(match[1]));
+    return match ? caseFoldKey(match[1]) : null;
   };
-  return content
-    .split('\n')
-    .filter((line) => !line.startsWith('<!-- search-anchor:') && !isWithheldLine(line))
-    .join('\n');
+
+  const lines = content.split('\n');
+  const sections: string[][] = [[]];
+  for (const line of lines) {
+    if (/^#{1,6}\s/.test(line) && sections[sections.length - 1].length > 0) {
+      sections.push([]);
+    }
+    sections[sections.length - 1].push(line);
+  }
+
+  const kept: string[] = [];
+  for (const section of sections) {
+    const slugs = section.map(lineSlug).filter((s): s is string => s !== null);
+    const allWithheld = slugs.length > 0 && slugs.every((s) => withheld.has(s));
+    if (allWithheld) continue;
+    for (const line of section) {
+      if (line.startsWith('<!-- search-anchor:')) continue;
+      const slug = lineSlug(line);
+      if (slug && withheld.has(slug)) continue;
+      kept.push(line);
+    }
+  }
+  return kept.join('\n');
 }
 
 async function loadWikiPages(

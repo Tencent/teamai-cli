@@ -183,6 +183,36 @@ describe('aggregateGlobalGraph', () => {
       expect(graph?.edges).toContainEqual({ from: 'docs/product/billing', to: 'a/svc', relation: 'MAPS_TO' });
     });
 
+    it("removes a --reconcile-added code-page node and its MAPS_TO edge for a withheld codebase, even though neither ever lived in a per-repo file (#912 review round 4 P1)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      // Simulate `teamai codebase --reconcile`: it adds a code-page node for
+      // svc-b's overview.md and a MAPS_TO edge from a product page, straight
+      // to the global graph, never to svc-b's per-repo file.
+      const globalPath = path.join(tmpDir, '.indices', 'graph-index.json');
+      const global = JSON.parse(await fs.readFile(globalPath, 'utf8'));
+      global.nodes.push({ slug: 'evidence/code/svc-b/overview', title: 'Svc B overview', type: 'architecture', confidence: 'high' });
+      global.edges.push({ from: 'docs/product/billing', to: 'evidence/code/svc-b/overview', relation: 'MAPS_TO' });
+      await fs.writeFile(globalPath, JSON.stringify(global));
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      const slugs = graph?.nodes.map((n: { slug: string }) => n.slug) ?? [];
+      expect(slugs).not.toContain('evidence/code/svc-b/overview');
+      expect(graph?.edges ?? []).not.toContainEqual(
+        expect.objectContaining({ to: 'evidence/code/svc-b/overview' }),
+      );
+    });
+
     it("keeps an allowed repo's file-to-file edge whose endpoints are not graph nodes at all (#912 review round 3 P1)", async () => {
       // AST/heuristic edges are commonly file-to-file with neither endpoint
       // present in nodes[] — requiring both endpoints to "survive as nodes"

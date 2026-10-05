@@ -78,6 +78,12 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
  * unrelated repos can legitimately collide on one slug after merging. In
  * that case withholding one must not also take down the other's.
  *
+ * Per-repo files alone are not the whole story either: `teamai codebase
+ * --reconcile` adds code-page nodes (`evidence/code/<slug>/<page>`) and their
+ * MAPS_TO edges straight to the global graph, never to a per-repo file. Those
+ * are caught by a second pass over the global graph's own nodes, matched by
+ * the `evidence/code/<slug>/` prefix instead of per-repo membership.
+ *
  * @param teamwikiRoot teamwiki/ 根目录
  * @param withheldProjects 排除的 codebase slug（大小写不敏感）
  * @returns 过滤后的图；没有全局图时返回 null
@@ -116,6 +122,18 @@ export async function scopeGlobalGraph(
         } catch { /* no per-repo graph for this project; nothing to subtract */ }
     }
     for (const id of allowedIds) withheldIds.delete(id);
+
+    // `teamai codebase --reconcile` adds code-page nodes (e.g.
+    // `evidence/code/svc-b/overview`) and their MAPS_TO edges straight to the
+    // global graph, the same as it does for product-page nodes — never to any
+    // per-repo file, so the scan above misses them. Unlike a bare fact-level
+    // slug, this prefix unambiguously names the codebase it came from (it IS
+    // the directory a withheld codebase declares), so there is no allowed/
+    // withheld collision risk to guard against here the way there is above.
+    for (const node of globalGraph.nodes) {
+        const match = node.slug.match(/^evidence\/code\/([^/]+)\//);
+        if (match && withheldProjects.has(caseFoldKey(match[1]))) withheldIds.add(node.slug);
+    }
 
     if (withheldIds.size === 0) return globalGraph;
 

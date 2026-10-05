@@ -172,4 +172,46 @@ describe('queryCodeKnowledge: withheldCodebases', () => {
       expect(result.snippet).not.toContain('payments-ledger');
     });
   });
+
+  describe('route depth: router.md domain-grouped format (routerTemplate with AI domains, #912 review round 4)', () => {
+    it("drops an all-withheld domain's header entirely, including an unlinked fallback line with no match in projects[]", async () => {
+      writeFileSync(
+        path.join(wikiRoot, 'router.md'),
+        '# Team Wiki Router\n\n'
+        + '## 项目域入口\n\n'
+        + '### Checkout (4 APIs)\n\n'
+        + '- [[evidence/code/svc-a/index]] — Svc A desc [alpha]\n\n'
+        + '### Billing (2 APIs)\n\n'
+        + '- [[evidence/code/svc-b/index]] — Svc B desc [payments-ledger]\n'
+        + '- svc-b-legacy\n',
+        'utf-8',
+      );
+
+      const [result] = await queryCodeKnowledge('router', {
+        wikiRoot, depth: 'route', withheldCodebases: ['svc-b'],
+      });
+      expect(result.snippet).toContain('Checkout');
+      expect(result.snippet).toContain('svc-a');
+      expect(result.snippet).not.toContain('Billing');
+      expect(result.snippet).not.toContain('svc-b');
+    });
+
+    it('keeps a mixed domain header and only drops the withheld line inside it', async () => {
+      writeFileSync(
+        path.join(wikiRoot, 'router.md'),
+        '# Team Wiki Router\n\n'
+        + '### Platform (5 APIs)\n\n'
+        + '- [[evidence/code/svc-a/index]] — Svc A desc [alpha]\n'
+        + '- [[evidence/code/svc-b/index]] — Svc B desc [payments-ledger]\n',
+        'utf-8',
+      );
+
+      const [result] = await queryCodeKnowledge('router', {
+        wikiRoot, depth: 'route', withheldCodebases: ['svc-b'],
+      });
+      expect(result.snippet).toContain('Platform');
+      expect(result.snippet).toContain('svc-a');
+      expect(result.snippet).not.toContain('svc-b');
+    });
+  });
 });
