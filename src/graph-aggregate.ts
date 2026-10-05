@@ -114,8 +114,12 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
  * alone would wave through a schema-invalid node and, separately, leave its
  * `label`/`id`/`kind` legacy fields unnormalized to `title`/`slug`/`type`,
  * so a restored node below would carry the wrong field name instead of just
- * the wrong value), this fails closed instead — returning `null` (no graph
- * at all for this query) rather than a result it cannot vouch for.
+ * the wrong value) — OR reports zero nodes and zero edges, which a schema-
+ * valid file can do but a genuine extraction's never does (its overlay hub
+ * node alone guarantees at least one), making an empty withheld graph a sign
+ * of staleness or a truncated write rather than real evidence there was
+ * nothing to subtract — this fails closed instead — returning `null` (no
+ * graph at all for this query) rather than a result it cannot vouch for.
  *
  * @param teamwikiRoot teamwiki/ 根目录
  * @param withheldProjects 排除的 codebase slug（大小写不敏感）
@@ -171,6 +175,19 @@ export async function scopeGlobalGraph(
             // still has for it.
             const repoGraph = parseGraphIndex(raw);
             if (!repoGraph) throw new Error(`${graphPath} does not validate as a graph-index.json`);
+            // A schema-valid but entirely empty graph ({nodes: [], edges: []})
+            // still parses, so it would otherwise mark a withheld codebase
+            // accounted for while contributing nothing to subtract — exposing
+            // whatever the global graph still has for it if this file is
+            // stale or was truncated mid-write rather than genuinely empty.
+            // A real extraction's per-repo graph is never actually empty:
+            // buildIndexHubOverlay unconditionally adds the project's own
+            // index/hub node whenever extraction produces any page at all, so
+            // zero nodes for a withheld codebase is itself suspicious — treat
+            // it with the same distrust as a file that fails to validate.
+            if (isWithheld && repoGraph.nodes.length === 0 && repoGraph.edges.length === 0) {
+                throw new Error(`${graphPath} reports no nodes or edges for a withheld codebase — too suspicious (stale or truncated) to trust as complete ownership evidence`);
+            }
             const ids = isWithheld ? withheldIds : allowedIds;
             const edgeKeys = isWithheld ? withheldEdgeKeys : allowedEdgeKeys;
             for (const node of repoGraph.nodes) {

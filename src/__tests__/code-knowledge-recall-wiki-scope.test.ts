@@ -196,6 +196,27 @@ describe('queryCodeKnowledge: withheldCodebases', () => {
       expect(result.snippet).not.toContain('svc-b');
     });
 
+    it("drops a domain header whose every component is an unmatched bare line, even though none of them carries a code/<slug> link to detect as withheld (#912 review round 9 P1)", async () => {
+      writeFileSync(
+        path.join(wikiRoot, 'router.md'),
+        '# Team Wiki Router\n\n'
+        + '### Checkout (4 APIs)\n\n'
+        + '- [[evidence/code/svc-a/index]] — Svc A desc [alpha]\n\n'
+        + '### Billing (2 APIs)\n\n'
+        + '- svc-b-legacy\n'
+        + '- svc-b-other\n',
+        'utf-8',
+      );
+
+      const [result] = await queryCodeKnowledge('router', {
+        wikiRoot, depth: 'route', withheldCodebases: ['svc-b'],
+      });
+      expect(result.snippet).toContain('Checkout');
+      expect(result.snippet).toContain('svc-a');
+      expect(result.snippet).not.toContain('Billing');
+      expect(result.snippet).not.toContain('svc-b');
+    });
+
     it('keeps a mixed domain header and only drops the withheld line inside it', async () => {
       writeFileSync(
         path.join(wikiRoot, 'router.md'),

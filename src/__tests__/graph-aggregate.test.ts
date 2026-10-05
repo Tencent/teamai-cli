@@ -241,6 +241,31 @@ describe('aggregateGlobalGraph', () => {
       expect(graph).toBeNull();
     });
 
+    it("fails closed when a withheld codebase's per-repo graph file is schema-valid but reports zero nodes and zero edges, even though the global graph still has its real content (#912 review round 9 P1)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      // svc-b's per-repo file goes stale/truncated to a schema-valid but
+      // empty graph after aggregation — the global graph still has its real
+      // node from the aggregation above. A real extraction's per-repo graph
+      // is never actually empty (its own index/hub node guarantees at least
+      // one), so this is distrusted the same as an invalid file rather than
+      // trusted as "nothing to subtract."
+      writeRepoGraph('svc-b', { schemaVersion: 1, generatedAt: '2026-01-02', nodes: [], edges: [] });
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      expect(graph).toBeNull();
+    });
+
     it("restores the allowed repo's title even when its own per-repo file used the legacy `label` field instead of `title` (#912 review round 8 P1)", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',

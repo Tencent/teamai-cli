@@ -259,12 +259,29 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
  * unconditionally, the same rule `scopeGlobalGraph` applies to graph
  * ownership it cannot verify, rather than trusting an unlinked line is
  * innocent just because something else nearby has an allowed link.
+ *
+ * A domain can ALSO end up with every one of its bullets unlinked — an AI
+ * domain classification that groups only components routerTemplate failed
+ * to match to any known project. `slugs` is then empty for that section, so
+ * the all-withheld check above never triggers (there is nothing linked to
+ * call "all withheld"), yet the per-line bare-bullet rule still drops every
+ * one of those bullets — leaving the bare `### <domain>` header behind with
+ * nothing under it, naming the domain regardless of whether it was the
+ * withheld codebase's own. So a section whose bullets existed but NONE
+ * survived line filtering is dropped whole (header included) the same way
+ * an all-withheld one is, rather than only checking whether any were linked.
  */
 function filterRouterContent(content: string, withheldCodebases: string[]): string {
   const withheld = new Set(withheldCodebases.map(caseFoldKey));
   const lineSlug = (line: string): string | null => {
     const match = line.match(/(?:evidence\/)?code\/([^/\]]+)/);
     return match ? caseFoldKey(match[1]) : null;
+  };
+  const isBullet = (line: string): boolean => /^-\s/.test(line);
+  const survivesFilter = (line: string): boolean => {
+    const slug = lineSlug(line);
+    if (slug) return !withheld.has(slug);
+    return !isBullet(line);
   };
 
   const lines = content.split('\n');
@@ -278,14 +295,12 @@ function filterRouterContent(content: string, withheldCodebases: string[]): stri
 
   const kept: string[] = [];
   for (const section of sections) {
-    const slugs = section.map(lineSlug).filter((s): s is string => s !== null);
-    const allWithheld = slugs.length > 0 && slugs.every((s) => withheld.has(s));
-    if (allWithheld) continue;
+    const bullets = section.filter(isBullet);
+    const dropWhole = bullets.length > 0 && bullets.every((line) => !survivesFilter(line));
+    if (dropWhole) continue;
     for (const line of section) {
       if (line.startsWith('<!-- search-anchor:')) continue;
-      const slug = lineSlug(line);
-      if (slug && withheld.has(slug)) continue;
-      if (slug === null && /^-\s/.test(line)) continue;
+      if (!survivesFilter(line)) continue;
       kept.push(line);
     }
   }
