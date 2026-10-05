@@ -584,6 +584,19 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
     }
     return merged;
   };
+  // An edge's plain `origin` is its own one-element provenance pair, same as
+  // `scopeGlobalGraph` already treats it (#974 review round 17 P2) — folded
+  // in here too, so the LOSING side of a collision doesn't lose it outright.
+  // Without this, a cross-repo edge (crossOriginPairs, no origin) winning an
+  // equal-evidence tie against an allowed repo's own ordinary edge (origin,
+  // no crossOriginPairs) kept only the winner's own fields — the loser's
+  // `origin` was never read at all, so it vanished from the merged edge
+  // entirely rather than surviving as one more independent pair (#974
+  // review round 18 P2).
+  const edgePairs = (e: GraphEdge): string[][] | undefined => {
+    const pairs = [...(e.crossOriginPairs ?? []), ...(e.origin ? [[e.origin]] : [])];
+    return pairs.length > 0 ? pairs : undefined;
+  };
 
   for (const e of base.edges) {
     edgeMap.set(graphEdgeKey(e), e);
@@ -597,7 +610,7 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
     }
     // Prefer the variant with more evidence; on ties, prefer overlay.
     const winner = evidenceLen(e) >= evidenceLen(existing) ? e : existing;
-    const crossOriginPairs = mergeCrossOriginPairs(existing.crossOriginPairs, e.crossOriginPairs);
+    const crossOriginPairs = mergeCrossOriginPairs(edgePairs(existing), edgePairs(e));
     edgeMap.set(key, crossOriginPairs ? { ...winner, crossOriginPairs } : winner);
   }
 

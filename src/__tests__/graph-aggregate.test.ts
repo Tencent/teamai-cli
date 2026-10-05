@@ -148,14 +148,32 @@ describe('aggregateGlobalGraph', () => {
       expect(mergeGraphs(b, a).edges[0].crossOriginPairs).toHaveLength(2);
     });
 
-    it('leaves a plain (non-cross-repo) edge collision unaffected', () => {
+    it("preserves BOTH plain origins as independent pairs when two ordinary (non-cross-repo) edges collide on the same identity, instead of the losing side's origin vanishing outright", () => {
+      // Two unrelated repos' own per-repo files can each independently
+      // produce the identical from/to/relation edge (same fact-level-slug
+      // collision risk as nodes). The loser's `origin` must survive as
+      // its own provenance pair, not be silently dropped just because it
+      // isn't the object that won the evidence tie-break.
       const base = createGraphIndex([], [{ from: 'a', to: 'b', relation: 'DEPENDS_ON', origin: 'svc-a' }]);
       const overlay = createGraphIndex([], [{ from: 'a', to: 'b', relation: 'DEPENDS_ON', origin: 'svc-a2' }]);
 
       const merged = mergeGraphs(base, overlay);
       expect(merged.edges).toHaveLength(1);
-      expect(merged.edges[0].crossOriginPairs).toBeUndefined();
-      expect(merged.edges[0].origin).toBe('svc-a2'); // overlay still wins ties, as before
+      expect(merged.edges[0].origin).toBe('svc-a2'); // overlay still wins ties for ordinary fields, as before
+      expect(merged.edges[0].crossOriginPairs).toEqual(expect.arrayContaining([['svc-a'], ['svc-a2']]));
+    });
+
+    it("preserves the LOSING side's plain origin as an independent pair when an allowed repo's ordinary edge collides with a newly synthesized cross-repo edge that wins the tie (#974 review round 18 P2)", () => {
+      const ordinary = createGraphIndex([], [{ from: 'a', to: 'b', relation: 'DEPENDS_ON', origin: 'svc-a' }]);
+      const crossEdge = createGraphIndex([], [{ from: 'a', to: 'b', relation: 'DEPENDS_ON', crossOriginPairs: [['svc-w', 'svc-z']] }]);
+
+      // Whichever order they merge in, svc-a's independent claim on this
+      // edge identity must not be lost just because it has no
+      // crossOriginPairs of its own and isn't the object that wins.
+      const mergedA = mergeGraphs(ordinary, crossEdge);
+      expect(mergedA.edges[0].crossOriginPairs).toEqual(expect.arrayContaining([['svc-w', 'svc-z'], ['svc-a']]));
+      const mergedB = mergeGraphs(crossEdge, ordinary);
+      expect(mergedB.edges[0].crossOriginPairs).toEqual(expect.arrayContaining([['svc-w', 'svc-z'], ['svc-a']]));
     });
   });
 
@@ -716,6 +734,43 @@ describe('aggregateGlobalGraph', () => {
 
       const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-a', 'svc-w', 'svc-z']));
       expect(graph?.edges ?? []).not.toContainEqual(expect.objectContaining({ from: 'x', to: 'y' }));
+    });
+
+    it("keeps an allowed repo's own ordinary edge claim alive through the REAL aggregation pipeline, when a later-detected cross-repo edge happens to share its exact identity and wins the merge tie-break (#974 review round 18 P2)", async () => {
+      // svc-a declares a plain fact-level edge directly (not import-derived).
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [],
+        edges: [{ from: 'a/x', to: 'a/y', relation: 'DEPENDS_ON' }],
+      });
+      // svc-w (withheld) imports something matching svc-z's component — not
+      // detected yet, since svc-z doesn't exist when svc-w is processed.
+      writeRepoGraph('svc-w', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/x', title: 'X', type: 'component', confidence: 'high' }],
+        edges: [{ from: 'a/x', to: 'y.py', relation: 'imports' }],
+      });
+      // svc-z, processed last, is what the match resolves against — the
+      // resulting synthesized edge has the IDENTICAL from/to/relation as
+      // svc-a's own plain edge above, purely by slug coincidence.
+      writeRepoGraph('svc-z', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/y', title: 'Y', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const global = JSON.parse(await fs.readFile(path.join(tmpDir, '.indices', 'graph-index.json'), 'utf8'));
+      const edge = global.edges.find((e: { from: string; to: string }) => e.from === 'a/x' && e.to === 'a/y');
+      expect(edge).toBeDefined();
+      // svc-a's plain origin must have survived the merge as its own pair,
+      // not been silently dropped because the cross edge won the tie.
+      expect(edge.crossOriginPairs).toEqual(expect.arrayContaining([['svc-a'], expect.arrayContaining(['svc-w', 'svc-z'])]));
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-w']));
+      // svc-a's independent claim keeps the edge alive even though svc-w
+      // (withheld) is one half of the OTHER pair sharing this identity.
+      expect(graph?.edges ?? []).toContainEqual(expect.objectContaining({ from: 'a/x', to: 'a/y' }));
     });
 
     it("keeps a cross-repo edge that remains independently producible by a fully-allowed repo pair, even though withholding one repo removes ITS pair's claim on the identical edge identity (#974 review round 15 P2)", async () => {
