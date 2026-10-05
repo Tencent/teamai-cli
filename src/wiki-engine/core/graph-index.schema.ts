@@ -103,23 +103,32 @@ export interface GraphEdge {
   source?: GraphEdgeSource;
   /**
    * Same provenance as `GraphNode.origin`. Absent on a synthesized
-   * cross-repo edge — see `crossOrigins` — since a single string cannot
+   * cross-repo edge — see `crossOriginPairs` — since a single string cannot
    * describe which of the two codebases it spans needs it withheld.
    */
   origin?: string;
   /**
-   * Both codebases a synthesized cross-repo edge's existence depends on
-   * (see `detectCrossRepoEdges`): the side whose own import produced the
-   * match, AND the side that was matched by label lookup against the other
-   * graph. Captured at the moment of detection, since a later slug
-   * collision can silently reattribute either endpoint node to a
-   * different, allowed repo (last write wins the merge) without this edge
-   * ever being re-examined. `scopeGlobalGraph` withholds the edge if EITHER
-   * entry is withheld. An element is omitted when that side had no origin
-   * yet (data merged before this field existed); absent entirely on any
-   * non-cross-repo edge.
+   * Every INDEPENDENT detection's pair of origins for a synthesized
+   * cross-repo edge (see `detectCrossRepoEdges`): one entry per repo-pair
+   * that has ever produced this exact from/to/relation identity — the side
+   * whose own import produced the match, and the side matched by label
+   * lookup against the other graph. Two different codebase pairs can
+   * independently produce the identical edge identity (e.g. both import
+   * something matching the same third repo's component under an equally
+   * generic importer slug of their own); `mergeGraphs` unions pairs on
+   * collision rather than letting one overwrite the other, so none of
+   * their provenance is lost. `scopeGlobalGraph` withholds the edge only
+   * when EVERY pair contains a withheld origin — an edge that remains
+   * independently producible by a fully-allowed pair survives even though
+   * the identical edge identity was ALSO, separately, produced by a
+   * withheld pair. A pair has 1 element instead of 2 when only one side
+   * had an origin at detection time (the other predates tagging); the
+   * field is absent entirely on any non-cross-repo edge, and captured at
+   * the moment of detection since a later slug collision can silently
+   * reattribute either endpoint node to a different, allowed repo without
+   * this edge ever being re-examined.
    */
-  crossOrigins?: string[];
+  crossOriginPairs?: string[][];
 }
 
 const graphEdgeKey = (edge: GraphEdge): string => JSON.stringify([edge.from, edge.to, edge.relation]);
@@ -191,7 +200,7 @@ const GraphEdgeSchema = z.object({
   predicate: z.string().optional(),
   source: z.custom<GraphEdgeSource>((value) => GRAPH_EDGE_SOURCES.includes(value as GraphEdgeSource)).optional(),
   origin: z.string().optional(),
-  crossOrigins: z.array(z.string()).optional(),
+  crossOriginPairs: z.array(z.array(z.string())).optional(),
 }).passthrough().transform((edge, context): GraphEdge => {
   const legacyRelation = Object.hasOwn(LEGACY_RELATIONS, edge.relation)
     ? LEGACY_RELATIONS[edge.relation]
@@ -549,19 +558,31 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
   const edgeMap = new Map<string, GraphEdge>();
 
   const evidenceLen = (e: GraphEdge) => e.evidence?.length ?? 0;
-  // Two DIFFERENT codebases can independently produce a synthesized
+  // Two DIFFERENT codebase PAIRS can independently produce a synthesized
   // cross-repo edge with the identical `from|to|relation` identity (e.g.
-  // both import something matching the same third repo's component under
-  // an equally generic, unqualified slug of their own). Whichever side
-  // "wins" the tie-break below must not silently erase the OTHER side's
-  // `crossOrigins` — overwriting lost that provenance entirely, which made
-  // scopeGlobalGraph's later withheld-origin check depend on merge order
-  // (#974 review round 14 P2): union them instead, so the edge is tagged
-  // with every codebase that has ever independently produced this exact
+  // repo X and repo Y both import something matching the same third repo
+  // Z's component under an equally generic, unqualified importer slug of
+  // their own). Whichever side "wins" the tie-break below must not
+  // silently erase the OTHER side's `crossOriginPairs` — overwriting lost
+  // that provenance entirely, which both made scopeGlobalGraph's later
+  // withheld-origin check depend on merge order AND collapsed two
+  // independent repo-pairs into one, making it impossible to tell that an
+  // edge withheld via one pair might still be valid via another, fully
+  // allowed one (#974 review rounds 14 P2 / 15 P2): union the pair lists
+  // instead (deduping an identical pair), so the edge keeps a record of
+  // every repo-pair that has ever independently produced this exact
   // relationship, regardless of which one happened to merge last.
-  const mergeCrossOrigins = (a?: string[], b?: string[]): string[] | undefined => {
+  const mergeCrossOriginPairs = (a?: string[][], b?: string[][]): string[][] | undefined => {
     if (!a && !b) return undefined;
-    return [...new Set([...(a ?? []), ...(b ?? [])])];
+    const seen = new Set<string>();
+    const merged: string[][] = [];
+    for (const pair of [...(a ?? []), ...(b ?? [])]) {
+      const key = JSON.stringify([...pair].sort());
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(pair);
+    }
+    return merged;
   };
 
   for (const e of base.edges) {
@@ -576,8 +597,8 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
     }
     // Prefer the variant with more evidence; on ties, prefer overlay.
     const winner = evidenceLen(e) >= evidenceLen(existing) ? e : existing;
-    const crossOrigins = mergeCrossOrigins(existing.crossOrigins, e.crossOrigins);
-    edgeMap.set(key, crossOrigins ? { ...winner, crossOrigins } : winner);
+    const crossOriginPairs = mergeCrossOriginPairs(existing.crossOriginPairs, e.crossOriginPairs);
+    edgeMap.set(key, crossOriginPairs ? { ...winner, crossOriginPairs } : winner);
   }
 
   return {

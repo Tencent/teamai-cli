@@ -21,7 +21,7 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
     const evidenceBase = path.join(teamwikiRoot, 'evidence', 'code');
     if (!(await fs.pathExists(evidenceBase))) return null;
 
-    const { mergeGraphs } = await import('./wiki-engine/adapters/index.js');
+    const { mergeGraphs, createGraphIndex } = await import('./wiki-engine/adapters/index.js');
     type GraphIndex = Parameters<typeof mergeGraphs>[0];
     const { detectCrossRepoEdges } = await import('./import-repo.js');
 
@@ -48,14 +48,29 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
             for (const edge of overlay.edges) edge.origin = dir.name;
             if (globalGraph) {
                 // A cross-repo edge spans two codebases, so
-                // detectCrossRepoEdges tags it with BOTH their origins in
-                // `crossOrigins` (see its own doc comment) — captured at
-                // the moment of the match rather than re-derived later from
-                // whichever node ends up winning a slug collision.
+                // detectCrossRepoEdges tags it with BOTH their origins as a
+                // pair in `crossOriginPairs` (see its own doc comment) —
+                // captured at the moment of the match rather than re-derived
+                // later from whichever node ends up winning a slug collision.
                 const crossEdges = detectCrossRepoEdges(overlay, globalGraph);
                 globalGraph = mergeGraphs(globalGraph, overlay);
                 if (crossEdges.length > 0) {
-                    globalGraph.edges.push(...crossEdges);
+                    // Routed through `mergeGraphs`, not appended raw: a
+                    // THIRD repo processed later can independently detect a
+                    // cross-repo edge with the exact same from/to/relation
+                    // identity as one already pushed here in an earlier
+                    // iteration (e.g. two unrelated repos both importing a
+                    // same-named component from a shared third one under an
+                    // equally generic importer slug of their own). Appending
+                    // both raw would leave two separate array entries
+                    // sharing one key — scopeGlobalGraph's removal is keyed,
+                    // so marking either one withheld removes both, which is
+                    // exactly what crossOriginPairs (see its own doc
+                    // comment) exists to prevent; that only works if both
+                    // detections' pairs actually end up unioned onto ONE
+                    // edge object, which only `mergeGraphs` does (#974
+                    // review round 15 P2).
+                    globalGraph = mergeGraphs(globalGraph, createGraphIndex([], crossEdges));
                 }
             } else {
                 globalGraph = overlay;
@@ -199,17 +214,22 @@ export async function scopeGlobalGraph(
         if (withheldProjects.has(origin)) withheldIds.add(node.slug);
     }
     for (const edge of globalGraph.edges) {
-        // A cross-repo edge spans two codebases and carries BOTH their
-        // origins in `crossOrigins` instead of the single-valued `origin` —
-        // either one being withheld makes the relationship stale, so the
-        // edge is removed if EITHER tag matches (#974 review round 13 P1).
-        const edgeOrigins = edge.crossOrigins ?? (edge.origin ? [edge.origin] : []);
-        let edgeWithheld = false;
-        for (const rawOrigin of edgeOrigins) {
-            const origin = caseFoldKey(rawOrigin);
-            taggedOrigins.add(origin);
-            if (withheldProjects.has(origin)) edgeWithheld = true;
+        // A cross-repo edge carries one pair of origins PER independent
+        // detection that has ever produced its exact identity (`mergeGraphs`
+        // unions pairs on collision rather than overwriting — #974 review
+        // round 15 P2). Removing the edge the moment ANY single origin is
+        // withheld would also discard a DIFFERENT, fully-allowed pair that
+        // happens to produce the identical from/to/relation — so the edge is
+        // withheld only when EVERY pair has at least one withheld member; a
+        // plain single-origin edge (`origin` set, no pairs) is just a
+        // length-1 list holding one length-1 "pair", so that case reduces to
+        // the original single-tag check unchanged.
+        const pairs = edge.crossOriginPairs ?? (edge.origin ? [[edge.origin]] : []);
+        for (const pair of pairs) {
+            for (const rawOrigin of pair) taggedOrigins.add(caseFoldKey(rawOrigin));
         }
+        const edgeWithheld = pairs.length > 0 && pairs.every((pair) =>
+            pair.some((rawOrigin) => withheldProjects.has(caseFoldKey(rawOrigin))));
         if (edgeWithheld) withheldEdgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
     }
     const tagCovered = new Set([...withheldProjects].filter((p) => taggedOrigins.has(p)));
@@ -304,15 +324,15 @@ export async function scopeGlobalGraph(
     // A legacy (not tag-covered) withheld codebase's contested slug is kept
     // because an allowed repo also legitimately claims it — correct for the
     // node itself. But a synthesized cross-repo edge that predates
-    // `origin`/`crossOrigins` tagging entirely never lived in any per-repo
+    // `origin`/`crossOriginPairs` tagging entirely never lived in any per-repo
     // file (cross edges are written straight to the global graph at
     // aggregation time), so the fallback scan above has no way to discover,
     // let alone subtract, one touching this slug. Silently trusting that no
     // such edge exists would risk exposing a withheld-only relationship
     // with no path left to remove it — fail closed instead (#974 review
     // round 14 P1).
-    const looksLikeUntaggedCrossEdge = (edge: { relation: string; origin?: string; crossOrigins?: string[]; source?: string }) =>
-        edge.relation === 'DEPENDS_ON' && !edge.origin && !edge.crossOrigins && !edge.source;
+    const looksLikeUntaggedCrossEdge = (edge: { relation: string; origin?: string; crossOriginPairs?: string[][]; source?: string }) =>
+        edge.relation === 'DEPENDS_ON' && !edge.origin && !edge.crossOriginPairs && !edge.source;
     for (const slug of contestedSlugs) {
         if (!fallbackWithheldIds.has(slug)) continue;
         const unverifiable = globalGraph.edges.some((e) => (e.from === slug || e.to === slug) && looksLikeUntaggedCrossEdge(e));

@@ -97,11 +97,11 @@ describe('detectCrossRepoEdges with GraphIndex format (slug/title)', () => {
     // so both origins are recorded, not just whichever side the label lookup matched.
     const edges = detectCrossRepoEdges(repoB, repoA);
     const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
-    expect(depEdge?.crossOrigins).toEqual(expect.arrayContaining(['svc-a', 'svc-b']));
-    expect(depEdge?.crossOrigins).toHaveLength(2);
+    expect(depEdge?.crossOriginPairs).toEqual([expect.arrayContaining(['svc-a', 'svc-b'])]);
+    expect(depEdge?.crossOriginPairs?.[0]).toHaveLength(2);
   });
 
-  it('omits a side from crossOrigins when that node predates origin tagging, instead of a placeholder', () => {
+  it('omits a side from the pair when that node predates origin tagging, instead of a placeholder', () => {
     const repoA = {
       nodes: [{ slug: 'hai-api/balance-client', title: 'BalanceClient', type: 'component' }],
       edges: [],
@@ -113,7 +113,7 @@ describe('detectCrossRepoEdges with GraphIndex format (slug/title)', () => {
 
     const edges = detectCrossRepoEdges(repoB, repoA);
     const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
-    expect(depEdge?.crossOrigins).toEqual(['svc-b']);
+    expect(depEdge?.crossOriginPairs).toEqual([['svc-b']]);
   });
 
   it("uses the import edge's own origin tag for the importing (reverse) side, not a fresh lookup of whichever node CURRENTLY sits at its slug — a later, unrelated collision can silently swap that node out without ever touching the edge's own tag (#974 review round 14 P1)", () => {
@@ -132,8 +132,8 @@ describe('detectCrossRepoEdges with GraphIndex format (slug/title)', () => {
 
     const edges = detectCrossRepoEdges(overlay, existing);
     const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
-    expect(depEdge?.crossOrigins).toEqual(expect.arrayContaining(['svc-b', 'svc-a']));
-    expect(depEdge?.crossOrigins).not.toContain('svc-x');
+    expect(depEdge?.crossOriginPairs).toEqual([expect.arrayContaining(['svc-b', 'svc-a'])]);
+    expect(depEdge?.crossOriginPairs?.[0]).not.toContain('svc-x');
   });
 
   it('falls back to the current from-node\'s origin for the importing side only when the import edge itself predates origin tagging', () => {
@@ -148,7 +148,7 @@ describe('detectCrossRepoEdges with GraphIndex format (slug/title)', () => {
 
     const edges = detectCrossRepoEdges(overlay, existing);
     const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
-    expect(depEdge?.crossOrigins).toEqual(expect.arrayContaining(['svc-x', 'svc-a']));
+    expect(depEdge?.crossOriginPairs).toEqual([expect.arrayContaining(['svc-x', 'svc-a'])]);
   });
 
   it('returns empty for repos with no shared names', () => {

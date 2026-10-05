@@ -76,8 +76,8 @@ interface LabelMatch {
 export function detectCrossRepoEdges(
     overlay: SimpleGraphIndex,
     existing: SimpleGraphIndex,
-): Array<{ from: string; to: string; relation: 'DEPENDS_ON'; crossOrigins?: string[] }> {
-    const crossEdges: Array<{ from: string; to: string; relation: 'DEPENDS_ON'; crossOrigins?: string[] }> = [];
+): Array<{ from: string; to: string; relation: 'DEPENDS_ON'; crossOriginPairs?: string[][] }> {
+    const crossEdges: Array<{ from: string; to: string; relation: 'DEPENDS_ON'; crossOriginPairs?: string[][] }> = [];
     const edgeSet = new Set<string>();
 
     const nodeId = (n: SimpleGraphNode): string => n.id ?? n.slug ?? '';
@@ -86,12 +86,15 @@ export function detectCrossRepoEdges(
     // Both sides this edge spans matter: the side whose own import produced
     // the match, AND the side that match resolved to. Either one being
     // withheld later makes the relationship stale, so both are captured now
-    // — a slug collision after this can still reattribute either endpoint
-    // node's CURRENT origin, but never this edge's own record of what it
-    // depended on at the moment it was detected.
-    const crossOrigins = (a?: string, b?: string): string[] | undefined => {
+    // as a single pair — a slug collision after this can still reattribute
+    // either endpoint node's CURRENT origin, but never this edge's own
+    // record of what it depended on at the moment it was detected. Wrapped
+    // in an outer array since `mergeGraphs` unions pairs from independent
+    // detections rather than letting one overwrite another (#974 review
+    // round 15 P2) — see `GraphEdge.crossOriginPairs`.
+    const crossOriginPair = (a?: string, b?: string): string[][] | undefined => {
         const origins = [a, b].filter((o): o is string => !!o);
-        return origins.length > 0 ? origins : undefined;
+        return origins.length > 0 ? [origins] : undefined;
     };
 
     // Build label index for the existing graph's components/interfaces. Each
@@ -133,7 +136,7 @@ export function detectCrossRepoEdges(
                     // (in a later-processed repo) can silently swap that
                     // node out without ever touching this edge's own tag
                     // (#974 review round 14 P1).
-                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(edge.origin ?? fromNode.origin, match.origin) });
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(edge.origin ?? fromNode.origin, match.origin) });
                 }
             }
         }
@@ -161,7 +164,7 @@ export function detectCrossRepoEdges(
                     // `imports` edge this actually is. `edge.origin` was
                     // stamped once, at that edge's own tagging time, and is
                     // immune to any node collision that happens afterward.
-                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(edge.origin ?? fromNode.origin, match.origin) });
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(edge.origin ?? fromNode.origin, match.origin) });
                 }
             }
         }
@@ -180,7 +183,7 @@ export function detectCrossRepoEdges(
             const key = `${match.id}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(match.origin, cfg.origin) });
+                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(match.origin, cfg.origin) });
             }
         }
     }
@@ -194,7 +197,7 @@ export function detectCrossRepoEdges(
             const key = `${match.id}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(match.origin, cfg.origin) });
+                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(match.origin, cfg.origin) });
             }
         }
     }

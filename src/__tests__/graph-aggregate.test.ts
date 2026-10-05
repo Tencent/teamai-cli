@@ -115,26 +115,37 @@ describe('aggregateGlobalGraph', () => {
     expect(result).toBeNull();
   });
 
-  describe('mergeGraphs: crossOrigins union on colliding edge identity (#974 review round 14 P2)', () => {
-    it("unions both sides' crossOrigins when two DIFFERENT codebases independently produce a cross-repo edge with the identical from/to/relation, instead of the later one silently erasing the earlier one's", () => {
+  describe('mergeGraphs: crossOriginPairs union on colliding edge identity (#974 review rounds 14 P2 / 15 P2)', () => {
+    it("keeps BOTH independent repo-pairs' provenance as separate pairs when two DIFFERENT codebase pairs produce a cross-repo edge with the identical from/to/relation, instead of the later one silently erasing the earlier one's", () => {
       const base = createGraphIndex([], [
-        { from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOrigins: ['svc-w', 'svc-z'] },
+        { from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOriginPairs: [['svc-w', 'svc-z']] },
       ]);
       const overlay = createGraphIndex([], [
-        { from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOrigins: ['svc-y', 'svc-z'] },
+        { from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOriginPairs: [['svc-y', 'svc-z']] },
       ]);
 
       const merged = mergeGraphs(base, overlay);
       expect(merged.edges).toHaveLength(1);
-      expect(merged.edges[0].crossOrigins).toEqual(expect.arrayContaining(['svc-w', 'svc-y', 'svc-z']));
-      expect(merged.edges[0].crossOrigins).toHaveLength(3);
+      expect(merged.edges[0].crossOriginPairs).toHaveLength(2);
+      expect(merged.edges[0].crossOriginPairs).toEqual(expect.arrayContaining([
+        expect.arrayContaining(['svc-w', 'svc-z']),
+        expect.arrayContaining(['svc-y', 'svc-z']),
+      ]));
+    });
+
+    it('dedupes an identical pair contributed by both sides instead of keeping a duplicate', () => {
+      const base = createGraphIndex([], [{ from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOriginPairs: [['svc-w', 'svc-z']] }]);
+      const overlay = createGraphIndex([], [{ from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOriginPairs: [['svc-w', 'svc-z']] }]);
+
+      expect(mergeGraphs(base, overlay).edges[0].crossOriginPairs).toHaveLength(1);
     });
 
     it('produces the identical union regardless of which side is base vs. overlay', () => {
-      const a = createGraphIndex([], [{ from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOrigins: ['svc-w', 'svc-z'] }]);
-      const b = createGraphIndex([], [{ from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOrigins: ['svc-y', 'svc-z'] }]);
+      const a = createGraphIndex([], [{ from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOriginPairs: [['svc-w', 'svc-z']] }]);
+      const b = createGraphIndex([], [{ from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOriginPairs: [['svc-y', 'svc-z']] }]);
 
-      expect(mergeGraphs(a, b).edges[0].crossOrigins?.sort()).toEqual(mergeGraphs(b, a).edges[0].crossOrigins?.sort());
+      expect(mergeGraphs(a, b).edges[0].crossOriginPairs).toHaveLength(2);
+      expect(mergeGraphs(b, a).edges[0].crossOriginPairs).toHaveLength(2);
     });
 
     it('leaves a plain (non-cross-repo) edge collision unaffected', () => {
@@ -143,7 +154,7 @@ describe('aggregateGlobalGraph', () => {
 
       const merged = mergeGraphs(base, overlay);
       expect(merged.edges).toHaveLength(1);
-      expect(merged.edges[0].crossOrigins).toBeUndefined();
+      expect(merged.edges[0].crossOriginPairs).toBeUndefined();
       expect(merged.edges[0].origin).toBe('svc-a2'); // overlay still wins ties, as before
     });
   });
@@ -565,7 +576,7 @@ describe('aggregateGlobalGraph', () => {
       const crossEdge = global.edges.find((e: { relation: string }) => e.relation === 'DEPENDS_ON');
       expect(crossEdge).toBeDefined();
       // Both sides: svc-a's own node produced the import, svc-b's was matched.
-      expect(crossEdge.crossOrigins).toEqual(expect.arrayContaining(['svc-a', 'svc-b']));
+      expect(crossEdge.crossOriginPairs).toEqual([expect.arrayContaining(['svc-a', 'svc-b'])]);
 
       const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
       // The slug survives — svc-c (allowed) also claims it.
@@ -608,7 +619,7 @@ describe('aggregateGlobalGraph', () => {
       const global = JSON.parse(await fs.readFile(path.join(tmpDir, '.indices', 'graph-index.json'), 'utf8'));
       const crossEdge = global.edges.find((e: { relation: string }) => e.relation === 'DEPENDS_ON');
       expect(crossEdge).toBeDefined();
-      expect(crossEdge.crossOrigins).toEqual(expect.arrayContaining(['svc-a', 'svc-b']));
+      expect(crossEdge.crossOriginPairs).toEqual([expect.arrayContaining(['svc-a', 'svc-b'])]);
 
       const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
       // The slug survives — svc-c (allowed) also claims it — and svc-a's
@@ -621,9 +632,9 @@ describe('aggregateGlobalGraph', () => {
       expect(graph?.edges ?? []).not.toContainEqual(expect.objectContaining({ from: 'b/client', to: 'a/service' }));
     });
 
-    it("fails closed when a legacy (not tag-covered) withheld codebase's contested slug is the endpoint of a cross-repo edge that predates origin/crossOrigins tagging entirely, since the fallback per-repo-file scan can never discover it (#974 review round 14 P1)", async () => {
+    it("fails closed when a legacy (not tag-covered) withheld codebase's contested slug is the endpoint of a cross-repo edge that predates origin/crossOriginPairs tagging entirely, since the fallback per-repo-file scan can never discover it (#974 review round 14 P1)", async () => {
       // Hand-written, pre-upgrade-style data: a global graph with a
-      // synthesized cross-repo edge that has no `origin`/`crossOrigins`/
+      // synthesized cross-repo edge that has no `origin`/`crossOriginPairs`/
       // `source` at all (as detectCrossRepoEdges produced before this field
       // existed), plus per-repo files for both the withheld codebase this
       // edge actually depends on and an allowed one that happens to share
@@ -652,6 +663,43 @@ describe('aggregateGlobalGraph', () => {
 
       const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-old']));
       expect(graph).toBeNull();
+    });
+
+    it("keeps a cross-repo edge that remains independently producible by a fully-allowed repo pair, even though withholding one repo removes ITS pair's claim on the identical edge identity (#974 review round 15 P2)", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/service', title: 'Service', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'shared/client', title: 'ClientB', type: 'component', confidence: 'high' }],
+        edges: [{ from: 'shared/client', to: 'service.py', relation: 'imports' }],
+      });
+      // svc-c mints the same unqualified importer slug as svc-b AND
+      // produces the exact same cross-repo edge shape independently —
+      // the two repos' relationships to svc-a merge onto one edge
+      // identity but must remain separately attributable.
+      writeRepoGraph('svc-c', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'shared/client', title: 'ClientC', type: 'component', confidence: 'high' }],
+        edges: [{ from: 'shared/client', to: 'service.py', relation: 'imports' }],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const global = JSON.parse(await fs.readFile(path.join(tmpDir, '.indices', 'graph-index.json'), 'utf8'));
+      const crossEdge = global.edges.find((e: { relation: string }) => e.relation === 'DEPENDS_ON');
+      expect(crossEdge).toBeDefined();
+      // Routed through mergeGraphs (not appended raw), so the two
+      // independent detections land as TWO pairs on ONE edge object.
+      expect(crossEdge.crossOriginPairs).toHaveLength(2);
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      // svc-c (allowed) wins the node collision, as always.
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toContain('shared/client');
+      // The edge survives: svc-c+svc-a's pair is fully allowed, even though
+      // svc-b+svc-a's pair — the identical edge identity — is withheld.
+      expect(graph?.edges ?? []).toContainEqual(expect.objectContaining({ from: 'shared/client', to: 'a/service' }));
     });
 
     it("removes an originless MAPS_TO edge pointing at evidence/code/<withheld>/<page>.md even when no node was ever created for that page (#974 review round 12 P2)", async () => {
