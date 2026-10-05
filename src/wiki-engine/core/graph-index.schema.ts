@@ -39,6 +39,17 @@ export interface GraphNode {
   title: string;
   domain?: string;
   source?: GraphEdgeSource;
+  /**
+   * The codebase slug (`evidence/code/<origin>/`) this node's own per-repo
+   * graph file contributed it from, stamped by the aggregation that merges
+   * per-repo graphs into the global one (#912). Absent on a cross-repo edge
+   * node reference and on anything aggregated before this field existed.
+   * Authoritative once present: it travels with the data itself, so it
+   * stays correct even if that per-repo file is later deleted, emptied, or
+   * rewritten to describe something different, which reading the per-repo
+   * file back out at query time cannot promise.
+   */
+  origin?: string;
 }
 
 /** Provenance of a graph edge (compile / reconcile pipeline). */
@@ -90,6 +101,8 @@ export interface GraphEdge {
   /** Fine-grained semantic predicate (e.g. G6 CALLS_HTTP, USES_TABLE). */
   predicate?: string;
   source?: GraphEdgeSource;
+  /** Same provenance as `GraphNode.origin`; absent on a synthesized cross-repo edge, which spans two codebases. */
+  origin?: string;
 }
 
 const graphEdgeKey = (edge: GraphEdge): string => JSON.stringify([edge.from, edge.to, edge.relation]);
@@ -149,6 +162,7 @@ const GraphNodeSchema = z.preprocess((value) => {
   title: z.string(),
   domain: z.string().optional(),
   source: z.custom<GraphEdgeSource>((value) => GRAPH_EDGE_SOURCES.includes(value as GraphEdgeSource)).optional(),
+  origin: z.string().optional(),
 }).passthrough());
 
 const GraphEdgeSchema = z.object({
@@ -159,6 +173,7 @@ const GraphEdgeSchema = z.object({
   weight: z.number().optional(),
   predicate: z.string().optional(),
   source: z.custom<GraphEdgeSource>((value) => GRAPH_EDGE_SOURCES.includes(value as GraphEdgeSource)).optional(),
+  origin: z.string().optional(),
 }).passthrough().transform((edge, context): GraphEdge => {
   const legacyRelation = Object.hasOwn(LEGACY_RELATIONS, edge.relation)
     ? LEGACY_RELATIONS[edge.relation]

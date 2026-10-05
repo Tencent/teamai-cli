@@ -35,6 +35,18 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
 
         try {
             const overlay = JSON.parse(await fs.readFile(graphPath, 'utf8')) as GraphIndex;
+            // Stamp ownership onto the data itself before it ever enters the
+            // global graph (#912 review): a cross-repo edge detected below
+            // spans two codebases and is intentionally left untagged, but
+            // every node and edge this ONE per-repo file contributed is
+            // unambiguously this project's. Once merged, that tag travels
+            // with the node/edge forever — scoping later reads it straight
+            // off the global graph instead of re-reading this per-repo file
+            // and trusting its CURRENT content still matches what was
+            // merged, which it may no longer if the file was since emptied,
+            // rewritten by a newer extraction, or deleted outright.
+            for (const node of overlay.nodes) node.origin = dir.name;
+            for (const edge of overlay.edges) edge.origin = dir.name;
             if (globalGraph) {
                 const crossEdges = detectCrossRepoEdges(overlay, globalGraph);
                 globalGraph = mergeGraphs(globalGraph, overlay);
@@ -100,26 +112,50 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
  * are caught by a second pass over the global graph's own nodes, matched by
  * the `evidence/code/<slug>/` prefix instead of per-repo membership.
  *
- * None of this works without a per-repo graph file to read ownership from in
- * the first place. `teamai codebase --extract` run directly (outside
- * `teamai import`'s cache-then-copy orchestration) writes only the global
+ * None of the above actually needs a per-repo graph file to be read at
+ * query time at all, IF the global graph already carries `origin` tags:
+ * `buildAggregatedGraph` stamps every node and edge with the codebase slug
+ * its own per-repo file contributed it from, at the moment it merges that
+ * file in. That tag travels with the data from then on — it stays correct
+ * even if the per-repo file is later emptied, rewritten by a newer
+ * extraction, or deleted outright, which re-reading the per-repo file at
+ * query time cannot promise (an import that replaces a withheld codebase's
+ * per-repo graph and is interrupted before the next re-aggregation leaves
+ * exactly this mismatch: a newer per-repo file describing different
+ * content than what the global graph actually has tagged from the older
+ * generation). So a withheld codebase with ANY `origin`-tagged content in
+ * the global graph is "tag-covered": every node/edge whose `origin` names
+ * it is removed directly, and its per-repo file is not read at all for
+ * subtraction purposes — the tag already answers the question reliably.
+ *
+ * A withheld codebase is NOT tag-covered when its content predates this
+ * tagging (an older aggregation, before this field existed) or was
+ * extracted directly via `teamai codebase --extract` (outside `teamai
+ * import`'s cache-then-copy orchestration, which writes only the global
  * `teamwiki/.indices/graph-index.json` and never populates
- * `evidence/code/<slug>/.indices/graph-index.json` at all — so a withheld
- * codebase extracted that way has no per-repo file for this function to read
- * ownership from, and would otherwise fail open: its fact-level nodes and
- * edges would stay in the "scoped" graph, fully exposed. So whenever a
- * withheld codebase's per-repo file is missing, unreadable, or fails to
+ * `evidence/code/<slug>/.indices/graph-index.json` at all). Only THOSE
+ * codebases fall back to reading their per-repo file, with the same
+ * fail-closed guards as before: missing, unreadable, or failing to
  * validate against the same `GraphIndexSchema` the global graph is loaded
- * with (`parseGraphIndex`, not a loose "are nodes/edges arrays" check — that
- * alone would wave through a schema-invalid node and, separately, leave its
- * `label`/`id`/`kind` legacy fields unnormalized to `title`/`slug`/`type`,
- * so a restored node below would carry the wrong field name instead of just
- * the wrong value) — OR reports zero nodes and zero edges, which a schema-
- * valid file can do but a genuine extraction's never does (its overlay hub
- * node alone guarantees at least one), making an empty withheld graph a sign
- * of staleness or a truncated write rather than real evidence there was
- * nothing to subtract — this fails closed instead — returning `null` (no
- * graph at all for this query) rather than a result it cannot vouch for.
+ * with (`parseGraphIndex`, not a loose "are nodes/edges arrays" check —
+ * that alone would wave through a schema-invalid node and, separately,
+ * leave `label`/`id`/`kind` legacy fields unnormalized, so a restored node
+ * below would carry the wrong field name instead of just the wrong value),
+ * or reporting zero nodes and zero edges (a schema-valid file can do this,
+ * but a genuine extraction's never does — its overlay hub node alone
+ * guarantees at least one) all fail closed — returning `null` (no graph at
+ * all for this query) rather than a result that fallback cannot vouch for.
+ * Note this fallback, and the fail-closed guard on it, is now reached only
+ * by codebases tagging hasn't covered yet; the next aggregation that runs
+ * for them (any `teamai import` or `codebase --extract`) tags them too.
+ *
+ * Collision handling (two codebases sharing one unqualified fact-level
+ * slug) still needs an ALLOWED codebase's per-repo file regardless of
+ * tagging, tag-covered or not: the merged global graph keeps only one
+ * node per slug, so if a withheld codebase's write won that merge, tagging
+ * alone would remove the node outright — losing the allowed codebase's
+ * equally legitimate claim on it. Allowed codebases are therefore always
+ * read, same as before `origin` tagging existed.
  *
  * @param teamwikiRoot teamwiki/ 根目录
  * @param withheldProjects 排除的 codebase slug（大小写不敏感）
@@ -135,7 +171,6 @@ export async function scopeGlobalGraph(
     const globalGraph = await loadGraphIndex(teamwikiRoot);
     if (!globalGraph || withheldProjects.size === 0) return globalGraph;
 
-    const evidenceBase = path.join(teamwikiRoot, 'evidence', 'code');
     const withheldIds = new Set<string>();
     const allowedIds = new Set<string>();
     const withheldEdgeKeys = new Set<string>();
@@ -148,13 +183,35 @@ export async function scopeGlobalGraph(
     // with `a -> b|c` were an identifier ever to contain the separator —
     // matching `graphEdgeKey`'s own approach in graph-index.schema.ts.
     const edgeKey = (from: string, to: string, relation?: string) => JSON.stringify([from, to, relation ?? '']);
-    const accountedWithheld = new Set<string>();
     const allowedNodeBySlug = new Map<string, GraphNode>();
+
+    // Origin-tag removal first (see doc comment): authoritative and
+    // independent of whatever any per-repo file currently says.
+    const taggedOrigins = new Set<string>();
+    for (const node of globalGraph.nodes) {
+        if (!node.origin) continue;
+        const origin = caseFoldKey(node.origin);
+        taggedOrigins.add(origin);
+        if (withheldProjects.has(origin)) withheldIds.add(node.slug);
+    }
+    for (const edge of globalGraph.edges) {
+        if (!edge.origin) continue;
+        const origin = caseFoldKey(edge.origin);
+        taggedOrigins.add(origin);
+        if (withheldProjects.has(origin)) withheldEdgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
+    }
+    const tagCovered = new Set([...withheldProjects].filter((p) => taggedOrigins.has(p)));
+
+    const evidenceBase = path.join(teamwikiRoot, 'evidence', 'code');
+    const accountedWithheld = new Set<string>();
     const projectDirs = await readdir(evidenceBase, { withFileTypes: true }).catch(() => []);
     for (const dir of projectDirs) {
         if (!dir.isDirectory()) continue;
         const foldedName = caseFoldKey(dir.name);
         const isWithheld = withheldProjects.has(foldedName);
+        // A tag-covered withheld codebase is already fully handled above;
+        // an allowed codebase is always read, for collision restoration.
+        if (isWithheld && tagCovered.has(foldedName)) continue;
         const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
         try {
             const raw = JSON.parse(await fs.readFile(graphPath, 'utf8'));
@@ -203,11 +260,13 @@ export async function scopeGlobalGraph(
         } catch { /* handled below: an unreadable or schema-invalid file leaves this withheld project unaccounted for */ }
     }
 
-    // Fail closed, not open: a withheld codebase this function could not load
-    // ownership for (see doc comment) must not be treated as "nothing to
-    // subtract" — that would silently leave its content exposed.
+    // Fail closed, not open: a withheld codebase tagging doesn't cover, that
+    // this function also could not load a per-repo fallback for (see doc
+    // comment), must not be treated as "nothing to subtract" — that would
+    // silently leave its content exposed. A tag-covered codebase needs no
+    // such fallback at all; it was already fully handled above.
     for (const withheldSlug of withheldProjects) {
-        if (!accountedWithheld.has(withheldSlug)) return null;
+        if (!tagCovered.has(withheldSlug) && !accountedWithheld.has(withheldSlug)) return null;
     }
 
     // A slug both sets claim needs its global metadata restored to the

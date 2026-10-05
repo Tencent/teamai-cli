@@ -198,7 +198,7 @@ describe('aggregateGlobalGraph', () => {
       expect(graph).toBeNull();
     });
 
-    it("fails closed when a withheld codebase's per-repo graph file is syntactically valid JSON but structurally wrong (#912 review round 7 P1)", async () => {
+    it("removes a withheld codebase's tagged content by origin even after its per-repo file goes structurally wrong post-aggregation, instead of failing the whole query closed (#912 review round 10 P1)", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
         nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
@@ -213,14 +213,17 @@ describe('aggregateGlobalGraph', () => {
 
       // A truncated or otherwise corrupted write can leave valid JSON that
       // is not a valid graph (no nodes[]/edges[] at all) — JSON.parse alone
-      // would not catch this.
+      // would not catch this. But svc-b was already tagged `origin: 'svc-b'`
+      // on its node when the aggregation above merged it in, so this no
+      // longer needs svc-b's (now-broken) per-repo file read at all: the
+      // whole query stays usable, scoped precisely by the tag.
       fs.writeFileSync(path.join(tmpDir, 'evidence', 'code', 'svc-b', '.indices', 'graph-index.json'), '{}');
 
       const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
-      expect(graph).toBeNull();
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toEqual(['a/svc']);
     });
 
-    it("fails closed when a withheld codebase's per-repo graph file has nodes[]/edges[] arrays but a node that doesn't validate against the graph schema (#912 review round 8 P1)", async () => {
+    it("fails closed when a withheld codebase's per-repo graph file has nodes[]/edges[] arrays but a node that doesn't validate against the graph schema, and it was never successfully aggregated before (#912 review round 8 P1)", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
         nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
@@ -229,7 +232,9 @@ describe('aggregateGlobalGraph', () => {
       // Array.isArray(nodes) && Array.isArray(edges) alone would wave this
       // through: the node object is missing every field GraphNodeSchema
       // requires (type, confidence, title), so it is not a valid node even
-      // though the file is syntactically and shape-wise fine.
+      // though the file is syntactically and shape-wise fine. svc-b has
+      // never been successfully aggregated, so it carries no origin tag
+      // either — there is nothing to fall back on.
       writeRepoGraph('svc-b', {
         schemaVersion: 1, generatedAt: '2026-01-01',
         nodes: [{ bogus: true }],
@@ -241,7 +246,7 @@ describe('aggregateGlobalGraph', () => {
       expect(graph).toBeNull();
     });
 
-    it("fails closed when a withheld codebase's per-repo graph file is schema-valid but reports zero nodes and zero edges, even though the global graph still has its real content (#912 review round 9 P1)", async () => {
+    it("removes a withheld codebase's tagged content by origin even after its per-repo file goes stale (schema-valid but empty) post-aggregation, instead of failing the whole query closed (#912 review round 9 P1)", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
         nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
@@ -255,15 +260,50 @@ describe('aggregateGlobalGraph', () => {
       await aggregateGlobalGraph(tmpDir);
 
       // svc-b's per-repo file goes stale/truncated to a schema-valid but
-      // empty graph after aggregation — the global graph still has its real
-      // node from the aggregation above. A real extraction's per-repo graph
-      // is never actually empty (its own index/hub node guarantees at least
-      // one), so this is distrusted the same as an invalid file rather than
-      // trusted as "nothing to subtract."
+      // empty graph after aggregation. The origin tag the aggregation above
+      // already stamped on svc-b's node makes this file irrelevant to
+      // scoping now — it is only read at all for a codebase tagging never
+      // covered in the first place.
       writeRepoGraph('svc-b', { schemaVersion: 1, generatedAt: '2026-01-02', nodes: [], edges: [] });
 
       const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
-      expect(graph).toBeNull();
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toEqual(['a/svc']);
+    });
+
+    it("removes a withheld codebase's OLD tagged nodes by origin even when its per-repo file has since been replaced by a newer, valid, non-empty but non-overlapping graph before re-aggregation ran (#912 review round 10 P1)", async () => {
+      // The scenario the review named directly: `teamai import` re-extracts
+      // svc-b, writing a brand new per-repo graph with different node slugs
+      // than last time, then is interrupted before the next
+      // aggregateGlobalGraph() call folds that new content into the global
+      // graph. The global graph still only has svc-b's OLD, already-tagged
+      // nodes — reading svc-b's (valid, non-empty, but now describing
+      // something else entirely) per-repo file would contribute the WRONG
+      // identifiers for subtracting what the global graph actually has.
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/old-svc', title: 'ServiceB Old', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      // Interrupted re-import: svc-b's per-repo file now describes an
+      // entirely different (but still valid, non-empty) node — the global
+      // graph has not been re-aggregated to match yet.
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-02',
+        nodes: [{ slug: 'b/new-svc', title: 'ServiceB New', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      const slugs = graph?.nodes.map((n: { slug: string }) => n.slug) ?? [];
+      expect(slugs).toEqual(['a/svc']);
+      expect(slugs).not.toContain('b/old-svc');
     });
 
     it("restores the allowed repo's title even when its own per-repo file used the legacy `label` field instead of `title` (#912 review round 8 P1)", async () => {
