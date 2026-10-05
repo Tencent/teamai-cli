@@ -216,6 +216,11 @@ export async function scopeGlobalGraph(
 
     const evidenceBase = path.join(teamwikiRoot, 'evidence', 'code');
     const accountedWithheld = new Set<string>();
+    // Slugs added to `withheldIds` by the per-repo-file fallback below
+    // specifically (as opposed to the origin-tag pass above) — tracked
+    // separately so the cross-repo-edge check further down can be scoped
+    // to exactly the codebases that fallback actually covers.
+    const fallbackWithheldIds = new Set<string>();
     const projectDirs = await readdir(evidenceBase, { withFileTypes: true }).catch(() => []);
     for (const dir of projectDirs) {
         if (!dir.isDirectory()) continue;
@@ -261,11 +266,16 @@ export async function scopeGlobalGraph(
             const edgeKeys = isWithheld ? withheldEdgeKeys : allowedEdgeKeys;
             for (const node of repoGraph.nodes) {
                 ids.add(node.slug);
+                if (isWithheld) fallbackWithheldIds.add(node.slug);
                 if (!isWithheld) allowedNodeBySlug.set(node.slug, node);
             }
             for (const edge of repoGraph.edges) {
                 ids.add(edge.from);
                 ids.add(edge.to);
+                if (isWithheld) {
+                    fallbackWithheldIds.add(edge.from);
+                    fallbackWithheldIds.add(edge.to);
+                }
                 edgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
             }
             if (isWithheld) accountedWithheld.add(foldedName);
@@ -289,6 +299,24 @@ export async function scopeGlobalGraph(
     const contestedSlugs = new Set<string>();
     for (const id of withheldIds) {
         if (allowedNodeBySlug.has(id)) contestedSlugs.add(id);
+    }
+
+    // A legacy (not tag-covered) withheld codebase's contested slug is kept
+    // because an allowed repo also legitimately claims it — correct for the
+    // node itself. But a synthesized cross-repo edge that predates
+    // `origin`/`crossOrigins` tagging entirely never lived in any per-repo
+    // file (cross edges are written straight to the global graph at
+    // aggregation time), so the fallback scan above has no way to discover,
+    // let alone subtract, one touching this slug. Silently trusting that no
+    // such edge exists would risk exposing a withheld-only relationship
+    // with no path left to remove it — fail closed instead (#974 review
+    // round 14 P1).
+    const looksLikeUntaggedCrossEdge = (edge: { relation: string; origin?: string; crossOrigins?: string[]; source?: string }) =>
+        edge.relation === 'DEPENDS_ON' && !edge.origin && !edge.crossOrigins && !edge.source;
+    for (const slug of contestedSlugs) {
+        if (!fallbackWithheldIds.has(slug)) continue;
+        const unverifiable = globalGraph.edges.some((e) => (e.from === slug || e.to === slug) && looksLikeUntaggedCrossEdge(e));
+        if (unverifiable) return null;
     }
 
     for (const id of allowedIds) withheldIds.delete(id);

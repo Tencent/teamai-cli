@@ -56,7 +56,7 @@ interface SimpleGraphNode {
 
 interface SimpleGraphIndex {
     nodes: SimpleGraphNode[];
-    edges: Array<{ from: string; to: string; relation: string }>;
+    edges: Array<{ from: string; to: string; relation: string; origin?: string }>;
 }
 
 interface LabelMatch {
@@ -127,7 +127,13 @@ export function detectCrossRepoEdges(
                 const key = `${fromId}|${match.id}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(fromNode.origin, match.origin) });
+                    // The import edge's OWN origin tag, not a fresh lookup of
+                    // whichever node currently sits at `edge.from`'s slug: a
+                    // node collision that happens AFTER this edge was tagged
+                    // (in a later-processed repo) can silently swap that
+                    // node out without ever touching this edge's own tag
+                    // (#974 review round 14 P1).
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(edge.origin ?? fromNode.origin, match.origin) });
                 }
             }
         }
@@ -148,7 +154,14 @@ export function detectCrossRepoEdges(
                 const key = `${fromId}|${match.id}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(fromNode.origin, match.origin) });
+                    // Same reasoning as the forward loop above: `existing`
+                    // accumulates every repo processed so far, so the node
+                    // currently at `edge.from`'s slug may already belong to
+                    // a DIFFERENT, later-colliding repo than the one whose
+                    // `imports` edge this actually is. `edge.origin` was
+                    // stamped once, at that edge's own tagging time, and is
+                    // immune to any node collision that happens afterward.
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(edge.origin ?? fromNode.origin, match.origin) });
                 }
             }
         }

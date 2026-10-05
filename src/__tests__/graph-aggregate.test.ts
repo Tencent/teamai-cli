@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import os from 'node:os';
 import { aggregateGlobalGraph, scopeGlobalGraph } from '../graph-aggregate.js';
+import { mergeGraphs, createGraphIndex } from '../wiki-engine/adapters/index.js';
 
 describe('aggregateGlobalGraph', () => {
   let tmpDir: string;
@@ -112,6 +113,39 @@ describe('aggregateGlobalGraph', () => {
   it('returns null when no evidence directory exists', async () => {
     const result = await aggregateGlobalGraph(tmpDir);
     expect(result).toBeNull();
+  });
+
+  describe('mergeGraphs: crossOrigins union on colliding edge identity (#974 review round 14 P2)', () => {
+    it("unions both sides' crossOrigins when two DIFFERENT codebases independently produce a cross-repo edge with the identical from/to/relation, instead of the later one silently erasing the earlier one's", () => {
+      const base = createGraphIndex([], [
+        { from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOrigins: ['svc-w', 'svc-z'] },
+      ]);
+      const overlay = createGraphIndex([], [
+        { from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOrigins: ['svc-y', 'svc-z'] },
+      ]);
+
+      const merged = mergeGraphs(base, overlay);
+      expect(merged.edges).toHaveLength(1);
+      expect(merged.edges[0].crossOrigins).toEqual(expect.arrayContaining(['svc-w', 'svc-y', 'svc-z']));
+      expect(merged.edges[0].crossOrigins).toHaveLength(3);
+    });
+
+    it('produces the identical union regardless of which side is base vs. overlay', () => {
+      const a = createGraphIndex([], [{ from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOrigins: ['svc-w', 'svc-z'] }]);
+      const b = createGraphIndex([], [{ from: 'client/main', to: 'z/service', relation: 'DEPENDS_ON', crossOrigins: ['svc-y', 'svc-z'] }]);
+
+      expect(mergeGraphs(a, b).edges[0].crossOrigins?.sort()).toEqual(mergeGraphs(b, a).edges[0].crossOrigins?.sort());
+    });
+
+    it('leaves a plain (non-cross-repo) edge collision unaffected', () => {
+      const base = createGraphIndex([], [{ from: 'a', to: 'b', relation: 'DEPENDS_ON', origin: 'svc-a' }]);
+      const overlay = createGraphIndex([], [{ from: 'a', to: 'b', relation: 'DEPENDS_ON', origin: 'svc-a2' }]);
+
+      const merged = mergeGraphs(base, overlay);
+      expect(merged.edges).toHaveLength(1);
+      expect(merged.edges[0].crossOrigins).toBeUndefined();
+      expect(merged.edges[0].origin).toBe('svc-a2'); // overlay still wins ties, as before
+    });
   });
 
   describe('scopeGlobalGraph (#912 review round 2)', () => {
@@ -585,6 +619,39 @@ describe('aggregateGlobalGraph', () => {
       // The cross-repo edge depended on svc-b's own import; it must not
       // survive just because the node at its source slug was reattributed.
       expect(graph?.edges ?? []).not.toContainEqual(expect.objectContaining({ from: 'b/client', to: 'a/service' }));
+    });
+
+    it("fails closed when a legacy (not tag-covered) withheld codebase's contested slug is the endpoint of a cross-repo edge that predates origin/crossOrigins tagging entirely, since the fallback per-repo-file scan can never discover it (#974 review round 14 P1)", async () => {
+      // Hand-written, pre-upgrade-style data: a global graph with a
+      // synthesized cross-repo edge that has no `origin`/`crossOrigins`/
+      // `source` at all (as detectCrossRepoEdges produced before this field
+      // existed), plus per-repo files for both the withheld codebase this
+      // edge actually depends on and an allowed one that happens to share
+      // its unqualified node slug. No aggregateGlobalGraph call here — it
+      // would re-tag everything, defeating the point of the fixture.
+      const globalDir = path.join(tmpDir, '.indices');
+      fs.ensureDirSync(globalDir);
+      fs.writeFileSync(path.join(globalDir, 'graph-index.json'), JSON.stringify({
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [
+          { slug: 'old/client', title: 'NewClient', type: 'component', confidence: 'high' },
+          { slug: 'allowed/target', title: 'AllowedTarget', type: 'component', confidence: 'high' },
+        ],
+        edges: [{ from: 'old/client', to: 'allowed/target', relation: 'DEPENDS_ON' }],
+      }));
+      writeRepoGraph('svc-old', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'old/client', title: 'OldClient', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-new', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'old/client', title: 'NewClient', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-old']));
+      expect(graph).toBeNull();
     });
 
     it("removes an originless MAPS_TO edge pointing at evidence/code/<withheld>/<page>.md even when no node was ever created for that page (#974 review round 12 P2)", async () => {

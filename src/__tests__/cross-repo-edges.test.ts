@@ -116,6 +116,41 @@ describe('detectCrossRepoEdges with GraphIndex format (slug/title)', () => {
     expect(depEdge?.crossOrigins).toEqual(['svc-b']);
   });
 
+  it("uses the import edge's own origin tag for the importing (reverse) side, not a fresh lookup of whichever node CURRENTLY sits at its slug — a later, unrelated collision can silently swap that node out without ever touching the edge's own tag (#974 review round 14 P1)", () => {
+    const existing = {
+      // `shared/client` collided with a DIFFERENT repo (svc-x) that was
+      // aggregated after svc-b and won the merge — the node here is no
+      // longer svc-b's, but the import edge below is still svc-b's own,
+      // tagged at the time IT was aggregated, unaffected by that collision.
+      nodes: [{ slug: 'shared/client', title: 'ClientX', type: 'component', origin: 'svc-x' }],
+      edges: [{ from: 'shared/client', to: 'libs/balance_service.py', relation: 'imports', origin: 'svc-b' }],
+    };
+    const overlay = {
+      nodes: [{ slug: 'a/service', title: 'BalanceService', type: 'component', origin: 'svc-a' }],
+      edges: [],
+    };
+
+    const edges = detectCrossRepoEdges(overlay, existing);
+    const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
+    expect(depEdge?.crossOrigins).toEqual(expect.arrayContaining(['svc-b', 'svc-a']));
+    expect(depEdge?.crossOrigins).not.toContain('svc-x');
+  });
+
+  it('falls back to the current from-node\'s origin for the importing side only when the import edge itself predates origin tagging', () => {
+    const existing = {
+      nodes: [{ slug: 'shared/client', title: 'ClientX', type: 'component', origin: 'svc-x' }],
+      edges: [{ from: 'shared/client', to: 'libs/balance_service.py', relation: 'imports' }],
+    };
+    const overlay = {
+      nodes: [{ slug: 'a/service', title: 'BalanceService', type: 'component', origin: 'svc-a' }],
+      edges: [],
+    };
+
+    const edges = detectCrossRepoEdges(overlay, existing);
+    const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
+    expect(depEdge?.crossOrigins).toEqual(expect.arrayContaining(['svc-x', 'svc-a']));
+  });
+
   it('returns empty for repos with no shared names', () => {
     const repoA = {
       nodes: [{ slug: 'a/foo', title: 'FooService', type: 'component' }],

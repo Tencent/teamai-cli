@@ -549,6 +549,20 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
   const edgeMap = new Map<string, GraphEdge>();
 
   const evidenceLen = (e: GraphEdge) => e.evidence?.length ?? 0;
+  // Two DIFFERENT codebases can independently produce a synthesized
+  // cross-repo edge with the identical `from|to|relation` identity (e.g.
+  // both import something matching the same third repo's component under
+  // an equally generic, unqualified slug of their own). Whichever side
+  // "wins" the tie-break below must not silently erase the OTHER side's
+  // `crossOrigins` — overwriting lost that provenance entirely, which made
+  // scopeGlobalGraph's later withheld-origin check depend on merge order
+  // (#974 review round 14 P2): union them instead, so the edge is tagged
+  // with every codebase that has ever independently produced this exact
+  // relationship, regardless of which one happened to merge last.
+  const mergeCrossOrigins = (a?: string[], b?: string[]): string[] | undefined => {
+    if (!a && !b) return undefined;
+    return [...new Set([...(a ?? []), ...(b ?? [])])];
+  };
 
   for (const e of base.edges) {
     edgeMap.set(graphEdgeKey(e), e);
@@ -561,9 +575,9 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
       continue;
     }
     // Prefer the variant with more evidence; on ties, prefer overlay.
-    if (evidenceLen(e) >= evidenceLen(existing)) {
-      edgeMap.set(key, e);
-    }
+    const winner = evidenceLen(e) >= evidenceLen(existing) ? e : existing;
+    const crossOrigins = mergeCrossOrigins(existing.crossOrigins, e.crossOrigins);
+    edgeMap.set(key, crossOrigins ? { ...winner, crossOrigins } : winner);
   }
 
   return {
