@@ -9,6 +9,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { queryCodeKnowledge } from '../code-knowledge-recall.js';
+import { aggregateGlobalGraph } from '../graph-aggregate.js';
 
 let wikiRoot: string;
 
@@ -16,6 +17,12 @@ function page(project: string, file: string, content: string): void {
   const dir = path.join(wikiRoot, 'evidence', 'code', project);
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, file), content, 'utf-8');
+}
+
+function repoGraph(project: string, graph: object): void {
+  const dir = path.join(wikiRoot, 'evidence', 'code', project, '.indices');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'graph-index.json'), JSON.stringify(graph), 'utf-8');
 }
 
 beforeEach(() => {
@@ -63,5 +70,68 @@ describe('queryCodeKnowledge: withheldCodebases', () => {
 
     const pages = results.map((r) => r.page);
     expect(pages).toEqual(['evidence/code/svc-a/overview.md']);
+  });
+
+  describe('route depth: router.md', () => {
+    function router(content: string): void {
+      writeFileSync(path.join(wikiRoot, 'router.md'), content, 'utf-8');
+    }
+
+    it('strips a withheld codebase\'s name, link, description and keywords from router.md', async () => {
+      router(
+        '# Team Wiki Router\n'
+        + '<!-- search-anchor: svc-a, svc-b, payments-ledger -->\n\n'
+        + '## 项目域入口\n\n'
+        + '- [[evidence/code/svc-a/index]] — Svc A desc [alpha]\n'
+        + '- [[evidence/code/svc-b/index]] — Svc B desc [payments-ledger]\n',
+      );
+
+      const [result] = await queryCodeKnowledge('router', {
+        wikiRoot, depth: 'route', withheldCodebases: ['svc-b'],
+      });
+      expect(result.snippet).toContain('svc-a');
+      expect(result.snippet).not.toContain('svc-b');
+      expect(result.snippet).not.toContain('payments-ledger');
+    });
+
+    it('returns router.md unfiltered when nothing is withheld, as before', async () => {
+      router('# Team Wiki Router\n\n- [[evidence/code/svc-b/index]] — Svc B desc\n');
+      const [result] = await queryCodeKnowledge('router', { wikiRoot, depth: 'route' });
+      expect(result.snippet).toContain('svc-b');
+    });
+  });
+
+  describe('graph scoping (#912 follow-up): a withheld codebase must not reach recall through the knowledge graph', () => {
+    beforeEach(() => {
+      // An svc-a file depends on a file whose basename-derived PascalCase
+      // matches a component title declared only in svc-b — the same
+      // cross-repo edge detection exercised by graph-aggregate.test.ts.
+      page('svc-a', 'overview.md', '---\ntitle: Svc A overview\nsource: a/client\n---\n\nnarwhal contract details for svc-a.\n');
+      repoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/client', title: 'BalanceClient', type: 'component', confidence: 'EXTRACTED' }],
+        edges: [{ from: 'a/client', to: 'libs/balance_service.py', relation: 'imports' }],
+      });
+      repoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/service', title: 'BalanceService', type: 'component', confidence: 'EXTRACTED' }],
+        edges: [],
+      });
+    });
+
+    it('surfaces a cross-codebase relatedFile when nothing is withheld, as before', async () => {
+      await aggregateGlobalGraph(wikiRoot);
+      const results = await queryCodeKnowledge('narwhal', { wikiRoot, depth: 'lookup', limit: 10 });
+      const svcA = results.find((r) => r.page === 'evidence/code/svc-a/overview.md');
+      expect(svcA?.relatedFiles).toContain('b/service');
+    });
+
+    it('never surfaces a withheld codebase\'s node as a relatedFile, even via a cross-codebase graph edge', async () => {
+      const results = await queryCodeKnowledge('narwhal', {
+        wikiRoot, depth: 'lookup', limit: 10, withheldCodebases: ['svc-b'],
+      });
+      const svcA = results.find((r) => r.page === 'evidence/code/svc-a/overview.md');
+      expect(svcA?.relatedFiles ?? []).not.toContain('b/service');
+    });
   });
 });

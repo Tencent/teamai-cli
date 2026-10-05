@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'fs-extra';
 import os from 'node:os';
-import { aggregateGlobalGraph } from '../graph-aggregate.js';
+import { aggregateGlobalGraph, buildAggregatedGraph } from '../graph-aggregate.js';
 
 describe('aggregateGlobalGraph', () => {
   let tmpDir: string;
@@ -112,5 +112,52 @@ describe('aggregateGlobalGraph', () => {
   it('returns null when no evidence directory exists', async () => {
     const result = await aggregateGlobalGraph(tmpDir);
     expect(result).toBeNull();
+  });
+
+  describe('buildAggregatedGraph: excludeProjects (#912)', () => {
+    it("omits an excluded project's nodes and edges entirely", async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [{ from: 'b/svc', to: 'b/other', relation: 'DEPENDS_ON' }],
+      });
+
+      const graph = await buildAggregatedGraph(tmpDir, new Set(['svc-b']));
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toEqual(['a/svc']);
+      expect(graph?.edges).toHaveLength(0);
+    });
+
+    it('excludes case-foldedly, matching the evidence/code/<slug>/ directory on a case-insensitive filesystem', async () => {
+      writeRepoGraph('Svc-B', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/svc', title: 'ServiceB', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+
+      const graph = await buildAggregatedGraph(tmpDir, new Set(['svc-b']));
+      expect(graph).toBeNull();
+    });
+
+    it('does not run cross-repo edge detection against an excluded project', async () => {
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/client', title: 'BalanceClient', type: 'component', confidence: 'high' }],
+        edges: [{ from: 'a/client', to: 'libs/balance_service.py', relation: 'imports' }],
+      });
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/service', title: 'BalanceService', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+
+      const graph = await buildAggregatedGraph(tmpDir, new Set(['svc-b']));
+      const crossEdges = (graph?.edges ?? []).filter((e: { relation: string }) => e.relation === 'DEPENDS_ON');
+      expect(crossEdges).toHaveLength(0);
+    });
   });
 });

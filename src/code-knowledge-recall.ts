@@ -228,6 +228,27 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
   return snippet;
 }
 
+/**
+ * `router.md` (routerTemplate in wiki-engine/adapters/templates.ts) lists
+ * every codebase as a `- [[evidence/code/<slug>/index]] — desc [keywords]`
+ * bullet, plus a `<!-- search-anchor: ... -->` comment aggregating every
+ * codebase's keywords. At `--depth route`, that single global file is the
+ * whole result, so a withheld codebase's name/link/description/keywords
+ * must be stripped from it the same way its evidence directory is excluded
+ * from `context`/`lookup` (#912).
+ */
+function filterRouterContent(content: string, withheldCodebases: string[]): string {
+  const withheld = new Set(withheldCodebases.map(caseFoldKey));
+  const isWithheldLine = (line: string): boolean => {
+    const match = line.match(/evidence\/code\/([^/\]]+)/);
+    return !!match && withheld.has(caseFoldKey(match[1]));
+  };
+  return content
+    .split('\n')
+    .filter((line) => !line.startsWith('<!-- search-anchor:') && !isWithheldLine(line))
+    .join('\n');
+}
+
 async function loadWikiPages(
   wikiRoot: string,
   depth: 'route' | 'context' | 'lookup',
@@ -239,7 +260,10 @@ async function loadWikiPages(
     // route 模式：只加载 router.md（路由入口）
     const routerPath = path.join(wikiRoot, 'router.md');
     try {
-      const content = await readFile(routerPath, 'utf-8');
+      const rawContent = await readFile(routerPath, 'utf-8');
+      const content = withheldCodebases.length > 0
+        ? filterRouterContent(rawContent, withheldCodebases)
+        : rawContent;
       const titleMatch = content.match(/^title:\s*(.+)$/m);
       const title = titleMatch ? titleMatch[1].trim() : 'Team Wiki Router';
       pages.push({
@@ -440,9 +464,23 @@ async function loadPagesRecursive(
 }
 
 // B7: Use protocol loadGraphIndex instead of local implementation
-async function loadGraph(wikiRoot: string): Promise<GraphIndex | null> {
-  const { loadGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
-  return loadGraphIndex(wikiRoot);
+//
+// A withheld codebase's graph nodes never carry an `evidence/code/<slug>/`
+// prefix at the fact level (AST/heuristic nodes are keyed by raw file path,
+// see wiki-engine/code-knowledge/code-graph.ts), so there is no reliable
+// string to filter the already-merged `.indices/graph-index.json` by. The
+// aggregation step (graph-aggregate.ts) is the one place that still knows,
+// per per-repo graph file, which codebase it came from — so a withheld
+// codebase is excluded by reusing that same aggregation (#912) rather than
+// by guessing node ownership here.
+async function loadGraph(wikiRoot: string, withheldCodebases: string[] = []): Promise<GraphIndex | null> {
+  if (withheldCodebases.length === 0) {
+    const { loadGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
+    return loadGraphIndex(wikiRoot);
+  }
+  const { buildAggregatedGraph } = await import('./graph-aggregate.js');
+  const excluded = new Set(withheldCodebases.map((slug) => caseFoldKey(slug)));
+  return (await buildAggregatedGraph(wikiRoot, excluded)) as GraphIndex | null;
 }
 
 export interface QueryCodeKnowledgeOptions {
@@ -476,7 +514,7 @@ export async function queryCodeKnowledge(
     }];
   }
 
-  const graph = await loadGraph(wikiRoot);
+  const graph = await loadGraph(wikiRoot, withheldCodebases);
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return [];
 
