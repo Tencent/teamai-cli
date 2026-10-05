@@ -220,11 +220,18 @@ export async function scopeGlobalGraph(
         // round 15 P2). Removing the edge the moment ANY single origin is
         // withheld would also discard a DIFFERENT, fully-allowed pair that
         // happens to produce the identical from/to/relation — so the edge is
-        // withheld only when EVERY pair has at least one withheld member; a
-        // plain single-origin edge (`origin` set, no pairs) is just a
-        // length-1 list holding one length-1 "pair", so that case reduces to
-        // the original single-tag check unchanged.
-        const pairs = edge.crossOriginPairs ?? (edge.origin ? [[edge.origin]] : []);
+        // withheld only when EVERY pair has at least one withheld member.
+        // `origin` and `crossOriginPairs` are not mutually exclusive:
+        // `mergeGraphs` can collide an allowed repo's own plain `origin`-
+        // tagged edge with a synthesized cross-repo edge sharing the same
+        // from/to/relation, leaving the winning edge with BOTH fields set.
+        // `origin` is then one MORE independent, single-codebase derivation
+        // of this edge — appended as its own length-1 "pair" rather than
+        // ignored, so a still-fully-allowed `origin` keeps the edge even
+        // when every `crossOriginPairs` entry is withheld (#974 review
+        // round 17 P2). A plain single-origin edge (`origin` set, no pairs
+        // at all) still reduces to the original single-tag check unchanged.
+        const pairs = [...(edge.crossOriginPairs ?? []), ...(edge.origin ? [[edge.origin]] : [])];
         for (const pair of pairs) {
             for (const rawOrigin of pair) taggedOrigins.add(caseFoldKey(rawOrigin));
         }

@@ -688,6 +688,36 @@ describe('aggregateGlobalGraph', () => {
       expect(graph).toBeNull();
     });
 
+    it("treats an edge's plain `origin` as one more independent provenance alongside `crossOriginPairs`, not something the nullish fallback discards, when mergeGraphs collides an allowed repo's own edge onto a synthesized cross-repo edge sharing the same identity (#974 review round 17 P2)", async () => {
+      const globalDir = path.join(tmpDir, '.indices');
+      fs.ensureDirSync(globalDir);
+      fs.writeFileSync(path.join(globalDir, 'graph-index.json'), JSON.stringify({
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [],
+        edges: [{ from: 'x', to: 'y', relation: 'DEPENDS_ON', origin: 'svc-a', crossOriginPairs: [['svc-w', 'svc-z']] }],
+      }));
+
+      // svc-w's cross-repo pair is fully withheld, but the SAME edge also
+      // carries svc-a's own, independently-allowed `origin` tag — the edge
+      // must survive, not be discarded just because crossOriginPairs took
+      // precedence over origin.
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-w']));
+      expect(graph?.edges ?? []).toContainEqual(expect.objectContaining({ from: 'x', to: 'y' }));
+    });
+
+    it('still removes that same edge once its `origin` AND every `crossOriginPairs` entry are withheld', async () => {
+      const globalDir = path.join(tmpDir, '.indices');
+      fs.ensureDirSync(globalDir);
+      fs.writeFileSync(path.join(globalDir, 'graph-index.json'), JSON.stringify({
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [],
+        edges: [{ from: 'x', to: 'y', relation: 'DEPENDS_ON', origin: 'svc-a', crossOriginPairs: [['svc-w', 'svc-z']] }],
+      }));
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-a', 'svc-w', 'svc-z']));
+      expect(graph?.edges ?? []).not.toContainEqual(expect.objectContaining({ from: 'x', to: 'y' }));
+    });
+
     it("keeps a cross-repo edge that remains independently producible by a fully-allowed repo pair, even though withholding one repo removes ITS pair's claim on the identical edge identity (#974 review round 15 P2)", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
