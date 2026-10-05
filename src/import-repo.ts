@@ -76,13 +76,23 @@ interface LabelMatch {
 export function detectCrossRepoEdges(
     overlay: SimpleGraphIndex,
     existing: SimpleGraphIndex,
-): Array<{ from: string; to: string; relation: 'DEPENDS_ON'; origin?: string }> {
-    const crossEdges: Array<{ from: string; to: string; relation: 'DEPENDS_ON'; origin?: string }> = [];
+): Array<{ from: string; to: string; relation: 'DEPENDS_ON'; crossOrigins?: string[] }> {
+    const crossEdges: Array<{ from: string; to: string; relation: 'DEPENDS_ON'; crossOrigins?: string[] }> = [];
     const edgeSet = new Set<string>();
 
     const nodeId = (n: SimpleGraphNode): string => n.id ?? n.slug ?? '';
     const nodeLabel = (n: SimpleGraphNode): string => n.label ?? n.title ?? '';
     const nodeKind = (n: SimpleGraphNode): string => n.kind ?? n.type ?? '';
+    // Both sides this edge spans matter: the side whose own import produced
+    // the match, AND the side that match resolved to. Either one being
+    // withheld later makes the relationship stale, so both are captured now
+    // — a slug collision after this can still reattribute either endpoint
+    // node's CURRENT origin, but never this edge's own record of what it
+    // depended on at the moment it was detected.
+    const crossOrigins = (a?: string, b?: string): string[] | undefined => {
+        const origins = [a, b].filter((o): o is string => !!o);
+        return origins.length > 0 ? origins : undefined;
+    };
 
     // Build label index for the existing graph's components/interfaces. Each
     // entry's `origin` is the matched node's AT THIS MOMENT — the only time
@@ -117,7 +127,7 @@ export function detectCrossRepoEdges(
                 const key = `${fromId}|${match.id}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', origin: match.origin });
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(fromNode.origin, match.origin) });
                 }
             }
         }
@@ -138,7 +148,7 @@ export function detectCrossRepoEdges(
                 const key = `${fromId}|${match.id}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', origin: match.origin });
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(fromNode.origin, match.origin) });
                 }
             }
         }
@@ -157,7 +167,7 @@ export function detectCrossRepoEdges(
             const key = `${match.id}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', origin: match.origin });
+                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(match.origin, cfg.origin) });
             }
         }
     }
@@ -171,7 +181,7 @@ export function detectCrossRepoEdges(
             const key = `${match.id}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', origin: match.origin });
+                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOrigins: crossOrigins(match.origin, cfg.origin) });
             }
         }
     }

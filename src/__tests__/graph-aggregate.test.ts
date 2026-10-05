@@ -504,7 +504,7 @@ describe('aggregateGlobalGraph', () => {
       );
     });
 
-    it("removes a cross-repo edge whose matched node was the withheld repo's, even after a later allowed repo wins the slug collision and the node itself survives (#974 review round 12 P1)", async () => {
+    it("removes a cross-repo edge whose MATCHED (target) node was the withheld repo's, even after a later allowed repo wins the slug collision and the node itself survives (#974 review round 12 P1)", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
         nodes: [{ slug: 'a/client', title: 'BalanceClient', type: 'component', confidence: 'high' }],
@@ -530,7 +530,8 @@ describe('aggregateGlobalGraph', () => {
       const global = JSON.parse(await fs.readFile(path.join(tmpDir, '.indices', 'graph-index.json'), 'utf8'));
       const crossEdge = global.edges.find((e: { relation: string }) => e.relation === 'DEPENDS_ON');
       expect(crossEdge).toBeDefined();
-      expect(crossEdge.origin).toBe('svc-b');
+      // Both sides: svc-a's own node produced the import, svc-b's was matched.
+      expect(crossEdge.crossOrigins).toEqual(expect.arrayContaining(['svc-a', 'svc-b']));
 
       const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
       // The slug survives — svc-c (allowed) also claims it.
@@ -541,6 +542,49 @@ describe('aggregateGlobalGraph', () => {
       // edge into libs/balance_service.py is unrelated and must stay.)
       expect(graph?.edges ?? []).not.toContainEqual(expect.objectContaining({ to: 'b/service' }));
       expect(graph?.edges ?? []).toContainEqual(expect.objectContaining({ to: 'libs/balance_service.py' }));
+    });
+
+    it("removes a cross-repo edge whose SOURCE (importer) node was the withheld repo's, even after a later allowed repo wins that slug collision and the matched (target) side is allowed (#974 review round 13 P1)", async () => {
+      // The review's own example: withheld svc-b imports allowed svc-a,
+      // while allowed svc-c shares svc-b's unqualified SOURCE-node slug —
+      // the collision this time is on the importer's own side, not the
+      // matched target's. Tagging the edge with only the matched side's
+      // origin (round 12's fix) would leave it carrying svc-a's (allowed)
+      // origin alone, surviving even though it only exists because of
+      // svc-b's own import.
+      writeRepoGraph('svc-b', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/client', title: 'BalanceClient', type: 'component', confidence: 'high' }],
+        edges: [{ from: 'b/client', to: 'libs/balance_service.py', relation: 'imports' }],
+      });
+      writeRepoGraph('svc-a', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'a/service', title: 'BalanceService', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      // svc-c mints the identical unqualified slug svc-b's IMPORTER node
+      // used, and is processed last, so its write wins that collision.
+      writeRepoGraph('svc-c', {
+        schemaVersion: 1, generatedAt: '2026-01-01',
+        nodes: [{ slug: 'b/client', title: 'UnrelatedClient', type: 'component', confidence: 'high' }],
+        edges: [],
+      });
+      await aggregateGlobalGraph(tmpDir);
+
+      const global = JSON.parse(await fs.readFile(path.join(tmpDir, '.indices', 'graph-index.json'), 'utf8'));
+      const crossEdge = global.edges.find((e: { relation: string }) => e.relation === 'DEPENDS_ON');
+      expect(crossEdge).toBeDefined();
+      expect(crossEdge.crossOrigins).toEqual(expect.arrayContaining(['svc-a', 'svc-b']));
+
+      const graph = await scopeGlobalGraph(tmpDir, new Set(['svc-b']));
+      // The slug survives — svc-c (allowed) also claims it — and svc-a's
+      // own node is untouched (it was never withheld).
+      expect(graph?.nodes.map((n: { slug: string }) => n.slug)).toEqual(
+        expect.arrayContaining(['b/client', 'a/service']),
+      );
+      // The cross-repo edge depended on svc-b's own import; it must not
+      // survive just because the node at its source slug was reattributed.
+      expect(graph?.edges ?? []).not.toContainEqual(expect.objectContaining({ from: 'b/client', to: 'a/service' }));
     });
 
     it("removes an originless MAPS_TO edge pointing at evidence/code/<withheld>/<page>.md even when no node was ever created for that page (#974 review round 12 P2)", async () => {

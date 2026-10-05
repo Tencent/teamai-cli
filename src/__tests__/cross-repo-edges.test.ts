@@ -75,7 +75,7 @@ describe('detectCrossRepoEdges with GraphIndex format (slug/title)', () => {
     expect(edges.length).toBeGreaterThan(0);
   });
 
-  it('tags a cross-repo edge with the MATCHED (existing-side) node\'s own origin, not the overlay side\'s (#974 review round 12 P2)', () => {
+  it('tags a cross-repo edge with BOTH sides\' origins — the overlay side whose import produced the match, and the matched existing side (#974 review round 13 P1)', () => {
     const repoA = {
       nodes: [
         { slug: 'hai-api/balance-client', title: 'BalanceClient', type: 'component', origin: 'svc-a' },
@@ -92,15 +92,16 @@ describe('detectCrossRepoEdges with GraphIndex format (slug/title)', () => {
     };
 
     // repoB (overlay) imports balance_client → matches repoA's (existing) BalanceClient.
-    // The edge depends on repoA's component existing, not repoB's own node, so it must
-    // carry repoA's origin ('svc-a') — withholding svc-a should remove this edge even
-    // though it was detected while processing svc-b.
+    // The relationship depends on BOTH repoB's own import statement AND repoA's
+    // component existing — withholding either one must be able to remove this edge,
+    // so both origins are recorded, not just whichever side the label lookup matched.
     const edges = detectCrossRepoEdges(repoB, repoA);
     const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
-    expect(depEdge?.origin).toBe('svc-a');
+    expect(depEdge?.crossOrigins).toEqual(expect.arrayContaining(['svc-a', 'svc-b']));
+    expect(depEdge?.crossOrigins).toHaveLength(2);
   });
 
-  it('leaves a cross-repo edge\'s origin undefined when the matched node predates origin tagging', () => {
+  it('omits a side from crossOrigins when that node predates origin tagging, instead of a placeholder', () => {
     const repoA = {
       nodes: [{ slug: 'hai-api/balance-client', title: 'BalanceClient', type: 'component' }],
       edges: [],
@@ -112,7 +113,7 @@ describe('detectCrossRepoEdges with GraphIndex format (slug/title)', () => {
 
     const edges = detectCrossRepoEdges(repoB, repoA);
     const depEdge = edges.find(e => e.relation === 'DEPENDS_ON');
-    expect(depEdge?.origin).toBeUndefined();
+    expect(depEdge?.crossOrigins).toEqual(['svc-b']);
   });
 
   it('returns empty for repos with no shared names', () => {

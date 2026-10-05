@@ -47,11 +47,9 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
             for (const node of overlay.nodes) node.origin = dir.name;
             for (const edge of overlay.edges) edge.origin = dir.name;
             if (globalGraph) {
-                // A cross-repo edge spans two codebases, but
-                // detectCrossRepoEdges tags each one with the origin of
-                // whichever side it matched by label against the OTHER
-                // graph (see its own doc comment) — the specific codebase
-                // this edge's existence actually depends on, captured at
+                // A cross-repo edge spans two codebases, so
+                // detectCrossRepoEdges tags it with BOTH their origins in
+                // `crossOrigins` (see its own doc comment) — captured at
                 // the moment of the match rather than re-derived later from
                 // whichever node ends up winning a slug collision.
                 const crossEdges = detectCrossRepoEdges(overlay, globalGraph);
@@ -201,10 +199,18 @@ export async function scopeGlobalGraph(
         if (withheldProjects.has(origin)) withheldIds.add(node.slug);
     }
     for (const edge of globalGraph.edges) {
-        if (!edge.origin) continue;
-        const origin = caseFoldKey(edge.origin);
-        taggedOrigins.add(origin);
-        if (withheldProjects.has(origin)) withheldEdgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
+        // A cross-repo edge spans two codebases and carries BOTH their
+        // origins in `crossOrigins` instead of the single-valued `origin` —
+        // either one being withheld makes the relationship stale, so the
+        // edge is removed if EITHER tag matches (#974 review round 13 P1).
+        const edgeOrigins = edge.crossOrigins ?? (edge.origin ? [edge.origin] : []);
+        let edgeWithheld = false;
+        for (const rawOrigin of edgeOrigins) {
+            const origin = caseFoldKey(rawOrigin);
+            taggedOrigins.add(origin);
+            if (withheldProjects.has(origin)) edgeWithheld = true;
+        }
+        if (edgeWithheld) withheldEdgeKeys.add(edgeKey(edge.from, edge.to, edge.relation));
     }
     const tagCovered = new Set([...withheldProjects].filter((p) => taggedOrigins.has(p)));
 

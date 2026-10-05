@@ -102,15 +102,24 @@ export interface GraphEdge {
   predicate?: string;
   source?: GraphEdgeSource;
   /**
-   * Same provenance as `GraphNode.origin`. A synthesized cross-repo edge
-   * carries the origin of whichever side was matched by label lookup against
-   * the OTHER graph at the moment of detection (see `detectCrossRepoEdges`)
-   * — not the side whose own edge produced the match — since that is the
-   * specific codebase this edge's existence actually depends on; it is
-   * absent only when that matched node itself had no origin (data merged
-   * before this field existed).
+   * Same provenance as `GraphNode.origin`. Absent on a synthesized
+   * cross-repo edge — see `crossOrigins` — since a single string cannot
+   * describe which of the two codebases it spans needs it withheld.
    */
   origin?: string;
+  /**
+   * Both codebases a synthesized cross-repo edge's existence depends on
+   * (see `detectCrossRepoEdges`): the side whose own import produced the
+   * match, AND the side that was matched by label lookup against the other
+   * graph. Captured at the moment of detection, since a later slug
+   * collision can silently reattribute either endpoint node to a
+   * different, allowed repo (last write wins the merge) without this edge
+   * ever being re-examined. `scopeGlobalGraph` withholds the edge if EITHER
+   * entry is withheld. An element is omitted when that side had no origin
+   * yet (data merged before this field existed); absent entirely on any
+   * non-cross-repo edge.
+   */
+  crossOrigins?: string[];
 }
 
 const graphEdgeKey = (edge: GraphEdge): string => JSON.stringify([edge.from, edge.to, edge.relation]);
@@ -182,6 +191,7 @@ const GraphEdgeSchema = z.object({
   predicate: z.string().optional(),
   source: z.custom<GraphEdgeSource>((value) => GRAPH_EDGE_SOURCES.includes(value as GraphEdgeSource)).optional(),
   origin: z.string().optional(),
+  crossOrigins: z.array(z.string()).optional(),
 }).passthrough().transform((edge, context): GraphEdge => {
   const legacyRelation = Object.hasOwn(LEGACY_RELATIONS, edge.relation)
     ? LEGACY_RELATIONS[edge.relation]
