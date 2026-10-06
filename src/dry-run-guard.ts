@@ -75,6 +75,8 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
   'models restore',
   'session save',
   'contribute',
+  'stats',
+  'recall',
   'recall feedback',
   'recall disable',
   'recall enable',
@@ -93,8 +95,6 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
  * on a command that is in neither.
  */
 export const NO_DRY_RUN_PREVIEW: Readonly<Record<string, string>> = {
-  stats: 'creates or refreshes the reports worktree until #970 lands',
-  recall: 'writes recall quality and the search index until #970 lands',
   digest: 'creates or refreshes the reports worktree; #900 C11',
   init: 'no preview; clones, saves config and injects hooks (single-repo: bootstraps the clone)',
   'models add': 'writes the personal profile and its key',

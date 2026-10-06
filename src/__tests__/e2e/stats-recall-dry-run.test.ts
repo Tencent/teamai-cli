@@ -39,14 +39,18 @@ function git(args: string[], cwd: string): void {
 
 const fwd = (value: string): string => value.split(path.sep).join('/');
 
-/** Every file under `dir` mapped to a content hash; git's transient lock files left out. */
+/**
+ * Every file under `dir` mapped to a content hash. Git's transient lock files
+ * and the CLI diagnostic log are left out: every log line appends to it,
+ * preview or not, the same way the other dry-run e2e suites ignore it.
+ */
 function snapshotTree(dir: string): Record<string, string> {
   const out: Record<string, string> = {};
   const walk = (current: string): void => {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) walk(full);
-      else if (entry.isFile() && !entry.name.endsWith('.lock') && entry.name !== 'gc.pid') {
+      else if (entry.isFile() && !entry.name.endsWith('.lock') && entry.name !== 'gc.pid' && entry.name !== 'debug.log') {
         out[path.relative(dir, full)] = createHash('sha256').update(fs.readFileSync(full)).digest('hex');
       }
     }

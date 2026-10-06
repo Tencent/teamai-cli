@@ -51,9 +51,13 @@ describe('--dry-run guard decisions', () => {
   }
 
   it.each([
-    'stats', 'digest', 'recall',
+    'digest',
   ])('refuses %s until its writes have a preview', (path) => {
     expect(dryRunRefusal(command(path))).toBe(`teamai ${path} has no --dry-run preview, nothing was run`);
+  });
+
+  it.each(['stats', 'recall'])('allows the merged %s preview', (path) => {
+    expect(dryRunRefusal(command(path))).toBeUndefined();
   });
 
   it.each([
