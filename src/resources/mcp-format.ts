@@ -66,8 +66,8 @@ const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
   // no SSE transport, so only that one is skipped.
   codex: new Set<McpTransport>(['stdio', 'http']),
   // OpenCode splits transports into `type: local` (stdio) and `type: remote`
-  // (streamable HTTP). It has no SSE transport.
-  opencode: new Set<McpTransport>(['stdio', 'http']),
+  // (streamable HTTP or SSE, negotiated by its client).
+  opencode: new Set<McpTransport>(['stdio', 'http', 'sse']),
   copilot: new Set<McpTransport>(['stdio', 'http', 'sse']),
 };
 
@@ -271,7 +271,7 @@ function renderCopilot(def: McpServerDef): McpJsonEntry {
 
 /**
  * OpenCode's shape is unlike the others: transport is expressed as
- * `type: "local"` (stdio) or `type: "remote"` (http), a local server's command
+ * `type: "local"` (stdio) or `type: "remote"` (http/sse), a local server's command
  * and args are a single `command` array, env is `environment` (not `env`), and
  * every server carries `enabled: true`.
  */

@@ -4097,16 +4097,17 @@ servers:
     });
   });
 
-  it('renders a remote (http) server with url + headers', async () => {
+  it.each(['http', 'sse'])('renders a remote (%s) server with url + headers', async (transport) => {
     await writeMcpYaml(`
 servers:
   - name: remote-srv
-    transport: http
+    transport: ${transport}
     url: https://example.com/mcp
     headers:
       Authorization: Bearer tok
 `);
-    await reconcileMcpForConfig(teamConfig, localConfig);
+    const result = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(result.changes).toContainEqual({ tool: 'opencode', server: 'remote-srv', action: 'added' });
 
     const doc = await fse.readJson(ocConfig());
     expect(doc.mcp['remote-srv']).toEqual({
@@ -4115,6 +4116,7 @@ servers:
       headers: { Authorization: 'Bearer tok' },
       enabled: true,
     });
+    expect((await reconcileMcpForConfig(teamConfig, localConfig)).wrote).toBe(false);
   });
 
   it('preserves unrelated keys (instructions) and the user\'s own mcp entries', async () => {
