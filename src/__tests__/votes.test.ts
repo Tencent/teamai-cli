@@ -160,6 +160,28 @@ describe('hasPendingVoteDeltas', () => {
     });
     expect(await hasPendingVoteDeltas(tmpDir, 'alice')).toBe(false);
   });
+
+  // It runs from the Stop hook and team push without the votes lock, so a
+  // migration write here could overwrite a vote a locked writer just saved (#972).
+  it('reads a v1 file without rewriting it', async () => {
+    const filePath = path.join(tmpDir, 'alice.yaml');
+    const v1 = YAML.stringify({ votes: { 'doc-a': { at: '2026-06-01T00:00:00Z' } } } satisfies UserVotes);
+    fs.writeFileSync(filePath, v1);
+
+    expect(await hasPendingVoteDeltas(tmpDir, 'alice')).toBe(false);
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(v1);
+  });
+
+  // Control: the locked writers still persist the upgrade.
+  it('control: a locked writer still upgrades the v1 file it touches', async () => {
+    const filePath = path.join(tmpDir, 'alice.yaml');
+    fs.writeFileSync(filePath, YAML.stringify({ votes: { 'doc-a': { at: '2026-06-01T00:00:00Z' } } } satisfies UserVotes));
+
+    await incrementRecalled(filePath, ['doc-b']);
+
+    expect(YAML.parse(fs.readFileSync(filePath, 'utf-8')).version).toBe(2);
+    expect(await hasPendingVoteDeltas(tmpDir, 'alice')).toBe(true);
+  });
 });
 
 describe('incrementRecalled', () => {

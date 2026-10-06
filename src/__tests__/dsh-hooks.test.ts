@@ -46,6 +46,29 @@ describe('DeepSeek Harness hook bridge', () => {
     expect(await fse.pathExists(path.join(home, '.teamai', 'dsh'))).toBe(false);
   });
 
+  it('writes the bridge where only $DSH_HOME exists, the home dsh runs from (#946)', async () => {
+    const dshHome = path.join(tmp, 'dsh-home');
+    await fse.ensureDir(dshHome);
+    vi.stubEnv('DSH_HOME', dshHome);
+    try {
+      await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+      expect(await fse.pathExists(patchFile())).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('does not create the bridge where $DSH_HOME does not exist, even with ~/.dsh (#946)', async () => {
+    await fse.ensureDir(path.join(home, '.dsh'));
+    vi.stubEnv('DSH_HOME', path.join(tmp, 'missing-dsh-home'));
+    try {
+      await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+      expect(await fse.pathExists(patchFile())).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('writes Claude-compatible hooks and a parseable dsh patch when dsh is installed', async () => {
     await fse.ensureDir(path.join(home, '.dsh'));
     await reconcileHooksToAllTools(toolPaths, home, [], manifest());

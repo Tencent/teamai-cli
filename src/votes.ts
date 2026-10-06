@@ -400,7 +400,7 @@ export function mergeDeltas(local: UserVotesV2, remote: UserVotesV2): UserVotesV
 
 /** True when the local votes file still has deltas not yet synced to the team repo. */
 export async function hasPendingVoteDeltas(localVotesDir: string, username: string): Promise<boolean> {
-  const local = await loadUserVotes(path.join(localVotesDir, `${username}.yaml`));
+  const local = await readUserVotes(path.join(localVotesDir, `${username}.yaml`));
   return Object.keys(local.deltas).length > 0;
 }
 
@@ -455,13 +455,14 @@ export async function syncVotesToTeam(
 /**
  * Record manual feedback for a recalled document.
  */
-export async function recallFeedback(opts: { positive?: string; negative?: string }): Promise<void> {
+export async function recallFeedback(opts: { positive?: string; negative?: string; dryRun?: boolean }): Promise<void> {
   const { resolveConfigForDir, findUnreadableProjectConfig, throwMissingOrInvalid, BROKEN_CONFIG_ADVICE } = await import('./config.js');
   // The votes of the cwd's scope (#787). An unreadable project config falls
   // back to no other scope: the feedback would reach that scope's team.
-  const localConfig = await resolveConfigForDir();
+  const loadOptions = { dryRun: opts.dryRun };
+  const localConfig = await resolveConfigForDir(undefined, undefined, loadOptions);
   if (!localConfig) {
-    const unreadable = await findUnreadableProjectConfig();
+    const unreadable = await findUnreadableProjectConfig(undefined, loadOptions);
     let reason: string;
     if (unreadable) {
       const { firstLine } = await import('./skill-content.js');
@@ -474,6 +475,11 @@ export async function recallFeedback(opts: { positive?: string; negative?: strin
     }
     log.error(`No feedback recorded: ${reason}`);
     process.exitCode = 1;
+    return;
+  }
+  if (opts.dryRun && (opts.positive || opts.negative)) {
+    const polarity = opts.positive ? 'positive' : 'negative';
+    log.info(`[dry-run] Would submit ${polarity} feedback for: ${opts.positive || opts.negative}`);
     return;
   }
   const { getVotesDir } = await import('./types.js');

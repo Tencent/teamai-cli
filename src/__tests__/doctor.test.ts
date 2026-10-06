@@ -18,6 +18,7 @@ vi.mock('../utils/fs.js', () => ({
     // Manifest loaders read through these; no manifest exists on this machine.
     readFileIfExists: vi.fn().mockResolvedValue(null),
     readJson: vi.fn().mockResolvedValue(null),
+    readJsonObject: vi.fn().mockResolvedValue({ kind: 'missing' }),
     // The delivery checks walk the team repo through resolveDesiredSkills,
     // resolveDesiredRules, resolveDesiredAgents and DocsHandler. This machine
     // has none of those; delivery on a real disk is covered by

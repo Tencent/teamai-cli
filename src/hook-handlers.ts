@@ -832,14 +832,15 @@ const secretsHintHandler: HookHandler = {
 };
 
 /**
- * SessionStart: a project's rules and instruction blocks (culture, shared
- * instructions, recall) for a tool with no rules format and no project file of
- * its own (the Codex family, #938, #945). The project AGENTS.md is the
- * owners' file, and other tools read it too. User-scope content is in the
- * tool's own AGENTS.md, so a session outside a project gets nothing here.
- * Codex runs SessionStart again after a compaction or a clear; a resumed
- * session already holds the content in its history. A subagent fires
- * SubagentStart instead, which gets the same content.
+ * SessionStart: a project's rules for a tool with no rules format and no
+ * project file of its own (the Codex family, #938; ZCode and DeepSeek
+ * Harness, #946), and for the Codex family its instruction blocks (culture,
+ * shared instructions, recall, #945). The project AGENTS.md is the owners'
+ * file, and other tools read it too. User-scope content is in the tool's own
+ * AGENTS.md, so a session outside a project gets nothing here. Codex runs
+ * SessionStart again after a compaction or a clear; a resumed session already
+ * holds the content in its history. A Codex subagent fires SubagentStart
+ * instead, which gets the same content.
  */
 const teamRulesHandler: HookHandler = {
   name: 'team-rules',
@@ -851,9 +852,9 @@ const teamRulesHandler: HookHandler = {
     const { loadTeamConfig } = await import('./config.js');
     const teamConfig = await loadTeamConfig(config.repo.localPath);
     if (!teamConfig) return null;
-    const { instructionHookTextFor } = await import('./instruction-targets.js');
+    const { deliversInstructionsByHook, instructionHookTextFor } = await import('./instruction-targets.js');
     const { teamRulesContext } = await import('./resources/rules.js');
-    const text = await instructionHookTextFor(teamConfig, config, tool);
+    const text = deliversInstructionsByHook(tool, config.scope) ? await instructionHookTextFor(teamConfig, config, tool) : '';
     const parts = text ? [text] : [];
     const rules = await teamRulesContext(teamConfig, config);
     if (rules !== null) parts.push(rules);
@@ -866,9 +867,10 @@ const teamRulesHandler: HookHandler = {
 
 /**
  * `instructions`: the culture, claudemd and recall blocks for a tool whose
- * extension adds them to the prompt instead of reading a file (#945). Resolved
- * for the member, project and scope of the session's cwd, as a pull would.
- * Nothing when the tool reads a file in that scope, or is excluded.
+ * extension adds them to the prompt instead of reading a file (#945), and for
+ * Pi the project's team rules after them (#946). Resolved for the member,
+ * project and scope of the session's cwd, as a pull would. Nothing when the
+ * tool reads a file in that scope, or is excluded.
  */
 const instructionsHandler: HookHandler = {
   name: 'instructions',
@@ -881,8 +883,15 @@ const instructionsHandler: HookHandler = {
     const teamConfig = await loadTeamConfig(config.repo.localPath);
     if (!teamConfig) return null;
     const text = await instructionHookTextFor(teamConfig, config, tool);
-    if (!text) return null;
-    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
+    const parts = text ? [text] : [];
+    const { getsRulesFromExtension } = await import('./resources/rule-format.js');
+    if (config.scope === 'project' && getsRulesFromExtension(tool)) {
+      const { teamRulesContext } = await import('./resources/rules.js');
+      const rules = await teamRulesContext(teamConfig, config);
+      if (rules !== null) parts.push(rules);
+    }
+    if (parts.length === 0) return null;
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: parts.join('\n\n') } });
   },
 };
 

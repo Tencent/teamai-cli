@@ -45,7 +45,8 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { pull, cleanupInactiveNamespaceSkills } from '../pull.js';
+import { pull, cleanupInactiveNamespaceSkills, checkoutKey } from '../pull.js';
+import { fileHash } from '../utils/fs.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope } from '../config.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -189,6 +190,33 @@ describe('pull role-aware sync and cleanup', () => {
 
     expect(await fse.pathExists(path.join(homeDir, '.claude/rules', 'old-rule.md'))).toBe(false);
     expect(await fse.pathExists(path.join(homeDir, '.codex/rules', 'old-rule.md'))).toBe(false);
+  });
+
+  it("cleans up a tombstoned rule's flat OMP copy on record, not a member's file of that name or a live root rule (#946)", async () => {
+    // The beforeEach config, mocked; OMP added.
+    const teamConfig = (await loadTeamConfig(repoPath))!;
+    vi.mocked(loadTeamConfig).mockResolvedValue({
+      ...teamConfig,
+      toolPaths: { ...teamConfig.toolPaths, omp: { rules: '.omp/rules', userScope: { rules: '.omp/agent/rules' } } },
+    });
+    const ompRules = path.join(homeDir, '.omp', 'agent', 'rules');
+    await fse.writeFile(path.join(repoPath, 'rules', '.removed'), 'fe/old\nbe/api\nfe/live\n');
+    await fse.writeFile(path.join(repoPath, 'rules', 'fe.live.md'), 'Live root rule.\n');
+    const recorded = path.join(ompRules, 'fe.old.md');
+    const mine = path.join(ompRules, 'be.api.md');
+    await fse.outputFile(recorded, '---\nalwaysApply: true\n---\n\nOld.\n');
+    await fse.outputFile(mine, 'My own dotted rule.\n');
+    const delivered = { [recorded]: (await fileHash(recorded))! };
+    vi.mocked(loadStateForScope).mockImplementation(async () => ({
+      lastPull: null,
+      lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: 'old', targets: [], delivered } },
+    }) as unknown as Awaited<ReturnType<typeof loadStateForScope>>);
+
+    await pull({});
+
+    expect(await fse.pathExists(recorded)).toBe(false);
+    expect(await fse.readFile(mine, 'utf8')).toBe('My own dotted rule.\n');
+    expect(await fse.readFile(path.join(ompRules, 'fe.live.md'), 'utf8')).toBe('---\nalwaysApply: true\n---\n\nLive root rule.\n');
   });
 
   it('should clean up local skill directories that are tombstoned', async () => {

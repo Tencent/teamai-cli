@@ -79,6 +79,21 @@ describe('builtin-rules', () => {
             expect(content).toContain('Team Knowledge Recall');
         });
 
+        it.each([
+            ['kiro', '.kiro/steering', 'inclusion: always'],
+            ['qoder', '.qoder/rules', 'trigger: always_on'],
+        ])('deploys the recall rule to %s in its own rules format (#946)', async (tool, dir, header) => {
+            fs.mkdirSync(path.join(tmpDir, dir), { recursive: true });
+            const teamConfig = { toolPaths: { [tool]: { rules: dir } } } as any;
+
+            const { deployBuiltinRules } = await import('../builtin-rules.js');
+            await deployBuiltinRules(teamConfig);
+
+            const content = fs.readFileSync(path.join(tmpDir, dir, 'teamai-recall.md'), 'utf-8');
+            expect(content.startsWith(`---\n${header}\n---\n\n`)).toBe(true);
+            expect(content).toContain('Team Knowledge Recall');
+        });
+
         it('should skip tool directories that do not exist (tool not installed)', async () => {
             // Arrange: only create one tool directory
             const claudeRulesDir = path.join(tmpDir, '.claude', 'rules');

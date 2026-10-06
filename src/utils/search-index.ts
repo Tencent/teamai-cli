@@ -5,6 +5,7 @@ import matter from 'gray-matter';
 import { readFileSafe, readJson, writeJsonAtomic, listFiles, listFilesRecursive, listDirs, pathExists } from './fs.js';
 import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
 import { log } from './logger.js';
+import { teamRuleBody, teamRuleData } from '../resources/team-rule.js';
 import {
   SEARCH_INDEX_VERSION,
   getDataHome,
@@ -296,33 +297,34 @@ export function parseLearningDoc(
 ): { meta: LearningDocMeta; bodyExcerpt: string } | null {
   if (!content.trim()) return null;
 
+  let data: Record<string, unknown>;
+  let body: string;
   try {
-    const { data, content: body } = matter(content);
-    const meta: LearningDocMeta = {
-      title: typeof data.title === 'string' ? data.title : undefined,
-      author: typeof data.author === 'string' ? data.author : undefined,
-      date: typeof data.date === 'string'
-        ? data.date
-        : data.date instanceof Date
-          ? data.date.toISOString().slice(0, 10)
-          : undefined,
-      tags: Array.isArray(data.tags)
-        ? data.tags.filter((t: unknown) => typeof t === 'string')
-        : typeof data.Tags === 'string'
-          ? data.Tags.split(/[,，]\s*/).map((t: string) => t.trim()).filter(Boolean)
-          : undefined,
-    };
-
-    const bodyExcerpt = body;
-    return { meta, bodyExcerpt };
+    ({ data, content: body } = matter(content));
   } catch {
-    // Fallback: treat entire content as body, derive title from filename
-    log.error(`Failed to parse frontmatter for ${filename}, using fallback`);
-    return {
-      meta: {},
-      bodyExcerpt: content,
-    };
+    // A rule glob such as `paths: **/*.ts` is not strict YAML: read the
+    // frontmatter the way the rule renders do, and keep it out of the body (#946).
+    log.debug(`Frontmatter of ${filename} is not strict YAML; read it tolerantly`);
+    data = teamRuleData(content);
+    body = teamRuleBody(content);
   }
+
+  const meta: LearningDocMeta = {
+    title: typeof data.title === 'string' ? data.title : undefined,
+    author: typeof data.author === 'string' ? data.author : undefined,
+    date: typeof data.date === 'string'
+      ? data.date
+      : data.date instanceof Date
+        ? data.date.toISOString().slice(0, 10)
+        : undefined,
+    tags: Array.isArray(data.tags)
+      ? data.tags.filter((t: unknown) => typeof t === 'string')
+      : typeof data.Tags === 'string'
+        ? data.Tags.split(/[,，]\s*/).map((t: string) => t.trim()).filter(Boolean)
+        : undefined,
+  };
+
+  return { meta, bodyExcerpt: body };
 }
 
 /**
@@ -736,6 +738,40 @@ export async function buildIndex(
   const opts: BuildIndexOptions = typeof optionsOrLearningsDir === 'string'
     ? { learningsDir: optionsOrLearningsDir, votesDir, indexPath }
     : optionsOrLearningsDir;
+  const index = await indexInMemory(opts);
+  const elapsed = Date.now() - start;
+
+  // Guard: don't overwrite a healthy index with a significantly smaller one
+  const targetPath = opts.indexPath ?? getSearchIndexPath();
+  const existingIndex = await loadIndex(targetPath);
+  if (guardIndexShrink(index, existingIndex, opts.partial) !== index) return elapsed;
+
+  // A torn in-place write parses as null on the next loadIndex, which silently
+  // wipes recall until the next rebuild — same shape as the votes file (#854).
+  await writeJsonAtomic(targetPath, index);
+
+  if (elapsed > 2000) {
+    log.warn(`Search index build took ${elapsed}ms — consider incremental updates for large knowledge bases`);
+  }
+
+  return elapsed;
+}
+
+/** Keep the existing index when a rebuild unexpectedly loses most of its corpus. */
+export function guardIndexShrink(index: SearchIndex, existing: SearchIndex | null, partial = false): SearchIndex {
+  if (!partial && existing && existing.entries.length > 5 && index.entries.length < existing.entries.length * 0.2) {
+    log.warn(`Index rebuild skipped: new index (${index.entries.length}) is <20% of existing (${existing.entries.length}), likely partial failure`);
+    return existing;
+  }
+  return index;
+}
+
+/**
+ * The index {@link buildIndex} would write, built in memory and not saved: for
+ * a dry run, which must search what a real run would without writing it.
+ */
+export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchIndex> {
+  const start = Date.now();
 
   // Aggregate votes once and reuse across all collectors.
   const voteAgg = opts.votesDir
@@ -794,34 +830,14 @@ export async function buildIndex(
     }
   }
 
-  const elapsed = Date.now() - start;
-
-  // Guard: don't overwrite a healthy index with a significantly smaller one
-  const targetPath = opts.indexPath ?? getSearchIndexPath();
-  const existingIndex = await loadIndex(targetPath);
-  if (!opts.partial && existingIndex && existingIndex.entries.length > 5 && entries.length < existingIndex.entries.length * 0.2) {
-    log.warn(`Index rebuild skipped: new index (${entries.length}) is <20% of existing (${existingIndex.entries.length}), likely partial failure`);
-    return elapsed;
-  }
-
-  const index: SearchIndex = {
+  return {
     version: SEARCH_INDEX_VERSION,
     builtAt: new Date().toISOString(),
-    elapsedMs: elapsed,
+    elapsedMs: Date.now() - start,
     entries,
     df,
     dfByDomain,
   };
-
-  // A torn in-place write parses as null on the next loadIndex, which silently
-  // wipes recall until the next rebuild — same shape as the votes file (#854).
-  await writeJsonAtomic(targetPath, index);
-
-  if (elapsed > 2000) {
-    log.warn(`Search index build took ${elapsed}ms — consider incremental updates for large knowledge bases`);
-  }
-
-  return elapsed;
 }
 
 /**

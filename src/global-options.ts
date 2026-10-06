@@ -4,6 +4,6 @@
  * adoption skips them to find the subcommand a shell call ran (#884).
  */
 export const GLOBAL_OPTIONS: ReadonlyArray<readonly [flags: string, description: string]> = [
-  ['--dry-run', 'Preview mode, no changes made'],
+  ['--dry-run', 'Preview mode, no changes made; a command with no preview exits 1 without running'],
   ['-v, --verbose', 'Verbose output'],
 ];

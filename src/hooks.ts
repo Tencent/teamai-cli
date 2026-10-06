@@ -227,7 +227,8 @@ export function isCodexTrustGatedTool(tool: string): boolean {
  * Shared with `doctor` (installed-hooks note) so the wording stays identical.
  */
 export function codexTrustReminder(): string {
-  return 'Codex hooks written, but Codex may require you to review/trust them before they run — open /hooks or Settings → Hooks in Codex to trust them.';
+  return 'Codex hooks written, but Codex may require you to review/trust them before they run — open /hooks or Settings → Hooks in Codex to trust them. '
+    + 'Until you do, a project\'s team rules do not reach Codex: they come through those hooks.';
 }
 
 /**
@@ -1879,9 +1880,10 @@ export async function reconcileHooksToAllTools(
       if (opts.settingsOnly) continue;
       try {
         if (opts.removeAll) {
-          const { removeOpenClawHooks, resolveOpenclawWorkspaceDir } = await import('./openclaw-hooks.js');
+          const { removeOpenClawHooks, removeOpenClawHookEntry, resolveOpenclawWorkspaceDir } = await import('./openclaw-hooks.js');
           const wsDir = await resolveOpenclawWorkspaceDir();
           if (wsDir) await removeOpenClawHooks(path.join(wsDir, 'hooks'));
+          await removeOpenClawHookEntry();
         } else {
           const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
           await injectOpenClawHooks(undefined, tool);
@@ -1932,9 +1934,8 @@ export async function reconcileHooksToAllTools(
     if (tool === 'dsh') {
       if (opts.settingsOnly) continue;
       try {
-        const dshHome = getUserHome();
-        if (opts.removeAll || await pathExists(path.join(dshHome, '.dsh'))) {
-          const { reconcileDshHooks, resolveDshHookConfigPath } = await import('./dsh-hooks.js');
+        const { isDshInstalled, reconcileDshHooks, resolveDshHookConfigPath } = await import('./dsh-hooks.js');
+        if (opts.removeAll || await isDshInstalled()) {
           if (await skipInstalled(resolveDshHookConfigPath(), 'dsh')) continue;
           await reconcileDshHooks(defs, {
             manifestPath: teamManifestPath,

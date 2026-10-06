@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
-import { expandHome, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
+import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, getDataHome, getMcpSharing, isAgentExcluded, managedMcpManifestKey, resolveToolBaseDir,
   resolveToolRootDir, scopedToolPaths,
@@ -9,7 +9,7 @@ import {
 import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, ResourceItem, TeamaiConfig } from './types.js';
 import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
-import type { ResourceHandler } from './resources/base.js';
+import { isToolInstalledForConfig, type ResourceHandler } from './resources/base.js';
 import type { Check, DoctorContext } from './doctor.js';
 import type { DesiredMcpContext } from './mcp-reconcile.js';
 import type { ResolvedMcpFile } from './mcp-resolved-files.js';
@@ -20,6 +20,7 @@ import {
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
+import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 
 /**
  * The checks that verify the payload rather than the plumbing: what each tool
@@ -74,6 +75,8 @@ function appendTo(buckets: Map<string, string[]>, tool: string, name: string): v
 
 /** What one tool was owed, and which of it did not arrive intact. */
 interface ToolDelivery {
+  /** The tool whose format its items land in; the map key also names the tools sharing the copy. */
+  tool: string;
   /** Where its items land — the fix names it when the filename is derived. */
   dir: string;
   /** Item names grouped by the problem label `classify` gave them. */
@@ -93,6 +96,8 @@ async function walkDelivery(
   items: ResourceItem[],
   classify: (target: DeliveryTarget, item: ResourceItem) => Promise<string | null>,
 ): Promise<{ byTool: Map<string, ToolDelivery>; unreceived: string[] }> {
+  // `items` is what this member receives, so the handler need not resolve it again.
+  const received = items.map((item) => item.name);
   const { localConfig, teamConfig } = ctx;
   if (!teamConfig) return { byTool: new Map(), unreceived: [] };
 
@@ -100,14 +105,16 @@ async function walkDelivery(
   const unreceived: string[] = [];
 
   for (const item of items) {
-    const targets = await handler.deliveryTargets(teamConfig, localConfig, item);
+    const targets = await handler.deliveryTargets(teamConfig, localConfig, item, received);
     if (targets.length === 0) unreceived.push(item.name);
 
     for (const target of targets) {
-      let delivery = byTool.get(target.tool);
+      // One check for a copy several tools read, naming them all (#946).
+      const key = [target.tool, ...target.sharedWith ?? []].join(', ');
+      let delivery = byTool.get(key);
       if (!delivery) {
-        delivery = { dir: path.dirname(target.dest), problems: new Map() };
-        byTool.set(target.tool, delivery);
+        delivery = { tool: target.tool, dir: path.dirname(target.dest), problems: new Map() };
+        byTool.set(key, delivery);
       }
       const problem = await classify(target, item);
       if (problem !== null) appendTo(delivery.problems, problem, item.name);
@@ -161,15 +168,19 @@ function hasDeliveryProblem(delivery: ToolDelivery): boolean {
 
 /**
  * What `pullItem` did not write at `target`: an older render, or a copy the
- * member changed since teamai delivered it, which pull keeps.
+ * member changed since teamai delivered it, which pull keeps. With
+ * `recordedLabel`, an older render still holding what teamai recorded writing
+ * gets that label instead.
  */
 async function differingCopyLabel(
-  item: ResourceItem, target: DeliveryTarget, olderLabel: string, localConfig: LocalConfig,
+  item: ResourceItem, target: DeliveryTarget, olderLabel: string, localConfig: LocalConfig, recordedLabel?: string,
 ): Promise<string> {
   const { deliveredHashes } = await import('./pull.js');
-  const { judgeCopy } = await import('./resources/delivered-copies.js');
-  const verdict = await judgeCopy(await deliveredHashes(localConfig), item, target);
-  return verdict.kind === 'keep' ? CHANGED_BY_YOU : olderLabel;
+  const { judgeCopy, recordedUnchanged } = await import('./resources/delivered-copies.js');
+  const previous = await deliveredHashes(localConfig);
+  const verdict = await judgeCopy(previous, item, target);
+  if (verdict.kind === 'keep') return CHANGED_BY_YOU;
+  return recordedLabel !== undefined && await recordedUnchanged(previous, target.dest) ? recordedLabel : olderLabel;
 }
 
 /** `a, b, c and 4 more` — a fix a human reads, not a wall of paths. */
@@ -260,23 +271,21 @@ export async function buildRulesDeliveryChecks(ctx: DoctorContext): Promise<Chec
 
   const roleContext = await buildRolePullContext(localConfig);
   const { items } = await resolveDesiredRules(teamConfig, localConfig, roleContext);
+  const activation = await buildRulesActivationChecks(ctx, items);
   if (items.length === 0) {
-    // No rule reaches this member, but a team-rules block a failed removal
-    // left in Codex's AGENTS.md is still read: report that and nothing else.
-    const codex = await buildCodexUserRulesChecks(ctx, items);
+    // Failed cleanup can leave an active glob or inline block after the last rule goes.
     const failing: Check[] = [];
-    for (const check of codex) if (!await check.check()) failing.push(check);
+    for (const check of activation) if (!await check.check()) failing.push(check);
     return failing;
   }
 
-  const activation = await buildRulesActivationChecks(ctx, items);
-
   // `pullItem` writes the handler's render byte for byte, so anything else at
-  // that path is a stale or hand-edited copy. Cursor reads `globs` and
-  // `alwaysApply` and Copilot reads `applyTo`; comparing against the render
-  // catches a wrong value there, which checking the keys were present did not.
-  const ruleLabels = ['not delivered', 'delivered from an older copy', CHANGED_BY_YOU] as const;
-  const perTool: Check[] = [...(await walkDelivery(
+  // that path is a stale or hand-edited copy. A tool with its own rules format
+  // scopes the rule by fields of it (Cursor `globs`, Kiro `inclusion`, …);
+  // comparing against the render catches a wrong value there, which checking
+  // the keys were present did not.
+  const ruleLabels = ['not delivered', 'delivered from an older copy', RECORDED_OLDER_RULE, FLAT_NAME_TAKEN, CHANGED_BY_YOU] as const;
+  const { byTool } = await walkDelivery(
     getHandler('rules'),
     ctx,
     items,
@@ -286,23 +295,81 @@ export async function buildRulesDeliveryChecks(ctx: DoctorContext): Promise<Chec
       const delivered = await readFileSafe(target.dest);
       if (delivered === null) return ruleLabels[0];
       if (target.content === undefined || delivered === target.content) return null;
-      return differingCopyLabel(item, target, ruleLabels[1], localConfig);
+      return differingCopyLabel(item, target, ruleLabels[1], localConfig, RECORDED_OLDER_RULE);
     },
-  )).byTool].map(([tool, delivery]) => ({
-    name: `Rules delivered to ${tool}`,
-    source: 'local',
-    check: async () => !hasDeliveryProblem(delivery),
-    // The fix names the directory rather than the tool: a rule's delivered
-    // filename carries a per-tool extension the reader would have to derive.
-    fix: `In ${delivery.dir}, ${describeProblems(delivery.problems, ruleLabels)}. `
-      + 'Run `teamai pull --force`: a plain pull skips a scope whose team repo has not changed, '
-      + 'so it cannot restore this. An older copy is one whose bytes are no longer what teamai '
-      + `renders for ${tool}, frontmatter included: a \`.mdc\` or \`.instructions.md\` whose `
-      + '`globs`, `alwaysApply` or `applyTo` drifted from the team `.md` applies to the wrong '
-      + `files while looking perfectly well-formed.${changedByYouFix(delivery)}`,
-  }));
+  );
+  // A tool that reads only the top of its rules directory gets no file for a
+  // namespaced rule whose flat name another rule has (`deliveryTargets`).
+  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+    if (!toolPath.rules || !ruleFormatForTool(tool)?.flat || isAgentExcluded(localConfig, tool)) continue;
+    if (!await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
+    const stems = ruleStemsForTool(tool, items.map((item) => item.name));
+    const collisions = items.filter((item) => !stems.has(item.name));
+    if (collisions.length === 0) continue;
+    let delivery = byTool.get(tool);
+    if (!delivery) {
+      delivery = { tool, dir: path.join(resolveToolBaseDir(tool, localConfig), toolPath.rules), problems: new Map() };
+      byTool.set(tool, delivery);
+    }
+    for (const item of collisions) appendTo(delivery.problems, FLAT_NAME_TAKEN, item.name);
+  }
+  const { unreadRulesDir } = await import('./resources/rules.js');
+  const perTool: Check[] = [];
+  for (const [tool, delivery] of byTool) {
+    // A team `toolPaths` entry written before the tool's rules moved still
+    // sends them to a directory it never reads (#946).
+    const rulesPath = scopedToolPaths(teamConfig, localConfig)[delivery.tool]?.rules;
+    const rulesDir = rulesPath ? path.join(resolveToolBaseDir(delivery.tool, localConfig), rulesPath) : undefined;
+    const unread = rulesDir ? unreadRulesDir(delivery.tool, rulesDir, localConfig) : undefined;
+    const problems = describeProblems(delivery.problems, ruleLabels);
+    const restore = delivery.problems.has(ruleLabels[0]) || delivery.problems.has(ruleLabels[1]);
+    perTool.push({
+      name: `Rules delivered to ${tool}`,
+      source: 'local',
+      check: async () => !hasDeliveryProblem(delivery) && unread === undefined,
+      // The fix names the directory rather than the tool: a rule's delivered
+      // filename carries a per-tool extension the reader would have to derive.
+      // A copy there is inert whatever its state, so only the entry is worth fixing.
+      fix: unread
+        ? `${unread.why}, but the team teamai.yaml's toolPaths.${delivery.tool} entry still sends the rules to `
+          + `${rulesDir}: a team entry replaces teamai's default for ${delivery.tool} whole, so ${delivery.tool} gets `
+          + `none of the rules copied there. In the team teamai.yaml, ${unread.toolPathsFix}, then run \`teamai pull\`.`
+        : `In ${delivery.dir}, ${problems}. `
+          + (delivery.problems.has(FLAT_NAME_TAKEN)
+            ? `${tool} reads only the top level of that directory, so a rule not written there never reaches it: `
+              + 'rename one of them in the team repo; `teamai pull` names the rules that share the file. '
+            : '')
+          + (restore
+            ? 'Run `teamai pull --force`: a plain pull skips a scope whose team repo has not changed, '
+              + 'so it cannot restore a missing copy or one teamai has no record of writing. '
+            : '')
+          + (delivery.problems.has(RECORDED_OLDER_RULE)
+            ? 'Run `teamai pull` to rewrite a copy that still holds what teamai recorded writing: it re-renders '
+              + 'one even when the team repo has not changed. '
+            : '')
+          + `${olderRuleCopyMeaning(delivery.tool)}${changedByYouFix(delivery)}`,
+    });
+  }
 
   return [...activation, ...perTool];
+}
+
+/** An older render of a rule that still holds what teamai recorded writing, which a plain pull re-renders. */
+const RECORDED_OLDER_RULE = 'delivered in an older render teamai recorded';
+
+/** A namespaced rule a tool reading only the top of its rules directory gets no file for. */
+const FLAT_NAME_TAKEN = 'not written, as another team rule has its flat name';
+
+/** What a rule copy "delivered from an older copy" means for `tool`, in its own format. */
+function olderRuleCopyMeaning(tool: string): string {
+  const fields = ruleFormatForTool(tool)?.scopeFields ?? [];
+  if (fields.length === 0) {
+    return `An older copy is one whose bytes are no longer the team \`.md\`, which ${tool} gets verbatim.`;
+  }
+  const named = fields.map((field) => `\`${field}\``);
+  return `An older copy is one whose bytes are no longer what teamai renders for ${tool}, frontmatter included: `
+    + `one whose ${named.slice(0, -1).join(', ')}${named.length > 1 ? ' or ' : ''}${named[named.length - 1]} drifted `
+    + 'from the team `.md` applies to the wrong files while looking perfectly well-formed.';
 }
 
 /**
@@ -326,78 +393,188 @@ async function buildRulesActivationChecks(ctx: DoctorContext, items: ResourceIte
   const handler = new RulesHandler();
   const checks: Check[] = [];
 
-  const opencode = await handler.opencodeInstructionsTarget(teamConfig, localConfig);
+  const opencode = await handler.opencodeInstructionsTarget(teamConfig, localConfig, items);
   if (opencode !== null) {
     const { readOpencodeInstructionList } = await import('./resources/opencode-config.js');
-    const instructions = await readOpencodeInstructionList(opencode.configFile);
-    const active = instructions !== null && instructions.includes(opencode.glob);
+    // A missing file just lists nothing yet; null is one the pull cannot parse.
+    const instructions = await pathExists(opencode.configFile) ? await readOpencodeInstructionList(opencode.configFile) : [];
+    const globs = items.length > 0 ? opencode.globs : [];
+    const missing = globs.filter((glob) => !instructions?.includes(glob));
+    const stale = (instructions ?? []).filter((entry): entry is string =>
+      typeof entry === 'string' && opencode.owns(entry) && !globs.includes(entry));
+    const relativeStale = stale.filter((entry) => !path.isAbsolute(entry));
+    const namespaceStale = stale.filter((entry) => path.isAbsolute(entry));
+    const quoted = (entries: string[]): string => entries.map((entry) => `\`${entry}\``).join(', ');
+    // Pull sets these globs even when the team repo has not moved (#946).
+    const rerun = 'Run `teamai pull`.';
     checks.push({
       name: 'Team rules are active in opencode',
       source: 'local',
-      check: async () => active,
+      check: async () => instructions !== null && missing.length === 0 && stale.length === 0,
       fix: instructions === null
         ? `${opencode.configFile} could not be read as a JSON object, so the pull left it alone `
-          + `and never added \`${opencode.glob}\` to \`instructions\`. Fix the file, then run `
-          + '`teamai pull --force`.'
-        : `${opencode.configFile} does not list \`${opencode.glob}\` under \`instructions\`. `
-          + 'OpenCode does not scan a rules directory, so every team rule delivered there is '
-          + 'inert until this glob references it. Run `teamai pull --force`: a plain pull skips '
-          + 'a scope whose team repo has not changed, so it cannot restore this.',
+          + 'without updating `instructions`. Fix the file, then run '
+          + '`teamai pull`.'
+        : [
+          ...(missing.length > 0
+            ? [`${opencode.configFile} does not list ${quoted(missing)} under \`instructions\`. `
+              + 'OpenCode does not scan a rules directory, so every team rule delivered there is '
+              + 'inert until a glob references it.']
+            : []),
+          ...(relativeStale.length > 0
+            ? [`${opencode.configFile} still lists ${quoted(relativeStale)}, which teamai no longer writes. `
+              + 'OpenCode resolves a relative entry from the session\'s working directory, so it loads '
+              + 'that directory\'s rules instead of the team rules.']
+            : []),
+          ...(namespaceStale.length > 0
+            ? [`${opencode.configFile} still lists ${quoted(namespaceStale)}, for team rules that `
+              + 'no longer reach this scope, so OpenCode loads whatever copy is left there.']
+            : []),
+          rerun,
+        ].join(' '),
     });
   }
 
   const { getHermesHome } = await import('./hermes-home.js');
   const hermesHome = getHermesHome();
-  if (!isAgentExcluded(localConfig, 'hermes') && await pathExists(hermesHome)) {
+  // SOUL.md is global and only a user-scope pull writes it; in a project,
+  // `ruleChannelNotes` says why Hermes gets no project rules (#946).
+  if (localConfig.scope === 'user' && !isAgentExcluded(localConfig, 'hermes') && await pathExists(hermesHome)) {
     const { getHermesSoulPath, readSoulRules } = await import('./hermes-config.js');
     const expected = await inlinedRulesText(items);
     const delivered = await readSoulRules();
     checks.push({
       name: 'Team rules are inlined in Hermes SOUL.md',
       source: 'local',
-      check: async () => delivered !== null && delivered === expected.trim(),
+      check: async () => (items.length === 0 && delivered === null) || delivered === expected.trim(),
       fix: delivered === null
         ? `${getHermesSoulPath()} carries no teamai rules block, so Hermes reads none of the `
-          + 'team rules. Run `teamai pull --force`: a plain pull skips a scope whose team repo '
-          + 'has not changed, so it cannot restore this.'
+          + 'team rules. Run `teamai pull` to restore it.'
         : `The teamai block in ${getHermesSoulPath()} is not what the team rules inline to: `
           + 'Hermes reads standing instructions from this file rather than a rules directory, '
-          + 'so a stale block is a stale rule set. Run `teamai pull --force` to rewrite it.',
+          + 'so a stale block is a stale rule set. Run `teamai pull` to rewrite it.',
     });
   }
 
-  checks.push(...await buildCodexUserRulesChecks(ctx, items));
+  checks.push(...await buildUserRulesFileChecks(ctx, items));
+  if (items.length > 0) checks.push(...await buildProjectRulesHookChecks(ctx));
   return checks;
 }
 
 /**
- * In user scope the Codex family reads the team rules from a managed block of
- * its own AGENTS.md (#938); in a project its session-start hook adds them, and
- * doctor checks that hook instead. One check per enabled, installed tool.
+ * The teamai `hook-dispatch session-start` commands under `SessionStart` in a
+ * Claude-shaped map of hook events (ZCode's `hooks.events`, the dsh bridge's
+ * `hooks`).
  */
-async function buildCodexUserRulesChecks(ctx: DoctorContext, items: ResourceItem[]): Promise<Check[]> {
+function sessionStartDispatches(eventMap: unknown): string[] {
+  const groups = (eventMap as Record<string, unknown> | null | undefined)?.SessionStart;
+  if (!Array.isArray(groups)) return [];
+  return groups
+    .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
+    .map((entry: { command?: unknown; args?: unknown }) => [entry?.command, ...(Array.isArray(entry?.args) ? entry.args : [])].join(' '))
+    .filter((command) => command.includes('hook-dispatch session-start'));
+}
+
+/**
+ * In a project, ZCode and DeepSeek Harness get the team rules only from
+ * teamai's session-start hook (#946), so doctor checks the hook the tool
+ * runs: ZCode reads only the user-level ~/.zcode/cli/config.json, and only
+ * with `hooks.enabled`; DeepSeek Harness loads teamai's hook config only
+ * through the patch, which the member passes to dsh (`ruleChannelNotes`).
+ * Pi's extension is checked with the team instructions it also carries
+ * (`buildInstructionDeliveryChecks`).
+ */
+async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, teamConfig } = ctx;
+  if (!teamConfig || localConfig.scope !== 'project') return [];
+  const paths = scopedToolPaths(teamConfig, localConfig);
+  const home = getUserHome();
+  const inject = 'Run `teamai hooks inject` to rewrite it.';
+  const checks: Check[] = [];
+
+  const zcodeSettings = paths.zcode?.settings;
+  if (zcodeSettings && !isAgentExcluded(localConfig, 'zcode') && await pathExists(path.join(home, '.zcode'))) {
+    const file = path.join(home, zcodeSettings);
+    const read = await readJsonObject(file);
+    const hooks = read.kind === 'ok' ? read.value.hooks as { enabled?: unknown; events?: unknown } | undefined : undefined;
+    const registered = sessionStartDispatches(hooks?.events).length > 0;
+    const enabled = hooks?.enabled === true;
+    checks.push({
+      name: 'Project rules reach zcode through its SessionStart hook',
+      source: 'local',
+      check: async () => registered && enabled,
+      fix: read.kind === 'invalid'
+        ? `${file} is not valid JSON (${read.error}), so ZCode loads none of its hooks and sessions in this project `
+          + 'get none of the team rules. Fix the file by hand (teamai does not rewrite a file it cannot parse), then run '
+          + '`teamai hooks inject`.'
+        : !registered
+          ? `${file} has no teamai SessionStart hook, so ZCode sessions in this project get none of the team rules: `
+            + `ZCode runs only the hooks in this file, none from a project. ${inject}`
+          : `${file} sets hooks.enabled to something other than true, so ZCode runs none of its hooks and sessions in `
+            + 'this project get none of the team rules. Run `teamai hooks inject`, which turns them on.',
+    });
+  }
+
+  const { isDshInstalled } = await import('./dsh-hooks.js');
+  if (!isAgentExcluded(localConfig, 'dsh') && await isDshInstalled()) {
+    const { buildDshPatch, resolveDshHookConfigPath, resolveDshPatchPath } = await import('./dsh-hooks.js');
+    const configPath = resolveDshHookConfigPath();
+    const patchPath = resolveDshPatchPath();
+    const patched = await readFileSafe(patchPath) === buildDshPatch(configPath);
+    const read = await readJsonObject(configPath);
+    const registered = read.kind === 'ok' && sessionStartDispatches(read.value.hooks).length > 0;
+    const broken = [...(patched ? [] : [patchPath]), ...(registered ? [] : [configPath])];
+    checks.push({
+      name: 'Project rules reach dsh through its session-start hook',
+      source: 'local',
+      check: async () => broken.length === 0,
+      fix: `${broken.join(' and ')} ${broken.length === 1 ? 'is' : 'are'} missing or out of date, so DeepSeek Harness `
+        + 'sessions in this project get none of the team rules. Run `teamai hooks inject` to rewrite '
+        + `${broken.length === 1 ? 'it' : 'them'}. dsh loads that hook only when it runs with \`--patch "${patchPath}"\`.`,
+    });
+  }
+  return checks;
+}
+
+/**
+ * In user scope each tool with no rules format reads the team rules from a
+ * managed block of a file only it reads (`userRulesFile`: the Codex family's
+ * AGENTS.md, #938; ZCode, DeepSeek Harness, the OpenClaw workspace, Pi,
+ * JoyCode's rules.txt, #946); in a project the session-start hook (the Codex
+ * family, ZCode, DeepSeek Harness) or Pi's extension adds them, and doctor
+ * checks that channel instead. One check per enabled,
+ * installed tool, on the bytes of the block in the file the tool reads.
+ */
+async function buildUserRulesFileChecks(ctx: DoctorContext, items: ResourceItem[]): Promise<Check[]> {
   const { localConfig, teamConfig } = ctx;
   if (!teamConfig || localConfig.scope !== 'user') return [];
 
   const { teamRulesBlock } = await import('./resources/rules.js');
-  const { getsRulesFromSessionHook, instructionFileInstallProbe, writesInstructionBlock } = await import('./resources/rule-format.js');
-  const { isToolInstalledForConfig } = await import('./resources/base.js');
-  const { TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveToolBaseDir, scopedToolPaths } = await import('./types.js');
+  const { isCodexTool } = await import('./utils/tool-names.js');
+  const { userRulesFile } = await import('./instruction-targets.js');
+  const { TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, scopedToolPaths } = await import('./types.js');
   const expected = await teamRulesBlock(items);
   const checks: Check[] = [];
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (!getsRulesFromSessionHook(tool) || isAgentExcluded(localConfig, tool)) continue;
-    const probe = instructionFileInstallProbe(tool, toolPath);
-    if (probe !== undefined && !await isToolInstalledForConfig(tool, probe, localConfig)) continue;
-    const name = tool === 'codex'
-      ? 'Team rules are inlined in Codex AGENTS.md'
-      : `Team rules are inlined in Codex AGENTS.md (${tool})`;
-    if (!writesInstructionBlock(tool, toolPath, 'team-rules')) {
-      // A team `toolPaths` entry replaces the default one whole, so an entry
-      // written before #938 leaves this tool nowhere to read user rules from.
+    if (isAgentExcluded(localConfig, tool)) continue;
+    const target = await userRulesFile(tool, toolPath, localConfig);
+    if (!target?.installed) continue;
+    const codexFamily = isCodexTool(tool);
+    const name = codexFamily && tool !== 'codex'
+      ? `Team rules are inlined in ${target.label} (${tool})`
+      : `Team rules are inlined in ${target.label}`;
+    if (target.unreadable) {
+      const { unreadableRulesFileMessage } = await import('./instruction-targets.js');
+      checks.push({ name, source: 'local', check: async () => false, fix: unreadableRulesFileMessage(tool, target.unreadable) });
+      continue;
+    }
+    const { file } = target;
+    if (file === undefined) {
+      // A team `toolPaths` entry replaces the default one whole, so a Codex
+      // entry written before #938 leaves it nowhere to read user rules from.
       // One with no `rules` path delivers no rules to it on purpose; with no
       // team rules it misses none.
-      if (items.length === 0 || !toolPath.rules) continue;
+      if (!codexFamily || items.length === 0 || !toolPath.rules) continue;
       checks.push({
         name,
         source: 'local',
@@ -409,28 +586,27 @@ async function buildCodexUserRulesChecks(ctx: DoctorContext, items: ResourceItem
       });
       continue;
     }
-    const file = path.join(resolveToolBaseDir(tool, localConfig), toolPath.claudemd);
     const content = await readFileSafe(file);
     const start = content?.indexOf(TEAMAI_TEAM_RULES_START) ?? -1;
     const end = content?.indexOf(TEAMAI_TEAM_RULES_END) ?? -1;
     const delivered = content !== null && start !== -1 && end > start
       ? content.slice(start, end + TEAMAI_TEAM_RULES_END.length)
       : null;
-    // Codex reads AGENTS.override.md instead of AGENTS.md in the same
-    // directory, so a current block there is never seen. An empty or
-    // whitespace-only override shadows it too (checked with `codex exec`).
-    const override = path.join(path.dirname(file), 'AGENTS.override.md');
     const problems: string[] = [];
     // With no rule body to inline (`expected === null`), pull writes no block.
     if (delivered === null && expected !== null) {
       problems.push(`${file} carries no team-rules block, so ${tool} reads none of the team `
         + 'rules. Run `teamai pull` to restore it.');
     } else if (delivered !== expected) {
-      problems.push(`The team-rules block in ${file} is not what the team rules inline to: Codex reads `
-        + 'standing instructions from this file rather than a rules directory, so a stale block '
+      problems.push(`The team-rules block in ${file} is not what the team rules inline to: ${tool} reads `
+        + 'the team rules from this file rather than a rules directory, so a stale block '
         + 'is a stale rule set. Run `teamai pull` to rewrite it.');
     }
-    if (expected !== null && await isReadableFile(override)) {
+    // Codex reads AGENTS.override.md instead of AGENTS.md in the same
+    // directory, so a current block there is never seen. An empty or
+    // whitespace-only override shadows it too (checked with `codex exec`).
+    const override = path.join(path.dirname(file), 'AGENTS.override.md');
+    if (codexFamily && expected !== null && await isReadableFile(override)) {
       problems.push(`${override} exists, so Codex reads it instead of ${file} and never sees the `
         + 'team rules. Move its content into AGENTS.md, or delete it.');
     }
@@ -1279,7 +1455,7 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
   }
 
   const opencodePaths = scopedToolPaths(teamConfig, localConfig).opencode;
-  const opencodeFile = opencodePaths && instructionTargetPath('opencode', opencodePaths, localConfig);
+  const opencodeFile = opencodePaths && await instructionTargetPath('opencode', opencodePaths, localConfig);
   // Only a file holding the blocks needs listing; pull registers it once it writes them.
   if (opencodeFile && targets.some((t) => t.path === opencodeFile) && await holdsInstructionBlocks(opencodeFile)) {
     const { config, entry } = opencodeContextReference(opencodeFile, localConfig.scope, resolveToolBaseDir('opencode', localConfig));
@@ -1295,13 +1471,17 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
     });
   }
 
+  // Pi's extension also carries the project's team rules (#946).
+  const { teamRulesContext } = await import('./resources/rules.js');
+  let hasTeamRules: boolean | undefined;
   for (const hook of hooks) {
     const text = instructionHookText(blocks, hook.recall);
-    if (!text) continue;
+    if (!text && !getsRulesFromExtension(hook.tool)) continue;
+    if (!text && !(hasTeamRules ??= await teamRulesContext(teamConfig, localConfig) !== null)) continue;
     const channel = await instructionHookChannel(hook.tool, { teamConfig, localConfig });
     const overLimit = hookLimitProblem(hook, text);
     checks.push({
-      name: `${hook.tool} adds the team instructions to its prompt`,
+      name: `${hook.tool} adds the team instructions${getsRulesFromExtension(hook.tool) ? ' and rules' : ''} to its prompt`,
       source: 'local',
       check: async () => channel.ready && overLimit === null,
       fix: channel.ready ? overLimit ?? '' : channel.fix,

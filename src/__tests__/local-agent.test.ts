@@ -1632,6 +1632,10 @@ describe('local-agent: uninstall_teamai command execution', () => {
 });
 
 describe('local-agent: cmds[] migration', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   async function makeSkillZip(skillName: string): Promise<Uint8Array> {
     const { zipSync, strToU8 } = await import('fflate');
     const skillMd = `---\nname: ${skillName}\ndescription: test skill\n---\n# ${skillName}\nbody\n`;
@@ -1683,6 +1687,46 @@ describe('local-agent: cmds[] migration', () => {
     const manifest = await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'));
     expect(manifest.scopes.user.claudemd?.['doc-a']).toBeDefined();
     expect(manifest.scopes.user.rules?.['doc-a']).toBeUndefined();
+  });
+
+  it('creates AGENTS.md for an HTTP prompt in an existing OpenClaw workspace (#946)', async () => {
+    const workspace = path.join(tmpDir, 'openclaw-workspace');
+    const configFile = path.join(tmpDir, '.openclaw', 'openclaw.json');
+    await fse.ensureDir(workspace);
+    await fse.outputJson(configFile, { agents: { defaults: { workspace } } });
+    vi.stubEnv('OPENCLAW_CONFIG_PATH', configFile);
+    const target = path.join(workspace, 'AGENTS.md');
+    expect(await fse.pathExists(target)).toBe(false);
+
+    const acks = await runResponse({ cmds: [{
+      id: 67, type: 'install_prompt_rule', handle_type: 'prompt', slug: 'openclaw-doc',
+      version: '1.0.0', download_url: 'http://127.0.0.1:42100/openclaw-doc.md', scope: 'user',
+    }] }, undefined, 'openclaw');
+
+    expect(acks.find((ack) => ack.id === 67)?.status).toBe('success');
+    const content = await fse.readFile(target, 'utf8');
+    expect(content).toContain(TEAMAI_CLAUDEMD_START);
+    expect(content).toContain('# content');
+  });
+
+  it('preserves personal text when installing an HTTP prompt in OpenClaw AGENTS.md (#946)', async () => {
+    const workspace = path.join(tmpDir, 'openclaw-workspace');
+    const configFile = path.join(tmpDir, '.openclaw', 'openclaw.json');
+    const target = path.join(workspace, 'AGENTS.md');
+    await fse.outputFile(target, '# My notes\n');
+    await fse.outputJson(configFile, { agents: { defaults: { workspace } } });
+    vi.stubEnv('OPENCLAW_CONFIG_PATH', configFile);
+
+    const acks = await runResponse({ cmds: [{
+      id: 68, type: 'install_prompt_rule', handle_type: 'prompt', slug: 'openclaw-doc',
+      version: '1.0.0', download_url: 'http://127.0.0.1:42100/openclaw-doc.md', scope: 'user',
+    }] }, undefined, 'openclaw');
+
+    expect(acks.find((ack) => ack.id === 68)?.status).toBe('success');
+    const content = await fse.readFile(target, 'utf8');
+    expect(content).toContain('# My notes');
+    expect(content).toContain(TEAMAI_CLAUDEMD_START);
+    expect(content).toContain('# content');
   });
 
   it('handle_type=prompt strips the block an earlier release left in ~/AGENTS.md (#945)', async () => {

@@ -314,6 +314,31 @@ describe('instruction targets shared by several tools (#945)', () => {
     }
   });
 
+  it('keeps a hook tool\'s retired file while its hook is not installed, unlike a tool with no project channel (#946)', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-946-no-channel-')));
+    vi.stubEnv('HOME', path.join(root, 'home'));
+    try {
+      const projectRoot = path.join(root, 'project');
+      // Codex is installed in the project, but no user-level Codex runs its hooks.
+      fs.mkdirSync(path.join(projectRoot, '.codex', 'skills'), { recursive: true });
+      fs.mkdirSync(path.join(projectRoot, '.claude'), { recursive: true });
+      const localConfig = {
+        repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
+        username: 'u', additionalRoles: [], scope: 'project', projectRoot,
+      } as unknown as LocalConfig;
+      const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git', toolPaths: {
+        claude: { rules: '.claude/rules', claudemd: 'AGENTS.md' }, codex: { skills: '.codex/skills', claudemd: 'AGENTS.md' },
+      } });
+
+      const retired = (await retiredFilesOfReached(teamConfig, localConfig, ['claude'])).map((target) => target.path);
+
+      expect(retired).not.toContain(path.join(projectRoot, 'AGENTS.md'));
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(['pi', 'omp', 'hermes', 'codex'])('protects retired files of excluded project hook tool %s', async (tool) => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-excluded-')));
     vi.stubEnv('HOME', path.join(root, 'home'));
@@ -757,13 +782,16 @@ describe('every tool and toolPaths shape keeps its instructions (#945)', () => {
       for (const value of Object.values(paths)) {
         if (typeof value === 'string') fs.mkdirSync(path.join(base, toolInstallRoot(value)), { recursive: true });
       }
+      // OpenClaw is installed where its workspace resolves (#946).
+      if (tool === 'openclaw') fs.mkdirSync(path.join(process.env.HOME, '.openclaw', 'workspace'), { recursive: true });
       const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git', toolPaths: { [tool]: paths } });
 
       const { targets, hooks, stale } = await resolveInstructionTargets(teamConfig, localConfig);
 
       const targetPaths = new Set(targets.map((t) => t.path));
       expect(stale.filter((t) => targetPaths.has(t.path))).toEqual([]);
-      if (paths.claudemd !== undefined) {
+      // OpenClaw reads no project file of its own, only the shared AGENTS.md (#946).
+      if (paths.claudemd !== undefined && !(scope === 'project' && tool === 'openclaw')) {
         expect([...targets.flatMap((t) => t.tools), ...hooks.map((h) => h.tool)]).toContain(tool);
       }
     } finally {

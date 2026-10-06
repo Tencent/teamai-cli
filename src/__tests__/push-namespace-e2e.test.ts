@@ -21,6 +21,13 @@ const CLI = path.join(ROOT, 'dist', 'index.js');
 const PUSH_AGENTS = ['claude', 'codex', 'codebuddy', 'opencode'] as const;
 type PushAgent = (typeof PUSH_AGENTS)[number];
 
+/**
+ * Whether a new file in the tool's rules directory is a new team rule. A tool
+ * with a rules format of its own keeps the member's own rules there, in that
+ * format, so push never offers one (CodeBuddy since #946, as Cursor).
+ */
+const pushesNewRule = (agent: PushAgent): boolean => agent !== 'codebuddy';
+
 const GIT_ENV = {
   GIT_AUTHOR_NAME: 'TeamAI CI',
   GIT_AUTHOR_EMAIL: 'ci@teamai.test',
@@ -278,12 +285,14 @@ describe('push places new rules and agents in a namespace (issue #649)', () => {
     );
 
     // The generic git provider cannot open a PR; the branch is still pushed.
-    expect(result.output).toContain('[rules] my-rule → rules/fe-know/my-rule.md');
+    if (pushesNewRule(agent)) expect(result.output).toContain('[rules] my-rule → rules/fe-know/my-rule.md');
+    else expect(result.output).not.toContain('[rules] my-rule');
     expect(result.output).toContain('[agents] vr → agents/fe-agents/vr.yaml');
 
     const { branch, files } = branchFiles(fixture);
     expect(branch, result.output).not.toBe('');
-    expect(files).toContain('rules/fe-know/my-rule.md');
+    if (pushesNewRule(agent)) expect(files).toContain('rules/fe-know/my-rule.md');
+    else expect(files).not.toContain('rules/fe-know/my-rule.md');
     expect(files).toContain('skills/fe-skills/my-skill/SKILL.md');
     expect(files).toContain('agents/fe-agents/vr.yaml');
     // The shared root is what shipped the rule to the whole team before #649.
@@ -296,7 +305,9 @@ describe('push places new rules and agents in a namespace (issue #649)', () => {
     const state = readState(fixture) as { placedRules?: unknown; pendingPushes: Array<{ items: Array<Record<string, unknown>> }> };
     expect(state.placedRules ?? {}).toEqual({});
     expect(state.pendingPushes.at(-1)?.items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'rules', name: 'my-rule', relativePath: 'rules/fe-know/my-rule.md', placed: true }),
+      ...pushesNewRule(agent)
+        ? [expect.objectContaining({ type: 'rules', name: 'my-rule', relativePath: 'rules/fe-know/my-rule.md', placed: true })]
+        : [],
       expect.objectContaining({ type: 'agents', name: 'vr', relativePath: 'agents/fe-agents/vr.yaml', placed: true }),
     ]));
   }, 60_000);
@@ -948,7 +959,7 @@ describe('push namespace placement reaches the PR providers (issue #649)', () =>
     expect(result.output).toContain('Pull Request created: https://github.com/team/issue-649/pull/649');
     expect(fs.readFileSync(ghLog, 'utf8')).toContain('pr create -R team/issue-649');
     const { files } = branchFiles(fixture);
-    expect(files).toContain('rules/fe-know/my-rule.md');
+    if (pushesNewRule(agent)) expect(files).toContain('rules/fe-know/my-rule.md');
     expect(files).toContain('agents/fe-agents/vr.yaml');
     expect(files).not.toContain('rules/my-rule.md');
   }, 60_000);
@@ -994,7 +1005,7 @@ describe('push namespace placement reaches the PR providers (issue #649)', () =>
       );
       expect(requestPaths).toEqual(['/api/v4/projects/team%2Fissue-649/merge_requests']);
       const { files } = branchFiles(fixture);
-      expect(files).toContain('rules/fe-know/my-rule.md');
+      if (pushesNewRule(agent)) expect(files).toContain('rules/fe-know/my-rule.md');
       expect(files).toContain('agents/fe-agents/vr.yaml');
       expect(files).not.toContain('rules/my-rule.md');
     } finally {

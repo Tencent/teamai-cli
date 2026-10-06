@@ -96,6 +96,7 @@ import { getUserHome } from './utils/home.js';
 import { describeRoles, listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
 import { loadProjectsManifest, listProjectIds, type ProjectsManifest } from './projects.js';
 import { memberReadRoots, readMemberConfig, mergeMemberConfig } from './members.js';
+import { noDryRunPreview } from './dry-run-guard.js';
 import { askQuestion, askConfirmation, askSelection, closePrompt, isInteractive, parseSelection } from './utils/prompt.js';
 import {
   normalizeAgentList,
@@ -781,7 +782,8 @@ export async function initHttp(
 /**
  * Install the hooks for a fresh init. When the team hooks do not resolve, the
  * built-in hooks are still installed; say that the team hooks were not, so the
- * success line that follows does not claim them.
+ * success line that follows does not claim them. Then name each installed tool
+ * that gets no rules in this scope, and why (#946).
  */
 async function reconcileHooksForInit(
   teamConfig: TeamaiConfig,
@@ -809,6 +811,10 @@ async function reconcileHooksForInit(
   } catch (e) {
     log.debug(`Team instruction check skipped: ${(e as Error).message}`);
   }
+  // A tool with no rules channel in this scope is told so here, not left to
+  // look delivered (#946).
+  const { ruleChannelNotes } = await import('./resources/rules.js');
+  for (const note of await ruleChannelNotes(localConfig)) log.info(note);
 }
 
 /**
@@ -1104,6 +1110,14 @@ export async function initSelfRepo(options: GlobalOptions & {
   force?: boolean;
   inheritUserScope?: boolean;
 }): Promise<void> {
+  // No preview yet, and loading the config below already bootstraps a clone
+  // whose teamai.yaml says `mode: self` (#852), so stop before anything (#900).
+  if (options.dryRun) {
+    log.error(noDryRunPreview('init'));
+    process.exit(1);
+    return;
+  }
+
   log.info('Initializing teamai (single-repo mode)...');
 
   const cwd = process.cwd();

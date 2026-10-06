@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { tokenize, wordSegments, buildIndex, loadIndex, search } from '../utils/search-index.js';
+import { tokenize, wordSegments, buildIndex, loadIndex, search, parseLearningDoc } from '../utils/search-index.js';
+import { log } from '../utils/logger.js';
 import { computeIdfBaseline, isRelevantScore } from '../recall.js';
 import type { SearchIndex, SearchIndexEntry } from '../types.js';
 
@@ -45,6 +46,21 @@ const DOC_WITHOUT_FRONTMATTER = `# K8s Pod OOM 排查
 const DOC_EMPTY = '';
 
 // ─── tokenize ─────────────────────────────────────────────
+
+describe('parseLearningDoc', () => {
+  it('reads a rule scoped with an unquoted glob without an error, and leaves its frontmatter out of the body (#946)', () => {
+    const error = vi.spyOn(log, 'error');
+    try {
+      const doc = parseLearningDoc('---\ntitle: TS rule\npaths: **/*.ts\n---\n\nUse strict types.\n', 'ts.md');
+
+      expect(doc?.meta.title).toBe('TS rule');
+      expect(doc?.bodyExcerpt).toBe('Use strict types.');
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
 
 describe('tokenize', () => {
   it('T1: tokenizes mixed Chinese and English text with CJK bigrams', () => {

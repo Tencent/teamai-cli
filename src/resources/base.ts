@@ -7,6 +7,13 @@ import type { DeliveryLedger } from './delivered-copies.js';
 
 const TOMBSTONE_FILE = '.removed';
 
+/**
+ * The root that says a tool is installed, for a tool with a path under
+ * another tool's root: WorkBuddy reads a project's rules from CodeBuddy's
+ * `.codebuddy/rules` (#946), which says nothing about WorkBuddy.
+ */
+const INSTALL_ROOTS: Readonly<Record<string, string>> = { workbuddy: '.workbuddy' };
+
 /** Detect an installed tool while respecting tool-specific user roots. */
 export async function isToolInstalledForConfig(
   tool: string,
@@ -20,7 +27,7 @@ export async function isToolInstalledForConfig(
       || (exactConfigPath !== undefined && await pathExists(exactConfigPath))
       || pathExists(getCopilotHome());
   }
-  return ResourceHandler.isToolInstalled(toolPath, baseDir);
+  return ResourceHandler.isToolInstalled(Object.hasOwn(INSTALL_ROOTS, tool) ? INSTALL_ROOTS[tool] : toolPath, baseDir);
 }
 
 /**
@@ -119,11 +126,16 @@ export abstract class ResourceHandler {
    * destination at all. Docs land in one directory, env in one shell profile,
    * and hooks and MCP are entries inside a tool's own config file, so those
    * keep checks of their own instead of a sentinel tool.
+   *
+   * `received` names the items this member receives in this scope, when the
+   * caller already resolved them; a handler that needs them otherwise
+   * resolves them itself (rules, for a tool that writes them flat).
    */
   async deliveryTargets(
     _teamConfig: TeamaiConfig,
     _localConfig: LocalConfig,
     _item: ResourceItem,
+    _received?: readonly string[],
   ): Promise<DeliveryTarget[]> {
     return [];
   }

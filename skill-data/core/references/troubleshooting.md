@@ -305,6 +305,9 @@ before cleaning shared instructions. Older destination contents do not count;
 culture and recall stay because HTTP prompt commands do not replace them.
 An HTTP prompt sync that cannot clean retired blocks reports a failed ACK and
 keeps its previous cache and manifest for the server's retry.
+OpenClaw HTTP prompts require an existing resolved user workspace, but not an
+existing `AGENTS.md`: the prompt sync creates that file and preserves personal
+text already in it.
 
 OpenCode registration saves ownership before activating a new config entry.
 If the state write fails, repair the state directory's permissions and retry

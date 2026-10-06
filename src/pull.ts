@@ -23,7 +23,7 @@ import { reportHeldAgents, type RedeployedCopy } from './resources/agents.js';
 import { listStaleDocDirectories, resolveDesiredDocs, resolveDocsDestination } from './resources/docs.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { skillsDirForTool } from './resources/skills.js';
-import { ruleFileExtensionForTool } from './resources/rule-format.js';
+import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
 import {
   forgetDelivered, judgeCopy, openLedger, removedCopyChanged, reportKept, type DeliveredHashes, type DeliveryLedger,
@@ -375,8 +375,9 @@ async function reportWouldKeep(
   ledger: DeliveryLedger,
   scopeLabel: string,
 ): Promise<void> {
+  const received = items.map((item) => item.name);
   for (const item of items) {
-    for (const target of await handler.deliveryTargets(freshConfig, localConfig, item)) {
+    for (const target of await handler.deliveryTargets(freshConfig, localConfig, item, received)) {
       if ((await judgeCopy(ledger.previous, item, target)).kind === 'keep') {
         log.info(`[${scopeLabel}] [dry-run] Would keep ${target.dest}: you changed it since teamai delivered it.`);
       }
@@ -510,6 +511,26 @@ async function cleanupTombstonedResources(
       if (!await isToolInstalledForConfig(tool, dir, localConfig)) continue;
       if (isAgentExcluded(localConfig, tool)) continue;
       const baseDir = resolveToolBaseDir(tool, localConfig);
+      // OMP's copy of a namespaced rule is flat (#946). A file of that name
+      // may be the member's own, so only its record makes it teamai's.
+      const teamNames = type === 'rules' ? (await handler.scanTeamForPull(freshConfig, localConfig)).map((rule) => rule.name) : [];
+      const flatStems = type === 'rules' ? flatStemsOfRemoved(tool, tombstones, teamNames) : new Set<string>();
+      // A removed root rule's name can be the flat name a live namespaced rule
+      // is written under (`fe.style` for `fe/style`): that file is not the removed rule's.
+      const liveFlatStems = type === 'rules' && ruleFormatForTool(tool)?.flat
+        ? new Set([...ruleStemsForTool(tool, teamNames)].filter(([name]) => name.includes('/')).map(([, stem]) => stem))
+        : new Set<string>();
+      for (const stem of flatStems) {
+        const localPath = path.join(baseDir, dir, `${stem}${ruleFileExtensionForTool(tool)}`);
+        if (ledger.previous?.[localPath] === undefined || !await pathExists(localPath)) continue;
+        if (await removedCopyChanged(ledger.previous, localPath)) {
+          log.warn(`[${scopeLabel}] Kept ${localPath}: the team removed the rule it is a copy of, but you changed this copy. Delete it when you no longer need it.`);
+          continue;
+        }
+        await remove(localPath);
+        forgetDelivered(ledger.hashes, localPath);
+        log.debug(`[${scopeLabel}] Cleaned up tombstoned rules copy ${stem} from ${dir}`);
+      }
 
       for (const name of tombstones) {
         for (const extension of tombstoneExtensions(type, tool)) {
@@ -519,6 +540,7 @@ async function cleanupTombstonedResources(
           // now (#945): a tombstone of a team rule by that name, from before,
           // does not reach it. A copy without the blocks is reclaimed by rules sync.
           if (type === 'rules' && name === TEAMAI_CONTEXT_RULE_NAME) continue;
+          if (liveFlatStems.has(name)) continue;
           // Even an upstream (tombstone) removal must not blow away a local
           // repo's stash/unpushed history inside a skill directory. Keep
           // + warn; the user can delete it manually once backed up.
@@ -824,6 +846,54 @@ function setAgentModels(record: CheckoutRecord, agentModels: AgentModelRecords):
 async function openCheckoutLedger(localConfig: LocalConfig, state?: State): Promise<DeliveryLedger> {
   const record = await deliveringCheckoutRecord(localConfig, state);
   return openLedger(record?.delivered, record?.agentModels);
+}
+
+/**
+ * Rules on the "Already synced" fast path (#946): a CLI upgrade can change
+ * what a tool's rule copy should hold while the team repo stays put, as when
+ * Kiro and Qoder got their own format. Only a copy still on record as what
+ * teamai wrote is rewritten (`RulesHandler.rerenderOutdatedCopies`), and the
+ * record follows, so the next pull does not read the new bytes as an edit. A
+ * copy the member changed is kept and named, as a full sync names it. A copy
+ * with no record is rewritten only while it is the team rule verbatim, and a
+ * copy whose path moved within a tool's directory (OMP's flat names) is
+ * written at the new path, the old copy being the proof of delivery.
+ *
+ * The copies an older CLI left where the tool does not read them are
+ * reclaimed first (`reclaimLegacyRuleCopies`, #938). That is also what writes
+ * a rule whose destination moved, such as WorkBuddy's from `.workbuddy/rules`
+ * to `.codebuddy/rules`: the new path has no record to rewrite.
+ */
+async function rerenderOutdatedRules(
+  freshConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  items: ResourceItem[],
+  scopeLabel: string,
+): Promise<void> {
+  try {
+    const key = await checkoutRecordKey(localConfig);
+    const state = await loadStateForScope(localConfig);
+    const ledger = await openCheckoutLedger(localConfig, state);
+    const handler = getHandler('rules') as RulesHandler;
+    const reclaimed = await handler.reclaimLegacyRuleCopies(freshConfig, localConfig, items, ledger);
+    // With no record yet, it still rewrites a copy its bytes prove teamai's.
+    const rewritten = key ? await handler.rerenderOutdatedCopies(freshConfig, localConfig, items, ledger) : [];
+    reportKept(ledger, scopeLabel);
+    if (!key || (reclaimed === 0 && rewritten.length === 0)) return;
+    const record = localConfig.scope === 'user' ? await userScopeRecord(state) : state.lastPullByWorkspace?.[key];
+    if (record) {
+      record.delivered = ledger.hashes;
+      await saveStateForScope(state, localConfig);
+    }
+    if (rewritten.length > 0) {
+      log.success(`[${scopeLabel}] Rewrote ${rewritten.length} rule(s) in their tool's own format: ${rewritten.join(', ')}`);
+    }
+  } catch (e) {
+    log.warn(
+      `[${scopeLabel}] Could not check whether delivered rules need their tool's format or a new place: ${(e as Error).message}. `
+      + 'Copies may still be in an older format, or where the tool does not read them; fix the cause, then run `teamai pull`.',
+    );
+  }
 }
 
 /**
@@ -1303,17 +1373,36 @@ async function pullForScope(
           // CLI keeps the copies that CLI failed to delete, and its stored rev
           // never moves again. Re-run the cleanup so the upgrade reaches it (#576).
           await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, openLedger(await deliveredHashes(localConfig, state)));
-          // Same reason: a CLI that moves Codex's team rules into its own
-          // AGENTS.md (user scope) and its session-start hook (project scope)
-          // writes that block and reclaims the old .codex/rules copies here (#938).
+          // Same reason: a CLI that moves a tool's user team rules into a file
+          // only it reads (Codex's AGENTS.md, #938; ZCode, DeepSeek Harness,
+          // OpenClaw, Pi and JoyCode, #946) writes that block here, and
+          // Hermes' SOUL.md block, which an older project pull overwrote.
           if (resourceTypes.includes('rules')) {
+            // A plain pull runs this path again, so it is the retry for each step.
+            let items: ResourceItem[] | undefined;
             try {
-              const { items } = await resolveDesiredRules(freshConfig, localConfig, roleContext);
-              await (getHandler('rules') as RulesHandler).syncCodexInstructionRules(
-                freshConfig, localConfig, items, openLedger(await deliveredHashes(localConfig, state)),
-              );
+              ({ items } = await resolveDesiredRules(freshConfig, localConfig, roleContext));
             } catch (error) {
-              log.warn(`[${scopeLabel}] Codex's team rules were not updated: ${(error as Error).message}. Run \`teamai pull --force\` to retry.`);
+              log.warn(`[${scopeLabel}] Could not resolve the team rules, so no OpenCode rules glob, older rule copy or, in user scope, tool's own rules file (such as ~/.codex/AGENTS.md) was updated: ${(error as Error).message}. Run \`teamai pull\` to retry.`);
+            }
+            if (items !== undefined) {
+              try {
+                await (getHandler('rules') as RulesHandler).syncUserRulesFiles(freshConfig, localConfig, items);
+              } catch (error) {
+                // A file that fails is named by syncUserRulesFiles.
+                log.warn(`[${scopeLabel}] No tool's own user rules file (such as ~/.codex/AGENTS.md or ~/.zcode/AGENTS.md) was updated: ${(error as Error).message}. Run \`teamai pull\` to retry.`);
+              }
+              // Same reason: a CLI that moves OpenCode's rules globs writes them
+              // to their new config file and reclaims the old ones (#946).
+              try {
+                await (getHandler('rules') as RulesHandler).activateOpencodeInstructions(freshConfig, localConfig, items);
+              } catch (error) {
+                log.warn(`[${scopeLabel}] OpenCode's rules globs were not updated: ${(error as Error).message}. Run \`teamai pull\` to retry.`);
+              }
+              // Same reason: a CLI that gives a tool its own rules format must
+              // re-render the copies an older one wrote verbatim, and reclaim the
+              // ones it left where the tool does not read them (#938, #946).
+              await rerenderOutdatedRules(freshConfig, localConfig, items, scopeLabel);
             }
           }
           // The repo has not moved, but an agent's model may have (#830).

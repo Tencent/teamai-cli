@@ -138,6 +138,26 @@ export async function readJson<T = unknown>(filePath: string): Promise<T | null>
   }
 }
 
+/** A JSON file read as an object: missing, not a JSON object (and why), or its value. */
+export type JsonObjectRead =
+  | { kind: 'missing' }
+  | { kind: 'invalid'; error: string }
+  | { kind: 'ok'; value: Record<string, unknown> };
+
+/** Read a file that should hold a JSON object, saying why when it does not. Never throws, never logs. */
+export async function readJsonObject(filePath: string): Promise<JsonObjectRead> {
+  const raw = await readFileSafe(filePath);
+  if (raw === null) return { kind: 'missing' };
+  try {
+    const value: unknown = JSON.parse(raw);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? { kind: 'ok', value: value as Record<string, unknown> }
+      : { kind: 'invalid', error: 'not a JSON object' };
+  } catch (e) {
+    return { kind: 'invalid', error: (e as Error).message };
+  }
+}
+
 /**
  * Write JSON file
  */

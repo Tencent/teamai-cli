@@ -77,7 +77,8 @@ export function openLedger(previous: DeliveredHashes | undefined, agentModels?: 
   };
 }
 
-function sha256(content: string | Buffer): string {
+/** sha256 of `content`, as `fileHash` and the record spell it. */
+export function contentHash(content: string | Buffer): string {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
@@ -93,7 +94,7 @@ function recordedUnder(hashes: DeliveredHashes, dest: string): string[] {
  */
 async function nextHashes(previous: DeliveredHashes, item: ResourceItem, target: DeliveryTarget): Promise<Map<string, string | null>> {
   if (item.type !== 'skills') {
-    return new Map([[target.dest, target.content === undefined ? null : sha256(target.content)]]);
+    return new Map([[target.dest, target.content === undefined ? null : contentHash(target.content)]]);
   }
   const { withSkillFrontmatter } = await import('./skills.js');
   const next = new Map<string, string | null>();
@@ -102,7 +103,7 @@ async function nextHashes(previous: DeliveredHashes, item: ResourceItem, target:
     const bytes = await fse.readFile(path.join(item.sourcePath, file));
     const text = bytes.toString('utf-8');
     const written = file === 'SKILL.md' ? withSkillFrontmatter(text, item.name) : text;
-    next.set(path.join(target.dest, file), sha256(written === text ? bytes : written));
+    next.set(path.join(target.dest, file), contentHash(written === text ? bytes : written));
   }
   for (const file of recordedUnder(previous, target.dest)) {
     if (!next.has(file)) next.set(file, null);
@@ -154,6 +155,27 @@ export async function recordDelivered(hashes: DeliveredHashes, dest: string, ski
     const hash = await fileHash(file);
     if (hash !== null) hashes[file] = hash;
   }
+}
+
+/**
+ * Whether `file` holds the bytes the record has for it, or for `recordAt`
+ * (the file a tool copied it from): on record and unchanged since.
+ */
+export async function recordedUnchanged(previous: DeliveredHashes | undefined, file: string, recordAt: string = file): Promise<boolean> {
+  const recorded = previous?.[recordAt];
+  return recorded !== undefined && recorded === await fileHash(file);
+}
+
+/**
+ * Give `file`, which has no record, the record `hash` of the copy it was made
+ * from, so pull treats it as that copy: kept once it differs. Returns whether
+ * it did; a pull with no record at all protects nothing, so it does not.
+ */
+export function adoptRecord(ledger: DeliveryLedger, file: string, hash: string): boolean {
+  if (ledger.previous === undefined || ledger.previous[file] !== undefined) return false;
+  ledger.previous[file] = hash;
+  ledger.hashes[file] = hash;
+  return true;
 }
 
 export function forgetDelivered(hashes: DeliveredHashes, dest: string): void {

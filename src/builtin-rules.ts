@@ -2,8 +2,7 @@ import path from 'node:path';
 import { ensureDir, writeFile, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
-import { ruleFileExtensionForTool, usesCursorMdcRules } from './resources/rule-format.js';
-import { teamRuleToCursorMdc } from './resources/cursor-mdc.js';
+import { renderRuleForTool, ruleFileExtensionForTool } from './resources/rule-format.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { resolveToolBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
 import fs from 'node:fs/promises';
@@ -86,14 +85,13 @@ export async function deployBuiltinRules(
         try {
             await ensureDir(rulesDir);
 
-            // Deploy current built-in rules. Cursor-compatible tools use `.mdc`
-            // with derived frontmatter; every other tool gets canonical `.md`.
+            // Deploy current built-in rules in each tool's own rules format
+            // (`.mdc` for Cursor, Kiro's and Qoder's frontmatter, …); a tool
+            // without one gets the canonical `.md`.
             const ext = ruleFileExtensionForTool(tool);
             for (const rule of builtinRules) {
                 const destFile = path.join(rulesDir, `${rule.name}${ext}`);
-                const content = usesCursorMdcRules(tool)
-                    ? teamRuleToCursorMdc(rule.content)
-                    : rule.content;
+                const content = renderRuleForTool(tool, rule.content);
                 await writeFile(destFile, content);
                 log.debug(`Deployed built-in rule ${rule.name} → ${tool}`);
 

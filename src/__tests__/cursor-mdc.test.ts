@@ -1,10 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import matter from 'gray-matter';
-import {
-  teamRuleToCursorMdc,
-  mergeCursorBodyIntoTeamMd,
-  cursorMdcBodyEqualsTeamMd,
-} from '../resources/cursor-mdc.js';
+import { teamRuleToCursorMdc } from '../resources/cursor-mdc.js';
+import { mergeRuleBodyIntoTeamMd, ruleBodyEqualsTeamMd } from '../resources/team-rule.js';
 
 describe('teamRuleToCursorMdc', () => {
   it('maps a team `paths:` array to Cursor `globs` with alwaysApply=false', () => {
@@ -83,7 +80,7 @@ Body.`;
   });
 });
 
-describe('mergeCursorBodyIntoTeamMd', () => {
+describe('mergeRuleBodyIntoTeamMd', () => {
   it('keeps the team rule frontmatter and replaces only the body', () => {
     const team = `---
 paths:
@@ -97,7 +94,7 @@ alwaysApply: false
 ---
 
 Edited body.`;
-    const merged = mergeCursorBodyIntoTeamMd(mdc, team);
+    const merged = mergeRuleBodyIntoTeamMd(mdc, team);
     expect(merged).toContain('paths:');
     expect(merged).toContain('- "**/*.ts"');
     expect(merged).toContain('Edited body.');
@@ -113,7 +110,7 @@ paths: ["**/*.ts"]
 
 Same body.`;
     const mdc = teamRuleToCursorMdc(team);
-    expect(mergeCursorBodyIntoTeamMd(mdc, team)).toBe(team);
+    expect(mergeRuleBodyIntoTeamMd(mdc, team)).toBe(team);
   });
 
   it('writes body only for a rule that does not exist upstream yet', () => {
@@ -122,20 +119,20 @@ alwaysApply: true
 ---
 
 Brand new rule.`;
-    expect(mergeCursorBodyIntoTeamMd(mdc, null)).toBe('Brand new rule.\n');
+    expect(mergeRuleBodyIntoTeamMd(mdc, null)).toBe('Brand new rule.\n');
   });
 
   it('handles a team rule that has no frontmatter', () => {
-    expect(mergeCursorBodyIntoTeamMd('just a body', 'old body')).toBe('just a body\n');
+    expect(mergeRuleBodyIntoTeamMd('just a body', 'old body')).toBe('just a body\n');
   });
 
   it('does not leak an empty `---/---` block into the body', () => {
     const mdc = '---\n---\nThe rule body.';
-    expect(mergeCursorBodyIntoTeamMd(mdc, null)).toBe('The rule body.\n');
+    expect(mergeRuleBodyIntoTeamMd(mdc, null)).toBe('The rule body.\n');
   });
 });
 
-describe('cursorMdcBodyEqualsTeamMd — round-trip stability', () => {
+describe('ruleBodyEqualsTeamMd — round-trip stability', () => {
   it('a pulled .mdc compares equal to its source team .md (no spurious modified)', () => {
     const team = `---
 paths:
@@ -144,13 +141,13 @@ paths:
 
 Rule text that must not drift.`;
     const mdc = teamRuleToCursorMdc(team);
-    expect(cursorMdcBodyEqualsTeamMd(mdc, team)).toBe(true);
+    expect(ruleBodyEqualsTeamMd(mdc, team)).toBe(true);
   });
 
   it('a mandatory (no-frontmatter) team rule round-trips equal', () => {
     const team = 'A mandatory rule with no frontmatter.';
     const mdc = teamRuleToCursorMdc(team);
-    expect(cursorMdcBodyEqualsTeamMd(mdc, team)).toBe(true);
+    expect(ruleBodyEqualsTeamMd(mdc, team)).toBe(true);
   });
 
   it('detects a genuine body edit as different', () => {
@@ -165,7 +162,7 @@ alwaysApply: false
 ---
 
 Edited body.`;
-    expect(cursorMdcBodyEqualsTeamMd(editedMdc, team)).toBe(false);
+    expect(ruleBodyEqualsTeamMd(editedMdc, team)).toBe(false);
   });
 
   it('ignores frontmatter-only differences', () => {
@@ -179,6 +176,6 @@ alwaysApply: true
 ---
 
 Same body.`;
-    expect(cursorMdcBodyEqualsTeamMd(differentFrontmatter, team)).toBe(true);
+    expect(ruleBodyEqualsTeamMd(differentFrontmatter, team)).toBe(true);
   });
 });

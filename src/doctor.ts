@@ -20,7 +20,7 @@ import {
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import { skillsDirForTool } from './resources/skills.js';
-import { getsRulesFromSessionHook } from './resources/rule-format.js';
+import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, readCodexHookTrustForScope } from './hooks.js';
 import {
   buildDeliveryChecks,
@@ -262,6 +262,23 @@ async function buildHookChecks(
       });
       continue;
     }
+    if (tool === 'openclaw') {
+      // OpenClaw has no settings file: its hook is a workspace hook directory,
+      // which OpenClaw loads only once openclaw.json enables its entry.
+      const { resolveOpenclawWorkspaceDir, isOpenclawHookEnabled, OPENCLAW_HOOK_DIR, OPENCLAW_HOOK_KEY } = await import('./openclaw-hooks.js');
+      const workspace = await resolveOpenclawWorkspaceDir();
+      if (!workspace || !await pathExists(path.join(workspace, 'hooks', OPENCLAW_HOOK_DIR))) continue;
+      checks.push({
+        name: 'OpenClaw hook enabled',
+        source: 'local',
+        check: isOpenclawHookEnabled,
+        fix: `OpenClaw loads teamai's hook only when openclaw.json sets hooks.internal.entries.${OPENCLAW_HOOK_KEY}.enabled `
+          + `(and internal hooks are not switched off), so OpenClaw sends no status report or sync. `
+          + `Run \`openclaw hooks enable ${OPENCLAW_HOOK_KEY}\`. If it is enabled already, openclaw.json is not plain JSON `
+          + `(comments, JSON5), which teamai cannot read: \`openclaw hooks info ${OPENCLAW_HOOK_KEY}\` shows what OpenClaw sees.`,
+      });
+      continue;
+    }
     // A standalone hooks file (Copilot) is injected at the config's own scope
     // (`reconcileTeamHooksForConfig` joins resolveToolBaseDir with the
     // config-scoped `hooks`), so it is probed from `toolPaths`. Settings-based
@@ -298,7 +315,10 @@ async function buildHookChecks(
       },
       fix: 'Run `teamai hooks inject` to inject/update hooks',
     });
-    if (getsRulesFromSessionHook(tool)) checks.push(sessionHookRulesCheck(tool, settingsPath));
+    // ZCode and DeepSeek Harness get the rules from their session-start hook
+    // too, checked with the rules (`buildProjectRulesHookChecks`); only Codex
+    // has the SubagentStart entry and the context limit this check is about.
+    if (isCodexTool(tool)) checks.push(sessionHookRulesCheck(tool, settingsPath));
   }
   return checks;
 }
@@ -668,12 +688,14 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   // Info, not checks: which namespace item or entry replaces which root one
   // (#707), a model alias an agent uses from a namespace not active here, and
   // how each alias agent's model resolved in each tool (#830).
+  const { ruleChannelNotes } = await import('./resources/rules.js');
   const notes = [
     ...await buildNamespaceNotes(ctx),
     ...await entryNamespaceNotes(ctx),
     ...await aliasNamespaceNotes(ctx),
     ...await agentModelNotes(ctx),
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
+    ...await ruleChannelNotes(localConfig),
     ...codexTrust.notes,
   ];
 

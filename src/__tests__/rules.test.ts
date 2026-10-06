@@ -15,6 +15,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 vi.mock('../utils/git.js', () => ({
   pullRepo: vi.fn(),
+  listFilesAtRev: vi.fn(async () => []),
   pushRepoBranch: vi.fn().mockResolvedValue(true),
   generateBranchName: vi.fn().mockReturnValue('teamai/push/test/20260305-120000'),
 }));
@@ -618,6 +619,8 @@ scope: 'user',
     });
 
     it('reclaims delivered copies from a rule directory shared with user rules (JoyCode)', async () => {
+      // A team entry that keeps a user rules directory for JoyCode; the
+      // default one reads none in user scope since #946.
       teamConfig.toolPaths.joycode = { rules: '.joycode/rules' };
       await fse.ensureDir(path.join(homeDir, '.joycode', 'rules'));
       const teamRulesDir = path.join(localConfig.repo.localPath, 'rules');
@@ -1060,22 +1063,95 @@ describe('RulesHandler.pullAllRules — OpenCode instructions activation', () =>
 
     // File landed under the user-scope OpenCode rules dir.
     expect(await fse.pathExists(path.join(ocRules(), 'team-rule.md'))).toBe(true);
-    // opencode.json now references the teamai glob (user scope → 'rules/*.md').
+    // An absolute glob: OpenCode resolves a relative entry from the session
+    // cwd, so `rules/*.md` would load the project's rules instead (#946).
     const doc = await fse.readJson(ocConfig());
-    expect(doc.instructions).toContain('rules/*.md');
+    expect(doc.instructions).toEqual([`${ocRules()}/*.md`]);
+  });
+
+  // OpenCode globs only the basename of an absolute entry, so `**` never
+  // matches: each directory a namespaced rule lands in gets its own glob.
+  it('adds one glob per namespace directory a rule lands in (#946)', async () => {
+    const teamRules = path.join(localConfig.repo.localPath, 'rules');
+    await fse.writeFile(path.join(teamRules, 'root-rule.md'), 'root');
+    await fse.ensureDir(path.join(teamRules, 'fe'));
+    await fse.writeFile(path.join(teamRules, 'fe', 'style.md'), 'fe style');
+    await fse.writeFile(path.join(teamRules, 'fe', 'tests.md'), 'fe tests');
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(ocRules(), 'fe', 'style.md'))).toBe(true);
+    expect((await fse.readJson(ocConfig())).instructions).toEqual([`${ocRules()}/*.md`, `${ocRules()}/fe/*.md`]);
+  });
+
+  it('replaces the relative rules/*.md an earlier release wrote, keeping the member\'s own entries (#946)', async () => {
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'team-rule.md'), 'team content');
+    await fse.ensureDir(path.dirname(ocConfig()));
+    await fse.writeJson(ocConfig(), { model: 'mine', instructions: ['CONVENTIONS.md', 'rules/*.md'] });
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.readJson(ocConfig())).toEqual({ model: 'mine', instructions: ['CONVENTIONS.md', `${ocRules()}/*.md`] });
+  });
+
+  it('keeps a glob the member added for a directory of their own under the rules root (#946)', async () => {
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'team-rule.md'), 'team content');
+    await fse.ensureDir(path.dirname(ocConfig()));
+    await fse.writeJson(ocConfig(), { instructions: [`${ocRules()}/mine/*.md`] });
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect((await fse.readJson(ocConfig())).instructions).toEqual([`${ocRules()}/mine/*.md`, `${ocRules()}/*.md`]);
+  });
+
+  it('drops the glob of a namespace this member no longer receives (#946)', async () => {
+    const teamRules = path.join(localConfig.repo.localPath, 'rules');
+    await fse.writeFile(path.join(teamRules, 'root-rule.md'), 'root');
+    await fse.ensureDir(path.join(teamRules, 'fe'));
+    await fse.writeFile(path.join(teamRules, 'fe', 'style.md'), 'fe style');
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    // `fe/` stays in the team repo; this member's selection leaves it out.
+    const selected = (await handler.scanTeamForPull(teamConfig, localConfig)).filter((rule) => rule.name === 'root-rule');
+    await handler.pullAllRules(teamConfig, localConfig, selected);
+
+    expect((await fse.readJson(ocConfig())).instructions).toEqual([`${ocRules()}/*.md`]);
+  });
+
+  it('drops the glob of a namespace the team deleted since the last pull (#946)', async () => {
+    const teamRules = path.join(localConfig.repo.localPath, 'rules');
+    await fse.writeFile(path.join(teamRules, 'root-rule.md'), 'root');
+    await fse.ensureDir(path.join(teamRules, 'fe'));
+    await fse.writeFile(path.join(teamRules, 'fe', 'style.md'), 'fe style');
+    await handler.pullAllRules(teamConfig, localConfig);
+    expect((await fse.readJson(ocConfig())).instructions).toContain(`${ocRules()}/fe/*.md`);
+
+    // The team deletes `fe/`; the last pull's revision still has it.
+    await fse.remove(path.join(teamRules, 'fe'));
+    const { listFilesAtRev } = await import('../utils/git.js');
+    vi.mocked(loadStateForScope).mockResolvedValueOnce({ lastPullRev: 'r1' } as State);
+    vi.mocked(listFilesAtRev).mockImplementation(async (_repo, rev) => (rev === 'r1' ? ['rules/root-rule.md', 'rules/fe/style.md'] : []));
+    try {
+      await handler.pullAllRules(teamConfig, localConfig);
+    } finally {
+      vi.mocked(listFilesAtRev).mockReset();
+      vi.mocked(listFilesAtRev).mockResolvedValue([]);
+    }
+
+    expect((await fse.readJson(ocConfig())).instructions).toEqual([`${ocRules()}/*.md`]);
   });
 
   it('removes the instructions glob when the team has no rules left', async () => {
     // First: one rule → glob present.
     await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'r.md'), 'x');
     await handler.pullAllRules(teamConfig, localConfig);
-    expect((await fse.readJson(ocConfig())).instructions).toContain('rules/*.md');
+    expect((await fse.readJson(ocConfig())).instructions).toContain(`${ocRules()}/*.md`);
 
     // Then: remove the team rule and re-pull → glob gone.
     await fse.remove(path.join(localConfig.repo.localPath, 'rules', 'r.md'));
     await handler.pullAllRules(teamConfig, localConfig);
     const doc = await fse.readJson(ocConfig());
-    expect(doc.instructions ?? []).not.toContain('rules/*.md');
+    expect(doc.instructions ?? []).not.toContain(`${ocRules()}/*.md`);
   });
 
   it('does not create opencode.json when OpenCode is not installed', async () => {
@@ -1086,9 +1162,62 @@ describe('RulesHandler.pullAllRules — OpenCode instructions activation', () =>
     await handler.pullAllRules(teamConfig, localConfig);
     expect(await fse.pathExists(ocConfig())).toBe(false);
   });
+
+  describe('project scope (#946)', () => {
+    let projectRoot: string;
+    let projectConfig: LocalConfig;
+    const rootConfig = () => path.join(projectRoot, 'opencode.json');
+    const dotConfig = () => path.join(projectRoot, '.opencode', 'opencode.json');
+
+    beforeEach(async () => {
+      projectRoot = path.join(tmpDir, 'project');
+      await fse.ensureDir(path.join(projectRoot, '.opencode'));
+      projectConfig = { ...localConfig, scope: 'project', projectRoot } as LocalConfig;
+      const teamRules = path.join(localConfig.repo.localPath, 'rules');
+      await fse.writeFile(path.join(teamRules, 'root-rule.md'), 'root');
+      await fse.ensureDir(path.join(teamRules, 'fe'));
+      await fse.writeFile(path.join(teamRules, 'fe', 'style.md'), 'fe style');
+    });
+
+    // A relative entry resolves from the session cwd up to the worktree, so
+    // one recursive glob from the project root loads the namespaced rules too.
+    it('registers .opencode/rules/**/*.md in .opencode/opencode.json, not in the root opencode.json', async () => {
+      await handler.pullAllRules(teamConfig, projectConfig);
+
+      expect(await fse.pathExists(path.join(projectRoot, '.opencode', 'rules', 'fe', 'style.md'))).toBe(true);
+      expect(await fse.readJson(dotConfig())).toEqual({ instructions: ['.opencode/rules/**/*.md'] });
+      expect(await fse.pathExists(rootConfig())).toBe(false);
+    });
+
+    it('reclaims the glob an earlier release wrote to the root opencode.json, leaving its other keys', async () => {
+      await fse.writeJson(rootConfig(), { mcp: { x: { type: 'local' } }, instructions: ['docs/style.md', '.opencode/rules/*.md'] });
+
+      await handler.pullAllRules(teamConfig, projectConfig);
+
+      expect(await fse.readJson(rootConfig())).toEqual({ mcp: { x: { type: 'local' } }, instructions: ['docs/style.md'] });
+      expect((await fse.readJson(dotConfig())).instructions).toEqual(['.opencode/rules/**/*.md']);
+    });
+
+    it('keeps the root glob while .opencode/opencode.json cannot be parsed, so the rules stay registered', async () => {
+      await fse.writeJson(rootConfig(), { instructions: ['.opencode/rules/*.md'] });
+      await fse.writeFile(dotConfig(), '{ // a comment\n}\n');
+
+      await handler.pullAllRules(teamConfig, projectConfig);
+
+      expect(await fse.readFile(dotConfig(), 'utf8')).toBe('{ // a comment\n}\n');
+      expect(await fse.readJson(rootConfig())).toEqual({ instructions: ['.opencode/rules/*.md'] });
+    });
+
+    it('removes the glob from .opencode/opencode.json when the team has no rules left', async () => {
+      await handler.pullAllRules(teamConfig, projectConfig);
+      await handler.pullAllRules(teamConfig, projectConfig, []);
+
+      expect((await fse.readJson(dotConfig())).instructions).toBeUndefined();
+    });
+  });
 });
 
-describe('RulesHandler — Cursor-compatible .mdc handling', () => {
+describe('RulesHandler — .mdc handling (Cursor, JoyCode)', () => {
   let tmpDir: string;
   let homeDir: string;
   let repoPath: string;
@@ -1119,7 +1248,8 @@ describe('RulesHandler — Cursor-compatible .mdc handling', () => {
       toolPaths: {
         claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md' },
         cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json' },
-        joycode: { skills: '.joycode/skills', rules: '.joycode/rules' },
+        // The default shape: in user scope JoyCode reads no rules directory (#946).
+        joycode: { skills: '.joycode/skills', rules: '.joycode/rules', userScope: { rules: null } },
       },
     };
 
@@ -1137,7 +1267,7 @@ describe('RulesHandler — Cursor-compatible .mdc handling', () => {
     await fse.remove(tmpDir);
   });
 
-  it('pull writes .mdc (not .md) with derived frontmatter for Cursor and JoyCode', async () => {
+  it('pull writes .mdc (not .md) with derived frontmatter for Cursor, and JoyCode\'s user rules to rules.txt', async () => {
     await fse.writeFile(
       path.join(repoPath, 'rules', 'ts-style.md'),
       '---\npaths:\n  - "**/*.ts"\n---\n\nUse named exports.',
@@ -1151,12 +1281,31 @@ describe('RulesHandler — Cursor-compatible .mdc handling', () => {
     const content = await fse.readFile(mdcPath, 'utf-8');
     expect(content).toContain('globs: "**/*.ts"');
     expect(content).toContain('alwaysApply: false');
-    const joycodeMdcPath = path.join(homeDir, '.joycode/rules/ts-style.mdc');
-    expect(await fse.pathExists(joycodeMdcPath)).toBe(true);
+    // JoyCode reads its user rules from one text file, not ~/.joycode/rules (#946).
+    expect(await fse.pathExists(path.join(homeDir, '.joycode/rules/ts-style.mdc'))).toBe(false);
     expect(await fse.pathExists(path.join(homeDir, '.joycode/rules/ts-style.md'))).toBe(false);
-    expect(await fse.readFile(joycodeMdcPath, 'utf-8')).toBe(content);
+    expect(await fse.readFile(path.join(homeDir, '.joycode/rules.txt'), 'utf-8'))
+      .toContain('Applies to files matching: **/*.ts\nUse named exports.');
     // claude still gets a plain .md copy
     expect(await fse.pathExists(path.join(homeDir, '.claude/rules/ts-style.md'))).toBe(true);
+  });
+
+  // JoyCode keeps the quotes Cursor's render puts around globs and splits on
+  // every comma, so it gets its own render (#946).
+  it('pull writes JoyCode\'s own .mdc render to a project\'s .joycode/rules', async () => {
+    localConfig.scope = 'project';
+    localConfig.projectRoot = homeDir;
+    await fse.writeFile(
+      path.join(repoPath, 'rules', 'ts-style.md'),
+      '---\npaths:\n  - "**/*.{ts,tsx}"\n---\n\nUse named exports.',
+    );
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    const joycodeMdcPath = path.join(homeDir, '.joycode/rules/ts-style.mdc');
+    expect(await fse.pathExists(path.join(homeDir, '.joycode/rules/ts-style.md'))).toBe(false);
+    expect(await fse.readFile(joycodeMdcPath, 'utf-8'))
+      .toBe('---\nglobs: **/*.ts, **/*.tsx\nalwaysApply: false\n---\n\nUse named exports.\n');
   });
 
   it('a clean pull does not make cursor rules look modified on push', async () => {
@@ -1183,8 +1332,10 @@ describe('RulesHandler — Cursor-compatible .mdc handling', () => {
       expect(await fse.readFile(path.join(homeDir, '.joycode/rules', file), 'utf-8'))
         .toBe(`Personal content: ${file}`);
     }
-    expect(await fse.readFile(path.join(homeDir, '.joycode/rules/team.mdc'), 'utf-8'))
-      .toContain('Team rule.');
+    // In user scope the team rule reaches JoyCode through rules.txt (#946).
+    const delivered = scope === 'user' ? '.joycode/rules.txt' : '.joycode/rules/team.mdc';
+    expect(await fse.readFile(path.join(homeDir, delivered), 'utf-8')).toContain('Team rule.');
+    if (scope === 'user') expect(await fse.pathExists(path.join(homeDir, '.joycode/rules/team.mdc'))).toBe(false);
   });
 
   it.each(['user', 'project'] as const)('cleans only explicitly removed JoyCode rules in %s scope', async (scope) => {
@@ -1192,19 +1343,28 @@ describe('RulesHandler — Cursor-compatible .mdc handling', () => {
     if (scope === 'project') localConfig.projectRoot = homeDir;
     await fse.writeFile(path.join(repoPath, 'rules', 'keep.md'), 'Current team rule.');
     await fse.writeFile(path.join(repoPath, 'rules', '.removed'), 'nested/removed\n');
-    for (const ext of ['.mdc', '.md']) {
-      await fse.outputFile(path.join(homeDir, '.joycode/rules/nested', `removed${ext}`), 'Former team rule.');
+    // Older layouts left `.md` copies in the project's `.mdc` directory; the
+    // user-scope ~/.joycode/rules only ever held teamai's `.mdc` copies.
+    const extensions = scope === 'user' ? ['.mdc'] : ['.mdc', '.md'];
+    const previous: DeliveredHashes = {};
+    for (const ext of extensions) {
+      const removed = path.join(homeDir, '.joycode/rules/nested', `removed${ext}`);
+      await fse.outputFile(removed, 'Former team rule.');
+      await recordDelivered(previous, removed);
     }
     const personalPath = path.join(homeDir, '.joycode/rules/nested/personal.mdc');
     await fse.outputFile(personalPath, 'Personal rule.');
 
-    await handler.pullAllRules(teamConfig, localConfig);
+    // In user scope ~/.joycode/rules is a directory JoyCode no longer gets
+    // rules in: a removed rule's copy goes on the record of its delivery (#946).
+    await handler.pullAllRules(teamConfig, localConfig, undefined, [], openLedger(previous));
 
-    for (const ext of ['.mdc', '.md']) {
+    for (const ext of extensions) {
       expect(await fse.pathExists(path.join(homeDir, '.joycode/rules/nested', `removed${ext}`))).toBe(false);
     }
     expect(await fse.readFile(personalPath, 'utf-8')).toBe('Personal rule.');
-    expect(await fse.pathExists(path.join(homeDir, '.joycode/rules/keep.mdc'))).toBe(true);
+    const kept = scope === 'user' ? '.joycode/rules.txt' : '.joycode/rules/keep.mdc';
+    expect(await fse.pathExists(path.join(homeDir, kept))).toBe(true);
   });
 
   it('detects a genuine edit to a cursor .mdc body as modified', async () => {
@@ -1385,6 +1545,153 @@ describe('RulesHandler — Cursor-compatible .mdc handling', () => {
   });
 });
 
+describe('RulesHandler — Kiro and Qoder rule formats (#946)', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let repoPath: string;
+  let handler: RulesHandler;
+  let teamConfig: TeamaiConfig;
+  let localConfig: LocalConfig;
+
+  const SCOPED = '---\npaths:\n  - "src/{a,b}/**"\n---\n\nUse named exports.\n';
+  const KIRO = '---\ninclusion: fileMatch\nfileMatchPattern: ["src/{a,b}/**"]\n---\n\nUse named exports.\n';
+  const QODER = '---\ntrigger: glob\nglob: src/a/**, src/b/**\n---\n\nUse named exports.\n';
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-rules-formats-'));
+    homeDir = path.join(tmpDir, 'home');
+    repoPath = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(path.join(repoPath, 'rules'));
+    await fse.writeFile(path.join(repoPath, 'rules', 'scoped.md'), SCOPED);
+    for (const dir of ['.claude/rules', '.kiro/steering', '.qoder/rules', '.qoder-cn/rules']) {
+      await fse.ensureDir(path.join(homeDir, dir));
+    }
+    vi.stubEnv('HOME', homeDir);
+    handler = new RulesHandler();
+    teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: {
+        claude: { rules: '.claude/rules' },
+        kiro: { rules: '.kiro/steering' },
+        qoder: { rules: '.qoder/rules' },
+        'qoder-cn': { rules: '.qoder/rules', userScope: { rules: '.qoder-cn/rules' } },
+      },
+    };
+    localConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      additionalRoles: [],
+      scope: 'user',
+    };
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  it('writes each tool its own render in user scope', async () => {
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.readFile(path.join(homeDir, '.kiro/steering/scoped.md'), 'utf-8')).toBe(KIRO);
+    expect(await fse.readFile(path.join(homeDir, '.qoder/rules/scoped.md'), 'utf-8')).toBe(QODER);
+    expect(await fse.readFile(path.join(homeDir, '.qoder-cn/rules/scoped.md'), 'utf-8')).toBe(QODER);
+    expect(await fse.readFile(path.join(homeDir, '.claude/rules/scoped.md'), 'utf-8')).toBe(SCOPED);
+  });
+
+  it('writes the same renders in project scope', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    for (const dir of ['.kiro/steering', '.qoder/rules']) await fse.ensureDir(path.join(projectRoot, dir));
+    localConfig.scope = 'project';
+    localConfig.projectRoot = projectRoot;
+
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await fse.readFile(path.join(projectRoot, '.kiro/steering/scoped.md'), 'utf-8')).toBe(KIRO);
+    expect(await fse.readFile(path.join(projectRoot, '.qoder/rules/scoped.md'), 'utf-8')).toBe(QODER);
+  });
+
+  it('a clean pull leaves nothing to push', async () => {
+    await handler.pullAllRules(teamConfig, localConfig);
+
+    expect(await handler.scanLocalForPush(teamConfig, localConfig)).toEqual([]);
+  });
+
+  it.each([
+    ['kiro', '.kiro/steering', KIRO],
+    ['qoder', '.qoder/rules', QODER],
+  ])('pushes an edited %s body into the team rule without the tool frontmatter', async (_tool, dir, render) => {
+    await handler.pullAllRules(teamConfig, localConfig);
+    const copy = path.join(homeDir, dir, 'scoped.md');
+    await fse.writeFile(copy, render.replace('Use named exports.', 'Use default exports.'));
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+    expect(items).toMatchObject([{ name: 'scoped', status: 'modified', sourcePath: copy }]);
+    await handler.pushItem(items[0], teamConfig, localConfig);
+
+    expect(await fse.readFile(path.join(repoPath, 'rules', 'scoped.md'), 'utf-8'))
+      .toBe('---\npaths:\n  - "src/{a,b}/**"\n---\n\nUse default exports.\n');
+  });
+
+  it("does not offer a member's own steering file as a new team rule", async () => {
+    await fse.writeFile(path.join(homeDir, '.kiro/steering/product.md'), '---\ninclusion: always\n---\n\nOur product.\n');
+    await fse.writeFile(path.join(homeDir, '.qoder/rules/mine.md'), '---\ntrigger: always_on\n---\n\nMine.\n');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    expect(items.map((item) => item.name)).toEqual([]);
+  });
+
+  it("keeps a member's own steering and Qoder rule files on pull, and still reclaims a team copy on record", async () => {
+    const product = path.join(homeDir, '.kiro/steering/product.md');
+    const mine = path.join(homeDir, '.qoder/rules/mine.md');
+    await fse.writeFile(product, '---\ninclusion: always\n---\n\nOur product.\n');
+    await fse.writeFile(mine, '---\ntrigger: always_on\n---\n\nMine.\n');
+    // A team rule this checkout received before, no longer delivered here.
+    const formerKiro = path.join(homeDir, '.kiro/steering/former.md');
+    const formerQoder = path.join(homeDir, '.qoder/rules/former.md');
+    await fse.writeFile(formerKiro, '---\ninclusion: always\n---\n\nFormer.\n');
+    await fse.writeFile(formerQoder, '---\ntrigger: always_on\n---\n\nFormer.\n');
+    const previous: DeliveredHashes = {};
+    await recordDelivered(previous, formerKiro);
+    await recordDelivered(previous, formerQoder);
+    const ledger = openLedger(previous);
+
+    await handler.pullAllRules(teamConfig, localConfig, undefined, [], ledger);
+
+    expect(await fse.readFile(product, 'utf-8')).toBe('---\ninclusion: always\n---\n\nOur product.\n');
+    expect(await fse.readFile(mine, 'utf-8')).toBe('---\ntrigger: always_on\n---\n\nMine.\n');
+    expect(await fse.pathExists(formerKiro)).toBe(false);
+    expect(await fse.pathExists(formerQoder)).toBe(false);
+    expect(Object.keys(ledger.hashes).filter((file) => file.endsWith('former.md'))).toEqual([]);
+  });
+
+  it('re-renders a verbatim copy an older teamai delivered, and keeps one the member edited (#822)', async () => {
+    const kiroCopy = path.join(homeDir, '.kiro/steering/scoped.md');
+    const qoderCopy = path.join(homeDir, '.qoder/rules/scoped.md');
+    await fse.writeFile(kiroCopy, SCOPED);
+    await fse.writeFile(qoderCopy, SCOPED);
+    const previous: DeliveredHashes = {};
+    await recordDelivered(previous, kiroCopy);
+    await recordDelivered(previous, qoderCopy);
+    const edited = SCOPED.replace('Use named exports.', 'My own wording.');
+    await fse.writeFile(qoderCopy, edited);
+    const ledger = openLedger(previous);
+
+    await handler.pullAllRules(teamConfig, localConfig, undefined, [], ledger);
+
+    expect(await fse.readFile(kiroCopy, 'utf-8')).toBe(KIRO);
+    expect(await fse.readFile(qoderCopy, 'utf-8')).toBe(edited);
+    expect(ledger.kept.map((kept) => kept.dest)).toEqual([qoderCopy]);
+  });
+});
+
 describe('inlinedRulesText — rules inlined into one instructions file (#938)', () => {
   let tmpDir: string;
 
@@ -1416,6 +1723,21 @@ describe('inlinedRulesText — rules inlined into one instructions file (#938)',
       + 'Review every PR.\n\n'
       + 'Applies to files matching: docs/**, *.md\nKeep docs short.',
     );
+  });
+
+  it('keeps the path hint of a rule scoped with an unquoted glob (#946)', async () => {
+    const rules = [await rule('ts', '---\npaths: **/*.ts\n---\n\nUse strict types.\n')];
+
+    expect(await inlinedRulesText(rules)).toBe('Applies to files matching: **/*.ts\nUse strict types.');
+  });
+
+  it.each([
+    'paths: **/*.ts # TypeScript files',
+    'paths:\n  - **/*.ts # TypeScript files',
+  ])('keeps comments out of the inline path hint: %s', async (frontmatter) => {
+    const rules = [await rule('ts', `---\n${frontmatter}\n---\n\nUse strict types.\n`)];
+
+    expect(await inlinedRulesText(rules)).toBe('Applies to files matching: **/*.ts\nUse strict types.');
   });
 
   it('skips a rule whose body is empty once its frontmatter is gone', async () => {
@@ -1469,5 +1791,32 @@ describe('RulesHandler.pullAllRules — Hermes SOUL.md (#938)', () => {
     const soul = await fse.readFile(path.join(hermesHome, 'SOUL.md'), 'utf-8');
     expect(soul).toContain('Applies to files matching: src/**/*.ts\nUse strict types.');
     expect(soul).not.toContain('paths:');
+  });
+
+  // Hermes has no project rules channel: SOUL.md is global, so only a
+  // user-scope pull may write its block (#946).
+  it('leaves the SOUL.md block as the user-scope pull wrote it after a project pull, with or without project rules', async () => {
+    // Model the user installation that owns the global rules block.
+    await fse.outputFile(path.join(tmpDir, 'home', '.teamai', 'config.yaml'), JSON.stringify(localConfig));
+    await fse.writeFile(path.join(localConfig.repo.localPath, 'rules', 'user-rule.md'), 'USER RULE\n');
+    await new RulesHandler().pullAllRules(teamConfig, localConfig);
+    const soulPath = path.join(hermesHome, 'SOUL.md');
+    const afterUserPull = await fse.readFile(soulPath, 'utf-8');
+    expect(afterUserPull).toContain('USER RULE');
+
+    const projectRoot = path.join(tmpDir, 'project');
+    const projectRepo = path.join(tmpDir, 'project-team-repo');
+    await fse.ensureDir(path.join(projectRepo, 'rules'));
+    await fse.writeFile(path.join(projectRepo, 'rules', 'project-rule.md'), 'PROJECT RULE\n');
+    const projectConfig = {
+      ...localConfig, scope: 'project', projectRoot, repo: { localPath: projectRepo, remote: 'r' },
+    } as unknown as LocalConfig;
+
+    await new RulesHandler().pullAllRules(teamConfig, projectConfig);
+    expect(await fse.readFile(soulPath, 'utf-8')).toBe(afterUserPull);
+
+    await fse.remove(path.join(projectRepo, 'rules', 'project-rule.md'));
+    await new RulesHandler().pullAllRules(teamConfig, projectConfig);
+    expect(await fse.readFile(soulPath, 'utf-8')).toBe(afterUserPull);
   });
 });

@@ -2142,7 +2142,9 @@ async function syncClaudemd(
       reached.push(tool);
       continue;
     }
-    const targetFile = instructionTargetFile(tool, toolPath, localConfig.scope);
+    const targetFile = await instructionTargetFile(tool, toolPath, localConfig.scope)
+      // A server-sent workspace can exist where OpenClaw's own lookup finds none.
+      ?? (tool === 'openclaw' && localConfig.scope !== 'project' && workspacePath ? toolPath.claudemd : undefined);
     if (!targetFile) continue;
 
     let baseDir = resolveToolBaseDir(tool, localConfig);
@@ -2158,7 +2160,7 @@ async function syncClaudemd(
     // Probed through the tool's own paths, as pull does: WorkBuddy's project
     // target sits under .codebuddy, which says nothing about WorkBuddy.
     const toolInstalled = resolvedAbsPath
-      ? await pathExists(resolvedAbsPath)
+      ? await pathExists(path.dirname(resolvedAbsPath))
       : await isInstructionToolInstalled(tool, toolPath, localConfig);
     if (!toolInstalled) {
       log.debug(`Skipped CLAUDE.md sync for ${tool}: target not found`);
@@ -2174,7 +2176,7 @@ async function syncClaudemd(
       log.debug(`local-agent: OpenCode reads the team instructions from ${claudeUserFile}; skipped`);
       continue;
     }
-    const target = instructionTargetAt(tool, claudeMdPath, localConfig.scope, toolPath);
+    const target = await instructionTargetAt(tool, claudeMdPath, localConfig.scope, toolPath);
     const plan = await planInstructionFiles([target], { claudemd: block });
     // A warning means the file was left as it was: nothing reached the tool.
     if (plan.warnings.length > 0) {

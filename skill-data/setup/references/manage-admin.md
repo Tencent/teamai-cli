@@ -134,7 +134,9 @@ teamai projects remove <id>  # remove a project
 
 A member gets the union of their role resources and their active project's
 resources. Admins declare projects in `manifest/projects.yaml` with the commands
-above, each of which opens a PR (`--dry-run` previews). After `projects remove`,
+above, each of which opens a PR. Until #971 lands and restores the guard
+classification, `roles init/add/update/remove` and `projects add/update/remove`
+refuse `--dry-run` before pulling the team repo. After `projects remove`,
 keep the project's content in the team repo until members have pulled: that is
 what lets their next pull clean up the copies they deployed.
 

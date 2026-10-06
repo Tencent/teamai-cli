@@ -29,7 +29,10 @@ vi.mock('../utils/git.js', () => ({
 
 import { syncTeamUpdatesToLocal } from '../utils/pre-push-sync.js';
 import { fileHash } from '../utils/fs.js';
+import { recordDelivered } from '../resources/delivered-copies.js';
 import { teamRuleToCopilotInstructions } from '../resources/copilot-instructions.js';
+import { teamRuleToOmpRule } from '../resources/omp-rule.js';
+import { teamRuleToKiroSteering } from '../resources/kiro-steering.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 describe('syncTeamUpdatesToLocal — rules', () => {
@@ -322,15 +325,16 @@ describe('syncTeamUpdatesToLocal — rules', () => {
   });
 
   it('should sync all installed tool directories', async () => {
-    // Add a second tool
-    await fse.ensureDir(path.join(homeDir, '.workbuddy', 'rules'));
-    teamConfig.toolPaths.workbuddy = { skills: '.workbuddy/skills', rules: '.workbuddy/rules' };
+    // Add a second tool that takes the team rule verbatim (WorkBuddy now gets
+    // CodeBuddy's render, #946)
+    await fse.ensureDir(path.join(homeDir, '.tclaude', 'rules'));
+    teamConfig.toolPaths.tclaude = { skills: '.tclaude/skills', rules: '.tclaude/rules' };
 
     // Team repo has v2
     await fse.writeFile(path.join(repoPath, 'rules', 'shared.md'), 'v2');
     // Both tool dirs have v1
     await fse.writeFile(path.join(homeDir, '.claude/rules', 'shared.md'), 'v1');
-    await fse.writeFile(path.join(homeDir, '.workbuddy/rules', 'shared.md'), 'v1');
+    await fse.writeFile(path.join(homeDir, '.tclaude/rules', 'shared.md'), 'v1');
     // Old team repo was v1
     mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1'));
 
@@ -338,7 +342,7 @@ describe('syncTeamUpdatesToLocal — rules', () => {
 
     // Both should now have v2
     const claudeContent = await fse.readFile(path.join(homeDir, '.claude/rules', 'shared.md'), 'utf-8');
-    const wbContent = await fse.readFile(path.join(homeDir, '.workbuddy/rules', 'shared.md'), 'utf-8');
+    const wbContent = await fse.readFile(path.join(homeDir, '.tclaude/rules', 'shared.md'), 'utf-8');
     expect(claudeContent).toBe('v2');
     expect(wbContent).toBe('v2');
   });
@@ -447,6 +451,52 @@ describe('syncTeamUpdatesToLocal — rules', () => {
 
     expect(await fse.readFile(mdcPath, 'utf-8')).toBe(before);
     expect(mockGetFileContentAtRev).not.toHaveBeenCalled();
+  });
+
+  it('refreshes an unedited Kiro render to the team update, in Kiro\'s format (#946)', async () => {
+    await fse.ensureDir(path.join(homeDir, '.kiro', 'steering'));
+    teamConfig.toolPaths.kiro = { rules: '.kiro/steering' };
+    const oldRule = '---\npaths: ["src/**"]\n---\n\nv1 content\n';
+    const newRule = '---\npaths: ["src/**"]\n---\n\nv2 content\n';
+    await fse.writeFile(path.join(repoPath, 'rules', 'my-rule.md'), newRule);
+    const localFile = path.join(homeDir, '.kiro/steering', 'my-rule.md');
+    await fse.writeFile(localFile, teamRuleToKiroSteering(oldRule));
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from(oldRule));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    expect(await fse.readFile(localFile, 'utf-8')).toBe(teamRuleToKiroSteering(newRule));
+  });
+
+  it('leaves a member flat-name file alone even when its body matches an older team rule (#946)', async () => {
+    await fse.ensureDir(path.join(homeDir, '.omp', 'agent', 'rules'));
+    teamConfig.toolPaths.omp = { rules: '.omp/rules', userScope: { rules: '.omp/agent/rules' } };
+    await fse.outputFile(path.join(repoPath, 'rules', 'fe', 'style.md'), 'v2 content\n');
+    const localFile = path.join(homeDir, '.omp/agent/rules', 'fe.style.md');
+    const personal = teamRuleToOmpRule('v1 content\n');
+    await fse.writeFile(localFile, personal);
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 content\n'));
+    const delivered = {};
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234', undefined, delivered);
+
+    expect(await fse.readFile(localFile, 'utf-8')).toBe(personal);
+    expect(delivered).toEqual({});
+  });
+
+  it('refreshes an unedited flat OMP copy of a namespaced rule from rules/<ns>/<name>.md (#946)', async () => {
+    await fse.ensureDir(path.join(homeDir, '.omp', 'agent', 'rules'));
+    teamConfig.toolPaths.omp = { rules: '.omp/rules', userScope: { rules: '.omp/agent/rules' } };
+    await fse.outputFile(path.join(repoPath, 'rules', 'fe', 'style.md'), 'v2 content\n');
+    const localFile = path.join(homeDir, '.omp/agent/rules', 'fe.style.md');
+    await fse.writeFile(localFile, teamRuleToOmpRule('v1 content\n'));
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 content\n'));
+
+    const delivered = {};
+    await recordDelivered(delivered, localFile);
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234', undefined, delivered);
+
+    expect(await fse.readFile(localFile, 'utf-8')).toBe(teamRuleToOmpRule('v2 content\n'));
   });
 
   describe.each(['project', 'user'] as const)('Copilot rules in %s scope', (scope) => {

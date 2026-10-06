@@ -51,6 +51,15 @@ export interface AstCallSite {
    * binding.
    */
   localBindings?: string[];
+  /**
+   * Swift only. Whether the call sits lexically inside the body of a type.
+   *
+   * Only such a call can be meaning a member: an unqualified `work()` is read as
+   * `self.work()` inside a type and as the module-level `work` outside one, so
+   * the member-name veto in the resolver has to know which of the two it has in
+   * front of it. Absent for non-Swift files and for a call no type encloses.
+   */
+  enclosedByType?: boolean;
   resolvedTargetId?: string;
   resolvedTargetFile?: string;
   confidence: ManifestConfidence;

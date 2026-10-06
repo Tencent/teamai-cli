@@ -116,10 +116,16 @@ function resolveOneCall(
     // superclass, an `extension` or a protocol default implementation anywhere in
     // the module puts it in scope. `swiftModuleDeclaresMember` is what stands in
     // for the inheritance graph this layer does not build.
+    //
+    // It only answers for a call a type lexically encloses, which the walker
+    // reports per site. The member names are module-wide, so a call in a free
+    // function would otherwise be vetoed by a member it has no way of reaching:
+    // `Helper.work` cannot be what `work()` means inside a top-level
+    // `func run()`, where there is no `self` to read it off.
     if (
       swiftModules &&
       !site.localBindings?.includes(callee) &&
-      !swiftModuleDeclaresMember(swiftModules, site.fromFile, callee)
+      !(site.enclosedByType === true && swiftModuleDeclaresMember(swiftModules, site.fromFile, callee))
     ) {
       const moduleSymbol = findSwiftModuleSymbol(swiftModules, site.fromFile, callee, ["function", "class"]);
       if (moduleSymbol) {

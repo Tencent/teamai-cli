@@ -41,6 +41,20 @@ describe('loadLocalConfig: legacy role migration against the team repo roles man
     expect(config?.primaryRole).toBe('hai');
   });
 
+  it.each([false, true])('resolves the role without writing, with notice suppression=%s', async (suppressMigrationNotice) => {
+    writeRoles('version: 1\nroles:\n  - id: hai\n    resources: { knowledge: [], skills: [hai] }\n');
+    const configPath = path.join(home, '.teamai', 'config.yaml');
+    const before = readFileSync(configPath);
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {});
+
+    const config = await loadLocalConfig({ dryRun: true, suppressMigrationNotice });
+
+    expect(config?.primaryRole).toBe('hai');
+    expect(readFileSync(configPath)).toEqual(before);
+    if (suppressMigrationNotice) expect(info).not.toHaveBeenCalled();
+    else expect(info).toHaveBeenCalledWith('[dry-run] Would migrate legacy teamai config to default role profile: hai');
+  });
+
   // Every command loads the config, `pull` included, so a broken manifest that
   // failed the load would leave the member unable to pull the fix. The pull
   // itself refuses a broken manifest, which is what keeps delivery from widening.

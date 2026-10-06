@@ -10,7 +10,7 @@ import {
   renderForTool,
 } from '../resources/agent-format.js';
 import { detectMcpFormat } from '../resources/mcp-format.js';
-import { ruleFileExtensionForTool, usesCursorMdcRules } from '../resources/rule-format.js';
+import { ruleFileExtensionForTool, usesMdcRules } from '../resources/rule-format.js';
 import { TeamaiConfigSchema, scopedToolPaths } from '../types.js';
 import type { LocalConfig } from '../types.js';
 
@@ -76,7 +76,7 @@ describe('Qoder CN support', () => {
     expect(ALL_SUPPORTED_TOOLS).toContain('qoder-cn');
     expect(agentFileExtensionForTool('qoder-cn')).toBe('.md');
     expect(ruleFileExtensionForTool('qoder-cn')).toBe('.md');
-    expect(usesCursorMdcRules('qoder-cn')).toBe(false);
+    expect(usesMdcRules('qoder-cn')).toBe(false);
   });
 
   it('renders Qoder CN subagents exactly like Qoder', () => {

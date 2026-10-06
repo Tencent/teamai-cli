@@ -28,7 +28,11 @@ import { loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
  * Loads that serve a --dry-run write nothing: the legacy role migration, the
  * partition adoption and the self-mode bootstrap stay in memory.
  */
-type LoadOptions = { dryRun?: boolean };
+type LoadOptions = {
+  dryRun?: boolean;
+  /** Omit the legacy-role preview notice for a read-only load on a plain command. */
+  suppressMigrationNotice?: boolean;
+};
 
 async function migrateLegacyRoleConfig(
   config: LocalConfig,
@@ -67,7 +71,7 @@ async function migrateLegacyRoleConfig(
   };
 
   if (options.dryRun) {
-    log.info('[dry-run] Would migrate legacy teamai config to default role profile: hai');
+    if (!options.suppressMigrationNotice) log.info('[dry-run] Would migrate legacy teamai config to default role profile: hai');
     return migrated;
   }
   await writeFileAtomic(expandHome(configPath), YAML.stringify(migrated));

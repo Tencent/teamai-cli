@@ -12,7 +12,7 @@ Generated: do not edit by hand. Regenerate with
 ## Global options
 
 - `-V, --version` — output the version number
-- `--dry-run` — Preview mode, no changes made
+- `--dry-run` — Preview mode, no changes made; a command with no preview exits 1 without running
 - `-v, --verbose` — Verbose output
 
 ## init

@@ -1090,6 +1090,15 @@ export async function isPastVersionOf(repoPath: string, absFile: string, relPath
   return blob !== null && await blobInHistory(repoPath, blob, relPath) === true;
 }
 
+/** The files under `dir` at `rev`, relative to the repo root; empty when either is unknown. */
+export async function listFilesAtRev(repoPath: string, rev: string, dir: string): Promise<string[]> {
+  try {
+    return (await createGit(repoPath).raw(['ls-tree', '-r', '-z', '--name-only', rev, '--', dir])).split('\0').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Get the raw content of a file at a specific git revision.
  * Uses `git show <rev>:<path>` to retrieve historical file content.

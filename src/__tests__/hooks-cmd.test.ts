@@ -709,7 +709,7 @@ describe('hooksList', () => {
         expect(omp).toHaveLength(4);
         expect(omp.join('\n')).not.toContain('[Skill]');
         expect(omp.join('\n')).not.toContain('[TodoWrite]');
-        // OpenClaw's handler maps session:start and command:new only
+        // OpenClaw's handler maps its events onto session-start and prompt-submit only
         // (openclaw-hooks.ts EVENT_MAP).
         expect(builtinBlock(builtin, 'openclaw')).toEqual([
             'SessionStart  →  teamai hook-dispatch session-start --tool <tool>',
