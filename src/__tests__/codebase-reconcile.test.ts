@@ -280,6 +280,38 @@ describe('codebase reconciliation', () => {
     ]));
   });
 
+  it('tags a repaired endpoint node with the same origin as the code-ast/code-heuristic edge that required it (#912 review round 11 P1)', async () => {
+    const root = createWikiFixture();
+    const repoGraphPath = path.join(root, 'teamwiki', 'evidence', 'code', 'auth', '.indices', 'graph-index.json');
+    fs.mkdirSync(path.dirname(repoGraphPath), { recursive: true });
+    fs.writeFileSync(repoGraphPath, JSON.stringify({
+      schemaVersion: 1,
+      generatedAt: '2026-01-01',
+      nodes: [{ slug: 'component/a', title: 'a', type: 'component', confidence: 'EXTRACTED' }],
+      edges: [{ from: 'src/a.ts', to: 'src/b.ts', relation: 'DEPENDS_ON', source: 'code-ast' }],
+    }));
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await aggregateGlobalGraph(path.join(root, 'teamwiki'));
+
+    await codebaseCmd({ reconcile: true, output: root, json: true });
+
+    const graph = await loadGraphIndex(path.join(root, 'teamwiki'));
+    // Both endpoints were missing from the per-repo graph's nodes[] and got
+    // minted here by the reconciler; each must carry the SAME origin as the
+    // edge that required it, since both sides of an intra-repo AST/heuristic
+    // edge belong to that one codebase.
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ slug: 'src/a.ts', origin: 'auth' }),
+      expect.objectContaining({ slug: 'src/b.ts', origin: 'auth' }),
+    ]));
+
+    const { scopeGlobalGraph } = await import('../graph-aggregate.js');
+    const scoped = await scopeGlobalGraph(path.join(root, 'teamwiki'), new Set(['auth']));
+    const survivingSlugs = scoped?.nodes.map((node) => node.slug) ?? [];
+    expect(survivingSlugs).not.toContain('src/a.ts');
+    expect(survivingSlugs).not.toContain('src/b.ts');
+  });
+
   it('replaces legacy bridge edges that upstream persisted without endpoint nodes', async () => {
     const root = createWikiFixture();
     const graphPath = path.join(root, 'teamwiki', '.indices', 'graph-index.json');

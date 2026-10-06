@@ -2,7 +2,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import matter from 'gray-matter';
-import { isToolInstalledForConfig, ResourceHandler, type ScanForPushOptions } from './base.js';
+import { isToolInstalledForConfig, ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
 import type { ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -762,9 +762,9 @@ export class AgentsHandler extends ResourceHandler {
    * this, `remove` matched that bare name and deleted every `vr` in every
    * namespace — other people's agents included (#649 review).
    */
-  async publishedNameFor(name: string, localConfig: LocalConfig): Promise<string | null> {
+  async publishedNameFor(name: string, localConfig: LocalConfig, records: PlacementRecords): Promise<string | null> {
     const placed = placedResourcePath(
-      (await loadStateForScope(localConfig)).placedAgents, 'agents', name,
+      records.placedAgents, 'agents', name,
     );
     if (!placed) return null;
     if (!await pathExists(path.join(localConfig.repo.localPath, placed))) return null;

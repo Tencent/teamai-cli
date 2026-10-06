@@ -440,7 +440,7 @@ projectsCmd
 projectsCmd
   .command('add <id>')
   .description('Add a project to manifest/projects.yaml, creating the file if needed (admin)')
-  .requiredOption('--namespaces <ns>', 'Comma-separated namespaces for knowledge, skills, learnings and agents (e.g. common,checkout); env, hooks, mcp, models and docs are declared by hand')
+  .requiredOption('--namespaces <ns>', 'Comma-separated namespaces for knowledge, skills, learnings and agents (e.g. common,checkout); env, hooks, mcp, models, docs and wiki are declared by hand')
   .option('--name <name>', 'Display name for the project')
   .option('-d, --description <desc>', 'Description for the project')
   .action(async (id: string, cmdOpts) => {

@@ -415,7 +415,7 @@ settings, and pull says it `is no longer active in your namespaces`.
 
 ### Manifest and per-entry keys
 
-`resources:` gains `env`, `hooks`, `mcp`, `models` and `docs`. They are optional
+`resources:` gains `env`, `hooks`, `mcp`, `models`, `docs` and (#912) `wiki`. They are optional
 and never defaulted: saving a manifest writes back the parsed object, so a
 default would add `env: []` to every manifest an admin edits and break members on
 an older CLI. For the same reason `--namespaces` on `teamai roles` and

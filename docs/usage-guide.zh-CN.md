@@ -325,7 +325,7 @@ teamai projects set hai-inference    # 设置本目录激活的项目（覆盖�
 teamai projects set hai-inference --dry-run # 预览选择，不保存配置
 teamai projects members hai-inference # 查看某项目下注册了哪些成员
 
-# 管理员：修改 manifest/projects.yaml 并发起 PR（--dry-run 在 #971 合并并恢复 guard 分类后可用）
+# 管理员：修改 manifest/projects.yaml 并发起 PR
 teamai projects add checkout --namespaces common,checkout --name "Checkout"  # 首次 add 会创建 projects.yaml
 teamai projects update checkout --add-namespaces payments --remove-namespaces common
 teamai projects remove checkout
@@ -333,7 +333,7 @@ teamai projects remove checkout
 
 `--namespaces` 会把同一组 namespace 写入项目的每种资源类型（`knowledge`、`skills`、
 `learnings`、`agents`）；`update` 在每种类型各自的列表上增删，因此手工编辑过的按类型
-布局会被保留。两者都不会改动 `env`、`hooks`、`mcp`、`models` 或 `docs`：这些请手动声明（见
+布局会被保留。两者都不会改动 `env`、`hooks`、`mcp`、`models`、`docs` 或 `wiki`：这些请手动声明（见
 [Env、hooks 与 MCP server 按 namespace 划分](#envhooks-与-mcp-server-按-namespace-划分)），因为旧版 CLI 的成员读不了它们。执行 `projects remove` 后，仍激活该项目的目录在下一次 pull 时会提示警告、
 回退为仅按角色过滤，并清理已部署的该项目 skills、rules 和 agents——前提是该项目的内容
 仍在团队仓库中，因为正是靠它识别已部署的副本。请在成员都 pull 过之后，再用单独的变更删除这些内容。
@@ -628,7 +628,7 @@ teamai pull --dry-run    # 试运行，不实际修改
 
 没有 `--dry-run` 预览的命令（如 `teamai init`、`teamai hooks remove`、`teamai models add` / `configure` / `remove`、`teamai bind-project` 和 `teamai codebase --extract`）会拒绝该参数：打印 `teamai <command> has no --dry-run preview, nothing was run` 并以退出码 1 结束。
 
-在 #971 合并前，`remove`、`roles init/add/remove/update`、`projects add/update/remove` 和 `import --from-repo/--from-repo-list` 也拒绝 `--dry-run`；在 #970 合并前，`stats` 和 `recall <query>` 拒绝该参数。`digest`、`import --from-claude` 和 `import --from-iwiki` 尚无安全预览，也拒绝该参数。`import --from-org`、`--from-mr`、`--dir` 和 `recall feedback` 的预览仍可使用。后合并的 PR 必须恢复已修复命令的 guard 分类。
+`remove`、`roles init/add/remove/update`、`projects add/update/remove` 和 `import --from-repo/--from-repo-list` 支持 `--dry-run`。远程导入源优先于较低优先级的 iWiki 或 Claude 参数。在 #970 合并前，`stats` 和 `recall <query>` 拒绝该参数。`digest`、`import --from-claude` 和 `import --from-iwiki` 尚无安全预览，也拒绝该参数。`import --from-org`、`--from-mr`、`--dir` 和 `recall feedback` 的预览仍可使用。后合并的 PR 必须恢复已修复命令的 guard 分类。
 
 手动执行 `teamai pull` 会在结束时运行 `teamai doctor` 的检查，并逐条打印失败项及其修复建议——包括它刚刚报告同步的 skill 是否真的落到每个启用工具的磁盘上、且可被读取。全部通过时不会有任何额外输出，退出码也不变。SessionStart hook 路径和 `--dry-run` 完全不运行检查，会话启动速度保持不变。托管平台相关的检查（`gh`/`gf` 认证）留给 `teamai doctor`：这次 pull 刚刚用过该平台。
 
@@ -780,7 +780,7 @@ Choose namespace [1-3] (default: 1 = common):
 - 当有多个 namespace 可接收新资源、且没有可供询问的终端（CI、hook、`TEAMAI_NONINTERACTIVE`）时，push 会以退出码 2 停止，列出这些 namespace，并要求使用 `--role <ns>`
 - `--role`/`--project` 只放置新资源。对共享根目录 rule 或 agent 的修改仍留在共享根目录，push 会给出提示
 - 已落点的资源在发布它的机器上仍可维护：PR 未合并期间，待评审 PR 记录会把作者对自己副本的修改带回该 PR；文件进入默认分支后，`state.json` 会记录 push 的落点，因此修改仍会写回同一个文件；即使 agent 落在本目录未激活的 namespace，也不会被当作“无活跃源”跳过
-- `teamai remove rules <name>` 同时接受作者副本的简名和发布名 `<namespace>/<name>`：会打印实际解析到的名字，并同时删除带 namespace 的团队文件和作者在 rules 根目录的副本。若无法先刷新团队仓库，或本机的落点记录无法更新并保存，`remove` 会以退出码 1 停止且不删除任何内容，因为两者都可能把名字解析到错误的文件
+- `teamai remove rules <name>` 同时接受作者副本的简名和发布名 `<namespace>/<name>`：会打印实际解析到的名字，并同时删除带 namespace 的团队文件和作者在 rules 根目录的副本。若无法先刷新团队仓库，或本机的落点记录无法更新并保存，`remove` 会以退出码 1 停止且不删除任何内容，因为两者都可能把名字解析到错误的文件。`--dry-run` 只执行 fetch：按真实 pull 后的克隆当前分支内容解析名字（单仓模式使用 origin 默认分支），且不保存任何落点记录。克隆预览先 fetch 配置的上游，包括名称不同的分支或远程。无法快进或没有上游时，再 fetch origin/当前分支以模拟真实 reset 回退。两种刷新都无法成功时，本地分支的删除预览会拒绝运行。克隆模式下 fetch 失败时，预览会使用与真实删除相同的拒绝消息，并以退出码 1 停止。克隆存在未提交更改时，预览也会以退出码 1 拒绝运行，请先 commit 或 stash。业务文件的未提交更改不会阻止单仓模式预览。
 - 本地 agent 被视为其来源团队 agent 的编辑：优先是活跃 namespace 中的 agent，其次是本机放置的 agent，最后是被二者替换的共享根目录 agent。只有三者都不存在时，才由 `--role`/`--project` 决定，此时该 agent 在该 namespace 中是新的；若该 namespace 已有同名 agent，则跳过该 agent 而不是覆盖它，与 rule 的处理一致。两个活跃的同名 agent 无论是否指定参数都视为有歧义并跳过。同名 agent 允许存在于多个 namespace，因此你未指定的非活跃 namespace 中的同名副本不会阻止你发布。本机放置的 agent 若在当前检出上次同步后被团队修改，会暂缓推送，因为 agents 没有推送前同步。pull 会保留你修改过的副本，因此请先另存你的修改，删除该副本，执行 `teamai pull --force`，重新应用修改后再 push。单仓库模式下，`.teamai/` 中的根目录副本若与其落点文件的某个旧版本相同，也会暂缓推送：没有任何操作会刷新它，因此它是旧副本而不是编辑
 - 新资源绝不会覆盖已存在的资源：若解析出的 namespace 下已有同名文件，命令会报错并指出该文件：请先 pull 并修改已有副本、重命名自己的资源，或用 `--role <ns>` 换一个 namespace
 - 本目录未激活的 namespace 下的 agent 可通过落点记录继续编辑，`pull` 也会基于同一记录下发它，使本地副本与团队文件保持同步；它会像活跃 namespace 中的 agent 一样替换共享根目录的同名 agent。若已激活的 namespace 中已有同名 agent，则以它为准
@@ -834,11 +834,11 @@ teamai roles update hai --remove-namespaces legacy -d "新描述"
 # 删除角色
 teamai roles remove devops
 
-# 预览变更（在 #971 合并并恢复 guard 分类后可用）
+# 预览变更
 teamai roles add test --namespaces common,test --dry-run
 ```
 
-`--namespaces` 列表会同时应用到 `knowledge`、`skills` 与 `agents`。以上命令会自动 push 分支并创建 MR，合并后对全团队生效。
+`--namespaces` 列表会同时应用到 `knowledge`、`skills` 与 `agents`。以上命令会自动 push 分支并创建 MR，合并后对全团队生效。加 `--dry-run` 时，`teamai roles init/add/update/remove` 与 `teamai projects add/update/remove` 只 fetch 并读取真实 pull 后的克隆当前分支 manifest（单仓模式使用 origin 默认分支），不会 pull 团队仓库，单仓模式下也不会创建 worktree，因此尚未推送的提交会保留。若 fetch 失败，这些 manifest 预览会警告并使用未改变的克隆检出，单仓模式则使用上次获取的默认分支副本，与真实编辑在 pull 失败后警告并继续的策略一致。克隆预览遇到未提交更改时会以退出码 1 拒绝运行，并提示先 commit 或 stash，因为真实 pull 可能保留本地 manifest 编辑。业务文件的未提交更改不会阻止单仓模式预览。干净克隆预览会保留领先分支、快进落后分支，分叉时使用 origin/当前分支，与真实 pull 一致。`roles init --dry-run` 在临时检出内检查已有 manifest 并询问是否覆盖。克隆模式下，真实 `roles init` 只在检查已有 manifest 和交互提问之前 pull 一次，写入之前不会再次 pull。
 
 **成员操作：**
 
@@ -1774,6 +1774,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 如果核心知识图谱提取或写入失败，导入会报错，且不会将该提交标记为已同步。下次增量导入会重试该提交。
 
+加 `--dry-run` 时，`--from-repo` 与 `--from-repo-list` 用 `git ls-remote` 读取每个仓库的目标提交，打印 `Would import <owner>/<repo> at <commit>` 以及本地缓存是否最新，然后停止：不会 clone 或 fetch 到缓存，不会获取导入锁，也不会运行任何 AI 步骤。使用 `--incremental` 且缓存含 `LAST_SYNC` 时，预览会查询该缓存配置的 origin 上当前分支的提交，与真实 fetch/reset 一致。完整克隆预览（包括缺少缓存或 `LAST_SYNC`）跟随远端 HEAD。若缓存分支已从远端删除，不执行 prune 的通配 fetch 会保留缓存 origin 引用，增量预览也使用该保留提交。启用 prune、显式 fetch 已删除分支或缺少缓存 origin 引用时，仍预览完整克隆回退。其他缓存分支查询失败时，预览会警告并预览完整克隆回退。 指定 `--output` 时，预览会显示与真实导入相同的输出文件旁 `teamwiki/evidence/code/<slug>` 目标目录。
+
 `--from-mr` 与 `teamai contribute` 的默认行为一样，把提取的经验发布到 `teamai-learnings` 分支：激活项目合计解析出恰好一个 learnings namespace 时放在 `learnings/<namespace>/` 下，否则放在共享的 `learnings/` 根目录。发布失败时，经验留在本机队列中，下次 `teamai pull` 会发布它；若阻止发布的是 teamai 拒绝使用的 learnings 检出，则在你按提示处理该检出之前，任何 pull 都无法发布它。
 
 如果草稿与已有经验（共享根目录或当前激活项目的 namespace 中的）高度重叠，命令会列出这些文件（`Possible duplicate: this learning overlaps N existing learning(s): <files>.`），使用 `--all` 时同样如此。这只是提示：不会标记或替换任何已有经验。`manifest/projects.yaml` 无法读取时，只与共享根目录比较，并给出提示。
@@ -1810,6 +1812,18 @@ teamai codebase --lint --output /path/to/repo
 不传 `--project` 时，`<project>` 取目录名；在检出的根目录下（主检出或 git 链接 worktree）取仓库名：主检出的真实目录名（经符号链接打开时也是如此），或 bare 仓库的名称（`repo/.bare` 或 `repo.git` → `repo`）。同一仓库的所有检出写入同一个条目。`teamai import --dir` 用同样的方式确定 slug。
 
 `.teamai/pending-review.jsonl` 中的待审改动可用 `teamai review` 查看。用 `teamai review <id> --apply --dry-run`、`teamai review <id> --reject --dry-run` 或 `teamai review --all-apply --max-risk medium --dry-run` 预览处理决定。应用预览会执行与真实应用相同的目标文件和托管章节校验，但不会修改文档或移除待审项；批量预览保留相同的类型与风险筛选。处理预览的 `--json` 输出包含 `dryRun: true`，其中 `ok` 表示通过校验，不表示已写入。去掉 `--dry-run` 才会执行处理。
+
+**按 namespace 分发 wiki。** `recall` 对 `teamwiki/evidence/code/<slug>/` 采用与 docs 相同的作用域规则：只要有任一角色（`manifest/roles.yaml`）或项目（`manifest/projects.yaml`）在 `resources.wiki` 中列出某个 codebase slug，它就只分发给激活了它的成员；未声明的 slug 仍然共享：
+
+```yaml
+# manifest/projects.yaml
+projects:
+  - id: svc-a
+    resources:
+      wiki: [svc-a]     # 只有激活 svc-a 时才能看到 evidence/code/svc-a/
+```
+
+这个 slug 就是 `teamai codebase --project <slug>`（或 `teamai import`）写入 `evidence/code/` 时用的那个值，它与 manifest 的 project id 没有必然关系，按实际提取时用的那个值声明即可。旧式用法（没有角色、没有 `projects.yaml`）会搜索所有 codebase，和之前一样。
 
 ### Dashboard
 

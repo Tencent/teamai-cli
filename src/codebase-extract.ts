@@ -730,6 +730,18 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   // Merge overlay into the per-repo graph
   const repoGraph = mergeGraphs(graph, overlay);
 
+  // Stamp ownership before writing, same as buildAggregatedGraph does for an
+  // orchestrated `teamai import` (#974 review round 19 P1): when this write
+  // target IS the real teamwiki root (a direct `teamai codebase --extract`,
+  // not routed through import's cache-dir redirection), it lands straight in
+  // `teamwiki/.indices/graph-index.json` with no later aggregation step ever
+  // tagging it. Leaving it untagged would let a withheld codebase's fresh
+  // re-extraction bypass origin-based removal entirely, and the stale
+  // evidence/code/<slug>/ per-repo file the fallback would otherwise read
+  // can no longer be trusted to describe it either.
+  for (const node of repoGraph.nodes) node.origin = project;
+  for (const edge of repoGraph.edges) edge.origin = project;
+
   // Write per-repo graph only; global aggregation is done by aggregateGlobalGraph()
   // in import-repo.ts after all per-repo graphs are in place (avoids write races).
   await saveGraphIndex(wikiRoot, repoGraph);

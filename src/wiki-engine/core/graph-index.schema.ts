@@ -39,6 +39,17 @@ export interface GraphNode {
   title: string;
   domain?: string;
   source?: GraphEdgeSource;
+  /**
+   * The codebase slug (`evidence/code/<origin>/`) this node's own per-repo
+   * graph file contributed it from, stamped by the aggregation that merges
+   * per-repo graphs into the global one (#912). Absent on a cross-repo edge
+   * node reference and on anything aggregated before this field existed.
+   * Authoritative once present: it travels with the data itself, so it
+   * stays correct even if that per-repo file is later deleted, emptied, or
+   * rewritten to describe something different, which reading the per-repo
+   * file back out at query time cannot promise.
+   */
+  origin?: string;
 }
 
 /** Provenance of a graph edge (compile / reconcile pipeline). */
@@ -73,7 +84,8 @@ const LEGACY_WIKI_CONFIDENCES: Record<string, WikiConfidence> = {
   medium: "INFERRED",
   low: "AMBIGUOUS",
 };
-const LEGACY_RELATIONS: Record<string, RelationType> = {
+/** A relation name `loadGraphIndex` normalizes to a current `RelationType` on load. */
+export const LEGACY_RELATIONS: Record<string, RelationType> = {
   imports: "DEPENDS_ON",
 };
 const LEGACY_WIKI_CATEGORIES: Record<string, WikiCategory> = {
@@ -89,6 +101,34 @@ export interface GraphEdge {
   /** Fine-grained semantic predicate (e.g. G6 CALLS_HTTP, USES_TABLE). */
   predicate?: string;
   source?: GraphEdgeSource;
+  /**
+   * Same provenance as `GraphNode.origin`. Absent on a synthesized
+   * cross-repo edge — see `crossOriginPairs` — since a single string cannot
+   * describe which of the two codebases it spans needs it withheld.
+   */
+  origin?: string;
+  /**
+   * Every INDEPENDENT detection's pair of origins for a synthesized
+   * cross-repo edge (see `detectCrossRepoEdges`): one entry per repo-pair
+   * that has ever produced this exact from/to/relation identity — the side
+   * whose own import produced the match, and the side matched by label
+   * lookup against the other graph. Two different codebase pairs can
+   * independently produce the identical edge identity (e.g. both import
+   * something matching the same third repo's component under an equally
+   * generic importer slug of their own); `mergeGraphs` unions pairs on
+   * collision rather than letting one overwrite the other, so none of
+   * their provenance is lost. `scopeGlobalGraph` withholds the edge only
+   * when EVERY pair contains a withheld origin — an edge that remains
+   * independently producible by a fully-allowed pair survives even though
+   * the identical edge identity was ALSO, separately, produced by a
+   * withheld pair. A pair has 1 element instead of 2 when only one side
+   * had an origin at detection time (the other predates tagging); the
+   * field is absent entirely on any non-cross-repo edge, and captured at
+   * the moment of detection since a later slug collision can silently
+   * reattribute either endpoint node to a different, allowed repo without
+   * this edge ever being re-examined.
+   */
+  crossOriginPairs?: string[][];
 }
 
 const graphEdgeKey = (edge: GraphEdge): string => JSON.stringify([edge.from, edge.to, edge.relation]);
@@ -148,6 +188,7 @@ const GraphNodeSchema = z.preprocess((value) => {
   title: z.string(),
   domain: z.string().optional(),
   source: z.custom<GraphEdgeSource>((value) => GRAPH_EDGE_SOURCES.includes(value as GraphEdgeSource)).optional(),
+  origin: z.string().optional(),
 }).passthrough());
 
 const GraphEdgeSchema = z.object({
@@ -158,6 +199,8 @@ const GraphEdgeSchema = z.object({
   weight: z.number().optional(),
   predicate: z.string().optional(),
   source: z.custom<GraphEdgeSource>((value) => GRAPH_EDGE_SOURCES.includes(value as GraphEdgeSource)).optional(),
+  origin: z.string().optional(),
+  crossOriginPairs: z.array(z.array(z.string())).optional(),
 }).passthrough().transform((edge, context): GraphEdge => {
   const legacyRelation = Object.hasOwn(LEGACY_RELATIONS, edge.relation)
     ? LEGACY_RELATIONS[edge.relation]
@@ -183,7 +226,8 @@ const GraphIndexSchema = z.object({
   edges: z.array(GraphEdgeSchema),
 }).passthrough();
 
-function parseGraphIndex(value: unknown): GraphIndex | null {
+/** Validates and normalizes `value` as a full `GraphIndex` (legacy field fallbacks, relation/confidence normalization included); `null` if it doesn't conform. */
+export function parseGraphIndex(value: unknown): GraphIndex | null {
   const result = GraphIndexSchema.safeParse(value);
   return result.success ? result.data as GraphIndex : null;
 }
@@ -514,6 +558,45 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
   const edgeMap = new Map<string, GraphEdge>();
 
   const evidenceLen = (e: GraphEdge) => e.evidence?.length ?? 0;
+  // Two DIFFERENT codebase PAIRS can independently produce a synthesized
+  // cross-repo edge with the identical `from|to|relation` identity (e.g.
+  // repo X and repo Y both import something matching the same third repo
+  // Z's component under an equally generic, unqualified importer slug of
+  // their own). Whichever side "wins" the tie-break below must not
+  // silently erase the OTHER side's `crossOriginPairs` — overwriting lost
+  // that provenance entirely, which both made scopeGlobalGraph's later
+  // withheld-origin check depend on merge order AND collapsed two
+  // independent repo-pairs into one, making it impossible to tell that an
+  // edge withheld via one pair might still be valid via another, fully
+  // allowed one (#974 review rounds 14 P2 / 15 P2): union the pair lists
+  // instead (deduping an identical pair), so the edge keeps a record of
+  // every repo-pair that has ever independently produced this exact
+  // relationship, regardless of which one happened to merge last.
+  const mergeCrossOriginPairs = (a?: string[][], b?: string[][]): string[][] | undefined => {
+    if (!a && !b) return undefined;
+    const seen = new Set<string>();
+    const merged: string[][] = [];
+    for (const pair of [...(a ?? []), ...(b ?? [])]) {
+      const key = JSON.stringify([...pair].sort());
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(pair);
+    }
+    return merged;
+  };
+  // An edge's plain `origin` is its own one-element provenance pair, same as
+  // `scopeGlobalGraph` already treats it (#974 review round 17 P2) — folded
+  // in here too, so the LOSING side of a collision doesn't lose it outright.
+  // Without this, a cross-repo edge (crossOriginPairs, no origin) winning an
+  // equal-evidence tie against an allowed repo's own ordinary edge (origin,
+  // no crossOriginPairs) kept only the winner's own fields — the loser's
+  // `origin` was never read at all, so it vanished from the merged edge
+  // entirely rather than surviving as one more independent pair (#974
+  // review round 18 P2).
+  const edgePairs = (e: GraphEdge): string[][] | undefined => {
+    const pairs = [...(e.crossOriginPairs ?? []), ...(e.origin ? [[e.origin]] : [])];
+    return pairs.length > 0 ? pairs : undefined;
+  };
 
   for (const e of base.edges) {
     edgeMap.set(graphEdgeKey(e), e);
@@ -526,9 +609,9 @@ export function mergeGraphs(base: GraphIndex, overlay: GraphIndex): GraphIndex {
       continue;
     }
     // Prefer the variant with more evidence; on ties, prefer overlay.
-    if (evidenceLen(e) >= evidenceLen(existing)) {
-      edgeMap.set(key, e);
-    }
+    const winner = evidenceLen(e) >= evidenceLen(existing) ? e : existing;
+    const crossOriginPairs = mergeCrossOriginPairs(edgePairs(existing), edgePairs(e));
+    edgeMap.set(key, crossOriginPairs ? { ...winner, crossOriginPairs } : winner);
   }
 
   return {

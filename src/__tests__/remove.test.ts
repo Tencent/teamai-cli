@@ -109,13 +109,13 @@ scope: 'user',
       );
       mockState.placedRules = { 'my-rule': 'rules/fe-know/my-rule.md' };
 
-      expect(await handler.publishedNameFor('my-rule', localConfig)).toBe('fe-know/my-rule');
+      expect(await handler.publishedNameFor('my-rule', localConfig, mockState)).toBe('fe-know/my-rule');
     });
 
     it('does not resolve a record whose team file is gone', async () => {
       mockState.placedRules = { 'my-rule': 'rules/fe-know/my-rule.md' };
 
-      expect(await handler.publishedNameFor('my-rule', localConfig)).toBeNull();
+      expect(await handler.publishedNameFor('my-rule', localConfig, mockState)).toBeNull();
     });
 
     it('does not resolve a rule this machine never placed', async () => {
@@ -123,7 +123,7 @@ scope: 'user',
         path.join(localConfig.repo.localPath, 'rules', 'fe-know', 'my-rule.md'), 'team content',
       );
 
-      expect(await handler.publishedNameFor('my-rule', localConfig)).toBeNull();
+      expect(await handler.publishedNameFor('my-rule', localConfig, mockState)).toBeNull();
     });
 
     it('tombstones only the published name, even when the record makes the root copy ours', async () => {

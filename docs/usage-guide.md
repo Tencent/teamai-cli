@@ -376,7 +376,7 @@ teamai projects set hai-inference    # Set active project(s) for this directory 
 teamai projects set hai-inference --dry-run # Preview the selection without saving it
 teamai projects members hai-inference # Who is registered on a project
 
-# Admin: edit manifest/projects.yaml and open a PR (--dry-run available after #971 lands and restores the guard classification)
+# Admin: edit manifest/projects.yaml and open a PR
 teamai projects add checkout --namespaces common,checkout --name "Checkout"  # The first add creates projects.yaml
 teamai projects update checkout --add-namespaces payments --remove-namespaces common
 teamai projects remove checkout
@@ -385,7 +385,7 @@ teamai projects remove checkout
 `--namespaces` sets the same namespaces on every project resource type
 (`knowledge`, `skills`, `learnings`, `agents`); `update` adds or removes them on
 each type's own list, so a hand-edited per-type layout survives. Neither touches
-`env`, `hooks`, `mcp`, `models` or `docs`: declare those by hand (see
+`env`, `hooks`, `mcp`, `models`, `docs` or `wiki`: declare those by hand (see
 [Env, hooks and MCP servers by namespace](#env-hooks-and-mcp-servers-by-namespace)),
 because a member on an older CLI cannot read them. After
 `projects remove`, a directory that still has the project active warns on its
@@ -723,7 +723,7 @@ teamai pull --dry-run    # Dry run, no actual changes
 
 A command with no `--dry-run` preview, such as `teamai init`, `teamai hooks remove`, `teamai models add` / `configure` / `remove`, `teamai bind-project` or `teamai codebase --extract`, refuses the flag: it prints `teamai <command> has no --dry-run preview, nothing was run` and exits 1.
 
-Until #971 lands, `remove`, `roles init/add/remove/update`, `projects add/update/remove`, and `import --from-repo/--from-repo-list` also refuse `--dry-run`. Until #970 lands, `stats` and `recall <query>` refuse it. `digest`, `import --from-claude`, and `import --from-iwiki` have no safe preview and refuse it too. Previews for `import --from-org`, `--from-mr`, `--dir`, and `recall feedback` remain available. The later-merging PR must restore the guard classification for commands whose previews are fixed.
+`remove`, `roles init/add/remove/update`, `projects add/update/remove`, and `import --from-repo/--from-repo-list` support `--dry-run`. Remote import sources take precedence over lower-priority iWiki or Claude flags. Until #970 lands, `stats` and `recall <query>` refuse it. `digest`, `import --from-claude`, and `import --from-iwiki` have no safe preview and refuse it too. Previews for `import --from-org`, `--from-mr`, `--dir`, and `recall feedback` remain available. The later-merging PR must restore the guard classification for commands whose previews are fixed.
 
 A manual `teamai pull` ends by running the `teamai doctor` checks and printing each one that failed, with its fix — including whether the skills it just reported syncing are readable on disk for every enabled tool. It prints nothing when they all pass, and the exit code is unchanged. The SessionStart hook path and `--dry-run` run no checks at all, so session startup stays as fast as before. Provider checks (`gh`/`gf` authentication) are left to `teamai doctor`: the pull just used the provider.
 
@@ -875,7 +875,7 @@ Choose namespace [1-3] (default: 1 = common):
 - When several namespaces could take a new resource and there is no terminal to ask on (CI, a hook, `TEAMAI_NONINTERACTIVE`), push stops with exit 2, lists them, and asks for `--role <ns>`
 - `--role`/`--project` places new resources only. An edit of a shared-root rule or agent stays at the shared root, and push says so
 - A placed resource stays maintainable from the machine that published it. While its PR is open, the open-PR record routes a later edit of the author's own copy back to that PR; once the file is on the default branch, `state.json` records where push put it, so the edit goes back to the same file, and an agent published into a namespace this directory has not activated is still editable rather than skipped as having no active source
-- `teamai remove rules <name>` accepts the bare name the author's copy carries as well as the published `<namespace>/<name>`; it reports which one it resolved to, and removes both the namespaced team file and the author's copy at the rules root. If the team repo cannot be refreshed first, or this machine's placement records cannot be updated and saved, `remove` stops with exit 1 and removes nothing, because either can resolve the name to the wrong files
+- `teamai remove rules <name>` accepts the bare name the author's copy carries as well as the published `<namespace>/<name>`; it reports which one it resolved to, and removes both the namespaced team file and the author's copy at the rules root. If the team repo cannot be refreshed first, or this machine's placement records cannot be updated and saved, `remove` stops with exit 1 and removes nothing, because either can resolve the name to the wrong files. `--dry-run` only fetches: it resolves names against the contents a real pull would use on the clone's checked-out branch (or origin's default branch in self mode), and saves no records. Clone previews fetch the configured upstream first, including differently named branches or remotes. If that pull cannot fast-forward or has no upstream, they fetch origin/current-branch to model the real reset fallback. A local-only branch is refused for removal when neither refresh can succeed. In clone mode, a failed fetch stops the preview with the same refusal and exit 1 as a real removal. A clone with uncommitted changes is refused with exit 1; commit or stash them before previewing. Dirty business files do not block self-mode previews.
 - A local agent is an edit of the team agent it was delivered from: one in an active namespace first, then one this machine placed, then the shared-root agent either of them replaces. Only when none exists does `--role`/`--project` decide, and the agent is new in that namespace; if that namespace already holds an agent of that name, the agent is skipped rather than written over it, as a rule would be. Two active agents of one name stay ambiguous and are skipped, flag or not. The same agent name may exist in several namespaces, so a copy in an inactive one you did not name never blocks publishing yours. A placed agent that changed on the team since this checkout last synced it is held, because agents have no pre-push sync. Pull keeps your changed copy, so save your edit, delete the copy, run `teamai pull --force`, reapply the edit and push again. In single-repo mode, a root copy under `.teamai/` that matches an older version of the file it was placed at is held too: nothing refreshes it, so it is an old copy rather than an edit
 - A new resource is never placed on top of one that is already there. If the resolved namespace already holds that name, the push stops and names the file: pull and edit the existing copy, rename yours, or pick another namespace with `--role <ns>`
 - An agent whose namespace is not active here stays editable through its placement record, and `pull` delivers it for the same reason, so your copy tracks the team file. It replaces a shared-root agent of the same name, as an active namespace's agent would. An active namespace holding that name wins: that agent is the one deployed here
@@ -934,11 +934,11 @@ teamai roles update hai --remove-namespaces legacy -d "New description"
 # Remove a role
 teamai roles remove devops
 
-# Preview changes (after #971 lands and restores the guard classification)
+# Preview changes
 teamai roles add test --namespaces common,test --dry-run
 ```
 
-The `--namespaces` list is applied to `knowledge`, `skills` and `agents` alike. The commands above automatically push a branch and create an MR; the change takes effect team-wide once merged.
+The `--namespaces` list is applied to `knowledge`, `skills` and `agents` alike. The commands above automatically push a branch and create an MR; the change takes effect team-wide once merged. With `--dry-run`, `teamai roles init/add/update/remove` and `teamai projects add/update/remove` fetch and read the manifest a real pull would use on the clone's checked-out branch (or origin's default branch in single-repo mode); they do not pull the team repo or, in single-repo mode, create a worktree, so commits you have not pushed stay. If fetching fails, these manifest previews warn and use the unchanged clone checkout, or the last fetched default-branch copy in single-repo mode, matching a real edit's warn-and-proceed policy. For these commands, clone previews refuse uncommitted changes with exit 1 and ask you to commit or stash them, since a real pull can retain local manifest edits. Dirty business files do not block self-mode previews. A clean clone preview retains an ahead branch, advances a behind branch, and uses origin/current-branch after divergence, matching the real pull. `roles init --dry-run` checks for an existing manifest and asks for overwrite confirmation inside that temporary checkout. In clone mode, real `roles init` pulls once before checking for an existing manifest and asking questions. It does not pull again before writing.
 
 **Member operations:**
 
@@ -1932,6 +1932,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 If core graph extraction or writing fails, the import reports an error without marking the commit as synced. The next incremental run retries that commit.
 
+With `--dry-run`, `--from-repo` and `--from-repo-list` read each repo's target commit with `git ls-remote`, print `Would import <owner>/<repo> at <commit>` and whether the local cache is current, and stop there: nothing is cloned or fetched into the cache, the import lock is not taken, and no AI step runs. With `--incremental` and a cache containing `LAST_SYNC`, the preview queries that cache's current branch at its configured origin, matching the real fetch/reset. Full-clone previews, including a missing cache or `LAST_SYNC`, follow remote HEAD. If the cached branch was deleted remotely, a non-pruning wildcard fetch retains its cached origin ref; incremental preview uses that retained commit too. Pruning, an explicit deleted-branch fetch refspec, or a missing cached origin ref still selects the full-clone fallback. Other cached-branch query failures warn and preview the full-clone fallback. With `--output`, the preview reports the same `teamwiki/evidence/code/<slug>` destination beside the output file as a real import.
+
 `--from-mr` publishes its learning the way `teamai contribute` does by default, on the `teamai-learnings` branch: under `learnings/<namespace>/` when the active projects resolve to exactly one learnings namespace, otherwise at the shared `learnings/` root. If that fails, the learning stays queued on this machine and the next `teamai pull` publishes it; when a learnings checkout teamai refuses stopped it, no pull can until you deal with that checkout as the message says.
 
 When the draft overlaps existing learnings, from the shared root or your active projects' namespaces, the command names them (`Possible duplicate: this learning overlaps N existing learning(s): <files>.`), with `--all` too. It is a notice only: nothing is marked or replaced. When `manifest/projects.yaml` cannot be read, the check compares the shared root only and says so.
@@ -1968,6 +1970,18 @@ Changes queued in `.teamai/pending-review.jsonl` can be inspected with `teamai r
 When extract finds components, it writes `teamwiki/evidence/code/<project>/_manifest.json` even if AI enrichment is skipped or produces nothing, so `--deep-enrich` can start.
 
 Without `--project`, `<project>` is the directory's name. At the root of a checkout, the main one or a linked git worktree, it is the repo's name: the main checkout's real name (also when opened through a symlink), or a bare repo's (`repo/.bare` or `repo.git` → `repo`). Every checkout of a repo writes the same entry. `teamai import --dir` picks its slug the same way.
+
+**Wiki by namespace.** `recall` scopes `teamwiki/evidence/code/<slug>/` the same way it scopes docs: once any role (in `manifest/roles.yaml`) or project (in `manifest/projects.yaml`) lists a codebase slug under `resources.wiki`, it reaches only the members who have it active, and an undeclared slug stays shared:
+
+```yaml
+# manifest/projects.yaml
+projects:
+  - id: svc-a
+    resources:
+      wiki: [svc-a]     # evidence/code/svc-a/ only where svc-a is active
+```
+
+The slug is whichever one `teamai codebase --project <slug>` (or `teamai import`) wrote under `evidence/code/`; it has no required relationship to the manifest's project id, so declare the one the extraction actually used. Legacy mode (no role and no `projects.yaml`) searches every codebase, as before.
 
 ### Dashboard
 

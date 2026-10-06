@@ -5,7 +5,7 @@ import chalk from 'chalk';
 import { generateCodebaseMd } from './codebase.js';
 import { extractCodebase } from './codebase-extract.js';
 import { detectProvider, getProvider } from './providers/registry.js';
-import { shallowClone, shallowFetch } from './clone.js';
+import { remoteHeadSha, shallowClone, shallowFetch } from './clone.js';
 import {
     getRepoCacheDir,
     getRepoSlug,
@@ -30,7 +30,7 @@ export interface ImportFromRepoOptions {
     forceAnonymous?: boolean;
     /** Skip AI recommendation when --domain is explicitly set */
     explicitDomain?: string;
-    /** Dry-run mode: skip writing to disk but still execute clone+scan */
+    /** Dry-run mode: read the remote head with ls-remote and stop before the clone, the lock and the LLM scan */
     dryRun?: boolean;
     /** Custom output root directory; defaults to .teamai/team-repo/teamwiki */
     output?: string;
@@ -51,11 +51,17 @@ interface SimpleGraphNode {
     kind?: string; type?: string;
     label?: string; title?: string;
     file?: string;
+    origin?: string;
 }
 
 interface SimpleGraphIndex {
     nodes: SimpleGraphNode[];
-    edges: Array<{ from: string; to: string; relation: string }>;
+    edges: Array<{ from: string; to: string; relation: string; origin?: string }>;
+}
+
+interface LabelMatch {
+    id: string;
+    origin?: string;
 }
 
 /**
@@ -70,26 +76,43 @@ interface SimpleGraphIndex {
 export function detectCrossRepoEdges(
     overlay: SimpleGraphIndex,
     existing: SimpleGraphIndex,
-): Array<{ from: string; to: string; relation: 'DEPENDS_ON' }> {
-    const crossEdges: Array<{ from: string; to: string; relation: 'DEPENDS_ON' }> = [];
+): Array<{ from: string; to: string; relation: 'DEPENDS_ON'; crossOriginPairs?: string[][] }> {
+    const crossEdges: Array<{ from: string; to: string; relation: 'DEPENDS_ON'; crossOriginPairs?: string[][] }> = [];
     const edgeSet = new Set<string>();
 
     const nodeId = (n: SimpleGraphNode): string => n.id ?? n.slug ?? '';
     const nodeLabel = (n: SimpleGraphNode): string => n.label ?? n.title ?? '';
     const nodeKind = (n: SimpleGraphNode): string => n.kind ?? n.type ?? '';
+    // Both sides this edge spans matter: the side whose own import produced
+    // the match, AND the side that match resolved to. Either one being
+    // withheld later makes the relationship stale, so both are captured now
+    // as a single pair — a slug collision after this can still reattribute
+    // either endpoint node's CURRENT origin, but never this edge's own
+    // record of what it depended on at the moment it was detected. Wrapped
+    // in an outer array since `mergeGraphs` unions pairs from independent
+    // detections rather than letting one overwrite another (#974 review
+    // round 15 P2) — see `GraphEdge.crossOriginPairs`.
+    const crossOriginPair = (a?: string, b?: string): string[][] | undefined => {
+        const origins = [a, b].filter((o): o is string => !!o);
+        return origins.length > 0 ? [origins] : undefined;
+    };
 
-    // Build label index for the existing graph's components/interfaces
-    const existingIndex = new Map<string, string>();
+    // Build label index for the existing graph's components/interfaces. Each
+    // entry's `origin` is the matched node's AT THIS MOMENT — the only time
+    // it's unambiguous, since a later-aggregated repo can still mint a
+    // colliding unqualified slug and win the merge, silently reattributing
+    // the final node without updating an edge created from this match.
+    const existingIndex = new Map<string, LabelMatch>();
     for (const node of existing.nodes) {
         const label = nodeLabel(node);
-        if (label) existingIndex.set(label.toLowerCase(), nodeId(node));
+        if (label) existingIndex.set(label.toLowerCase(), { id: nodeId(node), origin: node.origin });
     }
 
     // Build label index for the new graph's components/interfaces
-    const overlayIndex = new Map<string, string>();
+    const overlayIndex = new Map<string, LabelMatch>();
     for (const node of overlay.nodes) {
         const label = nodeLabel(node);
-        if (label) overlayIndex.set(label.toLowerCase(), nodeId(node));
+        if (label) overlayIndex.set(label.toLowerCase(), { id: nodeId(node), origin: node.origin });
     }
 
     // Check if import edge targets in the new repo match component names in the existing repo
@@ -104,10 +127,16 @@ export function detectCrossRepoEdges(
             const fromNode = overlay.nodes.find(n => (n.file ?? n.id ?? n.slug ?? '') === edge.from);
             if (fromNode) {
                 const fromId = nodeId(fromNode);
-                const key = `${fromId}|${match}`;
+                const key = `${fromId}|${match.id}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromId, to: match, relation: 'DEPENDS_ON' });
+                    // The import edge's OWN origin tag, not a fresh lookup of
+                    // whichever node currently sits at `edge.from`'s slug: a
+                    // node collision that happens AFTER this edge was tagged
+                    // (in a later-processed repo) can silently swap that
+                    // node out without ever touching this edge's own tag
+                    // (#974 review round 14 P1).
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(edge.origin ?? fromNode.origin, match.origin) });
                 }
             }
         }
@@ -125,10 +154,17 @@ export function detectCrossRepoEdges(
             const fromNode = existing.nodes.find(n => (n.file ?? n.id ?? n.slug ?? '') === edge.from);
             if (fromNode) {
                 const fromId = nodeId(fromNode);
-                const key = `${fromId}|${match}`;
+                const key = `${fromId}|${match.id}`;
                 if (!edgeSet.has(key)) {
                     edgeSet.add(key);
-                    crossEdges.push({ from: fromId, to: match, relation: 'DEPENDS_ON' });
+                    // Same reasoning as the forward loop above: `existing`
+                    // accumulates every repo processed so far, so the node
+                    // currently at `edge.from`'s slug may already belong to
+                    // a DIFFERENT, later-colliding repo than the one whose
+                    // `imports` edge this actually is. `edge.origin` was
+                    // stamped once, at that edge's own tagging time, and is
+                    // immune to any node collision that happens afterward.
+                    crossEdges.push({ from: fromId, to: match.id, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(edge.origin ?? fromNode.origin, match.origin) });
                 }
             }
         }
@@ -144,10 +180,10 @@ export function detectCrossRepoEdges(
         const cfgId = nodeId(cfg);
         const match = existingIndex.get(cfgName);
         if (match) {
-            const key = `${match}|${cfgId}`;
+            const key = `${match.id}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match, to: cfgId, relation: 'DEPENDS_ON' });
+                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(match.origin, cfg.origin) });
             }
         }
     }
@@ -158,10 +194,10 @@ export function detectCrossRepoEdges(
         const cfgId = nodeId(cfg);
         const match = overlayIndex.get(cfgName);
         if (match) {
-            const key = `${match}|${cfgId}`;
+            const key = `${match.id}|${cfgId}`;
             if (!edgeSet.has(key)) {
                 edgeSet.add(key);
-                crossEdges.push({ from: match, to: cfgId, relation: 'DEPENDS_ON' });
+                crossEdges.push({ from: match.id, to: cfgId, relation: 'DEPENDS_ON', crossOriginPairs: crossOriginPair(match.origin, cfg.origin) });
             }
         }
     }
@@ -181,6 +217,9 @@ export function detectCrossRepoEdges(
  *  4. extractCodebase → teamwiki evidence artifacts (deterministic overview + graph)
  *  5. Append AI narrative to teamwiki/evidence/code/<slug>/overview.md
  *  6. Write LAST_SYNC
+ *
+ * A dry run stops after step 1: it reads the target remote commit with `git ls-remote`
+ * and reports whether the cache is current.
  *
  * @throws Error on clone failure, scan failure, or IO failure
  */
@@ -204,13 +243,39 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     log.info(`Importing remote repo: ${owner}/${repoName} (provider: ${providerName})`);
 
     // 2. Shallow clone or incremental fetch+reset
-    await ensureCacheRoot();
     const cacheDir = getRepoCacheDir(providerName, owner, repoName);
     const slug = getRepoSlug(providerName, owner, repoName);
 
     const lastSync = await readLastSync(cacheDir);
     const cacheExists = await fs.pathExists(path.join(cacheDir, '.git'));
     const useIncremental = incremental && cacheExists && lastSync !== null;
+    const outputWikiRoot = output ? path.resolve(output, '..', 'teamwiki') : undefined;
+
+    // A preview asks for the target remote commit and stops: the clone replaces the
+    // cache (or fetches and resets it), and the lock and LLM scan follow (#900).
+    if (dryRun) {
+        let head: string;
+        let previewIncremental = useIncremental;
+        try {
+            head = await remoteHeadSha(url, providerName, {
+                forceSsh, forceAnonymous, cachedRepoPath: useIncremental ? cacheDir : undefined,
+            });
+        } catch (error) {
+            if (!useIncremental) throw error;
+            log.warn(`[incremental] preview refresh failed, previewing a full clone instead: ${(error as Error).message}`);
+            head = await remoteHeadSha(url, providerName, { forceSsh, forceAnonymous });
+            previewIncremental = false;
+        }
+        const cache = !cacheExists
+            ? `not cached yet, a real run would clone it into ${cacheDir}`
+            : lastSync?.sha === head
+                ? `cache is current at ${head.slice(0, 8)}${previewIncremental ? ', so an incremental run would skip it' : ''}`
+                : `cache would be refreshed from ${lastSync ? lastSync.sha.slice(0, 8) : 'an unrecorded commit'} to ${head.slice(0, 8)}`;
+        log.info(`[dry-run] Would import ${owner}/${repoName} at ${head.slice(0, 8)} into ${path.join(outputWikiRoot ?? 'teamwiki', 'evidence', 'code', slug)}; ${cache}`);
+        return;
+    }
+
+    await ensureCacheRoot();
 
     let cloneSha: string;
     let cloneBranch: string;
@@ -300,9 +365,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     const releaseImportLock = await acquireImportLock(teamRepoDir);
     try {
     // 4. Generate teamwiki/ knowledge graph artifacts + append AI narrative to overview.md
-    const teamwikiRoot = output
-        ? path.resolve(output, '..', 'teamwiki')
-        : path.join(teamRepoDir, 'teamwiki');
+    const teamwikiRoot = outputWikiRoot ?? path.join(teamRepoDir, 'teamwiki');
     if (!dryRun) {
         const cacheWiki = path.join(cacheDir, 'teamwiki');
         try {

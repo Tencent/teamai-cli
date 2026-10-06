@@ -229,6 +229,15 @@ interface MapsToEdge {
   relation: 'MAPS_TO';
   term: string;
   confidence: number;
+  /**
+   * The matched code node's own origin, captured at match time (#974
+   * review round 16 P1) — not re-derived later from whichever node
+   * currently occupies that slug, which a later slug collision between two
+   * codebases can silently reattribute. Absent when the matched node
+   * itself had no origin yet (legacy data from before aggregation-time
+   * tagging existed).
+   */
+  origin?: string;
 }
 
 /**
@@ -239,7 +248,7 @@ interface MapsToEdge {
  * - 在代码事实页面中搜索匹配
  * - 匹配成功则建立 MAPS_TO 边
  */
-async function reconcileIwikiWithCodebase(
+export async function reconcileIwikiWithCodebase(
   documents: IWikiDocument[],
   teamwikiRoot: string,
 ): Promise<MapsToEdge[]> {
@@ -247,13 +256,21 @@ async function reconcileIwikiWithCodebase(
   const graphRaw = await readFile(graphPath, 'utf-8');
   const graph = JSON.parse(graphRaw);
 
-  // 收集代码节点的标签用于匹配
-  const codeLabels = new Map<string, string>();
+  // 收集代码节点的标签用于匹配 — 连同该节点此刻的 origin 一并记录：
+  // 之后若另一个 codebase 碰撞出相同的无前缀 slug 并赢得 merge，这里捕获的
+  // origin 不会跟着被覆盖（#974 review round 16 P1）。
+  // `label`/`id` 为旧字段名的回退：当前 schema 写入的节点用的是
+  // `title`/`slug`（本函数对 graph-index.json 做的是原始 JSON.parse，不经过
+  // loadGraphIndex 的字段归一化）。
+  const codeLabels = new Map<string, { id: string; origin?: string }>();
   for (const node of graph.nodes) {
-    codeLabels.set(node.label.toLowerCase(), node.id);
+    const label: string | undefined = node.label ?? node.title;
+    const id: string | undefined = node.id ?? node.slug;
+    if (!label || !id) continue;
+    codeLabels.set(label.toLowerCase(), { id, origin: node.origin });
     // 也索引 PascalCase 拆分后的单词
-    const words = node.label.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
-    codeLabels.set(words, node.id);
+    const words = label.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+    codeLabels.set(words, { id, origin: node.origin });
   }
 
   // 加载代码事实页面内容用于全文匹配
@@ -284,10 +301,10 @@ async function reconcileIwikiWithCodebase(
       // 方式 1：术语直接匹配代码节点标签
       const directMatch = codeLabels.get(term.toLowerCase());
       if (directMatch) {
-        const key = `${docSlug}|${directMatch}`;
+        const key = `${docSlug}|${directMatch.id}`;
         if (!edgeSet.has(key)) {
           edgeSet.add(key);
-          mapsToEdges.push({ from: docSlug, to: directMatch, relation: 'MAPS_TO', term, confidence: 0.8 });
+          mapsToEdges.push({ from: docSlug, to: directMatch.id, relation: 'MAPS_TO', term, confidence: 0.8, origin: directMatch.origin });
         }
         continue;
       }

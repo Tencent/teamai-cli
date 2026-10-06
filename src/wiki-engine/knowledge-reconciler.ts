@@ -127,6 +127,13 @@ async function loadReconciliationBase(wikiRoot: string): Promise<GraphIndex> {
         title: path.basename(slug),
         domain: CODE_PAGE_DOMAIN,
         source: edge.source,
+        // Both endpoints of a code-ast/code-heuristic edge are files inside
+        // the SAME codebase that produced it (an intra-repo import graph), so
+        // a placeholder minted here for a missing endpoint is unambiguously
+        // that codebase's too (#912 review round 11 P1): without this, a
+        // withheld codebase's own tagged edges got removed from recall but
+        // these origin-less placeholder nodes stayed behind and searchable.
+        origin: edge.origin,
       });
     }
   }

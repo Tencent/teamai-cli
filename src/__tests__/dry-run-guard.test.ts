@@ -51,19 +51,29 @@ describe('--dry-run guard decisions', () => {
   }
 
   it.each([
-    'remove', 'roles init', 'roles add', 'roles remove', 'roles update',
-    'projects add', 'projects update', 'projects remove', 'stats', 'digest', 'recall',
+    'stats', 'digest', 'recall',
   ])('refuses %s until its writes have a preview', (path) => {
     expect(dryRunRefusal(command(path))).toBe(`teamai ${path} has no --dry-run preview, nothing was run`);
   });
 
-  it.each(['--from-repo', '--from-repo-list', '--from-iwiki', '--from-claude'])('refuses import %s', (flag) => {
+  it.each([
+    'remove', 'roles init', 'roles add', 'roles remove', 'roles update',
+    'projects add', 'projects update', 'projects remove',
+  ])('restores the git preview for %s', (path) => {
+    expect(dryRunRefusal(command(path))).toBeUndefined();
+  });
+
+  it.each(['--from-iwiki', '--from-claude'])('refuses import %s', (flag) => {
     const args = flag === '--from-claude' ? [flag] : [flag, 'source'];
     expect(dryRunRefusal(command('import', args))).toBe(`teamai import ${flag} has no --dry-run preview, nothing was run`);
   });
 
   it.each([
     [], ['--from-org', 'team'], ['--from-mr', 'url'], ['--dir', '.'],
+    ['--from-repo', 'url'], ['--from-repo-list', 'list'],
+    ['--from-repo', 'url', '--from-iwiki', 'page', '--from-claude'],
+    ['--from-repo-list', 'list', '--from-iwiki', 'page', '--from-claude'],
+    ['--from-org', 'team', '--from-repo', 'url', '--from-repo-list', 'list', '--from-iwiki', 'page', '--from-claude'],
     ['--from-org', 'team', '--from-repo', 'url'],
     ['--from-mr', 'url', '--from-claude'], ['--dir', '.', '--from-claude'],
   ].map((args) => [args]))('preserves safe import source precedence for %j', (args) => {

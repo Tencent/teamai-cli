@@ -18,6 +18,8 @@ import { callClaudeParallel } from '../utils/ai-client.js';
 import { extractCodebase } from '../codebase-extract.js';
 import { codebaseCmd } from '../codebase-cmd.js';
 import { runHiddenDeepEnrich } from '../deep-enrich.js';
+import { scopeGlobalGraph } from '../graph-aggregate.js';
+import { loadGraphIndex } from '../wiki-engine/core/graph-index.schema.js';
 import {
   buildFallbackManifest,
   describeEvidenceManifest,
@@ -313,5 +315,47 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
     expect(report.manifest).toMatchObject({ written: false, source: 'none' });
     expect(report.manifest?.note).toBe('AI enrich produced no manifest; deep-enrich will have no components');
     expect(fs.existsSync(path.join(root, 'teamwiki', 'evidence', 'code', 'empty', '_manifest.json'))).toBe(false);
+  });
+});
+
+describe('a direct `teamai codebase --extract` stamps origin on the graph it writes (#974 review round 19 P1)', () => {
+  it('tags every node and edge it writes straight to teamwiki/.indices/graph-index.json with the project slug', async () => {
+    const root = createWidgetFixture();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    // A standalone extract (no `teamai import`) writes directly to the real
+    // teamwiki root's global graph file — there is no later
+    // aggregateGlobalGraph call to tag it, since this bypasses import's
+    // orchestration entirely.
+    await extractCodebase({ path: root, project: 'widget', json: true, skipEnrich: true });
+
+    const graph = await loadGraphIndex(path.join(root, 'teamwiki'));
+    expect(graph?.nodes.length).toBeGreaterThan(0);
+    for (const node of graph?.nodes ?? []) expect(node.origin).toBe('widget');
+    for (const edge of graph?.edges ?? []) expect(edge.origin).toBe('widget');
+  });
+
+  it("lets scopeGlobalGraph withhold the freshly re-extracted content correctly even though the project's own evidence/code/widget/.indices/graph-index.json per-repo file was never touched by this direct extract and stays stale", async () => {
+    const root = createWidgetFixture();
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    // Simulate a stale per-repo file left over from an earlier `teamai
+    // import` run, describing different (older) content than what this
+    // direct re-extraction is about to write to the global graph.
+    const staleRepoGraphDir = path.join(root, 'teamwiki', 'evidence', 'code', 'widget', '.indices');
+    fs.mkdirSync(staleRepoGraphDir, { recursive: true });
+    fs.writeFileSync(path.join(staleRepoGraphDir, 'graph-index.json'), JSON.stringify({
+      schemaVersion: 1, generatedAt: '2025-01-01',
+      nodes: [{ slug: 'old/stale-component', title: 'StaleComponent', type: 'component', confidence: 'high' }],
+      edges: [],
+    }));
+
+    await extractCodebase({ path: root, project: 'widget', json: true, skipEnrich: true });
+
+    const scoped = await scopeGlobalGraph(path.join(root, 'teamwiki'), new Set(['widget']));
+    // Fully tag-covered by the fresh extract's own origin stamps — the
+    // stale per-repo file is never even read for this.
+    expect(scoped?.nodes ?? []).toHaveLength(0);
+    expect(scoped?.edges ?? []).toHaveLength(0);
   });
 });

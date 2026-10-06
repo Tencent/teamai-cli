@@ -5,12 +5,15 @@
  * The branch machinery itself lives in `branch-worktree.ts`; reports are one
  * instance of it and learnings are the other. What stays here is the reports
  * spec, the names its callers already import, and the knowledge worktree, which
- * is not a side branch at all: it is a throwaway checkout of the default branch.
+ * is not a side branch at all: it is a throwaway checkout of the default branch,
+ * while a dry-run checkout models the contents after a real refresh.
  */
+import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { createGit, getDefaultBranch, hasCommits } from './git.js';
+import { createGit, getDefaultBranch, getHeadCommit, hasCommits } from './git.js';
 import { pathExists } from './fs.js';
+import { log } from './logger.js';
 import {
   ForeignCheckoutError,
   createBranchWorktree,
@@ -231,5 +234,107 @@ export async function withKnowledgeWorktree<T>(
       await fse.remove(wt);
       try { await git.raw(['worktree', 'prune']); } catch { /* best effort */ }
     }
+  }
+}
+
+/** A failed refresh, distinct from errors while reading the preview checkout. */
+export class PreviewFetchError extends Error {
+  constructor(cause: unknown) {
+    super((cause as Error).message, { cause });
+    this.name = 'PreviewFetchError';
+  }
+}
+
+/** A clone's dirty files may survive a real pull but are absent from origin. */
+export class DirtyPreviewError extends Error {
+  constructor(repoRoot: string) {
+    super(`Cannot preview a team repo with uncommitted changes at ${repoRoot}. Commit or stash the changes, then retry --dry-run. Nothing was changed.`);
+    this.name = 'DirtyPreviewError';
+  }
+}
+
+/**
+ * Run `fn` against a throwaway checkout of the post-pull clone branch, or
+ * origin/<default> in self mode, without changing the member checkout.
+ *
+ * Only a fetch touches the member's repo. Pulling there can reset a clone
+ * that diverged from origin and discard its commits, and `withKnowledgeWorktree`
+ * adds a worktree (#900). The checkout is a `--shared` clone in the OS temp
+ * dir, so history reads work and nothing is written under the repo. `fn`
+ * receives a clone of localConfig pointed at it, laid out as the real run's.
+ */
+export async function withDefaultBranchPreview<T>(
+  localConfig: LocalConfig,
+  fn: (previewConfig: LocalConfig) => Promise<T>,
+  options: { allowStale?: boolean } = {},
+): Promise<T> {
+  const selfMode = localConfig.repo.kind === 'self';
+  const repoRoot = selfMode ? getBusinessRoot(localConfig) : localConfig.repo.localPath;
+  const git = createGit(repoRoot);
+  // A successful clone pull may preserve dirty manifests/resources. Do not
+  // silently replace that view with origin; self mode really reads a worktree.
+  if (!selfMode && (await git.raw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'])).trim()) {
+    throw new DirtyPreviewError(repoRoot);
+  }
+  const defaultBranch = await getDefaultBranch(repoRoot);
+  const branch = selfMode ? defaultBranch : (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+  const head = await getHeadCommit(repoRoot);
+  let base: string | null = null;
+  try {
+    if (selfMode) {
+      await git.fetch(['origin', branch]);
+      base = await getHeadCommit(repoRoot, `origin/${branch}`) ?? head;
+    } else {
+      // pullRepo first pulls the configured upstream. FETCH_HEAD also works
+      // when the remote or its branch has a different name from origin/local.
+      try {
+        const remote = (await git.getConfig(`branch.${branch}.remote`)).value;
+        const merge = (await git.getConfig(`branch.${branch}.merge`)).value;
+        if (remote && merge) {
+          await git.fetch([remote, merge]);
+          const upstream = await getHeadCommit(repoRoot, 'FETCH_HEAD');
+          if (head && upstream) {
+            const common = (await git.raw(['merge-base', head, upstream])).trim();
+            if (common === upstream) base = head;
+            else if (common === head) base = upstream;
+          }
+        }
+      } catch { /* failed ff-only pull: model pullRepo's origin/local fallback */ }
+      if (!base) {
+        await git.fetch(['origin', branch]);
+        base = await getHeadCommit(repoRoot, `origin/${branch}`);
+        if (!base) throw new Error(`Cannot resolve origin/${branch} after fetching; the pull reset would fail.`);
+      }
+    }
+  } catch (e) {
+    if (!options.allowStale) throw new PreviewFetchError(e);
+    log.warn(`Could not fetch origin/${branch} (${(e as Error).message}); ${selfMode ? 'previewing against the copy fetched last.' : 'previewing against the local checkout.'}`);
+    base = selfMode ? await getHeadCommit(repoRoot, `origin/${branch}`) ?? head : head;
+  }
+  if (!base) throw new EmptyRepoError(repoRoot);
+
+  const dir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-preview-'));
+  try {
+    await git.raw(['clone', '--quiet', '--shared', '--no-checkout', repoRoot, dir]);
+    const preview = createGit(dir);
+    await preview.raw(['checkout', '--quiet', '--detach', base]);
+    // A shared clone's origin/* initially name the member's local branches.
+    // History/name resolution must instead see the member's fetched refs,
+    // including an ahead HEAD that differs from origin/<active branch>.
+    const refs = await git.raw(['for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes/origin/']);
+    for (const entry of refs.trim().split('\n').filter(Boolean)) {
+      const [ref, commit] = entry.split(' ');
+      if (ref !== 'refs/remotes/origin/HEAD') await preview.raw(['update-ref', ref, commit]);
+    }
+    await preview.raw(['symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${defaultBranch}`]);
+    const previewConfig: LocalConfig = {
+      ...localConfig,
+      repo: selfMode
+        ? { ...localConfig.repo, localPath: path.join(dir, '.teamai'), businessRepoRoot: dir }
+        : { ...localConfig.repo, localPath: dir },
+    };
+    return await fn(previewConfig);
+  } finally {
+    await fse.remove(dir);
   }
 }

@@ -19,29 +19,42 @@ export async function pullLatest(repoPath: string): Promise<void> {
 /**
  * Run a manifest admin edit (write manifest + open PR) against the right repo.
  * In single-repo mode the manifest is knowledge on main, so the edit runs inside
- * an isolated knowledge worktree (never the user's active tree). `fn` receives
- * the repoPath to read/write the manifest and the localConfig to use for the PR
- * — both already scoped to the worktree in self mode.
+ * an isolated knowledge worktree (never the user's active tree); otherwise the
+ * team repo clone is pulled first. A dry run reads the post-pull branch contents
+ * from a throwaway checkout instead and never pulls, since the pull can reset a clone
+ * with unpushed commits (#900). `fn` receives the repoPath to read/write the
+ * manifest and the localConfig to use for the PR, both scoped to that checkout.
  */
 export async function runManifestEdit(
     localConfig: LocalConfig,
     label: string,
     fn: (repoPath: string, editConfig: LocalConfig) => Promise<void>,
+    options: { dryRun?: boolean; skipPull?: boolean } = {},
 ): Promise<void> {
-    if (localConfig.repo.kind === 'self') {
-        const { withKnowledgeWorktree, EmptyRepoError } = await import('./utils/reports-branch.js');
-        try {
-            await withKnowledgeWorktree(localConfig, (wtConfig) => fn(wtConfig.repo.localPath, wtConfig));
-        } catch (e) {
-            if (e instanceof EmptyRepoError) {
-                log.error(e.message);
-            } else {
-                log.error(`${label} update failed: ${(e as Error).message}`);
-            }
-        }
+    if (!options.dryRun && localConfig.repo.kind !== 'self') {
+        if (!options.skipPull) await pullLatest(localConfig.repo.localPath);
+        await fn(localConfig.repo.localPath, localConfig);
         return;
     }
-    await fn(localConfig.repo.localPath, localConfig);
+    const { withKnowledgeWorktree, withDefaultBranchPreview, EmptyRepoError, DirtyPreviewError } = await import('./utils/reports-branch.js');
+    const body = (checkoutConfig: LocalConfig) => fn(checkoutConfig.repo.localPath, checkoutConfig);
+    try {
+        if (options.dryRun) {
+            // Real manifest edits also warn and proceed when their pull fails.
+            await withDefaultBranchPreview(localConfig, body, { allowStale: true });
+        } else {
+            await withKnowledgeWorktree(localConfig, body);
+        }
+    } catch (e) {
+        if (e instanceof DirtyPreviewError) {
+            log.error(e.message);
+            process.exitCode = 1;
+        } else if (e instanceof EmptyRepoError) {
+            log.error(e.message);
+        } else {
+            log.error(`${label} update failed: ${(e as Error).message}`);
+        }
+    }
 }
 
 export async function pushManifestChange(input: {

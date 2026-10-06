@@ -12,6 +12,7 @@ import matter from 'gray-matter';
 
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { tokenize, tokenCount, MAX_TOKENIZE_CHARS } from './utils/tokenizer.js';
+import { caseFoldKey } from './manifest-schema.js';
 
 export interface SourceAnchor {
   path: string;
@@ -227,14 +228,100 @@ function extractSnippet(content: string, queryTokens: string[], maxLen: number =
   return snippet;
 }
 
-async function loadWikiPages(wikiRoot: string, depth: 'route' | 'context' | 'lookup'): Promise<PageDoc[]> {
+/**
+ * `router.md` lists every codebase in either of the two formats production
+ * code generates: `routerTemplate` (wiki-engine/adapters/templates.ts)
+ * writes bullets linking `[[evidence/code/<slug>/index]]` — grouped under a
+ * `### <domain>` header when AI domain classification ran, with an
+ * unresolved component falling back to a bare `- <name>` line with no link
+ * at all; `rebuildWikiIndex` (the path taken after an import) writes table
+ * rows linking `[[code/<slug>/index]]` instead. Plus a `<!-- search-anchor:
+ * ... -->` comment aggregating every codebase's keywords. At `--depth
+ * route`, that single global file is the whole result, so a withheld
+ * codebase must be stripped from it the same way its evidence directory is
+ * excluded from `context`/`lookup` (#912).
+ *
+ * A line-only filter leaves an all-withheld domain's `### <domain>` header
+ * (and any unlinked fallback line under it) behind with nothing linked left
+ * to filter it by, still naming the withheld domain. So this groups lines
+ * into sections at each markdown header first: a section whose links are
+ * ALL withheld (at least one found, none allowed) is dropped whole, header
+ * included.
+ *
+ * A mixed section — some links allowed, some withheld — keeps its header
+ * and drops only the withheld-linked lines, same as before. But an
+ * unresolved component's bare `- <name>` fallback line carries no link at
+ * all, so `lineSlug` can never attribute it to either side; nothing marks
+ * it as the withheld codebase's own stray line versus the allowed one's.
+ * This function only ever runs when at least one codebase IS withheld (the
+ * caller skips it otherwise), so that ambiguity can't be resolved safely —
+ * failing closed means dropping every such unattributable bullet
+ * unconditionally, the same rule `scopeGlobalGraph` applies to graph
+ * ownership it cannot verify, rather than trusting an unlinked line is
+ * innocent just because something else nearby has an allowed link.
+ *
+ * A domain can ALSO end up with every one of its bullets unlinked — an AI
+ * domain classification that groups only components routerTemplate failed
+ * to match to any known project. `slugs` is then empty for that section, so
+ * the all-withheld check above never triggers (there is nothing linked to
+ * call "all withheld"), yet the per-line bare-bullet rule still drops every
+ * one of those bullets — leaving the bare `### <domain>` header behind with
+ * nothing under it, naming the domain regardless of whether it was the
+ * withheld codebase's own. So a section whose bullets existed but NONE
+ * survived line filtering is dropped whole (header included) the same way
+ * an all-withheld one is, rather than only checking whether any were linked.
+ */
+function filterRouterContent(content: string, withheldCodebases: string[]): string {
+  const withheld = new Set(withheldCodebases.map(caseFoldKey));
+  const lineSlug = (line: string): string | null => {
+    const match = line.match(/(?:evidence\/)?code\/([^/\]]+)/);
+    return match ? caseFoldKey(match[1]) : null;
+  };
+  const isBullet = (line: string): boolean => /^-\s/.test(line);
+  const survivesFilter = (line: string): boolean => {
+    const slug = lineSlug(line);
+    if (slug) return !withheld.has(slug);
+    return !isBullet(line);
+  };
+
+  const lines = content.split('\n');
+  const sections: string[][] = [[]];
+  for (const line of lines) {
+    if (/^#{1,6}\s/.test(line) && sections[sections.length - 1].length > 0) {
+      sections.push([]);
+    }
+    sections[sections.length - 1].push(line);
+  }
+
+  const kept: string[] = [];
+  for (const section of sections) {
+    const bullets = section.filter(isBullet);
+    const dropWhole = bullets.length > 0 && bullets.every((line) => !survivesFilter(line));
+    if (dropWhole) continue;
+    for (const line of section) {
+      if (line.startsWith('<!-- search-anchor:')) continue;
+      if (!survivesFilter(line)) continue;
+      kept.push(line);
+    }
+  }
+  return kept.join('\n');
+}
+
+async function loadWikiPages(
+  wikiRoot: string,
+  depth: 'route' | 'context' | 'lookup',
+  withheldCodebases: string[] = [],
+): Promise<PageDoc[]> {
   const pages: PageDoc[] = [];
 
   if (depth === 'route') {
     // route 模式：只加载 router.md（路由入口）
     const routerPath = path.join(wikiRoot, 'router.md');
     try {
-      const content = await readFile(routerPath, 'utf-8');
+      const rawContent = await readFile(routerPath, 'utf-8');
+      const content = withheldCodebases.length > 0
+        ? filterRouterContent(rawContent, withheldCodebases)
+        : rawContent;
       const titleMatch = content.match(/^title:\s*(.+)$/m);
       const title = titleMatch ? titleMatch[1].trim() : 'Team Wiki Router';
       pages.push({
@@ -257,6 +344,15 @@ async function loadWikiPages(wikiRoot: string, depth: 'route' | 'context' | 'loo
     projectDirs = entries.filter(e => e.isDirectory()).map(e => e.name);
   } catch {
     return pages;
+  }
+
+  // A codebase slug a role or project declared under `resources.wiki` but did
+  // not select stays out of recall for this directory (#912), the same way an
+  // inactive docs namespace stays out. Case-folded: `evidence/code/Payments/`
+  // and a declared `payments` are the same slug on a case-insensitive filesystem.
+  if (withheldCodebases.length > 0) {
+    const withheld = new Set(withheldCodebases.map(caseFoldKey));
+    projectDirs = projectDirs.filter((project) => !withheld.has(caseFoldKey(project)));
   }
 
   for (const project of projectDirs) {
@@ -426,9 +522,26 @@ async function loadPagesRecursive(
 }
 
 // B7: Use protocol loadGraphIndex instead of local implementation
-async function loadGraph(wikiRoot: string): Promise<GraphIndex | null> {
-  const { loadGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
-  return loadGraphIndex(wikiRoot);
+//
+// A withheld codebase must not reach recall through the graph either (#912):
+// its nodes could otherwise still match as BM25 entry nodes, boost an
+// allowed page's score via a graph neighbor, or surface through
+// `relatedFiles` via a cross-repo edge. Rebuilding the graph from only the
+// allowed per-repo files (the first fix) turned out to silently drop
+// anything that lives only in the global file, e.g. `--reconcile`'s
+// product<->code MAPS_TO edges — so this instead takes the real global
+// graph and subtracts the withheld codebase's own content; see
+// scopeGlobalGraph's doc comment in graph-aggregate.ts for why that also
+// closes the cross-repo-edge leak despite fact-level nodes carrying no
+// `evidence/code/<slug>/` prefix to filter by.
+async function loadGraph(wikiRoot: string, withheldCodebases: string[] = []): Promise<GraphIndex | null> {
+  if (withheldCodebases.length === 0) {
+    const { loadGraphIndex } = await import('./wiki-engine/core/graph-index.schema.js');
+    return loadGraphIndex(wikiRoot);
+  }
+  const { scopeGlobalGraph } = await import('./graph-aggregate.js');
+  const withheld = new Set(withheldCodebases.map((slug) => caseFoldKey(slug)));
+  return (await scopeGlobalGraph(wikiRoot, withheld)) as GraphIndex | null;
 }
 
 export interface QueryCodeKnowledgeOptions {
@@ -436,15 +549,17 @@ export interface QueryCodeKnowledgeOptions {
   limit?: number;
   /** route: 只返回路由建议；context: 搜索 overview+modules+docs；lookup: 全量搜索 */
   depth?: 'route' | 'context' | 'lookup';
+  /** Codebase slugs (evidence/code/<slug>/) a role or project declared under `resources.wiki` but did not activate (#912). */
+  withheldCodebases?: string[];
 }
 
 export async function queryCodeKnowledge(
   query: string,
   options: QueryCodeKnowledgeOptions,
 ): Promise<CodeKnowledgeResult[]> {
-  const { wikiRoot, limit = 5, depth = 'context' } = options;
+  const { wikiRoot, limit = 5, depth = 'context', withheldCodebases = [] } = options;
 
-  const pages = await loadWikiPages(wikiRoot, depth);
+  const pages = await loadWikiPages(wikiRoot, depth, withheldCodebases);
   if (pages.length === 0) return [];
 
   if (depth === 'route') {
@@ -460,7 +575,7 @@ export async function queryCodeKnowledge(
     }];
   }
 
-  const graph = await loadGraph(wikiRoot);
+  const graph = await loadGraph(wikiRoot, withheldCodebases);
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return [];
 
