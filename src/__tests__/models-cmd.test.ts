@@ -90,7 +90,7 @@ describe('models commands', () => {
       '  Gateway: https://gateway.example.test',
       '  Models:',
       '    anthropic, openai-chat-completions: glm-5.3, deepseek-v4-flash',
-      '  Agents: claude, opencode, codebuddy, workbuddy, pi',
+      '  Agents: claude, opencode, codebuddy, workbuddy, pi, omp',
       '  Active: none',
     ];
     expect(await captureOutput(() => modelsList())).toEqual([
@@ -101,7 +101,7 @@ describe('models commands', () => {
       '  Gateway: https://other.example.test',
       '  Models:',
       '    openai-responses: glm-5.3',
-      '  Agents: codex, opencode, pi',
+      '  Agents: codex, opencode, pi, omp',
       '  Active: none',
     ]);
     expect(await captureOutput(() => modelsList('mine'))).toEqual(mine);

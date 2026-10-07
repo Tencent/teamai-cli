@@ -2,7 +2,7 @@
 
 ## 目标与边界
 
-团队发布一份网关目录，所有支持的 Agent（Claude Code、Codex、OpenCode、CodeBuddy、WorkBuddy、Pi）都能使用；个人也可以保留自己的网关配置。团队 Git 仓库不能变成密钥存储。
+团队发布一份网关目录，所有支持的 Agent（Claude Code、Codex、OpenCode、CodeBuddy、WorkBuddy、Pi、OMP）都能使用；个人也可以保留自己的网关配置。团队 Git 仓库不能变成密钥存储。
 
 - 目录格式保持精简：`id`、`name`、`base_url`、`api_key: ${API_KEY}`（占位符）和 `model_groups`。不按 Agent 分节，Agent 是否支持由协议推出。
 - 只有显式执行 `teamai models switch` 才会修改 Agent。此后，`teamai pull` 会把团队最新目录重新应用到已切换的 Agent；从未切换的 Agent 永远不会被修改。
@@ -61,8 +61,9 @@ profiles:
 | OpenCode | 任意 | 顶层 `model`，以及 `teamai-anthropic`、`teamai-chat`、`teamai-responses` 三个 provider；支持多种协议的模型只注册一次，优先 Chat Completions |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | 每个模型一个 `models.json` 条目；`availableModels` 不为空时加入受管 ID |
 | Pi | 任意 | `models.json` 中一个 provider，以 profile 引用为键；支持多种协议的模型只注册一次，优先 OpenAI。不改动 `settings.json` |
+| OMP | 任意 | `models.yml` 中一个 provider，以 profile 引用为键，结构与 Pi 相同，多协议模型的去重规则也相同。**不**识别 `PI_CODING_AGENT_DIR`——该变量重定位的是 Pi 的 agent 目录，若在此读取，会把 OMP 的目录指到 Pi 上；只使用默认的 `~/.omp/agent/` 布局。OMP 从不改写该文件 |
 
-Claude 的三个模型家族别名分别指向 ID 中含 `opus`、`sonnet`、`haiku` 的第一个网关模型，找不到则指向默认模型，保证后台任务和 subagent 不会请求网关上不存在的模型。通过环境变量引用的密钥分别写成 `env_key`（Codex）、`{env:VAR}`（OpenCode）、`${VAR}`（CodeBuddy/WorkBuddy）和 `$VAR`（Pi）；Claude 没有这种语法，只能写入解析后的密钥。
+Claude 的三个模型家族别名分别指向 ID 中含 `opus`、`sonnet`、`haiku` 的第一个网关模型，找不到则指向默认模型，保证后台任务和 subagent 不会请求网关上不存在的模型。通过环境变量引用的密钥分别写成 `env_key`（Codex）、`{env:VAR}`（OpenCode）、`${VAR}`（CodeBuddy/WorkBuddy）和 `$VAR`（Pi）；Claude 没有这种语法，只能写入解析后的密钥。OMP 同样没有内联展开，但会把 `!命令` 形式的 `apiKey` 执行并取其输出，因此环境变量密钥写成 `!printenv VAR`，不落入文件——与其它形式提供相同的保证。成员未设置该变量时会得到明确报错，而不是静默的空密钥。
 
 Codex 按行编辑，以保留注释和格式。写入前会解析结果并与预期值比对；遇到无法处理的特殊写法时直接失败，不修改文件。
 
@@ -72,7 +73,7 @@ Codex 按行编辑，以保留注释和格式。写入前会解析结果并与�
 
 `settings.json` 启用了 Bedrock、Vertex 或 Foundry 时拒绝切换 Claude。Shell 中与 TeamAI 写入值不一致的 `ANTHROPIC_*` 只给出警告、不拒绝，因为 Claude Code 桌面端等宿主应用会为自己的会话设置这些变量。
 
-写入顺序保证中断后可以收敛：先保存待完成记录，再原子替换 Agent 文件，最后清除待完成标记。下次执行命令时，只有受管字段与写入前或写入后的状态之一一致，才会自动收敛；否则跳过该 Agent。写入失败会删除对应的待完成记录。记录中固定了 Agent 的配置路径（支持 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_CONFIG_HOME`、`OPENCODE_CONFIG`、`PI_CODING_AGENT_DIR`），之后路径变化也不会让恢复写到别处。所有模型操作通过一把锁串行执行；`pull` 会在持锁后再次确认 Agent 仍在使用它要重新应用的配置。
+写入顺序保证中断后可以收敛：先保存待完成记录，再原子替换 Agent 文件，最后清除待完成标记。下次执行命令时，只有受管字段与写入前或写入后的状态之一一致，才会自动收敛；否则跳过该 Agent。写入失败会删除对应的待完成记录。记录中固定了 Agent 的配置路径（支持 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_CONFIG_HOME`、`OPENCODE_CONFIG`、`PI_CODING_AGENT_DIR`；OMP 没有覆盖变量，固定为 `~/.omp/agent/models.yml`），之后路径变化也不会让恢复写到别处。所有模型操作通过一把锁串行执行；`pull` 会在持锁后再次确认 Agent 仍在使用它要重新应用的配置。
 
 某个 Agent 使用 TeamAI 模型配置期间，local-agent 服务端模型下发会对该 Agent 暂停。用户级完整卸载会在清理 MCP 前先恢复模型配置，若有 Agent 无法恢复就停止卸载并保留记录；项目级卸载不改动这些机器级配置。
 

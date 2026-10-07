@@ -65,7 +65,7 @@ teamai push → 创建分支 + MR → reviewer 审批合并
 | **Hooks** | `hooks/hooks.yaml`、`hooks/<namespace>/hooks.yaml` | |
 | **MCP** | `mcp/mcp.yaml`、`mcp/<namespace>/mcp.yaml` | |
 | **Packages** | `teamai.yaml` | 目前只支持 npm 包和 Claude 插件 |
-| **Models** | `models/models.yaml`、`models/<namespace>/models.yaml` | 团队模型配置，适用于 Claude Code、Codex、OpenCode、CodeBuddy 和 WorkBuddy；只有运行 `teamai models switch` 后才会改动 Agent |
+| **Models** | `models/models.yaml`、`models/<namespace>/models.yaml` | 团队模型配置，适用于 Claude Code、Codex、OpenCode、CodeBuddy、WorkBuddy、Pi 和 OMP；只有运行 `teamai models switch` 后才会改动 Agent |
 
 Skills、rules、CLAUDE.md、agents、env、hooks、MCP、models 和 docs 也可以放在 `<namespace>/` 子目录下，只同步给在 `resources:` 中列出它的角色和项目（rules 与 CLAUDE.md 列在 `knowledge:` 下）。namespace 中的条目会替换根目录中同名的条目；docs namespace 不替换任何内容。配置了角色或项目后，根目录的 skills 只通过标签订阅送达成员。
 

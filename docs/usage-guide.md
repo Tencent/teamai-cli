@@ -2823,7 +2823,7 @@ Notify external endpoints when team events happen. Each endpoint declares a `url
 
 ## Model profiles
 
-Model profiles point Claude Code, Codex, OpenCode, CodeBuddy, WorkBuddy, and Pi at a shared model gateway. Nothing changes an agent until you run `teamai models switch`; after that, `teamai pull` keeps the switched agents on the team's latest catalog.
+Model profiles point Claude Code, Codex, OpenCode, CodeBuddy, WorkBuddy, Pi, and OMP at a shared model gateway. Nothing changes an agent until you run `teamai models switch`; after that, `teamai pull` keeps the switched agents on the team's latest catalog.
 
 There are two sources, both in the same format:
 
@@ -2862,6 +2862,7 @@ Which agents can use a profile follows from its protocols:
 | OpenCode | any | `opencode.json`: one provider per protocol with every model |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json`: one entry per model |
 | Pi | any | `~/.pi/agent/models.json`: one provider keyed by the profile ref, holding every model. `settings.json` is left alone, so you pick the default with `/model` |
+| OMP | any | `~/.omp/agent/models.yml`: one provider keyed by the profile ref, holding every model — Pi's shape, in YAML |
 
 The example above has no `openai-responses` group, so Codex is left alone; add that protocol once your gateway serves those models over the Responses API.
 

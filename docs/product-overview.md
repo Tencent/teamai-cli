@@ -65,7 +65,7 @@ Each resource is delivered to every agent:
 | **Hooks** | `hooks/hooks.yaml`, `hooks/<namespace>/hooks.yaml` | |
 | **MCP** | `mcp/mcp.yaml`, `mcp/<namespace>/mcp.yaml` | |
 | **Packages** | `teamai.yaml` | Currently npm packages and Claude Code plugins only |
-| **Models** | `models/models.yaml`, `models/<namespace>/models.yaml` | Team model profiles for Claude Code, Codex, OpenCode, CodeBuddy and WorkBuddy; an agent changes only after `teamai models switch` |
+| **Models** | `models/models.yaml`, `models/<namespace>/models.yaml` | Team model profiles for Claude Code, Codex, OpenCode, CodeBuddy, WorkBuddy, Pi and OMP; an agent changes only after `teamai models switch` |
 
 Skills, rules, CLAUDE.md, agents, env, hooks, MCP, models and docs can also live under a `<namespace>/` subdirectory, which ships only to the roles and projects that list it in `resources:` (rules and CLAUDE.md under `knowledge:`). A namespace item replaces the root item of the same name; a docs namespace replaces nothing. With roles or projects set, root skills reach a member only through a tag subscription.
 

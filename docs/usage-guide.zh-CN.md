@@ -2634,7 +2634,7 @@ skill 使用统计同样读取记录的根目录，迁移后的工具的 skills 
 
 ## 模型配置
 
-模型配置让 Claude Code、Codex、OpenCode、CodeBuddy、WorkBuddy 和 Pi 使用同一个模型网关。只有执行 `teamai models switch` 才会修改 Agent 配置；切换之后，`teamai pull` 会让已切换的 Agent 跟随团队目录的最新内容。
+模型配置让 Claude Code、Codex、OpenCode、CodeBuddy、WorkBuddy、Pi 和 OMP 使用同一个模型网关。只有执行 `teamai models switch` 才会修改 Agent 配置；切换之后，`teamai pull` 会让已切换的 Agent 跟随团队目录的最新内容。
 
 配置有两个来源，格式完全相同：
 
@@ -2673,6 +2673,7 @@ profiles:
 | OpenCode | 任意 | `opencode.json`：每种协议一个 provider，包含全部模型 |
 | CodeBuddy / WorkBuddy | `openai-chat-completions` | `models.json`：每个模型一个条目 |
 | Pi | 任意 | `~/.pi/agent/models.json`：一个以 profile 引用为键的 provider，包含全部模型。不改动 `settings.json`，默认模型由你用 `/model` 选择 |
+| OMP | 任意 | `~/.omp/agent/models.yml`：一个以 profile 引用为键的 provider，包含全部模型——与 Pi 结构相同，只是 YAML |
 
 上例没有 `openai-responses` 分组，因此不会修改 Codex；确认网关的 Responses 接口支持这些模型后，再加上该协议即可。
 
