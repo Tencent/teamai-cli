@@ -49,16 +49,21 @@ export function extractScala(files: CodeCollectedFile[]): CodeFact[] {
       }
 
       // --- Relations ---
-      // `import com.foo.Bar`, `import com.foo.{Bar, Baz}`, `import com.foo._`
-      // (Scala 2) and `import com.foo.*` (Scala 3) all narrow to `com.foo`.
-      // Dots are package separators; both relation consumers match
-      // slash-separated paths (buildCodeGraph's fuzzy file match, the call-chain
-      // tracer's module map), so emit the import as a path: `com.foo.Bar` →
-      // `com/foo/Bar`.
-      const importDecl = /^import\s+([A-Za-z_]\w*(?:\.\w+)*)/u.exec(decl);
+      // One relation per imported symbol, as a slash-separated path
+      // (`com.foo.{Bar, Baz => B}` → `com/foo/Bar`, `com/foo/Baz`). Both
+      // relation consumers match paths, not dotted packages: buildCodeGraph
+      // fuzzy-matches file paths and the call-chain tracer resolves the
+      // basename. Expanding the selector keeps the edge on the named file —
+      // a bare package path would tie the importer to every file in the
+      // directory.
+      const importDecl = /^import\s+([A-Za-z_]\w*(?:\.\w+)*)(?:\s*\.\s*\{([^}]*)\})?/u.exec(decl);
       if (importDecl) {
-        const target = importDecl[1].replace(/\._$/u, "").replace(/\./gu, "/");
-        facts.push(makeFact("relation", target, file.relativePath, lineNumber, line, "EXTRACTED"));
+        const packagePath = toPath(importDecl[1]);
+        const symbols = importDecl[2] ? selectedSymbols(importDecl[2]) : [];
+        const targets = symbols.length > 0 ? symbols.map((symbol) => `${packagePath}/${symbol}`) : [packagePath];
+        for (const target of targets) {
+          facts.push(makeFact("relation", target, file.relativePath, lineNumber, line, "EXTRACTED"));
+        }
       }
     }
   }
@@ -78,6 +83,24 @@ const MODIFIER_PATTERN =
 /** Anything after the leading annotations/modifiers is the declaration itself. */
 function stripLeadingModifiers(line: string): string {
   return line.replace(MODIFIER_PATTERN, "");
+}
+
+/** `com.foo.Bar` → `com/foo/Bar`; a trailing wildcard (`_`, `*`) names the whole package and drops off. */
+function toPath(dotted: string): string {
+  return dotted.replace(/[._*]+$/u, "").replace(/\./gu, "/");
+}
+
+/**
+ * `Bar, Baz => B` → `["Bar", "Baz"]`: the name a selector imports is the part
+ * before `=>`. Anything that is not a plain identifier — the in-brace `_`
+ * wildcard, nested selectors — is dropped; the package path covers it.
+ */
+function selectedSymbols(selector: string): string[] {
+  const names = selector
+    .split(",")
+    .map((item) => item.split("=>")[0].trim())
+    .filter((name) => /^[A-Za-z]\w*$/u.test(name));
+  return [...new Set(names)];
 }
 
 function makeFact(

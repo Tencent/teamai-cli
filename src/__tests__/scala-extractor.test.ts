@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { CodeCollectedFile } from '../wiki-engine/code-knowledge/code-collector.js';
 import { collectCode } from '../wiki-engine/code-knowledge/code-collector.js';
 import { buildCodeGraph } from '../wiki-engine/code-knowledge/code-graph.js';
+import { traceCallChains } from '../wiki-engine/call-chain-tracer.js';
 import { extractScala } from '../wiki-engine/code-knowledge/extractors/scala.js';
 import { extractForLanguage, supportedLanguages } from '../wiki-engine/code-knowledge/extractors/index.js';
 
@@ -105,17 +106,21 @@ describe('Scala heuristic extractor', () => {
         'import scala.collection.mutable.{Map => MMap}',
         'import com.payments.events._',
         'import com.payments.core.*',
+        'import com.payments.model.{Invoice, Order => O}',
       ].join('\n'),
     );
 
     // Relation names are slash-separated paths: buildCodeGraph and the
     // call-chain tracer both match against file paths, not dotted packages.
+    // Brace selectors expand to one relation per imported symbol.
     expect(facts).toEqual([
       'relation:com/payments/gateway',
       'relation:java/util/concurrent/TimeUnit',
-      'relation:scala/collection/mutable',
+      'relation:scala/collection/mutable/Map',
       'relation:com/payments/events',
       'relation:com/payments/core',
+      'relation:com/payments/model/Invoice',
+      'relation:com/payments/model/Order',
     ]);
   });
 
@@ -134,6 +139,53 @@ describe('Scala heuristic extractor', () => {
 
     expect(edge?.from).toBe('src/main/scala/com/demo/payments/Gateway.scala');
     expect(edge?.to).toBe('src/main/scala/com/demo/core/Invoice.scala');
+  });
+
+  it('scopes a brace import to the selected symbol, not the whole package directory', () => {
+    const gateway = scalaFile(
+      ['package com.demo.payments', '', 'import com.demo.core.{Invoice}', '', 'object Gateway {', '  def charge(i: Invoice): Boolean = true', '}'].join('\n'),
+      'src/main/scala/com/demo/payments/Gateway.scala',
+    );
+    const invoice = scalaFile(
+      ['package com.demo.core', '', 'case class Invoice(id: Int)'].join('\n'),
+      'src/main/scala/com/demo/core/Invoice.scala',
+    );
+    const admin = scalaFile(
+      ['package com.demo.core', '', 'object InternalAdmin'].join('\n'),
+      'src/main/scala/com/demo/core/InternalAdmin.scala',
+    );
+
+    const graph = buildCodeGraph([...extractScala([gateway]), ...extractScala([invoice]), ...extractScala([admin])]);
+    const deps = graph.edges.filter((e) => e.relation === 'DEPENDS_ON');
+
+    expect(deps).toHaveLength(1);
+    expect(deps[0].from).toBe('src/main/scala/com/demo/payments/Gateway.scala');
+    expect(deps[0].to).toBe('src/main/scala/com/demo/core/Invoice.scala');
+  });
+
+  it('resolves a brace import in the call-chain tracer', () => {
+    const main = scalaFile(
+      ['package com.demo.app', '', 'import com.demo.core.{Invoice}', '', 'object Main extends App {', '  val i: Invoice = null', '}'].join('\n'),
+      'src/main/scala/com/demo/app/Main.scala',
+    );
+    const invoice = scalaFile(
+      ['package com.demo.core', '', 'case class Invoice(id: Int)'].join('\n'),
+      'src/main/scala/com/demo/core/Invoice.scala',
+    );
+    const admin = scalaFile(
+      ['package com.demo.core', '', 'object InternalAdmin'].join('\n'),
+      'src/main/scala/com/demo/core/InternalAdmin.scala',
+    );
+    const files = [main, invoice, admin];
+    const facts = files.flatMap((f) => extractScala([f]));
+
+    const chains = traceCallChains(facts, files);
+    const mainChain = chains.find((c) => c.entryPoint.includes('Main.scala'));
+
+    // The brace import resolves to Invoice.scala's component; the sibling
+    // InternalAdmin.scala in the same package directory is not pulled in.
+    expect(mainChain?.steps[0]?.callsTo).toContain('Invoice');
+    expect(mainChain?.steps.some((s) => s.file.endsWith('InternalAdmin.scala'))).toBe(false);
   });
 
   it('infers error types from the Error/Exception suffix and reads environment config', () => {
