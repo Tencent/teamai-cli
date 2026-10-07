@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { type CodeFact } from "./code-extractors.js";
+import { type CodeFact, isMetadataRelation } from "./code-extractors.js";
 import {
   type GraphIndex,
   type GraphNode,
@@ -27,7 +27,7 @@ export function buildCodeGraph(facts: CodeFact[]): GraphIndex {
 
   const nodeFiles = new Set(facts.filter(f => f.kind !== "relation").map(f => f.file));
   const edges: GraphEdge[] = facts
-    .filter((fact) => fact.kind === "relation")
+    .filter((fact) => fact.kind === "relation" && !isMetadataRelation(fact.name))
     .flatMap((fact) => {
       // AST-derived relation facts carry a resolved target file in fact.name and a
       // "(code-ast)" marker in detail — trust them directly instead of fuzzy matching.

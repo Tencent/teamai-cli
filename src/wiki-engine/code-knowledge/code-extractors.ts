@@ -37,6 +37,16 @@ export interface CodeFact {
 }
 
 /**
+ * Relations that carry extraction metadata for the incremental layer — a
+ * Scala wildcard's package, a file's top-level declarations — rather than a
+ * dependency. Evidence pages and gap detection skip them, and the graph
+ * builder resolves none of them.
+ */
+export function isMetadataRelation(name: string): boolean {
+  return /^scala-(?:wildcard|decl):/u.test(name);
+}
+
+/**
  * Extract code facts from collected files.
  * Groups files by language, then dispatches to language-specific extractors.
  * `context` — the run's full file list and the previous run's declarations —

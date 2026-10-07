@@ -14,6 +14,15 @@ const TRAIT_DECL_PATTERN = /^trait\s+([A-Z]\w*)/u;
 export const SCALA_WILDCARD_PREFIX = "scala-wildcard:";
 
 /**
+ * Marks a file's top-level declaration names, comma-joined:
+ * `scala-decl:Invoice,Order`. Like the wildcard marker it is metadata for the
+ * incremental layer — the next run rebuilds the declarations index from these
+ * instead of component facts, which cannot tell a nested member from a
+ * package-level name.
+ */
+export const SCALA_DECL_PREFIX = "scala-decl:";
+
+/**
  * Scala extractor.
  * Extracts classes, objects, traits, enums, defs, configs, errors, and import relations.
  *
@@ -35,6 +44,10 @@ export function extractScala(files: CodeCollectedFile[], context?: ExtractorCont
 
   for (const file of files) {
     const lines = file.content.split(/\r?\n/);
+    const declared = declarations.get(file.relativePath);
+    if (declared && declared.size > 0) {
+      facts.push(makeFact("relation", `${SCALA_DECL_PREFIX}${[...declared].join(",")}`, file.relativePath, 1, "", "EXTRACTED"));
+    }
     // A brace selector scalafmt wraps across lines stays open until its `}`.
     let openImport: { line: number; prefix: string; selector: string } | undefined;
 
@@ -328,26 +341,38 @@ function afterPackage(relativePath: string, packagePath: string): string | undef
 /**
  * The top-level type, trait and def names a file declares — the names another
  * file can import from the package. A member sits inside braces or, in
- * significant-indentation Scala 3, at least one indent; either way it is not
- * a package-level name.
+ * significant-indentation Scala 3, deeper than the package block's first
+ * indent; either way it is not a package-level name.
  */
 function declarationNames(content: string): Set<string> {
   const names = new Set<string>();
   let depth = 0;
+  let inPackageBlock = false; // `package com.demo.core:` — members sit one indent in
+  let memberIndent = -1;
   for (const rawLine of content.split(/\r?\n/)) {
-    if (depth === 0 && !/^\s/u.test(rawLine)) {
-      const decl = stripLeadingModifiers(rawLine);
-      const typeDecl = TYPE_DECL_PATTERN.exec(decl);
-      if (typeDecl) {
-        names.add(typeDecl[2]);
+    const trimmed = rawLine.trim();
+    const indent = rawLine.length - rawLine.trimStart().length;
+    if (!inPackageBlock && /^package\s+[\w.]+\s*:\s*$/u.test(trimmed)) {
+      inPackageBlock = true;
+    } else if (trimmed !== "") {
+      if (inPackageBlock && memberIndent === -1) {
+        memberIndent = indent;
       }
-      const traitDecl = TRAIT_DECL_PATTERN.exec(decl);
-      if (traitDecl) {
-        names.add(traitDecl[1]);
-      }
-      const defDecl = DEF_DECL_PATTERN.exec(decl);
-      if (defDecl) {
-        names.add(defDecl[1]);
+      const topLevel = depth === 0 && (indent === 0 || (inPackageBlock && indent <= memberIndent));
+      if (topLevel) {
+        const decl = stripLeadingModifiers(rawLine);
+        const typeDecl = TYPE_DECL_PATTERN.exec(decl);
+        if (typeDecl) {
+          names.add(typeDecl[2]);
+        }
+        const traitDecl = TRAIT_DECL_PATTERN.exec(decl);
+        if (traitDecl) {
+          names.add(traitDecl[1]);
+        }
+        const defDecl = DEF_DECL_PATTERN.exec(decl);
+        if (defDecl) {
+          names.add(defDecl[1]);
+        }
       }
     }
     depth += (rawLine.match(/\{/gu) ?? []).length - (rawLine.match(/\}/gu) ?? []).length;

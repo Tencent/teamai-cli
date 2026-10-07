@@ -30,7 +30,8 @@ import {
 import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
 import type { CodeCollectedFile } from './wiki-engine/code-knowledge/code-collector.js';
 import type { ExtractorContext } from './wiki-engine/code-knowledge/extractors/index.js';
-import { SCALA_WILDCARD_PREFIX } from './wiki-engine/code-knowledge/extractors/index.js';
+import { SCALA_DECL_PREFIX, SCALA_WILDCARD_PREFIX } from './wiki-engine/code-knowledge/extractors/index.js';
+import { isMetadataRelation } from './wiki-engine/code-knowledge/code-extractors.js';
 import {
   loadFactsCache,
   saveFactsCache,
@@ -99,7 +100,7 @@ function detectKnowledgeGaps(
   }
 
   // 1. 未解析的外部依赖：import target 不在扫描范围内
-  const relationFacts = facts.filter((f) => f.kind === 'relation');
+  const relationFacts = facts.filter((f) => f.kind === 'relation' && !isMetadataRelation(f.name));
   const unresolvedImports = new Set<string>();
   for (const rel of relationFacts) {
     const target = rel.name;
@@ -219,7 +220,7 @@ function buildEvidencePages(
     pages.set(`${kind}.md`, lines.join('\n'));
   }
 
-  const relationFacts = facts.filter((f) => f.kind === 'relation');
+  const relationFacts = facts.filter((f) => f.kind === 'relation' && !isMetadataRelation(f.name));
   if (relationFacts.length > 0) {
     const byDir = new Map<string, CodeFact[]>();
     for (const fact of relationFacts) {
@@ -589,23 +590,29 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     }
   }
 
-  // 增量模式下，通配 import 在提取时物化为具体文件（com.demo.core._ → 各成员）；
-  // 若本次只变更了包成员而 importer 未变，物化结果已过期。缓存的
-  // scala-wildcard: 标记记录了每个通配 importer 及其包，据此把受影响的
-  // importer 一并重提取
+  // 增量模式下，import 在提取时物化为具体文件（通配 → 各成员、具名 → 声明
+  // 文件）；若本次只变更了被指向的文件而 importer 未变，物化结果已过期。
+  // 缓存的 scala-wildcard: 标记记录通配 importer 及其包；其余以 .scala/.java
+  // 结尾的 relation 名就是物化目标文件本身——两者任一受影响都重提取 importer
   const indicesDir = path.join(wikiRoot, '.indices');
   let cachedFacts: CodeFact[] | undefined;
   if (changedFiles !== undefined) {
     cachedFacts = await loadFactsCache(indicesDir);
-    const jvmChanged = [...changedFiles, ...deletedFiles].filter((f) => /\.(?:scala|java)$/.test(f));
-    if (jvmChanged.length > 0) {
-      const staleImporters = new Set<string>();
-      for (const fact of cachedFacts) {
-        if (fact.kind !== 'relation' || !fact.name.startsWith(SCALA_WILDCARD_PREFIX)) continue;
+    const changedSet = new Set([...changedFiles, ...deletedFiles]);
+    const staleImporters = new Set<string>();
+    for (const fact of cachedFacts) {
+      if (fact.kind !== 'relation') continue;
+      if (fact.name.startsWith(SCALA_WILDCARD_PREFIX)) {
         const wildcardPackage = fact.name.slice(SCALA_WILDCARD_PREFIX.length);
-        const touched = jvmChanged.some((f) => f.includes(`/${wildcardPackage}/`) || f.startsWith(`${wildcardPackage}/`));
+        const touched = changedFiles.some((f) => f.includes(`/${wildcardPackage}/`) || f.startsWith(`${wildcardPackage}/`))
+          || deletedFiles.some((f) => f.includes(`/${wildcardPackage}/`) || f.startsWith(`${wildcardPackage}/`));
         if (touched) staleImporters.add(fact.file);
+      } else if (/\.(?:scala|java)$/.test(fact.name) && changedSet.has(fact.name)) {
+        // a materialized target changed — the importer must re-resolve it
+        staleImporters.add(fact.file);
       }
+    }
+    if (staleImporters.size > 0) {
       changedFiles = [...new Set([...changedFiles, ...staleImporters])];
     }
   }
@@ -623,7 +630,8 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
 
   // 增量模式下，跨文件解析（通配展开、符号定位到声明文件）需要未变更文件的
   // 路径与声明；两者都能从上一轮 facts 缓存得到，未变更文件无需重新读取。
-  // 声明只认 component/interface —— config 等并非可导入符号
+  // 声明只从 scala-decl: 标记重建——component facts 分不出嵌套成员，
+  // 标记在提取时就只记包级名字
   let extractionContext: ExtractorContext | undefined;
   if (changedFiles !== undefined) {
     const priorDeclarations = new Map<string, Set<string>>();
@@ -633,9 +641,8 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
       if (!removed.has(fact.file)) {
         stubs.set(fact.file, { path: fact.file, relativePath: fact.file, language: 'text', sha256: '', content: '' });
       }
-      if (fact.kind === 'component' || fact.kind === 'interface') {
-        const names = priorDeclarations.get(fact.file) ?? new Set<string>();
-        names.add(fact.name);
+      if (fact.kind === 'relation' && fact.name.startsWith(SCALA_DECL_PREFIX)) {
+        const names = new Set(fact.name.slice(SCALA_DECL_PREFIX.length).split(','));
         priorDeclarations.set(fact.file, names);
       }
     }

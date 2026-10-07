@@ -160,7 +160,25 @@ describe('Scala heuristic extractor', () => {
 
     const names = extractScala([gateway, invoice, main]).filter((f) => f.kind === 'relation').map((f) => f.name);
 
-    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Main.scala']);
+    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Main.scala', 'scala-decl:Invoice', 'scala-decl:Main']);
+  });
+
+  it('reads top-level declarations under a Scala 3 package block', () => {
+    const models = scalaFile(
+      ['package com.demo.core:', '  case class Invoice(id: Int)', '  object Registry:', '    def build: Int = 1'].join('\n'),
+      'src/main/scala/com/demo/core/Models.scala',
+    );
+    const main = scalaFile('package com.demo.core:\n  object Main\n', 'src/main/scala/com/demo/core/Main.scala');
+    const gateway = scalaFile(
+      'package com.demo.payments\n\nimport com.demo.core.{Invoice => _, _}\nimport com.demo.core.Registry\n',
+      'src/main/scala/com/demo/payments/Gateway.scala',
+    );
+
+    const names = extractScala([models, main, gateway]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    // `def build` sits one indent deeper than Registry — a member, not a name
+    // the package exports; Invoice is hidden, Registry keeps Models.scala in.
+    expect(names).toEqual(['scala-decl:Invoice,Registry', 'scala-decl:Main', 'scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Models.scala', 'src/main/scala/com/demo/core/Main.scala']);
   });
 
   it('ignores nested defs when a hidden name decides wildcard exclusion', () => {
@@ -172,7 +190,7 @@ describe('Scala heuristic extractor', () => {
 
     // Models.scala's only package-level name is the hidden Invoice — its
     // nested `def total` is not something the wildcard could have imported.
-    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Main.scala']);
+    expect(names).toEqual(['scala-decl:Invoice', 'scala-decl:Main', 'scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Main.scala']);
   });
 
   it('resolves a wildcard on an object to the file declaring it', () => {
@@ -181,7 +199,7 @@ describe('Scala heuristic extractor', () => {
 
     const names = extractScala([domain, main]).filter((f) => f.kind === 'relation').map((f) => f.name);
 
-    expect(names).toEqual(['scala-wildcard:com/demo/Models', 'src/main/scala/com/demo/Domain.scala']);
+    expect(names).toEqual(['scala-decl:Models', 'scala-wildcard:com/demo/Models', 'src/main/scala/com/demo/Domain.scala']);
   });
 
   it('expands a plain wildcard over the package files', () => {
@@ -191,7 +209,7 @@ describe('Scala heuristic extractor', () => {
 
     const names = extractScala([main, invoice, admin]).filter((f) => f.kind === 'relation').map((f) => f.name);
 
-    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Invoice.scala', 'src/main/scala/com/demo/core/InternalAdmin.scala']);
+    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Invoice.scala', 'src/main/scala/com/demo/core/InternalAdmin.scala', 'scala-decl:Invoice', 'scala-decl:InternalAdmin']);
   });
 
   it('expands a Scala 3 `*` wildcard the same way as `_`', () => {
@@ -201,7 +219,7 @@ describe('Scala heuristic extractor', () => {
 
     const names = extractScala([main, invoice, admin]).filter((f) => f.kind === 'relation').map((f) => f.name);
 
-    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Invoice.scala', 'src/main/scala/com/demo/core/InternalAdmin.scala']);
+    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Invoice.scala', 'src/main/scala/com/demo/core/InternalAdmin.scala', 'scala-decl:Invoice', 'scala-decl:InternalAdmin']);
   });
 
   it('expands a wildcard over Java files of the package, minus hidden names', () => {
@@ -256,7 +274,7 @@ describe('Scala heuristic extractor', () => {
     const names = extractScala([models, main, gateway]).filter((f) => f.kind === 'relation').map((f) => f.name);
 
     // Models.scala declares only the hidden Invoice, so the wildcard skips it too.
-    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Main.scala']);
+    expect(names).toEqual(['scala-decl:Invoice', 'scala-decl:Main', 'scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Main.scala']);
   });
 
   it('does not import package-adjacent resources', () => {
@@ -268,7 +286,7 @@ describe('Scala heuristic extractor', () => {
       .filter((f) => f.kind === 'relation')
       .map((f) => f.name);
 
-    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Invoice.scala']);
+    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Invoice.scala', 'scala-decl:Invoice']);
   });
 
   it('resolves a top-level def import to its file', () => {
@@ -277,7 +295,7 @@ describe('Scala heuristic extractor', () => {
 
     const names = extractScala([helpers, main]).filter((f) => f.kind === 'relation').map((f) => f.name);
 
-    expect(names).toEqual(['src/main/scala/com/demo/core/Helpers.scala']);
+    expect(names).toEqual(['scala-decl:validate', 'src/main/scala/com/demo/core/Helpers.scala']);
   });
 
   it('resolves a named import to the file that declares the symbol', () => {
@@ -286,7 +304,7 @@ describe('Scala heuristic extractor', () => {
 
     const names = extractScala([models, gateway]).filter((f) => f.kind === 'relation').map((f) => f.name);
 
-    expect(names).toEqual(['src/main/scala/com/demo/core/Models.scala']);
+    expect(names).toEqual(['scala-decl:Invoice,Order', 'src/main/scala/com/demo/core/Models.scala']);
   });
 
   it('excludes a subpackage from a wildcard import', () => {
@@ -296,7 +314,7 @@ describe('Scala heuristic extractor', () => {
 
     const names = extractScala([main, invoice, admin]).filter((f) => f.kind === 'relation').map((f) => f.name);
 
-    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Invoice.scala']);
+    expect(names).toEqual(['scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Invoice.scala', 'scala-decl:Invoice', 'scala-decl:Admin']);
   });
 
   it('produces a dependency edge for an internal import', () => {
