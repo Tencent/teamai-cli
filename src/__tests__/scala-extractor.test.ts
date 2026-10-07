@@ -134,8 +134,9 @@ describe('Scala heuristic extractor', () => {
 
     // The fixture file sits outside com/demo/core, so the wildcard has no
     // collected file to name; a selector of only hidden names likewise leaves
-    // nothing but the package. Neither may produce a relation for `Invoice`.
-    expect(facts).toEqual(['relation:com/demo/core', 'relation:com/demo/core']);
+    // nothing but the package. Neither may produce a relation for `Invoice`,
+    // and both imports name the same dependency, so one relation suffices.
+    expect(facts).toEqual(['relation:com/demo/core']);
   });
 
   it('reads a brace import scalafmt wraps across lines', () => {
@@ -196,9 +197,64 @@ describe('Scala heuristic extractor', () => {
     };
     const collected = [gateway, invoiceJava, orderJava];
 
-    const names = extractScala([gateway], collected).filter((f) => f.kind === 'relation').map((f) => f.name);
+    const names = extractScala([gateway], { allFiles: collected, priorDeclarations: new Map() })
+      .filter((f) => f.kind === 'relation')
+      .map((f) => f.name);
 
     expect(names).toEqual(['src/main/java/com/demo/core/Order.java']);
+  });
+
+  it('resolves against a previous run\'s declarations when only the importer changed', () => {
+    // Incremental run: the batch holds only the changed importer; the rest of
+    // the project is known by path (content-less stubs) and cached facts.
+    const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.{Invoice => _, _}\nimport com.demo.core.Order\n', 'src/main/scala/com/demo/payments/Gateway.scala');
+    const stub = (relativePath: string): CodeCollectedFile => ({ path: `/virtual/${relativePath}`, relativePath, language: 'scala', sha256: '', content: '' });
+    const priorDeclarations = new Map<string, Set<string>>([
+      ['src/main/scala/com/demo/core/Invoice.scala', new Set(['Invoice'])],
+      ['src/main/scala/com/demo/core/Main.scala', new Set(['Main'])],
+      ['src/main/scala/com/demo/core/Models.scala', new Set(['Order'])],
+    ]);
+
+    const names = extractScala([gateway], {
+      allFiles: [gateway, stub('src/main/scala/com/demo/core/Invoice.scala'), stub('src/main/scala/com/demo/core/Main.scala'), stub('src/main/scala/com/demo/core/Models.scala')],
+      priorDeclarations,
+    })
+      .filter((f) => f.kind === 'relation')
+      .map((f) => f.name);
+
+    expect(names).toEqual(['src/main/scala/com/demo/core/Main.scala', 'src/main/scala/com/demo/core/Models.scala']);
+  });
+
+  it('keeps a declared-hidden symbol out of the wildcard even in a differently named file', () => {
+    const models = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\n', 'src/main/scala/com/demo/core/Models.scala');
+    const main = scalaFile('package com.demo.core\n\nobject Main\n', 'src/main/scala/com/demo/core/Main.scala');
+    const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.{Invoice => _, _}\n', 'src/main/scala/com/demo/payments/Gateway.scala');
+
+    const names = extractScala([models, main, gateway]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    // Models.scala declares only the hidden Invoice, so the wildcard skips it too.
+    expect(names).toEqual(['src/main/scala/com/demo/core/Main.scala']);
+  });
+
+  it('does not import package-adjacent resources', () => {
+    const main = scalaFile('package com.demo.app\n\nimport com.demo.core._\n', 'src/main/scala/com/demo/app/Main.scala');
+    const invoice = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\n', 'src/main/scala/com/demo/core/Invoice.scala');
+    const schema = scalaFile('-- schema', 'src/main/resources/com/demo/core/schema.sql');
+
+    const names = extractScala([main, invoice], { allFiles: [main, invoice, schema], priorDeclarations: new Map() })
+      .filter((f) => f.kind === 'relation')
+      .map((f) => f.name);
+
+    expect(names).toEqual(['src/main/scala/com/demo/core/Invoice.scala']);
+  });
+
+  it('resolves a top-level def import to its file', () => {
+    const helpers = scalaFile('package com.demo.core\n\ndef validate(s: String): Boolean = true\n', 'src/main/scala/com/demo/core/Helpers.scala');
+    const main = scalaFile('package com.demo.app\n\nimport com.demo.core.validate\n', 'src/main/scala/com/demo/app/Main.scala');
+
+    const names = extractScala([helpers, main]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['src/main/scala/com/demo/core/Helpers.scala']);
   });
 
   it('resolves a named import to the file that declares the symbol', () => {

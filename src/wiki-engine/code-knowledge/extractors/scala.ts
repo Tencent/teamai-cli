@@ -1,5 +1,6 @@
 import { type CodeCollectedFile } from "../code-collector.js";
 import { type CodeFact, type CodeFactKind, mapKindToEvidenceType } from "../code-extractors.js";
+import { type ExtractorContext } from "./index.js";
 
 const TYPE_DECL_PATTERN = /^(class|object|enum)\s+([A-Z]\w*)/u;
 const DEF_DECL_PATTERN = /^def\s+([a-z_]\w*)/u;
@@ -9,17 +10,21 @@ const TRAIT_DECL_PATTERN = /^trait\s+([A-Z]\w*)/u;
  * Scala extractor.
  * Extracts classes, objects, traits, enums, defs, configs, errors, and import relations.
  *
- * `allFiles` — every collected file, all languages — resolves wildcard imports
- * in a mixed project, where a Scala wildcard imports Java files just as freely
- * as Scala ones.
+ * `context.allFiles` — every collected file, all languages — resolves wildcard
+ * imports in a mixed project, where a Scala wildcard imports Java files just as
+ * freely as Scala ones. `context.priorDeclarations` — the previous run's
+ * declarations — keeps symbol resolution working in an incremental run, which
+ * re-extracts only changed files.
  */
-export function extractScala(files: CodeCollectedFile[], allFiles: CodeCollectedFile[] = files): CodeFact[] {
+export function extractScala(files: CodeCollectedFile[], context?: ExtractorContext): CodeFact[] {
   const facts: CodeFact[] = [];
-  const declarations = new Map<string, Set<string>>();
+  // An incremental run re-parses only changed files; everything else is known
+  // by its cached declarations, which the fresh parse then overrides.
+  const declarations = new Map(context?.priorDeclarations ?? []);
   for (const file of files) {
     declarations.set(file.relativePath, declarationNames(file.content));
   }
-  const context: ExtractContext = { files, allFiles, declarations };
+  const extractContext: ExtractContext = { allFiles: context?.allFiles ?? files, declarations };
 
   for (const file of files) {
     const lines = file.content.split(/\r?\n/);
@@ -35,7 +40,7 @@ export function extractScala(files: CodeCollectedFile[], allFiles: CodeCollected
         if (openImport.selector.includes("}")) {
           const { line: start, prefix, selector } = openImport;
           openImport = undefined;
-          pushRelations(facts, context, prefix, selector.split("}")[0], file.relativePath, start, line);
+          pushRelations(facts, extractContext, prefix, selector.split("}")[0], file.relativePath, start, line);
         }
         continue;
       }
@@ -92,14 +97,30 @@ export function extractScala(files: CodeCollectedFile[], allFiles: CodeCollected
             openImport = { line: lineNumber, prefix: clause[1], selector: after.replace(/^\s*\.\s*\{/u, "") };
             break;
           }
-          pushRelations(facts, context, clause[1], clause[3], file.relativePath, lineNumber, line);
+          pushRelations(facts, extractContext, clause[1], clause[3], file.relativePath, lineNumber, line);
           rest = after.replace(/^\s*,\s*/u, "");
         }
       }
     }
   }
 
-  return facts;
+  // Two imports of one file (a wildcard plus a named symbol, say) name the
+  // same dependency twice — keep one relation per target per file.
+  const seenRelations = new Set<string>();
+  const uniqueFacts: CodeFact[] = [];
+  for (const fact of facts) {
+    if (fact.kind !== "relation") {
+      uniqueFacts.push(fact);
+      continue;
+    }
+    const key = `${fact.file}|${fact.name}`;
+    if (seenRelations.has(key)) {
+      continue;
+    }
+    seenRelations.add(key);
+    uniqueFacts.push(fact);
+  }
+  return uniqueFacts;
 }
 
 /**
@@ -117,11 +138,9 @@ function stripLeadingModifiers(line: string): string {
 }
 
 interface ExtractContext {
-  /** The Scala batch — its declarations resolve imported symbols to files. */
-  files: CodeCollectedFile[];
-  /** Every collected file — a wildcard imports Java files as freely as Scala ones. */
+  /** Every collected file of the run — a wildcard imports Java files as freely as Scala ones. */
   allFiles: CodeCollectedFile[];
-  /** relativePath → the type and trait names the file declares. */
+  /** relativePath → the symbol names the file declares, this run or cached. */
   declarations: Map<string, Set<string>>;
 }
 
@@ -151,7 +170,7 @@ function pushRelations(
   let targets: string[];
   if (wildcard) {
     const hidden = new Set(selection?.hidden ?? []);
-    const expanded = expandWildcard(packagePath, context.allFiles, hidden);
+    const expanded = expandWildcard(packagePath, context, hidden);
     targets = expanded.length > 0 ? expanded : [packagePath];
   } else if (selection && selection.symbols.length > 0) {
     targets = [...new Set(selection.symbols.map((symbol) => symbolTarget(symbol, packagePath, file, context)))];
@@ -159,13 +178,14 @@ function pushRelations(
     // only hidden names — the package minus those names
     targets = [packagePath];
   } else {
-    // A plain import's last type names a symbol (`com.foo.Bar`), the rest its
-    // package; all-lowercase is a package import with nothing to resolve.
+    // A plain import names a symbol (`com.foo.Bar` — or a Scala 3 top-level
+    // `def validate`) preceded by its package; resolving it against the
+    // package's declarations keeps the conventional same-name path as fallback.
     const modulePath = toModulePath(packagePath);
     const segments = modulePath.split("/");
     const symbol = segments[segments.length - 1];
     targets =
-      segments.length > 1 && /^[A-Z]/u.test(symbol)
+      segments.length > 1
         ? [symbolTarget(symbol, segments.slice(0, -1).join("/"), file, context)]
         : [modulePath];
   }
@@ -231,10 +251,20 @@ function toModulePath(path: string): string {
   return lastType === -1 ? path : segments.slice(0, lastType + 1).join("/");
 }
 
-/** The files a wildcard import of `packagePath` brings in, minus hidden names. */
-function expandWildcard(packagePath: string, allFiles: CodeCollectedFile[], hidden: ReadonlySet<string>): string[] {
-  return packageMembers(packagePath, allFiles)
-    .filter((candidate) => !hidden.has(fileName(candidate.relativePath)))
+/**
+ * The files a wildcard import of `packagePath` brings in: the package's
+ * JVM-importable members, minus those hidden by file name and those whose
+ * every declared symbol is hidden.
+ */
+function expandWildcard(packagePath: string, context: ExtractContext, hidden: ReadonlySet<string>): string[] {
+  return packageMembers(packagePath, context.allFiles)
+    .filter((candidate) => {
+      if (hidden.has(fileName(candidate.relativePath))) {
+        return false;
+      }
+      const declared = context.declarations.get(candidate.relativePath);
+      return !(declared && declared.size > 0 && [...declared].every((name) => hidden.has(name)));
+    })
     .map((candidate) => candidate.relativePath);
 }
 
@@ -243,7 +273,7 @@ function expandWildcard(packagePath: string, allFiles: CodeCollectedFile[], hidd
  * none does — the symbol's own name is not a file name to rely on.
  */
 function symbolTarget(symbol: string, packagePath: string, importer: string, context: ExtractContext): string {
-  for (const candidate of packageMembers(packagePath, context.files)) {
+  for (const candidate of packageMembers(packagePath, context.allFiles)) {
     if (candidate.relativePath !== importer && context.declarations.get(candidate.relativePath)?.has(symbol)) {
       return candidate.relativePath;
     }
@@ -251,12 +281,18 @@ function symbolTarget(symbol: string, packagePath: string, importer: string, con
   return toModulePath(`${packagePath}/${symbol}`);
 }
 
-/** The direct members of the package directory — a subpackage's files are not among them. */
+/**
+ * The JVM-importable direct members of the package directory — a subpackage's
+ * files are not among them, and neither is a resource like a `.sql` schema
+ * that happens to sit beside the sources.
+ */
 function packageMembers(packagePath: string, files: CodeCollectedFile[]): CodeCollectedFile[] {
-  return files.filter((candidate) => {
-    const tail = afterPackage(candidate.relativePath, packagePath);
-    return tail !== undefined && !tail.includes("/");
-  });
+  return files
+    .filter((candidate) => /\.(?:scala|java)$/u.test(candidate.relativePath))
+    .filter((candidate) => {
+      const tail = afterPackage(candidate.relativePath, packagePath);
+      return tail !== undefined && !tail.includes("/");
+    });
 }
 
 /** The part of `relativePath` below `com/demo/core`, or undefined when the file is elsewhere. */
@@ -269,7 +305,7 @@ function afterPackage(relativePath: string, packagePath: string): string | undef
   return at === -1 ? undefined : relativePath.slice(at + marker.length);
 }
 
-/** The type and trait names a file declares — the names another file can import. */
+/** The type, trait and def names a file declares — the names another file can import. */
 function declarationNames(content: string): Set<string> {
   const names = new Set<string>();
   for (const rawLine of content.split(/\r?\n/)) {
@@ -281,6 +317,10 @@ function declarationNames(content: string): Set<string> {
     const traitDecl = TRAIT_DECL_PATTERN.exec(decl);
     if (traitDecl) {
       names.add(traitDecl[1]);
+    }
+    const defDecl = DEF_DECL_PATTERN.exec(decl);
+    if (defDecl) {
+      names.add(defDecl[1]);
     }
   }
   return names;

@@ -256,7 +256,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
           { cwd: businessRepo, encoding: 'utf-8', timeout: 10_000 },
         );
         changedFiles = diffOutput.trim().split('\n')
-          .filter(f => f && /\.(ts|tsx|js|jsx|py|go|rs|java)$/.test(f));
+          .filter(f => f && /\.(ts|tsx|js|jsx|py|go|rs|java|swift|scala)$/.test(f));
         if (changedFiles.length > 0) break;
       } catch {
         continue;

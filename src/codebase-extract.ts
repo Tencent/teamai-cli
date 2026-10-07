@@ -28,6 +28,8 @@ import {
   formatAstStatsSummary,
 } from './wiki-engine/adapters/index.js';
 import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
+import type { CodeCollectedFile } from './wiki-engine/code-knowledge/code-collector.js';
+import type { ExtractorContext } from './wiki-engine/code-knowledge/extractors/index.js';
 import {
   loadFactsCache,
   saveFactsCache,
@@ -597,17 +599,42 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     return;
   }
 
-  // 提取变更文件的新 facts
-  const newFacts = files.length > 0 ? extractCodeFacts(files) : [];
+  const indicesDir = path.join(wikiRoot, '.indices');
+
+  // 增量模式下，跨文件解析（通配展开、符号定位到声明文件）需要未变更文件的
+  // 路径与声明；两者都能从上一轮 facts 缓存得到，未变更文件无需重新读取
+  let cachedFacts: CodeFact[] | undefined;
+  let extractionContext: ExtractorContext | undefined;
+  if (changedFiles !== undefined) {
+    cachedFacts = await loadFactsCache(indicesDir);
+    const priorDeclarations = new Map<string, Set<string>>();
+    const stubs = new Map<string, CodeCollectedFile>();
+    const removed = new Set([...changedFiles, ...deletedFiles]);
+    for (const fact of cachedFacts) {
+      if (!removed.has(fact.file)) {
+        stubs.set(fact.file, { path: fact.file, relativePath: fact.file, language: 'text', sha256: '', content: '' });
+      }
+      if (fact.kind !== 'relation') {
+        const names = priorDeclarations.get(fact.file) ?? new Set<string>();
+        names.add(fact.name);
+        priorDeclarations.set(fact.file, names);
+      }
+    }
+    for (const file of files) {
+      stubs.delete(file.relativePath); // 变更文件以本批为准
+    }
+    extractionContext = { allFiles: [...files, ...stubs.values()], priorDeclarations };
+  }
+
+  const newFacts = files.length > 0 ? extractCodeFacts(files, extractionContext) : [];
 
   // 增量模式：加载缓存 → 剪除 → 合并
   let facts: CodeFact[];
   let interfaceInventory: InterfaceInventory;
-  const indicesDir = path.join(wikiRoot, '.indices');
 
   if (changedFiles !== undefined) {
     // 增量模式（含 changedFiles=[] 即仅删除场景）
-    const oldFacts = await loadFactsCache(indicesDir);
+    const oldFacts = cachedFacts ?? (await loadFactsCache(indicesDir));
     const oldInterfaces = await loadInterfacesCache(indicesDir);
 
     // 剪除已变更/删除的旧数据
