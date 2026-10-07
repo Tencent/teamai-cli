@@ -127,15 +127,47 @@ describe('Scala heuristic extractor', () => {
     ]);
   });
 
-  it('treats a wildcard selector as the whole package and never a hidden name', () => {
+  it('falls back to the package path when no collected file matches the import', () => {
     const facts = extracted(
       ['import com.demo.core.{Invoice => _, _}', 'import com.demo.core.{Order => _}'].join('\n'),
     );
 
-    // `Invoice => _` hides Invoice — no per-symbol relation may name it; with
-    // the wildcard the package is imported wholesale, and a selector of only
-    // hidden names imports the package minus those names.
+    // The fixture file sits outside com/demo/core, so the wildcard has no
+    // collected file to name; a selector of only hidden names likewise leaves
+    // nothing but the package. Neither may produce a relation for `Invoice`.
     expect(facts).toEqual(['relation:com/demo/core', 'relation:com/demo/core']);
+  });
+
+  it('reads a brace import scalafmt wraps across lines', () => {
+    const facts = extracted(['import com.demo.core.{', '  Invoice,', '  Order => O', '}'].join('\n'));
+
+    expect(facts).toEqual(['relation:com/demo/core/Invoice', 'relation:com/demo/core/Order']);
+  });
+
+  it('reads every clause of a comma-separated import', () => {
+    const facts = extracted('import com.demo.A, com.demo.B');
+
+    expect(facts).toEqual(['relation:com/demo/A', 'relation:com/demo/B']);
+  });
+
+  it('expands a wildcard over the package files and skips hidden names', () => {
+    const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.{Invoice => _, _}\n', 'src/main/scala/com/demo/payments/Gateway.scala');
+    const invoice = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\n', 'src/main/scala/com/demo/core/Invoice.scala');
+    const main = scalaFile('package com.demo.core\n\nobject Main\n', 'src/main/scala/com/demo/core/Main.scala');
+
+    const names = extractScala([gateway, invoice, main]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['src/main/scala/com/demo/core/Main.scala']);
+  });
+
+  it('expands a plain wildcard over the package files', () => {
+    const main = scalaFile('package com.demo.app\n\nimport com.demo.core._\n', 'src/main/scala/com/demo/app/Main.scala');
+    const invoice = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\n', 'src/main/scala/com/demo/core/Invoice.scala');
+    const admin = scalaFile('package com.demo.core\n\nobject InternalAdmin\n', 'src/main/scala/com/demo/core/InternalAdmin.scala');
+
+    const names = extractScala([main, invoice, admin]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['src/main/scala/com/demo/core/Invoice.scala', 'src/main/scala/com/demo/core/InternalAdmin.scala']);
   });
 
   it('produces a dependency edge for an internal import', () => {
