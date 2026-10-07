@@ -9,7 +9,7 @@ import { extractScala } from "./scala.js";
 import { extractSwift } from "./swift.js";
 import { extractTypescript } from "./typescript.js";
 
-type LanguageExtractor = (files: CodeCollectedFile[]) => CodeFact[];
+type LanguageExtractor = (files: CodeCollectedFile[], allFiles?: CodeCollectedFile[]) => CodeFact[];
 
 /**
  * Registry mapping language identifiers to their specialized extractors.
@@ -29,14 +29,16 @@ const EXTRACTOR_REGISTRY: Record<string, LanguageExtractor> = {
 
 /**
  * Dispatch extraction to the appropriate language-specific extractor.
+ * `allFiles` — every collected file, all languages — lets an extractor resolve
+ * cross-language constructs (a Scala wildcard importing Java files).
  * Falls back to an empty array for unsupported languages (json, yaml, text, etc.).
  */
-export function extractForLanguage(language: string, files: CodeCollectedFile[]): CodeFact[] {
+export function extractForLanguage(language: string, files: CodeCollectedFile[], allFiles?: CodeCollectedFile[]): CodeFact[] {
   const extractor = EXTRACTOR_REGISTRY[language];
   if (!extractor) {
     return [];
   }
-  return extractor(files);
+  return extractor(files, allFiles);
 }
 
 /**

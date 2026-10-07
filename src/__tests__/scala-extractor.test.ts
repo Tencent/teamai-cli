@@ -170,6 +170,56 @@ describe('Scala heuristic extractor', () => {
     expect(names).toEqual(['src/main/scala/com/demo/core/Invoice.scala', 'src/main/scala/com/demo/core/InternalAdmin.scala']);
   });
 
+  it('expands a Scala 3 `*` wildcard the same way as `_`', () => {
+    const main = scalaFile('package com.demo.app\n\nimport com.demo.core.*\n', 'src/main/scala/com/demo/app/Main.scala');
+    const invoice = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\n', 'src/main/scala/com/demo/core/Invoice.scala');
+    const admin = scalaFile('package com.demo.core\n\nobject InternalAdmin\n', 'src/main/scala/com/demo/core/InternalAdmin.scala');
+
+    const names = extractScala([main, invoice, admin]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['src/main/scala/com/demo/core/Invoice.scala', 'src/main/scala/com/demo/core/InternalAdmin.scala']);
+  });
+
+  it('expands a wildcard over Java files of the package, minus hidden names', () => {
+    const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.{Invoice => _, _}\n', 'src/main/scala/com/demo/payments/Gateway.scala');
+    const invoiceJava: CodeCollectedFile = {
+      path: '/virtual/src/main/java/com/demo/core/Invoice.java',
+      relativePath: 'src/main/java/com/demo/core/Invoice.java',
+      language: 'java',
+      sha256: 'test',
+      content: 'package com.demo.core;\n\npublic class Invoice {}\n',
+    };
+    const orderJava: CodeCollectedFile = {
+      ...invoiceJava,
+      relativePath: 'src/main/java/com/demo/core/Order.java',
+      content: 'package com.demo.core;\n\npublic class Order {}\n',
+    };
+    const collected = [gateway, invoiceJava, orderJava];
+
+    const names = extractScala([gateway], collected).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['src/main/java/com/demo/core/Order.java']);
+  });
+
+  it('resolves a named import to the file that declares the symbol', () => {
+    const models = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\ncase class Order(id: Int)\n', 'src/main/scala/com/demo/core/Models.scala');
+    const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.Order\n', 'src/main/scala/com/demo/payments/Gateway.scala');
+
+    const names = extractScala([models, gateway]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['src/main/scala/com/demo/core/Models.scala']);
+  });
+
+  it('excludes a subpackage from a wildcard import', () => {
+    const main = scalaFile('package com.demo.app\n\nimport com.demo.core._\n', 'src/main/scala/com/demo/app/Main.scala');
+    const invoice = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\n', 'src/main/scala/com/demo/core/Invoice.scala');
+    const admin = scalaFile('package com.demo.core.internal\n\nobject Admin\n', 'src/main/scala/com/demo/core/internal/Admin.scala');
+
+    const names = extractScala([main, invoice, admin]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['src/main/scala/com/demo/core/Invoice.scala']);
+  });
+
   it('produces a dependency edge for an internal import', () => {
     const gateway = scalaFile(
       ['package com.demo.payments', '', 'import com.demo.core.Invoice', '', 'object Gateway {', '  def charge(i: Invoice): Boolean = true', '}'].join('\n'),

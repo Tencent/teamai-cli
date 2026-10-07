@@ -44,7 +44,7 @@ export function extractCodeFacts(files: CodeCollectedFile[]): CodeFact[] {
   const byLanguage = groupByLanguage(files);
   const allFacts: CodeFact[] = [];
   for (const [language, langFiles] of byLanguage) {
-    allFacts.push(...extractForLanguage(language, langFiles));
+    allFacts.push(...extractForLanguage(language, langFiles, files));
   }
   // Deduplicate facts by kind:name:file (same symbol in same file only kept once)
   const seen = new Set<string>();
