@@ -1,6 +1,95 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IWikiClient, type IWikiPage } from '../utils/iwiki-client.js';
 import { log } from '../utils/logger.js';
+import https from 'node:https';
+import type { IncomingMessage } from 'node:http';
+import { EventEmitter } from 'node:events';
+
+/** Exercise the public client through serialized JSON-RPC responses. */
+function mockMcpResponses(responses: Record<string, { result?: unknown; error?: { code: number; message: string } }>): void {
+  const request = (_options: https.RequestOptions, callback?: (res: IncomingMessage) => void) => {
+    let payload = '';
+    const req = Object.assign(new EventEmitter(), {
+      write(chunk: string) { payload += chunk; },
+      destroy: vi.fn(),
+      end() {
+        const request = JSON.parse(payload) as { id: number; params: { name: string } };
+        queueMicrotask(() => {
+          const res = new EventEmitter();
+          if (typeof callback === 'function') callback(res as IncomingMessage);
+          res.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...responses[request.params.name] })));
+          res.emit('end');
+          req.emit('close');
+        });
+      },
+    });
+    return req as unknown as ReturnType<typeof https.request>;
+  };
+  vi.spyOn(https, 'request').mockImplementation(request as typeof https.request);
+}
+
+describe('IWikiClient MCP tool errors', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it.each(['getDocument', 'metadata'])('rejects when %s returns isError, before treating its content as document data', async (tool) => {
+    mockMcpResponses({
+      getDocument: { result: { content: [{ type: 'text', text: '# Real document' }] } },
+      metadata: { result: { content: [{ type: 'text', text: '{"title":"Real title"}' }] } },
+      [tool]: { result: { isError: true, content: [{ type: 'text', text: 'Permission denied' }] } },
+    });
+
+    await expect(new IWikiClient('fixture-token').getDocument('123'))
+      .rejects.toThrow(`iWiki MCP tool "${tool}" failed: Permission denied`);
+  });
+
+  it('rejects a tool error even when its text is valid document-shaped JSON', async () => {
+    mockMcpResponses({
+      getDocument: { result: { isError: true, content: [{ type: 'text', text: '{"content":"Not a document"}' }] } },
+      metadata: { result: { title: 'Page' } },
+    });
+    await expect(new IWikiClient('fixture-token').getDocument('123'))
+      .rejects.toThrow('iWiki MCP tool "getDocument" failed');
+  });
+
+  it.each([
+    { content: [] },
+    { content: [{ type: 'image', data: 'fixture', mimeType: 'image/png' }] },
+  ])('rejects a tool error without text content ($content)', async ({ content }) => {
+    mockMcpResponses({
+      getDocument: { result: { isError: true, content } },
+      metadata: { result: { title: 'Page' } },
+    });
+    await expect(new IWikiClient('fixture-token').getDocument('123'))
+      .rejects.toThrow('iWiki MCP tool "getDocument" failed');
+  });
+
+  it('warns on a page-tree tool error and keeps the existing empty-tree fallback', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    mockMcpResponses({
+      getSpacePageTree: { result: { isError: true, content: [{ type: 'text', text: 'Space unavailable' }] } },
+    });
+    await expect(new IWikiClient('fixture-token').getSpacePageTree('root')).resolves.toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('iWiki MCP tool "getSpacePageTree" failed: Space unavailable'));
+  });
+
+  it.each([false, undefined])('preserves successful text and metadata responses with isError=%s', async (isError) => {
+    mockMcpResponses({
+      getDocument: { result: { isError, content: [{ type: 'text', text: '# Real document' }] } },
+      metadata: { result: { isError, content: [{ type: 'text', text: '{"title":"Real title"}' }] } },
+    });
+    await expect(new IWikiClient('fixture-token').getDocument('123')).resolves.toEqual({
+      docid: '123', title: 'Real title', content: '# Real document', url: 'https://iwiki.woa.com/p/123',
+    });
+  });
+
+  it('still propagates JSON-RPC protocol errors', async () => {
+    mockMcpResponses({
+      getDocument: { error: { code: -32602, message: 'Unknown tool' } },
+      metadata: { result: { title: 'Page' } },
+    });
+    await expect(new IWikiClient('fixture-token').getDocument('123')).rejects.toThrow('iWiki API error: Unknown tool');
+  });
+});
 
 /**
  * Resolve on a later macrotask, the way a real MCP request over HTTPS does. A

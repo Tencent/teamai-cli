@@ -179,6 +179,18 @@ export class IWikiClient {
 
     // MCP 标准响应格式：result.content[0].text 包含实际内容
     const result = response.result;
+    // Tool execution failures are successful JSON-RPC responses, but their
+    // content is an error description, not a document to import.
+    if (result !== null && typeof result === 'object' && 'isError' in result && result.isError === true) {
+      const content = 'content' in result && Array.isArray(result.content)
+        ? result.content as Array<{ text?: unknown }>
+        : [];
+      const message = content
+        .filter((item) => typeof item.text === 'string')
+        .map((item) => item.text)
+        .join('\n');
+      throw new Error(`iWiki MCP tool "${toolName}" failed${message ? `: ${message}` : ''}`);
+    }
     if (
       result !== null &&
       typeof result === 'object' &&
