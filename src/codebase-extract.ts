@@ -30,6 +30,7 @@ import {
 import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
 import type { CodeCollectedFile } from './wiki-engine/code-knowledge/code-collector.js';
 import type { ExtractorContext } from './wiki-engine/code-knowledge/extractors/index.js';
+import { SCALA_WILDCARD_PREFIX } from './wiki-engine/code-knowledge/extractors/index.js';
 import {
   loadFactsCache,
   saveFactsCache,
@@ -588,6 +589,27 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     }
   }
 
+  // 增量模式下，通配 import 在提取时物化为具体文件（com.demo.core._ → 各成员）；
+  // 若本次只变更了包成员而 importer 未变，物化结果已过期。缓存的
+  // scala-wildcard: 标记记录了每个通配 importer 及其包，据此把受影响的
+  // importer 一并重提取
+  const indicesDir = path.join(wikiRoot, '.indices');
+  let cachedFacts: CodeFact[] | undefined;
+  if (changedFiles !== undefined) {
+    cachedFacts = await loadFactsCache(indicesDir);
+    const jvmChanged = [...changedFiles, ...deletedFiles].filter((f) => /\.(?:scala|java)$/.test(f));
+    if (jvmChanged.length > 0) {
+      const staleImporters = new Set<string>();
+      for (const fact of cachedFacts) {
+        if (fact.kind !== 'relation' || !fact.name.startsWith(SCALA_WILDCARD_PREFIX)) continue;
+        const wildcardPackage = fact.name.slice(SCALA_WILDCARD_PREFIX.length);
+        const touched = jvmChanged.some((f) => f.includes(`/${wildcardPackage}/`) || f.startsWith(`${wildcardPackage}/`));
+        if (touched) staleImporters.add(fact.file);
+      }
+      changedFiles = [...new Set([...changedFiles, ...staleImporters])];
+    }
+  }
+
   const { files, manifest: collectionManifest } = await collectCode({ root, maxFiles, changedFiles });
   if (files.length === 0 && !changedFiles) {
     // 全量模式下无文件
@@ -599,22 +621,19 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     return;
   }
 
-  const indicesDir = path.join(wikiRoot, '.indices');
-
   // 增量模式下，跨文件解析（通配展开、符号定位到声明文件）需要未变更文件的
-  // 路径与声明；两者都能从上一轮 facts 缓存得到，未变更文件无需重新读取
-  let cachedFacts: CodeFact[] | undefined;
+  // 路径与声明；两者都能从上一轮 facts 缓存得到，未变更文件无需重新读取。
+  // 声明只认 component/interface —— config 等并非可导入符号
   let extractionContext: ExtractorContext | undefined;
   if (changedFiles !== undefined) {
-    cachedFacts = await loadFactsCache(indicesDir);
     const priorDeclarations = new Map<string, Set<string>>();
     const stubs = new Map<string, CodeCollectedFile>();
     const removed = new Set([...changedFiles, ...deletedFiles]);
-    for (const fact of cachedFacts) {
+    for (const fact of cachedFacts ?? []) {
       if (!removed.has(fact.file)) {
         stubs.set(fact.file, { path: fact.file, relativePath: fact.file, language: 'text', sha256: '', content: '' });
       }
-      if (fact.kind !== 'relation') {
+      if (fact.kind === 'component' || fact.kind === 'interface') {
         const names = priorDeclarations.get(fact.file) ?? new Set<string>();
         names.add(fact.name);
         priorDeclarations.set(fact.file, names);

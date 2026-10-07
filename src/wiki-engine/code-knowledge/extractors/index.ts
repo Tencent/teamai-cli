@@ -64,6 +64,6 @@ export { extractGo } from "./go.js";
 export { extractJava } from "./java.js";
 export { extractPython } from "./python.js";
 export { extractRust } from "./rust.js";
-export { extractScala } from "./scala.js";
+export { extractScala, SCALA_WILDCARD_PREFIX } from "./scala.js";
 export { extractSwift } from "./swift.js";
 export { extractTypescript } from "./typescript.js";

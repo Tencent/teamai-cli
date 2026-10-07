@@ -7,6 +7,13 @@ const DEF_DECL_PATTERN = /^def\s+([a-z_]\w*)/u;
 const TRAIT_DECL_PATTERN = /^trait\s+([A-Z]\w*)/u;
 
 /**
+ * Marks a wildcard relation: `scala-wildcard:com/demo/core`. The name matches
+ * no file, so no consumer resolves it; the incremental layer reads these
+ * markers to re-extract importers whose package membership changed.
+ */
+export const SCALA_WILDCARD_PREFIX = "scala-wildcard:";
+
+/**
  * Scala extractor.
  * Extracts classes, objects, traits, enums, defs, configs, errors, and import relations.
  *
@@ -169,9 +176,22 @@ function pushRelations(
   const wildcard = /[._*]$/u.test(dottedPrefix) || (selection?.wildcard ?? false);
   let targets: string[];
   if (wildcard) {
+    facts.push(makeFact("relation", `${SCALA_WILDCARD_PREFIX}${packagePath}`, file, lineNumber, rawLine, "EXTRACTED"));
     const hidden = new Set(selection?.hidden ?? []);
     const expanded = expandWildcard(packagePath, context, hidden);
-    targets = expanded.length > 0 ? expanded : [packagePath];
+    if (expanded.length > 0) {
+      targets = expanded;
+    } else {
+      // `com.demo.Models.*` wildcards an object, not a package — resolve it to
+      // the file that declares the object, as a named import would.
+      const modulePath = toModulePath(packagePath);
+      const segments = modulePath.split("/");
+      const symbol = segments[segments.length - 1];
+      targets =
+        segments.length > 1 && /^[A-Z]/u.test(symbol)
+          ? [symbolTarget(symbol, segments.slice(0, -1).join("/"), file, context)]
+          : [packagePath];
+    }
   } else if (selection && selection.symbols.length > 0) {
     targets = [...new Set(selection.symbols.map((symbol) => symbolTarget(symbol, packagePath, file, context)))];
   } else if (selection) {
@@ -305,23 +325,32 @@ function afterPackage(relativePath: string, packagePath: string): string | undef
   return at === -1 ? undefined : relativePath.slice(at + marker.length);
 }
 
-/** The type, trait and def names a file declares — the names another file can import. */
+/**
+ * The top-level type, trait and def names a file declares — the names another
+ * file can import from the package. A member sits inside braces or, in
+ * significant-indentation Scala 3, at least one indent; either way it is not
+ * a package-level name.
+ */
 function declarationNames(content: string): Set<string> {
   const names = new Set<string>();
+  let depth = 0;
   for (const rawLine of content.split(/\r?\n/)) {
-    const decl = stripLeadingModifiers(rawLine);
-    const typeDecl = TYPE_DECL_PATTERN.exec(decl);
-    if (typeDecl) {
-      names.add(typeDecl[2]);
+    if (depth === 0 && !/^\s/u.test(rawLine)) {
+      const decl = stripLeadingModifiers(rawLine);
+      const typeDecl = TYPE_DECL_PATTERN.exec(decl);
+      if (typeDecl) {
+        names.add(typeDecl[2]);
+      }
+      const traitDecl = TRAIT_DECL_PATTERN.exec(decl);
+      if (traitDecl) {
+        names.add(traitDecl[1]);
+      }
+      const defDecl = DEF_DECL_PATTERN.exec(decl);
+      if (defDecl) {
+        names.add(defDecl[1]);
+      }
     }
-    const traitDecl = TRAIT_DECL_PATTERN.exec(decl);
-    if (traitDecl) {
-      names.add(traitDecl[1]);
-    }
-    const defDecl = DEF_DECL_PATTERN.exec(decl);
-    if (defDecl) {
-      names.add(defDecl[1]);
-    }
+    depth += (rawLine.match(/\{/gu) ?? []).length - (rawLine.match(/\}/gu) ?? []).length;
   }
   return names;
 }
