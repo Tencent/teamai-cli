@@ -55,12 +55,15 @@ export function extractScala(files: CodeCollectedFile[]): CodeFact[] {
       // fuzzy-matches file paths and the call-chain tracer resolves the
       // basename. Expanding the selector keeps the edge on the named file —
       // a bare package path would tie the importer to every file in the
-      // directory.
+      // directory. A wildcard selector (`_`, `{Bar => _, _}`) imports the
+      // whole package and keeps the package path, with no per-symbol relation
+      // for a name the selector explicitly hides.
       const importDecl = /^import\s+([A-Za-z_]\w*(?:\.\w+)*)(?:\s*\.\s*\{([^}]*)\})?/u.exec(decl);
       if (importDecl) {
         const packagePath = toPath(importDecl[1]);
-        const symbols = importDecl[2] ? selectedSymbols(importDecl[2]) : [];
-        const targets = symbols.length > 0 ? symbols.map((symbol) => `${packagePath}/${symbol}`) : [packagePath];
+        const selection = importDecl[2] ? parseSelectors(importDecl[2]) : WHOLE_PACKAGE;
+        const symbols = selection.wholePackage ? [] : selection.symbols;
+        const targets = [...new Set((symbols.length > 0 ? symbols.map((symbol) => `${packagePath}/${symbol}`) : [packagePath]).map(toModulePath))];
         for (const target of targets) {
           facts.push(makeFact("relation", target, file.relativePath, lineNumber, line, "EXTRACTED"));
         }
@@ -91,16 +94,54 @@ function toPath(dotted: string): string {
 }
 
 /**
- * `Bar, Baz => B` → `["Bar", "Baz"]`: the name a selector imports is the part
- * before `=>`. Anything that is not a plain identifier — the in-brace `_`
- * wildcard, nested selectors — is dropped; the package path covers it.
+ * `com/demo/core/Invoice/apply` → `com/demo/core/Invoice`: a lowercase tail
+ * after a type names a member of it, and the file that defines the type is
+ * the file the consumers can match.
  */
-function selectedSymbols(selector: string): string[] {
-  const names = selector
-    .split(",")
-    .map((item) => item.split("=>")[0].trim())
-    .filter((name) => /^[A-Za-z]\w*$/u.test(name));
-  return [...new Set(names)];
+function toModulePath(path: string): string {
+  const segments = path.split("/");
+  let lastType = -1;
+  for (let i = 0; i < segments.length; i++) {
+    if (/^[A-Z]/u.test(segments[i])) {
+      lastType = i;
+    }
+  }
+  return lastType === -1 ? path : segments.slice(0, lastType + 1).join("/");
+}
+
+interface ImportSelection {
+  /** The whole package is imported (a `_` wildcard, or only hidden names). */
+  wholePackage: boolean;
+  /** The symbols the selector names, excluding renames to `_` (hidden). */
+  symbols: string[];
+}
+
+const WHOLE_PACKAGE: ImportSelection = { wholePackage: true, symbols: [] };
+
+/**
+ * `{Invoice as Inv, Order => O}` → symbols `["Invoice", "Order"]`: the name an
+ * entry imports is the part before the rename (`=>` in Scala 2, `as` in
+ * Scala 3). `{Invoice => _, _}` → wholePackage: the wildcard subsumes the
+ * names, and an alias of `_` hides its name entirely — neither gets a
+ * per-symbol relation. Anything that is not a plain identifier (nested
+ * selectors) is dropped; the package path covers it.
+ */
+function parseSelectors(selector: string): ImportSelection {
+  const symbols: string[] = [];
+  let wholePackage = false;
+  for (const entry of selector.split(",")) {
+    const item = entry.trim();
+    const renamed = /^([A-Za-z_]\w*)\s*(?:=>|\bas\b)\s*(.+)$/u.exec(item);
+    const alias = renamed?.[2].trim();
+    if (item === "_") {
+      wholePackage = true;
+    } else if (renamed && alias && alias !== "_" && /^[A-Za-z_]\w*$/u.test(alias)) {
+      symbols.push(renamed[1]);
+    } else if (!renamed && /^[A-Za-z_]\w*$/u.test(item)) {
+      symbols.push(item);
+    }
+  }
+  return { wholePackage: wholePackage || symbols.length === 0, symbols: [...new Set(symbols)] };
 }
 
 function makeFact(

@@ -106,13 +106,15 @@ describe('Scala heuristic extractor', () => {
         'import scala.collection.mutable.{Map => MMap}',
         'import com.payments.events._',
         'import com.payments.core.*',
-        'import com.payments.model.{Invoice, Order => O}',
+        'import com.payments.model.{Invoice as Inv, Order => O}',
+        'import com.demo.core.Invoice.apply',
       ].join('\n'),
     );
 
     // Relation names are slash-separated paths: buildCodeGraph and the
     // call-chain tracer both match against file paths, not dotted packages.
-    // Brace selectors expand to one relation per imported symbol.
+    // Brace selectors expand to one relation per imported symbol; a member
+    // import narrows to the type's path.
     expect(facts).toEqual([
       'relation:com/payments/gateway',
       'relation:java/util/concurrent/TimeUnit',
@@ -121,7 +123,19 @@ describe('Scala heuristic extractor', () => {
       'relation:com/payments/core',
       'relation:com/payments/model/Invoice',
       'relation:com/payments/model/Order',
+      'relation:com/demo/core/Invoice',
     ]);
+  });
+
+  it('treats a wildcard selector as the whole package and never a hidden name', () => {
+    const facts = extracted(
+      ['import com.demo.core.{Invoice => _, _}', 'import com.demo.core.{Order => _}'].join('\n'),
+    );
+
+    // `Invoice => _` hides Invoice — no per-symbol relation may name it; with
+    // the wildcard the package is imported wholesale, and a selector of only
+    // hidden names imports the package minus those names.
+    expect(facts).toEqual(['relation:com/demo/core', 'relation:com/demo/core']);
   });
 
   it('produces a dependency edge for an internal import', () => {
