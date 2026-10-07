@@ -24,9 +24,11 @@ const ENTRY_PATTERNS = [
   /route/i,
   /controller/i,
   /endpoint/i,
-  /main\.(ts|go|py|rs|java|swift|scala)$/,
-  /server\.(ts|go|py|rs|java|swift|scala)$/,
-  /app\.(ts|go|py|rs|java|swift|scala)$/,
+  // Case-insensitive: Scala's key files are Main.scala / App.scala, and a
+  // capitalized App.ts or Main.go is just as much an entry point.
+  /main\.(ts|go|py|rs|java|swift|scala)$/i,
+  /server\.(ts|go|py|rs|java|swift|scala)$/i,
+  /app\.(ts|go|py|rs|java|swift|scala)$/i,
 ];
 
 const ORCHESTRATION_PATTERNS = [

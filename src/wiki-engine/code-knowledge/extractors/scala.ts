@@ -51,9 +51,14 @@ export function extractScala(files: CodeCollectedFile[]): CodeFact[] {
       // --- Relations ---
       // `import com.foo.Bar`, `import com.foo.{Bar, Baz}`, `import com.foo._`
       // (Scala 2) and `import com.foo.*` (Scala 3) all narrow to `com.foo`.
+      // Dots are package separators; both relation consumers match
+      // slash-separated paths (buildCodeGraph's fuzzy file match, the call-chain
+      // tracer's module map), so emit the import as a path: `com.foo.Bar` →
+      // `com/foo/Bar`.
       const importDecl = /^import\s+([A-Za-z_]\w*(?:\.\w+)*)/u.exec(decl);
       if (importDecl) {
-        facts.push(makeFact("relation", importDecl[1].replace(/\._$/u, ""), file.relativePath, lineNumber, line, "EXTRACTED"));
+        const target = importDecl[1].replace(/\._$/u, "").replace(/\./gu, "/");
+        facts.push(makeFact("relation", target, file.relativePath, lineNumber, line, "EXTRACTED"));
       }
     }
   }

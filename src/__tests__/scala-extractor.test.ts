@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import type { CodeCollectedFile } from '../wiki-engine/code-knowledge/code-collector.js';
 import { collectCode } from '../wiki-engine/code-knowledge/code-collector.js';
+import { buildCodeGraph } from '../wiki-engine/code-knowledge/code-graph.js';
 import { extractScala } from '../wiki-engine/code-knowledge/extractors/scala.js';
 import { extractForLanguage, supportedLanguages } from '../wiki-engine/code-knowledge/extractors/index.js';
 
@@ -107,13 +108,32 @@ describe('Scala heuristic extractor', () => {
       ].join('\n'),
     );
 
+    // Relation names are slash-separated paths: buildCodeGraph and the
+    // call-chain tracer both match against file paths, not dotted packages.
     expect(facts).toEqual([
-      'relation:com.payments.gateway',
-      'relation:java.util.concurrent.TimeUnit',
-      'relation:scala.collection.mutable',
-      'relation:com.payments.events',
-      'relation:com.payments.core',
+      'relation:com/payments/gateway',
+      'relation:java/util/concurrent/TimeUnit',
+      'relation:scala/collection/mutable',
+      'relation:com/payments/events',
+      'relation:com/payments/core',
     ]);
+  });
+
+  it('produces a dependency edge for an internal import', () => {
+    const gateway = scalaFile(
+      ['package com.demo.payments', '', 'import com.demo.core.Invoice', '', 'object Gateway {', '  def charge(i: Invoice): Boolean = true', '}'].join('\n'),
+      'src/main/scala/com/demo/payments/Gateway.scala',
+    );
+    const invoice = scalaFile(
+      ['package com.demo.core', '', 'case class Invoice(id: Int)'].join('\n'),
+      'src/main/scala/com/demo/core/Invoice.scala',
+    );
+
+    const graph = buildCodeGraph([...extractScala([gateway]), ...extractScala([invoice])]);
+    const edge = graph.edges.find((e) => e.relation === 'DEPENDS_ON');
+
+    expect(edge?.from).toBe('src/main/scala/com/demo/payments/Gateway.scala');
+    expect(edge?.to).toBe('src/main/scala/com/demo/core/Invoice.scala');
   });
 
   it('infers error types from the Error/Exception suffix and reads environment config', () => {
