@@ -24,9 +24,9 @@ const ENTRY_PATTERNS = [
   /route/i,
   /controller/i,
   /endpoint/i,
-  /main\.(ts|go|py|rs|java|swift)$/,
-  /server\.(ts|go|py|rs|java|swift)$/,
-  /app\.(ts|go|py|rs|java|swift)$/,
+  /main\.(ts|go|py|rs|java|swift|scala)$/,
+  /server\.(ts|go|py|rs|java|swift|scala)$/,
+  /app\.(ts|go|py|rs|java|swift|scala)$/,
 ];
 
 const ORCHESTRATION_PATTERNS = [
@@ -237,7 +237,7 @@ function resolveRelationTarget(importPath: string, filesByModule: Map<string, st
   // Normalize import path
   const normalized = importPath
     .replace(/^\.\//, "")
-    .replace(/\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|swift)$/, "");
+    .replace(/\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|swift|scala)$/, "");
 
   // Try exact match first
   const exact = filesByModule.get(normalized);

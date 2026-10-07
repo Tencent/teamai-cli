@@ -131,6 +131,7 @@ Use the `Glob → Grep → Read` three-step method (**adapt to the language of t
    TypeScript: app.ts / index.ts / main.ts / server.ts
    Rust:       main.rs / src/main.rs
    Swift:      main.swift / App.swift
+   Scala:      Main.scala / App.scala
    
 2. Grep: locate the core Handlers/Routers (choose the pattern by language + framework)
    Go:         grep -rn 'func.*Handler\|\.GET\|\.POST\|router\.\|@handler' <dir>

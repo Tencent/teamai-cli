@@ -5,6 +5,7 @@ import { extractGo } from "./go.js";
 import { extractJava } from "./java.js";
 import { extractPython } from "./python.js";
 import { extractRust } from "./rust.js";
+import { extractScala } from "./scala.js";
 import { extractSwift } from "./swift.js";
 import { extractTypescript } from "./typescript.js";
 
@@ -20,6 +21,7 @@ const EXTRACTOR_REGISTRY: Record<string, LanguageExtractor> = {
   python: extractPython,
   java: extractJava,
   rust: extractRust,
+  scala: extractScala,
   swift: extractSwift,
   toml: extractToml,
   sql: extractSql,
@@ -48,5 +50,6 @@ export { extractGo } from "./go.js";
 export { extractJava } from "./java.js";
 export { extractPython } from "./python.js";
 export { extractRust } from "./rust.js";
+export { extractScala } from "./scala.js";
 export { extractSwift } from "./swift.js";
 export { extractTypescript } from "./typescript.js";

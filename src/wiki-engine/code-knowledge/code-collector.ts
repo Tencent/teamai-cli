@@ -32,7 +32,8 @@ export const KEY_FILE_PATTERNS: Record<string, RegExp[]> = {
   java: [/Application\.java$/, /Controller\.java$/, /Service\.java$/],
   typescript: [/index\.ts$/, /server\.ts$/, /app\.ts$/, /router\.ts$/],
   rust: [/main\.rs$/, /lib\.rs$/, /mod\.rs$/],
-  swift: [/main\.swift$/, /App\.swift$/, /Package\.swift$/]
+  swift: [/main\.swift$/, /App\.swift$/, /Package\.swift$/],
+  scala: [/Main\.scala$/, /App\.scala$/]
 };
 
 export function isKeyFile(relativePath: string, language: string): boolean {
@@ -132,7 +133,7 @@ async function walk(directory: string, results: string[], includeTests: boolean)
 }
 
 function isCodeFile(filePath: string): boolean {
-  return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".swift", ".json", ".yaml", ".yml", ".toml", ".sql", ".conf", ".ini"].includes(
+  return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".swift", ".scala", ".json", ".yaml", ".yml", ".toml", ".sql", ".conf", ".ini"].includes(
     path.extname(filePath).toLowerCase()
   );
 }
@@ -145,7 +146,7 @@ function languageFor(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const map: Record<string, string> = {
     ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".jsx": "javascript",
-    ".py": "python", ".go": "go", ".rs": "rust", ".java": "java", ".swift": "swift",
+    ".py": "python", ".go": "go", ".rs": "rust", ".java": "java", ".swift": "swift", ".scala": "scala",
     ".json": "json", ".yaml": "yaml", ".yml": "yaml",
     ".toml": "toml", ".sql": "sql", ".conf": "toml", ".ini": "toml",
   };
