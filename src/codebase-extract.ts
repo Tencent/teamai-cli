@@ -86,6 +86,11 @@ interface KnowledgeGap {
   source: string;
 }
 
+/** 用户可见的 facts：元数据 relation（通配包名、顶层声明标记）不进任何统计。 */
+function visibleFactsOf(facts: CodeFact[]): CodeFact[] {
+  return facts.filter((f) => f.kind !== 'relation' || !isMetadataRelation(f.name));
+}
+
 function detectKnowledgeGaps(
   facts: CodeFact[],
   graph: GraphIndex,
@@ -302,7 +307,7 @@ function buildEvidencePages(
     '',
     `# ${project}`,
     '',
-    `Facts: ${facts.length} | Pages: ${pages.size}`,
+    `Facts: ${visibleFactsOf(facts).length} | Pages: ${pages.size}`,
     '',
   ];
 
@@ -471,7 +476,7 @@ function buildOverview(
     '',
     `# ${project}`,
     '',
-    `**${facts.length} facts** extracted from ${new Set(facts.map(f => f.file)).size} files.`,
+    `**${visibleFactsOf(facts).length} facts** extracted from ${new Set(facts.map(f => f.file)).size} files.`,
     `Graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges.`,
     '',
     '## Module Structure',
@@ -599,17 +604,23 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   if (changedFiles !== undefined) {
     cachedFacts = await loadFactsCache(indicesDir);
     const changedSet = new Set([...changedFiles, ...deletedFiles]);
+    const originalChangedFiles = changedFiles;
     const staleImporters = new Set<string>();
     for (const fact of cachedFacts) {
-      if (fact.kind !== 'relation') continue;
+      if (fact.kind !== 'relation' || isMetadataRelation(fact.name)) continue;
+      const touchedPackage = (pkg: string): boolean =>
+        originalChangedFiles.some((f) => f.includes(`/${pkg}/`) || f.startsWith(`${pkg}/`)) ||
+        deletedFiles.some((f) => f.includes(`/${pkg}/`) || f.startsWith(`${pkg}/`));
       if (fact.name.startsWith(SCALA_WILDCARD_PREFIX)) {
-        const wildcardPackage = fact.name.slice(SCALA_WILDCARD_PREFIX.length);
-        const touched = changedFiles.some((f) => f.includes(`/${wildcardPackage}/`) || f.startsWith(`${wildcardPackage}/`))
-          || deletedFiles.some((f) => f.includes(`/${wildcardPackage}/`) || f.startsWith(`${wildcardPackage}/`));
-        if (touched) staleImporters.add(fact.file);
-      } else if (/\.(?:scala|java)$/.test(fact.name) && changedSet.has(fact.name)) {
-        // a materialized target changed — the importer must re-resolve it
-        staleImporters.add(fact.file);
+        if (touchedPackage(fact.name.slice(SCALA_WILDCARD_PREFIX.length))) staleImporters.add(fact.file);
+      } else if (/\.(?:scala|java)$/.test(fact.name)) {
+        // 物化目标本身变了——importer 必须重新解析
+        if (changedSet.has(fact.name)) staleImporters.add(fact.file);
+      } else {
+        // 未物化的常规路径（com/demo/core/Invoice）：包目录里有文件增删时，
+        // 原本解析不到的目标可能已经可解析
+        const pkg = fact.name.split('/').slice(0, -1).join('/');
+        if (pkg && touchedPackage(pkg)) staleImporters.add(fact.file);
       }
     }
     if (staleImporters.size > 0) {
@@ -876,7 +887,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     ifByType[e.type] = (ifByType[e.type] ?? 0) + e.count;
   }
   const indexStats: IndexStats = {
-    totalFacts: facts.length,
+    totalFacts: visibleFactsOf(facts).length,
     totalNodes: repoGraph.nodes.length,
     totalEdges: repoGraph.edges.length,
     interfaces: Object.keys(ifByType).length > 0 ? ifByType : undefined,
@@ -982,14 +993,14 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   await writeFile(manifestPath, manifestContent, 'utf-8');
 
   const byKind: Record<string, number> = {};
-  for (const fact of facts) {
+  for (const fact of visibleFactsOf(facts)) {
     byKind[fact.kind] = (byKind[fact.kind] ?? 0) + 1;
   }
 
   const result: ExtractResult = {
     project,
     filesScanned: files.length,
-    facts: { total: facts.length, byKind },
+    facts: { total: visibleFactsOf(facts).length, byKind },
     graph: { nodes: repoGraph.nodes.length, edges: repoGraph.edges.length },
     incremental: !!opts.incremental && !!changedFiles,
     outputDir: wikiRoot,

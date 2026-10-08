@@ -208,8 +208,8 @@ function pushRelations(
   } else if (selection && selection.symbols.length > 0) {
     targets = [...new Set(selection.symbols.map((symbol) => symbolTarget(symbol, packagePath, file, context)))];
   } else if (selection) {
-    // only hidden names — the package minus those names
-    targets = [packagePath];
+    // only hidden names: the clause imports nothing, so no relation at all
+    targets = [];
   } else {
     // A plain import names a symbol (`com.foo.Bar` — or a Scala 3 top-level
     // `def validate`) preceded by its package; resolving it against the

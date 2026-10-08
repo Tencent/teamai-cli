@@ -135,9 +135,8 @@ describe('Scala heuristic extractor', () => {
     );
 
     // The fixture file sits outside com/demo/core, so the wildcard has no
-    // collected file to name; a selector of only hidden names likewise leaves
-    // nothing but the package. Neither may produce a relation for `Invoice`,
-    // and both imports name the same dependency, so one relation suffices.
+    // collected file to name. A selector of only hidden names (`{Order => _}`)
+    // imports nothing and emits nothing — no relation for `Invoice` either.
     expect(facts).toEqual(['relation:scala-wildcard:com/demo/core', 'relation:com/demo/core']);
   });
 
