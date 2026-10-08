@@ -1,5 +1,5 @@
 import type { CodeCollectedFile } from './code-knowledge/code-collector.js';
-import type { CodeFact } from './code-knowledge/code-extractors.js';
+import { type CodeFact, isMetadataRelation } from './code-knowledge/code-extractors.js';
 
 export type CallChainLayer = "entry" | "orchestration" | "service" | "data";
 
@@ -197,7 +197,9 @@ function findEntryPoints(facts: CodeFact[], files: CodeCollectedFile[]): EntryPo
 function buildRelationsByFile(facts: CodeFact[]): Map<string, CodeFact[]> {
   const map = new Map<string, CodeFact[]>();
   for (const fact of facts) {
-    if (fact.kind !== "relation") continue;
+    // Metadata relations (wildcard packages, declaration markers) name no
+    // target and would only crowd the bounded relation slice in traversal.
+    if (fact.kind !== "relation" || isMetadataRelation(fact.name)) continue;
     const group = map.get(fact.file) ?? [];
     group.push(fact);
     map.set(fact.file, group);

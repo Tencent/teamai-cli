@@ -575,7 +575,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   let deletedFiles: string[] = [];
   if (opts.incremental) {
     try {
-      const changes = await detectCodeIncrementalChanges(root, manifestPath, project);
+      const changes = await detectCodeIncrementalChanges(root, manifestPath, project, maxFiles);
       if (changes.added.length === 0 && changes.changed.length === 0 && changes.deleted.length === 0) {
         if (opts.json) {
           console.log(JSON.stringify({ status: 'up-to-date', project }));

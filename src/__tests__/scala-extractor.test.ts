@@ -345,6 +345,25 @@ describe('Scala heuristic extractor', () => {
     expect(facts).toEqual(['relation:com/demo/A', 'relation:com/demo/B']);
   });
 
+  it('keeps a file whose hidden name shares it with live symbols', () => {
+    const invoice = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\ncase class Order(id: Int)\n', 'src/main/scala/com/demo/core/Invoice.scala');
+    const main = scalaFile('package com.demo.core\n\nobject Main\n', 'src/main/scala/com/demo/core/Main.scala');
+    const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.{Invoice as _, *}\n', 'src/main/scala/com/demo/payments/Gateway.scala');
+
+    const names = extractScala([invoice, main, gateway]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    // Hiding Invoice does not hide Order, which lives in the same file.
+    expect(names).toEqual(['scala-decl:Invoice,Order', 'scala-decl:Main', 'scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Invoice.scala', 'src/main/scala/com/demo/core/Main.scala']);
+  });
+
+  it('reads declarations after a braced package closes', () => {
+    const models = scalaFile(['package a.b {', '  class X', '}', '', 'package c.d {', '  class Y', '}'].join('\n'), 'src/main/scala/c/d/Models.scala');
+
+    const names = extractScala([models]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['scala-decl:X,Y']);
+  });
+
   it('resolves a named import to the file that declares the symbol', () => {
     const models = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\ncase class Order(id: Int)\n', 'src/main/scala/com/demo/core/Models.scala');
     const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.Order\n', 'src/main/scala/com/demo/payments/Gateway.scala');

@@ -290,11 +290,14 @@ function toModulePath(path: string): string {
 function expandWildcard(packagePath: string, context: ExtractContext, hidden: ReadonlySet<string>): string[] {
   return packageMembers(packagePath, context.allFiles)
     .filter((candidate) => {
-      if (hidden.has(fileName(candidate.relativePath))) {
-        return false;
-      }
+      // Exclusion is declaration-based when the names are known: a file with
+      // any live declaration still carries its other symbols. Only a file
+      // with no known declarations falls back to its file name.
       const declared = context.declarations.get(candidate.relativePath);
-      return !(declared && declared.size > 0 && [...declared].every((name) => hidden.has(name)));
+      if (declared && declared.size > 0) {
+        return ![...declared].every((name) => hidden.has(name));
+      }
+      return !hidden.has(fileName(candidate.relativePath));
     })
     .map((candidate) => candidate.relativePath);
 }
@@ -387,7 +390,10 @@ function declarationNames(content: string): Set<string> {
           names.add(defDecl[1]);
         }
       }
-      depth += (rawLine.match(/\{/gu) ?? []).length - (rawLine.match(/\}/gu) ?? []).length;
+      // A package block's closing brace has no matching opener in the count
+      // (openers are deliberately skipped) — clamp so later blocks still sit
+      // at depth 0.
+      depth = Math.max(0, depth + (rawLine.match(/\{/gu) ?? []).length - (rawLine.match(/\}/gu) ?? []).length);
     }
   }
   return names;

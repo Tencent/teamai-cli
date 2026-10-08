@@ -16,6 +16,7 @@ export async function detectCodeIncrementalChanges(
   root: string,
   manifestPath: string,
   project: string,
+  maxFiles?: number,
 ): Promise<CodeIncrementalChange> {
   const previous = (await exists(manifestPath))
     ? (JSON.parse(await readFile(manifestPath, "utf8")) as {
@@ -50,8 +51,10 @@ export async function detectCodeIncrementalChanges(
     }
   }
 
-  // Fallback: full sha256 comparison when git is unavailable or no baseline
-  const current = await collectCode({ root });
+  // Fallback: full sha256 comparison when git is unavailable or no baseline.
+  // Honors the caller's --max-files: a default-capped scan against a larger
+  // prior extraction would classify the tail as deleted and prune it.
+  const current = await collectCode({ root, maxFiles });
   const previousByPath = new Map((previous.files ?? []).map((file) => [file.relativePath, file.sha256]));
   const currentByPath = new Map(current.manifest.files.map((file) => [file.relativePath, file.sha256]));
   const added = [...currentByPath.keys()].filter((file) => !previousByPath.has(file)).sort();
