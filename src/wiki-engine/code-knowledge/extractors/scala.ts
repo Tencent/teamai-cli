@@ -263,9 +263,9 @@ function parseSelectors(selector: string): ImportSelection {
   return selection;
 }
 
-/** `com.foo.Bar` → `com/foo/Bar`; a trailing wildcard (`_`, `*`) names the whole package and drops off. */
+/** `_root_.com.foo.Bar`/`com.foo.Bar` → `com/foo/Bar`; a trailing wildcard (`_`, `*`) names the whole package and drops off. */
 function toPath(dotted: string): string {
-  return dotted.replace(/[._*]+$/u, "").replace(/\./gu, "/");
+  return dotted.replace(/^_root_\./u, "").replace(/[._*]+$/u, "").replace(/\./gu, "/");
 }
 
 /**
@@ -341,24 +341,29 @@ function afterPackage(relativePath: string, packagePath: string): string | undef
 /**
  * The top-level type, trait and def names a file declares — the names another
  * file can import from the package. A member sits inside braces or, in
- * significant-indentation Scala 3, deeper than the package block's first
- * indent; either way it is not a package-level name.
+ * significant-indentation Scala 3, deeper than its package block's member
+ * indent (Scala 3 nests package blocks, each with its own level); either
+ * way it is not a package-level name.
  */
 function declarationNames(content: string): Set<string> {
   const names = new Set<string>();
   let depth = 0;
-  let inPackageBlock = false; // `package com.demo.core:` — members sit one indent in
-  let memberIndent = -1;
+  const packageMemberIndents: number[] = []; // open `package x:` blocks, innermost last; -1 until its member indent is seen
   for (const rawLine of content.split(/\r?\n/)) {
     const trimmed = rawLine.trim();
     const indent = rawLine.length - rawLine.trimStart().length;
-    if (!inPackageBlock && /^package\s+[\w.]+\s*:\s*$/u.test(trimmed)) {
-      inPackageBlock = true;
+    const last = packageMemberIndents.length - 1;
+    if (trimmed !== "" && last >= 0 && packageMemberIndents[last] === -1) {
+      packageMemberIndents[last] = indent; // the first content line fixes the block's member indent
+    }
+    if (/^package\s+[\w.]+\s*:\s*$/u.test(trimmed)) {
+      packageMemberIndents.push(-1);
     } else if (trimmed !== "") {
-      if (inPackageBlock && memberIndent === -1) {
-        memberIndent = indent;
+      while (packageMemberIndents.length > 1 && packageMemberIndents[packageMemberIndents.length - 1] > indent) {
+        packageMemberIndents.pop(); // dedented out of the inner block
       }
-      const topLevel = depth === 0 && (indent === 0 || (inPackageBlock && indent <= memberIndent));
+      const memberIndent = packageMemberIndents[packageMemberIndents.length - 1];
+      const topLevel = depth === 0 && (memberIndent === undefined ? indent === 0 : indent === memberIndent);
       if (topLevel) {
         const decl = stripLeadingModifiers(rawLine);
         const typeDecl = TYPE_DECL_PATTERN.exec(decl);

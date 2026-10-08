@@ -297,6 +297,27 @@ describe('Scala heuristic extractor', () => {
     expect(names).toEqual(['scala-decl:validate', 'src/main/scala/com/demo/core/Helpers.scala']);
   });
 
+  it('strips the _root_ qualifier from an import', () => {
+    const models = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\n', 'src/main/scala/com/demo/core/Models.scala');
+    const gateway = scalaFile('package com.demo.payments\n\nimport _root_.com.demo.core.Invoice\n', 'src/main/scala/com/demo/payments/Gateway.scala');
+
+    const names = extractScala([models, gateway]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['scala-decl:Invoice', 'src/main/scala/com/demo/core/Models.scala']);
+  });
+
+  it('reads nested Scala 3 package blocks', () => {
+    const models = scalaFile(
+      ['package com.demo:', '  package core:', '    case class Invoice(id: Int)', '  object Registry'].join('\n'),
+      'src/main/scala/com/demo/core/Models.scala',
+    );
+    const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.Invoice\n', 'src/main/scala/com/demo/payments/Gateway.scala');
+
+    const names = extractScala([models, gateway]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['scala-decl:Invoice,Registry', 'src/main/scala/com/demo/core/Models.scala']);
+  });
+
   it('resolves a named import to the file that declares the symbol', () => {
     const models = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\ncase class Order(id: Int)\n', 'src/main/scala/com/demo/core/Models.scala');
     const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.Order\n', 'src/main/scala/com/demo/payments/Gateway.scala');

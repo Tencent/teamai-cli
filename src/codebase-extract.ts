@@ -607,7 +607,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     const originalChangedFiles = changedFiles;
     const staleImporters = new Set<string>();
     for (const fact of cachedFacts) {
-      if (fact.kind !== 'relation' || isMetadataRelation(fact.name)) continue;
+      if (fact.kind !== 'relation' || fact.name.startsWith(SCALA_DECL_PREFIX)) continue;
       const touchedPackage = (pkg: string): boolean =>
         originalChangedFiles.some((f) => f.includes(`/${pkg}/`) || f.startsWith(`${pkg}/`)) ||
         deletedFiles.some((f) => f.includes(`/${pkg}/`) || f.startsWith(`${pkg}/`));
