@@ -1,6 +1,6 @@
 # Unified dashboard
 
-The logo's charcoal/blue palette, four-module navigation, English/Simplified Chinese UI and light/dark/system themes replace the previous session-only layout. All data comes from the existing local collectors and KB report aggregation.
+The logo's charcoal/blue palette, module navigation, English/Simplified Chinese UI and light/dark/system themes replace the previous session-only layout. All data comes from the existing local collectors and KB report aggregation.
 
 ## Functional mapping
 
@@ -10,13 +10,14 @@ The logo's charcoal/blue palette, four-module navigation, English/Simplified Chi
 | Team Execution | All supported tools, repository (all worktrees of a repo as one)/tool filters, active and recently ended sessions, first/latest secret-redacted prompt summaries and output previews, duration, last activity/tool, intervention and token counts; keyboard-accessible Details opens all captured prompt summaries (capped at 200 characters), safely rendered Markdown output and full breakdowns |
 | Team Context | Original KB totals, coverage by type, top recalled chart, expandable never-recalled groups, last-recall month chart, author contribution table, reported data scope and report generation time |
 | Team Improvement | Local trends, original promotion/archive/stale candidate guidance and commands, digest/session-save/share-learnings command references |
+| Team Library | Read-only team-repo inventory for the selected workspace's scope: skills (name, frontmatter description, namespace, repo path), MCP servers (name, transport, endpoint, source file, referenced secret variable names — never values) and the package declarations of teamai.yaml (Claude plugins, marketplaces, npm packages, passed through as declared). An unparseable MCP file or teamai.yaml is reported inline without failing the other sections |
 
 Maintenance commands remain read-only guidance. No new CLI command or browser mutation endpoint is introduced. `/kb-report` remains the complete original standalone report, including maintenance.
 
 ## Implementation
 
 - `dashboard-html.ts` embeds the shell, styles, locale catalog and browser application from `src/dashboard/` into one HTML response. No remote assets or package asset-copy step.
-- Existing `/api/sessions`, `/events`, `/api/trends`, `/api/kb-summary` and `/kb-report` stay available. `/api/context` reuses `buildVizData` and the original escaped report section renderers, with a 30-second cache and coalesced concurrent requests.
+- Existing `/api/sessions`, `/events`, `/api/trends`, `/api/kb-summary` and `/kb-report` stay available. `/api/context` reuses `buildVizData` and the original escaped report section renderers, with a 30-second cache and coalesced concurrent requests. `/api/library` serves `src/dashboard/library.ts`'s `getTeamLibrary` for the selected workspace's config (the user scope when none is selected), with the same 30-second cache and request coalescing.
 - SSE reconnects after failure. A 15-second session reconciliation poll also applies the collector's existing idle and 30-second ended-session rules without requiring another hook event. Relative times update every five seconds without replacing the focused row.
 - Fetch failures have retry controls. Previous successful KB/trend values remain visibly marked as stale on refresh failure. No missing metric is converted into a fabricated zero.
 - Local redacted prompt summaries and output remain local and are escaped before HTML/Markdown rendering. Knowledge titles, authors, commands and session content are not translated. Locale/theme preferences are stored only in browser storage and gracefully degrade if it is blocked.

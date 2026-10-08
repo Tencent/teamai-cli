@@ -11,19 +11,20 @@ const t = text => language === 'zh-CN' ? (Object.hasOwn(messages,text) ? message
 const e = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const label = text => e(t(text));
 const escapeHtml = e;
-const pageNames = { overview: 'Overview', execution: 'Team Execution', context: 'Team Context', improvement: 'Team Improvement' };
+const pageNames = { overview: 'Overview', execution: 'Team Execution', context: 'Team Context', improvement: 'Team Improvement', library: 'Team Library' };
 const statusNames = { running:'Working', waiting_for_input:'Your turn', error:'Error', idle:'Idle', stopped:'Ended' };
 let page = Object.hasOwn(pageNames,location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
-let sessions = [], haveSessions = false, connected = false, trends = null, kb = null;
-let trendError = false, kbError = false, selectedSession = null, selectedSnapshot = null, focusBeforeDialog = null;
-let trendLoading = false, kbLoading = false, eventSource = null, reconnectTimer = null, fallbackGeneration = 0;
+let sessions = [], haveSessions = false, connected = false, trends = null, kb = null, library = null;
+let trendError = false, kbError = false, libraryError = false, selectedSession = null, selectedSnapshot = null, focusBeforeDialog = null;
+let trendLoading = false, kbLoading = false, libraryLoading = false, eventSource = null, reconnectTimer = null, fallbackGeneration = 0;
 let workspaceId = '', workspaceGeneration = 0, workspaces = [];
 const api = route => route + (workspaceId ? '?workspace=' + encodeURIComponent(workspaceId) : '');
 function workspaceLabel(w) { return w.scope==='user'?label('User scope'):w.scope==='unassigned'?label('Unassigned sessions'):e(w.label)+' · '+label('Project'); }
 function workspaceOptions() { $('workspace').innerHTML=workspaces.map(w=>'<option value="'+e(w.id)+'">'+workspaceLabel(w)+'</option>').join('');$('workspace').value=workspaceId;const w=workspaces.find(w=>w.id===workspaceId);$('workspace-root').textContent=w?w.root:''; }
 const icons = {
  overview:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
- execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
+ execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>',
+ library:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>'
 };
 const icon = key => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'+icons[key]+'</svg>';
 const link = (key, text) => '<button class="link" data-page="'+key+'">'+label(text)+' →</button>';
@@ -73,6 +74,30 @@ function knowledge() {
  return '<div class="actions">'+source()+'<button class="link" data-retry="kb">'+label('Refresh report')+'</button>'+link('improvement','View maintenance')+'</div>'+(kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+(kb?'<div class="report" id="kb-content">'+kb.context+'</div>':kbError?'':'<div class="empty">'+label('Loading…')+'</div>');
 }
 function improvement() { return trendPanel()+'<div class="actions">'+source()+'<button class="link" data-retry="kb">'+label('Refresh report')+'</button></div>'+(kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+(kb?'<div class="report" id="kb-content">'+kb.maintenance+'</div>':'<div class="empty">'+label('Loading…')+'</div>'); }
+function libraryTable(headers, rows) {
+ return '<div class="table-scroll"><table><thead><tr>'+headers.map(h=>'<th>'+label(h)+'</th>').join('')+'</tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+function librarySubsection(title, count, body) {
+ return '<h3 class="section-label">'+label(title)+' <span class="count">'+number(count)+'</span></h3>'+body;
+}
+function teamLibrary() {
+ const refresh='<div class="actions"><button class="link" data-retry="library">'+label('Refresh')+'</button></div>';
+ const error=libraryError?errorPanel('Could not refresh the team library. Any displayed data is the last successful result.','library'):'';
+ if(!library) return refresh+error+(libraryError?'':'<div class="empty">'+label('Loading…')+'</div>');
+ const skills=library.skills||[],servers=library.mcpServers||[];
+ const pkgs=library.packages||{npm:[],claude:{marketplaces:[],plugins:[]}},plugins=pkgs.claude.plugins,marketplaces=pkgs.claude.marketplaces,npm=pkgs.npm;
+ const skillsSection='<section class="panel"><div class="panelhead"><h2>'+label('Team Skills')+' <span class="count">'+number(skills.length)+'</span></h2></div>'+
+  (skills.length?libraryTable(['NAME','DESCRIPTION','NAMESPACE','PATH'],skills.map(s=>'<tr><td data-verbatim>'+e(s.name)+'</td><td data-verbatim>'+e(s.description||'—')+'</td><td data-verbatim>'+e(s.namespace||'—')+'</td><td data-verbatim>'+e(s.path)+'</td></tr>').join('')):'<div class="empty">'+label('No team skills in this scope.')+'</div>')+'</section>';
+ const mcpBody=library.mcpError?'<div class="error-panel" role="status"><p data-verbatim>'+e(library.mcpError)+'</p></div>':
+  (servers.length?libraryTable(['NAME','TRANSPORT','ENDPOINT','SOURCE','SECRETS'],servers.map(s=>'<tr><td data-verbatim>'+e(s.name)+'</td><td data-verbatim>'+e(s.transport)+'</td><td data-verbatim>'+e(s.endpoint)+'</td><td data-verbatim>'+e(s.source)+'</td><td data-verbatim>'+e((s.secrets||[]).join(', ')||'—')+'</td></tr>').join('')):'<div class="empty">'+label('No team MCP servers in this scope.')+'</div>');
+ const mcpSection='<section class="panel"><div class="panelhead"><h2>'+label('MCP Servers')+' <span class="count">'+number(servers.length)+'</span></h2></div>'+mcpBody+'</section>';
+ const packagesBody=library.packagesError?'<div class="error-panel" role="status"><p data-verbatim>'+e(library.packagesError)+'</p></div>':
+  librarySubsection('Claude Plugins',plugins.length,plugins.length?libraryTable(['NAME','VERSION','SCOPE'],plugins.map(s=>'<tr><td data-verbatim>'+e(s.name)+'</td><td data-verbatim>'+e(s.version||'—')+'</td><td data-verbatim>'+e(s.scope||'—')+'</td></tr>').join('')):'<div class="empty">'+label('No Claude plugins declared.')+'</div>')+
+  librarySubsection('Marketplaces',marketplaces.length,marketplaces.length?libraryTable(['NAME','REPO','REF'],marketplaces.map(s=>'<tr><td data-verbatim>'+e(s.name)+'</td><td data-verbatim>'+e(s.repo)+'</td><td data-verbatim>'+e(s.ref||'—')+'</td></tr>').join('')):'<div class="empty">'+label('No Claude marketplaces declared.')+'</div>')+
+  librarySubsection('npm Packages',npm.length,npm.length?libraryTable(['NAME','VERSION','SCOPE','REGISTRY'],npm.map(s=>'<tr><td data-verbatim>'+e(s.name)+'</td><td data-verbatim>'+e(s.version||'*')+'</td><td data-verbatim>'+e(s.global?'global':'project')+'</td><td data-verbatim>'+e(s.registry||'—')+'</td></tr>').join('')):'<div class="empty">'+label('No npm packages declared.')+'</div>');
+ const packagesSection='<section class="panel"><div class="panelhead"><h2>'+label('Packages')+' <span class="count">'+number(plugins.length+marketplaces.length+npm.length)+'</span></h2></div>'+packagesBody+'</section>';
+ return refresh+error+skillsSection+mcpSection+packagesSection;
+}
 // Translate static report labels only; never translate knowledge titles, authors, commands or session text.
 function localizeReport() {
  const root=$('kb-content');if(!root)return;
@@ -94,7 +119,7 @@ function render() {
  $('nav').innerHTML=Object.keys(pageNames).map(key=>'<button data-page="'+key+'" class="'+(page===key?'active':'')+'" '+(page===key?'aria-current="page"':'')+'>'+icon(key)+label(pageNames[key])+'</button>').join('');
  $('title').textContent=t(pageNames[page]);$('crumb').textContent=t(pageNames[page]);
  document.querySelector('.filters').hidden=page!=='execution';
- $('view').innerHTML=({overview,execution,context:knowledge,improvement})[page]();
+ $('view').innerHTML=({overview,execution,context:knowledge,improvement,library:teamLibrary})[page]();
  localizeReport();connection();
  document.querySelectorAll('#kb-content details').forEach(d=>{if(opened.includes([...d.parentElement.children].indexOf(d)))d.open=true;});
  if(focusKey) [...document.querySelectorAll('[data-session]')].find(el=>el.dataset.session===focusKey)?.focus({preventScroll:true});
@@ -206,6 +231,7 @@ function showDetails(sessionId) {
 async function json(url) { const response=await fetch(url,{signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error('HTTP '+response.status);return response.json(); }
 async function loadTrends() { if(trendLoading)return;const generation=workspaceGeneration;trendLoading=true;try{const data=await json(api('/api/trends'));if(generation===workspaceGeneration){trends=data;trendError=false;}}catch{if(generation===workspaceGeneration)trendError=true;}finally{if(generation===workspaceGeneration){trendLoading=false;if(['overview','improvement'].includes(page))render();}} }
 async function loadKb() { if(kbLoading)return;const generation=workspaceGeneration;kbLoading=true;try{const data=await json(api('/api/context'));if(generation===workspaceGeneration){kb=data;kbError=false;}}catch{if(generation===workspaceGeneration)kbError=true;}finally{if(generation===workspaceGeneration){kbLoading=false;render();}} }
+async function loadLibrary() { if(libraryLoading)return;const generation=workspaceGeneration;libraryLoading=true;try{const data=await json(api('/api/library'));if(generation===workspaceGeneration){library=data;libraryError=false;}}catch{if(generation===workspaceGeneration)libraryError=true;}finally{if(generation===workspaceGeneration){libraryLoading=false;if(page==='library')render();}} }
 function receive(data) {
  if(!Array.isArray(data))return;
  if(haveSessions && JSON.stringify(sessions)===JSON.stringify(data))return;
@@ -253,7 +279,7 @@ document.addEventListener('click',event=>{
  if(nav){const key=nav.dataset.page;location.hash=key;if(key===page){render();$('title').focus();}}
  if(session)showDetails(session.dataset.session);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
- if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='library')loadLibrary();else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
 });
 $('title').tabIndex=-1;
 window.addEventListener('hashchange',()=>{page=Object.hasOwn(pageNames,location.hash.slice(1))?location.hash.slice(1):'overview';render();$('title').focus();});
@@ -261,12 +287,12 @@ $('session-dialog').addEventListener('close',()=>{const id=selectedSession;selec
 function switchWorkspace(id) {
  workspaceGeneration++;fallbackGeneration++;workspaceId=id;save('teamai-dashboard-workspace',id);
  eventSource?.close();clearTimeout(reconnectTimer);$('session-dialog').close();selectedSession=null;selectedSnapshot=null;
- sessions=[];haveSessions=false;connected=false;trends=null;kb=null;trendLoading=false;kbLoading=false;trendError=false;kbError=false;
- $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadKb();
+ sessions=[];haveSessions=false;connected=false;trends=null;kb=null;library=null;trendLoading=false;kbLoading=false;libraryLoading=false;trendError=false;kbError=false;libraryError=false;
+ $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadKb();loadLibrary();
 }
 $('workspace').onchange=()=>switchWorkspace($('workspace').value);
 preferences();
-json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadKb();});
+json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadKb();loadLibrary();});
 setInterval(loadTrends,30000);
 // Reconcile idle/ended expiry even when no hook emits another SSE event.
 setInterval(()=>{

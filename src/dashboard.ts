@@ -71,6 +71,8 @@ export async function startDashboard(port?: number): Promise<void> {
   const clientScopes = new Map<SSEClient, string | null>();
   const contextRequests = new Map<string, Promise<unknown>>();
   const contextCaches = new Map<string, { ts: number; data: unknown }>();
+  const libraryRequests = new Map<string, Promise<unknown>>();
+  const libraryCaches = new Map<string, { ts: number; data: unknown }>();
 
   // SSE clients
   const clients: Set<SSEClient> = new Set();
@@ -268,6 +270,36 @@ export async function startDashboard(port?: number): Promise<void> {
         log.debug(`dashboard: /api/context failed: ${(e as Error).message}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to load knowledge base health.' }));
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/library') {
+      // Team skills + MCP servers of the selected scope's team repo, cached and
+      // request-deduplicated like /api/context above.
+      try {
+        const key = scopeId ?? 'all';
+        let cached = libraryCaches.get(key);
+        if (!cached || Date.now() - cached.ts > KB_SUMMARY_TTL_MS) {
+          let pending = libraryRequests.get(key);
+          if (!pending) {
+            // No workspace selected: the library of the user scope's repo.
+            const libraryConfig = workspace
+              ? workspace.config
+              : workspaces.find(w => w.id === 'user')?.config ?? null;
+            pending = import('./dashboard/library.js').then(({ getTeamLibrary }) => getTeamLibrary(libraryConfig));
+            libraryRequests.set(key, pending);
+          }
+          try { cached = { ts: Date.now(), data: await pending }; }
+          finally { libraryRequests.delete(key); }
+          libraryCaches.set(key, cached);
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(cached.data));
+      } catch (e) {
+        log.debug(`dashboard: /api/library failed: ${(e as Error).message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: (e as Error).message }));
       }
       return;
     }
