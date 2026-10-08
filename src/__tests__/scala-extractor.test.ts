@@ -318,6 +318,33 @@ describe('Scala heuristic extractor', () => {
     expect(names).toEqual(['scala-decl:Invoice,Registry', 'src/main/scala/com/demo/core/Models.scala']);
   });
 
+  it('reads declarations inside a braced package', () => {
+    const models = scalaFile(['package com.demo.core {', '  class Invoice {', '    def total: Int = 1', '  }', '}'].join('\n'), 'src/main/scala/com/demo/core/Models.scala');
+    const main = scalaFile('package com.demo.core\n\nobject Main\n', 'src/main/scala/com/demo/core/Main.scala');
+    const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.{Invoice => _, _}\n', 'src/main/scala/com/demo/payments/Gateway.scala');
+
+    const names = extractScala([models, main, gateway]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    // The package brace does not nest the declarations away, and Models.scala
+    // declares only the hidden Invoice — the wildcard skips it.
+    expect(names).toEqual(['scala-decl:Invoice', 'scala-decl:Main', 'scala-wildcard:com/demo/core', 'src/main/scala/com/demo/core/Main.scala']);
+  });
+
+  it('resolves an import of a member declared inside an object', () => {
+    const domain = scalaFile('package com.demo\n\nobject Models {\n  case class Invoice(id: Int)\n}\n', 'src/main/scala/com/demo/Domain.scala');
+    const main = scalaFile('package com.demo.app\n\nimport com.demo.Models.Invoice\n', 'src/main/scala/com/demo/app/Main.scala');
+
+    const names = extractScala([domain, main]).filter((f) => f.kind === 'relation').map((f) => f.name);
+
+    expect(names).toEqual(['scala-decl:Models', 'src/main/scala/com/demo/Domain.scala']);
+  });
+
+  it('reads a comma-separated import with a plain `as` rename', () => {
+    const facts = extracted('import com.demo.A as Alias, com.demo.B');
+
+    expect(facts).toEqual(['relation:com/demo/A', 'relation:com/demo/B']);
+  });
+
   it('resolves a named import to the file that declares the symbol', () => {
     const models = scalaFile('package com.demo.core\n\ncase class Invoice(id: Int)\ncase class Order(id: Int)\n', 'src/main/scala/com/demo/core/Models.scala');
     const gateway = scalaFile('package com.demo.payments\n\nimport com.demo.core.Order\n', 'src/main/scala/com/demo/payments/Gateway.scala');

@@ -112,13 +112,17 @@ export function extractScala(files: CodeCollectedFile[], context?: ExtractorCont
           if (!clause) {
             break;
           }
+          // A plain clause may carry a Scala 3 rename (`a.B as Alias`) — the
+          // imported name is the part before it.
           const after = rest.slice(clause[0].length);
-          if (/^\s*\.\s*\{/u.test(after)) {
-            openImport = { line: lineNumber, prefix: clause[1], selector: after.replace(/^\s*\.\s*\{/u, "") };
+          const plainRename = /^\s+as\s+[A-Za-z_]\w*/u.exec(after)?.[0].length ?? 0;
+          const consumed = after.slice(plainRename);
+          if (/^\s*\.\s*\{/u.test(consumed)) {
+            openImport = { line: lineNumber, prefix: clause[1], selector: consumed.replace(/^\s*\.\s*\{/u, "") };
             break;
           }
           pushRelations(facts, extractContext, clause[1], clause[3], file.relativePath, lineNumber, line);
-          rest = after.replace(/^\s*,\s*/u, "");
+          rest = consumed.replace(/^\s*,\s*/u, "");
         }
       }
     }
@@ -197,30 +201,24 @@ function pushRelations(
     } else {
       // `com.demo.Models.*` wildcards an object, not a package — resolve it to
       // the file that declares the object, as a named import would.
-      const modulePath = toModulePath(packagePath);
-      const segments = modulePath.split("/");
-      const symbol = segments[segments.length - 1];
-      targets =
-        segments.length > 1 && /^[A-Z]/u.test(symbol)
-          ? [symbolTarget(symbol, segments.slice(0, -1).join("/"), file, context)]
-          : [packagePath];
+      const resolved = resolveSymbolPath(toModulePath(packagePath), file, context);
+      targets = resolved !== undefined ? [resolved] : [packagePath];
     }
   } else if (selection && selection.symbols.length > 0) {
-    targets = [...new Set(selection.symbols.map((symbol) => symbolTarget(symbol, packagePath, file, context)))];
+    targets = [
+      ...new Set(
+        selection.symbols.map((symbol) => resolveSymbolPath(`${packagePath}/${symbol}`, file, context) ?? toModulePath(`${packagePath}/${symbol}`)),
+      ),
+    ];
   } else if (selection) {
     // only hidden names: the clause imports nothing, so no relation at all
     targets = [];
   } else {
     // A plain import names a symbol (`com.foo.Bar` — or a Scala 3 top-level
-    // `def validate`) preceded by its package; resolving it against the
-    // package's declarations keeps the conventional same-name path as fallback.
+    // `def validate`) preceded by its package; the conventional path is the
+    // fallback when no collected file declares the symbol.
     const modulePath = toModulePath(packagePath);
-    const segments = modulePath.split("/");
-    const symbol = segments[segments.length - 1];
-    targets =
-      segments.length > 1
-        ? [symbolTarget(symbol, segments.slice(0, -1).join("/"), file, context)]
-        : [modulePath];
+    targets = [resolveSymbolPath(modulePath, file, context) ?? modulePath];
   }
   for (const target of targets) {
     facts.push(makeFact("relation", target, file, lineNumber, rawLine, "EXTRACTED"));
@@ -302,16 +300,23 @@ function expandWildcard(packagePath: string, context: ExtractContext, hidden: Re
 }
 
 /**
- * The file in the package that declares `symbol`, or the conventional path if
- * none does — the symbol's own name is not a file name to rely on.
+ * The file a dotted import path resolves to: the package member that declares
+ * the last type, or — failing that — an earlier one (`com/demo/Models/Invoice`
+ * names a member of `object Models`, which lives in Models' own declaring
+ * file). Undefined when no collected file declares any of them.
  */
-function symbolTarget(symbol: string, packagePath: string, importer: string, context: ExtractContext): string {
-  for (const candidate of packageMembers(packagePath, context.allFiles)) {
-    if (candidate.relativePath !== importer && context.declarations.get(candidate.relativePath)?.has(symbol)) {
-      return candidate.relativePath;
+function resolveSymbolPath(modulePath: string, importer: string, context: ExtractContext): string | undefined {
+  const segments = modulePath.split("/");
+  for (let i = segments.length - 1; i >= 1; i--) {
+    const symbol = segments[i];
+    const packagePath = segments.slice(0, i).join("/");
+    for (const candidate of packageMembers(packagePath, context.allFiles)) {
+      if (candidate.relativePath !== importer && context.declarations.get(candidate.relativePath)?.has(symbol)) {
+        return candidate.relativePath;
+      }
     }
   }
-  return toModulePath(`${packagePath}/${symbol}`);
+  return undefined;
 }
 
 /**
@@ -348,7 +353,7 @@ function afterPackage(relativePath: string, packagePath: string): string | undef
 function declarationNames(content: string): Set<string> {
   const names = new Set<string>();
   let depth = 0;
-  const packageMemberIndents: number[] = []; // open `package x:` blocks, innermost last; -1 until its member indent is seen
+  const packageMemberIndents: number[] = []; // open package blocks (`x:` or `x {`), innermost last; -1 until its member indent is seen
   for (const rawLine of content.split(/\r?\n/)) {
     const trimmed = rawLine.trim();
     const indent = rawLine.length - rawLine.trimStart().length;
@@ -356,7 +361,10 @@ function declarationNames(content: string): Set<string> {
     if (trimmed !== "" && last >= 0 && packageMemberIndents[last] === -1) {
       packageMemberIndents[last] = indent; // the first content line fixes the block's member indent
     }
-    if (/^package\s+[\w.]+\s*:\s*$/u.test(trimmed)) {
+    // `package x {` opens a block, not a declaration nest: its brace does not
+    // count toward the depth that hides members.
+    const packageOpener = /^package\s+[\w.]*\s*[:{]/u.test(trimmed);
+    if (packageOpener) {
       packageMemberIndents.push(-1);
     } else if (trimmed !== "") {
       while (packageMemberIndents.length > 1 && packageMemberIndents[packageMemberIndents.length - 1] > indent) {
@@ -379,8 +387,8 @@ function declarationNames(content: string): Set<string> {
           names.add(defDecl[1]);
         }
       }
+      depth += (rawLine.match(/\{/gu) ?? []).length - (rawLine.match(/\}/gu) ?? []).length;
     }
-    depth += (rawLine.match(/\{/gu) ?? []).length - (rawLine.match(/\}/gu) ?? []).length;
   }
   return names;
 }

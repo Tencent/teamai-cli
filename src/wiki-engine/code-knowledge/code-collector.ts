@@ -16,6 +16,14 @@ const execFileAsync = promisify(execFile);
  */
 const GIT_EXEC_OPTIONS = { windowsHide: true } as const;
 
+/**
+ * Bumped whenever the set of files collectCode picks up changes (a new
+ * extension whitelisted, a skip rule added). An incremental run against a
+ * manifest written by an older version skips the git fast path and diffs by
+ * sha256 instead, so files the old run never collected surface as added.
+ */
+export const CODE_COLLECTION_VERSION = 2;
+
 export interface CodeCollectedFile {
   path: string;
   relativePath: string;

@@ -29,6 +29,7 @@ import {
 } from './wiki-engine/adapters/index.js';
 import type { CodeFact, InterfaceInventory, CallChain } from './wiki-engine/adapters/index.js';
 import type { CodeCollectedFile } from './wiki-engine/code-knowledge/code-collector.js';
+import { CODE_COLLECTION_VERSION } from './wiki-engine/code-knowledge/code-collector.js';
 import type { ExtractorContext } from './wiki-engine/code-knowledge/extractors/index.js';
 import { SCALA_DECL_PREFIX, SCALA_WILDCARD_PREFIX } from './wiki-engine/code-knowledge/extractors/index.js';
 import { isMetadataRelation } from './wiki-engine/code-knowledge/code-extractors.js';
@@ -972,7 +973,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
 
   const headSha = collectionManifest.commit;
   const manifestObject: Record<string, unknown> = {
-    version: 1,
+    version: CODE_COLLECTION_VERSION,
     lastScan: new Date().toISOString(),
     files: allManifestFiles,
   };
