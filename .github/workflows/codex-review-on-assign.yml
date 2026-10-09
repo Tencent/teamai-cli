@@ -108,9 +108,9 @@ jobs:
     needs: gate
     if: needs.gate.outputs.authorized == 'true'
     runs-on: ubuntu-latest
-    # A normal review finishes in ~2 min. Cap the job so a hung run cannot idle
-    # for hours (the default 6h) burning runner time before it is killed.
-    timeout-minutes: 15
+    # A normal review finishes in ~2 min, a large PR's in up to ~15. Cap the job
+    # so a hung run cannot idle for hours (the default 6h) burning runner time.
+    timeout-minutes: 30
     permissions:
       contents: read # read the base code + git objects for the diff
       pull-requests: write # the comment step posts to the PR
