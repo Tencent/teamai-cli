@@ -274,9 +274,10 @@ cd ~/work/billing       && teamai init <team-repo> --project billing
 - **不自动激活。** 与「唯一 role 会被自动选中」不同，唯一的 project 不会自动选中
   —— 成员可以不属于任何项目（能获得共享的 learnings 根，以及其 role 列出的
   namespace，例如 `common`；没有 role 时不会通过 namespace 收到任何 skill）。
-- **根 skill 通过 tag 获取。** 团队启用 roles 或 projects 后，根目录 `skills/`
-  是 tag 目录：用 `teamai tags subscribe <tag>` 获取根 skill。pull 删除不再下发的
-  skill 时（例如选择 role 或 project 之后），会用一行输出列出它们的名字。
+- **根 skill 对全员共享。** 无论是否选择 role 或 project，根目录 `skills/` 都会
+  下发给每个成员；激活的 namespace 中的同名 skill 会整份替换根 skill。
+  `teamai tags subscribe <tag>` 还可以额外带来你未激活 namespace 中的 skill。
+  pull 删除不再下发的 skill 时（例如退出某个 project 之后），会用一行输出列出它们的名字。
 - **一次激活全部。** `--project all` 是保留值：展开为 manifest 声明的全部 id
   并落盘为快照，于是 monorepo 的接入文档只写一行，而不必维护一份「新增项目就会
   漂移」的清单。它是对全部项目（含项目私有 learnings）的显式选择，重跑 `init`

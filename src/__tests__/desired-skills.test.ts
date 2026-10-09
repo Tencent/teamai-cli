@@ -41,6 +41,12 @@ describe('resolveDesiredSkills', () => {
     await fse.writeFile(path.join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: d\n---\n`);
   }
 
+  async function writeRootSkill(name: string): Promise<void> {
+    const dir = path.join(repoPath, 'skills', name);
+    await fse.ensureDir(dir);
+    await fse.writeFile(path.join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: d\n---\n`);
+  }
+
   beforeEach(async () => {
     tempDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-desired-skills-'));
     repoPath = path.join(tempDir, 'team-repo');
@@ -131,5 +137,35 @@ describe('resolveDesiredSkills', () => {
 
     expect(await fse.readdir(tempDir)).toEqual(before);
     expect(await fse.pathExists(path.join(tempDir, '.claude'))).toBe(false);
+  });
+
+  // The root is shared: a member with a role context but no active skill
+  // namespace (no role, no active project, yet the team has projects.yaml)
+  // still receives every root skill — and cleanup keeps them.
+  it('delivers the shared root skills when the role context activates no namespaces', async () => {
+    await writeRootSkill('root-one');
+    await writeRootSkill('root-two');
+
+    const { items, overrides } = resolved(await resolveDesiredSkills(teamConfig, localConfig, rolesOver([])));
+
+    expect(items.map((i) => i.name).sort()).toEqual(['root-one', 'root-two']);
+    expect(items.every((i) => i.namespace === undefined)).toBe(true);
+    expect(overrides).toEqual([]);
+  });
+
+  it('unions root and active namespace skills, the namespace entry replacing the root of its name', async () => {
+    await writeRootSkill('shared-skill');
+    await writeRootSkill('root-only');
+
+    const { items, overrides } = resolved(await resolveDesiredSkills(teamConfig, localConfig, rolesOver(['common'])));
+
+    const byName = new Map(items.map((item) => [item.name, item]));
+    expect([...byName.keys()].sort()).toEqual(['root-only', 'shared-skill']);
+    // One delivered `shared-skill`, and it is the namespace copy, never the root.
+    expect(byName.get('shared-skill')?.namespace).toBe('common');
+    expect(byName.get('shared-skill')?.relativePath).toBe('skills/common/shared-skill');
+    expect(overrides).toEqual([
+      { name: 'shared-skill', source: 'skills/common/shared-skill', replaces: 'skills/shared-skill' },
+    ]);
   });
 });

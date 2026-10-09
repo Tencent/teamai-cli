@@ -1461,9 +1461,6 @@ async function pullForScope(
   let knownRepoSkillNames: Set<string> | null = null;
   // name → team-repo source dir, for the data-safety check in Step 3b cleanup.
   let knownRepoSkillSources: Map<string, string> | null = null;
-  // Root skills (no namespace) are the tag catalog: one of them removed by
-  // either cleanup phase still means `tags subscribe` brings it back (#911).
-  let rootRepoSkillNames: Set<string> | null = null;
 
   for (const type of resourceTypes) {
     const handler = getHandler(type);
@@ -1560,7 +1557,6 @@ async function pullForScope(
       desiredSkillNames = new Set(items.map((i) => i.name));
       knownRepoSkillNames = new Set(desired.teamItems.map((i) => i.name));
       knownRepoSkillSources = new Map(desired.teamItems.map((i) => [i.name, i.sourcePath]));
-      rootRepoSkillNames = new Set(desired.teamItems.filter((i) => !i.namespace).map((i) => i.name));
     } else if (type === 'agents') {
       const desired = await resolveDesiredAgents(freshConfig, localConfig, roleContext);
       if (desired.kind === 'conflict') {
@@ -1642,7 +1638,6 @@ async function pullForScope(
   // Skills this pull removes because they are no longer delivered here, named
   // in one line at the end of Step 3b so a member learns where they went (#911).
   const undeliveredSkills = new Set<string>();
-  let rootSkillUndelivered = false;
 
   // Step 3: Clean up tombstoned resources
   if (!options.dryRun) {
@@ -1658,12 +1653,9 @@ async function pullForScope(
           roleContext.inactiveSkillSources,
         );
         // A directory byte-identical to its inactive-namespace source is
-        // removed here, before Step 3b can see it. When the repo also holds
-        // that skill at the root, the tag channel can bring it back, so the
-        // recovery hint must fire for this removal too, not only Step 3b's.
+        // removed here, before Step 3b can see it.
         for (const name of removed) {
           undeliveredSkills.add(name);
-          if (rootRepoSkillNames?.has(name)) rootSkillUndelivered = true;
         }
       }
       // Same revocation for agents: a role change must remove the previous
@@ -1705,7 +1697,6 @@ async function pullForScope(
           log.debug(`Removed excluded skill ${dir} from ${tool}`);
         } else {
           undeliveredSkills.add(dir);
-          if (rootRepoSkillNames?.has(dir)) rootSkillUndelivered = true;
           log.debug(`Removed skill ${dir} from ${tool}: no longer delivered here`);
         }
       }
@@ -1730,10 +1721,7 @@ async function pullForScope(
   }
 
   if (undeliveredSkills.size > 0) {
-    const hint = roleContext && rootSkillUndelivered
-      ? ' While the team uses roles or projects, root skills arrive only through a tag: `teamai tags subscribe <tag>`.'
-      : '';
-    log.info(`[${scopeLabel}] Removed ${undeliveredSkills.size} skill(s) no longer delivered here: ${[...undeliveredSkills].join(', ')}.${hint}`);
+    log.info(`[${scopeLabel}] Removed ${undeliveredSkills.size} skill(s) no longer delivered here: ${[...undeliveredSkills].join(', ')}.`);
   }
 
   if (totalSynced === 0 && !docsSyncFailed) {

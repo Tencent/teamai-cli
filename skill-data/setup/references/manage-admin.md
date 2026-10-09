@@ -161,7 +161,7 @@ members' pull for that scope until it is fixed; the error names the entry. Fix
 it rather than deleting it — with no `roles.yaml`, delivery is unfiltered.
 
 An item in an active namespace replaces the root item of the same name, whole:
-a skill by directory name (including a root skill a member gets through a tag),
+a skill by directory name,
 an agent by file stem, a rule by first-level file name (`rules/<ns>/<name>.md`
 replaces `rules/<name>.md`), and a `claudemd/<ns>/<name>.md` file replaces
 `claudemd/<name>.md`. Use this to give a project its own version of a shared
