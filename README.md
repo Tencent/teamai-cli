@@ -146,7 +146,7 @@ Three layers of capability, built on Git:
 
 ## Learn More
 
-- [Getting Started](docs/guide/getting-started.md) — set up a team, join one, or share a skill, in about ten minutes
+- [Getting Started](docs/guide/getting-started.md) — set up a team, join one, or share a skill
 - [Documentation index](docs/README.md) — every document under `docs/`, by audience
 - [Usage Guide](docs/usage-guide.md) ([中文版](docs/usage-guide.zh-CN.md)) — setup, onboarding, daily workflows, and commands
 - [Product Overview](docs/product-overview.md) ([中文版](docs/product-overview.zh-CN.md)) — architecture, distribution controls, and capability details

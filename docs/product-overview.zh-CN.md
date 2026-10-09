@@ -4,6 +4,8 @@
 
 本文介绍 TeamAI 的产品架构、Agent 支持范围和核心能力。安装与日常使用流程请参阅[使用指南](usage-guide.zh-CN.md)。
 
+Agent 作为个人工具已经很强，但学到的东西留在个人手里：昨天某位成员的 Agent 摸索出来的结论，今天到不了其他人的 Agent 面前。TeamAI 是一条闭环：把 Agent 的工作方式共享出去，把团队知识交给它们，再把真实会话变成团队能力。从 Harness 分发起步；Context 与 Improvement 随团队真实使用 Agent 而加深。
+
 ---
 
 ## 产品架构
@@ -15,6 +17,33 @@
 | **Team Execution** | 让每个 Agent 按团队的方式工作 | `init` / `pull` / `push`，skills、rules、agents、hooks、MCP、env |
 | **Team Context** (beta) | 让每个 Agent 理解整个团队 | recall、learnings、代码知识图谱、teamwiki... |
 | **Team Improvement** (beta) | 让每一次执行都成为团队能力的积累 | 基于摩擦信号的经验分享、sessions、digest、dashboard... |
+
+## 核心概念
+
+| 概念 | 说明 |
+|------|------|
+| **Team Repo** | 一个 Git 仓库，集中存放团队 Harness 与知识（Skills / Rules / Docs / Env / Packages，以及 learnings、wiki） |
+| **Scope** | 资源安装位置：`project`（当前项目，默认）或 `user`（用户主目录）|
+| **Skills** | AI 可调用的自定义技能（目录形式，含 `SKILL.md`） |
+| **Rules** | Markdown 格式的团队规范，自动合并到 AI 工具配置中 |
+| **Docs** | 团队共享文档，供 AI 参考 |
+| **Env** | 团队共享环境变量，自动注入 shell |
+| **Packages** | 全团队统一的 npm 包和 Claude Code 插件，通过 `teamai packages` 主动安装 |
+
+```
+┌───────────────┐    teamai push (MR)    ┌───────────────────┐
+│  你的本地资源   │ ──────────────────────→ │   Team Repo (Git) │
+│ skills/rules  │                         │ skills/rules/docs │
+└───────────────┘ ←────────────────────── └───────────────────┘
+                     teamai pull (自动)
+                           │
+                           ▼
+                  ┌──────────────────┐
+                  │  AI 工具自动获取   │
+                  │ Claude / CodeBuddy│
+                  │ Cursor / Codex   │
+                  └──────────────────┘
+```
 
 ## 功能概览
 
@@ -69,7 +98,7 @@ teamai push → 创建分支 + MR → reviewer 审批合并
 
 Skills、rules、CLAUDE.md、agents、env、hooks、MCP、models 和 docs 也可以放在 `<namespace>/` 子目录下，只同步给在 `resources:` 中列出它的角色和项目（rules 与 CLAUDE.md 列在 `knowledge:` 下）。namespace 中的条目会替换根目录中同名的条目；docs namespace 不替换任何内容。配置了角色或项目后，根目录的 skills 只通过标签订阅送达成员。
 
-下方的 Team Context 知识库采用同样的作用域规则：`teamwiki/evidence/code/<slug>/` 代码库只分发给在 `resources.wiki` 中列出它的角色和项目，未声明的 slug 仍然共享——详见[按命名空间分发 wiki](guide/zh-CN/advanced.md#代码知识图谱)。
+下方的 Team Context 知识库采用同样的作用域规则：`teamwiki/evidence/code/<slug>/` 代码库只分发给在 `resources.wiki` 中列出它的角色和项目，未声明的 slug 仍然共享——详见[按命名空间分发 wiki](guide/zh-CN/codebase-graph.md#代码知识图谱)。
 
 文件格式与完整工作流见[使用指南](usage-guide.zh-CN.md)。
 

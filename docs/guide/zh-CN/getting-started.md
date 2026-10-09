@@ -6,9 +6,9 @@
 
 ---
 
-## 十分钟跑通团队
+## 选一条路径
 
-在表里找到你的情况，照那条路径做。
+在表里找到你的情况，照那条路径做。检查命令通过，这条路径就走完了。
 
 | 你是… | 去看 |
 | --- | --- |
@@ -23,7 +23,11 @@ npm install -g teamai-cli
 teamai --version
 ```
 
+工蜂用户还需要 `gf` CLI，CNB 用户还需要 `cnb` CLI。`teamai init` 会自动安装它们。
+
 你可以在 AI 工具里跟 `/teamai` skill 对话（它替你执行命令，需要你做选择时才问），也可以自己在终端里运行 `teamai`。下面每条路径两种都写了。
+
+产品是什么、文档里的词是什么意思，见[产品概览](../../product-overview.zh-CN.md#核心概念)。
 
 ### 路径 A：搭建团队
 
@@ -50,7 +54,9 @@ teamai --version
 4. 发布第一个资源，让成员第一次 pull 就有东西。把一个 skill 放到 `~/.claude/skills/<名称>/SKILL.md`（或一条 rule 放到 `~/.claude/rules/<名称>.md`），运行 `teamai push`。它会在团队仓库上开一个 PR，合并它。
 5. 把仓库地址发给团队。成员只需要这个地址。
 
-到这里你有了一个 `main` 上带着一个 skill 的团队仓库，你机器上的每个 AI 工具都会在会话启动时从它拉取。作用域、单仓模式和组织仓叠加见[管理员初始化](../admin-setup.md)；rules、env、MCP server 和 hooks 见[共享团队资源](../sharing.md)。
+**完成标准：** `teamai doctor` 通过，并且这个 skill 已经在团队仓库的默认分支上。你机器上的每个 AI 工具都会在会话启动时从它拉取。
+
+作用域、单仓模式和组织仓叠加见[管理员初始化](./admin-setup.md)。rules、env、MCP server 和 hooks 见[共享团队资源](./sharing.md)。
 
 ### 路径 B：加入团队
 
@@ -73,9 +79,11 @@ teamai --version
    teamai doctor
    teamai list        # 团队的 skills、rules、docs、env、agents、hooks 和 MCP server
    ```
-3. 打开你的 AI 工具。团队的 skills 和 rules 已经在里面，之后每次会话启动都会拉最新版，不用手动同步。
+3. 在这个项目里打开 AI 工具。
 
-日常命令见[成员使用](../member-guide.md)。想让 Agent 能检索同事学到的东西，看[团队知识](../knowledge.md)。
+**完成标准：** `teamai list` 能列出团队的 skills 和 rules，新开的 AI 会话可以直接用。每次会话启动都会拉取最新内容，不用手动同步。
+
+日常命令见[成员使用](./member-guide.md)。想让 Agent 能检索同事学到的东西，看[团队知识](./knowledge.md)。
 
 ### 路径 C：分享给团队
 
@@ -96,69 +104,19 @@ teamai --version
 2. 让它合并。团队仓库的评审人合并这个 PR。
 3. 任何成员的机器下一次会话启动就会拉到；`teamai list skills --source repo` 马上就能看到。
 
-角色、namespace 和每种资源类型的格式见[共享团队资源](../sharing.md)。
+**完成标准：** pull request 已合并，并且 `teamai list skills --source repo` 能看到这个 skill。
+
+角色、namespace 和每种资源类型的格式见[共享团队资源](./sharing.md)。
 
 ### 出了问题
 
-先跑 `teamai doctor`。大多数问题（钩子缺失、工具没识别到、token 没设置）它都会指出来并给出修法。剩下的见[卸载与常见问题](../faq.md)。
+先跑 `teamai doctor`。大多数问题（钩子缺失、工具没识别到、token 没设置）它都会指出来并给出修法。剩下的见[卸载与常见问题](./faq.md)。
 
----
+## 接下来看哪里
 
-## TeamAI 是什么
-
-Agent 作为个人工具已经很强，但学到的东西留在个人手里：昨天某位成员的 Agent 摸索出来的结论，今天到不了其他人的 Agent 面前。
-
-TeamAI 的产品是一条闭环，而不是三个独立产品：
-
-| 层 | 要解决的问题 | 在本 CLI 中怎么用 |
-|----|--------------|-------------------|
-| **Team Execution** | 让每个 Agent 按团队的方式工作 | `init` / `pull` / `push` 共享 Harness（skills、rules、agents、hooks、MCP、env） |
-| **Team Context** (beta) | 让每个 Agent 理解整个团队 | recall、learnings、代码知识图谱、teamwiki |
-| **Team Improvement** (beta) | 让每一次执行都成为团队能力的积累 | 基于摩擦信号的经验分享、sessions、digest、dashboard |
-
-**Execute → Understand → Learn → Self-Improve。** 从 Harness 分发起步；Context 与 Improvement 随团队真实使用 Agent 而加深。
-
----
-
-## 核心概念
-
-| 概念 | 说明 |
-|------|------|
-| **Team Repo** | 一个 Git 仓库，集中存放团队 Harness 与知识（Skills / Rules / Docs / Env / Packages，以及 learnings、wiki） |
-| **Scope** | 资源安装位置：`project`（当前项目，默认）或 `user`（用户主目录）|
-| **Team Execution** | 一份共享 Harness，分发到每位成员的 Agent |
-| **Team Context** | 可检索的团队知识，避免 Agent 每次 Session 从零理解团队 |
-| **Team Improvement** | 把 Session 摩擦与用量信号转化为新的 Skill、Rule 和知识 |
-| **Skills** | AI 可调用的自定义技能（目录形式，含 `SKILL.md`） |
-| **Rules** | Markdown 格式的团队规范，自动合并到 AI 工具配置中 |
-| **Docs** | 团队共享文档，供 AI 参考 |
-| **Env** | 团队共享环境变量，自动注入 shell |
-| **Packages** | 全团队统一的 npm 包和 Claude Code 插件，通过 `teamai packages` 主动安装 |
-
-```
-┌───────────────┐    teamai push (MR)    ┌───────────────────┐
-│  你的本地资源   │ ──────────────────────→ │   Team Repo (Git) │
-│ skills/rules  │                         │ skills/rules/docs │
-└───────────────┘ ←────────────────────── └───────────────────┘
-                     teamai pull (自动)
-                           │
-                           ▼
-                  ┌──────────────────┐
-                  │  AI 工具自动获取   │
-                  │ Claude / CodeBuddy│
-                  │ Cursor / Codex   │
-                  └──────────────────┘
-```
-
----
-
-## 安装
-
-```bash
-npm install -g teamai-cli
-
-# 验证
-teamai --version
-```
-
-**前置依赖：** Node.js ≥ 20、Git（TGit 用户还需 `gf` CLI、CNB 用户还需 `cnb` CLI，`teamai init` 时都会自动安装）
+| 你想… | 去看 |
+| --- | --- |
+| 弄清产品本身和文档里的词 | [产品概览](../../product-overview.zh-CN.md#核心概念) |
+| 选择资源装在哪里，或团队仓库怎么组织 | [管理员初始化](./admin-setup.md) |
+| 发布 skills、rules、env 或 MCP server | [共享团队资源](./sharing.md) |
+| 加入之后的日常用法 | [成员使用](./member-guide.md) |

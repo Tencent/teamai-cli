@@ -4,6 +4,8 @@
 
 This document explains TeamAI's product architecture, supported agents, and core capabilities. For setup and day-to-day workflows, see the [Usage Guide](usage-guide.md).
 
+Agents are strong as personal tools, but their learning stays personal: what one member's agent worked out yesterday does not reach anyone else's agent today. TeamAI is one loop: share how agents work, give them team knowledge, and turn real sessions into shared capability. Start with harness distribution; context and improvement grow as the team actually runs agents.
+
 ---
 
 ## Product architecture
@@ -15,6 +17,34 @@ This document explains TeamAI's product architecture, supported agents, and core
 | **Team Execution** | Make every agent work the team's way | `init` / `pull` / `push`, skills, rules, agents, hooks, MCP, env |
 | **Team Context** (beta) | Make every agent understand the team | recall, learnings, codebase graph, teamwiki... |
 | **Team Improvement** (beta) | Make every execution improve the team | friction-based share-learnings, sessions, digest, dashboard... |
+
+## Core concepts
+
+| Concept | Description |
+|------|------|
+| **Team Repo** | A Git repository that centrally stores the team's harness and knowledge (Skills / Rules / Docs / Env / Packages, plus learnings and wiki) |
+| **Scope** | Where resources are installed: `project` (current project, default) or `user` (home directory) |
+| **Skills** | Custom skills the AI can invoke (a directory containing a `SKILL.md`) |
+| **Rules** | Markdown-formatted team conventions, automatically merged into AI tool configs |
+| **Docs** | Shared team documentation for the AI to reference |
+| **Env** | Shared team environment variables, automatically injected into the shell |
+| **Packages** | Team-wide npm packages and Claude Code plugins, installed explicitly with `teamai packages` |
+
+```
+┌───────────────┐    teamai push (MR)    ┌───────────────────┐
+│ Your local     │ ──────────────────────→ │   Team Repo (Git) │
+│ resources      │                         │ skills/rules/docs │
+│ skills/rules   │ ←────────────────────── └───────────────────┘
+└───────────────┘     teamai pull (auto)
+                           │
+                           ▼
+                  ┌──────────────────┐
+                  │  AI tools fetch   │
+                  │  automatically    │
+                  │ Claude / CodeBuddy│
+                  │ Cursor / Codex    │
+                  └──────────────────┘
+```
 
 ## Overview
 
@@ -69,7 +99,7 @@ Each resource is delivered to every agent:
 
 Skills, rules, CLAUDE.md, agents, env, hooks, MCP, models and docs can also live under a `<namespace>/` subdirectory, which ships only to the roles and projects that list it in `resources:` (rules and CLAUDE.md under `knowledge:`). A namespace item replaces the root item of the same name; a docs namespace replaces nothing. With roles or projects set, root skills reach a member only through a tag subscription.
 
-The Team Context knowledge base below is scoped the same way: a `teamwiki/evidence/code/<slug>/` codebase reaches only the roles and projects that list it under `resources.wiki`, and an undeclared slug stays shared — see [Wiki by namespace](guide/advanced.md#codebase-knowledge-graph).
+The Team Context knowledge base below is scoped the same way: a `teamwiki/evidence/code/<slug>/` codebase reaches only the roles and projects that list it under `resources.wiki`, and an undeclared slug stays shared — see [Wiki by namespace](guide/codebase-graph.md#codebase-knowledge-graph).
 
 For file formats and full workflows, see the [Usage Guide](usage-guide.md).
 

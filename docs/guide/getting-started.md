@@ -6,9 +6,9 @@
 
 ---
 
-## Ten minutes to a working team
+## Pick a path
 
-Find your situation in the table and follow that path.
+Find your situation in the table and follow that path. Each path ends when its check command succeeds.
 
 | You are… | Go to |
 | --- | --- |
@@ -23,7 +23,11 @@ npm install -g teamai-cli
 teamai --version
 ```
 
+TGit users also need the `gf` CLI, and CNB users the `cnb` CLI. `teamai init` installs either automatically.
+
 You can drive TeamAI from inside your AI tool, by talking to the `/teamai` skill (it runs the commands and asks you when it needs a choice), or by running `teamai` in a terminal. The paths below show both.
+
+What the product is, and the words it uses, is in the [Product Overview](../product-overview.md#core-concepts).
 
 ### Path A — set up a team
 
@@ -50,7 +54,9 @@ One person does this; everyone else follows Path B.
 4. Publish a first resource so members receive something on their first pull. Put a skill in `~/.claude/skills/<name>/SKILL.md` (or a rule in `~/.claude/rules/<name>.md`) and run `teamai push`. It opens a pull request on the team repo; merge it.
 5. Send the repo URL to your team. That URL is all a member needs.
 
-You now have a team repo with one skill on `main`, and every AI tool on your machine pulls from it at session start. For scopes, single-repo mode and layered org repos, continue with [Admin Setup](./admin-setup.md); for rules, env, MCP servers and hooks, with [Sharing Team Resources](./sharing.md).
+**Done when** `teamai doctor` passes and the skill is on the team repo's default branch. Every AI tool on your machine pulls from that repo at session start.
+
+For scopes, single-repo mode and layered org repos, continue with [Admin Setup](./admin-setup.md). For rules, env, MCP servers and hooks, continue with [Sharing Team Resources](./sharing.md).
 
 ### Path B — join a team
 
@@ -73,7 +79,9 @@ You need the team repo URL from your admin.
    teamai doctor
    teamai list        # the team's skills, rules, docs, env, agents, hooks and MCP servers
    ```
-3. Open your AI tool. The team's skills and rules are already there, and every session start pulls the latest, so there is nothing to sync by hand.
+3. Open your AI tool in that project.
+
+**Done when** `teamai list` shows the team's skills and rules, and a new AI session can use them. Every session start pulls the latest, so there is nothing to sync by hand.
 
 Day-to-day commands are in the [Member Guide](./member-guide.md). [Team Knowledge](./knowledge.md) explains how to let your agent search what teammates have learned.
 
@@ -94,7 +102,9 @@ You wrote a skill, rule, agent or MCP server that teammates should have.
    ```
    `push` fills in missing `SKILL.md` frontmatter, pushes a branch and opens a pull request on the team repo.
 2. Get it merged. Whoever reviews on the team repo merges the PR.
-3. On any member's machine the next session start pulls it; `teamai list skills --source repo` shows it right away.
+3. On any member's machine the next session start pulls it. `teamai list skills --source repo` shows it right away.
+
+**Done when** the pull request is merged and `teamai list skills --source repo` shows the skill.
 
 Roles, namespaces and the format of each resource type are in [Sharing Team Resources](./sharing.md).
 
@@ -102,64 +112,11 @@ Roles, namespaces and the format of each resource type are in [Sharing Team Reso
 
 Run `teamai doctor`. It names the problem and the fix for most cases (missing hook, tool not detected, token not set). The rest are in [Uninstall & FAQ](./faq.md).
 
----
+## Where to go next
 
-## What TeamAI is
-
-Agents are strong as personal tools, but their learning stays personal: what one member's agent worked out yesterday does not reach anyone else's agent today.
-
-TeamAI's product is one loop, not three separate products:
-
-| Layer | Job | What you do in this CLI |
-|-------|-----|-------------------------|
-| **Team Execution** | Make every agent work the team's way | `init` / `pull` / `push` the shared harness (skills, rules, agents, hooks, MCP, env) |
-| **Team Context** (beta) | Make every agent understand the team | recall, learnings, codebase graph, teamwiki |
-| **Team Improvement** (beta) | Make every execution improve the team | friction-based share-learnings, sessions, digest, dashboard |
-
-**Execute → Understand → Learn → Self-Improve.** Start with harness distribution; context and improvement grow as the team actually runs agents.
-
----
-
-## Core Concepts
-
-| Concept | Description |
-|------|------|
-| **Team Repo** | A Git repository that centrally stores the team's harness and knowledge (Skills / Rules / Docs / Env / Packages, plus learnings and wiki) |
-| **Scope** | Where resources are installed: `project` (current project, default) or `user` (home directory) |
-| **Team Execution** | One shared harness, distributed to every member's agents |
-| **Team Context** | Searchable team knowledge so agents do not start from zero each session |
-| **Team Improvement** | Session friction and usage signals that become new skills, rules, and knowledge |
-| **Skills** | Custom skills the AI can invoke (a directory containing a `SKILL.md`) |
-| **Rules** | Markdown-formatted team conventions, automatically merged into AI tool configs |
-| **Docs** | Shared team documentation for the AI to reference |
-| **Env** | Shared team environment variables, automatically injected into the shell |
-| **Packages** | Team-wide npm packages and Claude Code plugins, installed explicitly with `teamai packages` |
-
-```
-┌───────────────┐    teamai push (MR)    ┌───────────────────┐
-│ Your local     │ ──────────────────────→ │   Team Repo (Git) │
-│ resources      │                         │ skills/rules/docs │
-│ skills/rules   │ ←────────────────────── └───────────────────┘
-└───────────────┘     teamai pull (auto)
-                           │
-                           ▼
-                  ┌──────────────────┐
-                  │  AI tools fetch   │
-                  │  automatically    │
-                  │ Claude / CodeBuddy│
-                  │ Cursor / Codex    │
-                  └──────────────────┘
-```
-
----
-
-## Installation
-
-```bash
-npm install -g teamai-cli
-
-# Verify
-teamai --version
-```
-
-**Prerequisites:** Node.js ≥ 20, Git (TGit users also need the `gf` CLI, and CNB users the `cnb` CLI — `teamai init` installs either automatically)
+| You want to… | Read |
+| --- | --- |
+| Understand the product and its terms | [Product Overview](../product-overview.md#core-concepts) |
+| Choose where resources are installed, or how the team repo is laid out | [Admin Setup](./admin-setup.md) |
+| Publish skills, rules, env, or MCP servers | [Sharing Team Resources](./sharing.md) |
+| Use TeamAI after you have joined | [Member Guide](./member-guide.md) |

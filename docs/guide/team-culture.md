@@ -6,11 +6,9 @@
 
 ---
 
-## Team Culture
-
 TeamAI supports injecting your team's culture into AI tools, so your AI coding assistant is aware of your team's culture, values, and coding standards in every session.
 
-### Creating culture.md
+## Creating culture.md
 
 The admin creates a `culture.md` file at the root of the team repo:
 
@@ -45,7 +43,7 @@ team:
 - Major changes require a design doc first
 ```
 
-### Frontmatter fields
+## Frontmatter fields
 
 | Field | Type | Description |
 |------|------|------|
@@ -59,7 +57,7 @@ team:
 
 The markdown body after the frontmatter becomes the body content of the team culture guidance, injected as a whole into each AI tool's instruction target (see [Where the blocks go](#where-the-blocks-go)).
 
-### How it works
+## How it works
 
 ```
 Team repo
@@ -88,7 +86,7 @@ A pull writes the culture, shared-instructions and recall blocks only to the fil
 
 A block with a missing or repeated marker is left as it is, with a warning to fix it by hand. `teamai pull --dry-run` lists the files a pull would change without writing them. When recall is disabled, the pull removes the recall block.
 
-#### Where the blocks go
+### Where the blocks go
 
 Two members of the same project can have different roles, so their shared instructions (`claudemd/`) can differ. The project's root `AGENTS.md` holds the instructions the project writes for everyone, so teamai never writes these blocks into it, into `~/AGENTS.md` or `~/.agents/AGENTS.md`, or into a file another tool reads. Each tool gets them in a file of its own or through its session hook:
 
@@ -153,7 +151,7 @@ If a requested block has incomplete or duplicated markers, the entire file stays
 
 A file named like a teamai target that teamai did not write is left alone and not listed in OpenCode's `instructions` (an entry you listed for it stays), and the pull warns about it. A team rule named `teamai-context` is not delivered, since it would land on that file; the pull names it, and removes a copy an earlier release delivered unless you changed it. teamai does not change `.gitignore`, `.git/info/exclude` or the git index. A team that wants to keep these files out of commits excludes them itself.
 
-### Viewing the result
+## Viewing the result
 
 After pulling, you can view an AI tool's instruction file directly, for example Claude Code's user file:
 

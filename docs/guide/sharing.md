@@ -6,11 +6,9 @@
 
 ---
 
-## Sharing Team Resources
-
 This is Team Execution: define skills, rules, and other harness once, review via MR, then `teamai pull` delivers them to every agent.
 
-### Skills
+## Skills
 
 ```bash
 # Create a skill
@@ -48,7 +46,7 @@ With role-based skills enabled, the push target directory becomes:
 - Default: `skills/<primaryRole>/<skill-name>/`
 - Explicit override: `skills/<role>/<skill-name>/` (via `--role`)
 
-### Rules
+## Rules
 
 For a scoped rule, YAML comments stay outside the glob: `paths: **/*.ts # TypeScript files` scopes native rules to `**/*.ts` and gives inline channels the same path hint. This also applies to block-list entries under `paths:`.
 
@@ -91,9 +89,9 @@ The culture, shared-instructions and recall blocks follow the same split. In use
 
 > The same goes for the other tools whose rules moved in this release: an entry written before it still sends rules where the tool never reads them, and pull leaves those copies. Remove `rules` and `userScope.rules` from a Pi or OpenClaw entry, add `userScope.rules: null` to a JoyCode entry (its project `rules: .joycode/rules` stays), and set a WorkBuddy entry's `rules` to `.codebuddy/rules` with `userScope.rules: .workbuddy/rules`. `teamai doctor` fails `Rules delivered to <tool>` for such an entry and names the change.
 
-> Upgrading from a release that copied rules to `.codex/rules/`: the next `pull` removes the `.md` copies teamai delivered there, including `teamai-recall.md`. Cleanup follows the recorded `toolRoots` location and checks both a publisher's bare local filename and its namespaced copy. A copy you edited is kept and named in a warning, and the `*.rules` files are never touched. A copy of a rule the team has since removed is deleted only if it matches its recorded delivery hash; without that record, it is kept and named too. The same pull adds `additionalContextLimit: 0` and a `SubagentStart` entry to the teamai hooks in `hooks.json`, which teamai then trusts again in the public Codex (see [Hooks](./advanced.md#hooks)).
+> Upgrading from a release that copied rules to `.codex/rules/`: the next `pull` removes the `.md` copies teamai delivered there, including `teamai-recall.md`. Cleanup follows the recorded `toolRoots` location and checks both a publisher's bare local filename and its namespaced copy. A copy you edited is kept and named in a warning, and the `*.rules` files are never touched. A copy of a rule the team has since removed is deleted only if it matches its recorded delivery hash; without that record, it is kept and named too. The same pull adds `additionalContextLimit: 0` and a `SubagentStart` entry to the teamai hooks in `hooks.json`, which teamai then trusts again in the public Codex (see [Hooks](./hooks.md#hooks)).
 
-### Env, hooks and MCP servers by namespace
+## Env, hooks and MCP servers by namespace
 
 Env variables, team hooks and MCP servers are each a list file in the team
 repo's root, shared with everyone, plus one file per namespace:
@@ -180,7 +178,7 @@ A hooks or MCP file that has none of its top-level keys, such as `server:` for
 servers or hooks, and pull and `teamai doctor` name the file, the keys found and
 the key expected. An extra top-level key next to `servers:` or `hooks:` is ignored.
 
-### Env (environment variables)
+## Env (environment variables)
 
 ```bash
 teamai env add API_ENDPOINT https://api.example.com --description "Team API endpoint"
@@ -317,7 +315,7 @@ Anything this can't resolve one way or the other, and a block sitting in a candi
 
 `doctor` (and the check `pull` runs automatically afterward) also flags a teamai env block left behind in a *different* candidate file — e.g. a block a pre-#682 install wrote to `.bashrc` before this file-selection logic changed — even if that block is broken and was never functional. `teamai uninstall` removes it.
 
-### Docs
+## Docs
 
 Place documentation in the team repo's `docs/` directory; after pushing, team members will automatically receive it on their next `pull`.
 
@@ -337,7 +335,7 @@ projects:
 - `recall` and `teamai doctor` use the same filter: recall indexes only the docs you receive, and `Team docs delivered` does not expect a namespace you do not have.
 - Legacy mode (no role and no `projects.yaml`) delivers all of `docs/`, as before.
 
-### MCP servers
+## MCP servers
 
 Declare each server once in the team repo's `mcp/mcp.yaml`. On `teamai pull` it is written into every installed tool's own MCP config, translated into that tool's native format. Tools outside `enabledAgents` or listed in `disabledAgents` are skipped.
 

@@ -120,7 +120,7 @@ teamai pull --dry-run    # 试运行，不实际修改
 
 **pull 会保留你修改过的 skill、rule 和 agent。** pull 按检出记录它在每个 skill、rule、agent 路径写入的内容。完整同步时，与记录不一致的副本会被保留并由 pull 指出，其他工具的副本照常更新。一个 skill 算作一份副本：它的任一团队文件被改动，整个 skill 都会保留；只有你自己添加的文件不计入。团队版本没有变化时，pull 输出 ``Kept <path>: you changed it since teamai delivered it. Share it with `teamai push`, or delete it and run `teamai pull --force` to get the team version back.``；
 
-团队版本也变了时（无论是团队改的，还是你的[本地模型别名覆盖](./advanced.md#本地覆盖)导致的），pull 给出警告，请你先把这项改动合并进自己的副本，再 push；由于 SessionStart 时的 pull 不输出信息，`teamai push` 也会对该副本给出警告。`--force` 同样保留这些副本，`--dry-run` 会逐个输出 `Would keep <path>`。团队删除某项资源时，你修改过的副本也会保留，并由 pull 指出；
+团队版本也变了时（无论是团队改的，还是你的[本地模型别名覆盖](./agents.md#本地覆盖)导致的），pull 给出警告，请你先把这项改动合并进自己的副本，再 push；由于 SessionStart 时的 pull 不输出信息，`teamai push` 也会对该副本给出警告。`--force` 同样保留这些副本，`--dry-run` 会逐个输出 `Would keep <path>`。团队删除某项资源时，你修改过的副本也会保留，并由 pull 指出；
 
 该路径上不含任何团队版本的你自己的文件同样保留，pull 会说明它不属于 teamai（``Kept <path>: it is not teamai's (...), so pull left it.``）。pull 没有记录的 skill、rule 或 agent（升级后第一次完整 pull 之前、新 worktree 中、从备份恢复或复制而来的检出（`.git` 因此有了新的标识），或你自己写的），只有当它与 teamai 按团队仓库历史中某个版本为该资源下发的内容相同时，才算 teamai 的；pull 会像以前一样更新或删除它。skill 目录只有其中每个文件都是 teamai 的才算 teamai 的，因此目录里只要有一个你自己的文件，整个目录就属于你。其他这类内容属于你：
 
@@ -140,7 +140,7 @@ Codex now sees two skills named <name>.``。在每个工具的 skills 目录中�
 
 > Fix the file, or move it aside and run `teamai init` to write a new one.`` 并以 exit 1 退出（加 `--silent` 时不输出，但仍以 exit 1 退出）；会话启动时不运行 pull，也不创建 agent 目录、不暂存包提示。`cwd` 已被删除的 hook（会话比它的 worktree 活得更久）沿用该会话最后记录的 scope，因此会话最后的事件和 skill 使用仍归属项目，分享提醒也遵循项目的设置，而不是 user scope 的。这需要本地事件日志中仍保留该会话之前的事件（压缩只保留活跃会话），且不适用于 Copilot，因为它的事件不记录目录。self 单仓模式则把 hooks 保留在业务仓库里，随 clone 传播。
 
-启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/<namespace>/` 和 `claudemd/<namespace>/` 按 `knowledge` namespace 同步，`docs/<namespace>/` 在被声明后按 `docs` namespace 同步（见 [Docs（文档）](./sharing.md#docs文档)）；`agents/<namespace>/` 按角色的 `agents` namespace 同步（见 [Agents 资源类型](./advanced.md#agents-资源类型)）。`learnings/` 根目录对所有人共享，而 `learnings/<project-id>/` 子目录只对本目录激活的项目同步（见 [多项目](./admin-setup.md#多项目project-作为与-role-正交的维度)）。
+启用角色化 skills 后，`pull` 的 skills 同步来源会变成 `skills/<namespace>/` 中的内容，按 `primaryRole + additionalRoles` 展开对应的 namespace，拍平安装到本地各 AI 工具 skills 目录。`rules/<namespace>/` 和 `claudemd/<namespace>/` 按 `knowledge` namespace 同步，`docs/<namespace>/` 在被声明后按 `docs` namespace 同步（见 [Docs（文档）](./sharing.md#docs文档)）；`agents/<namespace>/` 按角色的 `agents` namespace 同步（见 [Agents 资源类型](./agents.md#agents-资源类型)）。`learnings/` 根目录对所有人共享，而 `learnings/<project-id>/` 子目录只对本目录激活的项目同步（见 [多项目](./admin-setup.md#多项目project-作为与-role-正交的维度)）。
 
 **namespace 中的条目会替换根目录的同名条目。** 配置了角色或项目时，活跃 namespace 中的条目会取代根目录中的同名条目下发。替换以整个条目为单位，不做合并：
 

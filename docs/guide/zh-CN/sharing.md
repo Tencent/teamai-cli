@@ -6,11 +6,9 @@
 
 ---
 
-## 共享团队资源
-
 这是 Team Execution：Skills、Rules 等 Harness 定义一次，经 MR 评审后由 `teamai pull` 分发到每个 Agent。
 
-### Skills（技能）
+## Skills（技能）
 
 ```bash
 # 创建 skill
@@ -48,7 +46,7 @@ teamai push --role pm
 - 默认：`skills/<primaryRole>/<skill-name>/`
 - 显式覆盖：`skills/<role>/<skill-name>/`（通过 `--role`）
 
-### Rules（规则）
+## Rules（规则）
 
 带作用范围的 rule 中，YAML 注释不属于 glob：`paths: **/*.ts # TypeScript files` 的原生规则只匹配 `**/*.ts`，内联渠道也得到同样的路径提示。`paths:` 下的块列表条目同样如此。
 
@@ -93,7 +91,7 @@ culture、共享指令和 recall 区块采用同样的划分。user scope 下它
 
 > 从把 rule 复制到 `.codex/rules/` 的旧版本升级后，下一次 `pull` 会删除 teamai 投递到那里的 `.md` 副本，包括 `teamai-recall.md`。清理使用记录的 `toolRoots` 位置，同时检查发布者本地的无命名空间文件名及命名空间副本。你改过的副本会保留，并在警告中点名；`*.rules` 文件从不改动。团队此后已删除的 rule，其副本只有与记录的投递哈希一致时才会删除；没有该记录时也会保留并点名。同一次 pull 会为 `hooks.json` 中的 teamai hook 加上 `additionalContextLimit: 0` 和一个 `SubagentStart` 条目，随后 teamai 会在公开版 Codex 中重新信任这些 hook（见 Hooks 章节）。
 
-### Env、hooks 与 MCP server 按 namespace 划分
+## Env、hooks 与 MCP server 按 namespace 划分
 
 环境变量、团队 hooks 和 MCP server 各自是团队仓库根目录下的一个列表文件（对所有人共享），
 外加每个 namespace 一个文件：
@@ -165,7 +163,7 @@ hooks 或 MCP 文件若没有任何一个应有的顶层 key（例如把 `server
 按无法解析的文件处理：pull 保留已安装的 server 或 hook，pull 与 `teamai doctor`
 会指出文件、实际找到的 key 和应有的 key。`servers:` 或 `hooks:` 旁多出的顶层 key 会被忽略。
 
-### Env（环境变量）
+## Env（环境变量）
 
 ```bash
 teamai env add API_ENDPOINT https://api.example.com --description "团队 API 地址"
@@ -278,7 +276,7 @@ shell 配置文件会保留用户级 scope 的 teamai 区块，外加一个项�
 
 `doctor`（以及 `pull` 结束后自动运行的检查）还会标记出遗留在*其他*候选文件中的 teamai 环境变量块——例如 #682 之前的旧版本写入 `.bashrc` 的代码块，即便该代码块本身已损坏、从未生效。`teamai uninstall` 会清理它。
 
-### Docs（文档）
+## Docs（文档）
 
 将文档放入团队仓库 `docs/` 目录，push 后团队成员 pull 时自动同步。
 
@@ -298,7 +296,7 @@ projects:
 - `recall` 和 `teamai doctor` 使用同一过滤规则：recall 只索引你收到的文档，`Team docs delivered` 不会要求你拥有未激活的 namespace。
 - 旧模式（没有角色，也没有 `projects.yaml`）照旧分发整个 `docs/`。
 
-### MCP Server
+## MCP Server
 
 在团队仓库的 `mcp/mcp.yaml` 中声明一次，`teamai pull` 时会按各工具的原生格式写入它们各自的 MCP 配置文件。不在 `enabledAgents` 中或列在 `disabledAgents` 中的工具会被跳过。
 

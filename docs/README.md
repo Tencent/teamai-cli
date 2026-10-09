@@ -10,8 +10,8 @@ New to TeamAI? Start with [Getting Started](guide/getting-started.md).
 
 | Document | Languages | What it covers |
 | --- | --- | --- |
-| [Usage Guide](usage-guide.md) — eleven pages under [`guide/`](guide/) (Chinese in [`guide/zh-CN/`](guide/zh-CN/)) | [en](usage-guide.md) · [zh-CN](usage-guide.zh-CN.md) | Installation, admin setup, Git providers, member onboarding, daily workflows, command and configuration reference, Windows, FAQ |
-| [Product Overview](product-overview.md) | [en](product-overview.md) · [zh-CN](product-overview.zh-CN.md) | Product architecture, the three capability layers, supported agents |
+| [Usage Guide](usage-guide.md) — pages under [`guide/`](guide/) (Chinese in [`guide/zh-CN/`](guide/zh-CN/)) | [en](usage-guide.md) · [zh-CN](usage-guide.zh-CN.md) | Installation, admin setup, Git providers, member onboarding, daily workflows, command and configuration reference, Windows, FAQ |
+| [Product Overview](product-overview.md) | [en](product-overview.md) · [zh-CN](product-overview.zh-CN.md) | Product architecture, core concepts, the three capability layers, supported agents |
 | [CI examples](../examples/ci/README.md) | zh-CN only | Sample pipelines for MR knowledge extraction and teamwiki lint |
 
 ## For maintainers
