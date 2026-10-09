@@ -7,7 +7,7 @@ writes Markdown to stdout. The workflow feeds that Markdown both into the PR
 comment and the job summary.
 
 This never raises on a missing/garbled report or a renamed key: the workflow
-is informational and must not fail. See docs/ci-code-erosion.md.
+is informational and must not fail. See docs/dev/ci-code-erosion.md.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ def main() -> int:
         "## Code Erosion Report",
         "",
         "_Informational — **never blocks the merge**. `scb-check==0.2.0` "
-        "SlopCodeBench metrics; method & caveats in `docs/ci-code-erosion.md`._",
+        "SlopCodeBench metrics; method & caveats in `docs/dev/ci-code-erosion.md`._",
         "",
     ]
 

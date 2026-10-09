@@ -1,7 +1,5 @@
 # Team secrets
 
-[简体中文](team-secrets.zh-CN.md)
-
 Proposal: [#875](https://github.com/Tencent/teamai-cli/issues/875). Plan: [#879](https://github.com/Tencent/teamai-cli/issues/879).
 
 A team declares which secrets its members need, in the team repo, with no value. Each member supplies the value on their own machine. No secret value is written to the team repo.
@@ -44,7 +42,7 @@ teamai push
 
 ## Namespaces
 
-A namespace declares its own secrets in `env/<ns>/secrets.yaml`. It is active where `env/<ns>/env.yaml` is: a role or project that lists `<ns>` under `resources.env`. The rules are the env rules (see [Env, hooks and MCP servers by namespace](../usage-guide.md#env-hooks-and-mcp-servers-by-namespace)):
+A namespace declares its own secrets in `env/<ns>/secrets.yaml`. It is active where `env/<ns>/env.yaml` is: a role or project that lists `<ns>` under `resources.env`. The rules are the env rules (see [Env, hooks and MCP servers by namespace](../guide/sharing.md#env-hooks-and-mcp-servers-by-namespace)):
 
 - An active namespace entry replaces the root entry with the same key, whole.
 - The same key in two active namespaces, or twice in one file, fails the secrets.

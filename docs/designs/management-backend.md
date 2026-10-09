@@ -1,7 +1,5 @@
 # Management backend design
 
-[简体中文](management-backend.zh-CN.md)
-
 Status: proposed design for [#341](https://github.com/Tencent/teamai-cli/issues/341).
 This document describes future behavior. It adds no Go service, Web console, CLI
 option, or change to the current Git or ClawPro HTTP implementation. The issue's

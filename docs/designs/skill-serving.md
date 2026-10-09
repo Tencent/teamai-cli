@@ -1,5 +1,7 @@
 # Serving built-in skill content from the CLI
 
+> Status: **implemented**. `skill-data/` ships in the npm package and `teamai skill get` prints it.
+
 Issue: [#678](https://github.com/Tencent/teamai-cli/issues/678). Unreleased; targets the release after 0.25.0.
 
 ## The problem

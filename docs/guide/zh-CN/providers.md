@@ -1,4 +1,10 @@
-# Git Provider 说明
+# Git Provider
+
+> [English](../providers.md) | [简体中文](providers.md)
+
+> 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
+
+---
 
 TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现了六个：
 
@@ -120,7 +126,7 @@ TeamAI 通过 `getDefaultBranch()` 自动识别默认分支：先看 `origin/HEA
 
 成员需要能推送 `teamai-reports` 与 `teamai-learnings`（含首次创建这两个 ref）、推送
 `teamai push` 创建的特性分支，并能向默认分支开 PR。不需要直接推送 `main` / `master`，
-也不需要绕过分支保护或管理员权限。详见[使用指南](usage-guide.zh-CN.md)的数据拆分一节。
+也不需要绕过分支保护或管理员权限。详见[使用指南的项目级一节](admin-setup.md#项目级project-scope默认)。
 
 注意：`provider: git` 无法自动开 PR，`teamai push` 会推送分支并打印手动开 PR 的命令；
 `teamai contribute` 直接推送 `teamai-learnings`，不走 PR。
@@ -320,13 +326,12 @@ GitCode 命名空间为单层（用户或组织），仓库地址形如 `owner/r
 
 GitCode 不设默认 email 域，使用用户的 git 全局配置。
 
-## 手动指定 Provider
+## 在 `teamai.yaml` 中指定 Provider
 
 除了 URL 自动检测，也可以在 team 仓库的 `teamai.yaml` 中显式写 `provider: github`、`provider: tgit`、`provider: cnb`、`provider: gitlab`、`provider: gitcode` 或 `provider: git` 强制切换。一个典型的 `teamai.yaml`：
 
 ```yaml
 team: my-team
-scope: user
 description: TeamAI shared resources
 repo: https://github.com/yourorg/yourrepo.git
 provider: github
@@ -335,24 +340,6 @@ reviewers:
   - bob
 ```
 
-## CLI 解析与启动（跨平台）
-
-GitHub 与 CNB 两个 provider 都把操作委托给平台自己的 CLI，因此二者共用同一套解析与启动逻辑（[`src/utils/cli-path.ts`](../src/utils/cli-path.ts)）：
-
-- **解析**：`resolveCliPath(cmd)` 在 Windows 上走原生 `where`，在 macOS / Linux 上依次尝试 `bash -lc` → `zsh -lc` → `which`，返回一个**存在且可启动**的绝对路径；找不到时返回 `null`。
-  - Windows 上不能用 `which`：它来自 Git Bash / WSL，返回 MSYS 风格路径（如 `/c/Program Files/GitHub CLI/gh`），Node 会把 `/c/...` 当成 `C:\c\...`，于是 `existsSync` 恒为 false、`spawn` 报 ENOENT。表现为 `isGhInstalled()` 回答"已安装"，而每次 `ghExec()` 都以 status 1 + **空 stderr** 静默失败。
-  - `where` 的输出里，npm 生成的不带扩展名的 shim 往往排在 `.cmd` 之前；`pickWindowsCommand()` 只接受 `.exe` / `.cmd` / `.bat`，因为无扩展名的文件 CreateProcess 无法启动。
-- **启动**：解析出的绝对路径交给 `cross-spawn` 启动。Node 原生 `spawn` 无法直接执行 `.cmd`（报 `EINVAL`）——`cnb` 由 npm 安装，在 Windows 上只有 `.cmd` / `.ps1`、没有 `.exe`，所以"能解析"和"能启动"必须同时成立；CLI 缺失时返回 127 并在 stderr 里说明原因，不再静默返回 status 1。
-
-TGit 的 `gf` CLI 是例外：它只支持 macOS / Linux，且其路径会作为参数传给 `bash -c`，因此保留原样。
-
 ## 新增 Provider
 
-Provider 是一个 TypeScript 接口（见 [`src/providers/types.ts`](../src/providers/types.ts)），新增带平台 API 能力的 GitLab / Bitbucket / Gitea provider 只需要：
-
-1. 新建 `src/providers/<name>/` 目录
-2. 实现 `GitProvider` 接口：`parseRepoInput` / `authenticate` / `cloneRepo` / `createRepo` / `createPullRequest` / `getDefaultEmailDomain`
-3. 在 [`src/providers/registry.ts`](../src/providers/registry.ts) 的 `HOST_MAP` 和 `PROVIDERS` 中注册
-4. 写单元测试，参考 [`src/__tests__/github-provider.test.ts`](../src/__tests__/github-provider.test.ts)
-
-PR 欢迎。
+Provider 层的内部实现和新增 provider 的步骤见 [Adding a Git provider](../../dev/adding-a-provider.md)（英文）。

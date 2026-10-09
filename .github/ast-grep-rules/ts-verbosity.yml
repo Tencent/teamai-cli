@@ -9,7 +9,7 @@
 # on truthiness or type semantics (`len(x) == 0`, `x == True`) were tried and
 # DELIBERATELY DROPPED: they are false positives in TypeScript, where
 # `arr.length > 0` is idiomatic and `x !== true` is not equivalent to
-# `x === false` (TS has `undefined`; Python does not). See docs/ci-code-erosion.md.
+# `x === false` (TS has `undefined`; Python does not). See docs/dev/ci-code-erosion.md.
 #
 # severity is `hint` so `ast-grep scan` never exits non-zero on a match — this
 # layer is informational and must never block CI.

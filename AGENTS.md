@@ -13,7 +13,8 @@ TypeScript, Node 20+ (`npm run lint` needs ^20.19 or >=22.12), tsup (ESM), Vites
 ## Rules
 
 - CLI user-facing output must be English. No Chinese in production code. Tests assert English output.
-- Keep bilingual docs in sync (`README` / `*.zh-CN.md`, `docs/usage-guide.*`). Behavior changes must update every affected doc (including `docs/designs/`); grep old wording before opening the PR.
+- **文档结构**：`docs/README.md` 是总目录，新增或移动文档必须同步登记。面向用户的文档中英双版：顶层 `name.md` / `name.zh-CN.md`，使用指南分页为 `docs/guide/<page>.md`（英文）与 `docs/guide/zh-CN/<page>.md`（中文），行为变更时两版同步改。`docs/designs/`（设计稿，开头一行 `> Status:`，并在 `docs/designs/README.md` 登记状态）与 `docs/dev/`（维护者文档）只写英文。Behavior changes must update every affected doc; grep old wording before opening the PR.
+- 文档不抄命令用法：命令与 flag 链接到 `teamai --help` / `skill-data/core/references/commands.md`，不要手工维护命令表。
 - **README 精简**：尽量少改动 README，保持简洁。确需改动时，所有语言版本（`README.md` 及全部 `README.*.md`，改前先 `ls README*` 确认清单）必须全部改完并保持一致。
 - **`skill-data/` 与文档同等对待**：那是 agent 真正读到的内容。行为变更必须同步更新受影响的 skill（`core` / `setup` / `wiki` / `share`），并在 PR 前 grep 旧措辞。
 - `skill-data/core/references/commands.md` 由 Commander 命令表生成，改动命令或 flag 后运行 `npx vitest run commands-reference -u` 重新生成。

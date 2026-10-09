@@ -1,7 +1,5 @@
 # CI Code Erosion (informational)
 
-> [English](ci-code-erosion.md) | [简体中文](ci-code-erosion.zh-CN.md)
-
 The `Code Erosion` workflow (`.github/workflows/code-erosion.yml`) reports two
 "code sloppiness" metrics on every pull request, using the official
 [`scb-check`](https://pypi.org/project/scb-check/) tool (the SlopCodeBench

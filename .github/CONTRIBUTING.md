@@ -66,13 +66,17 @@ Giving every internet contributor write on the hub repo is not acceptable.
 src/
   providers/         # git hosting provider abstraction
     github/          # GitHub (gh CLI or GITHUB_TOKEN)
+    gitlab/          # GitLab (GITLAB_TOKEN)
+    gitcode/         # GitCode (GITCODE_TOKEN)
+    cnb/             # CNB (cnb CLI or CNB_TOKEN)
     tgit/            # Tencent TGit (gf CLI)
+    git/             # any Git host, no platform API
   resources/         # per-resource-type handlers (skills, rules, docs, env, ...)
   utils/             # shared helpers (git, fs, logger, prompt, ...)
   *.ts               # top-level command entry points (init, push, pull, ...)
 ```
 
-See [docs/providers.md](../docs/providers.md) for how to add a new git provider.
+See [docs/dev/adding-a-provider.md](../docs/dev/adding-a-provider.md) for how to add a new git provider.
 
 ## Making a Change
 
@@ -82,7 +86,7 @@ See [docs/providers.md](../docs/providers.md) for how to add a new git provider.
 4. Use conventional commits where possible: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
 5. Open a PR with a clear description: what's the problem, what's the fix, anything reviewers should pay attention to.
 
-Your PR also gets an informational `Code Erosion` report (SlopCodeBench verbosity/erosion metrics) posted as a comment — it never blocks the merge and is just there to flag creeping complexity. See [docs/ci-code-erosion.md](../docs/ci-code-erosion.md).
+Your PR also gets an informational `Code Erosion` report (SlopCodeBench verbosity/erosion metrics) posted as a comment — it never blocks the merge and is just there to flag creeping complexity. See [docs/dev/ci-code-erosion.md](../docs/dev/ci-code-erosion.md).
 
 ## Coding Style
 
@@ -103,7 +107,7 @@ Iterate on the affected E2E files; run the full suite when changing the E2E runn
 npm run test:e2e -- <test-file> [-t "<test-name>"]   # add --maxWorkers=2 on constrained machines
 ```
 
-Workers share the prepared `dist/` and OpenCode binary: never rebuild or reinstall them inside a test. Cases needing remote credentials skip without them ([CI E2E setup](../docs/ci-e2e-setup.md)). PRs changing runtime behavior (not docs- or tests-only) include one real-CLI verification, such as a focused E2E run, with its command and result.
+Workers share the prepared `dist/` and OpenCode binary: never rebuild or reinstall them inside a test. Cases needing remote credentials skip without them ([CI E2E setup](../docs/dev/ci-e2e-setup.md)). PRs changing runtime behavior (not docs- or tests-only) include one real-CLI verification, such as a focused E2E run, with its command and result.
 
 ## Bug Reports & Feature Requests
 

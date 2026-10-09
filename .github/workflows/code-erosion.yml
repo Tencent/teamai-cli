@@ -6,7 +6,7 @@ name: Code Erosion
 # a comment, with the job summary as a fallback) for reviewers to eyeball. It
 # runs fully independently of ci.yml and shares no state with it.
 #
-# Caveat (documented in docs/ci-code-erosion.md): scb-check's ast-grep
+# Caveat (documented in docs/dev/ci-code-erosion.md): scb-check's ast-grep
 # verbosity rules are Python-only, so on TypeScript the `verbosity` number
 # reflects clone + wrapper detection only (the 197 syntax rules contribute 0).
 # `erosion` is fully faithful on TypeScript. Read the numbers accordingly.

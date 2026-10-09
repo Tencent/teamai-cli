@@ -1,5 +1,7 @@
 # Model profile management
 
+> Status: **implemented**. See the [Usage Guide](../guide/reference.md#model-profiles) for how to use `teamai models`.
+
 ## Goals and boundaries
 
 Model profiles let a team publish one gateway catalog that every supported agent (Claude Code, Codex, OpenCode, CodeBuddy, WorkBuddy, Pi, OMP) can use, and let an individual keep personal gateways, without turning the team Git repository into a secret store.
