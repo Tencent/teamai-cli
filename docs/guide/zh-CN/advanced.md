@@ -497,7 +497,7 @@ Qoder 已作为内置目标支持。TeamAI 会将 Skills、Rules 和 Subagents �
 
 Rules 按 Qoder Desktop 写入的形式生成，Qoder CLI 也读取这种形式：带 `paths:` 的规则写成 `trigger: glob` 加一行不带引号、以逗号分隔的 `glob:`，由于该行会按每个逗号切分，`{a,b}` 形式的选择会展开为多个 glob；没有 `paths` 的规则写成 `trigger: always_on`。Qoder 未公开这种 frontmatter 的 schema，该形式取自 `alibaba/tron-one-agent` 中 Desktop 生成的规则文件。
 
-Qoder CN 是独立发行的版本，其**用户级**目录为 `~/.qoder-cn` 而非 `~/.qoder`，因此它作为独立的内置目标 `qoder-cn` 支持，而不是并入 `qoder`。两者仅用户作用域不同：用户级的资源写入 `~/.qoder-cn/{skills,rules,agents}`，Hooks 与 MCP 写入 `~/.qoder-cn/settings.json`；项目作用域则沿用 Qoder 的 `<project>/.qoder/` 布局。两者读取相同的 Claude 兼容资源格式，因此下发内容一致，仅用户级根目录不同。同时安装两个版本时，TeamAI 会分别同步到各自的用户目录，无需再建软链接。在项目中 Qoder 与 Qoder CN 都读取 `.qoder/rules/`，因此两者共用其中的一份副本：卸载其中一个时，只要另一个仍已安装，副本就会保留；`doctor` 也只检查一次，即 `Rules delivered to qoder, qoder-cn`。
+Qoder CN 是独立发行的版本，其**用户级**目录为 `~/.qoder-cn` 而非 `~/.qoder`，因此它作为独立的内置目标 `qoder-cn` 支持，而不是并入 `qoder`。两者仅用户作用域不同：用户级的资源写入 `~/.qoder-cn/{skills,rules,agents}`，Hooks 与 MCP 写入 `~/.qoder-cn/settings.json`；项目作用域则沿用 Qoder 的 `<project>/.qoder/` 布局。两者读取相同的 Claude 兼容资源格式，因此下发内容一致，仅用户级根目录不同。同时安装两个版本时，TeamAI 会分别同步到各自的用户目录，无需再建软链接。在项目中 Qoder 与 Qoder CN 都读取 `.qoder/rules/`，因此两者共用其中的一份副本：卸载其中一个时，只要另一个仍已安装，副本就会保留；`doctor` 也只检查一次，即 `Rules delivered to qoder, qoder-cn`。每个版本仅以自己的 HOME 根目录（`~/.qoder` / `~/.qoder-cn`）或显式 `--agent` 指定来判定为已安装，与 Trae 两个版本一致——项目中共用的 `.qoder/` 不代表任何一个版本在运行。
 
 ### Kiro
 
@@ -508,6 +508,14 @@ Kiro 内存中的内置默认 agent 无法修改，`--no-interactive` 也不会�
 Rules 以带 Kiro inclusion frontmatter 的 steering 文件写入 `.kiro/steering/` 与 `~/.kiro/steering/`：带 `paths:` 的规则写成 `inclusion: fileMatch`，并把其 glob 列表写入 `fileMatchPattern`；没有 `paths` 的规则写成 `inclusion: always`。Kiro 只读取 steering 目录的顶层（[kirodotdev/Kiro#10448](https://github.com/kirodotdev/Kiro/issues/10448)），因此与 [Oh My Pi](#oh-my-pi) 一样，namespace 下的规则会平铺写入：`rules/fe/style.md` 写成 `fe.style.md`，`push` 会把对该文件的修改写回 `rules/fe/style.md`。push 要求该平铺副本有下发记录；同名的个人文件既不会在 push 前被刷新，也不会被当作团队规则的修改。若你收到的另一条规则也对应同一个平铺文件名，该规则不会写入；
 
 与团队规则平铺文件名相同的你自己的文件永远不会被覆盖或删除。旧版写入的嵌套副本 `<ns>/<name>.md` 会在平铺副本写入后删除；你修改过的副本会保留并给出提示，因为 Kiro 不会读取它。Kiro 自己的 `product.md` 不是团队规则，`pull` 会留下它。Kiro CLI 无论 `inclusion` 取值都会加载全部 steering 文件（[kirodotdev/Kiro#7950](https://github.com/kirodotdev/Kiro/issues/7950)），因此在 CLI 中限定路径的规则也会始终生效。Kiro IDE 曾忽略 `~/.kiro/steering` 中的 `fileMatch`（[kirodotdev/Kiro#9176](https://github.com/kirodotdev/Kiro/issues/9176)，Kiro 0.12）；维护者称此后已修复，该 issue 未经复测即关闭。
+
+### Trae
+
+Trae 与 Trae CN 已作为内置目标支持。TeamAI 会将 Skills 下发到 `.trae/skills/`，Rules 下发到 `.trae/rules/`，与 [Trae 官方文档](https://docs.trae.cn/ide/rules)定义的布局一致。CN 版仅用户目录不同（`~/.trae-cn` 而非 `~/.trae`，同 Qoder CN）：项目中两个版本共用同一份 `.trae/`；用户级 pull 时，国际版写入 `~/.trae/skills/` 与 `~/.trae/user_rules/`，CN 版写入 `~/.trae-cn/skills/` 与 `~/.trae-cn/user_rules/`——注意 Trae 的用户规则目录名为 `user_rules` 而不是 `rules`。Trae 没有基于设置文件的 Hooks 表面，也没有 subagents 目录，这两类资源不做同步，需像 JoyCode 一样手动执行 `teamai pull`。MCP Server 合并进项目的 `.trae/mcp.json`，使用 Claude 的 `mcpServers` 结构（见分享指南的 MCP 章节）；两个版本的 target 在同一条共享归属记录下映射这同一个文件，任一版本的 pull 都能更新和清理它，用 `tools:` 限定到某一版本的服务器只要任一版本仍在使用就会保留。Trae 把用户级 MCP 保留在自身用户数据目录（随平台而异），因此不写用户级文件。
+
+每个版本仅以自己的 HOME 根目录（`~/.trae` / `~/.trae-cn`）或显式 `--agent` 指定来判定为已安装——项目中共用的 `.trae/` 不代表任何一个版本在运行（同 WorkBuddy 以 `.workbuddy/` 计数），因此任何一版都不会成为保留或重新同步另一版文件的“幻影兄弟”。项目中两个版本读取同一份 `.trae/skills/` 与 `.trae/rules/`，因此各只有一份副本：卸载其中一个时，只要另一个仍已安装，两份副本都会保留。
+
+Rules 是带 Trae frontmatter 的 `.md` 文件：带 `paths:` 的规则写成不加引号的 `globs: a, b`——Trae 的解析器按原样读取该行并按逗号拆分——外加 `alwaysApply: false`；没有 `paths` 的规则写成 `alwaysApply: true`。Trae 最多读取三层目录深的规则，因此 namespace 下的规则保持 `fe/style.md` 的目录形态。`push` 时只有 Markdown 正文回流；rules 目录中没有对应团队规则的文件属于你自己：`pull` 不会删除它，`push` 也不会把它当作新的团队规则提交。
 
 ### CodeBuddy 与 WorkBuddy
 
@@ -575,7 +583,7 @@ JoyCode 规则清理采用保守策略：不在团队规则列表中的本地 `.
 
 Cursor 的子代理部署到 `.cursor/agents/*.md`，YAML frontmatter 携带 `agent_id`（团队代理名）、`description`、`tools`，以及团队代理声明了的 `model`，外加所有 `tool_extras.cursor` 字段；`reverseFromCursor` 按同样字段读回，因此 `pull` → `push` 往返不会丢 model。
 
-Cursor 的项目规则必须以 **`.mdc`** 文件形式放在 `.cursor/rules/` 下，且带 YAML frontmatter——放在那里的纯 `.md` 会被 Cursor 直接忽略。因此 teamai 向 Cursor 写规则时用 `<name>.mdc`（JoyCode、Copilot、Kiro、Qoder、Qoder CN、CodeBuddy、WorkBuddy 与 Oh My Pi 各有自己的格式，见各自小节；其他工具写纯 `.md`），并从团队规则派生 frontmatter：
+Cursor 的项目规则必须以 **`.mdc`** 文件形式放在 `.cursor/rules/` 下，且带 YAML frontmatter——放在那里的纯 `.md` 会被 Cursor 直接忽略。因此 teamai 向 Cursor 写规则时用 `<name>.mdc`（JoyCode、Copilot、Kiro、Qoder、Qoder CN、Trae、Trae CN、CodeBuddy、WorkBuddy 与 Oh My Pi 各有自己的格式，见各自小节；其他工具写纯 `.md`），并从团队规则派生 frontmatter：
 
 - 带 `paths:` 列表的规则会转成 `globs: "<逗号拼接>"` + `alwaysApply: false`（上下文中有匹配文件时 Cursor 自动附加该规则）。值加引号是因为以 `*` 开头的 glob 不加引号时并非合法 YAML。
 - 无 `paths` 的规则（团队强制规则）会转成 `alwaysApply: true`（每个 Cursor 会话都应用）。
@@ -623,7 +631,7 @@ pull 会删除未修改的副本，并点名你修改过的副本。`doctor` 还
 
 `Rules delivered to <tool>` 与 `Agents delivered to <tool>` 对另外两类按工具下发的资源做同样的事，并且都向 handler 询问落点，而不是自行拼路径：
 
-rule 的文件名和内容因工具而异（`.md` 原样、`.mdc` 带派生的 `globs`/`alwaysApply`（JoyCode 的不加引号）、`.instructions.md` 带 `applyTo`、Kiro 平铺的 `.md` 带 `inclusion`/`fileMatchPattern`、Qoder 的 `.md` 带 `trigger`/`glob`、Oh My Pi 平铺的 `.md` 带 `alwaysApply` 或 `globs`/`description`、CodeBuddy 的 `.md` 带 `alwaysApply`/`paths`；共用一份副本的工具，例如项目中的 CodeBuddy 与 WorkBuddy，只有一项同时点名两者的检查），agent 的落点来自渲染结果，且由 `targets:` 决定哪些工具应当收到。已送达的 rule 会与 handler 为该工具渲染出的字节逐一比对，而不只是检查该工具所需的键是否存在：
+rule 的文件名和内容因工具而异（`.md` 原样、`.mdc` 带派生的 `globs`/`alwaysApply`（JoyCode 的不加引号）、`.instructions.md` 带 `applyTo`、Kiro 平铺的 `.md` 带 `inclusion`/`fileMatchPattern`、Qoder 的 `.md` 带 `trigger`/`glob`、Trae 的 `.md` 带 `globs`/`alwaysApply`、Oh My Pi 平铺的 `.md` 带 `alwaysApply` 或 `globs`/`description`、CodeBuddy 的 `.md` 带 `alwaysApply`/`paths`；共用一份副本的工具，例如项目中的 CodeBuddy 与 WorkBuddy，只有一项同时点名两者的检查），agent 的落点来自渲染结果，且由 `targets:` 决定哪些工具应当收到。已送达的 rule 会与 handler 为该工具渲染出的字节逐一比对，而不只是检查该工具所需的键是否存在：
 
 `globs` 与团队 rule 的 `paths:` 不再一致的 `.mdc`，即使 `alwaysApply` 取值合法，也会作用到错误的文件上；这里会报告为 `delivered from an older copy`——正文漂移的副本同样如此，因为两者都写入成功，却都是错的。agent 会与渲染结果逐字节比对：
 

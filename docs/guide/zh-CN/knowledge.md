@@ -113,7 +113,7 @@ recall 会为返回的每篇文档计数（`recalled_count`）。运行 recall �
 | OMP | 支持，仅通过其 `bash` 调用的认领确定归属 | 支持：subagent 的会话文件位于父会话文件之下，父会话文件的会话头把两个会话关联起来（对照 OMP 18.4.8 验证） |
 | Pi | 支持 | 不适用：TeamAI 不向 Pi 部署 subagent |
 | ZCode | 支持 | 不支持：ZCode 在 subagent 内不运行 hook |
-| OpenClaw、Hermes、Kiro、JoyCode | 不支持：没有 PostToolUse hook | 不支持 |
+| OpenClaw、Hermes、Kiro、JoyCode、Trae | 不支持：没有 PostToolUse hook | 不支持 |
 
 *未验证*：依据该 agent 文档记载或读源码得到的 hook 负载实现并测试，尚未在真实会话中核对。
 
@@ -122,7 +122,7 @@ recall 会为返回的每篇文档计数（`recalled_count`）。运行 recall �
 - **Cursor、Copilot CLI 和 ZCode 的 subagent。** 在 subagent 中运行的 recall 从不为主 agent 的读取计分：Cursor 和 Copilot CLI 给 subagent 分配独立会话且不关联父会话，ZCode 在 subagent 内不运行 hook。主 agent 自己运行的 recall 可以正常投票。
 - **OMP。** subagent 路径要求主会话文件已写入磁盘：主会话没有会话文件时（`--no-session`），subagent 无法关联到父会话，也不产生采纳。OMP 不在 shell 中设置会话变量，因此 run 只能通过运行它的 `bash` 调用的认领确定归属：OMP 把大段输出转存为 artifact 时，`run=` 行和投票都会丢失；从 Claude Code shell 启动的 OMP 会先把 run 记在 Claude 会话下，直到该认领将其纠正。
 - **不计入的搜索。** OMP 的 `grep`（markdown 树形输出）和 Cursor 的 `Grep` 不产生证据；打开文档仍然计入。ZCode 打印的 `Grep` 行是相对其工作目录的路径，因此从团队仓库内的目录发起的 ZCode 搜索不计入。
-- **没有 PostToolUse hook。** OpenClaw、Hermes、Kiro 和 JoyCode 会记录其 recall，但不记录读取，因此这些 recall 从不投票。
+- **没有 PostToolUse hook。** OpenClaw、Hermes、Kiro、Trae 和 JoyCode 会记录其 recall，但不记录读取，因此这些 recall 从不投票。
 - **旧版 CLI。** 使用旧版 TeamAI 的成员仍从会话 transcript 投票，该路径以文件的 basename（`SKILL`、`setup`）而非 recall 打印的 id（`retry`、`common/setup`）作为 skill、子目录中的文档或 wiki 页面的键，因此这些投票落不到该文档上。顶层的 learnings 和文档不受影响，升级后即可解决。
 
 **在 `teamai stats` 中查看。** 当前 scope 的 recall 日志中有 run 时，`teamai stats` 会在 skill 使用统计之后追加一个 recall 小节，列出最近执行过 recall 的 10 个会话，最新的在前：

@@ -109,7 +109,7 @@ resolve: `teamai skill get team-wiki-codebase` serves `wiki`.
 
 `teamai init` already injected Hooks into your AI tools and ended with a pull, so your first session has the team's skills, rules and MCP servers. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed. In project scope, that SessionStart hook first creates the current agent's project root (e.g. `<project>/.claude` when Claude Code opens the repo) if it is missing, then pulls.
 
-*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, GitHub Copilot CLI, Cursor, CodeBuddy, WorkBuddy, Qoder, ZCode, Kiro, OpenCode, Oh My Pi, Pi, Hermes, OpenClaw, or DeepSeek Harness. Kiro runs the hook when a TeamAI-rendered custom agent is activated in an interactive CLI session; its in-memory built-in default agent is not writable, and non-interactive mode does not fire `agentSpawn`. For tools without a teamai-writable hooks surface such as JoyCode or Gemini CLI, run `teamai pull` manually.)*
+*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, GitHub Copilot CLI, Cursor, CodeBuddy, WorkBuddy, Qoder, ZCode, Kiro, OpenCode, Oh My Pi, Pi, Hermes, OpenClaw, or DeepSeek Harness. Kiro runs the hook when a TeamAI-rendered custom agent is activated in an interactive CLI session; its in-memory built-in default agent is not writable, and non-interactive mode does not fire `agentSpawn`. For tools without a teamai-writable hooks surface such as JoyCode, Trae or Gemini CLI, run `teamai pull` manually.)*
 
 If you need to sync immediately, you can run it manually:
 
@@ -156,7 +156,7 @@ With role-based skills enabled, `pull`'s skill sync source becomes the contents 
 - An agent replaces the root agent of the same file stem.
 - A rule replaces the root rule of the same first-level file name: `rules/<ns>/<name>.md` replaces `rules/<name>.md`, in Hermes' `SOUL.md` block and the rules a session-start hook or Pi's extension adds too. Deeper paths such as `rules/<ns>/<dir>/<name>.md` replace nothing, and neither does a namespace rule your tag subscriptions leave out. 
 
-  In rule directories you share with rules of your own (every tool with a rules format of its own except Cursor: JoyCode, Copilot, Kiro, Qoder, CodeBuddy, WorkBuddy and Oh My Pi), the replaced root rule's copy is removed only while it is what teamai delivered (the current root rule, or the one of your last pull); an edited copy stays, and each pull names it, since the tool loads it beside the namespace rule.
+  In rule directories you share with rules of your own (every tool with a rules format of its own except Cursor: JoyCode, Copilot, Kiro, Qoder, Trae, CodeBuddy, WorkBuddy and Oh My Pi), the replaced root rule's copy is removed only while it is what teamai delivered (the current root rule, or the one of your last pull); an edited copy stays, and each pull names it, since the tool loads it beside the namespace rule.
 - A `claudemd/<ns>/<name>.md` file replaces `claudemd/<name>.md` in the managed block.
 
 When the namespace stops being active, the next pull delivers the root item again. If two active namespaces define the same skill or agent name, they compete for one installed file, so pull reports an error that names both files, does not update that type in that run, and keeps what is installed (for skills, recall keeps the ones it had indexed too); the other resource types still sync. Two active namespaces with the same rule or shared-instructions name are both delivered, because each keeps its own place (`rules/<ns>/` locally, its own section of the block); only the root one gives way. 
@@ -262,7 +262,7 @@ Exclusion rules take effect after role and tag filtering. When running `teamai p
 
 ### Push local resources
 
-Before scanning, `push` refreshes unedited old rule copies from the team repo. For a tool with a rules format of its own (Cursor `.mdc`, JoyCode's own `.mdc`, Copilot `.instructions.md`, Kiro steering, and the Qoder, CodeBuddy, WorkBuddy and Oh My Pi rules), it compares Markdown bodies independently of the generated header and renders updates in that tool's format. Local body edits are preserved. For Copilot this applies to project rules and user rules under `COPILOT_HOME`. Each copy it refreshes is recorded as delivered, so the next `teamai pull` still updates it instead of keeping it as your change. 
+Before scanning, `push` refreshes unedited old rule copies from the team repo. For a tool with a rules format of its own (Cursor `.mdc`, JoyCode's own `.mdc`, Copilot `.instructions.md`, Kiro steering, the Trae rules, and the Qoder, CodeBuddy, WorkBuddy and Oh My Pi rules), it compares Markdown bodies independently of the generated header and renders updates in that tool's format. Local body edits are preserved. For Copilot this applies to project rules and user rules under `COPILOT_HOME`. Each copy it refreshes is recorded as delivered, so the next `teamai pull` still updates it instead of keeping it as your change. 
 
 A new file in one of those tools' rules directories is your own rule in that tool's format, so `push` never offers it; to share a new team rule, write it as a plain `.md` in `.claude/rules/` (scoped with `paths:` if needed) and push that.
 

@@ -205,6 +205,12 @@ interface RemovalPlan {
   toolsToMerge?: string[];
   /** One project installation shared by its checkouts, rather than separate legacy installs. */
   sharedPartition?: boolean;
+  /**
+   * A targeted uninstall whose every removable resource stayed with an
+   * enabled, installed sibling: the empty plan is retention, not absence,
+   * so the exclusion is still recorded (see `uninstall`).
+   */
+  sharedRetentionOnly: boolean;
 }
 
 /** Per-tool findings collected during discovery (tool-specific resources only). */
@@ -1027,6 +1033,7 @@ async function buildRemovalPlan(
   }
 
   const plan: RemovalPlan = {
+    sharedRetentionOnly: false,
     hookFiles: [],
     openclawHookDirs: [],
     opencodeHookScopes: [],
@@ -1100,7 +1107,18 @@ async function buildRemovalPlan(
     for (const file of resources.ruleFiles) retainedRuleFiles.add(file);
   }
 
-  // Merge tool-specific resources for selected tools
+  // A skills directory another enabled, installed tool reads stays too: in a
+  // project Trae and Trae CN share `.trae/skills` (#904), as Qoder and Qoder
+  // CN share `.qoder/skills`.
+  const retainedSkillDirs = new Set<string>();
+  for (const [tool, resources] of perTool) {
+    if (toolsToMerge.includes(tool) || !activeTools.has(tool)) continue;
+    for (const entry of resources.skillDirs) retainedSkillDirs.add(entry.dir);
+  }
+
+  // Merge tool-specific resources for selected tools. Entries a sibling
+  // keeps are counted: they say an empty plan is retention, not absence.
+  let retainedSharedEntries = 0;
   for (const tool of toolsToMerge) {
     const res = perTool.get(tool);
     if (!res) continue;
@@ -1132,14 +1150,21 @@ async function buildRemovalPlan(
       // Retired paths are configured member files, whatever their basename.
       if (blocks.length > 0) plan.claudeMdFiles.push({ path: file, blocks, owned: false });
     }
-    plan.skillDirs.push(...res.skillDirs);
+    for (const entry of res.skillDirs) {
+      if (retainedSkillDirs.has(entry.dir)) retainedSharedEntries++;
+      else if (!plan.skillDirs.some((kept) => kept.dir === entry.dir)) plan.skillDirs.push(entry);
+    }
     plan.keptSkillDirs.push(...res.keptSkillDirs);
     plan.keptFiles.push(...res.keptFiles.filter((line) => !plan.keptFiles.includes(line)));
-    plan.ruleFiles.push(...res.ruleFiles.filter((file) => !retainedRuleFiles.has(file) && !plan.ruleFiles.includes(file)));
+    for (const file of res.ruleFiles) {
+      if (retainedRuleFiles.has(file)) retainedSharedEntries++;
+      else if (!plan.ruleFiles.includes(file)) plan.ruleFiles.push(file);
+    }
     plan.keptRuleFiles.push(...res.keptRuleFiles);
     plan.opencodeOwnedGlobs.push(...res.opencodeOwnedGlobs);
     plan.agentFiles.push(...res.agentFiles);
   }
+  plan.sharedRetentionOnly = agentFilter !== undefined && retainedSharedEntries > 0;
 
   // Hermes' plugin is machine-wide too: a project uninstall names it as kept.
   if (!globalAdapters && toolsToMerge.includes('hermes')) {
@@ -2261,14 +2286,18 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     for (const line of [...plan.keptSkillDirs, ...plan.keptFiles]) log.warn(line);
 
     const exclusionOnly = isPlanEmpty(plan) && agentKey && localConfig.scope === 'project'
-      && ['pi', 'omp', 'hermes', 'opencode', ...CODEX_TOOL_IDS].includes(agentKey);
+      && (['pi', 'omp', 'hermes', 'opencode', ...CODEX_TOOL_IDS].includes(agentKey) || plan.sharedRetentionOnly);
     if (isPlanEmpty(plan) && !exclusionOnly) {
       log.info('Nothing to uninstall');
       return;
     }
 
     printSummary(plan, agentKey);
-    if (exclusionOnly) log.info(`Exclude ${agentKey} from this project; keep its global delivery channel.`);
+    if (exclusionOnly) {
+      log.info(plan.sharedRetentionOnly
+        ? `Exclude ${agentKey} from this project; everything it shares stays with the tool still reading it.`
+        : `Exclude ${agentKey} from this project; keep its global delivery channel.`);
+    }
 
     if (opts.dryRun) {
       log.info('Dry run — no changes made');
@@ -2322,7 +2351,9 @@ async function removeConfirmed(
       process.exitCode = 1;
       return;
     }
-    log.success(`Excluded ${agentKey} from this project; its global delivery channel is kept for other teamai installs on this machine. If none uses it, run \`teamai hooks remove\` to remove it.`);
+    log.success(plan.sharedRetentionOnly
+      ? `Excluded ${agentKey} from this project; its shared skills and rules stay with the tool still reading them.`
+      : `Excluded ${agentKey} from this project; its global delivery channel is kept for other teamai installs on this machine. If none uses it, run \`teamai hooks remove\` to remove it.`);
     return;
   }
 

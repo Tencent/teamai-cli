@@ -21,7 +21,7 @@ import {
   managedMcpManifestKey,
   resolveToolBaseDir,
   scopedToolPaths,
-  TeamaiConfigSchema,
+  TeamaiConfigBaseSchema,
 } from './types.js';
 import YAML from 'yaml';
 import {
@@ -508,7 +508,7 @@ export async function resolveMcpTargets(
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
   const entries: Array<[string, (typeof toolPaths)[string], boolean?]> = Object.entries(toolPaths);
   if (options.includeUndetected && projectScope) {
-    for (const [tool, paths] of Object.entries(TeamaiConfigSchema.shape.toolPaths.parse(undefined))) {
+    for (const [tool, paths] of Object.entries(TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined))) {
       if (paths.mcpProject && toolPaths[tool]?.mcpProject !== paths.mcpProject) entries.push([tool, paths, true]);
     }
   }
@@ -1799,6 +1799,8 @@ export function mcpTargetExcluded(localConfig: LocalConfig, target: McpTarget): 
   if (!isAgentExcluded(localConfig, target.tool)) return false;
   // tclaude has no project-scope MCP file: it reads the <root>/.mcp.json the
   // claude target writes, so that target stays live while tclaude is enabled.
+  // Trae CN needs no such clause: its own target maps the shared
+  // <root>/.trae/mcp.json under trae's ownership key (#904).
   return !(target.projectScope && target.tool === 'claude' && !isAgentExcluded(localConfig, 'tclaude'));
 }
 
@@ -2235,6 +2237,25 @@ async function reconcileTargets(
     return { changes, wrote, unresolved: true };
   }
 
+  // Which of this team's servers apply to each tool, and in what rendered
+  // form. Targets that share one file under one ownership record
+  // (MCP_MANIFEST_KEY_ALIAS) reconcile as one: their per-tool desired sets
+  // differ (`tools:` on a server), and either alone would read the shared
+  // record, find the sibling's entry unwanted, and remove it from the file —
+  // so every sharer works from the union of their desired sets.
+  const desiredOf = new Map<McpTarget, ReturnType<typeof desiredMcpForTarget>>();
+  const live = targets.filter((t) => removeAll || !mcpTargetExcluded(localConfig, t));
+  for (const target of live) desiredOf.set(target, desiredMcpForTarget(target, teamDefs, desiredContext));
+  for (const target of live) {
+    const mine = desiredOf.get(target)!;
+    for (const other of live) {
+      if (other === target || other.file !== target.file) continue;
+      if (mcpManifestKey(other) !== mcpManifestKey(target)) continue;
+      for (const [name, entry] of desiredOf.get(other)!.desired) mine.desired.set(name, entry);
+      for (const name of desiredOf.get(other)!.kept) mine.kept.add(name);
+    }
+  }
+
   for (const resolved of targets) {
     // Same enabledAgents / disabledAgents gate as the other resource syncs. The
     // manifest entry is left as is: an excluded tool is skipped, not cleaned,
@@ -2243,7 +2264,7 @@ async function reconcileTargets(
     const manifestKey = mcpManifestKey(resolved);
 
     // Which of this team's servers apply to this tool, and in what rendered form.
-    const { desired, skipped, kept } = desiredMcpForTarget(resolved, teamDefs, desiredContext);
+    const { desired, skipped, kept } = desiredOf.get(resolved)!;
     changes.push(...skipped);
     const judge = judgeUnrecordedMcpEntry(localConfig, resolved, desired, desiredContext.vars, await claimedByOtherTools(claimTargets, resolved, manifest), history);
     // A file an earlier teamai created that hides a later one, holding only teamai's servers, is left (#993).
@@ -2855,7 +2876,7 @@ export async function removeLocalScopeMcpServers(dataHome: string, toolRoots?: R
   const manifestPath = path.join(dataHome, 'managed-local-mcp.json');
   const manifest = await readManifest(manifestPath);
   const recorded = Object.keys(manifest).length > 0;
-  const userMcp = applyToolRoots(TeamaiConfigSchema.shape.toolPaths.parse(undefined), toolRoots).claude?.mcp;
+  const userMcp = applyToolRoots(TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined), toolRoots).claude?.mcp;
   const files: Record<string, string | undefined> = {
     claude: userMcp && path.join(getUserHome(), userMcp),
     codebuddy: codebuddyLocalFile(),

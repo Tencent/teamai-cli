@@ -349,6 +349,8 @@ namespace 文件；只有当根文件未定义、而多个 namespace 文件都�
 | qoder | `~/.qoder/settings.json` | `<project>/.qoder/settings.json` |
 | qoder-cn | `~/.qoder-cn/settings.json` | `<project>/.qoder/settings.json` |
 | kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
+| trae | — | `<project>/.trae/mcp.json` |
+| trae-cn | — | `<project>/.trae/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 | omp | `~/.omp/agent/mcp.json` | `<project>/.omp/mcp.json` |
 | pi | `~/.pi/agent/mcp.json` | `<project>/.pi/mcp.json` |
@@ -418,7 +420,7 @@ TeamAI 仅在所有权记录证明已完成顶层写入且内容仍匹配时，�
 
 HTTP local-agent 更新 JSON MCP 配置时，先保留原有 ownership 记录，配置写入成功后才更新记录；如果随后保存记录失败，会恢复原配置。`uninstall_mcp` 先删除配置中的条目，再移除 ownership 记录：配置写入失败或无法读取时保留记录以便重试，manifest 写入失败时恢复条目。MCP reconcile 在保存 ownership 前失败时，会恢复本次已写入的所有配置，包括多个工具共用的文件。恢复本身也失败时，错误会同时说明两次失败及受影响的文件；修复配置与 ownership 记录后再重试。只要凭据仍在文件中，就继续保留 Git 排除保护。
 
-Copilot 使用原生 `mcpServers` 结构：`stdio` 写成 `type: "local"`，远程传输保留 `http` 或 `sse`，每个 TeamAI 管理的条目都会带上必需的 `tools: ["*"]` 允许列表。TeamAI 遵循 `COPILOT_HOME`，项目配置使用 Copilot CLI 官方文档指定的 `.github/mcp.json` 仓库路径。详见 [GitHub Copilot CLI 添加 MCP Server](https://docs.github.com/zh/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)。Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式。Kiro 在专用的、只含 `mcpServers` 的 `.kiro/settings/mcp.json` 中使用同一格式（见 [Kiro MCP 配置文档](https://kiro.dev/docs/mcp/configuration/)）。
+Copilot 使用原生 `mcpServers` 结构：`stdio` 写成 `type: "local"`，远程传输保留 `http` 或 `sse`，每个 TeamAI 管理的条目都会带上必需的 `tools: ["*"]` 允许列表。TeamAI 遵循 `COPILOT_HOME`，项目配置使用 Copilot CLI 官方文档指定的 `.github/mcp.json` 仓库路径。详见 [GitHub Copilot CLI 添加 MCP Server](https://docs.github.com/zh/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)。Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式；Trae 在其项目 `.trae/mcp.json` 中使用同一结构，两个版本的 target 在同一条共享归属记录下映射这同一个文件。Kiro 在专用的、只含 `mcpServers` 的 `.kiro/settings/mcp.json` 中使用同一格式（见 [Kiro MCP 配置文档](https://kiro.dev/docs/mcp/configuration/)）。
 
 OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）、`http` 和 `sse`（后两者均为 `type:"remote"`，由客户端协商传输协议），其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；
 

@@ -328,7 +328,7 @@ export const TEAMAI_SOURCES_DIR = path.join(getUserHome(), '.teamai', 'sources')
 export const ProviderNameSchema = z.enum(['tgit', 'github', 'cnb', 'gitlab', 'gitcode', 'git']);
 export type ProviderName = z.infer<typeof ProviderNameSchema>;
 
-export const TeamaiConfigSchema = z.object({
+export const TeamaiConfigBaseSchema = z.object({
   team: z.string(),
   description: z.string().default(''),
   repo: z.string(),
@@ -499,6 +499,40 @@ export const TeamaiConfigSchema = z.object({
       mcp: '.kiro/settings/mcp.json',
       mcpProject: '.kiro/settings/mcp.json',
     },
+    // Trae (trae.ai) is a VS Code-family IDE. Per its docs and its bundled
+    // code (verified against the installed app): project skills live in
+    // <root>/.trae/skills/<name>/SKILL.md, project rules in .trae/rules/*.md
+    // (frontmatter `alwaysApply` / `globs`, globs comma-separated, parsed by
+    // lines — see trae-rule.ts), and project MCP in .trae/mcp.json holding a
+    // Claude-shaped `mcpServers` object map. User rules are NOT ~/.trae/rules
+    // but ~/.trae/user_rules (the default file is user_rules.md), so
+    // userScope.rules carries that name. User-level MCP has no
+    // teamai-writable cross-platform file: the IDE keeps it next to its
+    // user settings (~/Library/Application Support/Trae/User/mcp.json on
+    // macOS, %APPDATA%/… on Windows), so only `mcpProject` is set. Trae has
+    // no settings-based hook surface and no subagents directory, so those
+    // keys stay absent (like JoyCode, users sync via `teamai pull`).
+    trae: {
+      skills: '.trae/skills',
+      rules: '.trae/rules',
+      mcpProject: '.trae/mcp.json',
+      userScope: { rules: '.trae/user_rules' },
+    },
+    // Trae CN (domestic.trae.cn) shares every project path with the
+    // international build (verified on installed apps: only the user
+    // directory differs, ~/.trae-cn). Both map the same .trae/mcp.json, and
+    // one shared ownership record covers the pair
+    // (MCP_MANIFEST_KEY_ALIAS), so whichever build a member runs, its
+    // target writes, updates and cleans the file.
+    'trae-cn': {
+      skills: '.trae/skills',
+      rules: '.trae/rules',
+      mcpProject: '.trae/mcp.json',
+      userScope: {
+        skills: '.trae-cn/skills',
+        rules: '.trae-cn/user_rules',
+      },
+    },
     // ZCode: user-level config lives at ~/.zcode/cli/config.json (a shared file
     // that also carries plugin state — reconcile must merge, never replace).
     // Hooks are Claude-shaped but nested under `hooks.events` and gated by
@@ -592,6 +626,26 @@ export const TeamaiConfigSchema = z.object({
       userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
     },
   }),
+});
+
+export const TeamaiConfigSchema = TeamaiConfigBaseSchema.superRefine((config, ctx) => {
+  // The Trae builds claim their MCP files under one shared ownership record
+  // (MCP_MANIFEST_KEY_ALIAS); that contract holds only while they map the
+  // same file. A team that maps them apart would see one reconcile clear the
+  // other's record, so reject the split instead (#904).
+  const trae = config.toolPaths.trae;
+  const traeCn = config.toolPaths['trae-cn'];
+  for (const field of ['mcp', 'mcpProject'] as const) {
+    const a = trae?.[field];
+    const b = traeCn?.[field];
+    if (a !== undefined && b !== undefined && a !== b) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['toolPaths', 'trae-cn', field],
+        message: `trae and trae-cn must map the same ${field} path: they claim their MCP servers under one shared ownership record`,
+      });
+    }
+  }
 });
 
 export type TeamaiConfig = z.infer<typeof TeamaiConfigSchema>;
@@ -1155,9 +1209,20 @@ export type ManagedMcpManifest = Record<string, ManagedMcpRecord[]>;
  * Each project WORKTREE now has its OWN manifest file (see managedMcpManifestPath),
  * so the file already isolates ownership by worktree — the key needs no workspace
  * segment. It is `<tool>:project` for project scope and `<tool>` for user scope.
+ *
+ * `MCP_MANIFEST_KEY_ALIAS` maps a tool onto another's key: builds that write
+ * one shared project MCP file claim it under one record, so either build's
+ * target can update and clean what the other's pull wrote, instead of a
+ * per-tool claim the sibling's reconcile would skip as foreign.
  */
+const MCP_MANIFEST_KEY_ALIAS: Readonly<Record<string, string>> = {
+  // Trae and Trae CN map the same <root>/.trae/mcp.json (#904).
+  'trae-cn': 'trae',
+};
+
 export function managedMcpManifestKey(tool: string, projectScope: boolean): string {
-  return projectScope ? `${tool}:project` : tool;
+  const owner = MCP_MANIFEST_KEY_ALIAS[tool] ?? tool;
+  return projectScope ? `${owner}:project` : owner;
 }
 
 /** Stable per-worktree identity segment; names the worktree's manifest subdirectory (#374). */

@@ -17,7 +17,7 @@ import { sameEnvName } from './env-key.js';
 
 export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi';
 
-const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'qoder', 'qoder-cn', 'kiro', 'zcode', 'omp']);
+const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'qoder', 'qoder-cn', 'kiro', 'zcode', 'omp', 'trae', 'trae-cn']);
 const CURSOR_TOOLS = new Set(['cursor']);
 const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 const BUDDY_TOOLS = new Set(['codebuddy', 'workbuddy']);

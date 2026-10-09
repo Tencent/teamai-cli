@@ -371,8 +371,8 @@ describe('doctor — hook checks', () => {
             },
         });
         // No project MCP config exists: one at a tool's built-in location that cannot be read would fail the git exclude check.
-        const { TeamaiConfigSchema } = await import('../types.js');
-        const mcpConfigs = Object.values(TeamaiConfigSchema.shape.toolPaths.parse(undefined))
+        const { TeamaiConfigBaseSchema } = await import('../types.js');
+        const mcpConfigs = Object.values(TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined))
             .flatMap((paths) => paths.mcpProject ? [path.join(projectRoot, paths.mcpProject)] : []);
         mockedPathExists.mockImplementation(async (filePath: string) => filePath !== copilotHome && !mcpConfigs.includes(filePath));
 

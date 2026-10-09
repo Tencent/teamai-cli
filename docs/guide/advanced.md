@@ -503,7 +503,7 @@ Rules are written in the form Qoder Desktop writes, which Qoder CLI also reads: 
 
 Qoder CN is a separate distribution that keeps its **user** directory at `~/.qoder-cn` instead of `~/.qoder`, so it is a separate built-in target (`qoder-cn`) rather than part of `qoder`. Only the user scope differs: user-scope resources go to `~/.qoder-cn/{skills,rules,agents}` and hooks/MCP to `~/.qoder-cn/settings.json`, while project-scope resources keep Qoder's `<project>/.qoder/` layout. It reads the same Claude-compatible resource formats, so content is identical and only the user-scope root changes. Install both editions and TeamAI syncs each one to its own user directory; neither needs a symlink. 
 
-In a project Qoder and Qoder CN both read `.qoder/rules/`, so they share one copy there: uninstalling one keeps it while the other is installed, and `doctor` checks it once, as `Rules delivered to qoder, qoder-cn`.
+In a project Qoder and Qoder CN both read `.qoder/rules/`, so they share one copy there: uninstalling one keeps it while the other is installed, and `doctor` checks it once, as `Rules delivered to qoder, qoder-cn`. Each edition counts as installed by its own HOME root (`~/.qoder` / `~/.qoder-cn`) or an explicit `--agent` entry, as the Trae builds do — the shared project `.qoder/` installs neither by itself.
 
 ### Kiro
 
@@ -518,6 +518,14 @@ Push requires a delivery record for that flat copy; a personal file with the sam
 Kiro's own `product.md` is not a team rule, so `pull` leaves it. Kiro CLI loads every steering file whatever its `inclusion` ([kirodotdev/Kiro#7950](https://github.com/kirodotdev/Kiro/issues/7950)), so a scoped rule is always on there. 
 
 The Kiro IDE once ignored `fileMatch` in `~/.kiro/steering` ([kirodotdev/Kiro#9176](https://github.com/kirodotdev/Kiro/issues/9176), Kiro 0.12); a maintainer reported fixes since, and the report closed without a retest.
+
+### Trae
+
+Trae and Trae CN are available as built-in targets. TeamAI deploys skills to `.trae/skills/` and rules to `.trae/rules/`, matching [Trae's documented layouts](https://docs.trae.ai/ide/rules). Only the user directory differs on the CN build (`~/.trae-cn` instead of `~/.trae`, as for Qoder CN): a project keeps one shared `.trae/` for both, while a user-scope pull delivers `~/.trae/skills/` and `~/.trae/user_rules/` for the international build and `~/.trae-cn/skills/` and `~/.trae-cn/user_rules/` for the CN one — Trae names its user rules directory `user_rules`, not `rules`. Trae has no settings-based hooks surface and no subagents directory, so those resources stay unsynced and you run `teamai pull` manually, as for JoyCode. MCP servers merge into the project's `.trae/mcp.json` in the Claude `mcpServers` shape (see the MCP section of the sharing guide); both builds' targets map that one file under a single shared ownership record, so either edition's pull updates and cleans it, and a server scoped by `tools:` to one edition stays while either targets it. Trae keeps user-level MCP next to its user settings in a platform-specific directory, so no user file is written.
+
+Each build counts as installed by its own HOME root (`~/.trae` / `~/.trae-cn`) or by an explicit `--agent` entry naming it — the shared project `.trae/` says nothing about which edition runs (as WorkBuddy is counted by `.workbuddy/`), so no half of the pair stays a "phantom sibling" that retains or resyncs the other's files. In a project both builds read the same `.trae/skills/` and `.trae/rules/`, so they share one copy of each there: uninstalling one keeps both while the other is installed.
+
+Rules are `.md` files with Trae's frontmatter: a rule with `paths:` gets `globs: a, b` unquoted — Trae's parser takes the line as it stands and splits it on every comma — plus `alwaysApply: false`; a rule without `paths` gets `alwaysApply: true`. Trae reads rules up to three directory levels deep, so a namespaced rule keeps its `fe/style.md` shape. On `push`, only the Markdown body flows back, and a rule file there with no matching team rule is yours: `pull` leaves it and `push` never offers it as a new team rule.
 
 ### CodeBuddy and WorkBuddy
 
@@ -587,7 +595,7 @@ For canonical YAML agents, push compares each local file with the corresponding 
 
 Cursor subagents deploy to `.cursor/agents/*.md` with YAML frontmatter carrying `agent_id` (the team agent's name), `description`, `tools`, and the agent's `model` when it declares one, plus any `tool_extras.cursor` fields; `reverseFromCursor` reads the same fields back, so a `pull` → `push` round-trip keeps the model.
 
-Cursor project rules must live in `.cursor/rules/` as **`.mdc`** files with YAML frontmatter — a plain `.md` file there is silently ignored by Cursor. teamai therefore writes rules to Cursor as `<name>.mdc` (JoyCode, Copilot, Kiro, Qoder, Qoder CN, CodeBuddy, WorkBuddy and Oh My Pi get a format of their own, described in their sections; every other tool gets a plain `.md`), deriving the frontmatter from the team rule:
+Cursor project rules must live in `.cursor/rules/` as **`.mdc`** files with YAML frontmatter — a plain `.md` file there is silently ignored by Cursor. teamai therefore writes rules to Cursor as `<name>.mdc` (JoyCode, Copilot, Kiro, Qoder, Qoder CN, Trae, Trae CN, CodeBuddy, WorkBuddy and Oh My Pi get a format of their own, described in their sections; every other tool gets a plain `.md`), deriving the frontmatter from the team rule:
 
 - A rule scoped with a `paths:` list becomes `globs: "<comma-joined>"` + `alwaysApply: false` (Cursor auto-attaches it when a matching file is in context). The value is quoted because a glob starting with `*` is not valid YAML unquoted.
 - A rule with no `paths` (a mandatory team rule) becomes `alwaysApply: true` (applied to every Cursor chat session).
@@ -637,7 +645,7 @@ When a namespace contributes env variables, hooks, MCP servers or team model pro
 
 For Oh My Pi and Kiro, `doctor` reports flat-name collisions even when every desired rule collides and no file can be written. Rename one of the rules in the team repo, then run `teamai pull`.
 
-`Rules delivered to <tool>` and `Agents delivered to <tool>` do the same for the other two per-tool resources, and both ask the handler where an item lands rather than deriving a path: a rule's filename and content change per tool (`.md` verbatim, `.mdc` with derived `globs`/`alwaysApply` (unquoted for JoyCode), `.instructions.md` with `applyTo`, Kiro's flat `.md` with `inclusion`/`fileMatchPattern`, Qoder's `.md` with `trigger`/`glob`, Oh My Pi's flat `.md` with `alwaysApply` or `globs`/`description`, CodeBuddy's `.md` with `alwaysApply`/`paths`; tools that read one copy, as CodeBuddy and WorkBuddy do in a project, get one check naming both), and an agent's destination comes from its render, with `targets:` deciding which tools are owed a copy at all. 
+`Rules delivered to <tool>` and `Agents delivered to <tool>` do the same for the other two per-tool resources, and both ask the handler where an item lands rather than deriving a path: a rule's filename and content change per tool (`.md` verbatim, `.mdc` with derived `globs`/`alwaysApply` (unquoted for JoyCode), `.instructions.md` with `applyTo`, Kiro's flat `.md` with `inclusion`/`fileMatchPattern`, Qoder's `.md` with `trigger`/`glob`, Trae's `.md` with `globs`/`alwaysApply`, Oh My Pi's flat `.md` with `alwaysApply` or `globs`/`description`, CodeBuddy's `.md` with `alwaysApply`/`paths`; tools that read one copy, as CodeBuddy and WorkBuddy do in a project, get one check naming both), and an agent's destination comes from its render, with `targets:` deciding which tools are owed a copy at all. 
 
 A delivered rule is compared with the bytes the handler renders for that tool, not merely read for the keys its tool needs: a `.mdc` whose `globs` no longer match the team rule's `paths:` applies to the wrong files while carrying a perfectly legal `alwaysApply`, and that reads here as `delivered from an older copy` — the same label as a body that drifted, because both landed successfully and are still wrong. 
 

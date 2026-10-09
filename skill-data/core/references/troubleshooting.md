@@ -291,7 +291,7 @@ session's runs, recalled docs and adopted docs. Per agent:
 - **Cursor, Copilot CLI, ZCode, Pi**: only a recall the main agent runs
   itself. A subagent's recall is not linked to the main session, and Pi has no
   TeamAI subagent.
-- **OpenClaw, Hermes, Kiro, JoyCode**: no PostToolUse hook, so recalls never
+- **OpenClaw, Hermes, Kiro, JoyCode, Trae**: no PostToolUse hook, so recalls never
   vote.
 
 A read after the session's last Stop is credited at SubagentStop, at Copilot CLI's

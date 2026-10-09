@@ -392,6 +392,8 @@ Where each tool's servers land:
 | qoder | `~/.qoder/settings.json` | `<project>/.qoder/settings.json` |
 | qoder-cn | `~/.qoder-cn/settings.json` | `<project>/.qoder/settings.json` |
 | kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
+| trae | — | `<project>/.trae/mcp.json` |
+| trae-cn | — | `<project>/.trae/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 | omp | `~/.omp/agent/mcp.json` | `<project>/.omp/mcp.json` |
 | pi | `~/.pi/agent/mcp.json` | `<project>/.pi/mcp.json` |
@@ -477,7 +479,7 @@ New HTTP local-agent installs check Git protection without changing it, persist 
 
 An HTTP local-agent update keeps the existing JSON MCP ownership record until the config write succeeds. If saving the new record then fails, it restores the previous config. `uninstall_mcp` removes the entry before dropping its ownership record; a failed config write or an unreadable config keeps that record for a retry, and a failed manifest write restores the entry. A failed MCP reconcile restores each config it wrote before saving ownership, including a file shared by multiple tools. A restoration failure reports both errors and the affected files: repair the config and ownership record before retrying. Git protection remains while a credential is still present.
 
-Copilot uses its native `mcpServers` schema: `stdio` becomes `type: "local"`, remote transports keep `http` or `sse`, and every managed entry gets the required `tools: ["*"]` allowlist. TeamAI honors `COPILOT_HOME`; project configuration uses Copilot CLI's documented `.github/mcp.json` repository location. See [Adding MCP servers for GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers). Codex supports `stdio` and `http`; `sse` is skipped. Qoder supports the Claude-compatible `mcpServers` format in its scope-specific `.qoder/settings.json`. Kiro supports the same `mcpServers` format in its dedicated, mcpServers-only `.kiro/settings/mcp.json` (see [Kiro's MCP configuration docs](https://kiro.dev/docs/mcp/configuration/)). 
+Copilot uses its native `mcpServers` schema: `stdio` becomes `type: "local"`, remote transports keep `http` or `sse`, and every managed entry gets the required `tools: ["*"]` allowlist. TeamAI honors `COPILOT_HOME`; project configuration uses Copilot CLI's documented `.github/mcp.json` repository location. See [Adding MCP servers for GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers). Codex supports `stdio` and `http`; `sse` is skipped. Qoder supports the Claude-compatible `mcpServers` format in its scope-specific `.qoder/settings.json`; Trae takes the same shape in its project `.trae/mcp.json`, both builds' targets mapping that one file under a single shared ownership record. Kiro supports the same `mcpServers` format in its dedicated, mcpServers-only `.kiro/settings/mcp.json` (see [Kiro's MCP configuration docs](https://kiro.dev/docs/mcp/configuration/)). 
 
 OpenCode supports `stdio` (written as its `type:"local"` shape), `http`, and `sse` (both `type:"remote"`, negotiated by its client); its servers live under the `mcp` key of the shared `opencode.json`. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
 

@@ -115,7 +115,7 @@ Recall counts every doc it returns (`recalled_count`). A returned doc is **adopt
 | OMP | Yes, settled only by the claim of its `bash` call | Yes: the subagent's session file sits under its parent's, whose session header links the two sessions (verified against OMP 18.4.8) |
 | Pi | Yes | None: TeamAI deploys no subagent to Pi |
 | ZCode | Yes | No: ZCode runs no hooks inside a subagent |
-| OpenClaw, Hermes, Kiro, JoyCode | No: no PostToolUse hook | No |
+| OpenClaw, Hermes, Kiro, JoyCode, Trae | No: no PostToolUse hook | No |
 
 *Unverified*: built and tested from the agent's documented or source-read hook payloads, not yet checked in a live session.
 
