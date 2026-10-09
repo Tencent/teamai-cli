@@ -997,7 +997,8 @@ describe('local-agent: MCP install/uninstall commands', () => {
       expect(await fse.readFile(path.join(wsPath, '.git', 'info', 'exclude'), 'utf-8')).toMatch(/^\/\.mcp\.json$/m);
     });
 
-    it('says the next session tries again when that sync cannot list the file, and calls it a credential', async () => {
+    // root ignores the read-only bit, so the write it expects to fail succeeds.
+    it.skipIf(process.getuid?.() === 0)('says the next session tries again when that sync cannot list the file, and calls it a credential', async () => {
       await install(9105, bearer);
       const excludeFile = path.join(wsPath, '.git', 'info', 'exclude');
       await fse.writeFile(excludeFile, '');
@@ -1077,7 +1078,8 @@ describe('local-agent: MCP install/uninstall commands', () => {
       expect(git('status', '--porcelain', '--untracked-files=all', '--', '.github/mcp.json')).toBe('');
     });
 
-    it('still lists that config when an install replacing its entry with a bare command cannot write the file', async () => {
+    // root ignores the directory's read-only bit, so the write it expects to fail succeeds.
+    it.skipIf(process.getuid?.() === 0)('still lists that config when an install replacing its entry with a bare command cannot write the file', async () => {
       await install(9105, bearer);
       await fse.writeFile(path.join(wsPath, '.git', 'info', 'exclude'), '');
       await fse.remove(await workspaceFile('managed-mcp-files.json'));

@@ -2681,8 +2681,15 @@ describe('uninstall', () => {
     const first = path.join(tmpDir, 'first');
     const second = path.join(tmpDir, 'second');
     execFileSync('git', ['init', '--bare', bare]);
-    execFileSync('git', ['--git-dir', bare, 'worktree', 'add', '--orphan', first]);
-    execFileSync('git', ['--git-dir', bare, 'worktree', 'add', '--orphan', second]);
+    // `worktree add --orphan` needs git 2.42+. An empty bare repo has no commit,
+    // so seed one via a throwaway normal repo and push it in — then each worktree
+    // gets its own branch off it. The test only needs two live bare worktrees.
+    const seed = path.join(tmpDir, 'seed');
+    execFileSync('git', ['init', '-q', seed]);
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: seed });
+    execFileSync('git', ['push', '-q', bare, 'HEAD:refs/heads/main'], { cwd: seed });
+    execFileSync('git', ['--git-dir', bare, 'worktree', 'add', '-q', '-b', 'first', first, 'main']);
+    execFileSync('git', ['--git-dir', bare, 'worktree', 'add', '-q', '-b', 'second', second, 'main']);
     const repoPath = path.join(tmpDir, 'team-repo');
     const homeDir = path.join(tmpDir, 'home');
     const dataHome = path.join(homeDir, '.teamai', 'shared-project');
