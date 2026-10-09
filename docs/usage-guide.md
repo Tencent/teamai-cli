@@ -317,10 +317,12 @@ explicit `--project` skips the picker.
   — a member may legitimately belong to no project (they get the shared
   learnings root and the namespaces their role lists, such as `common`; with no
   role, no namespace skills).
-- **Root skills arrive through a tag.** While the team uses roles or projects,
-  the root `skills/` is the tag catalog: `teamai tags subscribe <tag>` delivers
-  a root skill. When a pull removes skills that are no longer delivered, for
-  example after picking a role or project, it names them in one line.
+- **Root skills are shared with everyone.** The root `skills/` reaches every
+  member, with or without a role or project; an active namespace skill of the
+  same name replaces the root one whole. `teamai tags subscribe <tag>` can
+  additionally deliver a skill from a namespace you have not activated. When a
+  pull removes skills that are no longer delivered, for example after leaving
+  a project, it names them in one line.
 - **Activate everything at once.** `--project all` is a reserved value: it
   expands to every id the manifest declares and persists that snapshot, so a
   monorepo's onboarding docs carry one line instead of a list that drifts

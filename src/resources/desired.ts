@@ -47,6 +47,15 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
   const inactiveSkillNames = new Set<string>();
   const inactiveSkillSources = new Map<string, string>();
 
+  // Root skills are shared: always active, whatever the namespaces. Cleanup
+  // retains them by name even on a conflict run, when this set is the fallback.
+  const skillsRoot = path.join(localConfig.repo.localPath, 'skills');
+  for (const dir of await listDirs(skillsRoot)) {
+    if (await pathExists(path.join(skillsRoot, dir, 'SKILL.md'))) {
+      activeSkillNames.add(dir);
+    }
+  }
+
   for (const namespace of activeNamespaces.skills) {
     const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);
     const names = await listDirs(namespaceDir);
@@ -195,11 +204,33 @@ async function withSkillMd(items: ResourceItem[]): Promise<ResourceItem[]> {
   return skills;
 }
 
+/**
+ * The skills a member receives under the namespace rule (#707): the root
+ * `skills/<name>/` directories are shared with every member, and an active
+ * namespace adds `skills/<ns>/<name>/`, its same-name entry replacing the root
+ * one whole. Scanning only the namespaces would drop the shared root — and the
+ * desired-union cleanup would then prune every root skill from disk.
+ */
 export async function scanRoleAwareSkills(
   localConfig: LocalConfig,
   namespaces: ResourceNamespaces,
 ): Promise<{ kind: 'resolved'; items: ResourceItem[] } | DeliveryConflict> {
   const items: ResourceItem[] = [];
+  const skillsRoot = path.join(localConfig.repo.localPath, 'skills');
+
+  // A directory with SKILL.md at the root is a shared skill; one without is a
+  // namespace, scanned below when active. Same split as scanTeamForPull.
+  for (const dir of await listDirs(skillsRoot)) {
+    const dirPath = path.join(skillsRoot, dir);
+    if (await pathExists(path.join(dirPath, 'SKILL.md'))) {
+      items.push({
+        name: dir,
+        type: 'skills',
+        sourcePath: dirPath,
+        relativePath: `skills/${dir}`,
+      });
+    }
+  }
 
   for (const namespace of namespaces.skills) {
     const namespaceDir = path.join(localConfig.repo.localPath, 'skills', namespace);

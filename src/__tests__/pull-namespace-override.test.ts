@@ -442,9 +442,9 @@ describe('pull: an active namespace item replaces the root item of the same name
       expect(await read('.claude/skills/review/my-notes.md')).toBe('mine\n');
     });
 
-    // #911: a root skill that stops arriving is removed, and pull says so
-    // instead of leaving only a debug line and "No resources to sync".
-    it('names a root skill it removes once it is no longer delivered, and how to get it back', async () => {
+    // The root is shared: a root skill does not depend on the tag that once
+    // brought it, so unsubscribing removes nothing.
+    it('keeps a root skill when the tag that brought it is unsubscribed', async () => {
       as(['devops'], { subscribedTags: ['ui'] });
       await pull({});
       expect(await read('.claude/skills/review/SKILL.md')).toContain('Shared review');
@@ -453,14 +453,13 @@ describe('pull: an active namespace item replaces the root item of the same name
       as(['devops']);
       await pull({ force: true });
 
-      expect(await exists('.claude/skills/review')).toBe(false);
-      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: review\. .*`teamai tags subscribe <tag>`/)).toBe(true);
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Shared review');
+      expect(logged('info', /no longer delivered here/)).toBe(false);
     });
 
-    // #917 follow-up: the hint follows the repo, not the cleanup phase. Root
-    // `review` exists and is tagged `ui`, so even a namespace copy removed on
-    // deactivation leaves `tags subscribe` a way to bring the name back.
-    it('names a namespace skill it removes when the namespace deactivates, with the tag hint when the root copy is tag-recoverable', async () => {
+    // Deactivating the namespace brings the root skill back, the way rules and
+    // agents behave above — the member never loses the shared copy.
+    it('delivers the root skill again once the namespace of its name deactivates', async () => {
       await pull({});
       expect(await read('.claude/skills/review/SKILL.md')).toContain('Front review');
 
@@ -468,8 +467,8 @@ describe('pull: an active namespace item replaces the root item of the same name
       as(['devops']);
       await pull({ force: true });
 
-      expect(await exists('.claude/skills/review')).toBe(false);
-      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: review\. .*`teamai tags subscribe <tag>`/)).toBe(true);
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Shared review');
+      expect(logged('info', /no longer delivered here/)).toBe(false);
     });
 
     it('names a namespace-only skill it removes without the tag hint: no root copy exists to subscribe to', async () => {
@@ -488,9 +487,9 @@ describe('pull: an active namespace item replaces the root item of the same name
     });
 
     // The inactive namespace copy is byte-identical to the root skill, so the
-    // namespace cleanup phase removes the directory before the desired-union
-    // sweep can. The tag hint must survive that routing (#917 review).
-    it('keeps the tag hint when the removed root skill is byte-identical to its inactive namespace copy', async () => {
+    // namespace cleanup phase would remove the directory — but the name is the
+    // shared root skill's, and the root is always delivered, so it stays.
+    it('keeps the delivered root skill whose byte-identical copy sits in an inactive namespace', async () => {
       await team('tags.yaml', 'skills:\n  twin: [ui]\n');
       await team('skills/twin/SKILL.md', skillMd('twin', 'Twin review'));
       await team('skills/frontend/twin/SKILL.md', skillMd('twin', 'Twin review'));
@@ -503,8 +502,8 @@ describe('pull: an active namespace item replaces the root item of the same name
       as(['devops']);
       await pull({ force: true });
 
-      expect(await exists('.claude/skills/twin')).toBe(false);
-      expect(logged('info', /Removed 1 skill\(s\) no longer delivered here: twin\. .*`teamai tags subscribe <tag>`/)).toBe(true);
+      expect(await read('.claude/skills/twin/SKILL.md')).toContain('Twin review');
+      expect(logged('info', /no longer delivered here/)).toBe(false);
     });
 
     // A path another team version has is not enough to call a file a leftover:
@@ -581,8 +580,11 @@ describe('pull: an active namespace item replaces the root item of the same name
         entries: Array<{ type: string; filename: string; path?: string }>;
       };
       const skills = index.entries.filter((entry) => entry.type === 'skills');
-      expect(skills.map((entry) => entry.filename)).toEqual(['review.md']);
-      expect(skills[0]?.path).toBe(path.join(repoPath, 'skills/frontend/review/SKILL.md'));
+      // The shared root skill and the active namespace's overriding skill — not
+      // `deploy`, whose namespace is inactive.
+      expect(skills.map((entry) => entry.filename).sort()).toEqual(['lonely.md', 'review.md']);
+      expect(skills.find((entry) => entry.filename === 'review.md')?.path)
+        .toBe(path.join(repoPath, 'skills/frontend/review/SKILL.md'));
     });
 
     it('stops only skills when two active namespaces define one skill: other types still sync and installed skills stay', async () => {
@@ -599,22 +601,59 @@ describe('pull: an active namespace item replaces the root item of the same name
       expect(logged('warn', /Duplicate skill "review" found in active namespaces "frontend" and "devops" \(skills\/frontend\/review and skills\/devops\/review\)/)).toBe(true);
       // The installed skill is kept as it was: not replaced, not swept.
       expect(await read('.claude/skills/review/SKILL.md')).toContain('Front review');
-      // And recall keeps finding it: the index keeps the skills it held.
+      // And recall keeps finding them: the index keeps the skills it held.
       const index = await fse.readJson(path.join(homeDir, '.teamai', 'search-index.json')) as {
         entries: Array<{ type: string; filename: string; path?: string }>;
       };
       const skills = index.entries.filter((entry) => entry.type === 'skills');
-      expect(skills.map((entry) => entry.path)).toEqual([path.join(repoPath, 'skills/frontend/review/SKILL.md')]);
+      expect(skills.map((entry) => entry.path).sort()).toEqual([
+        path.join(repoPath, 'skills/frontend/review/SKILL.md'),
+        path.join(repoPath, 'skills/lonely/SKILL.md'),
+      ].sort());
       expect(await exists('.claude/agents/helper.md')).toBe(true);
       expect(await read('.claude/rules/style.md')).toBe('# Shared style\n');
       expect(await read('.teamai/env.sh')).toContain('API_BASE');
     });
 
-    it('still does not deliver root skills by default in role mode', async () => {
+    it('delivers the shared root skills in role mode, beside the active namespace', async () => {
       await pull({});
 
       expect(await read('.claude/skills/review/SKILL.md')).toContain('Front review');
-      expect(await exists('.claude/skills/lonely')).toBe(false);
+      expect(await read('.claude/skills/lonely/SKILL.md')).toContain('Untagged root skill');
+    });
+
+    // The reported data loss: a team that adds manifest/projects.yaml, a member
+    // with no role and no active project. The shared root skills must land and
+    // survive the next pull's cleanup, project skills must not.
+    it('keeps the shared root skills for a role-less, project-less member of a team with projects.yaml', async () => {
+      await team('manifest/projects.yaml', [
+        'version: 1',
+        'projects:',
+        '  - id: billing',
+        '    resources: { skills: [billing] }',
+        '',
+      ].join('\n'));
+      await team('skills/billing/billing-only/SKILL.md', skillMd('billing-only', 'Billing only'));
+
+      as(null);
+      await pull({});
+
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Shared review');
+      expect(await read('.claude/skills/lonely/SKILL.md')).toContain('Untagged root skill');
+      expect(await exists('.claude/skills/billing-only')).toBe(false);
+
+      // A second pull must not prune what the first delivered.
+      await pull({ force: true });
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Shared review');
+      expect(await read('.claude/skills/lonely/SKILL.md')).toContain('Untagged root skill');
+      expect(logged('info', /no longer delivered here/)).toBe(false);
+
+      // Activating the project adds its namespace; the shared root stays.
+      as(null, { projects: ['billing'] });
+      await pull({ force: true });
+      expect(await read('.claude/skills/billing-only/SKILL.md')).toContain('Billing only');
+      expect(await read('.claude/skills/review/SKILL.md')).toContain('Shared review');
+      expect(await read('.claude/skills/lonely/SKILL.md')).toContain('Untagged root skill');
     });
   });
 

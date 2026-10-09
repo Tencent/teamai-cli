@@ -112,7 +112,9 @@ describe('recall rebuilding a missing index', () => {
     const skills = index.entries
       .filter((e: { type: string }) => e.type === 'skills')
       .map((e: { filename: string }) => e.filename);
-    expect(skills).toEqual(['gateway.md']);
+    // The shared root skill and the active project namespace's — not `billing`,
+    // whose namespace is inactive.
+    expect(skills.sort()).toEqual(['gateway.md', 'untagged-root.md']);
   });
 
   it('indexes the docs pull delivers here: shared ones and the active namespace (#707)', async () => {
