@@ -490,7 +490,7 @@ GitHub Copilot CLI 已支持其官方自定义指令、Rules、Skills、自定�
 
 Qoder 已作为内置目标支持。TeamAI 会将 Skills、Rules 和 Subagents 分别下发到 `.qoder/skills/`、`.qoder/rules/` 和 `.qoder/agents/`。Hooks 与 MCP Server 会合并进对应作用域的 `.qoder/settings.json`，并保留用户已有的其他设置；这些路径与 Qoder 的用户级和项目级配置约定一致。
 
-Rules 按 Qoder Desktop 写入的形式生成，Qoder CLI 也读取这种形式：带 `paths:` 的规则写成 `trigger: glob` 加一行不带引号、以逗号分隔的 `glob:`，由于该行会按每个逗号切分，`{a,b}` 形式的选择会展开为多个 glob；没有 `paths` 的规则写成 `trigger: always_on`。Qoder 未公开这种 frontmatter 的 schema，该形式取自 `alibaba/tron-one-agent` 中 Desktop 生成的规则文件。`push` 时只有 Markdown 正文回流；`.qoder/rules/` 中没有对应团队规则的文件属于你自己：`pull` 不会删除它，`push` 也不会把它当作新的团队规则提交。旧版 teamai 原样写入的副本，若仍是 teamai 写入的内容，下一次 `pull` 会改写为新格式；你修改过的副本会保留并给出提示。
+Rules 按 Qoder Desktop 写入的形式生成，Qoder CLI 也读取这种形式：带 `paths:` 的规则写成 `trigger: glob` 加一行不带引号、以逗号分隔的 `glob:`，由于该行会按每个逗号切分，`{a,b}` 形式的选择会展开为多个 glob；没有 `paths` 的规则写成 `trigger: always_on`。Qoder 未公开这种 frontmatter 的 schema，该形式取自 `alibaba/tron-one-agent` 中 Desktop 生成的规则文件。
 
 Qoder CN 是独立发行的版本，其**用户级**目录为 `~/.qoder-cn` 而非 `~/.qoder`，因此它作为独立的内置目标 `qoder-cn` 支持，而不是并入 `qoder`。两者仅用户作用域不同：用户级的资源写入 `~/.qoder-cn/{skills,rules,agents}`，Hooks 与 MCP 写入 `~/.qoder-cn/settings.json`；项目作用域则沿用 Qoder 的 `<project>/.qoder/` 布局。两者读取相同的 Claude 兼容资源格式，因此下发内容一致，仅用户级根目录不同。同时安装两个版本时，TeamAI 会分别同步到各自的用户目录，无需再建软链接。在项目中 Qoder 与 Qoder CN 都读取 `.qoder/rules/`，因此两者共用其中的一份副本：卸载其中一个时，只要另一个仍已安装，副本就会保留；`doctor` 也只检查一次，即 `Rules delivered to qoder, qoder-cn`。
 
@@ -502,17 +502,13 @@ Kiro 内存中的内置默认 agent 无法修改，`--no-interactive` 也不会�
 
 Rules 以带 Kiro inclusion frontmatter 的 steering 文件写入 `.kiro/steering/` 与 `~/.kiro/steering/`：带 `paths:` 的规则写成 `inclusion: fileMatch`，并把其 glob 列表写入 `fileMatchPattern`；没有 `paths` 的规则写成 `inclusion: always`。Kiro 只读取 steering 目录的顶层（[kirodotdev/Kiro#10448](https://github.com/kirodotdev/Kiro/issues/10448)），因此与 [Oh My Pi](#oh-my-pi) 一样，namespace 下的规则会平铺写入：`rules/fe/style.md` 写成 `fe.style.md`，`push` 会把对该文件的修改写回 `rules/fe/style.md`。push 要求该平铺副本有下发记录；同名的个人文件既不会在 push 前被刷新，也不会被当作团队规则的修改。若你收到的另一条规则也对应同一个平铺文件名，该规则不会写入；
 
-与团队规则平铺文件名相同的你自己的文件永远不会被覆盖或删除。旧版写入的嵌套副本 `<ns>/<name>.md` 会在平铺副本写入后删除；你修改过的副本会保留并给出提示，因为 Kiro 不会读取它。`push` 时只有 Markdown 正文回流；没有对应团队规则的 steering 文件（例如 Kiro 自己生成的 `product.md`）属于你自己：`pull` 不会删除它，`push` 也不会把它当作新的团队规则提交。旧版 teamai 原样写入的副本，若仍是 teamai 写入的内容，下一次 `pull` 会改写为新格式；
-
-你修改过的副本会保留并给出提示。Kiro CLI 无论 `inclusion` 取值都会加载全部 steering 文件（[kirodotdev/Kiro#7950](https://github.com/kirodotdev/Kiro/issues/7950)），因此在 CLI 中限定路径的规则也会始终生效。Kiro IDE 曾忽略 `~/.kiro/steering` 中的 `fileMatch`（[kirodotdev/Kiro#9176](https://github.com/kirodotdev/Kiro/issues/9176)，Kiro 0.12）；维护者称此后已修复，该 issue 未经复测即关闭。
+与团队规则平铺文件名相同的你自己的文件永远不会被覆盖或删除。旧版写入的嵌套副本 `<ns>/<name>.md` 会在平铺副本写入后删除；你修改过的副本会保留并给出提示，因为 Kiro 不会读取它。Kiro 自己的 `product.md` 不是团队规则，`pull` 会留下它。Kiro CLI 无论 `inclusion` 取值都会加载全部 steering 文件（[kirodotdev/Kiro#7950](https://github.com/kirodotdev/Kiro/issues/7950)），因此在 CLI 中限定路径的规则也会始终生效。Kiro IDE 曾忽略 `~/.kiro/steering` 中的 `fileMatch`（[kirodotdev/Kiro#9176](https://github.com/kirodotdev/Kiro/issues/9176)，Kiro 0.12）；维护者称此后已修复，该 issue 未经复测即关闭。
 
 ### CodeBuddy 与 WorkBuddy
 
 WorkBuddy 运行的是 CodeBuddy 的引擎，因此两者都按 CodeBuddy 的格式得到 rules：带 `paths:` 的规则写成 `alwaysApply: false`，并把 `paths:` 写成 YAML 块列表，每项一个带引号的 glob；没有 `paths` 的规则写成 `alwaysApply: true`。CodeBuddy 的 frontmatter 解析器按行读取而非按 YAML 解析，原样副本中的行内写法 `paths: ["a", "b"]` 会让它得到带方括号的 glob。在项目中两个工具都读取 `.codebuddy/rules/`，因此该目录为两者只保存每条规则的一份副本：排除或卸载其中一个工具时，只要另一个仍已安装，这些副本就会保留；
 
-`doctor` 也只检查该目录一次，即 `Rules delivered to codebuddy, workbuddy`。只有存在 `.workbuddy/` 时 WorkBuddy 才视为已安装。在有 `.workbuddy/` 但没有 `.codebuddy/` 的项目中，共用副本会创建 `.codebuddy/`，于是 CodeBuddy 在该项目中也会被视为已安装，并同样得到 skills、agents 和 hooks；如果你不用 CodeBuddy，`teamai uninstall --agent codebuddy` 会移除它们并让它保持排除，共用的 rules 仍为 WorkBuddy 保留。user scope 下 CodeBuddy 读取 `~/.codebuddy/rules/`，WorkBuddy 读取 `~/.workbuddy/rules/`。`push` 时只有 Markdown 正文回流；其中没有对应团队规则的文件属于你自己：`pull` 不会删除它，`push` 也不会把它当作新的团队规则提交。旧版 teamai 原样写入的副本，若仍是 teamai 写入的内容，下一次 `pull` 会改写为新格式；
-
-你修改过的副本会保留并给出提示。
+`doctor` 也只检查该目录一次，即 `Rules delivered to codebuddy, workbuddy`。只有存在 `.workbuddy/` 时 WorkBuddy 才视为已安装。在有 `.workbuddy/` 但没有 `.codebuddy/` 的项目中，共用副本会创建 `.codebuddy/`，于是 CodeBuddy 在该项目中也会被视为已安装，并同样得到 skills、agents 和 hooks；如果你不用 CodeBuddy，`teamai uninstall --agent codebuddy` 会移除它们并让它保持排除，共用的 rules 仍为 WorkBuddy 保留。user scope 下 CodeBuddy 读取 `~/.codebuddy/rules/`，WorkBuddy 读取 `~/.workbuddy/rules/`。
 
 > 升级说明：旧版本把 WorkBuddy 的项目 rules 写到 `.workbuddy/rules/`，而 WorkBuddy 从不读取该目录。下一次 `pull` 会删除其中仍是 teamai 投递内容的副本（目录清空后一并删除），并把 rules 写到 `.codebuddy/rules/`，即使团队仓库没有变化也是如此；你改过的副本会保留并点名。WorkBuddy 的一次性迁移把 `~/.codebuddy/rules/` 复制到了 `~/.workbuddy/rules/`（会留下 `~/.workbuddy/.migrated-from-codebuddy`），其中也包括团队规则的副本。复制过来的团队规则若仍是 teamai 投递的内容（该规则的某种渲染结果，或 teamai 记录的在 `~/.codebuddy/rules/` 下同名文件写入的字节），在 WorkBuddy 仍得到该规则时会改写为 CodeBuddy 格式，否则删除；改过的副本会保留并点名，你自己的规则保持不变。
 
@@ -542,9 +538,7 @@ Oh My Pi（OMP）已作为内置目标支持。TeamAI 将 Skills、Rules 和 Sub
 
 Rules 以 OMP 自己的 frontmatter 写入 `.omp/rules/` 与 `~/.omp/agent/rules/`：没有 `paths:` 的规则写成 `alwaysApply: true`，其正文进入每次的提示；带 `paths:` 的规则写成 `globs`（即其 glob 列表）加一个 `description`（正文的第一个 Markdown 标题，没有标题时为 `Team rule for files matching <globs>`），OMP 会在提示的 rulebook 中以 `name (globs): description` 列出它，并在工作匹配时读取。两者都没有的规则会被 OMP 丢弃，teamai 以前原样复制的每条规则正是如此。OMP 只读取 rules 目录的顶层，因此 namespace 下的规则会平铺写入：`rules/fe/style.md` 写成 `fe.style.md`，`push` 会把对该文件的修改写回 `rules/fe/style.md`。push 要求该平铺副本有下发记录；
 
-同名的个人文件既不会在 push 前被刷新，也不会被当作团队规则的修改。若你收到的另一条规则也对应同一个平铺文件名，该规则不会写入：根目录规则（例如 `rules/fe.style.md`）保留该文件，两条 namespace 规则则都不写入；`pull` 会指出这些规则，`doctor` 会报告失败。与团队规则平铺文件名相同的你自己的文件不会被覆盖或删除：只有与下发记录中的内容一致，或与渲染结果完全一致，才能证明它是 teamai 写入的。下发后你修改过的平铺副本，`remove` 和 `uninstall` 会保留并点名。`push` 时只有 Markdown 正文回流；OMP rules 目录中没有对应团队规则的文件属于你自己：
-
-`pull` 不会删除它，`push` 也不会把它当作新的团队规则提交。旧版 teamai 原样写入的副本，若仍是 teamai 写入的内容，下一次 `pull` 会改写为新格式；旧的嵌套副本 `<ns>/<name>.md` 在平铺副本写入后删除，无论是否有下发记录（记录，或与团队规则原文一致，即可证明未被修改）；你修改过的副本会保留并给出提示，因为 OMP 不会读取它：
+同名的个人文件既不会在 push 前被刷新，也不会被当作团队规则的修改。若你收到的另一条规则也对应同一个平铺文件名，该规则不会写入：根目录规则（例如 `rules/fe.style.md`）保留该文件，两条 namespace 规则则都不写入；`pull` 会指出这些规则，`doctor` 会报告失败。与团队规则平铺文件名相同的你自己的文件不会被覆盖或删除：只有与下发记录中的内容一致，或与渲染结果完全一致，才能证明它是 teamai 写入的。下发后你修改过的平铺副本，`remove` 和 `uninstall` 会保留并点名。旧的嵌套副本 `<ns>/<name>.md` 在平铺副本写入后删除，无论是否有下发记录（记录，或与团队规则原文一致，即可证明未被修改）；你修改过的副本会保留并给出提示，因为 OMP 不会读取它：
 
 如需保留修改，请把它复制到平铺文件中。OMP 只在会话启动的目录读取 `.omp/rules/`，因此项目规则只到达从项目根目录启动的会话，从子目录启动的会话收不到。OMP 还会把项目中的 Cursor rules（`.cursor/rules/*.mdc`，仅顶层）和 Copilot instructions（`.github/instructions/**/*.instructions.md`）当作 rule 加载，并按名称每条只保留一份，优先使用它自己的 `.omp/rules` 副本（据 OMP 18.2.1 的加载器核实）。因此启用 Cursor 或 Copilot 时，根目录团队规则只送达 OMP 一次；但启用 Copilot 时，namespace 下的规则会送达两次：一次是 `.omp/rules` 中的 `fe.style`，一次是 `.github/instructions/fe/` 中的 `style`。只有你启用该来源时，OMP 才会读取 `~/.cursor/rules`。
 
@@ -560,7 +554,7 @@ TeamAI 会打印带绝对路径的 patch。将这个 `--patch` 参数加到启�
 
 JoyCode 已作为内置目标支持。Skills、Rules 和 Subagents 分别下发到 `.joycode/skills/`、`.joycode/rules/` 和 `.joycode/agents/`。Subagents 使用带 YAML frontmatter 的 Markdown 文件。
 
-Rules 是采用 JoyCode 自有渲染的 `.mdc` 文件。JoyCode 逐行读取 frontmatter，而不是按 YAML 解析：它会保留 Cursor 渲染给 `globs` 加的引号，并按每个逗号拆分取值，因此 Cursor 形式的带 `paths:` 的 rule 从未生效。带 `paths:` 的 rule 写成不加引号、逗号分隔的 `globs:`，每个 `{a,b}` 选择项都展开为单独的 glob，并加上 `alwaysApply: false`；不带 `paths` 的 rule 写成 `alwaysApply: true`。`push` 时只有 Markdown 正文回流，与 Cursor 相同。旧版 teamai 以 Cursor 形式写入的副本，若仍是 teamai 所下发的内容，会在下一次 `pull` 时重写；你改过的副本会保留并被点名；
+Rules 是采用 JoyCode 自有渲染的 `.mdc` 文件。JoyCode 逐行读取 frontmatter，而不是按 YAML 解析：它会保留 Cursor 渲染给 `globs` 加的引号，并按每个逗号拆分取值，因此 Cursor 形式的带 `paths:` 的 rule 从未生效。带 `paths:` 的 rule 写成不加引号、逗号分隔的 `globs:`，每个 `{a,b}` 选择项都展开为单独的 glob，并加上 `alwaysApply: false`；不带 `paths` 的 rule 写成 `alwaysApply: true`。旧版 teamai 以 Cursor 形式写入的副本，若仍是 teamai 所下发的内容，会在下一次 `pull` 时重写；你改过的副本会保留并被点名；
 
 只要其 `globs` 仍带引号，`pull` 会指出它不作用于任何文件，并说明如何修正。`doctor` 将项目 `.joycode/rules/` 中的每份副本与该渲染比对。
 
@@ -829,45 +823,9 @@ teamai source remove other-team
 
 订阅源的 skills 在 `teamai pull` 时自动同步到本地，与团队自有 skills 共存。`teamai source add`/`remove` 会立即更新当前 scope 的团队仓，因此改动尚未提交时，本机的 `list`、`browse` 和 `pull` 也会使用它。订阅配置存储在该仓库 `teamai.yaml` 的 `sources` 字段中。运行 `teamai push` 会开一个包含配置改动的 PR；合入后，每位成员的 `teamai pull` 都会自动获取到新的订阅源。
 
-订阅源的 skills 与团队自有 skills 落在同一位置（#993）：只送达已启用的工具（`enabledAgents`、`disabledAgents`），写入各工具的 skills 目录（Hermes 的 home、OpenClaw 的 workspace、user scope 下 Copilot 的 home），Codex 只有在 `.agents/skills` 中的副本属于该订阅源时才写入那里。项目外的目标以绝对路径记录，且必须位于该工具的 home 内；同一订阅源被多个项目共享的副本，直到最后一个项目释放它时才会删除。安装 manifest 就是送达记录：它没有记录（同一订阅源的其他安装也没有记录）的已有副本，只有等于当前拉取的源 skill、或等于源仓历史中的某个版本时才算该订阅源的；否则它属于成员：
+订阅源的 skills 与团队自有 skills 落在同一位置，且只送达已启用的工具。
 
-不写入、不删除，每次 pull 都会点名（`Kept <path>: it is not teamai's ...`）。若源缓存没有可读的历史，则只由记录和当前文件判断。旧版本写在项目 `.hermes/skills` 与 `.openclaw/skills`（两个工具都不读取）中的副本，若是源 skill 的某个版本，会在下次 pull 时删除；被改动过的副本会保留，记录也保留（push 仍会排除它），并在每次 pull 时提示：`Kept <path>: teamai no longer delivers source skills here, and this copy differs from <source>/<skill>. Delete it when you no longer need it.`
-
-订阅源的克隆和拉取时间按配置仓库 URL 的 SHA-256 哈希缓存，并在源名称之间共享。不同团队可以用同一源名称订阅不同仓库，不会共用克隆或 24 小时拉取 TTL。同一 URL 的不同源名称共享仓库版本和 TTL，避免旧名称的缓存覆盖已更新的共享 skill。修改 URL 会使用该 URL 的缓存；旧版按名称隔离及仅按名称缓存的克隆会原样保留，不再复用。移除源会保留仓库缓存，供其他安装继续使用。
-
-订阅源安装清单按团队检出与目标目录（用户 HOME、项目或 worktree）分别保存。`source remove` 只释放当前安装的归属，保留共享缓存和其他安装记录。如果另一目标已从共享 `teamai.yaml` 中移除源名称，仍可在剩余目标运行 `source remove <name>`，按其记录清理，且不会重写团队配置。如果共享名称已重新订阅其他仓库，旧安装或无法确定仓库身份的记录也只允许本地清理，并保留新订阅。
-
-pull 在复制前检查物理目标。若重叠路径已由不同或无法识别仓库的安装占用，会跳过该 skill 并显示归属记录；需要先移除另一安装才能替换。同一仓库可以共享并更新路径。新增目标冲突时会保留原有副本；更换仓库时若有冲突，则完整保留原安装。成功更换后会释放旧部署路径。只有最后一个订阅源拥有者释放路径后才删除文件，也适用于符号链接及重叠目录。dry-run 执行相同检查，但不改写 skill 或安装清单。
-
-来源标签使用当前安装记录；如果另一安装的 skill 占据当前物理目标，push 也会排除它。升级时，旧版未记录目标目录的 `installed.json` 无法证明部署位置，会原样保留且绝不作为删除依据。其 skill 名称会暂时从 push 排除并显示警告，因此无关的同名本地草稿也可能被暂缓。先核查并备份所有目标中的旧副本，确认归属后才手动归档旧清单，再 pull 仍使用的源以建立有范围的安装记录。已经停止公开的旧 skill 可能需要人工清理，不会自动推断并迁移。
-
-移动或删除团队检出不等于放弃其已部署文件；尽可能先在原范围移除订阅。新清单记录团队检出和目标目录，归属提示会指出需要核查的记录。孤立记录在人工核查前继续保护文件，不会自动回收。如果归属记录无法安全读取，skill push 会停止并警告，避免误发布第三方文件。
-
-Git 订阅源的添加、浏览/缓存刷新、pull 和移除共用本机生命周期锁，并在锁内重新读取状态。锁被占用时会提示重试，不会越过仍在运行的操作；dry-run 只检查锁状态并读取现有缓存，不克隆、拉取或更新时间戳；没有缓存时会说明暂时无法预览 skill 内容。订阅源事务进行期间，skill push 也会暂缓并提示重试。
-
-成功拉取只记录当前部署目标，并释放不再使用的工具路径，即使仓库 URL 未变也一样。有效源配置未声明 `publicSkills`、列表为空或所有公开 skill 目录均不存在时，会释放原安装；其他安装仍拥有的文件会被保留。源配置缺失或无法读取时会保留原安装，不推断为停止公开。因冲突保留的副本继续保留原路径记录。
-
-公开及已记录的 skill 名称必须已规范化，不能包含规范化后会改变的路径片段、重复分隔符、反斜杠或末尾斜杠，避免通过不同拼写绕过团队 skill 优先级。规范的嵌套名称也不能覆盖团队或内置 skill 的目录，包括父子路径冲突。保护机制留下旧源文件时，pull 或移除会保留其有范围的来源记录，相关路径在人工核查前仍从 push 排除，不会静默收归团队内容。移除订阅源会先检查所有其他归属记录和删除目标，再修改共享配置。归属记录必须包含安全的相对 skill 名称和非空的下级相对路径，或位于项目外工具 home（Hermes、OpenClaw、Copilot）内的绝对路径；
-
-等同根目录、越界或其他绝对路径会阻止清理，且不更改配置或文件。
-
-所有被接受的源名称（包括 `.git`、`node_modules` 和以 `.pyc` 结尾的名称）都参与归属、来源和 push 检查；资源目录过滤规则不会隐藏这些名称的跟踪记录。
-
-若有范围的记录中任一 skill 缺少非空的实际部署路径，pull 和源移除会保留整个安装并要求人工核查；同一仓库和预览也遵循此规则。当前工具路径不能证明历史部署位置，不会作为推测清理、覆盖文件或重建归属的依据。先核查并备份原始源副本及无关本地文件，再人工退役不明确的记录；修改工具路径或重试 `source remove` 无法补全缺失的历史。不明确的有范围归属会跨 checkout 按名称隔离，防止共用 HOME 的另一团队发布保留的源文件；在核查记录前，这可能暂时隐藏无关的同名草稿，完整的现代物理路径记录仍只按路径排除。明确记录了非空普通路径的旧清单仍受支持。 
-
-其他有范围安装或旧版无范围记录中的不明确声明，也会在任何修改前阻止相同、父级或子级逻辑名称的源写入和清理，并指明待核查的记录。由于历史位置未知，此保守名称检查可能阻止本来位于不同目录的操作，但绝不会推测删除权限。无关名称的源和具有完整具体路径的外部记录保持正常行为。
-
-通过归属预检后，订阅源 pull 会恢复 Codex 的已验证副本协调：仅当未被占用的配置目录副本同时与共享副本和传入源内容一致时才删除它。不同的本地副本、其他安装、已有跟踪路径、计划目标以及仓库输入均受保护；dry-run 不会协调文件。若 skill 根目录是符号链接，仅在其解析为源仓库内的子目录时才复制实体内容。越界、悬空或循环的根目录别名会在部署前停止；普通的仓库内别名和工具目标符号链接仍受支持。已有的 skill 根目录链接会保留记录及其指向的内容，等待人工核查；仅凭物理路径记录不能授权删除链接目标。不会迁移内部文件符号链接。
-
-对于已有完整物理路径记录的订阅源，push 只按实际物理路径排除其内容；另一个 agent 中无关的同名本地 skill 仍是候选项。仅旧版或缺少完整物理归属的有范围记录使用按名称隔离；格式错误或不完整的物理路径记录仍会阻止 skill push。
-
-新的有范围安装记录会在复制后保存每个目标的原始物理路径。对已有安装执行复制、撤回或移除前，TeamAI 会核对全部目标；符号链接改向、悬空、无法读取或无法确认时，会在更改安装文件、YAML 或记录前停止。请恢复原目标后重试，或人工核查保留文件和记录。其他安装保护的是原始物理位置，不是符号链接的新目标。没有物理路径记录的旧安装仅允许明确记录的普通路径；已有符号链接路径（包括链接形式的根目录）需要人工核查，不会猜测历史归属。新安装仍支持稳定的符号链接目标。
-
-规范的嵌套公开名称（如 `group/child`）仍受支持。若父子目录边界变更存在歧义（包括同一仓库的其他安装），或不同 skill 身份指向同一个物理目录，pull 会在复制任何 skill 或修改安装记录前停止。警告会要求人工核查：备份保留的文件，在受影响的安装中执行 `source remove`，再拉取新的公开内容。如果保留的父目录中还有其他订阅源拥有的子目录，父目录的来源记录也会保留；先移除子目录的安装，再重试移除父目录。不会自动迁移子树。互不重叠的目标迁移，以及同一仓库、同一 skill 对完全相同路径的共享仍受支持。
-
-状态和 skill 详情按记录的物理路径识别嵌套订阅源安装，不会将无关同名副本标为来自该订阅源。如果有范围的来源记录无法读取，状态或 skill 检查会提示来源标签不完整；local-only 标签不代表该文件已确认为本地所有。
-
-请勿并行执行订阅源安装/移除与 push。订阅源锁会串行化源状态修改，但 push 不会在整个暂存和发布事务中一直持有该锁；完整的跨命令快照隔离仍有限制。
+订阅 skill 路径上你自己的文件会保留并点名，不会被覆盖。`source remove` 只清理当前这次安装。缓存、锁，以及 pull 拒绝删除文件的情况，见[跨团队订阅源的安装归属](../../designs/data-directory-layout.md#cross-team-source-installation-ownership)。
 
 源仓只会共享它在自己 `teamai.yaml` 的 `publicSkills` 列表里显式声明的 skill。如果对方仓库没有 `teamai.yaml`，或没有声明 `publicSkills`，`teamai source add` 仍会成功，但会警告该源将同步 **0 个 skill**——需要对方团队先发布 `publicSkills` 列表，才会有内容流转过来。
 
