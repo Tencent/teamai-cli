@@ -11,7 +11,7 @@ A member joins an **existing** repo. You need its full URL from the admin.
 
 If the user has not given a full URL, ask for it:
 *"Paste the full team repo URL your admin gave you (e.g.
-https://github.com/yourorg/yourrepo)."* Do not proceed with `owner/repo` short
+https://github.com/your-org/your-repo)."* Do not proceed with `owner/repo` short
 form.
 
 **If the user does not have the URL, STOP here.** Do not guess a URL, do not probe

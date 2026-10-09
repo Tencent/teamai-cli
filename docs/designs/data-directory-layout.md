@@ -42,11 +42,15 @@ Git source add, browse/cache refresh, pull, and removal use the same machine-loc
 
 A successful source pull records only its current destinations and releases obsolete tool paths, including when the repository URL is unchanged. A valid source config with no `publicSkills`, an empty list, or no remaining published skill directories releases the previous installation. Files still owned by another installation remain protected; a missing or unreadable source config leaves the old installation untouched. Conflict-retained copies keep their previous records.
 
-Public skill names and recorded skill identities must already be canonical (no normalization-changing segments, repeated separators, backslashes, or trailing slash), so alternate spellings cannot bypass team-skill priority. Canonical nested names also respect local-team and builtin skill directory ownership, including ancestor/descendant conflicts. When this protection leaves previous source files in place, pull/removal retains their scoped provenance and excludes their paths from push pending manual review; it does not silently adopt them as team content. Source removal preflights all foreign ownership records and deletion targets before editing shared configuration. Ownership records must contain safe relative skill names and non-empty relative descendant paths, or absolute paths inside a tool's home outside the project (Hermes, OpenClaw, Copilot; #993); root-equivalent, escaping, and other absolute paths stop cleanup before configuration or files are changed.
+Public skill names and recorded skill identities must already be canonical (no normalization-changing segments, repeated separators, backslashes, or trailing slash), so alternate spellings cannot bypass team-skill priority. Canonical nested names also respect local-team and builtin skill directory ownership, including ancestor/descendant conflicts. When this protection leaves previous source files in place, pull/removal retains their scoped provenance and excludes their paths from push pending manual review; it does not silently adopt them as team content. Source removal preflights all foreign ownership records and deletion targets before editing shared configuration. 
+
+Ownership records must contain safe relative skill names and non-empty relative descendant paths, or absolute paths inside a tool's home outside the project (Hermes, OpenClaw, Copilot; #993); root-equivalent, escaping, and other absolute paths stop cleanup before configuration or files are changed.
 
 All accepted source aliases, including `.git`, `node_modules`, and names ending in `.pyc`, participate in ownership, provenance, and push checks; resource-directory filters never hide their tracking.
 
-If any skill in a scoped record lacks non-empty recorded destinations, pull and source removal keep the entire installation unchanged and require manual review, including for the same repository and during previews. Current tool paths cannot prove historical deployment locations, so they never authorize inferred cleanup, overwrites, or replacement claims. Review and back up the original source copies and unrelated local files before manually retiring the ambiguous record; changing tool paths or retrying `source remove` does not resolve missing history. Ambiguous scoped claims are quarantined across checkouts, so another team sharing HOME cannot publish the retained source bytes. This can temporarily hide unrelated same-named drafts until the record is reviewed; complete modern pins remain path-specific. Older records with non-empty concrete plain paths remain supported. An ambiguous claim in another scoped installation or an unscoped legacy record also blocks source writes and cleanup for equal, parent, or child logical names before any mutation. Its warning identifies the record to review. This conservative name guard may block otherwise separate destinations because their historical location is unknown; it never invents deletion authority. Sources with unrelated names and complete recorded foreign paths retain their normal behavior.
+If any skill in a scoped record lacks non-empty recorded destinations, pull and source removal keep the entire installation unchanged and require manual review, including for the same repository and during previews. Current tool paths cannot prove historical deployment locations, so they never authorize inferred cleanup, overwrites, or replacement claims. Review and back up the original source copies and unrelated local files before manually retiring the ambiguous record; changing tool paths or retrying `source remove` does not resolve missing history. Ambiguous scoped claims are quarantined across checkouts, so another team sharing HOME cannot publish the retained source bytes. This can temporarily hide unrelated same-named drafts until the record is reviewed; complete modern pins remain path-specific. 
+
+Older records with non-empty concrete plain paths remain supported. An ambiguous claim in another scoped installation or an unscoped legacy record also blocks source writes and cleanup for equal, parent, or child logical names before any mutation. Its warning identifies the record to review. This conservative name guard may block otherwise separate destinations because their historical location is unknown; it never invents deletion authority. Sources with unrelated names and complete recorded foreign paths retain their normal behavior.
 
 After ownership preflight, source pull restores Codex's verified duplicate reconciliation: an unowned configured copy is removed only when it matches both the shared copy and incoming source. Different local copies, other installations, existing tracked paths, planned destinations, and repository inputs remain protected; dry-run never reconciles files. A symbolic-link skill root is copied as concrete contents only when it resolves to a child directory inside the source repository. Outside, dangling, or looping root aliases stop before deployment; ordinary in-repository aliases and tool-destination symlinks remain supported. Previously installed skill-root links retain their record and referent for manual review; a physical pin alone does not authorize deleting the link target. This does not migrate nested file symlinks.
 
@@ -92,7 +96,9 @@ checkout in `lastPullByWorkspace`, keyed by `managedMcpWorkspaceId(workspaceRoot
 plus the inode and birth time of the checkout's `.git` entry (new each time a
 worktree is created, so a worktree re-created at the same path gets its own key),
 and takes the unchanged-repo fast path only when the shared `lastPullRev` and this
-checkout's own revision and tool targets all match. A worktree added after the
+checkout's own revision and tool targets all match. 
+
+A worktree added after the
 last pull therefore gets a full sync on its first pull, and two checkouts with
 different tool directories no longer force a full sync on each other (#807).
 Clearing `lastPullRev` still forces a full sync, which is how exclude, tags,
@@ -101,7 +107,9 @@ roles, projects, init and bootstrap apply their changes: the pull that finds
 which matches no revision, so each checkout does its own full sync (an older
 CLI compares `rev` too, so it also misses the fast path). A new team revision
 resets nothing, since a checkout recorded at an older revision already misses
-the fast path. `push` needs that entry too: before scanning, it syncs each rule
+the fast path. 
+
+`push` needs that entry too: before scanning, it syncs each rule
 and skill the member never edited, and "never edited" means equal to the
 version at a revision *this* checkout synced, not the shared `lastPullRev`
 another checkout may have moved (#812). Rules of a tool with its own rules
@@ -110,6 +118,8 @@ and render refreshed copies in the tool's native format. Rule sync uses the same
 scanner, including `COPILOT_HOME` for user-scope Copilot instructions.
 It checks `isAgentExcluded` before installation detection, so retained tool
 directories do not authorize writes to rules excluded by the local configuration.
+
+
 For Copilot updates that only change `paths`, it compares the entire local file
 with the rendered recorded versions before refreshing `applyTo`, preserving
 locally edited headers rather than overwriting them on a body match alone.
@@ -117,7 +127,9 @@ Each copy it writes, in any format, is recorded in the checkout's `delivered`
 (#822), so the next pull does not keep it as the member's edit.
 A placed agent, which push does not
 sync, is held when the team file has changed since any of those revisions, or
-since it was added if one of them predates it (#823). That sync brings the
+since it was added if one of them predates it (#823). 
+
+That sync brings the
 unedited copies up
 to the team repo, so when push has refreshed the team repo it adds the
 revision it synced to the entry's `pushBaseRevs`, newest first, even under
@@ -127,18 +139,24 @@ an older base. If push cannot save that revision, it stops before scanning and
 pushes nothing. The next push
 accepts a copy at any of `pushBaseRevs` or at `rev`, so a copy the sync left
 alone as edited is recognized again once the member undoes the edit, back to
-whichever version a sync gave it. The list keeps the 20 newest revisions; a
+whichever version a sync gave it. 
+
+The list keeps the 20 newest revisions; a
 copy at an older one reads as an edit until the checkout pulls. Push never
 moves the entry's `rev`: the pull fast path reads it, and the checkout still
 lacks that revision's docs and agents. A reset entry keeps its bases, `rev`
 included, in `pushBaseRevs`, and the next pull in the checkout rewrites the
-entry without them. A checkout with no entry (new, or last pulled by an older
+entry without them. 
+
+A checkout with no entry (new, or last pulled by an older
 CLI) syncs against the shared `lastPullRev`, which may be another checkout's or
 cleared, so when the scan lists a team rule or skill as modified, push stops
 before creating a branch and asks the member to save any edits to them and run
 `teamai pull` in the checkout. A rule this machine placed (`placedRules`) is the
 author's own copy and does not count; config-only pushes and new resources go
-through. Each project checkout's full sync records its `root` in its entry,
+through. 
+
+Each project checkout's full sync records its `root` in its entry,
 and every full sync drops the entries whose `root` is no longer a checkout of
 the repository (it has no `.git`, or `git rev-parse --git-common-dir` there
 names another common directory) or is one under another key, so a deleted or
@@ -147,7 +165,9 @@ does not read `git worktree list`, which names the git directory instead of
 the main checkout in a `--separate-git-dir` repo or a submodule (#993). An
 entry an older CLI wrote without `root` is kept until its checkout's own full
 sync adds one, and every entry is kept when git cannot name this checkout's
-common directory. A
+common directory. 
+
+A
 state.json written before this field has no entry, so each checkout does one
 full sync after the upgrade. The user scope's pull records its one checkout,
 HOME, the same way, for push's bases alone: its fast path still reads the
@@ -156,13 +176,17 @@ synced since) compares with `lastPullRev` and `lastInheritedPullRev`, which
 only HOME's pulls move and either of which may have run last, so push does not
 stop there; its first push creates the entry from `lastPullRev`, with
 `lastInheritedPullRev` as a push base, and adds the revision its sync reached.
+
+
 A project pull that inherits the user scope (`inheritUserScope`) moves HOME's
 skills, rules and agents too, so it adds its revision to that entry's push
 bases, creating the entry the same way if there is none, and leaves the entry's
 `rev` alone. So does any pull whose docs mirror or submodule update fails, or
 that holds an agent whose model cannot be resolved (#830), a cause the member
 may fix without a new team revision: it leaves its revision marker for the
-retry, but the skills, rules and agents it delivered are at the new revision. A full pull that holds skills or agents on a
+retry, but the skills, rules and agents it delivered are at the new revision. 
+
+A full pull that holds skills or agents on a
 namespace collision writes its revision as `rev` but keeps the entry's earlier
 bases as push bases, since the held copies stay at them. Like a full pull, an
 inherited pull already synced at the team's revision writes nothing (#823).
@@ -170,7 +194,9 @@ The entry's `agentModels` records, by agent stem and tool, the model, effort
 and resolution step each YAML agent copy received when pull last wrote it
 (#830), and for an alias step the alias name, so a removed alias is noticed
 even where it gave the tool no model. A copy pull keeps as the member's edit,
-or holds because its model cannot be resolved, keeps its old entry. The fast
+or holds because its model cannot be resolved, keeps its old entry. 
+
+The fast
 path compares each agent's current resolution with it and redeploys only the
 agents that differ, through the same ledger, so HOME's entry and each project
 checkout's are separate; a copy the ledger keeps as the member's edit is
@@ -178,7 +204,9 @@ named, as a full sync names it, and its entry kept. A missing copy is
 delivered, entry or not. An agent with no entry is also redeployed where an
 alias replaces its `model`, which is what an older CLI wrote as is, and where
 its copy still has the bytes `delivered` records but not the current render (an
-older CLI's render, such as Claude extras in a Qoder copy). Without a
+older CLI's render, such as Claude extras in a Qoder copy). 
+
+Without a
 `delivered` entry for the copy nothing tells that render from an edit, so it
 is left alone.
 
@@ -189,10 +217,14 @@ path rewrites each rule copy that still has the bytes `delivered` records but
 is not the current render, records the new bytes, and of a copy without an
 entry rewrites only one that is the team rule verbatim, which is what the older
 CLI wrote. A copy the member changed is kept and named when teamai would now
-deliver other bytes there. A destination that moved (WorkBuddy's project rules,
+deliver other bytes there. 
+
+A destination that moved (WorkBuddy's project rules,
 from `.workbuddy/rules` to `.codebuddy/rules`) has no entry at its new path, so
 the fast path first reclaims the old copies (`LEGACY_RULE_DIRS`), writes the
-new path where it is missing, and records the change. The flat names of Oh My Pi
+new path where it is missing, and records the change. 
+
+The flat names of Oh My Pi
 and Kiro (`RuleFormat.flat`: `<ns>/<name>.md` became `<ns>.<name>.md`, in the
 same directory) work the same
 way through `movedFrom`: the copy at the old path is what lets the fast path
@@ -250,6 +282,8 @@ the canonical dir and is left untouched; an external clone outside the partition
 is left untouched) and self-healing (it finishes an adoption that crashed between
 the rename and the config rewrite) — the same `repo.localPath` rebase that
 `migrate.ts` applies when moving a legacy `.teamai/` into a partition.
+
+
 A `--dry-run` detection adopts nothing: `resolvePartitionDir(anchor, { dryRun })`
 returns the directory that holds the data now (the legacy name, where adoption
 would rename it) and rewrites no config.
@@ -279,6 +313,8 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
      `O_CREAT|O_EXCL`), so the lock never exists without its content (#760); a
      filesystem without hard links falls back to `writeFile(path, payload, { flag: 'wx' })`.
      Payload is JSON `{ pid, startedAt, owner }` with a random `owner` token.
+
+
    - On `EEXIST`, reclaim only a **stale** lock: one whose owner is provably gone
      (`process.kill(pid,0)` fails with `ESRCH`). The reclaim is **serialized behind an
      atomically-created reclaim sentinel** and finished with an atomic rename-into-place,
@@ -287,7 +323,9 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
      lock that cannot be read (`EACCES`), an empty or partly written one (the `wx`
      fallback and older teamai open the file before writing), and a pid owned by another
      user (`EPERM`). A lock that names no owner, or cannot be read, stays until
-     removed by hand if a crash left it, and a warning names it. A lock that vanished before it could be read gets one more
+     removed by hand if a crash left it, and a warning names it. 
+
+   A lock that vanished before it could be read gets one more
      exclusive create instead (a third process may already have re-created it).
    - Migration skips the locks' transient artifacts (`<lock>.<uuid>.tmp`, `.sentinel`
      and its temps, `.new-<uuid>`) along with the locks themselves.
@@ -358,7 +396,9 @@ in the checkout's `.teamai/`. That `.teamai/` is team knowledge committed to mai
 so it is never copied whole or renamed: the self migration moves only those
 entries into the partition (see P2 below). Self mode reads its scope and kind
 from the partition's `config.yaml` when the checkout's is gone, so a relocation
-interrupted after the config moved still finishes. A partition `config.yaml` that
+interrupted after the config moved still finishes. 
+
+A partition `config.yaml` that
 exists but that detection cannot read plans nothing, with a warning naming the
 file, as for the other kinds below: the checkout's config is the only one that
 still loads, and nothing leaves the checkout until the member fixes that file.
@@ -371,14 +411,18 @@ authoritative partition; it only cleans up the leftover legacy dir, after settli
 its queue by the partition's config (settleCheckoutQueue, below): into the partition
 queue, or set aside, never into `.teamai.bak`, which a removed linked worktree takes
 with it. A queue that cannot move keeps the legacy dir (`'skipped'`), so
-`contribute` and `import --from-mr` stop on it and the next run tries again. A partition
+`contribute` and `import --from-mr` stop on it and the next run tries again. 
+
+A partition
 `config.yaml` that exists but that detection cannot read (it is empty or cannot be
 opened, does not parse, does not validate, or is not `scope: project`) plans nothing:
 the legacy dir holds the only config that still loads, so it stays in place (a warning
 names the file) until the member fixes the partition file, and the next write command
 then gets the retire-only cleanup. A partition dir with no `config.yaml` at all (say,
 one moved aside by hand) plans nothing either, with a warning: the full copy replaces
-the whole dir, so it would take that dir's data with it. The full copy's re-check under
+the whole dir, so it would take that dir's data with it. 
+
+The full copy's re-check under
 the lock in `runMigration` applies the same rules, warning and queue included.
 
 A readable self partition over a legacy dir that holds self knowledge (a
@@ -388,7 +432,9 @@ next to its old install, so retiring the whole dir would take the knowledge too
 (#808). Its machine entries (`SUPERSEDED_ENTRIES`: state, token, the `env` file,
 the team-repo clone and its `last-fetch.json` stamp, indexes, report and usage data) move to a new
 `.teamai.bak[.N]` with its own `.gitignore` (`*`), as step 5 keeps a retired dir;
-the knowledge stays. Then its queue is set aside as `pending-learnings.<old kind>`
+the knowledge stays. 
+
+Then its queue is set aside as `pending-learnings.<old kind>`
 (settleCheckoutQueue, below), and only then does `config.yaml` follow: it is what
 tells the next run the queue is the old install's. A learning still queued at that
 point (a `contribute` from a teamai older than the queue lock, below, running
@@ -481,7 +527,9 @@ stays in the checkout's `.teamai/`.
   self-heal bootstrap — which now writes the config into the PARTITION — then reads
   it back FROM the partition (`selfHealAndReadPartition`). A pre-P2 install whose
   config still sits in `<repo>/.teamai` is read via the legacy branch (double-read
-  compat) until migration relocates it. A `--dry-run` detection (a command that
+  compat) until migration relocates it. 
+
+  A `--dry-run` detection (a command that
   forwards `--dry-run` to its loader, or a read-only one such as `status`, `list`,
   `doctor` or `mcp list`, which loads this way unconditionally) previews the bootstrap
   instead (`previewSelfBootstrap`): it builds the config it would write, keeps it
@@ -603,6 +651,8 @@ Upgrading from the per-checkout layout:
   repository. It is set aside instead, as a mode switch does (below), to
   `pending-learnings.self` beside the partition queue, with a warning naming
   it.
+
+
   A queue with no `config.yaml` beside it is one an older self install left
   after its config had moved to the partition; once the project serves another
   install no plan covers it, so every migrating command sets it aside the same
@@ -610,7 +660,9 @@ Upgrading from the per-checkout layout:
   it stays, with a warning naming that file.
   A superseded git install's queue goes to `pending-learnings.git` the same way,
   and a git or http checkout's queue takes the same step before retire-only
-  retires the rest. A queue is the partition's only when both installs have the
+  retires the rest. 
+
+  A queue is the partition's only when both installs have the
   same kind and team repository (#823 item 13, below): a checkout's git install
   of another team repository has its queue set aside as
   `pending-learnings.git-<repo>`. While the partition config cannot be read, the self
@@ -620,6 +672,8 @@ Upgrading from the per-checkout layout:
   migration relocates nothing and reports `skipped`, keeping `config.yaml`, as
   retire-only and superseded do: the next run settles it.
   It runs per checkout; the old directory is the "not done yet" marker.
+
+
   After the migration, `contribute` and `import --from-mr` stop with exit code 1
   and save nothing whenever a learning queued now would still be kept in the
   checkout's `.teamai/` (`queueKeptInCheckout`): the migration stood down on the
@@ -636,13 +690,17 @@ Upgrading from the per-checkout layout:
   project's kind or team repository. Queue writes (`savePendingLearning`, which `contribute` and
   `import --from-mr` both use), the migration and the kind switch therefore
   share one lock per queue home, the directory holding `pending-learnings/`:
-  `~/.teamai/locks/queue-<first 16 hex of sha256(realpath(home))>.lock`. It
+  `~/.teamai/locks/queue-<first 16 hex of sha256(realpath(home))>.lock`. 
+
+  It
   lives outside the home because the migration renames a checkout's
   `.teamai/`, and a writer waiting on a lock inside it would create the
   directory again; the sync lock is not reused because git pulls hold it for
   their whole run. A write holds the lock only around the file write: under
   it, it re-reads `<dataHome>/config.yaml` and saves nothing when that file is
   gone, cannot be read or names another kind or team repository (`changed`).
+
+
   The migration holds
   the checkout's lock from after its sync lock to the end, through the rename
   or the last `config.yaml` move; `settleCheckoutQueue` holds the partition's
@@ -652,7 +710,9 @@ Upgrading from the per-checkout layout:
   nothing: the learnings stay for the install they were written for. Waits
   are bounded (30 x 100 ms): a write then exits 1 with `Another teamai command
   is moving this project's queued learnings (...). Nothing was saved.`, the
-  migration returns `busy`, and `init` exits 1 without saving the new config. Locks are
+  migration returns `busy`, and `init` exits 1 without saving the new config. 
+
+  Locks are
   taken in the order sync lock, checkout queue lock, partition queue lock, and
   a queue write holds no other lock. A teamai older than this takes no queue
   lock, so its `contribute` beside a migration can still leave a learning in
@@ -664,12 +724,16 @@ Upgrading from the per-checkout layout:
   registration of the same branch at a path ending in `/.teamai/<dirname>`, it
   runs `git worktree remove` without `--force`. A clean one goes (its commits
   are on the branch, which the new checkout reuses), so a `contribute` in a
-  linked worktree works with no pull first. One with uncommitted changes stays:
+  linked worktree works with no pull first. 
+
+  One with uncommitted changes stays:
   the side-branch step fails with an error naming the path and the next step
   (commit or move the changes, or delete the path by hand), and the queue keeps
   the learnings until then. What `import --from-mr` in 0.25.0 to 0.26.0-beta.3 left there is not
   such a change (#823 item 7): it wrote `learnings/<YYYY-MM-DD>-<title>.md` with
-  `source_mr` in the frontmatter and never committed it. `publishQueuedLearnings`
+  `source_mr` in the frontmatter and never committed it. 
+
+  `publishQueuedLearnings`
   first finds the branch's one registered checkout (`git worktree list` of the
   owning repo, so the shared one or the old `.teamai/<dirname>`, never another
   repository's), and queues each untracked file of exactly that shape, directly
@@ -679,11 +743,15 @@ Upgrading from the per-checkout layout:
   branch is the tree of `origin/teamai-learnings`, fetched first, never the
   checkout's tracked files: the old checkout is never synced again, so it may
   miss a teammate's later import of the same MR, or still track one origin has
-  since deleted (#823 item 21). When that fetch fails, every such file stays where it is
+  since deleted (#823 item 21). 
+
+  When that fetch fails, every such file stays where it is
   until a run can fetch, so a stale ref never queues a duplicate; when
   `git ls-remote` shows origin has no such branch (an offline first publish
   never pushed it), origin adds nothing and the files are queued. A file of
-  that shape that cannot be read is skipped, never holding back the rest. The
+  that shape that cannot be read is skipped, never holding back the rest. 
+
+  The
   queue is read under the queue lock, and only while the data home's config
   still names the install the command loaded (`readPendingForInstall`, the
   check `listPendingForInstall` makes): after `init` switched the project to
@@ -691,7 +759,9 @@ Upgrading from the per-checkout layout:
   does, or while the lock stays busy, every such file stays where it is. It runs only under the sync lock, before the queue is listed,
   and never on a dry run, which publishes nothing from the queue either and
   `pull` reports as `Would publish N queued learning(s)` (#823 item 20); any
-  other file in the checkout is left alone. The error is also printed as a warning, because
+  other file in the checkout is left alone. 
+
+  The error is also printed as a warning, because
   several callers treat a side-branch failure as non-fatal and log it at debug
   only; a silent (hook) run prints nothing. `refresh` does not swallow it:
   `recall maintenance` and `recall promote` stop with exit code 1 and write
@@ -708,7 +778,9 @@ Upgrading from the per-checkout layout:
   reader (`members`, `projects members`, `digest`, `pull`, `stats` and `viz`,
   through `readableReportsWorktree`) uses the local copy and never ensures it,
   after the same ownership probe as `indexableVotesDir` (below): another
-  repository's copy is refused with `ForeignCheckoutError`. A refresh that
+  repository's copy is refused with `ForeignCheckoutError`. 
+
+  A refresh that
   failed is tried once more, under the lock, and a second failure throws its
   cause: a reader never creates the checkout without the lock, which a writer
   that took it meanwhile may be creating (#823 item 15). The
@@ -727,13 +799,17 @@ the repository it belongs to and the command that removes it
 (`git -C <owner> worktree remove <checkout>`); it never removes it itself. A
 checkout git cannot open (`rev-parse` fails) is recreated only while the owning
 repo still registers it: its `.git` file names a gitdir whose `commondir` leads
-to the owning repo's git dir. A gitdir without it proves nothing: git pruned the
+to the owning repo's git dir. 
+
+A gitdir without it proves nothing: git pruned the
 registration, and a clone at the same path (the clone was deleted and cloned
 again, as `init` does when it switches to another team repository) is not the
 repository the checkout came from. That checkout, and any other path with a
 `.git` (one whose repository was moved or deleted, or a `.git` directory), is refused with
 the same error type, saying teamai cannot show whose it is, and is never
-removed; a path with no `.git` (a partial leftover) is cleared as before. The
+removed; a path with no `.git` (a partial leftover) is cleared as before. 
+
+The
 refusal is a `ForeignCheckoutError`, which `refresh` does not swallow either,
 because every path under the checkout is the other install's:
 `recall maintenance` and `recall promote` stop with exit code 1 instead of
@@ -744,6 +820,8 @@ same way on another repository's reports checkout. Every search-index build
 checkout's learnings: the queue, docs, rules, skills and older learnings stay
 recallable, and a plain `recall` runs no git. `digest` and the dashboard (`viz`:
 its throwaway index and its promotion and prune candidates) use the same roots.
+
+
 Those builds, and the reports checkout `teamai recall feedback --negative` counts
 the team's upvotes from, take the votes directory from `indexableVotesDir`,
 which runs the same probe on the reports checkout: another repository's votes
@@ -753,6 +831,8 @@ command returns after previewing the requested feedback, before any vote read,
 migration, lock, or reports-checkout probe. No vote count is predicted; ordinary
 diagnostic logging still applies.
 Negative feedback reads the team's votes without persisting a v1 → v2 upgrade there. A successful downvote is recorded in the scope's local votes and reaches the team's reports on sync.
+
+
 The recall hook's vote judge, which starts no git process, reads the same answer
 from git's files: the checkout's `.git` file names its gitdir, whose `commondir`
 leads to the owning repository's git dir, compared (realpath'd) with this
@@ -764,18 +844,24 @@ The queue is the same partition directory in both modes, and its learnings were
 written for the previous install's repository. A queue's owner is its install's
 kind and team repository (`repo.remote`, compared as `remotesMatch` compares
 remotes: credentials, protocol, scp or URL form, a trailing `.git` or `/` and
-case do not count; #823 item 13). When `init` changes the owner with learnings
+case do not count; #823 item 13). 
+
+When `init` changes the owner with learnings
 still queued, it moves the queue, under the queue lock and together with saving
 the new config (above), to `pending-learnings.<previous kind>`, or
 `pending-learnings.<kind>-<repo>` when only the team repository changed (`<repo>`
 is the compared form of the previous remote with `/` and the like as `-`, e.g.
 `pending-learnings.git-github.com-org-team-a`), beside it (the first free name,
 nothing is overwritten) and says how many learnings it set aside and where;
-nothing is published to the new repository or deleted. A previous config that
+nothing is published to the new repository or deleted. 
+
+A previous config that
 exists but cannot be read names no owner: the loaders return null for it as for
 a fresh install, so `init` checks for the file, and with learnings queued moves
 them to `pending-learnings.unknown` the same way, the warning naming that config;
 queued or not, it drops the search indexes, as on an owner change.
+
+
 When `init` is about to clone another owner's team repository where the old
 install's clone was, or reuses a clone of it that an earlier `init` left there,
 it settles the old install right then, before the clone or the refresh,
@@ -783,7 +869,9 @@ the same way (queue set aside, indexes dropped), and moves the old
 `config.yaml` to the first free `config.yaml.previous[.<n>]` instead of saving
 (#823 item 17). The save at the end still compares with the old install
 loaded before the clone, finds nothing left to set aside, and writes the new
-config. An `init` that stops in between (an unknown `--role`, a busy queue lock, a
+config. 
+
+An `init` that stops in between (an unknown `--role`, a busy queue lock, a
 prompt left) leaves no config naming the old team beside the new clone, so every
 command asks for `teamai init`; nothing is deleted. The rerun finds no
 `config.yaml`, so it reads the last `config.yaml.previous[.<n>]` for the
@@ -791,7 +879,9 @@ settings a re-init carries forward (`inheritUserScope`, agents, tool roots).
 A self install whose
 business repository moved to another URL (renamed or transferred) is another
 owner too: `init` sets its queue aside, and the warning names the directory to
-move the files back from. It also deletes every search index
+move the files back from. 
+
+It also deletes every search index
 in the data home (the root one and each `workspaces/*/`): they were built from
 the other repository, and `recall` rebuilds a missing index. `uninstall` lists, before it asks,
 how many unpublished learnings each queue in the data home holds, set-aside ones
@@ -806,7 +896,9 @@ older CLI's, or one contribute, recall, viz, the MCP writers or the local agent
 created before its checkout's first full pull) goes only when
 `git worktree list --porcelain -z` names every checkout (no non-bare entry is
 the common directory) and none of them, as git prints it or realpath'd, has its
-id. With `--separate-git-dir`, in a submodule, on git before 2.36, or when it
+id. 
+
+With `--separate-git-dir`, in a submodule, on git before 2.36, or when it
 holds `local-agent/`, it stays until its checkout's own full pull writes
 `root`. The fast path probes nothing.
 
@@ -847,20 +939,26 @@ project's report carry every project's skills. The user scope records in
 an earlier release still writes after a rollback; the shared file is never
 read. Local votes followed for the same reason (#787): `<dataHome>/votes/`, and
 `~/.teamai/user-votes/` (`getUserVotesDir()`) for the user scope, so a scope
-pushes only the votes cast where it is set up. The old shared `~/.teamai/votes/`
+pushes only the votes cast where it is set up. 
+
+The old shared `~/.teamai/votes/`
 is never read, and its pending deltas are not pushed. The recall log sits beside
 them (#884): `<dataHome>/dashboard/recall.jsonl` in every scope (`dashboard/` is
 already ignored in a workspace `.teamai/`), local and owner-only, never pushed, and pruned only by `pull` (30 days, then 5,000 lines). The dashboard stays an A2
 singleton: `teamai dashboard`, `session save` and the contribute check read
 across scopes; `stats --by-repo` reads only the current scope's events, as the
-rest of `stats` does (#795). Each event instead
+rest of `stats` does (#795). 
+
+Each event instead
 carries `dataHomeKey`, a hash of the realpath'd `getDataHome()` of the scope the
 hook resolved (#785; a hash, so a Copilot event still stores no path), and a
 scope's report keeps the sessions whose first keyed event is its own, whole: a
 Stop carries the whole transcript's totals, so a session that moved scope (a `cd`
 mid-session) is reported once, where it started. A tool's own session ID is one
 session whatever ends it records: `claude --resume` continues it, in a new
-process, and its Stop carries the whole transcript. A fallback ID (`pid-…`;
+process, and its Stop carries the whole transcript. 
+
+A fallback ID (`pid-…`;
 Copilot's is the parent PID) names one run up to its `session_end` or
 `process_exit`, so a later run that reuses it is decided on its own; a second end with nothing
 recorded since the first (the dashboard monitor's `process_exit` after
@@ -869,7 +967,9 @@ recorded since the first (the dashboard monitor's `process_exit` after
 though nothing ended that one (a crash with no dashboard running), and that one
 counts as the run closed before it; a tool's own
 ID is not split this way, since Claude fires SessionStart again on resume, in a
-new process, and its Stop carries the whole transcript. The monitor's `process_exit` also
+new process, and its Stop carries the whole transcript. 
+
+The monitor's `process_exit` also
 records `processExitAfter`, the last event it observed, and closes only that
 run: an exit appended after the next run of the same ID began does not end it,
 and one whose run compaction dropped is ignored. A dashboard started before
@@ -878,7 +978,9 @@ an exit followed by more events of its fallback ID before the next start did
 not end the open run: it belongs to the run closed before it, however late it
 was appended. A tool's own session ID is
 reported and snapshotted under the ID itself, as before, so a session resumed
-after compaction dropped its events still reads what its scope reported. The
+after compaction dropped its events still reads what its scope reported. 
+
+The
 scope that first reports it also appends the ID and its own data home key to
 `~/.teamai/dashboard/session-owners.jsonl` (never a path, #666), and a session
 recorded there is that scope's wherever it is resumed later, whatever the log
@@ -886,41 +988,57 @@ still holds, so another scope never reports its transcript again; the first
 line for an ID wins, and the file grows by one line per such session, like the
 snapshots. An earlier release kept only per-scope snapshots, so the file is
 first written from them: a tool's own ID is the scope's whose snapshots show it
-reported it with the greatest total (prompts, then tokens). They show it when the
+reported it with the greatest total (prompts, then tokens). 
+
+They show it when the
 shared snapshots (all three) hold none of it, or the scope is past their total:
 that release copied the shared file into every scope it ran in, so a copy, even
-the only one, shows nothing, and a tie names no owner. When several scopes
+the only one, shows nothing, and a tie names no owner. 
+
+When several scopes
 reported it (a session that release split per event), the owner's line also
 carries the credit of their parts, applied once as its baseline: a part whose
 daily entry shows it ended in a Stop holds the transcript's cumulative total, so
 the greatest such part counts once, while a part with no Stop counted its own
 prompts, which add; interruptions, rejections and tokens, from Stops, take the
-greatest, and corrections, counted per prompt, add. Whether a part with no
+greatest, and corrections, counted per prompt, add. 
+
+Whether a part with no
 Stop came before another's cumulative Stop, which already counts it, is read
 from the session's transcript when it has one (Claude): it keeps every prompt
 in order with the directory it was typed in, so the Stop covers the first
 prompts and only the part's prompts after those add. With no transcript to
-place them they all add, which undercounts once but never sends a prompt again. The scopes read are the
+place them they all add, which undercounts once but never sends a prompt again. 
+
+The scopes read are the
 user scope, every partition, and a project whose data home is in its workspace
 that a session still in the log leads to; each report also records the IDs of
 its own snapshots that have no owner yet and show it reported them (absent from
-the shared snapshot, or past its total there). A session none of these reach
+the shared snapshot, or past its total there). 
+
+A session none of these reach
 (a project whose data home is in its workspace, with no event left in the log)
 is found by its transcript: hooks record `transcriptPath` on UserPromptSubmit,
 Stop and SessionEnd (not SessionStart, whose path on a resume from another
 project names a file that never exists; never Copilot's), and a Claude
 transcript keeps its first `cwd` when resumed elsewhere, as a Codex rollout
 keeps its `session_meta` and Copilot's own session log, found by the session ID
-without storing its path, its `session.start` context. So a tool's own session
+without storing its path, its `session.start` context. 
+
+So a tool's own session
 with no owner is the scope's that directory resolves to, when that scope's
 snapshots already hold it; else it is decided as before (a fork under a new ID,
-a tool whose transcript records no start). A session main split across scopes
+a tool whose transcript records no start). 
+
+A session main split across scopes
 per event, whose events are still in the log with each part's `dataHome`, is
 credited once with every part reported: for each scope, the shortest prefix of
 its events whose metrics reach its snapshot, and the owner's entry is raised,
 counter by counter, to at least the metrics of their union (a part may have
 reported more time, tokens or costs with no more prompts), so parts counted before
 any Stop carried the transcript's total are neither lost nor sent twice.
+
+
 A Codex session (any Codex variant: `codex`, `codex-internal`, `tcodex`) is kept
 per rollout, with or without a token record, and when
 its tokens come from a thread-level counter that already spans rollouts (then
@@ -931,7 +1049,9 @@ rollout's counters restart, and compaction drops its events, so its prompt-token
 entry holds each rollout's reported prompts, tokens, interruptions, rejections,
 corrections, active time and request costs under a hash of the rollout's path,
 written with any delta, and whether it failed (an error, an interruption or a
-correction). The session's daily request costs sum its rollouts in the log. A
+correction). 
+
+The session's daily request costs sum its rollouts in the log. A
 rollout compaction has dropped keeps those totals in the session's prompt-token,
 intervention and daily sums (cache tokens from its tokens), and a failed one
 keeps the session unsuccessful, so a later rollout is reported in full and does
@@ -940,7 +1060,9 @@ written before rollouts were kept is one total: an earlier release rewrote every
 session in the log on each report, so it covers the rollouts begun by the time
 its file was last written, or, earlier, when that report wrote the team stats
 file in this scope's reports checkout (after reading the log, before its push;
-the snapshot came after the push). That is read before this report writes
+the snapshot came after the push). 
+
+That is read before this report writes
 anything; a seed keeps the
 shared file's time, and `teamai stats`, which only reads, writes no seed). Those still in
 the log consume it in order, as far as each had got by that time, what is left is the dropped rollouts', kept as one
@@ -949,21 +1071,27 @@ Compaction also keeps a session whose tool process is still running, so a run
 an exit from a dashboard before `processExitAfter` marked stopped keeps its
 start, and its ID. A
 fallback run is reported and snapshotted as `<id>@<first event's timestamp>`,
-which does not change when compaction drops earlier runs. A snapshot entry keyed
+which does not change when compaction drops earlier runs. 
+
+A snapshot entry keyed
 by a bare fallback ID (written before) is the sum of the runs of that ID in the
 log at the earlier release's last report, and compaction keeps or drops the
 runs of an ID together. So the next time the scope reports, those runs consume
 the entry in log order, each taking up to its own totals of what is left; once
 the prompt-token entry is used up, the later runs were not reported and count
 as new sessions (the interventions and daily snapshots follow the prompt-token
-one, since their counts say nothing when they run out). A run keeps its own
+one, since their counts say nothing when they run out). 
+
+A run keeps its own
 success and correction flags, since the sum's are no single run's, so an
 adopted run changes no status total. The first run always
 takes a share, as the entry means that release reported it. The entry is then
 removed, so no later run of that ID reads it. Only an earlier release wrote bare
 entries, and a seeded one may be another scope's, so a run whose first event
 carries `dataHomeKey` (recorded by this release), and every later run of its ID,
-takes none. A session written before that field existed is attributed by its first
+takes none. 
+
+A session written before that field existed is attributed by its first
 `cwd`: to the scope `resolveConfigForDir` resolves that directory to now, the
 dispatcher's rule, so a nested clone under a project is not the project's; no
 `cwd`, or one removed since, is no scope's. Inside git an event also carries `projectAnchor`, the repo's
@@ -972,7 +1100,9 @@ main checkout, which all of its worktrees share (#809); a Copilot event, with no
 `session save` and the dashboard's Repository filter key a session by the last
 anchor it recorded, else by its `cwd`, and the dashboard gives an event to the
 project rooted at its anchor, so a worktree counts as its repo, also after it
-is removed. A hook whose `cwd` no longer exists (a session that outlives its
+is removed. 
+
+A hook whose `cwd` no longer exists (a session that outlives its
 worktree) would resolve to the user scope, or be dropped without one, so it
 keeps the scope its session last recorded instead (#810): the config at that
 event's `projectAnchor` (for a bare repo, at one of its worktrees that still
@@ -980,7 +1110,9 @@ exists), used only while the key of its `getDataHome()` is still the recorded
 `dataHomeKey`. Its events and skill uses stay with the project, and the share
 reminder's gate reads the project too. A project config there that
 cannot be read records nothing, and with nothing recorded to match the hook
-resolves from its `cwd` as before. The recorded scope is read from `events.jsonl`, so it lasts as long
+resolves from its `cwd` as before. 
+
+The recorded scope is read from `events.jsonl`, so it lasts as long
 as the session's earlier events do (compaction keeps only active sessions),
 and Copilot, whose events record no directory, has none to recover.
 The snapshots of what was already reported are per scope
@@ -989,7 +1121,9 @@ ID is the parent PID):
 `<dataHome>/dashboard/reported-*.json`, and `~/.teamai/dashboard/user-reported-*.json`
 for the user scope. The first time a scope needs one it seeds it from the shared
 `~/.teamai/dashboard/reported-*.json`, so nothing reported before the upgrade is
-sent again; after that it reads only its own. That file summed every scope's
+sent again; after that it reads only its own. 
+
+That file summed every scope's
 runs of an ID, so the runs of the whole log consume it in log order, whichever
 scope each belongs to, and the seed keeps the shares of the scope's own runs,
 under their run IDs; none goes to a run recorded
@@ -997,7 +1131,9 @@ with a `dataHome` path: that release already kept per-scope snapshots, so a
 shared entry under its ID is another scope's. An unmatched fallback entry is
 dropped, so a later reuse of the PID cannot inherit it; a tool's own session ID
 is copied whole, as before, so a session resumed after compaction dropped its
-events is not sent again. The shared file is no longer
+events is not sent again. 
+
+The shared file is no longer
 written, except by an earlier release after a rollback, so every scope seeds from
 what the machine had reported by then, never from another scope's later report.
 The seed holds a session's whole total, so a session still running at the
@@ -1012,7 +1148,9 @@ runs, and two compactions cannot interleave their rewrites. A compaction
 whose log is below the threshold and holds no side files does the common
 case lock-free: one read, and it returns without touching the lock, so a
 state directory that is being torn down concurrently never meets a lock
-creation. A hook append waits
+creation. 
+
+A hook append waits
 up to ~250 ms, inside its foreground budget, and one that gives up records its
 line in an `events.pending-<uuid>.jsonl` side file, with the file's mode, that
 the next lock holder folds into the file before it writes — so an event is
@@ -1020,13 +1158,17 @@ late, never gone. Side files fold in their events' own time order, not
 readdir's, and the compaction classifies sessions in time order too (the
 order every reader rebuilds from), so a side file that outlived newer appends
 cannot place an older event after them and re-mark a live session stopped.
+
+
 The line carries a `pendingId`, so a fold never appends a side file twice (a
 holder that died after appending it but before removing it leaves it for the
 next one), two side files of identical events are both kept, and the id stays
 in the raw file — a rewrite keeps it, as the usage file's does — until the
 side file itself is gone, while no reader ever sees it: `readEvents` drops it.
 A side file without its trailing
-newline is still being written and waits for the next holder. A compaction
+newline is still being written and waits for the next holder. 
+
+A compaction
 waits up to ~5 s for a peer's rewrite, and skips — leaving the file as it is
 for the next compaction — when a live holder outlasts the wait; a lock whose
 owner is gone is reclaimed, and a rewrite's temp copy left by a killed
@@ -1048,7 +1190,9 @@ a display fallback: it is a persisted *workspace* path that may point at a linke
 worktree, so its disappearance does not prove the shared partition is orphaned. A
 partition with no anchor (e.g. one written before anchor-on-save) is therefore
 `unknown`, never ORPHAN — we never recommend deleting data we cannot confirm is
-dead. teamai never auto-collects orphans (a renamed or deleted project leaves its
+dead. 
+
+teamai never auto-collects orphans (a renamed or deleted project leaves its
 partition behind — a `gc` command is explicitly out of scope), so this is how a
 user finds partitions safe to `rm -rf` by hand.
 
@@ -1064,6 +1208,8 @@ A member's values for their teams' declared secrets live in `~/.teamai/secrets/`
 a class-A2 (machine-level) directory: `teams/<hash>.json`, one file per
 team repo, named by the full SHA-256 hex digest (64 characters, never shortened) of the team repo URL in `~/.teamai/config.yaml` (never
 `teamai.yaml`'s `repo:`), without the team name, so renaming `team:` keeps the values;
+
+
 the hash covers the URL's scheme (the ssh forms count as one; https and http are two),
 ssh user, host, non-default port and path (an scp-style path not starting with `/` or `~`
 is in the user's home, as `ssh://host/~/path`; `ssh://host/path` is from the root), so an
@@ -1071,6 +1217,8 @@ scp path in the home and the `ssh://` path from the root, two ssh users' repos o
 repos on one host with different ports, or repos behind http and https, get different files,
 and `machine.json`, the values set with `teamai env set --global` for every team.
 Every scope that uses the same team, and every worktree of it, reads the same file.
+
+
 Each entry records whether it is a secret's value or the member's value for an
 `env.yaml` variable (`kind`), so one is never used as the other.
 It never goes to a partition or to `<dataHome>`, which in single-repo mode is inside

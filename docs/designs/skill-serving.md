@@ -92,7 +92,9 @@ path (measured here from a 77-character one).
   on stderr, `skill path <name>` and `skill show <name>` refuse, and
   `skill list --json` reports `blockedBy: "recall"` with `path: null`. With no
   config on the machine at all it fails open: a refusal a fresh install cannot act
-  on is worse than serving the workflow. A config that exists but cannot be loaded
+  on is worse than serving the workflow. 
+
+  A config that exists but cannot be loaded
   blocks instead (`blockedBy: "config"`), since recall and the source are then
   unknown and the workflow would fail at `teamai contribute` — a project config
   too, which detection alone would skip in favour of the user config
@@ -102,7 +104,9 @@ path (measured here from a 77-character one).
   Stop-hook share reminder asks the same gate (`contributeHintAllowed`, called
   by the hook dispatcher and by the legacy `teamai contribute-check`), because it
   points at this command, with one difference: with no config at all it stays
-  silent. The hook fires in every project on the machine, and a directory without
+  silent. 
+
+  The hook fires in every project on the machine, and a directory without
   teamai has no team to share with (#748). The gate lives in one place: `shareGate`
   (`src/skill-content.ts`) decides it, and `resolveServableSkill` is the only
   way to obtain a packaged skill outside that module; it returns `blocked`
@@ -117,7 +121,9 @@ path (measured here from a 77-character one).
   apply to it. A config that cannot be loaded does apply: which team repo and
   agents are meant is then unknown (`detectTeam`), so `skill show` searches
   neither, refuses `share`, and answers any other name from the package alone,
-  saying what failed. The two legacy directory names are the exception, by design:
+  saying what failed. 
+
+  The two legacy directory names are the exception, by design:
   `team-wiki-codebase` and `teamai-share-learnings` classify as `[builtin]` and
   are skipped by the push scan by name alone (`isCliOwnedSkillName`), because a
   tree with that name is one a pre-stub release wrote until the first pull has
@@ -192,6 +198,8 @@ of those digests, whole file, frontmatter included: a member who changed only a
 skill's description changed the skill. The deploy repaired frontmatter from
 0.16.1 on, but every `SKILL.md` those releases shipped was already complete, and
 the copies came from the npm tarball byte for byte, so an unedited one matches.
+
+
 No release shipped a symlink, so a link is never ours, and bytecode is ours only
 beside a script proven ours by content. Anything else at a packaged path — an edit, a
 member's own skill that uses a legacy name, a root TeamAI never managed because
@@ -199,7 +207,9 @@ member's own skill that uses a legacy name, a root TeamAI never managed because
 directory. Checking the path alone would have deleted those. What is removed is
 still copied first to
 `~/.teamai/removed-skills/<run>/<base>/<tool>/<skill-root>/<skill>/`, so no
-removal is a one-way door. Order matters as much as ownership: the stub is
+removal is a one-way door. 
+
+Order matters as much as ownership: the stub is
 written first, then the references it no longer points at are pruned, and the
 legacy trees go only once the stub deployed for that agent, so a stub that cannot
 be written leaves a working old skill rather than a broken one. The destination
@@ -207,7 +217,9 @@ is resolved without side effects before the link guard runs. Codex reads both `.
 stub goes to the shared one when a copy already lives there; the copy an earlier
 release left in the other root is retired by the same rule
 (`retireOtherCodexCopy`), so Codex never sees a stale `teamai` beside the current
-one. That path is the machine's
+one. 
+
+That path is the machine's
 home, never the tool's base directory, which under project scope is the repo
 root. Only *retired* paths are archived: the stub is rewritten on every session
 start, so archiving it would file an identical copy per session forever. A
@@ -216,21 +228,27 @@ the skill directory — `~/.claude`, `~/.config/opencode`, `~/.claude/skills`,
 `COPILOT_HOME`, the skill directory itself — is refused outright: neither pruned nor written through, link
 and target untouched, since everything under it matches our names and none of it
 is ours. Pull, deploy and `uninstall` apply the same check; uninstall carries
-each skill directory's base for it. Components at or above the base are not
+each skill directory's base for it. 
+
+Components at or above the base are not
 checked: a home directory under a link is ordinary. The cost is a member whose
 whole `~/.claude` is a link (stow, chezmoi): the stub is not deployed and the
 legacy trees stay, with a warning on each pull naming the path, until the link
 is replaced by a directory. Deleting through a link is the one thing the prune
 must never do, so that member is told rather than guessed for. The
 `<base>` segment is there because `inheritUserScope` deploys the user base and
-then the project base in one process, with the same tool, root and skill name. A file whose copy fails is
+then the project base in one process, with the same tool, root and skill name. 
+
+A file whose copy fails is
 kept rather than removed: a backup that did not happen must not authorise the
 delete. The path carries the run and the skill root because neither is unique on
 its own — two pulls land on the same day, and Codex prunes the same skill name
 from both `.codex/skills` and the shared `.agents/skills`. Directories left empty go; a directory still holding a member's
 file is kept, and `pull` says which one and why. Python bytecode of a script we
 shipped counts as ours, so a `__pycache__` left by running the wiki scripts does
-not strand the tree. The same rule governs the stub directory: the seven
+not strand the tree. 
+
+The same rule governs the stub directory: the seven
 `teamai/references/*.md` a pre-stub release wrote are removed by name, not by
 "everything that is not SKILL.md".
 

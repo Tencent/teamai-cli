@@ -40,7 +40,7 @@ and create-repo URLs, and the per-provider caveats, and points at
 ## Rules for these flows
 
 1. **Always use a full URL** for the team repo (e.g.
-   `https://github.com/yourorg/yourrepo`). Never the `owner/repo` short form.
+   `https://github.com/your-org/your-repo`). Never the `owner/repo` short form.
 2. **Don't limit which AI tools get set up — cover all of them by default.**
    Unless the user names specific tools, do **not** pass `--agent` to restrict the
    install. Let `teamai init` set up every AI tool already installed (omitting

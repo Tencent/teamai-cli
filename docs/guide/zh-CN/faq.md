@@ -61,7 +61,7 @@ teamai uninstall --agent claude
 卸载后如需重新加入：
 
 ```bash
-teamai init --repo https://github.com/yourorg/yourrepo --scope user --role <role_id> --force
+teamai init --repo https://github.com/your-org/your-repo --scope user --role <role_id> --force
 ```
 
 ---
@@ -77,12 +77,14 @@ teamai init --repo https://github.com/yourorg/yourrepo --scope user --role <role
 交互模式下会提示是否覆盖，输入 `y` 即可。也可用 `--force` 跳过确认：
 
 ```bash
-teamai init --repo https://github.com/yourorg/yourrepo --force
+teamai init --repo https://github.com/your-org/your-repo --force
 ```
 
 **Q: 在项目里执行 `teamai init` 后没有 `.claude/`（或 `.cursor/`、`.codebuddy/`）目录？**
 
-对内置工具而言，`init` 未带 `--agent` 且没有终端（不弹选择器）时这是预期行为：它不知道你会打开哪个 Agent。执行 `teamai init <repo> --agent claude`（或 `cursor`、`codebuddy` 等）会在 init 结束前创建该工具的根目录并填充；或者在项目中打开该工具：SessionStart hook 会创建该工具的项目根目录并随后 pull。单独执行 `teamai pull` 不会为缺失的 Agent 根目录建目录。例外是仅在 `teamai.yaml` 的 `toolPaths` 中定义的自定义 Agent（不属于内置工具）——`init --agent <id>` 会自行创建该 Agent 的根目录，因为没有其他流程会为它创建。这仅在 git 模式的 init（默认或 `--self`）下生效：HTTP init（`--http`）不会在本地克隆 `teamai.yaml`，因此没有自定义路径可供创建，只会为已安装的内置工具创建根目录。
+对内置工具而言，`init` 未带 `--agent` 且没有终端（不弹选择器）时这是预期行为：它不知道你会打开哪个 Agent。执行 `teamai init <repo> --agent claude`（或 `cursor`、`codebuddy` 等）会在 init 结束前创建该工具的根目录并填充；或者在项目中打开该工具：SessionStart hook 会创建该工具的项目根目录并随后 pull。单独执行 `teamai pull` 不会为缺失的 Agent 根目录建目录。例外是仅在 `teamai.yaml` 的 `toolPaths` 中定义的自定义 Agent（不属于内置工具）
+
+——`init --agent <id>` 会自行创建该 Agent 的根目录，因为没有其他流程会为它创建。这仅在 git 模式的 init（默认或 `--self`）下生效：HTTP init（`--http`）不会在本地克隆 `teamai.yaml`，因此没有自定义路径可供创建，只会为已安装的内置工具创建根目录。
 
 **Q: Hooks 没有自动触发？**
 

@@ -29,7 +29,7 @@ You can drive TeamAI from inside your AI tool, by talking to the `/teamai` skill
 
 One person does this; everyone else follows Path B.
 
-1. Create an empty repository on your Git host (GitHub, GitLab, GitCode, CNB, TGit or any private Git) and give your teammates write access. Suggested name: `TeamAi-<team-name>`. No repo yet? Fork a ready-made one from [teamai-hub](https://github.com/teamai-hub).
+1. Create an empty repository on your Git host (GitHub, GitLab, GitCode, CNB, TGit or any private Git) and give your teammates write access. Suggested name: `<team-name>-teamai`. No repo yet? Fork a ready-made one from [teamai-hub](https://github.com/teamai-hub).
 2. Initialize in the project where you use your AI tool.
 
    In your AI tool:

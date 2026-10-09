@@ -29,7 +29,7 @@ teamai --version
 
 一个人做这一步，其余人走路径 B。
 
-1. 在 Git 托管平台上建一个空仓库（GitHub、GitLab、GitCode、CNB、工蜂或任意私有 Git），给团队成员写权限。建议命名 `TeamAi-<团队名>`。还没有仓库？到 [teamai-hub](https://github.com/teamai-hub) Fork 一个现成的。
+1. 在 Git 托管平台上建一个空仓库（GitHub、GitLab、GitCode、CNB、工蜂或任意私有 Git），给团队成员写权限。建议命名 `<团队名>-teamai`。还没有仓库？到 [teamai-hub](https://github.com/teamai-hub) Fork 一个现成的。
 2. 在你使用 AI 工具的项目里初始化。
 
    在 AI 工具里：

@@ -10,7 +10,7 @@
 
 > 只需一位管理员完成，其他成员跳到[成员接入](./member-guide.md#成员接入)。
 
-在 GitHub、GitLab（gitlab.com 或自建实例）、GitCode（gitcode.com）、CNB（cnb.cool）、TGit，或任意私有/自建 Git 服务上创建一个空仓库（命名建议：`TeamAi-<团队名>`）。对于支持自动建仓的 provider，也可直接执行 `teamai init`，按提示创建尚不存在的仓库。
+在 GitHub、GitLab（gitlab.com 或自建实例）、GitCode（gitcode.com）、CNB（cnb.cool）、TGit，或任意私有/自建 Git 服务上创建一个空仓库（命名建议：`<团队名>-teamai`）。对于支持自动建仓的 provider，也可直接执行 `teamai init`，按提示创建尚不存在的仓库。
 
 > **CNB 例外：** `cnb login` 令牌既不能建组织（`group-manage:rw`）也不能建仓库（`group-resource:rw`），`init` 会改为打印网页链接引导你创建后重新运行——组织不存在用 `https://cnb.cool/new/groups`，无权限建仓库用 `https://cnb.cool/new/repos`；如需 CLI 直接创建，请改用带这些权限的 `CNB_TOKEN` access token。
 
@@ -37,8 +37,8 @@ teamai init https://git.example.com/yourgroup/yourrepo
 ```bash
 # project 是默认值，可省略 --scope
 cd /path/to/my-project
-teamai init https://github.com/yourorg/yourrepo
-# 等价别名：teamai init --repo https://github.com/yourorg/yourrepo
+teamai init https://github.com/your-org/your-repo
+# 等价别名：teamai init --repo https://github.com/your-org/your-repo
 ```
 
 生成的目录结构：
@@ -67,10 +67,14 @@ teamai init https://github.com/yourorg/yourrepo
 无 teamai 残留，且同一仓库的 `git worktree` 共享同一分区。在新 worktree 中首次执行
 `teamai pull` 会向它完整同步一次，即使团队仓库自另一个检出 pull 之后并未变化。worktree 尚未 pull 过时，
 若 `teamai push` 发现与团队仓库不同的团队 rule 或 skill 就会停止，因为无法区分队友的更新和你的修改。
+
+
 `teamai pull` 会覆盖这些文件：如有修改，请先另存一份，再在该 worktree 中执行 `teamai pull`，放回修改后重新 push。各 Agent 的项目根目录
 （`.claude/`、`.cursor/`、`.codebuddy/` 等）仍在工作区内创建。`teamai init` 会为你选择的每个工具
 创建根目录，并在结束时执行一次 pull 将其填充：用 `--agent <tool>` 指定工具；或在终端中不带 `--agent`
 运行时，从与单仓库模式相同的选择器中勾选（第 1 项 **Auto** 为你 home 目录下已安装的工具，也是回车默认项）。
+
+
 所选工具会追加到 `enabledAgents`，因此重新执行只会新增工具，不会丢掉之前的选择。否则由 **SessionStart** 按刚打开的
 工具创建：打开 Claude Code 时会创建 `.claude/`，再由 pull 写入。单独执行 `teamai pull`，以及非交互且不带
 `--agent` 的 `init`，仍会跳过项目里还不存在根目录的工具，因此不会给尚未在本项目选择或打开过的 Agent 凭空建目录。
@@ -81,23 +85,33 @@ git 配置中安装一个 git hook，所有 worktree 共用：`hook.teamai-post-
 `core.hooksPath` hook 管理器和 `.git/hooks` 脚本之外一并运行它。当 `git worktree add`，或运行相同
 checkout hook 的应用，新建一个检出时，该 hook 会创建 `enabledAgents` 的项目根目录（为空时，取主检出已有的根目录），
 并在命令返回前向该 worktree 执行 pull，因此其中的第一次会话就已具备团队的 skill、rule 与 MCP 服务器。
+
+
 团队仓库克隆若在 24 小时内 fetch 过，这次 pull 直接读取它（否则先 fetch），订阅的 source 读取其缓存克隆；
 随后在后台运行一次完整的 `teamai pull --silent`，fetch 团队仓库、source、learnings 与 reports。
 切换分支不会触发任何操作。跳过 checkout hook 的宿主需要在 AI 工具启动前完成 `teamai pull` 的准备步骤。
 Codex CLI 0.160.0 请先用 `git worktree add` 创建检出，在其中执行 `teamai pull`，再用
 `codex exec -C <worktree>` 启动；原生 `codex exec --worktree` 路径会跳过 `post-checkout`。
+
+
 `git pull` 之后（`post-merge`，或 rebase 完成后的 `post-rewrite`，包括 `pull.rebase=true`；Git 2.32 及更早版本中，开启 autostash 的快进 rebase 只运行 `post-checkout`，同样会同步），该 hook 会 fetch 团队仓库（最多等待 5 秒），
 并在 `git pull` 返回前交付其变更；超过 5 秒时，以及 source、learnings 与 reports，交给同样的后台 pull。
 单仓库模式下，它交付 `git pull` 刚带来的知识，不访问网络。有冲突的 rebase 仅在完成后同步；
+
+
 `git commit --amend` 不触发同步。该 hook 不输出任何内容且始终以 0 退出，
 因此 pull 失败也不会让 git 命令失败。hook 内的失败（团队仓库 fetch 失败，或在 5 秒上限处被中止而后台 pull
 也未完成；另一个 teamai 进程持有项目的同步锁，超过 hook 的等待时间：`git pull` 之后 5 秒（包括单仓库模式），新 worktree 60 秒；资源、hook 或 MCP 未完整交付）
-会写入 `~/.teamai/debug.log` 并被记录：`teamai doctor` 会指出它及其修复方法，每次交互式 `teamai pull`
+会写入 `~/.teamai/debug.log` 并被记录：
+
+`teamai doctor` 会指出它及其修复方法，每次交互式 `teamai pull`
 都会提示，直到某次完成为止。后台 pull 会重试，只有所有启动交付阶段都成功后，hook pull 或交互式 pull 才会清除该记录。`teamai doctor` 还会报告 hook
 是否已安装并启用。Git 2.54+ 可禁用指定 hook
 （`hook.teamai-<event>.enabled=false`）；Git 2.55+ 还可禁用整个事件
 （`hook.<event>.enabled=false`）。两种设置均可写在全局、本地或 worktree 配置中。
 doctor 检查 Git 的实际生效配置，并按其作用域给出重新启用命令（本地覆盖，或删除本地配置无法覆盖的 worktree 设置）；`teamai pull` 保留显式禁用设置。
+
+
 启用后运行 `teamai pull` 完成同步。它遵循下文的 scope 规则：没有项目配置，或项目配置无法读取，
 都不会同步；无法读取配置的原因保留在 `~/.teamai/debug.log` 中。其命令是一行 `sh`，带着 Git 传入的参数运行 `teamai hook-dispatch <event> --tool git`，
 与 Agent hook 一样通过 `~/.teamai/bin` 找到 `teamai`。
@@ -106,7 +120,9 @@ Git 低于 2.54 且未设置 `core.hooksPath` 时，teamai 改为在 `.git/hooks
 `.git/hooks/post-merge` 与 `.git/hooks/post-rewrite` 的 shebang 之后插入一段位于 `# >>> teamai git hook` 与 `# <<< teamai git hook <<<`
 标记之间的代码块（脚本不存在时会创建），脚本的其他行保持不变。该代码块运行同一条命令，不输出任何内容，
 也不改变脚本的退出码。设置了 `core.hooksPath`（hook 管理器），或 hook 脚本是符号链接或不是可执行的 shell 脚本时，teamai
-不写入任何内容，`teamai doctor` 会建议：将 Git 升级到 2.54 或更高版本；或者，如果团队同意提交它，在管理器定义的
+不写入任何内容，`teamai doctor` 会建议：将 Git 升级到 2.54 或更高版本；
+
+或者，如果团队同意提交它，在管理器定义的
 post-checkout、post-merge 与 post-rewrite hook 中运行
 `command -v teamai >/dev/null 2>&1 && teamai hook-dispatch <event> --tool git "$@" >/dev/null 2>&1 || true`
 （`<event>` 为对应的事件名），管理器的配置不是 shell 脚本时用 `sh -c '...'` 包裹。
@@ -126,6 +142,8 @@ Git 升级到 2.54 或更高版本后，下一次 `teamai pull` 会安装配置 
 > 旧目录中尚未发布的 learning 队列会先移入分区的队列，绝不会进入备份。若分区已存在但其 `config.yaml`
 > 无法读取或缺失，迁移会保留 `<repo>/.teamai/` 并给出带路径的警告：修复或恢复该文件
 > （或把缺少 config 的分区移开）后，下一次执行上述任一命令会完成迁移。
+
+>
 > 在旧目录的数据迁移完成之前，`contribute`、`import --from-mr` 与 `init`（`--scope user` 除外）
 > 会以退出码 1 停止、不保存任何内容，并说明原因：另一个 teamai 命令正持有其锁、分区 `config.yaml` 如上所述不可用，
 > 或旧队列无法移动。处理之后重新执行即可。`contribute --scope user` 与
@@ -143,10 +161,12 @@ Git 升级到 2.54 或更高版本后，下一次 `teamai pull` 会安装配置 
 也可以通过 CLI 参数跳过交互，实现完全非交互式初始化（适合 CI/CD 或 AI agent）：
 
 ```bash
-GITHUB_TOKEN=ghp_... teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
+GITHUB_TOKEN=ghp_... teamai init https://github.com/your-org/your-repo --scope project --role hai_dev --force
 ```
 
-没有终端时 `init` 不会等待任何人：所有提示取默认值，需要浏览器登录的 provider 会立即失败并指出应准备的凭据（GitHub 用 `GITHUB_TOKEN` / `GH_TOKEN`，CNB 用 `CNB_TOKEN`，GitLab 用 `GITLAB_TOKEN`，GitCode 用 `GITCODE_TOKEN`）。TGit 是例外：它没有可用于无人值守的 token——`TGIT_TOKEN` 仅用于 REST API，git.woa.com 的 git 端点不接受它，因此需要先在该机器的交互式终端执行一次 `gf auth login`，之后无人值守运行会复用它保存的凭据。`git` 本身会关闭自己的提问：`GIT_TERMINAL_PROMPT=0`、`GIT_ASKPASS=echo`（不弹 askpass 对话框）、`GCM_INTERACTIVE=never`，且仅在你自己没有设置该变量时才生效。`ssh` 不在其列：它的批处理选项只能经由 `GIT_SSH_COMMAND` 传入，而该变量会覆盖各仓库自己配置的 `core.sshCommand`，因此 ssh 远端仍可能询问私钥口令或未知主机，需要你自行关闭——在该仓库执行 `git config core.sshCommand 'ssh -o BatchMode=yes'`，或为本次运行导出 `GIT_SSH_COMMAND`。stdin 不是 TTY、或设置了 `CI` / `TEAMAI_NONINTERACTIVE` 时都视为非交互，因此分配了伪终端的 agent 沙箱也能声明自己是无人值守运行。
+没有终端时 `init` 不会等待任何人：所有提示取默认值，需要浏览器登录的 provider 会立即失败并指出应准备的凭据（GitHub 用 `GITHUB_TOKEN` / `GH_TOKEN`，CNB 用 `CNB_TOKEN`，GitLab 用 `GITLAB_TOKEN`，GitCode 用 `GITCODE_TOKEN`）。TGit 是例外：它没有可用于无人值守的 token——`TGIT_TOKEN` 仅用于 REST API，git.woa.com 的 git 端点不接受它，因此需要先在该机器的交互式终端执行一次 `gf auth login`，之后无人值守运行会复用它保存的凭据。`git` 本身会关闭自己的提问：`GIT_TERMINAL_PROMPT=0`、`GIT_ASKPASS=echo`（不弹 askpass 对话框）、`GCM_INTERACTIVE=never`，且仅在你自己没有设置该变量时才生效。`ssh` 不在其列：
+
+它的批处理选项只能经由 `GIT_SSH_COMMAND` 传入，而该变量会覆盖各仓库自己配置的 `core.sshCommand`，因此 ssh 远端仍可能询问私钥口令或未知主机，需要你自行关闭——在该仓库执行 `git config core.sshCommand 'ssh -o BatchMode=yes'`，或为本次运行导出 `GIT_SSH_COMMAND`。stdin 不是 TTY、或设置了 `CI` / `TEAMAI_NONINTERACTIVE` 时都视为非交互，因此分配了伪终端的 agent 沙箱也能声明自己是无人值守运行。
 
 `init` 的全部参数见 [`commands.md`](../../../skill-data/core/references/commands.md) 和 `teamai init --help`；`--project` 见下文[多项目](#多项目project-作为与-role-正交的维度)。
 
@@ -215,6 +235,8 @@ projects:
 因此 `.. ` 最终变成 `..` 越出上级目录，`frontend.` 最终变成 `frontend` 落进另一个
 namespace 的目录；该规则同时排除了 `.` 与 `..`。除此之外不受限制 —— 非 ASCII 名称、
 名称中间含空格的目录、以及只是以设备名开头的名称（如 `console`）仍然合法。
+
+
 同一资源类型下的两个 namespace 不能仅有大小写差异（如 `frontend` 与 `Frontend`，按 Unicode 大小写折叠 `σ` 与 `ς` 也算）：在
 Windows 与 macOS 的默认文件系统上它们是同一个目录，限定到其中一个的 role 或 project
 会读到另一个的资源。该校验跨越两个 manifest，因为 `roles.yaml` 与 `projects.yaml` 共用
@@ -258,7 +280,7 @@ teamai projects remove checkout
 ```yaml
 repo:
   localPath: ~/.teamai/projects/<path-slug>-<hash>/team-repo
-  remote: https://github.com/yourorg/yourrepo.git
+  remote: https://github.com/your-org/your-repo.git
 username: alice
 scope: project
 projectRoot: /path/to/my-project   # 资源落地位置（当前 checkout）
@@ -274,7 +296,7 @@ resourceProfileVersion: 1
 资源安装到用户主目录（`~/.claude/skills/` 等），适用于通用团队规范、跨项目技能。
 
 ```bash
-teamai init https://github.com/yourorg/yourrepo --scope user
+teamai init https://github.com/your-org/your-repo --scope user
 ```
 
 生成的目录结构：
@@ -337,30 +359,42 @@ git 同一分支只能在一个 worktree 中检出，所以仓库的所有检出
 移走或删除这些改动之前，不会向该分支发布内容，也不会从该分支召回内容，`recall maintenance` 与
 `recall promote` 会停止。已排队的 learning
 仍留在队列中，仍可被召回。旧版 `import --from-mr`（0.25.0 至 0.26.0-beta.3）写进 learnings 检出却从未提交的 learning
-不算在内：下一次 `pull` 或 `contribute`（或排队了 learning 的 `import --from-mr`）会把它排队并发布（放入项目的命名空间，按 `contribute`
+不算在内：
+
+下一次 `pull` 或 `contribute`（或排队了 learning 的 `import --from-mr`）会把它排队并发布（放入项目的命名空间，按 `contribute`
 的方式命名），并指出它原来的位置，旧检出因此可以移除。若分支或队列中已有同一条（按 `source_mr` 或内容判断），
 则删除它，提示中会给出已有的那条 learning。检出无法创建时（例如 `teamai-learnings` 已在别处检出），maintenance 与 promote
 同样会停止，并说明原因。
+
+
 同一项目的 git 模式安装把检出放在相同的路径。切换模式后，teamai 会拒绝使用属于另一个
 仓库的检出，并打印清除它的 `git worktree remove` 命令：不会向它发布、不会为它建索引（包括其中的投票）、
 也不会改写其中内容（`recall maintenance` 与 `recall promote` 会停止）。旧安装仍在队列中的
 learning 会被移到同一数据目录下的 `pending-learnings.<旧类型>`，新安装不会发布它们；`init`
 会说明数量和位置，并删除为旧仓库构建的搜索索引（下一次 `recall` 会重建）。以同一类型对另一个团队仓库重新运行 `init`
 也同样处理，队列移到 `pending-learnings.<类型>-<仓库>`（例如 `pending-learnings.git-github.com-org-team-a`）；
+
+
 同一仓库换一种写法（带或不带 `.git`、SSH 或 HTTPS）不会移动队列。克隆另一个团队仓库之前（或复用之前某次 `init` 留下的该仓库克隆之前），
 `init` 会把旧的 `config.yaml` 移到旁边的 `config.yaml.previous` 并给出提示：若 `init` 在保存新配置前停止，
 所有命令都会要求先运行 `teamai init`，而不会用旧团队的配置操作新的克隆。重新运行 `init` 即可：它会从 `config.yaml.previous` 沿用该配置的设置（agent、工具根目录）。若旧安装的 `config.yaml` 存在但无法读取，
 就无从得知队列属于谁：`init` 会把它移到 `pending-learnings.unknown`，指出该文件，并删除搜索索引。尚未升级的检出中的旧队列也同样处理：
+
+
 在该检出运行的下一个命令会把它移到 `pending-learnings.self` 并给出路径。反过来，当某个检出的 `init --self`
 把 git 模式项目切换为单仓库模式，而另一个仍保留旧安装的检出从 main 取得了知识时，在那里运行的下一个
 `init`、`pull`、`push`、`contribute` 或 `import --from-mr` 会把旧安装的队列移到 `pending-learnings.git`，
 其余部分（config、克隆、env 等）移到 `<checkout>/.teamai.bak/`，知识保持不动。`teamai uninstall` 在请求确认前会列出每个仍有未发布 learning 的队列。
+
+
 若 `contribute` 或 `import --from-mr` 在迁移正在移动本检出数据、或 `init` 正在切换项目模式或团队仓库时写入队列，
 它会等待对方完成（最多 3 秒）。若此时它启动时读取的安装已经变化，它不保存任何内容并以退出码 1 结束
 （`This project's teamai install changed while this command ran`），重新执行即可。若等待结束后对方仍未完成，
 它同样以退出码 1 结束（`Another teamai command is moving this project's queued learnings`）。
 切换前刚写入的 learning 会随旧安装的队列一起被移开，绝不会发布到新仓库。这需要双方都是本版本：
 旧版 teamai 的 `contribute` 若与迁移同时运行，其 learning 仍可能留在 `.teamai.bak/` 中。
+
+
 teamai 无法证明属于本仓库的检出同样会被拒绝，且永不删除：例如其 `.git` 指向已被移动或删除的仓库，
 或本仓库已不再登记它（克隆被删除后重新 clone，`init` 在同一路径切换到另一个团队仓库时即是如此）。
 请把它移开，或在确认其中没有需要的内容后删除。
@@ -421,11 +455,11 @@ main 的团队知识 —— `git status` 保持干净。旧版单仓装升级后
 
 ```bash
 # 每位开发者执行一次：组织通用 skills、rules、docs、agents 和 learnings
-teamai init https://github.com/yourorg/engineering-practices --scope user
+teamai init https://github.com/your-org/engineering-practices --scope user
 
 # 在 Java 项目中：项目资源保持当前 scope，recall 时优先
 cd /path/to/java-service
-teamai init https://github.com/yourorg/java-service-teamai --inherit-user-scope
+teamai init https://github.com/your-org/java-service-teamai --inherit-user-scope
 ```
 
 启用继承后，`teamai pull` 会先把 user 的 `skills`、`rules`、`docs`、`agents`、共享指令/文化和检索索引刷新到用户主目录级位置，再刷新项目目录中的 project scope。user 的 `env`、hooks、MCP 定义、跨团队 sources、usage reporting 和远端仓库写入不会被继承。两个配置和两个 Git 仓库仍然分离；该功能组合的是安全读取路径，不会合并 Git 仓库或文件。同名的已安装资源仍分别位于 user/project 路径，由具体 AI 工具决定运行时优先级；Recall 则明确保证相同资源类型和文件名的 project 条目覆盖 user 条目。

@@ -22,7 +22,7 @@ TeamAI CLI talks to Git hosting platforms through a provider layer. Six provider
 `teamai init <input>` (or the equivalent `teamai init --repo <input>`) picks the provider from the shape of the input:
 
 ```
-yourorg/yourrepo                        → github (default)
+your-org/your-repo                        → github (default)
 https://github.com/org/repo(.git)       → github
 git@github.com:org/repo.git             → github
 https://git.woa.com/team/repo(.git)     → tgit
@@ -91,7 +91,7 @@ sudo apt install gh
 Run `gh auth login` after installing, or let `teamai init` start the interactive login:
 
 ```bash
-teamai init yourorg/yourrepo
+teamai init your-org/your-repo
 # when not logged in, runs gh auth login --web (interactive terminals only)
 ```
 
@@ -103,7 +103,7 @@ Where the `gh` CLI cannot be installed (CI, containers, locked-down Linux), auth
 
 ```bash
 export GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxx
-teamai init yourorg/yourrepo
+teamai init your-org/your-repo
 ```
 
 The token needs the `repo` scope. `GH_TOKEN` is recognized as an alias.
@@ -160,7 +160,7 @@ Two options, mirroring how the GitHub provider treats `GITHUB_TOKEN`.
 
 ```bash
 cnb login --host cnb.cool   # OAuth2 device flow; afterwards `cnb git-credential` supplies git credentials
-teamai init https://cnb.cool/yourorg/yourrepo
+teamai init https://cnb.cool/your-org/your-repo
 ```
 
 > **Why `--host`**: without an explicit host, the `cnb` CLI infers the platform address from the first git remote of the current directory. Running `cnb login` inside a repo whose remote points at a non-CNB platform (an internal git server, say) sends the request to that host and gets a `401`. An explicit `--host cnb.cool` avoids that; a self-hosted instance uses its own domain. When `teamai init` starts the login itself, it already passes `--host` from `TEAMAI_CNB_HOST` (default `cnb.cool`). That automatic login happens only in an interactive terminal; an unattended run fails at once and asks for `CNB_TOKEN` (option 2, [#711](https://github.com/Tencent/teamai-cli/issues/711)).
@@ -169,7 +169,7 @@ teamai init https://cnb.cool/yourorg/yourrepo
 
 ```bash
 export CNB_TOKEN=xxxxxxxx
-teamai init https://cnb.cool/yourorg/yourrepo
+teamai init https://cnb.cool/your-org/your-repo
 ```
 
 With `CNB_TOKEN` set, `cnb login` is not needed. The username is read from `cnb users get-user-info` and can be overridden with `CNB_USERNAME`.
@@ -327,7 +327,7 @@ Besides URL auto-detection, the team repo's `teamai.yaml` can name the provider 
 ```yaml
 team: my-team
 description: TeamAI shared resources
-repo: https://github.com/yourorg/yourrepo.git
+repo: https://github.com/your-org/your-repo.git
 provider: github
 reviewers:
   - alice

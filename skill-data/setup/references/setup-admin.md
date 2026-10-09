@@ -77,7 +77,7 @@ the repository, then continue to the next step:
 > `{SKILL_DIR}/references/provider-tgit.md` ("When you `teamai init` on TGit").
 
 Tell the user to sign in, create an **empty** repo (suggested name
-`TeamAi-<team-name>`), and give you the resulting repo URL. Explain in one
+`<team-name>-teamai`), and give you the resulting repo URL. Explain in one
 sentence: *"The repo on the website is where the team's skills and rules live; your
 computer only holds a synced copy — you never put business code in it."*
 
@@ -159,7 +159,7 @@ One choice — project-only or whole machine?
 - Whole machine: add `--scope user` so every project gets the team resources.
 
 (The repo name was already chosen when the user created the repo in Step 2c —
-suggested form `TeamAi-<team-name>`.)
+suggested form `<team-name>-teamai`.)
 
 ## Step 5 — Initialize (you run it)
 

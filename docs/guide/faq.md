@@ -61,7 +61,7 @@ The same `enabledAgents` whitelist (from `init --agent`) also gates CLI built-in
 To rejoin after uninstalling:
 
 ```bash
-teamai init --repo https://github.com/yourorg/yourrepo --scope user --role <role_id> --force
+teamai init --repo https://github.com/your-org/your-repo --scope user --role <role_id> --force
 ```
 
 ---
@@ -77,12 +77,14 @@ Yes, but project scope remains isolated by default. When the current working dir
 In interactive mode, you'll be asked whether to overwrite — type `y` to confirm. You can also use `--force` to skip the confirmation:
 
 ```bash
-teamai init --repo https://github.com/yourorg/yourrepo --force
+teamai init --repo https://github.com/your-org/your-repo --force
 ```
 
 **Q: After `teamai init` in a project, there is no `.claude/` (or `.cursor/`, `.codebuddy/`) directory?**
 
-That is expected for a built-in tool when `init` ran without `--agent` and without a terminal (no picker): it does not know which agent you will open. Run `teamai init <repo> --agent claude` (or `cursor`, `codebuddy`, …) to create that tool's root and fill it before init exits, or open the tool in the project: the SessionStart hook creates that tool's project root and then pulls. A bare `teamai pull` will not create missing agent roots. The exception is a custom agent defined only in `teamai.yaml`'s `toolPaths` (not one of the built-in tools) — `init --agent <id>` creates that agent's root itself, since nothing else ever would. This only works for git-backed init (default or `--self`): an HTTP init (`--http`) never clones a local `teamai.yaml`, so it has no custom paths to seed from and only ever creates roots for built-in tools that are already installed.
+That is expected for a built-in tool when `init` ran without `--agent` and without a terminal (no picker): it does not know which agent you will open. Run `teamai init <repo> --agent claude` (or `cursor`, `codebuddy`, …) to create that tool's root and fill it before init exits, or open the tool in the project: the SessionStart hook creates that tool's project root and then pulls. A bare `teamai pull` will not create missing agent roots. The exception is a custom agent defined only in `teamai.yaml`'s `toolPaths` (not one of the built-in tools) — `init --agent <id>` creates that agent's root itself, since nothing else ever would. 
+
+This only works for git-backed init (default or `--self`): an HTTP init (`--http`) never clones a local `teamai.yaml`, so it has no custom paths to seed from and only ever creates roots for built-in tools that are already installed.
 
 **Q: Hooks aren't firing automatically?**
 

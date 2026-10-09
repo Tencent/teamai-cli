@@ -22,7 +22,7 @@ TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现
 `teamai init <input>`（或等价别名 `teamai init --repo <input>`）根据输入格式自动选择 provider：
 
 ```
-yourorg/yourrepo                        → github（默认）
+your-org/your-repo                        → github（默认）
 https://github.com/org/repo(.git)       → github
 git@github.com:org/repo.git             → github
 https://git.woa.com/team/repo(.git)     → tgit
@@ -91,7 +91,7 @@ sudo apt install gh
 安装后运行 `gh auth login`，或直接让 `teamai init` 触发交互式登录：
 
 ```bash
-teamai init yourorg/yourrepo
+teamai init your-org/your-repo
 # 检测到未登录时会自动调起 gh auth login --web（仅限交互式终端）
 ```
 
@@ -103,7 +103,7 @@ teamai init yourorg/yourrepo
 
 ```bash
 export GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxx
-teamai init yourorg/yourrepo
+teamai init your-org/your-repo
 ```
 
 token 需要 `repo` 权限。`GH_TOKEN` 作为别名也会被识别。
@@ -164,7 +164,7 @@ CNB（[云原生构建](https://cnb.cool)）provider 是对官方 CLI `@cnbcool/
 
 ```bash
 cnb login --host cnb.cool   # OAuth2 device flow，登录后 `cnb git-credential` 为 git 提供凭据
-teamai init https://cnb.cool/yourorg/yourrepo
+teamai init https://cnb.cool/your-org/your-repo
 ```
 
 > **为什么要带 `--host`**：`cnb` CLI 在未显式指定 host 时，会从当前目录第一个 git remote 推断平台地址。若在一个 remote 指向非 CNB 平台（如内网 git 服务器）的仓库里直接跑 `cnb login`，请求会被打到那个 host 并返回 `401`。显式 `--host cnb.cool` 可避免此问题（自托管实例改用对应域名）。由 `teamai init` 自动触发登录时，teamai 已按 `TEAMAI_CNB_HOST`（默认 `cnb.cool`）带上 `--host`，无需手动处理；该自动登录仅在交互式终端里发生，无人值守运行改为立即失败并提示设置 `CNB_TOKEN`（见方式 2，[#711](https://github.com/Tencent/teamai-cli/issues/711)）。
@@ -173,7 +173,7 @@ teamai init https://cnb.cool/yourorg/yourrepo
 
 ```bash
 export CNB_TOKEN=xxxxxxxx
-teamai init https://cnb.cool/yourorg/yourrepo
+teamai init https://cnb.cool/your-org/your-repo
 ```
 
 设置 `CNB_TOKEN` 后无需 `cnb login`。用户名从 `cnb users get-user-info` 解析，也可用 `CNB_USERNAME` 覆盖。
@@ -333,7 +333,7 @@ GitCode 不设默认 email 域，使用用户的 git 全局配置。
 ```yaml
 team: my-team
 description: TeamAI shared resources
-repo: https://github.com/yourorg/yourrepo.git
+repo: https://github.com/your-org/your-repo.git
 provider: github
 reviewers:
   - alice

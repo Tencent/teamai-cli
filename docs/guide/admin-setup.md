@@ -10,7 +10,7 @@
 
 > Only one admin needs to do this — other members can skip to [Member Onboarding](./member-guide.md#member-onboarding).
 
-Create an empty repository on GitHub, GitLab (gitlab.com or a self-hosted instance), GitCode (gitcode.com), CNB (cnb.cool), TGit, or any private/self-hosted Git service (suggested naming: `TeamAi-<team-name>`). For providers that support repository creation, you can also run `teamai init` and create a missing repo when prompted.
+Create an empty repository on GitHub, GitLab (gitlab.com or a self-hosted instance), GitCode (gitcode.com), CNB (cnb.cool), TGit, or any private/self-hosted Git service (suggested naming: `<team-name>-teamai`). For providers that support repository creation, you can also run `teamai init` and create a missing repo when prompted.
 
 > **CNB exception:** the `cnb login` token can create neither an organization (`group-manage:rw`) nor a repo (`group-resource:rw`), so `init` prints a web link to create them instead — `https://cnb.cool/new/groups` for a missing org, `https://cnb.cool/new/repos` for a repo — then you re-run. Use a `CNB_TOKEN` access token carrying those scopes to let the CLI create them directly.
 
@@ -37,8 +37,8 @@ Resources are installed under the project directory (`<project>/.claude/skills/`
 ```bash
 # project is the default — --scope can be omitted
 cd /path/to/my-project
-teamai init https://github.com/yourorg/yourrepo
-# equivalent alias: teamai init --repo https://github.com/yourorg/yourrepo
+teamai init https://github.com/your-org/your-repo
+# equivalent alias: teamai init --repo https://github.com/your-org/your-repo
 ```
 
 Resulting directory structure:
@@ -69,7 +69,9 @@ teamai residue and a `git worktree` of the same repo shares one partition. The f
 `teamai pull` in a new worktree does a full sync into it, even when the team repo has
 not changed since another checkout pulled. Until a worktree has pulled, `teamai push`
 there stops if it finds a team rule or skill that differs from the team repo, since it
-cannot tell a teammate's update from your edit. `teamai pull` replaces those files, so
+cannot tell a teammate's update from your edit. 
+
+`teamai pull` replaces those files, so
 copy any you edited somewhere safe, pull, put your edits back and push again. Per-agent
 project roots (`.claude/`, `.cursor/`, `.codebuddy/`, …) are still created inside the
 workspace. `teamai init` creates the root of each tool you choose, then ends with a
@@ -77,6 +79,8 @@ pull that fills it: name the tools with `--agent <tool>`, or, in a terminal with
 `--agent`, pick them from the same picker single-repo mode uses (option 1, **Auto**,
 is the tools installed under your home dir and the Enter default). The choice is
 added to `enabledAgents`, so a re-run adds tools without dropping earlier ones.
+
+
 Otherwise **SessionStart** creates the root of the tool that just opened: opening
 Claude Code creates `.claude/`, then pull writes into it. A bare `teamai pull`, and a
 non-interactive `init` without `--agent`, still skip tools whose project root does
@@ -92,7 +96,9 @@ manager and any `.git/hooks` script. When `git worktree add`, or an app that run
 the same checkout hooks, makes a new checkout, the hook creates the project roots of
 `enabledAgents` (when that is empty, the roots the main checkout has) and pulls into
 the worktree before the command returns, so the first session there already has the
-team's skills, rules and MCP servers. That pull reads the team clone as it is when it
+team's skills, rules and MCP servers. 
+
+That pull reads the team clone as it is when it
 was fetched in the last 24 hours (and fetches it first otherwise), and subscribed
 sources from their cached clones; a full `teamai pull --silent` then runs in the
 background to fetch the team repo, sources, learnings and reports. A branch switch does nothing.
@@ -100,6 +106,8 @@ Hosts that skip checkout hooks need a setup step that finishes `teamai pull` bef
 the AI tool starts. For Codex CLI 0.160.0, create the checkout with `git worktree add`, run
 `teamai pull` there, then launch `codex exec -C <worktree>`; its native
 `codex exec --worktree` path skips `post-checkout`.
+
+
 After `git pull` (`post-merge`, or `post-rewrite` for a completed rebase, including
 `pull.rebase=true`; on Git 2.32 and older, a fast-forward rebase with autostash runs
 only `post-checkout`, which syncs the same way), the hook fetches the team repo, waiting at most 5 seconds,
@@ -107,7 +115,9 @@ and delivers its changes before `git pull` returns; past 5 seconds, and for sour
 learnings and reports, the same background pull takes over. In single-repo mode it
 delivers the knowledge `git pull` just brought, with no network. A conflicting rebase
 syncs only when completed; `git commit --amend` does not sync. The hook prints nothing and always exits 0, so a failed pull never
-fails the git command. A failure inside it (the team repo fetch failed, or stopped at the
+fails the git command. 
+
+A failure inside it (the team repo fetch failed, or stopped at the
 5-second cap and the background pull did not finish it; another teamai process held the
 project's sync lock longer than the hook waits, 5 seconds after `git pull` (including
 single-repo mode) and 60 seconds for a new worktree; incomplete resource, hook or MCP
@@ -115,13 +125,17 @@ delivery) is written to `~/.teamai/debug.log` and recorded: `teamai doctor`
 names it with its fix, and each interactive `teamai pull` mentions it until one completes. The
 background pull retries, and a hook or interactive pull clears the record only after all startup delivery
 stages succeed. `teamai doctor`
-also reports whether the hooks are installed and enabled. Git 2.54+ can disable a
+also reports whether the hooks are installed and enabled. 
+
+Git 2.54+ can disable a
 named hook (`hook.teamai-<event>.enabled=false`); Git 2.55+ can also disable the
 whole event (`hook.<event>.enabled=false`). Both settings can be global, local or per-worktree. Doctor checks the effective
 Git setting and gives the reactivation command for its scope (a local override, or unsetting a worktree setting, which a local one cannot override); `teamai pull` preserves an explicit
 disablement. After enabling it, run `teamai pull` to sync. It follows the scope rules below: no project config, or one
 that cannot be read, means no sync; an unreadable config's reason is kept in
-`~/.teamai/debug.log`. The command is one `sh` line that runs
+`~/.teamai/debug.log`. 
+
+The command is one `sh` line that runs
 `teamai hook-dispatch <event> --tool git` with Git's arguments, finding `teamai`
 through `~/.teamai/bin` as the agent hooks do.
 
@@ -130,14 +144,18 @@ With Git older than 2.54 and no `core.hooksPath`, teamai instead adds a block be
 along with `.git/hooks/post-merge` and `.git/hooks/post-rewrite`, right after the
 shebang, creating the script when there is
 none; the script's other lines are kept. The block runs the same command, silently, and
-does not change the script's exit status. With `core.hooksPath` set (a hook manager), or
+does not change the script's exit status. 
+
+With `core.hooksPath` set (a hook manager), or
 a hook script that is a symlink or not an executable shell script, teamai writes nothing, and `teamai doctor`
 advises: upgrade Git to 2.54 or later; or, if the team agrees to commit it, run
 `command -v teamai >/dev/null 2>&1 && teamai hook-dispatch <event> --tool git "$@" >/dev/null 2>&1 || true`
 from the post-checkout, post-merge and post-rewrite hooks your manager defines (with the
 corresponding event as `<event>`), wrapped in `sh -c '...'` when its config is not a shell script.
 That line does nothing on a machine without teamai.
-Existing hook contents and permissions are preserved. Reading or writing a hook can
+Existing hook contents and permissions are preserved. 
+
+Reading or writing a hook can
 fail: `init` and `hooks inject` propagate that error; a Git-started pull records it
 and the next `teamai pull` retries.
 
@@ -157,6 +175,8 @@ one teamai created, and is deleted.
 > exists but its `config.yaml` cannot be read, or is missing, the migration keeps
 > `<repo>/.teamai/` and warns with the path: fix or restore that file (or move the
 > config-less partition aside), and the next of those commands finishes the job.
+
+>
 > Until the old directory's data has moved, `contribute`, `import --from-mr` and
 > `init` (except `--scope user`) stop with exit code 1 and save nothing, naming the
 > cause: another teamai command holding its lock, a partition `config.yaml` as above,
@@ -178,10 +198,12 @@ At the role prompt, enter one or more comma-separated role numbers. The first nu
 You can also skip the interactive prompts via CLI flags for a fully non-interactive init (suitable for CI/CD or AI agents):
 
 ```bash
-GITHUB_TOKEN=ghp_... teamai init https://github.com/yourorg/yourrepo --scope project --role hai_dev --force
+GITHUB_TOKEN=ghp_... teamai init https://github.com/your-org/your-repo --scope project --role hai_dev --force
 ```
 
-Without a terminal `init` never waits on a person: every prompt takes its default, and a provider that would need a browser login fails at once and names the credential to prepare (`GITHUB_TOKEN` / `GH_TOKEN` for GitHub, `CNB_TOKEN` for CNB, `GITLAB_TOKEN` for GitLab, `GITCODE_TOKEN` for GitCode). TGit is the exception: it has no unattended token — `TGIT_TOKEN` is REST-API-only and git.woa.com rejects it for `git clone` — so run `gf auth login` once in an interactive shell on that machine and unattended runs reuse the credential it stores. `git` itself runs with its prompts closed: `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo` (no askpass dialog) and `GCM_INTERACTIVE=never`, each only when you have not set it yourself. `ssh` is left alone: its batch flag is only reachable through `GIT_SSH_COMMAND`, which would override whatever `core.sshCommand` each repository configured, so an ssh remote that still needs a passphrase or an unknown-host confirmation is yours to close — `git config core.sshCommand 'ssh -o BatchMode=yes'` on that repository, or export `GIT_SSH_COMMAND` for the run. A run counts as non-interactive when stdin is not a TTY, or when `CI` or `TEAMAI_NONINTERACTIVE` is set, so an agent sandbox that allocates a pseudo-terminal can still declare itself unattended.
+Without a terminal `init` never waits on a person: every prompt takes its default, and a provider that would need a browser login fails at once and names the credential to prepare (`GITHUB_TOKEN` / `GH_TOKEN` for GitHub, `CNB_TOKEN` for CNB, `GITLAB_TOKEN` for GitLab, `GITCODE_TOKEN` for GitCode). TGit is the exception: it has no unattended token — `TGIT_TOKEN` is REST-API-only and git.woa.com rejects it for `git clone` — so run `gf auth login` once in an interactive shell on that machine and unattended runs reuse the credential it stores. `git` itself runs with its prompts closed: `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo` (no askpass dialog) and `GCM_INTERACTIVE=never`, each only when you have not set it yourself. 
+
+`ssh` is left alone: its batch flag is only reachable through `GIT_SSH_COMMAND`, which would override whatever `core.sshCommand` each repository configured, so an ssh remote that still needs a passphrase or an unknown-host confirmation is yours to close — `git config core.sshCommand 'ssh -o BatchMode=yes'` on that repository, or export `GIT_SSH_COMMAND` for the run. A run counts as non-interactive when stdin is not a TTY, or when `CI` or `TEAMAI_NONINTERACTIVE` is set, so an agent sandbox that allocates a pseudo-terminal can still declare itself unattended.
 
 Every `init` flag is listed in [`commands.md`](../../skill-data/core/references/commands.md) and `teamai init --help`; `--project` is explained under [Multi-project](#multi-project-project-as-a-dimension-orthogonal-to-role) below.
 
@@ -266,6 +288,8 @@ would arrive as `..` and escape the parent while `frontend.` would arrive as
 `frontend` and land in another namespace's directory; the same rule rules out `.`
 and `..`. Anything else a filesystem accepts stays valid — a non-ASCII name, one
 holding a space inside it, or one that merely starts like a device (`console`).
+
+
 Two namespaces of the same resource type may not differ only by case (`frontend`
 and `Frontend`, or under Unicode case folding `σ` and `ς`): on the default Windows and macOS filesystems they are one
 directory, so a role or project scoped to one would read the other's resources.
@@ -302,7 +326,9 @@ because a member on an older CLI cannot read them. After
 `projects remove`, a directory that still has the project active warns on its
 next pull, falls back to role-only filtering, and has the project's deployed
 skills, rules and agents cleaned up — as long as the project's content is still
-in the team repo, since that is what identifies the deployed copies. Delete the
+in the team repo, since that is what identifies the deployed copies. 
+
+Delete the
 content in a later change, after members have pulled.
 
 Member registration is a **side-effect of `init`**: running `teamai init --project <id>`
@@ -319,7 +345,7 @@ Example local config:
 ```yaml
 repo:
   localPath: ~/.teamai/projects/<path-slug>-<hash>/team-repo
-  remote: https://github.com/group/repo.git
+  remote: https://github.com/your-org/your-repo.git
 username: alice
 scope: project
 projectRoot: /path/to/my-project   # where resources land (this checkout)
@@ -335,7 +361,7 @@ resourceProfileVersion: 1
 Resources are installed into your home directory (`~/.claude/skills/`, etc.), suited for general team conventions and cross-project skills.
 
 ```bash
-teamai init https://github.com/yourorg/yourrepo --scope user
+teamai init https://github.com/your-org/your-repo --scope user
 ```
 
 Resulting directory structure:
@@ -399,7 +425,9 @@ a side-branch checkout removes the old one. An old checkout with uncommitted
 changes is kept, and the command names it: nothing is published to or recalled
 from that branch until you commit, move or delete those changes, and
 `recall maintenance` and `recall promote` stop. Queued learnings stay queued
-and recallable. A learning an older `import --from-mr` (0.25.0 to 0.26.0-beta.3) wrote into a
+and recallable. 
+
+A learning an older `import --from-mr` (0.25.0 to 0.26.0-beta.3) wrote into a
 learnings checkout and never committed does not count: the next `pull` or
 `contribute` (or an `import --from-mr` that queues a learning) queues and publishes it (in the project's
 namespace, named as `contribute` names it) and says where it was, so the old
@@ -408,6 +436,8 @@ or its content, it is deleted instead, and the message names the learning that
 has it. Maintenance and promote also stop, naming the cause, when the
 checkout cannot be created, such as when `teamai-learnings` is checked out
 somewhere else.
+
+
 A git-mode install of the same project keeps its checkouts at the same paths.
 After switching modes, teamai refuses a checkout that belongs to the other
 repository and prints the `git worktree remove` command that clears it: nothing
@@ -415,7 +445,9 @@ is published to it, indexed from it (its votes included) or rewritten in it
 (`recall maintenance` and `recall promote` stop). Learnings still queued by the old install are moved
 to `pending-learnings.<old kind>` in the same data home, never published by the
 new one; `init` says how many and where, and deletes the search indexes built
-for the old repository (the next `recall` rebuilds them). Re-running `init`
+for the old repository (the next `recall` rebuilds them). 
+
+Re-running `init`
 against another team repository of the same kind does the same, to
 `pending-learnings.<kind>-<repo>` (for example
 `pending-learnings.git-github.com-org-team-a`); the same repository written
@@ -424,11 +456,15 @@ clones the other team repository, or reuses a clone of it an earlier `init` left
 `config.yaml.previous` beside it and says so: if `init` stops before it saves
 the new config, every command asks for `teamai init` instead of running the old
 team's config against the new clone. Run `init` again: it carries that config's
-settings (agents, tool roots) from `config.yaml.previous`. When the old
+settings (agents, tool roots) from `config.yaml.previous`. 
+
+When the old
 install's `config.yaml` exists but cannot be read, nothing says whose the queue is:
 `init` moves it to `pending-learnings.unknown`, names that file and deletes the search indexes. A checkout that had
 not been upgraded yet keeps its old queue the same way: the next command there
-moves it to `pending-learnings.self` and names the path. The other way round, when
+moves it to `pending-learnings.self` and names the path. 
+
+The other way round, when
 `init --self` in one checkout switches a git-mode project and another checkout that
 still has its old install takes the knowledge from main, the next `init`, `pull`,
 `push`, `contribute` or `import --from-mr` there moves that install's queue to
@@ -437,7 +473,9 @@ still has its old install takes the knowledge from main, the next `init`, `pull`
 with learnings not published yet before it asks to confirm.
 A `contribute` or `import --from-mr` that queues its learning while a migration is
 moving this checkout's data, or while `init` switches the project's mode or team repository, waits
-for it (up to 3 seconds). If the install it started with has changed by then, it
+for it (up to 3 seconds). 
+
+If the install it started with has changed by then, it
 saves nothing and exits 1 (`This project's teamai install changed while this
 command ran`); run it again. If the other command is still at it after the wait,
 it exits 1 the same way (`Another teamai command is moving this project's queued
@@ -445,6 +483,8 @@ learnings`). A learning queued just before the switch is set aside with the old
 install's queue and never published to the new repository. This needs this
 version on both sides: an older teamai's `contribute` running beside a migration
 can still leave its learning in `.teamai.bak/`.
+
+
 A checkout teamai cannot show to be this repository's is refused the same way and
 never removed: one whose `.git` leads to a repository that was moved or deleted,
 or one this repository no longer registers (its clone was deleted and cloned
@@ -513,11 +553,11 @@ Use two Team Repos when some knowledge is organization-wide and other resources 
 
 ```bash
 # Once per developer: organization-wide skills, rules, docs, agents, and learnings
-teamai init https://github.com/yourorg/engineering-practices --scope user
+teamai init https://github.com/your-org/engineering-practices --scope user
 
 # In a Java project: project resources stay active and recall prefers them
 cd /path/to/java-service
-teamai init https://github.com/yourorg/java-service-teamai --inherit-user-scope
+teamai init https://github.com/your-org/java-service-teamai --inherit-user-scope
 ```
 
 With inheritance enabled, `teamai pull` refreshes user `skills`, `rules`, `docs`, `agents`, shared instructions/culture, and the user search index in their home-level locations, then refreshes the project scope in the project directory. User `env`, hooks, MCP definitions, cross-team sources, usage reporting, and remote repository writes are not inherited. The two configs and repositories remain separate; this feature composes their safe read paths rather than merging Git repositories or files. Installed resources with the same name remain in separate user/project paths, so the AI tool decides runtime precedence; Recall separately guarantees that a project entry shadows the same user resource type and filename.
