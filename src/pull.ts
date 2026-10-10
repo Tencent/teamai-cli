@@ -5,7 +5,7 @@ import {
   buildRolePullContext, collectClaudemdFiles, describeDeliveryConflict, indexedRuleFiles,
   indexedSkills, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills, type RolePullContext,
 } from './resources/desired.js';
-import type { IndexedSkills } from './utils/search-index.js';
+import type { IndexedSkills, UnreadableFile } from './utils/search-index.js';
 import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
 import { pullRepo, getHeadRev, createGit, getDefaultBranch, completeWorktreeList, gitCommonDir, isLiveCheckout, listWorktrees } from './utils/git.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
@@ -1333,10 +1333,14 @@ async function pullForScope(
         log.debug(`learnings worktree unavailable: ${(e as Error).message}`);
       }
 
+      // What the rebuild is given and cannot resolve: as for a directory it
+      // cannot list, the index keeps what it held under each (#1006).
+      const unresolved: UnreadableFile[] = [];
+      const unresolvedReason = (e: unknown): string => (e instanceof Error ? e.message : String(e));
       // Without another repository's learnings checkout, if one sits where
       // this project's would (#808): the refusal was warned, and everything
       // else this project has stays indexed.
-      const publishedRoots = await indexableLearningsRoots(localConfig);
+      const publishedRoots = await indexableLearningsRoots(localConfig, unresolved);
       const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
       const rulesRepoDir = path.join(localConfig.repo.localPath, 'rules');
       const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
@@ -1377,16 +1381,25 @@ async function pullForScope(
       // Count what recall would find, not what every root holds: the same
       // relative path in two roots is one learning, and the index says so too.
       const counted = new Set<string>();
-      for (const dir of publishedRoots) {
-        for (const name of await countLearnings(dir)) counted.add(name);
+      for (const dir of publishedRoots.filter((root) => !unresolved.some((given) => given.path === root))) {
+        // Only for the message: a root that cannot be listed is named by the rebuild.
+        for (const name of await countLearnings(dir).catch(() => [])) counted.add(name);
       }
       learningsCount = counted.size;
       if (localConfig.scope === 'user') {
-        await mirrorLearnings(
-          mirrorSources,
-          getUserLearningsDir(),
-          activeLearningsNamespaces,
-        );
+        // The mirror deletes what no source has: with a source left out, it stays as it is.
+        if (unresolved.length === 0) {
+          try {
+            await mirrorLearnings(
+              mirrorSources,
+              getUserLearningsDir(),
+              activeLearningsNamespaces,
+            );
+          } catch (e) {
+            log.warn(`[${scopeLabel}] Could not update the learnings mirror ${getUserLearningsDir()}: ${unresolvedReason(e)}. `
+              + 'Recall indexes it as it stands. Fix the cause and run `teamai pull` again.');
+          }
+        }
         effectiveLearningsDir = await pathExists(getUserLearningsDir()) ? getUserLearningsDir() : undefined;
       } else {
         for (const dir of publishedRoots) {
@@ -1407,29 +1420,48 @@ async function pullForScope(
       const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
       const effectiveCodebaseDir = await pathExists(repoCodebaseDir) ? repoCodebaseDir : undefined;
 
-      if (hasAnySource || effectiveCodebaseDir) {
+      const indexPath = getProjectSearchIndexPath(localConfig);
+      // An index already on disk follows the last source away (#1006): left
+      // alone, it would keep serving what the member no longer receives.
+      if (hasAnySource || effectiveCodebaseDir || await pathExists(indexPath)) {
         const votesExist = votesDir ? await pathExists(votesDir) : false;
-        const indexPath = getProjectSearchIndexPath(localConfig);
         const { buildIndex, dropOtherCheckoutIndexes } = await import('./utils/search-index.js');
-        await dropOtherCheckoutIndexes(localConfig);
+        // Other checkouts' indexes: this checkout's rebuild goes ahead without them.
+        await dropOtherCheckoutIndexes(localConfig)
+          .catch((e: unknown) => log.warn(`[${scopeLabel}] Could not remove the search indexes of this project's other checkouts: ${unresolvedReason(e)}. `
+            + 'Recall there may return what you no longer receive until you fix the cause and run `teamai pull` in each.'));
+        // The docs and rules pull delivers here, not the whole trees (#707).
+        // A set that cannot be resolved counts as given and unreadable, whole:
+        // the build reads nothing under it and keeps what it indexed there.
+        const docFiles = await resolveDesiredDocs(localConfig.repo.localPath, roleContext?.inactiveDocsNamespaces ?? [])
+          .then(({ files }): readonly string[] | undefined => files, (e: unknown) => {
+            unresolved.push({ path: docsRepoDir, reason: unresolvedReason(e) });
+            return undefined;
+          });
+        const ruleFiles = await indexedRuleFiles(freshConfig, localConfig, roleContext)
+          .catch((e: unknown) => {
+            unresolved.push({ path: rulesRepoDir, reason: unresolvedReason(e) });
+            return undefined;
+          });
         const elapsed = await buildIndex({
           // The queue comes first: a contribution that could not be published
           // yet stays recallable, and a queued edit wins over the published copy.
           // Then every published root, so nothing is indexed from one directory
           // that happened to be picked.
+          // Each directory is given as is: the build tells one that is not
+          // there from one it cannot list.
           learningsDirs: [
             pendingLearningsDir(localConfig),
-            ...(effectiveLearningsDir ? [effectiveLearningsDir] : []),
+            ...(localConfig.scope === 'user' ? [getUserLearningsDir()] : []),
             ...publishedRoots,
           ],
           learningsNamespaces: activeLearningsNamespaces,
-          docsDir: await pathExists(docsRepoDir) ? docsRepoDir : undefined,
-          // The docs pull delivers here, not the whole docs/ tree (#707).
-          docFiles: (await resolveDesiredDocs(localConfig.repo.localPath, roleContext?.inactiveDocsNamespaces ?? [])).files,
-          rulesDir: await pathExists(rulesRepoDir) ? rulesRepoDir : undefined,
-          // The rules pull delivers here, not the whole rules/ tree (#707).
-          ruleFiles: await indexedRuleFiles(freshConfig, localConfig, roleContext),
+          docsDir: docsRepoDir,
+          docFiles,
+          rulesDir: rulesRepoDir,
+          ruleFiles,
           skills: await skillsToIndex(),
+          unreadable: unresolved,
           codebaseDir: undefined, // codebase now served by teamwiki/ graph engine
           votesDir: votesExist ? votesDir : undefined,
           indexPath,

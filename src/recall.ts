@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { requireInit, detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope } from './config.js';
-import { loadIndex, buildIndex, indexInMemory, guardIndexShrink, search, isLegacyIndex } from './utils/search-index.js';
-import type { BuildIndexOptions, SearchResult } from './utils/search-index.js';
+import { loadIndex, buildIndex, indexInMemory, search, isLegacyIndex } from './utils/search-index.js';
+import type { BuildIndexOptions, SearchResult, UnreadableFile } from './utils/search-index.js';
 import { ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, SearchIndex, LocalConfig, KnowledgeDomain } from './types.js';
@@ -410,7 +410,8 @@ async function loadOrBuildScopeIndex(
   // index only covered learnings, the new one covers four categories. Same
   // condition triggers rebuild when the file is missing entirely.
   const needsRebuild = !index || isLegacyIndex(index);
-  if (needsRebuild && (effectiveLearningsDir || await pathExists(path.join(localConfig.repo.localPath, 'docs')) || await pathExists(path.join(localConfig.repo.localPath, 'rules')) || await pathExists(path.join(localConfig.repo.localPath, 'skills')))) {
+  // A legacy index is rebuilt even when no source can be seen, or it would serve what it holds whole (#1006).
+  if (needsRebuild && (index || effectiveLearningsDir || await pathExists(path.join(localConfig.repo.localPath, 'docs')) || await pathExists(path.join(localConfig.repo.localPath, 'rules')) || await pathExists(path.join(localConfig.repo.localPath, 'skills')))) {
     // Votes live on the teamai-reports orphan branch for non-HTTP repos;
     // getReportsDir points at the worktree (sibling of the clone in git-kind).
     // If it isn't materialized yet, votesExist is false and vote-weighted
@@ -463,27 +464,29 @@ async function loadOrBuildScopeIndex(
       log.warn(`Skills stay out of recall: ${delivered.skills.reason}. Fix the collision and run \`teamai pull\`.`);
     }
 
-    // Smaller by design: an older index kept by the shrink guard would serve what the warning left out.
+    // A failed build must not fall back to the index on disk, which would serve what the warning left out.
     const partial = delivered === nothingDelivered;
     try {
       // Without another repository's learnings checkout, if one sits where
       // this project's would (#808). The probe runs only here, when an index
       // is built, never on a plain recall.
       const { indexableLearningsRoots } = await import('./utils/learnings-roots.js');
+      const unreadable: UnreadableFile[] = [];
       const buildOptions: BuildIndexOptions = {
-        learningsDirs: [pendingLearningsDir(localConfig), ...await indexableLearningsRoots(localConfig)],
+        learningsDirs: [pendingLearningsDir(localConfig), ...await indexableLearningsRoots(localConfig, unreadable)],
         learningsNamespaces,
-        docsDir: await pathExists(docsDir) ? docsDir : undefined,
-        rulesDir: await pathExists(rulesDir) ? rulesDir : undefined,
+        // Given as is: the build tells a directory that is not there from one it cannot list.
+        docsDir,
+        rulesDir,
         // The docs and skills pull delivers here, not the whole trees (#707).
         ...delivered,
         codebaseDir: undefined, // codebase now served by teamwiki/ graph engine
         votesDir: votesExist ? votesDir : undefined,
         indexPath,
-        partial,
+        unreadable,
       };
       if (dryRun) {
-        index = guardIndexShrink(await indexInMemory(buildOptions), index, partial);
+        index = await indexInMemory(buildOptions);
       } else {
         await buildIndex(buildOptions);
         index = await loadIndex(indexPath);
@@ -497,8 +500,9 @@ async function loadOrBuildScopeIndex(
           + 'Resolve that error, fix the manifest, and run `teamai pull` to rebuild it.');
         return 'build-failed';
       }
+      // Never the older index either: it predates what this build was given (#1006).
       log.warn(`Recall could not build the ${scopeLabel} search index: ${cause}`);
-      if (!index) return 'build-failed';
+      return 'build-failed';
     }
   }
 
@@ -603,6 +607,9 @@ export async function recall(
   const scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }> = [];
   // A failed build has named its cause; "no learnings" would misdirect to pull.
   let indexBuildFailed = false;
+  // An index that holds nothing is what pull leaves when the member receives
+  // nothing recall indexes (#1006); asking for a pull would misdirect too.
+  let indexEmpty = false;
 
   if (projectConfig) {
     // Project mode: project scope first.
@@ -611,7 +618,7 @@ export async function recall(
       if (result === 'build-failed') indexBuildFailed = true;
       else if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'project', config: projectConfig, learningsBase: result.learningsBase });
-      }
+      } else if (result) indexEmpty = true;
     } catch (e) {
       log.debug(`recall: project scope not available: ${(e as Error).message}`);
     }
@@ -624,7 +631,7 @@ export async function recall(
           if (result === 'build-failed') indexBuildFailed = true;
           else if (result && result.index.entries.length > 0) {
             scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
-          }
+          } else if (result) indexEmpty = true;
         }
       } catch (e) {
         log.debug(`recall: inherited user scope not available: ${(e as Error).message}`);
@@ -638,7 +645,7 @@ export async function recall(
       if (result === 'build-failed') indexBuildFailed = true;
       else if (result && result.index.entries.length > 0) {
         scopeIndexes.push({ index: result.index, scope: 'user', config: userConfig, learningsBase: result.learningsBase });
-      }
+      } else if (result) indexEmpty = true;
     } catch (e) {
       log.debug(`recall: user scope not available: ${(e as Error).message}`);
     }
@@ -656,7 +663,9 @@ export async function recall(
       emitCheckVerdict(0);
       return;
     }
-    if (!indexBuildFailed) log.info('No learnings available. Run `teamai pull` first to sync team knowledge.');
+    if (indexBuildFailed) return;
+    if (indexEmpty) log.info('The search index is empty: nothing you receive from the team is indexed. `teamai pull` rebuilds it when that changes.');
+    else log.info('No learnings available. Run `teamai pull` first to sync team knowledge.');
     return;
   }
 

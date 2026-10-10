@@ -130,8 +130,6 @@ describe('machine state saves are atomic', () => {
         return realWriteFile(file, data, 'utf-8');
       });
 
-      // The shrink guard must not mistake the tiny fixture corpus for a partial
-      // build: one entry rebuilt as one entry is a full index, not a shrink.
       await buildIndex({ learningsDirs: [learnings], indexPath });
 
       expect((await loadIndex(indexPath))?.entries.map((e) => e.filename)).toEqual(['a.md']);

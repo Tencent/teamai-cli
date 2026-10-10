@@ -58,6 +58,7 @@ import { pull } from '../pull.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig } from '../config.js';
 import { log } from '../utils/logger.js';
+import { getProjectSearchIndexPath } from '../types.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 const ROLES_YAML = `
@@ -299,6 +300,54 @@ describe('pull: docs by namespace', () => {
     await pull({});
 
     expect(await indexedDocs()).toEqual(['api/reference.md', 'frontend/components.md', 'frontend/styling.md', 'guide.md']);
+  });
+
+  it('empties a project index once the team removes the last directory it indexed (#1006)', async () => {
+    const config = configFor('frontend', { scope: 'project', projectRoot: path.join(tmpDir, 'proj') });
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(config);
+    const indexed = async (): Promise<string[]> => (
+      (await fse.readJson(getProjectSearchIndexPath(config)) as { entries: Array<{ filename: string }> })
+        .entries.map((entry) => entry.filename)
+    );
+    await pull({});
+    expect(await indexed()).not.toEqual([]);
+    await fse.remove(path.join(repoPath, 'docs'));
+
+    await pull({});
+
+    expect(await indexed()).toEqual([]);
+  });
+
+  // A directory pull cannot list counts as given and unreadable, whole: the
+  // index keeps what it held under it, names it, and still drops what the
+  // member no longer receives (#1006). chmod 0o000 does nothing for root or on Windows.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0).each([
+    { broken: 'learnings', removed: 'docs/guide.md', kept: 'learnings:note.md', gone: 'docs:guide.md' },
+    { broken: 'docs', removed: 'learnings/old.md', kept: 'docs:guide.md', gone: 'learnings:old.md' },
+  ])('rebuilds the index when the team repo $broken directory cannot be listed (#1006)', async ({ broken, removed, kept, gone }) => {
+    const config = configFor('frontend', { scope: 'project', projectRoot: path.join(tmpDir, 'proj') });
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(config);
+    await team('learnings/note.md', '---\ntitle: note\n---\nbody');
+    await team('learnings/old.md', '---\ntitle: old\n---\nbody');
+    const indexed = async (): Promise<string[]> => (
+      (await fse.readJson(getProjectSearchIndexPath(config)) as { entries: Array<{ type: string; filename: string }> })
+        .entries.map((entry) => `${entry.type}:${entry.filename}`)
+    );
+    await pull({});
+    expect(await indexed()).toEqual(expect.arrayContaining([kept, gone]));
+    await fse.remove(path.join(repoPath, removed));
+    const dir = path.join(repoPath, broken);
+    await fse.chmod(dir, 0o000);
+
+    try {
+      await pull({});
+    } finally {
+      await fse.chmod(dir, 0o755);
+    }
+
+    expect(await indexed()).toContain(kept);
+    expect(await indexed()).not.toContain(gone);
+    expect(warned(new RegExp(`^Search index could not read \\d+ path\\(s\\) \\(.*${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: `))).toBe(true);
   });
 
   it('rejects team-codebase as a docs namespace and syncs nothing for the scope', async () => {

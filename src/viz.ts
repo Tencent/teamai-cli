@@ -304,9 +304,9 @@ async function loadEntries(paths: VizPaths): Promise<SearchIndexEntry[]> {
   // which can misrepresent an explicit --repo corpus.
   let index = paths.indexPath ? await loadIndex(paths.indexPath) : null;
   if (!index || index.entries.length === 0) {
-    // Build into a unique throwaway path. A fixed shared temp file would let a
-    // previous run's larger index trip buildIndex's "new index too small" guard,
-    // leaving this run reading a stale corpus from a different repo.
+    // Build into a unique throwaway path. A fixed shared temp file would let
+    // buildIndex keep a previous run's index when it can read none of this
+    // corpus, leaving this run reading a stale corpus from a different repo.
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-viz-'));
     const tmpIndexPath = path.join(tmpDir, 'index.json');
     const namespaces = paths.learningsNamespaces;

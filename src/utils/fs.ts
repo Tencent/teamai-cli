@@ -12,7 +12,7 @@ const IGNORED_NAMES = new Set([
   '.git',
 ]);
 
-function isIgnored(name: string): boolean {
+export function isIgnored(name: string): boolean {
   return IGNORED_NAMES.has(name) || name.endsWith('.pyc');
 }
 
