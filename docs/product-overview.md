@@ -14,7 +14,7 @@ A conclusion from yesterday stays on one machine until someone puts it in the te
 |-------|-----|-------------------|
 | **Team Execution** | The same skills, rules, and hooks on every machine | `init` / `pull` / `push`, skills, rules, agents, hooks, MCP, env |
 | **Team Context** (beta) | Agents can search what the team has learned | recall, learnings, codebase graph, teamwiki... |
-| **Team Improvement** (beta) | Sessions can be written back as shared learnings | friction-based share-learnings, sessions, digest, dashboard... |
+| **Team Improvement** (beta) | Sessions can be written back as shared learnings | friction-based share-learnings, sessions, digest... |
 
 ## Core concepts
 
@@ -188,5 +188,4 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 |------------|---------|---------------|
 | **Usage** | `teamai digest` | Weekly team digest — 7-day success, prompt, active-time, estimated cost, cache, and correction trends, plus lifetime totals. |
 | **Sessions** | `teamai session save` | Privacy-scrubbed per-session summaries (tool sequence, prompt turns, interventions) that feed the digest's Session Highlights. |
-| **Dashboard** | `teamai dashboard` | Unified Overview / Team Execution / Team Context / Team Improvement views with local live sessions, 7-day trends, estimated cost per session, English/Chinese, and light/dark/system themes. |
 | **KB Health** | `teamai dashboard` → Team Context / Team Improvement | Coverage by type, top-recalled and silent entries, last-recall month distribution, author contributions, and maintenance; the full `/kb-report` remains available. |
