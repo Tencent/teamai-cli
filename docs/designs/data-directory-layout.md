@@ -101,6 +101,58 @@ checkout's own revision and tool targets all match.
 A worktree added after the
 last pull therefore gets a full sync on its first pull, and two checkouts with
 different tool directories no longer force a full sync on each other (#807).
+The fast path also needs the entry's `gitExcludePaths`, what each writer of
+the pull delivered into the checkout (the paths teamai's `delivered` git
+exclude block lists, #915). An entry saved by an older CLI has none, so the
+first pull after the upgrade is a full sync, whatever `sharing.gitExclude` says.
+The block is the union of the `gitExcludePaths` of the live checkouts
+(`liveCheckoutRecords`), less paths that hold a file outside another live
+checkout's list; paths in another repository (a submodule, a nested clone, a tool
+home under git) go to that repository's exclude file under `delivered/<id>`, the
+partition's anchor hash. Skill writers (team, source, built-in, Codex's
+`.agents/skills`, the local agent) report each file they wrote into a skill,
+never its directory, which the git exclude module refuses to list, so a file
+the member adds inside a delivered skill stays visible; a tracked file there
+gets no line while the skill's other files keep theirs. The docs writer reports each doc file it wrote, never
+an entry of the member's it kept nor a doc beneath one; with the mirror at
+`<root>/.teamai/docs`, outside single-repo mode, the sync also keeps teamai's
+block (`!/docs/**`) in `<root>/.teamai/.ignore` so ripgrep-based search finds
+the excluded docs, and lists that file while the block is all it holds.
+The `teamai-only` entry is judged anew on every pull,
+fast path included, and replaces its previous list: the shared config files
+teamai writes entries into (project MCP configs with no per-member place,
+`.codex/hooks.json`, `.opencode/opencode.json`) that git does not track and that
+hold only entries teamai's records own, so a file that takes in a member's entry
+leaves the block on the next pull, which says so. On OpenCode V2 with teamai's
+plugin current, the OpenCode MCP target is `.opencode/teamai-mcp.json` instead
+(teamai's whole, always listed; its records carry `file`), and the pull takes
+teamai's V1 entries out of the root `opencode.json` and `.opencode/opencode.json`
+when git does not track them, keeping the member's entries there.
+A `.codex/hooks.json` that is not teamai's alone (tracked, or holding a member's
+entry; always in self mode) gets no team hooks while the flag is on: pull takes
+teamai's entries out of it through its hook manifest and records the project's
+Codex team hooks in `~/.teamai/codex-team-hooks.json` (machine-wide, keyed by the
+main checkout, or by the checkout in self mode; locked by
+`codex-team-hooks.json.lock`; a project whose directory is gone is dropped). The
+same pull makes `~/.codex/hooks.json` hold one
+`teamai hook-dispatch <Event> --tool codex --team-hooks` entry per event any
+recorded project has hooks for, with the largest timeout, before the built-ins;
+at run time it resolves the project from the hook's `cwd` and runs that
+project's hooks from the index.
+`state.gitExcludeFiles` records, per owner, the exclude
+files holding its block. A pull nobody watches (session start, git hooks) keeps
+what it could not say about the block in `<dataHome>/git-exclude-notices.json`:
+its last failure to update it (cleared by the next update that succeeds) and
+notices the next interactive pull says once and drops; `doctor` reads both.
+`pull --dry-run` previews the block from what its writers would write, writing
+nothing. A checkout whose config still loads from `<workspace>/.teamai/` (the
+migration kept the legacy layout, or a dry run previews one) does not read its
+member `gitExcludeEnabled`: each worktree of that layout has its own config, and
+they share one exclude file, so only the team's setting or the default applies.
+`uninstall` reads `state.gitExcludeFiles` before it deletes the
+partition and, under the partition's sync lock, removes every teamai block
+from those files once it has deleted the files they hid; `uninstall --agent`
+filters the tool's paths out of every entry's `gitExcludePaths` and syncs again.
 Clearing `lastPullRev` still forces a full sync, which is how exclude, tags,
 roles, projects, init and bootstrap apply their changes: the pull that finds
 `lastPullRev` cleared resets every other checkout's entry to an empty `rev`,
@@ -595,7 +647,9 @@ every checkout, so that is where they live now:
     ├── managed-hooks.json                     getManagedHooksPath: team hooks teamai wrote into this checkout's own hook files (Copilot's
     │                                          .github/hooks/; every tool in self mode). Until #993 it sat in <root>/.teamai/: the first pull
     │                                          moves its Copilot records (all of them in self mode), and deletes it once empty and untracked;
-    │                                          doctor names a tracked one. Other records stay there for the pre-#370 import and legacy sweep
+    │                                          doctor names a tracked one. Other records stay there for the pre-#370 import and legacy sweep.
+    │                                          Self mode with sharing.gitExclude on: Claude's records describe .claude/settings.local.json, the
+    │                                          tracked settings.json keeps only the built-ins; off, they describe settings.json again (#915)
     ├── managed-main-checkout-hooks.json       bare repositories only: this workspace owns its Claude / Codex team-hook files and trust target, without sibling registrations
     ├── managed-mcp.json                       managedMcpManifestPath, one per checkout; Copilot placement is true for bare, false for keyed, absent when unproven
     ├── managed-mcp-files.json                 resolvedMcpFilesPath: project MCP configs teamai may have written a resolved ${VAR} to, and whether
@@ -614,10 +668,18 @@ config write fails. File records added by that failed run are cleaned up before
 Git protection is checked against the restored configs. If restoration also
 fails, the command reports both failures and keeps credential files excluded.
 
+For an HTTP workspace without project config, the resource cache and MCP records
+remain under that workspace's `.teamai/`. With git exclude enabled, `local-agent`
+lists its generated `.gitignore` and the existing MCP record files by exact path.
+Member files stay visible, and tracked files are never excluded.
+
 HTTP source removal keeps `~/.teamai/local-agent/config.json` as `{disabled:true}`,
 without an endpoint or credentials, so legacy config and environment fallback
 cannot reconnect. Failed agent-hook removals retain `agent-hooks.json` and report
-exit code 1; removal can retry without an active source. HTTP initialization
+exit code 1; removal can retry without an active source. So does
+`git-exclude.json` while an exclude file it records still holds a teamai block
+(one removal could not write, or the line of a copy it left on disk), so the
+next removal or `teamai uninstall` finds it. HTTP initialization
 replaces the disabled config to enable a source again.
 
 Sync, detached plugin reconciliation and HTTP source removal share `~/.teamai/.local-agent-sync-lock`, outside the

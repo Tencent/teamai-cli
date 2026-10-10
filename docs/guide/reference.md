@@ -42,6 +42,8 @@ sharing:
     injectShellProfile: true
   coAuthor:
     enabled: false             # optional; strip AI-tool commit trailers team-wide
+  gitExclude:
+    enabled: true              # optional; keep delivered files out of git (init writes true for a new team)
   contributeHint:
     enabled: true              # optional; false = no /teamai nudge after high-friction sessions
   intervention:
@@ -81,6 +83,7 @@ scope: project                 # project (default from init) or user
 projectRoot: /path/to/project  # project scope only
 inheritUserScope: true         # optional; project scope only, defaults to false
 coAuthorEnabled: true          # optional; per-machine co-author override
+gitExcludeEnabled: true        # optional; per-machine override of sharing.gitExclude.enabled
 contributeHintEnabled: false   # optional; per-machine override of sharing.contributeHint.enabled
 codexTrustEnabled: false       # optional; per-machine, stops teamai trusting its Codex hooks and project (see Hooks)
 toolRoots:                     # optional; per-machine tool roots (see below)

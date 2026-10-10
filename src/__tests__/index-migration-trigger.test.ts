@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { loadCommandTable } from './helpers/command-table.js';
 
 // Which commands move a checkout's `.teamai/` into the partition before they
 // run (#808): a mode that never writes this project's queue has no reason to,
@@ -28,7 +29,7 @@ afterEach(() => {
 
 /** Parse `args` as the CLI would; returns whether the pre-command migration ran. */
 async function migrates(args: string[]): Promise<boolean> {
-  const { program } = await import('../index.js');
+  const program = await loadCommandTable();
   await program.parseAsync(['node', 'teamai', ...args]);
   const { maybeMigrate } = await import('../migrate.js');
   return vi.mocked(maybeMigrate).mock.calls.length > 0;

@@ -7,8 +7,10 @@ import type { TeamaiConfig, LocalConfig } from './types.js';
 import { resolveToolBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
 import { getUserHome } from './utils/home.js';
+import { keepsTrackedCopy } from './resources/delivered-copies.js';
 import { ALL_SUPPORTED_TOOLS, agentStemFromFilename, renderForTool, reverseFromClaude } from './resources/agent-format.js';
 import type { ToolName } from './resources/agent-format.js';
+import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
 // ─── Built-in agents deployment ──────────────────────────
 //
@@ -81,6 +83,7 @@ async function removeStaleAgentSiblings(targetAgentsDir: string, stem: string, t
     if (agentStemFromFilename(file) !== stem) continue;
     if (file === `${stem}${targetExt}`) continue;
     try {
+      if (await keepsTrackedCopy(path.join(targetAgentsDir, file), path.join(targetAgentsDir, `${stem}${targetExt}`))) continue;
       await remove(path.join(targetAgentsDir, file));
       log.debug(`Removed stale agent sibling ${file} for ${stem}`);
     } catch {
@@ -92,7 +95,7 @@ async function removeStaleAgentSiblings(targetAgentsDir: string, stem: string, t
 export async function deployBuiltinAgents(
   teamConfig: TeamaiConfig,
   localConfig?: LocalConfig,
-  options?: { skipRecall?: boolean },
+  options?: { skipRecall?: boolean; recorder?: DeliveryRecorder; dryRun?: boolean },
 ): Promise<number> {
   const builtinDir = getBuiltinAgentsDir();
   if (!await pathExists(builtinDir)) {
@@ -139,8 +142,10 @@ export async function deployBuiltinAgents(
 
     const targetAgentsDir = path.join(baseDir, toolPath.agents);
     try {
-      await ensureDir(targetAgentsDir);
+      // A dry run writes nothing (#915): no directory, no sibling removed.
+      if (!options?.dryRun) await ensureDir(targetAgentsDir);
     } catch (e) {
+      options?.recorder?.failed('builtin');
       log.warn(`Failed to create agents dir for ${tool}: ${(e as Error).message}`);
       continue;
     }
@@ -157,14 +162,21 @@ export async function deployBuiltinAgents(
         }
         const rendered = renderForTool(parsed.spec, tool as ToolName);
         const stem = path.basename(file, '.md');
+        if (options?.dryRun) {
+          options.recorder?.report('builtin', path.join(targetAgentsDir, `${stem}${rendered.ext}`));
+          deployed++;
+          continue;
+        }
         // Clean up any same-stem sibling with a different extension before
         // writing the (possibly new) native extension — e.g. an upgrade that
         // switches a tool's native extension must not leave the stale file behind.
         await removeStaleAgentSiblings(targetAgentsDir, stem, rendered.ext);
         const dest = path.join(targetAgentsDir, `${stem}${rendered.ext}`);
         await writeFile(dest, rendered.content);
+        options?.recorder?.report('builtin', dest);
         deployed++;
       } catch (e) {
+        options?.recorder?.failed('builtin');
         log.warn(`Failed to deploy built-in agent ${file} to ${tool}: ${(e as Error).message}`);
       }
     }

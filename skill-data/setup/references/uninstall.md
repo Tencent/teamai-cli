@@ -94,6 +94,9 @@ and give it your team repo URL."*
   is teamai's (on the delivery record, or a team version by the history). The
   user's own file or skill of that name stays, and uninstall names it in a
   warning.
+- A copy git tracks is never deleted: uninstall names it and lists it in its
+  summary under `Kept (tracked)`. If the repository no longer needs it, have
+  the user run `git rm -r <path>` and commit.
 - If an OpenCode config entry cannot be removed, repair its config or permissions
   and retry the same uninstall command. Uninstall reports failure and keeps
   its ownership record and shared data directory, even for the last tool.
@@ -119,9 +122,40 @@ and give it your team repo URL."*
   `hook.teamai-post-checkout`, `hook.teamai-post-merge` and `hook.teamai-post-rewrite` entries in the repo's git
   config and the `# >>> teamai git hook` block in `.git/hooks/post-checkout`,
   `post-merge` and `post-rewrite`. Other hooks stay; a script left with only its shebang is deleted.
-- In a project, uninstall also takes teamai's lines out of `.git/info/exclude`
-  (the `# [teamai:mcp-exclude:start]` block) for MCP configs it proves hold no
-  resolved `${VAR}` value. A line names the path a write lands in: for a config
+- In a project, uninstall also takes teamai's blocks out of `.git/info/exclude`
+  once it has deleted the files they hid: the `delivered` block, the
+  `delivered/<id>` block it keeps in another repository (a tool folder that is
+  a nested clone or submodule, a tool home kept in git), the HTTP local
+  agent's lines for this project (it keeps serving the other workspaces; a
+  user-scope uninstall removes its `local-agent` block in every exclude file it
+  recorded), and every other `# [teamai:…]` block in those files. A file the user creates later at one of
+  those paths is visible to git. Their own lines stay, and so does another
+  project's block in a shared repository. A read-only exclude file is left as
+  it is, and the warning lists the lines to delete by hand; the uninstall is
+  then incomplete (exit 1) and keeps its records, so rerunning it once the
+  file is writable removes the block. Copies in other
+  worktrees stay on disk and become visible there. `--agent <tool>` drops only
+  that tool's lines (`.agents/skills` too for Codex) from every worktree,
+  keeping a path another tool in use reads. `--dry-run` lists the blocks under
+  `Git exclude blocks (teamai's):`. An incomplete uninstall keeps the line of
+  every file still on disk until the retry. With no configuration found (a
+  machine set up only with `init --http`, uninstall run outside its projects),
+  uninstall removes `~/.teamai/` and the HTTP source, and first teamai's lines
+  from every exclude file its records name, but the line of a file it leaves on
+  disk (named), and the local agent's MCP servers in Claude's and CodeBuddy's
+  local scopes that are still as it wrote them (a changed copy stays, named).
+  If such a file does not parse, `~/.teamai/` and the records stay and it exits
+  1, naming the file: fix it and rerun. `teamai source remove-http` leaves
+  those servers but keeps their records, for this uninstall to remove. In a workspace with no project config, run uninstall there: it also reads that workspace's `.teamai/managed-local-mcp.json`, with or without user config. A failed removal keeps those records and exits 1; repair the named file and retry in the same workspace. It does not scan other unconfigured workspaces. The local agent's skills and rules go only as far as they are
+  still what it installed: a file the user added inside a skill, an edited
+  copy, and a tracked file stay, named. If another pull or push holds the
+  project's sync lock, uninstall changes nothing and exits 1: run it again.
+- A `credentials` line stays, with a warning, while the models file it names
+  still holds an API key in any checkout of that repository. MCP lines
+  (the `# [teamai:mcp-exclude:start]` block) go only for MCP configs it proves
+  hold no resolved `${VAR}` value, judged in every checkout of the repository
+  (the main checkout of a `--separate-git-dir` repo or a submodule too), after
+  removing teamai's servers from each. A line names the path a write lands in: for a config
   under a symlinked directory, the link's target (`/config/mcp.json` for
   `.cursor/` linking to `config/`); for a config that is itself a symlink, its
   target, in that target's repository. For one it cannot prove clean (including one written

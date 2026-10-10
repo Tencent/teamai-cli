@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fc from 'fast-check';
-import { classifyCopy, describeKeptDir, judgeRemoval, type DeliveredFile } from '../resources/delivered-copies.js';
+import { execFileSync } from 'node:child_process';
+import { classifyCopy, describeKeptDir, judgeRemoval, keepsTrackedCopy, type DeliveredFile } from '../resources/delivered-copies.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 
 // #822 item 5: pull keeps a copy only when the record proves teamai wrote
@@ -149,5 +150,29 @@ describe('describeKeptDir', () => {
     expect(await describeKeptDir(link, 'skills/a', 'uninstall')).toBe(`Kept ${link}: it is a link of yours, so uninstall left it.`);
     expect(await describeKeptDir(holding, 'skills/a', 'uninstall')).toBe(`Kept ${holding}: it holds a link of yours, so uninstall left it.`);
     expect(await describeKeptDir(plain, 'skills/a', 'uninstall')).toContain('it is not teamai\'s');
+  });
+});
+
+describe('keepsTrackedCopy (#915)', () => {
+  let tmp: string;
+  beforeEach(() => { tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-tracked-copy-'))); });
+  afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
+
+  it('keeps a copy in a repository git cannot read, and lets one in no repository go', async () => {
+    const repo = path.join(tmp, 'repo');
+    const copy = path.join(repo, '.claude', 'rules', 'team-rule.md');
+    fs.mkdirSync(path.dirname(copy), { recursive: true });
+    fs.writeFileSync(copy, 'x\n');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
+    git('init', '-q');
+    git('add', '-A');
+    git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'team');
+    fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'not a ref\n');
+    const plain = path.join(tmp, 'plain', 'team-rule.md');
+    fs.mkdirSync(path.dirname(plain), { recursive: true });
+    fs.writeFileSync(plain, 'x\n');
+
+    expect(await keepsTrackedCopy(copy)).toBe(true);
+    expect(await keepsTrackedCopy(plain)).toBe(false);
   });
 });

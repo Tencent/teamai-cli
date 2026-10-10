@@ -392,6 +392,70 @@ describe('instruction targets shared by several tools (#945)', () => {
   });
 });
 
+describe('Copilot\'s project instructions with sharing.gitExclude (#915)', () => {
+  let root: string;
+  let projectRoot: string;
+  const teamConfig = (enabled?: boolean): TeamaiConfig => TeamaiConfigSchema.parse({
+    team: 't', repo: 'https://example.invalid/t.git',
+    ...(enabled === undefined ? {} : { sharing: { gitExclude: { enabled } } }),
+  });
+  const localConfig = (override?: boolean): LocalConfig => ({
+    repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
+    username: 'u', additionalRoles: [], scope: 'project', projectRoot, enabledAgents: ['copilot'],
+    ...(override === undefined ? {} : { gitExcludeEnabled: override }),
+  } as unknown as LocalConfig);
+  const contextFile = () => path.join(projectRoot, '.github', 'instructions', 'teamai-context.instructions.md');
+  const teamFile = () => path.join(projectRoot, '.github', 'copilot-instructions.md');
+
+  beforeEach(() => {
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-915-copilot-')));
+    projectRoot = path.join(root, 'project');
+    fs.mkdirSync(path.join(projectRoot, '.github', 'skills'), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('delivers to teamai\'s own file applied to every request while the flag is on, and retires the team\'s file', async () => {
+    for (const [team, member] of [[true, undefined], [false, true]] as const) {
+      const { targets, stale } = await resolveInstructionTargets(teamConfig(team), localConfig(member));
+
+      const copilot = targets.find((t) => t.tools.includes('copilot'));
+      // Exactly `**`: Copilot inlines a `**` file in every request, while any
+      // other glob only applies when a matching file is in context.
+      expect(copilot).toEqual(expect.objectContaining({ path: contextFile(), owned: true, header: '---\napplyTo: "**"\n---\n' }));
+      expect(stale.map((t) => t.path)).toContain(teamFile());
+    }
+  });
+
+  it('keeps delivering to the team\'s copilot-instructions.md while the flag is off, and retires teamai\'s own file', async () => {
+    for (const [team, member] of [[undefined, undefined], [true, false]] as const) {
+      const { targets, stale } = await resolveInstructionTargets(teamConfig(team), localConfig(member));
+
+      expect(targets.find((t) => t.tools.includes('copilot'))).toEqual(expect.objectContaining({ path: teamFile(), owned: undefined }));
+      expect(stale.map((t) => t.path)).toContain(contextFile());
+    }
+  });
+
+  it('deletes teamai\'s own file once it is retired, and keeps one git tracks', async () => {
+    const { stale } = await resolveInstructionTargets(teamConfig(false), localConfig());
+    const retired = stale.filter((t) => t.path === contextFile());
+    const ours = `---\napplyTo: "**"\n---\n\n${culture('c')}\n`;
+    fs.mkdirSync(path.dirname(contextFile()), { recursive: true });
+
+    fs.writeFileSync(contextFile(), ours);
+    await applyInstructionPlan(await planInstructionFiles([], {}, retired), { dryRun: false });
+    expect(fs.existsSync(contextFile())).toBe(false);
+
+    fs.writeFileSync(contextFile(), ours);
+    execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+    execFileSync('git', ['add', '.github/instructions/teamai-context.instructions.md'], { cwd: projectRoot });
+    await applyInstructionPlan(await planInstructionFiles([], {}, retired), { dryRun: false });
+    expect(fs.existsSync(contextFile())).toBe(true);
+  });
+});
+
 describe('a tool configured without a rules directory (#945)', () => {
   it('keeps the configured claudemd as its target, as the member\'s own file, instead of retiring it', async () => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-norules-')));

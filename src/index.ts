@@ -173,7 +173,7 @@ program
 
 program
   .command('pull')
-  .description('Pull team resources and inject into local AI tools')
+  .description('Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a project by default, a hidden directory, so search that path directly')
   .option('--silent', 'Silent mode (for hooks)')
   .option('--force', 'Force full sync even if repo is unchanged')
   .action(async (cmdOpts) => {
@@ -1016,9 +1016,25 @@ program
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
   .option('--bg-only', 'Internal: run only fire-and-forget background handlers (used by the detached child)')
   .option('--stdin-file <path>', 'Internal: read the hook payload from this file instead of STDIN')
-  .action(async (event: string, hookArgs: string[], cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean; stdinFile?: string }) => {
+  .option('--team-hooks', 'Run the team hooks of the project the hook\'s cwd belongs to (Codex, when the project\'s .codex/hooks.json is not teamai\'s alone)')
+  .action(async (event: string, hookArgs: string[], cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean; stdinFile?: string; teamHooks?: boolean }) => {
     const bgOnly = cmdOpts.bgOnly ?? false;
     const tool = cmdOpts.tool ?? 'claude';
+
+    // Team hooks keep their own timeouts and exit status: Codex bounds the
+    // entry by the largest of them, and exit 2 is a hook's blocking decision.
+    if (cmdOpts.teamHooks) {
+      let code = 0;
+      try {
+        if (tool === 'codex') {
+          const { runCodexDispatcher } = await import('./codex-team-hooks.js');
+          code = await runCodexDispatcher(event);
+        }
+      } catch (e) {
+        process.stderr.write(`teamai: team hooks did not run: ${(e as Error).message}\n`);
+      }
+      process.exit(code);
+    }
 
     // Hard wall-clock safety net for the FOREGROUND (parent) hook process, which
     // blocks the host IDE's hook. The host aborts a hook at ~10s regardless of
@@ -1496,7 +1512,7 @@ async function publishMaintenance(localConfig: LocalConfig, message: string, cha
  * The command table doubles as the source of truth for the generated skill
  * command reference (skill-data/core/references/commands.md). Importing this
  * module with TEAMAI_COMMAND_TABLE_ONLY set yields `program` without running
- * the CLI. Test-only: the two tests that read the table set it.
+ * the CLI. Test-only: tests load the table through helpers/command-table.ts.
  */
 export { program };
 

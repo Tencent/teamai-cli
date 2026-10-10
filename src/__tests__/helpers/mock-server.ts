@@ -1,6 +1,7 @@
 /**
  * In-process mock of the teamai HTTP backend (the three local-agent interfaces
- * report/sync/ack + the user-groups + skill zip download).
+ * report/sync/ack, the routes a session start reads (`get-config`,
+ * `projects/mine`, `plugins/config`), skill zip and rule file downloads).
  *
  * Used by the e2e tests and mirrors `scripts/mock-teamai-server.mjs` (the
  * standalone runnable server the reviewer asked for). Bearer auth is enforced
@@ -12,12 +13,25 @@ import type { AddressInfo } from 'node:net';
 import { zipSync, strToU8 } from 'fflate';
 import type { SkillCommand } from '../../skill-command.js';
 
+/**
+ * A command the sync hands back: any type the local agent runs, with the
+ * `scope` (`user` | `workspace`) and `workspace_path` every type may carry.
+ */
+export type MockCommand = (SkillCommand | { id?: number; type: string; [field: string]: unknown }) & {
+  scope?: string;
+  workspace_path?: string;
+};
+
 export interface MockServerConfig {
   apiKey: string;
   /** Commands handed back by the next sync call, then cleared. */
-  pendingCommands?: SkillCommand[];
+  pendingCommands?: MockCommand[];
   /** Slug → file map used to synthesize downloadable skill zips. */
   skillFiles?: Record<string, Record<string, string>>;
+  /** Slug → the `name:` its SKILL.md declares, when it is not the slug. */
+  skillNames?: Record<string, string>;
+  /** Slug → the markdown `/download?kind=rule&slug=<slug>` serves (default: a heading naming the slug). */
+  ruleFiles?: Record<string, string>;
 }
 
 export interface MockServerHandle {
@@ -27,7 +41,7 @@ export interface MockServerHandle {
   syncs: unknown[];
   acks: Array<{ id: number; body: unknown }>;
   /** Queue commands the next sync should return (download_url can use `url`). */
-  seedCommands: (cmds: SkillCommand[]) => void;
+  seedCommands: (cmds: MockCommand[]) => void;
 }
 
 /** Build a valid skill zip (`<slug>/SKILL.md` + extra files). */
@@ -74,10 +88,15 @@ export async function startMockServer(config: MockServerConfig): Promise<MockSer
       res.end(JSON.stringify(body));
     };
 
-    // Skill zip download — SMH-style: no Bearer header, token in query.
+    // Skill zip or rule file download — SMH-style: no Bearer header, token in query.
     if (req.method === 'GET' && url.pathname === '/download') {
       const slug = url.searchParams.get('slug') ?? '';
-      const zip = buildSkillZip(slug, config.skillFiles?.[slug]);
+      if (url.searchParams.get('kind') === 'rule') {
+        res.writeHead(200, { 'Content-Type': 'text/markdown' });
+        res.end(config.ruleFiles?.[slug] ?? `# ${slug}\n\nRule ${slug} from the backend.\n`);
+        return;
+      }
+      const zip = buildSkillZip(slug, config.skillFiles?.[slug], { name: config.skillNames?.[slug] });
       res.writeHead(200, { 'Content-Type': 'application/zip' });
       res.end(Buffer.from(zip));
       return;
@@ -100,6 +119,16 @@ export async function startMockServer(config: MockServerConfig): Promise<MockSer
       const commands = config.pendingCommands ?? [];
       config.pendingCommands = []; // deliver once
       json(200, { ok: true, commands });
+      return;
+    }
+
+    // Read by a session start: plugin config (default and overridden route) and the member's projects.
+    if (req.method === 'GET' && (url.pathname === '/api/local-agent/get-config' || url.pathname === '/api/plugins/config')) {
+      json(200, {});
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/projects/mine') {
+      json(200, { ok: true, projects: [] });
       return;
     }
 

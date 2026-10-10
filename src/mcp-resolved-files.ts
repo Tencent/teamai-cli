@@ -2,7 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { getDataHome, managedMcpManifestPath, type LocalConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
-import { updateFileLocked, type ExcludeUpdate } from './mcp-git-exclude.js';
+import { updateFileLocked, type ExcludeUpdate } from './git-exclude.js';
 
 // ─── Project MCP configs teamai wrote a resolved value to ────
 //

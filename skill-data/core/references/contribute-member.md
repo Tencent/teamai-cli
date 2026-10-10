@@ -119,7 +119,7 @@ The doc lands in the team's `learnings/` and appears for teammates on their next
 Before listing rules, `push` refreshes copies whose bodies still match a recorded
 sync revision. The header teamai generates for a tool's own rules format
 (Cursor `.mdc`, JoyCode's own `.mdc`, Copilot `applyTo`, Kiro `inclusion`, Qoder
-`trigger`, CodeBuddy and WorkBuddy `alwaysApply`, Oh My Pi `alwaysApply`/`globs`) does not count as a local edit: unedited old copies update in that
+`trigger`, Trae `globs`/`alwaysApply`, CodeBuddy and WorkBuddy `alwaysApply`, Oh My Pi `alwaysApply`/`globs`) does not count as a local edit: unedited old copies update in that
 format, including under `COPILOT_HOME` in user scope. Genuine local body edits remain push candidates.
 Rule pre-sync leaves tools excluded by `enabledAgents` or `disabledAgents` untouched.
 When only team `paths` change, `applyTo` refreshes if the local file still matches
@@ -136,7 +136,7 @@ team repo, then run `teamai pull`. Doctor also reports team-owned OpenCode globs
 or inline blocks left after the last rule is removed.
 
 A new file in the rules directory of a tool with a rules format of its own
-(Cursor, JoyCode, Copilot, Kiro, Qoder, CodeBuddy, WorkBuddy, Oh My Pi) is the
+(Cursor, JoyCode, Copilot, Kiro, Qoder, Trae, CodeBuddy, WorkBuddy, Oh My Pi) is the
 member's own rule in that tool's format: push never offers it, and pull leaves
 it. To author a new team rule, write it as a plain `.md` in `.claude/rules/`
 (scope it with `paths:` frontmatter, which teamai renders into each tool's

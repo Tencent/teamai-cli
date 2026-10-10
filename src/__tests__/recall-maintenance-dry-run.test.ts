@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { loadCommandTable } from './helpers/command-table.js';
 
 // `recall maintenance` and `recall promote` declare their own `--dry-run`, but
 // the root program declares one too, and Commander gives it to the root
@@ -55,7 +56,7 @@ afterEach(() => {
 });
 
 async function run(args: string[]): Promise<void> {
-  const { program } = await import('../index.js');
+  const program = await loadCommandTable();
   await program.parseAsync(['node', 'teamai', ...args]);
 }
 

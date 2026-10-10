@@ -9,8 +9,10 @@ import { detachChild } from './utils/exec.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import {
   ensureDir,
+  fileHash,
   listDirs,
   listFilesRecursive,
+  pruneEmptyDirs,
   pathExists,
   readFileSafe,
   readFileIfExists,
@@ -53,12 +55,22 @@ import {
   sameMcpFile,
   userMcpFile,
   USER_MCP_LOOKUP,
+  claimedByOtherTools,
+  deleteEmptiedMcpFile,
+  describeMcpLocation,
+  loadMcpManifest,
+  mcpManifestKey,
+  mcpRelocated,
+  projectMcpLocations,
+  resolveMcpTargets,
+  saveMcpManifest,
+  type McpTarget,
 } from './mcp-reconcile.js';
 import { normalizeAgentType } from './utils/tool-names.js';
 import { logHttpRequest, logHttpResponse } from './utils/http-log.js';
 import {
-  applyInstructionPlan, deliversInstructionsByHook, instructionHookChannel, instructionHookText, instructionHookTextFor, instructionTargetAt,
-  instructionTargetFile, isInstructionToolInstalled, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets,
+  applyInstructionPlan, deliversInstructionsByHook, holdsInstructionBlocks, instructionHookChannel, instructionHookText, instructionHookTextFor,
+  instructionTargetAt, instructionTargetFile, isInstructionToolInstalled, planInstructionFiles, registerOpencodeContext, resolveInstructionTargets,
   retiredFilesOfReached, nativeProjectInstructions,
 } from './instruction-targets.js';
 import { opencodeClaudeFallback } from './resources/opencode-config.js';
@@ -68,6 +80,10 @@ import {
   resolveToolBaseDir,
   scopedToolPaths,
   applyToolRoots,
+  getDataHome,
+  isGitExcludeEnabled,
+  isUnmigratedDataHome,
+  resolveGitExclude,
   resolveToolRootDir,
   CLAUDE_TOOL_ID,
   DEFAULT_CLAUDE_ROOT,
@@ -79,15 +95,26 @@ import {
   managedMcpManifestKey,
   managedMcpWorkspaceId,
   type DashboardEvent,
+  type DeliveryTarget,
   type LocalConfig,
   type ManagedMcpManifest,
   type ManagedMcpRecord,
   type McpServerDef,
   type McpTransport,
+  type ResourceItem,
   type TeamaiConfig,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
-import { resolveAnchors } from './utils/git.js';
+import { completeWorktreeList, gitCommonDir, isLiveCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
+import {
+  ensure as ensureGitExclude, gitExcludeFile, gitTracks, gitUntracked, remove as removeGitExclude, report as reportGitExclude, stateHomeRecord,
+  sync as syncGitExclude, type GitExcludeOwner,
+} from './git-exclude.js';
+import {
+  clearGitExcludeFailure, localAgentGitExcludeNotices, noticeGitExclude, recordGitExcludeFailure,
+} from './git-exclude-notices.js';
+import { blockingEntries, contentHash, deliveredSkillFiles, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir } from './resources/delivered-copies.js';
+import { skillOrigin, withSkillFrontmatter } from './resources/skills.js';
 import { acquireLock, releaseLock } from './update.js';
 
 const execFileAsync = promisify(execFile);
@@ -202,6 +229,13 @@ interface ManifestResource {
    * locate the directory by slug (the manifest key stays the slug).
    */
   dir_name?: string;
+  /**
+   * The tools this entry was written to (#915). An entry an older CLI wrote
+   * has none: it counts as recorded for a tool whose copy equals the installed
+   * version or sits under `dir_name`, and gains the field on its next install.
+   * For a claudemd entry, the tools the compiled block reached.
+   */
+  tools?: string[];
 }
 
 interface ManifestScope {
@@ -264,6 +298,8 @@ interface BuddyModelManifest {
   codebuddy?: Record<string, string>;
   workbuddy?: Record<string, string>;
   providersByAgent?: Record<string, Record<string, string>>;
+  /** Project scope: teamai created the project's models file, so it deletes it once nothing is left in it (#915). */
+  createdModelsFile?: boolean;
 }
 
 interface ModelConfigManifest extends BuddyModelManifest {
@@ -721,6 +757,189 @@ function createLocalAgentTeamConfig(endpoint: string): TeamaiConfig {
   });
 }
 
+/**
+ * Whether the member keeps what teamai delivers into `workspacePath` out of
+ * git (#915): the resolved flag of the config governing it, its project's,
+ * else the user scope's. Unknown when that config, or the git-mode team's
+ * teamai.yaml with no override in the config, cannot be read: `cause` says
+ * which, `fix` what to do (`resolveGitExclude`).
+ */
+async function gitExcludeEnabledFor(workspacePath: string): Promise<boolean | { cause: string; fix: string }> {
+  const { loadTeamConfig, resolveConfigForDir } = await import('./config.js');
+  let unreadable: { cause: string; fix: string } | undefined;
+  const config = await resolveConfigForDir(workspacePath, (configPath, error) => {
+    unreadable = { cause: `teamai could not read ${configPath} (${error})`, fix: `Fix ${configPath}` };
+  });
+  if (unreadable) return unreadable;
+  if (!config) return false;
+  const enabled = resolveGitExclude(config, await loadTeamConfig(config.repo.localPath));
+  if (enabled !== undefined) return enabled;
+  const override = isUnmigratedDataHome(config) ? '' : `, or set \`gitExcludeEnabled\` in ${path.join(getDataHome(config), 'config.yaml')}`;
+  return {
+    cause: `teamai could not read sharing.gitExclude from the team's teamai.yaml (${path.join(config.repo.localPath, 'teamai.yaml')})`,
+    fix: `Fix or restore teamai.yaml in the team repository${override}`,
+  };
+}
+
+/**
+ * The resource cache's team config for one install, carrying the workspace's
+ * git exclude flag so every writer and the instruction targets read the same
+ * value (#915). While the flag is unknown nothing is written: either value
+ * could move a file the other placed. `change` names what was refused
+ * ("install <slug>", "uninstall <slug>").
+ */
+async function localAgentTeamConfig(endpoint: string, scope: LocalAgentScope, workspacePath: string | undefined, change: string): Promise<TeamaiConfig> {
+  const teamConfig = createLocalAgentTeamConfig(endpoint);
+  if (scope !== 'project' || !workspacePath) return teamConfig;
+  const enabled = await gitExcludeEnabledFor(workspacePath);
+  if (typeof enabled === 'object') {
+    throw new Error(`${enabled.cause}, so the local agent did not ${change} in ${workspacePath}: it wrote nothing there. ${enabled.fix}.`);
+  }
+  if (!enabled) return teamConfig;
+  return { ...teamConfig, sharing: { ...teamConfig.sharing, gitExclude: { enabled: true } } };
+}
+
+/** The block of the skills and rules this agent installs in projects, its exclude files recorded in its state home (#915). */
+function localAgentGitExcludeOwner(): GitExcludeOwner {
+  return { name: 'local-agent', record: stateHomeRecord(getLocalAgentHome(), 'local-agent') };
+}
+
+/**
+ * Whether `entry` records `tool`'s copy at `dest` (#915): by its `tools`, or,
+ * for an entry an older CLI wrote without them, by its `dir_name` naming the
+ * path or by a copy equal to the installed version.
+ */
+async function recordsCopy(
+  entry: ManifestResource | undefined, tool: string, dest: string, equalsInstalled: () => Promise<boolean>,
+): Promise<boolean> {
+  if (!entry) return false;
+  if (entry.tools) return entry.tools.includes(tool);
+  if (entry.dir_name !== undefined && path.basename(dest) === entry.dir_name) return true;
+  return equalsInstalled();
+}
+
+/** Why the local agent did not install `slug` at `dest`: the file there is the member's (#915). */
+function keptMembersFile(dest: string, slug: string): string {
+  return `Kept ${dest}: it is not teamai's (not in the local agent's records). `
+    + `Rename or delete it; the local agent installs ${slug} on its next sync.`;
+}
+
+/** The tools an older CLI's `entry` counts as written to, by `recordsCopy` (#915). */
+async function legacyTools(
+  entry: ManifestResource,
+  fullTeamConfig: TeamaiConfig,
+  targetsFor: (teamConfig: TeamaiConfig) => Promise<DeliveryTarget[]>,
+  equalsInstalled: (target: DeliveryTarget) => Promise<boolean>,
+): Promise<string[]> {
+  const tools: string[] = [];
+  for (const [tool, toolPath] of Object.entries(fullTeamConfig.toolPaths)) {
+    for (const target of await targetsFor({ ...fullTeamConfig, toolPaths: { [tool]: toolPath } })) {
+      if (await pathExists(target.dest) && await recordsCopy(entry, tool, target.dest, () => equalsInstalled(target))) {
+        tools.push(tool);
+        break;
+      }
+    }
+  }
+  return tools;
+}
+
+/** `tools`, with `tool` when every one of its `targets` is on disk after the write. */
+async function withToolIfWritten(tools: string[], tool: string, targets: DeliveryTarget[]): Promise<string[]> {
+  const written = targets.length > 0 && (await Promise.all(targets.map(({ dest }) => pathExists(dest)))).every(Boolean);
+  return [...new Set(written ? [...tools, tool] : tools)].sort();
+}
+
+/**
+ * The first destination of `item` for the one tool of `teamConfig` that holds
+ * the member's rule (#915): a file that is neither the render of `item` nor
+ * recorded in `entry` (for a legacy entry, equal to the render of `installed`,
+ * the version in the cache).
+ */
+async function membersRuleCopy(
+  teamConfig: TeamaiConfig, localConfig: LocalConfig, item: ResourceItem, entry: ManifestResource | undefined,
+  tool: string, installed: ResourceItem | undefined,
+): Promise<string | null> {
+  const handler = new RulesHandler();
+  for (const { dest, content } of await handler.deliveryTargets(teamConfig, localConfig, item)) {
+    const disk = await fileHash(dest);
+    if (disk === null || (content !== undefined && disk === contentHash(content))) continue;
+    const equalsInstalled = async (): Promise<boolean> => {
+      if (!installed || !await pathExists(installed.sourcePath)) return false;
+      const render = (await handler.deliveryTargets(teamConfig, localConfig, installed)).find((target) => target.dest === dest)?.content;
+      return render !== undefined && disk === contentHash(render);
+    };
+    if (await recordsCopy(entry, tool, dest, equalsInstalled)) continue;
+    return dest;
+  }
+  return null;
+}
+
+/**
+ * Which files of `dest`, a tool's copy of the local agent's skill or rule
+ * `name` (a skill: its directory name), are teamai's (#915). Null when no
+ * manifest entry records that copy for `tool`; an entry an older CLI wrote,
+ * without tools, counts for every tool. Otherwise `teamais` are the files
+ * equal to what the agent writes there today from its cached source, and
+ * `members` every other entry (a file the member added or edited, a link, a
+ * repository). Read-only; judge before the cache is deleted. `config`: the
+ * source's, when a teardown already disabled it.
+ */
+export async function localAgentCopyFiles(
+  kind: 'skill' | 'rule', name: string, tool: string, dest: string, config?: LocalAgentConfig,
+): Promise<{ teamais: string[]; members: string[] } | null> {
+  config ??= await loadLocalAgentConfig({ dryRun: true }) ?? undefined;
+  if (!config) return null;
+  const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
+  const toolPath = fullTeamConfig.toolPaths[tool];
+  if (!toolPath) return null;
+  const real = async (file: string): Promise<string> => fs.promises.realpath(file).catch(() => path.resolve(file));
+  const at = await real(dest);
+  for (const [key, scopeManifest] of Object.entries((await loadManifest()).scopes)) {
+    const entries = Object.entries((kind === 'skill' ? scopeManifest.skills : scopeManifest.rules) ?? {});
+    const entry = entries.find(([slug, e]) => (kind === 'skill' ? e.dir_name ?? slug : slug) === name)?.[1];
+    if (!entry || (entry.tools && !entry.tools.includes(tool))) continue;
+    const { scope, workspacePath } = parseScopeKey(key);
+    const repoPath = await getResourceRepoPath(scope, workspacePath);
+    const localConfig = await createResourceLocalConfig(config, scope, repoPath, workspacePath);
+    const teamConfig = { ...fullTeamConfig, toolPaths: { [tool]: toolPath } };
+    const sourcePath = path.join(repoPath, kind === 'skill' ? 'skills' : 'rules', kind === 'skill' ? name : `${name}.md`);
+    const item: ResourceItem = { name, type: kind === 'skill' ? 'skills' : 'rules', sourcePath, relativePath: path.relative(repoPath, sourcePath).split(path.sep).join('/') };
+    const handler = kind === 'skill' ? new SkillsHandler() : new RulesHandler();
+    let target: DeliveryTarget | undefined;
+    for (const candidate of await handler.deliveryTargets(teamConfig, localConfig, item)) {
+      if (await real(candidate.dest) === at) target = candidate;
+    }
+    if (!target) continue;
+    if (kind === 'rule') {
+      const disk = await fileHash(dest);
+      const teamais = disk !== null && ((target.content !== undefined && disk === contentHash(target.content)) || disk === await fileHash(sourcePath));
+      return teamais ? { teamais: [dest], members: [] } : { teamais: [], members: [dest] };
+    }
+    if (await isLink(dest)) return { teamais: [], members: [dest] };
+    // What the agent writes there today: each cached file, SKILL.md with its frontmatter repaired.
+    const expected = new Map<string, string>();
+    for (const rel of await pathExists(sourcePath) ? await listFilesRecursive(sourcePath) : []) {
+      const bytes = await fse.readFile(path.join(sourcePath, rel));
+      const text = bytes.toString('utf-8');
+      const written = rel === 'SKILL.md' ? withSkillFrontmatter(text, name) : text;
+      expected.set(rel.split(path.sep).join('/'), contentHash(written === text ? bytes : written));
+    }
+    const result = { teamais: [] as string[], members: [] as string[] };
+    const walk = async (dir: string, rel: string): Promise<void> => {
+      for (const entry of await fse.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+        const file = path.join(dir, entry.name);
+        const entryRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) await walk(file, entryRel);
+        else if (entry.isFile() && expected.get(entryRel) === await fileHash(file)) result.teamais.push(file);
+        else result.members.push(file);
+      }
+    };
+    await walk(dest, '');
+    return result;
+  }
+  return null;
+}
+
 async function createResourceLocalConfig(
   config: LocalAgentConfig,
   scope: LocalAgentScope,
@@ -760,18 +979,33 @@ async function getResourceRepoPath(scope: LocalAgentScope, workspacePath?: strin
   return path.join(getLocalAgentHome(), 'resources', scope);
 }
 
+const WORKSPACE_CACHE_GITIGNORE = ['# teamai local state', 'local-agent/', ''].join('\n');
+
 async function ensureProjectGitignore(workspacePath: string): Promise<void> {
   const teamaiDir = path.join(workspacePath, '.teamai');
   await ensureDir(teamaiDir);
   const gitignorePath = path.join(teamaiDir, '.gitignore');
   const existing = await readFileSafe(gitignorePath);
   if (!existing) {
-    await writeFile(gitignorePath, ['# teamai local state', 'local-agent/', ''].join('\n'));
+    await writeFile(gitignorePath, WORKSPACE_CACHE_GITIGNORE);
     return;
   }
   if (!existing.split('\n').some((line) => line.trim() === 'local-agent/')) {
     await writeFile(gitignorePath, existing.trimEnd() + '\nlocal-agent/\n');
   }
+}
+
+/**
+ * The `.gitignore` that hides the cache the agent keeps inside a workspace
+ * with no project config of its own, while the cache lives there and the file
+ * is as the agent wrote it (#915). A `.gitignore` the member had, which the
+ * agent only appended to, is theirs.
+ */
+async function workspaceCacheGitignore(workspacePath: string, repoPath: string): Promise<string | null> {
+  const teamaiDir = path.join(workspacePath, '.teamai');
+  if (!repoPath.startsWith(teamaiDir + path.sep)) return null;
+  const file = path.join(teamaiDir, '.gitignore');
+  return await readFileSafe(file) === WORKSPACE_CACHE_GITIGNORE ? file : null;
 }
 
 function authHeaders(config: LocalAgentConfig, json = true): Record<string, string> {
@@ -1948,16 +2182,16 @@ async function installDownloadedResource(input: {
   const repoPath = await getResourceRepoPath(input.scope, input.workspacePath);
   if (input.scope === 'project' && input.workspacePath
       && repoPath.startsWith(path.join(input.workspacePath, '.teamai') + path.sep)) {
-    // Only gitignore when the cache actually lands inside the workspace (a legacy,
-    // un-migrated install). A partitioned install keeps it under ~/.teamai, so
-    // there is nothing in the workspace to ignore.
+    // Only gitignore when the cache actually lands inside the workspace (no
+    // project config there, or a legacy, un-migrated install). A partitioned
+    // install keeps it under ~/.teamai, so there is nothing in the workspace to ignore.
     await ensureProjectGitignore(input.workspacePath);
   }
   await ensureDir(repoPath);
 
   const downloadedPath = await downloadResource(input.command.download_url);
   try {
-    const fullTeamConfig = createLocalAgentTeamConfig(input.config.endpoint);
+    const fullTeamConfig = await localAgentTeamConfig(input.config.endpoint, input.scope, input.workspacePath, `install ${input.slug}`);
     const tool = input.tool ?? 'workbuddy';
     const toolPath = fullTeamConfig.toolPaths[tool];
     if (!toolPath) {
@@ -1997,28 +2231,67 @@ async function installDownloadedResource(input: {
     // Stays the slug for rules/claudemd. Recorded in the manifest so uninstall
     // can find the directory by slug.
     let skillDirName = input.slug;
+    // The tools this install wrote to, and every other rule entry it wrote (#915).
+    let tools: string[] | undefined;
+    const reachedRules: string[] = [];
+    // The tools the compiled claudemd block reached: it carries every other prompt of the scope too.
+    let reachedPrompts: string[] = [];
+    const recorded = getManifestScope(await loadManifest(), input.scope, input.workspacePath)[manifestKind(input.kind)][input.slug];
 
     if (input.kind === 'skill') {
       const extractDir = await extractZip(downloadedPath);
       const skillRoot = await findSkillRoot(extractDir);
       skillDirName = await resolveSkillDirName(skillRoot, input.slug);
       const dest = path.join(repoPath, 'skills', skillDirName);
+      const handler = new SkillsHandler();
+      const item: ResourceItem = { name: skillDirName, type: 'skills', sourcePath: dest, relativePath: `skills/${skillDirName}` };
+      const downloaded: ResourceItem = { ...item, sourcePath: skillRoot };
+      // A copy the record does not name is the member's unless it equals the
+      // download (#915); the cache is no git repo, so no history proves more.
+      const origin = skillOrigin(repoPath, skillDirName);
+      const equalsInstalled = async (copy: string): Promise<boolean> => await pathExists(dest) && ownsSkillDir(undefined, copy, origin, [item]);
+      const targets = await handler.deliveryTargets(teamConfig, localConfig, downloaded);
+      for (const { dest: copy } of targets) {
+        if (!await pathExists(copy) || await ownsSkillDir(undefined, copy, origin, [downloaded])) continue;
+        if (!await recordsCopy(recorded, tool, copy, () => equalsInstalled(copy))) throw new Error(keptMembersFile(copy, input.slug));
+      }
+      const previousTools = recorded?.tools ?? (recorded
+        ? await legacyTools(recorded, fullTeamConfig, (config) => handler.deliveryTargets(config, localConfig, item), ({ dest: copy }) => equalsInstalled(copy))
+        : []);
       await remove(dest);
       await fse.copy(skillRoot, dest, { overwrite: true });
       const fm = await readFrontmatter(path.join(dest, 'SKILL.md'));
       displayName = typeof fm.name === 'string' ? fm.name : displayName;
-      await new SkillsHandler().pullItem({
-        name: skillDirName,
-        type: 'skills',
-        sourcePath: dest,
-        relativePath: `skills/${skillDirName}`,
-      }, teamConfig, localConfig);
+      await handler.pullItem(item, teamConfig, localConfig);
+      tools = await withToolIfWritten(previousTools, tool, targets);
     } else if (input.kind === 'rule') {
       const ruleFile = await resolveMarkdownFromDownload(downloadedPath, input.slug);
       const dest = path.join(repoPath, 'rules', `${input.slug}.md`);
+      const handler = new RulesHandler();
+      const item: ResourceItem = { name: input.slug, type: 'rules', sourcePath: dest, relativePath: `rules/${input.slug}.md` };
+      const downloaded: ResourceItem = { ...item, sourcePath: ruleFile };
+      const members = await membersRuleCopy(teamConfig, localConfig, downloaded, recorded, tool, item);
+      if (members) throw new Error(keptMembersFile(members, input.slug));
+      // Before the cache takes the download: the render of the installed version.
+      const previousTools = recorded?.tools ?? (recorded
+        ? await legacyTools(recorded, fullTeamConfig, (config) => handler.deliveryTargets(config, localConfig, item),
+          async ({ dest: copy, content }) => content !== undefined && await fileHash(copy) === contentHash(content))
+        : []);
       await fse.ensureDir(path.dirname(dest));
       await fse.copyFile(ruleFile, dest);
-      await new RulesHandler().pullAllRules(teamConfig, localConfig);
+      // Every rule in the cache reaches this tool; one whose copy here is the
+      // member's is left out, as the installed one would be (#915).
+      const scope = getManifestScope(await loadManifest(), input.scope, input.workspacePath);
+      const deliver: ResourceItem[] = [];
+      for (const cached of await handler.scanTeamForPull(teamConfig, localConfig)) {
+        const kept = cached.name === input.slug ? null
+          : await membersRuleCopy(teamConfig, localConfig, cached, scope.rules[cached.name], tool, cached);
+        if (kept) log.warn(keptMembersFile(kept, cached.name));
+        else deliver.push(cached);
+      }
+      await handler.pullAllRules(teamConfig, localConfig, deliver);
+      tools = await withToolIfWritten(previousTools, tool, await handler.deliveryTargets(teamConfig, localConfig, item));
+      reachedRules.push(...deliver.map((rule) => rule.name).filter((name) => name !== input.slug));
     } else {
       const mdFile = await resolveMarkdownFromDownload(downloadedPath, input.slug);
       const dest = path.join(repoPath, 'claudemd', `${input.slug}.md`);
@@ -2026,7 +2299,7 @@ async function installDownloadedResource(input: {
       const previous = await readFileSafe(dest);
       await fse.copyFile(mdFile, dest);
       try {
-        await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath, fullTeamConfig);
+        reachedPrompts = await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath, fullTeamConfig);
       } catch (error) {
         // Session hooks read the cache directly: a prompt that was not
         // delivered must not reach them, nor push out the ones that were.
@@ -2034,6 +2307,7 @@ async function installDownloadedResource(input: {
         else await fse.writeFile(dest, previous);
         throw error;
       }
+      tools = recorded?.tools ?? [];
     }
 
     const version = commandVersion(input.command, input.kind);
@@ -2046,11 +2320,47 @@ async function installDownloadedResource(input: {
       source: 'enterprise',
       installed_at: now,
       ...(input.kind === 'skill' && skillDirName !== input.slug ? { dir_name: skillDirName } : {}),
+      ...(tools ? { tools } : {}),
     };
+    for (const name of reachedRules) {
+      const entry = scopeManifest.rules[name];
+      if (entry?.tools && !entry.tools.includes(tool)) entry.tools = [...entry.tools, tool].sort();
+    }
+    recordPromptReach(scopeManifest, reachedPrompts);
     await saveManifest(manifest);
     return version;
   } finally {
     await remove(path.dirname(downloadedPath));
+  }
+}
+
+/**
+ * Delete teamai's files of the skill copy at `dest` (#915): the directory
+ * when every file in it is teamai's, else those files only, naming each the
+ * member's. A file git tracks stays (named).
+ */
+async function removeSkillCopy(dest: string, name: string, files: { teamais: string[]; members: string[] }): Promise<void> {
+  if (files.members.length === 0) {
+    if (!await keepsTrackedCopy(dest)) await remove(dest);
+    return;
+  }
+  for (const file of files.teamais) if (!await keepsTrackedCopy(file)) await remove(file);
+  await pruneEmptyDirs(dest);
+  for (const file of files.members) {
+    log.warn(describeMembersDirLeft(file, `skills/${name}/${path.relative(dest, file).split(path.sep).join('/')}`, 'the local agent'));
+  }
+}
+
+/**
+ * Fail an uninstall, before it removes anything, while git cannot say whether
+ * the repository tracks a copy on disk: the removal would keep the copy but
+ * drop what proves it teamai's. The entry, its cache and records stay for the retry.
+ */
+async function failOnUnjudgedCopies(dests: readonly string[]): Promise<void> {
+  for (const dest of dests) {
+    if (!await pathExists(dest) || await gitUntracked(dest, 'entry')) continue;
+    const tracks = await gitTracks(dest, 'entry');
+    if (tracks.kind === 'unknown') throw new Error(`kept ${dest}: git could not say whether this repository tracks it (${tracks.error})`);
   }
 }
 
@@ -2063,30 +2373,63 @@ async function uninstallResource(input: {
   tool?: string;
 }): Promise<void> {
   const repoPath = await getResourceRepoPath(input.scope, input.workspacePath);
-  const fullTeamConfig = createLocalAgentTeamConfig(input.config.endpoint);
-  const tool = input.tool ?? 'workbuddy';
-  const toolPath = fullTeamConfig.toolPaths[tool];
-  if (!toolPath) {
-    throw new Error(`Unknown tool "${tool}": no toolPaths entry found`);
+  const fullTeamConfig = await localAgentTeamConfig(input.config.endpoint, input.scope, input.workspacePath, `uninstall ${input.slug}`);
+  if (input.tool && !fullTeamConfig.toolPaths[input.tool]) {
+    throw new Error(`Unknown tool "${input.tool}": no toolPaths entry found`);
   }
-  const teamConfig = { ...fullTeamConfig, toolPaths: { [tool]: toolPath } };
   const localConfig = await createResourceLocalConfig(input.config, input.scope, repoPath, input.workspacePath);
   const manifest = await loadManifest();
   const scopeManifest = getManifestScope(manifest, input.scope, input.workspacePath);
+  // The entry and its cached source go, and with them each copy the entry
+  // records (#915): for the tools it names, or, for an older CLI's entry,
+  // every tool. A copy goes only while it is what the agent writes today from
+  // the cached source, judged before the source is deleted; a skill file by
+  // file. Without an entry no copy is the agent's.
+  // A claudemd entry's block is synced again for every tool it reached, or, for an older CLI's entry, the command's.
+  const entry = scopeManifest[manifestKind(input.kind)][input.slug];
+  const tools = input.kind === 'claudemd' ? entry?.tools ?? [input.tool ?? 'workbuddy']
+    : entry ? entry.tools ?? Object.keys(fullTeamConfig.toolPaths) : [];
+  const teamConfig = {
+    ...fullTeamConfig,
+    toolPaths: Object.fromEntries(tools.flatMap((tool) => fullTeamConfig.toolPaths[tool] ? [[tool, fullTeamConfig.toolPaths[tool]]] : [])),
+  };
 
   if (input.kind === 'skill') {
     // The directory was created under the SKILL.md name (recorded as dir_name);
     // remove by that name, falling back to the slug for older installs.
-    const dirName = scopeManifest.skills[input.slug]?.dir_name ?? input.slug;
-    await new SkillsHandler().removeItem(dirName, teamConfig, localConfig);
+    const dirName = entry?.dir_name ?? input.slug;
+    const sourcePath = path.join(repoPath, 'skills', dirName);
+    const item: ResourceItem = { name: dirName, type: 'skills', sourcePath, relativePath: `skills/${dirName}` };
+    const copies: Array<{ dest: string; files: { teamais: string[]; members: string[] } }> = [];
+    for (const [tool, toolPath] of Object.entries(teamConfig.toolPaths)) {
+      for (const { dest } of await new SkillsHandler().deliveryTargets({ ...teamConfig, toolPaths: { [tool]: toolPath } }, localConfig, item)) {
+        const files = await pathExists(dest) ? await localAgentCopyFiles('skill', dirName, tool, dest, input.config) : null;
+        if (files) copies.push({ dest, files });
+      }
+    }
+    // The cache goes last: a copy that cannot go fails the entry while the
+    // cache still proves which of its files are teamai's, for the retry.
+    await failOnUnjudgedCopies(copies.map(({ dest }) => dest));
+    for (const { dest, files } of copies) await removeSkillCopy(dest, dirName, files);
+    await remove(sourcePath);
   } else if (input.kind === 'rule') {
-    await new RulesHandler().removeItem(input.slug, teamConfig, localConfig);
+    const item: ResourceItem = { name: input.slug, type: 'rules', sourcePath: path.join(repoPath, 'rules', `${input.slug}.md`), relativePath: `rules/${input.slug}.md` };
+    await failOnUnjudgedCopies((await new RulesHandler().deliveryTargets(teamConfig, localConfig, item)).map(({ dest }) => dest));
+    // removeItem deletes the cached rule before its copies: one that cannot go
+    // gets the cache back, which proves it teamai's on the retry.
+    const cached = await readFileSafe(item.sourcePath);
+    try {
+      await new RulesHandler().removeItem(input.slug, teamConfig, localConfig);
+    } catch (error) {
+      if (cached !== null && !await pathExists(item.sourcePath)) await fse.outputFile(item.sourcePath, cached);
+      throw error;
+    }
   } else {
     const dest = path.join(repoPath, 'claudemd', `${input.slug}.md`);
     const previous = await readFileSafe(dest);
     await remove(dest);
     try {
-      await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath, fullTeamConfig);
+      recordPromptReach(scopeManifest, await syncClaudemd(teamConfig, localConfig, repoPath, input.workspacePath, fullTeamConfig));
     } catch (error) {
       if (previous !== null) await fse.writeFile(dest, previous);
       throw error;
@@ -2095,6 +2438,246 @@ async function uninstallResource(input: {
 
   delete scopeManifest[manifestKind(input.kind)][input.slug];
   await saveManifest(manifest);
+}
+
+/**
+ * Add the tools a claudemd sync reached to every claudemd entry of the scope
+ * (#915): the block it delivered compiles all of them.
+ */
+function recordPromptReach(scope: ManifestScope, reached: readonly string[]): void {
+  for (const entry of Object.values(scope.claudemd ?? {})) {
+    entry.tools = [...new Set([...entry.tools ?? [], ...reached])].sort();
+  }
+}
+
+/**
+ * Whether `workspacePath` is a live checkout (#915). A directory a removed
+ * worktree left inside another checkout is not, though git places it there;
+ * nor is a subdirectory the agent keyed by its cwd while git could not answer.
+ */
+async function isLiveWorkspace(workspacePath: string): Promise<boolean> {
+  const commonDir = await gitCommonDir(workspacePath);
+  return commonDir !== null && isLiveCheckout(workspacePath, commonDir);
+}
+
+/** The copies the manifest records in one project workspace, for each tool it names (#915). */
+async function recordedProjectCopies(config: LocalAgentConfig, workspacePath: string, scope: ManifestScope): Promise<string[]> {
+  const repoPath = await getResourceRepoPath('project', workspacePath);
+  const fullTeamConfig = createLocalAgentTeamConfig(config.endpoint);
+  const localConfig = await createResourceLocalConfig(config, 'project', repoPath, workspacePath);
+  const copies: string[] = [];
+  const collect = async (
+    entries: Record<string, ManifestResource>,
+    itemFor: (slug: string, entry: ManifestResource) => ResourceItem,
+    handler: SkillsHandler | RulesHandler,
+  ) => {
+    for (const [slug, entry] of Object.entries(entries ?? {})) {
+      const item = itemFor(slug, entry);
+      for (const tool of entry.tools ?? []) {
+        const toolPath = fullTeamConfig.toolPaths[tool];
+        if (!toolPath) continue;
+        for (const { dest } of await handler.deliveryTargets({ ...fullTeamConfig, toolPaths: { [tool]: toolPath } }, localConfig, item)) {
+          // A skill is the files the agent installed from its cache, never the directory: a file the member adds there stays visible.
+          const files = item.type === 'skills' ? await deliveredSkillFiles(item.sourcePath, dest, await blockingEntries(dest, item.sourcePath)) : [dest];
+          for (const file of files) if (await pathExists(file)) copies.push(file);
+        }
+      }
+    }
+  };
+  await collect(scope.skills, (slug, entry) => {
+    const name = entry.dir_name ?? slug;
+    return { name, type: 'skills', sourcePath: path.join(repoPath, 'skills', name), relativePath: `skills/${name}` };
+  }, new SkillsHandler());
+  await collect(scope.rules, (slug) => ({ name: slug, type: 'rules', sourcePath: path.join(repoPath, 'rules', `${slug}.md`), relativePath: `rules/${slug}.md` }),
+    new RulesHandler());
+  // The instruction file teamai owns of each tool the claudemd block reached, while it holds teamai's blocks, as pull lists its own.
+  for (const tool of new Set(Object.values(scope.claudemd ?? {}).flatMap((entry) => entry.tools ?? []))) {
+    const toolPath = fullTeamConfig.toolPaths[tool];
+    const file = toolPath && await instructionTargetFile(tool, toolPath, 'project', true);
+    if (!file) continue;
+    const target = await instructionTargetAt(tool, path.resolve(resolveToolBaseDir(tool, localConfig), file), 'project', toolPath, true);
+    if (target.owned && await holdsInstructionBlocks(target.path)) copies.push(target.path);
+  }
+  const gitignore = await workspaceCacheGitignore(workspacePath, repoPath);
+  if (gitignore) copies.push(gitignore);
+  const dataHome = getDataHome(localConfig);
+  if (dataHome.startsWith(path.join(workspacePath, '.teamai') + path.sep) || dataHome === path.join(workspacePath, '.teamai')) {
+    const projectManifest = managedMcpManifestPath(dataHome, workspacePath);
+    const { resolvedMcpFilesPath } = await import('./mcp-resolved-files.js');
+    for (const file of [path.join(dataHome, 'managed-local-mcp.json'), projectManifest,
+      resolvedMcpFilesPath(localConfig)]) {
+      if (file && await pathExists(file)) copies.push(file);
+    }
+  }
+  return copies;
+}
+
+/**
+ * Make the `local-agent` git exclude blocks list exactly the skills and rules
+ * the manifest records in project workspaces that are live checkouts and keep
+ * teamai's deliveries out of git (#915). Each copy's line goes to the exclude
+ * file of the repository it lands in; a block no workspace needs any more goes.
+ * Nobody may watch the run, so a failure is also kept until the next sync
+ * succeeds, for the next interactive pull and `doctor`, and a path no line can
+ * name is kept as a notice. `without` leaves those workspaces out (a project
+ * `teamai uninstall` removes), so a file another workspace shares keeps only
+ * that workspace's lines; `dryRun` writes and keeps nothing and says what each
+ * exclude file would drop.
+ */
+async function syncLocalAgentGitExclude(
+  config: LocalAgentConfig, options: { without?: readonly string[]; dryRun?: boolean; rerun?: string } = {},
+): Promise<Array<{ excludeFile: string; dropped: string[] }>> {
+  const { without = [], dryRun = false, rerun = 'The next session start tries again.' } = options;
+  const notices = localAgentGitExcludeNotices();
+  const failures: string[] = [];
+  const changed: Array<{ excludeFile: string; dropped: string[] }> = [];
+  try {
+    const paths: string[] = [];
+    const unknown: string[] = [];
+    const scopes = (await loadManifest()).scopes;
+    for (const [key, scope] of Object.entries(scopes)) {
+      const { scope: kind, workspacePath } = parseScopeKey(key);
+      if (kind !== 'project' || !workspacePath || without.includes(workspacePath) || !await isLiveWorkspace(workspacePath)) continue;
+      const enabled = await gitExcludeEnabledFor(workspacePath);
+      if (enabled === false) continue;
+      const copies = await recordedProjectCopies(config, workspacePath, scope);
+      if (enabled === true) {
+        paths.push(...copies);
+        continue;
+      }
+      unknown.push(...copies);
+      failures.push(`${enabled.cause}, so it left the local agent's git exclude lines for ${workspacePath} as they were. `
+        + `${enabled.fix}, then start a new session.`);
+    }
+    // A workspace whose flag is unknown keeps the lines it has: neither added nor dropped.
+    // A path git cannot place is passed on too, so the sync only adds and drops no line.
+    if (unknown.length > 0) {
+      const current = await reportGitExclude(localAgentGitExcludeOwner(), unknown);
+      paths.push(...current.files.flatMap((file) => file.listed), ...current.gitFailed.map((failed) => failed.path));
+    }
+    const result = await syncGitExclude(localAgentGitExcludeOwner(), paths, { dryRun });
+    for (const { excludeFile, dropped } of result.files) if (dropped.length > 0) changed.push({ excludeFile, dropped });
+    if (dryRun) return changed;
+    for (const { excludeFile, write, reincluded } of result.files) {
+      const why = write.kind === 'locked' ? 'another teamai command held it past the wait'
+        : write.kind === 'notWritable' || write.kind === 'notReadable' ? write.message
+        : write.kind === 'writeFailed' ? write.error
+        : null;
+      if (why !== null) failures.push(`Could not update the local agent's git exclude block in ${excludeFile}: ${why}. ${rerun}`);
+      for (const { path: seen, rule } of reincluded) {
+        failures.push(`git still sees ${seen}: ${rule ? `\`${rule.pattern}\` (${rule.source}:${rule.line}) re-includes it` : 'a rule in your git ignore files re-includes it'}. Remove that rule.`);
+      }
+    }
+    for (const { message } of result.refused) {
+      log.warn(message);
+      await noticeGitExclude(notices, message, { silent: true });
+    }
+    for (const { path: failed, error } of result.gitFailed) {
+      failures.push(`Could not keep ${failed} out of git: git could not place it (${error}). ${rerun}`);
+    }
+  } catch (e) {
+    failures.push(`Could not update the local agent's git exclude blocks: ${(e as Error).message}. ${rerun}`);
+  }
+  if (dryRun) return changed;
+  for (const failure of failures) log.warn(failure);
+  if (failures.length > 0) await recordGitExcludeFailure(notices, failures.join(' '));
+  else await clearGitExcludeFailure(notices);
+  return changed;
+}
+
+/**
+ * For a project `teamai uninstall` that leaves the local agent in place:
+ * rebuild its `local-agent` blocks from its records without `workspaces`, so
+ * other workspaces keep their lines, in a shared exclude file too (#915).
+ * `null` when no local agent is set up on this machine. `dryRun` says what
+ * each exclude file would drop.
+ */
+export async function rebuildLocalAgentGitExcludeWithout(
+  workspaces: readonly string[], options: { dryRun?: boolean } = {},
+): Promise<Array<{ excludeFile: string; dropped: string[] }> | null> {
+  const config = await loadLocalAgentConfig({ dryRun: true });
+  if (!config) return null;
+  return syncLocalAgentGitExclude(config, { ...options, without: workspaces, rerun: 'The next session start tries again.' });
+}
+
+/**
+ * What the `local-agent` blocks are built from, short of asking git (#915):
+ * the manifest's project entries, and every config a workspace's flag can be
+ * read from (each project partition's and the user scope's).
+ */
+async function localAgentGitExcludeInput(): Promise<string> {
+  const { projectsRootDir } = await import('./utils/partition.js');
+  const projects = (await loadManifest()).scopes;
+  const entries = Object.keys(projects).filter((key) => parseScopeKey(key).scope === 'project').sort()
+    .map((key) => [key, projects[key].skills, projects[key].rules, projects[key].claudemd]);
+  const configs = [path.join(getTeamaiHomePath(), 'config.yaml'),
+    ...(await listDirs(projectsRootDir())).sort().map((dir) => path.join(projectsRootDir(), dir, 'config.yaml'))];
+  const parts = [JSON.stringify(entries)];
+  for (const file of configs) parts.push(file, (await readFileSafe(file)) ?? '');
+  return contentHash(parts.join('\0'));
+}
+
+/**
+ * Bring the `local-agent` blocks in step with the manifest and each
+ * workspace's flag (#915). `force` (a session start, or a batch that installed
+ * or removed a project skill or rule) always syncs; any other run syncs only
+ * when the input changed since the last sync, so it costs no git call.
+ */
+async function keepLocalAgentGitExclude(config: LocalAgentConfig, force: boolean): Promise<void> {
+  // An uninstall_teamai in this run removed the agent: nothing to keep, and nothing to recreate.
+  if (!await pathExists(getConfigPath())) return;
+  const synced = path.join(getLocalAgentHome(), 'git-exclude-synced.json');
+  const input = await localAgentGitExcludeInput().catch((e: unknown) => {
+    log.persist(`git exclude: could not read the local agent's git exclude input: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  });
+  if (!force && input !== null && (await readJson<Record<string, string>>(synced))?.['local-agent'] === input) return;
+  await syncLocalAgentGitExclude(config);
+  if (input === null) return;
+  await writeJson(synced, { 'local-agent': input }).catch((e: unknown) => {
+    log.persist(`git exclude: could not write ${synced}: ${e instanceof Error ? e.message : String(e)}`);
+  });
+}
+
+/**
+ * Remove the `local-agent` block from every exclude file the state home
+ * records, naming any it cannot write (#915). A line stays while a file it
+ * names is still on disk untracked (a copy the teardown kept) in a checkout reading that
+ * exclude file, among `roots` and those git lists for its repository, or when
+ * none of them does; the record then keeps that exclude file.
+ */
+async function removeLocalAgentGitExclude(roots: string[]): Promise<string[]> {
+  const left: string[] = [];
+  try {
+    const checkouts = new Set(roots);
+    for (const file of await localAgentGitExcludeOwner().record?.files() ?? []) {
+      // `<common dir>/info/exclude`: git lists the checkouts from the common directory.
+      for (const root of await listWorktrees(path.dirname(path.dirname(file)))) checkouts.add(root);
+    }
+    const keep = async ({ line, excludeFile }: { line: string; excludeFile: string }): Promise<boolean> => {
+      const left = await modelFilesBehind(line, excludeFile, { roots: [...checkouts] });
+      if (left === null) return true;
+      // A file the repository tracks is not hidden by its line.
+      for (const file of left) if ((await gitTracks(file, 'entry')).kind !== 'tracked') return true;
+      return false;
+    };
+    for (const { excludeFile, write, removed } of await removeGitExclude(localAgentGitExcludeOwner(), { keep })) {
+      const why = write.kind === 'locked' ? 'another teamai command held it past the wait'
+        : write.kind === 'notWritable' || write.kind === 'notReadable' ? write.message
+        : write.kind === 'writeFailed' ? write.error
+        : null;
+      const lines = removed.flatMap((block) => block.lines);
+      if (why !== null) {
+        left.push(excludeFile);
+        log.warn(`Kept the local agent's git exclude block in ${excludeFile}: ${why}. Delete it yourself, from \`# [teamai:local-agent:start]\` `
+          + `to \`# [teamai:local-agent:end]\`${lines.length > 0 ? ` (${lines.join(', ')})` : ''}.`);
+      }
+    }
+  } catch (e) {
+    left.push(path.join(getLocalAgentHome(), 'git-exclude.json'));
+    log.warn(`Could not remove the local agent's git exclude blocks: ${(e as Error).message}`);
+  }
+  return left;
 }
 
 /** The claudemd fragments in an HTTP resource cache, compiled into one block. */
@@ -2126,9 +2709,10 @@ export async function localAgentInstructionText(cwd: string, tool = ''): Promise
 }
 
 /**
- * Deliver the HTTP agent's claudemd block to `teamConfig`'s one tool, and
+ * Deliver the HTTP agent's claudemd block to `teamConfig`'s tools, and
  * strip the blocks earlier releases left in files no installed tool of
- * `fullTeamConfig` reads now, as pull does (#945).
+ * `fullTeamConfig` reads now, as pull does (#945). Returns the tools whose
+ * target holds the block now (#915).
  */
 async function syncClaudemd(
   teamConfig: TeamaiConfig,
@@ -2136,12 +2720,14 @@ async function syncClaudemd(
   repoPath: string,
   workspacePath: string | undefined,
   fullTeamConfig: TeamaiConfig,
-): Promise<void> {
+): Promise<string[]> {
   const { files, block } = await cachedClaudemdBlock(repoPath);
   let syncedAny = false;
   // Why each tool got nothing, for the ACK when none did.
   const skipped: string[] = [];
   const reached: string[] = [];
+  // The targets resolveInstructionTargets checks below (#915: Copilot's moves with the flag).
+  const gitExclude = isGitExcludeEnabled(localConfig, fullTeamConfig);
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     // Pi, OMP and Hermes in a project take the cache from their extension or
@@ -2158,7 +2744,7 @@ async function syncClaudemd(
       reached.push(tool);
       continue;
     }
-    const targetFile = await instructionTargetFile(tool, toolPath, localConfig.scope)
+    const targetFile = await instructionTargetFile(tool, toolPath, localConfig.scope, gitExclude)
       // A server-sent workspace can exist where OpenClaw's own lookup finds none.
       ?? (tool === 'openclaw' && localConfig.scope !== 'project' && workspacePath ? toolPath.claudemd : undefined);
     if (!targetFile) continue;
@@ -2190,7 +2776,7 @@ async function syncClaudemd(
     const viaClaude = tool === 'opencode' && localConfig.scope === 'user'
       && (await readFileSafe(claudeUserFile))?.includes(TEAMAI_CLAUDEMD_START) === true
       && await opencodeClaudeFallback(getUserHome(), [claudeUserFile]) !== null;
-    const target = await instructionTargetAt(tool, claudeMdPath, localConfig.scope, toolPath);
+    const target = await instructionTargetAt(tool, claudeMdPath, localConfig.scope, toolPath, gitExclude);
     const plan = await planInstructionFiles([target], { claudemd: block });
     // A warning means the file was left as it was: nothing reached the tool.
     if (plan.warnings.length > 0) {
@@ -2269,6 +2855,7 @@ async function syncClaudemd(
   if (!syncedAny && (files.length > 0 || skipped.length > 0)) {
     throw new Error(['CLAUDE.md sync landed on no tool: every configured target was skipped.', ...skipped].join(' '));
   }
+  return reached;
 }
 
 /**
@@ -2446,15 +3033,185 @@ async function writeModelJson(filePath: string, data: unknown): Promise<void> {
   await writeJsonAtomic(targetPath, data, { mode: 0o600 });
 }
 
-async function ensureWorkspaceModelGitignore(workspacePath: string): Promise<void> {
-  const gitignorePath = path.join(workspacePath, '.codebuddy', '.gitignore');
-  const existing = await readFileSafe(gitignorePath);
-  if (existing === null) {
-    await writeFile(gitignorePath, '# Local model credentials\nmodels.json\n');
-    return;
+// ─── Model API keys out of git (#915) ─────────────────────────
+
+/** The `credentials` git exclude owner: model API keys written into a project, kept out of git whatever the flag. */
+function credentialsGitExcludeOwner(): GitExcludeOwner {
+  return { name: 'credentials', record: stateHomeRecord(getLocalAgentHome(), 'credentials') };
+}
+
+const MODEL_KEY_RERUN = 'apply the model config again';
+
+/**
+ * List `file` in the `credentials` block before a model API key goes into it.
+ * Only git confirming that it ignores the file, or the file being in no git
+ * repository, lets the key through; anything else throws why git could still
+ * commit it and how to fix that, so the key is not written.
+ */
+async function keepModelKeyOutOfGit(file: string): Promise<void> {
+  const [{ result }] = await ensureGitExclude(credentialsGitExcludeOwner(), [file], { rerun: MODEL_KEY_RERUN });
+  // Excluded, or outside any repository, where nothing could commit it.
+  if (!('reason' in result)) return;
+  throw new Error(`apply_model_config: withheld the model API key from ${file}: teamai could not keep the file out of git: ${result.reason}. `
+    + `The file is left as it was. ${result.fix}`);
+}
+
+const TEAMAI_MODEL_GITIGNORE = ['# Local model credentials', 'models.json'];
+
+/**
+ * Delete the `.codebuddy/.gitignore` an older teamai created for `models.json`,
+ * while it holds only those two lines and git says it does not track it. One the
+ * member or the team edited, or committed, stays, and so does one git cannot judge.
+ */
+async function removeTeamaiModelGitignore(workspacePath: string): Promise<void> {
+  const file = path.join(workspacePath, '.codebuddy', '.gitignore');
+  const content = await readFileSafe(file);
+  if (content === null) return;
+  const lines = content.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+  if (lines.length !== TEAMAI_MODEL_GITIGNORE.length || lines.some((line, i) => line !== TEAMAI_MODEL_GITIGNORE[i])) return;
+  if (!await gitUntracked(file)) return;
+  await remove(file);
+}
+
+/** Whether a reconciled models document holds nothing: no model, and no other setting of the member's. */
+function holdsNoModels(document: unknown): boolean {
+  if (Array.isArray(document)) return document.length === 0;
+  return Object.entries(document as Record<string, unknown>).every(([key, value]) =>
+    (key === 'models' || key === 'availableModels') && Array.isArray(value) && value.length === 0);
+}
+
+/** Whether a models file may hold an API key: it exists and is not proven to hold none. */
+async function mayHoldModelKey(file: string): Promise<boolean> {
+  let content: string | null;
+  try {
+    content = await readFileSafe(file);
+  } catch {
+    return true;
   }
-  if (existing.split(/\r?\n/).some((line) => line.trim() === 'models.json')) return;
-  await writeFile(gitignorePath, `${existing.trimEnd()}\nmodels.json\n`);
+  if (content === null) return false;
+  try {
+    const parsed: unknown = JSON.parse(content);
+    const entries = Array.isArray(parsed) ? parsed : (parsed as { models?: unknown } | null)?.models;
+    if (entries === undefined && typeof parsed === 'object' && parsed !== null) return false;
+    if (!Array.isArray(entries)) return true;
+    return entries.some((entry) => typeof entry !== 'object' || entry === null
+      || ((entry as { apiKey?: unknown }).apiKey !== undefined && (entry as { apiKey?: unknown }).apiKey !== ''));
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The checkouts the local agent knows: every workspace it was bound to,
+ * installed skills or rules in, or wrote models into, and the other checkouts
+ * of each one's repository when git names them all. Read it before a teardown
+ * deletes those records.
+ */
+export async function localAgentCheckouts(): Promise<string[]> {
+  const config = await loadLocalAgentConfig().catch(() => null);
+  const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath()).catch(() => null)) ?? {};
+  const installed = Object.keys((await loadManifest().catch(() => null))?.scopes ?? {}).flatMap((key) => parseScopeKey(key).workspacePath ?? []);
+  const workspaces = new Set([...Object.keys(config?.workspaceBindings ?? {}), ...Object.keys(manifest.workspaceModels ?? {}), ...installed]);
+  const roots = new Set(workspaces);
+  for (const workspace of workspaces) {
+    const commonDir = await gitCommonDir(workspace);
+    for (const root of commonDir ? await completeWorktreeList(workspace, commonDir) ?? [] : []) roots.add(root);
+  }
+  return [...roots];
+}
+
+/**
+ * The files a line of `excludeFile` (a `credentials` line: model files) still keeps out of
+ * git: in each checkout that reads that exclude file, among `roots` and the
+ * ones the local agent knows, the file the line names when it is there
+ * (`withKey`: when it may hold a key). Null when none of those checkouts reads
+ * that exclude file, so nothing here can judge the line.
+ */
+export async function modelFilesBehind(
+  line: string,
+  excludeFile: string,
+  options: { roots?: string[]; withKey?: boolean } = {},
+): Promise<string[] | null> {
+  const { mcpExcludePatternPath } = await import('./mcp-git-exclude.js');
+  const rel = mcpExcludePatternPath(line);
+  let judged = false;
+  const files = new Set<string>();
+  for (const root of new Set([...options.roots ?? [], ...await localAgentCheckouts()])) {
+    const placed = await gitExcludeFile(root);
+    if (placed?.excludeFile !== excludeFile) continue;
+    judged = true;
+    const file = path.join(placed.root, rel);
+    const there = options.withKey
+      ? await mayHoldModelKey(file)
+      : await fs.promises.lstat(file).then(() => true, () => false);
+    if (there) files.add(file);
+  }
+  return judged ? [...files] : null;
+}
+
+/**
+ * Remove the `credentials` lines whose models file is gone from every checkout
+ * that reads their exclude file. Run once a models file was deleted. The
+ * exclude files it could not update.
+ */
+async function releaseModelKeyLines(): Promise<string[]> {
+  const left: string[] = [];
+  try {
+    // The checkouts reading each recorded exclude file, for a retry that no longer has the workspaces' records.
+    const roots: string[] = [];
+    for (const file of await credentialsGitExcludeOwner().record?.files() ?? []) roots.push(...await listWorktrees(path.dirname(path.dirname(file))));
+    const results = await removeGitExclude(credentialsGitExcludeOwner(), {
+      keep: async ({ line, excludeFile }) => (await modelFilesBehind(line, excludeFile, { roots }))?.length !== 0,
+    });
+    for (const { excludeFile, write, removed } of results) {
+      const why = write.kind === 'locked' ? 'another teamai command held it past the wait'
+        : write.kind === 'notWritable' || write.kind === 'notReadable' ? write.message
+        : write.kind === 'writeFailed' ? write.error
+        : null;
+      const lines = removed.flatMap((block) => block.lines);
+      if (why !== null && lines.length > 0) {
+        left.push(excludeFile);
+        log.warn(`Kept ${lines.join(', ')} in ${excludeFile}: ${why}. Delete it yourself, with the block's \`# [teamai:credentials:start]\` `
+          + 'and `# [teamai:credentials:end]` lines once it holds no other line.');
+      }
+    }
+  } catch (e) {
+    left.push(path.join(getLocalAgentHome(), 'git-exclude.json'));
+    log.warn(`Could not remove the git exclude lines of deleted model files: ${(e as Error).message}`);
+  }
+  return left;
+}
+
+/**
+ * Local-agent removal: take teamai's models out of every project's models
+ * file. A file left with nothing goes, and then its git exclude line. The
+ * models files it could not clean, whose record the teardown then keeps.
+ */
+async function removeWorkspaceModels(): Promise<string[]> {
+  let manifest: ModelConfigManifest;
+  try {
+    const raw = await readFileIfExists(getModelManifestPath());
+    manifest = raw === null ? {} : JSON.parse(raw) as ModelConfigManifest;
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error('not a JSON object');
+  } catch (e) {
+    // Without it nothing says which models are teamai's: none is taken out, and it stays.
+    log.warn(`Could not read teamai's model record ${getModelManifestPath()}: ${(e as Error).message}. `
+      + 'No project models file was changed.');
+    return [getModelManifestPath()];
+  }
+  const left: string[] = [];
+  for (const [workspacePath, scopeManifest] of Object.entries(manifest.workspaceModels ?? {})) {
+    for (const agentKind of ['codebuddy', 'workbuddy'] as const) {
+      if (scopeManifest[agentKind] === undefined) continue;
+      try {
+        await reconcileBuddyModels([], true, scopeManifest, agentKind, workspacePath);
+      } catch (e) {
+        left.push(buddyModelsPath(agentKind, workspacePath));
+        log.warn(`Could not remove teamai's models from ${buddyModelsPath(agentKind, workspacePath)}: ${(e as Error).message}`);
+      }
+    }
+  }
+  return left;
 }
 
 async function readBuddyModelEntries(
@@ -2526,7 +3283,6 @@ async function reconcileBuddyModels(
     nextManaged[model.model_id] = entryHash(entry);
   }
 
-  if (workspacePath) await ensureWorkspaceModelGitignore(workspacePath);
   if (doc) {
     doc.models = preserved;
     if (Array.isArray(doc.availableModels) && doc.availableModels.length > 0) {
@@ -2538,9 +3294,25 @@ async function reconcileBuddyModels(
       }
       doc.availableModels = available;
     }
-    await writeModelJson(targetFile, doc);
+  }
+  const document = doc ?? preserved;
+  const present = await fs.promises.lstat(targetFile).catch(() => null);
+  if (workspacePath && Object.keys(nextManaged).length === 0 && holdsNoModels(document)) {
+    if (!present || (scopeManifest.createdModelsFile && !present.isSymbolicLink() && await gitUntracked(targetFile))) {
+      // Nothing left in a file teamai created, or no file: it goes, then its git exclude line.
+      await remove(targetFile);
+      delete scopeManifest.createdModelsFile;
+      await removeTeamaiModelGitignore(workspacePath);
+      await releaseModelKeyLines();
+    } else {
+      // A file teamai did not create, one git tracks, or a member's link stays, and so does its line.
+      await writeModelJson(targetFile, document);
+    }
   } else {
-    await writeModelJson(targetFile, preserved);
+    if (workspacePath && Object.keys(nextManaged).length > 0) await keepModelKeyOutOfGit(targetFile);
+    await writeModelJson(targetFile, document);
+    if (workspacePath && !present) scopeManifest.createdModelsFile = true;
+    if (workspacePath && Object.keys(nextManaged).length > 0) await removeTeamaiModelGitignore(workspacePath);
   }
   if (agentKind === 'codebuddy') scopeManifest.codebuddy = nextManaged;
   else scopeManifest.workbuddy = nextManaged;
@@ -3023,6 +3795,72 @@ function updateManifestRecord(
   manifest[key] = records;
 }
 
+/**
+ * `tool`'s two places for a workspace's project MCP servers (#915), as a pull
+ * resolves them: the project's file (`tree`) and, for Claude and CodeBuddy,
+ * the tool's local scope (`local`), with `config`, the workspace's config the
+ * places were resolved with (the member's tool roots: Claude's local scope is
+ * in its user config). Null for a tool that has no local scope.
+ */
+async function workspaceMcpLocations(
+  config: LocalAgentConfig, localConfig: LocalConfig, tool: string, workspacePath: string,
+): Promise<{ tree: McpTarget; local: McpTarget; config: LocalConfig } | null> {
+  const withRoots = { ...localConfig, toolRoots: await memberToolRoots(workspacePath) };
+  const places = await projectMcpLocations(createLocalAgentTeamConfig(config.endpoint), withRoots, tool);
+  return places && { ...places, config: withRoots };
+}
+
+/**
+ * The MCP records of `localConfig`'s scope, as `install_mcp` and
+ * `uninstall_mcp` keep them, and how to save them. Project scope: the
+ * workspace's own manifest under the partition (it migrates legacy shared
+ * records on first read), with the records of its local scopes (#915), which
+ * every checkout of the project shares (`saveMcpManifest`). User scope: the
+ * single global file. The ownership key needs no workspace segment.
+ */
+async function loadLocalAgentMcpManifest(
+  localConfig: LocalConfig, dataHome: string,
+): Promise<{ manifestPath: string; manifest: ManagedMcpManifest; save: () => Promise<void> }> {
+  if (localConfig.scope === 'project' && localConfig.projectRoot) {
+    const scoped = { ...localConfig, dataHome };
+    const { manifestPath, manifest } = await loadMcpManifest(scoped, false);
+    return { manifestPath, manifest, save: () => saveMcpManifest(scoped, manifestPath, manifest) };
+  }
+  const manifestPath = managedMcpManifestPath(dataHome);
+  const manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
+  return { manifestPath, manifest, save: () => writeJsonAtomic(manifestPath, manifest) };
+}
+
+/**
+ * Take the servers of `records` out of `other`, the place for them in a
+ * workspace the git exclude flag does not pick now (#915), once they are
+ * written and recorded in the other place (`target`): a copy the member
+ * changed stays, named. From the project's file, a server another tool's
+ * record there still claims stays too (Claude while tclaude reads
+ * `.mcp.json`), and a file left holding nothing is deleted, unless git
+ * tracks it.
+ */
+async function leaveOtherMcpLocation(
+  config: LocalAgentConfig,
+  places: { tree: McpTarget; config: LocalConfig },
+  other: McpTarget,
+  serverKey: string,
+  records: readonly ManagedMcpRecord[],
+  target: string,
+  manifest: ManagedMcpManifest,
+): Promise<void> {
+  const fromTree = other.projectKey === undefined;
+  const claimed = fromTree
+    ? await claimedByOtherTools(
+      await resolveMcpTargets(createLocalAgentTeamConfig(config.endpoint), places.config, { includeUndetected: true }), places.tree, manifest)
+    : new Set<string>();
+  let removed = false;
+  for (const record of records) {
+    if (!claimed.has(record.name)) removed = await removeMovedMcpEntry(other, serverKey, record.name, target, record.hash) || removed;
+  }
+  if (removed && fromTree) await deleteEmptiedMcpFile(other.file).catch(() => false);
+}
+
 async function installMcpServer(
   config: LocalAgentConfig,
   command: LocalAgentCommand,
@@ -3062,34 +3900,33 @@ async function installMcpServer(
 
   const baseDir = resolveToolBaseDir(tool, localConfig);
   const mappedFile = path.join(baseDir, mcpRel);
+  // Claude's and CodeBuddy's go to the tool's local scope while the workspace's git exclude flag moves them, as a
+  // pull's do (#915); the other place is where an earlier install may have left this server.
+  const places = projectScope && workspacePath ? await workspaceMcpLocations(config, localConfig, tool, workspacePath) : null;
+  const relocated = places !== null
+    && await mcpRelocated(await localAgentTeamConfig(config.endpoint, scope, workspacePath, `install ${slug}`), places.config, tool);
+  const active = places && (relocated ? places.local : places.tree);
+  const other = places && (relocated ? places.tree : places.local);
   // CodeBuddy reads only the first of its user MCP files that exists (#993), as a pull writes it.
   const lookup = !projectScope && USER_MCP_LOOKUP[tool] !== undefined;
-  const targetFile = lookup ? await userMcpFile(tool, mcpRel, baseDir) : mappedFile;
+  const targetFile = active?.file ?? (lookup ? await userMcpFile(tool, mcpRel, baseDir) : mappedFile);
+  const target = describeMcpLocation({ file: targetFile, projectKey: active?.projectKey });
   const fileOf = (record: ManagedMcpRecord): string =>
     recordedFileOf({ file: targetFile, ...(lookup ? { mappedFile } : {}) }, record);
 
   const { resolveDataHomeForScope } = await import('./config.js');
   const dataHome = await resolveDataHomeForScope(projectScope ? 'project' : 'user', projectScope ? workspacePath : undefined);
-  // Project scope uses THIS worktree's own manifest file (per-worktree under the
-  // partition; migrates legacy shared records on first read). User scope uses the
-  // single global file. The ownership key needs no workspace segment.
-  let manifestPath: string;
-  let manifest: ManagedMcpManifest;
-  if (projectScope && workspacePath) {
-    const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
-    ({ manifestPath, manifest } = await loadProjectMcpManifest(dataHome, workspacePath));
-  } else {
-    manifestPath = managedMcpManifestPath(dataHome);
-    manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
-  }
-  const manifestKey = managedMcpManifestKey(tool, projectScope);
+  const { manifestPath, manifest, save } = await loadLocalAgentMcpManifest(localConfig, dataHome);
+  const manifestKey = active ? mcpManifestKey(active) : managedMcpManifestKey(tool, projectScope);
   // Only records of this file: a server an earlier install left in a file CodeBuddy no longer reads moves below.
   // By real path, as reconciliation compares them: a lookup file linked to another is that file.
   const records = manifest[manifestKey] ?? [];
   const inTarget = await Promise.all(records.map((r: ManagedMcpRecord) => sameMcpFile(fileOf(r), targetFile)));
   const owned = records.filter((_, i) => inTarget[i]);
   const ownedNames = new Set(owned.map((r: ManagedMcpRecord) => r.name));
-  const movedFrom = records.find((r: ManagedMcpRecord, i) => r.name === slug && !inTarget[i]);
+  const otherKey = other ? mcpManifestKey(other) : undefined;
+  const movedFrom = records.find((r: ManagedMcpRecord, i) => r.name === slug && !inTarget[i])
+    ?? (otherKey ? manifest[otherKey]?.find((r) => r.name === slug) : undefined);
   const file = lookup ? targetFile : undefined;
 
   if (format === 'codex') {
@@ -3101,7 +3938,7 @@ async function installMcpServer(
       throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
     }
     updateManifestRecord(manifest, manifestKey, slug, hash);
-    await writeJsonAtomic(manifestPath, manifest);
+    await save();
     source = spliceCodexBlock(source, slug, block);
     await writeCodexAtomic(targetFile, source);
   } else {
@@ -3109,18 +3946,19 @@ async function installMcpServer(
     const serverKey = MCP_SERVER_KEY[format];
     const hash = entryHash(entry);
     const allowBare = format === 'copilot' && projectScope;
-    const doc = await readJsonDoc(targetFile, serverKey, allowBare);
+    const doc = await readJsonDoc(targetFile, serverKey, allowBare, active?.projectKey);
     if (!doc) {
       throw new Error(`install_mcp: cannot parse ${targetFile}`);
     }
     if (doc.servers[slug] !== undefined && !ownsJsonMcpEntry(doc, slug, owned, allowBare)) {
-      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
+      throw new Error(`install_mcp: server "${slug}" exists in ${tool} config${active?.projectKey ? ` (${target})` : ''} and is not managed by teamai`);
     }
     // The copy a bare install left before another tool added the key would keep the old value beside this one (#882).
     // Judged by the record as it was before this install updates it.
     const bareCopy = isTeamaiBareCopy(doc, slug, owned);
     // Check Git without changing it until ownership is persisted. Recheck protection before writing the credential (#882).
-    const credential = projectScope && await keepCredentialOutOfGit({ ...localConfig, dataHome }, tool, slug, targetFile, entry, true);
+    // A local scope is outside the working tree: no git exclusion applies to it.
+    const credential = projectScope && !active?.projectKey && await keepCredentialOutOfGit({ ...localConfig, dataHome }, tool, slug, targetFile, entry, true);
     // A record of this server in the file CodeBuddy no longer reads is existing ownership too (#993).
     const previousRecord = owned.find((record) => record.name === slug) ?? movedFrom;
     const previousData = previousRecord ? structuredClone(doc.data) : undefined;
@@ -3128,7 +3966,7 @@ async function installMcpServer(
     // still persist a provisional record before adding a Git exclusion (#882).
     if (!previousRecord) {
       updateManifestRecord(manifest, manifestKey, slug, hash, projectScope ? credential : undefined, undefined, file);
-      await writeJsonAtomic(manifestPath, manifest);
+      await save();
     }
     if (credential) await keepCredentialOutOfGit({ ...localConfig, dataHome }, tool, slug, targetFile, entry);
     if (bareCopy) delete doc.data[slug];
@@ -3137,8 +3975,13 @@ async function installMcpServer(
     if (allowBare || previousRecord) {
       // Placement is evidence of a completed write, not just an attempted install.
       updateManifestRecord(manifest, manifestKey, slug, hash, projectScope ? credential : undefined, allowBare ? doc.bare : undefined, file);
+      // A record in the tool's other place goes with the copy there, once this write holds the server.
+      if (otherKey && manifest[otherKey]) {
+        manifest[otherKey] = manifest[otherKey].filter((r) => r.name !== slug);
+        if (manifest[otherKey].length === 0) delete manifest[otherKey];
+      }
       try {
-        await writeJsonAtomic(manifestPath, manifest);
+        await save();
       } catch (error) {
         if (previousData) {
           try {
@@ -3154,33 +3997,50 @@ async function installMcpServer(
         throw error;
       }
     }
-    if (movedFrom) await removeMovedMcpEntry(fileOf(movedFrom), serverKey, slug, targetFile, movedFrom.hash);
+    if (movedFrom && places && other) {
+      await leaveOtherMcpLocation(config, places, other, serverKey, [movedFrom], target, manifest);
+    } else if (movedFrom) {
+      await removeMovedMcpEntry({ file: fileOf(movedFrom) }, serverKey, slug, target, movedFrom.hash);
+    }
+  }
+  if (projectScope && workspacePath) {
+    const resources = await loadManifest();
+    getManifestScope(resources, 'project', workspacePath);
+    await saveManifest(resources);
   }
   log.debug(`local-agent: installed MCP server "${slug}" for ${tool} (scope=${scope})`);
   return command.version;
 }
 
 /**
- * Take `slug` out of `file`, where an earlier install wrote it and which
- * CodeBuddy no longer reads (#993): this install wrote it to `targetFile` and
- * recorded it there. A failure leaves the old entry, and says where.
+ * Take `slug` out of `from`, where an earlier install wrote it and which the
+ * tool no longer gets it from: a user MCP file CodeBuddy no longer reads
+ * (#993), or a project's `.mcp.json` or the tool's local scope, the place for
+ * it the git exclude flag no longer picks (#915). This install wrote it to
+ * `target` and recorded it there. A failure leaves the old entry, and says
+ * where. Whether it took it out.
  */
-async function removeMovedMcpEntry(file: string, serverKey: string, slug: string, targetFile: string, recordedHash: string): Promise<void> {
+async function removeMovedMcpEntry(
+  from: Pick<McpTarget, 'file' | 'projectKey'>, serverKey: string, slug: string, target: string, recordedHash: string,
+): Promise<boolean> {
+  const file = describeMcpLocation(from);
   try {
-    const doc = await readJsonDoc(file, serverKey);
+    const doc = await readJsonDoc(from.file, serverKey, false, from.projectKey);
     if (!doc) throw new Error('it does not parse');
-    if (doc.servers[slug] === undefined) return;
+    if (doc.servers[slug] === undefined) return false;
     // A copy the member changed since teamai installed it is theirs: left where it is (#993).
     if (entryHash(doc.servers[slug]) !== recordedHash) {
-      log.warn(`Installed MCP server ${slug} in ${targetFile}, and kept the copy in ${file}: you changed it since teamai installed it. `
+      log.warn(`Installed MCP server ${slug} in ${target}, and kept the copy in ${file}: you changed it since teamai installed it. `
         + `Remove ${slug} from ${file} when you no longer need it.`);
-      return;
+      return false;
     }
     delete doc.servers[slug];
-    await writeJsonDoc(file, serverKey, doc);
+    await writeJsonDoc(from.file, serverKey, doc);
+    return true;
   } catch (error) {
-    log.warn(`Installed MCP server ${slug} in ${targetFile}, but could not remove the copy an earlier install left in ${file}: `
+    log.warn(`Installed MCP server ${slug} in ${target}, but could not remove the copy an earlier install left in ${file}: `
       + `${error instanceof Error ? error.message : String(error)}. Remove ${slug} from ${file} yourself.`);
+    return false;
   }
 }
 
@@ -3243,68 +4103,64 @@ async function uninstallMcpServer(
 
   const { resolveDataHomeForScope } = await import('./config.js');
   const dataHome = await resolveDataHomeForScope(projectScope ? 'project' : 'user', projectScope ? workspacePath : undefined);
-  // Project scope uses THIS worktree's own manifest file (per-worktree under the
-  // partition; migrates legacy shared records on first read). User scope uses the
-  // single global file. The ownership key needs no workspace segment.
-  let manifestPath: string;
-  let manifest: ManagedMcpManifest;
-  if (projectScope && workspacePath) {
-    const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
-    ({ manifestPath, manifest } = await loadProjectMcpManifest(dataHome, workspacePath));
-  } else {
-    manifestPath = managedMcpManifestPath(dataHome);
-    manifest = (await readJson<ManagedMcpManifest>(manifestPath)) ?? {};
-  }
-  const manifestKey = managedMcpManifestKey(tool, projectScope);
-  const owned = manifest[manifestKey] ?? [];
-  const ownedNames = new Set(owned.map((r: ManagedMcpRecord) => r.name));
+  const { manifestPath, manifest, save } = await loadLocalAgentMcpManifest(localConfig, dataHome);
+  // Claude's and CodeBuddy's may be in the tool's local scope or in the project's file, whichever the git exclude
+  // flag picked when it was installed (#915): taken out wherever a record places it.
+  const places = projectScope && workspacePath ? await workspaceMcpLocations(config, localConfig, tool, workspacePath) : null;
+  const locations: Array<{ manifestKey: string; file?: string; projectKey?: string }> = places
+    ? [places.local, places.tree].map((place) => ({ manifestKey: mcpManifestKey(place), file: place.file, projectKey: place.projectKey }))
+    : [{ manifestKey: managedMcpManifestKey(tool, projectScope) }];
 
-  if (!ownedNames.has(slug)) return;
-  // CodeBuddy's user servers are where the install recorded them (#993); an older one recorded no file.
-  const recordedFile = !projectScope && USER_MCP_LOOKUP[tool] ? owned.find((r) => r.name === slug)?.file : undefined;
-  const targetFile = recordedFile ?? path.join(baseDir, mcpRel);
+  for (const { manifestKey, file, projectKey } of locations) {
+    const owned = manifest[manifestKey] ?? [];
+    if (!owned.some((r: ManagedMcpRecord) => r.name === slug)) continue;
+    // CodeBuddy's user servers are where the install recorded them (#993); an older one recorded no file.
+    const recordedFile = !projectScope && USER_MCP_LOOKUP[tool] ? owned.find((r) => r.name === slug)?.file : undefined;
+    const targetFile = file ?? recordedFile ?? path.join(baseDir, mcpRel);
+    const where = describeMcpLocation({ file: targetFile, projectKey });
 
-  let restoreConfig: (() => Promise<void>) | undefined;
-  if (format === 'codex') {
-    const source = (await readFileIfExists(targetFile)) ?? '';
-    const next = spliceCodexBlock(source, slug, null);
-    if (next !== source) {
-      await writeCodexAtomic(targetFile, next);
-      restoreConfig = () => writeCodexAtomic(targetFile, source);
-    }
-  } else {
-    const serverKey = MCP_SERVER_KEY[format];
-    const allowBare = format === 'copilot' && projectScope;
-    const doc = await readJsonDoc(targetFile, serverKey, allowBare);
-    if (!doc) throw new Error(`uninstall_mcp: cannot parse ${targetFile}. Ownership was kept; repair the config and uninstall the server again.`);
-    // Also a bare entry another tool's mcpServers now sits beside (#882).
-    const bareCopy = isTeamaiBareCopy(doc, slug, owned);
-    const ownsEntry = ownsJsonMcpEntry(doc, slug, owned, allowBare);
-    if ((ownsEntry && doc.servers[slug] !== undefined) || bareCopy) {
-      const previousData = structuredClone(doc.data);
-      if (ownsEntry) delete doc.servers[slug];
-      if (bareCopy) delete doc.data[slug];
-      await writeJsonDoc(targetFile, serverKey, doc);
-      restoreConfig = () => writeMcpJson(targetFile, previousData);
-    }
-  }
-  manifest[manifestKey] = owned.filter((r: ManagedMcpRecord) => r.name !== slug);
-  if (manifest[manifestKey].length === 0) delete manifest[manifestKey];
-  try {
-    await writeJsonAtomic(manifestPath, manifest);
-  } catch (error) {
-    if (restoreConfig) {
-      try {
-        await restoreConfig();
-      } catch (restoreError) {
-        throw new Error(
-          `uninstall_mcp: ownership write failed (${error instanceof Error ? error.message : String(error)}), and restoring ${targetFile} failed `
-          + `(${restoreError instanceof Error ? restoreError.message : String(restoreError)}). The config may not match ${manifestPath}. Repair the config and ownership record after fixing both write errors, then uninstall the server again.`,
-          { cause: error },
-        );
+    let restoreConfig: (() => Promise<void>) | undefined;
+    if (format === 'codex') {
+      const source = (await readFileIfExists(targetFile)) ?? '';
+      const next = spliceCodexBlock(source, slug, null);
+      if (next !== source) {
+        await writeCodexAtomic(targetFile, next);
+        restoreConfig = () => writeCodexAtomic(targetFile, source);
+      }
+    } else {
+      const serverKey = MCP_SERVER_KEY[format];
+      const allowBare = format === 'copilot' && projectScope;
+      const doc = await readJsonDoc(targetFile, serverKey, allowBare, projectKey);
+      if (!doc) throw new Error(`uninstall_mcp: cannot parse ${targetFile}. Ownership was kept; repair the config and uninstall the server again.`);
+      // Also a bare entry another tool's mcpServers now sits beside (#882).
+      const bareCopy = isTeamaiBareCopy(doc, slug, owned);
+      const ownsEntry = ownsJsonMcpEntry(doc, slug, owned, allowBare);
+      if ((ownsEntry && doc.servers[slug] !== undefined) || bareCopy) {
+        const previousData = structuredClone(doc.data);
+        if (ownsEntry) delete doc.servers[slug];
+        if (bareCopy) delete doc.data[slug];
+        await writeJsonDoc(targetFile, serverKey, doc);
+        restoreConfig = () => writeMcpJson(targetFile, previousData);
       }
     }
-    throw error;
+    manifest[manifestKey] = owned.filter((r: ManagedMcpRecord) => r.name !== slug);
+    if (manifest[manifestKey].length === 0) delete manifest[manifestKey];
+    try {
+      await save();
+    } catch (error) {
+      if (restoreConfig) {
+        try {
+          await restoreConfig();
+        } catch (restoreError) {
+          throw new Error(
+            `uninstall_mcp: ownership write failed (${error instanceof Error ? error.message : String(error)}), and restoring ${where} failed `
+            + `(${restoreError instanceof Error ? restoreError.message : String(restoreError)}). The config may not match ${manifestPath}. Repair the config and ownership record after fixing both write errors, then uninstall the server again.`,
+            { cause: error },
+          );
+        }
+      }
+      throw error;
+    }
   }
   log.debug(`local-agent: uninstalled MCP server "${slug}" from ${tool} (scope=${scope})`);
 }
@@ -3430,6 +4286,12 @@ async function processCommands(
   return modelConfigApplied;
 }
 
+/** Whether `command` installs or removes a project skill, rule or prompt, which the `local-agent` block lists (#915). */
+function changesProjectCopies(command: LocalAgentCommand): boolean {
+  return normalizeScope(command.scope) === 'project'
+    && ((commandKind(command) !== null && commandAction(command) !== null) || command.type === 'install_mcp' || command.type === 'uninstall_mcp');
+}
+
 export async function reportAndSyncLocalAgent(context: LocalAgentContext): Promise<boolean> {
   if (!await loadLocalAgentConfig({ dryRun: true })) return false;
   if (!await acquireLocalAgentLock()) {
@@ -3504,6 +4366,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
     }
   }
 
+  let changedProjectCopies = false;
   try {
     if (!skipReport) {
       const reportPayload = await buildReportPayload(config, context);
@@ -3537,6 +4400,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
     const commands = cmds && cmds.length > 0 ? cmds : (syncResponse.commands ?? []);
     if (commands.length > 0) {
       log.debug(`${tag} sync returned ${commands.length} command(s): ${commands.map((c) => `${c.type}#${c.id}`).join(', ')}`);
+      changedProjectCopies = commands.some(changesProjectCopies);
       const modelConfigApplied = await processCommands(config, commands, context);
       if (modelConfigApplied && !skipReport) {
         const reportPayload = await buildReportPayload(config, context);
@@ -3553,10 +4417,13 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
     log.error(`${tag} sync FAILED: ${error}`);
     await appendErrorLog({ error, context });
   }
+  // Every session start, and after project installs and uninstalls, failed ones included (a failure may have
+  // written part of its copies), also when the sync failed: the manifest and the flags decide, not the backend.
   // Also when the sync failed: what an install wrote is on disk either way. Also after an uninstall_teamai:
   // one that removed teamai's servers and records leaves nothing to list, and one that failed or kept the
   // shared files (another agent remains) leaves what still needs keeping out of git.
   await protectWorkspaceMcpConfigs(config, context.cwd);
+  await keepLocalAgentGitExclude(config, context.event?.type === 'session_start' || changedProjectCopies);
 
   return true;
 }
@@ -3571,6 +4438,8 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
 async function protectWorkspaceMcpConfigs(config: LocalAgentConfig, cwd?: string): Promise<void> {
   const workspacePath = await resolveWorkspacePath(cwd);
   if (!workspacePath) return;
+  // First, what an earlier install left in a file the tool no longer gets it from (#915).
+  await moveWorkspaceMcpServers(config, workspacePath);
   try {
     const { resolveDataHomeForScope } = await import('./config.js');
     const dataHome = await resolveDataHomeForScope('project', workspacePath);
@@ -3584,6 +4453,111 @@ async function protectWorkspaceMcpConfigs(config: LocalAgentConfig, cwd?: string
       + 'The next session checks again; do not commit them meanwhile.',
     );
   }
+}
+
+/**
+ * Move the project MCP servers earlier installs recorded in a workspace's
+ * `.mcp.json` to the tool's local scope (#915), for Claude and CodeBuddy
+ * while the workspace's git exclude flag moves them there, as a pull does.
+ * The server sends no install again for a server already in place. A copy
+ * the member changed stays, named, and is theirs from then on; so does a
+ * server of the same name the member has in the local scope. A server
+ * another tool's record there still claims stays in `.mcp.json` for that
+ * tool. With the flag off or unknown, nothing moves.
+ */
+async function moveWorkspaceMcpServers(config: LocalAgentConfig, workspacePath: string): Promise<void> {
+  // An uninstall_teamai in this run removed the agent: nothing to move.
+  if (!await loadLocalAgentConfig({ dryRun: true })) return;
+  try {
+    const localConfig = await createResourceLocalConfig(config, 'project', getUserHome(), workspacePath);
+    const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
+    // Read first without writing anything: most syncs find nothing to move.
+    const { manifest: recorded } = await loadProjectMcpManifest(getDataHome(localConfig), workspacePath, { dryRun: true });
+    const tools = Object.keys(createLocalAgentTeamConfig(config.endpoint).toolPaths)
+      .filter((tool) => (recorded[managedMcpManifestKey(tool, true)]?.length ?? 0) > 0);
+    if (tools.length === 0 || await gitExcludeEnabledFor(workspacePath) !== true) return;
+    const teamConfig = await localAgentTeamConfig(config.endpoint, 'project', workspacePath, 'move MCP servers');
+    const { manifest, save } = await loadLocalAgentMcpManifest(localConfig, getDataHome(localConfig));
+    for (const tool of tools) {
+      const places = await workspaceMcpLocations(config, localConfig, tool, workspacePath);
+      if (!places || !await mcpRelocated(teamConfig, places.config, tool)) continue;
+      await moveToLocalScope(config, tool, places, manifest, save);
+    }
+  } catch (e) {
+    log.warn(`Could not move the MCP servers the local agent installed in ${workspacePath} out of the project: `
+      + `${e instanceof Error ? e.message : String(e)}. The next session start tries again.`);
+  }
+}
+
+/** `moveWorkspaceMcpServers` for one tool. */
+async function moveToLocalScope(
+  config: LocalAgentConfig,
+  tool: string,
+  places: { tree: McpTarget; local: McpTarget; config: LocalConfig },
+  manifest: ManagedMcpManifest,
+  save: () => Promise<void>,
+): Promise<void> {
+  const { tree, local } = places;
+  const treeKey = mcpManifestKey(tree);
+  const localKey = mcpManifestKey(local);
+  const records = manifest[treeKey] ?? [];
+  if (records.length === 0 || tree.format === 'codex') return;
+  const serverKey = MCP_SERVER_KEY[tree.format];
+  const there = describeMcpLocation(local);
+  const from = await readJsonDoc(tree.file, serverKey);
+  const to = await readJsonDoc(local.file, serverKey, false, local.projectKey);
+  if (!from || !to) {
+    log.warn(`Did not move the local agent's MCP servers for ${tool} from ${tree.file} to ${there}: `
+      + `${from ? local.file : tree.file} does not parse. Fix it; the next session start moves them.`);
+    return;
+  }
+  const owned = new Set((manifest[localKey] ?? []).map((record) => record.name));
+  const moved: ManagedMcpRecord[] = [];
+  const edited: string[] = [];
+  const left: ManagedMcpRecord[] = [];
+  for (const record of records) {
+    const entry = from.servers[record.name];
+    // Gone from the file: nothing to move, and the record goes.
+    if (entry === undefined) continue;
+    // A copy the member changed since teamai installed it is theirs: it stays where it is, and its record goes.
+    if (entryHash(entry) !== record.hash) {
+      edited.push(record.name);
+      continue;
+    }
+    const held = to.servers[record.name];
+    if (held !== undefined && !owned.has(record.name) && entryHash(held) !== record.hash) {
+      log.warn(`Kept MCP server ${record.name} in ${tree.file}: ${there} holds a server of that name that is not teamai's. `
+        + `Rename or remove one of them; the local agent moves ${record.name} at its next sync.`);
+      left.push(record);
+      continue;
+    }
+    if (!owned.has(record.name)) to.servers[record.name] = entry;
+    moved.push(record);
+  }
+  if (left.length === records.length) return;
+
+  const previous = structuredClone(to.data);
+  const wrote = moved.some((record) => !owned.has(record.name));
+  if (wrote) await writeJsonDoc(local.file, serverKey, to);
+  for (const record of moved) {
+    if (!owned.has(record.name)) updateManifestRecord(manifest, localKey, record.name, record.hash, false);
+  }
+  if (left.length > 0) manifest[treeKey] = left;
+  else delete manifest[treeKey];
+  try {
+    await save();
+  } catch (error) {
+    if (wrote) await writeMcpJson(local.file, previous).catch(() => undefined);
+    throw error;
+  }
+  for (const name of edited) {
+    log.warn(`Kept MCP server ${name} in ${tree.file}: you changed it since teamai installed it, so the local agent did not move it to ${there}. `
+      + `It is yours now; remove ${name} from ${tree.file} when you no longer need it.`);
+  }
+  if (moved.length === 0) return;
+  await leaveOtherMcpLocation(config, places, tree, serverKey, moved, there, manifest);
+  log.info(`Moved the local agent's MCP servers for ${tool} (${moved.map((record) => record.name).join(', ')}) from ${tree.file} to ${there}: `
+    + 'with sharing.gitExclude on, the tool reads them there.');
 }
 
 function statusFromEvent(event?: DashboardEvent): string {
@@ -3812,7 +4786,7 @@ export async function removeLocalAgentHttp(): Promise<void> {
  * stale entry cannot block the teardown.
  */
 export async function shutdownLocalAgentHttp(retry: string): Promise<'none' | 'removed' | 'incomplete' | 'locked'> {
-  if (!await loadLocalAgentConfig({ dryRun: true }) && Object.keys(await loadAgentHookManifest()).length === 0) return 'none';
+  if (!await loadLocalAgentConfig({ dryRun: true }) && !await disabledSourceLeftovers()) return 'none';
   // A server-pushed uninstall runs while its sync holds the lock.
   const inherited = await holdsParentLocalAgentLock();
   if (!inherited && !await acquireLocalAgentLock()) {
@@ -3831,16 +4805,38 @@ export async function shutdownLocalAgentHttp(retry: string): Promise<'none' | 'r
   }
 }
 
+/**
+ * The config of a source an earlier removal disabled before it could uninstall
+ * every entry: the disabled marker keeps it for the retry, and nothing else
+ * reads it (`loadLocalAgentConfig` sees only the marker).
+ */
+async function interruptedRemovalConfig(): Promise<LocalAgentConfig | null> {
+  const marker = await readJson<{ disabled?: boolean; removing?: LocalAgentConfig }>(getConfigPath());
+  return marker?.disabled === true && marker.removing?.endpoint ? marker.removing : null;
+}
+
 async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'removed' | 'incomplete'> {
-  const config = await loadLocalAgentConfig();
+  const config = await loadLocalAgentConfig() ?? await interruptedRemovalConfig();
   if (!config) {
-    // An earlier run disabled the source but could not remove these agent hooks (#993).
-    if (Object.keys(await loadAgentHookManifest()).length > 0) return finishAgentHookTeardown(retry);
-    return 'none';
+    if (!await disabledSourceLeftovers()) return 'none';
+    // A retry: the caches an earlier run could not delete are still in the manifest.
+    const cachesLeft: string[] = [];
+    for (const [key, scopeManifest] of Object.entries((await loadManifest()).scopes)) {
+      const { scope, workspacePath } = parseScopeKey(key);
+      if (scope === 'project' && workspacePath && emptiedWorkspace(scopeManifest) && !await removeWorkspaceCache(workspacePath)) {
+        cachesLeft.push(workspacePath);
+      }
+    }
+    const blocks = await removeLocalAgentGitExclude(await localAgentCheckouts());
+    const models = await removeWorkspaceModels();
+    return finishAgentHookTeardown(retry, { models, caches: cachesLeft, blocks: [...blocks, ...await releaseModelKeyLines()] });
   }
+  // Read before the marker and the teardown below delete what names them (#915).
+  const checkouts = await localAgentCheckouts();
 
   // No sync or plugin worker can write after this point until teardown finishes.
-  await writeJsonAtomic(getConfigPath(), { disabled: true });
+  // The marker keeps the config until every entry is uninstalled, for a retry.
+  await writeJsonAtomic(getConfigPath(), { disabled: true, removing: config });
 
   // Tear down installed plugins before removing teamai's local-agent state.
   try {
@@ -3849,6 +4845,7 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
 
   const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
   const manifest = await loadManifest();
+  const cachesLeft: string[] = [];
   for (const [key, scopeManifest] of Object.entries(manifest.scopes)) {
     const { scope, workspacePath } = parseScopeKey(key);
     for (const kind of kinds) {
@@ -3856,30 +4853,118 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
         try {
           await uninstallResource({ config, kind, slug, scope, workspacePath });
         } catch (e) {
-          log.debug(`local-agent: failed to uninstall ${kind} "${slug}": ${(e as Error).message}`);
+          log.warn(`Could not uninstall ${kind} ${slug}: ${(e as Error).message}`);
         }
       }
     }
+    const left = (await loadManifest()).scopes[key];
+    if (scope === 'project' && workspacePath && emptiedWorkspace(left) && !await removeWorkspaceCache(workspacePath)) {
+      cachesLeft.push(workspacePath);
+    }
   }
+  const entriesLeft = Object.entries((await loadManifest()).scopes).flatMap(([key, left]) =>
+    kinds.flatMap((kind) => Object.keys(left?.[manifestKind(kind)] ?? {}).map((slug) => `${kind} ${slug} (${key})`)));
 
-  return finishAgentHookTeardown(retry);
+  // Before the state home goes: it records which exclude files hold the block (#915).
+  const blocks = await removeLocalAgentGitExclude(checkouts);
+  const models = await removeWorkspaceModels();
+  return finishAgentHookTeardown(retry, {
+    models, caches: cachesLeft, entries: entriesLeft, removing: entriesLeft.length > 0 ? config : undefined,
+    // The lines of models files the teardown deleted, with any an earlier run could not write.
+    blocks: [...blocks, ...await releaseModelKeyLines()],
+  });
+}
+
+/** Whether the teardown uninstalled every entry of a workspace, so its cache can go. */
+function emptiedWorkspace(scopeManifest: ManifestScope | undefined): boolean {
+  return (['skill', 'rule', 'claudemd'] as const).every((kind) => Object.keys(scopeManifest?.[manifestKind(kind)] ?? {}).length === 0);
 }
 
 /**
- * Clear the HTTP source, preserving failed hook records for a retry.
+ * Remove the cache the agent kept inside a workspace with no project config,
+ * with the untracked `.gitignore` it wrote for it and the directories left
+ * empty, once the teardown uninstalled every entry of the workspace (#915). A
+ * cache an entry could not be removed from stays, hidden by that file, whose
+ * line then stays too. False when the cache could not be deleted.
  */
-async function finishAgentHookTeardown(retry: string): Promise<'removed' | 'incomplete'> {
+async function removeWorkspaceCache(workspacePath: string): Promise<boolean> {
+  const teamaiDir = path.join(workspacePath, '.teamai');
+  const repoPath = await getResourceRepoPath('project', workspacePath);
+  if (!repoPath.startsWith(teamaiDir + path.sep)) return true;
+  const cache = path.dirname(repoPath);
+  try {
+    await remove(cache);
+    const gitignore = await workspaceCacheGitignore(workspacePath, repoPath);
+    // One the member committed is theirs now; one git cannot judge stays, with the record for the retry.
+    if (gitignore && (await gitTracks(gitignore, 'entry')).kind !== 'tracked') {
+      if (!await gitUntracked(gitignore, 'entry')) {
+        log.warn(`Kept ${gitignore}: git could not say whether this repository tracks it.`);
+        return false;
+      }
+      await remove(gitignore);
+    }
+    for (let dir = path.dirname(cache); dir.startsWith(teamaiDir); dir = path.dirname(dir)) {
+      if ((await fse.readdir(dir)).length > 0) break;
+      await fse.rmdir(dir);
+    }
+    return true;
+  } catch (e) {
+    log.warn(`Could not remove the local agent's cache in ${teamaiDir}: ${(e as Error).message}`);
+    return false;
+  }
+}
+
+/**
+ * What an earlier run that disabled the source could not remove: agent hooks
+ * (#993), or the `local-agent` block in an exclude file it records (#915).
+ */
+async function disabledSourceLeftovers(): Promise<boolean> {
+  if (Object.keys(await loadAgentHookManifest()).length > 0) return true;
+  // A teardown keeps these only for what it could not remove.
+  if (await pathExists(getModelManifestPath()) || await pathExists(getManifestPath())) return true;
+  for (const owner of [localAgentGitExcludeOwner(), credentialsGitExcludeOwner()]) {
+    // A record that cannot be read may name blocks still in place.
+    const files = await owner.record?.files().then((list) => list, () => null);
+    if (files === null || (files?.length ?? 0) > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Clear the HTTP source, preserving failed hook records for a retry, and the
+ * record of exclude files still holding a teamai block (#915), so the next
+ * `source remove-http` or `teamai uninstall` finds them. So do models files
+ * and workspace caches `left` names: the manifests that name them stay.
+ */
+async function finishAgentHookTeardown(
+  retry: string,
+  left: { models: string[]; caches: string[]; entries?: string[]; removing?: LocalAgentConfig; blocks?: string[] } = { models: [], caches: [] },
+): Promise<'removed' | 'incomplete'> {
+  const entries = left.entries ?? [];
+  const blocks = [...new Set(left.blocks ?? [])];
   const hooksLeft = await removeAllAgentHooks();
   const home = getLocalAgentHome();
-  const keep = path.basename(getAgentHookManifestPath());
-  await writeJsonAtomic(getConfigPath(), { disabled: true });
+  const keep = new Set([path.basename(getConfigPath())]);
+  if (hooksLeft.length > 0) keep.add(path.basename(getAgentHookManifestPath()));
+  if (left.models.length > 0) keep.add(path.basename(getModelManifestPath()));
+  if (left.caches.length > 0 || entries.length > 0) keep.add(path.basename(getManifestPath()));
+  const gitExcludeRecord = path.join(home, 'git-exclude.json');
+  // A record that cannot be read may name blocks still in place: it stays.
+  const recorded = await readFileIfExists(gitExcludeRecord).then((raw) => raw === null ? {} : JSON.parse(raw) as unknown).catch(() => null);
+  if (!recorded || typeof recorded !== 'object' || Object.keys(recorded).length > 0) keep.add(path.basename(gitExcludeRecord));
+  await writeJsonAtomic(getConfigPath(), left.removing ? { disabled: true, removing: left.removing } : { disabled: true });
   for (const entry of await fse.readdir(home)) {
-    if (entry !== path.basename(getConfigPath()) && !(hooksLeft.length > 0 && entry === keep)) {
-      await remove(path.join(home, entry));
-    }
+    if (!keep.has(entry)) await remove(path.join(home, entry));
   }
-  if (hooksLeft.length > 0) {
-    log.warn(`HTTP source disabled, but removal is incomplete: kept the record of agent hooks ${hooksLeft.map((h) => `${h.slug} (${h.tool})`).join(', ')} `
+  const held = [
+    ...hooksLeft.length > 0 ? [`agent hooks ${hooksLeft.map((h) => `${h.slug} (${h.tool})`).join(', ')}`] : [],
+    ...left.models.length > 0 ? [`teamai's models in ${left.models.join(', ')}`] : [],
+    ...left.caches.length > 0 ? [`the local agent's cache in ${left.caches.map((dir) => path.join(dir, '.teamai')).join(', ')}`] : [],
+    ...entries.length > 0 ? [`the installs ${entries.join(', ')}`] : [],
+    ...blocks.length > 0 ? [`teamai's git exclude blocks in ${blocks.join(', ')}`] : [],
+  ];
+  if (held.length > 0) {
+    log.warn(`HTTP source disabled, but removal is incomplete: kept the record of ${held.join('; ')} `
       + `in ${home}, as they could not be removed. Fix the files named above, then run \`${retry}\` again.`);
     process.exitCode = 1;
     return 'incomplete';

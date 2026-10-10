@@ -39,7 +39,12 @@ MCP definitions travel with the team repo like skills/rules — edit, then the
 members pick them up on sync.
 
 A server with a `${VAR}` the tool cannot expand itself gets the resolved value
-written into its project config (`.mcp.json`, `.cursor/mcp.json`, ...). Before
+written into its project config (`.mcp.json`, `.cursor/mcp.json`, ...). With
+`sharing.gitExclude` on, Claude's (not in a single-repo team, whose worktrees
+each read their own branch's servers) and CodeBuddy's servers go to their local
+scopes in `~/.claude.json` and `.codebuddy.json` instead, outside the project,
+and the next pull (on an HTTP-backed team, the local agent's next sync) moves
+teamai's servers out of `.mcp.json`. Before
 that write, teamai lists the file in the clone's `.git/info/exclude`, inside a
 `# [teamai:mcp-exclude:start]` block; the committed `.gitignore` is never touched.
 A file under a symlinked directory is listed and checked where the write lands
@@ -188,6 +193,23 @@ or project lists a `teamwiki/evidence/code/<slug>/` slug there, `recall` only
 surfaces it for members with that namespace active; an undeclared slug stays
 shared. The slug is whatever `teamai codebase --project <slug>` wrote, not
 necessarily the project's manifest id.
+
+## Keep delivered files out of git
+
+With `sharing.gitExclude.enabled: true` in `teamai.yaml`, each member's pull lists
+the skills and rules (one file per line, never a skill's directory, so a file a
+member adds to a delivered skill stays visible), agents, `teamai-context` files, hook
+files and team docs (one file per line) it delivered into a project, and each shared
+config file (MCP, `.codex/hooks.json`, OpenCode's) while it holds only teamai's entries,
+in teamai's `delivered` block in the clone's
+`.git/info/exclude` (local to the clone, never committed), so `git add -A` does
+not commit them; a member's own files, and copies they edited, stay visible. `init` writes it for a
+new team; an existing team adds the line and commits it through the normal
+review flow. A member overrides it on their machine with `gitExcludeEnabled:
+true|false` in the project's `config.yaml` (`~/.teamai/projects/<slug>/config.yaml`).
+Either takes effect on the next pull, no `--force`; turned off, the next pull
+removes only that block. `teamai doctor` says where the setting comes from and
+what git still sees; `teamai pull --dry-run` previews the block.
 
 ## Team dashboard (web UI)
 

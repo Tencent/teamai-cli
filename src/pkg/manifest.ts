@@ -44,7 +44,7 @@ export async function packageLockDir(localConfig: LocalConfig, options: { readOn
   // A project outside git keeps its data home in `.teamai/` itself.
   if (path.resolve(legacyDir) === path.resolve(dir)) return dir;
   const legacy = packageLockPath(legacyDir);
-  const { gitTracks } = await import('../mcp-git-exclude.js');
+  const { gitTracks } = await import('../git-exclude.js');
   if (await pathExists(legacy)) {
     if (options.readOnly) return await pathExists(packageLockPath(dir)) ? dir : legacyDir;
     if ((await gitTracks(legacy)).kind !== 'untracked') {

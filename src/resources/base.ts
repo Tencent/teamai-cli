@@ -17,6 +17,14 @@ const TOMBSTONE_FILE = '.removed';
  */
 const INSTALL_ROOTS: Readonly<Record<string, string>> = { workbuddy: '.workbuddy' };
 
+/** Each edition of a product sharing one project directory, and the HOME root that alone says the member runs it. */
+const EDITION_HOME_ROOTS: Readonly<Record<string, string>> = {
+  trae: '.trae',
+  'trae-cn': '.trae-cn',
+  qoder: '.qoder',
+  'qoder-cn': '.qoder-cn',
+};
+
 /** Detect an installed tool while respecting tool-specific user roots. */
 export async function isToolInstalledForConfig(
   tool: string,
@@ -29,6 +37,17 @@ export async function isToolInstalledForConfig(
     return localConfig.enabledAgents?.includes(COPILOT_TOOL_ID) === true
       || (exactConfigPath !== undefined && await pathExists(exactConfigPath))
       || pathExists(getCopilotHome());
+  }
+  // Editions of one product that share every project path (Trae and Trae CN
+  // share <root>/.trae/, Qoder and Qoder CN <root>/.qoder/): the shared root
+  // says nothing about which edition the member runs. Each edition counts as
+  // installed by its own HOME root, or by an explicit --agent whitelist entry
+  // naming it (#904) — the bootstrap a project-only init needs before the
+  // app has ever run and created its root.
+  const editionHomeRoot = EDITION_HOME_ROOTS[tool];
+  if (editionHomeRoot !== undefined) {
+    if (localConfig.enabledAgents?.includes(tool) === true) return true;
+    return pathExists(path.join(getUserHome(), editionHomeRoot));
   }
   return ResourceHandler.isToolInstalled(Object.hasOwn(INSTALL_ROOTS, tool) ? INSTALL_ROOTS[tool] : toolPath, baseDir);
 }

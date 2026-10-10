@@ -2,13 +2,15 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import fse from 'fs-extra';
 import { ResourceHandler } from './base.js';
-import { resolveBaseDir, type ResourceItem, type TeamaiConfig, type LocalConfig } from '../types.js';
+import { isSelfMode, resolveBaseDir, type ResourceItem, type TeamaiConfig, type LocalConfig } from '../types.js';
 import { expandHome, listDirs, pruneEmptyDirs } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { caseFoldKey } from '../manifest-schema.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { describeKeptEntry, describeMembersDirLeft, isLink, isTeamaiCopy, isTeamaiSkillCopy } from './delivered-copies.js';
 import { blobIdOf, historicalVersions, type HistoricalVersion } from '../utils/team-history.js';
+import type { DeliveryRecorder } from '../git-exclude-delivered.js';
+import { gitTracks, realFilePath, updateFileLocked, withOwnerLines } from '../git-exclude.js';
 
 /**
  * The single directory the team docs bundle is copied into. In project scope a
@@ -22,6 +24,107 @@ export function resolveDocsDestination(teamConfig: TeamaiConfig, localConfig: Lo
   }
   const expanded = expandHome(localDir);
   return path.isAbsolute(expanded) ? expanded : path.resolve(resolveBaseDir(localConfig), expanded);
+}
+
+// ─── Docs search whitelist (#915) ─────────────────────────────
+//
+//  With the docs mirror at its default location, `<root>/.teamai/docs`, and
+//  its files in teamai's `delivered` git exclude block, ripgrep-based search
+//  (the agents' grep tools) would skip them. `<root>/.teamai/.ignore`, which
+//  ripgrep reads and git does not, re-includes them from a block of teamai's:
+//  `!/docs/**`, anchored, matching the files themselves since each has its own
+//  exclude line, and nothing else under `.teamai/`.
+
+const WHITELIST_OWNER = 'delivered';
+const WHITELIST = ['!/docs/**'];
+
+/** What keepDocsSearchWhitelist did, or in a dry run would do. */
+export interface DocsSearchWhitelist {
+  /** `docsPaths` as the `delivered` block should list them: the `.ignore` file only while it holds nothing but teamai's block. */
+  paths: string[];
+  file: string;
+  change: 'write' | 'remove' | null;
+  /** Why the file could not be read or written; it is then left as it was, and not listed. */
+  failure: string | null;
+}
+
+/**
+ * Keep teamai's block in `<root>/.teamai/.ignore` while the delivered git
+ * exclude block lists docs of the mirror at its default location: the
+ * setting is on (`enabled`), the project is not single-repo (whose
+ * `.teamai/` is the team's, never excluded), and `docsPaths` (the docs
+ * writer's list, absolute real paths) holds a file of `<root>/.teamai/docs`.
+ * Otherwise remove the block, and the file when nothing else is in it. The
+ * member's lines stay byte for byte. Returns `docsPaths` with the `.ignore`
+ * file listed only while teamai's block is all it holds. `dryRun` writes nothing.
+ */
+export async function keepDocsSearchWhitelist(
+  localConfig: LocalConfig, teamConfig: TeamaiConfig | null, enabled: boolean, docsPaths: readonly string[], options: { dryRun?: boolean } = {},
+): Promise<DocsSearchWhitelist> {
+  const root = localConfig.projectRoot!;
+  const mirror = path.join(root, '.teamai', 'docs');
+  const file = path.join(root, '.teamai', '.ignore');
+  const [listed, realMirror] = await Promise.all([realFilePath(file), realFilePath(mirror)]);
+  const paths = docsPaths.filter((p) => p !== listed);
+  const wanted = enabled && !isSelfMode(localConfig) && teamConfig !== null
+    && path.resolve(resolveDocsDestination(teamConfig, localConfig)) === mirror
+    && paths.some((p) => p.startsWith(`${realMirror}${path.sep}`));
+  const result: DocsSearchWhitelist = { paths, file, change: null, failure: null };
+  try {
+    const edit = await editDocsSearchWhitelist(file, wanted, options);
+    result.change = edit.change;
+    if (edit.teamaiOnly) result.paths = [...paths, listed].sort();
+  } catch (e) {
+    result.failure = describeWhitelistFailure(file, e, 'run `teamai pull` again');
+  }
+  return result;
+}
+
+/**
+ * Remove teamai's block from `<projectRoot>/.teamai/.ignore`, and the file when
+ * nothing else is in it, for uninstall. Returns whether there was a block
+ * (in a dry run, whether there is one), or the failure to say.
+ */
+export async function removeDocsSearchWhitelist(projectRoot: string, options: { dryRun?: boolean } = {}): Promise<{ file: string; removed: boolean; failure: string | null }> {
+  const file = path.join(projectRoot, '.teamai', '.ignore');
+  try {
+    return { file, removed: (await editDocsSearchWhitelist(file, false, options)).change === 'remove', failure: null };
+  } catch (e) {
+    return { file, removed: false, failure: describeWhitelistFailure(file, e, 'delete its lines from `# [teamai:delivered:start]` to `# [teamai:delivered:end]` yourself') };
+  }
+}
+
+function describeWhitelistFailure(file: string, error: unknown, next: string): string {
+  return `Could not update teamai's docs search whitelist in ${file}: ${(error as Error).message}. Fix the cause, then ${next}.`;
+}
+
+/**
+ * Make `file` hold teamai's whitelist block (`wanted`) or not, member text kept;
+ * a file left with nothing else is deleted. Throws when it cannot be read or written.
+ */
+async function editDocsSearchWhitelist(
+  file: string, wanted: boolean, options: { dryRun?: boolean },
+): Promise<{ change: 'write' | 'remove' | null; teamaiOnly: boolean }> {
+  const lines = wanted ? WHITELIST : [];
+  const content = await fs.readFile(file, 'utf8').catch((e: NodeJS.ErrnoException) => {
+    if (e.code === 'ENOENT') return null;
+    throw e;
+  });
+  if (content === null && !wanted) return { change: null, teamaiOnly: false };
+  const next = withOwnerLines(content ?? '', WHITELIST_OWNER, lines);
+  const after = next ?? content ?? '';
+  const teamaiOnly = wanted && (withOwnerLines(after, WHITELIST_OWNER, []) ?? after).trim() === '';
+  if (next === null) return { change: null, teamaiOnly };
+  // A file the repository tracks is the team's: teamai leaves it as committed,
+  // and so it does while git cannot say.
+  if (content !== null && (await gitTracks(file, 'entry')).kind !== 'untracked') return { change: null, teamaiOnly: false };
+  const change = wanted ? 'write' : 'remove';
+  if (options.dryRun) return { change, teamaiOnly };
+  if (after.trim() === '') await fs.rm(file, { force: true });
+  else if (await updateFileLocked(file, (current) => withOwnerLines(current, WHITELIST_OWNER, lines)) === 'locked') {
+    throw new Error('another teamai command held it past the wait');
+  }
+  return { change, teamaiOnly };
 }
 
 /** Only absence means an empty bundle; permission and I/O errors must stop pruning. */
@@ -171,11 +274,9 @@ async function pruneDocs(source: string | undefined, destination: string, repoPa
       if (sourceEntry && !sourceEntry.isDirectory()) continue;
       // A directory where the team once had a doc file, holding anything that is
       // no team version, is the member's, put in place of that file: all of it stays (#993).
-      if (!sourceEntry && await isMembersDocDirectory(target, entryRel, repoPath)) {
-        log.warn(
-          `[${scope}] Kept ${target}: the team removed docs/${entryRel}, but this is a directory of yours in its place. `
-          + 'Delete it when you no longer need it.',
-        );
+      const kept = sourceEntry ? null : await describeMembersDocDirectory(target, entryRel, repoPath);
+      if (kept !== null) {
+        log.warn(`[${scope}] ${kept}`);
         continue;
       }
       await pruneDocs(sourceEntry ? path.join(source!, entry.name) : undefined, target, repoPath, scope, entryRel);
@@ -183,20 +284,36 @@ async function pruneDocs(source: string | undefined, destination: string, repoPa
       if (!sourceEntry && (await fse.readdir(target)).length === 0) await fse.rmdir(target);
     } else if (!sourceEntry) {
       if (!await isPrunableDoc(target, entryRel, repoPath)) {
-        // A file of the member's at a path the team never had stays without a word, like a personal rule;
-        // a link there is named, and any other entry kept is at a removed doc's path.
-        const neverTeams = (await historicalVersions(repoPath, `docs/${entryRel}`))?.length === 0;
-        if (neverTeams && !entry.isSymbolicLink()) continue;
-        log.warn(neverTeams
-          ? `[${scope}] Kept ${target}: it is a link of yours, and the team does not have docs/${entryRel}. `
-            + 'Delete it when you no longer need it.'
-          : `[${scope}] Kept ${target}: the team removed docs/${entryRel}, but this copy matches no team version of it. `
-            + 'Delete it when you no longer need it.');
+        const line = await describeKeptRemovedDoc(target, entryRel, repoPath, entry.isSymbolicLink());
+        if (line !== null) log.warn(`[${scope}] ${line}`);
         continue;
       }
       await fse.unlink(target);
     }
   }
+}
+
+/**
+ * Pull's line for an entry it keeps at `docs/<rel>`, a path the team repo no longer has,
+ * because it is no team version of that doc (#993). A link at a path the team never had is
+ * named as the member's; a file there is null: it stays without a word, like a personal rule.
+ */
+export async function describeKeptRemovedDoc(target: string, rel: string, repoPath: string, link: boolean): Promise<string | null> {
+  const neverTeams = (await historicalVersions(repoPath, `docs/${rel}`))?.length === 0;
+  if (neverTeams && !link) return null;
+  return neverTeams
+    ? `Kept ${target}: it is a link of yours, and the team does not have docs/${rel}. Delete it when you no longer need it.`
+    : `Kept ${target}: the team removed docs/${rel}, but this copy matches no team version of it. Delete it when you no longer need it.`;
+}
+
+/**
+ * Pull's line for the mirror's directory `dir` at `docs/<rel>`, a path the team repo no
+ * longer has, when it is one the member put where the team history had a doc file
+ * (isMembersDocDirectory): pull keeps it whole. Null otherwise.
+ */
+export async function describeMembersDocDirectory(dir: string, rel: string, repoPath: string): Promise<string | null> {
+  if (!await isMembersDocDirectory(dir, rel, repoPath)) return null;
+  return `Kept ${dir}: the team removed docs/${rel}, but this is a directory of yours in its place. Delete it when you no longer need it.`;
 }
 
 /**
@@ -227,6 +344,15 @@ async function wasTeamDocFile(repoPath: string, rel: string): Promise<boolean> {
   const pathspec = `docs/${rel}`;
   const versions = await historicalVersions(repoPath, pathspec);
   return (versions ?? []).some((version) => version.path === pathspec || version.path.endsWith(`/${pathspec}`));
+}
+
+/**
+ * Whether the docs directory `localDocsDir` is the team repo's own `docs/`, as
+ * in single-repo mode: nothing is mirrored there, and nothing is delivered.
+ */
+export async function isTeamDocsDirectory(localDocsDir: string, repoPath: string): Promise<boolean> {
+  const real = (dir: string) => fse.realpath(dir).catch(() => path.resolve(dir));
+  return await real(localDocsDir) === path.join(await real(repoPath), 'docs');
 }
 
 function containsPath(parent: string, child: string): boolean {
@@ -414,6 +540,15 @@ export async function membersDocs(desired: DesiredDocs, localDocsDir: string, re
   return [...members];
 }
 
+/**
+ * The files of `desired` the mirror writes: every one but those at a path `members`
+ * names (membersDocs) or beneath one, since a kept entry of the member's holds back
+ * every doc under it. Relative, `/`-separated.
+ */
+export function deliveredDocFiles(desired: DesiredDocs, members: readonly string[]): string[] {
+  return desired.files.filter((file) => !members.some((rel) => file === rel || file.startsWith(`${rel}/`)));
+}
+
 /** Whether `local` and `team` are both links to the same target. Never follows either. */
 async function sameLink(local: string, team: string): Promise<boolean> {
   const [mine, theirs] = await Promise.all([fs.readlink(local).catch(() => null), fs.readlink(team).catch(() => null)]);
@@ -522,9 +657,11 @@ export class DocsHandler extends ResourceHandler {
    * files, except those that are the member's own (`membersDocs`, named
    * here), remove every visible local entry the team repo does not have, then
    * withdraw the unchanged copies of a namespace not active here (#707).
-   * Returns how many files of the member's it kept.
+   * Reports each file it delivered to `recorder` (#915), never a kept entry
+   * of the member's or a doc beneath one. Returns how many entries of the
+   * member's it kept.
    */
-  async pullDocs(desired: DesiredDocs, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<number> {
+  async pullDocs(desired: DesiredDocs, teamConfig: TeamaiConfig, localConfig: LocalConfig, recorder?: DeliveryRecorder): Promise<number> {
     const localDocsDir = resolveDocsDestination(teamConfig, localConfig);
     const src = desired.sourceDir;
     // Validate the source before touching the destination, including an empty bundle.
@@ -539,9 +676,8 @@ export class DocsHandler extends ResourceHandler {
     const destination = await fse.realpath(localDocsDir);
     const repo = await fse.realpath(localConfig.repo.localPath);
     const base = await fse.realpath(resolveBaseDir(localConfig));
-    // In single-repo mode the configured docs directory may already be the
-    // source. Withdrawing there would delete the team's own files.
-    if (destination === path.join(repo, 'docs')) return 0;
+    // Withdrawing in the team's own docs would delete the team's own files.
+    if (await isTeamDocsDirectory(destination, repo)) return 0;
     if (containsPath(destination, base) || containsPath(destination, repo) || containsPath(repo, destination)) {
       throw new Error('Docs pruning requires a dedicated localDir that does not overlap the team repo or contain the home or project root.');
     }
@@ -555,6 +691,7 @@ export class DocsHandler extends ResourceHandler {
     // Copy first: a failed copy must not trigger deletion of the previous bundle.
     await pruneDocs(src, localDocsDir, localConfig.repo.localPath, localConfig.scope);
     await withdrawInactiveNamespaces(desired, localDocsDir, localConfig);
+    for (const file of deliveredDocFiles(desired, members)) recorder?.report('docs', path.join(destination, file));
     log.debug(`Synced docs → ${localDocsDir}`);
     return members.length;
   }

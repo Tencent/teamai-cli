@@ -35,6 +35,10 @@ This is the #1 onboarding issue. In order:
    settings (e.g. `~/.claude/settings.json`), not the project folder; the team's own
    hooks for Claude Code and Codex go to the main checkout
    (`.claude/settings.local.json`, `.codex/hooks.json`). That is intentional.
+   With `sharing.gitExclude` on, Codex's team hooks run from `~/.codex/hooks.json`
+   instead (one `hook-dispatch <Event> --tool codex --team-hooks` entry per event)
+   while the project's `.codex/hooks.json` is tracked or holds entries of its own,
+   and always in single-repo mode.
    Existing Claude/Codex main-checkout hook files count as installed targets
    even when HOME and current worktree tool roots are missing. Injection and
    pull update team hooks and restore HOME built-ins; removal clears managed
@@ -287,7 +291,7 @@ session's runs, recalled docs and adopted docs. Per agent:
 - **Cursor, Copilot CLI, ZCode, Pi**: only a recall the main agent runs
   itself. A subagent's recall is not linked to the main session, and Pi has no
   TeamAI subagent.
-- **OpenClaw, Hermes, Kiro, JoyCode**: no PostToolUse hook, so recalls never
+- **OpenClaw, Hermes, Kiro, JoyCode, Trae**: no PostToolUse hook, so recalls never
   vote.
 
 A read after the session's last Stop is credited at SubagentStop, at Copilot CLI's

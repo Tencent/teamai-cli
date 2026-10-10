@@ -125,6 +125,7 @@ vi.mock('../hooks.js', async (importOriginal) => ({
   describeUnappliedTeamHooks: (await importOriginal<typeof import('../hooks.js')>()).describeUnappliedTeamHooks,
   injectHooksToAllTools: vi.fn(),
   reconcileTeamHooksForConfig: vi.fn(async () => ({ ok: true, defs: [] })),
+  deliveredHookFiles: vi.fn(async () => []),
   hasTeamaiHooks: vi.fn(async () => true),
   reconcileHooks: vi.fn(),
   trustCodexForScope: vi.fn(async () => undefined),

@@ -338,15 +338,17 @@ namespace 文件；只有当根文件未定义、而多个 namespace 文件都�
 
 | 工具 | 用户级 | 项目级 |
 |---|---|---|
-| claude | `~/.claude.json` | `<project>/.mcp.json` |
+| claude | `~/.claude.json` | `<project>/.mcp.json`；开启 [`sharing.gitExclude`](./member-guide.md#让分发的文件不进入-git) 后为 `~/.claude.json` 的 `projects[<主 checkout>]`（见下文） |
 | cursor | `~/.cursor/mcp.json` | `<project>/.cursor/mcp.json` |
-| codebuddy | `~/.codebuddy/.mcp.json`、`~/.codebuddy/mcp.json`、`~/.codebuddy.json` 中第一个存在的文件（见下文） | `<project>/.mcp.json` |
+| codebuddy | `~/.codebuddy/.mcp.json`、`~/.codebuddy/mcp.json`、`~/.codebuddy.json` 中第一个存在的文件（见下文） | `<project>/.mcp.json`；开启 [`sharing.gitExclude`](./member-guide.md#让分发的文件不进入-git) 后为 `~/.codebuddy.json` 的 `projects[<worktree 根目录>]`（见下文） |
 | workbuddy | `~/.workbuddy/mcp.json` | `<project>/.workbuddy/mcp.json` |
 | copilot | `$COPILOT_HOME/mcp-config.json` | `<project>/.github/mcp.json` |
 | codex | `~/.codex/config.toml` | `<project>/.codex/config.toml` |
 | qoder | `~/.qoder/settings.json` | `<project>/.qoder/settings.json` |
 | qoder-cn | `~/.qoder-cn/settings.json` | `<project>/.qoder/settings.json` |
 | kiro | `~/.kiro/settings/mcp.json` | `<project>/.kiro/settings/mcp.json` |
+| trae | — | `<project>/.trae/mcp.json` |
+| trae-cn | — | `<project>/.trae/mcp.json` |
 | opencode | `~/.config/opencode/opencode.json` | `<project>/opencode.json` |
 | omp | `~/.omp/agent/mcp.json` | `<project>/.omp/mcp.json` |
 | pi | `~/.pi/agent/mcp.json` | `<project>/.pi/mcp.json` |
@@ -386,13 +388,37 @@ CodeBuddy Code 的 [MCP 文档](https://www.codebuddy.cn/docs/cli/mcp)
 TeamAI 不会迁移或删除旧文件。Claude Code 也读取根目录的 `.mcp.json`，
 因此两个工具共享该文件。
 
+开启 `sharing.gitExclude` 后，Claude 的项目级 server 不再写入 `.mcp.json`，而是写入 Claude Code 的 local scope：
+`~/.claude.json`（设置了 `CLAUDE_CONFIG_DIR` 时位于其中）的 `projects[<key>].mcpServers`，其中 `<key>` 是 Claude Code
+为该 checkout 使用的路径，即主 checkout 的真实路径，因此所有 worktree 共用一份（`--separate-git-dir` 仓库的 linked worktree
+用 git 目录；submodule 的 linked worktree 用其在 `.git/modules` 下的目录）。这样解析后的 token 不会进入工作区，Claude Code
+加载这些 server 时无需批准，团队自己的 `.mcp.json` 保持原样。teamai 在那里只改动自己的条目，`teamai uninstall` 也只移除这些
+条目，覆盖它记录过的每个 key，包括 worktree 已删除的 key。下一次 pull 会从 `.mcp.json` 中移除 teamai 的 server，保留你自己的
+server，保留你改动过的 teamai server 并给出提示；文件中不再剩下任何内容且 git 未跟踪它时删除该文件。关闭此选项后，下一次 pull
+会把这些 server 移回去，并从每个记录过的 key 中移除它们。
+项目中安装并启用了 tclaude 时，Claude 继续使用 tclaude 读取的 `.mcp.json`。单仓库（single-repo）团队中 Claude 也继续使用 `.mcp.json`：每个 worktree 读取各自分支的 `.teamai/mcp/mcp.yaml`，而 Claude Code 把所有 worktree 记在同一个 key 下，因此下一次 pull 会把 teamai 的 server 从该 key 移回每个 checkout 的 `.mcp.json`；该文件只含 teamai 的 server 时，git exclude 块会列出它。
+
+CodeBuddy 的项目级 server 也以同样方式移到 CodeBuddy 的 local scope：`CODEBUDDY_CONFIG_DIR`（未设置时为你的 home 目录）中
+`.codebuddy.json` 的 `projects[<key>].mcpServers`。CodeBuddy 按其运行目录作为 key，因此 `<key>` 是每个 worktree 根目录的真实路径，
+每个 worktree 各有一份：pull 会写入它，git 创建 worktree 时运行的 pull 也会写入。与以前一样，在子目录中启动的 CodeBuddy 看不到
+项目级 server。对于已不存在的 worktree，下一次 pull 会从它的 key 中移除 teamai 的 server，保留你自己的 server。teamai 只改动自己的条目，
+该文件的其他内容保持不变，`teamai uninstall` 也只移除 teamai 的 server，覆盖它记录过的每个 key。移出和移回 `.mcp.json` 的方式与上文 Claude 相同，
+因此开启此选项后不会有 pull 写入 `.mcp.json`。
+
+使用 HTTP 后端的团队中，本地 agent 遵循同一选项（按每个工作区读取）：它的 `install_mcp` 把 Claude 和 CodeBuddy 的 server
+写入上述 local scope，使用相同的 key，不写 `.mcp.json`；`uninstall_mcp` 和 `teamai uninstall` 只移除它在那里记录的 server。
+以前的安装留在 `.mcp.json` 中的 server 会在本地 agent 下一次同步时移过去；你改动过的副本留在原处并给出提示，归你所有；
+其他工具的记录仍认领的条目也留在原处。选项关闭时不会移动任何内容；teamai 无法读取该选项时，本地 agent 不会在该工作区为
+Claude 或 CodeBuddy 安装任何内容，并说明原因。`teamai doctor` 会指出本地 agent 记录的、仍在 `.mcp.json` 中的 server。
+`teamai source remove-http` 不移除这些 server，但保留它们的记录，因此之后的 `teamai uninstall`（包括找不到任何配置的卸载）会移除它们（见[卸载](./faq.md#卸载)）。
+
 TeamAI 仅在所有权记录证明已完成顶层写入且内容仍匹配时，才删除 `mcpServers` 旁的 Copilot 顶层条目。旧记录缺少位置证据时，即使内容与团队定义相同，也保留顶层条目。顶层所有权记录不授权修改 `mcpServers` 下的同名成员条目；更新跳过该冲突，移除时只清理受管理的顶层副本。缺少位置标记的记录只有在哈希匹配嵌套条目且不同时匹配顶层条目时，才能认领嵌套条目。完成的嵌套写入记录 `bare: false`；
 
 位置记录写入失败时，所有权仍未得到证明。HTTP 本地代理首次安装先只读检查 Git 保护，再保存临时所有权记录，随后添加排除规则和文件记录，最后写入凭据。初始所有权记录写入失败不会改变 Git 排除规则或 MCP 配置。
 
 HTTP local-agent 更新 JSON MCP 配置时，先保留原有 ownership 记录，配置写入成功后才更新记录；如果随后保存记录失败，会恢复原配置。`uninstall_mcp` 先删除配置中的条目，再移除 ownership 记录：配置写入失败或无法读取时保留记录以便重试，manifest 写入失败时恢复条目。MCP reconcile 在保存 ownership 前失败时，会恢复本次已写入的所有配置，包括多个工具共用的文件。恢复本身也失败时，错误会同时说明两次失败及受影响的文件；修复配置与 ownership 记录后再重试。只要凭据仍在文件中，就继续保留 Git 排除保护。
 
-Copilot 使用原生 `mcpServers` 结构：`stdio` 写成 `type: "local"`，远程传输保留 `http` 或 `sse`，每个 TeamAI 管理的条目都会带上必需的 `tools: ["*"]` 允许列表。TeamAI 遵循 `COPILOT_HOME`，项目配置使用 Copilot CLI 官方文档指定的 `.github/mcp.json` 仓库路径。详见 [GitHub Copilot CLI 添加 MCP Server](https://docs.github.com/zh/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)。Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式。Kiro 在专用的、只含 `mcpServers` 的 `.kiro/settings/mcp.json` 中使用同一格式（见 [Kiro MCP 配置文档](https://kiro.dev/docs/mcp/configuration/)）。
+Copilot 使用原生 `mcpServers` 结构：`stdio` 写成 `type: "local"`，远程传输保留 `http` 或 `sse`，每个 TeamAI 管理的条目都会带上必需的 `tools: ["*"]` 允许列表。TeamAI 遵循 `COPILOT_HOME`，项目配置使用 Copilot CLI 官方文档指定的 `.github/mcp.json` 仓库路径。详见 [GitHub Copilot CLI 添加 MCP Server](https://docs.github.com/zh/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)。Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式；Trae 在其项目 `.trae/mcp.json` 中使用同一结构，两个版本的 target 在同一条共享归属记录下映射这同一个文件。Kiro 在专用的、只含 `mcpServers` 的 `.kiro/settings/mcp.json` 中使用同一格式（见 [Kiro MCP 配置文档](https://kiro.dev/docs/mcp/configuration/)）。
 
 OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）、`http` 和 `sse`（后两者均为 `type:"remote"`，由客户端协商传输协议），其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；
 
@@ -408,7 +434,7 @@ teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配�
 
 符号链接按实际写入的那个文件加入 exclude。teamai 不改已提交的 `.gitignore`。git 已经跟踪的文件保持原样，`teamai mcp list` 和 `teamai doctor` 会指出它。若曾经提交过，执行 `git rm --cached <file>` 并轮换 token。旧版本写入的文件同样处理。其余情况见 [Team secrets](../../designs/team-secrets.md)。
 
-Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互式会话中确认一次。
+Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互式会话中确认一次。local scope 中的 server（开启 `sharing.gitExclude` 时，见上文）无需批准，CodeBuddy 的也是如此。
 
 ```bash
 teamai mcp list              # 查看 server、各自来自哪个文件、密钥状态与安装位置

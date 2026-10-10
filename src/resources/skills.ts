@@ -18,7 +18,8 @@ import { assertSafeFallbackNamespaces } from '../manifest-schema.js';
 import { assertWithinRoot, resolveReal } from '../utils/path-safety.js';
 import { splitFrontmatter, stringifyFrontmatter } from '../utils/frontmatter.js';
 import {
-  blockingEntries, describeKeptDir, describeMembersDirLeft, describeMembersFile, describeMembersLink, describeSkippedLink, isLink, judgeCopy, keepsEditedCopy, membersLinkAt, ownsSkillDir, recordDelivered, teamaiSkillFiles, type DeliveredHashes, type DeliveryLedger,
+  blockingEntries, deliveredSkillFiles, describeKeptDir, describeMembersDirLeft, describeMembersFile, describeMembersLink, describeSkippedLink, isLink, judgeCopy, keepsEditedCopy, keepsTrackedCopy,
+  membersLinkAt, ownsSkillDir, recordDelivered, teamaiSkillFiles, type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
 
 /** File name used to track who has contributed (pushed) a skill. */
@@ -77,8 +78,10 @@ export async function resolveSkillDestination(
       if (await isLink(configuredDestination)) {
         log.warn(describeMembersLink(configuredDestination, `skills/${skillName}`));
       } else if (await dirContentEqual(sharedDestination, configuredDestination) && await dirContentEqual(configuredDestination, sourcePath)) {
-        await remove(configuredDestination);
-        log.debug(`Removed identical TeamAI skill ${skillName} from ${configuredSkillsPath}`);
+        if (!await keepsTrackedCopy(configuredDestination, sharedDestination)) {
+          await remove(configuredDestination);
+          log.debug(`Removed identical TeamAI skill ${skillName} from ${configuredSkillsPath}`);
+        }
       } else {
         log.warn(`Codex skill conflict for ${skillName}: keeping different copies in ${SHARED_AGENT_SKILLS_PATH} and ${configuredSkillsPath}`);
       }
@@ -489,6 +492,7 @@ async function removeLeftoverVersionFiles(
       );
       continue;
     }
+    if (await keepsTrackedCopy(installed)) continue;
     await remove(installed);
     removed = true;
   }
@@ -850,8 +854,11 @@ export class SkillsHandler extends ResourceHandler {
         await removeLeftoverVersionFiles(item.sourcePath, dest, otherVersions, ledger?.previous);
         await ensureSkillFrontmatter(dest, item.name);
         if (ledger) await recordDelivered(ledger.hashes, dest, item.sourcePath);
+        // The files it wrote, never the directory, nor an entry of the member's it delivered around (#915).
+        if (ledger?.recorder) for (const file of await deliveredSkillFiles(item.sourcePath, dest, blocked)) ledger.recorder.report('skills', file);
         log.debug(`Synced skill ${item.name} → ${tool}`);
       } catch (e) {
+        ledger?.recorder?.failed('skills');
         log.warn(`Failed to sync skill ${item.name} to ${tool}: ${(e as Error).message}`);
         ledger?.failed.push({ name: item.name, tool });
       }
@@ -935,6 +942,8 @@ export class SkillsHandler extends ResourceHandler {
     await this.addTombstone(name, localConfig);
 
     for (const { tool, skillDir, files, packagedBase } of owned) {
+      // Any file of it the repository tracks keeps the whole directory, named once.
+      if (await keepsTrackedCopy(skillDir)) continue;
       if (packagedBase) {
         for (const file of files ?? []) await remove(file);
         removed.push(...files ?? []);

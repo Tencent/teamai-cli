@@ -91,7 +91,7 @@ function asObject(value: unknown): JsonObject | null {
 }
 
 /** Merge the two hook output schemas used by the supported hosts. */
-function mergeHookOutputs(outputs: string[]): string | null {
+export function mergeHookOutputs(outputs: string[]): string | null {
   if (outputs.length === 0) return null;
   if (outputs.length === 1) return outputs[0];
 

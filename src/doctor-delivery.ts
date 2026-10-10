@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
-  CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, getDataHome, getMcpSharing, isAgentExcluded, managedMcpManifestKey, resolveToolBaseDir,
-  resolveToolRootDir, scopedToolPaths,
+  CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, getDataHome, getMcpSharing, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey,
+  resolveToolBaseDir, resolveToolRootDir, scopedToolPaths,
 } from './types.js';
 import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, ResourceItem, TeamaiConfig } from './types.js';
 import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
@@ -418,16 +418,21 @@ function olderRuleCopyMeaning(tool: string): string {
  * that teamai's plugin in HOME is installed as this build writes it; its
  * context hook is what adds `what`. Null on V1, which loads `instructions`.
  */
-async function opencodeV2PluginCheck(name: string, what: string): Promise<Check | null> {
+async function opencodeV2PluginCheck(ctx: DoctorContext, name: string, what: string): Promise<Check | null> {
   const { opencodeContextPlugin, opencodeMajorVersion } = await import('./opencode-hooks.js');
   if (await opencodeMajorVersion() < 2) return null;
   const { file, ready } = await opencodeContextPlugin();
+  const { localConfig, teamConfig } = ctx;
+  // Without the plugin a pull keeps what OpenCode V1 reads, which V2 then reads its MCP servers from (#915).
+  const keeps = localConfig.scope === 'project' && localConfig.repo.kind !== 'http' && teamConfig !== null && isGitExcludeEnabled(localConfig, teamConfig)
+    ? ' Until it is current, teamai keeps the entries OpenCode V1 reads in the project\'s opencode.json files; the next pull with the plugin in place takes them out.'
+    : '';
   return {
     name,
     source: 'local',
     check: async () => ready,
     fix: `${file} is missing or out of date. OpenCode V2 ignores \`instructions\` and gets ${what} only through this plugin. `
-      + 'Run `teamai hooks inject` to reinstall it.',
+      + `Run \`teamai hooks inject\` to reinstall it.${keeps}`,
   };
 }
 
@@ -453,7 +458,7 @@ async function buildRulesActivationChecks(ctx: DoctorContext, items: ResourceIte
   const checks: Check[] = [];
 
   const opencode = await handler.opencodeInstructionsTarget(teamConfig, localConfig, items);
-  const opencodeV2 = opencode === null ? null : await opencodeV2PluginCheck('Team rules are active in opencode', 'the team rules');
+  const opencodeV2 = opencode === null ? null : await opencodeV2PluginCheck(ctx, 'Team rules are active in opencode', 'the team rules');
   if (opencodeV2) {
     checks.push(opencodeV2);
   } else if (opencode !== null) {
@@ -923,6 +928,40 @@ export async function buildMcpReadFileChecks(ctx: DoctorContext): Promise<Check[
   return checks;
 }
 
+/**
+ * HTTP mode (#915): the project MCP servers the local agent recorded in a
+ * project's `.mcp.json` while the git exclude flag gives Claude and CodeBuddy
+ * theirs in the tool's local scope. Its next sync moves them there. Built
+ * only while that file holds them. Read-only.
+ */
+export async function buildLocalAgentMcpLocationChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig, teamConfig } = ctx;
+  const { projectRoot } = localConfig;
+  if (!teamConfig || localConfig.repo.kind !== 'http' || localConfig.scope !== 'project' || !projectRoot) return [];
+  const { projectMcpLocations, mcpRelocated, installedMcpEntries, describeMcpLocation } = await import('./mcp-reconcile.js');
+  const { loadProjectMcpManifest } = await import('./utils/mcp-manifest.js');
+  const { manifest } = await loadProjectMcpManifest(getDataHome(localConfig), projectRoot, { dryRun: true });
+  const checks: Check[] = [];
+  for (const tool of Object.keys(teamConfig.toolPaths)) {
+    const records = manifest[managedMcpManifestKey(tool, true)] ?? [];
+    if (records.length === 0) continue;
+    const places = await projectMcpLocations(teamConfig, localConfig, tool);
+    if (!places || !await mcpRelocated(teamConfig, localConfig, tool)) continue;
+    const installed = await installedMcpEntries(places.tree);
+    const names = records.map((record) => record.name).filter((name) => installed?.has(name)).sort();
+    if (names.length === 0) continue;
+    checks.push({
+      name: `${tool} gets the local agent's MCP servers from its local scope`,
+      source: 'local',
+      check: async () => false,
+      fix: `teamai's MCP servers for ${tool} from the local agent (${nameList(names)}) are still in ${places.tree.file}, while sharing.gitExclude `
+        + `gives ${tool} them in ${describeMcpLocation(places.local)}. Start a new session: the local agent's sync moves them there. `
+        + `A copy you changed stays in ${places.tree.file}, as yours.`,
+    });
+  }
+  return checks;
+}
+
 /** Codex's verdict on a project, from the `projects` table of its user config. */
 type CodexProjectTrust =
   | { kind: 'trusted' }
@@ -1000,7 +1039,7 @@ export async function buildCodexProjectTrustCheck(ctx: DoctorContext): Promise<C
   if (names.length === 0) return [];
 
   const { resolveAnchors } = await import('./utils/git.js');
-  const { realFilePath } = await import('./mcp-git-exclude.js');
+  const { realFilePath } = await import('./git-exclude.js');
   const root = await realFilePath(projectRoot);
   const anchors = await resolveAnchors(projectRoot);
   const main = anchors?.projectAnchor ?? root;
@@ -1036,7 +1075,7 @@ export async function buildMcpGitExcludeCheck(ctx: DoctorContext): Promise<Check
     earlierMappedMcpTargets, earlierMappedMcpFileEvidence, ownedByMappers, unrecordedMcpTool, unmappedMcpDefaults, unrecordedUnmappedMcpDefaults, unclaimedMcpServers,
   } = await import('./mcp-reconcile.js');
   const { readResolvedMcpFiles } = await import('./mcp-resolved-files.js');
-  const { gitPathOf, gitTracking, gitTracks } = await import('./mcp-git-exclude.js');
+  const { gitPathOf, gitTracking, gitTracks } = await import('./git-exclude.js');
   const { sameServerKey } = await import('./resources/mcp-format.js');
   const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
   const { resolveEntriesFor } = await import('./namespaced-entries.js');
@@ -1461,6 +1500,55 @@ export async function buildDocsCheck(ctx: DoctorContext): Promise<Check[]> {
 }
 
 /**
+ * Pull's line for each file it keeps where the team removed a doc, because it
+ * is no version of that doc, and for each directory of the member's in such a
+ * doc's place (#993): information, never a failure, since no
+ * pull removes it, and git sees it (#915). Nothing when the docs cannot be
+ * read: the docs check says so.
+ */
+export async function keptDocNotes(ctx: DoctorContext): Promise<string[]> {
+  const { localConfig, teamConfig } = ctx;
+  if (!teamConfig) return [];
+  const {
+    describeKeptRemovedDoc, describeMembersDocDirectory, isPrunableDoc, listDocFiles, resolveDocsForDirectory, resolveDocsDestination,
+  } = await import('./resources/docs.js');
+  try {
+    const desired = await resolveDocsForDirectory(localConfig);
+    const dest = resolveDocsDestination(teamConfig, localConfig);
+    const known = [...desired.files, ...desired.withheld.flatMap(({ dir, files }) => files.map((file) => `${dir}/${file}`))];
+    const teamHas = (rel: string): boolean => known.some((file) => file === rel || file.startsWith(`${rel}/`));
+    const notes: string[] = [];
+    // A directory of the member's where the team removed a doc file: pull keeps it whole, and doctor names it once.
+    const keptDirs = new Set<string>();
+    const underKeptDir = async (file: string): Promise<boolean> => {
+      const parts = file.split('/');
+      for (let depth = 1; depth < parts.length; depth++) {
+        const rel = parts.slice(0, depth).join('/');
+        if (keptDirs.has(rel)) return true;
+        if (teamHas(rel)) continue;
+        const line = await describeMembersDocDirectory(path.join(dest, rel), rel, localConfig.repo.localPath);
+        if (line === null) continue;
+        notes.push(line);
+        keptDirs.add(rel);
+        return true;
+      }
+      return false;
+    };
+    for (const file of (await listDocFiles(dest)).filter((local) => !known.includes(local))) {
+      if (await underKeptDir(file)) continue;
+      const target = path.join(dest, file);
+      if (await isPrunableDoc(target, file, localConfig.repo.localPath)) continue;
+      const link = (await fs.promises.lstat(target).catch(() => null))?.isSymbolicLink() ?? false;
+      const line = await describeKeptRemovedDoc(target, file, localConfig.repo.localPath, link);
+      if (line !== null) notes.push(line);
+    }
+    return notes;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Information lines, not checks, that answer "why do I have this version?"
  * (#707). With roles or projects: each namespace skill, agent, rule or
  * claudemd file that replaces a root item of the same name. In legacy mode,
@@ -1578,7 +1666,7 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
   // writes them. Beside the Claude fallback V1 reads CLAUDE.md instead.
   const opencodeDelivered = opencodeFile !== undefined && targets.some((t) => t.path === opencodeFile) && await holdsInstructionBlocks(opencodeFile);
   const opencodeV2 = opencodeDelivered
-    ? await opencodeV2PluginCheck('opencode adds the team instructions to its prompt', 'the team instructions')
+    ? await opencodeV2PluginCheck(ctx, 'opencode adds the team instructions to its prompt', 'the team instructions')
     : null;
   if (opencodeV2) {
     checks.push(opencodeV2);
@@ -1593,6 +1681,22 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
         ? `${config} could not be read as a JSON object, so the pull left it alone and OpenCode never loads ${opencodeFile}. `
           + `Fix the file or add "${entry}" to its "instructions" by hand, then run \`teamai pull\`.`
         : `${config} does not list "${entry}" under "instructions", and OpenCode reads no file it is not told about. ${pullNow}`,
+    });
+  }
+
+  // On OpenCode V2 a pull takes teamai's V1 entries only out of a file git does not track (#915).
+  const { opencodeV1Leftovers } = await import('./teamai-only-files.js');
+  const v1Left = await opencodeV1Leftovers(teamConfig, localConfig);
+  if (v1Left.length > 0) {
+    checks.push({
+      name: 'No OpenCode V1 entries are left in shared config files',
+      source: 'local',
+      informational: true,
+      check: async () => false,
+      fix: `OpenCode V2 gets the team instructions, rules and MCP servers through teamai's plugin, but teamai's entries for OpenCode V1 `
+        + `are still in ${v1Left.map(({ file, entries }) => `${file} (${entries.join(', ')})`).join(' and ')}: git tracks the file, or pull `
+        + 'cannot edit it, so pull leaves it as it is. V2 ignores `instructions` and loads those servers a second time. '
+        + 'Remove teamai\'s entries by hand once no one on the project uses OpenCode V1.',
     });
   }
 
@@ -1624,7 +1728,8 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
     name: 'No team instruction blocks are left in files no tool loads them from',
     source: 'local',
     check: async () => leftovers.length === 0,
-    fix: [...warnings, `Earlier teamai releases left team instruction blocks in ${nameList(leftovers)}, which can carry another member's selection. ${pullNow}`].join(' '),
+    // A sharing.gitExclude switch moves Copilot's blocks too (#915).
+    fix: [...warnings, `An earlier teamai release or sharing.gitExclude setting left team instruction blocks in ${nameList(leftovers)}, which can carry another member's selection. ${pullNow}`].join(' '),
   });
   return checks;
 }

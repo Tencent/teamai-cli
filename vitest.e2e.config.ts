@@ -12,6 +12,7 @@ export default defineConfig({
     setupFiles: [
       'src/__tests__/helpers/isolate-e2e-env.ts',
       'src/__tests__/helpers/clear-agent-session-env.ts',
+      'src/__tests__/helpers/yield-between-tests.ts',
     ],
     // OpenCode's installer replaces a shared binary. Run it before workers.
     globalSetup: ['src/__tests__/helpers/prepare-opencode-e2e.ts'],
@@ -21,7 +22,8 @@ export default defineConfig({
     // while another file's CLI subprocess is using it.
     fileParallelism: true,
     minWorkers: 1,
-    maxWorkers: process.env.CI ? 2 : 4,
+    // GitHub's runner has 4 vCPUs: 4 workers halve the job against 2.
+    maxWorkers: 4,
     // Retry once: flaky tests recover, real bugs stay failed.
     retry: 1,
   },

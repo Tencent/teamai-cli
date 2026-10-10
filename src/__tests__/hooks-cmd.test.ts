@@ -848,7 +848,11 @@ describe('hooksRemove', () => {
             '/path/to/project',
             [],
             expect.any(String),
-            { removeAll: true, scope: 'project', installedBaseDir: '/path/to/project', teamHookProjectRoot: undefined, mainCheckout: null },
+            {
+                removeAll: true, scope: 'project', installedBaseDir: '/path/to/project', teamHookProjectRoot: undefined, mainCheckout: null,
+                // The team hooks in settings.local.json go too (#915).
+                selfLocalTeamHooks: { relocate: false },
+            },
         );
     });
 

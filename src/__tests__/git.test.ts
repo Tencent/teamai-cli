@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import path from 'node:path';
 
 // Mock simple-git before importing
 const mockGit = {
@@ -54,8 +55,28 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin } from '../utils/git.js';
+import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin, gitCommonDir } from '../utils/git.js';
 import fse from 'fs-extra';
+
+describe('gitCommonDir', () => {
+  it('probes a stable checkout only once during a run', async () => {
+    const cwd = path.resolve('common-dir-stable');
+    mockGit.revparse.mockClear().mockResolvedValue('.git');
+
+    expect(await gitCommonDir(cwd)).toBe(path.join(cwd, '.git'));
+    expect(await gitCommonDir(cwd)).toBe(path.join(cwd, '.git'));
+    expect(mockGit.revparse).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries when a repository becomes available after a failed probe', async () => {
+    const cwd = path.resolve('common-dir-retry');
+    mockGit.revparse.mockClear().mockRejectedValueOnce(new Error('not a repository')).mockResolvedValue('.git');
+
+    expect(await gitCommonDir(cwd)).toBeNull();
+    expect(await gitCommonDir(cwd)).toBe(path.join(cwd, '.git'));
+    expect(mockGit.revparse).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('generateBranchName', () => {
   it('should produce teamai/push/<username>/<timestamp> format', () => {

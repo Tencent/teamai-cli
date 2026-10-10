@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Command } from 'commander';
+import { loadCommandTable } from './helpers/command-table.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SKILL_DATA = path.join(ROOT, 'skill-data');
@@ -123,16 +124,14 @@ function validate(program: Command, invocations: Invocation[]): string[] {
 
 describe('commands named by the served skill content', () => {
   it('all exist in the CLI command table', async () => {
-    vi.stubEnv('TEAMAI_COMMAND_TABLE_ONLY', '1');
-    const { program } = await import('../index.js');
+    const program = await loadCommandTable();
 
     const problems = validate(program, collectInvocations());
     expect(problems, `\n${problems.join('\n')}\n`).toEqual([]);
   });
 
   it('catches the drift it exists to catch', async () => {
-    vi.stubEnv('TEAMAI_COMMAND_TABLE_ONLY', '1');
-    const { program } = await import('../index.js');
+    const program = await loadCommandTable();
 
     // `teamai extract graph` is the command the wiki skill advertised until this
     // change (issue #678, defect D1); the flag is invented.

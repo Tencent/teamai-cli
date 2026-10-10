@@ -21,6 +21,9 @@ vi.mock('../config.js', async (importOriginal) => ({
 vi.mock('../utils/git.js', () => ({
   pullRepo: vi.fn().mockResolvedValue('already up to date'),
   getHeadRev: vi.fn().mockResolvedValue('abc1234'),
+  // The project is no git checkout here.
+  gitCommonDir: vi.fn().mockResolvedValue(null),
+  listWorktrees: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -51,6 +54,8 @@ vi.mock('../source.js', () => ({
 vi.mock('../hooks.js', () => ({
   injectHooksToAllTools: vi.fn().mockResolvedValue(undefined),
   reconcileTeamHooksForConfig: vi.fn().mockResolvedValue({ ok: true, defs: [] }),
+  deliveredHookFiles: vi.fn().mockResolvedValue([]),
+  unreadableHookFiles: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../mcp-reconcile.js', () => ({

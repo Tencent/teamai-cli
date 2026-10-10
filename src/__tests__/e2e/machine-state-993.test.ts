@@ -219,7 +219,8 @@ describe('no machine state in the working tree (#993 bug 4)', () => {
     gitOk(['commit', '-q', '-m', 'team hooks'], repo);
 
     teamaiOk(['pull'], repo);
-    const settings = readJson(path.join(repo, '.claude', 'settings.json'));
+    // A new team keeps delivered files out of git, so the team hooks are in settings.local.json (#915).
+    const settings = readJson(path.join(repo, '.claude', 'settings.local.json'));
     expect(JSON.stringify(settings.hooks?.Stop ?? [])).toContain('echo team-stop');
     expect(gitOk(['status', '--porcelain', '-uall', '--', '.teamai'], repo)).toBe('');
     expect(run('git', ['check-ignore', '-q', '.teamai/managed-hooks.json'], repo).code).toBe(0);

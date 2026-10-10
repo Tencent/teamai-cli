@@ -7,13 +7,14 @@ import { CODEX_TOOL_IDS } from './utils/tool-names.js';
 import {
   opencodeClaudeFallback, opencodeContextReference, readOpencodeInstructionList, reconcileOpencodeInstructions,
 } from './resources/opencode-config.js';
-import { gitTracking, gitTracks } from './mcp-git-exclude.js';
+import { gitUntracked } from './git-exclude.js';
 import { TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
 import { getHermesHome } from './hermes-home.js';
 import { getHermesSoulPath } from './hermes-config.js';
 import { HERMES_SECTION_LIMIT } from './hermes-hooks.js';
 import {
   isAgentExcluded,
+  isGitExcludeEnabled,
   resolveToolBaseDir,
   resolveHookScope,
   scopedToolPaths,
@@ -189,6 +190,23 @@ const PROJECT_TARGETS: Readonly<Record<string, TargetEntry>> = {
   opencode: { file: () => '.opencode/teamai-context.md', owned: true, retired: [] },
 };
 
+/**
+ * Copilot inlines a `.github/instructions` file in every request, a question
+ * with no file in context included, only for exactly this glob; any other
+ * applies only when a matching file is in context (#915).
+ */
+const APPLY_TO_ALL = '---\napplyTo: "**"\n---\n';
+
+/**
+ * With sharing.gitExclude on (#915), Copilot reads the blocks from teamai's
+ * own file in its instructions directory, which git can be told to ignore, so
+ * the team's copilot-instructions.md stays untouched.
+ */
+const GIT_EXCLUDED_PROJECT_TARGETS: Readonly<Record<string, TargetEntry>> = {
+  ...PROJECT_TARGETS,
+  copilot: { file: contextRule('.instructions.md'), header: APPLY_TO_ALL, owned: true, retired: [] },
+};
+
 type MarkerPair = readonly [start: string, end: string, name: string];
 
 const CULTURE: MarkerPair = [TEAMAI_CULTURE_START, TEAMAI_CULTURE_END, 'culture'];
@@ -206,8 +224,10 @@ const TEAM_RULES: MarkerPair = [TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, 
 /** Every teamai block a stale target can hold. */
 const STALE_BLOCKS: readonly MarkerPair[] = [CULTURE, CLAUDEMD, RECALL, LEGACY_RULES, TEAM_RULES];
 
-function entryFor(tool: string, scope: Scope): TargetEntry | undefined {
-  return (scope === 'user' ? USER_TARGETS : PROJECT_TARGETS)[tool];
+/** `gitExclude`: the resolved sharing.gitExclude flag (`isGitExcludeEnabled`), which moves Copilot's project target (#915). */
+function entryFor(tool: string, scope: Scope, gitExclude = false): TargetEntry | undefined {
+  if (scope === 'user') return USER_TARGETS[tool];
+  return (gitExclude ? GIT_EXCLUDED_PROJECT_TARGETS : PROJECT_TARGETS)[tool];
 }
 
 /** One instruction file and the tools that read it. */
@@ -262,22 +282,26 @@ export interface InstructionBlocks {
  * dir or absolute (see `TargetEntry.file`). Tools absent from the table keep
  * their configured `claudemd` path.
  */
-export async function instructionTargetFile(tool: string, paths: ToolPaths, scope: Scope): Promise<string | undefined> {
-  return (entryFor(tool, scope)?.file ?? configured)(paths);
+export async function instructionTargetFile(tool: string, paths: ToolPaths, scope: Scope, gitExclude = false): Promise<string | undefined> {
+  return (entryFor(tool, scope, gitExclude)?.file ?? configured)(paths);
 }
 
 /**
  * Files, relative to the tool's base dir or absolute, an earlier release wrote
- * `tool`'s blocks to in `scope`: the defaults, and the `claudemd` the team's
- * `toolPaths` gives a tool whose target moved off it.
+ * `tool`'s blocks to in `scope`: the defaults, the `claudemd` the team's
+ * `toolPaths` gives a tool whose target moved off it, and the target the
+ * other value of the sharing.gitExclude flag selects, so turning the flag
+ * either way moves the blocks on the next pull (#915).
  */
-export async function retiredInstructionFiles(tool: string, paths: ToolPaths, scope: Scope): Promise<readonly string[]> {
-  const entry = entryFor(tool, scope);
+export async function retiredInstructionFiles(tool: string, paths: ToolPaths, scope: Scope, gitExclude = false): Promise<readonly string[]> {
+  const entry = entryFor(tool, scope, gitExclude);
   if (!entry) return [];
   // OpenClaw's default workspace stays read by its default profile (#946).
   if (tool === 'openclaw') return entry.retired;
-  const previous = paths.claudemd === await instructionTargetFile(tool, paths, scope) ? undefined : paths.claudemd;
-  return previous === undefined || entry.retired.includes(previous) ? entry.retired : [...entry.retired, previous];
+  const current = await instructionTargetFile(tool, paths, scope, gitExclude);
+  const previous = [paths.claudemd, await instructionTargetFile(tool, paths, scope, !gitExclude)]
+    .filter((file): file is string => file !== undefined && file !== current && !entry.retired.includes(file));
+  return previous.length === 0 ? entry.retired : [...entry.retired, ...new Set(previous)];
 }
 
 /** Whether `tool` gets this scope's blocks from teamai's session hook or extension rather than a file. */
@@ -441,8 +465,9 @@ export async function instructionTargetPath(
   tool: string,
   paths: ToolPaths,
   localConfig: LocalConfig,
+  gitExclude = false,
 ): Promise<string | undefined> {
-  const file = await instructionTargetFile(tool, paths, localConfig.scope);
+  const file = await instructionTargetFile(tool, paths, localConfig.scope, gitExclude);
   return file === undefined ? undefined : path.resolve(resolveToolBaseDir(tool, localConfig), file);
 }
 
@@ -505,12 +530,14 @@ export async function userRulesFile(tool: string, paths: ToolPaths, localConfig:
  * ownership its entry declares. Only teamai's `teamai-context` file takes
  * them; a configured file is the member's.
  */
-export async function instructionTargetAt(tool: string, file: string, scope: Scope, paths: ToolPaths): Promise<InstructionTarget> {
-  const entry = entryFor(tool, scope);
+export async function instructionTargetAt(
+  tool: string, file: string, scope: Scope, paths: ToolPaths, gitExclude = false,
+): Promise<InstructionTarget> {
+  const entry = entryFor(tool, scope, gitExclude);
   // teamai's file is the one its entry generates; the team's configured
   // `claudemd` (the fallback without `rules`) is the member's, whatever its name.
   const own = path.basename(file).startsWith(`${TEAMAI_CONTEXT_RULE_NAME}.`)
-    && await instructionTargetFile(tool, paths, scope) !== paths.claudemd;
+    && await instructionTargetFile(tool, paths, scope, gitExclude) !== paths.claudemd;
   return { path: file, tools: [], recall: false, header: own ? entry?.header : undefined, owned: own ? entry?.owned : undefined };
 }
 
@@ -519,13 +546,15 @@ export async function instructionTargetAt(tool: string, file: string, scope: Sco
  * A tool's current target is not among them: a tool that is not installed
  * here may still be installed by a teammate who shares the file (#945).
  */
-async function retiredTargets(toolPaths: Record<string, ToolPaths>, localConfig: LocalConfig): Promise<Map<string, InstructionTarget>> {
-  const current = new Set(await Promise.all(Object.entries(toolPaths).map(([tool, paths]) => instructionTargetPath(tool, paths, localConfig))));
+async function retiredTargets(
+  toolPaths: Record<string, ToolPaths>, localConfig: LocalConfig, gitExclude: boolean,
+): Promise<Map<string, InstructionTarget>> {
+  const current = new Set(await Promise.all(Object.entries(toolPaths).map(([tool, paths]) => instructionTargetPath(tool, paths, localConfig, gitExclude))));
   const known = new Map<string, InstructionTarget>();
   const table = localConfig.scope === 'user' ? USER_TARGETS : PROJECT_TARGETS;
   for (const tool of Object.keys(table)) {
     const baseDir = resolveToolBaseDir(tool, localConfig);
-    for (const retired of await retiredInstructionFiles(tool, toolPaths[tool] ?? {}, localConfig.scope)) {
+    for (const retired of await retiredInstructionFiles(tool, toolPaths[tool] ?? {}, localConfig.scope, gitExclude)) {
       const file = path.resolve(baseDir, retired);
       if (!current.has(file) && !known.has(file)) known.set(file, { path: file, tools: [], recall: false });
     }
@@ -574,12 +603,13 @@ export async function resolveInstructionTargets(
   const inUse = new Set<string>();
   const hooks: InstructionHook[] = [];
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
+  const gitExclude = isGitExcludeEnabled(localConfig, teamConfig);
   for (const [tool, paths] of Object.entries(toolPaths)) {
-    const entry = entryFor(tool, localConfig.scope);
-    const file = await instructionTargetPath(tool, paths, localConfig);
+    const entry = entryFor(tool, localConfig.scope, gitExclude);
+    const file = await instructionTargetPath(tool, paths, localConfig, gitExclude);
     if (isAgentExcluded(localConfig, tool)) {
       if (file) inUse.add(file);
-      for (const retired of await retiredInstructionFiles(tool, paths, localConfig.scope)) {
+      for (const retired of await retiredInstructionFiles(tool, paths, localConfig.scope, gitExclude)) {
         inUse.add(path.resolve(resolveToolBaseDir(tool, localConfig), retired));
       }
       continue;
@@ -605,13 +635,13 @@ export async function resolveInstructionTargets(
     }
     if (!file || !await isInstructionToolInstalled(tool, paths, localConfig)) continue;
     inUse.add(file);
-    const target = targets.get(file) ?? await instructionTargetAt(tool, file, localConfig.scope, paths);
+    const target = targets.get(file) ?? await instructionTargetAt(tool, file, localConfig.scope, paths, gitExclude);
     // The subagent block only where every tool reading the file has the subagent.
     target.recall = Boolean(paths.agents) && (target.tools.length === 0 || target.recall);
     target.tools.push(tool);
     targets.set(file, target);
   }
-  const stale = [...(await retiredTargets(toolPaths, localConfig)).values()].filter((t) => !inUse.has(t.path));
+  const stale = [...(await retiredTargets(toolPaths, localConfig, gitExclude)).values()].filter((t) => !inUse.has(t.path));
   // OpenCode V1 reads ~/.claude/CLAUDE.md while its own user AGENTS.md does
   // not exist; when Claude's blocks are there, listing OpenCode's file too
   // would duplicate them. That holds for blocks an excluded Claude left there
@@ -633,13 +663,15 @@ export async function retiredFilesOfReached(
   reached: readonly string[],
 ): Promise<InstructionTarget[]> {
   const { stale, hooks } = await resolveInstructionTargets(teamConfig, localConfig);
+  const gitExclude = isGitExcludeEnabled(localConfig, teamConfig);
   const writers = new Map<string, string[]>();
   for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (!hooks.some((hook) => hook.tool === tool) && !await isInstructionToolInstalled(tool, paths, localConfig)) continue;
     // A tool with no file and no hook channel here (OpenClaw in a project, #946)
     // has no replacement to wait for; a hook tool whose hook is not installed does.
-    if (!entryFor(tool, localConfig.scope)?.hook && await instructionTargetPath(tool, paths, localConfig) === undefined) continue;
-    for (const file of await retiredInstructionFiles(tool, paths, localConfig.scope)) {
+    if (!entryFor(tool, localConfig.scope, gitExclude)?.hook
+      && await instructionTargetPath(tool, paths, localConfig, gitExclude) === undefined) continue;
+    for (const file of await retiredInstructionFiles(tool, paths, localConfig.scope, gitExclude)) {
       const absolute = path.resolve(resolveToolBaseDir(tool, localConfig), file);
       writers.set(absolute, [...writers.get(absolute) ?? [], tool]);
     }
@@ -665,6 +697,9 @@ export async function registerOpencodeContext(
   const paths = scopedToolPaths(teamConfig, localConfig).opencode;
   const contextFile = paths && await instructionTargetPath('opencode', paths, localConfig);
   if (!contextFile) return null;
+  // OpenCode V2 ignores the entry, and teamai's plugin reads the file (#915).
+  const { opencodeDeliversThroughPlugin } = await import('./opencode-hooks.js');
+  if (await opencodeDeliversThroughPlugin(teamConfig, localConfig)) return null;
   const targeted = resolved.targets.some((target) => target.path === contextFile);
   const wanted = targeted && !resolved.opencodeFallback;
   if (!targeted && !resolved.stale.some((target) => target.path === contextFile)) return null;
@@ -791,9 +826,7 @@ function createdByTeamai(content: string): boolean {
  * whose state git cannot report stays too.
  */
 async function mayDelete(file: string): Promise<boolean> {
-  const tracked = await gitTracks(file);
-  if (tracked.kind !== 'unknown') return tracked.kind === 'untracked';
-  return (await gitTracking(file)).kind === 'outside-repo';
+  return gitUntracked(file);
 }
 
 async function planFile(
@@ -803,6 +836,8 @@ async function planFile(
   warnings: string[],
 ): Promise<InstructionFileChange | null> {
   const existing = await readFileSafe(target.path);
+  // A retired file teamai wrote with a header, such as its own Copilot file once sharing.gitExclude is off (#915).
+  const header = target.header ?? (kind === 'cleanup' ? KNOWN_HEADERS.find((known) => existing?.startsWith(known)) : undefined);
   if (existing !== null && target.owned && !hasTeamaiBlock(existing) && existing !== (target.header ?? '')) {
     warnings.push(`${target.path} was not written by teamai, so teamai left it unchanged. Move or rename it so teamai can deliver the team instructions there.`);
     return null;
@@ -823,17 +858,17 @@ async function planFile(
   }
   if (content === (existing ?? target.header ?? '')) return null;
 
-  const remainder = withoutHeader(content, target.header).trim();
+  const remainder = withoutHeader(content, header).trim();
   if (remainder === '') {
     if (existing === null) return null;
-    if (target.owned || (createdByTeamai(existing) && await mayDelete(target.path))) return { path: target.path, content: null, kind };
+    if (target.owned || (createdByTeamai(withoutHeader(existing, header)) && await mayDelete(target.path))) return { path: target.path, content: null, kind };
     return { path: target.path, content: '', kind };
   }
   return { path: target.path, content, kind };
 }
 
 /** Every header a target writes, so a file teamai created can be recognised later. */
-const KNOWN_HEADERS = [ALWAYS_APPLY];
+const KNOWN_HEADERS = [ALWAYS_APPLY, APPLY_TO_ALL];
 
 /**
  * Remove teamai instruction blocks from `file` (those whose start marker is in

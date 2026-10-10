@@ -26,6 +26,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getDataHome, type LocalConfig } from './types.js';
 import { execCommand } from './utils/exec.js';
+import { GIT_REPOSITORY_ENV } from './utils/git-env.js';
 import { readFileIfExists, readJson, remove, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -343,34 +344,9 @@ export async function isRebaseFastForward(
   return (await gitIn(cwd)(['merge-base', '--is-ancestor', oldRef, newRef])).code === 0;
 }
 
-/**
- * Variables through which Git hands a hook the repository it runs for
- * (`git rev-parse --local-env-vars`, minus GIT_CONFIG_COUNT and its
- * GIT_CONFIG_KEY/VALUE pairs, which a member sets in their own environment and
- * Git never adds for a hook). Every git child teamai starts would inherit them
- * and act on the business repo instead of the team clone it names.
- */
-const REPOSITORY_ENV = [
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_CONFIG',
-  'GIT_CONFIG_PARAMETERS',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_IMPLICIT_WORK_TREE',
-  'GIT_GRAFT_FILE',
-  'GIT_INDEX_FILE',
-  'GIT_NO_REPLACE_OBJECTS',
-  'GIT_REPLACE_REF_BASE',
-  'GIT_PREFIX',
-  'GIT_INTERNAL_SUPER_PREFIX',
-  'GIT_SHALLOW_FILE',
-  'GIT_COMMON_DIR',
-] as const;
-
 /** Drop the repository Git exported for the hook, before teamai runs any git. */
 export function clearGitHookRepositoryEnv(env: NodeJS.ProcessEnv = process.env): void {
-  for (const name of REPOSITORY_ENV) delete env[name];
+  for (const name of GIT_REPOSITORY_ENV) delete env[name];
 }
 
 // ─── Recorded failures ─────────────────────────────────

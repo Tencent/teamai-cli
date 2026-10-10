@@ -1,11 +1,16 @@
-import fs from 'node:fs';
 import path from 'node:path';
-import fse from 'fs-extra';
 import type { McpServerDef } from './types.js';
 import type { McpTarget } from './mcp-reconcile.js';
+import {
+  MCP_EXCLUDE_OWNER,
+  ensure,
+  excludeLines,
+  gitExcludeFile,
+  updateExcludeLines,
+  type ExcludeUpdate,
+} from './git-exclude.js';
 import { referencedVars, supportsEnvExpansion } from './resources/mcp-format.js';
-import { execCommand } from './utils/exec.js';
-import { pathExists, readFileSafe, symlinkTarget, writeFileAtomic } from './utils/fs.js';
+import { pathExists, readFileSafe } from './utils/fs.js';
 import { listWorktrees } from './utils/git.js';
 import { log } from './utils/logger.js';
 
@@ -15,22 +20,25 @@ import { log } from './utils/logger.js';
 //  business repo's working tree with the value in plaintext, and one
 //  `git add -A` commits it (#882). teamai lists such a file in the clone's own
 //  `.git/info/exclude`, inside a block it owns: local to the clone, nothing
-//  committed, and the team's `.gitignore` never touched.
+//  committed, and the team's `.gitignore` never touched. The block is the
+//  `mcp-exclude` owner's in the git-exclude module, which owns the file.
 
-export const MCP_EXCLUDE_START = '# [teamai:mcp-exclude:start] project MCP configs holding resolved ${VAR} values';
-export const MCP_EXCLUDE_END = '# [teamai:mcp-exclude:end]';
+export { MCP_EXCLUDE_END, MCP_EXCLUDE_START, updateFileLocked } from './git-exclude.js';
+
+const MCP_OWNER = { name: MCP_EXCLUDE_OWNER };
 
 /**
  * Whether `target`'s file carries a value teamai resolved from a `${VAR}`: a
  * project-scope file holding one of `names` whose definition references a
- * variable the tool does not expand itself.
+ * variable the tool does not expand itself. A local scope (#915) is
+ * outside the working tree: no exclusion protects it, and none is needed.
  */
 export function carriesResolvedValue(
   target: McpTarget,
   teamDefs: McpServerDef[],
   names: Iterable<string>,
 ): boolean {
-  if (!target.projectScope) return false;
+  if (!target.projectScope || target.projectKey) return false;
   const present = new Set(names);
   return teamDefs.some((def) => present.has(def.name)
     && referencedVars(def).length > 0
@@ -83,119 +91,6 @@ export function resolvedVariableIn(
 }
 
 /**
- * The `info/exclude` git reads for `dir`'s checkout (worktrees and submodules
- * included), the checkout's root, and `dir`'s path from it.
- */
-async function gitExcludeFile(dir: string): Promise<{ excludeFile: string; root: string; prefix: string } | null> {
-  const result = await execCommand('git', ['rev-parse', '--show-toplevel', '--show-prefix', '--git-path', 'info/exclude'], { cwd: dir, timeoutMs: 10_000 })
-    .catch(() => null);
-  if (!result || result.code !== 0) return null;
-  const [root = '', prefix = '', gitPath = ''] = result.stdout.split(/\r?\n/);
-  if (!root || !gitPath) return null;
-  // Real path, so one repository reached through a symlink (macOS /var) is one file.
-  const base = await fse.realpath(dir).catch(() => dir);
-  return { excludeFile: path.resolve(base, gitPath), root, prefix };
-}
-
-/** The closest directory above `file` that exists. */
-export async function existingAncestor(file: string): Promise<string> {
-  let dir = path.dirname(path.resolve(file));
-  while (!await pathExists(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
-  return dir;
-}
-
-/**
- * Where a write to `file` lands: the file a symlink at `file` points to (a
- * member's dotfiles link stays, and the write goes to its target), then the
- * real path of its closest existing directory, the rest appended. Every check
- * of whether git would commit the file judges this path, in the repository
- * holding it (#886), and reads keep `file`.
- */
-export async function realFilePath(file: string): Promise<string> {
-  // A link loop or an unreadable path: judged as the file itself, as the write would fail.
-  const target = await symlinkTarget(file).catch(() => file);
-  const dir = await existingAncestor(target);
-  const real = await fs.promises.realpath(dir).catch(() => dir);
-  return path.join(real, path.relative(dir, target));
-}
-
-/**
- * Whether git would put a file in a commit. `unknown` is a repository git could
- * not answer for (unsafe ownership, a bad config): never read it as safe.
- */
-export type GitTracking =
-  | { kind: 'ignored' }
-  | { kind: 'would-commit' }
-  | { kind: 'outside-repo' }
-  | { kind: 'unknown'; error: string };
-
-
-/**
- * `file` as a message names it, and the path to give git for it: the one a
- * write lands in, named with `file`, when `file` is a symlink or a directory
- * inside its checkout is one (#886), where git refuses `file` ("beyond a
- * symbolic link"). A symlink above the checkout (macOS /var) changes no path git uses.
- */
-export async function gitPathOf(file: string): Promise<{ label: string; path: string }> {
-  const landed = await realFilePath(file);
-  if (landed === file) return { label: file, path: file };
-  const linked = await symlinkTarget(file).catch(() => file) !== file;
-  const location = linked ? null : await gitExcludeFile(await existingAncestor(landed));
-  const inCheckout = location ? path.relative(location.root, landed) : '';
-  if (inCheckout && !inCheckout.startsWith('..') && file.endsWith(`${path.sep}${inCheckout}`)) return { label: file, path: file };
-  return { label: `${landed} (where ${file} is written)`, path: landed };
-}
-
-/**
- * Whether git would put `file` in a commit: tracked, or untracked without an
- * ignore rule. Judged where a write to it lands. Read-only.
- */
-export async function gitTracking(file: string): Promise<GitTracking> {
-  file = await realFilePath(file);
-  const dir = await existingAncestor(file);
-  const result = await execCommand('git', ['check-ignore', '-q', '--', path.relative(dir, file)], { cwd: dir, timeoutMs: 10_000 })
-    .catch((e: unknown) => ({ code: -1, stdout: '', stderr: e instanceof Error ? e.message : String(e) }));
-  if (result.code === 0) return { kind: 'ignored' };
-  if (result.code === 1) return { kind: 'would-commit' };
-  // Anything else is no repository at all, or git failing inside one.
-  for (let d = path.resolve(dir); ; d = path.dirname(d)) {
-    if (await pathExists(path.join(d, '.git'))) return { kind: 'unknown', error: result.stderr.trim() || `git exited with ${result.code}` };
-    if (path.dirname(d) === d) return { kind: 'outside-repo' };
-  }
-}
-
-/**
- * Whether git tracks `file` (#879): the next `git commit -a` commits a change to
- * it, and no exclude rule stops that. Read-only. `unknown` is git failing to
- * answer: never read it as untracked.
- */
-export async function gitTracks(file: string): Promise<{ kind: 'tracked' } | { kind: 'untracked' } | { kind: 'unknown'; error: string }> {
-  file = await realFilePath(file);
-  // The file, or even its directory, may be gone from disk and still be in the index.
-  const dir = await existingAncestor(file);
-  const result = await execCommand('git', ['--literal-pathspecs', 'ls-files', '--error-unmatch', '--', path.relative(dir, file)], { cwd: dir, timeoutMs: 10_000 })
-    .catch((e: unknown) => ({ code: -1, stdout: '', stderr: e instanceof Error ? e.message : String(e) }));
-  if (result.code === 0) return { kind: 'tracked' };
-  if (result.code === 1) return { kind: 'untracked' };
-  return { kind: 'unknown', error: result.stderr.trim() || `git exited with ${result.code}` };
-}
-
-/**
- * teamai's block and what surrounds it; null without both markers, so a damaged
- * block never takes the member's lines with it. The last start marker opens it:
- * one that lost its end marker is left behind, not paired with the next block's end.
- */
-function splitBlock(content: string): { before: string; patterns: string[]; after: string } | null {
-  const start = content.lastIndexOf(MCP_EXCLUDE_START);
-  const endAt = start === -1 ? -1 : content.indexOf(MCP_EXCLUDE_END, start);
-  if (endAt === -1) return null;
-  const patterns = content.slice(start + MCP_EXCLUDE_START.length, endAt)
-    .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
-  const after = content.slice(endAt + MCP_EXCLUDE_END.length).replace(/^\r?\n/, '');
-  return { before: content.slice(0, start), patterns, after };
-}
-
-/**
  * Whether `file` is kept out of git, or why teamai could not keep it out and
  * what the member does about it. `added`: this call listed it. `pending`: a dry
  * run found nothing in the way of listing it.
@@ -220,120 +115,16 @@ export async function ensureExcludedFromGit(
   file: string,
   options: { dryRun?: boolean; rerun?: string } = {},
 ): Promise<GitExclusion> {
-  const { rerun = 'run `teamai pull` again' } = options;
-  const tracking = await gitTracking(file);
-  if (tracking.kind === 'ignored' || tracking.kind === 'outside-repo') return { kind: 'excluded', added: false };
-  const repair = `Fix the repository, or add the file to its .git/info/exclude yourself, then ${rerun}.`;
-  const tracked = async (): Promise<GitExclusion> => {
-    const named = await gitPathOf(file);
-    return {
-      kind: 'failed',
-      reason: `git already tracks ${named.label}`,
-      // After "Run `git rm …`", a second "run" is dropped: "then `teamai pull` again".
-      fix: `Run \`git rm --cached ${named.path}\` (rotate any value a commit of it holds), then ${rerun.replace(/^run /, '')}.`,
-    };
-  };
-  const inIndex = await gitTracks(file);
-  if (inIndex.kind === 'tracked') return tracked();
-  if (inIndex.kind === 'unknown') return { kind: 'failed', reason: inIndex.error, fix: repair };
-  // Where the write lands. It and its directory need not exist yet: git is asked from the nearest one that does.
-  const landed = await realFilePath(file);
-  const dir = await existingAncestor(landed);
-  const location = await gitExcludeFile(dir);
-  if (!location) {
-    return {
-      kind: 'failed',
-      reason: tracking.kind === 'unknown' ? tracking.error : 'git could not locate .git/info/exclude',
-      fix: repair,
-    };
+  const [{ result }] = await ensure(MCP_OWNER, [file], options);
+  switch (result.kind) {
+    case 'excluded':
+    case 'pending':
+      return result;
+    case 'outsideRepo':
+      return { kind: 'excluded', added: false };
+    default:
+      return { kind: 'failed', reason: result.reason, fix: result.fix };
   }
-  const { excludeFile } = location;
-  // Anchored at the working tree root, glob characters escaped.
-  const rel = path.relative(dir, landed).split(path.sep).join('/');
-  const pattern = `/${location.prefix}${rel}`.replace(/[\\*?[\]!#]/g, '\\$&');
-  const retry = `Make it writable, or add \`${pattern}\` to it yourself, then ${rerun}.`;
-  const notWritable = ({ message, blocker, notDirectory }: NotWritableError): GitExclusion => ({
-    kind: 'failed',
-    reason: message,
-    fix: notDirectory
-      ? `Move ${blocker} aside, then ${rerun}.`
-      : `Make ${blocker} writable, or add \`${pattern}\` to ${excludeFile} yourself, then ${rerun}.`,
-  });
-  // A read-only exclude file is the member's choice; the atomic write would replace it all the same.
-  // A missing `info/` (`git init --template=`) is created by the write, so its closest existing directory is checked (#993).
-  const ancestor = await existingAncestor(excludeFile);
-  // A file where a directory belongs (`.git/info` a regular file): no write can create it, a dry run included.
-  if (await fse.stat(ancestor).then((s) => !s.isDirectory(), () => false)) return notWritable(new NotWritableError(excludeFile, ancestor, true));
-  for (const writable of [ancestor, ...(await pathExists(excludeFile) ? [excludeFile] : [])]) {
-    const denied = await fse.access(writable, fse.constants.W_OK).then(
-      () => false,
-      (e: NodeJS.ErrnoException) => ['EACCES', 'EPERM', 'EROFS'].includes(e.code ?? ''),
-    );
-    if (!denied) continue;
-    if (writable === excludeFile) return { kind: 'failed', reason: `${excludeFile} is not writable`, fix: retry };
-    return notWritable(new NotWritableError(excludeFile, writable, false));
-  }
-  const add = (content: string): string | null => {
-    const block = splitBlock(content);
-    if (block?.patterns.includes(pattern)) return null;
-    const head = block ? block.before : content;
-    const patterns = [...(block?.patterns ?? []), pattern];
-    const body = [MCP_EXCLUDE_START, ...patterns, MCP_EXCLUDE_END].join('\n');
-    const sep = head === '' || head.endsWith('\n') ? '' : '\n';
-    return `${head}${sep}${body}\n${block?.after ?? ''}`;
-  };
-  let result: ExcludeUpdate;
-  try {
-    if (options.dryRun) {
-      if (add((await readFileSafe(excludeFile)) ?? '') !== null) {
-        // A negated rule in a .gitignore outranks .git/info/exclude: the line would change nothing.
-        const rule = await reincludingRule(landed);
-        return rule && path.basename(rule.source) === '.gitignore' ? reincluded(await gitPathOf(file), rule, rerun) : { kind: 'pending' };
-      }
-      result = 'unchanged';
-    } else {
-      result = await updateFileLocked(excludeFile, add);
-    }
-  } catch (e) {
-    if (e instanceof NotWritableError) return notWritable(e);
-    return { kind: 'failed', reason: `adding it to ${excludeFile} failed: ${e instanceof Error ? e.message : String(e)}`, fix: retry };
-  }
-  if (result === 'locked') {
-    return {
-      kind: 'failed',
-      reason: `another teamai command held ${excludeFile} past the wait`,
-      fix: `${rerun.charAt(0).toUpperCase()}${rerun.slice(1)}.`,
-    };
-  }
-  if (result === 'written') log.debug(`Added ${pattern} to ${excludeFile}`);
-  if ((await gitTracking(file)).kind !== 'would-commit') return { kind: 'excluded', added: result === 'written' };
-  // Untracked, as checked above: a rule git reads after teamai's line, or before it, re-includes the file.
-  return reincluded(await gitPathOf(file), await reincludingRule(landed), rerun);
-}
-
-/** The failure for a file a rule of the member's re-includes, naming `rule` when git could. */
-function reincluded(named: { label: string }, rule: { source: string; line: string; pattern: string } | null, rerun: string): GitExclusion {
-  return rule
-    ? {
-      kind: 'failed',
-      reason: `a rule in your git ignore files re-includes ${named.label}: \`${rule.pattern}\` (${rule.source}:${rule.line})`,
-      fix: `Remove \`${rule.pattern}\` from ${rule.source}, then ${rerun}.`,
-    }
-    : {
-      kind: 'failed',
-      reason: `a rule in your git ignore files re-includes ${named.label}`,
-      fix: `Remove the rule in .gitignore, .git/info/exclude or core.excludesFile that re-includes it (\`git check-ignore -v\` names it), then ${rerun}.`,
-    };
-}
-
-/** The negated rule `git check-ignore -v` says decides `file`, or null when it names none. */
-async function reincludingRule(file: string): Promise<{ source: string; line: string; pattern: string } | null> {
-  const dir = await existingAncestor(file);
-  const result = await execCommand('git', ['check-ignore', '-v', '--', path.relative(dir, file)], { cwd: dir, timeoutMs: 10_000 })
-    .catch(() => null);
-  // <source>:<line>:<pattern><TAB><path>, the source as git names it from `dir`.
-  const match = result?.code === 0 ? /^(.*):(\d+):(!.*)\t/.exec(result.stdout) : null;
-  return match ? { source: path.resolve(dir, match[1]), line: match[2], pattern: match[3] } : null;
 }
 
 /**
@@ -348,58 +139,6 @@ export async function excludeFromGit(file: string, options: { rerun?: string; ho
       `${file} may hold ${options.holds ?? 'a resolved MCP variable'}, and teamai could not keep it out of git: ${exclusion.reason}. `
       + `${exclusion.fix} Do not commit the file meanwhile.`,
     );
-  }
-}
-
-/** How `updateFileLocked` left the file: `locked` wrote nothing, another command held it past the wait. */
-export type ExcludeUpdate = 'written' | 'unchanged' | 'locked';
-
-/**
- * `updateFileLocked` could not create `file`'s directory, which also holds its
- * lock: `blocker`, the closest existing path above `file`, is not a directory
- * (`notDirectory`), or denies the write.
- */
-export class NotWritableError extends Error {
-  constructor(readonly file: string, readonly blocker: string, readonly notDirectory: boolean) {
-    super(`${file} is not writable, as ${blocker} is not${notDirectory ? ' a directory' : ''}`);
-    this.name = 'NotWritableError';
-  }
-}
-
-/**
- * Rewrite `file` with `edit` (null: leave it as it is), holding a lock
- * across the read and an atomic write: the worktrees of a repository share
- * `.git/info/exclude`, so two commands adding different paths must not drop each other's.
- * A lock still held after the wait writes nothing: an unlocked write could drop
- * the holder's pattern, leaving that path unprotected. `mode` forces the file's
- * mode; without it the file keeps its own. Throws `NotWritableError`, without
- * waiting, when the file's directory cannot be created.
- */
-export async function updateFileLocked(
-  file: string,
-  edit: (content: string) => string | null,
-  options: { mode?: number } = {},
-): Promise<ExcludeUpdate> {
-  const { acquireLock, releaseLock } = await import('./update.js');
-  const lockPath = `${file}.teamai-lock`;
-  // acquireLock reads a lock directory it cannot create as a held lock; no wait would change that (#993).
-  await fse.ensureDir(path.dirname(file)).catch(async (e: NodeJS.ErrnoException) => {
-    if (!['EEXIST', 'ENOTDIR', 'EACCES', 'EPERM', 'EROFS'].includes(e.code ?? '')) throw e;
-    throw new NotWritableError(file, await existingAncestor(file), e.code === 'EEXIST' || e.code === 'ENOTDIR');
-  });
-  let held = false;
-  for (let attempt = 0; attempt < 25 && !held; attempt++) {
-    held = await acquireLock(lockPath);
-    if (!held) await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  if (!held) return 'locked';
-  try {
-    const next = edit((await readFileSafe(file)) ?? '');
-    if (next === null) return 'unchanged';
-    await writeFileAtomic(file, next, options);
-    return 'written';
-  } finally {
-    await releaseLock(lockPath);
   }
 }
 
@@ -420,12 +159,12 @@ export async function findMcpGitExcludes(dirs: Iterable<string>): Promise<Map<st
   const found = new Map<string, Array<{ pattern: string; files: string[] }>>();
   for (const [excludeFile, checkouts] of roots) {
     const content = await readFileSafe(excludeFile);
-    const block = content === null ? null : splitBlock(content);
-    if (!block) continue;
+    const patterns = content === null ? null : excludeLines(content, MCP_EXCLUDE_OWNER);
+    if (!patterns) continue;
     // Every checkout sharing the file, including a nested repository's linked worktrees elsewhere.
     const [anyCheckout] = checkouts;
     if (anyCheckout) for (const worktree of await listWorktrees(anyCheckout)) checkouts.add(worktree);
-    found.set(excludeFile, block.patterns.map((pattern) => {
+    found.set(excludeFile, patterns.map((pattern) => {
       const rel = mcpExcludePatternPath(pattern);
       return { pattern, files: [...checkouts].map((root) => path.join(root, rel)) };
     }));
@@ -443,12 +182,8 @@ export function mcpExcludePatternPath(pattern: string): string {
  * returned), and the block with its last pattern.
  */
 export async function removeMcpGitExclude(excludeFile: string, patterns: string[]): Promise<ExcludeUpdate> {
-  return updateFileLocked(excludeFile, (content) => {
-    const block = splitBlock(content);
-    if (!block) return null;
-    const kept = block.patterns.filter((p) => !patterns.includes(p));
-    if (kept.length === block.patterns.length) return null;
-    const body = kept.length > 0 ? `${[MCP_EXCLUDE_START, ...kept, MCP_EXCLUDE_END].join('\n')}\n` : '';
-    return block.before + body + block.after;
+  return updateExcludeLines(excludeFile, MCP_EXCLUDE_OWNER, (lines) => {
+    const kept = lines.filter((p) => !patterns.includes(p));
+    return kept.length === lines.length ? null : kept;
   });
 }

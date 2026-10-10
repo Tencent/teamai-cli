@@ -88,6 +88,14 @@ export const SharingConfigSchema = z.object({
     enabled: z.boolean().default(false),
   }).optional(),
   // Optional (not .default) so existing TeamaiConfig literals stay valid; use
+  // isGitExcludeEnabled() for the resolved view.
+  gitExclude: z.object({
+    /** Keep what teamai delivers into a project out of git, through teamai's
+     *  `delivered` block in the clone's `.git/info/exclude` (#915). `init`
+     *  writes true into a new team's teamai.yaml; absent means off. */
+    enabled: z.boolean().default(false),
+  }).optional(),
+  // Optional (not .default) so existing TeamaiConfig literals stay valid; use
   // isContributeHintEnabled() for the resolved view.
   contributeHint: z.object({
     /** Team default: whether the Stop hook nudges members towards the
@@ -187,6 +195,43 @@ export function getRecallSharing(config: { sharing?: { recall?: { enabled?: bool
   return { enabled: config.sharing?.recall?.enabled ?? false };
 }
 
+/**
+ * Resolve whether pull keeps what it delivers into a project out of git
+ * (#915): the member's `gitExcludeEnabled` in the partition config > the
+ * team's `sharing.gitExclude.enabled` > default (false). A checkout still on
+ * the un-migrated layout reads its own config from `<projectRoot>/.teamai/`,
+ * and its worktrees each have one: that member value is not read, so no single
+ * checkout decides for the exclude file they share.
+ */
+export function isGitExcludeEnabled(
+  localConfig: { gitExcludeEnabled?: boolean; scope?: string; projectRoot?: string; dataHome?: string },
+  teamConfig: { sharing?: { gitExclude?: { enabled?: boolean } } },
+): boolean {
+  const member = isUnmigratedDataHome(localConfig) ? undefined : localConfig.gitExcludeEnabled;
+  return member ?? teamConfig.sharing?.gitExclude?.enabled ?? false;
+}
+
+/**
+ * isGitExcludeEnabled with the team config as `loadTeamConfig` returns it.
+ * `undefined` when nothing can decide: git mode, no member override, and the
+ * team's teamai.yaml could not be read or validated. That is not "off": a
+ * caller leaves what the setting governs as it is. HTTP mode has no team
+ * setting, so the member's override or the default decides there.
+ */
+export function resolveGitExclude(
+  localConfig: Parameters<typeof isGitExcludeEnabled>[0] & { repo: { kind?: string } },
+  teamConfig: Parameters<typeof isGitExcludeEnabled>[1] | null,
+): boolean | undefined {
+  if (teamConfig || localConfig.repo.kind === 'http') return isGitExcludeEnabled(localConfig, teamConfig ?? {});
+  return isUnmigratedDataHome(localConfig) ? undefined : localConfig.gitExcludeEnabled;
+}
+
+/** Whether a project config was read from the checkout's own `.teamai/` rather than its partition. */
+export function isUnmigratedDataHome(localConfig: { scope?: string; projectRoot?: string; dataHome?: string }): boolean {
+  const { scope, projectRoot, dataHome } = localConfig;
+  return scope === 'project' && !!projectRoot && !!dataHome && path.resolve(dataHome) === path.resolve(projectRoot, '.teamai');
+}
+
 /** Resolve whether recall is enabled: user override > team config > default (false). */
 export function isRecallEnabled(
   localConfig: { recallEnabled?: boolean },
@@ -283,7 +328,7 @@ export const TEAMAI_SOURCES_DIR = path.join(getUserHome(), '.teamai', 'sources')
 export const ProviderNameSchema = z.enum(['tgit', 'github', 'cnb', 'gitlab', 'gitcode', 'git']);
 export type ProviderName = z.infer<typeof ProviderNameSchema>;
 
-export const TeamaiConfigSchema = z.object({
+export const TeamaiConfigBaseSchema = z.object({
   team: z.string(),
   description: z.string().default(''),
   repo: z.string(),
@@ -454,6 +499,40 @@ export const TeamaiConfigSchema = z.object({
       mcp: '.kiro/settings/mcp.json',
       mcpProject: '.kiro/settings/mcp.json',
     },
+    // Trae (trae.ai) is a VS Code-family IDE. Per its docs and its bundled
+    // code (verified against the installed app): project skills live in
+    // <root>/.trae/skills/<name>/SKILL.md, project rules in .trae/rules/*.md
+    // (frontmatter `alwaysApply` / `globs`, globs comma-separated, parsed by
+    // lines — see trae-rule.ts), and project MCP in .trae/mcp.json holding a
+    // Claude-shaped `mcpServers` object map. User rules are NOT ~/.trae/rules
+    // but ~/.trae/user_rules (the default file is user_rules.md), so
+    // userScope.rules carries that name. User-level MCP has no
+    // teamai-writable cross-platform file: the IDE keeps it next to its
+    // user settings (~/Library/Application Support/Trae/User/mcp.json on
+    // macOS, %APPDATA%/… on Windows), so only `mcpProject` is set. Trae has
+    // no settings-based hook surface and no subagents directory, so those
+    // keys stay absent (like JoyCode, users sync via `teamai pull`).
+    trae: {
+      skills: '.trae/skills',
+      rules: '.trae/rules',
+      mcpProject: '.trae/mcp.json',
+      userScope: { rules: '.trae/user_rules' },
+    },
+    // Trae CN (domestic.trae.cn) shares every project path with the
+    // international build (verified on installed apps: only the user
+    // directory differs, ~/.trae-cn). Both map the same .trae/mcp.json, and
+    // one shared ownership record covers the pair
+    // (MCP_MANIFEST_KEY_ALIAS), so whichever build a member runs, its
+    // target writes, updates and cleans the file.
+    'trae-cn': {
+      skills: '.trae/skills',
+      rules: '.trae/rules',
+      mcpProject: '.trae/mcp.json',
+      userScope: {
+        skills: '.trae-cn/skills',
+        rules: '.trae-cn/user_rules',
+      },
+    },
     // ZCode: user-level config lives at ~/.zcode/cli/config.json (a shared file
     // that also carries plugin state — reconcile must merge, never replace).
     // Hooks are Claude-shaped but nested under `hooks.events` and gated by
@@ -549,6 +628,26 @@ export const TeamaiConfigSchema = z.object({
   }),
 });
 
+export const TeamaiConfigSchema = TeamaiConfigBaseSchema.superRefine((config, ctx) => {
+  // The Trae builds claim their MCP files under one shared ownership record
+  // (MCP_MANIFEST_KEY_ALIAS); that contract holds only while they map the
+  // same file. A team that maps them apart would see one reconcile clear the
+  // other's record, so reject the split instead (#904).
+  const trae = config.toolPaths.trae;
+  const traeCn = config.toolPaths['trae-cn'];
+  for (const field of ['mcp', 'mcpProject'] as const) {
+    const a = trae?.[field];
+    const b = traeCn?.[field];
+    if (a !== undefined && b !== undefined && a !== b) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['toolPaths', 'trae-cn', field],
+        message: `trae and trae-cn must map the same ${field} path: they claim their MCP servers under one shared ownership record`,
+      });
+    }
+  }
+});
+
 export type TeamaiConfig = z.infer<typeof TeamaiConfigSchema>;
 
 // ─── Member config (members/<user>.yaml) ────────────────
@@ -633,6 +732,9 @@ export const LocalConfigSchema = z.object({
   excludedSkills: z.array(z.string()).optional(),
   /** User-level override for recall feature. When set, takes precedence over team config. */
   recallEnabled: z.boolean().optional(),
+  /** Per-machine override of the team's `sharing.gitExclude.enabled` (#915),
+   *  hand-edited in the partition config. Undefined defers to the team. */
+  gitExcludeEnabled: z.boolean().optional(),
   /** User-level override for the share-learnings hint. When set, takes precedence over team config. */
   contributeHintEnabled: z.boolean().optional(),
   /** Per-machine override for the co-author trailer in AI-tool commits. When set,
@@ -798,6 +900,12 @@ export const StateSchema = z.object({
    * another checkout drops the record once that root is no longer a checkout
    * of the repository under the same key; a record without one, from an older
    * CLI, is kept (#993).
+   * `gitExcludePaths` is what each writer of the pull delivered into the
+   * checkout, by writer id (`WriterId` in git-exclude-delivered.ts), as
+   * absolute landed paths: what teamai's `delivered` git exclude block lists
+   * (#915). It is kept whatever `sharing.gitExclude` says. A record without
+   * it, saved by an older CLI, misses the fast path, so the next pull is a
+   * full sync that writes it. A writer id this CLI does not know is kept.
    */
   lastPullByWorkspace: z.record(z.string(), z.object({
     rev: z.string(),
@@ -806,7 +914,15 @@ export const StateSchema = z.object({
     pushBaseRevs: z.array(z.string()).optional(),
     delivered: z.record(z.string(), z.string()).optional(),
     agentModels: z.record(z.string(), z.record(z.string(), RecordedAgentModelSchema)).optional(),
+    gitExcludePaths: z.record(z.string(), z.array(z.string())).optional(),
   })).optional(),
+  /**
+   * The exclude files holding each git exclude owner's block that this
+   * partition writes (`delivered`), by owner name (#915). Read by the next
+   * sync, by flag off and by uninstall, to visit every file that may still
+   * hold one.
+   */
+  gitExcludeFiles: z.record(z.string(), z.array(z.string())).optional(),
   /** Git commit hash synchronized through the safe user-resource inheritance channel. */
   lastInheritedPullRev: z.string().nullable().optional(),
   /** Tool targets that completed the last inherited user-resource pull. */
@@ -1093,9 +1209,20 @@ export type ManagedMcpManifest = Record<string, ManagedMcpRecord[]>;
  * Each project WORKTREE now has its OWN manifest file (see managedMcpManifestPath),
  * so the file already isolates ownership by worktree — the key needs no workspace
  * segment. It is `<tool>:project` for project scope and `<tool>` for user scope.
+ *
+ * `MCP_MANIFEST_KEY_ALIAS` maps a tool onto another's key: builds that write
+ * one shared project MCP file claim it under one record, so either build's
+ * target can update and clean what the other's pull wrote, instead of a
+ * per-tool claim the sibling's reconcile would skip as foreign.
  */
+const MCP_MANIFEST_KEY_ALIAS: Readonly<Record<string, string>> = {
+  // Trae and Trae CN map the same <root>/.trae/mcp.json (#904).
+  'trae-cn': 'trae',
+};
+
 export function managedMcpManifestKey(tool: string, projectScope: boolean): string {
-  return projectScope ? `${tool}:project` : tool;
+  const owner = MCP_MANIFEST_KEY_ALIAS[tool] ?? tool;
+  return projectScope ? `${owner}:project` : owner;
 }
 
 /** Stable per-worktree identity segment; names the worktree's manifest subdirectory (#374). */

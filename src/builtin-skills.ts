@@ -11,6 +11,8 @@ import { CODEX_TOOL, resolveSkillDestination, SHARED_AGENT_SKILLS_PATH, skillsDi
 import { getUserHome } from './utils/home.js';
 import { packagedSkillRoots } from './skill-content.js';
 import { PACKAGED_SKILL_DIGESTS } from './packaged-skill-digests.js';
+import { keepsTrackedCopy } from './resources/delivered-copies.js';
+import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
 // ─── Built-in skills deployment ──────────────────────────
 //
@@ -194,6 +196,8 @@ export interface PruneResult {
   skippedSymlink: boolean;
   /** Files left in place because the member, not the CLI, put them there. */
   foreign: number;
+  /** The CLI's files left in place because the repository tracks them, each named by `keepsTrackedCopy`. */
+  tracked: number;
   /** Files left in place because their backup could not be written, and why. */
   unbackedUp: { file: string; error: string }[];
   /** Files archived but not deleted, leaving the tree half-pruned, and why. */
@@ -206,6 +210,7 @@ export interface PruneResult {
 export function prunedWhole(result: PruneResult): boolean {
   return !result.skippedSymlink
     && result.foreign === 0
+    && result.tracked === 0
     && result.unbackedUp.length === 0
     && result.notRemoved.length === 0;
 }
@@ -226,7 +231,7 @@ export async function removeOwnedFiles(
   backupDir?: string,
 ): Promise<PruneResult> {
   const result: PruneResult = {
-    skippedSymlink: false, foreign: 0, unbackedUp: [], notRemoved: [], backedUp: 0,
+    skippedSymlink: false, foreign: 0, tracked: 0, unbackedUp: [], notRemoved: [], backedUp: 0,
   };
 
   // A link anywhere between the base directory and this one points at files we
@@ -273,6 +278,11 @@ export async function removeOwnedFiles(
       || (isDerivedArtifact(relative, proven) && !(await fs.promises.lstat(file)).isSymbolicLink());
     if (!owns) {
       result.foreign++;
+      continue;
+    }
+    // Ours, but a file the repository tracks is never deleted (#915); named there.
+    if (await keepsTrackedCopy(file)) {
+      result.tracked++;
       continue;
     }
     // Content proves the CLI wrote the file; a copy still goes to the archive
@@ -441,7 +451,7 @@ export async function pruneLegacyBuiltinSkills(
           log.warn(`Kept "${legacyName}" (${tool}): ${result.unbackedUp.length} file(s) in ${dir} could not be backed up, so they were not removed. First: ${result.unbackedUp[0].file} — ${result.unbackedUp[0].error}`);
         } else if (result.notRemoved.length > 0) {
           log.warn(`Partly removed "${legacyName}" (${tool}): ${result.notRemoved.length} file(s) in ${dir} were archived but could not be deleted. First: ${result.notRemoved[0].file} — ${result.notRemoved[0].error}`);
-        } else {
+        } else if (result.foreign > 0) {
           log.warn(`Kept "${legacyName}" (${tool}): ${dir} holds files TeamAI did not put there. The packaged files were removed${saved}; delete the rest yourself once you have saved what you need.`);
         }
       } catch (e) {
@@ -481,7 +491,7 @@ async function retireOtherCodexCopy(
       log.warn(`Kept ${result.unbackedUp.length} file(s) in ${other}: their backup could not be written, so they were not removed. First: ${result.unbackedUp[0].file} — ${result.unbackedUp[0].error}`);
     } else if (result.notRemoved.length > 0) {
       log.warn(`Could not finish removing ${other}: ${result.notRemoved.length} file(s) or directories stayed. First: ${result.notRemoved[0].file} — ${result.notRemoved[0].error}`);
-    } else {
+    } else if (result.foreign > 0) {
       log.warn(`Kept ${other}: it holds files TeamAI did not write, so Codex sees it beside the stub at ${deployedDir}. Remove it once you have saved what you need.`);
     }
   }
@@ -509,7 +519,9 @@ async function retireOtherCodexCopy(
  * - Built-in skills directory doesn't exist (dev environment without build)
  * - A tool's skills directory is not configured
  */
-export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?: LocalConfig): Promise<number> {
+export async function deployBuiltinSkills(
+  teamConfig: TeamaiConfig, localConfig?: LocalConfig, options?: { recorder?: DeliveryRecorder; dryRun?: boolean },
+): Promise<number> {
   const builtinDir = packagedSkillRoots().deployRoot;
 
   if (!await pathExists(builtinDir)) {
@@ -578,6 +590,13 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
           log.warn(`Skipped ${skillName} (${tool}): ${destDir} is reached through a symlink, and TeamAI does not write through one. Remove the link to let the skill deploy.`);
           continue;
         }
+        // A dry run writes and prunes nothing: it reports where the skill would land (#915).
+        if (options?.dryRun) {
+          options.recorder?.report('builtin', path.join(destDir, 'SKILL.md'));
+          deployed++;
+          deployedHere++;
+          continue;
+        }
         // The stub first: if it cannot be written, the pre-stub SKILL.md and the
         // references it points at stay together, a working old skill rather
         // than an old skill whose references are gone.
@@ -599,10 +618,13 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
           log.warn(`Archived but could not delete ${result.notRemoved.length} file(s) under ${destDir}. First: ${result.notRemoved[0].file} — ${result.notRemoved[0].error}`);
         }
         if (tool === CODEX_TOOL) await retireOtherCodexCopy(tool, skillName, destDir, target);
+        // The one file it writes there, never the directory (#915).
+        options?.recorder?.report('builtin', path.join(destDir, 'SKILL.md'));
 
         deployed++;
         deployedHere++;
       } catch (e) {
+        options?.recorder?.failed('builtin');
         log.error(`Failed to deploy built-in skill ${skillName} to ${toolPath.skills}: ${(e as Error).message}`);
       }
     }
@@ -610,6 +632,7 @@ export async function deployBuiltinSkills(teamConfig: TeamaiConfig, localConfig?
     // The legacy trees go only once their replacement is in place: pruning first
     // and then failing to write the stub (a link, a read-only directory) would
     // leave the agent with no discoverable TeamAI skill at all.
+    if (options?.dryRun) continue;
     if (deployedHere === skillNames.length) {
       await pruneLegacyBuiltinSkills(tool, target);
     } else {

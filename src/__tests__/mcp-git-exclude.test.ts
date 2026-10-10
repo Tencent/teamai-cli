@@ -36,6 +36,11 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
       if (slowExcludeRead.on && file.endsWith(path.join('info', 'exclude'))) await new Promise((r) => setTimeout(r, 30));
       return content;
     },
+    readFileIfExists: async (file: string) => {
+      const content = await actual.readFileIfExists(file);
+      if (slowExcludeRead.on && file.endsWith(path.join('info', 'exclude'))) await new Promise((r) => setTimeout(r, 30));
+      return content;
+    },
   };
 });
 
@@ -72,11 +77,23 @@ describe('teamai block in .git/info/exclude (#882)', () => {
       expect(await fse.readFile(excludeFile, 'utf8')).toMatch(/^\/\.mcp\.json$/m);
     });
 
-    it('excludes a file git answers it does not track', async () => {
+    it('lists a file git answers it does not track, but fails while git cannot confirm it ignores it (#915)', async () => {
+      const file = path.join(repo, '.mcp.json');
       failCheckIgnore.on = true;
 
-      expect(await ensureExcludedFromGit(path.join(repo, '.mcp.json'))).toEqual({ kind: 'excluded', added: true });
+      expect(await ensureExcludedFromGit(file)).toEqual({
+        kind: 'failed',
+        reason: `git could not confirm that it ignores ${file}: "fatal: detected dubious ownership in repository"`,
+        fix: `Check that \`git check-ignore -v ${file}\` works in that repository, then run \`teamai pull\` again.`,
+      });
       expect(await fse.readFile(excludeFile, 'utf8')).toMatch(/^\/\.mcp\.json$/m);
+      await fse.writeJson(file, {});
+      await excludeFromGit(file);
+      expect(log.warn).toHaveBeenCalledWith(
+        `${file} may hold a resolved MCP variable, and teamai could not keep it out of git: `
+        + `git could not confirm that it ignores ${file}: "fatal: detected dubious ownership in repository". `
+        + `Check that \`git check-ignore -v ${file}\` works in that repository, then run \`teamai pull\` again. Do not commit the file meanwhile.`,
+      );
     });
 
     it('fails for a file git tracks, and writes nothing', async () => {
@@ -185,6 +202,26 @@ describe('teamai block in .git/info/exclude (#882)', () => {
 
     const content = await fse.readFile(excludeFile, 'utf8');
     for (const name of ['a', 'b', 'c', 'd', 'e']) expect(content).toMatch(new RegExp(`^/${name}\\.json$`, 'm'));
+  });
+
+  describe.skipIf(process.getuid?.() === 0)('when the exclude file exists but cannot be read (#915)', () => {
+    afterEach(async () => {
+      await fse.chmod(excludeFile, 0o644);
+    });
+
+    it('fails with the fix, never takes the file for empty, and keeps the member\'s lines', async () => {
+      await fse.outputFile(excludeFile, 'scratch/\n');
+      await fse.chmod(excludeFile, 0o200);
+      const realExclude = path.join(await fse.realpath(repo), '.git', 'info', 'exclude');
+
+      expect(await ensureExcludedFromGit(path.join(repo, '.mcp.json'))).toEqual({
+        kind: 'failed',
+        reason: `${realExclude} cannot be read (EACCES)`,
+        fix: `Make ${realExclude} readable, then run \`teamai pull\` again.`,
+      });
+      await fse.chmod(excludeFile, 0o644);
+      expect(await fse.readFile(excludeFile, 'utf8')).toBe('scratch/\n');
+    });
   });
 
   describe('while another command holds the exclude file\'s lock', () => {
@@ -406,7 +443,11 @@ describe('teamai block in .git/info/exclude (#882)', () => {
     it('judges a directory that links nowhere from the closest one that exists: no write lands through it', async () => {
       await fse.symlink('missing', path.join(repo, '.dangling'), 'dir');
 
-      expect(await ensureExcludedFromGit(path.join(repo, '.dangling', 'mcp.json'))).toEqual({ kind: 'excluded', added: true });
+      // git answers nothing for a path beyond a symlink, so the exclusion is not confirmed (#915).
+      expect(await ensureExcludedFromGit(path.join(repo, '.dangling', 'mcp.json'))).toMatchObject({
+        kind: 'failed',
+        reason: expect.stringMatching(/could not confirm that it ignores/),
+      });
       expect(await fse.readFile(excludeFile, 'utf8')).toMatch(/^\/\.dangling\/mcp\.json$/m);
       await expect(fse.ensureDir(path.join(repo, '.dangling'))).rejects.toThrow();
     });

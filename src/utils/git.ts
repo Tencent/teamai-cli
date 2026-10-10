@@ -935,6 +935,10 @@ export function parseWorktreeList(output: string): WorktreeListEntry[] {
   return entries;
 }
 
+// CLI invocations keep checkout locations stable. Cache successful probes only;
+// a failed probe must be retried if the repository becomes available later.
+const commonDirs = new Map<string, string>();
+
 /**
  * The realpath of the git common directory of the repository containing
  * `cwd`, shared by its main checkout and every linked worktree, or null when
@@ -942,10 +946,14 @@ export function parseWorktreeList(output: string): WorktreeListEntry[] {
  * directory was pruned).
  */
 export async function gitCommonDir(cwd: string): Promise<string | null> {
+  const known = commonDirs.get(cwd);
+  if (known) return known;
   try {
     // Inside the try: simple-git throws at once for a directory that does not exist.
     const out = await createGit(cwd).revparse(['--git-common-dir']);
-    return await realpath(path.resolve(cwd, out.replace(/\r?\n$/, '')));
+    const found = await realpath(path.resolve(cwd, out.replace(/\r?\n$/, '')));
+    commonDirs.set(cwd, found);
+    return found;
   } catch {
     return null;
   }

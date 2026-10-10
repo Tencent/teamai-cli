@@ -25,7 +25,8 @@ import {
   CODEX_TOOL, codexSkillConflictLine, resolveSkillDestination, skillOrigin, skillTargetForTool,
 } from './resources/skills.js';
 import {
-  describeKeptEntry, describeMembersLink, describeSkippedLink, holdsGitDir, holdsNonRegular, isLink, isTeamaiSkillCopy, membersLinkAt,
+  deliveredSkillFiles, describeKeptEntry, describeMembersLink, describeSkippedLink, holdsGitDir, holdsNonRegular, isLink, isTeamaiSkillCopy,
+  keepsTrackedCopy, membersLinkAt,
 } from './resources/delivered-copies.js';
 import { getHermesHome } from './hermes-home.js';
 import { warnOnce } from './utils/warn-once.js';
@@ -43,6 +44,7 @@ import type {
   GlobalOptions,
 } from './types.js';
 import { getCopilotHome, isAgentExcluded, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
+import type { DeliveryRecorder } from './git-exclude-delivered.js';
 
 // ─── Source repo management ──────────────────────────────
 
@@ -481,7 +483,10 @@ async function sourceRemoveLocked(name: string, options: GlobalOptions, localCon
         retainedPaths[skill] = getRetainedSkillPaths(skill, manifest, baseDir);
         continue;
       }
-      const plan = await getSkillRemovalPaths(skill, baseDir, otherOwners, manifest.installedPaths?.[skill], manifest.installedPhysicalPaths, keepLegacy(skill));
+      // A copy the repository tracks stays too, on record like a kept legacy copy (#915).
+      const keepLegacyCopy = keepLegacy(skill);
+      const plan = await getSkillRemovalPaths(skill, baseDir, otherOwners, manifest.installedPaths?.[skill], manifest.installedPhysicalPaths,
+        async (skillDir) => await keepLegacyCopy(skillDir) || await keepsTrackedCopy(skillDir));
       cleanupPaths.push(...plan.removals);
       if (plan.kept.length > 0) keptPaths[skill] = plan.kept;
     }
@@ -703,31 +708,46 @@ async function sourceBrowseLocked(name: string, options: GlobalOptions, localCon
  * Pull skills from all configured sources.
  * Called from pull() at the top level (not inside pullForScope).
  */
-export async function pullSources(localConfig: LocalConfig, options: GlobalOptions): Promise<void> {
-  if (!(await loadTeamConfig(localConfig.repo.localPath))?.sources?.length) return;
+export async function pullSources(localConfig: LocalConfig, options: GlobalOptions, recorder?: DeliveryRecorder): Promise<void> {
+  if (!(await loadTeamConfig(localConfig.repo.localPath))?.sources?.length) {
+    // No source configured delivers nothing: copies an earlier pull left stay
+    // where they are, and are no longer teamai's to keep out of git (#915).
+    recorder?.succeeded('sources');
+    return;
+  }
   try {
-    await withSourceLock(options, () => pullSourcesLocked(localConfig, options));
+    await withSourceLock(options, () => pullSourcesLocked(localConfig, options, recorder));
   } catch (error) {
+    recorder?.failed('sources');
     log.warn(`[source] ${(error as Error).message}`);
   }
 }
 
-async function pullSourcesLocked(localConfig: LocalConfig, options: GlobalOptions): Promise<void> {
+async function pullSourcesLocked(localConfig: LocalConfig, options: GlobalOptions, recorder?: DeliveryRecorder): Promise<void> {
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
-  if (!teamConfig) return;
+  if (!teamConfig) {
+    recorder?.failed('sources');
+    return;
+  }
 
   const sources = teamConfig.sources ?? [];
-  if (sources.length === 0) return;
+  if (sources.length === 0) {
+    recorder?.succeeded('sources');
+    return;
+  }
 
   const baseDir = resolveBaseDir(localConfig);
 
   for (const source of sources) {
     try {
-      await pullSingleSource(source, teamConfig, localConfig, baseDir, options);
+      // An installation left as it was keeps what it delivered before.
+      if (!await pullSingleSource(source, teamConfig, localConfig, baseDir, options, recorder)) recorder?.failed('sources');
     } catch (e) {
+      recorder?.failed('sources');
       log.warn(`[source:${source.name}] Pull failed: ${(e as Error).message}`);
     }
   }
+  recorder?.succeeded('sources');
 }
 
 async function pullSingleSource(
@@ -736,16 +756,17 @@ async function pullSingleSource(
   localConfig: LocalConfig,
   baseDir: string,
   options: GlobalOptions,
-): Promise<void> {
+  recorder?: DeliveryRecorder,
+): Promise<boolean> {
   // Ensure source repo is cloned/updated
   const repoDir = await ensureSourceRepo(source, !!options.force, !!options.dryRun, !!options.inline);
-  if (!repoDir) return;
+  if (!repoDir) return false;
 
   // Load source's teamai.yaml
   const sourceTeamConfig = await loadTeamConfig(repoDir);
   if (!sourceTeamConfig) {
     log.debug(`[source:${source.name}] No teamai.yaml, skipping`);
-    return;
+    return false;
   }
 
   // A valid empty publication withdraws previous skills. An unreadable config
@@ -778,13 +799,13 @@ async function pullSingleSource(
   const repositoryChanged = !!oldManifest && oldManifest.repositoryId !== repositoryId;
   if (oldManifest && [...oldInstalled].some((skill) => !oldManifest.installedPaths?.[skill]?.length)) {
     log.warn(`[source:${source.name}] Cannot modify an installation with unrecorded destinations. Keeping all previous files and provenance unchanged. Manual review is required: review ${getSourceManifestPath(source.name, localConfig)} and the original deployment paths before retiring this claim.`);
-    return;
+    return false;
   }
   if (oldManifest) await assertSourceDestinationsUnchanged(oldManifest, baseDir);
   const ambiguousClaim = await findAmbiguousSourceClaim([...oldInstalled, ...skillsToDeploy.map((skill) => skill.name)], getSourceManifestPath(source.name, localConfig));
   if (ambiguousClaim) {
     log.warn(`[source:${source.name}] Cannot modify skills overlapping ambiguous source ownership. Keeping the installation unchanged. Manual review is required: ${ambiguousClaim}`);
-    return;
+    return false;
   }
 
   // Collect skills that belong to the local team (they take priority)
@@ -797,7 +818,7 @@ async function pullSingleSource(
     || hasNestedSourceOwner(skill, oldManifest!, baseDir, otherOwners));
   if (repositoryChanged && protectedOldSkills.length > 0) {
     log.warn(`[source:${source.name}] Cannot replace this installation while prior source paths overlap team, builtin, or nested source content. Keeping its provenance for manual review: ${getSourceManifestPath(source.name, localConfig)}`);
-    return;
+    return false;
   }
   const retained = new Set(protectedOldSkills);
   const installedPaths: Record<string, string[]> = {};
@@ -917,7 +938,7 @@ async function pullSingleSource(
         && (owned.path !== target.path || owned.skillName !== target.skillName));
     if (overlap) {
       log.warn(`[source:${source.name}] Cannot change overlapping skill directory boundaries: ${target.path} overlaps ${overlap.path}. Keeping the previous installation unchanged. Manual review is required: back up retained files, remove the affected source installation(s), then pull again. Ownership record: ${getSourceManifestPath(source.name, localConfig)}`);
-      return;
+      return false;
     }
   }
 
@@ -927,7 +948,7 @@ async function pullSingleSource(
   const conflict = plans.find((plan) => plan.conflictingPath);
   if (conflict && repositoryChanged) {
     log.warn(`[source:${source.name}] Cannot replace this installation: another source repository owns ${conflict.conflictingPath}. Keeping previous installation. Ownership record: ${conflict.conflictingRecord}`);
-    return;
+    return false;
   }
 
   // Validate retained recorded paths before any unrelated plan can write.
@@ -985,6 +1006,10 @@ async function pullSingleSource(
     if (options.dryRun) {
       const label = oldInstalled.has(skill.name) ? 'update' : 'new';
       log.info(`[dry-run] [source:${source.name}] Would pull ${skill.name} (${label})`);
+      // Where it would land, for the preview of the delivered git exclude block (#915).
+      for (const targetDir of targets) {
+        for (const file of await deliveredSkillFiles(skill.sourcePath, targetDir)) recorder?.report('sources', file);
+      }
       deployed.push(skill.name);
       continue;
     }
@@ -998,6 +1023,8 @@ async function pullSingleSource(
         skippedLinks.add(link);
         log.warn(`[source:${source.name}] ${describeSkippedLink(link, `${source.name}/${skill.name}`)}`);
       });
+      // The files this pull landed, never the directory or what the manifest keeps (#915).
+      for (const file of await deliveredSkillFiles(skill.sourcePath, targetDir)) recorder?.report('sources', file);
       const relativeTarget = recordedDestination(baseDir, targetDir);
       const skillPaths = installedPaths[skill.name] ??= [];
       if (!skillPaths.includes(relativeTarget)) skillPaths.push(relativeTarget);
@@ -1035,8 +1062,10 @@ async function pullSingleSource(
       if (retained.has(oldSkill) || isLocalTeamSkill(oldSkill, localTeamSkills)) continue;
       const previousPaths = oldManifest?.installedPaths?.[oldSkill];
       // Any installation with unrecorded claims already stopped above.
+      // A copy the repository tracks stays too, on record like a kept legacy copy (#915).
+      const keepLegacyCopy = keepLegacy(oldSkill, skillsToDeploy.find((skill) => skill.name === oldSkill)?.sourcePath);
       const kept = await removeSkillFromToolPaths(oldSkill, baseDir, [...otherOwners, ...currentOwners], previousPaths, oldManifest?.installedPhysicalPaths,
-        keepLegacy(oldSkill, skillsToDeploy.find((skill) => skill.name === oldSkill)?.sourcePath));
+        async (skillDir) => await keepLegacyCopy(skillDir) || await keepsTrackedCopy(skillDir));
       for (const target of kept) {
         (installedPaths[oldSkill] ??= []).push(target);
         installedPhysicalPaths[target] = getSourcePhysicalPin(oldManifest!, baseDir, target);
@@ -1064,6 +1093,7 @@ async function pullSingleSource(
       log.success(`[source:${source.name}] Synced ${deployed.length} skills (all updated)`);
     }
   }
+  return true;
 }
 
 // ─── Helpers ─────────────────────────────────────────────

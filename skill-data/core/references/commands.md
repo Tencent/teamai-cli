@@ -42,7 +42,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## pull
 
-- `teamai pull` — Pull team resources and inject into local AI tools
+- `teamai pull` — Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a project by default, a hidden directory, so search that path directly
   - `--silent` — Silent mode (for hooks)
   - `--force` — Force full sync even if repo is unchanged
 

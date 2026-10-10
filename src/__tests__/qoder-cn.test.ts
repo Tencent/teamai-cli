@@ -12,6 +12,7 @@ import {
 import { detectMcpFormat } from '../resources/mcp-format.js';
 import { ruleFileExtensionForTool, usesMdcRules } from '../resources/rule-format.js';
 import { TeamaiConfigSchema, scopedToolPaths } from '../types.js';
+import { isToolInstalledForConfig } from '../resources/base.js';
 import type { LocalConfig } from '../types.js';
 
 describe('Qoder CN support', () => {
@@ -112,6 +113,37 @@ describe('Qoder CN support', () => {
         file: path.join(home, '.qoder-cn', 'settings.json'),
         projectScope: false,
       });
+    } finally {
+      await fse.remove(home);
+    }
+  });
+
+  it('counts each edition installed by its own HOME root or an explicit --agent entry, never the shared .qoder/', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-qoder-editions-'));
+    try {
+      const projectRoot = path.join(home, 'project');
+      await fse.ensureDir(path.join(projectRoot, '.qoder', 'skills'));
+      vi.stubEnv('HOME', home);
+      const localConfig = (enabledAgents?: string[]) => ({
+        repo: { localPath: path.join(home, 'repo'), remote: 'test/repo' },
+        username: 'test',
+        scope: 'project',
+        projectRoot,
+        additionalRoles: [],
+        ...(enabledAgents ? { enabledAgents } : {}),
+      }) as unknown as LocalConfig;
+
+      // The shared project root installs neither edition by itself.
+      expect(await isToolInstalledForConfig('qoder', '.qoder/skills', localConfig())).toBe(false);
+      expect(await isToolInstalledForConfig('qoder-cn', '.qoder/skills', localConfig())).toBe(false);
+
+      // An explicit --agent entry bootstraps the edition before its app runs.
+      expect(await isToolInstalledForConfig('qoder-cn', '.qoder/skills', localConfig(['qoder-cn']))).toBe(true);
+
+      // And each edition's own HOME root installs it.
+      await fse.ensureDir(path.join(home, '.qoder', 'skills'));
+      expect(await isToolInstalledForConfig('qoder', '.qoder/skills', localConfig())).toBe(true);
+      expect(await isToolInstalledForConfig('qoder-cn', '.qoder/skills', localConfig())).toBe(false);
     } finally {
       await fse.remove(home);
     }

@@ -14,6 +14,9 @@ vi.mock('../mcp-reconcile.js', async (importOriginal) => {
   return {
     desiredMcpForTarget: actual.desiredMcpForTarget,
     mcpTargetExcluded: actual.mcpTargetExcluded,
+    mcpManifestKey: actual.mcpManifestKey,
+    describeMcpLocation: actual.describeMcpLocation,
+    readMcpManifest: actual.readMcpManifest,
     reconcileMcpForConfig: vi.fn(),
     releaseCleanMcpGitExcludes: vi.fn(),
     resolveMcpTargets: vi.fn().mockResolvedValue([]),
@@ -32,6 +35,7 @@ vi.mock('../mcp-git-exclude.js', async (importOriginal) => ({
 }));
 vi.mock('../utils/fs.js', () => ({
   readJson: vi.fn().mockResolvedValue(null),
+  expandHome: (p: string) => p,
   // No teamai env.sh on this machine (member-env.ts, via the env advisories).
   readFileSafe: vi.fn().mockResolvedValue(null),
 }));

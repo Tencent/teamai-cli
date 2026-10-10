@@ -58,6 +58,7 @@ import { fileHash } from '../utils/fs.js';
 import { TeamaiConfigSchema, getDataHome, managedMcpManifestKey, managedMcpManifestPath } from '../types.js';
 import { ModelProfileSchema, resolveProfile } from '../models/profile.js';
 import { renderRuleForTool } from '../resources/rule-format.js';
+import { entryHash } from '../resources/mcp-format.js';
 import { switchModelProfile } from '../models/switch.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
@@ -1284,7 +1285,7 @@ describe('uninstall', () => {
 
   // Regression: MCP cleanup used to run after ~/.teamai/ was deleted, so the
   // ownership manifest was already gone and removeAll became a no-op.
-  it('卸载时移除 teamai 管理的 MCP server，并保留用户自建的', async () => {
+  it('removes unchanged managed MCP servers and keeps member servers', async () => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);
     vi.stubEnv('SHELL', '/bin/zsh');
@@ -1296,7 +1297,7 @@ describe('uninstall', () => {
       },
     });
     await fse.writeJson(path.join(teamaiHome, 'managed-mcp.json'), {
-      claude: [{ name: 'team-mcp', hash: 'abc' }],
+      claude: [{ name: 'team-mcp', hash: entryHash({ type: 'http', url: 'https://team.example/mcp' }) }],
     });
 
     const teamConfig = makeTeamConfig({
@@ -1499,6 +1500,143 @@ describe('uninstall', () => {
     });
   });
 
+  describe('Trae and Trae CN share a project\'s .trae/skills (#904)', () => {
+    async function sharedFixture(agent: 'trae' | 'trae-cn' | undefined, others: { disabled?: boolean; cnInstalled?: boolean; intlInstalled?: boolean } = {}) {
+      const { homeDir, repoPath } = await setupFixture(tmpDir);
+      const projectRoot = path.join(tmpDir, 'business-repo');
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('SHELL', '/bin/zsh');
+      const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' }).toolPaths;
+      const teamConfig = makeTeamConfig({ toolPaths: { trae: defaults.trae, 'trae-cn': defaults['trae-cn'] } });
+      const other = agent === 'trae' ? 'trae-cn' : 'trae';
+      const localConfig = makeLocalConfig(homeDir, repoPath, {
+        scope: 'project',
+        projectRoot,
+        ...(others.disabled ? { disabledAgents: [other] } : {}),
+        repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+      });
+      mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+      // One shared project root, and each edition's own HOME root: a build
+      // counts as installed only there, or by an explicit --agent entry (#904).
+      await fse.ensureDir(path.join(projectRoot, '.trae'));
+      // Skill removal is git-judged in a project (#915): a repository of
+      // their own keeps the copies untracked, so removal is not "unjudged".
+      execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+      if (others.intlInstalled !== false) await fse.ensureDir(path.join(homeDir, '.trae', 'skills'));
+      if (others.cnInstalled !== false) await fse.ensureDir(path.join(homeDir, '.trae-cn', 'skills'));
+      const skill = path.join(projectRoot, '.trae', 'skills', 'team-skill');
+      await fse.outputFile(path.join(skill, 'SKILL.md'), '# Team Skill');
+      const rule = path.join(projectRoot, '.trae', 'rules', 'team-rule.md');
+      await fse.outputFile(rule, '---\nalwaysApply: true\n---\n\n# Team Rule\n');
+      // What a pull recorded delivering: proves the copies teamai's (#993),
+      // so a removal run takes them instead of keeping them as the member's.
+      const state = await loadStateForScope(localConfig);
+      state.lastPullByWorkspace = {
+        [await checkoutKey(projectRoot)]: { rev: 'old', targets: [], delivered: { [path.join(skill, 'SKILL.md')]: (await fileHash(path.join(skill, 'SKILL.md')))! } },
+      };
+      await saveStateForScope(state, localConfig);
+      return { skill, rule, localConfig };
+    }
+
+    it.each(['trae', 'trae-cn'] as const)('uninstall --agent %s keeps the shared skills the other still reads', async (agent) => {
+      const { skill, rule } = await sharedFixture(agent);
+
+      await uninstall({ force: true, agent });
+
+      expect(await fse.pathExists(skill)).toBe(true);
+      // The shared rule copy stays through the same retention as #946.
+      expect(await fse.pathExists(rule)).toBe(true);
+    });
+
+    it.each(['trae', 'trae-cn'] as const)('uninstall --agent %s removes the shared skills once the other is excluded', async (agent) => {
+      const { skill } = await sharedFixture(agent, { disabled: true });
+
+      await uninstall({ force: true, agent });
+
+      expect(await fse.pathExists(skill)).toBe(false);
+    });
+
+    it.each(['trae', 'trae-cn'] as const)('uninstall --agent %s still records the exclusion when everything is shared', async (agent) => {
+      const { skill, localConfig } = await sharedFixture(agent);
+
+      await uninstall({ force: true, agent });
+
+      // An empty plan by retention, not absence: the exclusion lands anyway,
+      // so a later pull stops syncing the tool the member asked to remove.
+      expect(await fse.pathExists(skill)).toBe(true);
+      expect(localConfig.disabledAgents).toContain(agent);
+      const excluded = vi.mocked(log.success).mock.calls.map(([message]) => String(message))
+        .filter((message) => message.includes(`Excluded ${agent} from this project`));
+      expect(excluded).toHaveLength(1);
+      expect(excluded[0]).toContain('stay with the tool still reading them');
+    });
+
+    it('uninstall --agent trae removes the shared skills when no Trae CN is installed (no phantom sibling)', async () => {
+      // Only the international build runs here: no ~/.trae-cn, so the shared
+      // project .trae/ must not keep the CN half of the pair "installed".
+      const { skill } = await sharedFixture('trae', { cnInstalled: false });
+
+      await uninstall({ force: true, agent: 'trae' });
+
+      // A last-tool uninstall (no other active tool): the files go, and with
+      // them the whole teamai home, so no exclusion is left to persist.
+      expect(await fse.pathExists(skill)).toBe(false);
+    });
+
+    it('uninstall --agent trae-cn removes the shared skills when only Trae CN was installed (no phantom sibling, mirrored)', async () => {
+      // The mirrored member: only the CN build runs, so no ~/.trae keeps the
+      // international half of the pair "installed".
+      const { skill } = await sharedFixture('trae-cn', { intlInstalled: false });
+
+      await uninstall({ force: true, agent: 'trae-cn' });
+
+      expect(await fse.pathExists(skill)).toBe(false);
+    });
+
+    it.each(['qoder', 'qoder-cn'] as const)('uninstall --agent %s removes the shared .qoder/skills an unrun edition would have kept', async (agent) => {
+      // The Qoder pair shares <root>/.qoder/ the way the Trae pair shares
+      // .trae/ (#904): with only the named edition installed, the other must
+      // not stay "active" off the shared root and retain the files.
+      const { homeDir, repoPath } = await setupFixture(tmpDir);
+      const projectRoot = path.join(tmpDir, 'business-repo-qoder');
+      vi.stubEnv('HOME', homeDir);
+      vi.stubEnv('SHELL', '/bin/zsh');
+      const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' }).toolPaths;
+      const localConfig = makeLocalConfig(homeDir, repoPath, {
+        scope: 'project',
+        projectRoot,
+        repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+      });
+      mockAutoDetectInit.mockResolvedValue({
+        localConfig,
+        teamConfig: makeTeamConfig({ toolPaths: { qoder: defaults.qoder, 'qoder-cn': defaults['qoder-cn'] } }),
+      });
+      await fse.ensureDir(path.join(projectRoot, '.qoder'));
+      execFileSync('git', ['init', '-q'], { cwd: projectRoot });
+      await fse.ensureDir(path.join(homeDir, agent === 'qoder' ? '.qoder' : '.qoder-cn', 'skills'));
+      const skill = path.join(projectRoot, '.qoder', 'skills', 'team-skill');
+      await fse.outputFile(path.join(skill, 'SKILL.md'), '# Team Skill');
+      const state = await loadStateForScope(localConfig);
+      state.lastPullByWorkspace = {
+        [await checkoutKey(projectRoot)]: { rev: 'old', targets: [], delivered: { [path.join(skill, 'SKILL.md')]: (await fileHash(path.join(skill, 'SKILL.md')))! } },
+      };
+      await saveStateForScope(state, localConfig);
+
+      await uninstall({ force: true, agent });
+
+      expect(await fse.pathExists(skill)).toBe(false);
+    });
+
+    it('a full uninstall removes the shared skills, counted once', async () => {
+      const { skill } = await sharedFixture(undefined);
+
+      await uninstall({ force: true });
+
+      expect(await fse.pathExists(skill)).toBe(false);
+      expect(log.success).toHaveBeenCalledWith('Removed 1 skill directories');
+    });
+  });
+
   describe('the block protects a config holding a resolved value (#882)', () => {
     const block = [
       '# [teamai:mcp-exclude:start] project MCP configs holding resolved ${VAR} values',
@@ -1663,7 +1801,7 @@ describe('uninstall', () => {
       const file = path.join(projectRoot, '.mcp.json');
       await fse.writeJson(file, { mcpServers: { jira, docs: { type: 'http', url: 'https://docs.example/mcp' } } });
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
-        [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: 'h' }],
+        [managedMcpManifestKey('claude', true)]: [{ name: 'docs', hash: entryHash({ type: 'http', url: 'https://docs.example/mcp' }) }],
       });
       const { trackResolvedMcpFiles, recordUnverifiedMcpServers } = await import('../mcp-resolved-files.js');
       await trackResolvedMcpFiles(localConfig, [{ tool: 'claude', file }]);
@@ -1720,7 +1858,7 @@ describe('uninstall', () => {
       await fse.writeJson(path.join(projectRoot, '.mcp.json'), { mcpServers: { jira, mine } });
       withCodeBuddy(localConfig);
       await fse.outputJson(managedMcpManifestPath(getDataHome(localConfig), projectRoot), {
-        [managedMcpManifestKey('claude', true)]: [{ name: 'jira', hash: 'h' }],
+        [managedMcpManifestKey('claude', true)]: [{ name: 'jira', hash: entryHash(jira) }],
         [managedMcpManifestKey('codebuddy', true)]: [],
       });
 
@@ -3140,6 +3278,29 @@ describe('uninstall', () => {
     expect(await fse.pathExists(legacyShare)).toBe(false);
   });
 
+  it('names a packaged file the repository started tracking after the plan once, as tracked, not as a file TeamAI did not put there', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const stubDir = path.join(homeDir, '.claude', 'skills', 'teamai');
+    const stub = path.join(stubDir, 'SKILL.md');
+    // A HOME under version control, which tracks nothing of teamai's when the plan is built.
+    execFileSync('git', ['init', '-q'], { cwd: homeDir });
+    // The member stages the stub while uninstall runs: hooks go before skills.
+    mockReconcileHooks.mockImplementation(async () => {
+      execFileSync('git', ['add', '-f', path.relative(homeDir, stub)], { cwd: homeDir });
+      return { changes: [] };
+    });
+
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+    await uninstall({ force: true });
+
+    const warnings = (log.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    const about = warnings.filter((w) => w.includes(stubDir));
+    expect(about).toEqual([expect.stringContaining(`Kept ${stub}: this repository tracks it`)]);
+    expect(await fse.pathExists(stub)).toBe(true);
+  });
+
   it('names the file and the error when a packaged file cannot be deleted, instead of calling the directory kept', async () => {
     if (process.getuid?.() === 0) return; // root ignores directory permissions
     const { homeDir, repoPath } = await setupFixture(tmpDir);
@@ -3159,10 +3320,14 @@ describe('uninstall', () => {
 
     const warnings = (log.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
     const about = warnings.filter((w) => w.includes(stubDir));
-    expect(about).toHaveLength(1);
-    expect(about[0]).toContain('Could not delete packaged files under');
+    // The error, then the records kept so the retry can find what is left.
+    expect(about).toEqual([
+      expect.stringContaining('Could not delete packaged files under'),
+      expect.stringContaining('Kept '),
+      expect.stringContaining('Uninstall incomplete'),
+    ]);
     expect(about[0]).toContain(path.join(stubDir, 'SKILL.md'));
-    expect(about[0]).not.toContain('did not put there');
+    expect(about.join('\n')).not.toContain('did not put there');
     expect(await fse.pathExists(path.join(stubDir, 'SKILL.md'))).toBe(true);
   });
 

@@ -42,6 +42,8 @@ sharing:
     injectShellProfile: true
   coAuthor:
     enabled: false             # 可选，为全团队去除 AI 工具提交尾注
+  gitExclude:
+    enabled: true              # 可选，让分发的文件不进入 git（init 为新团队写入 true）
   contributeHint:
     enabled: true              # 可选，false = 高摩擦 session 结束后不再提示 /teamai
   intervention:
@@ -81,6 +83,7 @@ scope: project                 # project（init 默认）或 user
 projectRoot: /path/to/project  # 仅 project scope
 inheritUserScope: true         # 可选，仅 project scope，默认 false
 coAuthorEnabled: true          # 可选，每机器的 co-author 覆盖
+gitExcludeEnabled: true        # 可选，每机器对 sharing.gitExclude.enabled 的覆盖
 contributeHintEnabled: false   # 可选，每机器覆盖 sharing.contributeHint.enabled
 codexTrustEnabled: false       # 可选，每机器，停止 teamai 信任它写入的 Codex hooks 与项目（见 Hooks）
 toolRoots:                     # 可选，每机器的工具根目录（见下）

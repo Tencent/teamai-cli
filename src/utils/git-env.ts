@@ -45,3 +45,35 @@ export function applyNonInteractiveGitEnv(): void {
     if (process.env[name] === undefined) process.env[name] = value;
   }
 }
+
+/**
+ * Variables through which Git hands a hook the repository it runs for
+ * (`git rev-parse --local-env-vars`, minus GIT_CONFIG_COUNT and its
+ * GIT_CONFIG_KEY/VALUE pairs, which a member sets in their own environment and
+ * Git never adds for a hook). Every git child teamai starts would inherit them
+ * and act on the business repo instead of the team clone it names.
+ */
+export const GIT_REPOSITORY_ENV = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CONFIG',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_IMPLICIT_WORK_TREE',
+  'GIT_GRAFT_FILE',
+  'GIT_INDEX_FILE',
+  'GIT_NO_REPLACE_OBJECTS',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_PREFIX',
+  'GIT_INTERNAL_SUPER_PREFIX',
+  'GIT_SHALLOW_FILE',
+  'GIT_COMMON_DIR',
+] as const;
+
+/** `env` without the repository Git exported for a hook: a git child started with it acts on its cwd's repository. */
+export function withoutGitRepositoryEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const copy = { ...env };
+  for (const name of GIT_REPOSITORY_ENV) delete copy[name];
+  return copy;
+}

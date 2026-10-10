@@ -95,7 +95,7 @@ Two members of the same project can have different roles, so their shared instru
 | Claude Code | `~/.claude/CLAUDE.md` | `.claude/rules/teamai-context.md` |
 | claude-internal, tclaude | `.claude-internal/CLAUDE.md`, `.tclaude/CLAUDE.md` in their homes (unchanged) | The same paths under the project (unchanged, unverified) |
 | Codex, codex-internal, tcodex | `$CODEX_HOME/AGENTS.md` (and the variants' homes), beside the team rules | Added by the session-start and subagent-start hooks, beside the project's team rules; nothing on resume |
-| Copilot CLI | `$COPILOT_HOME/copilot-instructions.md` (unchanged) | `.github/copilot-instructions.md` (unchanged) |
+| Copilot CLI | `$COPILOT_HOME/copilot-instructions.md` (unchanged) | `.github/copilot-instructions.md` (unchanged); with `sharing.gitExclude` on, `.github/instructions/teamai-context.instructions.md` (unverified) |
 | Cursor | `~/.cursor/rules/teamai-context.mdc` (unverified) | `.cursor/rules/teamai-context.mdc` (unverified) |
 | CodeBuddy | `~/.codebuddy/CODEBUDDY.md` | `.codebuddy/rules/teamai-context.md`, one copy shared with WorkBuddy (unverified) |
 | WorkBuddy | `~/.workbuddy/rules/teamai-context.md` (unverified) | `.codebuddy/rules/teamai-context.md`, one copy shared with CodeBuddy (unverified) |
@@ -110,6 +110,8 @@ A team `toolPaths` entry without `rules` keeps its configured `claudemd` for Cla
 *Unverified*: built from the tool's documented or source-read loader, not yet checked in a live session. Claude Code, Oh My Pi, OpenCode and Pi (project scope) were checked in live sessions, from the project root and a subdirectory. A tool with the `teamai-recall` subagent gets a recall block that calls it; a tool without one (Pi, Hermes, OpenClaw) gets a recall block that tells the agent to run `teamai recall` directly. A file several tools share gets the subagent block only when every one of them has the subagent.
 
 Claude Code loads `.claude/rules/teamai-context.md` from the project root and any subdirectory, and still reads the project's `AGENTS.md` or authored `CLAUDE.md` the way it chose to. Copilot CLI 1.0.89 and later also reads a project's `.claude/rules`, so with both tools installed Copilot can get the blocks twice.
+
+With [`sharing.gitExclude`](./member-guide.md#keeping-delivered-files-out-of-git) on, Copilot's project blocks go to `.github/instructions/teamai-context.instructions.md`, a file teamai owns, with `applyTo: "**"`, so the team's `.github/copilot-instructions.md` stays as the team committed it. Copilot CLI, and VS Code Copilot Chat (ask, edit, agent and inline chat), apply a `**` instructions file to every request, a question with no file attached included, as they do `copilot-instructions.md`; that was read in their source, not yet checked in a live session. Some Copilot surfaces read no `.github/instructions` file, so they get no culture, shared-instructions or recall blocks with the option on (they already get no team rules, which use the same files): VS Code and Visual Studio code review, and Eclipse chat. GitHub documents JetBrains and Xcode Copilot chat both ways; neither was checked. VS Code applies the file only while `chat.includeApplyingInstructions` is on (the default); with it off, only edit mode gets the blocks.
 
 Both `teamai-context.mdc` files carry `alwaysApply: true`, which Cursor's rule loader reads as always applied. Cursor CLI reads `~/.cursor/rules` when the session starts under your home directory; the Cursor IDE was not checked.
 
@@ -149,7 +151,7 @@ The pull names each file it changes:
 
 If a requested block has incomplete or duplicated markers, the entire file stays unchanged, including its other managed blocks. Fix the named markers, then run `teamai pull` again.
 
-A file named like a teamai target that teamai did not write is left alone and not listed in OpenCode's `instructions` (an entry you listed for it stays), and the pull warns about it. A team rule named `teamai-context` is not delivered, since it would land on that file; the pull names it, and removes a copy an earlier release delivered unless you changed it. teamai does not change `.gitignore`, `.git/info/exclude` or the git index. A team that wants to keep these files out of commits excludes them itself.
+A file named like a teamai target that teamai did not write is left alone and not listed in OpenCode's `instructions` (an entry you listed for it stays), and the pull warns about it. A team rule named `teamai-context` is not delivered, since it would land on that file; the pull names it, and removes a copy an earlier release delivered unless you changed it. Where that copy is not the tool's instruction file (OpenCode's `.opencode/rules/`, Kiro's `.kiro/steering/`), one your repository tracks is kept and named, as any tracked copy is. teamai never changes `.gitignore` or the git index; what it lists in `.git/info/exclude` is described in [Keeping Delivered Files Out of Git](./member-guide.md#keeping-delivered-files-out-of-git). Your `teamai-context` file is among them while that option is on: your tools still load it, and a search that follows git's ignore rules skips it, as it skips excluded skills and rules; open it by its path.
 
 ## Viewing the result
 

@@ -213,6 +213,15 @@ export function getDispatchCommand(event: string, tool: string, matcher?: string
 }
 
 /**
+ * The command of a team-hook dispatcher entry (#915): it runs the team hooks of
+ * the project the hook's cwd belongs to. Unlike the built-ins it keeps stderr
+ * and the exit status, which carry a team hook's blocking decision (exit 2).
+ */
+export function getTeamHookDispatchCommand(event: string, tool: string): string {
+  return `${getHookShellCommand()} -lc "teamai hook-dispatch ${event} --tool ${tool} --team-hooks"`;
+}
+
+/**
  * Raw dispatch command without a shell wrapper. Used by ZCode, whose hook
  * entries are `process`-typed (an executable plus an argv vector): the writer
  * puts `bash -lc <raw>` into `args` itself, so the wrapper must not be baked

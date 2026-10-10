@@ -93,7 +93,7 @@ pull 只把团队文化、共享指令和 recall 块写入已安装 AI 工具的
 | Claude Code | `~/.claude/CLAUDE.md` | `.claude/rules/teamai-context.md` |
 | claude-internal、tclaude | 各自主目录下的 `.claude-internal/CLAUDE.md`、`.tclaude/CLAUDE.md`（未改变） | 项目下的相同路径（未改变，未验证） |
 | Codex、codex-internal、tcodex | `$CODEX_HOME/AGENTS.md`（以及各变体的主目录），位于团队规则旁 | 由 session-start 和 subagent-start hook 加入，位于项目团队规则旁；恢复会话时不重复加入 |
-| Copilot CLI | `$COPILOT_HOME/copilot-instructions.md`（未改变） | `.github/copilot-instructions.md`（未改变） |
+| Copilot CLI | `$COPILOT_HOME/copilot-instructions.md`（未改变） | `.github/copilot-instructions.md`（未改变）；开启 `sharing.gitExclude` 时为 `.github/instructions/teamai-context.instructions.md`（未验证） |
 | Cursor | `~/.cursor/rules/teamai-context.mdc`（未验证） | `.cursor/rules/teamai-context.mdc`（未验证） |
 | CodeBuddy | `~/.codebuddy/CODEBUDDY.md` | `.codebuddy/rules/teamai-context.md`，与 WorkBuddy 共用一份（未验证） |
 | WorkBuddy | `~/.workbuddy/rules/teamai-context.md`（未验证） | `.codebuddy/rules/teamai-context.md`，与 CodeBuddy 共用一份（未验证） |
@@ -108,6 +108,8 @@ pull 只把团队文化、共享指令和 recall 块写入已安装 AI 工具的
 *未验证*：依据工具的文档或源码中的加载逻辑实现，尚未在实际会话中检查。Claude Code、Oh My Pi、OpenCode 和 Pi（项目范围）已在实际会话中从项目根目录和子目录检查过。有 `teamai-recall` subagent 的工具获得调用该 subagent 的 recall 块；没有的工具（Pi、Hermes、OpenClaw）获得提示 agent 直接运行 `teamai recall` 的 recall 块。多个工具共用的文件只有在每个工具都有该 subagent 时才获得 subagent 块。
 
 Claude Code 会从项目根目录和任意子目录加载 `.claude/rules/teamai-context.md`，并照常读取项目的 `AGENTS.md` 或项目自己编写的 `CLAUDE.md`。Copilot CLI 1.0.89 及更高版本也会读取项目的 `.claude/rules`，因此同时安装这两个工具时，Copilot 可能会读到两份。
+
+开启 [`sharing.gitExclude`](./member-guide.md#让分发的文件不进入-git) 时，Copilot 的项目块写入 teamai 自己的文件 `.github/instructions/teamai-context.instructions.md`，带有 `applyTo: "**"`，因此团队的 `.github/copilot-instructions.md` 保持团队提交时的样子。Copilot CLI 和 VS Code Copilot Chat（ask、edit、agent 和 inline chat）会把 `**` 指令文件应用到每个请求，包括没有附加任何文件的提问，与 `copilot-instructions.md` 相同；这一点是阅读其源码得出的，尚未在实际会话中检查。有些 Copilot 界面不读取任何 `.github/instructions` 文件，因此开启此选项后得不到团队文化、共享指令和 recall 块（它们本来也得不到使用同样文件的团队 rule）：VS Code 和 Visual Studio 的代码审查，以及 Eclipse chat。GitHub 文档对 JetBrains 和 Xcode 的 Copilot chat 说法不一，两者均未检查。VS Code 只在 `chat.includeApplyingInstructions` 开启（默认开启）时应用该文件；关闭时只有 edit 模式能获得这些块。
 
 这两个 `teamai-context.mdc` 文件都带有 `alwaysApply: true`，Cursor 的规则加载器将其视为始终应用。Cursor CLI 仅在会话从主目录下启动时读取 `~/.cursor/rules`；Cursor IDE 未经验证。
 
@@ -145,7 +147,7 @@ pull 会列出所修改的每个文件：
 
 若请求更新的块存在不完整或重复的标记，整个文件保持不变，包括其他托管块。修复提示中的标记后，再运行 `teamai pull`。
 
-与 teamai 目标同名但并非 teamai 写入的文件保持不变，也不会被列入 OpenCode 的 `instructions`（你自己为它列的条目保留不动），pull 会给出警告。名为 `teamai-context` 的团队 rule 不会被分发，因为它会落在该文件上；pull 会指出它，并删除早期版本分发的副本（除非你改过它）。teamai 不修改 `.gitignore`、`.git/info/exclude` 或 git 索引。若团队希望这些文件不进入提交，需要自行排除。
+与 teamai 目标同名但并非 teamai 写入的文件保持不变，也不会被列入 OpenCode 的 `instructions`（你自己为它列的条目保留不动），pull 会给出警告。名为 `teamai-context` 的团队 rule 不会被分发，因为它会落在该文件上；pull 会指出它，并删除早期版本分发的副本（除非你改过它）。若该副本不是工具的指令文件（OpenCode 的 `.opencode/rules/`、Kiro 的 `.kiro/steering/`），仓库已跟踪的副本会保留并被指出，与其他被跟踪的副本一样。teamai 从不修改 `.gitignore` 或 git 索引；它在 `.git/info/exclude` 中列出哪些内容，见[让分发的文件不进入 git](./member-guide.md#让分发的文件不进入-git)。该选项开启时，你的 `teamai-context` 文件也在其中：工具仍会加载它，遵循 git 忽略规则的搜索会跳过它（与被排除的 skill 和 rule 一样）；请按路径打开它。
 
 ## 查看效果
 

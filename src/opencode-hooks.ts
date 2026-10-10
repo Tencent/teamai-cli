@@ -27,6 +27,7 @@ import { writeFile, writeIfChanged, ensureDir, pathExists, readFileSafe, remove 
 import { probeBinary } from './utils/exec.js';
 import { log } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
+import { isGitExcludeEnabled, type LocalConfig, type TeamaiConfig } from './types.js';
 
 /** Plugin directory name under an OpenCode config dir. OpenCode scans both
  *  `plugin/` and `plugins/`; we use the singular, matching the docs examples. */
@@ -34,6 +35,17 @@ export const OPENCODE_PLUGIN_DIR = 'plugin';
 
 /** Filename of the teamai-managed OpenCode plugin. */
 export const OPENCODE_HOOK_FILE = 'teamai-hooks.ts';
+
+/**
+ * The file in a project's `.opencode/` that teamai's plugin reads the team MCP
+ * servers from on OpenCode V2 (#915): teamai's alone, and kept out of git.
+ */
+export const OPENCODE_MCP_FILE = 'teamai-mcp.json';
+
+/** A project's `OPENCODE_MCP_FILE`. */
+export function opencodeMcpFile(projectRoot: string): string {
+  return path.join(projectRoot, '.opencode', OPENCODE_MCP_FILE);
+}
 
 /** Marker so `teamai doctor` / `uninstall` can recognize our generated plugin. */
 const TEAMAI_MARKER = '[teamai]';
@@ -200,8 +212,34 @@ const TeamaiHooks = async ({ directory, worktree }) => {
 
 // OpenCode V2 ignores the \`instructions\` entries teamai writes for V1, so the
 // V2 setup adds the same files to each request's system prompt: the user
-// instruction file and rules, then the nearest project's.
+// instruction file and rules, then the nearest project's. It also adds that
+// project's team MCP servers, which teamai keeps out of the project's
+// opencode.json on V2.
 const USER_CONFIG_DIR = ${JSON.stringify(userConfigDir)};
+
+/**
+ * The \`.opencode\` directories from \`directory\` up that teamai delivers to:
+ * the nearest holding a teamai file. A team with only rules leaves no such
+ * file, so then each one with a \`rules\` directory, outermost first, as
+ * OpenCode V1 globs teamai's rules entry in each directory up: a member's own
+ * \`.opencode/rules\` in a nested package does not hide the team's above it.
+ */
+const teamaiProjects = async (directory) => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const exists = (file) => fs.stat(file).then(() => true, () => false);
+  const withRules = [];
+  for (let dir = directory; dir;) {
+    const project = path.join(dir, '.opencode');
+    for (const marker of ['teamai-context.md', ${JSON.stringify(OPENCODE_MCP_FILE)}]) {
+      if (await exists(path.join(project, marker))) return [project];
+    }
+    if (await exists(path.join(project, 'rules'))) withRules.unshift(project);
+    const parent = path.dirname(dir);
+    dir = parent === dir ? undefined : parent;
+  }
+  return withRules;
+};
 
 /** @param {string} directory */
 const teamaiContext = async (directory) => {
@@ -228,21 +266,39 @@ const teamaiContext = async (directory) => {
     }
     return texts;
   };
-  const exists = (file) => fs.stat(file).then(() => true, () => false);
   const texts = [...await read(path.join(USER_CONFIG_DIR, 'teamai-context.md')), ...await rules(path.join(USER_CONFIG_DIR, 'rules'))];
-  for (let dir = directory; dir;) {
-    const project = path.join(dir, '.opencode');
-    if (await exists(path.join(project, 'teamai-context.md')) || await exists(path.join(project, 'rules'))) {
-      texts.push(...await read(path.join(project, 'teamai-context.md')), ...await rules(path.join(project, 'rules')));
-      break;
-    }
-    const parent = path.dirname(dir);
-    dir = parent === dir ? undefined : parent;
+  for (const project of await teamaiProjects(directory)) {
+    texts.push(...await read(path.join(project, 'teamai-context.md')), ...await rules(path.join(project, 'rules')));
   }
   return texts;
 };
 
-${buildDualPluginDefinition('teamai.hooks', 'TeamaiHooks', 'teamaiContext')}
+/**
+ * The nearest project's team MCP servers, written in the V1 form opencode.json
+ * takes (\`enabled\`), as V2 takes them (\`disabled\`).
+ * @param {string} directory
+ */
+const teamaiMcp = async (directory) => {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+  const [project] = await teamaiProjects(directory);
+  if (!project) return {};
+  let servers;
+  try {
+    servers = JSON.parse(await fs.readFile(path.join(project, ${JSON.stringify(OPENCODE_MCP_FILE)}), 'utf8')).mcp;
+  } catch {
+    return {};
+  }
+  const v2 = {};
+  for (const [name, server] of Object.entries(servers && typeof servers === 'object' ? servers : {})) {
+    if (!server || typeof server !== 'object' || Array.isArray(server)) continue;
+    const { enabled, ...config } = server;
+    v2[name] = enabled === false ? { ...config, disabled: true } : config;
+  }
+  return v2;
+};
+
+${buildDualPluginDefinition('teamai.hooks', 'TeamaiHooks', 'teamaiContext', 'teamaiMcp')}
 
 `;
 }
@@ -250,10 +306,22 @@ ${buildDualPluginDefinition('teamai.hooks', 'TeamaiHooks', 'teamaiContext')}
 /**
  * Both hosts load one definition, but call only their own entrypoint.
  * `context` names a function of the session directory returning the texts the
- * V2 setup adds to each request's system prompt, compaction included; only
- * teamai's own plugin passes one, so an agent-hook plugin adds nothing.
+ * V2 setup adds to each request's system prompt, compaction included, and
+ * `mcp` one returning the MCP servers it adds to the location; only teamai's
+ * own plugin passes them, so an agent-hook plugin adds nothing.
  */
-function buildDualPluginDefinition(id: string, factory: string, context?: string): string {
+function buildDualPluginDefinition(id: string, factory: string, context?: string, mcp?: string): string {
+  const mcpTransform = mcp ? `
+    try {
+      const servers = await ${mcp}(ctx.location.directory);
+      if (Object.keys(servers).length > 0) {
+        registrations.push(await ctx.mcp.transform((editor) => {
+          for (const [name, config] of Object.entries(servers)) editor.set(name, config);
+        }));
+      }
+    } catch (error) {
+      console.error('[teamai] Could not add the team MCP servers', error);
+    }` : '';
   const contextHooks = context ? `
     const addContext = async (event) => {
       try {
@@ -270,7 +338,7 @@ function buildDualPluginDefinition(id: string, factory: string, context?: string
   server: ${factory},
   async setup(ctx) {
     const hooks = await ${factory}({ directory: ctx.location.directory });
-    const registrations = [];${contextHooks}
+    const registrations = [];${contextHooks}${mcpTransform}
     if (hooks['chat.message']) {
       registrations.push(await ctx.session.hook('prompt', async (event) => {
         await hooks['chat.message']({ sessionID: event.sessionID }, { parts: [{ type: 'text', text: event.prompt.text }] });
@@ -328,13 +396,18 @@ export async function injectOpencodeHooks(baseDir: string, scope: 'project' | 'u
   }
 }
 
+let majorVersion: Promise<number> | undefined;
+
 /**
  * OpenCode's major version, from `opencode --version` (`opencode v2.0.24` on
- * V2, `1.18.35` on V1). 1 when the binary is absent or prints no version.
+ * V2, `1.18.35` on V1), asked once per run. 1 when the binary is absent or
+ * prints no version.
  */
-export async function opencodeMajorVersion(): Promise<number> {
-  const match = /(\d+)\.\d+/.exec(await probeBinary('opencode'));
-  return match ? Number(match[1]) : 1;
+export function opencodeMajorVersion(): Promise<number> {
+  return majorVersion ??= probeBinary('opencode').then((output) => {
+    const match = /(\d+)\.\d+/.exec(output);
+    return match ? Number(match[1]) : 1;
+  });
 }
 
 /**
@@ -345,6 +418,22 @@ export async function opencodeMajorVersion(): Promise<number> {
 export async function opencodeContextPlugin(): Promise<{ file: string; ready: boolean }> {
   const file = path.join(resolveOpencodePluginDir(getUserHome(), 'user'), OPENCODE_HOOK_FILE);
   return { file, ready: await readFileSafe(file) === buildPluginSource() };
+}
+
+/**
+ * Whether OpenCode gets this project's team content only through teamai's
+ * plugin (#915): OpenCode V2, `sharing.gitExclude` on, and the plugin
+ * installed as this build writes it. Then the team MCP servers go to
+ * `.opencode/teamai-mcp.json` for the plugin, and teamai takes the entries
+ * OpenCode V1 reads out of the project's opencode.json files it alone wrote.
+ * Otherwise (V1, the setting off, an HTTP-backed team, or no current plugin:
+ * removed, skipped, or not written) those entries stay, since without the
+ * plugin they are all V2 would get. A pull asks after it reconciled the plugin.
+ */
+export async function opencodeDeliversThroughPlugin(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<boolean> {
+  if (localConfig.scope !== 'project' || localConfig.repo.kind === 'http') return false;
+  if (!isGitExcludeEnabled(localConfig, teamConfig) || !(await opencodeContextPlugin()).ready) return false;
+  return await opencodeMajorVersion() >= 2;
 }
 
 /** Remove the teamai OpenCode plugin for a scope if present. */

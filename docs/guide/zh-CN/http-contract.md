@@ -37,8 +37,14 @@
 候选集只会写入当前上报任务的 agent。CodeBuddy 使用用户级 `~/.codebuddy/models.json`（`{ "models": [...] }`）；
 WorkBuddy 使用 `~/.workbuddy/models.json`；当前 `{ "models": [...] }` 和旧版顶层数组两种结构都支持，
 已有文件保持原结构。CodeBuddy 或 WorkBuddy 的 workspace 级任务写入
-`<workspace>/.codebuddy/models.json`，与产品内嵌模型加载器一致；该含凭证文件会被加入
-`<workspace>/.codebuddy/.gitignore`。仅当目标路径已存在于 reporter 的 workspace bindings 中时，
+`<workspace>/.codebuddy/models.json`，与产品内嵌模型加载器一致。该文件含 API key，因此无论 git exclude
+设置如何都会被排除在 git 之外：写入前，teamai 先把它列入仓库 `.git/info/exclude` 的 `credentials` 块，
+只有 git 确认忽略该文件后才写入 key（不在任何 git 仓库中的 workspace 直接写入 key，不写 exclude 行）。若 git 已跟踪该文件、
+某个 `.gitignore` 规则重新包含了它、exclude 文件无法写入，或 git 无法确认，则不写入 key，任务失败并给出原因和修复方法（已跟踪的文件需
+`git rm --cached`）。不含任何模型的任务会移除 teamai 的条目；由 teamai 创建的文件中不再剩下其他内容时删除该文件，然后删除对应的行。
+不是 teamai 创建的文件、git 已跟踪的文件或符号链接会保留，对应的行也保留。
+`teamai source remove-http` 移除 HTTP 源时会对每个 workspace 做同样的处理。teamai 不再创建
+`<workspace>/.codebuddy/.gitignore`，旧版本创建的该文件若只含它写入的两行，会被删除。仅当目标路径已存在于 reporter 的 workspace bindings 中时，
 才接受 workspace 级下发。若同一模型 ID 已由用户配置，则保留用户条目。
 
 

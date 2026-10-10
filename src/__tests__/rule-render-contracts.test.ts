@@ -5,12 +5,14 @@ import { teamRuleToJoycodeRule } from '../resources/joycode-rule.js';
 import { teamRuleToKiroSteering } from '../resources/kiro-steering.js';
 import { teamRuleToOmpRule } from '../resources/omp-rule.js';
 import { teamRuleToQoderRule } from '../resources/qoder-rule.js';
+import { teamRuleToTraeRule } from '../resources/trae-rule.js';
 
 /**
  * The exact bytes each tool's rule render writes (#946). Kiro and Qoder ship
  * no parser to run, so these pin the documented form. This file is the test
  * of kiro-steering.ts, qoder-rule.ts, omp-rule.ts, codebuddy-rule.ts,
- * joycode-rule.ts, copilot-instructions.ts and team-rule.ts's `paths:` parse.
+ * joycode-rule.ts, trae-rule.ts, copilot-instructions.ts and team-rule.ts's
+ * `paths:` parse.
  */
 const UNSCOPED = 'Use named exports.\n';
 const INLINE = '---\npaths: ["src/**/*.ts", "test/**"]\n---\n\nUse named exports.\n';
@@ -138,6 +140,31 @@ describe('JoyCode rule render', () => {
   it('expands a brace glob, since the globs line is split on every comma', () => {
     const source = '---\npaths: ["src/{a,b}/**", "test/**"]\n---\n\nUse named exports.\n';
     expect(teamRuleToJoycodeRule(source)).toBe(
+      '---\nglobs: src/a/**, src/b/**, test/**\nalwaysApply: false\n---\n\nUse named exports.\n',
+    );
+  });
+});
+
+describe('Trae rule render (Trae and Trae CN)', () => {
+  it('makes an unscoped rule always applied', () => {
+    expect(teamRuleToTraeRule(UNSCOPED)).toBe('---\nalwaysApply: true\n---\n\nUse named exports.\n');
+  });
+
+  // Trae's bundled parser reads the globs line as it stands, quotes included,
+  // and splits it on every comma: the globs are written unquoted and `{a,b}`
+  // is expanded.
+  it.each([
+    ['an inline list', INLINE],
+    ['a block list', BLOCK],
+  ])('scopes %s with unquoted, comma-joined globs and alwaysApply false', (_label, source) => {
+    expect(teamRuleToTraeRule(source)).toBe(
+      '---\nglobs: src/**/*.ts, test/**\nalwaysApply: false\n---\n\nUse named exports.\n',
+    );
+  });
+
+  it('expands a brace glob, since the globs line is split on every comma', () => {
+    const source = '---\npaths: ["src/{a,b}/**", "test/**"]\n---\n\nUse named exports.\n';
+    expect(teamRuleToTraeRule(source)).toBe(
       '---\nglobs: src/a/**, src/b/**, test/**\nalwaysApply: false\n---\n\nUse named exports.\n',
     );
   });

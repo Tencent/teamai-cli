@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { realpathSync } from 'node:fs';
-import { rm, stat } from 'node:fs/promises';
+import { lstat, rm, stat } from 'node:fs/promises';
 import { readJson, readJsonObject, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import {
@@ -25,12 +25,14 @@ import {
   CODEX_TOOL_ID,
   DEFAULT_CODEX_ROOT,
   getDataHome,
+  isGitExcludeEnabled,
   getTeamaiHome,
   isAgentExcluded,
   isSelfMode,
   managedMcpManifestKey,
   managedMcpManifestPath,
   managedMcpWorkspaceId,
+  resolveGitExclude,
   resolveToolRootDir,
 } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride, getRawDispatchCommand, skipToolsWithoutShell } from './builtin-hooks.js';
@@ -43,6 +45,8 @@ import { CLAUDE_HOOK_OTHER_HOST_SKIP } from './claude-hook-host.js';
 import { listWorktrees, resolveAnchors } from './utils/git.js';
 import { findOnPath } from './utils/lookpath.js';
 import type { CodexHookTrustReport, CodexTrust } from './codex-trust.js';
+import { dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
+import type { CodexTeamHook } from './codex-team-hooks.js';
 
 export { CLAUDE_HOOK_OTHER_HOST_SKIP };
 
@@ -326,6 +330,12 @@ export interface ReconcileHooksOptions {
   mainCheckout?: MainCheckoutHooks;
   /** The team's hooks at every revision, to recognize entries the manifest does not record (#993). */
   teamHookHistory?: TeamHookHistory;
+  /**
+   * Without a manifest, still treat every entry carrying a team hook's marker
+   * as teamai's: the pass removes them and records nothing. For self mode's
+   * tracked settings while the team hooks live in `settings.local.json` (#915).
+   */
+  dropTeamEntries?: boolean;
 }
 
 /** Every team hook any revision of the team repo's hook files declares, read once. */
@@ -601,7 +611,7 @@ export async function migrateLegacyManagedHooks(localConfig: LocalConfig): Promi
     await writeJson(manifestPath, manifest);
   }
   if (Object.keys(legacy).length === 0) {
-    const { gitTracks } = await import('./mcp-git-exclude.js');
+    const { gitTracks } = await import('./git-exclude.js');
     if ((await gitTracks(legacyPath)).kind === 'untracked') {
       await rm(legacyPath, { force: true });
       return;
@@ -955,6 +965,219 @@ async function mainCheckoutOf(projectRoot: string): Promise<{ root: string; work
 /** The main checkout's team hook file of `tool`, when the tool keeps one there. */
 export function mainCheckoutHookFile(mainCheckout: MainCheckoutHooks | null | undefined, tool: string): string | null {
   return mainCheckout?.files[tool] ?? null;
+}
+
+/**
+ * The project whose Codex team hooks a dispatcher entry runs for a checkout
+ * (#915): the main checkout, whose `.codex/hooks.json` every worktree reads, or
+ * in self mode the checkout itself, which keeps its own hook files. Null
+ * outside a project scope.
+ */
+export async function codexTeamHookProject(localConfig: LocalConfig): Promise<string | null> {
+  if (localConfig.scope !== 'project' || !localConfig.projectRoot) return null;
+  if (isSelfMode(localConfig)) return canonicalProjectRoot(localConfig.projectRoot);
+  const { root } = await mainCheckoutOf(localConfig.projectRoot);
+  return root === canonicalProjectRoot(getUserHome()) ? null : root;
+}
+
+/** `~/.codex/hooks.json` as this scope resolves Codex's user hook file, or null. */
+function codexHomeHooksFile(teamConfig: TeamaiConfig, localConfig: LocalConfig): string | null {
+  const settings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' })[CODEX_TOOL_ID]?.settings;
+  return settings ? path.join(canonicalProjectRoot(getUserHome()), settings) : null;
+}
+
+/**
+ * Stop running this project's Codex team hooks from the dispatcher, and drop
+ * the dispatcher entries no other project needs (#915). For `uninstall`, whose
+ * hook removal does not go through the reconcile that does this on pull.
+ * Returns the file it could not update, which keeps them running, or null.
+ */
+export async function stopCodexTeamHookDispatch(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string | null> {
+  const project = await codexTeamHookProject(localConfig);
+  const homeFile = codexHomeHooksFile(teamConfig, localConfig);
+  const hooks = project ? await dispatchedCodexHooks(project) : undefined;
+  if (!project || !hooks) return null;
+  const index = path.join('~', '.teamai', 'codex-team-hooks.json');
+  if (!await setCodexDispatcherHooks(project, null)) {
+    log.warn(`Could not update ${index}: another teamai process held it, so the Codex team hooks of ${project} still run.`);
+    return index;
+  }
+  if (!homeFile) return null;
+  try {
+    await reconcileCodexDispatchers(homeFile);
+    return null;
+  } catch (e) {
+    // The entry comes back, so the retry still finds the dispatcher entries to remove.
+    await setCodexDispatcherHooks(project, hooks);
+    log.warn(`Could not remove the Codex team-hook dispatchers from ${homeFile}: ${(e as Error).message}. The Codex team hooks of ${project} still run.`);
+    return homeFile;
+  }
+}
+
+/** Where a project scope's Codex team hooks go (#915); see placeCodexTeamHooks. */
+interface CodexTeamHookPlacement {
+  project: string;
+  /** The resolved `sharing.gitExclude`; undefined leaves the hooks where they are. */
+  gitExclude: boolean | undefined;
+  /** Self mode: the committed file holds the built-ins, so it is never teamai's alone. */
+  self: boolean;
+  /** `~/.codex/hooks.json`, which holds the dispatcher entries; null when Codex has none here. */
+  homeFile: string | null;
+}
+
+/**
+ * Whether the project's Codex hook file holds anything teamai does not own:
+ * git tracks it, it is not a plain JSON file of hooks, or an entry is neither
+ * recorded in `recorded`, nor equal to teamai's render of a team hook (#993),
+ * nor an exact built-in. Read-only.
+ */
+async function holdsForeignCodexHooks(
+  file: string,
+  teamDefs: HookDef[],
+  recorded: ManagedHookRecord[],
+  history: TeamHookHistory | undefined,
+): Promise<boolean> {
+  const stats = await lstat(file).catch(() => null);
+  if (!stats) return false;
+  if (!stats.isFile()) return true;
+  const { gitUntracked } = await import('./git-exclude.js');
+  // A file git cannot judge inside a repository may be tracked.
+  if (!await gitUntracked(file, 'entry')) return true;
+  const raw = await readFileSafe(file);
+  if (raw === null || raw.trim() === '') return false;
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return true;
+  }
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) return true;
+  const { hooks, ...others } = json as { hooks?: unknown };
+  if (Object.keys(others).length > 0) return true;
+  if (hooks === undefined) return false;
+  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return true;
+  const owners = [...recorded, ...(await judgeUnrecordedTeamEntries(file, CODEX_TOOL_ID, teamDefs, recorded, { teamOnly: true, teamHookHistory: history })).adopted];
+  for (const [event, entries] of Object.entries(hooks)) {
+    if (!Array.isArray(entries)) return true;
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index] as CodexHookMatcher;
+      if (!entry || typeof entry !== 'object') return true;
+      if (isExactBuiltinEntry(event, CODEX_TOOL_ID, entry)) continue;
+      if (!owners.some((record) => ownsCodexEntry(record, event, index, entries as CodexHookMatcher[]))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Decide, on this run, whether the project's Codex team hooks run from the
+ * dispatcher (#915), and record that: while `sharing.gitExclude` is on and
+ * `file` holds anything teamai does not own (always in self mode). Returns
+ * whether they do. When the index cannot be updated, they stay where they are.
+ */
+async function placeCodexTeamHooks(
+  placement: CodexTeamHookPlacement,
+  file: string,
+  teamDefs: HookDef[],
+  recorded: ManagedHookRecord[],
+  opts: { removeAll?: boolean; teamHookHistory?: TeamHookHistory },
+): Promise<boolean> {
+  const current = await runsFromCodexDispatcher(placement.project);
+  const dispatch = opts.removeAll ? false
+    : placement.gitExclude === undefined ? current
+      : placement.gitExclude && (placement.self || await holdsForeignCodexHooks(file, teamDefs, recorded, opts.teamHookHistory));
+  const hooks: CodexTeamHook[] = teamDefsForTool(teamDefs, CODEX_TOOL_ID).map((def) => ({
+    id: def.key, event: def.event, command: def.command,
+    ...(def.matcher && def.matcher !== '*' ? { matcher: def.matcher } : {}),
+    ...(def.timeout !== undefined ? { timeout: def.timeout } : {}),
+  }));
+  if (!await setCodexDispatcherHooks(placement.project, dispatch && hooks.length > 0 ? hooks : null)) {
+    log.warn(`Could not update ${path.join('~', '.teamai', 'codex-team-hooks.json')}: another teamai process held it. `
+      + 'The Codex team hooks stay where they are; the next pull places them.');
+    return current;
+  }
+  if (!dispatch || hooks.length === 0) return dispatch;
+  // The project file gives up the team hooks only once the dispatcher entries that run them are in place.
+  try {
+    if (!placement.homeFile) throw new Error('Codex has no user hook file here');
+    await reconcileCodexDispatchers(placement.homeFile);
+    return true;
+  } catch (e) {
+    await setCodexDispatcherHooks(placement.project, null);
+    log.warn(`Could not add the Codex team-hook dispatchers to ${placement.homeFile ?? '~/.codex/hooks.json'}: ${(e as Error).message}. `
+      + `The team hooks stay in ${file}; fix the cause above, then run \`teamai pull\`.`);
+    return false;
+  }
+}
+
+/**
+ * Self mode (#915): the tools whose team hooks leave the committed settings
+ * for the checkout's own `settings.local.json` while `sharing.gitExclude` is
+ * on. Their built-ins stay committed, so a fresh clone still has them.
+ */
+const SELF_LOCAL_TEAM_HOOK_TOOLS: readonly string[] = ['claude'];
+
+function selfLocalHookFile(baseDir: string, tool: string, settings: string): string | null {
+  return SELF_LOCAL_TEAM_HOOK_TOOLS.includes(tool) ? path.join(baseDir, path.dirname(settings), 'settings.local.json') : null;
+}
+
+/** This self-mode checkout's `settings.local.json` that can hold `tool`'s team hooks, or null. */
+export function selfLocalTeamHookFile(
+  localConfig: LocalConfig,
+  toolPaths: Record<string, { settings?: string }>,
+  tool: string,
+): string | null {
+  if (localConfig.scope !== 'project' || !localConfig.projectRoot || !isSelfMode(localConfig)) return null;
+  const settings = toolPaths[tool]?.settings;
+  return settings ? selfLocalHookFile(resolveHookScope(localConfig).baseDir, tool, settings) : null;
+}
+
+/**
+ * Reconcile one self-mode tool whose team hooks can live in `localFile`. The
+ * per-checkout manifest keys records by tool, so its records for `tool`
+ * describe one file at a time: the one holding the team hooks.
+ *
+ * - `relocate` (the resolved `sharing.gitExclude` on): the local file is
+ *   reconciled team-only from those records first; then the tracked file
+ *   keeps the built-ins and drops every team entry by its marker, without
+ *   reading or writing the records.
+ * - otherwise: the local file gives up the entries the records name (and is
+ *   deleted when nothing else is left in it), then the tracked file gets the
+ *   built-ins and team hooks as before #915, and its pass records them.
+ */
+async function reconcileSelfLocalTeamHooks(
+  settingsPath: string,
+  localFile: string,
+  tool: string,
+  teamDefs: HookDef[],
+  manifestPath: string,
+  opts: { relocate: boolean; removeAll?: boolean; builtinOverride?: BuiltinHookOverride; teamHookHistory?: TeamHookHistory },
+): Promise<void> {
+  const relocate = opts.relocate && !opts.removeAll;
+  if (relocate || await hasTeamaiHooks(localFile, tool, manifestPath)) {
+    await reconcileMainCheckoutTeamHooks(localFile, tool, relocate ? teamDefs : [], {
+      manifestPath,
+      removeAll: !relocate,
+      teamHookHistory: opts.teamHookHistory,
+    });
+    if (!relocate) await removeEmptyHookFile(localFile);
+  }
+  await reconcileHooks(settingsPath, tool, relocate ? [] : teamDefs, relocate
+    ? { builtinOverride: opts.builtinOverride, dropTeamEntries: true }
+    : { manifestPath, removeAll: opts.removeAll, builtinOverride: opts.builtinOverride, teamHookHistory: opts.teamHookHistory });
+}
+
+/** Delete an untracked hook file that holds nothing but empty hook lists. */
+async function removeEmptyHookFile(file: string): Promise<void> {
+  const json = await readJson<Record<string, unknown>>(file);
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return;
+  const hooks = json.hooks;
+  const empty = Object.keys(json).every((key) => key === 'hooks')
+    && (hooks === undefined || (typeof hooks === 'object' && hooks !== null
+      && Object.values(hooks).every((entries) => Array.isArray(entries) && entries.length === 0)));
+  if (!empty) return;
+  const { gitTracks } = await import('./git-exclude.js');
+  if ((await gitTracks(file, 'entry')).kind === 'untracked') await rm(file, { force: true });
 }
 
 /**
@@ -1438,6 +1661,8 @@ async function reconcileCodexFormat(
   const isManaged = (event: string, index: number, entries: CodexHookMatcher[]): boolean => {
     const entry = entries[index];
     const cmd = entry.hooks?.[0]?.command ?? '';
+    // The team-hook dispatchers have their own pass (reconcileCodexDispatchers).
+    if (!opts.removeAll && isCodexTeamHookDispatcher(cmd)) return false;
     return (opts.teamOnly
       ? isExactBuiltinEntry(event, tool, entry)
       : TEAMAI_COMMAND_MARKERS.some((marker) => cmd.includes(marker)))
@@ -1776,7 +2001,7 @@ export async function removeAgentHook(
  * of it, so the hook pass for it stops here, the file left byte-identical and nothing recorded,
  * and the first pull after the repair writes it.
  */
-async function readHookFile<T>(file: string, fallback: T): Promise<T> {
+export async function readHookFile<T>(file: string, fallback: T): Promise<T> {
   const read = await readJsonObject(file);
   if (read.kind === 'invalid') {
     throw new Error(`${file} does not parse (${read.error}), so teamai left it as it is. Fix it, then run the command again.`);
@@ -1807,7 +2032,7 @@ export async function reconcileHooks(
       teamHookHistory: opts.teamHookHistory,
     });
   }
-  const teamActive = !!opts.manifestPath;
+  const teamActive = !!opts.manifestPath || !!opts.dropTeamEntries;
   const manifest = opts.manifestPath ? await readManifest(opts.manifestPath) : null;
   // Pre-#370 Codex hooks used this same file. Persist their authority in the
   // new manifest before touching the file; retire the old records only on success.
@@ -2282,7 +2507,13 @@ export async function reconcileHooksToAllTools(
   baseDir: string,
   teamDefs: HookDef[],
   manifestPath: string,
-  opts: { removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; scope?: Scope; builtinsOnly?: BuiltinsOnly; mainCheckout?: MainCheckoutHooks | null; teamHookHistory?: TeamHookHistory } = {},
+  opts: {
+    removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; scope?: Scope; builtinsOnly?: BuiltinsOnly; mainCheckout?: MainCheckoutHooks | null; teamHookHistory?: TeamHookHistory;
+    /** Self mode: team hooks of SELF_LOCAL_TEAM_HOOK_TOOLS go to `settings.local.json` while `relocate` (#915). */
+    selfLocalTeamHooks?: { relocate: boolean };
+    /** Project scope: Codex team hooks may run from the dispatcher instead of the project's file (#915). */
+    codexTeamHooks?: CodexTeamHookPlacement;
+  } = {},
 ): Promise<Set<string>> {
   // Without the manifest, reconcileHooks manages the built-in entries only.
   const teamManifestPath = opts.builtinsOnly ? undefined : manifestPath;
@@ -2430,6 +2661,7 @@ export async function reconcileHooksToAllTools(
       ? path.join(opts.installedBaseDir, toolInstallRoot(paths.settings))
       : toolRoot;
     const mainFile = mainCheckoutHookFile(opts.mainCheckout, tool);
+    const localFile = opts.selfLocalTeamHooks ? selfLocalHookFile(baseDir, tool, paths.settings) : null;
     const installed = await pathExists(toolRoot) || await pathExists(installedRoot)
       || (!opts.removeAll && mainFile !== null && await pathExists(mainFile));
     // Existing main-checkout hooks can be removed after HOME was deleted or
@@ -2441,6 +2673,15 @@ export async function reconcileHooksToAllTools(
     claimedSettingsFiles.add(settingsFileKey);
     try {
       if (installed && await skipInstalled(settingsPath, tool)) continue;
+      // The file the project's Codex team hooks would go to: the main checkout's, or self mode's own.
+      const codexFile = tool === CODEX_TOOL_ID && opts.codexTeamHooks && !opts.builtinsOnly
+        ? mainFile ?? (opts.codexTeamHooks.self ? settingsPath : null) : null;
+      const dispatched = codexFile !== null && await placeCodexTeamHooks(opts.codexTeamHooks!, codexFile, defs, [
+        ...(await readManifest(opts.mainCheckout && mainFile ? opts.mainCheckout.manifestPath : manifestPath))[tool] ?? [],
+        ...(opts.mainCheckout && mainFile ? (await readManifest(legacyManagedHooksPath(opts.mainCheckout.root)))[tool] ?? [] : []),
+      ], { removeAll: opts.removeAll, teamHookHistory: opts.teamHookHistory });
+      // Dispatched: teamai's entries leave the file, through its manifest.
+      const fileDefs = dispatched ? [] : defs;
       if (installed) {
         if (mainFile && opts.mainCheckout && opts.teamHookProjectRoot && !opts.removeAll) {
           // HOME keeps this tool's built-ins only: the project's team hooks live
@@ -2453,8 +2694,15 @@ export async function reconcileHooksToAllTools(
               teamHookHistory: opts.teamHookHistory,
             });
           }
+        } else if (localFile && !opts.builtinsOnly) {
+          await reconcileSelfLocalTeamHooks(settingsPath, localFile, tool, defs, manifestPath, {
+            relocate: opts.selfLocalTeamHooks?.relocate ?? false,
+            removeAll: opts.removeAll,
+            builtinOverride: opts.builtinOverride,
+            teamHookHistory: opts.teamHookHistory,
+          });
         } else {
-          await reconcileHooks(settingsPath, tool, defs, {
+          await reconcileHooks(settingsPath, tool, fileDefs, {
             manifestPath: teamManifestPath,
             removeAll: opts.removeAll,
             builtinOverride: opts.builtinOverride,
@@ -2465,7 +2713,7 @@ export async function reconcileHooksToAllTools(
       }
       // With the team hooks unresolved, the ones installed there are kept.
       if (mainFile && opts.mainCheckout && !opts.builtinsOnly) {
-        await reconcileMainCheckoutTeamHooks(mainFile, tool, defs, {
+        await reconcileMainCheckoutTeamHooks(mainFile, tool, fileDefs, {
           manifestPath: opts.mainCheckout.manifestPath,
           legacyManifestPath: legacyManagedHooksPath(opts.mainCheckout.root),
           checkoutManifestPath: opts.mainCheckout.checkoutManifestPath,
@@ -2496,7 +2744,7 @@ async function reconcileMainCheckoutTeamHooks(
   teamDefs: HookDef[],
   opts: {
     manifestPath: string;
-    legacyManifestPath: string;
+    legacyManifestPath?: string;
     checkoutManifestPath?: string;
     sharedWithOtherInstall?: boolean;
     current?: string;
@@ -2660,8 +2908,8 @@ async function teamaiCodexHooks(file: string, manifestPath: string): Promise<Cod
   const builtins = builtinHookDefs(CODEX_TOOL_ID);
   return Object.entries(json.hooks).flatMap(([event, groups]) => (groups ?? []).flatMap((group, index) => {
     const command = group.hooks?.[0]?.command;
-    const builtin = group.hooks?.length === 1 && builtins.some((def) =>
-      def.event === event && def.command === command && toCodexEntry(def).matcher === group.matcher);
+    const builtin = group.hooks?.length === 1 && (isCodexTeamHookDispatcher(command ?? '') || builtins.some((def) =>
+      def.event === event && def.command === command && toCodexEntry(def).matcher === group.matcher));
     if (typeof command !== 'string' || !(builtin || records.some((r) => ownsCodexEntry(r, event, index, groups)))) return [];
     const snake = event.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
     return [{ file, command, key: `${canonicalProjectRoot(file)}:${snake}:${index}:0` }];
@@ -2701,6 +2949,9 @@ async function codexTrustTargets(
       // A linked worktree of a self repo: Codex reads the main checkout's file.
       sources[0] = { file: path.join(anchor, paths.settings), manifestPath };
     }
+    // Self mode: the team-hook dispatchers live in HOME, beside the project's file.
+    const home = codexHomeHooksFile(teamConfig, localConfig);
+    if (isSelfMode(localConfig) && home && !sources.some((s) => s.file === home)) sources.push({ file: home, manifestPath });
   }
   const hooks = (await Promise.all(sources.map((s) => teamaiCodexHooks(s.file, s.manifestPath)))).flat();
   const mcpRecords = localConfig.scope === 'project'
@@ -2943,6 +3194,8 @@ export async function reconcileTeamHooksForConfig(
   // Before any reconcile reads this checkout's manifest (#993).
   await migrateLegacyManagedHooks(localConfig);
   const history = teamHookHistory(localConfig);
+  const codexProject = await codexTeamHookProject(localConfig);
+  const codexHome = codexHomeHooksFile(teamConfig, localConfig);
   const reconciledMainTools = await reconcileHooksToAllTools(hookToolPaths, baseDir, teamDefs, manifestPath, {
     removeAll: opts.removeAll,
     builtinOverride: builtin,
@@ -2955,7 +3208,21 @@ export async function reconcileTeamHooksForConfig(
     builtinsOnly,
     mainCheckout: await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths),
     teamHookHistory: history,
+    ...(isSelfMode(localConfig) && localConfig.scope === 'project' && localConfig.projectRoot
+      ? { selfLocalTeamHooks: { relocate: isGitExcludeEnabled(localConfig, teamConfig) } }
+      : {}),
+    ...(codexProject
+      ? { codexTeamHooks: { project: codexProject, gitExclude: resolveGitExclude(localConfig, teamConfig), self: isSelfMode(localConfig), homeFile: codexHome } }
+      : {}),
   });
+  // The dispatcher entries follow every project's choice, this one's included.
+  if (codexProject && codexHome && !builtinsOnly && (!filterAgents || filterAgents.includes(CODEX_TOOL_ID))) {
+    try {
+      await reconcileCodexDispatchers(codexHome);
+    } catch (e) {
+      log.warn(`Failed to reconcile the Codex team-hook dispatchers in ${codexHome}: ${(e as Error).message}`);
+    }
+  }
 
   const copilotExcluded = disabled?.includes(COPILOT_TOOL_ID) ?? false;
   const copilotSelected = !copilotExcluded
@@ -2993,6 +3260,115 @@ export async function reconcileTeamHooksForConfig(
   if (!opts.removeAll) await installProjectGitHook(localConfig);
   if (builtinsOnly) return { ok: false, builtins: builtinsOnly };
   return { ok: true, defs: teamDefs };
+}
+
+/**
+ * The project files holding teamai's hook entries, as a pull delivered them
+ * (#915): the main checkout's `.claude/settings.local.json` while its manifest
+ * records team hooks there, and Copilot's hook file while it holds teamai's
+ * entries. Read from disk after the reconcile, so a file the pass left as it
+ * was (team hooks unresolved, built-ins already installed) counts too. In self
+ * mode, this checkout's `.claude/settings.local.json` while its manifest records
+ * team hooks there; never the tracked settings or `.codex/hooks.json`.
+ */
+export async function deliveredHookFiles(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
+  const files: string[] = [];
+  for (const { file, tool, manifestPath } of await projectHookFiles(teamConfig, localConfig)) {
+    if (await hasTeamaiHooks(file, tool, manifestPath)) files.push(file);
+  }
+  return files;
+}
+
+/**
+ * The files of deliveredHookFiles' candidates that do not parse (#915). The
+ * hook pass leaves such a file as it is, so whether it still holds teamai's
+ * entries is unknown until the member repairs it.
+ */
+export async function unreadableHookFiles(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<string[]> {
+  const files: string[] = [];
+  for (const { file } of await projectHookFiles(teamConfig, localConfig)) {
+    if ((await readJsonObject(file)).kind === 'invalid') files.push(file);
+  }
+  return files;
+}
+
+/** The project files that may hold teamai's hook entries, each with the manifest recording them. */
+async function projectHookFiles(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<Array<{ file: string; tool: string; manifestPath: string }>> {
+  if (localConfig.scope !== 'project') return [];
+  const files: Array<{ file: string; tool: string; manifestPath: string }> = [];
+  const main = await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths);
+  const claudeFile = mainCheckoutHookFile(main, 'claude');
+  if (main && claudeFile && ((await readManifest(main.manifestPath)).claude?.length ?? 0) > 0) {
+    files.push({ file: claudeFile, tool: 'claude', manifestPath: main.manifestPath });
+  }
+  // Self mode: this checkout's own settings.local.json while its manifest records team hooks there.
+  const selfLocal = selfLocalTeamHookFile(localConfig, scopedToolPaths(teamConfig, localConfig), 'claude');
+  const selfManifest = getManagedHooksPath(localConfig);
+  if (selfLocal && ((await readManifest(selfManifest)).claude?.length ?? 0) > 0) {
+    files.push({ file: selfLocal, tool: 'claude', manifestPath: selfManifest });
+  }
+  const copilotHooks = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID]?.hooks;
+  if (copilotHooks) {
+    files.push({
+      file: path.join(resolveToolBaseDir(COPILOT_TOOL_ID, localConfig), copilotHooks),
+      tool: COPILOT_TOOL_ID,
+      manifestPath: getManagedHooksPath(localConfig),
+    });
+  }
+  return files;
+}
+
+/**
+ * The project's `.codex/hooks.json`, when it exists and holds anything, and
+ * whether it holds only teamai's team hooks (#915): no top-level key but
+ * `hooks`, and every handler one that teamai's hook manifest for that file
+ * records (the main checkout's `managed-main-checkout-hooks.json`, or this
+ * checkout's `managed-hooks.json` in self mode), at least one. Run after the
+ * reconcile, which records the unrecorded entries that equal a team render
+ * (#993). A symlink is the member's and is not judged. Read-only.
+ */
+export async function judgeTeamaiOnlyCodexHooks(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+): Promise<{ file: string; teamaiOnly: boolean } | null> {
+  if (localConfig.scope !== 'project' || !localConfig.projectRoot) return null;
+  let file: string | null;
+  let manifestPath: string;
+  if (isSelfMode(localConfig)) {
+    const settings = scopedToolPaths(teamConfig, localConfig)[CODEX_TOOL_ID]?.settings;
+    file = settings ? path.join(resolveHookScope(localConfig).baseDir, settings) : null;
+    manifestPath = getManagedHooksPath(localConfig);
+  } else {
+    const main = await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths);
+    file = mainCheckoutHookFile(main, CODEX_TOOL_ID);
+    manifestPath = main?.manifestPath ?? '';
+  }
+  if (!file || !(await lstat(file).catch(() => null))?.isFile()) return null;
+  const raw = await readFileSafe(file);
+  if (raw === null || raw.trim() === '') return null;
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { file, teamaiOnly: false };
+  }
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) return { file, teamaiOnly: false };
+  if (Object.keys(json).length === 0) return null;
+  const { hooks, ...others } = json as { hooks?: unknown };
+  if (Object.keys(others).length > 0 || typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) return { file, teamaiOnly: false };
+  const records = (await readManifest(manifestPath))[CODEX_TOOL_ID] ?? [];
+  let owned = 0;
+  for (const [event, entries] of Object.entries(hooks)) {
+    if (!Array.isArray(entries)) return { file, teamaiOnly: false };
+    for (let index = 0; index < entries.length; index++) {
+      if (!records.some((record) => ownsCodexEntry(record, event, index, entries as CodexHookMatcher[]))) return { file, teamaiOnly: false };
+      owned++;
+    }
+  }
+  return { file, teamaiOnly: owned > 0 };
 }
 
 /**

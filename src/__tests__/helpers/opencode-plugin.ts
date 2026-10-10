@@ -61,11 +61,20 @@ export async function loadOpencodePlugin(ctx: { directory?: string; worktree?: s
   return { hooks: await plugin.server(ctx), dispatches };
 }
 
+/** The part of V2's `ctx.mcp.transform` editor a plugin uses. */
+interface McpEditor {
+  list(): Array<[string, unknown]>;
+  get(name: string): unknown;
+  set(name: string, config: unknown): void;
+  remove(name: string): void;
+}
+
 /** V2's public registration/stream boundaries, with abortable event delivery, for a host at `directory`. */
 export async function loadV2Plugin(source = buildPluginSource(), globals: Record<string, unknown> = {}, directory = '/work/proj') {
   const { plugin, dispatches } = capturePlugin(source, globals);
   const callbacks: Record<string, (...args: unknown[]) => Promise<void>> = {};
   const disposed: string[] = [];
+  const transforms: Array<(editor: McpEditor) => void> = [];
   let signal: AbortSignal;
   let wake: (() => void) | undefined;
   const queue: Array<{ event: unknown; done: () => void }> = [];
@@ -79,6 +88,10 @@ export async function loadV2Plugin(source = buildPluginSource(), globals: Record
     location,
     session: { hook: register('session') },
     tool: { hook: register('tool') },
+    mcp: { transform: async (callback: (editor: McpEditor) => void) => {
+      transforms.push(callback);
+      return { dispose: async () => { disposed.push('mcp.transform'); transforms.splice(transforms.indexOf(callback), 1); } };
+    } },
     event: { subscribe: (options: { signal: AbortSignal }) => {
       signal = options.signal;
       signal.addEventListener('abort', () => wake?.(), { once: true });
@@ -96,6 +109,18 @@ export async function loadV2Plugin(source = buildPluginSource(), globals: Record
   return {
     plugin, dispatches, callbacks, disposed, cleanup,
     aborted: () => signal?.aborted,
+    /** The MCP servers the host runs after the plugin's transforms, starting from those of its config files. */
+    mcpServers: (config: Record<string, unknown> = {}): Record<string, unknown> => {
+      const servers = new Map(Object.entries(config));
+      const editor: McpEditor = {
+        list: () => [...servers],
+        get: (name) => servers.get(name),
+        set: (name, value) => { servers.set(name, value); },
+        remove: (name) => { servers.delete(name); },
+      };
+      for (const transform of transforms) transform(editor);
+      return Object.fromEntries(servers);
+    },
     emit: (type: string, data: unknown, eventLocation: unknown = location) => new Promise<void>((done) => {
       queue.push({ event: { type, data, location: eventLocation }, done }); wake?.();
     }),

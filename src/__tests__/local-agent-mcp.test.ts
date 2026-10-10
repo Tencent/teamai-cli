@@ -11,6 +11,7 @@ vi.mock('../utils/logger.js', () => ({
     warn: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
+    persist: vi.fn(),
   },
 }));
 
@@ -1382,6 +1383,81 @@ describe('local-agent: MCP install/uninstall commands', () => {
       expect((await uninstall(9608))[0].status).toBe('success');
       expect((await fse.readJson(mcp())).mcpServers).toEqual({ 'mine-old': MEMBER });
       expect((await fse.readJson(dotMcp())).mcpServers).toEqual({ 'my-user': MEMBER });
+    });
+  });
+
+  // While the workspace's git exclude flag is on, Claude's and CodeBuddy's go to the tool's local scope (#915).
+  describe('a workspace install for Claude or CodeBuddy while the git exclude flag is on (#915)', () => {
+    const run = (commands: Record<string, unknown>[], tool: string, cwd: string) => runResponse({ cmds: commands }, tool, cwd);
+    const install = (id: number, slug: string, workspace: string) => ({
+      id, type: 'install_mcp', scope: 'workspace', workspace_path: workspace, slug, version: '1.0.0',
+      mcp_config: { transport: 'stdio', command: `${slug}-server` },
+    });
+    const servers = async (file: string, key?: string): Promise<Record<string, unknown> | undefined> => {
+      if (!await fse.pathExists(file)) return undefined;
+      const doc = await fse.readJson(file);
+      return key === undefined ? doc.mcpServers : doc.projects?.[key]?.mcpServers;
+    };
+
+    async function repo(name: string): Promise<string> {
+      const dir = path.join(tmpDir, name);
+      await fse.ensureDir(path.join(dir, '.claude'));
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, env: { ...process.env, HOME: tmpDir, GIT_CONFIG_NOSYSTEM: '1' } });
+      return fse.realpathSync(dir);
+    }
+
+    /** The member's user-scope config, holding the git exclude override (HTTP mode). */
+    async function flag(on: boolean): Promise<void> {
+      await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), [
+        'repo:', `  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}`, '  remote: https://test.example.com/api',
+        '  kind: http', '  url: https://test.example.com/api', 'username: tester', 'scope: user', `gitExcludeEnabled: ${on}`, '',
+      ].join('\n'));
+    }
+
+    it('keeps in .mcp.json a server another tool\'s record still claims there, and leaves Claude there while tclaude is installed', async () => {
+      const app = await repo('app');
+      await fse.ensureDir(path.join(app, '.tclaude', 'skills'));
+      await flag(false);
+      expect((await run([install(1, 'shared', app)], 'claude', app))[0].status).toBe('success');
+      const entry = (await servers(path.join(app, '.mcp.json')))?.shared;
+      // CodeBuddy's record claims the same entry, as a pull for CodeBuddy that wrote it would.
+      const { resolveDataHomeForScope } = await import('../config.js');
+      const { loadProjectMcpManifest } = await import('../utils/mcp-manifest.js');
+      const { manifestPath, manifest } = await loadProjectMcpManifest(await resolveDataHomeForScope('project', app), app);
+      await fse.writeJson(manifestPath, { ...manifest, 'codebuddy:project': manifest['claude:project'] });
+
+      await flag(true);
+      await run([install(2, 'claude-only', app)], 'claude', app);
+
+      // tclaude reads .mcp.json, so Claude's stay there; CodeBuddy's moves, and the entry Claude's record claims stays.
+      expect(await servers(path.join(tmpDir, '.codebuddy.json'), app)).toEqual({ shared: entry });
+      expect(Object.keys(await servers(path.join(app, '.mcp.json')) ?? {}).sort()).toEqual(['claude-only', 'shared']);
+      expect(await fse.pathExists(path.join(tmpDir, '.claude.json'))).toBe(false);
+    });
+
+    it('installs nothing and moves nothing while the flag is unknown, and says why', async () => {
+      const app = await repo('app');
+      await flag(false);
+      expect((await run([install(1, 'old-api', app)], 'claude', app))[0].status).toBe('success');
+      const before = await fse.readFile(path.join(app, '.mcp.json'), 'utf8');
+      // The workspace now follows a git-mode config with no override, whose team clone has no teamai.yaml.
+      const clone = path.join(tmpDir, '.teamai', 'team-repo');
+      await fse.ensureDir(clone);
+      await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), [
+        'repo:', `  localPath: ${clone}`, '  remote: https://example.com/team.git', '  kind: git', '  url: https://example.com/team.git',
+        'username: tester', 'scope: user', '',
+      ].join('\n'));
+
+      const acks = await run([install(2, 'new-api', app)], 'claude', app);
+
+      expect(acks[0].status).toBe('failed');
+      expect(acks[0].error).toBe(
+        `teamai could not read sharing.gitExclude from the team's teamai.yaml (${path.join(clone, 'teamai.yaml')}), `
+        + `so the local agent did not install new-api in ${app}: it wrote nothing there. `
+        + `Fix or restore teamai.yaml in the team repository, or set \`gitExcludeEnabled\` in ${path.join(tmpDir, '.teamai', 'config.yaml')}.`,
+      );
+      expect(await fse.readFile(path.join(app, '.mcp.json'), 'utf8')).toBe(before);
+      expect(await fse.pathExists(path.join(tmpDir, '.claude.json'))).toBe(false);
     });
   });
 });

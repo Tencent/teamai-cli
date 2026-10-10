@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -14,37 +15,36 @@ import { _resetShellCache } from '../builtin-hooks.js';
 // Verify that reconcileHooksToAllTools (the pull/init main path) creates the
 // teamai wrapper at $HOME/.teamai/bin/teamai when workbuddy or codebuddy is present.
 //
-// resolveTeamaiEntryScript() looks for index.js next to builtin-hooks.ts (src/).
-// We create a stub src/index.js so resolution succeeds in the test environment.
+// resolveTeamaiEntryScript() looks for index.js next to builtin-hooks.ts, which
+// only the built bundle has. The tests report src/index.js as present instead
+// of writing it: while a real src/index.js exists, every test file importing
+// '../index.js' in parallel loads that file instead of src/index.ts.
 
 const srcDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const stubIndexJs = path.join(srcDir, 'index.js');
+const entryScript = path.join(srcDir, 'index.js');
+
+function pretendEntryScriptExists(): void {
+  const existsSync = fs.existsSync;
+  vi.spyOn(fs, 'existsSync').mockImplementation((file) => file === entryScript || existsSync(file));
+}
 
 describe('reconcileHooksToAllTools — wrapper creation on main inject path', () => {
   let tmp: string;
   let origHome: string | undefined;
-  let stubCreated = false;
 
   beforeEach(async () => {
     tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'hooks-wrapper-'));
     origHome = process.env.HOME;
     process.env.HOME = tmp;
 
-    // Create stub index.js so resolveTeamaiEntryScript() succeeds in test env
-    if (!await fse.pathExists(stubIndexJs)) {
-      await fse.writeFile(stubIndexJs, '// test stub\n');
-      stubCreated = true;
-    }
+    pretendEntryScriptExists();
   });
 
   afterEach(async () => {
     if (origHome !== undefined) process.env.HOME = origHome;
     else delete process.env.HOME;
     await fse.remove(tmp);
-    if (stubCreated) {
-      await fse.remove(stubIndexJs);
-      stubCreated = false;
-    }
+    vi.restoreAllMocks();
   });
 
   for (const tool of ['workbuddy', 'codebuddy']) {
@@ -83,28 +83,20 @@ describe('reconcileHooksToAllTools — wrapper creation on main inject path', ()
 describe('reconcileHooksToAllTools — wrapper creation on main inject path', () => {
   let tmp: string;
   let origHome: string | undefined;
-  let stubCreated = false;
 
   beforeEach(async () => {
     tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'hooks-wrapper-'));
     origHome = process.env.HOME;
     process.env.HOME = tmp;
 
-    // Create stub index.js so resolveTeamaiEntryScript() succeeds in test env
-    if (!await fse.pathExists(stubIndexJs)) {
-      await fse.writeFile(stubIndexJs, '// test stub\n');
-      stubCreated = true;
-    }
+    pretendEntryScriptExists();
   });
 
   afterEach(async () => {
     if (origHome !== undefined) process.env.HOME = origHome;
     else delete process.env.HOME;
     await fse.remove(tmp);
-    if (stubCreated) {
-      await fse.remove(stubIndexJs);
-      stubCreated = false;
-    }
+    vi.restoreAllMocks();
   });
 
   for (const tool of ['workbuddy', 'codebuddy']) {
@@ -143,7 +135,6 @@ describe('reconcileHooksToAllTools — wrapper creation on main inject path', ()
 describe('reconcileHooksToAllTools — teamai.cmd wrapper (win32)', () => {
   let tmp: string;
   let origHome: string | undefined;
-  let stubCreated = false;
   let platformSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {
@@ -153,11 +144,7 @@ describe('reconcileHooksToAllTools — teamai.cmd wrapper (win32)', () => {
     platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     _resetShellCache();
 
-    // Create stub index.js so resolveTeamaiEntryScript() succeeds in test env
-    if (!await fse.pathExists(stubIndexJs)) {
-      await fse.writeFile(stubIndexJs, '// test stub\n');
-      stubCreated = true;
-    }
+    pretendEntryScriptExists();
   });
 
   afterEach(async () => {
@@ -166,10 +153,7 @@ describe('reconcileHooksToAllTools — teamai.cmd wrapper (win32)', () => {
     if (origHome !== undefined) process.env.HOME = origHome;
     else delete process.env.HOME;
     await fse.remove(tmp);
-    if (stubCreated) {
-      await fse.remove(stubIndexJs);
-      stubCreated = false;
-    }
+    vi.restoreAllMocks();
   });
 
   it('writes teamai.cmd next to the POSIX shim so cmd.exe can resolve it', async () => {

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { agentHookDescription } from '../hooks.js';
 import { TEAMAI_CLAUDEMD_START } from '../types.js';
 
@@ -14,6 +15,7 @@ vi.mock('../utils/logger.js', () => ({
     warn: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
+    persist: vi.fn(),
   },
 }));
 
@@ -2226,6 +2228,8 @@ describe('local-agent: per-worktree claudemd isolation (issue #374 P1-2C)', () =
       repo: { localPath: path.join(partition, 'team-repo'), remote: 'https://example.com/x.git', kind: 'git' },
       username: 'u', scope: 'project', projectRoot: repo, additionalRoles: [],
     }));
+    // Its team's setting is readable (#915).
+    await fse.outputFile(path.join(partition, 'team-repo', 'teamai.yaml'), 'team: x\nrepo: https://example.com/x.git\n');
 
     await fse.ensureDir(path.join(tmpDir, '.teamai', 'local-agent'));
     await fse.writeJson(path.join(tmpDir, '.teamai', 'local-agent', 'config.json'), {
@@ -2443,6 +2447,8 @@ describe('local-agent: project prompts reach every installed tool (#945)', () =>
     const partition = path.join(tmpDir, '.teamai', 'projects', projectSlug(fs.realpathSync(tmpDir) + '/project'));
     await fse.outputFile(path.join(partition, 'config.yaml'),
       `repo:\n  localPath: ${partition}/team-repo\n  remote: https://example.com/t.git\nusername: u\nscope: project\nprojectRoot: ${project}\n`);
+    // Its team's setting is readable (#915).
+    await fse.outputFile(path.join(partition, 'team-repo', 'teamai.yaml'), 'team: t\nrepo: https://example.com/t.git\n');
     const { repo, ack } = await installProjectPrompt('opencode', ['.opencode/skills']);
 
     expect(ack?.status).toBe('success');
@@ -2548,5 +2554,406 @@ describe('local-agent: loadLocalAgentConfig({ dryRun: true }) writes nothing (#8
     // Positive control: the same load without the flag persists the backfill.
     await loadLocalAgentConfig();
     expect(await fse.pathExists(configPath())).toBe(true);
+  });
+});
+
+describe('local-agent: project installs stay out of git, and a member\'s file stays theirs (#915)', () => {
+  const RULE = '# HTTP rule\n\nFrom the backend.\n';
+  const skillMdOf = (name: string): string => `---\nname: ${name}\ndescription: test skill\n---\n# ${name}\nbody\n`;
+
+  async function skillZip(name: string): Promise<Uint8Array> {
+    const { zipSync, strToU8 } = await import('fflate');
+    return zipSync({ [`${name}/SKILL.md`]: strToU8(skillMdOf(name)) });
+  }
+
+  const gitEnv = (): NodeJS.ProcessEnv => ({ ...process.env, HOME: tmpDir, GIT_CONFIG_NOSYSTEM: '1' });
+  const git = (args: string[], cwd: string): string => execFileSync('git', args, { cwd, encoding: 'utf8', env: gitEnv() });
+  const ignored = (cwd: string, rel: string): boolean =>
+    spawnSync('git', ['check-ignore', '-q', rel], { cwd, env: gitEnv() }).status === 0;
+
+  async function repo(name: string): Promise<string> {
+    const dir = path.join(tmpDir, name);
+    await fse.ensureDir(dir);
+    git(['init', '-q', '-b', 'main'], dir);
+    return fs.realpathSync.native(dir);
+  }
+
+  /** The member's user-scope config, holding the git exclude override. */
+  async function flag(on: boolean): Promise<void> {
+    await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), [
+      'repo:', `  localPath: ${path.join(tmpDir, '.teamai', 'team-repo')}`, '  remote: https://test.example.com/api',
+      '  kind: http', '  url: https://test.example.com/api', 'username: tester', 'scope: user', `gitExcludeEnabled: ${on}`, '',
+    ].join('\n'));
+  }
+
+  const skill = (id: number, slug: string, workspace: string, version = '1.0.0') => ({
+    id, type: 'install_skill', skill_slug: slug, skill_version: version,
+    download_url: `http://127.0.0.1:42100/skill.zip?slug=${slug}`, scope: 'workspace', workspace_path: workspace,
+  });
+  const rule = (id: number, slug: string, workspace: string, version = '1.0.0') => ({
+    id, type: 'install_rule', rule_slug: slug, rule_version: version,
+    download_url: `http://127.0.0.1:42100/${slug}.md?v=${version}`, scope: 'workspace', workspace_path: workspace,
+  });
+
+  async function run(commands: Record<string, unknown>[], cwd: string, tool = 'claude', event?: 'prompt_submit') {
+    if (!await fse.pathExists(path.join(tmpDir, '.teamai', 'local-agent', 'config.json'))) await setupConfig();
+    const zips = new Map<string, Uint8Array>();
+    for (const command of commands) {
+      if (command.type === 'install_skill') zips.set(String(command.skill_slug), await skillZip(String(command.skill_slug)));
+    }
+    const acks: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: { body?: string }) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/skill.zip') return new Response(Buffer.from(zips.get(url.searchParams.get('slug') ?? '')!));
+      if (url.pathname.endsWith('.md')) return new Response(url.searchParams.get('v') === '1.0.0' ? RULE : `${RULE}\nVersion ${url.searchParams.get('v')}.\n`);
+      if (url.pathname.includes('/local-agent/sync')) return new Response(JSON.stringify({ ok: true, commands }));
+      if (url.pathname.includes('/commands/ack')) acks.push(JSON.parse(init?.body ?? '{}'));
+      return new Response(JSON.stringify({ ok: true }));
+    }));
+    const { reportAndSyncLocalAgent } = await import('../local-agent.js');
+    await reportAndSyncLocalAgent({
+      cwd, tool, status: 'running',
+      event: event && { type: event, timestamp: new Date().toISOString(), sessionId: 's', tool, cwd },
+    });
+    return acks;
+  }
+
+  const blockOf = (app: string): string[] | null => {
+    const file = path.join(app, '.git', 'info', 'exclude');
+    const content = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    const match = /# \[teamai:local-agent:start\]\n([\s\S]*?)# \[teamai:local-agent:end\]\n/.exec(content);
+    return match ? match[1].split('\n').filter(Boolean) : null;
+  };
+
+  it('lists the skills and rules it installs in a project in its own block while the flag is on, and an uninstall drops the line', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await fse.outputFile(path.join(app, '.claude', 'rules', 'mine.md'), '# Mine\n');
+
+    const acks = await run([skill(1, 'http-skill', app), rule(2, 'http-rule', app)], app);
+
+    expect(acks.map((ack) => ack.status)).toEqual(['success', 'success']);
+    expect(ignored(app, '.claude/skills/http-skill/SKILL.md')).toBe(true);
+    expect(ignored(app, '.claude/rules/http-rule.md')).toBe(true);
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.claude/skills/http-skill/SKILL.md', '/.teamai/.gitignore']);
+    expect(git(['status', '--porcelain', '-uall', '--', '.claude'], app)).toBe('?? .claude/rules/mine.md\n');
+    expect(await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'git-exclude.json')))
+      .toEqual({ 'local-agent': [path.join(app, '.git', 'info', 'exclude')] });
+
+    const removed = await run([{ id: 3, type: 'uninstall_skill', skill_slug: 'http-skill', scope: 'workspace', workspace_path: app }], app);
+
+    expect(removed[0]?.status).toBe('success');
+    expect(fs.existsSync(path.join(app, '.claude', 'skills', 'http-skill'))).toBe(false);
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.teamai/.gitignore']);
+
+    const ruleRemoved = await run([{ id: 4, type: 'uninstall_rule', rule_slug: 'http-rule', scope: 'workspace', workspace_path: app }], app);
+
+    expect(ruleRemoved[0]?.status).toBe('success');
+    expect(blockOf(app)).toEqual(['/.teamai/.gitignore']);
+  });
+
+  it('writes no block while the flag is off', async () => {
+    await flag(false);
+    const app = await repo('app');
+
+    await run([skill(1, 'http-skill', app), rule(2, 'http-rule', app)], app);
+
+    expect(blockOf(app)).toBeNull();
+    expect(git(['status', '--porcelain', '-uall', '--', '.claude'], app))
+      .toBe('?? .claude/rules/http-rule.md\n?? .claude/skills/http-skill/SKILL.md\n');
+  });
+
+  it('keeps a member\'s skill and rule at the paths it would install to, and adopts a copy equal to the download', async () => {
+    await flag(true);
+    const app = await repo('app');
+    const memberSkill = path.join(app, '.claude', 'skills', 'http-skill');
+    const memberRule = path.join(app, '.claude', 'rules', 'http-rule.md');
+    await fse.outputFile(path.join(memberSkill, 'SKILL.md'), '# my own skill\n');
+    await fse.outputFile(memberRule, '# my own rule\n');
+    await fse.outputFile(path.join(app, '.claude', 'rules', 'same-rule.md'), RULE);
+
+    const acks = await run([skill(1, 'http-skill', app), rule(2, 'http-rule', app), rule(3, 'same-rule', app)], app);
+
+    expect(acks.map(({ id, status, error }) => ({ id, status, error }))).toEqual([
+      { id: 1, status: 'failed', error: `Kept ${memberSkill}: it is not teamai's (not in the local agent's records). Rename or delete it; the local agent installs http-skill on its next sync.` },
+      { id: 2, status: 'failed', error: `Kept ${memberRule}: it is not teamai's (not in the local agent's records). Rename or delete it; the local agent installs http-rule on its next sync.` },
+      { id: 3, status: 'success', error: '' },
+    ]);
+    expect(fs.readFileSync(path.join(memberSkill, 'SKILL.md'), 'utf8')).toBe('# my own skill\n');
+    expect(fs.readFileSync(memberRule, 'utf8')).toBe('# my own rule\n');
+    expect(blockOf(app)).toEqual(['/.claude/rules/same-rule.md', '/.teamai/.gitignore']);
+    expect(git(['status', '--porcelain', '-uall', '--', '.claude'], app))
+      .toBe('?? .claude/rules/http-rule.md\n?? .claude/skills/http-skill/SKILL.md\n');
+  });
+
+  it('counts an older CLI\'s entry as recorded where the copy is the installed version, lists it once it records its tools, and keeps an edited copy', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await run([skill(1, 'http-skill', app), rule(2, 'http-rule', app)], app);
+    // What an older CLI left: the same entries, without the tools they went to.
+    const manifestPath = path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json');
+    const manifest = await fse.readJson(manifestPath);
+    for (const kind of ['skills', 'rules']) {
+      for (const entry of Object.values(manifest.scopes[`project:${app}`][kind]) as Array<Record<string, unknown>>) delete entry.tools;
+    }
+    await fse.writeJson(manifestPath, manifest);
+    await fse.writeFile(path.join(app, '.claude', 'skills', 'http-skill', 'SKILL.md'), '# edited by the member\n');
+
+    const acks = await run([skill(3, 'http-skill', app, '2.0.0'), rule(4, 'http-rule', app, '2.0.0')], app);
+
+    expect(acks.map(({ id, status }) => ({ id, status }))).toEqual([{ id: 3, status: 'failed' }, { id: 4, status: 'success' }]);
+    expect(fs.readFileSync(path.join(app, '.claude', 'skills', 'http-skill', 'SKILL.md'), 'utf8')).toBe('# edited by the member\n');
+    expect(fs.readFileSync(path.join(app, '.claude', 'rules', 'http-rule.md'), 'utf8')).toContain('Version 2.0.0.');
+    expect((await fse.readJson(manifestPath)).scopes[`project:${app}`].rules['http-rule'].tools).toEqual(['claude']);
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.teamai/.gitignore']);
+  });
+
+  it('lists a main checkout\'s and a linked worktree\'s installs in their shared file, another repository\'s in its own, and none of a worktree that is gone', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await fse.outputFile(path.join(app, 'README.md'), '# app\n');
+    git(['add', '-A'], app);
+    git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'app'], app);
+    // Inside the main checkout, so a leftover directory is still in a repository.
+    git(['worktree', 'add', '-q', path.join(app, 'wt')], app);
+    const worktree = fs.realpathSync.native(path.join(app, 'wt'));
+    const other = await repo('other');
+
+    await run([skill(1, 'main-skill', app), rule(2, 'wt-rule', worktree), rule(3, 'other-rule', other)], app);
+
+    expect(blockOf(app)).toEqual(['/.claude/rules/wt-rule.md', '/.claude/skills/main-skill/SKILL.md', '/.teamai/.gitignore']);
+    expect(ignored(worktree, '.claude/rules/wt-rule.md')).toBe(true);
+    expect(blockOf(other)).toEqual(['/.claude/rules/other-rule.md', '/.teamai/.gitignore']);
+
+    // The directory stays, with the copies in it, but it is no checkout any more.
+    fs.rmSync(path.join(worktree, '.git'));
+    git(['worktree', 'prune'], app);
+    await run([rule(4, 'other-rule', other, '2.0.0')], other);
+
+    expect(blockOf(app)).toEqual(['/.claude/skills/main-skill/SKILL.md', '/.teamai/.gitignore']);
+    expect(blockOf(other)).toEqual(['/.claude/rules/other-rule.md', '/.teamai/.gitignore']);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('removing the local agent drops its block after the per-entry loop, but the line of a copy it could not delete, and the retry removes the copy', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await run([skill(1, 'http-skill', app), rule(2, 'http-rule', app)], app);
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.claude/skills/http-skill/SKILL.md', '/.teamai/.gitignore']);
+    // The skill's copy cannot be deleted, so its uninstall fails, and its cache stays to prove the copy teamai's.
+    const copy = path.join(app, '.claude', 'skills', 'http-skill');
+    fs.chmodSync(copy, 0o555);
+    process.exitCode = undefined;
+    try {
+      const { removeLocalAgentHttp } = await import('../local-agent.js');
+      await removeLocalAgentHttp();
+    } finally {
+      fs.chmodSync(copy, 0o755);
+    }
+
+    expect(fs.existsSync(path.join(copy, 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(app, '.claude', 'rules', 'http-rule.md'))).toBe(false);
+    // The copy left on disk stays out of git until it is gone, and its record stays for the retry.
+    expect(blockOf(app)).toEqual(['/.claude/skills/http-skill/SKILL.md', '/.teamai/.gitignore']);
+    expect(process.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'))).toBe(true);
+
+    process.exitCode = undefined;
+    const { removeLocalAgentHttp } = await import('../local-agent.js');
+    await removeLocalAgentHttp();
+
+    expect(process.exitCode).toBeUndefined();
+    expect(fs.existsSync(copy)).toBe(false);
+    expect(blockOf(app)).toBeNull();
+    expect(fs.existsSync(path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json'))).toBe(false);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('keeps a rule copy it could not delete, with its line and its cached source, and the retry removes the copy', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await run([rule(1, 'http-rule', app)], app);
+    const rules = path.join(app, '.claude', 'rules');
+    const copy = path.join(rules, 'http-rule.md');
+    fs.chmodSync(rules, 0o555);
+    process.exitCode = undefined;
+    const { removeLocalAgentHttp } = await import('../local-agent.js');
+    const { log } = await import('../utils/logger.js');
+    (log.warn as ReturnType<typeof vi.fn>).mockClear();
+    try {
+      await removeLocalAgentHttp();
+    } finally {
+      fs.chmodSync(rules, 0o755);
+    }
+
+    expect(process.exitCode).toBe(1);
+    expect(fs.existsSync(copy)).toBe(true);
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.teamai/.gitignore']);
+    // The warning names the file and why, so the member knows what to fix.
+    expect((log.warn as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0])).join('\n')).toContain(copy);
+
+    process.exitCode = undefined;
+    await removeLocalAgentHttp();
+
+    expect(process.exitCode).toBeUndefined();
+    expect(fs.existsSync(copy)).toBe(false);
+    expect(blockOf(app)).toBeNull();
+  });
+
+  it.skipIf(process.getuid?.() === 0)('keeps the record of a workspace cache removal could not delete, and deletes it on the retry', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await run([rule(1, 'http-rule', app)], app);
+    const workspaces = path.join(app, '.teamai', 'workspaces');
+    const [id] = fs.readdirSync(workspaces);
+    const manifest = path.join(tmpDir, '.teamai', 'local-agent', 'manifest.json');
+    const { removeLocalAgentHttp } = await import('../local-agent.js');
+    fs.chmodSync(path.join(workspaces, id), 0o555);
+    process.exitCode = undefined;
+    try {
+      await removeLocalAgentHttp();
+    } finally {
+      fs.chmodSync(path.join(workspaces, id), 0o755);
+    }
+
+    expect(process.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(workspaces, id, 'local-agent'))).toBe(true);
+    expect(fs.existsSync(manifest)).toBe(true);
+
+    process.exitCode = undefined;
+    await removeLocalAgentHttp();
+
+    expect(process.exitCode).toBeUndefined();
+    expect(fs.existsSync(path.join(app, '.teamai'))).toBe(false);
+    expect(fs.existsSync(manifest)).toBe(false);
+  });
+
+  it('keeps the cache .gitignore and its record while git cannot say whether it is tracked, and the retry removes it', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await run([rule(1, 'http-rule', app)], app);
+    const gitignore = path.join(app, '.teamai', '.gitignore');
+    expect(fs.existsSync(gitignore)).toBe(true);
+    const head = fs.readFileSync(path.join(app, '.git', 'HEAD'), 'utf8');
+    fs.writeFileSync(path.join(app, '.git', 'HEAD'), 'not a ref\n');
+    const { removeLocalAgentHttp } = await import('../local-agent.js');
+    process.exitCode = undefined;
+    try {
+      await removeLocalAgentHttp();
+    } finally {
+      fs.writeFileSync(path.join(app, '.git', 'HEAD'), head);
+    }
+
+    expect(process.exitCode).toBe(1);
+    expect(fs.existsSync(gitignore)).toBe(true);
+
+    process.exitCode = undefined;
+    await removeLocalAgentHttp();
+
+    expect(process.exitCode).toBeUndefined();
+    expect(fs.existsSync(path.join(app, '.teamai'))).toBe(false);
+    expect(blockOf(app)).toBeNull();
+  });
+
+  it('keeps a git exclude record it cannot read, with the blocks it may name', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await run([rule(1, 'http-rule', app)], app);
+    const record = path.join(tmpDir, '.teamai', 'local-agent', 'git-exclude.json');
+    const intact = fs.readFileSync(record, 'utf8');
+    fs.writeFileSync(record, '{ not json\n');
+    const { removeLocalAgentHttp } = await import('../local-agent.js');
+    process.exitCode = undefined;
+
+    await removeLocalAgentHttp();
+
+    expect(process.exitCode).toBe(1);
+    expect(fs.readFileSync(record, 'utf8')).toBe('{ not json\n');
+
+    // The retry finds it still unreadable: still incomplete, not "nothing to remove".
+    process.exitCode = undefined;
+    await removeLocalAgentHttp();
+    expect(process.exitCode).toBe(1);
+
+    fs.writeFileSync(record, intact);
+    process.exitCode = undefined;
+    await removeLocalAgentHttp();
+    expect(process.exitCode).toBeUndefined();
+    expect(blockOf(app)).toBeNull();
+    expect(fs.existsSync(record)).toBe(false);
+  });
+
+  it('follows a flag change at a run that brings no command, and leaves the block alone while nothing it is built from changed', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await run([skill(1, 'http-skill', app), rule(2, 'http-rule', app)], app);
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.claude/skills/http-skill/SKILL.md', '/.teamai/.gitignore']);
+
+    await flag(false);
+    await run([], app, 'claude', 'prompt_submit');
+    expect(blockOf(app)).toBeNull();
+
+    await flag(true);
+    await run([], app, 'claude', 'prompt_submit');
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.claude/skills/http-skill/SKILL.md', '/.teamai/.gitignore']);
+
+    // Nothing changed since: the run does not look at the exclude file.
+    const exclude = path.join(app, '.git', 'info', 'exclude');
+    const edited = fs.readFileSync(exclude, 'utf8').replace(/# \[teamai:local-agent:start\][\s\S]*# \[teamai:local-agent:end\]\n/, '');
+    fs.writeFileSync(exclude, edited);
+    await run([], app, 'claude', 'prompt_submit');
+    expect(fs.readFileSync(exclude, 'utf8')).toBe(edited);
+  });
+
+  it('keeps a workspace\'s lines while its git-mode team\'s teamai.yaml cannot be read, and says why', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await run([skill(1, 'http-skill', app), rule(2, 'http-rule', app)], app);
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.claude/skills/http-skill/SKILL.md', '/.teamai/.gitignore']);
+    // The workspace now follows a git-mode config with no override, whose team clone has no teamai.yaml.
+    const clone = path.join(tmpDir, '.teamai', 'team-repo');
+    await fse.ensureDir(clone);
+    await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), [
+      'repo:', `  localPath: ${clone}`, '  remote: https://example.com/team.git', '  kind: git', '  url: https://example.com/team.git',
+      'username: tester', 'scope: user', '',
+    ].join('\n'));
+
+    await run([], app, 'claude', 'prompt_submit');
+
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.claude/skills/http-skill/SKILL.md', '/.teamai/.gitignore']);
+    const { localAgentGitExcludeNotices, readGitExcludeNotices } = await import('../git-exclude-notices.js');
+    expect((await readGitExcludeNotices(localAgentGitExcludeNotices())).lastFailure?.message).toBe(
+      `teamai could not read sharing.gitExclude from the team's teamai.yaml (${path.join(clone, 'teamai.yaml')}), `
+      + `so it left the local agent's git exclude lines for ${app} as they were. Fix or restore teamai.yaml in the team repository, `
+      + `or set \`gitExcludeEnabled\` in ${path.join(tmpDir, '.teamai', 'config.yaml')}, then start a new session.`,
+    );
+
+    // Nor does it install there meanwhile: either value could place a file where the other would not.
+    const acks = await run([rule(3, 'other-rule', app)], app);
+    expect(acks[0]?.status).toBe('failed');
+    expect(acks[0]?.error).toBe(
+      `teamai could not read sharing.gitExclude from the team's teamai.yaml (${path.join(clone, 'teamai.yaml')}), `
+      + `so the local agent did not install other-rule in ${app}: it wrote nothing there. `
+      + `Fix or restore teamai.yaml in the team repository, or set \`gitExcludeEnabled\` in ${path.join(tmpDir, '.teamai', 'config.yaml')}.`,
+    );
+    expect(fs.existsSync(path.join(app, '.claude', 'rules', 'other-rule.md'))).toBe(false);
+    expect(blockOf(app)).toEqual(['/.claude/rules/http-rule.md', '/.claude/skills/http-skill/SKILL.md', '/.teamai/.gitignore']);
+  });
+
+  it('keeps those lines when git also cannot place the workspace\'s paths', async () => {
+    await flag(true);
+    const app = await repo('app');
+    await run([skill(1, 'http-skill', app), rule(2, 'http-rule', app)], app);
+    const before = ['/.claude/rules/http-rule.md', '/.claude/skills/http-skill/SKILL.md', '/.teamai/.gitignore'];
+    expect(blockOf(app)).toEqual(before);
+    const clone = path.join(tmpDir, '.teamai', 'team-repo');
+    await fse.ensureDir(clone);
+    await fse.outputFile(path.join(tmpDir, '.teamai', 'config.yaml'), [
+      'repo:', `  localPath: ${clone}`, '  remote: https://example.com/team.git', '  kind: git', '  url: https://example.com/team.git',
+      'username: tester', 'scope: user', '',
+    ].join('\n'));
+    await fse.writeFile(path.join(app, '.git', 'HEAD'), 'not a ref\n');
+
+    await run([], app, 'claude', 'prompt_submit');
+
+    expect(blockOf(app)).toEqual(before);
   });
 });

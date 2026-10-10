@@ -1,10 +1,13 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
+import { gitTracks, gitUntracked } from '../git-exclude.js';
+import type { DeliveryRecorder } from '../git-exclude-delivered.js';
 import type { AgentModelRecords, CopyOrigin, DeliveryTarget, ResourceItem } from '../types.js';
 import { fileHash, listFilesRecursive } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { matchesHistory } from '../utils/team-history.js';
+import { warnOnce } from '../utils/warn-once.js';
 
 /**
  * What teamai last wrote at each skill, rule and agent file it delivered into
@@ -83,6 +86,12 @@ export interface DeliveryLedger {
   readonly held: { name: string; reason: string; tools?: string[]; everyTool: boolean }[];
   /** Copies that failed with an error, already reported: the pull is not synced, and the next one is full. */
   readonly failed: { name: string; tool: string }[];
+  /**
+   * Where a writer reports the paths it delivered into the project checkout
+   * and whether it delivered all it meant to (#915). Only pull's project
+   * scope sets it; a ledger without one (another command) reports nothing.
+   */
+  readonly recorder?: DeliveryRecorder;
 }
 
 export function openLedger(
@@ -295,6 +304,17 @@ export async function teamaiSkillFiles(
   };
   await walk(dir, '');
   return result;
+}
+
+/**
+ * The files a delivery of the skill at `source` writes into `dest`, absolute:
+ * each regular file `copyDir` copies (no link, no ignored name), so a file the
+ * member adds in `dest` is never one of them (#915). `blocked` (paths from the
+ * skill's root) were left undelivered, with everything under them.
+ */
+export async function deliveredSkillFiles(source: string, dest: string, blocked: readonly string[] = []): Promise<string[]> {
+  const delivered = (rel: string): boolean => !blocked.some((entry) => rel === entry || rel.startsWith(`${entry}/`));
+  return (await listFilesRecursive(source)).filter(delivered).map((rel) => path.join(dest, ...rel.split('/')));
 }
 
 /**
@@ -520,6 +540,28 @@ export async function judgeRemoval(
     : !await fse.pathExists(dest) || await isTeamaiCopy(dest, origin);
   if (teamais) return 'remove';
   return recordedUnder(otherRecords, dest).length > 0 ? 'edited' : 'notTeamais';
+}
+
+/**
+ * Whether a removal pass keeps `dest`, a copy teamai no longer delivers there,
+ * because the repository it sits in tracks it (#915): deleting it would be a
+ * change in the member's repository. Asked right before the deletion, after
+ * whatever proved the copy teamai's, so no proof deletes it. Named once per
+ * run. A path in no repository is not kept; one in a repository git cannot
+ * answer for is, as it may be tracked. `movedTo` is
+ * where a layout migration writes the resource now: the tool may then load
+ * both copies, and the message says so.
+ */
+export async function keepsTrackedCopy(dest: string, movedTo?: string): Promise<boolean> {
+  if (await gitUntracked(dest, 'entry')) return false;
+  const tracks = await gitTracks(dest, 'entry');
+  const moved = movedTo === undefined ? '' : ` The resource now lives at ${movedTo}, and the tool may load both until the repository removes this copy.`;
+  warnOnce(tracks.kind === 'unknown'
+    ? `Kept ${dest}: git could not say whether this repository tracks it (${tracks.error}), so teamai does not delete it. `
+      + `Fix that repository, then run the command again.${moved}`
+    : `Kept ${dest}: this repository tracks it, so teamai does not delete it. `
+      + `Run \`git rm -r ${dest}\` and commit if the repository no longer needs it.${moved}`);
+  return true;
 }
 
 /**

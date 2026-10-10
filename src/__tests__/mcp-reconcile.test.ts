@@ -2693,6 +2693,20 @@ servers:
         expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/not writable[\s\S]*teamai pull/));
       });
 
+      it.skipIf(process.getuid?.() === 0)('writes no value when .git/info/exclude exists but cannot be read, and keeps the member\'s lines (#915)', async () => {
+        await fse.outputFile(path.join(infoDir(), 'exclude'), 'scratch/\n');
+        await writeMcpYaml(withSecret);
+        await fse.chmod(path.join(infoDir(), 'exclude'), 0o200);
+
+        const { changes } = await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await fse.pathExists(mcpJson())).toBe(false);
+        expect(changes).toContainEqual(expect.objectContaining({ tool: 'claude', server: 'with-secret', action: 'skipped' }));
+        expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/cannot be read[\s\S]*readable[\s\S]*teamai pull/));
+        await fse.chmod(path.join(infoDir(), 'exclude'), 0o644);
+        expect(await fse.readFile(path.join(infoDir(), 'exclude'), 'utf-8')).toBe('scratch/\n');
+      });
+
       it.skipIf(process.getuid?.() === 0)('keeps an earlier entry as it was', async () => {
         await writeMcpYaml(withSecret);
         await reconcileMcpForConfig(teamConfig, claudeOnly());
@@ -2705,6 +2719,24 @@ servers:
         await reconcileMcpForConfig(teamConfig, claudeOnly());
 
         expect(await fse.readFile(mcpJson(), 'utf-8')).toBe(before);
+      });
+
+      it('writes no value when git cannot confirm it ignores the config after listing it (#915)', async () => {
+        const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+        const bin = path.join(tmpDir, 'bin');
+        await fse.outputFile(
+          path.join(bin, 'git'),
+          `#!/bin/sh\nif [ "$1" = check-ignore ]; then echo 'fatal: cannot check' >&2; exit 128; fi\nexec '${realGit}' "$@"\n`,
+          { mode: 0o755 },
+        );
+        vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH ?? ''}`);
+        await writeMcpYaml(withSecret);
+
+        const { changes } = await reconcileMcpForConfig(teamConfig, claudeOnly());
+
+        expect(await fse.pathExists(mcpJson())).toBe(false);
+        expect(changes).toContainEqual(expect.objectContaining({ tool: 'claude', server: 'with-secret', action: 'skipped' }));
+        expect(log.warn).toHaveBeenCalledWith(expect.stringMatching(/could not confirm that it ignores[\s\S]*teamai pull/));
       });
 
       it('writes no value while another command holds the exclude file\'s lock', async () => {

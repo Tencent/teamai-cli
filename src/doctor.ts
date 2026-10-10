@@ -31,6 +31,7 @@ import {
   buildNamespaceNotes,
   buildMcpDeliveryChecks,
   buildMcpReadFileChecks,
+  buildLocalAgentMcpLocationChecks,
   buildCodexProjectTrustCheck,
   buildMcpGitExcludeCheck,
   buildEnvDeliveryCheck,
@@ -39,8 +40,12 @@ import {
   buildEntryScopeKeyCheck,
   entryNamespaceNotes,
   buildDocsCheck,
+  keptDocNotes,
 } from './doctor-delivery.js';
 import { agentModelNotes, aliasNamespaceNotes, buildAgentModelChecks } from './doctor-agent-models.js';
+import {
+  buildDeliveredGitExcludeChecks, buildLocalAgentGitExcludeChecks, deliveredGitExcludeNotes, localAgentGitExcludeNotes,
+} from './doctor-git-exclude.js';
 
 /**
  * Where a check gets its answer. `provider` checks shell out to a provider CLI
@@ -565,8 +570,11 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...await buildAgentModelChecks(ctx, stage),
     ...await buildMcpDeliveryChecks(ctx),
     ...await buildMcpReadFileChecks(ctx),
+    ...await buildLocalAgentMcpLocationChecks(ctx),
     ...await buildCodexProjectTrustCheck(ctx),
     ...await buildMcpGitExcludeCheck(ctx),
+    ...await buildDeliveredGitExcludeChecks(ctx),
+    ...await buildLocalAgentGitExcludeChecks(),
     ...await buildDocsCheck(ctx),
     ...await buildEnvDeliveryCheck(ctx),
     ...await buildEntryResolutionChecks(ctx),
@@ -620,7 +628,7 @@ async function buildGitHookChecks(localConfig: LocalConfig, stage: CheckStage): 
 async function buildTrackedHookIndexCheck(localConfig: LocalConfig): Promise<Check[]> {
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return [];
   const root = localConfig.projectRoot;
-  const { gitTracks } = await import('./mcp-git-exclude.js');
+  const { gitTracks } = await import('./git-exclude.js');
   const legacyFiles = [
     { file: legacyManagedHooksPath(root), what: 'hook index', after: 'teamai pull deletes it once nothing in it is needed' },
     { file: path.join(root, '.teamai', 'teamai.lock'), what: 'package lock', after: 'the next `teamai packages install` or session start deletes it' },
@@ -734,6 +742,10 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
     ...await ruleChannelNotes(localConfig),
     ...codexTrust.notes,
+    // What git sees of the delivered team resources, and what no pull changes (#915).
+    ...await deliveredGitExcludeNotes(ctx),
+    ...await localAgentGitExcludeNotes(),
+    ...await keptDocNotes(ctx),
   ];
 
   if (jsonMode) {
