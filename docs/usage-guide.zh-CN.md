@@ -13,7 +13,7 @@
 ## 目录
 
 - [快速开始](guide/zh-CN/getting-started.md) — 三条路径：搭建团队、加入团队或分享 skill
-- [管理员初始化](guide/zh-CN/admin-setup.md) — 初始化团队仓库：作用域、单仓模式、组织仓叠加
+- [管理员初始化](guide/zh-CN/admin-setup.md) — 五份可复制配置：作用域、单仓、组织仓加项目仓、角色和项目
 - [Git Provider](guide/zh-CN/providers.md) — GitHub、GitLab、GitCode、CNB、工蜂与通用 Git：检测与认证
 - [成员使用](guide/zh-CN/member-guide.md) — 加入团队、日常使用、提交 Co-Author 署名
 - [共享团队资源](guide/zh-CN/sharing.md) — 发布 skills、rules、docs、env、agents、hooks 与 MCP server

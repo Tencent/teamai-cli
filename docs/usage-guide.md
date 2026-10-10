@@ -13,7 +13,7 @@ New to TeamAI? Start with [Getting Started](guide/getting-started.md). Pick the 
 ## Contents
 
 - [Getting Started](guide/getting-started.md) — three paths: set up a team, join one, or share a skill
-- [Admin Setup](guide/admin-setup.md) — Initializing a team repo: scopes, single-repo mode, layered repos
+- [Admin Setup](guide/admin-setup.md) — Five copy-paste setups: scope, single-repo, org plus project, roles and projects
 - [Git Providers](guide/providers.md) — GitHub, GitLab, GitCode, CNB, TGit and generic Git: detection and authentication
 - [Member Guide](guide/member-guide.md) — Joining a team, day-to-day use, commit co-author attribution
 - [Sharing Team Resources](guide/sharing.md) — Publishing skills, rules, docs, env, agents, hooks and MCP servers

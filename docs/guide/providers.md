@@ -125,7 +125,7 @@ TeamAI detects the default branch with `getDefaultBranch()`: `origin/HEAD` first
 
 ### Minimum permissions when the default branch is protected
 
-Members need to push `teamai-reports` and `teamai-learnings` (including creating those two refs the first time), push the feature branches `teamai push` creates, and open PRs against the default branch. They do not need to push `main` / `master` directly, bypass branch protection, or hold admin rights. See the [project-scope section of Admin Setup](admin-setup.md#project-scope-default).
+Members need to push `teamai-reports` and `teamai-learnings` (including creating those two refs the first time), push the feature branches `teamai push` creates, and open PRs against the default branch. They do not need to push `main` / `master` directly, bypass branch protection, or hold admin rights. See [Git permissions](admin-setup.md#git-permissions).
 
 Note: `provider: git` cannot open PRs; `teamai push` pushes the branch and prints the command for opening the PR by hand. `teamai contribute` pushes `teamai-learnings` directly, without a PR.
 

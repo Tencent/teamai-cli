@@ -128,7 +128,7 @@ TeamAI 通过 `getDefaultBranch()` 自动识别默认分支：先看 `origin/HEA
 
 成员需要能推送 `teamai-reports` 与 `teamai-learnings`（含首次创建这两个 ref）、推送
 `teamai push` 创建的特性分支，并能向默认分支开 PR。不需要直接推送 `main` / `master`，
-也不需要绕过分支保护或管理员权限。详见[使用指南的项目级一节](admin-setup.md#项目级project-scope默认)。
+也不需要绕过分支保护或管理员权限。详见[Git 权限](admin-setup.md#git-权限)。
 
 注意：`provider: git` 无法自动开 PR，`teamai push` 会推送分支并打印手动开 PR 的命令；
 `teamai contribute` 直接推送 `teamai-learnings`，不走 PR。

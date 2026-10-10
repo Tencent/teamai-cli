@@ -63,7 +63,7 @@ Team-wide settings an admin configures once and delivers to every member on `tea
 | **Tags** | `teamai tags` | Tag skills / rules so members subscribe to just the tags they need. |
 | **Sources** | `teamai source` | Subscribe to additional skill repos — other teams' public repos, or shared/public repos within your own org; subscribed skills sync automatically on pull. |
 
-Learnings isolation: `learnings/` at the repo root is shared with everyone; `learnings/<project-id>/` is project-private. See the [usage guide](guide/admin-setup.md#multi-project-project-as-a-dimension-orthogonal-to-role).
+Learnings isolation: `learnings/` at the repo root is shared with everyone; `learnings/<project-id>/` is project-private. See [Projects](guide/admin-setup.md#demo-5-roles-and-projects).
 
 ## Team Execution
 
