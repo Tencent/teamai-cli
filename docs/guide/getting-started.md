@@ -56,8 +56,6 @@ You need the repo URL.
    ```
 3. Open your AI tool in that project.
 
-`teamai list` shows the team's skills and rules, and a new session can use them. Session start pulls again, so you do not run `pull` yourself.
-
 Day-to-day commands are in the [Member Guide](./member-guide.md). Searching what teammates learned is in [Team Knowledge](./knowledge.md).
 
 ### Share with the team
