@@ -1,8 +1,8 @@
 # TeamAI 产品概览
 
-> [English](product-overview.md) | [简体中文](product-overview.zh-CN.md)
+安装和日常使用在[使用指南](usage-guide.zh-CN.md)。
 
-本文介绍 TeamAI 的产品架构、Agent 支持范围和核心能力。安装与日常使用流程请参阅[使用指南](usage-guide.zh-CN.md)。
+昨天摸出来的结论，不放进团队仓库，就还在那一台机器上。TeamAI 把仓库里的 skills、rules、docs、env、hooks 同步到每个人的 AI 工具，也可以把会话里的经验写回去。先把 harness 发出去。Context 和 Improvement 仍是 beta。
 
 ---
 
@@ -12,9 +12,36 @@
 
 | 层 | 要解决的问题 | 当前 CLI 中的体现 |
 |----|--------------|-------------------|
-| **Team Execution** | 让每个 Agent 按团队的方式工作 | `init` / `pull` / `push`，skills、rules、agents、hooks、MCP、env |
-| **Team Context** (beta) | 让每个 Agent 理解整个团队 | recall、learnings、代码知识图谱、teamwiki... |
-| **Team Improvement** (beta) | 让每一次执行都成为团队能力的积累 | 基于摩擦信号的经验分享、sessions、digest、dashboard... |
+| **Team Execution** | 每台机器上的 skills、rules、hooks 相同 | `init` / `pull` / `push`，skills、rules、agents、hooks、MCP、env |
+| **Team Context** (beta) | Agent 能检索团队记下的经验 | recall、learnings、代码知识图谱、teamwiki... |
+| **Team Improvement** (beta) | 会话可以写回成共享的经验 | 基于摩擦信号的经验分享、sessions、digest... |
+
+## 核心概念
+
+| 概念 | 说明 |
+|------|------|
+| **Team Repo** | 一个 Git 仓库，集中存放团队 Harness 与知识（Skills / Rules / Docs / Env / Packages，以及 learnings、wiki） |
+| **Scope** | 资源安装位置：`project`（当前项目，默认）或 `user`（用户主目录）|
+| **Skills** | AI 可调用的自定义技能（目录形式，含 `SKILL.md`） |
+| **Rules** | Markdown 格式的团队规范，自动合并到 AI 工具配置中 |
+| **Docs** | 团队共享文档，供 AI 参考 |
+| **Env** | 团队共享环境变量，自动注入 shell |
+| **Packages** | 全团队统一的 npm 包和 Claude Code 插件，通过 `teamai packages` 主动安装 |
+
+```
+┌───────────────┐    teamai push (MR)    ┌───────────────────┐
+│  你的本地资源   │ ──────────────────────→ │   Team Repo (Git) │
+│ skills/rules  │                         │ skills/rules/docs │
+└───────────────┘ ←────────────────────── └───────────────────┘
+                     teamai pull (自动)
+                           │
+                           ▼
+                  ┌──────────────────┐
+                  │  AI 工具自动获取   │
+                  │ Claude / CodeBuddy│
+                  │ Cursor / Codex   │
+                  └──────────────────┘
+```
 
 ## 功能概览
 
@@ -24,7 +51,7 @@
 
 ### 分发策略
 
-管理员一次配置、随 `teamai pull` 分发给每位成员的团队级设置：
+写在团队仓库里的设置。`teamai pull` 会带下来：
 
 | 能力 | 命令 | 作用 |
 |------|------|------|
@@ -33,13 +60,11 @@
 | **标签（Tags）** | `teamai tags` | 给 skills / rules 打标签，成员只订阅自己需要的标签。 |
 | **订阅源（Sources）** | `teamai source` | 订阅额外的 skill 仓库——其他团队的公开仓库，或本团队内的公共/共享仓库；已订阅的 skills 会在 pull 时自动同步。 |
 
-learnings 隔离：仓库 `learnings/` 根目录对所有人共享；`learnings/<project-id>/` 为项目私有。详见[使用指南](guide/zh-CN/admin-setup.md#多项目project-作为与-role-正交的维度)。
+learnings 隔离：仓库 `learnings/` 根目录对所有人共享；`learnings/<project-id>/` 为项目私有。详见[角色和项目](guide/zh-CN/admin-setup.md#角色和项目)。
 
 ## Team Execution
 
-> One Team. One Harness. Every Agent.
-
-TeamAI 把 skills、rules、docs、hooks 统一存放在共享 Git 仓库，通过「push → 评审合并 → pull」的流程分发到每位成员的本地 AI 工具，并支持订阅其他团队或公共仓库的 Harness。
+TeamAI 把 skills、rules、docs、hooks 放在共享 Git 仓库里，再装到每个人的 AI 工具：push、评审、合并、pull。仓库也可以订阅其他团队的 harness。
 
 ### 工作原理
 
@@ -69,7 +94,7 @@ teamai push → 创建分支 + MR → reviewer 审批合并
 
 Skills、rules、CLAUDE.md、agents、env、hooks、MCP、models 和 docs 也可以放在 `<namespace>/` 子目录下，只同步给在 `resources:` 中列出它的角色和项目（rules 与 CLAUDE.md 列在 `knowledge:` 下）。namespace 中的条目会替换根目录中同名的条目；docs namespace 不替换任何内容。配置了角色或项目后，根目录的 skills 只通过标签订阅送达成员。
 
-下方的 Team Context 知识库采用同样的作用域规则：`teamwiki/evidence/code/<slug>/` 代码库只分发给在 `resources.wiki` 中列出它的角色和项目，未声明的 slug 仍然共享——详见[按命名空间分发 wiki](guide/zh-CN/advanced.md#代码知识图谱)。
+下方的 Team Context 知识库采用同样的作用域规则：`teamwiki/evidence/code/<slug>/` 代码库只分发给在 `resources.wiki` 中列出它的角色和项目，未声明的 slug 仍然共享——详见[按命名空间分发 wiki](guide/zh-CN/codebase-graph.md#代码知识图谱)。
 
 文件格式与完整工作流见[使用指南](usage-guide.zh-CN.md)。
 
@@ -160,5 +185,4 @@ teamai recall maintenance --update-quality       # 为过时 skills / docs 生�
 |------|------|----------|
 | **用量（Usage）** | `teamai digest` | 团队周报——近 7 天成功率、对话、活跃时长、估算成本、缓存与纠偏趋势，以及历史累计数据。 |
 | **会话（Sessions）** | `teamai session save` | 脱敏的单会话摘要（工具序列、对话轮次、干预次数），喂给周报的 Session Highlights。 |
-| **看板（Dashboard）** | `teamai dashboard` | 统一的 Overview / Team Execution / Team Context / Team Improvement 界面，保留本机实时会话、近 7 天趋势、每会话估算费用，支持中英文及日间/夜间/跟随系统主题。 |
 | **知识库健康（KB Health）** | `teamai dashboard` → Team Context / Team Improvement | 保留各类型覆盖率、高频召回与沉默条目、最近召回月份统计、作者贡献及维护控制台；完整 `/kb-report` 报告仍可访问。 |

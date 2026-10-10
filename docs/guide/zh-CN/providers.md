@@ -1,7 +1,5 @@
 # Git Provider
 
-> [English](../providers.md) | [简体中文](providers.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---
@@ -43,11 +41,11 @@ git@git.example.com:group/repo.git      → 检查 GitLab，未确认则 git
 
 ### 手动指定 provider（`--provider`）
 
-`teamai init <input> --provider <name>` 跳过上面的自动检测（包括 GitLab 探测），直接使用指定的 provider，取值与 `teamai.yaml` 的 `provider` 相同：`tgit`、`github`、`cnb`、`gitlab`、`gitcode`、`git`。典型用法是团队仓库在自建 GitLab 上、但成员只需要普通 Git：`--provider git` 不做平台登录、不检查 `GITLAB_TOKEN`，clone/pull/push 走已有的 Git 凭据。
+```bash
+teamai init https://gitlab.example.com/group/repo --provider git
+```
 
-该选择写入成员本机的本地配置（`provider` 字段），只影响这台机器：创建 PR/MR（`push`、`remove` 等）和 `doctor` 的 provider 检查优先使用它，已有的 `teamai.yaml` 不变。`init` 新建 `teamai.yaml`（空仓库，或单仓库模式首次初始化）时，`--provider git` 写入的仍是不带该参数时检测到的 provider（包括 GitLab 探测）；探测到尚未配置的自建 GitLab 时 `init` 会停止并提示设置 `GITLAB_URL`，不会把 `git` 写成团队默认值。其他值按指定值写入。不带 `--provider` 重新运行 `init` 即恢复自动检测。
-
-自建 GitLab 使用 `--provider gitlab` 时仍需设置 `GITLAB_URL`（以及 `GITLAB_TOKEN`）。GitLab API 地址取自 `GITLAB_URL`，未设置时指向 gitlab.com，所以检测无法识别该 host 时 `init` 会直接报错退出，不会把 token 发往别处。
+取值：`tgit`、`github`、`cnb`、`gitlab`、`gitcode`、`git`。`git` 不需要平台 token，用已有的 Git 凭据；PR/MR 需要自己到 Git 平台上创建。该选择只影响本机。自建 GitLab 用 `--provider gitlab` 时仍需设置 `GITLAB_URL` 和 `GITLAB_TOKEN`。
 
 ## 通用 Git Provider（自建/私有仓库）
 
@@ -124,11 +122,9 @@ token 需要 `repo` 权限。`GH_TOKEN` 作为别名也会被识别。
 TeamAI 通过 `getDefaultBranch()` 自动识别默认分支：先看 `origin/HEAD`，再依次探测
 `origin/main`、`origin/master`。`main` 和 `master` 都可以，无需改动仓库设置。
 
-### 默认分支受保护时的最小权限
+### 分支权限
 
-成员需要能推送 `teamai-reports` 与 `teamai-learnings`（含首次创建这两个 ref）、推送
-`teamai push` 创建的特性分支，并能向默认分支开 PR。不需要直接推送 `main` / `master`，
-也不需要绕过分支保护或管理员权限。详见[使用指南的项目级一节](admin-setup.md#项目级project-scope默认)。
+同事有分支写权限、能开 pull request 就够了。主干保持保护。上报和学习记录走 `teamai-reports` 和 `teamai-learnings`。详见[Git 权限](admin-setup.md#git-权限)。
 
 注意：`provider: git` 无法自动开 PR，`teamai push` 会推送分支并打印手动开 PR 的命令；
 `teamai contribute` 直接推送 `teamai-learnings`，不走 PR。
@@ -344,4 +340,4 @@ reviewers:
 
 ## 新增 Provider
 
-Provider 层的内部实现和新增 provider 的步骤见 [Adding a Git provider](../../dev/adding-a-provider.md)（英文）。
+Provider 层的内部实现和新增 provider 的步骤见 [Adding a Git provider](../../dev/adding-a-provider.md)。

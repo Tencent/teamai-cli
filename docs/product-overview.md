@@ -1,8 +1,8 @@
 # TeamAI Product Overview
 
-> [English](product-overview.md) | [简体中文](product-overview.zh-CN.md)
+Setup and daily use are in the [Usage Guide](usage-guide.md).
 
-This document explains TeamAI's product architecture, supported agents, and core capabilities. For setup and day-to-day workflows, see the [Usage Guide](usage-guide.md).
+A conclusion from yesterday stays on one machine until someone puts it in the team repo. TeamAI copies skills, rules, docs, env, and hooks from that repo into each person's AI tools, and can write session learnings back. Share the harness first. Context and improvement are still beta.
 
 ---
 
@@ -12,9 +12,37 @@ This document explains TeamAI's product architecture, supported agents, and core
 
 | Layer | Job | In this CLI today |
 |-------|-----|-------------------|
-| **Team Execution** | Make every agent work the team's way | `init` / `pull` / `push`, skills, rules, agents, hooks, MCP, env |
-| **Team Context** (beta) | Make every agent understand the team | recall, learnings, codebase graph, teamwiki... |
-| **Team Improvement** (beta) | Make every execution improve the team | friction-based share-learnings, sessions, digest, dashboard... |
+| **Team Execution** | The same skills, rules, and hooks on every machine | `init` / `pull` / `push`, skills, rules, agents, hooks, MCP, env |
+| **Team Context** (beta) | Agents can search what the team has learned | recall, learnings, codebase graph, teamwiki... |
+| **Team Improvement** (beta) | Sessions can be written back as shared learnings | friction-based share-learnings, sessions, digest... |
+
+## Core concepts
+
+| Concept | Description |
+|------|------|
+| **Team Repo** | A Git repository that centrally stores the team's harness and knowledge (Skills / Rules / Docs / Env / Packages, plus learnings and wiki) |
+| **Scope** | Where resources are installed: `project` (current project, default) or `user` (home directory) |
+| **Skills** | Custom skills the AI can invoke (a directory containing a `SKILL.md`) |
+| **Rules** | Markdown-formatted team conventions, automatically merged into AI tool configs |
+| **Docs** | Shared team documentation for the AI to reference |
+| **Env** | Shared team environment variables, automatically injected into the shell |
+| **Packages** | Team-wide npm packages and Claude Code plugins, installed explicitly with `teamai packages` |
+
+```
+┌───────────────┐    teamai push (MR)    ┌───────────────────┐
+│ Your local     │ ──────────────────────→ │   Team Repo (Git) │
+│ resources      │                         │ skills/rules/docs │
+│ skills/rules   │ ←────────────────────── └───────────────────┘
+└───────────────┘     teamai pull (auto)
+                           │
+                           ▼
+                  ┌──────────────────┐
+                  │  AI tools fetch   │
+                  │  automatically    │
+                  │ Claude / CodeBuddy│
+                  │ Cursor / Codex    │
+                  └──────────────────┘
+```
 
 ## Overview
 
@@ -24,7 +52,7 @@ See the [agent capability matrix](../README.md#product-overview) in the README f
 
 ### Distribution Controls
 
-Team-wide settings an admin configures once and delivers to every member on `teamai pull`:
+Settings in the team repo. `teamai pull` delivers them:
 
 | Capability | Command | What it does |
 |------------|---------|--------------|
@@ -33,13 +61,11 @@ Team-wide settings an admin configures once and delivers to every member on `tea
 | **Tags** | `teamai tags` | Tag skills / rules so members subscribe to just the tags they need. |
 | **Sources** | `teamai source` | Subscribe to additional skill repos — other teams' public repos, or shared/public repos within your own org; subscribed skills sync automatically on pull. |
 
-Learnings isolation: `learnings/` at the repo root is shared with everyone; `learnings/<project-id>/` is project-private. See the [usage guide](guide/admin-setup.md#multi-project-project-as-a-dimension-orthogonal-to-role).
+Learnings isolation: `learnings/` at the repo root is shared with everyone; `learnings/<project-id>/` is project-private. See [Projects](guide/admin-setup.md#roles-and-projects).
 
 ## Team Execution
 
-> One Team. One Harness. Every Agent.
-
-TeamAI keeps skills, rules, docs, and hooks in a shared git repo and distributes them to every member's local AI tools through a "push → review & merge → pull" flow — with support for subscribing to other teams' or shared repos' Harness.
+TeamAI keeps skills, rules, docs, and hooks in a shared git repo and installs them into each person's AI tools: push, review, merge, pull. A repo can also subscribe to another team's harness.
 
 ### How It Works
 
@@ -69,7 +95,7 @@ Each resource is delivered to every agent:
 
 Skills, rules, CLAUDE.md, agents, env, hooks, MCP, models and docs can also live under a `<namespace>/` subdirectory, which ships only to the roles and projects that list it in `resources:` (rules and CLAUDE.md under `knowledge:`). A namespace item replaces the root item of the same name; a docs namespace replaces nothing. With roles or projects set, root skills reach a member only through a tag subscription.
 
-The Team Context knowledge base below is scoped the same way: a `teamwiki/evidence/code/<slug>/` codebase reaches only the roles and projects that list it under `resources.wiki`, and an undeclared slug stays shared — see [Wiki by namespace](guide/advanced.md#codebase-knowledge-graph).
+The Team Context knowledge base below is scoped the same way: a `teamwiki/evidence/code/<slug>/` codebase reaches only the roles and projects that list it under `resources.wiki`, and an undeclared slug stays shared — see [Wiki by namespace](guide/codebase-graph.md#codebase-knowledge-graph).
 
 For file formats and full workflows, see the [Usage Guide](usage-guide.md).
 
@@ -162,5 +188,4 @@ Insight into how the team actually uses its AI tools, and a starting point for t
 |------------|---------|---------------|
 | **Usage** | `teamai digest` | Weekly team digest — 7-day success, prompt, active-time, estimated cost, cache, and correction trends, plus lifetime totals. |
 | **Sessions** | `teamai session save` | Privacy-scrubbed per-session summaries (tool sequence, prompt turns, interventions) that feed the digest's Session Highlights. |
-| **Dashboard** | `teamai dashboard` | Unified Overview / Team Execution / Team Context / Team Improvement views with local live sessions, 7-day trends, estimated cost per session, English/Chinese, and light/dark/system themes. |
 | **KB Health** | `teamai dashboard` → Team Context / Team Improvement | Coverage by type, top-recalled and silent entries, last-recall month distribution, author contributions, and maintenance; the full `/kb-report` remains available. |

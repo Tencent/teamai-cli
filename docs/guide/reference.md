@@ -1,7 +1,5 @@
 # Reference
 
-> [English](reference.md) | [简体中文](zh-CN/reference.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---
@@ -69,7 +67,7 @@ The mirror keeps no record of what it wrote, so a file at a team document's path
 
 File/directory type changes at the same path are handled using staged replacements, and only for an entry the team history proves teamai's: a file where the team now has a directory, or a directory where the team now has a file, whose every file holds a team version. Any other such entry is yours and is kept and named like a file above, a link included unless the team has the same link there; pull never follows a link. Failed replacements restore the conflicting local entries. If a directory to be replaced contains hidden local entries, move those entries first; the sync refuses to discard them. A failed copy stops cleanup. 
 
-`teamai pull --dry-run` previews the sync without changing files; use `teamai pull --force` to clean residue from a revision already synced by an older CLI.
+`teamai pull --dry-run` previews the sync without changing files.
 
 ### config.yaml (local config)
 
@@ -229,15 +227,12 @@ projects:
   and prints a line to run `teamai models switch team:<id>`, which asks for the
   key of the new gateway (or run `teamai models configure team:<id>` first). The
   key for the first gateway is kept, so leaving the namespace needs no new key.
-  The same applies when the team moves the root profile to another origin. A key
-  configured before this version is used for the root profile's origin only.
+  The same applies when the team moves the root profile to another origin.
 - **Conflicts stop models, not the pull.** The same `id` in two active namespaces,
   or an active file that does not parse, means no agent is updated this run; the
   warning names the file(s). `teamai push` refuses any invalid models file.
 - `teamai models list` shows the file each team profile comes from and whether
   it overrides the root one; `teamai doctor` lists each override as a note.
-- **Upgrade every member first.** teamai 0.25.0 and the 0.26.0 betas reject the
-  `models` key in `resources:`.
 
 ### Personal profiles
 

@@ -1,16 +1,12 @@
 # Sharing Team Resources
 
-> [English](sharing.md) | [简体中文](zh-CN/sharing.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---
 
-## Sharing Team Resources
+Put skills, rules, and the other harness files in the team repo. Review them in a merge request. `teamai pull` installs them.
 
-This is Team Execution: define skills, rules, and other harness once, review via MR, then `teamai pull` delivers them to every agent.
-
-### Skills
+## Skills
 
 ```bash
 # Create a skill
@@ -48,7 +44,7 @@ With role-based skills enabled, the push target directory becomes:
 - Default: `skills/<primaryRole>/<skill-name>/`
 - Explicit override: `skills/<role>/<skill-name>/` (via `--role`)
 
-### Rules
+## Rules
 
 For a scoped rule, YAML comments stay outside the glob: `paths: **/*.ts # TypeScript files` scopes native rules to `**/*.ts` and gives inline channels the same path hint. This also applies to block-list entries under `paths:`.
 
@@ -71,7 +67,7 @@ A rule file teamai has no delivery record of is teamai's only when it holds a ve
 
 `teamai remove` and `teamai uninstall` delete only teamai's copy (on the checkout's record, or a team version by the history) and name each file of yours they leave: ``Kept <path>: it is not teamai's (no delivery record, and it matches no team version of <resource>), so <command> left it.`` While such a file holds a team rule or agent back, every `pull` does a full sync instead of stopping at "Already synced", until you rename or delete the file; the next pull then delivers the team version.
 
-`push` writes back only a rule's Markdown body. A file in a tool's rules directory with no matching team rule stays yours: `pull` leaves it, and `push` does not offer it as a new team rule. A verbatim copy from an older teamai is rewritten on the next `pull` when it still matches what teamai delivered; a copy you edited is kept and named.
+`push` writes back only a rule's Markdown body. A file in a tool's rules directory with no matching team rule stays yours: `pull` leaves it, and `push` does not offer it as a new team rule.
 
 Most tools get one file per rule in their rules directory. Codex, `codex-internal` and `tcodex` read no rules directory (`.codex/rules/` holds Codex's own `*.rules` command policies), so `pull` writes no rule file for them. In user scope the team rules go into a `<!-- [teamai:team-rules:start] -->` block of the tool's own `AGENTS.md` (`~/.codex/AGENTS.md`, `~/.codex-internal/AGENTS.md`, `~/.tcodex/AGENTS.md`; a `toolRoots` entry moves it), which only that tool reads. In a project their session-start hook adds the project's team rules to each session instead: the project `AGENTS.md` is the owners' file, and other tools with a rules format of their own read it too. 
 
@@ -79,9 +75,9 @@ ZCode, DeepSeek Harness, OpenClaw, Pi and JoyCode have no rules format either, a
 
 In a project, ZCode and DeepSeek Harness get the project's team rules from the same session-start hook as Codex, and Pi from teamai's Pi extension, which adds them to each run's system prompt after the team instructions; none of them gets a user rule there, so with teamai in both scopes each rule reaches the tool once. ZCode and DeepSeek Harness drop the hook's text when they compact a session, so the rules come back in the next session, and DeepSeek Harness runs the hook detached, so its first request can miss them; in a project `init` and `doctor` say so. 
 
-OpenClaw gets no project rules, since its only project file is the `AGENTS.md` other tools read too; in a project `init` and `doctor` say so. Earlier releases copied rules to `.openclaw/rules`, `.pi/rules`, `~/.pi/agent/rules` and `~/.joycode/rules`, which these tools never read: the next pull, even at an unchanged team revision, removes the copies that still hold what teamai delivered and names the ones you edited. Hermes gets the same text in its `SOUL.md` block, from a user-scope pull only: `SOUL.md` is global, so a project pull leaves it as the user-scope pull wrote it. 
+OpenClaw gets no project rules, since its only project file is the `AGENTS.md` other tools read too; in a project `init` and `doctor` say so. Hermes gets the same text in its `SOUL.md` block, from a user-scope pull only: `SOUL.md` is global, so a project pull leaves it as the user-scope pull wrote it. 
 
-A user pull rewrites the block also when the team repo has not moved, which repairs one an older release's project pull overwrote. On a machine with no user-scope config, a project pull removes the team rules block an older project pull left behind, preserving other SOUL.md content. Hermes gets no project rules, and in a project `init` and `doctor` say why: `.hermes.md` would hide the project `AGENTS.md`, a `pre_llm_call` hook repeats the rules on every turn, and the one plugin prompt section (at most 4,000 characters) already carries the team instructions. Frontmatter is dropped, so a rule with `paths:` applies everywhere there, led by an `Applies to files matching: <globs>` line. 
+A user pull rewrites the block also when the team repo has not moved. Hermes gets no project rules, and in a project `init` and `doctor` say why: `.hermes.md` would hide the project `AGENTS.md`, a `pre_llm_call` hook repeats the rules on every turn, and the one plugin prompt section (at most 4,000 characters) already carries the team instructions. Frontmatter is dropped, so a rule with `paths:` applies everywhere there, led by an `Applies to files matching: <globs>` line. 
 
 Codex runs the hook again after a compaction or a clear, and adds nothing when it resumes a session, which already holds the rules. A subagent Codex spawns gets them through the `SubagentStart` hook. The public Codex runs only trusted hooks. teamai trusts the hooks it writes automatically; if automatic trust is disabled or fails, approve them in `/hooks` to receive the project rules.
 
@@ -89,11 +85,7 @@ The culture, shared-instructions and recall blocks follow the same split. In use
 
 > A `toolPaths` in the team `teamai.yaml` replaces the built-in defaults whole. A team that sets it should give each Codex-family entry `userScope.claudemd: .codex/AGENTS.md` (`.codex-internal/…`, `.tcodex/…`) for the user-scope rules and blocks, and drop its `rules` path, since Codex never reads that directory. A top-level `claudemd` would put the blocks back in the project `AGENTS.md`, so leave it out. In a project the hook needs only the entry's `settings` path, where it is installed. The `codex` entry also needs `mcpProject: .codex/config.toml` for the project's team MCP servers. 
 
-> The same goes for the other tools whose rules moved in this release: an entry written before it still sends rules where the tool never reads them, and pull leaves those copies. Remove `rules` and `userScope.rules` from a Pi or OpenClaw entry, add `userScope.rules: null` to a JoyCode entry (its project `rules: .joycode/rules` stays), and set a WorkBuddy entry's `rules` to `.codebuddy/rules` with `userScope.rules: .workbuddy/rules`. `teamai doctor` fails `Rules delivered to <tool>` for such an entry and names the change.
-
-> Upgrading from a release that copied rules to `.codex/rules/`: the next `pull` removes the `.md` copies teamai delivered there, including `teamai-recall.md`. Cleanup follows the recorded `toolRoots` location and checks both a publisher's bare local filename and its namespaced copy. A copy you edited is kept and named in a warning, and the `*.rules` files are never touched. A copy of a rule the team has since removed is deleted only if it matches its recorded delivery hash; without that record, it is kept and named too. The same pull adds `additionalContextLimit: 0` and a `SubagentStart` entry to the teamai hooks in `hooks.json`, which teamai then trusts again in the public Codex (see [Hooks](./advanced.md#hooks)).
-
-### Env, hooks and MCP servers by namespace
+## Env, hooks and MCP servers by namespace
 
 Env variables, team hooks and MCP servers are each a list file in the team
 repo's root, shared with everyone, plus one file per namespace:
@@ -150,9 +142,7 @@ projects:
   the environment doesn't override either, and `env.sh` exports that value (not one
   set with `--from-env`). `teamai env list` and `teamai list env` show that value
   with where it comes from, `team` or `env.yaml`.
-- **Upgrade every member first.** teamai 0.25.0 and the 0.26.0 betas reject a
-  `resources:` key they do not know, so declaring `env`, `hooks` or `mcp` breaks
-  their pull. From this version on, an unknown `resources:` key only warns, and
+- An unknown `resources:` key only warns, and
   `teamai roles` and `teamai projects` keep it when they save the manifest.
 
 The per-entry keys these files replace:
@@ -171,16 +161,14 @@ will not deliver the variable, naming the namespace file to move it to.
 
 An entry with any other key its schema does not know, such as a mistyped `role:`,
 reaches nobody as well, and pull, the list commands, status and `teamai doctor` name the
-file, the entry and the key. Correct the key or remove it. A key that a later
-teamai version adds is unknown to an older one too, so upgrade every member
-before the team uses a new entry key.
+file, the entry and the key. Correct the key or remove it.
 
 A hooks or MCP file that has none of its top-level keys, such as `server:` for
 `servers:`, is treated like a file that does not parse: pull keeps the installed
 servers or hooks, and pull and `teamai doctor` name the file, the keys found and
 the key expected. An extra top-level key next to `servers:` or `hooks:` is ignored.
 
-### Env (environment variables)
+## Env (environment variables)
 
 ```bash
 teamai env add API_ENDPOINT https://api.example.com --description "Team API endpoint"
@@ -313,11 +301,11 @@ Anything else — a trailing redirection or extra argument on the source itself,
 
 Nothing inside an `if`, `for`/`while`/`until`, `case`, `select`, a function body, or a `(...)`/`{...}` group counts, however it's guarded — none of those are guaranteed to run (a subshell or brace group's body may always run, but its exports never reach the caller either way) — which also means the standard Debian/Ubuntu `.profile` template (the same source, but nested two `if`s deep, checking `$BASH_VERSION` on the way) is not recognized and falls back to the order-based pick. Nothing textually after an unconditional, top-level `return` or `exit` counts either, since control never reaches it. 
 
-Anything this can't resolve one way or the other, and a block sitting in a candidate nothing in the chain actually reaches, is never preferred over the order-based pick — otherwise a stale block left by a pre-#682 install would outrank the correct file forever, silently reintroducing #682 on upgrade.
+Anything this can't resolve one way or the other, and a block sitting in a candidate nothing in the chain actually reaches, is never preferred over the order-based pick.
 
-`doctor` (and the check `pull` runs automatically afterward) also flags a teamai env block left behind in a *different* candidate file — e.g. a block a pre-#682 install wrote to `.bashrc` before this file-selection logic changed — even if that block is broken and was never functional. `teamai uninstall` removes it.
+`doctor` (and the check `pull` runs automatically afterward) also flags a teamai env block left behind in a *different* candidate file, even if that block is broken and was never functional. `teamai uninstall` removes it.
 
-### Docs
+## Docs
 
 Place documentation in the team repo's `docs/` directory; after pushing, team members will automatically receive it on their next `pull`.
 
@@ -337,7 +325,7 @@ projects:
 - `recall` and `teamai doctor` use the same filter: recall indexes only the docs you receive, and `Team docs delivered` does not expect a namespace you do not have.
 - Legacy mode (no role and no `projects.yaml`) delivers all of `docs/`, as before.
 
-### MCP servers
+## MCP servers
 
 Declare each server once in the team repo's `mcp/mcp.yaml`. On `teamai pull` it is written into every installed tool's own MCP config, translated into that tool's native format. Tools outside `enabledAgents` or listed in `disabledAgents` are skipped.
 
@@ -416,18 +404,13 @@ Pull and uninstall
 also take out of the files CodeBuddy does not read an entry with no record that
 equals a team version of the server, so a lost record does not leave one
 behind. A path that is a symlink to another of these files counts as that
-file: teamai writes through it and moves nothing between them. Earlier releases
-always created `~/.codebuddy/mcp.json`, which hides `~/.codebuddy.json`: when it
-holds nothing but teamai's servers and a later file exists, the next pull moves
-them to that file, deletes `~/.codebuddy/mcp.json` and says so once. In
+file: teamai writes through it and moves nothing between them. In
 `~/.codebuddy.json` teamai touches only its own entries. 
 
 A
 `~/.codebuddy/mcp.json` that also holds a server of yours, or any other key,
 stays where it is and stays the file teamai writes. An HTTP-backed team's local
-agent installs into the same file CodeBuddy reads and records it; a server it
-installed in a file CodeBuddy no longer reads moves there when it is installed
-again.
+agent installs into the same file CodeBuddy reads and records it.
 
 CodeBuddy Code's [MCP documentation](https://www.codebuddy.ai/docs/cli/mcp)
 lists the project root's `.mcp.json` as its preferred project configuration.
@@ -465,8 +448,7 @@ back works as for Claude above, so with the option on no pull writes `.mcp.json`
 
 On an HTTP-backed team the local agent follows the same option, read for each workspace: its `install_mcp` puts
 Claude's and CodeBuddy's servers in those local scopes, under the same keys, and writes no `.mcp.json`;
-`uninstall_mcp` and `teamai uninstall` remove exactly the servers it recorded there. A server an earlier install left
-in `.mcp.json` moves at the local agent's next sync; a copy you changed stays there, named, as yours, and so does an
+`uninstall_mcp` and `teamai uninstall` remove exactly the servers it recorded there. A server still in `.mcp.json` moves at the local agent's next sync; a copy you changed stays there, named, as yours, and so does an
 entry another tool's record still claims there. With the option off nothing moves, and while teamai cannot read it
 the local agent installs nothing for Claude or CodeBuddy in that workspace and says why. `teamai doctor` names a
 server the local agent recorded that is still in `.mcp.json`. `teamai source remove-http` leaves these servers where
@@ -491,7 +473,7 @@ teamai **resolves every `${VAR}` to its value and writes it verbatim** into each
 
 > ⚠️ **The resolved token lands on disk.** Project-scope MCP configs (`.mcp.json`, `.github/mcp.json`, `.cursor/mcp.json`, `.codex/config.toml`, `opencode.json`) then contain the literal secret. Whenever such a file would hold a value teamai resolved and git would track it, teamai lists the path in the clone's `.git/info/exclude` (creating `.git/info/` when the repository has none, as after `git init --template=`), inside a `# [teamai:mcp-exclude:start]` block (the worktrees of a repo share it), before it writes the value. 
 
-A symlink is excluded at the file the write actually lands in. teamai does not edit the committed `.gitignore`. A file git already tracks is left unchanged; `teamai mcp list` and `teamai doctor` name it. Run `git rm --cached <file>` and rotate the token if it was ever committed. The same applies to a file an older install wrote. Further cases are in [Team secrets](../designs/team-secrets.md).
+A symlink is excluded at the file the write actually lands in. teamai does not edit the committed `.gitignore`. A file git already tracks is left unchanged; `teamai mcp list` and `teamai doctor` name it. Run `git rm --cached <file>` and rotate the token if it was ever committed. Further cases are in [Team secrets](../designs/team-secrets.md).
 
 Claude Code may show project `.mcp.json` servers as pending approval until you accept them once in an interactive session. Servers in its local scope (`sharing.gitExclude` on, above) need no approval, and neither do CodeBuddy's.
 

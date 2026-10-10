@@ -1,14 +1,12 @@
 # 团队知识
 
-> [English](../knowledge.md) | [简体中文](knowledge.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---
 
 ## 知识沉淀与检索
 
-这是 Team Context，也是 Team Improvement 的起点：先记下本次 Session 真正学到的东西，再让下一次 Agent 能检索到。
+记下这次会话学到的东西，下一次 Agent 就能检索到。
 
 ### 贡献知识
 
@@ -123,7 +121,6 @@ recall 会为返回的每篇文档计数（`recalled_count`）。运行 recall �
 - **OMP。** subagent 路径要求主会话文件已写入磁盘：主会话没有会话文件时（`--no-session`），subagent 无法关联到父会话，也不产生采纳。OMP 不在 shell 中设置会话变量，因此 run 只能通过运行它的 `bash` 调用的认领确定归属：OMP 把大段输出转存为 artifact 时，`run=` 行和投票都会丢失；从 Claude Code shell 启动的 OMP 会先把 run 记在 Claude 会话下，直到该认领将其纠正。
 - **不计入的搜索。** OMP 的 `grep`（markdown 树形输出）和 Cursor 的 `Grep` 不产生证据；打开文档仍然计入。ZCode 打印的 `Grep` 行是相对其工作目录的路径，因此从团队仓库内的目录发起的 ZCode 搜索不计入。
 - **没有 PostToolUse hook。** OpenClaw、Hermes、Kiro、Trae 和 JoyCode 会记录其 recall，但不记录读取，因此这些 recall 从不投票。
-- **旧版 CLI。** 使用旧版 TeamAI 的成员仍从会话 transcript 投票，该路径以文件的 basename（`SKILL`、`setup`）而非 recall 打印的 id（`retry`、`common/setup`）作为 skill、子目录中的文档或 wiki 页面的键，因此这些投票落不到该文档上。顶层的 learnings 和文档不受影响，升级后即可解决。
 
 **在 `teamai stats` 中查看。** 当前 scope 的 recall 日志中有 run 时，`teamai stats` 会在 skill 使用统计之后追加一个 recall 小节，列出最近执行过 recall 的 10 个会话，最新的在前：
 

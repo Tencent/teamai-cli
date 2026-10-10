@@ -1,14 +1,12 @@
 # Team Knowledge
 
-> [English](knowledge.md) | [简体中文](zh-CN/knowledge.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---
 
 ## Knowledge Capture & Retrieval
 
-This is Team Context plus the start of Team Improvement: capture what a session actually learned, then let the next agent find it.
+Record what a session learned, then let the next agent search it.
 
 ### Contributing knowledge
 
@@ -125,7 +123,6 @@ Recall counts every doc it returns (`recalled_count`). A returned doc is **adopt
 - **OMP.** The subagent path needs the main session's file on disk: when it has none (`--no-session`), the subagent is not linked to its parent and gives no adoption. OMP sets no session variable in its shell, so a run settles only through the claim of the `bash` call that ran it: when OMP moves a large output into an artifact, the `run=` line and the vote are lost, and an OMP started from a Claude Code shell records its run under the Claude session until that claim corrects it.
 - **Searches not counted.** OMP's `grep` (a markdown tree) and Cursor's `Grep` add no evidence; opening the doc still counts. ZCode prints `Grep` lines relative to its working directory, so a ZCode search run from a directory inside the team repo is not counted.
 - **No PostToolUse hook.** OpenClaw, Hermes, Kiro and JoyCode record their recalls but no reads, so these recalls never vote.
-- **Older CLIs.** A member on an older TeamAI still votes from the session transcript, and that path keys a skill, a doc in a subdirectory or a wiki page by its file's basename (`SKILL`, `setup`) rather than the id recall prints (`retry`, `common/setup`), so those votes miss the doc. Top-level learnings and docs are unaffected, and upgrading ends it.
 
 **In `teamai stats`.** When the current scope's recall log has runs, `teamai stats` adds a recall section after the skill usage, with the 10 sessions that recalled most recently, newest first:
 

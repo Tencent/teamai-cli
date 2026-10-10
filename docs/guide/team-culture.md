@@ -1,18 +1,14 @@
 # Team Culture
 
-> [English](team-culture.md) | [简体中文](zh-CN/team-culture.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---
 
-## Team Culture
+A `culture.md` at the root of the team repo is written into each installed AI tool on pull. Later sessions see that text: culture, values, and coding standards.
 
-TeamAI supports injecting your team's culture into AI tools, so your AI coding assistant is aware of your team's culture, values, and coding standards in every session.
+## Creating culture.md
 
-### Creating culture.md
-
-The admin creates a `culture.md` file at the root of the team repo:
+Put a `culture.md` file at the root of the team repo:
 
 ```markdown
 ---
@@ -45,7 +41,7 @@ team:
 - Major changes require a design doc first
 ```
 
-### Frontmatter fields
+## Frontmatter fields
 
 | Field | Type | Description |
 |------|------|------|
@@ -59,7 +55,7 @@ team:
 
 The markdown body after the frontmatter becomes the body content of the team culture guidance, injected as a whole into each AI tool's instruction target (see [Where the blocks go](#where-the-blocks-go)).
 
-### How it works
+## How it works
 
 ```
 Team repo
@@ -84,11 +80,11 @@ teamai pull
 
 The injected content sits between the `<!-- [teamai:culture:start] -->` and `<!-- [teamai:culture:end] -->` markers, is automatically updated on every `pull`, and does not affect any other content in the file.
 
-A pull writes the culture, shared-instructions and recall blocks only to the files of AI tools that are installed, and leaves a file alone when its blocks are already current. Earlier releases wrote these blocks to files that tools now share or that hide other instructions (listed under [Where the blocks go](#where-the-blocks-go)); while no installed tool reads such a file, the next pull removes the teamai blocks from it and names the file in its output. A tool's current file is never cleaned on its own: `teamai uninstall --agent <tool>` removes those blocks. It deletes the file when nothing else is left, unless git tracks it. 
+A pull writes the culture, shared-instructions and recall blocks only to the files of AI tools that are installed, and leaves a file alone when its blocks are already current. A tool's current file is never cleaned on its own: `teamai uninstall --agent <tool>` removes those blocks. It deletes the file when nothing else is left, unless git tracks it. 
 
 A block with a missing or repeated marker is left as it is, with a warning to fix it by hand. `teamai pull --dry-run` lists the files a pull would change without writing them. When recall is disabled, the pull removes the recall block.
 
-#### Where the blocks go
+### Where the blocks go
 
 Two members of the same project can have different roles, so their shared instructions (`claudemd/`) can differ. The project's root `AGENTS.md` holds the instructions the project writes for everyone, so teamai never writes these blocks into it, into `~/AGENTS.md` or `~/.agents/AGENTS.md`, or into a file another tool reads. Each tool gets them in a file of its own or through its session hook:
 
@@ -131,31 +127,17 @@ Oh My Pi reads `RULES.md` as an always-applied rule beside its single user conte
 
 Pi and Oh My Pi wait for foreground session-start dispatch, including HTTP prompt sync, before caching the project instructions for the first prompt. Codex reads its HTTP prompt cache after the same sync, before returning SessionStart context.
 
-A pull from an earlier release may have left these blocks in a file listed below. A pull removes each block only after its replacement was resolved and delivered to every installed tool that wrote that file. An unreadable or invalid culture source keeps the old culture block even if shared instructions and recall sync successfully. Failed target writes, foreign files, missing extensions or disabled plugins keep the old blocks for a retry. Excluded tools' current and retired files stay unchanged and are excluded from doctor's stale-instruction check.
-
 HTTP prompt commands verify the current destinations of all installed former writers, including delivery from previous commands, before removing the retired shared-instructions block. A destination holding an older prompt does not count as delivered. HTTP cleanup preserves culture and recall blocks, which those commands do not replace.
 
-While a native project instruction file still contains a TeamAI block, the session hook skips that block, including a cached HTTP prompt, to avoid adding a second member selection. Other blocks still reach the hook. Delivery resumes after the retained block is cleaned. Codex respects `AGENTS.override.md` precedence, and Oh My Pi respects `.omp/AGENTS.md`. Doctor reports incomplete or repeated markers in retired files; repair those markers before retrying pull.
+While a native project instruction file still contains a TeamAI block, the session hook skips that block, including a cached HTTP prompt, to avoid adding a second member selection. Other blocks still reach the hook. Delivery resumes after the retained block is cleaned. Codex respects `AGENTS.override.md` precedence, and Oh My Pi respects `.omp/AGENTS.md`.
 
-The pull names each file it changes:
-
-- Claude Code, project scope: `.claude/CLAUDE.md`
-- CodeBuddy, project scope: `.codebuddy/CODEBUDDY.md`
-- WorkBuddy: `~/AGENTS.md` and the project `AGENTS.md`
-- Hermes: `~/AGENTS.md`
-- Oh My Pi: `~/.omp/agent/AGENTS.md` and `.omp/AGENTS.md`. Oh My Pi reads one context file per level, so these hid `~/.agents/AGENTS.md` and the project's `AGENTS.md`.
-- Pi: the project `AGENTS.md`
-- OpenClaw, project scope: `.openclaw/workspace/AGENTS.md`, which OpenClaw never reads
-- Codex family: the project `AGENTS.md`, when a team's `toolPaths` or an earlier build pointed Codex there
-- Any tool whose file changed: the `claudemd` path the team's `toolPaths` sets for it, unless another tool's blocks go there now
-
-`teamai doctor` checks that each installed tool can load these blocks: that each file holds the current blocks, that OpenCode's config lists its file (on OpenCode V2, that teamai's plugin is installed instead), that the Pi or Oh My Pi extension and the Hermes plugin are installed and enabled, that the Hermes section fits its limit, and that no file an earlier release wrote still holds blocks.
+`teamai doctor` checks that each installed tool can load these blocks: that each file holds the current blocks, that OpenCode's config lists its file (on OpenCode V2, that teamai's plugin is installed instead), that the Pi or Oh My Pi extension and the Hermes plugin are installed and enabled, that the Hermes section fits its limit.
 
 If a requested block has incomplete or duplicated markers, the entire file stays unchanged, including its other managed blocks. Fix the named markers, then run `teamai pull` again.
 
-A file named like a teamai target that teamai did not write is left alone and not listed in OpenCode's `instructions` (an entry you listed for it stays), and the pull warns about it. A team rule named `teamai-context` is not delivered, since it would land on that file; the pull names it, and removes a copy an earlier release delivered unless you changed it. Where that copy is not the tool's instruction file (OpenCode's `.opencode/rules/`, Kiro's `.kiro/steering/`), one your repository tracks is kept and named, as any tracked copy is. teamai never changes `.gitignore` or the git index; what it lists in `.git/info/exclude` is described in [Keeping Delivered Files Out of Git](./member-guide.md#keeping-delivered-files-out-of-git). Your `teamai-context` file is among them while that option is on: your tools still load it, and a search that follows git's ignore rules skips it, as it skips excluded skills and rules; open it by its path.
+A file named like a teamai target that teamai did not write is left alone and not listed in OpenCode's `instructions` (an entry you listed for it stays), and the pull warns about it. A team rule named `teamai-context` is not delivered, since it would land on that file; the pull names it. teamai never changes `.gitignore` or the git index; what it lists in `.git/info/exclude` is described in [Keeping Delivered Files Out of Git](./member-guide.md#keeping-delivered-files-out-of-git). Your `teamai-context` file is among them while that option is on: your tools still load it, and a search that follows git's ignore rules skips it, as it skips excluded skills and rules; open it by its path.
 
-### Viewing the result
+## Viewing the result
 
 After pulling, you can view an AI tool's instruction file directly, for example Claude Code's user file:
 

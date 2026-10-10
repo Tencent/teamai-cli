@@ -1,16 +1,12 @@
 # 共享团队资源
 
-> [English](../sharing.md) | [简体中文](sharing.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---
 
-## 共享团队资源
+把 skills、rules 和其他 harness 文件放进团队仓库，用 merge request 评审。`teamai pull` 会装到本机。
 
-这是 Team Execution：Skills、Rules 等 Harness 定义一次，经 MR 评审后由 `teamai pull` 分发到每个 Agent。
-
-### Skills（技能）
+## Skills（技能）
 
 ```bash
 # 创建 skill
@@ -48,7 +44,7 @@ teamai push --role pm
 - 默认：`skills/<primaryRole>/<skill-name>/`
 - 显式覆盖：`skills/<role>/<skill-name>/`（通过 `--role`）
 
-### Rules（规则）
+## Rules（规则）
 
 带作用范围的 rule 中，YAML 注释不属于 glob：`paths: **/*.ts # TypeScript files` 的原生规则只匹配 `**/*.ts`，内联渠道也得到同样的路径提示。`paths:` 下的块列表条目同样如此。
 
@@ -67,11 +63,11 @@ teamai push
 
 > 管理员可在 `teamai.yaml` 中设置强制规则（`sharing.rules.enforced`），成员不可删除。
 
-teamai 没有投递记录的 rule 文件，只有当它与团队仓库历史中该团队 rule 的某个版本相同时，才算 teamai 的。团队从未有过的名字的个人 rule 现在会被保留而不再被清理，即使在 teamai 原本会清理的目录（`.claude/rules/`、`.cursor/rules/`）中也是如此。位于团队 rule 或 agent 路径上的你自己的文件同样会被 `pull`、`teamai remove` 和 `teamai uninstall` 保留并指出（见[自动同步](./member-guide.md#自动同步)中“pull 会保留你修改过的 skill、rule 和 agent”）；`teamai remove` 和 `teamai uninstall` 只删除 teamai 的副本（在该 checkout 的记录中，或按历史是某个团队版本），并逐一指出留下的你自己的文件：
+teamai 没有投递记录的 rule 文件，只有当它与团队仓库历史中该团队 rule 的某个版本相同时，才算 teamai 的。团队从未有过的名字的个人 rule 会被保留，在 `.claude/rules/`、`.cursor/rules/` 中也是如此。位于团队 rule 或 agent 路径上的你自己的文件同样会被 `pull`、`teamai remove` 和 `teamai uninstall` 保留并指出（见[自动同步](./member-guide.md#自动同步)中“pull 会保留你修改过的 skill、rule 和 agent”）；`teamai remove` 和 `teamai uninstall` 只删除 teamai 的副本（在该 checkout 的记录中，或按历史是某个团队版本），并逐一指出留下的你自己的文件：
 
 ``Kept <path>: it is not teamai's (no delivery record, and it matches no team version of <resource>), so <command> left it.``只要这样的文件挡住了某个团队 rule 或 agent，每次 `pull` 都会做完整同步，而不是停在 “Already synced”，直到你重命名或删除该文件；之后的下一次 pull 就会送达团队版本。
 
-`push` 只把 rule 的 Markdown 正文写回团队仓库。工具 rules 目录里没有对应团队 rule 的文件属于你：`pull` 会留下它，`push` 也不会把它当成新的团队 rule。旧版 teamai 原样写入的副本，若仍与当时下发的内容一致，下一次 `pull` 会改写成新格式；你改过的副本会保留并点名。
+`push` 只把 rule 的 Markdown 正文写回团队仓库。工具 rules 目录里没有对应团队 rule 的文件属于你：`pull` 会留下它，`push` 也不会把它当成新的团队 rule。
 
 大多数工具在自己的 rules 目录中为每条 rule 得到一个文件。Codex、`codex-internal` 和 `tcodex` 不读取 rules 目录（`.codex/rules/` 存放的是 Codex 自己的 `*.rules` 命令策略文件），因此 `pull` 不为它们写任何 rule 文件。user scope 下，团队 rule 写入该工具自己的 `AGENTS.md`（`~/.codex/AGENTS.md`、`~/.codex-internal/AGENTS.md`、`~/.tcodex/AGENTS.md`；`toolRoots` 条目可改变其位置）中的 `<!-- [teamai:team-rules:start] -->` 区块，只有该工具读取这个文件。在项目中，改由它们的 session-start hook 把项目的团队 rule 加入每个会话：
 
@@ -79,21 +75,17 @@ teamai 没有投递记录的 rule 文件，只有当它与团队仓库历史中�
 
 pull 会给出警告，`doctor` 会失败，直到该文件改为纯 JSON。在项目中，ZCode 和 DeepSeek Harness 通过与 Codex 相同的 session-start hook 得到项目的团队 rule，Pi 则通过 teamai 的 Pi 扩展得到，扩展把它们加在团队指令之后、加入每次运行的系统提示；它们在项目中都不会得到 user rule，因此在两个 scope 都安装 teamai 时，每条 rule 只送达该工具一次。ZCode 和 DeepSeek Harness 在压缩会话时会丢弃 hook 的文本，rule 要到下一个会话才回来；DeepSeek Harness 以分离方式运行该 hook，第一次请求可能错过它们；在项目中 `init` 和 `doctor` 会说明这一点。OpenClaw 不会得到项目 rule，因为它唯一的项目文件是其他工具也会读取的 `AGENTS.md`；
 
-在项目中 `init` 和 `doctor` 会说明这一点。旧版本把 rule 复制到这些工具从不读取的 `.openclaw/rules`、`.pi/rules`、`~/.pi/agent/rules` 和 `~/.joycode/rules`：下一次 pull（即使团队版本未变）会删除仍是 teamai 所下发内容的副本，并点名你改过的副本。Hermes 的 `SOUL.md` 区块得到同样的内容，且只由 user scope 的 pull 写入：
+在项目中 `init` 和 `doctor` 会说明这一点。Hermes 的 `SOUL.md` 区块得到同样的内容，且只由 user scope 的 pull 写入：
 
-`SOUL.md` 是全局文件，项目 pull 会让它保持 user scope pull 写入时的样子。即使团队仓库没有变化，user pull 也会重写该区块，从而修复旧版本项目 pull 覆盖过的区块。若本机没有 user scope 配置，项目 pull 会移除旧版项目 pull 留下的团队规则区块，并保留 SOUL.md 中的其他内容。Hermes 不会得到项目 rule，在项目中 `init` 和 `doctor` 会说明原因：
+`SOUL.md` 是全局文件，项目 pull 会让它保持 user scope pull 写入时的样子。即使团队仓库没有变化，user pull 也会重写该区块。Hermes 不会得到项目 rule，在项目中 `init` 和 `doctor` 会说明原因：
 
 `.hermes.md` 会遮蔽项目 `AGENTS.md`，`pre_llm_call` hook 会在每一轮重复添加 rule，而唯一的插件提示段落（最多 4,000 个字符）已用于团队指令。frontmatter 会被去掉，所以带 `paths:` 的 rule 在这里对所有文件生效，并以一行 `Applies to files matching: <globs>` 开头。Codex 在压缩上下文或 clear 之后会再次运行该 hook；恢复会话时不添加任何内容，因为会话中已包含这些 rule。Codex 启动的子 agent 通过 `SubagentStart` hook 获得它们。公开版 Codex 只运行已信任的 hook。teamai 会自动信任它写入的 hooks；如果自动信任被禁用或失败，请在 `/hooks` 中批准它们以获得项目的 rule。
 
 culture、共享指令和 recall 区块采用同样的划分。user scope 下它们写入同一个 `AGENTS.md`，标记之外你自己的内容保持不变。在项目中，session-start hook 把它们与 rule 一起加入会话，`pull` 不改动项目 `AGENTS.md`。
 
-> 团队 `teamai.yaml` 中的 `toolPaths` 会整体替换内置默认值。设置了它的团队应为每个 Codex 系条目加上 `userScope.claudemd: .codex/AGENTS.md`（`.codex-internal/…`、`.tcodex/…`），用于 user scope 的 rule 和区块，并去掉其 `rules` 路径，因为 Codex 从不读取该目录。顶层的 `claudemd` 会把区块重新写进项目 `AGENTS.md`，所以不要设置。在项目中，hook 只需要该条目的 `settings` 路径，它安装在那里。`codex` 条目还需要 `mcpProject: .codex/config.toml`，项目的团队 MCP server 才会写入。本版本中 rules 位置发生变化的其他工具同理：
+> 团队 `teamai.yaml` 中的 `toolPaths` 会整体替换内置默认值。设置了它的团队应为每个 Codex 系条目加上 `userScope.claudemd: .codex/AGENTS.md`（`.codex-internal/…`、`.tcodex/…`），用于 user scope 的 rule 和区块，并去掉其 `rules` 路径，因为 Codex 从不读取该目录。顶层的 `claudemd` 会把区块重新写进项目 `AGENTS.md`，所以不要设置。在项目中，hook 只需要该条目的 `settings` 路径，它安装在那里。`codex` 条目还需要 `mcpProject: .codex/config.toml`，项目的团队 MCP server 才会写入。
 
-> 之前写的条目仍会把 rules 发往工具从不读取的目录，pull 也会保留那些副本。请从 Pi 或 OpenClaw 条目中去掉 `rules` 和 `userScope.rules`，给 JoyCode 条目加上 `userScope.rules: null`（其项目级 `rules: .joycode/rules` 保留），并把 WorkBuddy 条目的 `rules` 设为 `.codebuddy/rules`、`userScope.rules` 设为 `.workbuddy/rules`。对这样的条目，`teamai doctor` 的 `Rules delivered to <tool>` 会失败并指出要改什么。
-
-> 从把 rule 复制到 `.codex/rules/` 的旧版本升级后，下一次 `pull` 会删除 teamai 投递到那里的 `.md` 副本，包括 `teamai-recall.md`。清理使用记录的 `toolRoots` 位置，同时检查发布者本地的无命名空间文件名及命名空间副本。你改过的副本会保留，并在警告中点名；`*.rules` 文件从不改动。团队此后已删除的 rule，其副本只有与记录的投递哈希一致时才会删除；没有该记录时也会保留并点名。同一次 pull 会为 `hooks.json` 中的 teamai hook 加上 `additionalContextLimit: 0` 和一个 `SubagentStart` 条目，随后 teamai 会在公开版 Codex 中重新信任这些 hook（见 Hooks 章节）。
-
-### Env、hooks 与 MCP server 按 namespace 划分
+## Env、hooks 与 MCP server 按 namespace 划分
 
 环境变量、团队 hooks 和 MCP server 各自是团队仓库根目录下的一个列表文件（对所有人共享），
 外加每个 namespace 一个文件：
@@ -140,9 +132,7 @@ projects:
   你用 `teamai env set KEY` 为该团队设置了值时，变量取你的值，否则取文件中的值；环境
   不覆盖二者，`env.sh` 导出的就是这个值（用 `--from-env` 设置的除外）。`teamai env list` 与
   `teamai list env` 显示这个值及其来源：`team` 或 `env.yaml`。
-- **先让所有成员升级。** teamai 0.25.0 与 0.26.0 beta 会拒绝不认识的 `resources:` key，
-  声明 `env`、`hooks` 或 `mcp` 会让这些版本的 pull 失败。从本版本起，未知的
-  `resources:` key 只会给出警告，`teamai roles` 与 `teamai projects` 保存 manifest 时也会保留它。
+- 未知的 `resources:` key 只会给出警告，`teamai roles` 与 `teamai projects` 保存 manifest 时也会保留它。
 
 这些文件取代的按条目 key：
 
@@ -150,7 +140,7 @@ projects:
 |---|---|---|
 | `projects:` | env、hooks、MCP | 已移除：该条目不再下发给任何人；pull、各 list 命令和 status 都会警告并给出应迁往的文件 |
 | `roles:` | env | 已移除，处理方式相同 |
-| `roles:` | hooks、MCP | 已弃用：在一个次版本内仍像 0.25.0 一样按角色过滤，根文件中以不同 `roles:` 重复的名字也照旧生效；pull 会警告，`teamai doctor` 有一项检查，两者都会列出每个目标文件 |
+| `roles:` | hooks、MCP | 已弃用：仍按角色过滤，根文件中以不同 `roles:` 重复的名字也照旧生效；pull 会警告，`teamai doctor` 有一项检查，两者都会列出每个目标文件 |
 
 没有自动迁移：把每个条目移到警告给出的 namespace 文件中，并删掉该 key。
 如果 `teamai env add` 更新的已有变量仍带有已移除的按条目 `projects:` 或 `roles:` key，
@@ -158,14 +148,12 @@ projects:
 
 条目若带有其 schema 不认识的其他 key（例如拼错的 `role:`），同样不会下发给任何人；
 pull、各 list 命令、status 与 `teamai doctor` 会指出文件、条目和该 key。请改正或删除这个 key。
-较新版本 teamai 新增的 key 对旧版本同样是未知 key，因此团队使用新的条目 key 之前，
-请先让所有成员升级。
 
 hooks 或 MCP 文件若没有任何一个应有的顶层 key（例如把 `servers:` 写成 `server:`），
 按无法解析的文件处理：pull 保留已安装的 server 或 hook，pull 与 `teamai doctor`
 会指出文件、实际找到的 key 和应有的 key。`servers:` 或 `hooks:` 旁多出的顶层 key 会被忽略。
 
-### Env（环境变量）
+## Env（环境变量）
 
 ```bash
 teamai env add API_ENDPOINT https://api.example.com --description "团队 API 地址"
@@ -274,11 +262,11 @@ shell 配置文件会保留用户级 scope 的 teamai 区块，外加一个项�
 
 ——一律不识别，直接回退到按优先级选出的文件，而不是去猜。这是刻意收窄到两种固定写法的封闭集合，而不是尝试解析任意的 shell 条件：真要匹配一个真实 shell 脚本能用来让某一行变成有条件执行（或者把可执行内容伪装成惰性文本）的所有手法，需要一个真正的 shell 解析器，任何固定规模的规则集合都不可能穷尽这件事。嵌在 `if`、`for`/`while`/`until`、`case`、`select`、函数体，或者 `(...)`/`{...}` 分组里的内容一律不算数，不管外层条件写的是什么
 
-——这些结构要么不保证一定会执行，要么即使一定会执行（比如子 shell 或大括号分组），它导出的环境变量也传不到调用它的 shell 里，这也意味着 Debian/Ubuntu 标准模板里那种嵌套两层 `if`、沿途还检查 `$BASH_VERSION` 的写法无法被识别，会回退到按优先级选出的文件。位于无条件的顶层 `return` 或 `exit` 之后的内容同样不算数，因为控制流根本不会执行到那里。凡是这套逻辑判断不了的情况，以及当前这条链条根本没触及到的候选文件——哪怕它本身带着代码块——都绝不会因此被优先选中，否则 #682 之前旧版本留下的失效代码块就会永远压过正确的文件，等于在升级后又悄悄把 #682 引入回来。
+——这些结构要么不保证一定会执行，要么即使一定会执行（比如子 shell 或大括号分组），它导出的环境变量也传不到调用它的 shell 里，这也意味着 Debian/Ubuntu 标准模板里那种嵌套两层 `if`、沿途还检查 `$BASH_VERSION` 的写法无法被识别，会回退到按优先级选出的文件。位于无条件的顶层 `return` 或 `exit` 之后的内容同样不算数，因为控制流根本不会执行到那里。凡是这套逻辑判断不了的情况，以及当前这条链条根本没触及到的候选文件——哪怕它本身带着代码块——都绝不会因此被优先选中。
 
-`doctor`（以及 `pull` 结束后自动运行的检查）还会标记出遗留在*其他*候选文件中的 teamai 环境变量块——例如 #682 之前的旧版本写入 `.bashrc` 的代码块，即便该代码块本身已损坏、从未生效。`teamai uninstall` 会清理它。
+`doctor`（以及 `pull` 结束后自动运行的检查）还会标记出遗留在*其他*候选文件中的 teamai 环境变量块，即便该代码块本身已损坏、从未生效。`teamai uninstall` 会清理它。
 
-### Docs（文档）
+## Docs（文档）
 
 将文档放入团队仓库 `docs/` 目录，push 后团队成员 pull 时自动同步。
 
@@ -298,7 +286,7 @@ projects:
 - `recall` 和 `teamai doctor` 使用同一过滤规则：recall 只索引你收到的文档，`Team docs delivered` 不会要求你拥有未激活的 namespace。
 - 旧模式（没有角色，也没有 `projects.yaml`）照旧分发整个 `docs/`。
 
-### MCP Server
+## MCP Server
 
 在团队仓库的 `mcp/mcp.yaml` 中声明一次，`teamai pull` 时会按各工具的原生格式写入它们各自的 MCP 配置文件。不在 `enabledAgents` 中或列在 `disabledAgents` 中的工具会被跳过。
 
@@ -371,10 +359,6 @@ Codex 只在受信任的项目中读取 `<project>/.codex/config.toml`。写入�
 pull 和 uninstall 还会从 CodeBuddy 不读取的文件中移除没有记录、但与某个团队版本的 server 相同的条目，
 因此记录丢失也不会留下残余。指向这几个文件中另一个的符号链接视为该文件本身：teamai 通过链接写入，
 不会在它们之间移动任何内容。
-早期版本总是创建 `~/.codebuddy/mcp.json`，它会遮住 `~/.codebuddy.json`：当它只含 teamai 的 server、
-且排在后面的文件存在时，下一次 pull 会把这些 server 移入该文件，删除 `~/.codebuddy/mcp.json`，
-并只提示一次。在 `~/.codebuddy.json` 中 teamai 只改动自己的条目。若 `~/.codebuddy/mcp.json`
-还含有你自己的 server 或任何其他键，它保持原样，teamai 仍写入该文件。
 
 
 HTTP 模式团队的本地 agent 也安装到 CodeBuddy 读取的那个文件并记录它；
@@ -434,7 +418,7 @@ teamai 会**把每个 `${VAR}` 解析成取值后原样写入**各工具的配�
 
 > ⚠️ **解析后的 token 会落盘。** 项目级 MCP 配置（`.mcp.json`、`.github/mcp.json`、`.cursor/mcp.json`、`.codex/config.toml`、`opencode.json`）因此含有明文密钥。只要这类文件将含有 teamai 解析出的值且 git 会跟踪它，teamai 就会在写入该值之前把路径写入本地克隆的 `.git/info/exclude`（仓库没有 `.git/info/` 时会先创建它，例如用 `git init --template=` 创建的仓库），放在 `# [teamai:mcp-exclude:start]` 块中（同一仓库的各 worktree 共用该文件）。
 
-符号链接按实际写入的那个文件加入 exclude。teamai 不改已提交的 `.gitignore`。git 已经跟踪的文件保持原样，`teamai mcp list` 和 `teamai doctor` 会指出它。若曾经提交过，执行 `git rm --cached <file>` 并轮换 token。旧版本写入的文件同样处理。其余情况见 [Team secrets](../../designs/team-secrets.md)。
+符号链接按实际写入的那个文件加入 exclude。teamai 不改已提交的 `.gitignore`。git 已经跟踪的文件保持原样，`teamai mcp list` 和 `teamai doctor` 会指出它。若曾经提交过，执行 `git rm --cached <file>` 并轮换 token。其余情况见 [Team secrets](../../designs/team-secrets.md)。
 
 Claude Code 可能把来自仓库的 `.mcp.json` 标为待批准，需在交互式会话中确认一次。local scope 中的 server（开启 `sharing.gitExclude` 时，见上文）无需批准，CodeBuddy 的也是如此。
 

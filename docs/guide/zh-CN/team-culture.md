@@ -1,18 +1,14 @@
 # 团队文化
 
-> [English](../team-culture.md) | [简体中文](team-culture.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---
 
-## 团队文化
+团队仓库根目录的 `culture.md` 会在 pull 时写进已安装的 AI 工具。之后的会话能看到这段文字：团队文化、价值观和编码准则。
 
-TeamAI 支持将团队文化注入到 AI 工具中，让 AI 编码助手在每次会话中都能感知你的团队文化、价值观和编码准则。
+## 创建 culture.md
 
-### 创建 culture.md
-
-管理员在团队仓库根目录创建 `culture.md` 文件：
+在团队仓库根目录放一个 `culture.md`：
 
 ```markdown
 ---
@@ -45,7 +41,7 @@ team:
 - 重大变更需要先写设计文档
 ```
 
-### frontmatter 字段
+## frontmatter 字段
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -59,7 +55,7 @@ team:
 
 frontmatter 之后的 markdown body 部分会作为团队文化指引的正文内容，整体注入到各 AI 工具的指令目标文件（见[这些块写到哪里](#这些块写到哪里)）。
 
-### 工作原理
+## 工作原理
 
 ```
 团队仓库
@@ -84,9 +80,9 @@ teamai pull
 
 注入的内容位于 `<!-- [teamai:culture:start] -->` 和 `<!-- [teamai:culture:end] -->` 标记之间，每次 pull 时自动更新，不会影响文件中的其他内容。
 
-pull 只把团队文化、共享指令和 recall 块写入已安装 AI 工具的文件；块内容未变化时不改写文件。早期版本把这些块写进了如今由多个工具共用或会遮蔽其他指令的文件（见[这些块写到哪里](#这些块写到哪里)）；只要没有已安装的工具读取这类文件，下一次 pull 就会移除其中的 teamai 块，并在输出中列出该文件。工具当前的目标文件不会被单独清理：`teamai uninstall --agent <tool>` 会移除其中的块。文件中没有其他内容时一并删除该文件，但 git 跟踪的文件不会被删除。标记缺失或重复的块保持原样，并提示手动修复。`teamai pull --dry-run` 只列出将要修改的文件，不写入。recall 关闭时，pull 会移除 recall 块。
+pull 只把团队文化、共享指令和 recall 块写入已安装 AI 工具的文件；块内容未变化时不改写文件。工具当前的目标文件不会被单独清理：`teamai uninstall --agent <tool>` 会移除其中的块。文件中没有其他内容时一并删除该文件，但 git 跟踪的文件不会被删除。标记缺失或重复的块保持原样，并提示手动修复。`teamai pull --dry-run` 只列出将要修改的文件，不写入。recall 关闭时，pull 会移除 recall 块。
 
-#### 这些块写到哪里
+### 这些块写到哪里
 
 同一项目的两名成员可能角色不同，因此他们的共享指令（`claudemd/`）可能不同。项目根目录的 `AGENTS.md` 存放项目为所有人编写的指令，所以 teamai 不会把这些块写入它，也不会写入 `~/AGENTS.md`、`~/.agents/AGENTS.md` 或其他工具读取的文件。每个工具通过自己的文件或会话钩子获得这些块：
 
@@ -127,31 +123,15 @@ Oh My Pi 把 `RULES.md` 作为始终应用的规则读取，与其唯一的用�
 
 Codex 也会在该同步完成后读取 HTTP prompt 缓存，再返回 SessionStart 上下文。
 
-早期版本的 pull 可能把这些块留在下列文件中。只有某个区块的替代内容已成功解析并投递给曾写入该文件的每个已安装工具后，pull 才移除该旧区块。文化源文件不可读或无效时，即使共享指令和 recall 已成功同步，旧文化区块仍会保留。目标写入失败、文件并非 teamai 所有、扩展缺失或插件被禁用时，旧块保留以便重试。被排除工具的当前和旧指令文件保持不变，并且不纳入 doctor 的旧指令检查。
+当原生项目指令文件仍含 TeamAI 区块时，会话 hook 跳过该区块，包括缓存的 HTTP prompt，避免同时加入另一个成员的选择。其他区块仍通过 hook 投递，保留的区块清理后恢复投递。Codex 遵循 `AGENTS.override.md` 的优先级，Oh My Pi 遵循 `.omp/AGENTS.md` 的优先级。
 
-HTTP prompt 命令会检查所有已安装的旧写入工具的当前目标，包括先前命令的投递结果，确认后才移除旧共享指令区块。目标仍含旧 prompt 时不算投递成功。HTTP 清理保留文化和 recall 区块，因为这些命令不替换它们。
-
-当原生项目指令文件仍含 TeamAI 区块时，会话 hook 跳过该区块，包括缓存的 HTTP prompt，避免同时加入另一个成员的选择。其他区块仍通过 hook 投递，保留的区块清理后恢复投递。Codex 遵循 `AGENTS.override.md` 的优先级，Oh My Pi 遵循 `.omp/AGENTS.md` 的优先级。Doctor 会报告旧文件中不完整或重复的标记；修复标记后再运行 pull。
-
-pull 会列出所修改的每个文件：
-
-- Claude Code，项目范围：`.claude/CLAUDE.md`
-- CodeBuddy，项目范围：`.codebuddy/CODEBUDDY.md`
-- WorkBuddy：`~/AGENTS.md` 和项目 `AGENTS.md`
-- Hermes：`~/AGENTS.md`
-- Oh My Pi：`~/.omp/agent/AGENTS.md` 和 `.omp/AGENTS.md`。Oh My Pi 每一层只读取一个上下文文件，因此它们会遮蔽 `~/.agents/AGENTS.md` 和项目的 `AGENTS.md`。
-- Pi：项目 `AGENTS.md`
-- OpenClaw，项目 scope：OpenClaw 从不读取的 `.openclaw/workspace/AGENTS.md`
-- Codex 系列：项目 `AGENTS.md`（当团队的 `toolPaths` 或早期构建把 Codex 指向那里时）
-- 目标文件已改变的任一工具：团队 `toolPaths` 为它设置的 `claudemd` 路径，除非现在另一个工具的块写在那里
-
-`teamai doctor` 会检查每个已安装工具能否加载这些块：每个文件是否包含当前的块，OpenCode 配置是否列出其文件（在 OpenCode V2 上改为检查 teamai 插件是否已安装），Pi 或 Oh My Pi 扩展和 Hermes 插件是否已安装并启用，Hermes 段落是否在限制内，以及早期版本写过的文件中是否仍残留块。
+`teamai doctor` 会检查每个已安装工具能否加载这些块：每个文件是否包含当前的块，OpenCode 配置是否列出其文件（在 OpenCode V2 上改为检查 teamai 插件是否已安装），Pi 或 Oh My Pi 扩展和 Hermes 插件是否已安装并启用，Hermes 段落是否在限制内。
 
 若请求更新的块存在不完整或重复的标记，整个文件保持不变，包括其他托管块。修复提示中的标记后，再运行 `teamai pull`。
 
-与 teamai 目标同名但并非 teamai 写入的文件保持不变，也不会被列入 OpenCode 的 `instructions`（你自己为它列的条目保留不动），pull 会给出警告。名为 `teamai-context` 的团队 rule 不会被分发，因为它会落在该文件上；pull 会指出它，并删除早期版本分发的副本（除非你改过它）。若该副本不是工具的指令文件（OpenCode 的 `.opencode/rules/`、Kiro 的 `.kiro/steering/`），仓库已跟踪的副本会保留并被指出，与其他被跟踪的副本一样。teamai 从不修改 `.gitignore` 或 git 索引；它在 `.git/info/exclude` 中列出哪些内容，见[让分发的文件不进入 git](./member-guide.md#让分发的文件不进入-git)。该选项开启时，你的 `teamai-context` 文件也在其中：工具仍会加载它，遵循 git 忽略规则的搜索会跳过它（与被排除的 skill 和 rule 一样）；请按路径打开它。
+与 teamai 目标同名但并非 teamai 写入的文件保持不变，也不会被列入 OpenCode 的 `instructions`（你自己为它列的条目保留不动），pull 会给出警告。名为 `teamai-context` 的团队 rule 不会被分发，因为它会落在该文件上；pull 会指出它。teamai 从不修改 `.gitignore` 或 git 索引；它在 `.git/info/exclude` 中列出哪些内容，见[让分发的文件不进入 git](./member-guide.md#让分发的文件不进入-git)。该选项开启时，你的 `teamai-context` 文件也在其中：工具仍会加载它，遵循 git 忽略规则的搜索会跳过它（与被排除的 skill 和 rule 一样）；请按路径打开它。
 
-### 查看效果
+## 查看效果
 
 pull 后可以直接查看 AI 工具的指令文件，例如 Claude Code 的用户文件：
 
