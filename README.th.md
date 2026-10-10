@@ -144,7 +144,7 @@ teamai init https://github.com/your-org/your-repo --scope user
   </tbody>
 </table>
 
-<sup>✓*</sup> rules ส่งถึงเครื่องมือ แต่มีผลเสมอ: เครื่องมือไม่จำกัดขอบเขตตาม path (กฎแบบ inline ที่ระบุ path มีคำแนะนำด้าน path ให้โมเดล)
+<sup>✓*</sup> rules มีผลเสมอ และไม่จำกัดตาม path
 
 ## เรียนรู้เพิ่มเติม
 

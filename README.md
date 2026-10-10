@@ -144,7 +144,7 @@ Three layers of capability, built on Git:
   </tbody>
 </table>
 
-<sup>✓*</sup> The rules reach the tool, but always on: it does not scope them by path (scoped inline rules include path hints for the model).
+<sup>✓*</sup> Rules stay on. They are not limited by path.
 
 ## Learn More
 

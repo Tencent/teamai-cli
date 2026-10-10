@@ -150,7 +150,7 @@ teamai init https://github.com/your-org/your-repo --scope user
   </tbody>
 </table>
 
-<sup>✓*</sup> rules 能送达该工具，但始终生效：它不按路径限定作用范围（带路径范围的内联规则会向模型提供路径提示）。
+<sup>✓*</sup> rules 始终生效，不按路径限定。
 
 ## 了解更多
 
