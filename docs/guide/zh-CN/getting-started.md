@@ -12,19 +12,6 @@
 | 加入已有仓库 | [加入团队](#加入团队) |
 | 把写好的 skill 或 rule 等 AI 资产分享给团队 | [分享给团队](#分享给团队) |
 
-需要 Node.js 20 或更高版本，以及 Git。
-
-```bash
-npm install -g teamai-cli
-teamai --version
-```
-
-工蜂上，`teamai init` 会装 `gf`。CNB 上，它会装 `cnb`。
-
-把提示词贴进 AI 工具，或在终端里跑命令。`/teamai` skill 会替你执行，需要你做选择时才问。
-
-scope、团队仓库这些词的意思，见[产品概览](../../product-overview.zh-CN.md#核心概念)。
-
 ### 搭建团队
 
 1. 在 GitHub、GitLab、GitCode、CNB、工蜂或私有 Git 上建一个空仓库。名字用 `<团队名>-teamai` 比较好认。给同事分支写权限，主干保持保护。还没有仓库？到 [teamai-hub](https://github.com/teamai-hub) Fork 一个。

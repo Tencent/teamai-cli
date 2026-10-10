@@ -12,19 +12,6 @@
 | Joining a repo that already exists | [Join a team](#join-a-team) |
 | Share a skill, rule, or other AI asset you wrote with the team | [Share with the team](#share-with-the-team) |
 
-You need Node.js 20 or newer, and Git.
-
-```bash
-npm install -g teamai-cli
-teamai --version
-```
-
-On TGit, `teamai init` installs the `gf` CLI. On CNB, it installs the `cnb` CLI.
-
-Paste the prompt into your AI tool, or run the commands in a terminal. The `/teamai` skill runs the commands and asks when it needs a choice.
-
-Scope, team repo, and the other terms are in the [Product Overview](../product-overview.md#core-concepts).
-
 ### Set up a team
 
 1. Create an empty repository on GitHub, GitLab, GitCode, CNB, TGit, or a private Git host. `<team-name>-teamai` is a clear name. Give teammates permission to push branches, and leave the default branch protected. No repo yet? Fork one from [teamai-hub](https://github.com/teamai-hub).
