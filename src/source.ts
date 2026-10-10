@@ -93,6 +93,24 @@ function getSourceRepoDir(source: SourceConfig): string {
   return path.join(getSourceRepoCacheDir(source), 'repo');
 }
 
+/** A source installation record, with the team checkout it was written for: null when it names none or cannot be read. */
+export interface InstallationRecord { path: string; teamCheckout: string | null }
+
+/** Every source's installation records. */
+export async function listInstallationRecords(): Promise<InstallationRecord[]> {
+  const records: InstallationRecord[] = [];
+  for (const sourceName of await listSourceNames()) {
+    const installationsDir = path.join(getSourceDir(sourceName), 'installations');
+    for (const file of await listFiles(installationsDir)) {
+      if (!file.endsWith('.json')) continue;
+      const manifestPath = path.join(installationsDir, file);
+      const manifest = await readSourceManifest(manifestPath).catch(() => null);
+      records.push({ path: manifestPath, teamCheckout: typeof manifest?.teamCheckout === 'string' ? manifest.teamCheckout : null });
+    }
+  }
+  return records;
+}
+
 export function getSourceManifestPath(sourceName: string, localConfig: LocalConfig): string {
   const installationId = createHash('sha256').update(JSON.stringify([
     path.resolve(resolveBaseDir(localConfig)),

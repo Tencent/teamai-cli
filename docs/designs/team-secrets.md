@@ -113,7 +113,7 @@ teamai env unset GITHUB_TOKEN [--global]
 - Each entry is exactly one of `{"value": "..."}` or `{"env": "VAR"}`, with a `kind`, `secret` or `variable`: what the scope declared the key as when `env set` wrote it. An entry without `kind` is a secret's. An entry is used only as its kind, so a secret's value is never exported as a variable after the team stops declaring the key while `env.yaml` still sets it, and a member's value for a variable never becomes a secret's. `env list` shows an entry of the other kind under its key as not used, with the fix: `teamai env unset KEY`, then `teamai env set KEY`. 
 
   A file that does not parse is reported by its path only, one that holds any other entry by its path and the entry number, never with its content, and every secret of that team (of every team, for `machine.json`) is `unreadable` until it is fixed.
-- Lifetime: uninstalling a project scope leaves the per-team and machine values in place, since another scope may use them; `teamai uninstall` of the user scope removes `~/.teamai`, and the values with it.
+- Lifetime: uninstalling a project scope leaves the per-team and machine values in place, since another scope may use them; `teamai uninstall` of the user scope removes `~/.teamai`, and the values with it, but those of the projects still set up on the machine: each one's team file, and `machine.json` when one of those teams declares secrets.
 - Model profile keys stay where they are ([Model profiles](model-profiles.md)): `env set` does not configure them, and `env/secrets.yaml` cannot declare one.
 
 ## Resolution
