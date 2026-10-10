@@ -213,7 +213,7 @@ teamai env exec -- glab mr list     GITLAB_HOST from env.yaml and GITLAB_TOKEN f
 ```
 
 - **Scope.** The directory's scope: the project teamai is set up for there, found through git, so every worktree of a project resolves to that project, else the user scope.
-- **Environment.** The command inherits teamai's environment, overlaid with the scope's variables in the [variable order](#variables) (a scope variable wins over an inherited one), then with its secrets in the [resolution order](#resolution). A key declared as a secret that has no value for this scope is removed from the command's environment, so the command never sees a value `teamai env list` doesn't show for this scope: another team's export, or the member's own export when this team's value names another variable with `--from-env`. 
+- **Environment.** The command inherits teamai's environment without the values a teamai `env.sh` exported (a shell started in another project carries that project's, [#1018](env-by-directory.md)), overlaid with the user scope's variables when the project sets `inheritUserScope: true`, then with the scope's variables in the [variable order](#variables) (a scope variable wins over an inherited one), then with its secrets in the [resolution order](#resolution). A key declared as a secret that has no value for this scope is removed from the command's environment, so the command never sees a value `teamai env list` doesn't show for this scope: another team's export, or the member's own export when this team's value names another variable with `--from-env`.
 
   On Windows, where environment names are case-insensitive, a key in any case is the same variable: overlaying one replaces an inherited `api_url` or `API_URL` rather than adding a second name, and removing one removes every case of it.
 - **Missing secret.** The [line](#a-missing-secret-tells-the-member-what-to-run) goes to stderr, and the command runs anyway: `gh` and `glab` can still use their own login.
@@ -231,14 +231,14 @@ teamai env exec -- glab mr list     GITLAB_HOST from env.yaml and GITLAB_TOKEN f
 
 ## Telling the agent
 
-An agent that runs `gh` without `env exec` silently uses whatever account its environment has. When the scope declares secrets, the session-start hook adds one line to the agent's context (`additionalContext`, beside the MR and package hints):
+An agent that runs `gh` without `env exec` silently uses whatever account its environment has, and its shell may carry another project's env. When the scope delivers env variables or declares secrets, the session-start hook adds one line to the agent's context (`additionalContext`, beside the MR and package hints):
 
 ```text
-Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the CLIs that need them through `teamai env exec -- <command>` so they get this team's values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.
+Team env variables in this scope: API_URL. Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.
 ```
 
-- The line lists each declared key with its `description`, so the description should say which tool or server uses the key. It carries no value and no state.
-- No line when the scope declares no secrets, when its secrets files can't be used (`pull` and `doctor` report that), or in a directory without teamai.
+- The line lists each variable and each declared secret with its `description`, so the description should say which tool or server uses the key. It carries no value and no state. The sentence about secret values is there only when the scope declares secrets.
+- No line when the scope delivers neither, when its files can't be used (`pull` and `doctor` report that), or in a directory without teamai.
 - Hosts that run SessionStart but discard its output (Hermes, Pi, OpenCode, OpenClaw), and JoyCode, which has no hooks, get the same rule from the teamai core skill.
 - The skills say an agent never asks for a secret value in chat, never passes one through `--stdin`, never reads the value files and never prints a secret (`teamai env exec -- env` included). On a missing secret it asks the member to run `teamai env set KEY` in their own terminal. Declaring a secret with `env add --secret` takes no value, so an agent can run it.
 

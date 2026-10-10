@@ -249,7 +249,7 @@ teamai env exec -- glab mr list
 都输出到 stderr，退出码就是命令的退出码。这里没有 teamai 配置时，命令以你的环境运行，并给出提示。
 不会把任何值写入磁盘。见[用 `env exec` 运行 CLI](../../designs/team-secrets.md#running-a-cli-with-env-exec)。
 
-scope 声明了密钥时，session-start hook 会告诉 agent 有哪些 key 及其 `description`，并让它通过
+scope 下发了环境变量或声明了密钥时，session-start hook 会告诉 agent 有哪些 key 及其 `description`，并让它通过
 `teamai env exec --` 运行需要这些 key 的 CLI。工具会丢弃 hook 输出的 agent 从 teamai core skill 获得同样的规则。
 agent 从不索要密钥值：缺少密钥时，它会请你在自己的终端运行 `teamai env set KEY`。见
 [告诉 agent](../../designs/team-secrets.md#telling-the-agent)。
@@ -258,15 +258,27 @@ agent 从不索要密钥值：缺少密钥时，它会请你在自己的终端�
 未变化而提示 `Already synced` 也一样。在那次 pull 之前，`teamai doctor` 会报告
 `env.sh` 中仍在导出的这类变量，前一个项目的密钥不会悄无声息地继续生效。
 
-shell 配置文件会保留用户级 scope 的 teamai 区块，外加一个项目级区块：在项目级目录中 pull 会替换上一个项目的区块，用户级区块保持不变。用户级区块在前，因此两者定义了同一个键时以项目的值为准。在多个项目级目录中都执行过 pull 的机器，新开的 shell 里会是用户级的变量加上最后一次 pull 的那个目录的变量。每个目录自己的 `env.sh` 仍然是正确的；只是 shell 配置文件只指向最后一个项目的那个。
+团队环境变量按目录进入 shell：在某个目录中启动的 shell 获得管辖该目录的 scope 的环境变量，因此同时打开的多个项目各自拿到自己的。shell 配置文件里只有一个 teamai 区块，所有 scope 共用，它 source `~/.teamai/env-loader.sh`。每次项目 pull 都会把该 scope 及其机器数据分区登记到 `~/.teamai/env-scopes`，以检出与其 worktree 共享的 git 目录为键（不在 git 中时以目录本身为键），loader 在其中查找 shell 所在的目录：
 
-`pull` 时，若启用了 `injectShellProfile`（默认启用），`$SHELL` 为 zsh 时环境变量块会写入 `~/.zshrc`，否则写入 `~/.bashrc`——但 Windows 上例外：`$SHELL` 通常未设置，而 Git Bash 以*登录 shell*方式启动，从不读取 `.bashrc`，因此 teamai 会优先选择已存在的 `~/.bash_profile`、其次 `~/.bash_login`、再次 `~/.profile`，只有三者都不存在时才回退到 `~/.bashrc`（通过 MSYS2/Cygwin 安装、会设置 `$SHELL` 的 zsh 仍会解析到 `.zshrc`）。这与 Git for Windows 自身在 `/etc/profile.d/bash_profile.sh` 中的回退逻辑一致，其判断条件是 `[ -e ~/.bashrc -a ! -e ~/.bash_profile -a ! -e ~/.bash_login -a ! -e ~/.profile ]`——只有在这一种情况下它才会生成一个会 source `.bashrc` 的 `.bash_profile`；
+- 在项目中，加载该项目的 `env.sh`，不加载用户级 scope 的任何内容，除非项目设置了 `inheritUserScope: true`：此时先加载用户级 scope 的变量，两者定义同一个键时以项目为准；用户级 scope 的密钥始终不会加载；
+- 在关联的 worktree 中，即使该 worktree 尚未 pull，也加载其所属项目的；
+- 其他位置，加载用户级 scope 的。
 
-这也是为什么哪怕一个只 source 了其他内容（例如 `~/.local/bin/env`）的 `~/.profile` 存在，也足以让 `.bashrc` 单独失效。可通过 `teamai.yaml` 中的 `sharing.env.shellProfilePath` 覆盖目标文件。
+用户级 scope 的团队设置了 `injectShellProfile: false` 时，它的 `env.sh` 在任何位置都不加载，继承它的项目中也不加载。
+
+项目所属团队设置了 `injectShellProfile: false` 时，项目的 `env.sh` 和继承的用户级 scope 都不会加载。
+
+交互式 shell 在 `cd` 时切换环境变量，并在离开项目时恢复你进入项目前设置的值。zsh 从 `.zshenv` 读取该区块，每个 zsh 都会读取它，因此工具执行命令时用的 `zsh -c` 也能拿到所在目录的环境变量。bash 在 `bash -c` 时不读取任何启动文件，所以 loader 会把 `BASH_ENV` 指向自身，并在加载团队环境后继续 source 你原有的 `BASH_ENV`；每个 bash 只运行你的文件一次。团队环境不能设置 `BASH_ENV`、`ENV`、`ZDOTDIR`、`HOME`、`PROMPT_COMMAND`、zsh 钩子数组，以及以 `__TEAMAI_ENV_` 或 `__teamai_env_` 开头的名称；这些名称控制 shell 启动、钩子或 loader 状态。团队声明这些名称时，pull、`env set` 和 `env exec` 会警告，因为 TeamAI 会忽略这些值。其他 shell（fish、PowerShell）不运行 loader：需要团队环境变量的命令请通过 `teamai env exec --` 运行，它按同样的方式解析。
+
+pull 不再为切换项目而改写 shell 配置文件。第一次用带 loader 的版本 pull 时（在没有环境变量的项目中也是如此），会从每个候选文件中移除旧版本写入的按 scope 区块；若某个项目因此不再获得以前能拿到的用户级变量，会提示一次。
+
+`pull` 时，若启用了 `injectShellProfile`（默认启用），`$SHELL` 为 zsh 时环境变量块会写入 `~/.zshenv`（设置了 `ZDOTDIR` 时为 `$ZDOTDIR/.zshenv`），否则写入 `~/.bashrc`——但 Windows 上例外：`$SHELL` 通常未设置，而 Git Bash 以*登录 shell*方式启动，从不读取 `.bashrc`，因此 teamai 会优先选择已存在的 `~/.bash_profile`、其次 `~/.bash_login`、再次 `~/.profile`，只有三者都不存在时才回退到 `~/.bashrc`（通过 MSYS2/Cygwin 安装、会设置 `$SHELL` 的 zsh 仍会解析到 `.zshenv`）。这与 Git for Windows 自身在 `/etc/profile.d/bash_profile.sh` 中的回退逻辑一致，其判断条件是 `[ -e ~/.bashrc -a ! -e ~/.bash_profile -a ! -e ~/.bash_login -a ! -e ~/.profile ]`——只有在这一种情况下它才会生成一个会 source `.bashrc` 的 `.bash_profile`；
+
+这也是为什么哪怕一个只 source 了其他内容（例如 `~/.local/bin/env`）的 `~/.profile` 存在，也足以让 `.bashrc` 单独失效。可通过 `teamai.yaml` 中的 `sharing.env.shellProfilePath` 覆盖 bash 的目标文件。对 zsh，teamai 始终把区块写入 `.zshenv`（若设置了 `$ZDOTDIR`，则写入其下的 `.zshenv`），因为 `zsh -c` 不会读取 `.zshrc`；若 override 指向其他 zsh 启动文件，会忽略并给出警告，pull 时也会把旧区块迁到 `.zshenv`。
 
 每次 pull 都会重新走一遍这个优先级判断，找到当前环境实际会读取的那个文件，然后沿着它对另外四个候选文件名的引用一路查下去——无论要经过多少跳
 
-——寻找一个已经带着代码块的候选文件，而不是重复注入。如果这条链上还没有文件带着本作用域的代码块，就使用第一个带着其他作用域代码块的文件，让用户级区块和项目级区块按顺序放在同一个文件里，而不是分散在两个文件中。如果链条中间经过的是这五个候选文件名之外的文件（比如某些环境会改用 `~/.config/shell/profile` 这类自定义文件来 source），这条链就不会被继续跟踪。这正是为了不让 Git for Windows 自身的引导逻辑把目标文件从脚下换掉：
+——寻找一个已经带着代码块的候选文件，而不是重复注入。如果链条中间经过的是这五个候选文件名之外的文件（比如某些环境会改用 `~/.config/shell/profile` 这类自定义文件来 source），这条链就不会被继续跟踪。这正是为了不让 Git for Windows 自身的引导逻辑把目标文件从脚下换掉：
 
 上面那条 `/etc/profile.d/bash_profile.sh` 判断条件，在第一次 pull 写入 `.bashrc` 之后同样会成立，于是下一次 Git Bash 登录 shell 启动时就会自动生成一个 source 它的 `~/.bash_profile`；如果不沿着这条转发链去找，下一次 pull 就会转而偏好这个新出现的文件，在那里注入第二个代码块，而原来那个——依旧在正常工作，只是绕得更远了——则会被误报为失效的遗留代码块。同样的道理也适用于一个普通的 `.profile`：它用一条扁平的存在性守卫（`[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"`）为交互式 shell source `.bashrc`——这时登录 shell 最先读到的文件，离实际代码块有两跳之遥。
 
@@ -276,7 +288,7 @@ shell 配置文件会保留用户级 scope 的 teamai 区块，外加一个项�
 
 ——这些结构要么不保证一定会执行，要么即使一定会执行（比如子 shell 或大括号分组），它导出的环境变量也传不到调用它的 shell 里，这也意味着 Debian/Ubuntu 标准模板里那种嵌套两层 `if`、沿途还检查 `$BASH_VERSION` 的写法无法被识别，会回退到按优先级选出的文件。位于无条件的顶层 `return` 或 `exit` 之后的内容同样不算数，因为控制流根本不会执行到那里。凡是这套逻辑判断不了的情况，以及当前这条链条根本没触及到的候选文件——哪怕它本身带着代码块——都绝不会因此被优先选中，否则 #682 之前旧版本留下的失效代码块就会永远压过正确的文件，等于在升级后又悄悄把 #682 引入回来。
 
-`doctor`（以及 `pull` 结束后自动运行的检查）还会标记出遗留在*其他*候选文件中的 teamai 环境变量块——例如 #682 之前的旧版本写入 `.bashrc` 的代码块，即便该代码块本身已损坏、从未生效。`teamai uninstall` 会清理它。
+`doctor`（以及 `pull` 结束后自动运行的检查）还会标记出旧版本遗留在候选文件中的按 scope 环境变量块——例如 #682 之前的旧版本写入 `.bashrc` 的代码块，即便该代码块本身已损坏、从未生效。下一次 pull 或 `teamai uninstall` 会清理它。`This directory resolves its team env` 会在该目录启动你的 `$SHELL`、在其中运行 loader，并检查它加载的是本 scope 的 `env.sh`；尚未被 pull 登记的项目会失败，直到你在那里 pull。若 shell 不运行 loader，该检查判定通过，doctor 会附一条说明指出这一缺口。
 
 ### Docs（文档）
 
@@ -426,7 +438,7 @@ OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）、`http` 和 `sse`�
 
 与手写同名则跳过，除非 `--force`。
 
-**密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。团队在 `env/secrets.yaml` 中声明的 key 优先取你为该团队设置的值（`teamai env set`），其次取你为本机设置的值（`teamai env set --global`），再次取你自己的环境，不包括 teamai `env.sh` 导出的值（见[团队密钥](../../designs/team-secrets.md#resolution)）。其他变量优先取你为该团队设置的值（`teamai env set KEY`），其次是该目录收到的团队环境变量（`env/env.yaml` 与活动的 `env/<ns>/env.yaml`）；
+**密钥**：在 `mcp.yaml` 里写 `${VAR}`，不要写明文。团队在 `env/secrets.yaml` 中声明的 key 优先取你为该团队设置的值（`teamai env set`），其次取你为本机设置的值（`teamai env set --global`），再次取你自己的环境，不包括 teamai `env.sh` 导出的值（见[团队密钥](../../designs/team-secrets.md#resolution)）。其他变量优先取你为该团队设置的值（`teamai env set KEY`），其次是该目录收到的团队环境变量（`env/env.yaml` 与活动的 `env/<ns>/env.yaml`）；对于设置了 `inheritUserScope: true` 的项目，用户级 scope 变量作为项目变量的后备值。
 
 环境只补充团队没有设置的 key，不再覆盖团队变量（见[团队密钥](../../designs/team-secrets.md#variables)）。你导出的值与团队的值不同而被忽略时，交互式 `pull` 和 `teamai doctor` 会指出。变量无法解析则跳过并提示。已声明的密钥不同：pull 找不到它时，之前某次 pull 写入的条目原样保留，因此里面可能是已经轮换掉的旧值，直到某次 pull 找到新值（见[团队密钥](../../designs/team-secrets.md#a-missing-secret-keeps-the-mcp-entry)）。交互式 `pull`、`teamai mcp list`、`teamai env list`、`teamai doctor` 和 `teamai env exec` 会指出没有值的已声明密钥、用到它的 server 以及设置它的命令：`` github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (<url>). ``
 

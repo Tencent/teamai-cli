@@ -164,6 +164,15 @@ describe('MCP servers and declared secrets', () => {
     expect(vars.API_URL).toBe('u');
   });
 
+  it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply'])('does not deliver reserved team variable %s to MCP', async (key) => {
+    await write('env/env.yaml', `variables:\n  - key: ${key}\n    value: team-value\n`);
+
+    const vars = await buildVarTable(localConfig);
+
+    expect(vars[key]).not.toBe('team-value');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(key));
+  });
+
   // #879: secrets and variable overrides share the team store; an entry is used only as the kind it was set as.
   it('gives a server the env.yaml value of a former secret, never its stored value, and a secret never a variable override', async () => {
     await write('env/env.yaml', 'variables:\n  - key: API_URL\n    value: team-url\n');

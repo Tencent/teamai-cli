@@ -35,6 +35,7 @@ import {
   buildCodexProjectTrustCheck,
   buildMcpGitExcludeCheck,
   buildEnvDeliveryCheck,
+  envLoaderNotes,
   buildEntryResolutionChecks,
   buildSecretValuesCheck,
   buildEntryScopeKeyCheck,
@@ -740,6 +741,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await aliasNamespaceNotes(ctx),
     ...await agentModelNotes(ctx),
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
+    ...await envLoaderNotes(ctx),
     ...await ruleChannelNotes(localConfig),
     ...codexTrust.notes,
     // What git sees of the delivered team resources, and what no pull changes (#915).

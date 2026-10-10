@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fse from 'fs-extra';
@@ -8,12 +8,14 @@ import path from 'node:path';
 import YAML from 'yaml';
 
 import { envExec, exitLike, inTerminalForeground } from '../env-exec.js';
+import { EnvHandler } from '../resources/env.js';
+import { envLoaderPath } from '../resources/env-loader.js';
 import { envShMarker } from '../env-sh-exports.js';
 import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore, type SecretStore } from '../secret-store.js';
 import { resolveAnchors } from '../utils/git.js';
 import { _resetState, _setLogFilePath, setStderrOnly } from '../utils/logger.js';
 import { projectDataHome } from '../utils/partition.js';
-import type { LocalConfig } from '../types.js';
+import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 /**
  * `teamai env exec -- <command>` (#875, #879 S8): the command runs with the
@@ -83,6 +85,38 @@ describe('teamai env exec', () => {
     return JSON.parse(await fse.readFile(out, 'utf8')) as Record<string, string>;
   }
 
+  it('restores the member BASH_ENV when removing the loader from the child environment', async () => {
+    const memberBashEnv = path.join(home, '.bash_env');
+    vi.stubEnv('BASH_ENV', envLoaderPath());
+    vi.stubEnv('__TEAMAI_ENV_BASH_ENV', memberBashEnv);
+
+    const env = await childEnv(home);
+
+    expect(env.BASH_ENV).toBe(memberBashEnv);
+    expect(env.__TEAMAI_ENV_BASH_ENV).toBeUndefined();
+  });
+
+  it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'home', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply'])('does not overlay reserved team variable %s in env exec', async (key) => {
+    const { repoPath } = await team('reserved', { 'env/env.yaml': `variables:\n  - key: ${key}\n    value: team-value\n` });
+    await userScope(repoPath);
+
+    const env = await childEnv(home);
+
+    expect(env[key]).not.toBe('team-value');
+    expect(stderr.join('\n')).toContain(`${key} is reserved for TeamAI shell routing`);
+  });
+
+  it('does not pass a reserved team secret to env exec', async () => {
+    const { repoPath } = await team('reserved-secret', { 'env/secrets.yaml': 'secrets:\n  - key: BASH_ENV\n' });
+    const config = await userScope(repoPath);
+    await writeSecretStore(getTeamSecretsPath(config), { BASH_ENV: { value: 'team-value' } });
+
+    const env = await childEnv(home);
+
+    expect(env.BASH_ENV).not.toBe('team-value');
+    expect(stderr.join('\n')).toContain('BASH_ENV is reserved for TeamAI shell routing');
+  });
+
   beforeEach(async () => {
     tmpDir = fs.realpathSync(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-env-exec-')));
     home = path.join(tmpDir, 'home');
@@ -130,6 +164,77 @@ describe('teamai env exec', () => {
     env = await childEnv(home);
     expect(env.GITHUB_TOKEN).toBe('fixture-from-env');
     expect(text(stderr)).not.toContain('is not set');
+  });
+
+  // #1018: a shell started in another project carries that project's env.sh;
+  // a command run here gets this directory's env, not a mix of both.
+  describe('with values another scope exported', () => {
+    const exportedBy = async (config: LocalConfig, variables: { key: string; value: string }[]): Promise<void> => {
+      const teamConfig = { sharing: { env: { injectShellProfile: false } } } as TeamaiConfig;
+      await new EnvHandler().writeResolvedEnv(variables, teamConfig, config);
+      for (const { key, value } of variables) vi.stubEnv(key, value);
+    };
+
+    it("drops another project's values before applying this one's", async () => {
+      const { repoPath } = await team('work', { 'env/env.yaml': 'variables:\n  - key: API_URL\n    value: https://a.example\n' });
+      const { root } = await project(repoPath);
+      await exportedBy({
+        repo: { localPath: repoPath, remote: 'https://example.com/b.git' }, username: 't', scope: 'project',
+        projectRoot: path.join(tmpDir, 'b'), additionalRoles: [], dataHome: path.join(home, '.teamai', 'projects', 'b'),
+      }, [{ key: 'ONLY_B', value: 'b-only' }, { key: 'API_URL', value: 'https://b.example' }]);
+      vi.stubEnv('MINE', 'kept');
+
+      const env = await childEnv(root);
+
+      expect(env.ONLY_B).toBeUndefined();
+      expect(env.API_URL).toBe('https://a.example');
+      expect(env.MINE).toBe('kept');
+    });
+
+    it('puts the user scope\'s variables, never its secrets, under a project that inherits it', async () => {
+      const personal = await team('personal', {
+        'env/env.yaml': 'variables:\n  - key: USER_ONLY\n    value: u\n  - key: SHARED\n    value: user\n',
+        'env/secrets.yaml': GITHUB_SECRET,
+      });
+      const userConfig = await userScope(personal.repoPath);
+      await writeSecretStore(getTeamSecretsPath(userConfig), { GITHUB_TOKEN: { value: 'fixture-user-team' } });
+      const work = await team('work', { 'env/env.yaml': 'variables:\n  - key: SHARED\n    value: project\n' });
+      const { root, partition, config } = await project(work.repoPath);
+
+      expect((await childEnv(root)).USER_ONLY).toBeUndefined();
+
+      await fse.outputFile(path.join(partition, 'config.yaml'), YAML.stringify({ ...config, inheritUserScope: true }));
+      const env = await childEnv(root);
+      expect(env.USER_ONLY).toBe('u');
+      expect(env.SHARED).toBe('project');
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+    });
+
+    it.skipIf(spawnSync('bash', ['-c', 'true']).status !== 0)("keeps this project's secret in a bash the command starts, from a shell that loaded another directory's env", async () => {
+      const { repoPath } = await team('work', { 'env/secrets.yaml': GITHUB_SECRET });
+      const { root, config } = await project(repoPath);
+      await writeSecretStore(getTeamSecretsPath(config), { GITHUB_TOKEN: { value: 'fixture-work' } });
+      const b = path.join(tmpDir, 'b');
+      await fse.ensureDir(b);
+      vi.stubEnv('SHELL', '/bin/bash');
+      await new EnvHandler().writeResolvedEnv([{ key: 'GITHUB_TOKEN', value: 'fixture-b' }], { sharing: { env: { injectShellProfile: true } } } as TeamaiConfig, {
+        repo: { localPath: repoPath, remote: 'https://example.com/b.git' }, username: 't', scope: 'project',
+        projectRoot: b, additionalRoles: [], dataHome: path.join(home, '.teamai', 'projects', 'b'),
+      });
+      // What a script started in b carries: the loader's values and its bookkeeping.
+      const loaded = spawnSync('bash', ['-c', `${JSON.stringify(process.execPath)} -e '${DUMP}' "$0"`, out], {
+        cwd: b, env: { HOME: home, PATH: process.env.PATH, BASH_ENV: path.join(home, '.teamai', 'env-loader.sh') },
+      });
+      expect(loaded.status).toBe(0);
+      const inherited = JSON.parse(await fse.readFile(out, 'utf8')) as Record<string, string>;
+      expect(inherited.GITHUB_TOKEN).toBe('fixture-b');
+      for (const [key, value] of Object.entries(inherited)) if (key.startsWith('__TEAMAI_ENV_') || key === 'BASH_ENV' || key === 'GITHUB_TOKEN') vi.stubEnv(key, value);
+
+      const outcome = await envExec(['--', 'bash', '-c', 'printenv GITHUB_TOKEN > "$0"', out], {}, root);
+
+      expect((await fse.readFile(out, 'utf8')).trim()).toBe('fixture-work');
+      expect(outcome).toEqual({ kind: 'exited', code: 0 });
+    });
   });
 
   // #875 (#879 S9): the same order as MCP for a variable.

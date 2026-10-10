@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { shipped, shippedSkillDigestsMock } from './helpers/shipped-skills.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 
@@ -55,6 +55,7 @@ import { deployBuiltinRules } from '../builtin-rules.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { checkoutKey } from '../pull.js';
 import { fileHash } from '../utils/fs.js';
+import { writeAnchorFile } from '../utils/partition.js';
 import { TeamaiConfigSchema, getDataHome, managedMcpManifestKey, managedMcpManifestPath } from '../types.js';
 import { ModelProfileSchema, resolveProfile } from '../models/profile.js';
 import { renderRuleForTool } from '../resources/rule-format.js';
@@ -381,11 +382,12 @@ describe('uninstall', () => {
     expect(bashrcAfter).toBe(bashrc);
   });
 
-  // #876: a user-scope block and a project-scope block share ~/.zshrc.
-  // Uninstalling either scope removes its own block and leaves the other one
-  // exactly as it was, wherever each sits in the file.
+  // #876: a user-scope block and a project-scope block share ~/.zshrc, as
+  // versions before #1018 wrote them. Uninstalling either scope removes its
+  // own block and leaves the other one exactly as it was.
   describe('with a user-scope and a project-scope block in one profile', () => {
-    const scopeBlock = (envSh: string): string => new EnvHandler().generateShellBlock(path.dirname(envSh));
+    const scopeBlock = (envSh: string): string =>
+      `# [teamai:env:start]\n# DO NOT EDIT: This section is auto-managed by teamai\n[ -f '${envSh}' ] && source '${envSh}'\n# [teamai:env:end]`;
 
     async function setupTwoBlocks() {
       const fixture = await setupFixture(tmpDir);
@@ -435,6 +437,155 @@ describe('uninstall', () => {
       expect(zshrc).toContain(projectBlock);
       expect(zshrc).not.toContain(userBlock);
       expect(zshrc).toContain('# My zshrc config');
+    });
+  });
+
+  // #1018: one loader block serves every scope, and a registry routes each
+  // project's directories to its env.sh.
+  describe('with the env loader', () => {
+    const shellSees = (homeDir: string, dir: string, key: string): string =>
+      spawnSync('zsh', ['-c', `printenv ${key} || true`], {
+        cwd: dir, env: { HOME: homeDir, PATH: process.env.PATH, SHELL: '/bin/zsh' }, encoding: 'utf-8',
+      }).stdout.trim();
+    const loaderBlocks = async (homeDir: string): Promise<number> =>
+      ((await fse.readFile(path.join(homeDir, '.zshenv'), 'utf-8').catch(() => '')).match(/# \[teamai:env:start\]/g) ?? []).length;
+
+    async function setupUserAndProject(injectShellProfile = true) {
+      const fixture = await setupFixture(tmpDir);
+      vi.stubEnv('HOME', fixture.homeDir);
+      vi.stubEnv('SHELL', '/bin/zsh');
+      vi.stubEnv('ZDOTDIR', '');
+      const teamConfig = makeTeamConfig();
+      const projectTeamConfig = makeTeamConfig({ sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '~/.teamai/docs' }, env: { injectShellProfile } } });
+      const userConfig = makeLocalConfig(fixture.homeDir, fixture.repoPath);
+      const projectRoot = path.join(tmpDir, 'work', 'api');
+      await fse.ensureDir(projectRoot);
+      execFileSync('git', ['init', '-q', projectRoot]);
+      const projectConfig = makeLocalConfig(projectRoot, fixture.repoPath, {
+        scope: 'project', projectRoot, dataHome: path.join(fixture.homeDir, '.teamai', 'projects', 'api'),
+      });
+      await fse.outputFile(path.join(projectConfig.dataHome!, 'config.yaml'), 'scope: project\n');
+      await writeAnchorFile(projectConfig.dataHome!, projectRoot);
+      const handler = new EnvHandler();
+      await handler.writeResolvedEnv([{ key: 'USER_ONLY', value: 'u' }], teamConfig, userConfig);
+      await handler.writeResolvedEnv([{ key: 'PROJECT_ONLY', value: 'p' }], projectTeamConfig, projectConfig);
+      return { ...fixture, teamConfig, projectTeamConfig, userConfig, projectConfig, projectRoot };
+    }
+
+    it.skipIf(spawnSync('zsh', ['-c', 'true']).status !== 0)('stops routing an uninstalled project, so a shell there gets the user env again', async () => {
+      const { homeDir, teamConfig, projectConfig, projectRoot } = await setupUserAndProject();
+      expect(shellSees(homeDir, projectRoot, 'USER_ONLY')).toBe('');
+      mockAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig });
+
+      await uninstall({ force: true });
+
+      expect(shellSees(homeDir, projectRoot, 'USER_ONLY')).toBe('u');
+      expect(await loaderBlocks(homeDir)).toBe(1);
+    });
+
+    it('removes the loader block with the last scope', async () => {
+      const { homeDir, teamConfig, userConfig, projectConfig } = await setupUserAndProject();
+      mockAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig });
+      await uninstall({ force: true });
+      mockAutoDetectInit.mockResolvedValue({ localConfig: userConfig, teamConfig });
+
+      await uninstall({ force: true });
+
+      expect(await loaderBlocks(homeDir)).toBe(0);
+    });
+
+    it('removes the loader script and its registry with the last scope, a project with no user scope', async () => {
+      const { homeDir, teamaiHome, teamConfig, projectConfig } = await setupUserAndProject();
+      await fse.remove(path.join(teamaiHome, 'config.yaml'));
+      await fse.remove(path.join(teamaiHome, 'env.sh'));
+      mockAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig });
+
+      await uninstall({ force: true });
+
+      expect(await loaderBlocks(homeDir)).toBe(0);
+      expect(await fse.pathExists(path.join(teamaiHome, 'env-loader.sh'))).toBe(false);
+      expect(await fse.pathExists(path.join(teamaiHome, 'env-scopes'))).toBe(false);
+    });
+
+    it('keeps the loader block when a user uninstall leaves a project behind', async () => {
+      const { homeDir, teamConfig, userConfig } = await setupUserAndProject();
+      mockAutoDetectInit.mockResolvedValue({ localConfig: userConfig, teamConfig });
+
+      await uninstall({ force: true });
+
+      expect(await loaderBlocks(homeDir)).toBe(1);
+    });
+
+    it.skipIf(spawnSync('zsh', ['-c', 'true']).status !== 0 || spawnSync('bash', ['-c', 'true']).status !== 0)('removes all teamai home state when no configuration is found', async () => {
+      const { homeDir, teamaiHome, projectConfig } = await setupUserAndProject();
+      await fse.writeFile(path.join(homeDir, '.bashrc'), new EnvHandler().generateShellBlock(path.join(teamaiHome, 'env-loader.sh')));
+      mockAutoDetectInit.mockRejectedValue(new Error('no configuration'));
+
+      await uninstall({ force: true });
+
+      expect(await fse.pathExists(teamaiHome)).toBe(false);
+      expect(await fse.pathExists(projectConfig.dataHome!)).toBe(false);
+      expect(await loaderBlocks(homeDir)).toBe(1);
+      expect(shellSees(homeDir, tmpDir, 'PROJECT_ONLY')).toBe('');
+      const zsh = spawnSync('zsh', ['-c', ':'], {
+        env: { HOME: homeDir, PATH: process.env.PATH, SHELL: '/bin/zsh' }, encoding: 'utf-8',
+      });
+      expect(zsh.status, zsh.stderr).toBe(0);
+      expect(zsh.stdout).toBe('');
+      const bash = spawnSync('bash', ['--noprofile', '--norc', '-c', ':'], {
+        env: { HOME: homeDir, PATH: process.env.PATH, SHELL: '/bin/bash', BASH_ENV: path.join(homeDir, '.bashrc') }, encoding: 'utf-8',
+      });
+      expect(bash.status, bash.stderr).toBe(0);
+      expect(bash.stdout).toBe('');
+    });
+
+    // Both remove ~/.teamai, where the loader script and its registry live.
+    it.skipIf(spawnSync('zsh', ['-c', 'true']).status !== 0).each([
+      { uninstalling: 'the user scope', detects: 'user' },
+    ])('keeps a remaining project\'s env in its shells after uninstalling $uninstalling', async ({ detects }) => {
+      const { homeDir, teamaiHome, teamConfig, userConfig, projectConfig, projectRoot } = await setupUserAndProject();
+      if (detects) mockAutoDetectInit.mockResolvedValue({ localConfig: userConfig, teamConfig });
+      else mockAutoDetectInit.mockRejectedValue(new Error('no configuration'));
+      const elsewhere = path.join(tmpDir, 'elsewhere');
+      await fse.ensureDir(elsewhere);
+
+      await uninstall({ force: true });
+
+      expect(shellSees(homeDir, projectRoot, 'PROJECT_ONLY')).toBe('p');
+      expect(shellSees(homeDir, elsewhere, 'USER_ONLY')).toBe('');
+      expect(await fse.readFile(path.join(teamaiHome, 'env-scopes'), 'utf-8')).not.toMatch(/^user\t/m);
+      expect(await fse.pathExists(path.join(teamaiHome, 'config.yaml'))).toBe(false);
+      expect(await fse.pathExists(path.join(projectConfig.dataHome!, 'config.yaml'))).toBe(true);
+      expect(await fse.pathExists(path.join(projectConfig.dataHome!, 'env.sh'))).toBe(true);
+    });
+
+    it.each([
+      { uninstalling: 'the user scope with an opted-in project', detects: 'user' as const, injectShellProfile: true, legacyRegistry: false, removeLastProject: false, loader: true },
+      { uninstalling: 'the user scope with an opted-out project', detects: 'user' as const, injectShellProfile: false, legacyRegistry: false, removeLastProject: false, loader: false },
+      { uninstalling: 'the user scope with an old registry line', detects: 'user' as const, injectShellProfile: true, legacyRegistry: true, removeLastProject: false, loader: true },
+      { uninstalling: 'the last project while the user scope remains', detects: 'project' as const, injectShellProfile: true, legacyRegistry: false, removeLastProject: true, loader: true },
+    ])('preserves only the state needed after uninstalling $uninstalling', async ({ detects, injectShellProfile, legacyRegistry, removeLastProject, loader }) => {
+      const { homeDir, teamaiHome, teamConfig, projectTeamConfig, userConfig, projectConfig } = await setupUserAndProject(injectShellProfile);
+      if (removeLastProject) await fse.outputJson(path.join(teamaiHome, 'config.yaml'), userConfig);
+      if (legacyRegistry) {
+        const registry = path.join(teamaiHome, 'env-scopes');
+        const lines = (await fse.readFile(registry, 'utf-8')).trimEnd().split('\n');
+        await fse.writeFile(registry, `${lines.filter((line) => !line.startsWith('stamp\t')).join('\n')}\n`);
+      }
+      if (detects === 'user') mockAutoDetectInit.mockResolvedValue({ localConfig: userConfig, teamConfig });
+      else if (detects === 'project') mockAutoDetectInit.mockResolvedValue({ localConfig: projectConfig, teamConfig: projectTeamConfig });
+      else mockAutoDetectInit.mockRejectedValue(new Error('no configuration'));
+
+      await uninstall({ force: true });
+
+      expect(await fse.pathExists(path.join(projectConfig.dataHome!, 'config.yaml'))).toBe(!removeLastProject);
+      expect(await fse.pathExists(path.join(projectConfig.dataHome!, 'env.sh'))).toBe(!removeLastProject);
+      expect(await fse.pathExists(path.join(teamaiHome, 'env-scopes'))).toBe(true);
+      expect(await fse.pathExists(path.join(teamaiHome, 'env-loader.sh'))).toBe(loader);
+      if (detects) expect(await loaderBlocks(homeDir)).toBe(loader ? 1 : 0);
+      const registry = await fse.readFile(path.join(teamaiHome, 'env-scopes'), 'utf-8');
+      expect(registry.split('\n').some((line) => line.startsWith('user\t'))).toBe(removeLastProject);
+      expect(registry.split('\n').some((line) => line.split('\t')[2] === '-')).toBe(!loader);
     });
   });
 

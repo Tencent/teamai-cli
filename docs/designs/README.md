@@ -8,6 +8,7 @@ One document per feature design, in English. The status column says how far each
 | Implemented | [Unified dashboard](dashboard-unified.md) — four-module local dashboard | — |
 | Implemented | [GitCode provider](gitcode-provider.md) | #361 |
 | Implemented | [Model profiles](model-profiles.md) — `teamai models` | — |
+| Implemented | [Team env by directory](env-by-directory.md) — each directory's shell gets the env of the scope that governs it | #1018 |
 | Implemented | [Skill serving](skill-serving.md) — built-in skill content shipped with the CLI (`teamai skill get`) | #678 |
 | Implemented, living | [Team secrets](team-secrets.md) — describes only what the current version does | #875, #879 |
 | In progress | [Multi-project management](multi-project-management.md) — `project` as a dimension orthogonal to `role`; P1/P2 shipped (`--project`, `manifest/projects.yaml`) | #375 |

@@ -35,12 +35,12 @@ teamai uninstall --agent claude
 - 团队同步的 skills，包括 OpenClaw workspace skills（保留用户自建 skills）。两个版本在项目中共用的 skills 目录——Trae 与 Trae CN 的 `.trae/skills/`、Qoder 与 Qoder CN 的 `.qoder/skills/`——只要另一个版本仍已安装就会保留
 - 团队同步的 rules，包括旧版本留在 `.codex/rules/`、项目的 `.workbuddy/rules/` 与 `.pi/rules/`、`.openclaw/rules/`、`~/.pi/agent/rules/` 和 `~/.joycode/rules/` 中的副本，团队此后已删除的 rule 的副本也包括在内。项目 `.codebuddy/rules/` 中的副本，只要 CodeBuddy 与 WorkBuddy 中的另一个仍已安装就会保留。清理使用记录的 `toolRoots` 位置和发布者本地的文件名。其中你改过的副本会保留，并在警告中点名。已删除 rule 的副本只有与记录的投递哈希一致时才会删除；没有该记录时也会保留并点名。Codex 的 `*.rules` 文件保留
 - 团队同步的自定义 agents 和 CLI 内置 agents（保留用户自建 agents）
-- Shell profile 中的 env 块——会清理每一个候选文件（`.zshrc`、`.bashrc`、`.bash_profile`、`.bash_login`、`.profile`）中、代码块指向本作用域自身 `env.sh` 的那些，而不仅仅是当前 `pull` 会选中的那一个；指向其他作用域 `env.sh` 的代码块不受影响
+- Shell profile 中的 env 块——项目的目录立即不再加载它的环境变量，所有 scope 共用的那一个区块随最后一个 scope 一起移除；同时会清理每一个候选文件（`.zshenv`、`.zshrc`、`.bashrc`、`.bash_profile`、`.bash_login`、`.profile`）中旧版本为本作用域自身 `env.sh` 写入的代码块；指向其他作用域 `env.sh` 的代码块不受影响
 - 项目中 teamai 的 git hook：仓库 git 配置中的 `hook.teamai-post-checkout`、`hook.teamai-post-merge` 与 `hook.teamai-post-rewrite` 条目，以及 `.git/hooks/post-checkout`、`post-merge` 与 `post-rewrite` 中带标记的代码块（移除后只剩 shebang 的脚本是 teamai 创建的，会被删除）。其他 hook 保留
 - 项目中 teamai 的 git exclude 块，在删除它们所隐藏的文件之后移除：项目 `.git/info/exclude` 中的 `delivered` 块、其他仓库中的 `delivered/<id>` 块（作为嵌套克隆或 submodule 的工具目录、纳入 git 的工具主目录）、HTTP 本地 agent 为该项目写的行（agent 仍为你的其他工作区服务；user scope 的卸载会移除它在其记录的每个 exclude 文件中的 `local-agent` 块，包括其他仓库的），以及这些文件中 teamai 的其他所有块，因此你之后在这些路径上新建的文件对 git 可见。你自己的行保留，与其他项目共用的仓库中属于那个项目的块也保留。teamai 无法证明不含解析值的 MCP 配置所对应的行会保留并给出警告（见 [MCP Server](./sharing.md#mcp-server)），判断时会检查仓库的每个 checkout；`credentials` 行在该仓库任一 checkout 中其指向的模型文件仍含 API key 时同样保留。卸载未完成时，仍在磁盘上的文件的行全部保留，留待重试时移除。只读的 exclude 文件（或被另一个 teamai 命令占用超过短暂等待时间的文件）保持原样，警告中会列出需要手动删除的行；此时记录该文件的 teamai 数据目录也会保留，卸载报告未完成（退出码 1），文件可写后再次运行即可移除该块。所属仓库已不存在的 exclude 文件会跳过
 - 每个 checkout 的 `.teamai/.ignore` 中 teamai 的文档搜索白名单块，文件中没有其他内容时连同文件一起删除（见[让分发的文件不进入 git](./member-guide.md#让分发的文件不进入-git)）。
 - docs 目录（`sharing.docs.localDir`）中的团队文档：与团队仓库历史中该文档某个版本相同的文件或链接。其余内容会保留并被指出（`Kept <path>: it is not teamai's ... so uninstall left it.`）：被删除文档路径上或团队从未有过的路径上的文件、你自己的目录或链接。包含它们的目录也会保留，在 `~/.teamai/` 中也是如此。团队仓库历史无法读取时，整个 docs 目录都会保留
-- `~/.teamai/` 目录。卸载找不到任何配置时（在所有项目之外运行，且没有 user scope 配置，例如只用 `init --http` 设置过的机器），会移除该目录和 HTTP 源，并在此之前从其记录中提到的每个 exclude 文件里移除 teamai 的 git exclude 行；它留在磁盘上的文件，其行会保留并被指出；还会移除本地 agent 记录在 Claude 和 CodeBuddy local scope（`~/.claude.json`、`.codebuddy.json`）中的 MCP server，只移除仍与 teamai 写入时相同的：你改动过的副本会保留并被指出，你自己的 server 也保留。若存放 teamai server 的文件无法读取或写入（例如无法解析），该目录连同这些记录一并保留，卸载报告未完成（退出码 1）并指出该文件；修好文件后再次运行即可
+- `~/.teamai/` 目录。卸载找不到任何配置时（在所有项目之外运行，且没有 user scope 配置，例如只用 `init --http` 设置过的机器），会移除整个目录，包括已注册项目的机器状态，以及 HTTP 源。若要保留项目状态，请在 user scope 配置仍可用时卸载 user scope。卸载会先从其记录中提到的每个 exclude 文件里移除 teamai 的 git exclude 行；它留在磁盘上的文件，其行会保留并被指出；还会移除本地 agent 记录在 Claude 和 CodeBuddy local scope（`~/.claude.json`、`.codebuddy.json`）中的 MCP server，只移除仍与 teamai 写入时相同的：你改动过的副本会保留并被指出，你自己的 server 也保留。若存放 teamai server 的文件无法读取或写入（例如无法解析），该目录连同这些记录一并保留，卸载报告未完成（退出码 1）并指出该文件；修好文件后再次运行即可
 
 git 跟踪的 skill、rule 或 agent 副本绝不会被删除：uninstall 会指出它，并附上将其从仓库移除的 `git rm -r <path>`，摘要中把它列在 `Kept (tracked)` 下。
 
@@ -82,7 +82,7 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 **Q: User scope 和 Project scope 可以共存吗？**
 
-可以，但 project scope 默认保持隔离。当前工作目录包含 project scope 配置时，该项目生效并跳过 user scope。先初始化 user scope，再使用 `--inherit-user-scope` 初始化项目（或在项目本地配置中设置 `inheritUserScope: true`），即可组合安全资源和 Recall 结果；可执行配置和控制面配置（`env`、MCP）仍只使用 project scope；hooks 例外——非-self 的 project scope 会把内置 hooks 注入到 HOME，以便 `hook-dispatch` 依据 `cwd` 门控（详见 Hooks 章节）。
+可以，但 project scope 默认保持隔离。当前工作目录包含 project scope 配置时，该项目生效并跳过 user scope。先初始化 user scope，再使用 `--inherit-user-scope` 初始化项目（或在项目本地配置中设置 `inheritUserScope: true`），即可组合安全资源、user 的 `env` 变量和 Recall 结果；密钥以及其他可执行配置和控制面配置（MCP）仍只使用 project scope；hooks 例外——非-self 的 project scope 会把内置 hooks 注入到 HOME，以便 `hook-dispatch` 依据 `cwd` 门控（详见 Hooks 章节）。
 
 **Q: `teamai init` 提示已初始化？**
 

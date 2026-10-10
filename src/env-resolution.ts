@@ -9,15 +9,17 @@
  * part of its output gives the same answer.
  */
 import { memberEnvironment, type MemberEnvironment } from './member-env.js';
+import { loadLocalConfigForScope } from './config.js';
 import { resolveEntries, resolveEntriesFor, type EntryResolution, type ResolvedEntry } from './namespaced-entries.js';
 import { envEntryReader, type EnvVariable } from './resources/env.js';
-import { sameEnvName } from './resources/env-key.js';
+import { envName, sameEnvName } from './resources/env-key.js';
 import { declaredSecretKeys, resolveSecretDeclarations, type KnownNamespaces, type SecretDeclarations } from './resources/secrets.js';
 import {
   getMachineSecretsPath, getTeamSecretsPath, readSecretStore, storedEntryKind, storedSecretValue, type SecretStore,
   type SecretStoreRead, type StoredEntryKind, type StoredSecret,
 } from './secret-store.js';
 import type { LocalConfig } from './types.js';
+import { isReservedTeamEnvKey } from './env-reserved.js';
 
 export interface SecretValue {
   readonly source: 'team' | 'global' | 'environment';
@@ -51,6 +53,8 @@ export type StoreResolution<V> =
 export interface TeamEnv {
   /** The env.yaml variables this scope receives, a declared secret's included. */
   readonly variables: EntryResolution<EnvVariable>;
+  /** User-scope variables inherited by this project, before its own variables. */
+  readonly inheritedVariables: readonly ResolvedEntry<EnvVariable>[];
   readonly declarations: SecretDeclarations;
   /**
    * Each declared secret's value: the member's value for this team, then for
@@ -107,15 +111,48 @@ export async function resolveTeamEnv(
   const team = secretKeys.size > 0 || plain.length > 0 ? await readSecretStore(getTeamSecretsPath(localConfig)) : NO_VALUES;
   const machine = secretKeys.size > 0 ? await readSecretStore(getMachineSecretsPath()) : NO_VALUES;
   const secrets = secretValues(secretKeys, team, machine, member, env);
+  let resolvedVariables = variableValues(plain, team, env);
+  let inheritedVariables: readonly ResolvedEntry<EnvVariable>[] = [];
+  if (localConfig.scope === 'project' && localConfig.inheritUserScope === true) {
+    const userConfig = await loadLocalConfigForScope('user');
+    if (userConfig && userConfig.repo.kind !== 'http') {
+      const userEnv = await resolveTeamEnv(userConfig, undefined, env);
+      const userSecretKeys = declaredSecretKeys(userEnv.declarations) ?? new Set<string>();
+      inheritedVariables = userEnv.variables.kind === 'resolved'
+        ? userEnv.variables.entries.filter(({ name }) => sameEnvName(userSecretKeys, name) === undefined)
+        : [];
+      if (resolvedVariables.kind === 'resolved' && userEnv.variableValues.kind === 'resolved') {
+        const inherited = new Map(userEnv.variableValues.values);
+        for (const [key, value] of resolvedVariables.values) {
+          const previous = sameEnvName(inherited.keys(), key);
+          if (previous !== undefined) inherited.delete(previous);
+          inherited.set(key, value);
+        }
+        resolvedVariables = { kind: 'resolved', values: inherited };
+      }
+    }
+  }
   return {
     variables,
+    inheritedVariables,
     declarations,
     secrets: secrets.values,
     unsetReferences: secrets.unsetReferences,
-    variableValues: variableValues(plain, team, env),
+    variableValues: resolvedVariables,
     staleEntries: staleEntries(secretKeys, plain, team),
     member,
   };
+}
+
+/** The variable declarations a scope delivers, with project declarations taking precedence over inherited user ones. */
+export function effectiveTeamEnvVariables(teamEnv: TeamEnv): readonly ResolvedEntry<EnvVariable>[] {
+  const effective = new Map<string, ResolvedEntry<EnvVariable>>();
+  for (const variable of [...teamEnv.inheritedVariables, ...(teamEnv.variables.kind === 'resolved' ? teamEnv.variables.entries : [])]) {
+    const key = envName(variable.name);
+    effective.delete(key);
+    effective.set(key, variable);
+  }
+  return [...effective.values()];
 }
 
 /** The entry for `key` when it is of this kind: a secret never resolves from a variable override, nor the reverse. */
@@ -199,7 +236,7 @@ export function envShVariables(
 ): EnvVariable[] {
   return variables.flatMap((variable) => {
     const resolved = values.get(variable.name);
-    return resolved && !resolved.fromEnv ? [{ ...variable.entry, value: resolved.value }] : [];
+    return resolved && !resolved.fromEnv && !isReservedTeamEnvKey(variable.name) ? [{ ...variable.entry, value: resolved.value }] : [];
   });
 }
 

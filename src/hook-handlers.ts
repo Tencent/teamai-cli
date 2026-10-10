@@ -11,11 +11,13 @@
 
 import path from 'node:path';
 
+import type { ResolvedEntry } from './namespaced-entries.js';
 import type { HookHandler } from './hook-dispatch.js';
 import type { LocalConfig } from './types.js';
 import type { GitHookEvent } from './git-hook.js';
 import { deriveDispatchSessionId, deriveSessionId } from './utils/session-id.js';
 import { log } from './utils/logger.js';
+import { isReservedTeamEnvKey } from './env-reserved.js';
 import { normalizeToolName } from './utils/tool-names.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { pathExists } from './utils/fs.js';
@@ -821,27 +823,39 @@ const packageHintHandler: HookHandler = {
 };
 
 /**
- * SessionStart: tell the agent which secrets the scope declares and to run the
- * CLIs that need them through `teamai env exec` (#875). Nothing when the scope
- * declares none, or when its secrets files don't parse (doctor and pull say so).
+ * SessionStart: tell the agent which env variables and secrets the scope
+ * delivers, and to run the commands that need them through `teamai env exec`
+ * (#875). That is the one path that gives a command this directory's env in
+ * every tool and shell (#1018). Nothing when the scope delivers neither, or
+ * when its files don't parse (doctor and pull say so).
  */
-const secretsHintHandler: HookHandler = {
-  name: 'secrets-hint',
+const teamEnvHintHandler: HookHandler = {
+  name: 'team-env-hint',
   async execute(_stdin, _tool, config) {
     if (!config) return null;
-    const { resolveSecretDeclarations } = await import('./resources/secrets.js');
-    const declarations = await resolveSecretDeclarations(config);
-    if (declarations.kind !== 'resolved' || declarations.entries.length === 0) return null;
-    const keys = declarations.entries.map(({ name, entry }) => {
+    const { resolveTeamEnv, effectiveTeamEnvVariables } = await import('./env-resolution.js');
+    const teamEnv = await resolveTeamEnv(config);
+    const { declarations } = teamEnv;
+    const variables = effectiveTeamEnvVariables(teamEnv);
+    const secrets = declarations.kind === 'resolved' ? declarations.entries.filter(({ name }) => !isReservedTeamEnvKey(name)) : [];
+    const secretNames = new Set(secrets.map(({ name }) => name));
+    const plain = variables.filter(({ name }) => !secretNames.has(name) && !isReservedTeamEnvKey(name));
+    if (secrets.length === 0 && plain.length === 0) return null;
+    const described = (entries: readonly Pick<ResolvedEntry<{ description?: string }>, 'name' | 'entry'>[]): string => entries.map(({ name, entry }) => {
       const description = entry.description?.replace(/\s+/g, ' ').trim();
       return description ? `${name} (${description})` : name;
-    });
+    }).join(', ');
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        additionalContext: `Team secrets in this scope: ${keys.join(', ')}. `
-          + 'Run the CLIs that need them through `teamai env exec -- <command>` so they get this team\'s values. '
-          + 'Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.',
+        additionalContext: [
+          ...plain.length > 0 ? [`Team env variables in this scope: ${described(plain)}.`] : [],
+          ...secrets.length > 0 ? [`Team secrets in this scope: ${described(secrets)}.`] : [],
+          'Run the commands that need them through `teamai env exec -- <command>` so they get this directory\'s team values.',
+          ...secrets.length > 0
+            ? ['Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.']
+            : [],
+        ].join(' '),
       },
     });
   },
@@ -1059,7 +1073,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: teamRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'session-start', matcher: '*', handler: secretsHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'session-start', matcher: '*', handler: teamEnvHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
     // Asked for by the Pi and OMP extensions and the Hermes plugin, which add the result to the prompt.
     { event: 'instructions', matcher: '*', handler: instructionsHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },

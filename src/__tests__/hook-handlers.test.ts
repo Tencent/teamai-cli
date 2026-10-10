@@ -103,6 +103,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   // project config, so the gate asks the user config: the same mocked one.
   requireInit: mockAutoDetectInit,
   findUnreadableProjectConfig: mockFindUnreadableProjectConfig,
+  loadLocalConfigForScope: vi.fn().mockResolvedValue(null),
   resolveConfigForDir: vi.fn().mockResolvedValue({
     repo: { localPath: '/tmp/team-repo', remote: '' }, username: 'test', scope: 'user', additionalRoles: [],
   }),
@@ -1460,7 +1461,7 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
   });
 });
 
-describe('session-start secrets hint (#875)', () => {
+describe('session-start team env hint (#875, #1018)', () => {
   let teamRepo: string;
 
   beforeEach(() => {
@@ -1504,7 +1505,38 @@ describe('session-start secrets hint (#875)', () => {
     expect(lines.filter((line) => line !== secretLines[0])).toEqual(['MR context', 'Package context']);
   });
 
-  it('adds nothing when the scope declares no secrets', async () => {
+  it('names the scope\'s env variables and env exec when it delivers variables but no secrets (#1018)', async () => {
+    fs.mkdirSync(path.join(teamRepo, 'env'));
+    fs.writeFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'variables:\n  - key: API_URL\n    value: https://api.example\n');
+
+    const lines = await sessionContext();
+
+    const envLines = lines.filter((line) => line.includes('API_URL'));
+    expect(envLines).toHaveLength(1);
+    expect(envLines[0]).toContain('teamai env exec --');
+    expect(envLines[0]).not.toContain('teamai env set KEY');
+  });
+
+  it('includes inherited user variables in the hint through the shared env resolution', async () => {
+    const userRepo = path.join(teamRepo, 'user-team');
+    fs.mkdirSync(path.join(userRepo, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(userRepo, 'teamai.yaml'), 'team: acme\nrepo: https://example.test/acme/team.git\n');
+    fs.writeFileSync(path.join(userRepo, 'env', 'env.yaml'), 'variables:\n  - key: USER_ONLY\n    value: inherited\n');
+    const { loadLocalConfigForScope } = await import('../config.js');
+    vi.mocked(loadLocalConfigForScope).mockResolvedValueOnce({
+      ...scope, scope: 'user', repo: { localPath: userRepo, remote: '' },
+    });
+    const projectConfig: LocalConfig = {
+      ...scope, scope: 'project', inheritUserScope: true, projectRoot: teamRepo, repo: { localPath: teamRepo, remote: '' },
+    };
+    const dispatcher = createDispatcher({ handlers: filterHandlersForConfig(buildHandlerRegistry(), projectConfig), localConfig: projectConfig });
+    const result = await dispatcher.dispatch('session-start', '*', { session_id: 'sid-inherited', cwd: teamRepo }, 'claude', 'foreground');
+
+    expect(result.errors).toEqual([]);
+    expect(result.output).toContain('Team env variables in this scope: USER_ONLY.');
+  });
+
+  it('adds nothing when the scope delivers no env', async () => {
     expect(await sessionContext()).toEqual(['MR context', 'Package context']);
   });
 
@@ -1516,10 +1548,10 @@ describe('session-start secrets hint (#875)', () => {
   });
 
   it('is a foreground team handler, so a directory without teamai never gets the line', () => {
-    const registration = buildHandlerRegistry().find((r) => r.handler.name === 'secrets-hint');
+    const registration = buildHandlerRegistry().find((r) => r.handler.name === 'team-env-hint');
     expect(registration).toMatchObject({ event: 'session-start', matcher: '*', requiresConfig: true });
     expect(registration?.background).not.toBe(true);
-    expect(filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name)).not.toContain('secrets-hint');
+    expect(filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name)).not.toContain('team-env-hint');
   });
 });
 

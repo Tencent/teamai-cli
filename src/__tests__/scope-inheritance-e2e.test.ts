@@ -20,10 +20,12 @@ interface RunResult {
   output: string;
 }
 
-function runCLI(args: string[], env: Record<string, string>, cwd: string): Promise<RunResult> {
+function runCLI(args: string[], env: Record<string, string>, cwd: string, clean: string[] = []): Promise<RunResult> {
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: '0', ...env };
+  for (const key of clean) delete childEnv[key];
   return new Promise((resolve) => {
     const child = spawn('node', [CLI, ...args], {
-      env: { ...process.env, FORCE_COLOR: '0', ...env },
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd,
     });
@@ -65,10 +67,13 @@ const TEAM_YAML = [
   'sharing:',
   '  env:',
   '    injectShellProfile: true',
+  '  mcp:',
+  '    autoApply: true',
   'toolPaths:',
   '  claude:',
   '    skills: .claude/skills',
   '    rules: .claude/rules',
+  '    mcpProject: .mcp.json',
 ].join('\n');
 
 function makeRemote(
@@ -139,6 +144,18 @@ describe('opt-in user-scope inheritance (e2e)', () => {
 
     const projectRemote = path.join(sandbox, 'java-remote');
     makeRemote(projectRemote, PROJECT_TITLE, 'java-review', PROJECT_COLLISION_TITLE);
+    fs.mkdirSync(path.join(projectRemote, 'mcp'), { recursive: true });
+    fs.writeFileSync(path.join(projectRemote, 'mcp', 'mcp.yaml'), [
+      'servers:',
+      '  - name: inherited-token',
+      '    transport: http',
+      '    url: https://api.example.com/mcp',
+      '    headers:',
+      '      Authorization: "Bearer ${ORG_ONLY_SECRET}"',
+      '',
+    ].join('\n'));
+    git(['add', '-A'], projectRemote);
+    git(['commit', '-q', '-m', 'add project MCP server'], projectRemote);
     const projectLocal = path.join(projectRoot, '.teamai', 'team-repo');
     git(['clone', '-q', projectRemote, projectLocal], sandbox);
     fs.writeFileSync(
@@ -154,7 +171,7 @@ describe('opt-in user-scope inheritance (e2e)', () => {
       ].join('\n'),
     );
 
-    pullResult = await runCLI(['pull'], { HOME: homeDir }, projectRoot);
+    pullResult = await runCLI(['pull'], { HOME: homeDir }, projectRoot, ['ORG_ONLY_SECRET']);
   }, 60_000);
 
   afterAll(() => {
@@ -176,6 +193,12 @@ describe('opt-in user-scope inheritance (e2e)', () => {
   it('does not apply inherited user hooks or MCP configuration', () => {
     expect(fs.existsSync(path.join(homeDir, '.claude', 'settings.json'))).toBe(false);
     expect(fs.existsSync(path.join(homeDir, '.teamai', 'managed-mcp.json'))).toBe(false);
+  });
+
+  it('resolves inherited user env for project MCP during pull with a clean process env', () => {
+    expect(pullResult.code, pullResult.output).toBe(0);
+    const projectMcp = fs.readFileSync(path.join(projectRoot, '.mcp.json'), 'utf8');
+    expect(projectMcp).toContain('Bearer should-not-load-in-project');
   });
 
   it('recalls organization and project knowledge together', async () => {

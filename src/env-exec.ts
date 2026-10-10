@@ -21,9 +21,11 @@ import { resolveTeamEnv } from './env-resolution.js';
 import { memberEnvironmentWithoutScope, type MemberEnvironment } from './member-env.js';
 import { describeEntryFailure } from './namespaced-entries.js';
 import { envTable } from './resources/env-key.js';
+import { envLoaderPath } from './resources/env-loader.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { getDataHome, type GlobalOptions, type LocalConfig } from './types.js';
 import { log, setStderrOnly } from './utils/logger.js';
+import { isReservedTeamEnvKey, reservedTeamEnvWarning } from './env-reserved.js';
 
 /** How the command ended. */
 export type ExecOutcome =
@@ -151,9 +153,22 @@ async function commandEnvironment(cwd: string, dryRun: boolean | undefined): Pro
   return overlayTeamEnv(localConfig);
 }
 
-/** A copy of the inherited environment that keeps `__proto__` an own key when the overlay sets it. */
+/**
+ * A copy of the inherited environment that keeps `__proto__` an own key when
+ * the overlay sets it. Without the env loader's bookkeeping and its BASH_ENV
+ * (env-loader.ts): they describe the env of the directory a shell loaded, not
+ * the one teamai gives the command, and a bash the command starts would
+ * un-apply it over this scope's values, a secret included (#1018).
+ */
 function inheritedEnvironment(): NodeJS.ProcessEnv {
-  return envTable(Object.entries(process.env));
+  const env = envTable(Object.entries(process.env));
+  const memberBashEnv = env.__TEAMAI_ENV_BASH_ENV;
+  for (const key of Object.keys(env)) if (key.startsWith('__TEAMAI_ENV_')) delete env[key];
+  if (env.BASH_ENV && path.normalize(env.BASH_ENV) === envLoaderPath()) {
+    if (memberBashEnv) env.BASH_ENV = memberBashEnv;
+    else delete env.BASH_ENV;
+  }
+  return env;
 }
 
 /**
@@ -172,6 +187,11 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
   const env = inheritedEnvironment();
   const teamEnv = await resolveTeamEnv(localConfig);
   const { variables, declarations, variableValues, secrets } = teamEnv;
+  const warning = reservedTeamEnvWarning([
+    ...(variables.kind === 'resolved' ? variables.entries.map(({ name }) => name) : []),
+    ...(declaredSecretKeys(declarations) ?? []),
+  ]);
+  if (warning) log.warn(warning);
   if (declarations.kind === 'failed') {
     // Any env.yaml key may be a secret the file declares, so no team value is applied (#879 Conflict 14),
     // and one a teamai env.sh exported is a team value, not the member's: it is removed.
@@ -189,7 +209,10 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
     const without = exportedClause(withoutTeamExports(env, teamEnv.member));
     log.warn(`${variableValues.reason} The command runs without the team's env variables${without}.`);
   } else {
-    for (const [key, variable] of variableValues.values) setKey(env, key, variable.value);
+    // A shell started in another directory carries that scope's env.sh: what
+    // a teamai env.sh exported is not this directory's, so it goes first (#1018).
+    withoutTeamExports(env, teamEnv.member);
+    for (const [key, variable] of variableValues.values) if (!isReservedTeamEnvKey(key)) setKey(env, key, variable.value);
   }
   const secretKeys = declaredSecretKeys(declarations);
   if (!secretKeys || secretKeys.size === 0) return env;
@@ -198,6 +221,7 @@ async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessE
     log.warn(`${secrets.reason} The command runs without team secrets.`);
   }
   for (const key of secretKeys) {
+    if (isReservedTeamEnvKey(key)) continue;
     const secret = secrets.kind === 'resolved' ? secrets.values.get(key) : undefined;
     if (secret) setKey(env, key, secret.value);
     else removeKey(env, key);

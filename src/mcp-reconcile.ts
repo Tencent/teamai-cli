@@ -41,6 +41,7 @@ import { mcpEntryReader, parseTeamMcpServers, teamMcpToDef } from './resources/m
 import { historicalContents } from './utils/team-history.js';
 import { describeMembersFile, keepsTrackedCopy } from './resources/delivered-copies.js';
 import { envName, envTable } from './resources/env-key.js';
+import { isReservedTeamEnvKey, reservedTeamEnvWarning } from './env-reserved.js';
 import { declaredSecretKeys, type SecretDeclarations } from './resources/secrets.js';
 import { resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
 import { isEnvShMarker } from './env-sh-exports.js';
@@ -189,13 +190,18 @@ export async function buildVarTable(localConfig: LocalConfig, teamEnv?: TeamEnv)
   const table = envTable<string>();
   const resolved = localConfig.repo.kind === 'http' ? null : teamEnv ?? await resolveTeamEnv(localConfig);
   const secretKeys = resolved ? declaredSecretKeys(resolved.declarations) : new Set<string>();
-  const isSecret = (key: string): boolean => secretKeys?.has(key) ?? false;
+  const reservedWarning = reservedTeamEnvWarning([
+    ...(resolved?.variables.kind === 'resolved' ? resolved.variables.entries.map(({ name }) => name) : []),
+    ...(secretKeys ?? []),
+  ]);
+  if (reservedWarning) warnOnce(reservedWarning);
+  const isSecret = (key: string): boolean => !isReservedTeamEnvKey(key) && (secretKeys?.has(key) ?? false);
   const variables = resolved?.variables.kind === 'resolved' && secretKeys ? resolved.variableValues : null;
   if (variables?.kind === 'resolved') {
-    for (const [key, variable] of variables.values) table[key] = variable.value;
+    for (const [key, variable] of variables.values) if (!isReservedTeamEnvKey(key)) table[key] = variable.value;
   } else {
     if (variables) warnOnce(variablesKeptWarning(variables.reason));
-    for (const [key, value] of Object.entries(await readEnvBackup(localConfig))) if (!isSecret(key)) table[key] = value;
+    for (const [key, value] of Object.entries(await readEnvBackup(localConfig))) if (!isSecret(key) && !isReservedTeamEnvKey(key)) table[key] = value;
   }
   // The environment fills only what the team sets nothing for (#875): a
   // member overrides a team variable with `teamai env set`, for that team.
@@ -210,7 +216,7 @@ export async function buildVarTable(localConfig: LocalConfig, teamEnv?: TeamEnv)
     warnOnce(`${resolved.secrets.reason} Team secrets have no value until it is fixed.`);
     return table;
   }
-  for (const [key, secret] of resolved.secrets.values) table[key] = secret.value;
+  for (const [key, secret] of resolved.secrets.values) if (!isReservedTeamEnvKey(key)) table[key] = secret.value;
   return table;
 }
 

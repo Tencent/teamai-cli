@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { EnvHandler, describeEnvYamlShapeProblem, parseEnvFile } from '../resources/env.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
+import { memberEnvironment } from '../member-env.js';
 import type { TeamaiConfig, LocalConfig, ResourceItem } from '../types.js';
 
 vi.mock('../utils/logger.js', () => ({
@@ -22,7 +23,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 /**
- * The source line `generateShellBlock` must emit for a given teamai home.
+ * The source line `generateShellBlock` must emit for a given env loader script.
  *
  * Built by mirroring the production transform rather than hard-coding a
  * separator: the real path is machine-dependent (`C:\Users\...` on Windows,
@@ -31,11 +32,10 @@ vi.mock('../utils/logger.js', () => ({
  * does. Only Windows-form paths are rewritten — a POSIX home keeps its
  * backslashes, which are filename characters there, not separators.
  */
-const expectedSourceLine = (teamaiHome: string): string => {
-  const isWindowsForm = /^[A-Za-z]:[\\/]/.test(teamaiHome) || teamaiHome.startsWith('\\\\');
-  const shellHome = isWindowsForm ? teamaiHome.replace(/\\/g, '/') : teamaiHome;
-  const envShPath = `'${shellHome}/env.sh'`;
-  return `[ -f ${envShPath} ] && source ${envShPath}`;
+const expectedSourceLine = (loaderPath: string): string => {
+  const isWindowsForm = /^[A-Za-z]:[\\/]/.test(loaderPath) || loaderPath.startsWith('\\\\');
+  const quoted = `'${isWindowsForm ? loaderPath.replace(/\\/g, '/') : loaderPath}'`;
+  return `[ -f ${quoted} ] && . ${quoted}`;
 };
 
 describe('EnvHandler', () => {
@@ -268,12 +268,12 @@ scope: 'user',
 
   describe('generateShellBlock', () => {
     it('should generate source line block with markers', () => {
-      const block = handler.generateShellBlock('/home/dev/.teamai');
+      const block = handler.generateShellBlock('/home/dev/.teamai/env-loader.sh');
 
       expect(block).toContain(TEAMAI_ENV_START);
       expect(block).toContain(TEAMAI_ENV_END);
       expect(block).toContain('# DO NOT EDIT: This section is auto-managed by teamai');
-      expect(block).toContain(expectedSourceLine('/home/dev/.teamai'));
+      expect(block).toContain(expectedSourceLine('/home/dev/.teamai/env-loader.sh'));
       // Should NOT contain inline export lines
       expect(block).not.toMatch(/^export /m);
     });
@@ -282,30 +282,28 @@ scope: 'user',
       // Even on Windows the block is read back by bash/zsh, where the native
       // form `C:\Users\me\.teamai` is an escape-laden string: `[ -f ... ]`
       // fails and `source` never runs, with nothing reporting it (#661).
-      const block = handler.generateShellBlock('C:\\Users\\me\\.teamai');
+      const block = handler.generateShellBlock('C:\\Users\\me\\.teamai\\env-loader.sh');
 
       expect(block).toContain(
-        "[ -f 'C:/Users/me/.teamai/env.sh' ] && source 'C:/Users/me/.teamai/env.sh'",
+        "[ -f 'C:/Users/me/.teamai/env-loader.sh' ] && . 'C:/Users/me/.teamai/env-loader.sh'",
       );
     });
 
     it('leaves a backslash in a POSIX home alone', () => {
       // On POSIX a backslash is an ordinary filename character; collapsing it
       // would point the block at a different directory (bot review on #680).
-      const block = handler.generateShellBlock('/home/a\\b/.teamai');
+      const block = handler.generateShellBlock('/home/a\\b/.teamai/env-loader.sh');
 
-      expect(block).toContain(expectedSourceLine('/home/a\\b/.teamai'));
       expect(block).toContain(
-        "[ -f '/home/a\\b/.teamai/env.sh' ] && source '/home/a\\b/.teamai/env.sh'",
+        "[ -f '/home/a\\b/.teamai/env-loader.sh' ] && . '/home/a\\b/.teamai/env-loader.sh'",
       );
     });
 
     it('quotes the path so a home directory containing a space cannot break the block', () => {
-      const block = handler.generateShellBlock('C:\\Users\\John Doe\\.teamai');
+      const block = handler.generateShellBlock('C:\\Users\\John Doe\\.teamai\\env-loader.sh');
 
-      expect(block).toContain(expectedSourceLine('C:\\Users\\John Doe\\.teamai'));
       expect(block).toContain(
-        "[ -f 'C:/Users/John Doe/.teamai/env.sh' ] && source 'C:/Users/John Doe/.teamai/env.sh'",
+        "[ -f 'C:/Users/John Doe/.teamai/env-loader.sh' ] && . 'C:/Users/John Doe/.teamai/env-loader.sh'",
       );
     });
   });
@@ -373,6 +371,19 @@ scope: 'user',
 
       expect(content).toBe("export _PRIVATE='a'\nexport A1_b2='b'\n");
     });
+
+    it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'home', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply'])('should drop reserved loader variable %s', (key) => {
+      expect(handler.generateEnvFile([{ key, value: 'team-value' }, { key: 'SAFE', value: 'yes' }]))
+        .toBe("export SAFE='yes'\n");
+    });
+
+    it('does not mark a filtered reserved value as team-exported', async () => {
+      await handler.writeResolvedEnv([{ key: 'BASH_ENV', value: '/tmp/team-bash-env' }], teamConfig, localConfig);
+
+      const member = await memberEnvironment(localConfig, { secretKeys: new Set(), envYaml: new Map() }, { BASH_ENV: '/tmp/team-bash-env' });
+
+      expect(member('BASH_ENV')).toBe('/tmp/team-bash-env');
+    });
   });
 
   // ─── pullItem ────────────────────────────────────────────
@@ -428,22 +439,22 @@ scope: 'user',
       const content = await fse.readFile(bashrcPath, 'utf-8');
       expect(content).toContain('# existing config');
       expect(content).toContain(TEAMAI_ENV_START);
-      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai`));
+      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai/env-loader.sh`));
       expect(content).toContain(TEAMAI_ENV_END);
       // Should NOT have inline export lines in the profile
       expect(content).not.toContain('export TGIT_API_BASE');
     });
 
-    it('should inject source line into .zshrc for zsh users', async () => {
+    it('should inject source line into .zshenv for zsh users, which every zsh reads', async () => {
       vi.stubEnv('SHELL', '/bin/zsh');
-      const zshrcPath = path.join(homeDir, '.zshrc');
-      await fse.writeFile(zshrcPath, '# zsh config\n');
+      const zshenvPath = path.join(homeDir, '.zshenv');
+      await fse.writeFile(zshenvPath, '# zsh config\n');
 
       await handler.pullItem(item, teamConfig, localConfig);
 
-      const content = await fse.readFile(zshrcPath, 'utf-8');
+      const content = await fse.readFile(zshenvPath, 'utf-8');
       expect(content).toContain(TEAMAI_ENV_START);
-      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai`));
+      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai/env-loader.sh`));
     });
 
     it('should idempotently replace existing block (including old-style with exports)', async () => {
@@ -467,7 +478,7 @@ scope: 'user',
       // Old inline export should be gone
       expect(content).not.toContain('OLD_VAR');
       // Source line should be present instead
-      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai`));
+      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai/env-loader.sh`));
       expect(content).toContain('# my config');
       expect(content).toContain('# other config');
       // Only one start/end pair
@@ -586,10 +597,10 @@ scope: 'user',
 
       const content = await fse.readFile(customPath, 'utf-8');
       expect(content).toContain(TEAMAI_ENV_START);
-      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai`));
+      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai/env-loader.sh`));
     });
 
-    it('should skip when env.yaml has no variables and nothing was delivered before', async () => {
+    it('should install the loader when env.yaml has no variables but the scope is registered for shells', async () => {
       await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [] }));
 
       vi.stubEnv('SHELL', '/bin/bash');
@@ -599,7 +610,8 @@ scope: 'user',
       await handler.pullItem(item, teamConfig, localConfig);
 
       const content = await fse.readFile(bashrcPath, 'utf-8');
-      expect(content).toBe('# original\n');
+      expect(content).toContain(TEAMAI_ENV_START);
+      expect(content).toContain(expectedSourceLine(`${homeDir}/.teamai/env-loader.sh`));
       expect(await fse.pathExists(path.join(homeDir, '.teamai', 'env.sh'))).toBe(false);
     });
 
@@ -772,244 +784,6 @@ scope: 'user',
       // Should not crash and should not modify shell profile
       const content = await fse.readFile(bashrcPath, 'utf-8');
       expect(content).toBe('# original\n');
-    });
-  });
-
-  // ─── a user and a project scope in one profile (#876) ────
-
-  describe('writeResolvedEnv with a user scope and a project scope (#876)', () => {
-    let userHome: string;
-    let projectConfig: LocalConfig;
-    let otherProjectConfig: LocalConfig;
-    const shared = (value: string) => [{ key: 'SHARED', value }];
-    const sourceLines = (profile: string) => profile.split('\n').filter((line) => line.startsWith('[ -f '));
-
-    const projectScope = (slug: string): LocalConfig => ({
-      ...localConfig,
-      scope: 'project',
-      projectRoot: path.join(homeDir, 'work', slug),
-      dataHome: path.join(homeDir, '.teamai', 'projects', slug),
-    });
-
-    beforeEach(async () => {
-      userHome = path.join(homeDir, '.teamai');
-      // The user scope is configured: a project pull recognises its block by
-      // the env.sh this config resolves to.
-      await fse.writeFile(path.join(userHome, 'config.yaml'), YAML.stringify(localConfig));
-      projectConfig = projectScope('api');
-      otherProjectConfig = projectScope('web');
-    });
-
-    const pulls = {
-      user: () => handler.writeResolvedEnv(shared('user'), teamConfig, localConfig),
-      project: () => handler.writeResolvedEnv(shared('project'), teamConfig, projectConfig),
-    };
-
-    it.each([
-      [['user', 'project']],
-      [['project', 'user']],
-      [['user', 'project', 'user']],
-      [['project', 'user', 'project']],
-    ] as const)('keeps the user block ahead of the project block after pulls in order %j', async (order) => {
-      for (const scope of order) await pulls[scope]();
-
-      const profile = await fse.readFile(path.join(homeDir, '.bashrc'), 'utf-8');
-      expect(sourceLines(profile)).toEqual([
-        expectedSourceLine(userHome),
-        expectedSourceLine(projectConfig.dataHome ?? ''),
-      ]);
-    });
-
-    it('keeps both blocks in an explicit sharing.env.shellProfilePath', async () => {
-      const customPath = path.join(tmpDir, 'custom_profile');
-      teamConfig.sharing.env.shellProfilePath = customPath;
-
-      await pulls.user();
-      await pulls.project();
-      await pulls.user();
-
-      expect(sourceLines(await fse.readFile(customPath, 'utf-8'))).toEqual([
-        expectedSourceLine(userHome),
-        expectedSourceLine(projectConfig.dataHome ?? ''),
-      ]);
-    });
-
-    it('lets a second project take over the first project\'s block and keeps the user block', async () => {
-      await pulls.user();
-      await pulls.project();
-      await handler.writeResolvedEnv(shared('web'), teamConfig, otherProjectConfig);
-
-      const profile = await fse.readFile(path.join(homeDir, '.bashrc'), 'utf-8');
-      expect(sourceLines(profile)).toEqual([
-        expectedSourceLine(userHome),
-        expectedSourceLine(otherProjectConfig.dataHome ?? ''),
-      ]);
-    });
-
-    it('inserts the user block right before a project block, leaving the rest of the profile alone', async () => {
-      const bashrcPath = path.join(homeDir, '.bashrc');
-      await fse.writeFile(bashrcPath, '# before\n');
-      await pulls.project();
-      await fse.appendFile(bashrcPath, '# after\n');
-
-      await pulls.user();
-
-      const profile = await fse.readFile(bashrcPath, 'utf-8');
-      expect(profile.startsWith('# before\n')).toBe(true);
-      expect(profile.endsWith('# after\n')).toBe(true);
-      expect(sourceLines(profile)).toEqual([
-        expectedSourceLine(userHome),
-        expectedSourceLine(projectConfig.dataHome ?? ''),
-      ]);
-    });
-
-    it('takes over the first non-user block of a hand-edited profile and leaves the others alone', async () => {
-      await pulls.user();
-      await handler.writeResolvedEnv(shared('web'), teamConfig, otherProjectConfig);
-      const bashrcPath = path.join(homeDir, '.bashrc');
-      const stray = handler.generateShellBlock(path.join(homeDir, '.teamai', 'projects', 'stray'));
-      await fse.appendFile(bashrcPath, `\n${stray}\n`);
-
-      await pulls.project();
-
-      expect(sourceLines(await fse.readFile(bashrcPath, 'utf-8'))).toEqual([
-        expectedSourceLine(userHome),
-        expectedSourceLine(projectConfig.dataHome ?? ''),
-        expectedSourceLine(path.join(homeDir, '.teamai', 'projects', 'stray')),
-      ]);
-    });
-
-    it('treats every other block as a project block when no user scope is configured', async () => {
-      await pulls.user();
-      await fse.remove(path.join(userHome, 'config.yaml'));
-
-      await pulls.project();
-
-      expect(sourceLines(await fse.readFile(path.join(homeDir, '.bashrc'), 'utf-8'))).toEqual([
-        expectedSourceLine(projectConfig.dataHome ?? ''),
-      ]);
-    });
-
-    it('keeps the user block when the user config is present but does not parse', async () => {
-      await pulls.user();
-      await fse.writeFile(path.join(userHome, 'config.yaml'), 'scope: [unclosed\n');
-
-      await pulls.project();
-
-      expect(sourceLines(await fse.readFile(path.join(homeDir, '.bashrc'), 'utf-8'))).toEqual([
-        expectedSourceLine(userHome),
-        expectedSourceLine(projectConfig.dataHome ?? ''),
-      ]);
-    });
-
-    it('does not read the user config when the project already has its own block', async () => {
-      await pulls.user();
-      await pulls.project();
-      await fse.writeFile(path.join(userHome, 'config.yaml'), 'scope: [unclosed\n');
-      const { log } = await import('../utils/logger.js');
-      vi.mocked(log.error).mockClear();
-
-      await pulls.project();
-
-      expect(log.error).not.toHaveBeenCalled();
-    });
-
-    const cannotRevokeWrite = process.platform === 'win32' || process.getuid?.() === 0;
-    it.skipIf(cannotRevokeWrite)('leaves the profile unwritten on repeat pulls of either scope', async () => {
-      const bashrcPath = path.join(homeDir, '.bashrc');
-      await pulls.user();
-      await pulls.project();
-      const first = await fse.readFile(bashrcPath, 'utf-8');
-
-      // Read-only, so a rewrite throws rather than merely bumping a timestamp.
-      await fse.chmod(bashrcPath, 0o444);
-      try {
-        await pulls.project();
-        await pulls.user();
-        await pulls.project();
-      } finally {
-        await fse.chmod(bashrcPath, 0o644);
-      }
-      expect(await fse.readFile(bashrcPath, 'utf-8')).toBe(first);
-    });
-
-    // The Git for Windows chain: the user block sits in .bashrc, which the
-    // .bash_profile a login shell reads sources. Run in a real bash, since the
-    // question is which value a new shell ends up with.
-    it.skipIf(process.platform === 'win32')('lets the project value win on a shared key when the user block is in a sourced .bashrc', async () => {
-      vi.stubEnv('SHELL', '');
-      vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-      const bashProfilePath = path.join(homeDir, '.bash_profile');
-
-      await pulls.user();
-      await fse.writeFile(bashProfilePath, '# generated by Git for Windows\ntest -f ~/.bashrc && . ~/.bashrc\n');
-      await pulls.project();
-      await pulls.user();
-
-      const value = execFileSync('bash', ['-c', '. ~/.bash_profile; printf %s "$SHARED"'], {
-        env: { HOME: homeDir, PATH: process.env.PATH ?? '' },
-      }).toString();
-      expect(value).toBe('project');
-    });
-
-    // The reverse chain: a block already sits in the sourced .bashrc and this
-    // scope's first pull comes after Git for Windows generated .bash_profile.
-    describe('when another scope\'s block is in a .bashrc that .bash_profile sources', () => {
-      const loginShell = (key: string) => execFileSync('bash', ['-c', `. ~/.bash_profile; printf %s "$${key}"`], {
-        env: { HOME: homeDir, PATH: process.env.PATH ?? '' },
-      }).toString();
-
-      beforeEach(() => {
-        vi.stubEnv('SHELL', '');
-        vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-      });
-
-      async function gitForWindowsGeneratesBashProfile(): Promise<void> {
-        await fse.writeFile(path.join(homeDir, '.bash_profile'), 'test -f ~/.bashrc && . ~/.bashrc\n');
-      }
-
-      it.skipIf(process.platform === 'win32')('lets the project value win when the user scope pulls first after the project', async () => {
-        await pulls.project();
-        await gitForWindowsGeneratesBashProfile();
-        await pulls.user();
-
-        expect(loginShell('SHARED')).toBe('project');
-      });
-
-      it.skipIf(process.platform === 'win32')('leaves only the last project\'s block live', async () => {
-        await handler.writeResolvedEnv([{ key: 'API_ONLY', value: 'api' }], teamConfig, projectConfig);
-        await gitForWindowsGeneratesBashProfile();
-        await handler.writeResolvedEnv([{ key: 'WEB_ONLY', value: 'web' }], teamConfig, otherProjectConfig);
-
-        expect([loginShell('API_ONLY'), loginShell('WEB_ONLY')]).toEqual(['', 'web']);
-      });
-    });
-
-    // The inline-export block from before env.sh existed is the user scope's,
-    // whichever scope pulls.
-    describe('with a block from before env.sh', () => {
-      const bashrcPath = () => path.join(homeDir, '.bashrc');
-      const inlineBlock = (value: string) => [TEAMAI_ENV_START, `export OLD_VAR='${value}'`, TEAMAI_ENV_END].join('\n');
-
-      it('keeps it on a project pull', async () => {
-        await fse.writeFile(bashrcPath(), `${inlineBlock('old')}\n`);
-
-        await pulls.project();
-
-        const profile = await fse.readFile(bashrcPath(), 'utf-8');
-        expect(profile).toContain(inlineBlock('old'));
-        expect(sourceLines(profile)).toEqual([expectedSourceLine(projectConfig.dataHome ?? '')]);
-      });
-
-      it('replaces it on a user pull even when a value mentions env.sh', async () => {
-        await fse.writeFile(bashrcPath(), `${inlineBlock('see env.sh')}\n`);
-
-        await pulls.user();
-
-        const profile = await fse.readFile(bashrcPath(), 'utf-8');
-        expect(profile).not.toContain('OLD_VAR');
-        expect(sourceLines(profile)).toEqual([expectedSourceLine(userHome)]);
-      });
     });
   });
 

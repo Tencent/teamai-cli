@@ -284,9 +284,9 @@ stderr, and the exit code is the command's. With no teamai config here, the
 command runs with your environment and a notice. No value is written to disk.
 See [Running a CLI with `env exec`](../designs/team-secrets.md#running-a-cli-with-env-exec).
 
-When the scope declares secrets, the session-start hook tells the agent which
-keys exist, with their `description`, and to run the CLIs that need them through
-`teamai env exec --`. Agents whose tool discards hook output get the same rule
+When the scope delivers env variables or declares secrets, the session-start
+hook tells the agent which keys exist, with their `description`, and to run the
+CLIs that need them through `teamai env exec --`. Agents whose tool discards hook output get the same rule
 from the teamai core skill. An agent never asks for a secret value: when one is
 missing, it asks you to run `teamai env set KEY` in your own terminal. See
 [Telling the agent](../designs/team-secrets.md#telling-the-agent).
@@ -297,13 +297,26 @@ not moved. Until that pull runs, `teamai doctor` reports a variable that
 `env.sh` still exports, so the previous project's secrets are not left live in
 silence.
 
-The shell profile keeps the user scope's teamai block alongside one project block: a pull in a project-scoped directory replaces the previous project's block and leaves the user scope's in place. The user block comes first, so a project value wins on a key both define. A machine that pulls in several project-scoped directories therefore ends up with the user scope's variables plus the last-pulled directory's in new shells. Each directory's own `env.sh` stays correct; the profile points only at the last project's.
+Team env reaches a shell by directory: a shell started in a directory gets the env of the scope that governs it, so several projects open at once each get their own. The shell profile carries one teamai block, the same for every scope, which sources `~/.teamai/env-loader.sh`. Each project pull records its scope and machine-data partition in `~/.teamai/env-scopes`, keyed by the git directory a checkout shares with its worktrees (or the directory itself outside git), and the loader looks the shell's directory up there:
 
-On `pull`, when `injectShellProfile` is enabled (default), the env block goes into `~/.zshrc` if `$SHELL` is zsh, otherwise `~/.bashrc` — except on Windows: `$SHELL` is normally unset there, and Git Bash starts as a *login* shell that never reads `.bashrc`, so teamai instead prefers an existing `~/.bash_profile`, then `~/.bash_login`, then `~/.profile`, falling back to `~/.bashrc` only when none of them exist (a zsh installed via MSYS2/Cygwin, which does set `$SHELL`, still resolves to `.zshrc`). 
+- in a project, the project's `env.sh`, and nothing of the user scope's unless the project sets `inheritUserScope: true`: then the user scope's variables load first and the project wins a key both define; the user scope's secrets never do;
+- in a linked worktree, its project's, before the worktree has pulled;
+- anywhere else, the user scope's.
 
-This matches Git for Windows' own fallback in `/etc/profile.d/bash_profile.sh`, whose guard is `[ -e ~/.bashrc -a ! -e ~/.bash_profile -a ! -e ~/.bash_login -a ! -e ~/.profile ]` — it only synthesizes a `.bash_profile` that sources `.bashrc` in that same one case, which is why a stray `~/.profile` (even one that just sources something else, e.g. `~/.local/bin/env`) is enough to make `.bashrc` alone go unread. Override the target file with `sharing.env.shellProfilePath` in `teamai.yaml`.
+The user scope's `env.sh` loads nowhere when its team sets `injectShellProfile: false`, under a project that inherits it included.
 
-Every pull re-runs this order to find the file the current environment actually reads, then follows every reference from it to one of the other four candidate filenames — transitively, through as many hops as it takes — looking for a candidate that already carries the block, rather than duplicating it. When no file along that chain carries this scope's block yet, the first one carrying another scope's block is used, so the user scope's block and a project's end up ordered in one file rather than split across two. A chain through a file outside that fixed set of five (e.g. a custom `~/.config/shell/profile` some setups source instead) is not followed. 
+A project whose team sets `injectShellProfile: false` loads neither its own `env.sh` nor an inherited user scope's.
+
+An interactive shell switches env on `cd` and puts back a value you had set before entering the project. zsh reads the block from `.zshenv`, which every zsh reads, so the `zsh -c` a tool runs a command with gets the env of its own directory. bash reads no startup file for `bash -c`, so the loader points `BASH_ENV` at itself and chains your existing `BASH_ENV` after loading the team env. Each bash runs your file once. Team env files cannot set `BASH_ENV`, `ENV`, `ZDOTDIR`, `HOME`, `PROMPT_COMMAND`, the zsh hook arrays, or names beginning `__TEAMAI_ENV_` or `__teamai_env_`; these names control shell startup, hooks, or loader state. Pull, `env set`, and `env exec` warn when a team declares them because TeamAI ignores those values. Other shells (fish, PowerShell) run no loader: run the commands that need team env through `teamai env exec --`, which resolves the same way.
+
+A pull no longer rewrites the profile to switch projects. The first pull with a version that has the loader, also in a project without env, takes out the per-scope blocks earlier versions wrote, from every candidate file, and says so once when a project loses the user scope's variables it used to get.
+
+On `pull`, when `injectShellProfile` is enabled (default), the env block goes into `~/.zshenv` (`$ZDOTDIR/.zshenv` when `ZDOTDIR` is set) if `$SHELL` is zsh, otherwise `~/.bashrc` — except on Windows: `$SHELL` is normally unset there, and Git Bash starts as a *login* shell that never reads `.bashrc`, so teamai instead prefers an existing `~/.bash_profile`, then `~/.bash_login`, then `~/.profile`, falling back to `~/.bashrc` only when none of them exist (a zsh installed via MSYS2/Cygwin, which does set `$SHELL`, still resolves to `.zshenv`).
+
+
+This matches Git for Windows' own fallback in `/etc/profile.d/bash_profile.sh`, whose guard is `[ -e ~/.bashrc -a ! -e ~/.bash_profile -a ! -e ~/.bash_login -a ! -e ~/.profile ]` — it only synthesizes a `.bash_profile` that sources `.bashrc` in that same one case, which is why a stray `~/.profile` (even one that just sources something else, e.g. `~/.local/bin/env`) is enough to make `.bashrc` alone go unread. Override the target file for bash with `sharing.env.shellProfilePath` in `teamai.yaml`. For zsh, teamai always installs the block in `.zshenv` (under `$ZDOTDIR` when set), because `zsh -c` never reads `.zshrc`; an override naming another zsh startup file is ignored with a warning, and an older block there is moved to `.zshenv` on pull.
+
+Every pull re-runs this order to find the file the current environment actually reads, then follows every reference from it to one of the other four candidate filenames — transitively, through as many hops as it takes — looking for a candidate that already carries the block, rather than duplicating it. A chain through a file outside that fixed set of five (e.g. a custom `~/.config/shell/profile` some setups source instead) is not followed.
 
 This is what keeps the Git-for-Windows bootstrap above from moving the target out from under it: that same guard condition means a first pull into `.bashrc` leaves the exact state that makes the next login shell auto-generate a `~/.bash_profile` sourcing it, and without following that forwarding relationship the next pull would prefer the newly-created file and inject a second block there, leaving the original — still working, just loaded further away — reported as a dead leftover. The same reasoning covers a plain `.profile` that flat-guards a source of `.bashrc` for interactive shells (`[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"`), two hops from whatever a login shell reads first.
 
@@ -315,7 +328,7 @@ Nothing inside an `if`, `for`/`while`/`until`, `case`, `select`, a function body
 
 Anything this can't resolve one way or the other, and a block sitting in a candidate nothing in the chain actually reaches, is never preferred over the order-based pick — otherwise a stale block left by a pre-#682 install would outrank the correct file forever, silently reintroducing #682 on upgrade.
 
-`doctor` (and the check `pull` runs automatically afterward) also flags a teamai env block left behind in a *different* candidate file — e.g. a block a pre-#682 install wrote to `.bashrc` before this file-selection logic changed — even if that block is broken and was never functional. `teamai uninstall` removes it.
+`doctor` (and the check `pull` runs automatically afterward) also flags a per-scope env block an earlier version left behind in a candidate file — e.g. a block a pre-#682 install wrote to `.bashrc` before this file-selection logic changed — even if that block is broken and was never functional. The next pull or `teamai uninstall` removes it. `This directory resolves its team env` starts your `$SHELL` in the directory, runs the loader there, and checks that it loads this scope's `env.sh`; a project a pull has not registered yet fails it until you pull there. With a shell that runs no loader, the check passes and a doctor note names the gap.
 
 ### Docs
 
@@ -483,7 +496,7 @@ Copilot uses its native `mcpServers` schema: `stdio` becomes `type: "local"`, re
 
 OpenCode supports `stdio` (written as its `type:"local"` shape), `http`, and `sse` (both `type:"remote"`, negotiated by its client); its servers live under the `mcp` key of the shared `opencode.json`. Ownership is tracked in `~/.teamai/managed-mcp.json` — hand-added servers are left alone; name collisions skip unless `--force`.
 
-**Secrets.** Write `${VAR}`, never a literal, in `mcp.yaml`. A key the team declares in `env/secrets.yaml` resolves from your value for this team (`teamai env set`), then your value for the machine (`teamai env set --global`), then your own environment, which leaves out values a teamai `env.sh` exported (see [Team secrets](../designs/team-secrets.md#resolution)). Any other variable resolves from your value for this team (`teamai env set KEY`), then from the team env variables this directory receives (`env/env.yaml` and the active `env/<ns>/env.yaml`); the environment fills only a key the team sets nothing for, and no longer overrides a team variable (see [Team secrets](../designs/team-secrets.md#variables)). 
+**Secrets.** Write `${VAR}`, never a literal, in `mcp.yaml`. A key the team declares in `env/secrets.yaml` resolves from your value for this team (`teamai env set`), then your value for the machine (`teamai env set --global`), then your own environment, which leaves out values a teamai `env.sh` exported (see [Team secrets](../designs/team-secrets.md#resolution)). Any other variable resolves from your value for this team (`teamai env set KEY`), then from the team env variables this directory receives (`env/env.yaml` and the active `env/<ns>/env.yaml`); in a project with `inheritUserScope: true`, inherited user-scope variables are available under project variables. The environment fills only a key the team sets nothing for, and no longer overrides a team variable (see [Team secrets](../designs/team-secrets.md#variables)).
 
 An interactive `pull` and `teamai doctor` say when your export differs from the team's value and is ignored. Unresolved variables skip the server with a hint. A declared secret is different: when a pull can't find it, the entry an earlier pull wrote stays as it is, so it may hold a value that was since rotated, until a pull finds the new one (see [Team secrets](../designs/team-secrets.md#a-missing-secret-keeps-the-mcp-entry)). An interactive `pull`, `teamai mcp list`, `teamai env list`, `teamai doctor` and `teamai env exec` name a declared secret with no value, the servers that use it and the command that sets it: `` github: GITHUB_TOKEN is not set. Run `teamai env set GITHUB_TOKEN` (<url>). ``
 

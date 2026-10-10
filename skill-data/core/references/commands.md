@@ -24,7 +24,7 @@ Generated: do not edit by hand. Regenerate with
   - `--self` — Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.
   - `--token <key>` — API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.
   - `--scope <scope>` — Install scope: project (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude)
-  - `--inherit-user-scope` — In project scope, also sync safe user-scope resources and search its knowledge
+  - `--inherit-user-scope` — In project scope, also sync safe user-scope resources, load its env variables (not its secrets) in the project, and search its knowledge
   - `--no-inherit-user-scope` — Disable user-scope inheritance for this project
   - `--role <id>` — Primary role ID (e.g. hai_dev) for non-interactive setup
   - `--project <ids>` — Active logical project(s) from manifest/projects.yaml (comma-separated); scopes which project resources and learnings this directory syncs. Pass "all" to activate every project the manifest declares (a snapshot taken now)

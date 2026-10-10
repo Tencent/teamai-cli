@@ -11,6 +11,7 @@ import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
 import { isToolInstalledForConfig, type ResourceHandler } from './resources/base.js';
 import type { Check, DoctorContext } from './doctor.js';
+import type { DirectoryEnv } from './resources/env-loader.js';
 import type { DesiredMcpContext } from './mcp-reconcile.js';
 import type { ResolvedMcpFile } from './mcp-resolved-files.js';
 import {
@@ -1269,7 +1270,11 @@ async function resolveEntryTypes(
  * skipped for `unresolved variable(s)`, with nothing pointing back here.
  */
 export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]> {
-  const { problems, staleProfiles } = await envDeliveryProblems(ctx);
+  const { problems, staleProfiles, isLoaderOwed } = await envDeliveryProblems(ctx);
+  const { localConfig } = ctx;
+  const { directoryEnv } = await import('./resources/env-loader.js');
+  const dir = localConfig.scope === 'project' && localConfig.projectRoot ? localConfig.projectRoot : process.cwd();
+  const directory = isLoaderOwed ? await directoryEnv(localConfig, dir) : null;
   return [
     {
       name: 'Env variables injected in shell profile',
@@ -1278,6 +1283,15 @@ export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]
       fix: problems.length === 0
         ? 'Run `teamai pull` to inject env variables into shell profile'
         : `${problems.join('; ')}. Run \`teamai pull\` after fixing the cause, then open a new shell.`,
+    },
+    // Several projects open at once each load their own env (#1018): this
+    // asks the loader, in a real shell started here, which env.sh it loads.
+    // A shell that runs no loader passes here; envLoaderNotes names the gap.
+    {
+      name: 'This directory resolves its team env',
+      source: 'local',
+      check: async () => directoryEnvFix(directory, dir) === undefined,
+      fix: directoryEnvFix(directory, dir),
     },
     // A separate check, not folded into the one above: a stray leftover
     // block for this same scope (e.g. from before #682 changed which file
@@ -1299,16 +1313,49 @@ export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]
   ];
 }
 
+/** What to do about what a shell started in `dir` loads, or undefined when there is nothing to do. */
+function directoryEnvFix(directory: DirectoryEnv | null, dir: string): string | undefined {
+  if (directory === null) return undefined;
+  switch (directory.kind) {
+    case 'loads-scope':
+    case 'shell-without-loader':
+      return undefined;
+    case 'loads-other':
+      return `A shell started in ${dir} loads ${directory.loaded.length > 0 ? nameList([...directory.loaded]) : 'no team env'} `
+        + `instead of ${nameList([...directory.expected])}. Run \`teamai pull\` here, then open a new shell.`;
+    case 'shell-failed':
+      return `Could not run ${directory.shell} in ${dir} to check which team env it loads: ${directory.reason}. `
+        + 'Check that SHELL names a shell that starts.';
+    default: {
+      const unhandled: never = directory;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * Info for a member whose shell runs no env loader (#1018): the team env does
+ * not reach it, and `env exec` does. Not a check, since nothing here is
+ * broken and no pull changes it.
+ */
+export async function envLoaderNotes(ctx: DoctorContext): Promise<string[]> {
+  const { localConfig, teamConfig } = ctx;
+  if (teamConfig?.sharing?.env?.injectShellProfile === false) return [];
+  const { loaderShell } = await import('./resources/env-loader.js');
+  const shell = process.env.SHELL ?? '';
+  if (loaderShell(shell)) return [];
+  if (!await pathExists(path.join(getDataHome(localConfig), 'env.sh'))) return [];
+  return [`Team env does not load in ${path.basename(shell) || 'a shell without SHELL'}: only zsh and bash run the teamai env loader. `
+    + 'Run the commands that need it through `teamai env exec -- <command>`.'];
+}
+
 /** Every reason the team's env variables are not reaching a shell, and any stray leftover blocks found along the way. */
 async function envDeliveryProblems(
   ctx: DoctorContext,
-): Promise<{ problems: string[]; staleProfiles: string[] }> {
+): Promise<{ problems: string[]; staleProfiles: string[]; isLoaderOwed?: true }> {
   const { localConfig, teamConfig } = ctx;
   const none = { problems: [], staleProfiles: [] };
   if (teamConfig?.sharing?.env?.injectShellProfile === false) return none;
-
-  const { EnvHandler } = await import('./resources/env.js');
-  const envHandler = new EnvHandler();
 
   // The variables this member and directory receive: the same resolution pull
   // writes env.sh from, not a second copy of it. A file that cannot be used, or
@@ -1382,19 +1429,22 @@ async function envDeliveryProblems(
   // candidates that are always absolute — an unexpanded `~/...` override
   // would never match its own resolved file and get reported as a stray
   // copy of itself (#693 review round 4).
-  const profilePath = expandHome(
-    teamConfig?.sharing?.env?.shellProfilePath ?? await envHandler.detectShellProfile(envShPath),
-  );
-  // This scope's own block: the profile can also carry another scope's
-  // (#876), and that one is not this scope's to judge.
+  const { envLoaderPath } = await import('./resources/env-loader.js');
+  const { envLoaderProfile } = await import('./utils/shell-profile.js');
+  const loaderPath = envLoaderPath();
+  // For zsh, a file every zsh reads, whatever shellProfilePath names (#1018).
+  const override = teamConfig?.sharing?.env?.shellProfilePath;
+  const { path: profilePath } = await envLoaderProfile(override, loaderPath);
+  // One block for every scope: it sources the loader, which picks the env.sh
+  // for the shell's directory (#1018).
   const profile = await readFileSafe(profilePath);
-  const block = profile === null ? null : findEnvBlockFor(profile, envShPath);
+  const block = profile === null ? null : findEnvBlockFor(profile, loaderPath);
 
   if (block === null) {
-    problems.push(`${profilePath} carries no TeamAI env block for ${envShPath}`);
-  } else if (envSh !== null && !envBlockSourcesPath(block.text, envShPath)) {
+    problems.push(`${profilePath} carries no TeamAI env block for ${loaderPath}`);
+  } else if (!envBlockSourcesPath(block.text, loaderPath)) {
     problems.push(
-      `the block in ${profilePath} does not load ${envShPath}: a POSIX shell reads an unquoted `
+      `the block in ${profilePath} does not load ${loaderPath}: a POSIX shell reads an unquoted `
       + 'backslash as an escape, so the `[ -f ... ]` test fails and `source` never runs',
     );
   }
@@ -1406,14 +1456,13 @@ async function envDeliveryProblems(
   // sits in, say, `.bashrc` from a pre-#682/#661 install (#693 review).
   const home = getUserHome();
   const staleProfiles: string[] = [];
-  for (const name of SHELL_PROFILE_CANDIDATE_NAMES) {
-    const candidate = path.join(home, name);
+  for (const candidate of new Set([...override ? [expandHome(override)] : [], ...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(home, name))])) {
     if (sameFile(candidate, profilePath)) continue;
     const content = await readFileSafe(candidate);
     if (content && findEnvBlockFor(content, envShPath)) staleProfiles.push(candidate);
   }
 
-  return { problems, staleProfiles };
+  return { problems, staleProfiles, isLoaderOwed: true };
 }
 
 /**

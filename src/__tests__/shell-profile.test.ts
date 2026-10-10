@@ -42,9 +42,23 @@ describe('detectShellProfile', () => {
   });
 
   describe('POSIX (darwin/linux)', () => {
-    it('returns .zshrc when SHELL is zsh', async () => {
+    it('returns .zshenv when SHELL is zsh, the file every zsh reads (#1018)', async () => {
       vi.stubEnv('SHELL', '/bin/zsh');
-      expect(await detectShellProfile('linux')).toBe(path.join(homeDir, '.zshrc'));
+      vi.stubEnv('ZDOTDIR', '');
+      expect(await detectShellProfile('linux')).toBe(path.join(homeDir, '.zshenv'));
+    });
+
+    it('returns the .zshenv in ZDOTDIR when the environment sets ZDOTDIR and there is no ~/.zshenv', async () => {
+      vi.stubEnv('SHELL', '/bin/zsh');
+      vi.stubEnv('ZDOTDIR', path.join(homeDir, '.config', 'zsh'));
+      expect(await detectShellProfile('linux')).toBe(path.join(homeDir, '.config', 'zsh', '.zshenv'));
+    });
+
+    it('returns the .zshenv in ZDOTDIR even when ~/.zshenv exists: a zsh started with ZDOTDIR set never reads ~/.zshenv', async () => {
+      vi.stubEnv('SHELL', '/bin/zsh');
+      vi.stubEnv('ZDOTDIR', path.join(homeDir, '.config', 'zsh'));
+      await fse.writeFile(path.join(homeDir, '.zshenv'), 'export ZDOTDIR="$HOME/.config/zsh"\n');
+      expect(await detectShellProfile('linux')).toBe(path.join(homeDir, '.config', 'zsh', '.zshenv'));
     });
 
     it('returns .bashrc when SHELL is bash', async () => {
@@ -59,12 +73,13 @@ describe('detectShellProfile', () => {
   });
 
   describe('Windows (win32)', () => {
-    it('returns .zshrc when SHELL is zsh, even on win32 (MSYS2/Cygwin zsh)', async () => {
+    it('returns .zshenv when SHELL is zsh, even on win32 (MSYS2/Cygwin zsh)', async () => {
       // A zsh installed via MSYS2/Cygwin sets SHELL just like it does on
       // POSIX, while native Windows Node still reports platform === win32.
       // SHELL-based detection must win here, or this setup regresses.
       vi.stubEnv('SHELL', '/usr/bin/zsh');
-      expect(await detectShellProfile('win32')).toBe(path.join(homeDir, '.zshrc'));
+      vi.stubEnv('ZDOTDIR', '');
+      expect(await detectShellProfile('win32')).toBe(path.join(homeDir, '.zshenv'));
     });
 
     it('falls back to .bashrc when SHELL is unset and none of the login-shell files exist', async () => {
@@ -670,7 +685,7 @@ describe('envBlockReferencesDataHome', () => {
 describe('findEnvBlockFor', () => {
   const userEnvSh = '/home/me/.teamai/env.sh';
   const projectEnvSh = '/home/me/.teamai/projects/api/env.sh';
-  const block = (envSh: string): string => new EnvHandler().generateShellBlock(path.posix.dirname(envSh));
+  const block = (envSh: string): string => new EnvHandler().generateShellBlock(envSh);
   const profile = `# mine\n${block(userEnvSh)}\n\n${block(projectEnvSh)}\n# tail\n`;
 
   it('returns the block that sources the given env.sh, wherever it sits in the file', () => {

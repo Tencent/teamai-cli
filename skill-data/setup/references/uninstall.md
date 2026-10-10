@@ -60,6 +60,7 @@ and give it your team repo URL."*
 
 ## Notes
 
+- If no valid configuration is found and TeamAI reports "home directory only," uninstall removes all of `~/.teamai`, including registered project machine state. If the user wants to keep project state, run user-scope uninstall while its configuration is available.
 - Project uninstall keeps the shared Claude/Codex team hooks in the main checkout
   while another checkout uses them. A targeted uninstall releases only the selected
   tool. Checkouts that exclude a tool do not retain its shared hook. Bare-repository

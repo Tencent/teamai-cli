@@ -9,6 +9,7 @@ import { referencedVars } from './resources/mcp-format.js';
 import { envName } from './resources/env-key.js';
 import { mcpEntryReader, teamMcpToDef } from './resources/mcp.js';
 import { declaredSecretKeys } from './resources/secrets.js';
+import { isReservedTeamEnvKey } from './env-reserved.js';
 import { resolveEntriesFor } from './namespaced-entries.js';
 import type { LocalConfig, TeamaiConfig } from './types.js';
 import { log } from './utils/logger.js';
@@ -60,6 +61,7 @@ export async function envAdvisories(
 
   const advisories: EnvAdvisory[] = [];
   for (const secret of declarations.entries) {
+    if (isReservedTeamEnvKey(secret.name)) continue;
     const state = secretState(resolved.secrets, secret.name);
     switch (state) {
       case 'missing':
@@ -88,7 +90,7 @@ export async function envAdvisories(
     }
   }
   for (const variable of variables) {
-    if (secretKeys.has(variable.name)) advisories.push({ kind: 'secret-also-variable', key: variable.name, source: variable.source });
+    if (!isReservedTeamEnvKey(variable.name) && secretKeys.has(variable.name)) advisories.push({ kind: 'secret-also-variable', key: variable.name, source: variable.source });
   }
   return [...advisories, ...ignored];
 }
@@ -111,6 +113,7 @@ function ignoredExports(teamEnv: TeamEnv): EnvAdvisory[] {
   if (values.kind === 'store-unreadable' || values.values.size === 0) return [];
   const variables = teamEnv.variables.kind === 'resolved' ? teamEnv.variables.entries : [];
   return variables.flatMap((variable): EnvAdvisory[] => {
+    if (isReservedTeamEnvKey(variable.name)) return [];
     const resolved = values.values.get(variable.name);
     if (!resolved || resolved.source !== 'env.yaml' || resolved.fromEnv) return [];
     const exported = member(variable.name);

@@ -14,6 +14,7 @@ import { secretState, type TeamEnv } from './env-resolution.js';
 import { describeEntryFailure, describeOrigin } from './namespaced-entries.js';
 import { maskEnvValue } from './resources/env.js';
 import { declaredSecretKeys } from './resources/secrets.js';
+import { isReservedTeamEnvKey } from './env-reserved.js';
 
 export interface EnvListingLine {
   readonly text: string;
@@ -40,9 +41,9 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
   if (variableValues.kind === 'store-unreadable') problems.add(variableValues.reason);
   if (secrets.kind === 'store-unreadable') problems.add(secrets.reason);
 
-  const declared = declarations.kind === 'resolved' ? declarations.entries : [];
+  const declared = declarations.kind === 'resolved' ? declarations.entries.filter(({ name }) => !isReservedTeamEnvKey(name)) : [];
   const secretKeys = declaredSecretKeys(declarations) ?? new Set<string>();
-  const received = (variables.kind === 'resolved' ? variables.entries : []).filter((variable) => !secretKeys.has(variable.name));
+  const received = (variables.kind === 'resolved' ? variables.entries : []).filter((variable) => !secretKeys.has(variable.name) && !isReservedTeamEnvKey(variable.name));
   const lines: EnvListingLine[] = [];
   const line = (text: string): void => { lines.push({ text, detail: false }); };
   const detail = (text: string | undefined): void => { if (text && options.verbose) lines.push({ text: `    ${text}`, detail: true }); };

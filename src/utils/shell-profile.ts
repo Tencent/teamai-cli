@@ -1,10 +1,10 @@
 import path from 'node:path';
 import { pathExists, readFileSafe } from './fs.js';
-import { getUserHome } from './home.js';
+import { expandHome, getUserHome } from './home.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 
 /** Every profile file `detectShellProfile()` could ever have resolved to, across platforms and CLI versions. */
-export const SHELL_PROFILE_CANDIDATE_NAMES = ['.zshrc', '.bashrc', '.bash_profile', '.bash_login', '.profile'];
+export const SHELL_PROFILE_CANDIDATE_NAMES = ['.zshenv', '.zshrc', '.bashrc', '.bash_profile', '.bash_login', '.profile'];
 
 /**
  * Detect the shell profile file `teamai`'s env block should be injected into.
@@ -43,8 +43,12 @@ export async function detectShellProfile(
   const home = getUserHome();
   const shell = process.env.SHELL ?? '';
 
+  // `.zshenv`, not `.zshrc`: zsh reads it for every invocation, so the
+  // `zsh -c` a tool runs a command with gets the env too (#1018). zsh reads
+  // it from the ZDOTDIR it starts with: a ZDOTDIR this process inherited is
+  // one every zsh it starts inherits too, and those never read ~/.zshenv.
   if (shell.includes('zsh')) {
-    return path.join(home, '.zshrc');
+    return path.join(process.env.ZDOTDIR || home, '.zshenv');
   }
 
   if (platform === 'win32') {
@@ -55,6 +59,35 @@ export async function detectShellProfile(
   }
 
   return path.join(home, '.bashrc');
+}
+
+/** Whether `file` is one of zsh's startup files, or named for zsh: no bash reads it. */
+function isZshFile(file: string): boolean {
+  return /zsh|^\.z/.test(path.basename(file));
+}
+
+/**
+ * The profile file the env loader's block goes in (#1018), and the team's
+ * `sharing.env.shellProfilePath` override when it is not that file.
+ *
+ * For zsh, the file every zsh reads, `zsh -c` included: `.zshenv` (or a
+ * file it sources), whatever the override names. The override is for bash,
+ * where it picks the file a Git Bash login shell reads, so it is used there
+ * unless it names a zsh file. `ignoredOverride` is set when the override
+ * names a zsh file that is not where the block goes.
+ */
+export async function envLoaderProfile(
+  override: string | undefined,
+  loaderPath: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ path: string; ignoredOverride: string | null }> {
+  const overridePath = override ? expandHome(override) : null;
+  if (overridePath !== null && !isZshFile(overridePath) && !(process.env.SHELL ?? '').includes('zsh')) {
+    return { path: overridePath, ignoredOverride: null };
+  }
+  const profile = await resolveActiveShellProfile(loaderPath, platform);
+  const ignored = overridePath !== null && isZshFile(overridePath) && !sameFile(overridePath, profile, platform);
+  return { path: profile, ignoredOverride: ignored ? overridePath : null };
 }
 
 /**
