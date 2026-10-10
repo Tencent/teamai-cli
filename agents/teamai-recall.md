@@ -253,6 +253,7 @@ condense each into **one or two sentences**.
   retain the `Sources:` file anchors from the facts page (do not discard them
   in favour of the module summary alone); cross-reference those anchor files
   against graph-index.json edges to surface dependency relationships.
+- Check the separate `Source freshness:` line when recall returns one. It reports status per cited source and may include `(last scan: <timestamp>)`. `current` means only that the cited file's content hash matches the scan baseline; it does not certify the knowledge document. For `stale`, read the current source and revalidate related claims before using them. For `missing`, check whether the file moved or has a replacement before relying on the old citation. For `unknown` (or when no freshness status is reported), say that freshness could not be established and inspect the source when available. Do not extend one source's status to the whole page, project, or unlisted files. The scan time is the baseline extraction time, not a document review time.
 - If you need architectural context (why a module exists, design decisions),
   check `overview.md` in the same project directory.
 - If the hit mentions a knowledge gap (from `gaps/detected.md`), relay

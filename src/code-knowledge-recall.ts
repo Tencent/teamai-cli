@@ -17,6 +17,8 @@ import { caseFoldKey } from './manifest-schema.js';
 export interface SourceAnchor {
   path: string;
   desc?: string;
+  freshness?: 'current' | 'stale' | 'missing' | 'unknown';
+  lastScan?: string;
 }
 
 export interface CodeKnowledgeResult {
