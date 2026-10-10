@@ -3955,7 +3955,7 @@ async function installMcpServer(
       throw new Error(`install_mcp: server "${slug}" exists in ${tool} config and is not managed by teamai`);
     }
     updateManifestRecord(manifest, manifestKey, slug, entryHash(entry));
-    await writeJsonAtomic(manifestPath, manifest);
+    await save();
     patch.servers[slug] = entry;
     await writeDshPatchDoc(targetFile, patch);
   } else {

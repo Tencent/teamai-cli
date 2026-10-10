@@ -250,6 +250,19 @@ excludedSkills:
 
 排除规则在角色和标签过滤之后生效。执行 `teamai pull` 时，被排除的 skill 不会同步，并且会清理由之前 pull 安装的副本。`teamai doctor` 会把最终结果集与磁盘实际内容比对，并且不会要求被排除的 skill 存在。
 
+### 每个 Skill 只保留一份共享副本（可选）
+
+默认情况下，`pull` 会把每个团队 skill 复制到每个 AI 工具的 skills 目录。使用 `--skill-library` 后，`pull` 会把每个 skill 只安装一次到共享的 `.agents/skills/` 库目录（位于该 scope 的基础目录下，例如 `~/.agents/skills/`），并把其他工具的 skill 目录链接到它：
+
+```bash
+teamai init <repo-url> --skill-library     # 开启（re-init 时保留）
+teamai init <repo-url> --no-skill-library  # 恢复为每个工具一份副本
+```
+
+该设置保存在该 scope 的 `config.yaml` 中，即 `skillLibrary: true`。Codex 直接读取 `.agents/skills/`，因此它既没有链接也没有自己的副本。
+
+你拥有的内容不会被覆盖。当 `pull` 发现某个工具里的副本是它之前安装的，或与团队 skill 完全一致时，会把副本替换为链接。对于与团队 skill 不一致的副本（可能包含你的修改）、包含 `.git` 的副本、指向其他位置的链接，以及本身是符号链接的库条目，它会保留并给出警告。被排除或被移除的 skill，在库和链接中都会被清理。
+
 ### 推送本地资源
 
 扫描前，`push` 会用团队仓库的新版刷新未修改的旧规则副本。对于有自有规则格式的工具（Cursor 的 `.mdc`、JoyCode 自己的 `.mdc`、Copilot 的 `.instructions.md`、Kiro steering，以及 Qoder、Trae、CodeBuddy、WorkBuddy 与 Oh My Pi rules），会单独比较 Markdown 正文，忽略自动生成的头部，并以该工具的格式写入更新；本地正文编辑会保留。对 Copilot，此行为适用于项目规则和 `COPILOT_HOME` 下的用户规则。它刷新的每份副本都会记录为 teamai 写入的内容，因此下一次 `teamai pull` 仍会更新它，而不会当作你的修改保留。这些工具的 rules 目录中新建的文件是你自己的、该工具格式的 rule，因此 `push` 从不提交它；

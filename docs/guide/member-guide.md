@@ -260,6 +260,19 @@ excludedSkills:
 
 Exclusion rules take effect after role and tag filtering. When running `teamai pull`, excluded skills are not synced, and any copies previously installed by `pull` are cleaned up. `teamai doctor` checks the resulting set against what is on disk, and asks nothing of an excluded skill.
 
+### One shared copy of each skill (opt-in)
+
+By default `pull` copies every team skill into each AI tool's skills directory. With `--skill-library`, `pull` installs each skill once into the shared `.agents/skills/` library (under the scope's base directory, e.g. `~/.agents/skills/`) and links every other tool's skill directory to it:
+
+```bash
+teamai init <repo-url> --skill-library     # Turn it on (kept across re-init)
+teamai init <repo-url> --no-skill-library  # Go back to per-tool copies
+```
+
+The setting is stored as `skillLibrary: true` in the scope's `config.yaml`. Codex reads `.agents/skills/` directly, so it gets no link and no copy of its own.
+
+Nothing you own is overwritten. When `pull` finds a per-tool copy that it installed earlier, or one identical to the team skill, it replaces the copy with a link. It keeps and warns about a copy that differs (it may hold your changes), a copy containing `.git`, a link that points somewhere else, and a library entry that is itself a symlink. Excluded and removed skills are cleaned up in the library and the links alike.
+
 ### Push local resources
 
 Before scanning, `push` refreshes unedited old rule copies from the team repo. For a tool with a rules format of its own (Cursor `.mdc`, JoyCode's own `.mdc`, Copilot `.instructions.md`, Kiro steering, the Trae rules, and the Qoder, CodeBuddy, WorkBuddy and Oh My Pi rules), it compares Markdown bodies independently of the generated header and renders updates in that tool's format. Local body edits are preserved. For Copilot this applies to project rules and user rules under `COPILOT_HOME`. Each copy it refreshes is recorded as delivered, so the next `teamai pull` still updates it instead of keeping it as your change. 

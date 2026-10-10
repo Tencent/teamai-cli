@@ -355,6 +355,9 @@ namespace 文件；只有当根文件未定义、而多个 namespace 文件都�
 | omp | `~/.omp/agent/mcp.json` | `<project>/.omp/mcp.json` |
 | pi | `~/.pi/agent/mcp.json` | `<project>/.pi/mcp.json` |
 | zcode | `~/.agents/mcp.json` | —（不写入 ZCode 的项目级 MCP 格式） |
+| kimi | `~/.kimi-code/mcp.json` | 读取 `<project>/.mcp.json`（由 claude 写入） |
+| devin | `~/.config/devin/mcp_config.json` | `<project>/.devin/mcp_config.json` |
+| dsh | `~/.dsh/cordis.patch.yml` | —（无项目级配置） |
 
 Codex 只在受信任的项目中读取 `<project>/.codex/config.toml`。写入团队 MCP servers 后，`teamai pull` 会自动信任主 checkout，除非设置了 `codexTrustEnabled: false`，或该项目已被明确标记为不信任。自动信任被禁用或失败时，可在 `~/.codex/config.toml` 中加入 `[projects."<主 checkout 的真实路径>"]` 表并设置 `trust_level = "trusted"`；信任主 checkout 即覆盖该仓库的所有 worktree。项目未受信任、而其文件含有团队 server 时，`teamai doctor` 会报告。
 
@@ -422,7 +425,7 @@ HTTP local-agent 更新 JSON MCP 配置时，先保留原有 ownership 记录，
 
 Copilot 使用原生 `mcpServers` 结构：`stdio` 写成 `type: "local"`，远程传输保留 `http` 或 `sse`，每个 TeamAI 管理的条目都会带上必需的 `tools: ["*"]` 允许列表。TeamAI 遵循 `COPILOT_HOME`，项目配置使用 Copilot CLI 官方文档指定的 `.github/mcp.json` 仓库路径。详见 [GitHub Copilot CLI 添加 MCP Server](https://docs.github.com/zh/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)。Codex 支持 `stdio` 与 `http`，`sse` 会被跳过。Qoder 使用对应作用域 `.qoder/settings.json` 中与 Claude 兼容的 `mcpServers` 格式；Trae 在其项目 `.trae/mcp.json` 中使用同一结构，两个版本的 target 在同一条共享归属记录下映射这同一个文件。Kiro 在专用的、只含 `mcpServers` 的 `.kiro/settings/mcp.json` 中使用同一格式（见 [Kiro MCP 配置文档](https://kiro.dev/docs/mcp/configuration/)）。
 
-OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）、`http` 和 `sse`（后两者均为 `type:"remote"`，由客户端协商传输协议），其 server 位于共享 `opencode.json` 的 `mcp` 键下。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；
+OpenCode 支持 `stdio`（写成其 `type:"local"` 形态）、`http` 和 `sse`（后两者均为 `type:"remote"`，由客户端协商传输协议），其 server 位于共享 `opencode.json` 的 `mcp` 键下。Kimi Code 和 Devin 使用 `mcpServers`，传输协议写在 `transport` 键中（`stdio`、`http` 或 `sse`）。DeepSeek Harness 每个 server 对应一个 `@deepseek-ai/dsh-mcp-client` 条目，由其 home 级 patch 层 `~/.dsh/cordis.patch.yml` 插入（对每个 dsh profile 生效）；支持 `stdio` 和 `http`（写作 `streamable-http`），跳过 `sse`——该文件中你自己的 patch 和注释都会保留。归属记录在 `~/.teamai/managed-mcp.json`——手动添加的 server 不动；
 
 与手写同名则跳过，除非 `--force`。
 
