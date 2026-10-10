@@ -1,12 +1,12 @@
 # TeamAI CLI — 团队接入与使用指南
 
-从[快速开始](guide/zh-CN/getting-started.md)进入：搭建团队、加入团队，或分享一个 skill。
+从[快速开始](guide/zh-CN/getting-started.md)进入：搭建团队、加入团队，或把 AI 资产分享给团队。
 
 ---
 
 ## 目录
 
-- [快速开始](guide/zh-CN/getting-started.md) — 三条路径：搭建团队、加入团队或分享 skill
+- [快速开始](guide/zh-CN/getting-started.md) — 搭建团队、加入团队，或把 AI 资产分享给团队
 - [配置示例](guide/zh-CN/admin-setup.md) — 安装范围、仓库、团队包、模型、环境变量、MCP、角色
 - [Git Provider](guide/zh-CN/providers.md) — GitHub、GitLab、GitCode、CNB、工蜂与通用 Git：检测与认证
 - [成员使用](guide/zh-CN/member-guide.md) — 加入团队、日常使用、提交 Co-Author 署名、让分发的文件不进入 git

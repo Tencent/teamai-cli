@@ -1,12 +1,12 @@
 # TeamAI CLI — Team Onboarding & Usage Guide
 
-Start with [Getting Started](guide/getting-started.md): set up a team, join one, or share a skill.
+Start with [Getting Started](guide/getting-started.md): set up a team, join one, or share an AI asset with the team.
 
 ---
 
 ## Contents
 
-- [Getting Started](guide/getting-started.md) — three paths: set up a team, join one, or share a skill
+- [Getting Started](guide/getting-started.md) — set up a team, join one, or share an AI asset with the team
 - [Setup demos](guide/admin-setup.md) — Copy a block: scope, repo, packages, models, env, MCP, roles
 - [Git Providers](guide/providers.md) — GitHub, GitLab, GitCode, CNB, TGit and generic Git: detection and authentication
 - [Member Guide](guide/member-guide.md) — Joining a team, day-to-day use, commit co-author attribution, keeping delivered files out of git

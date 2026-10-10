@@ -2,10 +2,6 @@
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
----
-
-## Three ways in
-
 | What you are doing | Section |
 | --- | --- |
 | Creating the team repo | [Set up a team](#set-up-a-team) |
