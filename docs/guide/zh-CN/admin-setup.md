@@ -4,9 +4,7 @@
 
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
-一位管理员做完这些。其他人走[快速开始的路径 B](./getting-started.md#路径-b加入团队)。
-
-选一张和你的团队相符的 demo，抄下来。每条都以 `teamai doctor` 结束，每一行都应通过。
+按团队的情况选一份配置，照着做。每份都以 `teamai doctor` 结束，每一行都应通过。加入一个已经配好的团队，看[快速开始的路径 B](./getting-started.md#路径-b加入团队)。
 
 | 你要的 | 抄这份 |
 | --- | --- |
@@ -186,14 +184,12 @@ variables:
     value: https://web.example.com
 ```
 
-下面的命令会写入这两份 manifest 并开一个 pull request。合并之后，每个人在自己工作的目录里选角色。
+下面的命令会写入这两份 manifest 并开一个 pull request。合并之后，在项目目录里运行后四条。
 
 ```bash
-# 管理员，做一次
 teamai roles add frontend --namespaces common,frontend -d "Web engineers"
 teamai projects add checkout --namespaces checkout --name "Checkout service"
 
-# 每位成员，在自己的项目里
 teamai roles set frontend
 teamai projects set checkout
 teamai pull

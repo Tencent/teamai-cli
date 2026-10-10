@@ -4,9 +4,7 @@
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
-One admin does this. Everyone else follows [Path B in Getting Started](./getting-started.md#path-b--join-a-team).
-
-Copy the demo that matches your team. Each one ends with `teamai doctor`: every line should pass.
+Pick the setup that matches the team and follow it. Each one ends with `teamai doctor`: every line should pass. Joining a team that is already set up is [Path B in Getting Started](./getting-started.md#path-b--join-a-team).
 
 | You want | Copy |
 | --- | --- |
@@ -186,14 +184,12 @@ variables:
     value: https://web.example.com
 ```
 
-The same commands write those manifests and open a pull request. Merge it, then each person picks a role in the directory where they work.
+These commands write the same manifests and open a pull request. After it is merged, run the last four commands in the project directory.
 
 ```bash
-# admin, once
 teamai roles add frontend --namespaces common,frontend -d "Web engineers"
 teamai projects add checkout --namespaces checkout --name "Checkout service"
 
-# each member, in their project
 teamai roles set frontend
 teamai projects set checkout
 teamai pull
