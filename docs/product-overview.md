@@ -63,7 +63,7 @@ Settings in the team repo. `teamai pull` delivers them:
 | **Tags** | `teamai tags` | Tag skills / rules so members subscribe to just the tags they need. |
 | **Sources** | `teamai source` | Subscribe to additional skill repos — other teams' public repos, or shared/public repos within your own org; subscribed skills sync automatically on pull. |
 
-Learnings isolation: `learnings/` at the repo root is shared with everyone; `learnings/<project-id>/` is project-private. See [Projects](guide/admin-setup.md#demo-5-roles-and-projects).
+Learnings isolation: `learnings/` at the repo root is shared with everyone; `learnings/<project-id>/` is project-private. See [Projects](guide/admin-setup.md#roles-and-projects).
 
 ## Team Execution
 

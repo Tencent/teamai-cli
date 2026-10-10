@@ -62,7 +62,7 @@
 | **标签（Tags）** | `teamai tags` | 给 skills / rules 打标签，成员只订阅自己需要的标签。 |
 | **订阅源（Sources）** | `teamai source` | 订阅额外的 skill 仓库——其他团队的公开仓库，或本团队内的公共/共享仓库；已订阅的 skills 会在 pull 时自动同步。 |
 
-learnings 隔离：仓库 `learnings/` 根目录对所有人共享；`learnings/<project-id>/` 为项目私有。详见[角色和项目](guide/zh-CN/admin-setup.md#demo-5-角色和项目)。
+learnings 隔离：仓库 `learnings/` 根目录对所有人共享；`learnings/<project-id>/` 为项目私有。详见[角色和项目](guide/zh-CN/admin-setup.md#角色和项目)。
 
 ## Team Execution
 
