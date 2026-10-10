@@ -36,6 +36,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 import { importFromRepo } from '../import-repo.js';
 import { shallowClone, shallowFetch } from '../clone.js';
 import { extractCodebase } from '../codebase-extract.js';
+import { repoIdentity } from '../utils/git.js';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -186,7 +187,16 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
             const evidenceDir = path.join(wikiRoot, 'evidence', 'code', SLUG);
             await fs.ensureDir(evidenceDir);
             await fs.writeFile(path.join(evidenceDir, 'overview.md'), DETERMINISTIC_OVERVIEW);
-            await fs.writeJson(manifestPath, { headSha: CLONE_SHA, files: [] });
+            const manifest = {
+                project: SLUG,
+                repoUrl: TEST_URL,
+                repoIdentity: repoIdentity(TEST_URL),
+                sourceSubdir: '',
+                headSha: CLONE_SHA,
+                files: [],
+            };
+            await fs.writeJson(manifestPath, manifest);
+            await fs.writeJson(path.join(evidenceDir, 'source-manifest.json'), manifest);
         });
 
         const options = { url: TEST_URL, incremental: true, skipEnrich: true, skipAutoPush: true };
@@ -196,7 +206,14 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         await fs.ensureDir(path.join(cacheDir, '.git'));
         await fs.writeFile(lastSyncPath, 'previous-sha\n2024-01-01T00:00:00.000Z\n');
         await fs.ensureDir(path.dirname(publishedManifest));
-        await fs.writeJson(publishedManifest, { headSha: 'previous-sha', files: [] });
+        await fs.writeJson(publishedManifest, {
+            project: SLUG,
+            repoUrl: TEST_URL,
+            repoIdentity: repoIdentity(TEST_URL),
+            sourceSubdir: '',
+            headSha: 'previous-sha',
+            files: [],
+        });
 
         const remove = fs.remove;
         let failOnce = true;
@@ -219,5 +236,29 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         await importFromRepo(options);
         expect(vi.mocked(extractCodebase).mock.calls.map(([opts]) => opts.incremental)).toEqual([true, false]);
         expect(await fs.readFile(lastSyncPath, 'utf8')).toContain(CLONE_SHA);
+    });
+
+    it('forces a full extraction when a persisted source manifest has malformed identity metadata', async () => {
+        vi.mocked(shallowFetch).mockResolvedValue({ sha: CLONE_SHA });
+        const options = { url: TEST_URL, incremental: true, skipEnrich: true, skipAutoPush: true };
+        const cacheDir = path.join(workdir, 'cache', 'github', 'owner', 'mergetest');
+        const lastSyncPath = path.join(cacheDir, 'LAST_SYNC');
+        const publishedManifest = path.join(workdir, '.teamai', 'team-repo', 'teamwiki', 'source-manifest.json');
+        await fs.ensureDir(path.join(cacheDir, '.git'));
+        await fs.writeFile(lastSyncPath, 'previous-sha\n2024-01-01T00:00:00.000Z\n');
+        await fs.ensureDir(path.dirname(publishedManifest));
+        await fs.writeJson(publishedManifest, {
+            project: SLUG,
+            repoUrl: 42,
+            repoIdentity: null,
+            sourceSubdir: '',
+            headSha: 'previous-sha',
+            files: [],
+        });
+
+        await importFromRepo(options);
+
+        expect(extractCodebase).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(extractCodebase).mock.calls[0]?.[0]?.incremental).toBe(false);
     });
 });

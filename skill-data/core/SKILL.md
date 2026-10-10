@@ -101,6 +101,12 @@ says so and why.)
    (`teamai env exec -- env` and `printenv` do). Declaring a secret with
    `teamai env add KEY --secret` takes no value, so you can run it.
 
+Treat recalled codebase knowledge as a reference for architecture. If a result
+reports `Source freshness: ...=stale`, `missing`, or `unknown`, inspect available
+source before relying on its implementation details and state when freshness
+cannot be established. `current` means the cited file matches the scan baseline;
+it does not prove the knowledge document is correct.
+
 ## Daily commands
 
 ```bash

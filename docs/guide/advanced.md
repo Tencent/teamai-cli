@@ -57,6 +57,17 @@ For GitLab behind an API gateway, set `GITLAB_URL` and `GITLAB_API_PREFIX=api/gi
 
 The graph stores components, interfaces, configs, and cross-repo dependencies. `teamai recall` combines learnings with graph BM25 hits on a bounded, relevance-normalized score scale.
 
+**Source freshness in recall.** A full `teamai recall` can add a separate `Source freshness:` line after `Sources:` for the visible codebase results it returns:
+
+```text
+Sources: src/a.ts, src/b.ts
+Source freshness: src/a.ts=current (last scan: 2026-10-09T14:23:05.000Z); src/b.ts=stale
+```
+
+For a source under a verified repository identity, `current` means its content hash matches the codebase knowledge scan baseline; it does not prove the generated knowledge is correct. `stale` means the hash differs, so read the current source and revalidate related claims before relying on them. `missing` means the path is absent beneath a repository root whose identity was verified; check for a moved or replacement file before relying on the old citation. `unknown` means the baseline, repository identity, or safe file check was unavailable; state that freshness is unknown and verify the source when possible. The optional `last scan` time is the scan that produced the baseline, not a review time for the knowledge document. These local checks cover only sources attached to returned codebase results; they do not use the network, reindex, invoke AI, start a rescan, or infer staleness from a changed Git HEAD alone. `teamai recall --check` remains a relevance precheck and does not perform source freshness checks.
+
+Older manifests without enough repository or source-subdirectory provenance remain `unknown` until the codebase is extracted again. Incremental extraction falls back to a full extraction when it cannot verify that the baseline belongs to the same source; subdirectory extractions may trigger this fallback.
+
 Dependency edges are extracted by two parallel tracks: a WASM tree-sitter **AST track** (TypeScript/JavaScript, Python, Go, Swift) that resolves imports, calls, and TS `implements` clauses to precise file-to-file edges (`code-ast`), and a regex **heuristic track** (all languages, `code-heuristic`) that also covers languages the AST track does not. AST results win on overlap. The AST parser needs no native toolchain; on load failure, extraction falls back to heuristics and records an `AST_UNAVAILABLE` gap. Set `TEAMAI_SKIP_AST=1` to force heuristic-only extraction.
 
 ```bash

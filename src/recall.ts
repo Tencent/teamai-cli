@@ -10,6 +10,7 @@ import type { GlobalOptions, SearchIndex, LocalConfig, KnowledgeDomain } from '.
 import { getProjectSearchIndexPath, getUserSearchIndexPath, getVotesDir } from './types.js';
 import { queryCodeKnowledge } from './code-knowledge-recall.js';
 import type { SourceAnchor } from './code-knowledge-recall.js';
+import { annotateCodebaseSourceFreshness } from './codebase-freshness.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
 import { recordRecallQuality } from './recall-quality.js';
 import { agentSessionFromEnv, deriveSessionId } from './utils/session-id.js';
@@ -251,6 +252,13 @@ export function formatResults(results: ScopedSearchResult[], runId?: string): st
     lines.push(`File: ${printedPath(results[i])}`);
     if (sources && sources.length > 0) {
       lines.push(`Sources: ${sources.map((s) => s.desc ? `${s.path} (${s.desc})` : s.path).join(', ')}`);
+      const freshnessSources = sources.filter((source) => source.freshness);
+      if (freshnessSources.length > 0) {
+        lines.push(`Source freshness: ${freshnessSources.map((source) => {
+          const scan = source.lastScan ? ` (last scan: ${source.lastScan})` : '';
+          return `${source.path}=${source.freshness}${scan}`;
+        }).join('; ')}`);
+      }
     }
     if (entry.snippet) {
       lines.push(`Snippet: ${entry.snippet}`);
@@ -752,6 +760,15 @@ export async function recall(
 
   // Limit to top 5
   const topResults = allResults.slice(0, 5);
+  // Hash only codebase sources that will be shown. This stays after the
+  // --check early return so the relevance precheck remains filesystem-cheap.
+  await annotateCodebaseSourceFreshness(topResults, wikiRoot).catch(() => {
+    for (const result of topResults) {
+      if (result.fromCodebase && result.sources) {
+        result.sources = result.sources.map((source) => ({ ...source, freshness: 'unknown' }));
+      }
+    }
+  });
 
   // Record quality signal for contribute-check's knowledge-gap detection,
   // misses included. The run, a miss included, goes to the active scope's

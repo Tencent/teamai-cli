@@ -78,7 +78,7 @@ describe('teamai codebase extract CLI (issue #360 slice 1)', () => {
     }
   });
 
-  it('refreshes and lints the same local graph using the skill commands from another directory', async () => {
+  it('refreshes and lints a non-Git local graph from another directory with a full fallback', async () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-local-workflow-'));
     const caller = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-caller-'));
     try {
@@ -100,7 +100,9 @@ describe('teamai codebase extract CLI (issue #360 slice 1)', () => {
 
       const refreshed = await runCLI([...args(refresh!), '--json'], caller);
       expect(refreshed.code, refreshed.output).toBe(0);
-      expect(JSON.parse(refreshed.stdout)).toMatchObject({ project: 'custom-service', incremental: true });
+      // This fixture has no Git identity, so the prior manifest cannot prove the same source repository.
+      // Refresh must use a full extraction while still replacing the old source content and linting cleanly.
+      expect(JSON.parse(refreshed.stdout)).toMatchObject({ project: 'custom-service', incremental: false });
       const wiki = path.join(fixture, 'teamwiki');
       expect(fs.readdirSync(path.join(wiki, 'evidence', 'code'))).toEqual(['custom-service']);
       const evidence = fs.readFileSync(path.join(wiki, 'evidence', 'code', 'custom-service', 'component.md'), 'utf8');

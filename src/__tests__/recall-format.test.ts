@@ -75,6 +75,23 @@ describe('formatResults — Sources line', () => {
     expect(output).not.toContain('Sources:');
   });
 
+  it('prints source freshness separately so the existing Sources line stays unchanged', () => {
+    const output = formatResults([
+      {
+        entry: makeEntry({ title: 'Code Page', path: '/wiki/evidence/code/proj/foo.md' }),
+        score: 7.5,
+        scope: 'project',
+        sources: [
+          { path: 'src/a.ts', desc: 'authentication', freshness: 'current', lastScan: '2026-10-09T10:11:12.000Z' },
+          { path: 'src/b.ts', freshness: 'stale' },
+        ],
+      },
+    ]);
+
+    expect(output).toContain('Sources: src/a.ts (authentication), src/b.ts');
+    expect(output).toContain('Source freshness: src/a.ts=current (last scan: 2026-10-09T10:11:12.000Z); src/b.ts=stale');
+  });
+
   it('普通 learnings 结果（无 sources、有 snippet）输出形态不变', () => {
     const output = formatResults([
       {

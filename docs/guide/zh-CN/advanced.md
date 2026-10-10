@@ -59,6 +59,17 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 图谱存储组件、接口、配置和跨仓库依赖关系。`teamai recall` 会将 learnings 与图谱 BM25 命中转换到有界的相关性分数尺度后合并排序。
 
+**recall 中的源码新鲜度。** 完整运行 `teamai recall` 后，返回的可见代码库结果可能会在 `Sources:` 后附加单独的 `Source freshness:` 行：
+
+```text
+Sources: src/a.ts, src/b.ts
+Source freshness: src/a.ts=current (last scan: 2026-10-09T14:23:05.000Z); src/b.ts=stale
+```
+
+对于仓库身份已验证的源码，`current` 表示其内容哈希与代码库知识扫描基线一致，但不代表生成的知识一定正确。`stale` 表示哈希不同；依赖相关结论前应先读取当前源码并重新核对。`missing` 表示在仓库身份已验证的根目录下找不到该路径；依赖旧引用前应检查文件是否已移动或被替换。`unknown` 表示基线、仓库身份或安全的文件检查不可用；应明确说明新鲜度未知，并在可能时核对源码。可选的 `last scan` 时间是生成基线的扫描时间，不是知识文档的复核时间。这些本地检查只覆盖本次返回代码库结果中列出的源码，不访问网络、不重建索引、不调用 AI、不重新扫描代码库，也不会仅因 Git HEAD 改变就判为过期。`teamai recall --check` 仍是相关性预检，不执行源码新鲜度检查。
+
+旧 manifest 缺少足够的仓库身份或源码子目录信息时会保持 `unknown`，重新提取代码库后才能判定。增量提取无法确认基线与本次源码同源时会安全退回全量提取；子目录提取也可能触发这一回退。
+
 依赖边由两条并行轨道提取：WASM tree-sitter **AST 轨**（TypeScript/JavaScript、Python、Go、Swift），将 import、调用、以及 TS `implements` 子句解析为精确的文件到文件边（`code-ast`）；以及正则 **启发式轨**（所有语言，`code-heuristic`），同时覆盖 AST 轨未支持的语言。重叠时 AST 结果优先。AST 解析器无需原生编译工具链；加载失败时提取会降级到启发式并记录一条 `AST_UNAVAILABLE` gap。设置 `TEAMAI_SKIP_AST=1` 可强制仅用启发式提取。
 
 ```bash

@@ -7,7 +7,7 @@
  */
 
 import { statSync } from 'node:fs';
-import { mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, realpath, lstat } from 'node:fs/promises';
 import path from 'node:path';
 
 import chalk from 'chalk';
@@ -42,7 +42,8 @@ import {
   mergeInterfaceInventories,
 } from './wiki-engine/code-knowledge/code-incremental.js';
 import { writeIfChanged } from './utils/fs.js';
-import { resolveAnchors } from './utils/git.js';
+import { createGit, redactGitCredentials, repoIdentity, resolveAnchors } from './utils/git.js';
+import { assertSafePath } from './utils/path-safety.js';
 import { repoName } from './utils/repo-attribution.js';
 import type { GraphIndex } from './wiki-engine/core/graph-index.schema.js';
 import { routerTemplate, indexTemplate, HOT_TEMPLATE } from './wiki-engine/adapters/templates.js';
@@ -561,21 +562,146 @@ export async function defaultProjectSlug(dir: string): Promise<string> {
   return path.basename(dir);
 }
 
+interface SourceRepositoryMetadata {
+  repoUrl?: string;
+  repoIdentity?: string;
+  sourceSubdir?: string;
+}
+
+interface StoredSourceManifest extends SourceRepositoryMetadata {
+  project?: string;
+  files?: Array<{ relativePath: string; sha256: string; language?: string }>;
+  repoIdentity?: string;
+  branch?: string;
+  ingestedMrs?: Array<{ url: string; headSha?: string; at: string }>;
+}
+
+function sanitizeRepoUrl(url: string): string {
+  const redacted = redactGitCredentials(url);
+  try {
+    const parsed = new URL(redacted);
+    parsed.username = '';
+    parsed.password = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    // scp-form URLs have no URL authority separator; retain their conventional
+    // `git@host:path` user while stripping userinfo from other malformed URLs.
+    return redacted.replace(/^(.+:\/\/)[^/@]*@/, '$1');
+  }
+}
+
+async function readStoredSourceManifest(filePath: string): Promise<StoredSourceManifest | null> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(filePath, 'utf8'));
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as StoredSourceManifest
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function manifestMatchesSource(
+  manifest: StoredSourceManifest | null,
+  project: string,
+  source: SourceRepositoryMetadata,
+): manifest is StoredSourceManifest {
+  if (!manifest || !source.repoIdentity || source.sourceSubdir === undefined) return false;
+  if (manifest.project !== project || manifest.sourceSubdir !== source.sourceSubdir) return false;
+  if (typeof manifest.repoIdentity === 'string' && manifest.repoIdentity.trim()) {
+    return manifest.repoIdentity.trim() === source.repoIdentity;
+  }
+  if (typeof manifest.repoUrl !== 'string' || !manifest.repoUrl.trim()) return false;
+  try {
+    return repoIdentity(manifest.repoUrl) === source.repoIdentity;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read the repository provenance for a source root without contacting its
+ * remote. Hashes in source-manifest.json are relative to the extraction root,
+ * so retain only the relative path from the verified Git root.
+ */
+async function sourceRepositoryMetadata(
+  root: string,
+  explicitRepoUrl?: string,
+): Promise<SourceRepositoryMetadata> {
+  let sourceSubdir: string | undefined;
+  let remoteUrl = explicitRepoUrl;
+  try {
+    const git = createGit(root);
+    const gitRoot = (await git.revparse(['--show-toplevel'])).trim();
+    const [realGitRoot, realSourceRoot] = await Promise.all([realpath(gitRoot), realpath(root)]);
+    const relative = path.relative(realGitRoot, realSourceRoot);
+    if (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)) {
+      sourceSubdir = relative.split(path.sep).filter(Boolean).join('/');
+    }
+    if (!remoteUrl) {
+      const remotes = await git.getRemotes(true);
+      remoteUrl = remotes.find((remote) => remote.name === 'origin')?.refs.fetch;
+    }
+  } catch {
+    // A repository identity/root that cannot be verified leaves freshness
+    // unknown. Extraction itself still works for non-Git directories.
+  }
+
+  if (!remoteUrl) return sourceSubdir !== undefined ? { sourceSubdir } : {};
+  const safeUrl = sanitizeRepoUrl(remoteUrl);
+  const identity = repoIdentity(safeUrl);
+  // Keep the historical repoUrl field for status output, after removing
+  // credentials, and store strict identity separately for freshness checks.
+  return {
+    repoUrl: safeUrl,
+    repoIdentity: identity,
+    ...(sourceSubdir !== undefined ? { sourceSubdir } : {}),
+  };
+}
+
 export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<void> {
   const root = path.resolve(opts.path || '.');
   const project = opts.project || await defaultProjectSlug(root);
+  const sourceRepo = await sourceRepositoryMetadata(root, opts.repoUrl);
   const maxFiles = opts.maxFiles || 200;
   const outputBase = opts.outputRoot ? path.resolve(opts.outputRoot) : root;
 
   const wikiRoot = path.join(outputBase, 'teamwiki');
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code', project);
   const manifestPath = path.join(wikiRoot, 'source-manifest.json');
+  const projectManifestPath = path.join(evidenceDir, 'source-manifest.json');
+  assertSafePath(projectManifestPath, [wikiRoot]);
+  const sidecarStat = await lstat(projectManifestPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  });
+  // A dangling link cannot be resolved by assertSafePath, but writeFile would
+  // follow it and create its target. Reject sidecar links before reading them.
+  if (sidecarStat?.isSymbolicLink()) {
+    throw new Error('Refusing to write source manifest through a symbolic link');
+  }
+  const rootManifest = await readStoredSourceManifest(manifestPath);
+  const projectManifest = await readStoredSourceManifest(projectManifestPath);
+  const rootMatchesSource = manifestMatchesSource(rootManifest, project, sourceRepo);
+  const projectMatchesSource = manifestMatchesSource(projectManifest, project, sourceRepo);
+  // The .indices facts cache is shared at teamwiki/.indices. Reuse it only
+  // while the root manifest proves that cache belongs to this exact source.
+  // If provenance is absent or another repo was extracted last, run a full
+  // hash scan rather than combining another repo's file/fact baseline.
+  // The Git diff helper reports repository-root-relative paths, while this
+  // extractor stores subdirectory-relative paths. Until those contracts are
+  // unified, subdirectory extracts must hash the complete source tree.
+  const incrementalBaselineMatches = sourceRepo.sourceSubdir === ''
+    && rootMatchesSource
+    && (!projectManifest || projectMatchesSource);
+  const incrementalManifestPath = projectMatchesSource ? projectManifestPath : manifestPath;
+  const provenanceManifest = projectMatchesSource ? projectManifest : rootMatchesSource ? rootManifest : null;
 
   let changedFiles: string[] | undefined;
   let deletedFiles: string[] = [];
-  if (opts.incremental) {
+  if (opts.incremental && incrementalBaselineMatches) {
     try {
-      const changes = await detectCodeIncrementalChanges(root, manifestPath, project, maxFiles);
+      const changes = await detectCodeIncrementalChanges(root, incrementalManifestPath, project, maxFiles);
       if (changes.added.length === 0 && changes.changed.length === 0 && changes.deleted.length === 0) {
         if (opts.json) {
           console.log(JSON.stringify({ status: 'up-to-date', project }));
@@ -594,6 +720,8 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
         console.log(chalk.dim('[extract] no manifest history, running full extraction'));
       }
     }
+  } else if (opts.incremental && !opts.json) {
+    console.log(chalk.dim('[extract] no matching source baseline, running full extraction'));
   }
 
   // 增量模式下，import 在提取时物化为具体文件（通配 → 各成员、具名 → 声明
@@ -775,6 +903,10 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   const pages = buildEvidencePages(facts, project, interfaceInventory, callChains);
 
   await mkdir(evidenceDir, { recursive: true });
+  // A project evidence directory may have been replaced by a symlink after
+  // extraction started. Do not let generated pages or the baseline escape the
+  // teamwiki root.
+  assertSafePath(evidenceDir, [wikiRoot]);
 
   // 增量模式下复用已有 dependency-paths.md
   if (changedFiles && !pages.has('dependency-paths.md')) {
@@ -938,7 +1070,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
   if (changedFiles !== undefined && changedFiles.length > 0) {
     // 有变更/新增文件：合并旧 manifest 中未变更的记录 + 新扫描的记录
     try {
-      const oldManifestRaw = await readFile(manifestPath, 'utf-8');
+      const oldManifestRaw = await readFile(incrementalManifestPath, 'utf-8');
       const oldManifest = JSON.parse(oldManifestRaw) as {
         files?: Array<{ relativePath: string; sha256: string; language?: string }>;
       };
@@ -954,44 +1086,45 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     allManifestFiles = allManifestFiles.filter(f => !deletedSet.has(f.relativePath));
   }
   // Persist git baseline from prior incremental manifest when not explicitly supplied
-  let prevRepoUrl: string | undefined;
-  let prevBranch: string | undefined;
-  let prevIngestedMrs: Array<{ url: string; headSha?: string; at: string }> = [];
-  // Always carry forward prior baseline provenance (repoUrl / branch /
-  // ingestedMrs) so a full re-extract does not silently drop it. A missing
-  // or unreadable manifest just leaves the defaults.
-  try {
-    const prev = JSON.parse(await readFile(manifestPath, 'utf-8')) as {
-      repoUrl?: string;
-      branch?: string;
-      ingestedMrs?: Array<{ url: string; headSha?: string; at: string }>;
-    };
-    prevRepoUrl = prev.repoUrl;
-    prevBranch = prev.branch;
-    prevIngestedMrs = prev.ingestedMrs ?? [];
-  } catch { /* no prior manifest */ }
+  const prevRepoUrl = provenanceManifest?.repoUrl;
+  const prevBranch = provenanceManifest?.branch;
+  const prevIngestedMrs = provenanceManifest?.ingestedMrs ?? [];
+  const sameSource = provenanceManifest !== null;
 
   const headSha = collectionManifest.commit;
   const manifestObject: Record<string, unknown> = {
     version: CODE_COLLECTION_VERSION,
     lastScan: new Date().toISOString(),
+    project,
     files: allManifestFiles,
   };
+  if (sourceRepo.sourceSubdir !== undefined) manifestObject.sourceSubdir = sourceRepo.sourceSubdir;
   if (headSha) manifestObject.headSha = headSha;
-  const repoUrl = opts.repoUrl ?? prevRepoUrl;
+  const repoUrl = sourceRepo.repoUrl ?? (sameSource ? prevRepoUrl : undefined);
   const branch = opts.branch ?? prevBranch;
   if (repoUrl) manifestObject.repoUrl = repoUrl;
-  if (branch) manifestObject.branch = branch;
+  const currentRepoIdentity = sourceRepo.repoIdentity ?? (sameSource ? provenanceManifest?.repoIdentity : undefined);
+  if (currentRepoIdentity) manifestObject.repoIdentity = currentRepoIdentity;
+  // branch and MR provenance are tied to a source repository as well.
+  if (branch && (sameSource || opts.branch)) manifestObject.branch = branch;
   // P5: record ingested MR (upsert by url) when invoked via --from-mr
-  let ingestedMrs = prevIngestedMrs;
+  let ingestedMrs = sameSource ? prevIngestedMrs : [];
   if (opts.sourceMrUrl) {
     const at = new Date().toISOString();
     const entry = { url: opts.sourceMrUrl, headSha, at };
-    ingestedMrs = [...prevIngestedMrs.filter((m) => m.url !== opts.sourceMrUrl), entry];
+    ingestedMrs = [...ingestedMrs.filter((m) => m.url !== opts.sourceMrUrl), entry];
   }
   if (ingestedMrs.length > 0) manifestObject.ingestedMrs = ingestedMrs;
   const manifestContent = JSON.stringify(manifestObject, null, 2);
+  // The per-codebase sidecar is new output and may be replaced by a local
+  // symlink. Resolve it before writing so it cannot redirect metadata outside
+  // the teamwiki tree.
+  assertSafePath(projectManifestPath, [wikiRoot]);
   await writeFile(manifestPath, manifestContent, 'utf-8');
+  // Keep a copy with each codebase's evidence. A teamwiki may contain several
+  // imported repositories, while the legacy root manifest is overwritten by
+  // the most recently extracted one.
+  await writeFile(projectManifestPath, manifestContent, 'utf-8');
 
   const byKind: Record<string, number> = {};
   for (const fact of visibleFactsOf(facts)) {
