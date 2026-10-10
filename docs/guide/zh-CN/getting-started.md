@@ -31,9 +31,7 @@
 4. 先发一个文件，免得第一次 pull 是空的。把 skill 放到 `~/.claude/skills/<名称>/SKILL.md`（或把 rule 放到 `~/.claude/rules/<名称>.md`），运行 `teamai push`。合并它开出的 pull request。
 5. 把仓库地址发给同事。
 
-`teamai doctor` 通过，并且这个 skill 已经在默认分支上。这台机器上的 AI 工具会在会话启动时从该仓库拉取。
-
-scope、仓库文件、packages、models 都在[配置示例](./admin-setup.md)里，抄一块就行。
+更多管理功能请参考[配置示例](./admin-setup.md)。
 
 ### 加入团队
 
@@ -93,5 +91,5 @@ pull request 已合并，并且 `teamai list skills --source repo` 能看到这�
 
 | 接下来 | 去看 |
 | --- | --- |
-| scope、仓库、packages、models、env、MCP | [配置示例](./admin-setup.md) |
+| 更多管理功能 | [配置示例](./admin-setup.md) |
 | 加入之后怎么用 | [成员使用](./member-guide.md) |
