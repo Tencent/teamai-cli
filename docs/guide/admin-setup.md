@@ -67,6 +67,48 @@ sharing:
 
 Teammates push branches and open pull requests. The default branch stays protected.
 
+## Roles and projects
+
+```yaml
+# manifest/roles.yaml
+version: 1
+roles:
+  - id: frontend
+    description: Web engineers
+    resources:
+      knowledge: [common, frontend]
+      skills: [common, frontend]
+      agents: [common, frontend]
+```
+
+```yaml
+# manifest/projects.yaml
+version: 1
+projects:
+  - id: checkout
+    name: Checkout service
+    resources:
+      knowledge: [checkout]
+      skills: [checkout]
+      learnings: [checkout]
+      agents: [checkout]
+```
+
+```text
+skills/common/code-review/SKILL.md
+skills/frontend/react-patterns/SKILL.md
+skills/checkout/
+learnings/checkout/
+```
+
+Commit both files. In the project:
+
+```bash
+teamai roles set frontend
+teamai projects set checkout
+teamai pull
+```
+
 ## Packages
 
 ```bash
@@ -132,45 +174,3 @@ servers:
 ```
 
 Commit the file.
-
-## Roles and projects
-
-```yaml
-# manifest/roles.yaml
-version: 1
-roles:
-  - id: frontend
-    description: Web engineers
-    resources:
-      knowledge: [common, frontend]
-      skills: [common, frontend]
-      agents: [common, frontend]
-```
-
-```yaml
-# manifest/projects.yaml
-version: 1
-projects:
-  - id: checkout
-    name: Checkout service
-    resources:
-      knowledge: [checkout]
-      skills: [checkout]
-      learnings: [checkout]
-      agents: [checkout]
-```
-
-```text
-skills/common/code-review/SKILL.md
-skills/frontend/react-patterns/SKILL.md
-skills/checkout/
-learnings/checkout/
-```
-
-Commit both files. In the project:
-
-```bash
-teamai roles set frontend
-teamai projects set checkout
-teamai pull
-```

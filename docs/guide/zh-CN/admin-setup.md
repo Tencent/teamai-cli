@@ -67,6 +67,48 @@ skill 和 rule 用 `teamai push`。`docs/`、`hooks/hooks.yaml`、`mcp/mcp.yaml`
 
 同事能推分支、能开 pull request。主干保持保护。
 
+## 角色和项目
+
+```yaml
+# manifest/roles.yaml
+version: 1
+roles:
+  - id: frontend
+    description: Web engineers
+    resources:
+      knowledge: [common, frontend]
+      skills: [common, frontend]
+      agents: [common, frontend]
+```
+
+```yaml
+# manifest/projects.yaml
+version: 1
+projects:
+  - id: checkout
+    name: Checkout service
+    resources:
+      knowledge: [checkout]
+      skills: [checkout]
+      learnings: [checkout]
+      agents: [checkout]
+```
+
+```text
+skills/common/code-review/SKILL.md
+skills/frontend/react-patterns/SKILL.md
+skills/checkout/
+learnings/checkout/
+```
+
+把这两份文件提交。在项目里：
+
+```bash
+teamai roles set frontend
+teamai projects set checkout
+teamai pull
+```
+
 ## 团队包
 
 ```bash
@@ -132,45 +174,3 @@ servers:
 ```
 
 把这个文件提交。
-
-## 角色和项目
-
-```yaml
-# manifest/roles.yaml
-version: 1
-roles:
-  - id: frontend
-    description: Web engineers
-    resources:
-      knowledge: [common, frontend]
-      skills: [common, frontend]
-      agents: [common, frontend]
-```
-
-```yaml
-# manifest/projects.yaml
-version: 1
-projects:
-  - id: checkout
-    name: Checkout service
-    resources:
-      knowledge: [checkout]
-      skills: [checkout]
-      learnings: [checkout]
-      agents: [checkout]
-```
-
-```text
-skills/common/code-review/SKILL.md
-skills/frontend/react-patterns/SKILL.md
-skills/checkout/
-learnings/checkout/
-```
-
-把这两份文件提交。在项目里：
-
-```bash
-teamai roles set frontend
-teamai projects set checkout
-teamai pull
-```
