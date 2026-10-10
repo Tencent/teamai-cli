@@ -28,17 +28,13 @@ teamai init https://github.com/your-org/your-repo --scope user
 
 **纯 Git、无需平台 token（`--provider git`）：**
 
-团队仓库所在平台的 provider 需要 token 时（例如自建 GitLab 需要 `GITLAB_TOKEN`），从不需要 CLI 创建 PR/MR 的成员可以改用已有的 Git 认证（SSH Key 或 Credential Helper）：
+不配平台 token（例如 `GITLAB_TOKEN`），直接用已有的 SSH Key 或 Git 凭据：
 
 ```bash
 teamai init https://gitlab.example.com/yourgroup/yourrepo --provider git
 ```
 
-- `--provider` 跳过自动检测，直接使用指定的 provider：`tgit`、`github`、`cnb`、`gitlab`、`gitcode` 或 `git`。`git` 不做平台登录，也不检查 token。
-- 该选择只保存在本机的本地配置中。已有的 `teamai.yaml` 不变，其他成员仍使用团队的 provider。`init` 新建 `teamai.yaml` 时，`--provider git` 写入的仍是 `init` 不带该参数时检测到的 provider；若 host 是尚未配置的自建 GitLab，`init` 会停止并提示设置 `GITLAB_URL`，而不是写入 `git`。
-- 自建 GitLab 使用 `--provider gitlab` 时仍需设置 `GITLAB_URL` 或 `TEAMAI_GITLAB_HOST`（以及 `GITLAB_TOKEN`）。两者都未设置时 `init` 会直接停止，否则 GitLab API 会指向 gitlab.com。
-- `pull` 照常工作。`push` 会推送分支，但无法创建 PR/MR，需要到 Git 平台上手动创建；由于这一步没有完成，命令以非零退出码结束。
-- 不带 `--provider` 重新运行 `teamai init` 即恢复自动检测。
+只影响本机。`push` 会推送分支，PR/MR 需要自己到 Git 平台上创建。
 
 **HTTP 模式（只读消费者）：**
 

@@ -28,17 +28,13 @@ teamai init https://github.com/your-org/your-repo --scope user
 
 **Plain Git, no platform token (`--provider git`):**
 
-When the team repo is on a platform whose provider needs a token (for example self-hosted GitLab and `GITLAB_TOKEN`), a member who never needs the CLI to open PRs/MRs can use their existing Git authentication (SSH key or credential helper) instead:
+Skip the platform token (for example `GITLAB_TOKEN`) and use your existing SSH key or Git credentials:
 
 ```bash
 teamai init https://gitlab.example.com/yourgroup/yourrepo --provider git
 ```
 
-- `--provider` skips auto-detection and uses the named provider: `tgit`, `github`, `cnb`, `gitlab`, `gitcode`, or `git`. `git` runs no platform login or token check.
-- The choice is saved in this machine's local config only. An existing `teamai.yaml` is not changed, so other members keep the team's provider. When `init` creates a new `teamai.yaml`, `--provider git` still records the provider `init` would detect without it. If the host is a self-hosted GitLab that is not configured, `init` stops and asks for `GITLAB_URL` rather than record `git` as the team default.
-- `--provider gitlab` on a self-hosted instance still needs `GITLAB_URL` or `TEAMAI_GITLAB_HOST` (and `GITLAB_TOKEN`). Without either `init` stops, because the GitLab API would otherwise target gitlab.com.
-- `pull` works as usual. `push` pushes the branch but cannot open a PR/MR, so open it on the Git host yourself; the command exits non-zero because that step did not run.
-- Re-running `teamai init` without `--provider` returns to auto-detection.
+This only affects your machine. `push` pushes the branch; open the PR/MR on the Git host yourself.
 
 **HTTP mode (read-only consumer):**
 

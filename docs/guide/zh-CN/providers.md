@@ -43,11 +43,11 @@ git@git.example.com:group/repo.git      → 检查 GitLab，未确认则 git
 
 ### 手动指定 provider（`--provider`）
 
-`teamai init <input> --provider <name>` 跳过上面的自动检测（包括 GitLab 探测），直接使用指定的 provider，取值与 `teamai.yaml` 的 `provider` 相同：`tgit`、`github`、`cnb`、`gitlab`、`gitcode`、`git`。典型用法是团队仓库在自建 GitLab 上、但成员只需要普通 Git：`--provider git` 不做平台登录、不检查 `GITLAB_TOKEN`，clone/pull/push 走已有的 Git 凭据。
+```bash
+teamai init https://gitlab.example.com/group/repo --provider git
+```
 
-该选择写入成员本机的本地配置（`provider` 字段），只影响这台机器：创建 PR/MR（`push`、`remove` 等）和 `doctor` 的 provider 检查优先使用它，已有的 `teamai.yaml` 不变。`init` 新建 `teamai.yaml`（空仓库，或单仓库模式首次初始化）时，`--provider git` 写入的仍是不带该参数时检测到的 provider（包括 GitLab 探测）；探测到尚未配置的自建 GitLab 时 `init` 会停止并提示设置 `GITLAB_URL`，不会把 `git` 写成团队默认值。其他值按指定值写入。不带 `--provider` 重新运行 `init` 即恢复自动检测。
-
-自建 GitLab 使用 `--provider gitlab` 时仍需设置 `GITLAB_URL`（以及 `GITLAB_TOKEN`）。GitLab API 地址取自 `GITLAB_URL`，未设置时指向 gitlab.com，所以检测无法识别该 host 时 `init` 会直接报错退出，不会把 token 发往别处。
+取值：`tgit`、`github`、`cnb`、`gitlab`、`gitcode`、`git`。`git` 不需要平台 token，用已有的 Git 凭据；PR/MR 需要自己到 Git 平台上创建。该选择只影响本机。自建 GitLab 用 `--provider gitlab` 时仍需设置 `GITLAB_URL` 和 `GITLAB_TOKEN`。
 
 ## 通用 Git Provider（自建/私有仓库）
 

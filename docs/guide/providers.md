@@ -43,11 +43,11 @@ After a successful init the provider is written to the `provider` field of the t
 
 ### Choosing a provider by hand (`--provider`)
 
-`teamai init <input> --provider <name>` skips the auto-detection above, including the GitLab probe, and uses the named provider. The values are the same as in `teamai.yaml`: `tgit`, `github`, `cnb`, `gitlab`, `gitcode`, `git`. The typical case is a team repo on a self-hosted GitLab whose members only need plain Git: `--provider git` performs no platform login, does not check `GITLAB_TOKEN`, and runs clone/pull/push with your existing Git credentials.
+```bash
+teamai init https://gitlab.example.com/group/repo --provider git
+```
 
-The choice is written to the member's local configuration (`provider` field) and affects only that machine: creating PRs/MRs (`push`, `remove` and friends) and the provider check in `doctor` use it first; the existing `teamai.yaml` is unchanged. When `init` creates a new `teamai.yaml` (an empty repo, or the first init in single-repo mode), `--provider git` still writes the provider that would have been detected without the flag, GitLab probe included; if the probe finds a self-hosted GitLab that is not configured yet, `init` stops and asks for `GITLAB_URL` rather than writing `git` as the team default. Any other value is written as given. Running `init` again without `--provider` restores auto-detection.
-
-A self-hosted GitLab used with `--provider gitlab` still needs `GITLAB_URL` (and `GITLAB_TOKEN`). The GitLab API address comes from `GITLAB_URL`, and defaults to gitlab.com when unset, so when detection cannot recognize the host `init` exits with an error instead of sending the token somewhere else.
+Values: `tgit`, `github`, `cnb`, `gitlab`, `gitcode`, `git`. `git` needs no platform token and uses your existing Git credentials; open PRs/MRs on the Git host yourself. The choice only affects your machine. A self-hosted GitLab with `--provider gitlab` still needs `GITLAB_URL` and `GITLAB_TOKEN`.
 
 ## Generic Git provider (self-hosted and private repos)
 
