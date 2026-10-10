@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI ซิงก์ skills, rules, learnings, models, MCP และสินทรัพย์ AI อื่นๆ ของทีมไปยังเครื่องมือ AI ของแต่ละคน**
+**TeamAI จัดการ skills, rules, agents, learnings, models, MCP และสินทรัพย์ AI อื่นๆ ของทีมผ่าน git repo**
 
-ไฟล์อยู่ใน git repo. `teamai push` เปิด pull request และตอนเริ่มเซสชันจะรัน `teamai pull`
+สมาชิกเริ่มต้นครั้งเดียว หลังจากนั้นสินทรัพย์ AI ล่าสุดของทีมจะซิงก์ให้อัตโนมัติ
 
 ## ทำไมต้อง TeamAI
 

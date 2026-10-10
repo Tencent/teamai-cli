@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI는 팀의 skills, rules, learnings, models, MCP 등 AI 자산을 각 멤버의 AI 도구로 동기화합니다.**
+**TeamAI는 git 저장소로 팀의 skills, rules, agents, learnings, models, MCP 등 AI 자산을 관리합니다.**
 
-파일은 git 저장소에 둡니다. `teamai push`는 pull request를 엽니다. 세션이 시작되면 `teamai pull`이 실행됩니다.
+팀원은 한 번 초기화하면, 이후 팀의 최신 AI 자산이 자동으로 동기화됩니다.
 
 ## 왜 TeamAI인가
 

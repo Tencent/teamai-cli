@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI 把团队的 skills、rules、learnings、models、MCP 等 AI 资产同步到每个人的 AI 工具。**
+**TeamAI 通过 git 仓库，管理团队的 skills、rules、agents、learnings、models、MCP 等 AI 资产。**
 
-文件放在一个 git 仓库里。`teamai push` 开 pull request。会话启动时跑 `teamai pull`。
+团队成员一次初始化，后续自动同步团队最新 AI 资产。
 
 ## 为什么选择 TeamAI
 

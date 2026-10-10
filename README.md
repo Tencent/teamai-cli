@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI syncs a team's skills, rules, learnings, models, MCP, and other AI assets into each person's AI tools.**
+**TeamAI manages a team's skills, rules, agents, learnings, models, MCP, and other AI assets in a git repo.**
 
-The files live in a git repo. `teamai push` opens a pull request. A session start runs `teamai pull`.
+A teammate initializes once. After that, the latest team AI assets sync automatically.
 
 ## Why TeamAI
 

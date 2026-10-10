@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**TeamAI は、チームの skills、rules、learnings、models、MCP などの AI 資産を各メンバーの AI ツールへ同期します。**
+**TeamAI は git リポジトリで、チームの skills、rules、agents、learnings、models、MCP などの AI 資産を管理します。**
 
-ファイルは git リポジトリに置きます。`teamai push` は pull request を開きます。セッション開始時に `teamai pull` が走ります。
+メンバーは一度初期化するだけで、その後はチームの最新 AI 資産が自動で同期されます。
 
 ## なぜ TeamAI なのか
 
