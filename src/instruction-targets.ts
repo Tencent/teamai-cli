@@ -51,11 +51,10 @@ interface TargetEntry {
   /** The file this tool reads the blocks from in this scope. */
   readonly file: ToolFile;
   /**
-   * For a tool with no rules format, in user scope: the file it reads the
-   * team rules from (#938, #946), the blocks' `file` unless `file` is given,
-   * and how doctor names it.
+   * For a tool with no rules format, in user scope: the team rules go in the
+   * blocks' `file` too (#938, #946, #1029), and this is how doctor names it.
    */
-  readonly teamRules?: { readonly label: string; readonly file?: ToolFile };
+  readonly teamRules?: { readonly label: string };
   /** The tool gets this scope's blocks from teamai's session hook or extension instead of a file. */
   readonly hook?: boolean;
   /** The most characters the hook channel takes; the tool drops a larger text whole. */
@@ -141,11 +140,11 @@ const USER_TARGETS: Readonly<Record<string, TargetEntry>> = {
   codex: codexUser,
   'codex-internal': codexUser,
   tcodex: codexUser,
-  // ZCode reads ~/.zcode/AGENTS.md as its user context; teamai writes it only the team rules.
-  zcode: { file: () => undefined, teamRules: { label: 'ZCode AGENTS.md', file: () => '.zcode/AGENTS.md' }, retired: [] },
-  dsh: { file: () => undefined, teamRules: { label: 'DeepSeek Harness AGENTS.md', file: dshAgentsMd }, retired: [] },
+  // ZCode reads ~/.zcode/AGENTS.md as its user context; the team rules sit beside the blocks.
+  zcode: { file: () => '.zcode/AGENTS.md', teamRules: { label: 'ZCode AGENTS.md' }, retired: [] },
+  dsh: { file: dshAgentsMd, teamRules: { label: 'DeepSeek Harness AGENTS.md' }, retired: [] },
   // JoyCode reads its user rules from one plain text file.
-  joycode: { file: () => undefined, teamRules: { label: 'JoyCode rules.txt', file: () => '.joycode/rules.txt' }, retired: [] },
+  joycode: { file: () => '.joycode/rules.txt', teamRules: { label: 'JoyCode rules.txt' }, retired: [] },
   // WorkBuddy reads user rules from ~/.workbuddy/rules; nothing else reads them.
   workbuddy: { file: contextRule('.md'), header: ALWAYS_APPLY, owned: true, retired: ['AGENTS.md'] },
   codebuddy: { file: configured, retired: [] },
@@ -520,7 +519,7 @@ export async function userRulesFile(tool: string, paths: ToolPaths, localConfig:
     }
     return { file: workspace.kind === 'found' ? path.join(workspace.dir, 'AGENTS.md') : undefined, installed: workspace.kind === 'found', label };
   }
-  const relative = await (entry.teamRules.file ?? entry.file)(paths);
+  const relative = await entry.file(paths);
   const file = relative === undefined ? undefined : path.resolve(resolveToolBaseDir(tool, localConfig), relative);
   return { file, installed: await isInstructionToolInstalled(tool, paths, localConfig), label };
 }

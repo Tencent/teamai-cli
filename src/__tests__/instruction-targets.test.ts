@@ -10,9 +10,11 @@ import {
   instructionChannelProblems,
   instructionHookTextFor,
   planInstructionFiles,
+  readsTeamRulesFromFile,
   registerOpencodeContext,
   retiredFilesOfReached,
   resolveInstructionTargets,
+  userRulesFile,
   type InstructionTarget,
 } from '../instruction-targets.js';
 import { injectPiHooks } from '../pi-hooks.js';
@@ -866,5 +868,61 @@ describe('every tool and toolPaths shape keeps its instructions (#945)', () => {
       }
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('a tool that reads the team rules from a file of its own in user scope (#1029)', () => {
+  const DEFAULTS = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+  const tools = Object.keys(DEFAULTS.toolPaths).filter(readsTeamRulesFromFile);
+
+  /** A member's home with `tool` installed, its default paths, and the file it reads the team rules from. */
+  async function installed(tool: string, run: (ctx: { home: string; localConfig: LocalConfig; paths: TeamaiConfig['toolPaths'][string]; rulesFile: string }) => Promise<void>) {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1029-')));
+    const home = path.join(root, 'home');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('DSH_HOME', path.join(home, '.dsh'));
+    try {
+      const localConfig = {
+        repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
+        username: 'u', additionalRoles: [], scope: 'user',
+      } as unknown as LocalConfig;
+      const paths = scopedToolPaths(DEFAULTS, localConfig)[tool];
+      for (const value of Object.values(paths)) {
+        if (typeof value === 'string') fs.mkdirSync(path.join(home, toolInstallRoot(value)), { recursive: true });
+      }
+      fs.mkdirSync(path.join(home, '.dsh'), { recursive: true });
+      fs.mkdirSync(path.join(home, '.openclaw', 'workspace'), { recursive: true });
+      const rulesFile = (await userRulesFile(tool, paths, localConfig))?.file;
+      expect(rulesFile).toBeDefined();
+      await run({ home, localConfig, paths, rulesFile: rulesFile! });
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  const resolveWith = (tool: string, paths: TeamaiConfig['toolPaths'][string], localConfig: LocalConfig) =>
+    resolveInstructionTargets(TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git', toolPaths: { [tool]: paths } }), localConfig);
+
+  it('covers the tools whose user rules file had no instruction blocks', () => {
+    expect(tools).toEqual(expect.arrayContaining(['zcode', 'dsh', 'joycode']));
+  });
+
+  it.each(tools)('%s reads the instruction blocks from that file, whether or not the team configures it as its claudemd', async (tool) => {
+    await installed(tool, async ({ home, localConfig, paths, rulesFile }) => {
+      for (const claudemd of [paths.claudemd, path.relative(home, rulesFile)]) {
+        const { targets, stale } = await resolveWith(tool, { ...paths, claudemd }, localConfig);
+        expect(targets.filter((target) => target.tools.includes(tool)).map((target) => target.path), `claudemd: ${claudemd}`).toEqual([rulesFile]);
+        expect(stale.map((target) => target.path), `claudemd: ${claudemd}`).not.toContain(rulesFile);
+      }
+    });
+  });
+
+  it.each(['zcode', 'dsh', 'joycode'])('%s does not read a claudemd that names another file, so its blocks there are cleaned', async (tool) => {
+    await installed(tool, async ({ home, localConfig, paths, rulesFile }) => {
+      const { targets, stale } = await resolveWith(tool, { ...paths, claudemd: '.config/other/AGENTS.md' }, localConfig);
+      expect(targets.filter((target) => target.tools.includes(tool)).map((target) => target.path)).toEqual([rulesFile]);
+      expect(stale.map((target) => target.path)).toContain(path.join(home, '.config', 'other', 'AGENTS.md'));
+    });
   });
 });

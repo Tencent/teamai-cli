@@ -535,7 +535,7 @@ ZCode 已作为内置目标支持。Skills 下发到 `.zcode/skills/`（ZCode �
 
 以上路径已对照 ZCode 桌面端实测验证：设置页「新建子智能体」写入的就是 `~/.zcode/agents/*.md`，反向放入的文件也会出现在页面的已安装列表中。MCP Server 下发到 `~/.agents/mcp.json`（用户级，Claude 的 `mcpServers` 结构——正是 ZCode 自己的 MCP 设置页读取的文件）。项目级暂未接入：ZCode 的工作区 MCP 使用不同的键（`.zcode/config.json` 内的 `mcp.servers`），Claude 写入器无法生成该结构。ZCode 不读取 rules 目录：
 
-user scope 下团队 rule 是 `~/.zcode/AGENTS.md` 中的一个区块，ZCode 把它作为用户上下文读取，不按路径限定作用范围。在项目中，teamai 写在 `~/.zcode/cli/config.json` 中的 `SessionStart` hook 会把项目的团队 rule 加入每个新会话（ZCode 不运行项目级 hook）。ZCode 压缩会话时会丢弃这段文本，rule 要到下一个会话才回来。
+user scope 下团队 rule 是 `~/.zcode/AGENTS.md` 中的一个区块，与 culture、共享指令和 recall 区块并列，ZCode 把它作为用户上下文读取，不按路径限定作用范围。在项目中，teamai 写在 `~/.zcode/cli/config.json` 中的 `SessionStart` hook 会把项目的团队 rule 加入每个新会话（ZCode 不运行项目级 hook）。ZCode 压缩会话时会丢弃这段文本，rule 要到下一个会话才回来。
 
 ### Oh My Pi
 
@@ -559,7 +559,7 @@ Rules 以 OMP 自己的 frontmatter 写入 `.omp/rules/` 与 `~/.omp/agent/rules
 
 DeepSeek Harness（`dsh`）支持 TeamAI Skills 和共享资源。DSH 官方的 Claude Hook Bridge 是通过 profile 插件加载的，并不是设置文件中的 Hooks；因此当 dsh 的主目录（`$DSH_HOME`，未设置时为 `~/.dsh/`）存在时，`teamai init`、`teamai pull` 或 `teamai hooks inject` 会在 `~/.teamai/dsh/` 下生成兼容 Claude 的 Hook 配置和 Cordis patch。
 
-dsh 不读取 rules 目录。user scope 下团队 rule 是 `$DSH_HOME/AGENTS.md`（未设置 `DSH_HOME` 时为 `~/.dsh/AGENTS.md`）中的一个区块，dsh 会把它放进第一次请求，不按路径限定作用范围。与 Hook 一样，只有该主目录存在时 teamai 才写入它。Skills 仍写入 `~/.dsh/skills/`，且只在 `~/.dsh/` 存在时写入，与 `DSH_HOME` 无关。在项目中，dsh 带上下面的 patch 运行后，teamai 的 session-start hook 会加入项目的团队 rule。dsh 以分离方式运行该 hook，第一次请求可能错过它们，压缩会话时也会丢弃它们。
+dsh 不读取 rules 目录。user scope 下团队 rule 是 `$DSH_HOME/AGENTS.md`（未设置 `DSH_HOME` 时为 `~/.dsh/AGENTS.md`）中的一个区块，与 culture、共享指令和 recall 区块并列，dsh 会把它放进第一次请求，不按路径限定作用范围。与 Hook 一样，只有该主目录存在时 teamai 才写入它。Skills 仍写入 `~/.dsh/skills/`，且只在 `~/.dsh/` 存在时写入，与 `DSH_HOME` 无关。在项目中，dsh 带上下面的 patch 运行后，teamai 的 session-start hook 会加入项目的团队 rule。dsh 以分离方式运行该 hook，第一次请求可能错过它们，压缩会话时也会丢弃它们。
 
 TeamAI 会打印带绝对路径的 patch。将这个 `--patch` 参数加到启动 DSH profile 的命令中，例如 `dsh tui --patch "<打印出的路径>"`。这是一次性的启动器选择；`teamai hooks remove` 和 `teamai uninstall` 会移除 TeamAI patch，同时保留生成配置中的其他 Hook 条目。
 
@@ -571,7 +571,7 @@ Rules 是采用 JoyCode 自有渲染的 `.mdc` 文件。JoyCode 逐行读取 fro
 
 只要其 `globs` 仍带引号，`pull` 会指出它不作用于任何文件，并说明如何修正。`doctor` 将项目 `.joycode/rules/` 中的每份副本与该渲染比对。
 
-user scope 下 JoyCode 不读取 rules 目录：团队 rule 是 `~/.joycode/rules.txt` 中的一个区块，不按路径限定作用范围。pull 会删除旧版本留在 `~/.joycode/rules/` 中未修改的 `.mdc` 副本，并点名你改过的副本。
+user scope 下 JoyCode 不读取 rules 目录：团队 rule 是 `~/.joycode/rules.txt` 中的一个区块，与 culture、共享指令和 recall 区块并列，不按路径限定作用范围。pull 会删除旧版本留在 `~/.joycode/rules/` 中未修改的 `.mdc` 副本，并点名你改过的副本。
 
 JoyCode 规则清理采用保守策略：不在团队规则列表中的本地 `.mdc` 和 `.md` 文件会被保留，只有团队明确记录了删除标记（tombstone）才会清理。这能保护同一目录中的个人规则；缺少删除记录的旧团队副本也会保留，不会猜测其已过期。
 

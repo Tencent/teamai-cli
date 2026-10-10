@@ -106,10 +106,13 @@ Two members of the same project can have different roles, so their shared instru
 | Pi | `~/.pi/agent/AGENTS.md` | Added to each run's system prompt by teamai's Pi extension |
 | OpenClaw | The workspace `AGENTS.md`, found the way its hook finds it (`agents.defaults.workspace`, `OPENCLAW_WORKSPACE_DIR`, or `<state dir>/workspace`), beside the team rules (unverified) | Nothing: its only project file is the shared `AGENTS.md` |
 | Hermes | A block in `$HERMES_HOME/SOUL.md`, beside the team rules block (unverified) | A system prompt section from teamai's Hermes plugin (unverified) |
+| ZCode | `~/.zcode/AGENTS.md`, beside the team rules (unverified) | Only a `claudemd` the team's `toolPaths` configures (none by default) |
+| DeepSeek Harness | `$DSH_HOME/AGENTS.md` (`~/.dsh/AGENTS.md` when `DSH_HOME` is unset), beside the team rules (unverified) | Only a `claudemd` the team's `toolPaths` configures (none by default) |
+| JoyCode | `~/.joycode/rules.txt`, beside the team rules (unverified) | Only a `claudemd` the team's `toolPaths` configures (none by default) |
 
 A team `toolPaths` entry without `rules` keeps its configured `claudemd` for Claude Code, Cursor, CodeBuddy and WorkBuddy, which have no rules directory to take a `teamai-context` file. An entry with only `claudemd` counts as installed when that file's directory exists, and always for a bare file such as `AGENTS.md`.
 
-*Unverified*: built from the tool's documented or source-read loader, not yet checked in a live session. Claude Code, Oh My Pi, OpenCode and Pi (project scope) were checked in live sessions, from the project root and a subdirectory. A tool with the `teamai-recall` subagent gets a recall block that calls it; a tool without one (Pi, Hermes, OpenClaw) gets a recall block that tells the agent to run `teamai recall` directly. A file several tools share gets the subagent block only when every one of them has the subagent.
+*Unverified*: built from the tool's documented or source-read loader, not yet checked in a live session. Claude Code, Oh My Pi, OpenCode and Pi (project scope) were checked in live sessions, from the project root and a subdirectory. A tool with the `teamai-recall` subagent gets a recall block that calls it; a tool without one (Pi, Hermes, OpenClaw, DeepSeek Harness) gets a recall block that tells the agent to run `teamai recall` directly. A file several tools share gets the subagent block only when every one of them has the subagent.
 
 Claude Code loads `.claude/rules/teamai-context.md` from the project root and any subdirectory, and still reads the project's `AGENTS.md` or authored `CLAUDE.md` the way it chose to. Copilot CLI 1.0.89 and later also reads a project's `.claude/rules`, so with both tools installed Copilot can get the blocks twice.
 
