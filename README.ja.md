@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**チームが AI とともに働き、学び、改善し続けるための共通基盤。**
+**TeamAI は、チームの skills、rules、docs、env を各メンバーの AI ツールへ同期します。**
 
-TeamAI は個人の AI 能力をチーム共有の能力へと変え、Agent・マシン・メンバーをまたいで活用できるようにします。
+ファイルは git リポジトリに置きます。`teamai push` は pull request を開きます。セッション開始時に `teamai pull` が走ります。
 
 ## なぜ TeamAI なのか
 
@@ -78,7 +78,7 @@ npm install -g teamai-cli
 
 ### チーム管理者 / 個人利用
 
-Git ホスト（GitHub、GitLab、GitCode、CNB、TGit、またはプライベート Git サービス）に共有リポジトリを作成し、**チームメンバーに書き込み権限を付与**してから、`teamai init https://github.com/your-org/your-repo` を実行します。
+Git ホスト（GitHub、GitLab、GitCode、CNB、TGit、またはプライベート Git サービス）に共有リポジトリを作成します。メンバーにはブランチへの push 権限を付け、デフォルトブランチは保護したままにします。その後 `teamai init https://github.com/your-org/your-repo` を実行します。
 
 > **まだチームリポジトリがない場合は？** 本番向けの skills、rules、review agents が入ったテンプレートから始められます。[teamai-hub](https://github.com/teamai-hub) org を開き、**Fork** してから、新しいリポジトリに対して `teamai init` を実行してください。
 

@@ -2,9 +2,9 @@
 
 > [English](product-overview.md) | [简体中文](product-overview.zh-CN.md)
 
-本文介绍 TeamAI 的产品架构、Agent 支持范围和核心能力。安装与日常使用流程请参阅[使用指南](usage-guide.zh-CN.md)。
+安装和日常使用在[使用指南](usage-guide.zh-CN.md)。
 
-Agent 作为个人工具已经很强，但学到的东西留在个人手里：昨天某位成员的 Agent 摸索出来的结论，今天到不了其他人的 Agent 面前。TeamAI 是一条闭环：把 Agent 的工作方式共享出去，把团队知识交给它们，再把真实会话变成团队能力。从 Harness 分发起步；Context 与 Improvement 随团队真实使用 Agent 而加深。
+昨天摸出来的结论，不放进团队仓库，就还在那一台机器上。TeamAI 把仓库里的 skills、rules、docs、env、hooks 同步到每个人的 AI 工具，也可以把会话里的经验写回去。先把 harness 发出去。Context 和 Improvement 仍是 beta。
 
 ---
 
@@ -14,9 +14,9 @@ Agent 作为个人工具已经很强，但学到的东西留在个人手里：�
 
 | 层 | 要解决的问题 | 当前 CLI 中的体现 |
 |----|--------------|-------------------|
-| **Team Execution** | 让每个 Agent 按团队的方式工作 | `init` / `pull` / `push`，skills、rules、agents、hooks、MCP、env |
-| **Team Context** (beta) | 让每个 Agent 理解整个团队 | recall、learnings、代码知识图谱、teamwiki... |
-| **Team Improvement** (beta) | 让每一次执行都成为团队能力的积累 | 基于摩擦信号的经验分享、sessions、digest、dashboard... |
+| **Team Execution** | 每台机器上的 skills、rules、hooks 相同 | `init` / `pull` / `push`，skills、rules、agents、hooks、MCP、env |
+| **Team Context** (beta) | Agent 能检索团队记下的经验 | recall、learnings、代码知识图谱、teamwiki... |
+| **Team Improvement** (beta) | 会话可以写回成共享的经验 | 基于摩擦信号的经验分享、sessions、digest、dashboard... |
 
 ## 核心概念
 
@@ -53,7 +53,7 @@ Agent 作为个人工具已经很强，但学到的东西留在个人手里：�
 
 ### 分发策略
 
-管理员一次配置、随 `teamai pull` 分发给每位成员的团队级设置：
+写在团队仓库里的设置。`teamai pull` 会带下来：
 
 | 能力 | 命令 | 作用 |
 |------|------|------|
@@ -66,9 +66,7 @@ learnings 隔离：仓库 `learnings/` 根目录对所有人共享；`learnings/
 
 ## Team Execution
 
-> One Team. One Harness. Every Agent.
-
-TeamAI 把 skills、rules、docs、hooks 统一存放在共享 Git 仓库，通过「push → 评审合并 → pull」的流程分发到每位成员的本地 AI 工具，并支持订阅其他团队或公共仓库的 Harness。
+TeamAI 把 skills、rules、docs、hooks 放在共享 Git 仓库里，再装到每个人的 AI 工具：push、评审、合并、pull。仓库也可以订阅其他团队的 harness。
 
 ### 工作原理
 

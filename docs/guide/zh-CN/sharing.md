@@ -6,7 +6,7 @@
 
 ---
 
-这是 Team Execution：Skills、Rules 等 Harness 定义一次，经 MR 评审后由 `teamai pull` 分发到每个 Agent。
+把 skills、rules 和其他 harness 文件放进团队仓库，用 merge request 评审。`teamai pull` 会装到本机。
 
 ## Skills（技能）
 

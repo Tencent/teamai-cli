@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**The shared foundation for how your team works, learns, and improves with AI.**
+**TeamAI syncs a team's skills, rules, docs, and env into each person's AI tools.**
 
-TeamAI turns individual AI capabilities into shared team capabilities — across agents, machines, and team members.
+The files live in a git repo. `teamai push` opens a pull request. A session start runs `teamai pull`.
 
 ## Why TeamAI
 
@@ -78,7 +78,7 @@ npm install -g teamai-cli
 
 ### Team admin / solo user
 
-Create a shared-experience repo on your git host (GitHub, GitLab, GitCode, CNB, TGit, or a private Git service), **grant write access to team members**, then run `teamai init https://github.com/your-org/your-repo`.
+Create a shared repo on your git host (GitHub, GitLab, GitCode, CNB, TGit, or a private Git service). Give teammates permission to push branches, and leave the default branch protected. Then run `teamai init https://github.com/your-org/your-repo`.
 
 > **No team repo yet?** Start from a template pre-loaded with production-ready skills, rules, and review agents. Browse the [teamai-hub](https://github.com/teamai-hub) org, click **Fork**, then `teamai init` against your new repo.
 

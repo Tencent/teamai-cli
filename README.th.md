@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**รากฐานร่วมสำหรับการทำงาน การเรียนรู้ และการพัฒนาอย่างต่อเนื่องของทีมด้วย AI**
+**TeamAI ซิงก์ skills, rules, docs และ env ของทีมไปยังเครื่องมือ AI ของแต่ละคน**
 
-TeamAI เปลี่ยนความสามารถด้าน AI ของแต่ละคนให้เป็นความสามารถร่วมของทีม ใช้ได้ข้าม Agent อุปกรณ์ และสมาชิกในทีม
+ไฟล์อยู่ใน git repo. `teamai push` เปิด pull request และตอนเริ่มเซสชันจะรัน `teamai pull`
 
 ## ทำไมต้อง TeamAI
 
@@ -78,7 +78,7 @@ npm install -g teamai-cli
 
 ### ผู้ดูแลทีม / ผู้ใช้คนเดียว
 
-สร้างรีโปสำหรับแบ่งปันประสบการณ์บน Git host ของคุณ (GitHub, GitLab, GitCode, CNB, TGit หรือบริการ Git ส่วนตัว) **ให้สิทธิ์เขียนแก่สมาชิกทีม** จากนั้นรัน `teamai init https://github.com/your-org/your-repo`
+สร้างรีโปที่ใช้ร่วมกันบน Git host (GitHub, GitLab, GitCode, CNB, TGit หรือบริการ Git ส่วนตัว) ให้สมาชิกสิทธิ์ push สาขา และปล่อยให้สาขาหลักถูกป้องกันไว้ จากนั้นรัน `teamai init https://github.com/your-org/your-repo`
 
 > **ยังไม่มีรีโปของทีม?** เริ่มจากเทมเพลตที่มี Skills, Rules และ review agents พร้อมใช้จริงอยู่แล้ว เปิดดู org [teamai-hub](https://github.com/teamai-hub) กด **Fork** แล้วรัน `teamai init` กับรีโปใหม่ของคุณ
 

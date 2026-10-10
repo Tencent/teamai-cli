@@ -233,23 +233,17 @@ expected to show hooks installed; others are skipped by design or not yet suppor
 which is normal. Full table in the troubleshooting reference
 (`"$(teamai skill path core)/references/troubleshooting.md"`), section "Which tools actually get hooks".
 
-## Step 7 — Grant members repo access (required before they can join)
+## Step 7 — Grant members branch access (required before they can join)
 
-TeamAI has **no permission model of its own** — it rides the Git platform's
-access control. After you initialize the repo, **each member must be granted
-read/write access to it on the platform website**, or their `teamai init` / `pull`
-/ `push` will fail with a permission error.
+TeamAI uses the Git host's access control. After the repo exists, each member
+needs permission to clone it and to push branches. Leave the default branch
+protected. They open pull requests against it.
 
-Tell the admin (in their language) to add every member on the repo's website:
+`teamai push` pushes a feature branch and opens a pull request. Reports and
+learnings use the branches `teamai-reports` and `teamai-learnings`.
 
-- **Tencent TGit:** repo → Members → add each member with at
-  least **Developer** (read/write) access.
-- **GitHub:** repo → Settings → Collaborators → add with **Write**.
-- **GitLab:** repo → Settings → Members → add with **Developer** or above.
-- **CNB:** repo → members → grant read/write.
-
-Do this **before** handing off the invite line below — otherwise the member hits a
-"permission denied / can't clone" error on their very first step.
+Do this before handing off the invite line below. Without branch access,
+`teamai init` or `teamai push` fails with a permission error.
 
 ## Step 8 — Hand off to members
 

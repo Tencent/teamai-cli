@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**팀이 AI와 함께 일하고, 배우고, 개선해 나가기 위한 공통 기반.**
+**TeamAI는 팀의 skills, rules, docs, env를 각 멤버의 AI 도구로 동기화합니다.**
 
-TeamAI는 개인의 AI 역량을 팀 공동의 역량으로 바꾸고, 여러 Agent와 기기, 팀원 전반에서 활용할 수 있게 합니다.
+파일은 git 저장소에 둡니다. `teamai push`는 pull request를 엽니다. 세션이 시작되면 `teamai pull`이 실행됩니다.
 
 ## 왜 TeamAI인가
 
@@ -78,7 +78,7 @@ npm install -g teamai-cli
 
 ### 팀 관리자 / 개인 사용자
 
-Git 호스트(GitHub, GitLab, GitCode, CNB, TGit 또는 비공개 Git 서비스)에 공유 경험 저장소를 만들고, **팀원에게 쓰기 권한을 부여한 뒤** `teamai init https://github.com/your-org/your-repo`를 실행하세요.
+Git 호스트(GitHub, GitLab, GitCode, CNB, TGit 또는 비공개 Git 서비스)에 공유 저장소를 만듭니다. 팀원에게는 브랜치 push 권한을 주고, 기본 브랜치는 보호된 채로 둡니다. 그다음 `teamai init https://github.com/your-org/your-repo`를 실행하세요.
 
 > **아직 팀 저장소가 없나요?** 프로덕션에 바로 쓸 수 있는 Skills, Rules, review agents가 미리 들어 있는 템플릿으로 시작하세요. [teamai-hub](https://github.com/teamai-hub) org를 둘러본 뒤 **Fork**하고, 새로 만든 저장소에 `teamai init`을 실행하면 됩니다.
 

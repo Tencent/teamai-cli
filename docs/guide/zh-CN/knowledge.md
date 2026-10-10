@@ -8,7 +8,7 @@
 
 ## 知识沉淀与检索
 
-这是 Team Context，也是 Team Improvement 的起点：先记下本次 Session 真正学到的东西，再让下一次 Agent 能检索到。
+记下这次会话学到的东西，下一次 Agent 就能检索到。
 
 ### 贡献知识
 

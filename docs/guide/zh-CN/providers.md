@@ -124,11 +124,9 @@ token 需要 `repo` 权限。`GH_TOKEN` 作为别名也会被识别。
 TeamAI 通过 `getDefaultBranch()` 自动识别默认分支：先看 `origin/HEAD`，再依次探测
 `origin/main`、`origin/master`。`main` 和 `master` 都可以，无需改动仓库设置。
 
-### 默认分支受保护时的最小权限
+### 分支权限
 
-成员需要能推送 `teamai-reports` 与 `teamai-learnings`（含首次创建这两个 ref）、推送
-`teamai push` 创建的特性分支，并能向默认分支开 PR。不需要直接推送 `main` / `master`，
-也不需要绕过分支保护或管理员权限。详见[Git 权限](admin-setup.md#git-权限)。
+同事有分支写权限、能开 pull request 就够了。主干保持保护。上报和学习记录走 `teamai-reports` 和 `teamai-learnings`。详见[Git 权限](admin-setup.md#git-权限)。
 
 注意：`provider: git` 无法自动开 PR，`teamai push` 会推送分支并打印手动开 PR 的命令；
 `teamai contribute` 直接推送 `teamai-learnings`，不走 PR。

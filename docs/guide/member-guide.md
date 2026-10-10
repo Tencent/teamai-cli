@@ -8,7 +8,7 @@
 
 ## Member Onboarding
 
-Once the admin shares the team repo URL with members:
+After you have the team repo URL:
 
 **Project-scoped teams (default):**
 

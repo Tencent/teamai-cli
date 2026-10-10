@@ -2,9 +2,9 @@
 
 > [English](product-overview.md) | [简体中文](product-overview.zh-CN.md)
 
-This document explains TeamAI's product architecture, supported agents, and core capabilities. For setup and day-to-day workflows, see the [Usage Guide](usage-guide.md).
+Setup and daily use are in the [Usage Guide](usage-guide.md).
 
-Agents are strong as personal tools, but their learning stays personal: what one member's agent worked out yesterday does not reach anyone else's agent today. TeamAI is one loop: share how agents work, give them team knowledge, and turn real sessions into shared capability. Start with harness distribution; context and improvement grow as the team actually runs agents.
+A conclusion from yesterday stays on one machine until someone puts it in the team repo. TeamAI copies skills, rules, docs, env, and hooks from that repo into each person's AI tools, and can write session learnings back. Share the harness first. Context and improvement are still beta.
 
 ---
 
@@ -14,9 +14,9 @@ Agents are strong as personal tools, but their learning stays personal: what one
 
 | Layer | Job | In this CLI today |
 |-------|-----|-------------------|
-| **Team Execution** | Make every agent work the team's way | `init` / `pull` / `push`, skills, rules, agents, hooks, MCP, env |
-| **Team Context** (beta) | Make every agent understand the team | recall, learnings, codebase graph, teamwiki... |
-| **Team Improvement** (beta) | Make every execution improve the team | friction-based share-learnings, sessions, digest, dashboard... |
+| **Team Execution** | The same skills, rules, and hooks on every machine | `init` / `pull` / `push`, skills, rules, agents, hooks, MCP, env |
+| **Team Context** (beta) | Agents can search what the team has learned | recall, learnings, codebase graph, teamwiki... |
+| **Team Improvement** (beta) | Sessions can be written back as shared learnings | friction-based share-learnings, sessions, digest, dashboard... |
 
 ## Core concepts
 
@@ -54,7 +54,7 @@ See the [agent capability matrix](../README.md#product-overview) in the README f
 
 ### Distribution Controls
 
-Team-wide settings an admin configures once and delivers to every member on `teamai pull`:
+Settings in the team repo. `teamai pull` delivers them:
 
 | Capability | Command | What it does |
 |------------|---------|--------------|
@@ -67,9 +67,7 @@ Learnings isolation: `learnings/` at the repo root is shared with everyone; `lea
 
 ## Team Execution
 
-> One Team. One Harness. Every Agent.
-
-TeamAI keeps skills, rules, docs, and hooks in a shared git repo and distributes them to every member's local AI tools through a "push → review & merge → pull" flow — with support for subscribing to other teams' or shared repos' Harness.
+TeamAI keeps skills, rules, docs, and hooks in a shared git repo and installs them into each person's AI tools: push, review, merge, pull. A repo can also subscribe to another team's harness.
 
 ### How It Works
 

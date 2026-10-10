@@ -6,7 +6,7 @@
 
 ---
 
-This is Team Execution: define skills, rules, and other harness once, review via MR, then `teamai pull` delivers them to every agent.
+Put skills, rules, and the other harness files in the team repo. Review them in a merge request. `teamai pull` installs them.
 
 ## Skills
 

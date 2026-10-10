@@ -4,7 +4,7 @@
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
-Pick the setup that matches the team and follow it. Each one ends with `teamai doctor`: every line should pass. Joining a team that is already set up is [Path B in Getting Started](./getting-started.md#path-b--join-a-team).
+Copy the setup that matches the team. Finish with `teamai doctor`. Joining a repo that already exists is [Join a team](./getting-started.md#join-a-team).
 
 | You want | Copy |
 | --- | --- |
@@ -20,7 +20,7 @@ GitHub, GitLab, GitCode, CNB, TGit, and a private Git host all work. Token and s
 
 ## Demo 1. Separate team repo
 
-Create an empty repo (suggested name: `<team-name>-teamai`), give teammates write access, then:
+Create an empty repo. `<team-name>-teamai` is a clear name. Give teammates permission to push branches, and leave the default branch protected. Then:
 
 ```bash
 cd /path/to/my-project
@@ -87,13 +87,9 @@ One team setup stays tied to this repo. To share one knowledge base across many 
 
 ### Git permissions
 
-On a protected default branch, a member needs to:
+Teammates need permission to push branches and to open pull requests. Leave the default branch protected. Admin rights are not required.
 
-- push `teamai-reports` and `teamai-learnings`, and create those refs the first time
-- push the feature branches `teamai push` creates
-- open pull requests against the default branch
-
-A member does not need to push `main` directly or hold admin rights. With `provider: git`, teamai pushes the branch and prints the command to open the pull request yourself.
+`teamai push` pushes a feature branch and opens a pull request. Reports and learnings use the branches `teamai-reports` and `teamai-learnings`, and the first push creates them. With `provider: git`, teamai pushes the branch and prints the command to open the pull request.
 
 ---
 
@@ -102,7 +98,7 @@ A member does not need to push `main` directly or hold admin rights. With `provi
 Install the CLI once. Each scope has its own config and its own clone.
 
 ```bash
-# once per developer: company skills, rules, docs, agents
+# company skills, rules, docs, agents
 teamai init https://github.com/your-org/engineering-practices --scope user
 
 # in one service: project resources stay in front
@@ -119,7 +115,7 @@ teamai doctor
 
 Skip this demo when everyone should receive the same skills. With no `manifest/roles.yaml` and no `manifest/projects.yaml`, `pull` installs the repo root for every member.
 
-A **role** is a job (`frontend`, `infra`). A **project** is which checkout this directory is (`checkout`, `billing`). A member receives the union of both. They do not override each other.
+A role names a job, such as `frontend` or `infra`. A project names this checkout, such as `checkout` or `billing`. Pull installs the union of the two. One does not replace the other.
 
 `skills/common/` is shared by every role that lists `common`. `skills/frontend/` reaches only roles and projects that list `frontend`. While roles or projects are in use, a skill left in the root `skills/` is delivered only when a member subscribes to its tag (`teamai tags subscribe <tag>`).
 

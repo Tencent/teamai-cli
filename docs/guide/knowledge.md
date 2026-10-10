@@ -8,7 +8,7 @@
 
 ## Knowledge Capture & Retrieval
 
-This is Team Context plus the start of Team Improvement: capture what a session actually learned, then let the next agent find it.
+Record what a session learned, then let the next agent search it.
 
 ### Contributing knowledge
 

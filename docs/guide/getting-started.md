@@ -6,34 +6,30 @@
 
 ---
 
-## Pick a path
+## Three ways in
 
-Find your situation in the table and follow that path. Each path ends when its check command succeeds.
-
-| You are… | Go to |
+| What you are doing | Section |
 | --- | --- |
-| Setting up TeamAI for your team for the first time | [Path A — set up a team](#path-a--set-up-a-team) |
-| Joining a team that already uses TeamAI | [Path B — join a team](#path-b--join-a-team) |
-| Already set up, and want the team to get a skill or rule you wrote | [Path C — share something](#path-c--share-something) |
+| Creating the team repo | [Set up a team](#set-up-a-team) |
+| Joining a repo that already exists | [Join a team](#join-a-team) |
+| Sending a skill or rule you wrote | [Share a skill or rule](#share-a-skill-or-rule) |
 
-You need Node.js ≥ 20 and Git. Install the CLI once:
+You need Node.js 20 or newer, and Git.
 
 ```bash
 npm install -g teamai-cli
 teamai --version
 ```
 
-TGit users also need the `gf` CLI, and CNB users the `cnb` CLI. `teamai init` installs either automatically.
+On TGit, `teamai init` installs the `gf` CLI. On CNB, it installs the `cnb` CLI.
 
-You can drive TeamAI from inside your AI tool, by talking to the `/teamai` skill (it runs the commands and asks you when it needs a choice), or by running `teamai` in a terminal. The paths below show both.
+Paste the prompt into your AI tool, or run the commands in a terminal. The `/teamai` skill runs the commands and asks when it needs a choice.
 
-What the product is, and the words it uses, is in the [Product Overview](../product-overview.md#core-concepts).
+Scope, team repo, and the other terms are in the [Product Overview](../product-overview.md#core-concepts).
 
-### Path A — set up a team
+### Set up a team
 
-One person does this; everyone else follows Path B.
-
-1. Create an empty repository on your Git host (GitHub, GitLab, GitCode, CNB, TGit or any private Git) and give your teammates write access. Suggested name: `<team-name>-teamai`. No repo yet? Fork a ready-made one from [teamai-hub](https://github.com/teamai-hub).
+1. Create an empty repository on GitHub, GitLab, GitCode, CNB, TGit, or a private Git host. `<team-name>-teamai` is a clear name. Give teammates permission to push branches, and leave the default branch protected. No repo yet? Fork one from [teamai-hub](https://github.com/teamai-hub).
 2. Initialize in the project where you use your AI tool.
 
    In your AI tool:
@@ -45,22 +41,22 @@ One person does this; everyone else follows Path B.
    cd /path/to/my-project
    teamai init https://github.com/your-org/your-repo
    ```
-   `init` detects the Git provider, signs you in if needed, registers you as a member, installs a session-start hook into the AI tools it finds, and ends with a pull.
-3. Check that it worked.
+   `init` detects the Git host, signs you in if needed, registers you as a member, installs a session-start hook in the AI tools it finds, and pulls.
+3. Check it.
    ```bash
    teamai doctor      # every line should pass
-   teamai status      # local vs team repo: nothing pending right after init
+   teamai status      # empty right after init
    ```
-4. Publish a first resource so members receive something on their first pull. Put a skill in `~/.claude/skills/<name>/SKILL.md` (or a rule in `~/.claude/rules/<name>.md`) and run `teamai push`. It opens a pull request on the team repo; merge it.
-5. Send the repo URL to your team. That URL is all a member needs.
+4. Publish one file so the first pull is not empty. Put a skill in `~/.claude/skills/<name>/SKILL.md` (or a rule in `~/.claude/rules/<name>.md`) and run `teamai push`. Merge the pull request it opens.
+5. Send the repo URL to the team.
 
-**Done when** `teamai doctor` passes and the skill is on the team repo's default branch. Every AI tool on your machine pulls from that repo at session start.
+`teamai doctor` passes, and the skill is on the default branch. Each AI tool on your machine pulls that repo when a session starts.
 
-For scopes, single-repo mode and layered org repos, continue with [Admin Setup](./admin-setup.md). For rules, env, MCP servers and hooks, continue with [Sharing Team Resources](./sharing.md).
+Scopes, a business repo that is its own team repo, and an org repo plus a project repo are in [Admin Setup](./admin-setup.md). Rules, env, MCP servers, and hooks are in [Sharing Team Resources](./sharing.md).
 
-### Path B — join a team
+### Join a team
 
-You need the team repo URL from your admin.
+You need the repo URL.
 
 1. Initialize in the project where you use your AI tool.
 
@@ -73,21 +69,21 @@ You need the team repo URL from your admin.
    cd /path/to/my-project
    teamai init https://github.com/your-org/your-repo
    ```
-   Add `--scope user` if you want the team's resources in every project rather than this one.
-2. Check that it worked.
+   Add `--scope user` to install into your home directory. Every project on this machine then sees the files. Without that flag, files install into this project.
+2. Check it.
    ```bash
    teamai doctor
    teamai list        # the team's skills, rules, docs, env, agents, hooks and MCP servers
    ```
 3. Open your AI tool in that project.
 
-**Done when** `teamai list` shows the team's skills and rules, and a new AI session can use them. Every session start pulls the latest, so there is nothing to sync by hand.
+`teamai list` shows the team's skills and rules, and a new session can use them. Session start pulls again, so you do not run `pull` yourself.
 
-Day-to-day commands are in the [Member Guide](./member-guide.md). [Team Knowledge](./knowledge.md) explains how to let your agent search what teammates have learned.
+Day-to-day commands are in the [Member Guide](./member-guide.md). Searching what teammates learned is in [Team Knowledge](./knowledge.md).
 
-### Path C — share something
+### Share a skill or rule
 
-You wrote a skill, rule, agent or MCP server that teammates should have.
+You have a skill, rule, agent, or MCP server that teammates should have.
 
 1. Push it.
 
@@ -100,23 +96,23 @@ You wrote a skill, rule, agent or MCP server that teammates should have.
    teamai push                       # pick from what it finds under your AI tools
    teamai push --skill ~/.claude/skills/<name>
    ```
-   `push` fills in missing `SKILL.md` frontmatter, pushes a branch and opens a pull request on the team repo.
-2. Get it merged. Whoever reviews on the team repo merges the PR.
-3. On any member's machine the next session start pulls it. `teamai list skills --source repo` shows it right away.
+   `push` fills in missing `SKILL.md` frontmatter, pushes a branch, and opens a pull request on the team repo.
+2. A reviewer on the team repo merges the pull request.
+3. The next session on a teammate's machine pulls it. `teamai list skills --source repo` shows it before that session.
 
-**Done when** the pull request is merged and `teamai list skills --source repo` shows the skill.
+The pull request is merged, and `teamai list skills --source repo` shows the skill.
 
-Roles, namespaces and the format of each resource type are in [Sharing Team Resources](./sharing.md).
+Roles, namespaces, and the format of each resource are in [Sharing Team Resources](./sharing.md).
 
-### If something does not work
+### If a command fails
 
-Run `teamai doctor`. It names the problem and the fix for most cases (missing hook, tool not detected, token not set). The rest are in [Uninstall & FAQ](./faq.md).
+Run `teamai doctor`. It names a missing hook, a tool it did not detect, or a token that is not set, and prints a fix. Other cases are in [Uninstall & FAQ](./faq.md).
 
 ## Where to go next
 
-| You want to… | Read |
+| Next | Read |
 | --- | --- |
-| Understand the product and its terms | [Product Overview](../product-overview.md#core-concepts) |
-| Choose where resources are installed, or how the team repo is laid out | [Admin Setup](./admin-setup.md) |
-| Publish skills, rules, env, or MCP servers | [Sharing Team Resources](./sharing.md) |
-| Use TeamAI after you have joined | [Member Guide](./member-guide.md) |
+| Terms | [Product Overview](../product-overview.md#core-concepts) |
+| Where files are installed, and how the team repo is laid out | [Admin Setup](./admin-setup.md) |
+| Skills, rules, env, or MCP servers | [Sharing Team Resources](./sharing.md) |
+| After you have joined | [Member Guide](./member-guide.md) |

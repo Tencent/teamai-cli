@@ -8,7 +8,7 @@
 
 ## Uninstall
 
-`teamai uninstall` intelligently cleans up all teamai-managed resources, **preserving anything you created yourself**.
+`teamai uninstall` removes resources TeamAI installed. Files you created stay.
 
 A targeted project exclusion also requires confirmation or `--force`, even when there are no local files to remove. `--dry-run` and a declined confirmation leave the project config unchanged.
 

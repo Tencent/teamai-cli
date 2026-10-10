@@ -4,7 +4,7 @@
 
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
-按团队的情况选一份配置，照着做。每份都以 `teamai doctor` 结束，每一行都应通过。加入一个已经配好的团队，看[快速开始的路径 B](./getting-started.md#路径-b加入团队)。
+抄一份和团队匹配的配置。最后跑 `teamai doctor`。加入已有仓库，看[加入团队](./getting-started.md#加入团队)。
 
 | 你要的 | 抄这份 |
 | --- | --- |
@@ -20,7 +20,7 @@ GitHub、GitLab、GitCode、CNB、工蜂和私有 Git 都可以。Token 和自�
 
 ## Demo 1. 独立团队仓库
 
-建一个空仓库（建议名 `<团队名>-teamai`），给同事写权限，然后：
+建一个空仓库。名字用 `<团队名>-teamai` 比较好认。给同事分支写权限，主干保持保护。然后：
 
 ```bash
 cd /path/to/my-project
@@ -87,13 +87,9 @@ skill 和 rule 用 `teamai push` 加，它会开一个 pull request。`docs/`、
 
 ### Git 权限
 
-默认分支受保护时，成员需要：
+同事有分支写权限、能开 pull request 就够了。主干保持保护。不需要管理员权限。
 
-- 能推送 `teamai-reports` 和 `teamai-learnings`，这两个 ref 不存在时也能创建
-- 能推送 `teamai push` 创建的功能分支
-- 能对默认分支开 pull request
-
-成员不需要直接推 `main`，也不需要管理员权限。`provider: git` 时，teamai 推送分支并打印你手动开 pull request 的命令。
+`teamai push` 推一个功能分支并开 pull request。上报和学习记录走 `teamai-reports`、`teamai-learnings` 这两个分支，第一次推送时创建它们。`provider: git` 时，teamai 推送分支并打印手动开 pull request 的命令。
 
 ---
 
@@ -102,7 +98,7 @@ skill 和 rule 用 `teamai push` 加，它会开一个 pull request。`docs/`、
 CLI 装一次。每个 scope 有自己的配置和自己的 clone。
 
 ```bash
-# 每位开发者一次：公司级 skills、rules、docs、agents
+# 公司级 skills、rules、docs、agents
 teamai init https://github.com/your-org/engineering-practices --scope user
 
 # 在某一个服务里：项目资源优先
@@ -119,7 +115,7 @@ teamai doctor
 
 所有人收同一套 skill 时，跳过这份 demo。没有 `manifest/roles.yaml` 也没有 `manifest/projects.yaml` 时，`pull` 把仓库根目录发给每个成员。
 
-**角色**是岗位（`frontend`、`infra`）。**项目**是这个目录属于哪个产品（`checkout`、`billing`）。成员收到两边的并集，两边互不覆盖。
+角色是岗位，比如 `frontend`、`infra`。项目是这个目录对应的产品，比如 `checkout`、`billing`。pull 安装两边的并集。一边不会替换另一边。
 
 `skills/common/` 发给所有列出 `common` 的角色。`skills/frontend/` 只发给列出 `frontend` 的角色和项目。启用了角色或项目之后，留在根目录 `skills/` 的 skill 只有成员订阅了它的 tag 才会下发（`teamai tags subscribe <tag>`）。
 

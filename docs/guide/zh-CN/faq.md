@@ -8,7 +8,7 @@
 
 ## 卸载
 
-`teamai uninstall` 会智能清理所有 teamai 管理的资源，**保留用户自建内容**。
+`teamai uninstall` 删除 TeamAI 装上去的资源。你自己建的文件会留下。
 
 即使没有本地文件需要删除，排除项目中的指定工具也需要确认或 `--force`。`--dry-run` 或拒绝确认不会修改项目配置。
 

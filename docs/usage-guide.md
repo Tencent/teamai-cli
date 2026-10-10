@@ -2,11 +2,9 @@
 
 > [English](usage-guide.md) | [简体中文](usage-guide.zh-CN.md)
 
-> **teamai-cli** — the team collaboration layer for AI agents
->
-> **Make every team continuously smarter with AI.** Define how agents work (Team Execution), give them team knowledge (Team Context), and turn real sessions into shared capability (Team Improvement). TeamAI manages Skills, Rules, Docs, Env, MCP, and more across Claude Code, Codex, GitHub Copilot CLI, CodeBuddy, WorkBuddy, OpenCode, Pi, Cursor, and other supported agents.
+> **teamai-cli** syncs Skills, Rules, Docs, Env, and MCP across Claude Code, Codex, GitHub Copilot CLI, CodeBuddy, WorkBuddy, OpenCode, Pi, Cursor, and the other supported agents.
 
-New to TeamAI? Start with [Getting Started](guide/getting-started.md). Pick the path for setting up a team, joining one, or sharing a skill.
+Start with [Getting Started](guide/getting-started.md): set up a team, join one, or share a skill.
 
 ---
 

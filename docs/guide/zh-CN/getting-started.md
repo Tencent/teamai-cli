@@ -6,34 +6,30 @@
 
 ---
 
-## 选一条路径
+## 三条路
 
-在表里找到你的情况，照那条路径做。检查命令通过，这条路径就走完了。
-
-| 你是… | 去看 |
+| 要做的事 | 章节 |
 | --- | --- |
-| 第一次给团队搭 TeamAI | [路径 A：搭建团队](#路径-a搭建团队) |
-| 加入一个已经在用 TeamAI 的团队 | [路径 B：加入团队](#路径-b加入团队) |
-| 已经装好了，想让团队用上你写的 skill 或 rule | [路径 C：分享给团队](#路径-c分享给团队) |
+| 建团队仓库 | [搭建团队](#搭建团队) |
+| 加入已有仓库 | [加入团队](#加入团队) |
+| 把写好的 skill 或 rule 发出去 | [分享 skill 或 rule](#分享-skill-或-rule) |
 
-需要 Node.js ≥ 20 和 Git。CLI 装一次即可：
+需要 Node.js 20 或更高版本，以及 Git。
 
 ```bash
 npm install -g teamai-cli
 teamai --version
 ```
 
-工蜂用户还需要 `gf` CLI，CNB 用户还需要 `cnb` CLI。`teamai init` 会自动安装它们。
+工蜂上，`teamai init` 会装 `gf`。CNB 上，它会装 `cnb`。
 
-你可以在 AI 工具里跟 `/teamai` skill 对话（它替你执行命令，需要你做选择时才问），也可以自己在终端里运行 `teamai`。下面每条路径两种都写了。
+把提示词贴进 AI 工具，或在终端里跑命令。`/teamai` skill 会替你执行，需要你做选择时才问。
 
-产品是什么、文档里的词是什么意思，见[产品概览](../../product-overview.zh-CN.md#核心概念)。
+scope、团队仓库这些词的意思，见[产品概览](../../product-overview.zh-CN.md#核心概念)。
 
-### 路径 A：搭建团队
+### 搭建团队
 
-一个人做这一步，其余人走路径 B。
-
-1. 在 Git 托管平台上建一个空仓库（GitHub、GitLab、GitCode、CNB、工蜂或任意私有 Git），给团队成员写权限。建议命名 `<团队名>-teamai`。还没有仓库？到 [teamai-hub](https://github.com/teamai-hub) Fork 一个现成的。
+1. 在 GitHub、GitLab、GitCode、CNB、工蜂或私有 Git 上建一个空仓库。名字用 `<团队名>-teamai` 比较好认。给同事分支写权限，主干保持保护。还没有仓库？到 [teamai-hub](https://github.com/teamai-hub) Fork 一个。
 2. 在你使用 AI 工具的项目里初始化。
 
    在 AI 工具里：
@@ -46,21 +42,21 @@ teamai --version
    teamai init https://github.com/your-org/your-repo
    ```
    `init` 会识别 Git 平台、需要时让你登录、把你登记为成员、给找到的 AI 工具装上会话启动钩子，最后做一次 pull。
-3. 确认成功。
+3. 检查一下。
    ```bash
    teamai doctor      # 每一行都应通过
-   teamai status      # 本地与团队仓库的差异：刚 init 完应为空
+   teamai status      # 刚 init 完应为空
    ```
-4. 发布第一个资源，让成员第一次 pull 就有东西。把一个 skill 放到 `~/.claude/skills/<名称>/SKILL.md`（或一条 rule 放到 `~/.claude/rules/<名称>.md`），运行 `teamai push`。它会在团队仓库上开一个 PR，合并它。
-5. 把仓库地址发给团队。成员只需要这个地址。
+4. 先发一个文件，免得第一次 pull 是空的。把 skill 放到 `~/.claude/skills/<名称>/SKILL.md`（或把 rule 放到 `~/.claude/rules/<名称>.md`），运行 `teamai push`。合并它开出的 pull request。
+5. 把仓库地址发给同事。
 
-**完成标准：** `teamai doctor` 通过，并且这个 skill 已经在团队仓库的默认分支上。你机器上的每个 AI 工具都会在会话启动时从它拉取。
+`teamai doctor` 通过，并且这个 skill 已经在默认分支上。这台机器上的 AI 工具会在会话启动时从该仓库拉取。
 
-作用域、单仓模式和组织仓叠加见[管理员初始化](./admin-setup.md)。rules、env、MCP server 和 hooks 见[共享团队资源](./sharing.md)。
+作用域、业务仓库自己当团队仓库、组织仓再加项目仓，见[管理员初始化](./admin-setup.md)。rules、env、MCP server 和 hooks 见[共享团队资源](./sharing.md)。
 
-### 路径 B：加入团队
+### 加入团队
 
-你需要管理员给的团队仓库地址。
+需要仓库地址。
 
 1. 在你使用 AI 工具的项目里初始化。
 
@@ -73,21 +69,21 @@ teamai --version
    cd /path/to/my-project
    teamai init https://github.com/your-org/your-repo
    ```
-   如果想让团队资源在所有项目里都可用，而不只是这一个，加 `--scope user`。
-2. 确认成功。
+   加上 `--scope user` 会装到用户主目录，这台机器上的每个项目都能看见。不加的话，文件只进当前项目。
+2. 检查一下。
    ```bash
    teamai doctor
    teamai list        # 团队的 skills、rules、docs、env、agents、hooks 和 MCP server
    ```
 3. 在这个项目里打开 AI 工具。
 
-**完成标准：** `teamai list` 能列出团队的 skills 和 rules，新开的 AI 会话可以直接用。每次会话启动都会拉取最新内容，不用手动同步。
+`teamai list` 能列出团队的 skills 和 rules，新开的会话可以直接用。会话启动时会再拉一次，不用自己跑 `pull`。
 
-日常命令见[成员使用](./member-guide.md)。想让 Agent 能检索同事学到的东西，看[团队知识](./knowledge.md)。
+日常命令见[成员使用](./member-guide.md)。检索同事记下的经验，看[团队知识](./knowledge.md)。
 
-### 路径 C：分享给团队
+### 分享 skill 或 rule
 
-你写了一个 skill、rule、agent 或 MCP server，同事也应该有。
+你本地有一个 skill、rule、agent 或 MCP server，同事也要用。
 
 1. 推上去。
 
@@ -100,23 +96,23 @@ teamai --version
    teamai push                       # 从它在你的 AI 工具里找到的资源中挑选
    teamai push --skill ~/.claude/skills/<名称>
    ```
-   `push` 会补全 `SKILL.md` 缺失的 frontmatter，推一个分支，并在团队仓库上开 PR。
-2. 让它合并。团队仓库的评审人合并这个 PR。
-3. 任何成员的机器下一次会话启动就会拉到；`teamai list skills --source repo` 马上就能看到。
+   `push` 会补全 `SKILL.md` 缺失的 frontmatter，推一个分支，并在团队仓库上开 pull request。
+2. 团队仓库的评审人合并这个 pull request。
+3. 同事机器上下一次会话会拉到。在那之前，`teamai list skills --source repo` 已经能看到。
 
-**完成标准：** pull request 已合并，并且 `teamai list skills --source repo` 能看到这个 skill。
+pull request 已合并，并且 `teamai list skills --source repo` 能看到这个 skill。
 
-角色、namespace 和每种资源类型的格式见[共享团队资源](./sharing.md)。
+角色、namespace 和每种资源的格式见[共享团队资源](./sharing.md)。
 
-### 出了问题
+### 命令失败了
 
-先跑 `teamai doctor`。大多数问题（钩子缺失、工具没识别到、token 没设置）它都会指出来并给出修法。剩下的见[卸载与常见问题](./faq.md)。
+跑 `teamai doctor`。钩子缺失、工具没识别到、token 没设置，它会点名并给出修法。其他情况见[卸载与常见问题](./faq.md)。
 
-## 接下来看哪里
+## 接下来
 
-| 你想… | 去看 |
+| 接下来 | 去看 |
 | --- | --- |
-| 弄清产品本身和文档里的词 | [产品概览](../../product-overview.zh-CN.md#核心概念) |
-| 选择资源装在哪里，或团队仓库怎么组织 | [管理员初始化](./admin-setup.md) |
-| 发布 skills、rules、env 或 MCP server | [共享团队资源](./sharing.md) |
-| 加入之后的日常用法 | [成员使用](./member-guide.md) |
+| 术语 | [产品概览](../../product-overview.zh-CN.md#核心概念) |
+| 文件装在哪，团队仓库怎么放 | [管理员初始化](./admin-setup.md) |
+| skills、rules、env 或 MCP server | [共享团队资源](./sharing.md) |
+| 加入之后怎么用 | [成员使用](./member-guide.md) |

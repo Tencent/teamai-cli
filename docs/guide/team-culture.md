@@ -6,11 +6,11 @@
 
 ---
 
-TeamAI supports injecting your team's culture into AI tools, so your AI coding assistant is aware of your team's culture, values, and coding standards in every session.
+A `culture.md` at the root of the team repo is written into each installed AI tool on pull. Later sessions see that text: culture, values, and coding standards.
 
 ## Creating culture.md
 
-The admin creates a `culture.md` file at the root of the team repo:
+Put a `culture.md` file at the root of the team repo:
 
 ```markdown
 ---

@@ -2,11 +2,9 @@
 
 > [English](usage-guide.md) | [简体中文](usage-guide.zh-CN.md)
 
-> **teamai-cli** — AI Agents 的团队协作层
->
-> **让每个团队通过 AI 持续变得更聪明。** 统一工作方式（Team Execution）、共享团队 Context（Team Context），并把真实 Session 沉淀成团队能力（Team Improvement）。TeamAI 统一管理 Claude Code、Codex、GitHub Copilot CLI、CodeBuddy、WorkBuddy、OpenCode、Pi、Cursor 及其他受支持 Agent 的 Skills、Rules、Docs、Env、MCP 等资源。
+> **teamai-cli** 在 Claude Code、Codex、GitHub Copilot CLI、CodeBuddy、WorkBuddy、OpenCode、Pi、Cursor 以及其他受支持的 Agent 之间同步 Skills、Rules、Docs、Env 和 MCP。
 
-第一次用 TeamAI？先看[快速开始](guide/zh-CN/getting-started.md)，按搭建团队、加入团队或分享 skill 选一条路径。
+从[快速开始](guide/zh-CN/getting-started.md)进入：搭建团队、加入团队，或分享一个 skill。
 
 ---
 

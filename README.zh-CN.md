@@ -19,9 +19,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-**为团队构建共享的 AI 基础，统一协作方式、沉淀团队上下文，并持续改进。**
+**TeamAI 把团队的 skills、rules、docs 和 env 同步到每个人的 AI 工具。**
 
-TeamAI 将个人的 AI 能力转化为团队共享能力，并在不同 Agent、设备和团队成员之间复用。
+文件放在一个 git 仓库里。`teamai push` 开 pull request。会话启动时跑 `teamai pull`。
 
 ## 为什么选择 TeamAI
 
@@ -84,7 +84,7 @@ npm install -g teamai-cli
 
 ### 团队管理员 / 个人使用者
 
-在 Git 托管平台（GitHub、GitLab、GitCode、CNB、TGit，或私有 Git 服务）创建共享经验仓库，**授予团队成员写权限**，然后运行 `teamai init https://github.com/your-org/your-repo`。
+在 Git 托管平台（GitHub、GitLab、GitCode、CNB、TGit，或私有 Git 服务）创建共享仓库。给同事分支写权限，主干保持保护。然后运行 `teamai init https://github.com/your-org/your-repo`。
 
 > **还没有团队仓库？** 可以从内置了成套 skills、rules、review agents 的模板起步。浏览 [teamai-hub](https://github.com/teamai-hub) org，点 **Fork** 生成自己的仓库，再对它执行 `teamai init`。
 
