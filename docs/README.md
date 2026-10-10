@@ -26,4 +26,4 @@ New to TeamAI? Start with [Getting Started](guide/getting-started.md).
 
 ## Design documents
 
-[`designs/`](designs/README.md) holds one document per feature design, in English. Its index states, for each one, whether the design is implemented, in progress, or still a proposal.
+[`designs/`](designs/README.md) holds one document per feature design. Its index states, for each one, whether the design is implemented, in progress, or still a proposal.
