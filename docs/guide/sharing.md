@@ -45,7 +45,7 @@ teamai push --role pm
 
 With role-based skills enabled, the push target directory becomes:
 
-- Default: `skills/<primaryRole>/<skill-name>/`
+- New skill: `skills/<ns>/<skill-name>/`, where `<ns>` is a skills namespace your role or active projects give (asked when there are several; see the [member guide](member-guide.md))
 - Explicit override: `skills/<role>/<skill-name>/` (via `--role`)
 
 ### Rules

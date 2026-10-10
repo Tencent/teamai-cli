@@ -153,7 +153,7 @@ Git 升级到 2.54 或更高版本后，下一次 `teamai pull` 会安装配置 
 
 如果仓库启用了角色化 skills（存在 `manifest/roles.yaml`），`teamai init` 还会交互式要求你选择：
 
-- `primaryRole`：默认 skill 同步和推送的目标 namespace
+- `primaryRole`：你的主角色。它的 skill namespace 会被同步，并与当前激活项目的 namespace 一起，作为 push 放置新 skill 的可选落点（见[成员指南](member-guide.md)）
 - `additionalRoles`：额外需要同步的 skill namespace
 
 角色提示中可以输入一个或多个用逗号分隔的角色编号。第一个编号会保存为 `primaryRole`，后续编号会保存为 `additionalRoles`（例如 `1,3`）。

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir, toolInstallRoot } from '../types.js';
-import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig, State } from '../types.js';
+import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig, PendingPush, State } from '../types.js';
 
 /** The placement records `publishedNameFor` resolves a bare name through. */
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
@@ -57,15 +57,19 @@ export async function isToolInstalledForConfig(
  * Each resource type (skills, rules, docs, env, agents, hooks, mcp) implements this.
  */
 /**
- * What `push` knows before it scans. Only the destination an explicit
- * `--role`/`--project` names, and only agents read it: their scan has to
+ * What `push` knows before it scans. The destination an explicit
+ * `--role`/`--project` names, which only agents read: their scan has to
  * decide which team file a local edit is an edit OF, and that answer changes
  * when the user has named a namespace (see `AgentsHandler.scanLocalForPush`).
- * Rules and skills are placed after selection, so their scan needs nothing.
+ * And the open-PR records, which only skills read: an open PR is proof of
+ * where a new skill goes, so it decides the copy's destination before copies
+ * from several tools are merged (see `SkillsHandler.scanLocalForPush`).
  */
 export interface ScanForPushOptions {
   /** The namespace `--role <ns>` / `--project <id>` resolved to, if any. */
   namespace?: string;
+  /** Open-PR records whose branch is still on origin. */
+  pending?: readonly PendingPush[];
 }
 
 export abstract class ResourceHandler {

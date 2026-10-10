@@ -148,7 +148,8 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-vi.mock('../resources/skills.js', () => ({
+vi.mock('../resources/skills.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../resources/skills.js')>(),
   scanTeamRepoNamespaces: vi.fn().mockResolvedValue([]),
 }));
 
@@ -930,6 +931,104 @@ describe('push namespace routing for rules and agents', () => {
     name: 'vr', type: 'agents', sourcePath: '/tmp/vr.md',
     relativePath: 'agents/vr.yaml', status: 'new',
   };
+  const newSkill = {
+    name: 'new-skill', type: 'skills', sourcePath: '/tmp/new-skill',
+    relativePath: 'skills/new-skill', status: 'new',
+  };
+
+  const resourceCases = [
+    { type: 'skills', item: newSkill, axis: 'skills', expected: 'svc-a' },
+    { type: 'rules', item: newRule, axis: 'knowledge', expected: 'svc-a' },
+    { type: 'agents', item: newAgent, axis: 'agents', expected: 'svc-a' },
+  ] as const;
+
+  const silentPlacementCases: {
+    name: string;
+    resource: typeof resourceCases[number];
+    setup: () => ReturnType<typeof makeLocalConfig>;
+    expected?: string;
+    error?: boolean;
+    root?: boolean;
+  }[] = [
+    ...resourceCases.map((resource) => ({
+      name: `without a roles manifest, active project candidates constrain ${resource.type}`,
+      resource,
+      setup: () => {
+        mockLoadRolesManifest.mockRejectedValue(new RolesManifestNotFoundError('/tmp/team-repo/manifest/roles.yaml'));
+        mockLoadProjectsManifest.mockResolvedValue({
+          version: 1,
+          projects: [{ id: 'svc-a', resources: {
+            knowledge: ['svc-a'], skills: ['svc-a', 'payments'], agents: ['svc-a', 'payments'],
+          } }],
+        });
+        return makeLocalConfig({ primaryRole: 'platform', projects: ['svc-a'] });
+      },
+      expected: resource.expected,
+    })),
+    ...resourceCases.map((resource) => ({
+      name: `without a projects manifest, active projects cannot place ${resource.type}`,
+      resource,
+      setup: () => {
+        mockLoadRolesManifest.mockRejectedValue(new RolesManifestNotFoundError('/tmp/team-repo/manifest/roles.yaml'));
+        mockLoadProjectsManifest.mockResolvedValue(null);
+        return makeLocalConfig({ primaryRole: 'platform', projects: ['svc-a'] });
+      },
+      error: true,
+    })),
+    ...resourceCases.map((resource) => ({
+      name: `a role without a ${resource.axis} namespace keeps ${resource.type} at the shared root`,
+      resource,
+      setup: () => {
+        mockLoadRolesManifest.mockResolvedValue({
+          version: 1,
+          roles: [{ id: 'backend', description: '', resources: { knowledge: [], skills: [], agents: [] } }],
+        });
+        mockLoadProjectsManifest.mockResolvedValue(null);
+        return makeLocalConfig({ primaryRole: 'backend', projects: [] });
+      },
+      root: true,
+    })),
+    ...resourceCases.map((resource) => ({
+      name: `a role without a ${resource.axis} namespace uses active project candidates for ${resource.type}`,
+      resource,
+      setup: () => {
+        mockLoadRolesManifest.mockResolvedValue({
+          version: 1,
+          roles: [{ id: 'backend', description: '', resources: { knowledge: [], skills: [], agents: [] } }],
+        });
+        mockLoadProjectsManifest.mockResolvedValue({
+          version: 1,
+          projects: [{ id: 'svc-a', resources: {
+            knowledge: ['svc-a', 'payments'], skills: ['svc-a', 'payments'], agents: ['svc-a', 'payments'],
+          } }],
+        });
+        return makeLocalConfig({ primaryRole: 'backend', projects: ['svc-a'] });
+      },
+      expected: resource.expected,
+    })),
+    ...resourceCases.map((resource) => ({
+      name: `several resolved candidates constrain silent ${resource.type} placement`,
+      resource,
+      setup: () => {
+        mockLoadRolesManifest.mockResolvedValue({
+          version: 1,
+          roles: [{ id: 'backend', description: '', resources: {
+            knowledge: ['be-know', 'be-know-extra'],
+            skills: ['be-skills', 'be-skills-extra'],
+            agents: ['be-agents', 'be-agents-extra'],
+          } }],
+        });
+        mockLoadProjectsManifest.mockResolvedValue({
+          version: 1,
+          projects: [{ id: 'svc-a', resources: {
+            knowledge: ['svc-a'], skills: ['svc-a'], agents: ['svc-a'],
+          } }],
+        });
+        return makeLocalConfig({ primaryRole: 'backend', projects: ['svc-a'] });
+      },
+      expected: resource.type === 'skills' ? 'be-skills' : resource.type === 'rules' ? 'be-know' : 'be-agents',
+    })),
+  ];
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -970,6 +1069,31 @@ describe('push namespace routing for rules and agents', () => {
     // The agent keeps the extension its handler chose.
     expect(agent?.relativePath).toBe('agents/pm/vr.yaml');
     expect(agent?.namespace).toBe('pm');
+  });
+
+  it.each(silentPlacementCases)('$name', async ({ resource, setup, expected, error, root }) => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    const localConfig = setup();
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig() });
+    mockHandlers({ [resource.type]: [{ ...resource.item }] }, pushedItems);
+    process.exitCode = undefined;
+
+    await push({ all: true, silent: true });
+
+    if (error) {
+      expect(process.exitCode).toBe(2);
+      expect(pushedItems).toHaveLength(0);
+      expect(mockPushRepoBranch).not.toHaveBeenCalled();
+    } else {
+      expect(pushedItems).toHaveLength(1);
+      if (root) {
+        expect(pushedItems[0].namespace).toBeUndefined();
+        expect(pushedItems[0].relativePath).toBe(resource.item.relativePath);
+      } else {
+        expect(pushedItems[0].namespace).toBe(expected);
+        expect(pushedItems[0].relativePath).toBe(`${resource.type}/${expected}/${resource.item.relativePath.split('/').at(-1)}`);
+      }
+    }
   });
 
   it('rejects a path-traversal --role before placing a rule', async () => {

@@ -344,7 +344,8 @@ export async function cleanupInactiveNamespaceSkills(
       // that work — so keep it and warn instead. If we cannot locate the source
       // to compare against, err on the side of NOT deleting.
       if (!await skillSafeToRemove(localSkillDir, inactiveSkillSources?.get(skillName))) {
-        log.warn(`[${localConfig.scope}] Kept skill "${skillName}" (${tool}): it has local changes or unpushed files not in the team repo (or could not be verified). Push or back them up, then delete it manually.`);
+        // Step 3b judges the same copy again: say it once (#1020).
+        warnOnce(`[${localConfig.scope}] Kept skill "${skillName}" (${tool}): it has local changes or unpushed files not in the team repo (or could not be verified). Push or back them up, then delete it manually.`);
         continue;
       }
       if (await keepsTrackedCopy(localSkillDir)) continue;
@@ -1893,7 +1894,7 @@ async function pullForScope(
         // deployed skill that differs from its team-repo source (local edits or
         // unpushed files). Keep + warn instead of silently destroying work.
         if (!await skillSafeToRemove(skillDir, knownRepoSkillSources?.get(dir))) {
-          log.warn(`[${scopeLabel}] Kept skill "${dir}" (${tool}): it has local changes or unpushed files not in the team repo (or could not be verified). Push or back them up, then delete it manually.`);
+          warnOnce(`[${scopeLabel}] Kept skill "${dir}" (${tool}): it has local changes or unpushed files not in the team repo (or could not be verified). Push or back them up, then delete it manually.`);
           continue;
         }
         if (await keepsTrackedCopy(skillDir)) continue;

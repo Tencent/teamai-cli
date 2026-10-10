@@ -7,25 +7,25 @@ import {
   createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName,
   resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit,
 } from './utils/git.js';
-import { reconcilePlacementRecords,
-  findPendingForItem, partiallySelectedEntries, pendingNamespaceFor, planPushGroups,
+import { reconcilePlacementRecords, dropClosedPendingPushes,
+  findPendingForItem, isRecordedItem, partiallySelectedEntries, pendingNamespaceFor, planPushGroups, recordedNamespace,
   prunePendingPushes, recordPendingPush, toPendingItems, type PushGroup,
 } from './utils/pending-push.js';
 import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
-import { scanTeamRepoNamespaces } from './resources/skills.js';
+import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.js';
 import { AgentsHandler } from './resources/agents.js';
 import { deliversEveryNamespace } from './resource-namespaces.js';
 import type {
-  GlobalOptions, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
+  GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
 import { getDataHome, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
-import { assertSafeResourceName } from './utils/path-safety.js';
-import { loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError } from './roles.js';
-import type { ProjectsManifest } from './projects.js';
+import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
+import { loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
+import { loadProjectsManifest, resolveProjectResourceNamespaces, type ProjectsManifest } from './projects.js';
 import { isSafeNamespaceSegment, NAMESPACE_RULE, fallbackNamespaceError } from './manifest-schema.js';
 import {
   isAtSharedRoot, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
@@ -68,9 +68,10 @@ type CandidateResolution =
 
 /**
  * The namespaces this user could push a new `type` into, on that type's own
- * axis: the deduplicated list from the roles manifest, or — for skills, which
- * are the only type with a detector — the namespace directories the team repo
- * already has.
+ * axis: the deduplicated union of what the roles manifest gives the role and
+ * the projects manifest gives the active projects (#1021), or — when neither
+ * gives any, for skills, which are the only type with a detector — the
+ * namespace directories the team repo already has.
  *
  * A manifest that EXISTS but cannot answer — unparseable, or missing the role
  * this directory is configured with — is a failure, not an empty list. Falling
@@ -94,6 +95,9 @@ async function namespaceCandidates(
         + 'to name the namespace for this push.',
     };
   }
+  const activeProjects = await resolveActiveProjectNamespaces(localConfig);
+  if (!activeProjects.ok) return activeProjects;
+  const fromProjects = activeProjects.namespaces?.[NAMESPACE_AXIS[type]] ?? [];
   if (localConfig.primaryRole) {
     try {
       const manifest = await loadRolesManifest(localConfig.repo.localPath);
@@ -116,7 +120,7 @@ async function namespaceCandidates(
             + 'Fix manifest/roles.yaml, or pass --role <ns> to name the namespace for this push.',
         };
       }
-      return { ok: true, candidates };
+      return { ok: true, candidates: [...new Set([...candidates, ...fromProjects])] };
     } catch (e) {
       if (!(e instanceof RolesManifestNotFoundError)) {
         return {
@@ -126,6 +130,8 @@ async function namespaceCandidates(
             + 'to name the namespace for this push.',
         };
       }
+      // Pull does not deliver the role id's namespace beside active projects.
+      if (fromProjects.length > 0) return { ok: true, candidates: fromProjects };
       // Legacy fallback: with no manifest at all a role id doubles as its
       // skills namespace. That convention only ever existed for skills. No
       // manifest validated the id as a namespace, so it is checked here.
@@ -135,9 +141,10 @@ async function namespaceCandidates(
     }
   }
 
-  // No role configured. Skills can still be placed by detecting the team repo's
-  // existing namespace directories; rules and agents have no such detector, so
-  // a new one stays at the shared root.
+  if (fromProjects.length > 0) return { ok: true, candidates: fromProjects };
+  // No role or project gives one. Skills can still be placed by detecting the
+  // team repo's existing namespace directories; rules and agents have no such
+  // detector, so a new one stays at the shared root.
   if (type !== 'skills') return { ok: true, candidates: [] };
   try {
     return { ok: true, candidates: await scanTeamRepoNamespaces(localConfig.repo.localPath) };
@@ -148,6 +155,54 @@ async function namespaceCandidates(
         + 'Pass --role <ns> to name the namespace for this push.',
     };
   }
+}
+
+/** The active projects' namespaces, or why the projects manifest cannot give them. */
+type ActiveProjectsResolution =
+  | { ok: true; namespaces: ResourceNamespaces | null }
+  | { ok: false; message: string };
+
+/**
+ * The namespaces the active projects declare: where this directory's own
+ * resources live, so which team skills are its own and where a new resource
+ * belongs unless a flag says otherwise (#1021). Null with no active project.
+ * An active project the manifest does not declare, or no manifest at all, is a
+ * failure, as for `--project`: pull then falls back to role-only filtering, and
+ * on push that fallback sends a new rule or agent to the whole team and lets
+ * the skills scan match a local skill to another project's of the same name.
+ * `pushCore` stops on it before anything is scanned.
+ */
+async function resolveActiveProjectNamespaces(localConfig: LocalConfig): Promise<ActiveProjectsResolution> {
+  const activeProjects = localConfig.projects ?? [];
+  if (activeProjects.length === 0) return { ok: true, namespaces: null };
+  try {
+    const manifest = await loadProjectsManifest(localConfig.repo.localPath);
+    if (!manifest) {
+      return {
+        ok: false,
+        message: `Cannot tell which namespaces are yours: active projects (${activeProjects.join(', ')}) are configured, `
+          + 'but the team repo has no manifest/projects.yaml to say where they keep their resources. Nothing was pushed. '
+          + 'Restore manifest/projects.yaml, or pass --role <ns> to name the namespace for this push.',
+      };
+    }
+    // The manifest schema already holds each namespace to one safe path segment.
+    return { ok: true, namespaces: resolveProjectResourceNamespaces({ manifest, activeProjects }) };
+  } catch (e) {
+    return {
+      ok: false,
+      message: `Cannot tell which namespaces are yours: ${e instanceof Error ? e.message : String(e)}. Nothing was pushed. `
+        + 'Fix manifest/projects.yaml or run `teamai projects set <id>`, or pass --project <id> or --role <ns> '
+        + 'to name the namespace for this push.',
+    };
+  }
+}
+
+/**
+ * Whether `--role`/`--project` relocates `item`: every selected skill, except
+ * an edit from a namespace not active here, which goes back there (#1020).
+ */
+function isRelocatedByFlag(item: ResourceItem): boolean {
+  return item.type === 'skills' && !item.fromInactiveNamespace;
 }
 
 /**
@@ -192,13 +247,16 @@ async function resolveNamespaceForNew(
   if (candidates.length === 0) return { kind: 'shared-root' };
   if (candidates.length === 1) return { kind: 'namespace', namespace: candidates[0] };
   if (options.silent) {
-    // Skills keep their historical silent default (the primary role id); no
-    // other axis ever had that convention, so they take the first candidate.
+    // Preserve the historical skill default only when the role id is one of
+    // the destinations pull delivers. A role id absent from this list (for
+    // example, when projects supply the only namespaces) is not proof.
     const skillsDefault = type === 'skills' ? localConfig.primaryRole : undefined;
-    // The role id is not one of the candidates the manifest validated.
-    const unsafe = skillsDefault === undefined ? null : fallbackNamespaceError([skillsDefault], 'role id used as a skills namespace');
+    const unsafe = skillsDefault === undefined
+      ? null
+      : fallbackNamespaceError([skillsDefault], 'role id used as a skills namespace');
     if (unsafe !== null) return { kind: 'unresolvable', message: unsafe };
-    return { kind: 'namespace', namespace: skillsDefault ?? candidates[0] };
+    const preferred = skillsDefault && candidates.includes(skillsDefault) ? skillsDefault : candidates[0];
+    return { kind: 'namespace', namespace: preferred };
   }
   // No terminal to ask on (CI, a hook, TEAMAI_NONINTERACTIVE): say what the
   // choice is and how to make it, instead of failing inside the prompt.
@@ -467,10 +525,12 @@ function supersededPathOf(item: ResourceItem): string | undefined {
  * Give every resource waiting in an open PR back the destination that PR
  * recorded, rather than asking again — a different answer would silently move
  * the resource, and the branch is force-pushed, so the old copy would not even
- * stay behind. Runs before placement, so a resource with a recorded namespace
- * is no longer at the shared root and placement leaves it alone.
+ * stay behind. Runs before placement and returns the resources it settled,
+ * which placement leaves alone — the shared root included, as much a recorded
+ * destination as any namespace.
  */
-function reuseRecordedDestinations(groups: PushGroup[]): void {
+function reuseRecordedDestinations(groups: PushGroup[]): Set<ResourceItem> {
+  const settled = new Set<ResourceItem>();
   for (const group of groups) {
     if (!group.reuse) continue;
     log.info(
@@ -479,13 +539,13 @@ function reuseRecordedDestinations(groups: PushGroup[]): void {
     for (const item of group.items) {
       if (item.status !== 'new' || !isPlaceableType(item.type)) continue;
       const ns = pendingNamespaceFor(group.reuse, item);
-      if (!ns) continue;
+      settled.add(item);
       if (item.type === 'skills') {
         // A skill's path is derived from its name, so the recorded namespace
         // replaces whatever a --role/--project override wrote above.
         item.namespace = ns;
-        item.relativePath = skillNamespacePath(ns, item.name);
-      } else if (isAtSharedRoot(item)) {
+        item.relativePath = ns ? skillNamespacePath(ns, item.name) : `skills/${item.name}`;
+      } else if (ns && isAtSharedRoot(item)) {
         // A rule or agent carries its own path from the scanner, and that path
         // is authoritative when it already names a namespace (#654).
         item.namespace = ns;
@@ -493,6 +553,7 @@ function reuseRecordedDestinations(groups: PushGroup[]): void {
       }
     }
   }
+  return settled;
 }
 
 /**
@@ -515,13 +576,15 @@ async function placeNewResources(args: {
   skillsDestinationError?: string;
   /** The clone could not be refreshed this run; its manifests may be stale. */
   teamRepoStale?: boolean;
+  /** Resources whose open PR already decided where they go. */
+  settled: ReadonlySet<ResourceItem>;
 }): Promise<boolean> {
-  const { items, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale } = args;
+  const { items, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale, settled } = args;
 
   // A project that declares no skills namespace only blocks the push once a
-  // skill is actually selected, so a rule can still go out from a scan that
-  // happens to contain an unrelated skill.
-  if (skillsDestinationError && items.some((i) => i.type === 'skills')) {
+  // skill the flag relocates is actually selected, so a rule can still go out
+  // from a scan that happens to contain an unrelated skill.
+  if (skillsDestinationError && items.some(isRelocatedByFlag)) {
     log.error(skillsDestinationError);
     process.exitCode = 2;
     return false;
@@ -529,7 +592,7 @@ async function placeNewResources(args: {
 
   for (const type of PLACEABLE_TYPES) {
     const newAtRoot = items.filter(
-      (i) => i.type === type && i.status === 'new' && !i.namespace && isAtSharedRoot(i),
+      (i) => i.type === type && i.status === 'new' && !i.namespace && isAtSharedRoot(i) && !settled.has(i),
     );
     if (newAtRoot.length === 0) continue;
 
@@ -1130,6 +1193,20 @@ async function pushCore(
     }
   }
 
+  // Every path below reads the active projects' namespaces: the skills scan to
+  // tell this directory's team skills from another project's of the same name,
+  // `--skill`, and the placement of a new rule, skill or agent. Without them
+  // each could only guess from the role alone, so stop here once for all of
+  // them. A flag names the destination instead.
+  if (!options.role && !options.project) {
+    const activeProjects = await resolveActiveProjectNamespaces(localConfig);
+    if (!activeProjects.ok) {
+      log.error(activeProjects.message);
+      process.exitCode = 2;
+      return;
+    }
+  }
+
   // Settle the placement records against the clone just pulled, BEFORE the
   // scan reads them: a placement whose PR has merged becomes a record, one
   // whose file the team deleted stops being one, and one shadowed by a new
@@ -1251,7 +1328,8 @@ async function pushCore(
     : teamConfig;
 
   // Scan for pushable resources first, then resolve namespace for new skills only.
-  // Modified skills already carry their namespace from scanLocalForPush.
+  // Skills already carry the destination scanLocalForPush decided: a modified
+  // one its team skill's, a new one awaiting review its open PR's.
   const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'agents'];
   const fullScan: ResourceItem[] = [];
 
@@ -1272,6 +1350,21 @@ async function pushCore(
       agentsDestinationError = resolved.message;
     }
   }
+  // The skills namespace the flags name: it picks among a name's several open PRs.
+  let requestedSkillsNamespace: string | undefined;
+  if (options.project && projectsManifest) {
+    const resolved = resolveProjectNamespace(projectsManifest, options.project, 'skills');
+    if (resolved.ok) requestedSkillsNamespace = resolved.namespace;
+  } else {
+    requestedSkillsNamespace = options.role;
+  }
+
+  // Open PRs are proof of where a new skill goes, so the skills scan reads
+  // them while it decides each copy's destination. Records whose branch is gone
+  // are dropped first; the scan-presence rule needs the scan and runs after it.
+  const pushState = await loadStateForScope(localConfig);
+  const recordedPushes = pushState.pendingPushes ?? [];
+  const openPushes = await dropClosedPendingPushes(localConfig.repo.localPath, recordedPushes);
 
   for (const type of pushableTypes) {
     const handler = getHandler(type);
@@ -1279,7 +1372,8 @@ async function pushCore(
       const items = await handler.scanLocalForPush(
         scanTeamConfig,
         localConfig,
-        type === 'agents' ? { namespace: requestedAgentsNamespace } : undefined,
+        type === 'agents' ? { namespace: requestedAgentsNamespace }
+          : type === 'skills' ? { pending: openPushes, namespace: requestedSkillsNamespace } : undefined,
       );
       fullScan.push(...items);
     } catch (e) {
@@ -1316,9 +1410,8 @@ async function pushCore(
   // Preserve blocked items in the full scan so their pending PR records survive.
   // Exclude them before selection and grouping: pushItem cannot write their paths.
   const allItems = fullScan.filter((item) => {
-    if (item.type === 'agents' && 'skipReason' in item
-      && typeof item.skipReason === 'string' && item.skipReason) {
-      log.warn(`[agents] Skipped ${item.name}: ${item.skipReason}`);
+    if ('skipReason' in item && typeof item.skipReason === 'string' && item.skipReason) {
+      log.warn(`[${item.type}] Skipped ${item.name}: ${item.skipReason}`);
       return false;
     }
     // A model alias kept its hand-edited model out (#830); the rest goes out.
@@ -1350,27 +1443,22 @@ async function pushCore(
 
   // ── Handle --skill parameter: filter to a single specific skill ──────
   if (options.skill) {
-    // Validate the skill name: take the basename of the input path as the
-    // resource name to defend against path traversal, URL-encoded bypasses,
-    // and other illegal characters.
-    const skillBasename = path.basename(
-      options.skill.startsWith('~')
-        ? options.skill.slice(1).replace(/^[/\\]+/, '')
-        : options.skill,
-    );
+    // Normalize the input path (expand ~ and resolve to absolute). Messages
+    // name it as given; the skill is the directory a symlink points to, and is
+    // named after that directory. Validate that name: it defends against path
+    // traversal, URL-encoded bypasses, and other illegal characters.
+    const os = await import('node:os');
+    const requestedPath = options.skill.startsWith('~')
+      ? path.join(os.homedir(), options.skill.slice(1))
+      : path.resolve(options.skill);
+    const skillPath = resolveReal(requestedPath);
     try {
-      assertSafeResourceName(skillBasename);
+      assertSafeResourceName(path.basename(skillPath));
     } catch (e) {
       console.error(`[push] Invalid --skill argument: ${(e as Error).message}`);
       process.exitCode = 2;
       return;
     }
-
-    // Normalize the input path (expand ~, resolve to absolute)
-    const os = await import('node:os');
-    const skillPath = options.skill.startsWith('~')
-      ? path.join(os.homedir(), options.skill.slice(1))
-      : path.resolve(options.skill);
 
     // Try to find matching skill from scan results first
     let matchedItem: ResourceItem | undefined;
@@ -1378,21 +1466,9 @@ async function pushCore(
     for (const item of allItems) {
       if (item.type !== 'skills') continue;
 
-      // Match by sourcePath (absolute path)
-      if (path.resolve(item.sourcePath) === skillPath) {
-        matchedItem = item;
-        break;
-      }
-
-      // Match by skill name
-      if (item.name === path.basename(skillPath)) {
-        matchedItem = item;
-        break;
-      }
-
-      // Match by partial path (e.g., "skills/namespace/skillname" in sourcePath)
-      const skillInput = options.skill.replace(/^~/, os.homedir());
-      if (item.sourcePath.endsWith(skillInput) || item.sourcePath.includes(path.sep + skillInput)) {
+      // --skill selects this copy only. A same-named item from another tool
+      // cannot stand in for a requested copy the scan skipped.
+      if (resolveReal(item.sourcePath) === skillPath) {
         matchedItem = item;
         break;
       }
@@ -1409,43 +1485,71 @@ async function pushCore(
       if (await pathExists(skillPath) && await pathExists(path.join(skillPath, 'SKILL.md'))) {
         const skillName = path.basename(skillPath);
 
-        // Try to detect existing namespace from team repo
-        let namespace: string | undefined;
-        let status: 'new' | 'modified' = 'new';
-        const teamSkillsDir = path.join(localConfig.repo.localPath, 'skills');
-        if (await pathExists(teamSkillsDir)) {
-          const { listDirs } = await import('./utils/fs.js');
-          const topDirs = await listDirs(teamSkillsDir);
-          for (const dir of topDirs) {
-            const candidatePath = path.join(teamSkillsDir, dir, skillName);
-            if (await pathExists(candidatePath)) {
-              // Check if this is a namespace dir (not a direct skill)
-              const isNamespace = !await pathExists(path.join(teamSkillsDir, dir, 'SKILL.md'));
-              if (isNamespace) {
-                namespace = dir;
-              }
-              status = 'modified';
-              break;
-            }
-          }
-          // Also check flat layout
-          if (!namespace && await pathExists(path.join(teamSkillsDir, skillName))) {
-            status = 'modified';
-          }
-        }
-
-        const relPath = namespace
-          ? `skills/${namespace}/${skillName}`
-          : `skills/${skillName}`;
-
-        matchedItem = {
+        // The destination the skills scan gives this copy (`resolveDestination`).
+        // Where that is no single team skill, --skill asks for --role rather than guess.
+        const { deliveredHashes } = await import('./pull.js');
+        const { recordedSkillDir } = await import('./resources/delivered-copies.js');
+        const { readTeamSkillIndex, resolveDestination, resolvePushSkillNamespaces } = await import('./resources/skills.js');
+        const team = await readTeamSkillIndex(localConfig.repo.localPath, await resolvePushSkillNamespaces(localConfig));
+        const delivered = await deliveredHashes(localConfig) ?? {};
+        const destination = await resolveDestination({
           name: skillName,
-          type: 'skills',
+          // Pull's record of this copy is under the path pull wrote, not under its real path.
+          dest: recordedSkillDir(delivered, skillPath) ?? skillPath,
+          team,
+          delivered,
+          pending: openPushes,
+          repoPath: localConfig.repo.localPath,
+          role: requestedSkillsNamespace,
+        });
+        const copies = team.allTeamSkills.get(skillName) ?? [];
+        // Picked by name among several the scope is given (a namespace over the
+        // shared root, the first namespace), which the scan accepts and --skill
+        // does not. Every out-of-scope skill of the name is among `copies`.
+        const pickedByName = destination.kind === 'team' && !destination.proven
+          && copies.length - (team.blockedSkills.get(skillName)?.length ?? 0) > 1;
+        if (destination.kind === 'ambiguousOpenPr' && !options.role && !options.project) {
+          log.error(
+            `[skills] Cannot tell which open PR ${requestedPath} belongs to: it is awaiting review at `
+            + `${destination.records.map((r) => `${r.relativePath} (branch ${r.branch})`).join(' and ')}. `
+            + 'Pass --role <ns> to name the namespace it goes to.',
+          );
+          process.exitCode = 2;
+          return;
+        }
+        const unresolved = pickedByName || destination.kind === 'ambiguous' || destination.kind === 'outOfScope'
+          || destination.kind === 'ambiguousOpenPr';
+        if (unresolved && !options.role && !options.project) {
+          log.error(
+            `[skills] Cannot tell which team skill ${requestedPath} is: teamai has no record of delivering this copy from `
+            + `${copies.map((copy) => path.relative(localConfig.repo.localPath, copy.dir).split(path.sep).join('/')).join(' or ')}. `
+            + 'Pass --role <ns> to name the namespace it goes to.',
+          );
+          process.exitCode = 2;
+          return;
+        }
+        const proven = destination.kind === 'team' && destination.proven;
+        const deliveryRecorded = proven || destination.kind === 'unproven';
+        const status: 'new' | 'modified' = destination.kind === 'openPr' || destination.kind === 'new'
+          || destination.kind === 'ambiguousOpenPr' ? 'new' : 'modified';
+        const namespace = destination.kind === 'openPr' ? destination.namespace
+          : destination.kind === 'team' && !unresolved ? destination.teamSkill.namespace
+            : undefined;
+
+        const constructed = createSkillPushItem({
+          name: skillName,
           sourcePath: skillPath,
-          relativePath: relPath,
           status,
           namespace,
-        };
+          ...proven ? { fromInactiveNamespace: true } : {},
+          ...deliveryRecorded ? { deliveryRecorded: true } : {},
+          ...proven ? { originProven: true } : {},
+          ...(deliveryRecorded && !proven ? { reportSourcePath: requestedPath } : {}),
+          originCandidates: copies,
+          repoPath: localConfig.repo.localPath,
+        });
+        if (!constructed) return;
+        matchedItem = constructed;
         log.debug(`Force-pushing skill from explicit path: ${skillPath}`);
       } else {
         const skillNames = allItems
@@ -1470,10 +1574,26 @@ async function pushCore(
     // because its content matches the team repo) is absent from fullScan. Add it
     // so prunePendingPushes still sees this skill as locally present — otherwise
     // its own open-PR record is dropped and the next run opens a duplicate.
-    if (!fullScan.some((i) => i.type === matchedItem!.type && i.name === matchedItem!.name)) {
+    if (!fullScan.some((i) => i.type === matchedItem!.type
+      && resolveReal(i.sourcePath) === resolveReal(matchedItem!.sourcePath))) {
       fullScan.push(matchedItem);
     }
   }
+
+  // ── Step 0: Cross-check against still-open push PRs ────────────────
+  // Resources waiting in an unmerged PR are absent from the default branch, so
+  // the scan above flags them as new every single time. Without this check each
+  // run opens another duplicate PR.
+  const pruned = await prunePendingPushes(
+    localConfig.repo.localPath,
+    openPushes,
+    fullScan,
+  );
+  pushState.pendingPushes = pruned.pending;
+  if (pruned.pending.length !== recordedPushes.length) {
+    await saveStateForScope(pushState, localConfig);
+  }
+  const pendingPushes = pushState.pendingPushes;
 
   // An explicit --role or --project is a destination override for every selected
   // skill, including modified ones. Keep relativePath aligned with pushItem's
@@ -1497,7 +1617,7 @@ async function pushCore(
       return;
     }
     skillsDestination = options.role;
-  } else if (options.project && projectsManifest && allItems.some((i) => i.type === 'skills')) {
+  } else if (options.project && projectsManifest && allItems.some(isRelocatedByFlag)) {
     const resolved = resolveProjectNamespace(projectsManifest, options.project, 'skills');
     if (resolved.ok) {
       skillsDestination = resolved.namespace;
@@ -1518,7 +1638,7 @@ async function pushCore(
       return;
     }
     for (const item of allItems) {
-      if (item.type !== 'skills') continue;
+      if (!isRelocatedByFlag(item)) continue;
       const placedAt = skillNamespacePath(skillsDestination, item.name);
       // Same rule as step 4: a MODIFIED skill is meant to land on its own
       // existing directory, a new one must never land on somebody else's.
@@ -1536,36 +1656,20 @@ async function pushCore(
     }
   }
 
-  // ── Step 0: Cross-check against still-open push PRs ────────────────
-  // Resources waiting in an unmerged PR are absent from the default branch, so
-  // the scan above flags them as new every single time. Without this check each
-  // run opens another duplicate PR.
-  const pushState = await loadStateForScope(localConfig);
-  const pruned = await prunePendingPushes(
-    localConfig.repo.localPath,
-    pushState.pendingPushes,
-    fullScan,
-  );
-  pushState.pendingPushes = pruned.pending;
-  if (pruned.changed) {
-    await saveStateForScope(pushState, localConfig);
-  }
-  const pendingPushes = pushState.pendingPushes;
-
   // A rule or agent awaiting review in a namespace whose name a shared-root
   // file now takes: the scan maps the author's root copy onto that shared file
-  // and calls it modified. Reusing the open PR — matched by type and name —
-  // would rebuild it with the author's content over the shared file and drop
-  // the namespaced change from review (#649 review). The shared root owns the
-  // name in every tool dir, as reconcile already rules for a record, so this
-  // copy is left out: the open PR stays as it is.
+  // and calls it modified. Pushing it would send the author's content over the
+  // shared file while the namespaced change waits in review (#649 review). The
+  // record is found by name: the copy and its placement share it, not a path.
+  // The shared root owns the name in every tool dir, as reconcile already rules
+  // for a record, so this copy is left out: the open PR stays as it is.
   for (let i = allItems.length - 1; i >= 0; i--) {
     const item = allItems[i];
     if (!item || (item.type !== 'rules' && item.type !== 'agents')) continue;
     if (item.status !== 'modified' || !isAtSharedRoot(item)) continue;
     const awaiting = pendingPushes.flatMap((entry) => entry.items.map((recorded) => ({ entry, recorded })))
       .find(({ recorded }) => recorded.type === item.type && recorded.name === item.name
-        && recorded.relativePath.split('/').length === 3);
+        && recordedNamespace(recorded) !== undefined);
     if (!awaiting) continue;
     log.warn(
       `[${item.type}] ${item.name}: ${item.relativePath} now exists at the shared root, so your local ${item.name} `
@@ -1620,10 +1724,12 @@ async function pushCore(
     return;
   }
 
-  // An open PR is matched by type and name alone. When the user has NAMED a
-  // destination, a pending entry that put the same-named resource somewhere
-  // else is a different resource: reusing its branch would force-push this
-  // content into that PR and move it to the wrong namespace (#649 review).
+  // An open PR is matched by destination, or by name for a new resource
+  // (`isRecordedItem`). A pending entry that put a new resource somewhere other
+  // than where this push sends it is a different resource: reusing its branch would force-push this content into
+  // that PR and move it to the wrong namespace (#649 review). Where this push
+  // sends it is the namespace the user NAMED, or else the path it was scanned
+  // with, such as a kept skill's inactive namespace (#1020).
   const requestedNamespaceFor = (type: PlaceableType): string | undefined => {
     if (options.role) return options.role;
     if (!options.project || !projectsManifest) return undefined;
@@ -1633,29 +1739,31 @@ async function pushCore(
   // Only what the flag actually MOVES can conflict with it: every selected
   // skill (the override above), and a rule or agent only while it is new and at
   // the shared root (step 4). Anything else keeps the path it was scanned with,
-  // so its open PR is still the right one to update, and treating it as a
-  // conflict opened a second PR on the same file (#649 review).
-  const scannedByKey = new Map(allItems.map((item) => [`${item.type}:${item.name}`, item]));
-  const movedByFlag = (item: ResourceItem): boolean => item.type === 'skills'
+  // so an open PR recording that path is still the right one to update, and
+  // treating it as a conflict opened a second PR on the same file (#649 review).
+  const movedByFlag = (item: ResourceItem): boolean => isRelocatedByFlag(item)
     || (item.status === 'new' && !item.namespace && isAtSharedRoot(item));
   const conflictsWithRequest = (
-    recorded: { type: string; name: string; namespace?: string; relativePath: string },
+    recorded: PendingPushItem,
   ): boolean => {
     if (!isPlaceableType(recorded.type as ResourceType)) return false;
-    const scanned = scannedByKey.get(`${recorded.type}:${recorded.name}`);
-    if (!scanned || !movedByFlag(scanned)) return false;
+    const scanned = allItems.find((item) => isRecordedItem(recorded, item));
+    if (!scanned) return false;
+    if (!movedByFlag(scanned)) {
+      // A new resource still at the shared root is placed later and takes the
+      // PR's recorded destination; anything else already has its own.
+      if (scanned.status === 'new' && isAtSharedRoot(scanned)) return false;
+      return path.posix.dirname(scanned.relativePath) !== path.posix.dirname(recorded.relativePath);
+    }
     // The path, not the field: a scan can record an item whose destination is
     // namespaced while leaving `namespace` unset, and trusting the field let
     // those entries slip past the check and be force-pushed into (#649 review).
-    const segments = recorded.relativePath.split('/');
-    const recordedNamespace = recorded.namespace
-      ?? (segments.length === 3 ? segments[1] : undefined);
     // A recorded path with no namespace is the shared root — as much a
     // destination as any namespace. Letting it through would reuse that PR's
     // branch and rebuild it with the namespaced path, moving a review the
     // user did not name from "everyone" to one namespace (#649 review).
     const requested = requestedNamespaceFor(recorded.type as PlaceableType);
-    return requested !== undefined && requested !== recordedNamespace;
+    return requested !== undefined && requested !== recordedNamespace(recorded);
   };
   const reusablePending = pendingPushes.filter((entry) => {
     const conflicting = entry.items.filter(conflictsWithRequest);
@@ -1666,7 +1774,7 @@ async function pushCore(
     for (const recorded of conflicting) {
       log.warn(
         `[${recorded.type}] ${recorded.name} is awaiting review at ${recorded.relativePath} `
-        + `(${entry.prUrl ?? entry.branch}). This push names a different namespace, so it goes to a `
+        + `(${entry.prUrl ?? entry.branch}). This push sends it to a different namespace, so it goes to a `
         + 'separate PR and that one is left untouched.',
       );
     }
@@ -1691,7 +1799,8 @@ async function pushCore(
     if (!isAtSharedRoot(item)) {
       console.log(`       to:   ${item.relativePath}`);
     }
-    const openPrs = findPendingForItem(pendingPushes, item);
+    // Only a PR this push would update: a conflicting one was reported above.
+    const openPrs = findPendingForItem(reusablePending, item);
     if (openPrs.length > 0) {
       pendingIndices.add(i);
       for (const entry of openPrs) {
@@ -1717,9 +1826,9 @@ async function pushCore(
   if (options.dryRun) {
     // Same two steps, same order as a real run: an open PR's recorded
     // destination first, then placement for whatever is still at the root.
-    reuseRecordedDestinations(planPushGroups(allItems, reusablePending));
+    const settled = reuseRecordedDestinations(planPushGroups(allItems, reusablePending));
     const placed = await placeNewResources({
-      items: allItems, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale,
+      items: allItems, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale, settled,
     });
     if (!placed) return;
     log.info('Dry run — no changes made');
@@ -1748,7 +1857,7 @@ async function pushCore(
   // can happen in one run, so editing a resource under review updates its PR
   // without dragging unrelated resources into that review.
   const groups = planPushGroups(selectedItems, reusablePending);
-  reuseRecordedDestinations(groups);
+  const settled = reuseRecordedDestinations(groups);
   // The conflicting entries dropped above are deliberately not reused, so they
   // are not "partly selected" either — warning about them would contradict the
   // warning already given.
@@ -1761,7 +1870,7 @@ async function pushCore(
 
   // ── Step 4: Place NEW root-level resources in a namespace (after selection) ─
   if (!await placeNewResources({
-    items: selectedItems, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale,
+    items: selectedItems, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale, settled,
   })) return;
 
   // ── Step 5: Push each group — one branch/PR per group ──────────────

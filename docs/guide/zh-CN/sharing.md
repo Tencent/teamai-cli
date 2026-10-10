@@ -45,7 +45,7 @@ teamai push --role pm
 
 启用角色化 skills 后，push 的目标目录为：
 
-- 默认：`skills/<primaryRole>/<skill-name>/`
+- 新 skill：`skills/<ns>/<skill-name>/`，`<ns>` 是你的角色或激活项目提供的 skills namespace（有多个时会询问，见[成员指南](member-guide.md)）
 - 显式覆盖：`skills/<role>/<skill-name>/`（通过 `--role`）
 
 ### Rules（规则）

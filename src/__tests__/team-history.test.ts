@@ -58,6 +58,78 @@ describe('team history proof', () => {
     expect(await historicalVersions(repo, 'never/there.md')).toEqual([]);
   });
 
+  it('stops current-lifetime proof at the latest deletion', async () => {
+    expect(await historicalVersions(repo, 'rules/a.md', { currentLifetime: true })).toEqual([]);
+  });
+
+  it.each([
+    { change: 'deleted by merge', pull: 'fast-forward', recreate: false, deletionMerge: true },
+    { change: 'deleted by merge', pull: 'merge', recreate: false, deletionMerge: true },
+    { change: 'recreated by merge', pull: 'fast-forward', recreate: true, deletionMerge: false },
+    { change: 'recreated by merge', pull: 'merge', recreate: true, deletionMerge: false },
+    { change: 'deleted and recreated by merge', pull: 'fast-forward', recreate: true, deletionMerge: true },
+    { change: 'deleted and recreated by merge', pull: 'merge', recreate: true, deletionMerge: true },
+  ])('limits origin proof to the live lifetime when $change lands before a $pull pull', async ({ recreate, deletionMerge, pull }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'team-history-merge-'));
+    const seed = path.join(root, 'seed');
+    const origin = path.join(root, 'origin.git');
+    const member = path.join(root, 'member');
+    const runGit = (cwd: string, ...args: string[]): string => execFileSync('git', args, {
+      cwd, env: GIT_ENV, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    const commitFile = (cwd: string, relPath: string, content: string | null, message: string): void => {
+      const file = path.join(cwd, relPath);
+      if (content === null) fs.rmSync(file);
+      else {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, content);
+      }
+      runGit(cwd, 'add', '-A');
+      runGit(cwd, 'commit', '-q', '-m', message);
+    };
+    try {
+      fs.mkdirSync(seed);
+      runGit(seed, 'init', '-q', '-b', 'main');
+      commitFile(seed, 'skills/svc-a/a-skill/SKILL.md', 'old lifetime\n', 'initial');
+      runGit(root, 'clone', '-q', '--bare', seed, origin);
+      runGit(root, 'clone', '-q', origin, member);
+
+      const teammate = path.join(root, 'teammate');
+      runGit(root, 'clone', '-q', origin, teammate);
+      if (pull === 'merge') commitFile(member, 'member-only.txt', 'local work\n', 'local work');
+      const sync = (): void => {
+        runGit(teammate, 'push', '-q', 'origin', 'main');
+        runGit(member, 'pull', '-q', ...(pull === 'merge' ? ['--no-rebase', '--no-ff'] : ['--ff-only']));
+      };
+      if (deletionMerge) {
+        runGit(teammate, 'switch', '-q', '-c', 'delete-skill');
+        fs.rmSync(path.join(teammate, 'skills/svc-a/a-skill/SKILL.md'));
+        runGit(teammate, 'add', '-A');
+        runGit(teammate, 'commit', '-q', '-m', 'delete skill');
+        runGit(teammate, 'switch', '-q', 'main');
+        runGit(teammate, 'merge', '-q', '--no-ff', '-m', 'merge deletion', 'delete-skill');
+      } else {
+        commitFile(teammate, 'skills/svc-a/a-skill/SKILL.md', null, 'delete skill');
+      }
+      sync();
+      if (recreate) {
+        runGit(teammate, 'switch', '-q', '-c', 'recreate-skill');
+        commitFile(teammate, 'skills/svc-a/a-skill/SKILL.md', 'new lifetime\n', 'recreate skill');
+        runGit(teammate, 'switch', '-q', 'main');
+        runGit(teammate, 'merge', '-q', '--no-ff', '-m', 'merge recreation', 'recreate-skill');
+        sync();
+      }
+
+      const versions = await historicalVersions(member, 'skills/svc-a/a-skill/SKILL.md', { currentLifetime: true });
+      const blobs = new Set(versions?.map((version) => version.blob));
+      expect(blobs.has(await blobIdOf(member, 'old lifetime\n'))).toBe(false);
+      if (recreate) expect(blobs).toEqual(new Set([await blobIdOf(member, 'new lifetime\n')]));
+      else expect(versions).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('computes the blob id git gives a content', async () => {
     fs.writeFileSync(path.join(repo, 'probe.txt'), 'probe\n');
     expect(await blobIdOf(repo, 'probe\n')).toBe(git('hash-object', 'probe.txt'));

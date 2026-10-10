@@ -13,6 +13,7 @@ import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 import { loadStateForScope } from '../config.js';
 import { placedResourcePath } from '../push-namespaces.js';
+import { recordedNamespace } from '../utils/pending-push.js';
 import { itemCandidate, resolveNamespacedItems, type NamespaceResolution } from '../namespace-resolver.js';
 import { getFileContentAtRev, getFileContentWhenAdded, isPastVersionOf } from '../utils/git.js';
 import {
@@ -229,7 +230,7 @@ export class AgentsHandler extends ResourceHandler {
     // Agents this machine placed in a namespace and has awaiting review: the
     // open PR is their destination, not "no active source".
     const pendingPlacedAgents = new Set((pendingPushes ?? []).flatMap((entry) => entry.items)
-      .filter((item) => item.type === 'agents' && item.relativePath.split('/').length === 3)
+      .filter((item) => item.type === 'agents' && recordedNamespace(item) !== undefined)
       .map((item) => item.name));
 
     const directItems: AgentResourceItem[] = [];

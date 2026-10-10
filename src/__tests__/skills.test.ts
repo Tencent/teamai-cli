@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
+import YAML from 'yaml';
 import { parseFrontmatter } from '../utils/frontmatter.js';
 
 vi.mock('../utils/logger.js', () => ({
@@ -16,10 +17,39 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { SkillsHandler } from '../resources/skills.js';
-import { scanTeamRepoNamespaces, ensureSkillFrontmatter } from '../resources/skills.js';
+import { scanTeamRepoNamespaces, ensureSkillFrontmatter, createSkillPushItem } from '../resources/skills.js';
+import { contentHash } from '../resources/delivered-copies.js';
 import { log } from '../utils/logger.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
+
+describe('skill push item construction', () => {
+  it.each([
+    ['scanned kept skill', 'modified', 'svc-a', true],
+    ['explicit --skill fallback', 'modified', 'svc-a', true],
+    ['legacy duplicate resolution', 'modified', 'svc-a', true],
+    ['new resource awaiting placement', 'new', undefined, false],
+  ] as const)('%s keeps its origin and relocation fields together', (_path, status, namespace, inactive) => {
+    const item = createSkillPushItem({
+      name: 'a-skill',
+      sourcePath: '/project/skills/a-skill',
+      status,
+      namespace,
+      ...(inactive ? { fromInactiveNamespace: true as const } : {}),
+    });
+
+    expect(item).toMatchObject({
+      name: 'a-skill',
+      type: 'skills',
+      sourcePath: '/project/skills/a-skill',
+      relativePath: namespace ? `skills/${namespace}/a-skill` : 'skills/a-skill',
+      status,
+      namespace,
+      ...(inactive ? { fromInactiveNamespace: true } : {}),
+    });
+    expect(item!.fromInactiveNamespace).toBe(inactive ? true : undefined);
+  });
+});
 
 describe('SkillsHandler.scanLocalForPush', () => {
   let tmpDir: string;
@@ -62,8 +92,93 @@ scope: 'user',
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     await fse.remove(tmpDir);
+  });
+
+  it.each([
+    ['shared-root origin with a newly active namespace copy', 'shared-root'],
+    ['two tools with distinct proven destinations', 'distinct'],
+    ['two different edits of one proven destination', 'same-destination-different'],
+    ['identical edits of one proven destination', 'same-destination-identical'],
+  ] as const)('preserves delivered copy identity: %s', async (_label, scenario) => {
+    const repoPath = localConfig.repo.localPath;
+    const teamSkill = (name: string, content: string, namespace?: string): string => {
+      const dir = path.join(repoPath, 'skills', ...(namespace ? [namespace] : []), name);
+      fse.ensureDirSync(dir);
+      fse.writeFileSync(path.join(dir, 'SKILL.md'), content);
+      return dir;
+    };
+    const original = (name: string, tag: string): string => `---\nname: ${name}\ndescription: ${name}\n---\n\n# ${tag}\n`;
+    const projectManifest = { version: 1, projects: [
+      { id: 'svc-a', resources: { skills: ['svc-a'] } },
+      { id: 'svc-b', resources: { skills: ['svc-b'] } },
+    ] };
+    await fse.outputFile(path.join(repoPath, 'manifest', 'projects.yaml'), YAML.stringify(projectManifest));
+    const deliveries: Record<string, string> = {};
+    const addLocalCopy = async (tool: 'claude' | 'codex', teamDir: string, content: string): Promise<string> => {
+      const skillsRoot = path.join(homeDir, tool === 'claude' ? '.claude/skills' : '.codex/skills');
+      const dest = path.join(skillsRoot, 'foo');
+      await fse.ensureDir(dest);
+      await fse.writeFile(path.join(dest, 'SKILL.md'), content);
+      deliveries[path.join(dest, 'SKILL.md')] = contentHash(await fse.readFile(path.join(teamDir, 'SKILL.md')));
+      return dest;
+    };
+    let copies: string[] = [];
+    if (scenario === 'shared-root') {
+      const root = teamSkill('foo', original('foo', 'shared root'));
+      teamSkill('foo', original('foo', 'active namespace'), 'svc-b');
+      localConfig.projects = ['svc-b'];
+      await addLocalCopy('claude', root, `${original('foo', 'shared root')}\nMember edit.\n`);
+    } else {
+      const a = teamSkill('foo', original('foo', 'svc-a'), 'svc-a');
+      const b = teamSkill('foo', original('foo', 'svc-b'), 'svc-b');
+      localConfig.projects = ['svc-a', 'svc-b'];
+      teamConfig.toolPaths.codex = { skills: '.codex/skills' };
+      if (scenario === 'distinct') {
+        await addLocalCopy('claude', a, `${original('foo', 'svc-a')}\nClaude edit.\n`);
+        await addLocalCopy('codex', b, `${original('foo', 'svc-b')}\nCodex edit.\n`);
+      } else {
+        const left = scenario === 'same-destination-identical'
+          ? `${original('foo', 'svc-a')}\nShared edit.\n`
+          : `${original('foo', 'svc-a')}\nClaude edit.\n`;
+        const right = scenario === 'same-destination-identical'
+          ? left
+          : `${original('foo', 'svc-a')}\nCodex edit.\n`;
+        copies = [
+          await addLocalCopy('claude', a, left),
+          await addLocalCopy('codex', a, right),
+        ];
+        // A copy's age is its newest file's mtime, not its directory's.
+        const newer = new Date(Date.now() + 1_000);
+        await fse.utimes(path.join(copies[1], 'SKILL.md'), newer, newer);
+      }
+    }
+    localConfig.enabledAgents = scenario === 'distinct' || scenario.startsWith('same-destination')
+      ? ['claude', 'codex'] : ['claude'];
+    vi.spyOn(await import('../pull.js'), 'deliveredHashes').mockResolvedValue(deliveries);
+    vi.mocked(log.warn).mockClear();
+    await fse.ensureDir(repoPath);
+    commitTeamRepo(repoPath, `r7-${scenario}`);
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    if (scenario === 'shared-root') {
+      expect(items).toHaveLength(1);
+      expect(items[0].relativePath).toBe('skills/foo');
+    } else if (scenario === 'distinct') {
+      expect(items.map((item) => item.relativePath).sort()).toEqual(['skills/svc-a/foo', 'skills/svc-b/foo']);
+    } else {
+      expect(items).toHaveLength(1);
+      expect(items[0].sourcePath).toBe(copies[1]);
+      if (scenario === 'same-destination-different') {
+        expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(copies[0]));
+      } else {
+        expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('another edited copy'));
+      }
+    }
+    vi.restoreAllMocks();
   });
 
   it('should detect a new skill with status "new"', async () => {
@@ -529,6 +644,26 @@ scope: 'user',
     // Modified skill should carry its original namespace from team repo
     expect(item!.namespace).toBe('tencent');
     expect(item!.relativePath).toBe('skills/tencent/tgit');
+  });
+
+  it('skips an undelivered copy of a name several namespaces hold, advising what can push it', async () => {
+    for (const namespace of ['svc-a', 'svc-b']) {
+      const dir = path.join(localConfig.repo.localPath, 'skills', namespace, 'foo');
+      await fse.ensureDir(dir);
+      await fse.writeFile(path.join(dir, 'SKILL.md'), `# ${namespace}`);
+    }
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'foo');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '# edited');
+    vi.mocked(log.warn).mockClear();
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    expect(items.filter((i) => i.name === 'foo')).toEqual([]);
+    // The scan never sees --role, so the advice names the --skill run that does.
+    const warning = vi.mocked(log.warn).mock.calls.map(([message]) => String(message))
+      .find((message) => message.includes('several skills with this name'));
+    expect(warning).toContain(`teamai push --skill ${localSkillDir} --role <ns>`);
   });
 
   it('detects unchanged skill in namespaced team repo when no primaryRole is set', async () => {

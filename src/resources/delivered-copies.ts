@@ -6,7 +6,8 @@ import type { DeliveryRecorder } from '../git-exclude-delivered.js';
 import type { AgentModelRecords, CopyOrigin, DeliveryTarget, ResourceItem } from '../types.js';
 import { fileHash, listFilesRecursive } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { matchesHistory } from '../utils/team-history.js';
+import { resolveReal } from '../utils/path-safety.js';
+import { historicalVersions, matchesHistory, readBlob } from '../utils/team-history.js';
 import { warnOnce } from '../utils/warn-once.js';
 
 /**
@@ -115,8 +116,21 @@ export function contentHash(content: string | Buffer): string {
 }
 
 /** The recorded paths of the copy at `dest`: the file, or every file under the skill directory. */
-function recordedUnder(hashes: DeliveredHashes, dest: string): string[] {
+export function recordedUnder(hashes: DeliveredHashes, dest: string): string[] {
   return Object.keys(hashes).filter((file) => file === dest || file.startsWith(dest + path.sep));
+}
+
+/**
+ * The skill directory pull recorded, in the form it wrote it, that is the copy
+ * at `dir`: the one whose real path is `dir`'s. A copy reached through a
+ * symlink, or under a linked skills directory, matches its record this way.
+ */
+export function recordedSkillDir(hashes: DeliveredHashes, dir: string): string | undefined {
+  const real = resolveReal(dir);
+  return Object.keys(hashes)
+    .filter((file) => path.basename(file) === SKILL_MD)
+    .map((file) => path.dirname(file))
+    .find((recorded) => resolveReal(recorded) === real);
 }
 
 /**
@@ -141,6 +155,47 @@ async function nextHashes(previous: DeliveredHashes, item: ResourceItem, target:
     if (!next.has(file)) next.set(file, null);
   }
   return next;
+}
+
+/**
+ * Whether the skill directory `dest` is still exactly what pull last wrote
+ * there: every recorded file unchanged, and no other file but CONTRIBUTORS.
+ * Such a copy is never an edit, whatever the team changed since. Read-only.
+ */
+export async function isUneditedSkillCopy(previous: DeliveredHashes, dest: string): Promise<boolean> {
+  const recorded = recordedUnder(previous, dest);
+  if (recorded.length === 0 || await holdsNonRegular(dest)) return false;
+  for (const rel of await listFilesRecursive(dest)) {
+    if (path.basename(rel) !== CONTRIBUTORS_FILE && previous[path.join(dest, rel)] === undefined) return false;
+  }
+  for (const file of recorded) {
+    if (!await recordedUnchanged(previous, file)) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether the SKILL.md recorded in the skill directory `dest` is what pull
+ * writes from a version of `<teamDir>/SKILL.md` (repo-relative) in the
+ * history of `repoPath`: the team skill the copy was delivered from, even
+ * after the team changed it. Tells which of several same-named team skills a
+ * copy came from. False with no record, or when git cannot read the history.
+ * Read-only; reads the history.
+ */
+export async function isRecordedFromTeamSkill(
+  previous: DeliveredHashes, dest: string, repoPath: string, teamDir: string,
+): Promise<boolean> {
+  const recorded = previous[path.join(dest, SKILL_MD)];
+  if (recorded === undefined) return false;
+  const { withSkillFrontmatter } = await import('./skills.js');
+  for (const version of await historicalVersions(repoPath, `${teamDir}/${SKILL_MD}`, { currentLifetime: true }) ?? []) {
+    const bytes = await readBlob(repoPath, version.blob);
+    if (bytes === null) continue;
+    const text = bytes.toString('utf-8');
+    const written = withSkillFrontmatter(text, path.posix.basename(teamDir));
+    if (contentHash(written === text ? bytes : written) === recorded) return true;
+  }
+  return false;
 }
 
 async function withDisk(previous: DeliveredHashes, next: Iterable<[string, string | null]>): Promise<DeliveredFile[]> {

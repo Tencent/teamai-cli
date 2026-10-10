@@ -190,7 +190,7 @@ one teamai created, and is deleted.
 
 If the repo has role-based skills enabled (i.e. `manifest/roles.yaml` exists), `teamai init` will also interactively ask you to choose:
 
-- `primaryRole`: the target namespace for skill sync and push by default
+- `primaryRole`: your main role. Its skill namespaces are synced, and with your active projects' namespaces they are where push can place a new skill (see the [member guide](member-guide.md))
 - `additionalRoles`: additional skill namespaces to sync
 
 At the role prompt, enter one or more comma-separated role numbers. The first number becomes `primaryRole` and the remaining numbers become `additionalRoles` (for example, `1,3`).

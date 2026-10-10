@@ -1027,6 +1027,8 @@ export interface ResourceItem {
   relativePath: string;
   status?: ResourceItemStatus;
   namespace?: string;
+  /** A kept skill with a recorded origin: `--role`/`--project` never relocate it (#1020). */
+  fromInactiveNamespace?: true;
 }
 
 export interface ResourceDiff {

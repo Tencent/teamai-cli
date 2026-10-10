@@ -483,7 +483,46 @@ a root one is written to its namespace file, never to the root. The agents
 source order is active namespace, then this machine's placement record, then the
 shared root; in role/project mode a same-stem root file no longer withdraws the
 placement record (legacy mode still does). The skills push scan uses role ∪
-project namespaces, and `push` picks up a change to any `env/<ns>/env.yaml` or `env/<ns>/secrets.yaml`.
+project namespaces. A skill outside them stays out unless the delivery record
+shows teamai wrote that copy, as when pull keeps an edited skill after a switch.
+A copy still exactly as recorded is not an edit and stays out. An edited one goes
+back to the team skill whose history holds the SKILL.md version pull recorded,
+inactive namespace, active namespace or shared root, even after the team changed
+it. When that version matches no single copy, wherever the copies are, it is
+skipped with a warning naming them, so a same-named skill that replaced the
+deleted one is never overwritten (#1020). A copy teamai never delivered matches
+by name only a shared-root or active skill. In legacy mode with no active role
+or project, a delivered duplicate goes back only when its record identifies
+exactly one same-named skill across all namespaces; missing or ambiguous
+records are skipped with a warning. A never-delivered duplicate is also skipped
+instead of taking the first namespace, and the warning names the
+`push --skill <path> --role <ns>` run that sends it. `push --skill` resolves its skill the
+same way, and asks for `--role` rather than taking the first directory that
+holds the name. An open PR is reused for a resource only when it records the
+same destination this push sends the resource to: a resource already in the
+team repo is identified by its path, so same-named skills in two namespaces are
+two resources, and a new one by its name. Otherwise this push opens its own PR
+and leaves that one untouched. A new skill keeps the destination its open PR
+recorded even when a same-named team skill appears elsewhere and the scan would
+call the copy an edit of that skill. Open PRs holding a new skill's name at
+several destinations prove none of them: push leaves the copy out, and
+`--skill <path> --role <ns>` picks the one at that namespace. Edits from several tools of one team skill
+are one candidate, the newest, whether or not each copy has a delivery record.
+Each copy's destination is decided before copies are merged, so a new skill
+awaiting review in one tool and an edit of a same-named team skill in another
+stay two candidates.
+A new skill, rule or
+agent pushed without `--role` or `--project` is placed among the role ∪ active
+project namespaces on its own axis, as pull delivers them. When a role is
+configured but the role and active projects give no namespace, the resource
+stays at the shared root; with no configured role and no active-project
+namespace, the pre-project fallback applies (the skills namespace scan for
+skills, shared root for rules and agents). Active projects the projects
+manifest cannot resolve (an undeclared id, or no `manifest/projects.yaml`) stop
+a push without `--role` or `--project` before it scans anything, so neither the
+skills scan nor `push --skill` treats every namespace as the member's (#1021).
+With a flag the skills scan stays scoped to the role's namespaces rather than
+falling back to the unscoped legacy scan. `push` picks up a change to any `env/<ns>/env.yaml` or `env/<ns>/secrets.yaml`.
 `teamai env add|remove` take `--role` / `--project`, and `--secret` for that namespace's `secrets.yaml`.
 
 

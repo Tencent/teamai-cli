@@ -13,6 +13,7 @@ import type { OpencodeRulesTarget } from './opencode-config.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 import { loadStateForScope } from '../config.js';
 import { placedResourcePath } from '../push-namespaces.js';
+import { recordedNamespace } from '../utils/pending-push.js';
 import { deliversEveryNamespace } from '../resource-namespaces.js';
 import { getFileContentAtRev, isPastVersionOf, listFilesAtRev } from '../utils/git.js';
 import { historicalVersions } from '../utils/team-history.js';
@@ -813,7 +814,7 @@ export class RulesHandler extends ResourceHandler {
     // is still the author's work (#649 review).
     for (const entry of pendingPushes ?? []) {
       for (const item of entry.items) {
-        if (item.type === 'rules' && !item.name.includes('/') && item.relativePath.split('/').length === 3) {
+        if (item.type === 'rules' && !item.name.includes('/') && recordedNamespace(item) !== undefined) {
           teamRuleNames.add(item.name);
         }
       }
