@@ -32,7 +32,7 @@ Git hook 安装失败时，`hooks inject`、`init` 和单仓库自动初始化�
 
 > **OpenClaw** — teamai 的 hook 是一个 workspace hook，位于 `<workspace>/hooks/teamai-status-report`。它在 `command:new`、`command:reset`、`session:auto-reset` 和 `gateway:startup` 时运行 `session-start`，在 `message:received` 时运行 `prompt-submit`，并以事件中的 workspace 作为 hook 的 `cwd`。OpenClaw 只有在 `openclaw.json` 启用了某个 workspace hook 的条目时才会加载它，因此 init、pull 和 `hooks inject` 会写入 `hooks.internal.entries.teamai-status-report.enabled: true`，`hooks remove` 和 uninstall 会将其移除。若 OpenClaw 正在加载它发现的所有 hook（`hooks.internal.enabled: true` 且没有具名条目），新增第一个条目会把发现模式变成白名单，从而停掉你的其他 hook，所以 teamai 不改动配置，只给出警告；
 
-> 当你关闭了该 hook 或整个 internal hooks，或 `openclaw.json` 不是纯 JSON 时也同样处理。此时请自行运行 `openclaw hooks enable teamai-status-report`。旧版 teamai 在设置了 `OPENCLAW_STATE_DIR` 时会自行写入 `hooks.internal.enabled: true`，因此这类机器在你运行该命令前都会看到这条警告。服务端下发的 agent hook 位于 `<state dir>/hooks/<slug>`，并有自己的条目 `teamai-agent-<slug>`。workspace 与配置的查找方式与 OpenClaw 一致：`OPENCLAW_CONFIG_PATH`、`OPENCLAW_STATE_DIR` 或 `OPENCLAW_PROFILE`（`~/.openclaw-<profile>`），然后是 `agents.defaults.workspace`、`OPENCLAW_WORKSPACE_DIR` 或 `<state dir>/workspace`。条目缺失或被关闭时，`doctor` 的 `OpenClaw hook enabled` 检查会失败。
+> 当你关闭了该 hook 或整个 internal hooks，或 `openclaw.json` 不是纯 JSON 时也同样处理。此时请自行运行 `openclaw hooks enable teamai-status-report`。服务端下发的 agent hook 位于 `<state dir>/hooks/<slug>`，并有自己的条目 `teamai-agent-<slug>`。workspace 与配置的查找方式与 OpenClaw 一致：`OPENCLAW_CONFIG_PATH`、`OPENCLAW_STATE_DIR` 或 `OPENCLAW_PROFILE`（`~/.openclaw-<profile>`），然后是 `agents.defaults.workspace`、`OPENCLAW_WORKSPACE_DIR` 或 `<state dir>/workspace`。条目缺失或被关闭时，`doctor` 的 `OpenClaw hook enabled` 检查会失败。
 
 在 Windows 上，经由 bash 执行的内置 hook 派发命令（如 Claude、Codex、Cursor、Copilot CLI）会以绝对路径引用 Git Bash——先查标准安装位置，再回退到 `HKLM\SOFTWARE\GitForWindows` 注册表——从而避免解析到 WSL 的 `bash.exe`；若找不到 Git Bash，则退回裸 `bash`。
 
@@ -42,7 +42,7 @@ Copilot 会给每个子进程设置它，包括从它的 shell 里启动的 Clau
 
 > **Codex hook 信任** — Codex（OpenAI / ChatGPT Codex 应用，工具 id 为 `codex`）只运行已信任的非托管 hook，未信任或已变更的 hook 会被静默跳过；且只有项目被信任时才读取其 `.codex/`。因此每次写入 Codex hooks 文件后（`init`、每次 `pull`（含 SessionStart 触发的 pull）、`teamai hooks inject`），teamai 都会通过 `codex app-server` 信任它写入的那些 hook——与 Codex `/hooks` 信任提示调用的是同一接口。同一文件里你自己的 hook 不受影响，即使命令与团队 hook 相同；
 
-> 只有与 teamai 写入的整条条目完全相同的条目才算 teamai 的（见下文）。Codex 所有权记录包含事件、位置和完整生成条目，信任操作只选择对应的 Codex key。其他条目移动它的位置时，仅在完整定义唯一匹配时恢复所有权。旧 manifest 只记录事件、matcher 和命令，因此这些字段唯一匹配时，即使 hook 包含 `timeout` 或 `additionalContextLimit`，也可恢复所有权。对于 #370 之前的项目 Codex hooks，teamai 先从主 checkout 的 `.teamai/managed-hooks.json` 导入所有权，再用新 manifest 同步同一个文件；直接移除时也如此。没有任何记录认领、且与 teamai 为恰好一个团队 hook（按团队仓库当前或任一历史版本的定义）写入的条目完全相同的条目，算作 teamai 的：
+> 只有与 teamai 写入的整条条目完全相同的条目才算 teamai 的（见下文）。Codex 所有权记录包含事件、位置和完整生成条目，信任操作只选择对应的 Codex key。其他条目移动它的位置时，仅在完整定义唯一匹配时恢复所有权。旧 manifest 只记录事件、matcher 和命令，因此这些字段唯一匹配时，即使 hook 包含 `timeout` 或 `additionalContextLimit`，也可恢复所有权。没有任何记录认领、且与 teamai 为恰好一个团队 hook（按团队仓库当前或任一历史版本的定义）写入的条目完全相同的条目，算作 teamai 的：
 
 > manifest 丢失后不会再为每个团队 hook 多写一份（`.claude/settings.local.json` 中带标记的条目同理）。其他没有记录的条目会保留；与多个团队 hook 相同的条目，或与任何团队 hook 都不同的带标记 Claude 条目，pull 还会指出，`teamai doctor` 也会列出。在项目中，当 Codex 需要从主 checkout 的 `.codex/` 读取 teamai 的 hooks 或 MCP servers 时，teamai 也会信任该主 checkout；bare 仓库则在当前 worktree 写入并信任。你在 Codex 中标记为不信任的项目保持不变，teamai 会提示。SessionStart 触发的 pull 写入的信任从下一个 Codex 会话起生效：
 

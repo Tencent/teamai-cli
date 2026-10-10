@@ -43,8 +43,7 @@ WorkBuddy 使用 `~/.workbuddy/models.json`；当前 `{ "models": [...] }` 和�
 某个 `.gitignore` 规则重新包含了它、exclude 文件无法写入，或 git 无法确认，则不写入 key，任务失败并给出原因和修复方法（已跟踪的文件需
 `git rm --cached`）。不含任何模型的任务会移除 teamai 的条目；由 teamai 创建的文件中不再剩下其他内容时删除该文件，然后删除对应的行。
 不是 teamai 创建的文件、git 已跟踪的文件或符号链接会保留，对应的行也保留。
-`teamai source remove-http` 移除 HTTP 源时会对每个 workspace 做同样的处理。teamai 不再创建
-`<workspace>/.codebuddy/.gitignore`，旧版本创建的该文件若只含它写入的两行，会被删除。仅当目标路径已存在于 reporter 的 workspace bindings 中时，
+`teamai source remove-http` 移除 HTTP 源时会对每个 workspace 做同样的处理。仅当目标路径已存在于 reporter 的 workspace bindings 中时，
 才接受 workspace 级下发。若同一模型 ID 已由用户配置，则保留用户条目。
 
 

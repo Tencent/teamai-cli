@@ -50,9 +50,7 @@ and the fix (for a tracked file, `git rm --cached` it). A task with no models re
 teamai's entries; when nothing else is left in a file teamai created, the file is deleted,
 then its line. A file teamai did not create, one git tracks, or a link stays, and so does
 its line. The same happens for every workspace when `teamai source remove-http` removes the
-HTTP source. teamai no longer creates
-`<workspace>/.codebuddy/.gitignore`, and deletes the one an earlier version created while it
-holds only its two lines. Workspace delivery is accepted only for a path
+HTTP source. Workspace delivery is accepted only for a path
 already present in the reporter's workspace bindings. User-owned entries with the same
 model ID are preserved. 
 
