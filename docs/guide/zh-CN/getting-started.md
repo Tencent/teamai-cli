@@ -52,7 +52,7 @@ scope、团队仓库这些词的意思，见[产品概览](../../product-overvie
 
 `teamai doctor` 通过，并且这个 skill 已经在默认分支上。这台机器上的 AI 工具会在会话启动时从该仓库拉取。
 
-作用域、业务仓库自己当团队仓库、组织仓再加项目仓，见[管理员初始化](./admin-setup.md)。rules、env、MCP server 和 hooks 见[共享团队资源](./sharing.md)。
+scope、仓库文件、packages、models 都在[配置示例](./admin-setup.md)里，抄一块就行。
 
 ### 加入团队
 
@@ -112,7 +112,5 @@ pull request 已合并，并且 `teamai list skills --source repo` 能看到这�
 
 | 接下来 | 去看 |
 | --- | --- |
-| 术语 | [产品概览](../../product-overview.zh-CN.md#核心概念) |
-| 文件装在哪，团队仓库怎么放 | [管理员初始化](./admin-setup.md) |
-| skills、rules、env 或 MCP server | [共享团队资源](./sharing.md) |
+| scope、仓库、packages、models、env、MCP | [配置示例](./admin-setup.md) |
 | 加入之后怎么用 | [成员使用](./member-guide.md) |

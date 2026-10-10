@@ -52,7 +52,7 @@ Scope, team repo, and the other terms are in the [Product Overview](../product-o
 
 `teamai doctor` passes, and the skill is on the default branch. Each AI tool on your machine pulls that repo when a session starts.
 
-Scopes, a business repo that is its own team repo, and an org repo plus a project repo are in [Admin Setup](./admin-setup.md). Rules, env, MCP servers, and hooks are in [Sharing Team Resources](./sharing.md).
+Scope, the repo file, packages, and models are copy blocks in [Setup demos](./admin-setup.md).
 
 ### Join a team
 
@@ -112,7 +112,5 @@ Run `teamai doctor`. It names a missing hook, a tool it did not detect, or a tok
 
 | Next | Read |
 | --- | --- |
-| Terms | [Product Overview](../product-overview.md#core-concepts) |
-| Where files are installed, and how the team repo is laid out | [Admin Setup](./admin-setup.md) |
-| Skills, rules, env, or MCP servers | [Sharing Team Resources](./sharing.md) |
+| Scope, repo, packages, models, env, MCP | [Setup demos](./admin-setup.md) |
 | After you have joined | [Member Guide](./member-guide.md) |

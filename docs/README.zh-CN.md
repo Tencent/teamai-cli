@@ -10,7 +10,7 @@
 
 | 文档 | 语言 | 内容 |
 | --- | --- | --- |
-| [使用指南](usage-guide.zh-CN.md) — 分页在英文 [`guide/`](guide/) 与中文 [`guide/zh-CN/`](guide/zh-CN/) | [en](usage-guide.md) · [zh-CN](usage-guide.zh-CN.md) | 安装、管理员初始化、Git Provider、成员接入、日常流程、命令与配置参考、Windows、FAQ |
+| [使用指南](usage-guide.zh-CN.md) — 分页在英文 [`guide/`](guide/) 与中文 [`guide/zh-CN/`](guide/zh-CN/) | [en](usage-guide.md) · [zh-CN](usage-guide.zh-CN.md) | 安装、配置示例、Git Provider、成员接入、日常流程、命令与配置参考、Windows、FAQ |
 | [产品概览](product-overview.zh-CN.md) | [en](product-overview.md) · [zh-CN](product-overview.zh-CN.md) | 产品架构、核心概念、三层能力、支持的 Agent |
 | [CI 示例](../examples/ci/README.md) | 仅 zh-CN | MR 知识提炼与 teamwiki 一致性检查的流水线示例 |
 

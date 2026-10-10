@@ -1,208 +1,63 @@
-# Admin Setup
+# Setup demos
 
 > [English](admin-setup.md) | [简体中文](zh-CN/admin-setup.md)
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
-Copy the setup that matches the team. Finish with `teamai doctor`. Joining a repo that already exists is [Join a team](./getting-started.md#join-a-team).
+Copy one block. Then `teamai doctor`. Joining a repo that already exists is [Join a team](./getting-started.md#join-a-team).
 
-| You want | Copy |
+| Copy | |
 | --- | --- |
-| A shared repo, resources in this project only | [Demo 1](#demo-1-separate-team-repo) |
-| The same resources in every project on this machine | [Demo 2](#demo-2-user-scope) |
-| This business repo to be the team repo | [Demo 3](#demo-3-single-repo) |
-| Company-wide resources plus a project repo | [Demo 4](#demo-4-organization-plus-project) |
-| Different people to receive different skills | [Demo 5](#demo-5-roles-and-projects) |
-
-GitHub, GitLab, GitCode, CNB, TGit, and a private Git host all work. Token and self-hosted GitLab setup is in [Git Providers](./providers.md).
+| Where files install | [Scope](#scope) |
+| `teamai.yaml` and the repo | [Repo](#repo) |
+| npm packages and Claude plugins | [Packages](#packages) |
+| A shared model gateway | [Models](#models) |
+| Env vars | [Env](#env) |
+| MCP servers | [MCP](#mcp) |
+| Different skills for different people | [Demo 5](#demo-5-roles-and-projects) |
 
 ---
 
-## Demo 1. Separate team repo
+## Scope
 
-Create an empty repo. `<team-name>-teamai` is a clear name. Give teammates permission to push branches, and leave the default branch protected. Then:
+This project only:
 
 ```bash
 cd /path/to/my-project
 teamai init https://github.com/your-org/platform-teamai
-teamai doctor
 ```
 
-Send teammates the repo URL. They run the same `init` in their own project.
-
-Resources land in this project (`.claude/skills/`, and the same for the other tools `init` found). A `scope:` field in `teamai.yaml` is ignored; only `--scope` on `init` decides.
-
----
-
-## Demo 2. User scope
-
-Same team repo. Resources install under your home directory, so every project on this machine sees them.
+Every project on this machine:
 
 ```bash
 teamai init https://github.com/your-org/platform-teamai --scope user
-teamai doctor
 ```
 
-| | Project scope (Demo 1, default) | User scope (Demo 2) |
-| --- | --- | --- |
-| Installs into | the project directory | `~/` |
-| Use it for | skills that belong to one repo | conventions and skills every repo should have |
-| Together | a project install can also read the user install | see [Demo 4](#demo-4-organization-plus-project) |
+Company files in `~/`, this service's files in the project:
 
----
+```bash
+teamai init https://github.com/your-org/engineering-practices --scope user
 
-## Demo 3. Single-repo
+cd /path/to/java-service
+teamai init https://github.com/your-org/java-service-teamai --inherit-user-scope
+```
 
-The business repo is the team repo. There is no second repository.
+The business repo is the team repo (no second repository):
 
 ```bash
 cd /path/to/my-project
 teamai init . --agent claude,cursor
-teamai doctor
 ```
 
-`--agent` is repeatable or comma-separated (`claude,cursor`). Re-running `init .` keeps tools you already enabled and adds the ones you name. Omit `--agent` in a terminal and `init` asks; option 1, **Auto**, is the tools already installed under your home directory.
-
-`init` commits this layout on the current branch. Push that branch so a clone is enough for the next person: their first `teamai` command or AI session finishes setup when their Git host is already logged in.
-
-```text
-my-project/
-├── .teamai/
-│   ├── teamai.yaml
-│   ├── skills/
-│   ├── rules/
-│   ├── docs/
-│   ├── agents/
-│   ├── env/env.yaml          # committed; no secrets
-│   ├── env/secrets.yaml      # names only, no values
-│   ├── hooks/hooks.yaml
-│   └── mcp/mcp.yaml
-├── .claude/settings.json     # one settings file per --agent
-└── src/
-```
-
-Add a skill or rule with `teamai push` (it opens a pull request). Edit `docs/`, `hooks/hooks.yaml`, and `mcp/mcp.yaml` with a normal commit. Put only non-secret values in `env/env.yaml`. Name a secret, without its value, in `env/secrets.yaml` — see [Team secrets](../designs/team-secrets.md).
-
-One team setup stays tied to this repo. To share one knowledge base across many repos, use [Demo 1](#demo-1-separate-team-repo).
-
-### Git permissions
-
-Teammates need permission to push branches and to open pull requests. Leave the default branch protected. Admin rights are not required.
-
-`teamai push` pushes a feature branch and opens a pull request. Reports and learnings use the branches `teamai-reports` and `teamai-learnings`, and the first push creates them. With `provider: git`, teamai pushes the branch and prints the command to open the pull request.
+`scope:` in `teamai.yaml` is ignored. `--scope` on `init` is what counts.
 
 ---
 
-## Demo 4. Organization plus project
+## Repo
 
-Install the CLI once. Each scope has its own config and its own clone.
+Empty repo, named `<team-name>-teamai`. Teammates can push branches. The default branch stays protected. They run the same `init` in their project.
 
-```bash
-# company skills, rules, docs, agents
-teamai init https://github.com/your-org/engineering-practices --scope user
-
-# in one service: project resources stay in front
-cd /path/to/java-service
-teamai init https://github.com/your-org/java-service-teamai --inherit-user-scope
-teamai doctor
-```
-
-`teamai pull` refreshes the user-scope skills, rules, docs, agents, culture, and search index, then the project scope. User env, hooks, MCP, cross-team sources, and usage reporting are not inherited. Two resources with the same name stay in different directories; recall prefers the project copy.
-
----
-
-## Demo 5. Roles and projects
-
-Skip this demo when everyone should receive the same skills. With no `manifest/roles.yaml` and no `manifest/projects.yaml`, `pull` installs the repo root for every member.
-
-A role names a job, such as `frontend` or `infra`. A project names this checkout, such as `checkout` or `billing`. Pull installs the union of the two. One does not replace the other.
-
-`skills/common/` is shared by every role that lists `common`. `skills/frontend/` reaches only roles and projects that list `frontend`. While roles or projects are in use, a skill left in the root `skills/` is delivered only when a member subscribes to its tag (`teamai tags subscribe <tag>`).
-
-```text
-platform-teamai/
-├── teamai.yaml
-├── manifest/
-│   ├── roles.yaml
-│   └── projects.yaml
-├── skills/
-│   ├── common/code-review/SKILL.md
-│   └── frontend/react-patterns/SKILL.md
-├── rules/
-│   ├── common/style.md
-│   └── frontend/react.md
-└── env/
-    ├── env.yaml
-    └── frontend/env.yaml
-```
-
-```yaml
-# manifest/roles.yaml
-version: 1
-roles:
-  - id: frontend
-    description: Web engineers
-    resources:
-      knowledge: [common, frontend]
-      skills:    [common, frontend]
-      agents:    [common, frontend]
-  - id: infra
-    description: Infrastructure
-    resources:
-      knowledge: [common, infra]
-      skills:    [common, infra]
-      agents:    [common, infra]
-```
-
-```yaml
-# manifest/projects.yaml
-version: 1
-projects:
-  - id: checkout
-    name: Checkout service
-    resources:
-      knowledge: [checkout]
-      skills:    [checkout]
-      learnings: [checkout]
-      agents:    [checkout]
-```
-
-```yaml
-# env/env.yaml — everyone
-variables:
-  - key: API_ENDPOINT
-    value: https://api.example.com
-    description: Team API endpoint
-
-# env/frontend/env.yaml — only where the frontend namespace is active
-variables:
-  - key: API_ENDPOINT
-    value: https://web.example.com
-```
-
-These commands write the same manifests and open a pull request. After it is merged, run the last four commands in the project directory.
-
-```bash
-teamai roles add frontend --namespaces common,frontend -d "Web engineers"
-teamai projects add checkout --namespaces checkout --name "Checkout service"
-
-teamai roles set frontend
-teamai projects set checkout
-teamai pull
-teamai list
-```
-
-`teamai list` should show `common` and `frontend` skills, plus anything under `skills/checkout/`. `learnings/checkout/` is visible only in a directory that has that project active. `learnings/` at the repo root stays shared.
-
-A namespace is one path segment (`frontend`, not `web/frontend`).
-
-To give one directory every project, `teamai init <repo> --project all`.
-
----
-
-## Copy-paste teamai.yaml
-
-Put this at the root of a separate team repo, or at `.teamai/teamai.yaml` in [Demo 3](#demo-3-single-repo). `init` writes one for you; replace the placeholders.
+`init` writes `teamai.yaml`. Replace the placeholders. Separate team repo: file at the repo root. Business repo is the team repo: `.teamai/teamai.yaml`.
 
 ```yaml
 team: platform
@@ -222,26 +77,173 @@ sharing:
     injectShellProfile: true
 ```
 
-Every other field is in the [configuration reference](./reference.md#teamaiyaml-remote-team-config).
+Other fields: [configuration reference](./reference.md#teamaiyaml-remote-team-config). Token and self-hosted GitLab: [Git Providers](./providers.md).
+
+When the business repo is the team repo, `init .` commits this layout on the current branch:
+
+```text
+my-project/
+├── .teamai/
+│   ├── teamai.yaml
+│   ├── skills/
+│   ├── rules/
+│   ├── docs/
+│   ├── agents/
+│   ├── env/env.yaml
+│   ├── env/secrets.yaml
+│   ├── hooks/hooks.yaml
+│   └── mcp/mcp.yaml
+└── .claude/settings.json
+```
+
+Skills and rules: `teamai push` (opens a pull request). `docs/`, `hooks/hooks.yaml`, `mcp/mcp.yaml`: a normal commit.
+
+### Git permissions
+
+Teammates need permission to push branches and to open pull requests. Leave the default branch protected. Admin rights are not required.
+
+`teamai push` pushes a feature branch and opens a pull request. Reports and learnings use the branches `teamai-reports` and `teamai-learnings`, and the first push creates them. With `provider: git`, teamai pushes the branch and prints the command to open the pull request.
 
 ---
 
-## What init writes on this machine
+## Packages
 
-You do not hand-write this. After Demo 1 it looks like:
-
-```yaml
-# ~/.teamai/projects/<project>-<hash>/config.yaml
-repo:
-  localPath: ~/.teamai/projects/<project>-<hash>/team-repo
-  remote: https://github.com/your-org/platform-teamai.git
-username: alice
-scope: project
-projectRoot: /path/to/my-project
-primaryRole: frontend          # after Demo 5
-additionalRoles: []
+```bash
+teamai packages install typescript
+teamai packages install code-review@claude-plugins-official
+teamai push
 ```
 
-User scope (Demo 2) uses `~/.teamai/config.yaml` and `scope: user`. Demo 4 adds `inheritUserScope: true` on the project config.
+That writes `packages:` into `teamai.yaml`:
 
-Where the clone, learnings, and reports actually sit is in the [data directory layout](../designs/data-directory-layout.md).
+```yaml
+packages:
+  npm:
+    - name: typescript
+      version: "*"
+  claude:
+    marketplaces:
+      - name: claude-plugins-official
+        repo: anthropics/claude-plugins-official
+    plugins:
+      - name: code-review@claude-plugins-official
+```
+
+On each machine, after pull: `teamai packages`. Field list: [Team packages](./member-guide.md#team-packages).
+
+---
+
+## Models
+
+`models/models.yaml` in the team repo. The key is not in the file. Each person sets it locally.
+
+```yaml
+profiles:
+  - id: tokenhub
+    name: Tencent TokenHub
+    base_url: https://tokenhub.tencentmaas.com
+    api_key: ${API_KEY}
+    model_groups:
+      - protocols: [anthropic, openai-chat-completions]
+        models:
+          - glm-5.3
+          - deepseek-v4-flash
+```
+
+```bash
+teamai models switch tokenhub
+```
+
+Field list: [Model profiles](./reference.md#model-profiles).
+
+---
+
+## Env
+
+```yaml
+# env/env.yaml
+variables:
+  - key: API_ENDPOINT
+    value: https://api.example.com
+    description: Team API endpoint
+```
+
+```yaml
+# env/secrets.yaml — name only, no value
+secrets:
+  - key: GITHUB_TOKEN
+    description: GitHub token with repo scope
+```
+
+```bash
+teamai env add API_ENDPOINT https://api.example.com --description "Team API endpoint"
+teamai env add GITHUB_TOKEN --secret -d "GitHub token with repo scope"
+teamai push
+```
+
+---
+
+## MCP
+
+```yaml
+# mcp/mcp.yaml
+servers:
+  - name: gpu-analysis
+    transport: http
+    url: https://example.com/api/mcp
+    headers:
+      Authorization: Bearer ${GPU_ANALYSIS_TOKEN}
+```
+
+Commit the file. `teamai pull` writes it into each installed tool.
+
+---
+
+## Demo 5. Roles and projects
+
+Skip this when everyone gets the same skills. Without these two files, `pull` installs the repo root for every member.
+
+A role is a job (`frontend`). A project is this checkout (`checkout`). Pull installs both.
+
+```yaml
+# manifest/roles.yaml
+version: 1
+roles:
+  - id: frontend
+    description: Web engineers
+    resources:
+      knowledge: [common, frontend]
+      skills:    [common, frontend]
+      agents:    [common, frontend]
+```
+
+```yaml
+# manifest/projects.yaml
+version: 1
+projects:
+  - id: checkout
+    name: Checkout service
+    resources:
+      knowledge: [checkout]
+      skills:    [checkout]
+      learnings: [checkout]
+      agents:    [checkout]
+```
+
+```text
+skills/common/code-review/SKILL.md      # every role that lists common
+skills/frontend/react-patterns/SKILL.md # frontend only
+skills/checkout/                       # checkout project only
+```
+
+```bash
+teamai roles add frontend --namespaces common,frontend -d "Web engineers"
+teamai projects add checkout --namespaces checkout --name "Checkout service"
+
+teamai roles set frontend
+teamai projects set checkout
+teamai pull
+teamai list
+```
+
+The first two commands write the manifests and open a pull request. After it is merged, run the last four in the project directory. `teamai list` shows `common`, `frontend`, and `skills/checkout/`.

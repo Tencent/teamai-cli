@@ -11,7 +11,7 @@ Start with [Getting Started](guide/getting-started.md): set up a team, join one,
 ## Contents
 
 - [Getting Started](guide/getting-started.md) — three paths: set up a team, join one, or share a skill
-- [Admin Setup](guide/admin-setup.md) — Five copy-paste setups: scope, single-repo, org plus project, roles and projects
+- [Setup demos](guide/admin-setup.md) — Copy a block: scope, repo, packages, models, env, MCP, roles
 - [Git Providers](guide/providers.md) — GitHub, GitLab, GitCode, CNB, TGit and generic Git: detection and authentication
 - [Member Guide](guide/member-guide.md) — Joining a team, day-to-day use, commit co-author attribution, keeping delivered files out of git
 - [Sharing Team Resources](guide/sharing.md) — Publishing skills, rules, docs, env, agents, hooks and MCP servers
