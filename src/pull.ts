@@ -46,6 +46,7 @@ import {
   CultureFrontmatterSchema,
   resolveBaseDir,
   resolveToolBaseDir,
+  toolGateRoot,
   resolveHookScope,
   getDataHome,
   getProjectSearchIndexPath,
@@ -1871,7 +1872,7 @@ async function pullForScope(
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
       if (isAgentExcluded(localConfig, tool)) continue;
       if (!toolPath.skills) continue;
-      if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir)) continue;
+      if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir, toolGateRoot(tool, toolPath.skills, localConfig.toolRoots))) continue;
       if (tool === CODEX_TOOL) {
         const swept = (name: string): boolean => !desiredSkillNames.has(name) && knownRepoSkillNames.has(name);
         for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, scopeLabel)) {
@@ -2524,7 +2525,7 @@ async function reinjectLegacyHooks(localConfig: LocalConfig): Promise<void> {
   }
   // Paths follow the same scope decision as `baseDir`: a non-self project scope
   // injects into HOME, so it must use the user-scope paths there.
-  await injectHooksToAllTools(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope }), baseDir, hookFilter);
+  await injectHooksToAllTools(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope }), baseDir, hookFilter, localConfig.toolRoots);
   log.debug('Hooks migrated to dispatch format');
 }
 

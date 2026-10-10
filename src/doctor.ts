@@ -237,7 +237,7 @@ function buildToolRootChecks(localConfig: LocalConfig, teamConfig: TeamaiConfig 
       fix: rejection
         ? `${envVar} is ${detected}, which teamai cannot sync to (${rejection}); `
           + `this config syncs ${label} to ${effective}. Point ${envVar} at a directory `
-          + 'in your home (or ~/.config/<name>) and re-run `teamai init`.'
+          + 'in your home, or anywhere under a `~/.config/<name>`, and re-run `teamai init`.'
         : `${envVar} is ${detected}; this config syncs ${label} to ${effective}`
           + `${recorded === undefined ? ' (no root recorded)' : ''}. `
           + 'Re-run `teamai init` to record it.',

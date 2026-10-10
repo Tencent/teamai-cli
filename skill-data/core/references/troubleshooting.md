@@ -67,7 +67,8 @@ This is the #1 onboarding issue. In order:
    variable names is not the one this config syncs to. Re-run
    `teamai init` from a shell that has the variable exported; it records the root
    and moves the install. If the check says the value cannot be synced to (outside
-   your home, or nested deeper than `~/.config/<name>`), fix the variable first.
+   your home, or neither a plain directory in it nor one under `.config/`), fix the
+   variable first.
 6. **A command reports a broken manifest** (`Invalid roles manifest…`,
    `Invalid projects manifest…`, `Invalid manifests…`, or `…manifest … could not
    be read`). `pull` skips that scope on purpose, since syncing without the

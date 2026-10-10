@@ -9,7 +9,7 @@ import {
   isSelfMode,
   resolveHookScope,
   scopedToolPaths,
-  toolInstallRoot,
+  toolGateRoot,
   detectToolRoot,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
@@ -206,12 +206,12 @@ export async function seedSelfModeToolDirs(
     if (!selfMode && !isCustom) continue;
 
     const fallbackSkills = KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
-    let ensured = await seedToolRoots(baseDir, configured[id], fallbackSkills);
+    let ensured = await seedToolRoots(id, baseDir, configured[id], fallbackSkills, localConfig.toolRoots);
     // The HOME pass is restricted to what hook installation actually reads
     // (settings/hooks) — seeding skills/rules/agents/claudemd there too would
     // create a redundant directory for a tool with no settings-based hook
     // surface (#867 review, P2).
-    if (seedHookRoot && await seedHookInstallRoot(hookScope.baseDir, hookConfigured[id])) ensured = true;
+    if (seedHookRoot && await seedHookInstallRoot(id, hookScope.baseDir, hookConfigured[id], localConfig.toolRoots)) ensured = true;
     if (ensured) seeded.push(id);
   }
   return seeded;
@@ -226,22 +226,32 @@ export async function seedSelfModeToolDirs(
  * to create — its own "installed" check keys off a `.${tool}` directory
  * convention instead (local-agent.ts), unrelated to its own path, so it is
  * left alone here. settings/hooks are handled by seedHookInstallRoot.
+ *
+ * The root created is the one the gate reads (`toolGateRoot`), not the
+ * two-segment shape of the path: seeding a prefix the gate no longer probes
+ * would leave the tool looking uninstalled and the hook injection skipped.
  */
 async function seedToolRoots(
+  tool: string,
   baseDir: string,
   paths: ReturnType<typeof scopedToolPaths>[string] | undefined,
   fallbackSkills?: string,
+  toolRoots?: Record<string, string>,
 ): Promise<boolean> {
   const dirPaths = [paths?.skills, paths?.rules, paths?.agents].filter((p): p is string => !!p);
   if (dirPaths.length === 0 && fallbackSkills) dirPaths.push(fallbackSkills);
   for (const dirPath of dirPaths) await ensureDir(path.join(baseDir, dirPath));
 
   let ensuredAnything = dirPaths.length > 0;
-  if (paths?.claudemd && toolInstallRoot(paths.claudemd) !== paths.claudemd) {
-    await ensureDir(path.join(baseDir, toolInstallRoot(paths.claudemd)));
-    ensuredAnything = true;
+  const claudemd = paths?.claudemd;
+  if (claudemd) {
+    const claudemdRoot = toolGateRoot(tool, claudemd, toolRoots);
+    if (claudemdRoot !== claudemd) {
+      await ensureDir(path.join(baseDir, claudemdRoot));
+      ensuredAnything = true;
+    }
   }
-  if (await seedHookInstallRoot(baseDir, paths)) ensuredAnything = true;
+  if (await seedHookInstallRoot(tool, baseDir, paths, toolRoots)) ensuredAnything = true;
   return ensuredAnything;
 }
 
@@ -250,18 +260,20 @@ async function seedToolRoots(
  * own probe actually read (`paths.settings ?? paths.hooks`), ensured on disk.
  * Nested, that's its parent directory, same as any other file-valued path.
  * Bare (no "/"), there is no parent — the gate checks the FILE itself
- * (`toolInstallRoot` returns a bare path unchanged) — but reconcileHooks
+ * (`toolGateRoot` returns a bare path unchanged) — but reconcileHooks
  * already treats a missing settings/hooks file as `{}`, so an empty JSON
  * object satisfies the gate and gives it something valid to merge into,
  * instead of a bogus same-named directory.
  */
 async function seedHookInstallRoot(
+  tool: string,
   baseDir: string,
   paths: ReturnType<typeof scopedToolPaths>[string] | undefined,
+  toolRoots?: Record<string, string>,
 ): Promise<boolean> {
   let seeded = false;
   for (const filePath of [paths?.settings, paths?.hooks].filter((p): p is string => !!p)) {
-    const root = toolInstallRoot(filePath);
+    const root = toolGateRoot(tool, filePath, toolRoots);
     if (root !== filePath) {
       await ensureDir(path.join(baseDir, root));
     } else {

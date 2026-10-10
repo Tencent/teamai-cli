@@ -2161,11 +2161,16 @@ function isUnderUserHome(dir: string): boolean {
 }
 
 /**
- * Root shapes the installed-tool gate can express: a single directory in HOME
- * (`.claude-work`), or `.config/<name>` — the two forms `toolInstallRoot`
- * recognises. Anything deeper (`configs/claude`) would leave every gate keying
- * on the first segment alone, so an unrelated `~/configs` would report the tool
- * as installed and teamai would write into a directory that does not exist.
+ * Root shapes a member may record: a single directory in HOME
+ * (`.claude-work`), or a directory under `.config/` at any depth
+ * (`~/.config/cloak/profiles/work/claude`).
+ *
+ * `configs/claude` is still refused: not being under `.config`, the recorded
+ * value alone does not say how deep the tool's own root sits, so nothing
+ * distinguishes it from an unrelated directory of the same name — an
+ * unrelated `~/configs` would report the tool as installed and teamai would
+ * write into a directory that does not exist. `.config` gives the gate a
+ * bounded namespace to look in; `toolGateRoot` finds the exact root within it.
  */
 function isAddressableRootSegment(segment: string): boolean {
   const segments = segment.split('/');
@@ -2173,7 +2178,7 @@ function isAddressableRootSegment(segment: string): boolean {
   // reads it as the two-segment OpenCode-style root, so the gate would look for
   // the settings FILE as the tool's directory and never find it.
   if (segments.length === 1) return segments[0] !== '.config';
-  return segments.length === 2 && segments[0] === '.config';
+  return segments[0] === '.config';
 }
 
 /**
@@ -2210,8 +2215,8 @@ export function toolRootRejection(dir: string): string | null {
   const segment = path.relative(getUserHome(), resolved).split(path.sep).join('/');
   if (!isAddressableRootSegment(segment)) {
     return 'a tool root has to be a directory in the home directory other than '
-      + '~/.config itself (~/.claude-work), or a ~/.config/<name> directory, '
-      + 'because that is what the "is this tool installed?" check can look for';
+      + '~/.config itself (~/.claude-work), or a directory under a ~/.config/<name> one, '
+      + 'so the "is this tool installed?" check can tell it apart from an unrelated directory';
   }
   return null;
 }
@@ -2273,15 +2278,16 @@ export function isAgentExcluded(
 }
 
 /**
- * The directory whose existence marks a tool as "installed" for a given
- * resource path. The tool root is normally the first path segment
- * (`.claude/skills` → `.claude`, `.openclaw/workspace/AGENTS.md` → `.openclaw`).
+ * The root a set of tool paths hangs off, derived from the path's shape: the
+ * first segment (`.claude/skills` → `.claude`, `.openclaw/workspace/AGENTS.md`
+ * → `.openclaw`), except under `.config/`, where `.config` alone is a directory
+ * nearly every user has, and the root is therefore the first two segments
+ * (`.config/opencode`).
  *
- * The one exception is OpenCode's user scope, whose paths live under
- * `.config/opencode/...`: there the first segment (`.config`) is a directory
- * nearly every user has, so it would wrongly report OpenCode as installed.
- * For a `.config/<tool>/...` path the root is the first two segments
- * (`.config/opencode`) instead.
+ * This is the shape a relocation keys on and rewrites (`relocateToolPaths`
+ * matches against it, `applyToolRoots` re-roots at it), so it must stay
+ * independent of any recorded root. The installed-tool gate needs the tool's
+ * real directory instead — that is `toolGateRoot`.
  */
 export function toolInstallRoot(toolPath: string): string {
   const segments = toolPath.split('/');
@@ -2289,6 +2295,37 @@ export function toolInstallRoot(toolPath: string): string {
     return `${segments[0]}/${segments[1]}`;
   }
   return segments[0] ?? toolPath;
+}
+
+/**
+ * The directory the installed-tool gate reads for `tool`: the recorded root
+ * when one is in play, and the path-derived one otherwise.
+ *
+ * `toolInstallRoot` answers from the path's shape, which is what relocation
+ * needs. The gate needs the directory the tool actually keeps its config in,
+ * and those stop agreeing once a member records a root nested below
+ * `~/.config/<name>` (`~/.config/cloak/profiles/work/claude`): the two-segment
+ * prefix (`.config/cloak`) is a directory that may exist for an unrelated
+ * reason while the recorded root itself does not. Probing the prefix would
+ * call the tool installed and the write below it would recreate a root the
+ * user had deleted — the very thing the gate exists to prevent.
+ *
+ * The record is consulted only when `toolPath` really does hang off it: the
+ * same `toolPaths` are used unrelocated in project scope, where a HOME-relative
+ * member root says nothing, and a root that cannot be used is ignored there
+ * too (see `toolRootSegment`).
+ */
+export function toolGateRoot(
+  tool: string,
+  toolPath: string,
+  toolRoots?: Record<string, string>,
+): string {
+  const recorded = toolRoots?.[tool];
+  if (recorded) {
+    const segment = toolRootSegment(tool, recorded);
+    if (segment && (toolPath === segment || toolPath.startsWith(`${segment}/`))) return segment;
+  }
+  return toolInstallRoot(toolPath);
 }
 
 /** Path fields of ToolPathsSchema that live under the tool's own user root. */

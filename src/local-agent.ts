@@ -4648,10 +4648,12 @@ export async function initLocalAgentHttp(options: {
   const teamConfig = createLocalAgentTeamConfig(endpoint);
   // The local agent is always user-scope and always rooted at HOME, so resolve
   // the user-scope paths (Qoder CN's user config lives under ~/.qoder-cn).
+  const toolRoots = await memberToolRoots();
   await injectHooksToAllTools(
-    scopedToolPaths(teamConfig, { scope: 'user', toolRoots: await memberToolRoots() }),
+    scopedToolPaths(teamConfig, { scope: 'user', toolRoots }),
     getUserHome(),
     options.filterAgents,
+    toolRoots,
   );
   log.success(`HTTP local agent initialized at ${getConfigPath()}`);
 }

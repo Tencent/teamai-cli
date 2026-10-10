@@ -18,7 +18,7 @@ import {
   resolveLegacyProjectHookScope,
   resolveToolBaseDir,
   scopedToolPaths,
-  toolInstallRoot,
+  toolGateRoot,
 } from './types.js';
 import type { HookDef, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope } from './types.js';
 import {
@@ -2409,7 +2409,7 @@ async function reconcilePiExtension(
  * Only writes to tools whose root directory already exists on disk,
  * preventing creation of config dirs for tools the user hasn't installed.
  */
-export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[]): Promise<void> {
+export async function injectHooksToAllTools(toolPaths: Record<string, { settings?: string }>, baseDir?: string, filterAgents?: string[], toolRoots?: Record<string, string>): Promise<void> {
   const resolvedBaseDir = baseDir ?? getUserHome();
   const skipped = skipToolsWithoutShell(
     Object.keys(toolPaths).filter(t => !filterAgents || filterAgents.includes(t)),
@@ -2424,7 +2424,7 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
         log.warn(`Failed to inject Pi hook: ${(e as Error).message}`);
       }
     } else if (paths.settings) {
-      const toolRoot = path.join(resolvedBaseDir, toolInstallRoot(paths.settings));
+      const toolRoot = path.join(resolvedBaseDir, toolGateRoot(tool, paths.settings, toolRoots));
       if (!await pathExists(toolRoot)) continue;
       const settingsPath = path.join(resolvedBaseDir, paths.settings);
       try {
@@ -2509,6 +2509,11 @@ export async function reconcileHooksToAllTools(
   manifestPath: string,
   opts: {
     removeAll?: boolean; builtinOverride?: BuiltinHookOverride; filterAgents?: string[]; settingsOnly?: boolean; installedBaseDir?: string; teamHookProjectRoot?: string; scope?: Scope; builtinsOnly?: BuiltinsOnly; mainCheckout?: MainCheckoutHooks | null; teamHookHistory?: TeamHookHistory;
+    /**
+     * The active config's `toolRoots`, so the gate probes a member's recorded
+     * root rather than the path's two-segment shape (see `toolGateRoot`).
+     */
+    toolRoots?: Record<string, string>;
     /** Self mode: team hooks of SELF_LOCAL_TEAM_HOOK_TOOLS go to `settings.local.json` while `relocate` (#915). */
     selfLocalTeamHooks?: { relocate: boolean };
     /** Project scope: Codex team hooks may run from the dispatcher instead of the project's file (#915). */
@@ -2656,9 +2661,10 @@ export async function reconcileHooksToAllTools(
     // every configured tool (e.g. ~/.tclaude, ~/.tcodex) via reconcileHooks's
     // ensureDir — making uninstalled tools look installed and pulling skills
     // into them on later `pull`s.
-    const toolRoot = path.join(baseDir, toolInstallRoot(paths.settings));
+    const gateRoot = toolGateRoot(tool, paths.settings, opts.toolRoots);
+    const toolRoot = path.join(baseDir, gateRoot);
     const installedRoot = opts.installedBaseDir
-      ? path.join(opts.installedBaseDir, toolInstallRoot(paths.settings))
+      ? path.join(opts.installedBaseDir, gateRoot)
       : toolRoot;
     const mainFile = mainCheckoutHookFile(opts.mainCheckout, tool);
     const localFile = opts.selfLocalTeamHooks ? selfLocalHookFile(baseDir, tool, paths.settings) : null;
@@ -3205,6 +3211,7 @@ export async function reconcileTeamHooksForConfig(
       : undefined,
     installedBaseDir: localConfig.scope === 'project' ? (localConfig.projectRoot ?? baseDir) : undefined,
     scope: localConfig.scope,
+    toolRoots: localConfig.toolRoots,
     builtinsOnly,
     mainCheckout: await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths),
     teamHookHistory: history,

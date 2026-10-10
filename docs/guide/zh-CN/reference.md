@@ -103,7 +103,7 @@ toolRoots:                     # 可选，每机器的工具根目录（见下�
 
 根目录是这台机器的事实，而 project scope 的 hook 也注入到 home 目录。要结束迁移，把该变量设为空再执行一次 `init`（`CLAUDE_CONFIG_DIR= teamai init …`、`CODEX_HOME= teamai init …`）：记录会被清除，旧根目录按同样方式释放。除 hook 之外，旧根目录里 teamai 管理的 MCP server，以及（Claude Code 的）本地 agent 下发的网关凭据也会一并移除——它们是生效中的配置，不同于 skills 和 rules。
 
-根目录必须是 teamai 能够识别该工具的位置：home 目录下的一层目录（`~/.claude-work`，但 `~/.config` 本身除外），或者一个 `~/.config/<名称>` 目录（开头的 `~/` 会被展开）。这两种形态正是「该工具是否已安装」这项检查能够查找的范围；更深的层级、或 home 目录之外的路径都会被拒绝并给出警告，而不是只生效一半。
+根目录必须是 teamai 能够识别该工具的位置：home 目录下的一层目录（`~/.claude-work`，但 `~/.config` 本身除外），或者 `.config/` 下的目录——`~/.config/<名称>`，或更深的层级（`~/.config/cloak/profiles/work/claude`，即 cloak 这类「按目录切换 profile」的工具产生的布局）。开头的 `~/` 会被展开。`.config/` 下的深层根目录之所以可用，是因为「该工具是否已安装」这项检查读的是配置里记录的根目录本身，而不是路径上的某个前缀，而 `.config/` 是一个足够窄、能在其中定位到它的命名空间；不在 `.config` 之下的深层根目录、以及 home 目录之外的任何路径，都会被拒绝并给出警告，而不是只生效一半。
 
 skill 使用统计同样读取记录的根目录，迁移后的工具的 skills 也算作已安装；`import --from-claude` 读取迁移后的 Claude Code 的 rules。
 

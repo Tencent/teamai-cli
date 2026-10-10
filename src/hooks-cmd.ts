@@ -286,6 +286,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     const reconciledMainTools = await reconcileHooksToAllTools(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope }), baseDir, [], manifestPath, {
         removeAll: true,
         scope: localConfig.scope,
+        toolRoots: localConfig.toolRoots,
         installedBaseDir: localConfig.scope === 'project' ? localConfig.projectRoot : undefined,
         teamHookProjectRoot: localConfig.scope === 'project' && !isSelfMode(localConfig)
             ? localConfig.projectRoot

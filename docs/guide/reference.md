@@ -103,7 +103,7 @@ A re-init keeps a root that was recorded earlier, so running `init` from a shell
 
 To end a relocation, run `init` once with the variable set but blank (`CLAUDE_CONFIG_DIR= teamai init …`, `CODEX_HOME= teamai init …`): the record is cleared and the old root released the same way. Along with the hooks, the old root loses the teamai-managed MCP servers and, for Claude Code, any gateway credentials the local agent delivered there; they are active configuration, unlike the skills and rules.
 
-A root has to be somewhere teamai can recognize the tool at: a directory in your home other than `~/.config` itself (`~/.claude-work`), or a `~/.config/<name>` directory (a leading `~/` is expanded). Those are the two shapes the "is this tool installed?" check can look for; anything deeper, or outside your home directory, is refused with a warning rather than silently half-applied.
+A root has to be somewhere teamai can recognize the tool at: a directory in your home other than `~/.config` itself (`~/.claude-work`), or a directory under `.config/` — `~/.config/<name>`, or nested deeper (`~/.config/cloak/profiles/work/claude`, the layout per-directory profile managers such as cloak produce). A leading `~/` is expanded. A nested `.config/` root is fine because the "is this tool installed?" check reads the root the config recorded rather than a prefix of the path, and `.config/` is a narrow enough namespace to find it in; a nested root that is not under `.config`, or any root outside your home directory, is refused with a warning rather than silently half-applied.
 
 Skill-use tracking reads the recorded roots as well, so a relocated tool's skills count as installed, and `import --from-claude` reads a relocated Claude Code's rules.
 
