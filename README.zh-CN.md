@@ -155,7 +155,6 @@ teamai init https://github.com/your-org/your-repo --scope user
 ## 了解更多
 
 - [快速开始](docs/guide/zh-CN/getting-started.md) — 搭建团队、加入团队或分享 skill
-- [文档总目录](docs/README.zh-CN.md) — `docs/` 下全部文档，按读者分类
 - [使用指南](docs/usage-guide.zh-CN.md)（[English](docs/usage-guide.md)）— 安装、成员接入、日常流程与命令参考
 - [产品概览](docs/product-overview.zh-CN.md)（[English](docs/product-overview.md)）— 架构、分发策略与能力详解
 - [Git Provider](docs/guide/zh-CN/providers.md) — 支持的代码托管平台

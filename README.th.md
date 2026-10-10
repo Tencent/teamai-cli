@@ -149,7 +149,6 @@ teamai init https://github.com/your-org/your-repo --scope user
 ## เรียนรู้เพิ่มเติม
 
 - [Getting Started](docs/guide/getting-started.md) — set up a team, join one, or share a skill
-- [Documentation index](docs/README.md) — every document under `docs/`, by audience
 - [Usage Guide](docs/usage-guide.md) — setup, onboarding, daily workflows, and commands
 - [Product Overview](docs/product-overview.md) — architecture, distribution controls, and capability details
 - [Git Providers](docs/guide/providers.md) — supported repository providers

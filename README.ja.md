@@ -149,7 +149,6 @@ Git を基盤に、3 層の能力を構築します：
 ## 詳細情報
 
 - [Getting Started](docs/guide/getting-started.md) — set up a team, join one, or share a skill
-- [Documentation index](docs/README.md) — every document under `docs/`, by audience
 - [Usage Guide](docs/usage-guide.md) — setup, onboarding, daily workflows, and commands
 - [Product Overview](docs/product-overview.md) — architecture, distribution controls, and capability details
 - [Git Providers](docs/guide/providers.md) — supported repository providers
