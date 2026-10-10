@@ -1,7 +1,5 @@
 # Setup demos
 
-> [English](admin-setup.md) | [简体中文](zh-CN/admin-setup.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 Joining a repo that already exists is [Join a team](./getting-started.md#join-a-team).

@@ -1,7 +1,5 @@
 # 共享团队资源
 
-> [English](../sharing.md) | [简体中文](sharing.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---

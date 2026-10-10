@@ -1,7 +1,5 @@
 # Git Providers
 
-> [English](providers.md) | [简体中文](zh-CN/providers.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---

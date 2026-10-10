@@ -1,7 +1,5 @@
 # 诊断与维护
 
-> [English](../diagnostics.md) | [简体中文](diagnostics.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---

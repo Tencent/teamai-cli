@@ -1,7 +1,5 @@
 # TeamAI 产品概览
 
-> [English](product-overview.md) | [简体中文](product-overview.zh-CN.md)
-
 安装和日常使用在[使用指南](usage-guide.zh-CN.md)。
 
 昨天摸出来的结论，不放进团队仓库，就还在那一台机器上。TeamAI 把仓库里的 skills、rules、docs、env、hooks 同步到每个人的 AI 工具，也可以把会话里的经验写回去。先把 harness 发出去。Context 和 Improvement 仍是 beta。

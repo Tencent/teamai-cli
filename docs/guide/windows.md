@@ -1,7 +1,5 @@
 # Windows: Getting Hooks to Fire
 
-> [English](windows.md) | [简体中文](zh-CN/windows.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 > What to check when TeamAI's agent hooks do not run on Windows.

@@ -1,7 +1,5 @@
 # 跨团队 Skill 订阅
 
-> [English](../subscriptions.md) | [简体中文](subscriptions.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---

@@ -1,7 +1,5 @@
 # Uninstall & FAQ
 
-> [English](faq.md) | [简体中文](zh-CN/faq.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---

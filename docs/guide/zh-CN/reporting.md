@@ -1,7 +1,5 @@
 # 使用统计上报
 
-> [English](../reporting.md) | [简体中文](reporting.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---

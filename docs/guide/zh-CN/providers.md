@@ -1,7 +1,5 @@
 # Git Provider
 
-> [English](../providers.md) | [简体中文](providers.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---
@@ -342,4 +340,4 @@ reviewers:
 
 ## 新增 Provider
 
-Provider 层的内部实现和新增 provider 的步骤见 [Adding a Git provider](../../dev/adding-a-provider.md)（英文）。
+Provider 层的内部实现和新增 provider 的步骤见 [Adding a Git provider](../../dev/adding-a-provider.md)。

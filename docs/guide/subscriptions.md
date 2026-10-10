@@ -1,7 +1,5 @@
 # Cross-team skill subscriptions
 
-> [English](subscriptions.md) | [简体中文](zh-CN/subscriptions.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---

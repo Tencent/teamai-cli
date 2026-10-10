@@ -1,7 +1,5 @@
 # TeamAI CLI — 团队接入与使用指南
 
-> [English](usage-guide.md) | [简体中文](usage-guide.zh-CN.md)
-
 > **teamai-cli** 在 Claude Code、Codex、GitHub Copilot CLI、CodeBuddy、WorkBuddy、OpenCode、Pi、Cursor 以及其他受支持的 Agent 之间同步 Skills、Rules、Docs、Env 和 MCP。
 
 从[快速开始](guide/zh-CN/getting-started.md)进入：搭建团队、加入团队，或分享一个 skill。

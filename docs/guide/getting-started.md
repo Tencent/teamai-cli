@@ -1,7 +1,5 @@
 # Getting Started
 
-> [English](getting-started.md) | [简体中文](zh-CN/getting-started.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---

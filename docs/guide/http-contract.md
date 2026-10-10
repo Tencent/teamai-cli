@@ -1,7 +1,5 @@
 # HTTP contract
 
-> [English](http-contract.md) | [简体中文](zh-CN/http-contract.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---

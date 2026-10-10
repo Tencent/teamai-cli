@@ -1,7 +1,5 @@
 # TeamAI CLI — Team Onboarding & Usage Guide
 
-> [English](usage-guide.md) | [简体中文](usage-guide.zh-CN.md)
-
 > **teamai-cli** syncs Skills, Rules, Docs, Env, and MCP across Claude Code, Codex, GitHub Copilot CLI, CodeBuddy, WorkBuddy, OpenCode, Pi, Cursor, and the other supported agents.
 
 Start with [Getting Started](guide/getting-started.md): set up a team, join one, or share a skill.

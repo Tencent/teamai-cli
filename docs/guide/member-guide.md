@@ -1,7 +1,5 @@
 # Member Guide
 
-> [English](member-guide.md) | [简体中文](zh-CN/member-guide.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---

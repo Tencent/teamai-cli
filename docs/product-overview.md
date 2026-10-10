@@ -1,7 +1,5 @@
 # TeamAI Product Overview
 
-> [English](product-overview.md) | [简体中文](product-overview.zh-CN.md)
-
 Setup and daily use are in the [Usage Guide](usage-guide.md).
 
 A conclusion from yesterday stays on one machine until someone puts it in the team repo. TeamAI copies skills, rules, docs, env, and hooks from that repo into each person's AI tools, and can write session learnings back. Share the harness first. Context and improvement are still beta.

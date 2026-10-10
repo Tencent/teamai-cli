@@ -155,10 +155,10 @@ teamai init https://github.com/your-org/your-repo --scope user
 ## 了解更多
 
 - [快速开始](docs/guide/zh-CN/getting-started.md) — 搭建团队、加入团队或分享 skill
-- [使用指南](docs/usage-guide.zh-CN.md)（[English](docs/usage-guide.md)）— 安装、成员接入、日常流程与命令参考
-- [产品概览](docs/product-overview.zh-CN.md)（[English](docs/product-overview.md)）— 架构、分发策略与能力详解
+- [使用指南](docs/usage-guide.zh-CN.md) — 安装、成员接入、日常流程与命令参考
+- [产品概览](docs/product-overview.zh-CN.md) — 架构、分发策略与能力详解
 - [Git Provider](docs/guide/zh-CN/providers.md) — 支持的代码托管平台
-- [Windows 配置](docs/guide/zh-CN/windows.md)（[English](docs/guide/windows.md)）— Hook 与 Shell 配置
+- [Windows 配置](docs/guide/zh-CN/windows.md) — Hook 与 Shell 配置
 - [技术设计](docs/designs/README.md) — 设计文档与提案
 
 ## 贡献者
