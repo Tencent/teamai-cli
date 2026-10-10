@@ -92,6 +92,12 @@ restrict the install unless the user said to. Omitting it gives a picker — sel
 language) which agents will now auto-sync TeamAI**, and note any detected tool that
 was skipped and why.
 
+**One shared copy per skill (only when the user asks for it):** add
+`--skill-library` to install each team skill once into `.agents/skills/` and link
+every other tool to it instead of copying. `pull` keeps (and warns about) any
+existing tool copy that differs from the team skill; `--no-skill-library` goes
+back to per-tool copies.
+
 **Read-only / restricted environments (no Git access):** some sandboxed hosts
 cannot use Git. If the admin provides an HTTP endpoint + API key instead, use:
 

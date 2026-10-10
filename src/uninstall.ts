@@ -67,7 +67,7 @@ import {
 } from './builtin-skills.js';
 import { getHermesHome } from './hermes-home.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
-import { CODEX_TOOL, SHARED_AGENT_SKILLS_PATH, skillOrigin } from './resources/skills.js';
+import { CODEX_TOOL, SHARED_AGENT_SKILLS_PATH, isSkillLibraryLink, skillLibraryDir, skillOrigin, skillsDirForTool } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
 import { clearInstructionFile, instructionTargetFile, readsTeamRulesFromFile, retiredInstructionFiles, resolveInstructionTargets, userRulesFile } from './instruction-targets.js';
 import {
@@ -448,6 +448,7 @@ async function discoverToolResources(
    * HTTP agent, a self-mode project or another checkout still uses them (#945).
    */
   globalAdapters = scope === 'user',
+  skillLibraryEnabled = false,
 ): Promise<ToolResources> {
   const res: ToolResources = {
     hookFiles: [], openclawHookDirs: [], opencodeHookScopes: [], ompHookFile: null, piHookFiles: [], dshHookFile: null,
@@ -643,7 +644,9 @@ async function discoverToolResources(
     // .agents/skills root when teamai's copy already lives there, so uninstall
     // must look where deployment could have put it — the legacy prune already
     // does. Codex only: another tool's pass must not reach into it.
-    if (tool === CODEX_TOOL) {
+    // With `skillLibrary` on, that root is the library other tools link to:
+    // it goes only with the shared resources (see buildRemovalPlan).
+    if (tool === CODEX_TOOL && !skillLibraryEnabled) {
       const sharedSkills = path.join(baseDir, SHARED_AGENT_SKILLS_PATH);
       skillRoots.set(sharedSkills, skillsGuardBase(scopeRoot, sharedSkills));
     }
@@ -887,6 +890,7 @@ async function buildRemovalPlan(
         localConfig.scope,
         hookToolPaths[tool]?.settings,
         globalAdapters,
+        skillLibraryDir(localConfig) !== null,
       ),
     );
   }
@@ -1170,6 +1174,30 @@ async function buildRemovalPlan(
   if (!globalAdapters && toolsToMerge.includes('hermes')) {
     const { getInstructionsPluginDir, ownsInstructionsPlugin } = await import('./hermes-hooks.js');
     if (await pathExists(getInstructionsPluginDir()) && await ownsInstructionsPlugin()) plan.keptGlobal.push(getInstructionsPluginDir());
+  }
+
+  // `skillLibrary`: each selected tool holds links into the library, which
+  // discovery (it lists real directories) does not see. Removing a link never
+  // reaches the library copy; that goes only with the shared resources.
+  const library = skillLibraryDir(localConfig);
+  if (library) {
+    const scoped = scopedToolPaths(teamConfig, localConfig);
+    for (const tool of toolsToMerge) {
+      const skillsDir = await skillsDirForTool(tool, scoped[tool]?.skills, localConfig);
+      if (!skillsDir) continue;
+      for (const name of teamSkillNames) {
+        const link = path.join(skillsDir, name);
+        if (await isSkillLibraryLink(link, name, localConfig)) plan.skillDirs.push({ dir: link, baseDir: path.dirname(path.dirname(skillsDir)) });
+      }
+    }
+    if (includeShared) {
+      for (const name of await listDirs(library)) {
+        const dir = path.join(library, name);
+        if (teamSkillNames.has(name) && !plan.skillDirs.some((entry) => entry.dir === dir)) {
+          plan.skillDirs.push({ dir, baseDir: skillsGuardBase(baseDir, library) });
+        }
+      }
+    }
   }
 
   if (includeShared) {

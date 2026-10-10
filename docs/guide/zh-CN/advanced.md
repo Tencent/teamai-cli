@@ -563,6 +563,14 @@ dsh 不读取 rules 目录。user scope 下团队 rule 是 `$DSH_HOME/AGENTS.md`
 
 TeamAI 会打印带绝对路径的 patch。将这个 `--patch` 参数加到启动 DSH profile 的命令中，例如 `dsh tui --patch "<打印出的路径>"`。这是一次性的启动器选择；`teamai hooks remove` 和 `teamai uninstall` 会移除 TeamAI patch，同时保留生成配置中的其他 Hook 条目。
 
+### Kimi Code
+
+Kimi Code（`kimi`）已作为内置目标支持 Skills。TeamAI 在 user scope 把它们下发到 `~/.kimi-code/skills/`，在 project scope 下发到 `.kimi-code/skills/`，即 Kimi Code 原生读取的目录。Kimi Code 也会读取共享的 `.agents/skills/`，因此 `--skill-library` 会像其他工具一样把它的目录链接到库。团队 MCP server 合并进 `~/.kimi-code/mcp.json`（见 [MCP Server](./sharing.md#mcp-server)）；在项目中 Kimi Code 读取项目根目录的 `.mcp.json`，即 `claude` 目标写入的文件。
+
+### Devin
+
+Devin（`devin`）已作为内置目标支持 Skills。TeamAI 在 user scope 把它们下发到 `~/.config/devin/skills/`，在 project scope 下发到 `.devin/skills/`，即 `devin skills paths` 列出的目录。Devin 也会读取共享的 `.agents/skills/`。团队 MCP server 合并进 `~/.config/devin/mcp_config.json` 和 `<project>/.devin/mcp_config.json`（见 [MCP Server](./sharing.md#mcp-server)）。
+
 ### JoyCode
 
 JoyCode 已作为内置目标支持。Skills、Rules 和 Subagents 分别下发到 `.joycode/skills/`、`.joycode/rules/` 和 `.joycode/agents/`。Subagents 使用带 YAML frontmatter 的 Markdown 文件。

@@ -2,8 +2,9 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { isToolInstalledForConfig, ResourceHandler } from './base.js';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
-import { getPushignorePath, isAgentExcluded, resolveToolBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
-import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
+import { getPushignorePath, isAgentExcluded, resolveBaseDir, resolveToolBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
+import fse from 'fs-extra';
+import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile, replaceDirAtomic, readSymlinkTarget, hasVcsMetadataRecursive } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { getFileContentWhenAdded, isPastVersionOf } from '../utils/git.js';
@@ -19,7 +20,7 @@ import { assertWithinRoot, resolveReal } from '../utils/path-safety.js';
 import { splitFrontmatter, stringifyFrontmatter } from '../utils/frontmatter.js';
 import {
   blockingEntries, deliveredSkillFiles, describeKeptDir, describeMembersDirLeft, describeMembersFile, describeMembersLink, describeSkippedLink, isLink, judgeCopy, keepsEditedCopy, keepsTrackedCopy,
-  membersLinkAt, ownsSkillDir, recordDelivered, teamaiSkillFiles, type DeliveredHashes, type DeliveryLedger,
+  forgetDelivered, membersLinkAt, ownsSkillDir, recordDelivered, teamaiSkillFiles, type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
 
 /** File name used to track who has contributed (pushed) a skill. */
@@ -186,6 +187,89 @@ export function skillOrigin(repoPath: string, name: string): CopyOrigin {
     pathspec: `:(glob)skills/**/${name}`,
     renders: [(content) => withSkillFrontmatter(content.toString('utf-8'), name)],
   };
+}
+
+/**
+ * The shared skill library, or null when `skillLibrary` is off. With it on,
+ * each team skill is installed here once and every tool links to it.
+ */
+export function skillLibraryDir(localConfig: LocalConfig): string | null {
+  if (!localConfig.skillLibrary) return null;
+  return path.join(resolveBaseDir(localConfig), SHARED_AGENT_SKILLS_PATH);
+}
+
+async function isSkillLibraryLinkTarget(dest: string, libraryPath: string): Promise<boolean> {
+  const target = await readSymlinkTarget(dest);
+  return target !== null && path.resolve(target) === path.resolve(libraryPath);
+}
+
+/** True when `dest` is a symlink to the library copy of skill `name`, even a dangling one. */
+export async function isSkillLibraryLink(dest: string, name: string, localConfig: LocalConfig): Promise<boolean> {
+  const library = skillLibraryDir(localConfig);
+  return library !== null && isSkillLibraryLinkTarget(dest, path.join(library, name));
+}
+
+/**
+ * The skill directories under `skillsDir`. With `skillLibrary` on, links into
+ * the library count too: pull made them, so its cleanups must see them, while
+ * `listDirs` skips every symlink.
+ */
+export async function listDeployedSkillNames(skillsDir: string, localConfig: LocalConfig): Promise<string[]> {
+  const names = await listDirs(skillsDir);
+  if (!skillLibraryDir(localConfig)) return names;
+  let entries;
+  try {
+    entries = await fse.readdir(skillsDir, { withFileTypes: true });
+  } catch {
+    return names;
+  }
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() && await isSkillLibraryLink(path.join(skillsDir, entry.name), entry.name, localConfig)) {
+      names.push(entry.name);
+    }
+  }
+  return names;
+}
+
+/**
+ * Whether the real directory `dest` holds only an earlier TeamAI install of a
+ * library skill: `earlierInstall` (it matched the library copy before this
+ * pull) or the same files as the library copy now. One with its own VCS
+ * metadata never does, since a file compare cannot see unpushed history.
+ */
+async function isReplaceableCopy(dest: string, libraryPath: string, earlierInstall: boolean): Promise<boolean> {
+  if (await hasVcsMetadataRecursive(dest)) return false;
+  return earlierInstall || dirContentEqual(dest, libraryPath, [CONTRIBUTORS_FILE]);
+}
+
+/**
+ * Point `dest` at `libraryPath`. Only a missing entry, a dangling link, or an
+ * earlier TeamAI copy is turned into the link; anything else is the member's
+ * and stays, with a warning.
+ */
+async function linkToLibrary(tool: string, dest: string, libraryPath: string, earlierInstall: boolean): Promise<void> {
+  const stat = await fse.lstat(dest).catch(() => null);
+  if (stat?.isSymbolicLink()) {
+    if (await isSkillLibraryLinkTarget(dest, libraryPath)) return;
+    if (await pathExists(dest)) {
+      const target = await readSymlinkTarget(dest);
+      log.warn(`Kept ${dest} (${tool}): it links to ${target}, not the skill library. Remove the link to let the library copy deploy.`);
+      return;
+    }
+    await remove(dest);
+  } else if (stat?.isDirectory()) {
+    if (!await isReplaceableCopy(dest, libraryPath, earlierInstall)) {
+      log.warn(`Kept ${dest} (${tool}): it differs from the team skill, so it may hold your changes. Push or back them up, then delete it to link the skill library.`);
+      return;
+    }
+    await remove(dest);
+  } else if (stat) {
+    log.warn(`Kept ${dest} (${tool}): a file is in the way of the skill library link.`);
+    return;
+  }
+  await fse.ensureDir(path.dirname(dest));
+  await fse.symlink(libraryPath, dest, process.platform === 'win32' ? 'junction' : 'dir');
+  log.debug(`Linked ${dest} → ${libraryPath}`);
 }
 
 /** Add fields immediately before the closing delimiter without reformatting existing YAML. */
@@ -524,6 +608,31 @@ async function isPastSkillVersion(
   return true;
 }
 
+/** `delivered`'s record of the copy at `dest`, keyed as if it lived at `staging`. */
+function stagedRecord(delivered: DeliveredHashes | undefined, dest: string, staging: string): DeliveredHashes | undefined {
+  if (delivered === undefined) return undefined;
+  const staged: DeliveredHashes = {};
+  for (const [file, hash] of Object.entries(delivered)) {
+    if (file.startsWith(dest + path.sep)) staged[staging + file.slice(dest.length)] = hash;
+  }
+  return staged;
+}
+
+/**
+ * Whether every file of the tool copy at `localDir` is a current or past
+ * version of the same file of the team skill `teamRelDir` in the team repo at
+ * `repoPath`, so deleting the copy loses nothing the team history lacks.
+ */
+async function isPastSkillInstall(repoPath: string, localDir: string, teamRelDir: string): Promise<boolean> {
+  if (teamRelDir.startsWith('..') || path.isAbsolute(teamRelDir)) return false;
+  const files = (await listFilesRecursive(localDir)).filter(rel => !rel.split('/').includes(CONTRIBUTORS_FILE));
+  if (files.length === 0) return false;
+  for (const rel of files) {
+    if (!await isPastVersionOf(repoPath, path.join(localDir, rel), `${teamRelDir}/${rel}`)) return false;
+  }
+  return true;
+}
+
 export class SkillsHandler extends ResourceHandler {
   readonly type = 'skills' as const;
 
@@ -626,10 +735,17 @@ export class SkillsHandler extends ResourceHandler {
     // Collect the best candidate for each skill name across all tool directories
     const candidates = new Map<string, { sourcePath: string; mtime: number; status: ResourceItemStatus; namespace?: string }>();
 
-    // Scan each tool's skills directory
+    // Scan each tool's skills directory. Links into the skill library are not
+    // listed there, so the library is scanned as a root of its own.
+    const scanRoots: [string, string][] = [];
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.skills) continue;
-      const skillsDir = path.join(resolveToolBaseDir(tool, localConfig), toolPath.skills);
+      scanRoots.push([tool, path.join(resolveToolBaseDir(tool, localConfig), toolPath.skills)]);
+    }
+    const library = skillLibraryDir(localConfig);
+    if (library) scanRoots.push(['skill library', library]);
+
+    for (const [tool, skillsDir] of scanRoots) {
       if (!await pathExists(skillsDir)) continue;
 
       // Use recursive scanning to find all skills at any depth
@@ -825,6 +941,11 @@ export class SkillsHandler extends ResourceHandler {
     localConfig: LocalConfig,
     item: ResourceItem,
   ): Promise<DeliveryTarget[]> {
+    // `skillLibrary`: the one copy pull delivers is the library's; every tool
+    // only links to it, so a per-tool target would judge pull's own links as
+    // the member's.
+    const library = skillLibraryDir(localConfig);
+    if (library) return [{ tool: SHARED_AGENT_SKILLS_PATH, dest: path.join(library, item.name) }];
     return this.resolveTargets(teamConfig, localConfig, item);
   }
 
@@ -833,6 +954,11 @@ export class SkillsHandler extends ResourceHandler {
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig, ledger?: DeliveryLedger): Promise<void> {
     const otherVersions = await otherVersionFiles(localConfig.repo.localPath, item);
+    const library = skillLibraryDir(localConfig);
+    if (library) {
+      await this.pullItemIntoLibrary(item, teamConfig, localConfig, path.join(library, item.name), otherVersions, ledger);
+      return;
+    }
     for (const target of await this.resolveTargets(teamConfig, localConfig, item, item.sourcePath, ledger?.previous)) {
       const { tool, dest } = target;
       try {
@@ -863,6 +989,96 @@ export class SkillsHandler extends ResourceHandler {
         ledger?.failed.push({ name: item.name, tool });
       }
     }
+  }
+
+  /**
+   * `skillLibrary` mode: stage the skill, validate it, swap it into the library
+   * in one rename, then link each tool to it. Codex reads the library itself,
+   * so its own copy is removed rather than linked, or Codex would list the
+   * skill twice.
+   */
+  private async pullItemIntoLibrary(
+    item: ResourceItem,
+    teamConfig: TeamaiConfig,
+    localConfig: LocalConfig,
+    libraryPath: string,
+    otherVersions: Map<string, string[]>,
+    ledger?: DeliveryLedger,
+  ): Promise<void> {
+    if (await readSymlinkTarget(libraryPath) !== null) {
+      log.warn(`Skipped skill ${item.name}: ${libraryPath} is a symlink, and TeamAI does not write through one. Remove the link to let the skill deploy.`);
+      return;
+    }
+    if (!await pathExists(path.join(item.sourcePath, SKILL_MD))) {
+      log.warn(`Skipped skill ${item.name}: the team copy has no ${SKILL_MD}.`);
+      return;
+    }
+
+    const targets: DeliveryTarget[] = [];
+    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
+      if (isAgentExcluded(localConfig, tool)) continue;
+      const skillsDir = await skillsDirForTool(tool, toolPath.skills, localConfig);
+      if (skillsDir !== null) targets.push({ tool, dest: path.join(skillsDir, item.name) });
+    }
+
+    // A tool copy that matches the library copy before this update, or whose
+    // every file is a version the team repo once had, is an earlier TeamAI
+    // install; the first is only decidable while the old copy is there.
+    const teamRelDir = path.relative(localConfig.repo.localPath, item.sourcePath).split(path.sep).join('/');
+    const earlierInstalls = new Set<string>();
+    for (const { dest } of targets) {
+      if (await readSymlinkTarget(dest) !== null || !(await fse.lstat(dest).catch(() => null))?.isDirectory()) continue;
+      if (await dirContentEqual(dest, libraryPath, [CONTRIBUTORS_FILE])
+        || await isPastSkillInstall(localConfig.repo.localPath, dest, teamRelDir)) {
+        earlierInstalls.add(dest);
+      }
+    }
+
+    const libraryTarget = { tool: SHARED_AGENT_SKILLS_PATH, dest: libraryPath };
+    if (!(ledger && await keepsEditedCopy(ledger, item, libraryTarget))) {
+      try {
+        await replaceDirAtomic(libraryPath, async (staging) => {
+          await copyDir(item.sourcePath, staging);
+          await removeLeftoverVersionFiles(item.sourcePath, staging, otherVersions, stagedRecord(ledger?.previous, libraryPath, staging));
+          await ensureSkillFrontmatter(staging, item.name);
+        });
+        if (ledger) await recordDelivered(ledger.hashes, libraryPath, item.sourcePath);
+        log.debug(`Synced skill ${item.name} → ${libraryPath}`);
+      } catch (e) {
+        log.warn(`Failed to sync skill ${item.name} to the skill library: ${(e as Error).message}`);
+        return;
+      }
+    }
+
+    for (const { tool, dest } of targets) {
+      if (path.resolve(dest) === path.resolve(libraryPath)) continue;
+      try {
+        if (tool === CODEX_TOOL) {
+          await this.removeCodexCopy(dest, libraryPath, earlierInstalls.has(dest));
+        } else {
+          await linkToLibrary(tool, dest, libraryPath, earlierInstalls.has(dest));
+        }
+      } catch (e) {
+        log.warn(`Failed to link skill ${item.name} for ${tool}: ${(e as Error).message}`);
+      }
+      // A tool copy turned into a link (or removed, for Codex) is no longer a delivery of its own.
+      if (ledger && (await readSymlinkTarget(dest) !== null || !await pathExists(dest))) forgetDelivered(ledger.hashes, dest);
+    }
+  }
+
+  private async removeCodexCopy(dest: string, libraryPath: string, earlierInstall: boolean): Promise<void> {
+    const stat = await fse.lstat(dest).catch(() => null);
+    if (!stat) return;
+    if (stat.isSymbolicLink()) {
+      if (await isSkillLibraryLinkTarget(dest, libraryPath)) await remove(dest);
+      return;
+    }
+    if (stat.isDirectory() && await isReplaceableCopy(dest, libraryPath, earlierInstall)) {
+      await remove(dest);
+      log.debug(`Removed ${dest}: Codex reads the skill library copy`);
+      return;
+    }
+    log.warn(`Codex skill conflict for ${path.basename(dest)}: keeping different copies in ${SHARED_AGENT_SKILLS_PATH} and ${dest}`);
   }
 
   /**

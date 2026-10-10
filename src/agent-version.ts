@@ -105,7 +105,21 @@ const DETECTORS: Record<string, VersionDetector> = {
   // DeepSeek Harness: `dsh --version` prints e.g. "0.1.1" (optionally with a
   // leading "v" or trailing commit info). Extract leading semver-ish digits.
   dsh: detectDshVersion,
+  // Kimi Code: `kimi --version` prints e.g. "0.38.0".
+  kimi: detectKimiVersion,
+  // Devin: `devin version` prints e.g. "devin 3000.10.21 (611c1cba)".
+  devin: detectDevinVersion,
 };
+
+async function detectDevinVersion(): Promise<string> {
+  const raw = await execVersion('devin', ['version']);
+  return raw.match(/(\d+(?:\.\d+)+)/)?.[1] ?? '';
+}
+
+async function detectKimiVersion(): Promise<string> {
+  const raw = await execVersion('kimi');
+  return raw.match(/v?(\d+(?:\.\d+)*)/)?.[1] ?? '';
+}
 
 async function detectDshVersion(): Promise<string> {
   const raw = await execVersion('dsh');

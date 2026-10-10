@@ -577,6 +577,14 @@ dsh reads no rules directory. In user scope the team rules are a block in `$DSH_
 
 TeamAI prints the exact absolute patch path. Add that `--patch` flag to the command that starts your DSH profile, for example `dsh tui --patch "<printed-path>"`. This is a one-time launcher opt-in; `teamai hooks remove` and `teamai uninstall` remove the TeamAI patch while preserving other hook entries in the generated config.
 
+### Kimi Code
+
+Kimi Code (`kimi`) is available as a built-in target for skills. TeamAI deploys them to `~/.kimi-code/skills/` at user scope and `.kimi-code/skills/` at project scope, the directories Kimi Code reads natively. Kimi Code also reads the shared `.agents/skills/`, so `--skill-library` links its directory to the library like any other tool. Team MCP servers merge into `~/.kimi-code/mcp.json` (see [MCP servers](./sharing.md#mcp-servers)); in a project Kimi Code reads the root `.mcp.json`, which the `claude` target writes.
+
+### Devin
+
+Devin (`devin`) is available as a built-in target for skills. TeamAI deploys them to `~/.config/devin/skills/` at user scope and `.devin/skills/` at project scope, the directories `devin skills paths` lists. Devin also reads the shared `.agents/skills/`. Team MCP servers merge into `~/.config/devin/mcp_config.json` and `<project>/.devin/mcp_config.json` (see [MCP servers](./sharing.md#mcp-servers)).
+
 ### JoyCode
 
 JoyCode is available as a built-in target. Skills, rules, and subagents are deployed to `.joycode/skills/`, `.joycode/rules/`, and `.joycode/agents/`. Subagents use Markdown with YAML frontmatter.

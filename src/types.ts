@@ -595,8 +595,10 @@ export const TeamaiConfigBaseSchema = z.object({
     hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
     // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
     // provider scans as user-dsh root (rank 400). dsh discovers both directory
-    // bundles (<name>/SKILL.md) and flat Markdown files there natively.
-    dsh: { skills: '.dsh/skills' },
+    // bundles (<name>/SKILL.md) and flat Markdown files there natively. MCP servers
+    // go into the home-level patch layer every dsh profile applies. No mcpProject:
+    // dsh has no project-scope patch file.
+    dsh: { skills: '.dsh/skills', mcp: '.dsh/cordis.patch.yml' },
     // WorkBuddy runs CodeBuddy's engine: in a project it reads CodeBuddy's
     // .codebuddy/rules, which the two share (one copy), and in user scope its
     // own ~/.workbuddy/rules (#946). Its install probe stays .workbuddy
@@ -610,6 +612,17 @@ export const TeamaiConfigBaseSchema = z.object({
       mcp: '.workbuddy/mcp.json',
       mcpProject: '.workbuddy/mcp.json',
       userScope: { rules: '.workbuddy/rules' },
+    },
+    // Kimi Code: skills in ~/.kimi-code/skills (user) and .kimi-code/skills (project).
+    // No mcpProject: Kimi reads the project root's .mcp.json, which `claude` writes.
+    kimi: { skills: '.kimi-code/skills', mcp: '.kimi-code/mcp.json' },
+    // Devin: user skills live under ~/.config/devin/ but project skills under
+    // <root>/.devin/ — a different prefix, hence userScope.
+    devin: {
+      skills: '.devin/skills',
+      mcp: '.config/devin/mcp_config.json',
+      mcpProject: '.devin/mcp_config.json',
+      userScope: { skills: '.config/devin/skills' },
     },
     // OpenCode reads project config from <root>/.opencode/ but user config from
     // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
@@ -730,6 +743,13 @@ export const LocalConfigSchema = z.object({
   subscribedTags: z.array(z.string()).optional(),
   /** Skills to exclude from local sync (per-user, does not affect team repo). */
   excludedSkills: z.array(z.string()).optional(),
+  /**
+   * Opt-in (`init --skill-library`): pull installs each team skill once into
+   * the shared `.agents/skills` library and links every other tool's skill
+   * directory to it, instead of copying the skill into each tool. Unset keeps
+   * the per-tool copies.
+   */
+  skillLibrary: z.boolean().optional(),
   /** User-level override for recall feature. When set, takes precedence over team config. */
   recallEnabled: z.boolean().optional(),
   /** Per-machine override of the team's `sharing.gitExclude.enabled` (#915),

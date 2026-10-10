@@ -15,7 +15,9 @@ import { sameEnvName } from './env-key.js';
 //  Keeping the differences here — rather than in the reconcile engine — is the
 //  same split agents uses between agent-format.ts and its handler.
 
-export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi';
+export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi' | 'kimi' | 'dsh';
+/** Formats stored as a JSON server map (codex is TOML, dsh a Cordis patch list). */
+export type JsonMcpFormat = Exclude<McpFormat, 'codex' | 'dsh'>;
 
 const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'qoder', 'qoder-cn', 'kiro', 'zcode', 'omp', 'trae', 'trae-cn']);
 const CURSOR_TOOLS = new Set(['cursor']);
@@ -23,7 +25,13 @@ const CODEX_TOOLS = new Set(['codex', 'codex-internal', 'tcodex']);
 const BUDDY_TOOLS = new Set(['codebuddy', 'workbuddy']);
 const OPENCODE_TOOLS = new Set(['opencode']);
 const COPILOT_TOOLS = new Set(['copilot']);
+// `mcpServers` entries that name their transport in a `transport` key.
+const KIMI_TOOLS = new Set(['kimi', 'devin']);
 const COPILOT_ALL_TOOLS = '*';
+/** The Cordis plugin DeepSeek Harness loads once per MCP server. */
+export const DSH_MCP_PLUGIN_PACKAGE = '@deepseek-ai/dsh-mcp-client';
+/** Prefix of the loader entry id teamai gives each server it injects into dsh. */
+export const DSH_MCP_ENTRY_PREFIX = 'teamai-mcp-';
 
 export function detectMcpFormat(tool: string): McpFormat | null {
   if (tool === 'pi') return 'pi';
@@ -33,26 +41,29 @@ export function detectMcpFormat(tool: string): McpFormat | null {
   if (BUDDY_TOOLS.has(tool)) return 'buddy';
   if (OPENCODE_TOOLS.has(tool)) return 'opencode';
   if (COPILOT_TOOLS.has(tool)) return 'copilot';
+  if (KIMI_TOOLS.has(tool)) return 'kimi';
+  if (tool === 'dsh') return 'dsh';
   return null;
 }
 
 /**
  * Top-level JSON key each format stores its server map under. Claude/cursor/buddy
- * all use `mcpServers`; OpenCode uses `mcp`. Codex is TOML (handled separately) and
- * has no entry here.
+ * all use `mcpServers`; OpenCode uses `mcp`. Codex (TOML) and dsh (Cordis patch
+ * list) are handled separately and have no entry here.
  */
-export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
+export const MCP_SERVER_KEY: Record<JsonMcpFormat, string> = {
   pi: 'mcpServers',
   claude: 'mcpServers',
   cursor: 'mcpServers',
   buddy: 'mcpServers',
   opencode: 'mcp',
   copilot: 'mcpServers',
+  kimi: 'mcpServers',
 };
 
 /** Whether two formats keep their servers under one key of a shared file (Claude, Cursor and CodeBuddy all use `mcpServers`). */
 export function sameServerKey(a: McpFormat, b: McpFormat): boolean {
-  if (a === 'codex' || b === 'codex') return a === b;
+  if (a === 'codex' || b === 'codex' || a === 'dsh' || b === 'dsh') return a === b;
   return MCP_SERVER_KEY[a] === MCP_SERVER_KEY[b];
 }
 
@@ -69,6 +80,9 @@ const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
   // (streamable HTTP or SSE, negotiated by its client).
   opencode: new Set<McpTransport>(['stdio', 'http', 'sse']),
   copilot: new Set<McpTransport>(['stdio', 'http', 'sse']),
+  kimi: new Set<McpTransport>(['stdio', 'http', 'sse']),
+  // dsh-mcp-client speaks stdio and streamable HTTP; it has no SSE transport.
+  dsh: new Set<McpTransport>(['stdio', 'http']),
 };
 
 export function supportsTransport(format: McpFormat, transport: McpTransport): boolean {
@@ -269,6 +283,20 @@ function renderCopilot(def: McpServerDef): McpJsonEntry {
   return e;
 }
 
+/** Kimi Code and Devin key the transport off `transport`, not `type`. */
+function renderKimi(def: McpServerDef): McpJsonEntry {
+  const e: McpJsonEntry = { transport: def.transport };
+  if (def.transport === 'stdio') {
+    e.command = def.command;
+    if (def.args?.length) e.args = def.args;
+    if (def.env && Object.keys(def.env).length) e.env = def.env;
+  } else {
+    e.url = def.url;
+    if (def.headers && Object.keys(def.headers).length) e.headers = def.headers;
+  }
+  return e;
+}
+
 /**
  * OpenCode's shape is unlike the others: transport is expressed as
  * `type: "local"` (stdio) or `type: "remote"` (http/sse), a local server's command
@@ -293,8 +321,29 @@ function renderOpencode(def: McpServerDef): McpJsonEntry {
   return e;
 }
 
-/** Render the JSON-shaped entry for a format. Codex is handled separately (TOML). */
-export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpServerDef): McpJsonEntry {
+/**
+ * DeepSeek Harness loads one `dsh-mcp-client` plugin instance per server, as a
+ * loader entry inserted by a Cordis patch. `serverName` namespaces the tools
+ * (`mcp__<serverName>__<tool>`), and HTTP is spelled `streamable-http`.
+ */
+export function renderDshEntry(def: McpServerDef): McpJsonEntry {
+  const config: McpJsonEntry = { serverName: def.name };
+  if (def.transport === 'stdio') {
+    config.transport = 'stdio';
+    config.command = def.command;
+    if (def.args?.length) config.args = def.args;
+    if (def.env && Object.keys(def.env).length) config.env = def.env;
+  } else {
+    config.transport = 'streamable-http';
+    config.url = def.url;
+    if (def.headers && Object.keys(def.headers).length) config.headers = def.headers;
+  }
+  if (def.timeout !== undefined) config.toolCallTimeoutMs = def.timeout;
+  return { id: `${DSH_MCP_ENTRY_PREFIX}${def.name}`, name: DSH_MCP_PLUGIN_PACKAGE, config };
+}
+
+/** Render the JSON-shaped entry for a format. Codex and dsh are handled separately. */
+export function renderJsonEntry(format: JsonMcpFormat, def: McpServerDef): McpJsonEntry {
   if (format === 'pi') {
     const entry = renderClaude(def);
     // Pi uses seconds (including fractions); team definitions use milliseconds.
@@ -306,6 +355,7 @@ export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpSer
   if (format === 'cursor') return renderCursor(def);
   if (format === 'opencode') return renderOpencode(def);
   if (format === 'copilot') return renderCopilot(def);
+  if (format === 'kimi') return renderKimi(def);
   return renderBuddy(def);
 }
 
