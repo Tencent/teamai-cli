@@ -10,7 +10,7 @@
 | --- | --- |
 | Creating the team repo | [Set up a team](#set-up-a-team) |
 | Joining a repo that already exists | [Join a team](#join-a-team) |
-| Sending a skill or rule you wrote | [Share a skill or rule](#share-a-skill-or-rule) |
+| Share a skill, rule, or other AI asset you wrote with the team | [Share with the team](#share-with-the-team) |
 
 You need Node.js 20 or newer, and Git.
 
@@ -79,7 +79,7 @@ You need the repo URL.
 
 Day-to-day commands are in the [Member Guide](./member-guide.md). Searching what teammates learned is in [Team Knowledge](./knowledge.md).
 
-### Share a skill or rule
+### Share with the team
 
 You have a skill, rule, agent, or MCP server that teammates should have.
 

@@ -10,7 +10,7 @@
 | --- | --- |
 | 建团队仓库 | [搭建团队](#搭建团队) |
 | 加入已有仓库 | [加入团队](#加入团队) |
-| 把写好的 skill 或 rule 发出去 | [分享 skill 或 rule](#分享-skill-或-rule) |
+| 把写好的 skill 或 rule 等 AI 资产分享给团队 | [分享给团队](#分享给团队) |
 
 需要 Node.js 20 或更高版本，以及 Git。
 
@@ -79,7 +79,7 @@ scope、仓库文件、packages、models 都在[配置示例](./admin-setup.md)�
 
 日常命令见[成员使用](./member-guide.md)。检索同事记下的经验，看[团队知识](./knowledge.md)。
 
-### 分享 skill 或 rule
+### 分享给团队
 
 你本地有一个 skill、rule、agent 或 MCP server，同事也要用。
 
