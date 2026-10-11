@@ -135,7 +135,7 @@ hooks:
     const claudeTeam = await claudeLocal();
     expect(claudeTeam.hooks.Stop).toHaveLength(1);
     expect(claudeTeam.hooks.Stop[0].description).toBe('[teamai:hook:lint] run lint at stop');
-    expect(claudeTeam.hooks.Stop[0].hooks[0].command).toBe(`${claudeHookOtherHostSkip('npm run lint')}npm run lint`);
+    expect(claudeTeam.hooks.Stop[0].hooks[0].command).toBe(`${claudeHookOtherHostSkip('Stop', undefined, 'npm run lint')}npm run lint`);
     expect(claudeTeam.hooks.SessionStart).toBeUndefined();
 
     // Every other tool: built-in + gated team hook in HOME.
@@ -198,9 +198,9 @@ hooks:
       expect(m.cursor).toHaveLength(2);
 
       // Claude's team hooks live in each project's own checkout.
-      expect((await claudeLocal()).hooks.Stop.map((e) => e.hooks[0].command)).toEqual([`${claudeHookOtherHostSkip('echo project-a')}echo project-a`]);
+      expect((await claudeLocal()).hooks.Stop.map((e) => e.hooks[0].command)).toEqual([`${claudeHookOtherHostSkip('Stop', undefined, 'echo project-a')}echo project-a`]);
       const claudeB = await fse.readJson(path.join(projectB, '.claude', 'settings.local.json'));
-      expect(claudeB.hooks.Stop.map((e: { hooks: Array<{ command: string }> }) => e.hooks[0].command)).toEqual([`${claudeHookOtherHostSkip('echo project-b')}echo project-b`]);
+      expect(claudeB.hooks.Stop.map((e: { hooks: Array<{ command: string }> }) => e.hooks[0].command)).toEqual([`${claudeHookOtherHostSkip('Stop', undefined, 'echo project-b')}echo project-b`]);
     } finally {
       await fse.remove(projectB);
       await fse.remove(repoB);

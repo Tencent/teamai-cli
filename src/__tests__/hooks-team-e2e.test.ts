@@ -79,7 +79,7 @@ describe('teamai hooks — unified A+B end-to-end', () => {
     // Team hook appended to Stop.
     const teamHook = claude.hooks.Stop.find((h) => h.description?.startsWith('[teamai:hook:lint]'));
     expect(teamHook).toBeDefined();
-    expect(teamHook!.hooks[0].command).toBe(`${claudeHookOtherHostSkip('npm run lint')}npm run lint`);
+    expect(teamHook!.hooks[0].command).toBe(`${claudeHookOtherHostSkip('Stop', undefined, 'npm run lint')}npm run lint`);
 
     const cursor = readJson('.cursor/hooks.json') as unknown as { hooks: Record<string, Array<{ command: string }>> };
     expect(cursor.hooks.stop.some((h) => h.command === 'npm run lint')).toBe(true);

@@ -62,7 +62,7 @@ describe('reconcileHooks — team (B) hooks', () => {
       const team = postToolUse[postToolUse.length - 1];
       expect(team.description).toBe('[teamai:hook:block-secret] scan secrets before bash');
       expect(team.matcher).toBe('Bash');
-      expect(team.hooks[0].command).toBe(`${claudeHookOtherHostSkip(teamDef().command)}${teamDef().command}`);
+      expect(team.hooks[0].command).toBe(`${claudeHookOtherHostSkip('PostToolUse', 'Bash', teamDef().command)}${teamDef().command}`);
     });
 
     it('records the team hook in the manifest', async () => {
@@ -87,7 +87,7 @@ describe('reconcileHooks — team (B) hooks', () => {
       await reconcileHooks(SETTINGS, 'claude', [teamDef({ command: 'echo changed' })], { manifestPath: MANIFEST });
 
       const team = claudeHooks().PostToolUse.find((h) => h.description?.startsWith('[teamai:hook:block-secret]'));
-      expect(team?.hooks[0].command).toBe(`${claudeHookOtherHostSkip('echo changed')}echo changed`);
+      expect(team?.hooks[0].command).toBe(`${claudeHookOtherHostSkip('PostToolUse', 'Bash', 'echo changed')}echo changed`);
       expect(claudeHooks().PostToolUse).toHaveLength(4);
     });
 

@@ -16,18 +16,24 @@ const CURSOR_MARKER = '--tool cursor';
 const COPILOT_MARKER = '--tool copilot';
 
 // Shell guards run outside the CLI, so read Copilot's project hook files with Node.
-// argv[2] is the team command's sha256; a file Copilot loads must hold it as an active entry.
+// argv[2] is copilotCopyKey of the team hook; a file Copilot loads must hold it as an active entry.
 const PROJECT_COPILOT_COPY_CHECK = [
   'const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");',
-  'const hash = command => typeof command === "string" && crypto.createHash("sha256").update(command).digest("hex") === process.argv[2];',
+  'const key = (event, matcher, command) => crypto.createHash("sha256")',
+  '.update(JSON.stringify([event, matcher && matcher !== "*" ? matcher : "", command])).digest("hex");',
   'try { process.exit(fs.readdirSync(process.argv[1]).some(name => {',
   'if (!name.endsWith(".json")) return false;',
   'try { const data = JSON.parse(fs.readFileSync(path.join(process.argv[1], name), "utf8"));',
-  'return data?.version === 1 && !data.disableAllHooks && Object.values(data.hooks ?? {}).some(entries =>',
+  'return data?.version === 1 && !data.disableAllHooks && Object.entries(data.hooks ?? {}).some(([event, entries]) =>',
   'Array.isArray(entries) && entries.some(entry => entry?.type === "command" &&',
-  '(hash(entry.bash) || hash(entry.command))));',
+  '[entry.bash, entry.command].some(command => typeof command === "string" && key(event, entry.matcher, command) === process.argv[2])));',
   '} catch { return false; } }) ? 0 : 1); } catch { process.exit(1); }',
 ].join(' ');
+
+/** The key PROJECT_COPILOT_COPY_CHECK computes for each entry of a Copilot hook file. */
+function copilotCopyKey(event: string, matcher: string | undefined, command: string): string {
+  return createHash('sha256').update(JSON.stringify([event, matcher && matcher !== '*' ? matcher : '', command])).digest('hex');
+}
 
 const CURSOR_HOOK_SKIP =
   'if [ -n "$CURSOR_VERSION" ] && { home="${HOME:-$USERPROFILE}"; [ -n "$home" ] && { grep -q -- \'--tool cursor\' "$home/.cursor/hooks.json" 2>/dev/null || { [ -n "$CURSOR_PROJECT_DIR" ] && grep -q -- \'--tool cursor\' "$CURSOR_PROJECT_DIR/.cursor/hooks.json" 2>/dev/null; }; }; }; then exit 0; fi; ';
@@ -38,12 +44,14 @@ export const LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP = CURSOR_HOOK_SKIP
 
 /**
  * Prefix for a Claude team command. Under Copilot it exits only when the
- * event's project delivers the same command to Copilot, which then runs it.
+ * event's project delivers the same command to Copilot for the same event and
+ * matcher, which then runs it. `copilotEvent` and `copilotMatcher` are the
+ * Copilot renderer's for this hook; an event Copilot lacks has no replacement.
  */
-export function claudeHookOtherHostSkip(command: string): string {
-  const hash = createHash('sha256').update(command).digest('hex');
+export function claudeHookOtherHostSkip(copilotEvent: string | undefined, copilotMatcher: string | undefined, command: string): string {
+  if (!copilotEvent) return CURSOR_HOOK_SKIP;
   return CURSOR_HOOK_SKIP + 'if [ -n "$COPILOT_PROJECT_DIR" ] && node -e \'' + PROJECT_COPILOT_COPY_CHECK + '\' '
-    + `"$COPILOT_PROJECT_DIR/.github/hooks" ${hash} 2>/dev/null; then exit 0; fi; `;
+    + `"$COPILOT_PROJECT_DIR/.github/hooks" ${copilotCopyKey(copilotEvent, copilotMatcher, command)} 2>/dev/null; then exit 0; fi; `;
 }
 
 function homeDir(env: NodeJS.ProcessEnv): string | undefined {

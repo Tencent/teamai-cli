@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { migrateLegacyManagedHooks, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, getHookStatus, reportCodexTrust, resolveMainCheckoutHooks, trustCodexForScope, type HookStatus } from './hooks.js';
+import { migrateLegacyManagedHooks, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, removeCopilotGlobalBuiltins, sweepLegacyProjectHooks, getHookStatus, reportCodexTrust, resolveMainCheckoutHooks, trustCodexForScope, type HookStatus } from './hooks.js';
 import { applyBuiltinOverride, installedBuiltinHookDefs } from './builtin-hooks.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices } from './namespaced-entries.js';
@@ -310,12 +310,10 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
         );
     }
 
-    if (localConfig.scope === 'project' && hookScope === 'user') {
-        const userConfig = { ...localConfig, scope: hookScope };
-        const globalHooks = scopedToolPaths(teamConfig, userConfig)[COPILOT_TOOL_ID]?.hooks;
-        if (globalHooks) {
-            await reconcileHooks(path.join(resolveToolBaseDir(COPILOT_TOOL_ID, userConfig), globalHooks), COPILOT_TOOL_ID, [], { removeAll: true, copilotGlobal: path.join(resolveToolBaseDir(COPILOT_TOOL_ID, userConfig), globalHooks) });
-        }
+    // Copilot loads every user hook file, so built-ins another project's filename
+    // installed would take over the dispatch.
+    if (teamConfig.toolPaths[COPILOT_TOOL_ID]) {
+        await removeCopilotGlobalBuiltins();
     }
 
     // Clean up the legacy <projectRoot> copy a pre-#370 CLI wrote alongside HOME

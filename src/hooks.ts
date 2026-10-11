@@ -749,7 +749,8 @@ function isProjectGatedCommand(command: string): boolean {
 /**
  * Team commands written for `claude` exit when Cursor runs them and its own
  * teamai hooks are installed, or when Copilot CLI runs them and the project
- * delivers the same command to Copilot. A claude-only setup is not skipped.
+ * delivers the same command to Copilot for the same event and matcher. A
+ * claude-only setup is not skipped.
  * Built-in hooks exit inside hook-dispatch instead of here.
  *
  * `tool` here keys the cursor/copilot wrapper, which is orthogonal to the
@@ -757,9 +758,11 @@ function isProjectGatedCommand(command: string): boolean {
  * (CodeBuddy's Windows hooks run through Git Bash), but this wrapper still
  * needs to know which tool it is rendering for.
  */
-function skipWhenAnotherHostLoadsClaudeSettings(command: string, tool: string, legacyGuard = false): string {
-  if (tool !== 'claude') return command;
-  return `${legacyGuard ? LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP : claudeHookOtherHostSkip(command)}${command}`;
+function skipWhenAnotherHostLoadsClaudeSettings(def: HookDef, tool: string, legacyGuard = false): string {
+  if (tool !== 'claude') return def.command;
+  const guard = legacyGuard ? LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP
+    : claudeHookOtherHostSkip(CLAUDE_TO_COPILOT_EVENTS[def.event], toCopilotEntry(def).matcher, def.command);
+  return `${guard}${def.command}`;
 }
 
 /**
@@ -1214,7 +1217,7 @@ async function staleCheckoutGateRoots(
 function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string, legacyGuard = false): HookDef[] {
   const prepared = teamDefs.map((def) => ({
     ...def,
-    command: skipWhenAnotherHostLoadsClaudeSettings(def.command, tool, legacyGuard),
+    command: skipWhenAnotherHostLoadsClaudeSettings(def, tool, legacyGuard),
   }));
   if (!projectRoot) return prepared;
   return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot) }));
@@ -1616,6 +1619,29 @@ export async function copilotBuiltinDisabled(localConfig: LocalConfig | null, ev
   return builtin.known && (builtin.override?.disabled ?? []).includes(def.key);
 }
 
+/** The user hook files Copilot loads (every native JSON file), in owner-selection order. */
+async function copilotGlobalHookFiles(): Promise<Array<{ file: string; json: CopilotHooksJson & { disableAllHooks?: boolean } }>> {
+  const dir = path.join(getCopilotHome(), 'hooks');
+  const files = await readdir(dir).catch(() => [] as string[]);
+  const result = [];
+  for (const name of files.filter(name => name.endsWith('.json')).sort()) {
+    const file = path.resolve(dir, name);
+    const json = await readJson<CopilotHooksJson & { disableAllHooks?: boolean }>(file);
+    if (json?.version === COPILOT_HOOK_SCHEMA_VERSION && json.hooks) result.push({ file, json });
+  }
+  return result;
+}
+
+/**
+ * Remove the built-ins from every user hook file owner selection reads, so
+ * another project's configured filename does not take over the dispatch.
+ */
+export async function removeCopilotGlobalBuiltins(): Promise<void> {
+  for (const { file } of await copilotGlobalHookFiles()) {
+    await reconcileHooks(file, COPILOT_TOOL_ID, [], { removeAll: true, copilotGlobal: file });
+  }
+}
+
 /** Suppress an overlapping Copilot built-in, including a legacy copy cached by the host. */
 export async function copilotBuiltinRunsInAnotherScope(
   localConfig: LocalConfig | null,
@@ -1627,13 +1653,9 @@ export async function copilotBuiltinRunsInAnotherScope(
   if (localConfig?.scope === 'project' && isSelfMode(localConfig)) return !!globalSource;
   const def = copilotBuiltinDef(event, matcher);
   if (!def) return false;
-  const dir = path.join(getCopilotHome(), 'hooks');
-  const files = await readdir(dir).catch(() => [] as string[]);
-  // Copilot loads every native JSON file. A stable owner also suppresses cached copies after sync.
-  for (const name of files.filter(name => name.endsWith('.json')).sort()) {
-    const file = path.resolve(dir, name);
-    const json = await readJson<CopilotHooksJson & { disableAllHooks?: boolean }>(file);
-    if (json?.version !== COPILOT_HOOK_SCHEMA_VERSION || !json.hooks || json.disableAllHooks) continue;
+  // A stable owner also suppresses cached copies after sync.
+  for (const { file, json } of await copilotGlobalHookFiles()) {
+    if (json.disableAllHooks) continue;
     const expected = toCopilotEntry(def, file);
     const entries = json.hooks[CLAUDE_TO_COPILOT_EVENTS[def.event]];
     if (Array.isArray(entries) && entries.some(entry => entry?.type === 'command'

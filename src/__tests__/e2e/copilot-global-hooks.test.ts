@@ -125,6 +125,27 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(events.map(event => event.sessionId)).toEqual(['before-b', 'both-global', 'cached-global']);
   });
 
+  it('removes the built-ins from every global file, whichever project configured it', () => {
+    const a = project('a');
+    const b = project('b');
+    for (const dir of [a, b]) {
+      const teamFile = path.join(dir, '.teamai/team-repo/teamai.yaml');
+      write(teamFile, fs.readFileSync(teamFile, 'utf8') + `toolPaths:\n  copilot:\n    hooks: .github/hooks/teamai.json\n    userScope:\n      hooks: hooks/${path.basename(dir)}.json\n`);
+      cli(['hooks', 'inject'], dir);
+    }
+    const personal = path.join(copilotHome, 'hooks/personal.json');
+    write(personal, JSON.stringify({ version: 1, hooks: { Stop: [{ type: 'command', bash: 'echo personal' }] } }));
+    const globalA = hooks(path.join(copilotHome, 'hooks/a.json'));
+    cli(['hooks', 'remove'], b);
+    for (const name of ['a.json', 'b.json']) {
+      expect(Object.values(hooks(path.join(copilotHome, 'hooks', name)).hooks).flat(), name).toEqual([]);
+    }
+    expect(hooks(personal).hooks.Stop.map(entry => entry.bash)).toEqual(['echo personal']);
+    // A copy Copilot cached before the removal no longer runs either.
+    dispatch(globalA.hooks.UserPromptSubmit[0], a, b, 'after-remove');
+    expect(fs.existsSync(path.join(home, '.teamai/dashboard/events.jsonl'))).toBe(false);
+  });
+
   it('lists and diagnoses hooks configured only in user scope', () => {
     const dir = project('a');
     const teamFile = path.join(dir, '.teamai/team-repo/teamai.yaml');
@@ -373,6 +394,32 @@ describe('Copilot built-in hooks in project scope', () => {
     env.COPILOT_PROJECT_DIR = dir;
     const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.local.json'), 'utf8'));
     const shell = spawnSync('bash', ['-c', settings.hooks.Stop[0].hooks[0].command], { cwd: dir, env, encoding: 'utf8' });
+    expect(shell.status).toBe(0);
+    expect(shell.stdout.trim()).toBe(output);
+  });
+
+  // The same command on another Copilot event or matcher is no replacement for the Claude hook.
+  it.each([
+    ['Stop', '', 'Stop', '', ''],
+    ['Stop', '', 'SessionStart', '', 'team-hook'],
+    ['PostToolUse', 'Bash', 'PostToolUse', 'Bash', ''],
+    ['PostToolUse', 'Bash', 'PostToolUse', 'Edit', 'team-hook'],
+  ])('runs a Claude %s(%s) team hook when Copilot delivers it for %s(%s) -> %j', (claudeEvent, claudeMatcher, copilotEvent, copilotMatcher, output) => {
+    const dir = project('claude-project');
+    const teamFile = path.join(dir, '.teamai/team-repo/teamai.yaml');
+    write(teamFile, fs.readFileSync(teamFile, 'utf8') + 'toolPaths:\n  claude:\n    settings: .claude/settings.json\n  copilot:\n    hooks: .github/hooks/teamai.json\n    userScope:\n      hooks: hooks/teamai.json\n');
+    const configFile = path.join(dir, '.teamai/config.yaml');
+    write(configFile, fs.readFileSync(configFile, 'utf8').replace('[copilot]', '[claude, copilot]'));
+    const hook = (id: string, tool: string, event: string, matcher: string) =>
+      `  - id: ${id}\n    description: ${id}\n    event: ${event}\n${matcher ? `    matcher: ${matcher}\n` : ''}    tools: [${tool}]\n    command: echo team-hook\n`;
+    write(path.join(dir, '.teamai/team-repo/hooks/hooks.yaml'),
+      `hooks:\n${hook('claude-hook', 'claude', claudeEvent, claudeMatcher)}${hook('copilot-hook', 'copilot', copilotEvent, copilotMatcher)}`);
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    cli(['hooks', 'inject'], dir);
+    env.COPILOT_PROJECT_DIR = dir;
+    const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.local.json'), 'utf8'));
+    const shell = spawnSync('bash', ['-c', settings.hooks[claudeEvent][0].hooks[0].command], { cwd: dir, env, encoding: 'utf8' });
     expect(shell.status).toBe(0);
     expect(shell.stdout.trim()).toBe(output);
   });

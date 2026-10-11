@@ -107,22 +107,35 @@ describe('hookDispatchCli', () => {
     expect(claudeHookRunsInAnotherHost('cursor', { CURSOR_VERSION: '1.2.3', HOME: home })).toBe(false);
     expect(claudeHookRunsInAnotherHost('copilot', { COPILOT_PROJECT_DIR: project })).toBe(false);
 
-    const runPrefix = (extra: NodeJS.ProcessEnv): string => execFileSync(
+    const runPrefix = (extra: NodeJS.ProcessEnv, event?: string, matcher?: string): string => execFileSync(
       'sh',
-      ['-c', `${claudeHookOtherHostSkip('echo RAN')}echo RAN`],
+      ['-c', `${claudeHookOtherHostSkip(event, matcher, 'echo RAN')}echo RAN`],
       { env: { PATH: process.env.PATH ?? '', HOME: bare, ...extra }, encoding: 'utf8' },
     );
-    expect(runPrefix({ CURSOR_VERSION: '1.2.3' })).toBe('RAN\n');
-    expect(runPrefix({ CURSOR_VERSION: '1.2.3', HOME: home })).toBe('');
-    expect(runPrefix({ CURSOR_VERSION: '1.2.3', CURSOR_PROJECT_DIR: project })).toBe('');
+    expect(runPrefix({ CURSOR_VERSION: '1.2.3' }, 'Stop')).toBe('RAN\n');
+    expect(runPrefix({ CURSOR_VERSION: '1.2.3', HOME: home }, 'Stop')).toBe('');
+    expect(runPrefix({ CURSOR_VERSION: '1.2.3', CURSOR_PROJECT_DIR: project }, 'Stop')).toBe('');
     // Copilot runs the team command itself only when the project's hook file delivers it.
-    expect(runPrefix({ COPILOT_PROJECT_DIR: project })).toBe('RAN\n');
+    expect(runPrefix({ COPILOT_PROJECT_DIR: project }, 'Stop')).toBe('RAN\n');
     const builtinCopilotHooks = fs.readFileSync(copilotHooks, 'utf8');
-    fs.writeFileSync(copilotHooks, '{"version":1,"hooks":{"agentStop":[{"type":"command","bash":"echo RAN"}]}}');
-    expect(runPrefix({ COPILOT_PROJECT_DIR: project })).toBe('');
+    // Only the same command for the same Copilot event and matcher replaces the Claude copy.
+    const rows: Array<[string | undefined, string | undefined, string, string]> = [
+      ['Stop', undefined, '{"Stop":[{"type":"command","bash":"echo RAN"}]}', ''],
+      ['Stop', '*', '{"Stop":[{"type":"command","command":"echo RAN"}]}', ''],
+      ['Stop', undefined, '{"SessionStart":[{"type":"command","bash":"echo RAN"}]}', 'RAN\n'],
+      ['Stop', undefined, '{"Stop":[{"type":"command","bash":"echo RAN","matcher":"Bash"}]}', 'RAN\n'],
+      ['PostToolUse', 'Bash', '{"PostToolUse":[{"type":"command","bash":"echo RAN","matcher":"Bash"}]}', ''],
+      ['PostToolUse', 'Bash', '{"PostToolUse":[{"type":"command","bash":"echo RAN","matcher":"Edit"}]}', 'RAN\n'],
+      ['PostToolUse', 'Bash', '{"PostToolUse":[{"type":"command","bash":"echo RAN"}]}', 'RAN\n'],
+      [undefined, undefined, '{"Stop":[{"type":"command","bash":"echo RAN"}]}', 'RAN\n'],
+    ];
+    for (const [event, matcher, hooks, output] of rows) {
+      fs.writeFileSync(copilotHooks, `{"version":1,"hooks":${hooks}}`);
+      expect(runPrefix({ COPILOT_PROJECT_DIR: project }, event, matcher), `${event} ${matcher} ${hooks}`).toBe(output);
+    }
     fs.writeFileSync(copilotHooks, builtinCopilotHooks);
-    expect(runPrefix({ COPILOT_CLI: '1' })).toBe('RAN\n');
-    expect(runPrefix({})).toBe('RAN\n');
+    expect(runPrefix({ COPILOT_CLI: '1' }, 'Stop')).toBe('RAN\n');
+    expect(runPrefix({}, 'Stop')).toBe('RAN\n');
 
     const previousCursor = process.env.CURSOR_VERSION;
     const previousProjectDir = process.env.CURSOR_PROJECT_DIR;
