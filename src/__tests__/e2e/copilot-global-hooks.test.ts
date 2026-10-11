@@ -312,7 +312,7 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(events.map(event => event.tool)).toEqual(['copilot']);
   });
 
-  it.each(['disabled', 'invalid'])('keeps Claude hooks active when the global Copilot file is %s', (state) => {
+  it.each(['disabled', 'invalid'])('keeps Claude built-ins active when the global Copilot file is %s', (state) => {
     const dir = project('a');
     const teamFile = path.join(dir, '.teamai/team-repo/teamai.yaml');
     write(teamFile, fs.readFileSync(teamFile, 'utf8') + 'toolPaths:\n  claude:\n    settings: .claude/settings.json\n  copilot:\n    hooks: .github/hooks/teamai.json\n    userScope:\n      hooks: hooks/teamai.json\n');
@@ -334,7 +334,65 @@ describe('Copilot built-in hooks in project scope', () => {
     const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.local.json'), 'utf8'));
     const shell = spawnSync('bash', ['-c', settings.hooks.Stop[0].hooks[0].command], { cwd: dir, env, encoding: 'utf8' });
     expect(shell.status).toBe(0);
-    expect(shell.stdout.trim()).toBe('team-hook');
+    // The project's Copilot copy, not the global file, decides team hooks.
+    expect(shell.stdout.trim()).toBe('');
+  });
+
+  // The shared file holds every built-in; each project's `builtin.disabled` applies when its event runs.
+  it.each(['a', 'b'])('applies each project\'s disabled built-ins when %s syncs last', (last) => {
+    const a = project('a');
+    const b = project('b');
+    const aHooks = path.join(a, '.teamai/team-repo/hooks/hooks.yaml');
+    write(aHooks, fs.readFileSync(aHooks, 'utf8') + 'builtin:\n  disabled: [Hook dispatch prompt-submit]\n');
+    for (const dir of last === 'a' ? [b, a] : [a, b]) cli(['hooks', 'inject'], dir);
+    const global = hooks(path.join(copilotHome, 'hooks/teamai.json'));
+    expect(global.hooks.UserPromptSubmit).toHaveLength(1);
+    dispatch(global.hooks.UserPromptSubmit[0], a, a, 'a-session');
+    dispatch(global.hooks.UserPromptSubmit[0], a, b, 'b-session');
+    const events = fs.readFileSync(path.join(home, '.teamai/dashboard/events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(events.map(event => event.sessionId)).toEqual(['b-session']);
+  });
+
+  // A Claude team hook yields under Copilot only to the same hook in the event's project.
+  it.each([
+    ['claude', 'team-hook'],
+    ['claude, copilot', ''],
+  ])('runs a Claude team hook under Copilot in a project with agents [%s] -> %j', (agents, output) => {
+    const other = project('other');
+    cli(['hooks', 'inject'], other);
+    const dir = project('claude-project');
+    const teamFile = path.join(dir, '.teamai/team-repo/teamai.yaml');
+    write(teamFile, fs.readFileSync(teamFile, 'utf8') + 'toolPaths:\n  claude:\n    settings: .claude/settings.json\n  copilot:\n    hooks: .github/hooks/teamai.json\n    userScope:\n      hooks: hooks/teamai.json\n');
+    const configFile = path.join(dir, '.teamai/config.yaml');
+    write(configFile, fs.readFileSync(configFile, 'utf8').replace('[copilot]', `[${agents}]`));
+    const teamHooksFile = path.join(dir, '.teamai/team-repo/hooks/hooks.yaml');
+    write(teamHooksFile, fs.readFileSync(teamHooksFile, 'utf8').replace('[copilot]', '[claude, copilot]'));
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    cli(['hooks', 'inject'], dir);
+    env.COPILOT_PROJECT_DIR = dir;
+    const settings = JSON.parse(fs.readFileSync(path.join(dir, '.claude/settings.local.json'), 'utf8'));
+    const shell = spawnSync('bash', ['-c', settings.hooks.Stop[0].hooks[0].command], { cwd: dir, env, encoding: 'utf8' });
+    expect(shell.status).toBe(0);
+    expect(shell.stdout.trim()).toBe(output);
+  });
+
+  it('keeps a custom project hook filename in the user hooks directory', () => {
+    const dir = project('a');
+    const teamFile = path.join(dir, '.teamai/team-repo/teamai.yaml');
+    write(teamFile, fs.readFileSync(teamFile, 'utf8') + 'provider: git\ntoolPaths:\n  copilot:\n    hooks: .github/hooks/custom.json\n');
+    cli(['hooks', 'inject'], dir);
+    const globalFile = path.join(copilotHome, 'hooks/custom.json');
+    expect(fs.existsSync(path.join(copilotHome, '.github'))).toBe(false);
+    expect(hooks(globalFile).hooks.SessionStart).toHaveLength(1);
+    expect(hooks(path.join(dir, '.github/hooks/custom.json')).hooks.Stop.map(entry => entry.bash)).toEqual(['echo team-hook']);
+    expect(cli(['hooks', 'list'], dir)).toMatch(new RegExp(`copilot\\s+installed\\s+${globalFile}`));
+    expect(cli(['doctor'], dir)).toMatch(/✔.*teamai hooks in copilot settings/);
+    cli(['hooks', 'remove'], dir);
+    expect(hooks(globalFile).hooks.SessionStart ?? []).toEqual([]);
+    cli(['hooks', 'inject'], dir);
+    expect(cli(['uninstall', '--force'], dir)).toContain(globalFile);
+    expect(hooks(globalFile).hooks.SessionStart).toHaveLength(1);
   });
 
 });

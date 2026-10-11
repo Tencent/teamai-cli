@@ -2466,6 +2466,9 @@ export function scopedToolPaths(
     if (us.rules === null) delete scoped.rules;
     out[tool] = scoped;
   }
+  // Copilot loads user hooks only from files directly in `$COPILOT_HOME/hooks/`.
+  const copilot = out[COPILOT_TOOL_ID];
+  if (copilot?.hooks) out[COPILOT_TOOL_ID] = { ...copilot, hooks: `hooks/${path.basename(copilot.hooks)}` };
   return out;
 }
 

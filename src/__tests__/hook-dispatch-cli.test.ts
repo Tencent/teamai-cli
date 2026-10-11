@@ -23,7 +23,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 
 const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
   await import('../hook-dispatch-cli.js');
-const { CLAUDE_HOOK_OTHER_HOST_SKIP } = await import('../claude-hook-host.js');
+const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
 const { log } = await import('../utils/logger.js');
 
 describe('readStdin', () => {
@@ -109,13 +109,18 @@ describe('hookDispatchCli', () => {
 
     const runPrefix = (extra: NodeJS.ProcessEnv): string => execFileSync(
       'sh',
-      ['-c', `${CLAUDE_HOOK_OTHER_HOST_SKIP}echo RAN`],
+      ['-c', `${claudeHookOtherHostSkip('echo RAN')}echo RAN`],
       { env: { PATH: process.env.PATH ?? '', HOME: bare, ...extra }, encoding: 'utf8' },
     );
     expect(runPrefix({ CURSOR_VERSION: '1.2.3' })).toBe('RAN\n');
     expect(runPrefix({ CURSOR_VERSION: '1.2.3', HOME: home })).toBe('');
     expect(runPrefix({ CURSOR_VERSION: '1.2.3', CURSOR_PROJECT_DIR: project })).toBe('');
+    // Copilot runs the team command itself only when the project's hook file delivers it.
+    expect(runPrefix({ COPILOT_PROJECT_DIR: project })).toBe('RAN\n');
+    const builtinCopilotHooks = fs.readFileSync(copilotHooks, 'utf8');
+    fs.writeFileSync(copilotHooks, '{"version":1,"hooks":{"agentStop":[{"type":"command","bash":"echo RAN"}]}}');
     expect(runPrefix({ COPILOT_PROJECT_DIR: project })).toBe('');
+    fs.writeFileSync(copilotHooks, builtinCopilotHooks);
     expect(runPrefix({ COPILOT_CLI: '1' })).toBe('RAN\n');
     expect(runPrefix({})).toBe('RAN\n');
 

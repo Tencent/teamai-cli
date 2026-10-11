@@ -212,7 +212,7 @@ Git hook 安装失败时，`hooks inject`、`init` 和单仓库自动初始化�
 
 在 Windows 上，经由 bash 执行的内置 hook 派发命令（如 Claude、Codex、Cursor、Copilot CLI）会以绝对路径引用 Git Bash——先查标准安装位置，再回退到 `HKLM\SOFTWARE\GitForWindows` 注册表——从而避免解析到 WSL 的 `bash.exe`；若找不到 Git Bash，则退回裸 `bash`。
 
-Cursor 也会加载 `~/.claude/settings.json`。Copilot CLI 会加载受信任项目里的 `.claude/settings.json`（self mode 把 hook 写在项目里；Copilot 不加载 `~/.claude/settings.json`）。只有另一边的 teamai hook 已经在磁盘上时，`hook-dispatch --tool claude` 才会退出：`~/.cursor/hooks.json` 或 `$CURSOR_PROJECT_DIR/.cursor/hooks.json` 含有 `--tool cursor`，或 `$COPILOT_HOME/hooks/`（默认 `~/.copilot/hooks/`）中有效且未禁用的 version-1 JSON Hook 文件的命令含有 `--tool copilot`，或 `$COPILOT_PROJECT_DIR/.github/hooks/` 中的项目 JSON 文件含有该标记。无效或已禁用的全局文件不会让 Claude Hook 退出。写给 `claude` 的团队 hook 命令用同一判断。self mode 只检查项目的 Copilot 目录：共享的全局内置 hook 会跳过 self 会话，因此不能接替本地的 Claude hook。只启用了 Claude 时，Cursor 里这份 hook 照常运行，因为没有第二份可以接替。`COPILOT_CLI` 不能当信号：
+Cursor 也会加载 `~/.claude/settings.json`。Copilot CLI 会加载受信任项目里的 `.claude/settings.json`（self mode 把 hook 写在项目里；Copilot 不加载 `~/.claude/settings.json`）。只有另一边的 teamai hook 已经在磁盘上时，`hook-dispatch --tool claude` 才会退出：`~/.cursor/hooks.json` 或 `$CURSOR_PROJECT_DIR/.cursor/hooks.json` 含有 `--tool cursor`，或 `$COPILOT_HOME/hooks/`（默认 `~/.copilot/hooks/`）中有效且未禁用的 version-1 JSON Hook 文件的命令含有 `--tool copilot`，或 `$COPILOT_PROJECT_DIR/.github/hooks/` 中的项目 JSON 文件含有该标记。无效或已禁用的全局文件不会让 Claude Hook 退出。self mode 只检查项目的 Copilot 目录：共享的全局内置 hook 会跳过 self 会话，因此不能接替本地的 Claude hook。写给 `claude` 的团队 hook 命令在 Copilot 下只有当 `$COPILOT_PROJECT_DIR/.github/hooks/` 中有效的 version-1 JSON 文件把同一条命令交给 Copilot 时才退出；全局文件不算数，所以只发给 Claude 的 hook 照常运行。只启用了 Claude 时，Cursor 里这份 hook 照常运行，因为没有第二份可以接替。`COPILOT_CLI` 不能当信号：
 
 Copilot 会给每个子进程设置它，包括从它的 shell 里启动的 Claude。Claude Code 不会设置 `CURSOR_VERSION` 或 `COPILOT_PROJECT_DIR`。已经装好的团队 hook 需要再跑一次 `teamai pull` 或 `teamai hooks inject`，才会带上这个判断。
 
@@ -228,7 +228,7 @@ Copilot 会给每个子进程设置它，包括从它的 shell 里启动的 Clau
 
 ### 团队 Hooks 声明
 
-团队可在仓库 `hooks/hooks.yaml` 中声明自定义 hooks，按 namespace 划分的写在 `hooks/<ns>/hooks.yaml`（见 [Env、hooks 与 MCP server 按 namespace 划分](./sharing.md#envhooks-与-mcp-server-按-namespace-划分)），`teamai pull` 会自动分发到支持团队 Hooks 的适配器。`builtin:` 只从 `hooks/hooks.yaml` 读取。Pi 目前仅支持 TeamAI 内置生命周期桥接；此文件中的自定义 Hooks 和内置 Hook 覆盖不会应用到 Pi。
+团队可在仓库 `hooks/hooks.yaml` 中声明自定义 hooks，按 namespace 划分的写在 `hooks/<ns>/hooks.yaml`（见 [Env、hooks 与 MCP server 按 namespace 划分](./sharing.md#envhooks-与-mcp-server-按-namespace-划分)），`teamai pull` 会自动分发到支持团队 Hooks 的适配器。`builtin:` 只从 `hooks/hooks.yaml` 读取。Pi 目前仅支持 TeamAI 内置生命周期桥接；此文件中的自定义 Hooks 和内置 Hook 覆盖不会应用到 Pi。非 self mode 下，Copilot 内置 Hook 由多个项目共用一个用户级文件：各项目的 `builtin.disabled` 在其事件触发时生效，但 `builtin.overrides` 的 timeout 不生效。无法解析的 `hooks/hooks.yaml` 不会禁用任何内置 Hook。
 
 ```yaml
 hooks:

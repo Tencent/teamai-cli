@@ -37,18 +37,18 @@ import {
 } from './types.js';
 import { builtinHookDefs, applyBuiltinOverride, getRawDispatchCommand, skipToolsWithoutShell } from './builtin-hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
-import { parseTeamHooks, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
+import { parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
 import { entryLayout } from './namespaced-entries.js';
 import { historicalContents } from './utils/team-history.js';
 import { getUserHome } from './utils/home.js';
-import { CLAUDE_HOOK_OTHER_HOST_SKIP, LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip } from './claude-hook-host.js';
+import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip } from './claude-hook-host.js';
 import { listWorktrees, resolveAnchors } from './utils/git.js';
 import { findOnPath } from './utils/lookpath.js';
 import type { CodexHookTrustReport, CodexTrust } from './codex-trust.js';
 import { dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
 
-export { CLAUDE_HOOK_OTHER_HOST_SKIP };
+export { claudeHookOtherHostSkip };
 
 /**
  * Lobster-family agents (OpenClaw engine) that use HOOK.md + handler.ts instead
@@ -308,8 +308,6 @@ export interface ReconcileHooksOptions {
   removeAll?: boolean;
   /** Mark Copilot user built-ins so legacy project copies yield during migration. */
   copilotGlobal?: string;
-  /** Self mode's Claude hooks yield only to the project's Copilot copy. */
-  copilotProjectOnly?: boolean;
   /**
    * Path to the managed-hooks manifest (~/.teamai/managed-hooks.json). Required
    * to track Cursor team hooks (their commands carry no teamai marker). When
@@ -391,7 +389,7 @@ export async function keptTeamHookEntries(teamConfig: TeamaiConfig, localConfig:
 export async function hasUnrecordedTeamHooks(
   settingsPath: string,
   tool: string,
-  opts: Pick<ReconcileHooksOptions, 'teamHookHistory' | 'teamHookProjectRoot' | 'teamOnly' | 'copilotProjectOnly'>,
+  opts: Pick<ReconcileHooksOptions, 'teamHookHistory' | 'teamHookProjectRoot' | 'teamOnly'>,
 ): Promise<boolean> {
   return (await judgeUnrecordedTeamEntries(settingsPath, tool, [], [], opts)).adopted.length > 0;
 }
@@ -450,15 +448,9 @@ async function judgeUnrecordedTeamEntries(
   const loadRenders = async () => {
     if (renders) return renders;
     const history = await opts.teamHookHistory!();
-    const historicalDefs = scopedTeamDefs(history, opts.teamHookProjectRoot, tool, opts.copilotProjectOnly);
-    if (format === 'claude' && tool === 'claude') {
-      // Scope migration changes the host guard, but each exact prior render still proves ownership.
-      historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, tool, !opts.copilotProjectOnly));
-      const projectGuard = claudeHookOtherHostSkip(false);
-      historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, tool, true).map(def => ({
-        ...def, command: def.command.replace(projectGuard, LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP),
-      })));
-    }
+    const historicalDefs = scopedTeamDefs(history, opts.teamHookProjectRoot, tool);
+    // A render under the previous host guard still proves ownership.
+    if (format === 'claude' && tool === 'claude') historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, tool, true));
     return renders = [...teamDefsForTool(scopedDefs, tool), ...teamDefsForTool(historicalDefs, tool)]
       .map(def => ({ def, ...render(def) }));
   };
@@ -755,19 +747,19 @@ function isProjectGatedCommand(command: string): boolean {
 }
 
 /**
- * Team commands written for `claude` exit when Cursor or Copilot CLI runs them
- * and that host's own teamai hooks are installed. The prefix checks the hook
- * file; it does not skip a claude-only setup. Built-in hooks take the same
- * exit inside hook-dispatch instead of here.
+ * Team commands written for `claude` exit when Cursor runs them and its own
+ * teamai hooks are installed, or when Copilot CLI runs them and the project
+ * delivers the same command to Copilot. A claude-only setup is not skipped.
+ * Built-in hooks exit inside hook-dispatch instead of here.
  *
  * `tool` here keys the cursor/copilot wrapper, which is orthogonal to the
  * project gate: the gate lost its per-tool form once every render became POSIX
  * (CodeBuddy's Windows hooks run through Git Bash), but this wrapper still
  * needs to know which tool it is rendering for.
  */
-function skipWhenAnotherHostLoadsClaudeSettings(command: string, tool: string, copilotProjectOnly = false): string {
+function skipWhenAnotherHostLoadsClaudeSettings(command: string, tool: string, legacyGuard = false): string {
   if (tool !== 'claude') return command;
-  return `${claudeHookOtherHostSkip(!copilotProjectOnly)}${command}`;
+  return `${legacyGuard ? LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP : claudeHookOtherHostSkip(command)}${command}`;
 }
 
 /**
@@ -1174,13 +1166,12 @@ async function reconcileSelfLocalTeamHooks(
       manifestPath,
       removeAll: !relocate,
       teamHookHistory: opts.teamHookHistory,
-      copilotProjectOnly: true,
     });
     if (!relocate) await removeEmptyHookFile(localFile);
   }
   await reconcileHooks(settingsPath, tool, relocate ? [] : teamDefs, relocate
     ? { builtinOverride: opts.builtinOverride, dropTeamEntries: true }
-    : { manifestPath, removeAll: opts.removeAll, builtinOverride: opts.builtinOverride, teamHookHistory: opts.teamHookHistory, copilotProjectOnly: true });
+    : { manifestPath, removeAll: opts.removeAll, builtinOverride: opts.builtinOverride, teamHookHistory: opts.teamHookHistory });
 }
 
 /** Delete an untracked hook file that holds nothing but empty hook lists. */
@@ -1220,18 +1211,18 @@ async function staleCheckoutGateRoots(
   return [...roots];
 }
 
-function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string, copilotProjectOnly = false): HookDef[] {
+function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string, legacyGuard = false): HookDef[] {
   const prepared = teamDefs.map((def) => ({
     ...def,
-    command: skipWhenAnotherHostLoadsClaudeSettings(def.command, tool, copilotProjectOnly),
+    command: skipWhenAnotherHostLoadsClaudeSettings(def.command, tool, legacyGuard),
   }));
   if (!projectRoot) return prepared;
   return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot) }));
 }
 
-function manifestRecordsForTool(teamDefs: HookDef[], tool: string, removeAll: boolean, projectRoot?: string, copilotProjectOnly = false): ManagedHookRecord[] {
+function manifestRecordsForTool(teamDefs: HookDef[], tool: string, removeAll: boolean, projectRoot?: string): ManagedHookRecord[] {
   if (removeAll) return [];
-  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool, copilotProjectOnly), tool).map((d) => ({
+  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool), tool).map((d) => ({
     id: d.key,
     event: d.event,
     ...(d.matcher && d.matcher !== '*' ? { matcher: d.matcher } : {}),
@@ -1608,6 +1599,23 @@ function unmarkCopilotGlobal(command: string): string {
   return command.replace(/ --copilot-global [^ "\r\n]+/, '');
 }
 
+function copilotBuiltinDef(event: string, matcher: string): HookDef | undefined {
+  return builtinHookDefs(COPILOT_TOOL_ID).find(def =>
+    def.command.includes(`teamai hook-dispatch ${event} --tool copilot `) && (def.matcher ?? '*') === matcher,
+  );
+}
+
+/**
+ * The shared user file holds every built-in, so the event's project applies its
+ * own `builtin.disabled`. A root hooks file that does not parse disables nothing.
+ */
+export async function copilotBuiltinDisabled(localConfig: LocalConfig | null, event: string, matcher: string): Promise<boolean> {
+  const def = copilotBuiltinDef(event, matcher);
+  if (!localConfig || !def) return false;
+  const builtin = await readBuiltinOverride(localConfig);
+  return builtin.known && (builtin.override?.disabled ?? []).includes(def.key);
+}
+
 /** Suppress an overlapping Copilot built-in, including a legacy copy cached by the host. */
 export async function copilotBuiltinRunsInAnotherScope(
   localConfig: LocalConfig | null,
@@ -1617,9 +1625,7 @@ export async function copilotBuiltinRunsInAnotherScope(
 ): Promise<boolean> {
   // A self project's overrides and local hooks remain authoritative.
   if (localConfig?.scope === 'project' && isSelfMode(localConfig)) return !!globalSource;
-  const def = builtinHookDefs(COPILOT_TOOL_ID).find(def =>
-    def.command.includes(`teamai hook-dispatch ${event} --tool copilot `) && (def.matcher ?? '*') === matcher,
-  );
+  const def = copilotBuiltinDef(event, matcher);
   if (!def) return false;
   const dir = path.join(getCopilotHome(), 'hooks');
   const files = await readdir(dir).catch(() => [] as string[]);
@@ -2114,7 +2120,6 @@ export async function reconcileHooks(
       root: target.worktreeScoped ? undefined : target.root,
       removeAll: opts.removeAll,
       teamHookHistory: opts.teamHookHistory,
-      copilotProjectOnly: opts.copilotProjectOnly,
     });
   }
   const teamActive = !!opts.manifestPath || !!opts.dropTeamEntries;
@@ -2128,7 +2133,7 @@ export async function reconcileHooks(
     await writeJson(expandHome(opts.manifestPath), manifest);
   }
   const allPriorRecords = manifest?.[tool] ?? [];
-  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool, opts.copilotProjectOnly);
+  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool);
   const recorded = opts.teamHookProjectRoot
     ? allPriorRecords.filter((r) => isGatedForProject(r.command, opts.teamHookProjectRoot!))
     : allPriorRecords;
@@ -2163,7 +2168,7 @@ export async function reconcileHooks(
 
   // Update the manifest's team-hook index for this tool (when manifest is active).
   if (opts.manifestPath && manifest) {
-    const records = codexRecords ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot, opts.copilotProjectOnly);
+    const records = codexRecords ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot);
     const prev = manifest[tool] ?? [];
     // Main-checkout team-only files belong to one project; their old gated
     // records are consumed on migration. HOME retains the other projects.
@@ -2836,7 +2841,6 @@ async function reconcileMainCheckoutTeamHooks(
     root?: string;
     removeAll?: boolean;
     teamHookHistory?: TeamHookHistory;
-    copilotProjectOnly?: boolean;
   },
 ): Promise<void> {
   const { checkoutManifestPath, sharedWithOtherInstall, current, root, ...reconcileOpts } = opts;
@@ -3323,14 +3327,16 @@ export async function reconcileTeamHooksForConfig(
     const copilotHooksPath = path.join(resolveToolBaseDir(COPILOT_TOOL_ID, copilotConfig), copilotPaths.hooks);
     const splitCopilotHooks = localConfig.scope === 'project' && hookScope === 'user';
     const copilotManifestPath = splitCopilotHooks ? undefined : getManagedHooksPath(localConfig);
+    // The user file is shared by every project; dispatch applies each project's `builtin.disabled`.
+    const copilotBuiltin = hookScope === 'user' ? undefined : builtin;
     const copilotInstalled = await builtinsInstalled(
-      builtinsOnly, copilotHooksPath, COPILOT_TOOL_ID, copilotManifestPath ?? manifestPath, builtin);
+      builtinsOnly, copilotHooksPath, COPILOT_TOOL_ID, copilotManifestPath ?? manifestPath, copilotBuiltin);
     if (copilotInstalled && hookScope === 'user') await markCopilotGlobalBuiltins(copilotHooksPath);
     if (!copilotInstalled && (copilotSelected || await pathExists(getCopilotHome()))) {
       await reconcileHooks(copilotHooksPath, COPILOT_TOOL_ID, splitCopilotHooks ? [] : teamDefs, {
         manifestPath: builtinsOnly ? undefined : copilotManifestPath,
         removeAll: opts.removeAll,
-        builtinOverride: builtin,
+        builtinOverride: copilotBuiltin,
         teamHookHistory: splitCopilotHooks ? undefined : history,
         copilotGlobal: hookScope === 'user' ? copilotHooksPath : undefined,
       });

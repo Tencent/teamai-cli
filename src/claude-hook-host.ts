@@ -3,25 +3,29 @@
  * Skip that copy only when the other host's own teamai hooks are on disk.
  * A claude-only setup has no replacement, so those hooks must still run.
  *
- * The shell prefix and claudeHookRunsInAnotherHost check the same paths.
+ * The shell prefix guards team commands; claudeHookRunsInAnotherHost guards
+ * built-ins, which Copilot also runs from its user hook files.
  * COPILOT_CLI is not a signal: Copilot sets it on every subprocess.
  * An empty value does not count.
  */
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 const CURSOR_MARKER = '--tool cursor';
 const COPILOT_MARKER = '--tool copilot';
 
-// Shell guards run outside the CLI, so validate native global hook files with Node.
-const ACTIVE_GLOBAL_COPILOT_CHECK = [
-  'const fs = require("node:fs"), path = require("node:path");',
+// Shell guards run outside the CLI, so read Copilot's project hook files with Node.
+// argv[2] is the team command's sha256; a file Copilot loads must hold it as an active entry.
+const PROJECT_COPILOT_COPY_CHECK = [
+  'const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");',
+  'const hash = command => typeof command === "string" && crypto.createHash("sha256").update(command).digest("hex") === process.argv[2];',
   'try { process.exit(fs.readdirSync(process.argv[1]).some(name => {',
   'if (!name.endsWith(".json")) return false;',
   'try { const data = JSON.parse(fs.readFileSync(path.join(process.argv[1], name), "utf8"));',
   'return data?.version === 1 && !data.disableAllHooks && Object.values(data.hooks ?? {}).some(entries =>',
   'Array.isArray(entries) && entries.some(entry => entry?.type === "command" &&',
-  '[entry.bash, entry.powershell, entry.command].some(command => typeof command === "string" && command.includes("--tool copilot"))));',
+  '(hash(entry.bash) || hash(entry.command))));',
   '} catch { return false; } }) ? 0 : 1); } catch { process.exit(1); }',
 ].join(' ');
 
@@ -32,15 +36,15 @@ const CURSOR_HOOK_SKIP =
 export const LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP = CURSOR_HOOK_SKIP
   + 'if [ -n "$COPILOT_PROJECT_DIR" ] && grep -q -- \'--tool copilot\' "$COPILOT_PROJECT_DIR/.github/hooks/teamai.json" 2>/dev/null; then exit 0; fi; ';
 
-export function claudeHookOtherHostSkip(includeGlobalCopilot = true): string {
-  const global = includeGlobalCopilot
-    ? 'copilot_home="${COPILOT_HOME:-${HOME:-$USERPROFILE}/.copilot}"; node -e \'' + ACTIVE_GLOBAL_COPILOT_CHECK + '\' "$copilot_home/hooks" 2>/dev/null || '
-    : '';
-  return CURSOR_HOOK_SKIP + 'if [ -n "$COPILOT_PROJECT_DIR" ] && { ' + global
-    + 'grep -q -- \'--tool copilot\' "$COPILOT_PROJECT_DIR"/.github/hooks/*.json 2>/dev/null; }; then exit 0; fi; ';
+/**
+ * Prefix for a Claude team command. Under Copilot it exits only when the
+ * event's project delivers the same command to Copilot, which then runs it.
+ */
+export function claudeHookOtherHostSkip(command: string): string {
+  const hash = createHash('sha256').update(command).digest('hex');
+  return CURSOR_HOOK_SKIP + 'if [ -n "$COPILOT_PROJECT_DIR" ] && node -e \'' + PROJECT_COPILOT_COPY_CHECK + '\' '
+    + `"$COPILOT_PROJECT_DIR/.github/hooks" ${hash} 2>/dev/null; then exit 0; fi; `;
 }
-
-export const CLAUDE_HOOK_OTHER_HOST_SKIP = claudeHookOtherHostSkip();
 
 function homeDir(env: NodeJS.ProcessEnv): string | undefined {
   const home = env.HOME?.trim() || env.USERPROFILE?.trim();

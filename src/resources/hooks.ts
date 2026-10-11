@@ -142,9 +142,14 @@ export async function resolveTeamHookEntries(
   localConfig: LocalConfig,
 ): Promise<{ resolution: EntryResolution<TeamHook>; builtin: BuiltinOverrideRead }> {
   const resolution = await resolveEntriesFor(hooksEntryReader, localConfig);
+  return { resolution, builtin: await readBuiltinOverride(localConfig) };
+}
+
+/** The root hooks file's `builtin:` block alone (see BuiltinOverrideRead). */
+export async function readBuiltinOverride(localConfig: LocalConfig): Promise<BuiltinOverrideRead> {
   const root = await readHooksFile(teamHooksYamlPath(localConfig.repo.localPath), entryFilePath('hooks', null));
-  if (root === null) return { resolution, builtin: { known: true, override: undefined } };
-  return { resolution, builtin: root.ok ? { known: true, override: root.yaml.builtin } : { known: false } };
+  if (root === null) return { known: true, override: undefined };
+  return root.ok ? { known: true, override: root.yaml.builtin } : { known: false };
 }
 
 // ─── Security gate (§6) ─────────────────────────────────────

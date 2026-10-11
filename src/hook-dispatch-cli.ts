@@ -467,8 +467,9 @@ export async function hookDispatchCli(
     // Global Copilot built-ins skip self mode, so its local Claude copy has no global replacement.
     if (claudeHookRunsInAnotherHost(tool, process.env, !localConfig || !isSelfMode(localConfig))) return;
     if (!bgOnly && tool === 'copilot') {
-      const { copilotBuiltinRunsInAnotherScope } = await import('./hooks.js');
+      const { copilotBuiltinDisabled, copilotBuiltinRunsInAnotherScope } = await import('./hooks.js');
       if (await copilotBuiltinRunsInAnotherScope(localConfig, event, matcher, options.copilotGlobal)) return;
+      if (await copilotBuiltinDisabled(localConfig, event, matcher)) return;
     }
     const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
     const dispatcher = createDispatcher({ handlers, localConfig });
