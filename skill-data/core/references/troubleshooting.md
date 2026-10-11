@@ -12,6 +12,14 @@ teamai doctor
 It checks provider config, hooks, paths, and package/plugin status. Fix what it
 reports before anything else.
 
+## "Cannot acquire lock <path>: <reason>"
+
+The lock could not be created or reclaimed. Fix the filesystem error named in
+the message (permissions, a full disk, or a parent path that is a file), then
+retry; waiting for another process does not fix it. Ordinary contention still
+uses the command's busy/skip message. An existing unreadable or ownerless lock
+is treated as held: remove it only after confirming no teamai process uses it.
+
 ## "My skills / rules aren't showing up"
 
 This is the #1 onboarding issue. In order:

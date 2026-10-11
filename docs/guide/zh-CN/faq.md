@@ -80,6 +80,13 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 ## 常见问题 FAQ
 
+**Q: 命令提示 `Cannot acquire lock <path>: <reason>`？**
+
+锁无法创建或回收。先修复提示中的文件系统错误（例如权限不足、磁盘已满，
+或父路径是文件），再重试；等待其他 teamai 进程结束无法解决这类错误。
+另一个进程持有锁时仍使用该命令原有的占用或跳过提示；已有锁无法读取或
+未记录所有者时，也会被视为已占用以保护它。
+
 **Q: User scope 和 Project scope 可以共存吗？**
 
 可以，但 project scope 默认保持隔离。当前工作目录包含 project scope 配置时，该项目生效并跳过 user scope。先初始化 user scope，再使用 `--inherit-user-scope` 初始化项目（或在项目本地配置中设置 `inheritUserScope: true`），即可组合安全资源和 Recall 结果；可执行配置和控制面配置（`env`、MCP）仍只使用 project scope；hooks 例外——非-self 的 project scope 会把内置 hooks 注入到 HOME，以便 `hook-dispatch` 依据 `cwd` 门控（详见 Hooks 章节）。

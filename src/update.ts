@@ -301,7 +301,7 @@ async function exclusiveCreate(target: string, payload: string): Promise<boolean
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    return exclusiveCreateInPlace(target, payload);
+    return await exclusiveCreateInPlace(target, payload);
   } finally {
     await fse.remove(tmp).catch(() => {});
   }
@@ -357,15 +357,18 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
   if ((await lockState(sentinel)) !== 'stale') return false;
   try {
     await fse.rename(sentinel, `${sentinel}.reclaim-${owner}`);
-  } catch {
-    return false; // another process stole it first
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false; // another process stole it first
+    throw err;
   }
   await fse.remove(`${sentinel}.reclaim-${owner}`).catch(() => {});
   return exclusiveCreate(sentinel, payload);
 }
 
 /**
- * Try to acquire a lock. Returns false if another live process holds it.
+ * Try to acquire a lock. Returns false when the lock is held (including an
+ * unreadable or ownerless existing lock); filesystem failures reject with the
+ * lock path and original cause, so callers do not retry them as contention.
  *
  * The happy path is a single atomic exclusive create (a fully written temp file
  * hard-linked to the lock name, or O_CREAT|O_EXCL without hard links), so exactly
@@ -402,11 +405,6 @@ export async function acquireLock(
 
   try {
     await ensureDir(path.dirname(resolved));
-  } catch {
-    return false;
-  }
-
-  try {
     // Fast path: no lock present. A live holder means busy; only a stale lock
     // may be reclaimed.
     const first = await createOrInspect(resolved, payload);
@@ -438,8 +436,8 @@ export async function acquireLock(
     } finally {
       await removeIfOwner(sentinel, owner);
     }
-  } catch {
-    return false;
+  } catch (err) {
+    throw new Error(`Cannot acquire lock ${resolved}: ${(err as Error).message}`, { cause: err });
   }
 }
 

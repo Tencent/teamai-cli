@@ -80,6 +80,14 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 ## FAQ
 
+**Q: A command says `Cannot acquire lock <path>: <reason>`?**
+
+The lock could not be created or reclaimed. Fix the filesystem error it names
+(for example permissions, a full disk, or a parent path that is a file), then
+retry. Waiting for another teamai process will not fix these errors. A lock held
+by another process still uses the command's usual busy/skip message; an existing
+lock that cannot be read or names no owner is also treated as held to protect it.
+
 **Q: Can user scope and project scope coexist?**
 
 Yes, but project scope remains isolated by default. When the current working directory contains a project-scope config, it is active and user scope is skipped. Initialize user scope first, then initialize the project with `--inherit-user-scope` (or set `inheritUserScope: true` in the project's local config) to compose safe resources and Recall results. Executable and control-plane configuration (`env`, MCP) remains project-only; hooks are the exception — a non-self project scope injects the built-in hooks into HOME so `hook-dispatch` can gate on `cwd` (see the Hooks section).

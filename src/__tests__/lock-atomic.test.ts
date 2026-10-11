@@ -254,6 +254,90 @@ describe('acquireLock never takes over a lock another live process may hold (#76
   });
 });
 
+describe('acquireLock filesystem failures (#999)', () => {
+  it('rejects when the parent path is a file, rather than reporting contention', async () => {
+    const parent = path.join(tmpDir, 'not-a-directory');
+    fs.writeFileSync(parent, 'keep');
+    await expect(acquireLock(path.join(parent, '.lock'))).rejects.toThrow(parent);
+    expect(fs.readFileSync(parent, 'utf-8')).toBe('keep');
+  });
+
+  it.each(['EACCES', 'ENOSPC'])('rejects a temp-file write failure (%s)', async (code) => {
+    const error = Object.assign(new Error(`${code}: cannot write`), { code });
+    const write = vi.spyOn(fse, 'writeFile').mockRejectedValueOnce(error);
+    try {
+      await expect(acquireLock(lockPath)).rejects.toMatchObject({ cause: error, message: expect.stringContaining(lockPath) });
+      expect(fs.existsSync(lockPath)).toBe(false);
+      await releaseLock(lockPath);
+      expect(await acquireLock(lockPath)).toBe(true);
+      await releaseLock(lockPath);
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it('rejects an exclusive-create permission failure on a filesystem without hard links', async () => {
+    const error = Object.assign(new Error('EACCES: cannot create lock'), { code: 'EACCES' });
+    const link = vi.spyOn(fse, 'link').mockRejectedValueOnce(Object.assign(new Error('ENOTSUP'), { code: 'ENOTSUP' }));
+    const write = vi.spyOn(fse, 'writeFile').mockImplementation(async (file, data) => {
+      if (file === lockPath) throw error;
+      fs.writeFileSync(file, data);
+    });
+    try {
+      await expect(acquireLock(lockPath)).rejects.toMatchObject({ cause: error });
+      expect(fs.readdirSync(tmpDir)).toEqual([]);
+    } finally {
+      link.mockRestore();
+      write.mockRestore();
+    }
+  });
+
+  it('rejects a reclaim-sentinel rename failure and preserves the stale lock', async () => {
+    const dead = JSON.stringify({ pid: 999999, owner: 'dead', startedAt: 'x' });
+    fs.writeFileSync(lockPath, dead);
+    fs.writeFileSync(`${lockPath}.sentinel`, dead);
+    const error = Object.assign(new Error('EPERM: cannot rename sentinel'), { code: 'EPERM' });
+    const rename = vi.spyOn(fse, 'rename').mockRejectedValueOnce(error);
+    try {
+      await expect(acquireLock(lockPath)).rejects.toMatchObject({ cause: error });
+      expect(fs.readFileSync(lockPath, 'utf-8')).toBe(dead);
+      expect(fs.readFileSync(`${lockPath}.sentinel`, 'utf-8')).toBe(dead);
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
+  it('still backs off when another reclaimer removes the stale sentinel first', async () => {
+    const dead = JSON.stringify({ pid: 999999, owner: 'dead', startedAt: 'x' });
+    fs.writeFileSync(lockPath, dead);
+    fs.writeFileSync(`${lockPath}.sentinel`, dead);
+    const rename = vi.spyOn(fse, 'rename').mockImplementationOnce(async () => {
+      fs.rmSync(`${lockPath}.sentinel`);
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    try {
+      expect(await acquireLock(lockPath)).toBe(false);
+      expect(fs.readFileSync(lockPath, 'utf-8')).toBe(dead);
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
+  it('rejects a stale-lock replacement failure and releases its reclaim sentinel', async () => {
+    const dead = JSON.stringify({ pid: 999999, owner: 'dead', startedAt: 'x' });
+    fs.writeFileSync(lockPath, dead);
+    const error = Object.assign(new Error('EPERM: cannot replace lock'), { code: 'EPERM' });
+    const rename = vi.spyOn(fse, 'rename').mockRejectedValueOnce(error);
+    try {
+      await expect(acquireLock(lockPath)).rejects.toMatchObject({ cause: error });
+      expect(fs.readFileSync(lockPath, 'utf-8')).toBe(dead);
+      expect(fs.existsSync(`${lockPath}.sentinel`)).toBe(false);
+    } finally {
+      rename.mockRestore();
+    }
+  });
+});
+
 describe('releaseLock (real fs)', () => {
   it('removes a lock this process owns', async () => {
     await acquireLock(lockPath);
