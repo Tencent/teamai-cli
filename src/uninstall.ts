@@ -464,6 +464,7 @@ async function discoverToolResources(
         path: hooksPath,
         tool,
         manifestPath: standaloneHookManifestPath,
+        ...(tool === 'copilot' && scope === 'project' ? { teamOnly: true } : {}),
       });
     }
   } else if (tool === 'dsh') {
@@ -889,6 +890,17 @@ async function buildRemovalPlan(
         globalAdapters,
       ),
     );
+  }
+
+  // A project uninstall leaves Copilot's shared built-ins available to other projects.
+  if (localConfig.scope === 'project' && primaryHookScope.scope === 'user') {
+    const userConfig = { ...localConfig, scope: primaryHookScope.scope };
+    const hooks = hookToolPaths.copilot?.hooks;
+    const res = perTool.get('copilot');
+    if (hooks && res) {
+      const file = path.join(resolveToolBaseDir('copilot', userConfig), hooks);
+      if (await pathExists(file) && await hasTeamaiHooks(file, 'copilot')) res.keptGlobal.push(file);
+    }
   }
 
   // A team rule's or agent's name is no proof (#993): a copy goes only when it

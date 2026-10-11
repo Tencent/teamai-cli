@@ -286,15 +286,9 @@ async function buildHookChecks(
       });
       continue;
     }
-    // A standalone hooks file (Copilot) is injected at the config's own scope
-    // (`reconcileTeamHooksForConfig` joins resolveToolBaseDir with the
-    // config-scoped `hooks`), so it is probed from `toolPaths`. Settings-based
-    // hooks follow resolveHookScope and are probed from `hookToolPaths`.
-    // Mixing the two — userScope `hooks/teamai.json` under <projectRoot> —
-    // reported Copilot missing right after a successful `hooks inject` (#732).
     const settings = hookToolPaths[tool]?.settings;
-    const hookPath = paths.hooks
-      ? path.join(resolveToolBaseDir(tool, localConfig), paths.hooks)
+    const hookPath = hookToolPaths[tool]?.hooks
+      ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: resolveHookScope(localConfig).scope }), hookToolPaths[tool]?.hooks ?? paths.hooks)
       : settings
         ? path.join(baseDir, settings)
         : undefined;
@@ -302,7 +296,7 @@ async function buildHookChecks(
     const settingsPath = hookPath;
     const parentDir = path.dirname(settingsPath);
     const installed = tool === COPILOT_TOOL_ID
-      ? await isToolInstalledForConfig(tool, paths.hooks ?? paths.settings ?? '', localConfig)
+      ? await isToolInstalledForConfig(tool, hookToolPaths[tool]?.hooks ?? paths.settings ?? '', localConfig)
       : await pathExists(parentDir);
     // An uninstalled tool has no hooks to check. Whether it should be installed
     // at all is a different question — see buildEnabledToolChecks.

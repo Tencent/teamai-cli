@@ -175,8 +175,8 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             });
             continue;
         }
-        const hookPath = paths.hooks
-            ? path.join(resolveToolBaseDir(tool, localConfig), paths.hooks)
+        const hookPath = hookScopedPaths[tool]?.hooks
+            ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: hookScope }), hookScopedPaths[tool]?.hooks ?? paths.hooks)
             : hookScopedPaths[tool]?.settings
                 ? path.join(baseDir, hookScopedPaths[tool].settings)
                 : undefined;
@@ -305,8 +305,17 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
             {
                 manifestPath: getManagedHooksPath(localConfig),
                 removeAll: true,
+                teamOnly: localConfig.scope === 'project' && hookScope === 'user',
             },
         );
+    }
+
+    if (localConfig.scope === 'project' && hookScope === 'user') {
+        const userConfig = { ...localConfig, scope: hookScope };
+        const globalHooks = scopedToolPaths(teamConfig, userConfig)[COPILOT_TOOL_ID]?.hooks;
+        if (globalHooks) {
+            await reconcileHooks(path.join(resolveToolBaseDir(COPILOT_TOOL_ID, userConfig), globalHooks), COPILOT_TOOL_ID, [], { removeAll: true, copilotGlobal: path.join(resolveToolBaseDir(COPILOT_TOOL_ID, userConfig), globalHooks) });
+        }
     }
 
     // Clean up the legacy <projectRoot> copy a pre-#370 CLI wrote alongside HOME

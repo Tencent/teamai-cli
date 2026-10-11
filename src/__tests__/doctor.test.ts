@@ -1,3 +1,4 @@
+import { getCopilotHome } from '../types.js';
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import path from 'node:path';
 
@@ -286,9 +287,9 @@ describe('doctor — hook checks', () => {
         expect(copilotLine).toContain('✔');
     });
 
-    it('reports missing project hooks for explicitly selected Copilot', async () => {
+    it('reports missing global hooks for explicitly selected project Copilot', async () => {
         const projectRoot = '/tmp/teamai-doctor-copilot-project';
-        const hookPath = path.join(projectRoot, '.github', 'hooks', 'teamai.json');
+        const hookPath = path.join(getCopilotHome(), 'hooks', 'teamai.json');
         mockedLoadLocalConfig.mockResolvedValue({
             ...mockLocalConfig,
             scope: 'project',
@@ -299,7 +300,7 @@ describe('doctor — hook checks', () => {
             ...mockTeamConfig,
             sharing: { env: { injectShellProfile: false } },
             toolPaths: {
-                copilot: { hooks: '.github/hooks/teamai.json' },
+                copilot: { hooks: '.github/hooks/teamai.json', userScope: { hooks: 'hooks/teamai.json' } },
             },
         });
         mockedPathExists.mockImplementation(async (filePath: string) => (
@@ -315,12 +316,9 @@ describe('doctor — hook checks', () => {
         expect(allPassed).toBe(false);
     });
 
-    // Non-self project scope: `hooks inject` writes copilot at
-    // <projectRoot>/.github/hooks/teamai.json (the config's own scope), so doctor
-    // must probe that file — not userScope.hooks joined onto projectRoot.
-    it('checks project Copilot hooks where inject wrote them when userScope.hooks is set', async () => {
+    it('checks global Copilot hooks for a project when userScope.hooks is set', async () => {
         const projectRoot = '/tmp/teamai-doctor-copilot-project-userscope';
-        const hookPath = path.join(projectRoot, '.github', 'hooks', 'teamai.json');
+        const hookPath = path.join(getCopilotHome(), 'hooks', 'teamai.json');
         mockedLoadLocalConfig.mockResolvedValue({
             ...mockLocalConfig,
             scope: 'project',

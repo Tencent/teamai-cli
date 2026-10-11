@@ -442,7 +442,7 @@ AI 编码工具会在它生成的提交上打一个 `Co-Authored-By:` / attribut
 - rule 每个文件一行，从不列目录，因此你放在旁边的自己的文件仍然可见：包括命名空间子目录（`.cursor/rules/fe/style.mdc`）、扁平化的文件名（`.kiro/steering/fe.style.md`）以及 `.github/instructions/**/*.instructions.md`；
 - agent，以及 `teamai-recall` rule 和 agent；
 - 你的 `teamai-context` 文件（`.claude/rules/teamai-context.md`、`.cursor/rules/teamai-context.mdc`、`.codebuddy/rules/teamai-context.md`、`.opencode/teamai-context.md`、`.github/instructions/teamai-context.instructions.md`）；
-- Copilot 的 `.github/hooks/teamai.json`，以及 teamai 在其中有条目（团队 hook 或 co-author 设置）时的 `.claude/settings.local.json`，无论其中还有什么；
+- Copilot 的项目团队 Hook 文件 `.github/hooks/teamai.json`（self mode 下也包含内置 Hook），以及 teamai 在其中有条目（团队 hook 或 co-author 设置）时的 `.claude/settings.local.json`，无论其中还有什么；
 - pull 镜像到 `sharing.docs.localDir` 的团队文档，每篇文档一行，从不列目录，因此你放在那里的自己的文件仍然可见；你修改过的文档也会从下一次同步文档的 pull（团队有变更，或 `pull --force`）起变为可见；pull 在那里保留的你的条目（文档路径上的目录或链接）本身及其下的内容都不会列出。镜像位于默认的 `.teamai/docs/` 时，还会列出 `.teamai/.ignore`（见下文）；
 - 在 OpenCode V2 上，teamai 插件读取团队 MCP server 的 `.opencode/teamai-mcp.json`（见 [OpenCode](./advanced.md#opencode)）；
 - 只含 teamai 条目、且 git 未跟踪的共享配置文件：项目 MCP 配置 `.cursor/mcp.json`、`.github/mcp.json`、`.codex/config.toml`、`.kiro/settings/mcp.json`、`.omp/mcp.json`、`.pi/mcp.json`、`.workbuddy/mcp.json` 以及 OpenCode V1 下根目录的 `opencode.json`；`.codex/hooks.json`；以及 OpenCode V1 下的 `.opencode/opencode.json`。「只含 teamai 条目」指其中每个 server、团队 hook 或 `instructions` 条目都属于 teamai，且没有其他顶层键（`$schema` 也算一个）。teamai 没有记录的条目，只要与 teamai 为某个团队 server 或 hook 写入的内容（当前或团队更早的版本）相同，也算 teamai 的，因此升级前写入的文件、或记录丢失后的文件同样会被列出；`.opencode/opencode.json` 的 `instructions` 条目没有记录，与 teamai 写入的条目相同即算。

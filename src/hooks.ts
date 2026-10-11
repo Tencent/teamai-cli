@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { realpathSync } from 'node:fs';
-import { lstat, rm, stat } from 'node:fs/promises';
+import { lstat, readdir, rm, stat } from 'node:fs/promises';
 import { readJson, readJsonObject, writeJson, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import {
@@ -41,7 +41,7 @@ import { parseTeamHooks, resolveTeamHooks, teamHookToDef } from './resources/hoo
 import { entryLayout } from './namespaced-entries.js';
 import { historicalContents } from './utils/team-history.js';
 import { getUserHome } from './utils/home.js';
-import { CLAUDE_HOOK_OTHER_HOST_SKIP } from './claude-hook-host.js';
+import { CLAUDE_HOOK_OTHER_HOST_SKIP, LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip } from './claude-hook-host.js';
 import { listWorktrees, resolveAnchors } from './utils/git.js';
 import { findOnPath } from './utils/lookpath.js';
 import type { CodexHookTrustReport, CodexTrust } from './codex-trust.js';
@@ -306,6 +306,10 @@ function desiredDefs(
 export interface ReconcileHooksOptions {
   /** Remove all teamai-managed hooks instead of injecting the desired set. */
   removeAll?: boolean;
+  /** Mark Copilot user built-ins so legacy project copies yield during migration. */
+  copilotGlobal?: string;
+  /** Self mode's Claude hooks yield only to the project's Copilot copy. */
+  copilotProjectOnly?: boolean;
   /**
    * Path to the managed-hooks manifest (~/.teamai/managed-hooks.json). Required
    * to track Cursor team hooks (their commands carry no teamai marker). When
@@ -387,7 +391,7 @@ export async function keptTeamHookEntries(teamConfig: TeamaiConfig, localConfig:
 export async function hasUnrecordedTeamHooks(
   settingsPath: string,
   tool: string,
-  opts: Pick<ReconcileHooksOptions, 'teamHookHistory' | 'teamHookProjectRoot' | 'teamOnly'>,
+  opts: Pick<ReconcileHooksOptions, 'teamHookHistory' | 'teamHookProjectRoot' | 'teamOnly' | 'copilotProjectOnly'>,
 ): Promise<boolean> {
   return (await judgeUnrecordedTeamEntries(settingsPath, tool, [], [], opts)).adopted.length > 0;
 }
@@ -443,10 +447,21 @@ async function judgeUnrecordedTeamEntries(
     }
   };
   let renders: Array<{ def: HookDef; event?: string; entry: unknown }> | undefined;
-  const loadRenders = async () => renders ??= [
-    ...teamDefsForTool(scopedDefs, tool),
-    ...teamDefsForTool(scopedTeamDefs(await opts.teamHookHistory!(), opts.teamHookProjectRoot, tool), tool),
-  ].map((def) => ({ def, ...render(def) }));
+  const loadRenders = async () => {
+    if (renders) return renders;
+    const history = await opts.teamHookHistory!();
+    const historicalDefs = scopedTeamDefs(history, opts.teamHookProjectRoot, tool, opts.copilotProjectOnly);
+    if (format === 'claude' && tool === 'claude') {
+      // Scope migration changes the host guard, but each exact prior render still proves ownership.
+      historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, tool, !opts.copilotProjectOnly));
+      const projectGuard = claudeHookOtherHostSkip(false);
+      historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, tool, true).map(def => ({
+        ...def, command: def.command.replace(projectGuard, LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP),
+      })));
+    }
+    return renders = [...teamDefsForTool(scopedDefs, tool), ...teamDefsForTool(historicalDefs, tool)]
+      .map(def => ({ def, ...render(def) }));
+  };
   const marked = (command: string) => TEAMAI_COMMAND_MARKERS.some((m) => command.includes(m));
   // The commands each reconciler owns an entry by; none for an entry its built-in handling claims.
   const commandsOf = (event: string, entry: HookFileEntry): string[] => {
@@ -750,9 +765,9 @@ function isProjectGatedCommand(command: string): boolean {
  * (CodeBuddy's Windows hooks run through Git Bash), but this wrapper still
  * needs to know which tool it is rendering for.
  */
-function skipWhenAnotherHostLoadsClaudeSettings(command: string, tool: string): string {
+function skipWhenAnotherHostLoadsClaudeSettings(command: string, tool: string, copilotProjectOnly = false): string {
   if (tool !== 'claude') return command;
-  return `${CLAUDE_HOOK_OTHER_HOST_SKIP}${command}`;
+  return `${claudeHookOtherHostSkip(!copilotProjectOnly)}${command}`;
 }
 
 /**
@@ -1159,12 +1174,13 @@ async function reconcileSelfLocalTeamHooks(
       manifestPath,
       removeAll: !relocate,
       teamHookHistory: opts.teamHookHistory,
+      copilotProjectOnly: true,
     });
     if (!relocate) await removeEmptyHookFile(localFile);
   }
   await reconcileHooks(settingsPath, tool, relocate ? [] : teamDefs, relocate
     ? { builtinOverride: opts.builtinOverride, dropTeamEntries: true }
-    : { manifestPath, removeAll: opts.removeAll, builtinOverride: opts.builtinOverride, teamHookHistory: opts.teamHookHistory });
+    : { manifestPath, removeAll: opts.removeAll, builtinOverride: opts.builtinOverride, teamHookHistory: opts.teamHookHistory, copilotProjectOnly: true });
 }
 
 /** Delete an untracked hook file that holds nothing but empty hook lists. */
@@ -1204,18 +1220,18 @@ async function staleCheckoutGateRoots(
   return [...roots];
 }
 
-function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string): HookDef[] {
+function scopedTeamDefs(teamDefs: HookDef[], projectRoot: string | undefined, tool: string, copilotProjectOnly = false): HookDef[] {
   const prepared = teamDefs.map((def) => ({
     ...def,
-    command: skipWhenAnotherHostLoadsClaudeSettings(def.command, tool),
+    command: skipWhenAnotherHostLoadsClaudeSettings(def.command, tool, copilotProjectOnly),
   }));
   if (!projectRoot) return prepared;
   return prepared.map((def) => ({ ...def, command: gateTeamHookCommand(def.command, projectRoot) }));
 }
 
-function manifestRecordsForTool(teamDefs: HookDef[], tool: string, removeAll: boolean, projectRoot?: string): ManagedHookRecord[] {
+function manifestRecordsForTool(teamDefs: HookDef[], tool: string, removeAll: boolean, projectRoot?: string, copilotProjectOnly = false): ManagedHookRecord[] {
   if (removeAll) return [];
-  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool), tool).map((d) => ({
+  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool, copilotProjectOnly), tool).map((d) => ({
     id: d.key,
     event: d.event,
     ...(d.matcher && d.matcher !== '*' ? { matcher: d.matcher } : {}),
@@ -1279,7 +1295,14 @@ function copilotPowershellCommand(command: string): string {
     : `& ${match[1]} -lc "${match[2]} 2>/dev/null"; exit 0`;
 }
 
-function toCopilotEntry(def: HookDef): CopilotHookEntry {
+function copilotGlobalSource(file: string): string {
+  return createHash('sha256').update(path.resolve(file)).digest('hex');
+}
+
+function toCopilotEntry(def: HookDef, globalSource?: string): CopilotHookEntry {
+  const command = globalSource && def.source === 'builtin'
+    ? def.command.replace('--tool copilot', `--tool copilot --copilot-global ${copilotGlobalSource(globalSource)}`)
+    : def.command;
   const matcher = def.source === 'builtin'
     && def.event === 'PostToolUse'
     && def.matcher === 'Skill'
@@ -1287,9 +1310,9 @@ function toCopilotEntry(def: HookDef): CopilotHookEntry {
     : def.matcher;
   return {
     type: 'command',
-    bash: def.command,
-    powershell: copilotPowershellCommand(def.command),
-    command: def.command,
+    bash: command,
+    powershell: copilotPowershellCommand(command),
+    command,
     ...(matcher && matcher !== '*' ? { matcher } : {}),
     ...(def.timeout !== undefined ? { timeoutSec: def.timeout } : {}),
   };
@@ -1581,6 +1604,62 @@ function copilotEntryCommands(entry: CopilotHookEntry): string[] {
   return [entry.bash, entry.powershell, entry.command].filter(Boolean);
 }
 
+function unmarkCopilotGlobal(command: string): string {
+  return command.replace(/ --copilot-global [^ "\r\n]+/, '');
+}
+
+/** Suppress an overlapping Copilot built-in, including a legacy copy cached by the host. */
+export async function copilotBuiltinRunsInAnotherScope(
+  localConfig: LocalConfig | null,
+  event: string,
+  matcher: string,
+  globalSource?: string,
+): Promise<boolean> {
+  // A self project's overrides and local hooks remain authoritative.
+  if (localConfig?.scope === 'project' && isSelfMode(localConfig)) return !!globalSource;
+  const def = builtinHookDefs(COPILOT_TOOL_ID).find(def =>
+    def.command.includes(`teamai hook-dispatch ${event} --tool copilot `) && (def.matcher ?? '*') === matcher,
+  );
+  if (!def) return false;
+  const dir = path.join(getCopilotHome(), 'hooks');
+  const files = await readdir(dir).catch(() => [] as string[]);
+  // Copilot loads every native JSON file. A stable owner also suppresses cached copies after sync.
+  for (const name of files.filter(name => name.endsWith('.json')).sort()) {
+    const file = path.resolve(dir, name);
+    const json = await readJson<CopilotHooksJson & { disableAllHooks?: boolean }>(file);
+    if (json?.version !== COPILOT_HOOK_SCHEMA_VERSION || !json.hooks || json.disableAllHooks) continue;
+    const expected = toCopilotEntry(def, file);
+    const entries = json.hooks[CLAUDE_TO_COPILOT_EVENTS[def.event]];
+    if (Array.isArray(entries) && entries.some(entry => entry?.type === 'command'
+      && entry.matcher === expected.matcher
+      && copilotEntryCommands(entry).some(command => command === expected.bash || command === expected.powershell))) {
+      return globalSource !== copilotGlobalSource(file);
+    }
+  }
+  return !!globalSource;
+}
+
+/** Upgrade only the source marker when unresolved team hooks require retaining the installed set. */
+async function markCopilotGlobalBuiltins(file: string): Promise<void> {
+  const json = await readHookFile<CopilotHooksJson>(file, { version: COPILOT_HOOK_SCHEMA_VERSION, hooks: {} });
+  const commands = new Set(builtinHookDefs(COPILOT_TOOL_ID).flatMap(def => copilotEntryCommands(toCopilotEntry(def))));
+  let changed = false;
+  for (const entries of Object.values(json.hooks ?? {})) {
+    for (const entry of entries) {
+      for (const field of ['bash', 'powershell', 'command'] as const) {
+        const command = entry[field] && unmarkCopilotGlobal(entry[field]);
+        if (command && commands.has(command)) {
+          const marked = command.replace('--tool copilot', `--tool copilot --copilot-global ${copilotGlobalSource(file)}`);
+          if (entry[field] === marked) continue;
+          entry[field] = marked;
+          changed = true;
+        }
+      }
+    }
+  }
+  if (changed) await writeJson(file, json);
+}
+
 async function reconcileCopilotFormat(
   hooksPath: string,
   tool: string,
@@ -1603,15 +1682,20 @@ async function reconcileCopilotFormat(
   hooksJson.version = COPILOT_HOOK_SCHEMA_VERSION;
   if (!hooksJson.hooks) hooksJson.hooks = {};
 
-  const isManaged = (entry: CopilotHookEntry): boolean => copilotEntryCommands(entry).some((command) =>
-    TEAMAI_COMMAND_MARKERS.some((marker) => command.includes(marker)) || priorTeamCommands.has(command),
+  const builtinCommands = new Set(builtinHookDefs(tool).flatMap(def =>
+    copilotEntryCommands(toCopilotEntry(def)),
+  ));
+  const isManaged = (entry: CopilotHookEntry): boolean => copilotEntryCommands(entry).some(command =>
+    priorTeamCommands.has(command) || (opts.teamOnly || opts.copilotGlobal
+      ? builtinCommands.has(unmarkCopilotGlobal(command))
+      : TEAMAI_COMMAND_MARKERS.some(marker => command.includes(marker))),
   );
   const defs = opts.removeAll ? [] : desiredDefs(tool, teamDefs, opts);
   const desiredByEvent: Record<string, CopilotHookEntry[]> = {};
   for (const def of defs) {
     const event = CLAUDE_TO_COPILOT_EVENTS[def.event];
     if (!event) continue;
-    (desiredByEvent[event] ??= []).push(toCopilotEntry(def));
+    (desiredByEvent[event] ??= []).push(toCopilotEntry(def, opts.copilotGlobal));
   }
 
   for (const event of Object.keys(hooksJson.hooks)) {
@@ -2030,6 +2114,7 @@ export async function reconcileHooks(
       root: target.worktreeScoped ? undefined : target.root,
       removeAll: opts.removeAll,
       teamHookHistory: opts.teamHookHistory,
+      copilotProjectOnly: opts.copilotProjectOnly,
     });
   }
   const teamActive = !!opts.manifestPath || !!opts.dropTeamEntries;
@@ -2043,7 +2128,7 @@ export async function reconcileHooks(
     await writeJson(expandHome(opts.manifestPath), manifest);
   }
   const allPriorRecords = manifest?.[tool] ?? [];
-  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool);
+  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool, opts.copilotProjectOnly);
   const recorded = opts.teamHookProjectRoot
     ? allPriorRecords.filter((r) => isGatedForProject(r.command, opts.teamHookProjectRoot!))
     : allPriorRecords;
@@ -2078,7 +2163,7 @@ export async function reconcileHooks(
 
   // Update the manifest's team-hook index for this tool (when manifest is active).
   if (opts.manifestPath && manifest) {
-    const records = codexRecords ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot);
+    const records = codexRecords ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot, opts.copilotProjectOnly);
     const prev = manifest[tool] ?? [];
     // Main-checkout team-only files belong to one project; their old gated
     // records are consumed on migration. HOME retains the other projects.
@@ -2157,9 +2242,9 @@ export async function getHookStatus(
       const want = toCopilotEntry(def);
       return (hooksJson.hooks[event] ?? []).some((entry) =>
         entry.type === want.type
-        && entry.bash === want.bash
-        && entry.powershell === want.powershell
-        && entry.command === want.command
+        && (entry.bash && unmarkCopilotGlobal(entry.bash)) === want.bash
+        && (entry.powershell && unmarkCopilotGlobal(entry.powershell)) === want.powershell
+        && (entry.command && unmarkCopilotGlobal(entry.command)) === want.command
         && entry.matcher === want.matcher,
       );
     });
@@ -2751,6 +2836,7 @@ async function reconcileMainCheckoutTeamHooks(
     root?: string;
     removeAll?: boolean;
     teamHookHistory?: TeamHookHistory;
+    copilotProjectOnly?: boolean;
   },
 ): Promise<void> {
   const { checkoutManifestPath, sharedWithOtherInstall, current, root, ...reconcileOpts } = opts;
@@ -3231,25 +3317,37 @@ export async function reconcileTeamHooksForConfig(
     copilotSelected
     || (explicitlySelectedAgents === undefined && await pathExists(getCopilotHome()))
   );
-  const copilotPaths = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID];
+  const copilotConfig = { ...localConfig, scope: hookScope };
+  const copilotPaths = hookToolPaths[COPILOT_TOOL_ID];
   if (copilotEnabled && copilotPaths?.hooks) {
-    const copilotBase = resolveToolBaseDir(COPILOT_TOOL_ID, localConfig);
-    const copilotHooksPath = path.join(copilotBase, copilotPaths.hooks);
-    const copilotManifestPath = getManagedHooksPath(localConfig);
+    const copilotHooksPath = path.join(resolveToolBaseDir(COPILOT_TOOL_ID, copilotConfig), copilotPaths.hooks);
+    const splitCopilotHooks = localConfig.scope === 'project' && hookScope === 'user';
+    const copilotManifestPath = splitCopilotHooks ? undefined : getManagedHooksPath(localConfig);
     const copilotInstalled = await builtinsInstalled(
-      builtinsOnly, copilotHooksPath, COPILOT_TOOL_ID, copilotManifestPath, builtin);
+      builtinsOnly, copilotHooksPath, COPILOT_TOOL_ID, copilotManifestPath ?? manifestPath, builtin);
+    if (copilotInstalled && hookScope === 'user') await markCopilotGlobalBuiltins(copilotHooksPath);
     if (!copilotInstalled && (copilotSelected || await pathExists(getCopilotHome()))) {
-      await reconcileHooks(
-        copilotHooksPath,
-        COPILOT_TOOL_ID,
-        teamDefs,
-        {
-          manifestPath: builtinsOnly ? undefined : copilotManifestPath,
-          removeAll: opts.removeAll,
-          builtinOverride: builtin,
-          teamHookHistory: history,
-        },
-      );
+      await reconcileHooks(copilotHooksPath, COPILOT_TOOL_ID, splitCopilotHooks ? [] : teamDefs, {
+        manifestPath: builtinsOnly ? undefined : copilotManifestPath,
+        removeAll: opts.removeAll,
+        builtinOverride: builtin,
+        teamHookHistory: splitCopilotHooks ? undefined : history,
+        copilotGlobal: hookScope === 'user' ? copilotHooksPath : undefined,
+      });
+    }
+    if (splitCopilotHooks && !builtinsOnly) {
+      const projectHooks = scopedToolPaths(teamConfig, localConfig)[COPILOT_TOOL_ID]?.hooks;
+      if (projectHooks) {
+        const projectFile = path.join(resolveToolBaseDir(COPILOT_TOOL_ID, localConfig), projectHooks);
+        if (await pathExists(projectFile) || teamDefsForTool(teamDefs, COPILOT_TOOL_ID).length > 0) {
+          await reconcileHooks(projectFile, COPILOT_TOOL_ID, teamDefs, {
+            manifestPath: getManagedHooksPath(localConfig),
+            removeAll: opts.removeAll,
+            teamOnly: true,
+            teamHookHistory: history,
+          });
+        }
+      }
     }
   }
   if (!builtinsOnly) await sweepLegacyProjectHooks(teamConfig.toolPaths, localConfig, reconciledMainTools);

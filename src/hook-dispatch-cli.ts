@@ -30,6 +30,7 @@ import { log, setSilent, setStderrOnly } from './utils/logger.js';
 import { clearGitHookRepositoryEnv, GIT_HOOK_TOOL } from './git-hook.js';
 import { deriveDispatchSessionId } from './utils/session-id.js';
 import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
+import { isSelfMode } from './types.js';
 
 export { claudeHookRunsInAnotherHost };
 
@@ -415,11 +416,11 @@ export async function hookDispatchCli(
   event: string,
   tool: string,
   matcher: string,
-  options: { bgOnly?: boolean; stdinFile?: string; hookArgs?: string[] } = {},
+  options: { bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; hookArgs?: string[] } = {},
 ): Promise<void> {
   const { bgOnly = false, stdinFile } = options;
   setStderrOnly(true);
-  if (claudeHookRunsInAnotherHost(tool)) {
+  if (claudeHookRunsInAnotherHost(tool, process.env, false)) {
     log.debug('hook-dispatch: skipping claude hooks because Cursor or Copilot CLI has its own teamai hooks');
     return;
   }
@@ -463,6 +464,12 @@ export async function hookDispatchCli(
       }
     }
     const localConfig = await resolveHookConfig(stdin, tool);
+    // Global Copilot built-ins skip self mode, so its local Claude copy has no global replacement.
+    if (claudeHookRunsInAnotherHost(tool, process.env, !localConfig || !isSelfMode(localConfig))) return;
+    if (!bgOnly && tool === 'copilot') {
+      const { copilotBuiltinRunsInAnotherScope } = await import('./hooks.js');
+      if (await copilotBuiltinRunsInAnotherScope(localConfig, event, matcher, options.copilotGlobal)) return;
+    }
     const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
     const dispatcher = createDispatcher({ handlers, localConfig });
 

@@ -1014,10 +1014,11 @@ program
   .option('--stdin', 'Read hook data from STDIN (accepted for forward compat, always reads STDIN)')
   .option('--tool <name>', 'Tool identifier (e.g. codebuddy, workbuddy, claude)')
   .option('--matcher <matcher>', 'Hook matcher for PostToolUse (e.g. Skill, Bash)')
+  .option('--copilot-global <source>', 'Internal: identify a Copilot user built-in to prevent duplicate project execution')
   .option('--bg-only', 'Internal: run only fire-and-forget background handlers (used by the detached child)')
   .option('--stdin-file <path>', 'Internal: read the hook payload from this file instead of STDIN')
   .option('--team-hooks', 'Run the team hooks of the project the hook\'s cwd belongs to (Codex, when the project\'s .codex/hooks.json is not teamai\'s alone)')
-  .action(async (event: string, hookArgs: string[], cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean; stdinFile?: string; teamHooks?: boolean }) => {
+  .action(async (event: string, hookArgs: string[], cmdOpts: { stdin?: boolean; tool?: string; matcher?: string; bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; teamHooks?: boolean }) => {
     const bgOnly = cmdOpts.bgOnly ?? false;
     const tool = cmdOpts.tool ?? 'claude';
 
