@@ -1,4 +1,4 @@
-import { lstat, readdir, realpath } from 'node:fs/promises';
+import { lstat, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, resolveMemberToolRoots, saveLocalConfig, saveLocalConfigForScope, saveStateForScope, UnreadableProjectConfigError, detectProjectConfig } from './config.js';
 import { createDeliveryRecorder, deliveredOwner, deliveredOwnerElsewhere } from './git-exclude-delivered.js';
@@ -91,7 +91,7 @@ import { listQueuesIn } from './utils/pending-learnings.js';
 import { log } from './utils/logger.js';
 import { askConfirmation } from './utils/prompt.js';
 import { getUserHome } from './utils/home.js';
-import { listWorktrees } from './utils/git.js';
+import { gitCommonDir, listWorktrees } from './utils/git.js';
 import {
   detectShellProfile,
   findEnvBlockFor,
@@ -730,13 +730,14 @@ interface KeptForProjects { projects: KeptProject[]; paths: string[] }
  * set up on this machine (#1025), so `teamai uninstall` in each still finds
  * its config and removes what it installed: each partition holding a config,
  * and the shared files those projects' own pull, uninstall and doctor read.
- * A config that does not parse still makes a project (as in rules.ts), and
- * keeps every shared file it could need.
+ * A shared file goes only when no kept project can need it: a config that
+ * does not parse still makes a project (as in rules.ts), and one whose team
+ * checkouts cannot all be known keeps every shared file it could need.
  */
 async function keptForProjects(): Promise<KeptForProjects> {
   const { projectsRootDir, readAnchorFile } = await import('./utils/partition.js');
   const projects: KeptProject[] = [];
-  const configs: Array<LocalConfig | null> = [];
+  const readers: Array<LocalConfig[] | null> = [];
   for (const dir of await listDirs(projectsRootDir())) {
     const dataHome = path.join(projectsRootDir(), dir);
     if (!await pathExists(path.join(dataHome, 'config.yaml'))) continue;
@@ -744,14 +745,14 @@ async function keptForProjects(): Promise<KeptForProjects> {
     const hasCheckout = !!anchor && await pathExists(anchor);
     // No checkout to run `teamai uninstall` in: the member deletes it, never this guess.
     projects.push({ dataHome, name: hasCheckout ? anchor : `${dataHome} (checkout ${anchor ?? 'unknown'} missing: delete it by hand)` });
-    configs.push(await readConfigFrom(dataHome, anchor ?? dataHome, undefined, undefined, { selfHeal: false }));
+    readers.push(await teamReadersOf(dataHome, anchor));
   }
   if (projects.length === 0) return { projects, paths: [] };
   const shared = [
     getUserManagedHooksPath(),
     codexTeamHookIndexPath(),
-    ...await secretsFor(configs),
-    ...await sourceRecordsFor(configs),
+    ...await secretsFor(readers),
+    ...await sourceRecordsFor(readers),
   ];
   const present = [];
   for (const file of shared) if (await pathExists(file)) present.push(file);
@@ -759,37 +760,61 @@ async function keptForProjects(): Promise<KeptForProjects> {
 }
 
 /**
- * The secret stores the projects with `configs` read: each team's values, and
- * the machine's when one of those teams declares a secret. One whose config
- * or declarations cannot be read keeps them all.
+ * The configs the project in `dataHome` reads its team with: one per checkout
+ * in self mode, where each checkout's own `.teamai` is the team checkout.
+ * Null when they cannot all be known: the config does not parse, or a
+ * self-mode project names no checkout that git can list the others from.
  */
-async function secretsFor(configs: ReadonlyArray<LocalConfig | null>): Promise<string[]> {
+async function teamReadersOf(dataHome: string, anchor: string | null): Promise<LocalConfig[] | null> {
+  const read = (root: string): Promise<LocalConfig | null> => readConfigFrom(dataHome, root, undefined, undefined, { selfHeal: false });
+  const config = await read(anchor ?? dataHome);
+  if (config === null || config.repo.kind !== 'self') return config && [config];
+  if (!anchor || !await gitCommonDir(anchor)) return null;
+  const checkouts = await projectCheckouts(config).catch(() => null);
+  if (checkouts === null) return null;
+  const configs = [config];
+  for (const root of checkouts) {
+    const checkoutConfig = await read(root);
+    if (checkoutConfig === null) return null;
+    configs.push(checkoutConfig);
+  }
+  return configs;
+}
+
+/**
+ * The secret stores the projects with `readers` read: each team's values, and
+ * the machine's unless every team checkout is there and declares no secret.
+ * One whose readers or declarations cannot be known keeps them all.
+ */
+async function secretsFor(readers: ReadonlyArray<LocalConfig[] | null>): Promise<string[]> {
   const { getMachineSecretsPath, getTeamSecretsPath } = await import('./secret-store.js');
   const { declaredSecretKeys, resolveSecretDeclarations } = await import('./resources/secrets.js');
   const kept = new Set<string>();
-  for (const config of configs) {
-    if (config === null) return [path.dirname(getMachineSecretsPath())];
-    kept.add(getTeamSecretsPath(config));
-    const keys = await resolveSecretDeclarations(config).then(declaredSecretKeys, () => null);
-    if (keys === null || keys.size > 0) kept.add(getMachineSecretsPath());
+  for (const configs of readers) {
+    if (configs === null) return [path.dirname(getMachineSecretsPath())];
+    for (const config of configs) {
+      kept.add(getTeamSecretsPath(config));
+      // A checkout that is not there reads as declaring nothing, which proves nothing.
+      const isReadable = await stat(config.repo.localPath).then((stats) => stats.isDirectory(), () => false);
+      const keys = isReadable ? await resolveSecretDeclarations(config).then(declaredSecretKeys, () => null) : null;
+      if (keys === null || keys.size > 0) kept.add(getMachineSecretsPath());
+    }
   }
   return [...kept];
 }
 
 /**
- * The source installation records the projects with `configs` pull with:
- * those written for their team checkout, and any that cannot be read. One
- * whose config cannot be read keeps them all.
+ * The source installation records the projects with `readers` pull with:
+ * those written for their team checkouts, and any that cannot be read. One
+ * whose readers cannot be known keeps them all.
  */
-async function sourceRecordsFor(configs: ReadonlyArray<LocalConfig | null>): Promise<string[]> {
+async function sourceRecordsFor(readers: ReadonlyArray<LocalConfig[] | null>): Promise<string[]> {
   const { listInstallationRecords } = await import('./source.js');
   const records = await listInstallationRecords();
   const teamCheckouts = new Set<string>();
-  for (const config of configs) {
-    if (config === null) return records.map((record) => record.path);
-    // A self-mode project's team checkout is each checkout's own `.teamai`.
-    const checkouts = config.repo.kind === 'self' ? (await projectCheckouts(config)).map((root) => path.join(root, '.teamai')) : [config.repo.localPath];
-    for (const checkout of checkouts) teamCheckouts.add(path.resolve(checkout));
+  for (const configs of readers) {
+    if (configs === null) return records.map((record) => record.path);
+    for (const config of configs) teamCheckouts.add(path.resolve(config.repo.localPath));
   }
   return records
     .filter(({ teamCheckout }) => teamCheckout === null || teamCheckouts.has(path.resolve(teamCheckout)))

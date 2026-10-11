@@ -4210,4 +4210,63 @@ describe('user-scope uninstall and the projects still set up (#1025)', () => {
     expect(await fse.readFile(projectRecord, 'utf8')).toBe(record(localConfig.repo.localPath));
     expect(await fse.pathExists(otherRecord)).toBe(otherKept);
   });
+
+  /**
+   * A self-mode project with no remote at `<tmpDir>/app`, and a linked worktree
+   * at `<tmpDir>/app-sibling` whose `.teamai` declares a secret when asked. Its
+   * team files are each checkout's, as the checkout itself would hash them.
+   */
+  async function selfModeProject(siblingDeclares: boolean): Promise<{ config: string; anchor: string; sibling: string; teamFiles: string[] }> {
+    const anchor = path.join(tmpDir, 'app');
+    const sibling = path.join(tmpDir, 'app-sibling');
+    await fse.ensureDir(path.join(anchor, '.teamai'));
+    execFileSync('git', ['init', '-q'], { cwd: anchor });
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: anchor });
+    execFileSync('git', ['worktree', 'add', '-q', sibling], { cwd: anchor });
+    await fse.ensureDir(path.join(sibling, '.teamai'));
+    if (siblingDeclares) await fse.outputFile(path.join(sibling, '.teamai', 'env', 'secrets.yaml'), 'secrets:\n  - key: TOKEN\n');
+    const localConfig = makeLocalConfig('', path.join(anchor, '.teamai'), {
+      scope: 'project',
+      projectRoot: anchor,
+      repo: { localPath: path.join(anchor, '.teamai'), remote: '', kind: 'self', businessRepoRoot: anchor },
+    });
+    const teamFile = (root: string): string => getTeamSecretsPath({ ...localConfig, repo: { ...localConfig.repo, localPath: path.join(root, '.teamai') } });
+    return { config: YAML.stringify(localConfig), anchor, sibling, teamFiles: [teamFile(anchor), teamFile(await fse.realpath(sibling))] };
+  }
+
+  // A shared file goes only when no kept project can need it: what cannot be read or listed counts as needed.
+  it.each([
+    { project: 'its team clone is gone', setup: 'clone-gone', machineKept: true, unknownKept: false },
+    { project: 'a self-mode sibling worktree has its own team file', setup: 'self', machineKept: false, unknownKept: false },
+    { project: 'a self-mode sibling worktree declares secrets', setup: 'self-sibling-declares', machineKept: true, unknownKept: false },
+    { project: 'a self-mode project names no checkout', setup: 'self-no-anchor', machineKept: true, unknownKept: true },
+    { project: 'a self-mode project\'s checkout is gone', setup: 'self-anchor-gone', machineKept: true, unknownKept: true },
+  ] as const)('keeps every secret and source record a kept project may read when $project', async ({ setup, machineKept, unknownKept }) => {
+    const { teamaiHome } = await userScope();
+    let teamFiles: string[];
+    if (setup === 'clone-gone') {
+      const { config, localConfig } = await projectConfig('proj');
+      await partition(teamaiHome, 'app', { 'config.yaml': config });
+      await fse.remove(localConfig.repo.localPath);
+      teamFiles = [getTeamSecretsPath(localConfig)];
+    } else {
+      const project = await selfModeProject(setup === 'self-sibling-declares');
+      const { dir } = await partition(teamaiHome, 'app', { 'config.yaml': project.config });
+      if (setup === 'self-no-anchor') await fse.remove(path.join(dir, 'anchor'));
+      if (setup === 'self-anchor-gone') await fse.remove(project.anchor);
+      teamFiles = project.teamFiles;
+    }
+    const otherFile = path.join(teamaiHome, 'secrets', 'teams', `${'0'.repeat(64)}.json`);
+    const machineFile = path.join(teamaiHome, 'secrets', 'machine.json');
+    const otherRecord = path.join(teamaiHome, 'sources', 'skills-src', 'installations', 'b.json');
+    for (const file of [...teamFiles, otherFile, machineFile]) await fse.outputFile(file, '{}\n');
+    await fse.outputFile(otherRecord, JSON.stringify({ teamCheckout: path.join(teamaiHome, 'team-repo'), lastPull: '2026-01-01T00:00:00.000Z', installedSkills: ['s'] }));
+
+    await uninstall({ force: true });
+
+    for (const file of teamFiles) expect(await fse.pathExists(file), file).toBe(true);
+    expect(await fse.pathExists(machineFile)).toBe(machineKept);
+    expect(await fse.pathExists(otherFile)).toBe(unknownKept);
+    expect(await fse.pathExists(otherRecord)).toBe(unknownKept);
+  });
 });
