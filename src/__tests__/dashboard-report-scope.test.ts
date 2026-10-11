@@ -38,6 +38,7 @@ vi.mock('../utils/reports-branch.js', () => ({
 const { hookDispatchCli } = await import('../hook-dispatch-cli.js');
 const { resolveProjectDataHome, saveLocalConfigForScope, resolveConfigForDir, loadLocalConfig } = await import('../config.js');
 const { reportUsageToTeam } = await import('../team-push.js');
+const { reconcileHooks } = await import('../hooks.js');
 const { getDataHome } = await import('../types.js');
 const { dataHomeKey } = await import('../dashboard-collector.js');
 const dataHomeKeyOf = (config: LocalConfig) => dataHomeKey(getDataHome(config));
@@ -46,12 +47,14 @@ let tmp: string;
 let originalHome: string | undefined;
 let originalCwd: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dashboard-scope-')));
   originalHome = process.env.HOME;
   originalCwd = process.cwd();
   process.env.HOME = path.join(tmp, 'home');
   fs.mkdirSync(process.env.HOME);
+  // Copilot runs the built-ins it has installed.
+  await reconcileHooks(path.join(process.env.HOME, '.copilot', 'hooks', 'teamai.json'), 'copilot');
 });
 
 afterEach(() => {

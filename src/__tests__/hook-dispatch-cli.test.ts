@@ -24,6 +24,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, hookDispatchCli, claudeHookRunsInAnotherHost } =
   await import('../hook-dispatch-cli.js');
 const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
+const { reconcileHooks } = await import('../hooks.js');
 const { log } = await import('../utils/logger.js');
 
 describe('readStdin', () => {
@@ -184,6 +185,7 @@ describe('hookDispatchCli', () => {
       mockDispatcher.dispatch.mockClear();
       fs.writeFileSync(copilotHooks, '{"version":1,"hooks":{"sessionStart":[{"type":"command","bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
       process.env.COPILOT_PROJECT_DIR = project;
+      await reconcileHooks(path.join(bare, '.copilot', 'hooks', 'teamai.json'), 'copilot');
       await hookDispatchCli('stop', 'copilot', '*', { stdinFile });
       expect(mockDispatcher.dispatch).toHaveBeenCalledTimes(1);
     } finally {
@@ -291,6 +293,9 @@ describe('hookDispatchCli', () => {
     };
     mockSpawn.mockReturnValue(child);
 
+    const previousCopilotHome = process.env.COPILOT_HOME;
+    process.env.COPILOT_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-home-'));
+    await reconcileHooks(path.join(process.env.COPILOT_HOME, 'hooks', 'teamai.json'), 'copilot');
     try {
       await hookDispatchCli('session-start', 'copilot', '*', { stdinFile });
       expect(mockSpawn).toHaveBeenCalled();
@@ -298,6 +303,9 @@ describe('hookDispatchCli', () => {
       expect(JSON.parse(detachedPayload).session_id).not.toContain(cwd);
     } finally {
       fs.rmSync(stdinFile, { force: true });
+      fs.rmSync(process.env.COPILOT_HOME, { recursive: true, force: true });
+      if (previousCopilotHome === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = previousCopilotHome;
       if (previousClaudeId === undefined) delete process.env.CLAUDE_SESSION_ID;
       else process.env.CLAUDE_SESSION_ID = previousClaudeId;
     }

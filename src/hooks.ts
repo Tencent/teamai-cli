@@ -1620,20 +1620,25 @@ export async function copilotBuiltinDisabled(localConfig: LocalConfig | null, ev
 }
 
 /**
- * True while a user hook file Copilot runs still holds this built-in, under
- * any filename. A copy cached from a file whose built-ins were removed then
+ * True while a hook file Copilot runs still holds this built-in, under any
+ * filename: a user hook file, or for a copy from a project file (no
+ * `--copilot-global`), also that project's `.github/hooks`, where an upgrade
+ * moved it from. A copy cached from a file whose built-ins were removed then
  * stops; it never defers to another copy, which the session may not have loaded.
  */
-export async function copilotBuiltinInstalledGlobally(event: string, matcher: string): Promise<boolean> {
+export async function copilotBuiltinInstalled(event: string, matcher: string, projectConfig: LocalConfig | null): Promise<boolean> {
   const def = copilotBuiltinDef(event, matcher);
   if (!def) return false;
   const expected = toCopilotEntry(def);
-  const dir = path.join(getCopilotHome(), 'hooks');
-  for (const name of await readdir(dir).catch(() => [] as string[])) {
-    if (!name.endsWith('.json')) continue;
-    const json = await readJson<unknown>(path.join(dir, name));
-    if (copilotRunsEntries(json).some(([entryEvent, entryMatcher, command]) => entryEvent === CLAUDE_TO_COPILOT_EVENTS[def.event]
-      && entryMatcher === expected.matcher && [expected.bash, expected.powershell].includes(unmarkCopilotGlobal(command)))) return true;
+  const dirs = [path.join(getCopilotHome(), 'hooks')];
+  if (projectConfig?.scope === 'project') dirs.push(path.join(resolveToolBaseDir(COPILOT_TOOL_ID, projectConfig), '.github', 'hooks'));
+  for (const dir of dirs) {
+    for (const name of await readdir(dir).catch(() => [] as string[])) {
+      if (!name.endsWith('.json')) continue;
+      const json = await readJson<unknown>(path.join(dir, name));
+      if (copilotRunsEntries(json).some(([entryEvent, entryMatcher, command]) => entryEvent === CLAUDE_TO_COPILOT_EVENTS[def.event]
+        && entryMatcher === expected.matcher && [expected.bash, expected.powershell].includes(unmarkCopilotGlobal(command)))) return true;
+    }
   }
   return false;
 }

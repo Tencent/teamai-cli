@@ -205,6 +205,49 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(fs.existsSync(path.join(home, '.teamai/dashboard/events.jsonl'))).toBe(false);
   });
 
+  // A cached copy runs only while its install is on disk: a global copy in a
+  // user hook file, a legacy project copy in its project's or a user hook file.
+  it('runs a cached copy only while its install is on disk, through upgrade and removal', () => {
+    const a = project('a');
+    const b = project('b');
+    cli(['hooks', 'inject'], a);
+    const globalFile = path.join(copilotHome, 'hooks/teamai.json');
+    const global = hooks(globalFile).hooks.UserPromptSubmit[0];
+    const legacyFile = JSON.parse(JSON.stringify(hooks(globalFile)).replaceAll(/ --copilot-global [^ "\r\n]+/g, '')) as Hooks;
+    const legacy = legacyFile.hooks.UserPromptSubmit[0];
+    const states: Array<[string, () => void]> = [
+      ['before the upgrade', () => {
+        fs.rmSync(globalFile);
+        write(path.join(b, '.github/hooks/teamai.json'), JSON.stringify(legacyFile));
+      }],
+      ['after the upgrade', () => cli(['hooks', 'inject'], b)],
+      ['after hooks remove', () => cli(['hooks', 'remove'], b)],
+    ];
+    // [state, copy the session cached, events expected]
+    const rows: Array<[string, string, number]> = [
+      ['before the upgrade', 'legacy', 1],
+      ['before the upgrade', 'global', 0],
+      ['after the upgrade', 'legacy', 1],
+      ['after the upgrade', 'global', 1],
+      ['after hooks remove', 'legacy', 0],
+      ['after hooks remove', 'global', 0],
+    ];
+    const recorded = (sessionId: string) => {
+      const file = path.join(home, '.teamai/dashboard/events.jsonl');
+      if (!fs.existsSync(file)) return 0;
+      return fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+        .filter(event => event.type === 'prompt_submit' && event.sessionId === sessionId).length;
+    };
+    for (const [state, enter] of states) {
+      enter();
+      for (const [rowState, copy, expected] of rows.filter(([rowState]) => rowState === state)) {
+        const sessionId = `${rowState}-${copy}`.replaceAll(' ', '-');
+        dispatch(copy === 'legacy' ? legacy : global, a, b, sessionId);
+        expect(recorded(sessionId), `${rowState}: ${copy} copy`).toBe(expected);
+      }
+    }
+  });
+
   it('lists and diagnoses hooks configured only in user scope', () => {
     const dir = project('a');
     const teamFile = path.join(dir, '.teamai/team-repo/teamai.yaml');

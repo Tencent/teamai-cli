@@ -470,8 +470,8 @@ export async function hookDispatchCli(
     if (!bgOnly && tool === 'copilot') {
       // A self project's overrides and local hooks remain authoritative.
       if (options.copilotGlobal && localConfig?.scope === 'project' && isSelfMode(localConfig)) return;
-      const { copilotBuiltinDisabled, copilotBuiltinInstalledGlobally } = await import('./hooks.js');
-      if (options.copilotGlobal && !await copilotBuiltinInstalledGlobally(event, matcher)) return;
+      const { copilotBuiltinDisabled, copilotBuiltinInstalled } = await import('./hooks.js');
+      if (!await copilotBuiltinInstalled(event, matcher, options.copilotGlobal ? null : localConfig)) return;
       if (await copilotBuiltinDisabled(localConfig, event, matcher)) return;
       if (!claimCopilotHookEvent(event, matcher, raw)) return;
     }
