@@ -1163,7 +1163,7 @@ program
   .action(async (cmdOpts) => {
     if (cmdOpts.stdin) {
       const { todoWriteHint } = await import('./todowrite-hint.js');
-      await todoWriteHint();
+      await todoWriteHint(cmdOpts.tool);
     }
   });
 
@@ -1224,7 +1224,7 @@ program
   .action(async (cmdOpts) => {
     if (cmdOpts.stdin) {
       const { mrHint } = await import('./mr-hint.js');
-      await mrHint();
+      await mrHint(cmdOpts.tool);
     }
   });
 

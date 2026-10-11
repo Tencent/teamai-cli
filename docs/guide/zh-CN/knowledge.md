@@ -158,6 +158,8 @@ teamai recall status     # 查看当前生效状态（团队默认 + 用户覆�
 
 关闭后，`teamai pull` 将跳过部署 recall subagent 和 TodoWrite 提醒 hook，并从团队指令中移除 recall 块。手动执行 `teamai recall <query>` 搜索不受此开关影响。
 
+`teamai.yaml` 中的 `language`（可选，`en` 或 `zh`）决定内置 recall 规则，以及 TodoWrite 提示和已合入 MR 提示的语言。`en` 为仅英文。`zh` 或省略该字段时，保持既有中英双语文本，逐字节不变。每个 scope 读取自己团队仓库的 `teamai.yaml`，因此 project 与 user 安装可以不同。下一次 `teamai pull` 会按所选语言重写 recall 规则。
+
 ### 知识库维护
 
 随着时间推移，部分 learnings 会积累低置信度（无人 upvote）或变得过时。`teamai recall maintenance` 可保持知识库健康：

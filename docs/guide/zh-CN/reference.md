@@ -21,6 +21,7 @@ team: my-team
 description: 团队 AI 资源仓库
 repo: https://github.com/your-org/your-repo.git
 provider: github
+# language: en                # 可选；en | zh。省略或 zh 保持既有中英双语的 recall 规则、TodoWrite 提示和已合入 MR 提示。en 为仅英文。
 # scope: 若存在则忽略——本机安装位置由 `teamai init --scope` 决定
 
 reviewers:
@@ -58,6 +59,8 @@ sharing:
         timeout: 5000          # 可选，单次请求超时（毫秒，默认 5000）
         retries: 3             # 可选，失败重试次数（默认 3）
 ```
+
+`language`（可选，`en` 或 `zh`）决定 teamai 注入给 agent 的文本语言：内置 `teamai-recall` 规则、TodoWrite 提示，以及已合入 MR 提示。`en` 为仅英文。`zh` 或省略该字段时，保持既有中英双语文本，逐字节不变。下一次 `teamai pull` 会按所选语言重写 recall 规则。
 
 `teamai pull` 将你收到的 `docs/` 非隐藏文件（见[按 namespace 分发 docs](./sharing.md#docs文档)）镜像同步到 `sharing.docs.localDir`：团队库删除的文档，本地也会一并删除，包括删除最后一篇文档或整个团队文档目录的情况。被删除文档路径上的本地文件，只有与团队仓库历史中该文档的某个版本相同时才会删除；
 

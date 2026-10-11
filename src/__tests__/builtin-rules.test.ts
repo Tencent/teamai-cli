@@ -50,6 +50,49 @@ describe('builtin-rules', () => {
             expect(content).toContain('teamai recall');
         });
 
+        it('deploys an English-only recall rule when language is en and treats that body as teamai-owned (#1014)', async () => {
+            const claudeRulesDir = path.join(tmpDir, '.claude', 'rules');
+            fs.mkdirSync(claudeRulesDir, { recursive: true });
+            const teamConfig = {
+                language: 'en',
+                toolPaths: { claude: { rules: '.claude/rules' } },
+            } as any;
+
+            const { deployBuiltinRules, isDeployedRecallRule } = await import('../builtin-rules.js');
+            await deployBuiltinRules(teamConfig);
+
+            const content = fs.readFileSync(path.join(claudeRulesDir, 'teamai-recall.md'), 'utf-8');
+            expect(content).toContain('Self-exemption');
+            expect(content).toContain('teamai-recall');
+            expect(content).toContain('teamai recall');
+            expect(content).toContain('Nothing was searched');
+            expect(content).toContain('Recall skips the older index');
+            expect(content).not.toMatch(/[\u4e00-\u9fff]/);
+            expect(isDeployedRecallRule(content)).toBe(true);
+            expect(isDeployedRecallRule(content + '\nedited\n')).toBe(false);
+        });
+
+        it('keeps the historical bilingual recall rule when language is omitted or zh (#1014)', async () => {
+            const write = async (language?: 'zh') => {
+                const dir = path.join(tmpDir, language ?? 'omit', '.claude', 'rules');
+                fs.mkdirSync(dir, { recursive: true });
+                const teamConfig = {
+                    ...(language ? { language } : {}),
+                    toolPaths: { claude: { rules: path.join(language ?? 'omit', '.claude', 'rules') } },
+                } as any;
+                const { deployBuiltinRules, isDeployedRecallRule } = await import('../builtin-rules.js');
+                await deployBuiltinRules(teamConfig);
+                const content = fs.readFileSync(path.join(dir, 'teamai-recall.md'), 'utf-8');
+                expect(isDeployedRecallRule(content)).toBe(true);
+                return content;
+            };
+
+            const omitted = await write();
+            const zh = await write('zh');
+            expect(zh).toBe(omitted);
+            expect(omitted).toContain('规则：任务开始前检索团队知识库');
+        });
+
         it('should deploy the recall rule to cursor as .mdc, not an ignored .md', async () => {
             const cursorRulesDir = path.join(tmpDir, '.cursor', 'rules');
             fs.mkdirSync(cursorRulesDir, { recursive: true });

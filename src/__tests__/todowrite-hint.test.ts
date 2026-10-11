@@ -34,6 +34,21 @@ describe('buildHintMessage', () => {
     // English prompt body
     expect(msg).toMatch(/Task plan detected/);
   });
+
+  it('is English-only when the team language is en (#1014)', () => {
+    const msg = buildHintMessage('en');
+    expect(msg).toContain('[teamai:todowrite-hint]');
+    expect(msg).toContain('teamai-recall');
+    expect(msg).toMatch(/Task plan detected/);
+    expect(msg).not.toMatch(/[\u4e00-\u9fff]/);
+  });
+
+  it('stays byte-identical to the bilingual hint when language is omitted or zh (#1014)', () => {
+    const omitted = buildHintMessage();
+    expect(buildHintMessage('zh')).toBe(omitted);
+    expect(omitted).toMatch(/任务/);
+    expect(omitted).toMatch(/Task plan detected/);
+  });
 });
 
 describe('shouldSkipTodoWriteHint — session deduplication', () => {
@@ -144,5 +159,58 @@ describe('hooks.ts — TodoWrite hint registration', () => {
       (h: { matcher?: string }) => h.matcher === 'TodoWrite',
     );
     expect(hits.length).toBe(1);
+  });
+});
+
+describe('todowrite hint follows teamai.yaml language (#1014)', () => {
+  let tmpHome: string;
+  let repo: string;
+
+  beforeEach(async () => {
+    tmpHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-todowrite-lang-'));
+    repo = path.join(tmpHome, 'team');
+    await fse.ensureDir(repo);
+    vi.stubEnv('HOME', tmpHome);
+    vi.stubEnv('TEAMAI_RECALL_DISABLED', '');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpHome);
+  });
+
+  async function hint(language?: 'en' | 'zh'): Promise<string> {
+    const lines = ['team: t', 'repo: https://example.invalid/t.git'];
+    if (language) lines.push(`language: ${language}`);
+    await fse.writeFile(path.join(repo, 'teamai.yaml'), `${lines.join('\n')}\n`);
+    const { buildHandlerRegistry } = await import('../hook-handlers.js');
+    const { LocalConfigSchema } = await import('../types.js');
+    const local = LocalConfigSchema.parse({
+      repo: { localPath: repo, remote: 'https://example.invalid/t.git' },
+      username: 'a',
+      scope: 'user',
+    });
+    const handler = buildHandlerRegistry().find((r) => r.handler.name === 'todowrite-hint')!.handler;
+    const raw = await handler.execute(
+      { tool_name: 'TodoWrite', session_id: `sid-${language ?? 'omit'}-${Date.now()}` },
+      'claude',
+      local,
+    );
+    return JSON.parse(raw!).hookSpecificOutput.additionalContext as string;
+  }
+
+  it('emits an English-only hint when language is en', async () => {
+    const msg = await hint('en');
+    expect(msg).toContain('[teamai:todowrite-hint]');
+    expect(msg).toContain('teamai-recall');
+    expect(msg).not.toMatch(/[\u4e00-\u9fff]/);
+  });
+
+  it('keeps the bilingual hint when language is omitted or zh', async () => {
+    const omitted = await hint();
+    const zh = await hint('zh');
+    expect(zh).toBe(omitted);
+    expect(omitted).toMatch(/任务/);
+    expect(omitted).toMatch(/Task plan detected/);
   });
 });

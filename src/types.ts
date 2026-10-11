@@ -363,6 +363,13 @@ export const TeamaiConfigBaseSchema = z.object({
   /** Run `git submodule update --init` on pull so skills distributed as git
    * submodules are populated and kept current. Off by default. */
   submodules: z.boolean().optional(),
+  /**
+   * Language of the agent-facing texts teamai injects: the built-in
+   * teamai-recall rule, the todowrite-hint, and the mr-hint.
+   * `en` is English only. `zh` or omitted keeps the historical bilingual
+   * text, byte for byte (#1014).
+   */
+  language: z.enum(['en', 'zh']).optional(),
   /** Team-owned scripts the CLI runs at defined points of a pull — repo-committed
    * entrypoints, distinct from `sharing.hooks.requireTeamScripts` (the
    * `~/.teamai/team-scripts/` trust boundary for hook commands). Every entry is

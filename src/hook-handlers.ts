@@ -780,9 +780,15 @@ const votesJudgeHandler: HookHandler = {
   },
 };
 
+/** `teamai.yaml` `language` for this scope, when that file can be read. */
+async function teamAgentLanguage(config: LocalConfig | null): Promise<'en' | 'zh' | undefined> {
+  const { loadTeamAgentLanguage } = await import('./config.js');
+  return loadTeamAgentLanguage(config);
+}
+
 const todowriteHintHandler: HookHandler = {
   name: 'todowrite-hint',
-  async execute(stdin, _tool) {
+  async execute(stdin, _tool, config) {
     if (process.env.TEAMAI_RECALL_DISABLED === '1') return null;
 
     const toolName = normalizeToolName(typeof stdin.tool_name === 'string' ? stdin.tool_name : '');
@@ -795,7 +801,7 @@ const todowriteHintHandler: HookHandler = {
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: buildHintMessage(),
+        additionalContext: buildHintMessage(await teamAgentLanguage(config)),
       },
     });
   },
@@ -803,9 +809,9 @@ const todowriteHintHandler: HookHandler = {
 
 const mrHintHandler: HookHandler = {
   name: 'mr-hint',
-  async execute(_stdin, _tool) {
+  async execute(_stdin, _tool, config) {
     const { computeMrHintOutput } = await import('./mr-hint.js');
-    return computeMrHintOutput();
+    return computeMrHintOutput(await teamAgentLanguage(config));
   },
 };
 

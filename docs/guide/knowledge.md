@@ -162,6 +162,8 @@ Append `--dry-run` to `enable` or `disable` to preview the config and managed-ar
 
 When disabled, `teamai pull` skips deploying the recall subagent and the TodoWrite reminder hook, and removes the recall block from the team instructions. Manually running `teamai recall <query>` to search is not affected by this switch.
 
+`language` in `teamai.yaml` (`en` or `zh`, optional) chooses the language of the built-in recall rule and of the TodoWrite and merged-MR hints. `en` is English only. `zh` or omitting the field keeps the historical bilingual text, byte for byte. Each scope reads the `teamai.yaml` of its own team repo, so a project and a user install can differ. The next `teamai pull` rewrites the recall rule in the selected language.
+
 ### Knowledge Base Maintenance
 
 Over time, some learnings accumulate low confidence scores (nobody upvoted them) or become stale. `teamai recall maintenance` keeps the knowledge base healthy:

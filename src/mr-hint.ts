@@ -363,9 +363,22 @@ async function listGitHubMergedMRs(
  * Build the additionalContext hint message for AI.
  *
  * @param mrs  New merged MRs that have not been imported yet
- * @returns    Bilingual hint string
+ * @returns    Hint string. English only when language is `en`; otherwise the historical bilingual text.
  */
-export function buildHintMessage(mrs: MRSummary[]): string {
+export function buildHintMessage(mrs: MRSummary[], language?: 'en' | 'zh'): string {
+  if (language === 'en') {
+    const lines = [
+      `[teamai:mr-hint] Found ${mrs.length} recently merged MR(s) not yet imported into the team knowledge base.`,
+      '',
+      'After this task, tell the user they can turn each MR into a learning and update codebase.md with:',
+      '',
+    ];
+    for (const mr of mrs) {
+      lines.push(`- ${mr.title} (merged: ${mr.mergedAt.slice(0, 10)})`);
+      lines.push(`  teamai import --from-mr ${mr.url}`);
+    }
+    return lines.join('\n');
+  }
   const lines: string[] = [
     `[teamai:mr-hint] 发现 ${mrs.length} 个近期已合入但尚未提炼的 MR。`,
     '',
@@ -407,7 +420,7 @@ export function buildHintMessage(mrs: MRSummary[]): string {
  * nothing to hint. Does NOT read STDIN — safe to call from the hook dispatcher
  * (which has already consumed STDIN) as well as from the standalone command.
  */
-export async function computeMrHintOutput(): Promise<string | null> {
+export async function computeMrHintOutput(language?: 'en' | 'zh'): Promise<string | null> {
   if (process.env.TEAMAI_MR_HINT_DISABLED === '1') return null;
 
   // Detect git remote
@@ -462,7 +475,7 @@ export async function computeMrHintOutput(): Promise<string | null> {
   saveCache(owner, repo, { hintedMrIds: updatedIds, updatedAt: new Date().toISOString() });
 
   // Build additionalContext hint
-  const hintText = buildHintMessage(newMrs);
+  const hintText = buildHintMessage(newMrs, language);
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
@@ -471,19 +484,33 @@ export async function computeMrHintOutput(): Promise<string | null> {
   });
 }
 
-export async function mrHint(): Promise<void> {
+export async function mrHint(tool?: string): Promise<void> {
   // Drain STDIN when piped (hook invocation) so the caller doesn't block.
-  // Session metadata is not yet used by the hint logic.
+  // The payload's cwd selects the scope whose teamai.yaml `language` applies.
+  let payload: Record<string, unknown> = {};
   if (!process.stdin.isTTY) {
     try {
-      for await (const _chunk of process.stdin) {
-        void _chunk;
+      const chunks: Buffer[] = [];
+      for await (const chunk of process.stdin) {
+        chunks.push(chunk as Buffer);
+      }
+      const raw = Buffer.concat(chunks).toString('utf-8').trim();
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            payload = parsed as Record<string, unknown>;
+          }
+        } catch {
+          // non-critical: an unparseable payload still drains
+        }
       }
     } catch {
       // non-critical
     }
   }
 
-  const output = await computeMrHintOutput();
+  const { loadTeamAgentLanguageForHook } = await import('./config.js');
+  const output = await computeMrHintOutput(await loadTeamAgentLanguageForHook(payload, tool));
   if (output) process.stdout.write(output + '\n');
 }

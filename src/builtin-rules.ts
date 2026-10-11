@@ -63,7 +63,7 @@ export async function deployBuiltinRules(
     let deployed = 0;
 
     const builtinRules: Array<{ name: string; content: string }> = [
-        { name: 'teamai-recall', content: TEAMAI_RECALL_RULE_CONTENT },
+        { name: 'teamai-recall', content: recallRuleContent(teamConfig.language) },
     ].filter(r => !(options?.skipRecall && r.name === 'teamai-recall'));
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
@@ -147,10 +147,12 @@ const TEAMAI_RECALL_RULE_HEADING = '# Team Knowledge Recall (teamai)';
  * TEAMAI_RECALL_RULE_HEADING, newest first (from `git log origin/main --
  * src/builtin-rules.ts`). The built-ins are not in the delivery ledger, so
  * these hashes are what proves a copy in a Codex legacy rules dir unedited.
- * Add the new hash when TEAMAI_RECALL_RULE_CONTENT changes: a team `toolPaths`
- * that still names such a dir keeps receiving the current body.
+ * Add the new hash when either deployed body changes (the historical bilingual
+ * text, or the English `language: en` body, #1014): a team `toolPaths` that
+ * still names such a dir keeps receiving the current body.
  */
 const DEPLOYED_RECALL_RULE_HASHES = new Set<string>([
+    '37d1a34f733bfb15e291b08bd17951f2764b91047117d1b2c396e7d01c67c038',
     '9fbe3cc0b5bd39b9418ab2672a38cac831f2d4a3ab31ad539ce4de51d0bcab7f',
     '564b9e8369fbc0009580f0174af119144da6b07ee4e1030f75bc5a03e9c60015',
     '11698b506859049b7dc7ceb7ea149c371ae42dfc0db9a512763d9295f4af480e',
@@ -216,3 +218,44 @@ searched: relay that warning rather than conclude the team has no knowledge ther
 例如专有名词、品牌与产品名、缩写、代码标识符与符号、错误码、版本号、文件路径、命令与 API 名
 （\`AppID\`、\`Kubernetes\`、\`GPU\`、\`RuntimeError\`、\`v2.1.3\`、\`oauth\`）——翻译它们只会损害匹配。
 `;
+
+const TEAMAI_RECALL_RULE_CONTENT_EN = `${TEAMAI_RECALL_RULE_HEADING}\n\n> **Self-exemption (must read first):** If you ARE the \`teamai-recall\` subagent yourself, this rule does NOT apply to you — do not invoke \`teamai-recall\` (or any recall) again. Proceed directly to performing the knowledge search that is your task. This prevents infinite subagent recursion in tools (e.g. Cursor) whose always-apply rules leak into subagent sessions.
+
+## Rule: search the team knowledge base before a task (recommended)
+
+**Before** starting a task that involves code changes, debugging,
+or design decisions, you **SHOULD** search the team knowledge base
+— unless one of the skip conditions below applies.
+
+### Skip conditions (any one is enough to skip the search)
+
+1. **The user already provided context** — the message names files, gives a solution, or says the answer is in the current directory or this file
+2. **The local files already have the answer** — the task can be done from the current workspace (for example, an obvious bug in the file being edited)
+3. **A small or local change** — a narrow edit to a known file (a typo, a parameter value, formatting) that needs no extra background
+
+### Option 1: Subagent (preferred when the tool has an Agent tool)
+
+Call the \`teamai-recall\` subagent (in the agents/ directory) with a natural-language description of the task.
+It returns a structured summary of team knowledge (skills, learnings, docs, rules, codebase).
+
+### Option 2: Bash command (works in every tool)
+
+\`\`\`bash
+teamai recall "<keyword1> <keyword2> ..."
+\`\`\`
+
+Extract 3-6 high-signal keywords from the task description.
+
+If the output contains \`Nothing was searched:\`, this project's teamai config cannot be
+read and no team knowledge was searched: show that line to the user rather than
+concluding the team has no knowledge, and do not move the file or run \`teamai init\`
+without their consent. If it contains \`Recall skips the older index\`, that scope was not
+searched: relay that warning rather than conclude the team has no knowledge there.
+
+**Search in both languages (cross-language recall):** the knowledge base mixes English and Chinese, and search is lexical, so a query in one language misses documents written only in the other. Give each domain term in both languages in the same query. Translate only terms whose English and Chinese forms actually differ. Leave every language-independent token unchanged — proper nouns, brand and product names, abbreviations, code identifiers and symbols, error codes, versions, file paths, commands, and API names (\`AppID\`, \`Kubernetes\`, \`GPU\`, \`RuntimeError\`, \`v2.1.3\`, \`oauth\`). Translating those only hurts matching.
+`;
+
+/** Recall rule body for `teamai.yaml` `language`. `en` is English only; anything else is the historical bilingual text (#1014). */
+export function recallRuleContent(language?: 'en' | 'zh'): string {
+    return language === 'en' ? TEAMAI_RECALL_RULE_CONTENT_EN : TEAMAI_RECALL_RULE_CONTENT;
+}

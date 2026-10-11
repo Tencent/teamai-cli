@@ -1830,3 +1830,43 @@ describe('buildAdoptedSummary', () => {
     expect(msg).not.toMatch(/[\u4e00-\u9fff]/);
   });
 });
+
+describe('mr-hint agent language (#1014)', () => {
+  it('passes language en from teamai.yaml into the hint', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lang-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\nlanguage: en\n');
+      const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
+      mockMrHintOutput.mockClear();
+      await handler.execute({}, 'claude', {
+        ...scope,
+        repo: { localPath: dir, remote: 'https://example.invalid/t.git' },
+      });
+      expect(mockMrHintOutput).toHaveBeenCalledWith('en');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('passes no English override when language is omitted', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lang-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\n');
+      const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
+      mockMrHintOutput.mockClear();
+      await handler.execute({}, 'claude', {
+        ...scope,
+        repo: { localPath: dir, remote: 'https://example.invalid/t.git' },
+      });
+      expect(mockMrHintOutput.mock.calls.at(-1)).toEqual([undefined]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

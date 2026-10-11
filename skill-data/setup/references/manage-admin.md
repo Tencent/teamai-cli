@@ -309,6 +309,14 @@ worth sharing, TeamAI prompts the member and the dedicated
 `share` workflow (`teamai skill get share`) summarizes the session and runs
 `teamai contribute`. Nobody has to invoke it by hand. (A member whose teamai config
 cannot be loaded gets no prompt; `teamai skill get share` names the file and the error.)
+
+Teams that work in English set `language: en` in `teamai.yaml` and `teamai push`.
+That makes the built-in teamai-recall rule, the TodoWrite hint, and the merged-MR
+hint English only. Omit `language`, or set `zh`, to keep the historical bilingual
+text. Each scope reads its own team repo, so a project install and a user install
+can differ. Members receive the recall rule in that language on the next
+`teamai pull`.
+
 (Publishing a **reusable skill** someone authored is a different task — any member
 can do it, see `"$(teamai skill path core)/references/contribute-member.md"`.)
 

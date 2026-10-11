@@ -21,6 +21,7 @@ team: my-team
 description: Team AI resource repo
 repo: https://github.com/your-org/your-repo.git
 provider: github
+# language: en                # optional; en | zh. Omit or zh keeps the historical bilingual recall rule, TodoWrite hint, and merged-MR hint. en is English only.
 # scope: ignored if present — local install location is set by `teamai init --scope`
 
 reviewers:
@@ -58,6 +59,8 @@ sharing:
         timeout: 5000          # optional; per-request timeout in ms (default 5000)
         retries: 3             # optional; retry attempts on failure (default 3)
 ```
+
+`language` (`en` or `zh`, optional) chooses the language of the texts teamai injects into the agent: the built-in `teamai-recall` rule, the TodoWrite hint, and the merged-MR hint. `en` is English only. `zh` or omitting the field keeps the historical bilingual text, byte for byte. The next `teamai pull` rewrites the recall rule in the selected language.
 
 `teamai pull` mirrors the non-hidden `docs/` files you receive (see [Docs by namespace](./sharing.md#docs)) into `sharing.docs.localDir`: documents deleted from the team repo are also deleted locally, even when the last document or the entire team directory is removed. A local file at a deleted document's path is deleted only when it holds a version of that document from the team repo's history; any other is kept, and pull names it (`Kept <path>: the team removed docs/<file>, but this copy matches no team version of it. Delete it when you no longer need it.`). A directory you put where the team had a document is kept whole, and named the same way. 
 

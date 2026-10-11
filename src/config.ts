@@ -103,6 +103,35 @@ export async function loadTeamConfig(repoPath: string): Promise<TeamaiConfig | n
 }
 
 /**
+ * `teamai.yaml` `language` for the scope that owns `config` (#1014).
+ * No config, a missing file, or a file that does not parse means no override:
+ * callers keep the historical bilingual agent text.
+ */
+export async function loadTeamAgentLanguage(
+  config: { repo: { localPath: string } } | null,
+): Promise<'en' | 'zh' | undefined> {
+  if (!config) return undefined;
+  return (await loadTeamConfig(config.repo.localPath))?.language;
+}
+
+/**
+ * Same as {@link loadTeamAgentLanguage}, resolved the way a hook finds its
+ * scope: project over user, and a removed worktree keeps the scope its session
+ * recorded. A lookup failure keeps the historical bilingual text.
+ */
+export async function loadTeamAgentLanguageForHook(
+  payload: Record<string, unknown>,
+  tool?: string,
+): Promise<'en' | 'zh' | undefined> {
+  try {
+    const { resolveHookConfig } = await import('./dashboard-collector.js');
+    return loadTeamAgentLanguage(await resolveHookConfig(payload, tool ?? 'claude'));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Load the local config (~/.teamai/config.yaml)
  */
 export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalConfig | null> {
