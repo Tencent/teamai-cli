@@ -16,6 +16,8 @@ import {
   resolveToolBaseDir,
   isAgentExcluded,
   scopedToolPaths,
+  getDataHome,
+  isUsageReportEnabled,
   type LocalConfig,
   type TeamaiConfig,
 } from './types.js';
@@ -376,6 +378,21 @@ async function teamaiHookEntries(
       typeof entry?.command === 'string' && entry.command.includes(`teamai hook-dispatch ${subcommand}`));
 }
 
+
+/**
+ * Whether `teamai pull` reports this scope's usage stats to the team repo, and
+ * what decides it: the member's `usageReportEnabled`, the team's `usageReport`,
+ * or the default. An HTTP team repo is never reported to.
+ */
+function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
+  if (localConfig.repo.kind === 'http') return 'Usage reporting: off, from HTTP mode (no team repo to report to).';
+  const member = localConfig.usageReportEnabled;
+  const team = teamConfig?.usageReport;
+  const source = member !== undefined ? `usageReportEnabled: ${member} in ${path.join(getDataHome(localConfig), 'config.yaml')}`
+    : team !== undefined ? `usageReport: ${team} in the team's teamai.yaml`
+    : 'the default';
+  return `Usage reporting: ${isUsageReportEnabled(localConfig, teamConfig ?? {}) ? 'on' : 'off'}, from ${source}.`;
+}
 
 /**
  * Whether the public Codex will run the hooks teamai wrote in this scope (#955),
@@ -742,6 +759,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
     ...await ruleChannelNotes(localConfig),
     ...codexTrust.notes,
+    usageReportNote(ctx),
     // What git sees of the delivered team resources, and what no pull changes (#915).
     ...await deliveredGitExcludeNotes(ctx),
     ...await localAgentGitExcludeNotes(),

@@ -633,6 +633,31 @@ describe('doctor — JSON report', () => {
         expect(failing?.fix).toContain('teamai hooks inject');
     });
 
+    it('notes that usage reporting is off and that the member turned it off', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, usageReportEnabled: false });
+
+        await doctor({ json: true });
+
+        expect(emittedReport().notes).toContainEqual(
+            expect.stringMatching(/^Usage reporting: off, from usageReportEnabled: false in .+config\.yaml\.$/));
+    });
+
+    it('notes that usage reporting is off when the team turned it off', async () => {
+        mockedLoadTeamConfig.mockResolvedValue({ ...mockTeamConfig, usageReport: false });
+
+        await doctor({ json: true });
+
+        expect(emittedReport().notes).toContain("Usage reporting: off, from usageReport: false in the team's teamai.yaml.");
+    });
+
+    it('notes that usage reporting is off for an HTTP team repo', async () => {
+        mockedLoadLocalConfig.mockResolvedValue({ ...mockLocalConfig, repo: { ...mockLocalConfig.repo, kind: 'http' } });
+
+        await doctor({ json: true });
+
+        expect(emittedReport().notes).toContain('Usage reporting: off, from HTTP mode (no team repo to report to).');
+    });
+
     it('emits the same envelope before initialization', async () => {
         mockedLoadLocalConfig.mockResolvedValue(null);
         mockedLoadTeamConfig.mockResolvedValue(null);

@@ -764,7 +764,8 @@ usageReport: false
 
 A member overrides the team's setting on their machine with
 `usageReportEnabled: false` (or `true`) in the scope's `config.yaml`; see
-[config.yaml](reference.md#configyaml-local-config).
+[config.yaml](reference.md#configyaml-local-config). `teamai doctor` says
+whether reporting is on and where that comes from.
 
 Pull keeps each scope's usage file to its newest 5,000 events, dropping the
 oldest after the report step. For an http source or a `usageReport: false`

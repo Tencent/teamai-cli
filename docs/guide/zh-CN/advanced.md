@@ -731,6 +731,7 @@ usageReport: false
 
 成员可在该 scope 的 `config.yaml` 中设置 `usageReportEnabled: false`（或 `true`），
 在本机覆盖团队设置；见 [config.yaml](reference.md#configyaml本地配置)。
+`teamai doctor` 会显示上报是否开启以及该设置的来源。
 
 Pull 在上报步骤之后把每个 scope 的使用文件限制为最新 5,000 条事件，丢弃更早的
 事件。对 HTTP 源或 `usageReport: false` 的团队，该文件是 `teamai stats` 唯一的
