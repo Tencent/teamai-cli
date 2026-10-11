@@ -1,4 +1,4 @@
-import { lstat, readdir, realpath, stat } from 'node:fs/promises';
+import { lstat, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, resolveMemberToolRoots, saveLocalConfig, saveLocalConfigForScope, saveStateForScope, UnreadableProjectConfigError, detectProjectConfig } from './config.js';
 import { createDeliveryRecorder, deliveredOwner, deliveredOwnerElsewhere } from './git-exclude-delivered.js';
@@ -783,7 +783,7 @@ async function teamReadersOf(dataHome: string, anchor: string | null): Promise<L
 
 /**
  * The secret stores the projects with `readers` read: each team's values, and
- * the machine's unless every team checkout is there and declares no secret.
+ * the machine's unless every team checkout can be read and declares no secret.
  * One whose readers or declarations cannot be known keeps them all.
  */
 async function secretsFor(readers: ReadonlyArray<LocalConfig[] | null>): Promise<string[]> {
@@ -794,8 +794,9 @@ async function secretsFor(readers: ReadonlyArray<LocalConfig[] | null>): Promise
     if (configs === null) return [path.dirname(getMachineSecretsPath())];
     for (const config of configs) {
       kept.add(getTeamSecretsPath(config));
-      // A checkout that is not there reads as declaring nothing, which proves nothing.
-      const isReadable = await stat(config.repo.localPath).then((stats) => stats.isDirectory(), () => false);
+      // A checkout gone, or an empty folder left by an unmounted one, reads as
+      // declaring nothing, which proves nothing: only its teamai.yaml shows it is there.
+      const isReadable = !!await readFileSafe(path.join(config.repo.localPath, 'teamai.yaml'));
       const keys = isReadable ? await resolveSecretDeclarations(config).then(declaredSecretKeys, () => null) : null;
       if (keys === null || keys.size > 0) kept.add(getMachineSecretsPath());
     }

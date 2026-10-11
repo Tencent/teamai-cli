@@ -4165,7 +4165,7 @@ describe('user-scope uninstall and the projects still set up (#1025)', () => {
   /** A kept project's config naming its team clone at `<tmpDir>/<name>-team`, which declares `secrets.yaml` when given. */
   async function projectConfig(name: string, secretsYaml?: string): Promise<{ config: string; localConfig: LocalConfig }> {
     const localPath = path.join(tmpDir, `${name}-team`);
-    await fse.ensureDir(localPath);
+    await fse.outputFile(path.join(localPath, 'teamai.yaml'), `team: ${name}\n`);
     if (secretsYaml) await fse.outputFile(path.join(localPath, 'env', 'secrets.yaml'), secretsYaml);
     const localConfig = makeLocalConfig('', localPath, { scope: 'project', repo: { localPath, remote: `https://git.example.com/team/${name}.git` } });
     return { config: YAML.stringify(localConfig), localConfig };
@@ -4219,11 +4219,11 @@ describe('user-scope uninstall and the projects still set up (#1025)', () => {
   async function selfModeProject(siblingDeclares: boolean): Promise<{ config: string; anchor: string; sibling: string; teamFiles: string[] }> {
     const anchor = path.join(tmpDir, 'app');
     const sibling = path.join(tmpDir, 'app-sibling');
-    await fse.ensureDir(path.join(anchor, '.teamai'));
+    await fse.outputFile(path.join(anchor, '.teamai', 'teamai.yaml'), 'team: app\n');
     execFileSync('git', ['init', '-q'], { cwd: anchor });
     execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: anchor });
     execFileSync('git', ['worktree', 'add', '-q', sibling], { cwd: anchor });
-    await fse.ensureDir(path.join(sibling, '.teamai'));
+    await fse.outputFile(path.join(sibling, '.teamai', 'teamai.yaml'), 'team: app\n');
     if (siblingDeclares) await fse.outputFile(path.join(sibling, '.teamai', 'env', 'secrets.yaml'), 'secrets:\n  - key: TOKEN\n');
     const localConfig = makeLocalConfig('', path.join(anchor, '.teamai'), {
       scope: 'project',
@@ -4237,6 +4237,7 @@ describe('user-scope uninstall and the projects still set up (#1025)', () => {
   // A shared file goes only when no kept project can need it: what cannot be read or listed counts as needed.
   it.each([
     { project: 'its team clone is gone', setup: 'clone-gone', machineKept: true, unknownKept: false },
+    { project: 'its team clone is an empty folder', setup: 'clone-empty', machineKept: true, unknownKept: false },
     { project: 'a self-mode sibling worktree has its own team file', setup: 'self', machineKept: false, unknownKept: false },
     { project: 'a self-mode sibling worktree declares secrets', setup: 'self-sibling-declares', machineKept: true, unknownKept: false },
     { project: 'a self-mode project names no checkout', setup: 'self-no-anchor', machineKept: true, unknownKept: true },
@@ -4244,10 +4245,12 @@ describe('user-scope uninstall and the projects still set up (#1025)', () => {
   ] as const)('keeps every secret and source record a kept project may read when $project', async ({ setup, machineKept, unknownKept }) => {
     const { teamaiHome } = await userScope();
     let teamFiles: string[];
-    if (setup === 'clone-gone') {
+    if (setup === 'clone-gone' || setup === 'clone-empty') {
       const { config, localConfig } = await projectConfig('proj');
       await partition(teamaiHome, 'app', { 'config.yaml': config });
       await fse.remove(localConfig.repo.localPath);
+      // A clone that is itself a mount point, unmounted, leaves its folder empty.
+      if (setup === 'clone-empty') await fse.ensureDir(localConfig.repo.localPath);
       teamFiles = [getTeamSecretsPath(localConfig)];
     } else {
       const project = await selfModeProject(setup === 'self-sibling-declares');
