@@ -533,6 +533,38 @@ export const TeamaiConfigBaseSchema = z.object({
         rules: '.trae-cn/user_rules',
       },
     },
+    // Antigravity CLI (`agy` / `antigravity`) — Google DeepMind's coding agent,
+    // the successor to `gemini-cli`. Per its docs and the installed
+    // `~/.gemini/antigravity-cli/` layout: project skills under
+    // <root>/.agents/skills, project rules as plain Markdown in
+    // <root>/.agents/rules, subagents in <root>/.agents/agents, and project MCP
+    // servers in <root>/.agents/mcp_config.json — all four in the shared
+    // `.agents/` root the central Agent Skills entry also uses, which is why its
+    // install probe is explicit (see isToolInstalledForConfig). Everything
+    // user-scope lives under ~/.gemini: skills in ~/.gemini/antigravity/skills,
+    // rules in ~/.gemini/config/rules, the instruction file at
+    // ~/.gemini/config/GEMINI.md, subagents in ~/.gemini/antigravity-cli/agents,
+    // the lifecycle hooks in ~/.gemini/antigravity-cli/hooks.json, and the MCP
+    // servers in ~/.gemini/config/mcp_config.json. `settings` names the PROJECT
+    // hooks.json (Antigravity reads it at the project root), while
+    // `userScope.settings` moves it to the CLI's own home. `gemini` and `agy`
+    // are accepted aliases for the id (normalizeToolId).
+    antigravity: {
+      skills: '.agents/skills',
+      rules: '.agents/rules',
+      settings: 'hooks.json',
+      claudemd: 'GEMINI.md',
+      agents: '.agents/agents',
+      mcp: '.gemini/config/mcp_config.json',
+      mcpProject: '.agents/mcp_config.json',
+      userScope: {
+        skills: '.gemini/antigravity/skills',
+        rules: '.gemini/config/rules',
+        settings: '.gemini/antigravity-cli/hooks.json',
+        claudemd: '.gemini/config/GEMINI.md',
+        agents: '.gemini/antigravity-cli/agents',
+      },
+    },
     // ZCode: user-level config lives at ~/.zcode/cli/config.json (a shared file
     // that also carries plugin state — reconcile must merge, never replace).
     // Hooks are Claude-shaped but nested under `hooks.events` and gated by

@@ -103,7 +103,7 @@ teamai skill path wiki              # 打印打包目录，用于运行 skill �
 
 `teamai init` 时已注入 Hooks 到你的 AI 工具中，并在结束时执行了一次 pull，因此你的第一个会话就已拥有团队的 skill、rule 和 MCP server。**每次启动 AI 会话时会自动执行 `teamai pull`**，无需手动操作。在 project scope 下，该 SessionStart hook 会先为当前 Agent 创建项目根目录（例如用 Claude Code 打开仓库时创建 `<project>/.claude`），然后再 pull。
 
-*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 [CC]、Codex、GitHub Copilot CLI、Cursor、CodeBuddy、WorkBuddy、Qoder、ZCode、Kiro、OpenCode、Oh My Pi、Pi、Hermes、OpenClaw、DeepSeek Harness 等。Kiro 仅在交互式 CLI 会话激活由 TeamAI 渲染的自定义 agent 时触发该 Hook；其内存中的内置默认 agent 无法写入，非交互模式也不会触发 `agentSpawn`。对于暂无 teamai 可写入 Hooks 的工具（如 JoyCode、Trae、Gemini CLI 等），需手动执行 `teamai pull`。)*
+*(注：会话启动自动同步依赖工具的生命周期 Hooks 支持，如 [CC]、Codex、GitHub Copilot CLI、Cursor、CodeBuddy、WorkBuddy、Qoder、ZCode、Kiro、OpenCode、Oh My Pi、Pi、Hermes、OpenClaw、DeepSeek Harness、Antigravity CLI 等。Kiro 仅在交互式 CLI 会话激活由 TeamAI 渲染的自定义 agent 时触发该 Hook；其内存中的内置默认 agent 无法写入，非交互模式也不会触发 `agentSpawn`。对于暂无 teamai 可写入 Hooks 的工具（如 JoyCode、Trae、Gemini CLI 等），需手动执行 `teamai pull`。)*
 
 如果需要立即同步，可以手动执行：
 

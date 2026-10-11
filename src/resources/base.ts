@@ -6,6 +6,7 @@ import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiCo
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
+import { isOnPath } from '../utils/lookpath.js';
 import type { DeliveryLedger } from './delivered-copies.js';
 
 const TOMBSTONE_FILE = '.removed';
@@ -24,6 +25,24 @@ const EDITION_HOME_ROOTS: Readonly<Record<string, string>> = {
   qoder: '.qoder',
   'qoder-cn': '.qoder-cn',
 };
+
+/**
+ * Antigravity's project skills land in the shared `<root>/.agents/skills` tree,
+ * which the central Agent Skills entry also uses — so the generic
+ * `toolInstallRoot` probe would report Antigravity "installed" for anyone who
+ * has ever used a `.agents/` directory. The product's own roots are what says
+ * it is installed: the CLI home `~/.gemini/antigravity-cli/` and the shared
+ * config root `~/.gemini/config/`, or its `agy` / `antigravity` binary on PATH.
+ */
+const ANTIGRAVITY_TOOL_ID = 'antigravity';
+
+async function isAntigravityInstalledWith(localConfig: LocalConfig): Promise<boolean> {
+  if (localConfig.enabledAgents?.includes(ANTIGRAVITY_TOOL_ID) === true) return true;
+  const home = getUserHome();
+  if (await pathExists(path.join(home, '.gemini', 'antigravity-cli'))) return true;
+  if (await pathExists(path.join(home, '.gemini', 'config'))) return true;
+  return isOnPath('agy') || isOnPath('antigravity');
+}
 
 /** Detect an installed tool while respecting tool-specific user roots. */
 export async function isToolInstalledForConfig(
@@ -49,6 +68,7 @@ export async function isToolInstalledForConfig(
     if (localConfig.enabledAgents?.includes(tool) === true) return true;
     return pathExists(path.join(getUserHome(), editionHomeRoot));
   }
+  if (tool === ANTIGRAVITY_TOOL_ID) return isAntigravityInstalledWith(localConfig);
   return ResourceHandler.isToolInstalled(Object.hasOwn(INSTALL_ROOTS, tool) ? INSTALL_ROOTS[tool] : toolPath, baseDir);
 }
 

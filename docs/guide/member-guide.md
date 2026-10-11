@@ -109,7 +109,7 @@ resolve: `teamai skill get team-wiki-codebase` serves `wiki`.
 
 `teamai init` already injected Hooks into your AI tools and ended with a pull, so your first session has the team's skills, rules and MCP servers. **`teamai pull` runs automatically every time you start an AI session** — no manual action needed. In project scope, that SessionStart hook first creates the current agent's project root (e.g. `<project>/.claude` when Claude Code opens the repo) if it is missing, then pulls.
 
-*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, GitHub Copilot CLI, Cursor, CodeBuddy, WorkBuddy, Qoder, ZCode, Kiro, OpenCode, Oh My Pi, Pi, Hermes, OpenClaw, or DeepSeek Harness. Kiro runs the hook when a TeamAI-rendered custom agent is activated in an interactive CLI session; its in-memory built-in default agent is not writable, and non-interactive mode does not fire `agentSpawn`. For tools without a teamai-writable hooks surface such as JoyCode, Trae or Gemini CLI, run `teamai pull` manually.)*
+*(Note: Automatic sync on session start requires an agent that supports lifecycle hooks, such as [CC], Codex, GitHub Copilot CLI, Cursor, CodeBuddy, WorkBuddy, Qoder, ZCode, Kiro, OpenCode, Oh My Pi, Pi, Hermes, OpenClaw, or DeepSeek Harness, or Antigravity CLI. Kiro runs the hook when a TeamAI-rendered custom agent is activated in an interactive CLI session; its in-memory built-in default agent is not writable, and non-interactive mode does not fire `agentSpawn`. For tools without a teamai-writable hooks surface such as JoyCode, Trae or Gemini CLI, run `teamai pull` manually.)*
 
 If you need to sync immediately, you can run it manually:
 

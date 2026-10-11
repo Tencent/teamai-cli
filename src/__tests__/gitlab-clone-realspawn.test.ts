@@ -7,7 +7,14 @@ import path from 'node:path';
 // and that error output is sanitized end-to-end.
 import { gitlabRepoClone } from '../providers/gitlab/gitlab-api.js';
 
-describe('gitlabRepoClone — real spawn (e2e)', () => {
+// Windows: the fake `git` this test plants is a `#!/bin/bash` script found
+// through a `:`-separated PATH, so the guard does not take effect there and the
+// REAL git runs against the default `https://gitlab.com/org/repo.git` — whose
+// 401 makes Git for Windows' credential helper (Git Credential Manager, the
+// system-level `credential.helper=manager`) open a browser login window, and
+// the test then hangs ~2 minutes on the credential prompt. Skip on Windows
+// rather than make a real network call and prompt for credentials.
+describe.skipIf(process.platform === 'win32')('gitlabRepoClone — real spawn (e2e)', () => {
   let tmp: string;
   const origPath = process.env.PATH;
   const origEnv = { ...process.env };

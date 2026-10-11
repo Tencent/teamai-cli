@@ -575,7 +575,17 @@ describe('OpenCode instructions registration (#945)', () => {
       const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
       const resolved = await resolveInstructionTargets(teamConfig, localConfig);
       const plan = await planInstructionFiles(resolved.targets, { claudemd: claudemd('desired') });
-      if (state === 'write failure') vi.spyOn(fse, 'writeFile').mockRejectedValueOnce(new Error('EACCES'));
+      if (state === 'write failure') {
+        // Reject only THIS target's write. A machine with other tools installed
+        // (Antigravity's `agy` on PATH, say) contributes its own planned files,
+        // and a blanket `mockRejectedValueOnce` would be consumed by whichever
+        // file is written first — never the one under test.
+        const realWriteFile = fse.writeFile;
+        vi.spyOn(fse, 'writeFile').mockImplementation((async (target: string, ...rest: unknown[]) => {
+          if (String(target) === file) throw new Error('EACCES');
+          return (realWriteFile as (...args: unknown[]) => Promise<void>)(target, ...rest);
+        }) as typeof fse.writeFile);
+      }
       const { files } = await applyInstructionPlan(plan, { dryRun: false });
       await registerOpencodeContext(teamConfig, localConfig, resolved, false, files);
 

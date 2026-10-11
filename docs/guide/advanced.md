@@ -196,7 +196,7 @@ teamai hooks inject    # Re-inject
 teamai hooks remove    # Remove
 ```
 
-`hooks list` prints the built-in set per tool, because the set is not universal: Copilot also gets `SessionEnd`, Claude Code, Codex, CodeBuddy and Qoder also get `SubagentStop`, the Codex family also gets `SubagentStart` (the project's team rules and instructions for a spawned subagent), OMP's extension covers four events without the `Skill` / `TodoWrite` matchers, OpenClaw maps only `SessionStart` + `UserPromptSubmit`, and Hermes only `SessionStart`. Tools the hook pipeline installs nothing for (e.g. JoyCode) are omitted, and so is Kiro — its `SessionStart` command is embedded as `hooks.agentSpawn` by the agent sync, so it exists only for the agents you actually synced.
+`hooks list` prints the built-in set per tool, because the set is not universal: Copilot also gets `SessionEnd`, Claude Code, Codex, CodeBuddy and Qoder also get `SubagentStop`, the Codex family also gets `SubagentStart` (the project's team rules and instructions for a spawned subagent), OMP's extension covers four events without the `Skill` / `TodoWrite` matchers, OpenClaw maps only `SessionStart` + `UserPromptSubmit`, and Hermes only `SessionStart`. Tools the hook pipeline installs nothing for (e.g. JoyCode) are omitted, and so is Kiro — its `SessionStart` command is embedded as `hooks.agentSpawn` by the agent sync, so it exists only for the agents you actually synced. Antigravity CLI receives the whole built-in set through its own `hooks.json` adapter (see [Antigravity CLI](#antigravity-cli-agy)).
 
 The inject and remove commands only touch tools you actually have installed (i.e. whose `~/.<tool>/` root directory already exists). They never create root directories for tools listed in `toolPaths` but not installed. Existing Claude/Codex main-checkout hook files also count as installed targets when the HOME and current worktree tool roots are missing. Injection and pull update those team hooks and restore HOME built-ins; removal clears the managed main-checkout hooks without recreating HOME roots.
 
@@ -335,7 +335,7 @@ aliases:
   | CodeBuddy, Qoder, Qoder CN | as written | `effort` |
   | Cursor | as written, including the bracket form `claude-opus-5[effort=high]` | none; write the effort in the brackets |
   | Copilot | the first entry, as one model string | none |
-  | Kiro, WorkBuddy, JoyCode, ZCode, OMP | as written | none |
+  | Kiro, WorkBuddy, JoyCode, ZCode, OMP, Antigravity | as written | none |
 
 - An `effort` mapped for a tool with no effort field is dropped: the tool receives the model alone, and pull warns once, naming the alias and the tool, when it delivers an agent that uses the alias to that tool.
 - claude-internal and tclaude use the `claude` entry, codex-internal and tcodex the `codex` entry, and Qoder CN the `qoder` entry, unless the alias has a key of their own. No other tool inherits an entry: Qoder, ZCode, OMP and JoyCode never receive the `claude` model.
@@ -526,6 +526,14 @@ Trae and Trae CN are available as built-in targets. TeamAI deploys skills to `.t
 Each build counts as installed by its own HOME root (`~/.trae` / `~/.trae-cn`) or by an explicit `--agent` entry naming it — the shared project `.trae/` says nothing about which edition runs (as WorkBuddy is counted by `.workbuddy/`), so no half of the pair stays a "phantom sibling" that retains or resyncs the other's files. In a project both builds read the same `.trae/skills/` and `.trae/rules/`, so they share one copy of each there: uninstalling one keeps both while the other is installed.
 
 Rules are `.md` files with Trae's frontmatter: a rule with `paths:` gets `globs: a, b` unquoted — Trae's parser takes the line as it stands and splits it on every comma — plus `alwaysApply: false`; a rule without `paths` gets `alwaysApply: true`. Trae reads rules up to three directory levels deep, so a namespaced rule keeps its `fe/style.md` shape. On `push`, only the Markdown body flows back, and a rule file there with no matching team rule is yours: `pull` leaves it and `push` never offers it as a new team rule.
+
+### Antigravity CLI (agy)
+
+Antigravity CLI is available as a built-in target, and its `agy` and `gemini` ids are aliases for `--agent`. TeamAI deploys skills to `.agents/skills/`, rules to `.agents/rules/`, and subagents to `.agents/agents/`, and merges MCP servers into the Claude-shaped `mcpServers` object of the project's `.agents/mcp_config.json`. In user scope the same resources land under `~/.gemini/` — skills in `~/.gemini/antigravity/skills/`, rules in `~/.gemini/config/rules/`, subagents in `~/.gemini/antigravity-cli/agents/`, MCP servers in `~/.gemini/config/mcp_config.json`. Antigravity has no rule format of its own, so a team rule is written as a plain `.md` copy, and the team instruction blocks go to its `claudemd` file (`GEMINI.md` in a project, `~/.gemini/config/GEMINI.md` in user scope).
+
+Because the project's `.agents/` tree is shared with the central Agent Skills entry, Antigravity counts as installed by its own roots — `~/.gemini/antigravity-cli/`, `~/.gemini/config/`, or an `agy` / `antigravity` binary on `PATH` — or by an explicit `--agent antigravity` entry, never by a project `.agents/` directory alone.
+
+Lifecycle hooks live in a `hooks.json` shaped unlike any settings-based tool: the file is keyed by hook *name*, and each block carries the events (`PreToolUse`, `PostToolUse`, `PreInvocation`, `PostInvocation`, `Stop`) rather than the other way round. TeamAI owns exactly one top-level key, `teamai-hooks`, and deep-merges it, so your own blocks (`plan-readonly-guard`, `dangerous-commands-guard`, …) are never touched. A project keeps them in `<project>/hooks.json`, user scope in `~/.gemini/antigravity-cli/hooks.json`; `teamai hooks remove` (or `teamai uninstall`) deletes only TeamAI's key. A project that has no `hooks.json` gets none written. Antigravity has no `models` profile surface, so `teamai models` does not switch it.
 
 ### CodeBuddy and WorkBuddy
 

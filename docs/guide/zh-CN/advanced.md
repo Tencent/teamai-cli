@@ -198,7 +198,7 @@ teamai hooks inject    # 重新注入
 teamai hooks remove    # 移除
 ```
 
-`hooks list` 按工具分别列出内置 hooks，因为各工具的集合并不相同：Copilot 额外有 `SessionEnd`，Claude Code、Codex、CodeBuddy 和 Qoder 额外有 `SubagentStop`，Codex 系工具还额外有 `SubagentStart`（为其启动的子 agent 提供项目的团队 rule 和指令），OMP 扩展覆盖四个事件且没有 `Skill` / `TodoWrite` matcher，OpenClaw 只映射 `SessionStart` + `UserPromptSubmit`，Hermes 只有 `SessionStart`。hook 注入流程不会为其安装任何内置 hook 的工具（如 JoyCode）不会列出；Kiro 也不列出——它的 `SessionStart` 由 agent 同步以 `hooks.agentSpawn` 形式内嵌，只存在于你实际同步过的 agent 中。
+`hooks list` 按工具分别列出内置 hooks，因为各工具的集合并不相同：Copilot 额外有 `SessionEnd`，Claude Code、Codex、CodeBuddy 和 Qoder 额外有 `SubagentStop`，Codex 系工具还额外有 `SubagentStart`（为其启动的子 agent 提供项目的团队 rule 和指令），OMP 扩展覆盖四个事件且没有 `Skill` / `TodoWrite` matcher，OpenClaw 只映射 `SessionStart` + `UserPromptSubmit`，Hermes 只有 `SessionStart`。hook 注入流程不会为其安装任何内置 hook 的工具（如 JoyCode）不会列出；Kiro 也不列出——它的 `SessionStart` 由 agent 同步以 `hooks.agentSpawn` 形式内嵌，只存在于你实际同步过的 agent 中。Antigravity CLI 通过自己的 `hooks.json` 适配器接收全部内置 hook（见 [Antigravity CLI](#antigravity-cli-agy)）。
 
 inject 和 remove 只会操作你实际已安装的工具（即 `~/.<tool>/` 根目录已存在的工具）。对于 `toolPaths` 中已配置但未安装的工具，命令不会为其凭空创建根目录。HOME 和当前 worktree 的工具根目录缺失时，主 checkout 中现存的 Claude/Codex hook 文件也视为已安装的目标。inject 和 pull 会更新这些团队 hooks 并恢复 HOME 中的内置 hooks；remove 会清理主 checkout 中的托管 hooks，而不重建 HOME 根目录。
 
@@ -333,7 +333,7 @@ aliases:
   | CodeBuddy、Qoder、Qoder CN | 按原样写入 | `effort` |
   | Cursor | 按原样写入，包括方括号形式 `claude-opus-5[effort=high]` | 无；把推理强度写在方括号中 |
   | Copilot | 第一个条目，作为单个模型字符串 | 无 |
-  | Kiro、WorkBuddy、JoyCode、ZCode、OMP | 按原样写入 | 无 |
+  | Kiro、WorkBuddy、JoyCode、ZCode、OMP、Antigravity | 按原样写入 | 无 |
 
 - 为没有推理强度字段的工具映射的 `effort` 会被丢弃：该工具只收到模型；pull 把使用该别名的 agent 交付给该工具时会警告一次，并指明别名和工具。
 - claude-internal 和 tclaude 使用 `claude` 条目，codex-internal 和 tcodex 使用 `codex` 条目，Qoder CN 使用 `qoder` 条目，除非该别名有它们自己的键。其他工具不继承任何条目：Qoder、ZCode、OMP 和 JoyCode 永远不会收到 `claude` 的模型。
@@ -516,6 +516,14 @@ Trae 与 Trae CN 已作为内置目标支持。TeamAI 会将 Skills 下发到 `.
 每个版本仅以自己的 HOME 根目录（`~/.trae` / `~/.trae-cn`）或显式 `--agent` 指定来判定为已安装——项目中共用的 `.trae/` 不代表任何一个版本在运行（同 WorkBuddy 以 `.workbuddy/` 计数），因此任何一版都不会成为保留或重新同步另一版文件的“幻影兄弟”。项目中两个版本读取同一份 `.trae/skills/` 与 `.trae/rules/`，因此各只有一份副本：卸载其中一个时，只要另一个仍已安装，两份副本都会保留。
 
 Rules 是带 Trae frontmatter 的 `.md` 文件：带 `paths:` 的规则写成不加引号的 `globs: a, b`——Trae 的解析器按原样读取该行并按逗号拆分——外加 `alwaysApply: false`；没有 `paths` 的规则写成 `alwaysApply: true`。Trae 最多读取三层目录深的规则，因此 namespace 下的规则保持 `fe/style.md` 的目录形态。`push` 时只有 Markdown 正文回流；rules 目录中没有对应团队规则的文件属于你自己：`pull` 不会删除它，`push` 也不会把它当作新的团队规则提交。
+
+### Antigravity CLI (agy)
+
+Antigravity CLI 已作为内置目标支持，`agy` 与 `gemini` 是 `--agent` 的别名。TeamAI 会将 Skills 下发到 `.agents/skills/`，Rules 下发到 `.agents/rules/`，Subagents 下发到 `.agents/agents/`，并把 MCP Server 合并进项目 `.agents/mcp_config.json` 的 Claude `mcpServers` 结构中。用户作用域下同类资源落在 `~/.gemini/`：Skills 在 `~/.gemini/antigravity/skills/`，Rules 在 `~/.gemini/config/rules/`，Subagents 在 `~/.gemini/antigravity-cli/agents/`，MCP Server 在 `~/.gemini/config/mcp_config.json`。Antigravity 没有自有的 rule 格式，因此团队 rule 以纯 `.md` 副本写入；团队指令区块写入它的 `claudemd` 文件（项目中为 `GEMINI.md`，用户作用域为 `~/.gemini/config/GEMINI.md`）。
+
+由于项目中的 `.agents/` 与中央 Agent Skills 条目共用，Antigravity 的安装判定只依据自己的根：`~/.gemini/antigravity-cli/`、`~/.gemini/config/`，或 `PATH` 上的 `agy` / `antigravity` 可执行文件，或显式的 `--agent antigravity`，绝不会仅凭项目的 `.agents/` 目录就判定为已安装。
+
+生命周期 Hooks 存放在 `hooks.json` 中，其结构与任何基于设置文件的工具都不同：文件以 hook **名称** 为键，每个块内部才携带事件（`PreToolUse`、`PostToolUse`、`PreInvocation`、`PostInvocation`、`Stop`）。TeamAI 只拥有一个顶层键 `teamai-hooks` 并对其深合并，因此你自己的块（`plan-readonly-guard`、`dangerous-commands-guard` 等）永远不会被改动。项目中它们位于 `<project>/hooks.json`，用户作用域位于 `~/.gemini/antigravity-cli/hooks.json`；`teamai hooks remove`（或 `teamai uninstall`）只删除 TeamAI 的键。项目中没有 `hooks.json` 时不会新建。Antigravity 没有 `models` 配置文件表面，`teamai models` 不会切换它。
 
 ### CodeBuddy 与 WorkBuddy
 
