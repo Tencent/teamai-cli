@@ -26,22 +26,38 @@ const EDITION_HOME_ROOTS: Readonly<Record<string, string>> = {
   'qoder-cn': '.qoder-cn',
 };
 
-/**
- * Antigravity's project skills land in the shared `<root>/.agents/skills` tree,
- * which the central Agent Skills entry also uses — so the generic
- * `toolInstallRoot` probe would report Antigravity "installed" for anyone who
- * has ever used a `.agents/` directory. The product's own roots are what says
- * it is installed: the CLI home `~/.gemini/antigravity-cli/` and the shared
- * config root `~/.gemini/config/`, or its `agy` / `antigravity` binary on PATH.
- */
+/** The Antigravity tool id, referenced from both the probe and its entry point. */
 const ANTIGRAVITY_TOOL_ID = 'antigravity';
 
-async function isAntigravityInstalledWith(localConfig: LocalConfig): Promise<boolean> {
+/**
+ * Paths in the tool's own base dir that are Antigravity's and nobody else's:
+ * its hooks config, its instruction file, and its own hidden directory.
+ * `.agents/` is deliberately absent — that tree is shared with the central
+ * Agent Skills entry, so its presence says nothing about Antigravity (and
+ * accepting it would add Antigravity's MCP/skills targets to every project
+ * that merely uses `.agents/`).
+ */
+const ANTIGRAVITY_OWN_PATHS = ['hooks.json', 'GEMINI.md', '.gemini'] as const;
+
+/**
+ * Antigravity's install evidence. `baseDir` is the scope's base — the project
+ * root in project scope, HOME in user scope — so both the machine-level signals
+ * and the tool's own files in that scope count.
+ *
+ * The generic `toolInstallRoot` probe is NOT used: a project's `.agents/` tree
+ * is shared with the central Agent Skills entry, so it would report Antigravity
+ * installed for anyone who has ever used `.agents/`.
+ */
+async function isAntigravityInstalledWith(localConfig: LocalConfig, baseDir: string): Promise<boolean> {
   if (localConfig.enabledAgents?.includes(ANTIGRAVITY_TOOL_ID) === true) return true;
   const home = getUserHome();
   if (await pathExists(path.join(home, '.gemini', 'antigravity-cli'))) return true;
   if (await pathExists(path.join(home, '.gemini', 'config'))) return true;
-  return isOnPath('agy') || isOnPath('antigravity');
+  if (isOnPath('agy') || isOnPath('antigravity')) return true;
+  for (const ownPath of ANTIGRAVITY_OWN_PATHS) {
+    if (await pathExists(path.join(baseDir, ownPath))) return true;
+  }
+  return false;
 }
 
 /** Detect an installed tool while respecting tool-specific user roots. */
@@ -68,7 +84,15 @@ export async function isToolInstalledForConfig(
     if (localConfig.enabledAgents?.includes(tool) === true) return true;
     return pathExists(path.join(getUserHome(), editionHomeRoot));
   }
-  if (tool === ANTIGRAVITY_TOOL_ID) return isAntigravityInstalledWith(localConfig);
+  // Antigravity must be probed by ITS OWN roots, never by the generic one:
+  // its project skills live in the `.agents/` tree that the central Agent
+  // Skills entry also uses, so the generic probe would report it installed for
+  // any project that merely has `.agents/` — which adds Antigravity's MCP and
+  // skills targets to teams that do not run it (#882's MCP reconciliation
+  // assertions catch exactly that). `isAntigravityInstalledWith` therefore
+  // looks at the machine-level roots plus Antigravity's own files in `baseDir`,
+  // which is what the upstream #945 suite sets up before asserting delivery.
+  if (tool === ANTIGRAVITY_TOOL_ID) return isAntigravityInstalledWith(localConfig, baseDir);
   return ResourceHandler.isToolInstalled(Object.hasOwn(INSTALL_ROOTS, tool) ? INSTALL_ROOTS[tool] : toolPath, baseDir);
 }
 

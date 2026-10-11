@@ -98,15 +98,15 @@ describe('Antigravity CLI (agy) support', () => {
     expect(normalizeAgentList(['agy', 'gemini,claude'])).toEqual([AGY, 'claude']);
   });
 
-  it('treats an Antigravity HOME root, or an explicit --agent entry, as installed', async () => {
+  it('accepts the Antigravity roots and the --agent bootstrap, and still honours the path probe (#945)', async () => {
     const tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-antigravity-install-'));
     try {
       const home = path.join(tmp, 'home');
       const projectRoot = path.join(tmp, 'project');
-      // The shared project root alone installs nothing: `.agents/` is the
-      // central Agent Skills tree, not evidence of Antigravity.
-      await fse.ensureDir(path.join(projectRoot, '.agents', 'skills'));
       vi.stubEnv('HOME', home);
+      // This machine may genuinely have the CLI installed (its `agy` binary on
+      // PATH), so pin the PATH off to isolate the signals under test.
+      vi.stubEnv('PATH', '');
       const localConfig = (enabledAgents?: string[]) => ({
         repo: { localPath: path.join(tmp, 'repo'), remote: 'test/repo' },
         username: 'test',
@@ -117,21 +117,37 @@ describe('Antigravity CLI (agy) support', () => {
       }) as unknown as LocalConfig;
 
       await fse.ensureDir(home);
-      // This machine may genuinely have the CLI installed (its `agy` binary on
-      // PATH), so pin the PATH off to assert the "nothing yet" case.
-      vi.stubEnv('PATH', '');
+      expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig())).toBe(false);
+
+      // The shared `.agents/` tree is NOT evidence: the central Agent Skills
+      // entry uses it, so accepting it would hand Antigravity's targets to every
+      // project that merely has `.agents/` (the #882 MCP assertions catch that).
+      await fse.ensureDir(path.join(projectRoot, '.agents', 'skills'));
+      expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig())).toBe(false);
+
+      // Antigravity's OWN files are evidence — the contract the upstream #945
+      // suite sets up before asserting delivery (its fixture creates
+      // `hooks.json`, `GEMINI.md` and `.gemini/` next to `.agents/`).
+      await fse.ensureDir(path.join(projectRoot, '.gemini'));
+      expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig())).toBe(true);
+      await fse.remove(path.join(projectRoot, '.gemini'));
       expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig())).toBe(false);
 
       // `--agent antigravity` bootstraps a project-only init before the app ran.
       expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig([AGY]))).toBe(true);
 
-      // The CLI's own home, then its shared config root.
+      // The product's own roots count with no project evidence at all: probe a
+      // path whose project root is absent, so only the machine signal can answer.
+      const noProjectEvidence = '.gemini/antigravity/skills';
       await fse.ensureDir(path.join(home, '.gemini', 'antigravity-cli'));
-      expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig())).toBe(true);
+      expect(await isToolInstalledForConfig(AGY, noProjectEvidence, localConfig())).toBe(true);
 
       await fse.remove(path.join(home, '.gemini', 'antigravity-cli'));
       await fse.ensureDir(path.join(home, '.gemini', 'config'));
-      expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig())).toBe(true);
+      expect(await isToolInstalledForConfig(AGY, noProjectEvidence, localConfig())).toBe(true);
+
+      await fse.remove(path.join(home, '.gemini', 'config'));
+      expect(await isToolInstalledForConfig(AGY, noProjectEvidence, localConfig())).toBe(false);
     } finally {
       await fse.remove(tmp);
     }
