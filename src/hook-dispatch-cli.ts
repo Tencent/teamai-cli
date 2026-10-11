@@ -465,11 +465,16 @@ export async function hookDispatchCli(
       }
     }
     const localConfig = await resolveHookConfig(stdin, tool);
-    // Global Copilot built-ins skip self mode, so its local Claude copy has no global replacement.
-    if (claudeHookRunsInAnotherHost(tool, process.env, !localConfig || !isSelfMode(localConfig))) return;
+    // A self project's overrides and local hooks remain authoritative where
+    // Copilot loaded them, so the global built-ins step aside there.
+    const copilotProject = process.env.COPILOT_PROJECT_DIR?.trim();
+    const selfRoot = localConfig?.scope === 'project' && isSelfMode(localConfig) ? localConfig.projectRoot : undefined;
+    const selfCopilotCopyLoaded = !!selfRoot && (!copilotProject || await import('./hooks.js')
+      .then(({ canonicalProjectRoot }) => canonicalProjectRoot(copilotProject) === canonicalProjectRoot(selfRoot)));
+    // Where the global copy steps aside, it is no replacement for the local Claude copy.
+    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded)) return;
     if (!bgOnly && tool === 'copilot') {
-      // A self project's overrides and local hooks remain authoritative.
-      if (options.copilotGlobal && localConfig?.scope === 'project' && isSelfMode(localConfig)) return;
+      if (options.copilotGlobal && selfCopilotCopyLoaded) return;
       const { copilotBuiltinDisabled, copilotBuiltinInstalled } = await import('./hooks.js');
       if (!await copilotBuiltinInstalled(event, matcher, options.copilotGlobal ? null : localConfig)) return;
       if (await copilotBuiltinDisabled(localConfig, event, matcher)) return;

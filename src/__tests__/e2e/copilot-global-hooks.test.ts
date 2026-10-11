@@ -283,6 +283,23 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(events.map(event => event.tool)).toEqual(['copilot']);
   });
 
+  // A cached project copy came from the project Copilot loaded, which may not be the event's cwd.
+  it.each([
+    ['b', 'a', 1],
+    ['a', 'b', 0],
+  ])('runs a cached legacy copy loaded from project %s with the event in project %s -> %i', (loaded, cwd, expected) => {
+    const projects: Record<string, string> = { a: project('a'), b: project('b') };
+    cli(['hooks', 'inject'], projects.a);
+    const globalFile = path.join(copilotHome, 'hooks/teamai.json');
+    const legacyFile = JSON.parse(JSON.stringify(hooks(globalFile)).replaceAll(/ --copilot-global [^ "\r\n]+/g, '')) as Hooks;
+    fs.rmSync(globalFile);
+    write(path.join(projects.b, '.github/hooks/teamai.json'), JSON.stringify(legacyFile));
+    dispatch(legacyFile.hooks.UserPromptSubmit[0], projects[cwd], projects[cwd], 'mismatch', { env: { COPILOT_PROJECT_DIR: projects[loaded] } });
+    const file = path.join(home, '.teamai/dashboard/events.jsonl');
+    const events = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+    expect(events.filter(event => event.type === 'prompt_submit')).toHaveLength(expected);
+  });
+
   it('keeps self built-ins local when a global install also exists', () => {
     const a = project('a');
     cli(['hooks', 'inject'], a);
@@ -298,6 +315,26 @@ describe('Copilot built-in hooks in project scope', () => {
     dispatch(local.hooks.UserPromptSubmit[0], a, dir, 'self-session');
     const events = fs.readFileSync(path.join(home, '.teamai/dashboard/events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(events.map(event => event.sessionId)).toEqual(['self-session']);
+  });
+
+  // The global copy yields to a self project only when Copilot loaded that project's local copy.
+  it.each([
+    ['self', 1],
+    ['a', 1],
+  ])('runs a self project event once when Copilot loaded project %s', (loaded, expected) => {
+    const a = project('a');
+    cli(['hooks', 'inject'], a);
+    const dir = project('self');
+    write(path.join(dir, '.teamai/teamai.yaml'), fs.readFileSync(path.join(dir, '.teamai/team-repo/teamai.yaml'), 'utf8'));
+    const configFile = path.join(dir, '.teamai/config.yaml');
+    write(configFile, fs.readFileSync(configFile, 'utf8').replace('repo:\n', 'repo:\n  kind: self\n'));
+    cli(['hooks', 'inject'], dir);
+    const copilotEnv = { env: { COPILOT_PROJECT_DIR: loaded === 'self' ? dir : a } };
+    dispatch(hooks(path.join(copilotHome, 'hooks/teamai.json')).hooks.UserPromptSubmit[0], dir, dir, 'self-session', copilotEnv);
+    if (loaded === 'self') dispatch(hooks(path.join(dir, '.github/hooks/teamai.json')).hooks.UserPromptSubmit[0], dir, dir, 'self-session', copilotEnv);
+    const file = path.join(home, '.teamai/dashboard/events.jsonl');
+    const events = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
+    expect(events.filter(event => event.type === 'prompt_submit' && event.sessionId === 'self-session')).toHaveLength(expected);
   });
 
   it.each([[false, false], [true, false], [true, true]])('keeps Claude-only self hooks active with gitExclude=%s and legacyGuard=%s', (gitExclude, legacyGuard) => {
