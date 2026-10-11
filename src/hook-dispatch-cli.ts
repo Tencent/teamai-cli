@@ -30,6 +30,7 @@ import { log, setSilent, setStderrOnly } from './utils/logger.js';
 import { clearGitHookRepositoryEnv, GIT_HOOK_TOOL } from './git-hook.js';
 import { deriveDispatchSessionId } from './utils/session-id.js';
 import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
+import { claimCopilotHookEvent } from './copilot-hook-claim.js';
 import { isSelfMode } from './types.js';
 
 export { claudeHookRunsInAnotherHost };
@@ -467,9 +468,12 @@ export async function hookDispatchCli(
     // Global Copilot built-ins skip self mode, so its local Claude copy has no global replacement.
     if (claudeHookRunsInAnotherHost(tool, process.env, !localConfig || !isSelfMode(localConfig))) return;
     if (!bgOnly && tool === 'copilot') {
-      const { copilotBuiltinDisabled, copilotBuiltinRunsInAnotherScope } = await import('./hooks.js');
-      if (await copilotBuiltinRunsInAnotherScope(localConfig, event, matcher, options.copilotGlobal)) return;
+      // A self project's overrides and local hooks remain authoritative.
+      if (options.copilotGlobal && localConfig?.scope === 'project' && isSelfMode(localConfig)) return;
+      const { copilotBuiltinDisabled, copilotBuiltinInstalledGlobally } = await import('./hooks.js');
+      if (options.copilotGlobal && !await copilotBuiltinInstalledGlobally(event, matcher)) return;
       if (await copilotBuiltinDisabled(localConfig, event, matcher)) return;
+      if (!claimCopilotHookEvent(event, matcher, raw)) return;
     }
     const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
     const dispatcher = createDispatcher({ handlers, localConfig });

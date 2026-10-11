@@ -1619,49 +1619,39 @@ export async function copilotBuiltinDisabled(localConfig: LocalConfig | null, ev
   return builtin.known && (builtin.override?.disabled ?? []).includes(def.key);
 }
 
-/** The user hook files Copilot loads (every native JSON file), in owner-selection order. */
-async function copilotGlobalHookFiles(): Promise<Array<{ file: string; json: CopilotHooksJson & { disableAllHooks?: boolean } }>> {
+/**
+ * True while a user hook file Copilot runs still holds this built-in, under
+ * any filename. A copy cached from a file whose built-ins were removed then
+ * stops; it never defers to another copy, which the session may not have loaded.
+ */
+export async function copilotBuiltinInstalledGlobally(event: string, matcher: string): Promise<boolean> {
+  const def = copilotBuiltinDef(event, matcher);
+  if (!def) return false;
+  const expected = toCopilotEntry(def);
   const dir = path.join(getCopilotHome(), 'hooks');
-  const files = await readdir(dir).catch(() => [] as string[]);
-  const result = [];
-  for (const name of files.filter(name => name.endsWith('.json')).sort()) {
-    const file = path.resolve(dir, name);
-    const json = await readJson<CopilotHooksJson & { disableAllHooks?: boolean }>(file);
-    if (json?.version === COPILOT_HOOK_SCHEMA_VERSION && json.hooks) result.push({ file, json });
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!name.endsWith('.json')) continue;
+    const json = await readJson<unknown>(path.join(dir, name));
+    if (copilotRunsEntries(json).some(([entryEvent, entryMatcher, command]) => entryEvent === CLAUDE_TO_COPILOT_EVENTS[def.event]
+      && entryMatcher === expected.matcher && [expected.bash, expected.powershell].includes(unmarkCopilotGlobal(command)))) return true;
   }
-  return result;
+  return false;
 }
 
 /**
- * Remove the built-ins from every user hook file owner selection reads, so
- * another project's configured filename does not take over the dispatch.
+ * Remove the built-ins from every native JSON hook file in the user hooks
+ * directory, whichever project configured its filename.
  */
 export async function removeCopilotGlobalBuiltins(): Promise<void> {
-  for (const { file } of await copilotGlobalHookFiles()) {
-    await reconcileHooks(file, COPILOT_TOOL_ID, [], { removeAll: true, copilotGlobal: file });
-  }
-}
-
-/** Suppress an overlapping Copilot built-in, including a legacy copy cached by the host. */
-export async function copilotBuiltinRunsInAnotherScope(
-  localConfig: LocalConfig | null,
-  event: string,
-  matcher: string,
-  globalSource?: string,
-): Promise<boolean> {
-  // A self project's overrides and local hooks remain authoritative.
-  if (localConfig?.scope === 'project' && isSelfMode(localConfig)) return !!globalSource;
-  const def = copilotBuiltinDef(event, matcher);
-  if (!def) return false;
-  // A stable owner also suppresses cached copies after sync.
-  for (const { file, json } of await copilotGlobalHookFiles()) {
-    const expected = toCopilotEntry(def, file);
-    if (copilotRunsEntries(json).some(([event, entryMatcher, command]) => event === CLAUDE_TO_COPILOT_EVENTS[def.event]
-      && entryMatcher === expected.matcher && (command === expected.bash || command === expected.powershell))) {
-      return globalSource !== copilotGlobalSource(file);
+  const dir = path.join(getCopilotHome(), 'hooks');
+  const files = await readdir(dir).catch(() => [] as string[]);
+  for (const name of files.filter(name => name.endsWith('.json')).sort()) {
+    const file = path.resolve(dir, name);
+    const json = await readJson<CopilotHooksJson>(file);
+    if (json?.version === COPILOT_HOOK_SCHEMA_VERSION && json.hooks) {
+      await reconcileHooks(file, COPILOT_TOOL_ID, [], { removeAll: true, copilotGlobal: file });
     }
   }
-  return !!globalSource;
 }
 
 /** Upgrade only the source marker when unresolved team hooks require retaining the installed set. */

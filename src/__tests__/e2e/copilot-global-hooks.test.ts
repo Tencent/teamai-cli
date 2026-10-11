@@ -43,10 +43,23 @@ function hooks(file: string): Hooks {
   return JSON.parse(fs.readFileSync(file, 'utf8')) as Hooks;
 }
 
-function dispatch(entry: Hooks['hooks'][string][number], launchDir: string, dir: string, sessionId: string): void {
+// Copilot passes one payload, with its millisecond timestamp, to every copy of an event.
+const EVENT_TIME = 1_760_000_000_000;
+
+function dispatch(
+  entry: Hooks['hooks'][string][number], launchDir: string, dir: string, sessionId: string,
+  event: { timestamp?: number | null; env?: NodeJS.ProcessEnv } = {},
+): void {
   const command = entry.bash?.match(/teamai (hook-dispatch [^"]+?) 2>\/dev\/null/);
   expect(command, 'generated Copilot dispatcher command').not.toBeNull();
-  cli(command![1].split(' '), launchDir, JSON.stringify({ cwd: dir, session_id: sessionId, hook_event_name: 'UserPromptSubmit', prompt: 'implement the feature' }));
+  const timestamp = event.timestamp === null ? {} : { timestamp: event.timestamp ?? EVENT_TIME };
+  const saved = env;
+  env = { ...env, ...event.env };
+  try {
+    cli(command![1].split(' '), launchDir, JSON.stringify({ ...timestamp, cwd: dir, session_id: sessionId, hook_event_name: 'UserPromptSubmit', prompt: 'implement the feature' }));
+  } finally {
+    env = saved;
+  }
 }
 
 beforeEach(() => {
@@ -123,6 +136,52 @@ describe('Copilot built-in hooks in project scope', () => {
     dispatch(globalB.hooks.UserPromptSubmit[0], a, b, 'cached-global');
     const events = fs.readFileSync(path.join(home, '.teamai/dashboard/events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(events.map(event => event.sessionId)).toEqual(['before-b', 'both-global', 'cached-global']);
+  });
+
+  // Each event runs once among the copies the session loaded, whatever is on disk now.
+  it('runs each event once among the loaded copies, whatever the hooks directory holds now', () => {
+    const a = project('a');
+    const b = project('b');
+    for (const dir of [a, b]) {
+      const teamFile = path.join(dir, '.teamai/team-repo/teamai.yaml');
+      write(teamFile, fs.readFileSync(teamFile, 'utf8') + `toolPaths:\n  copilot:\n    hooks: .github/hooks/teamai.json\n    userScope:\n      hooks: hooks/${path.basename(dir)}.json\n`);
+    }
+    cli(['hooks', 'inject'], b);
+    const globalB = hooks(path.join(copilotHome, 'hooks/b.json')).hooks.UserPromptSubmit[0];
+    const legacy = { bash: globalB.bash!.replace(/ --copilot-global [^ "\r\n]+/, '') };
+    // A later sync adds a.json, which sorts first; sessions started earlier never loaded it.
+    cli(['hooks', 'inject'], a);
+    const globalA = hooks(path.join(copilotHome, 'hooks/a.json')).hooks.UserPromptSubmit[0];
+    const claims = path.join(home, '.teamai/copilot-hook-claims');
+    // [case, copies the session loaded, payload, events expected]
+    const rows: Array<[string, Array<typeof globalA>, Parameters<typeof dispatch>[4] | 'per-copy' | 'per-session' | 'unwritable', number]> = [
+      ['session loaded only b.json', [globalB], {}, 1],
+      ['session loaded only the legacy project copy', [legacy], {}, 1],
+      ['session loaded a.json and b.json', [globalA, globalB], {}, 1],
+      ['session loaded b.json and the legacy project copy', [globalB, legacy], {}, 1],
+      ['two events with their own timestamps', [globalB, globalB], 'per-copy', 2],
+      ['two Copilot sessions with the same payload', [globalA, globalB], 'per-session', 2],
+      ['payload without a timestamp', [globalA, globalB], { timestamp: null }, 2],
+      ['claim directory unwritable', [globalA, globalB], 'unwritable', 2],
+    ];
+    for (const [name, copies, payload, expected] of rows) {
+      const sessionId = name.replaceAll(' ', '-');
+      if (payload === 'unwritable') {
+        fs.rmSync(claims, { recursive: true, force: true });
+        write(claims, 'not a directory');
+      }
+      copies.forEach((copy, i) => dispatch(copy, a, b, sessionId,
+        payload === 'per-copy' ? { timestamp: EVENT_TIME + i }
+          : payload === 'per-session' ? { env: { COPILOT_AGENT_SESSION_ID: `copilot-${i}` } }
+            : payload === 'unwritable' ? {} : payload));
+      if (payload === 'unwritable') fs.rmSync(claims, { force: true });
+      const events = fs.readFileSync(path.join(home, '.teamai/dashboard/events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(events.filter(event => event.type === 'prompt_submit' && event.sessionId === sessionId), name).toHaveLength(expected);
+    }
+    // Claims from earlier days are removed on the next claim.
+    write(path.join(claims, '2000-01-01', 'old'), '');
+    dispatch(globalB, a, b, 'cleanup');
+    expect(fs.existsSync(path.join(claims, '2000-01-01'))).toBe(false);
   });
 
   it('removes the built-ins from every global file, whichever project configured it', () => {
