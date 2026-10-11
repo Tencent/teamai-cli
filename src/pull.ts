@@ -50,6 +50,7 @@ import {
   getDataHome,
   getProjectSearchIndexPath,
   isRecallEnabled,
+  isUsageReportEnabled,
   resolveGitExclude,
   isAgentExcluded,
   scopedToolPaths,
@@ -264,9 +265,9 @@ async function refreshTeamRepo(
   return { label: result, version, submodulesFailed, submodulesChanged };
 }
 
-/** teamai.yaml `usageReport: false` — per-repo opt-out of stat commits. */
-async function usageReportDisabled(repoPath: string): Promise<boolean> {
-  return (await loadTeamConfig(repoPath))?.usageReport === false;
+/** Opt-out of stat commits: the member's `usageReportEnabled`, else teamai.yaml `usageReport`. */
+async function usageReportDisabled(scope: LocalConfig): Promise<boolean> {
+  return !isUsageReportEnabled(scope, (await loadTeamConfig(scope.repo.localPath)) ?? {});
 }
 
 // Deployment adds a CONTRIBUTORS file that the team source may not have; ignore it
@@ -2803,11 +2804,12 @@ export async function pull(
         const { reportUsageToTeam } = await import('./team-push.js');
         const { truncateUsageAfterReport, readUsageEvents, capUsageEvents } = await import('./usage-tracker.js');
         const targets: Array<{ repoPath: string; username: string; opts: { skipTruncate: true; selfConfig: LocalConfig } }> = [];
-        // Per-target opt-out (teamai.yaml `usageReport: false`): a repo that
-        // disables stat commits is dropped from the targets — e.g. teams
-        // pulling from a read-only remote never accumulate unpushable commits.
+        // Per-target opt-out (teamai.yaml `usageReport: false`, or the member's
+        // `usageReportEnabled: false`): a scope that disables stat commits is
+        // dropped from the targets — e.g. teams pulling from a read-only
+        // remote never accumulate unpushable commits.
         if (reconcileProject && reconcileProject.repo.kind !== 'http'
-          && !await usageReportDisabled(reconcileProject.repo.localPath)) {
+          && !await usageReportDisabled(reconcileProject)) {
           targets.push({
             repoPath: reconcileProject.repo.localPath,
             username: reconcileProject.username,
@@ -2819,7 +2821,7 @@ export async function pull(
           });
         }
         if (reconcileUser && reconcileUser.repo.kind !== 'http'
-          && !await usageReportDisabled(reconcileUser.repo.localPath)) {
+          && !await usageReportDisabled(reconcileUser)) {
           targets.push({
             repoPath: reconcileUser.repo.localPath,
             username: reconcileUser.username,

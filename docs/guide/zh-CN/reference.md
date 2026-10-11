@@ -85,6 +85,7 @@ inheritUserScope: true         # 可选，仅 project scope，默认 false
 coAuthorEnabled: true          # 可选，每机器的 co-author 覆盖
 gitExcludeEnabled: true        # 可选，每机器对 sharing.gitExclude.enabled 的覆盖
 contributeHintEnabled: false   # 可选，每机器覆盖 sharing.contributeHint.enabled
+usageReportEnabled: false      # 可选，每机器覆盖 usageReport
 codexTrustEnabled: false       # 可选，每机器，停止 teamai 信任它写入的 Codex hooks 与项目（见 Hooks）
 toolRoots:                     # 可选，每机器的工具根目录（见下）
   claude: ~/.claude-work

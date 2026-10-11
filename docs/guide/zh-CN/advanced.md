@@ -729,6 +729,9 @@ clone 解析到它自己的项目或 user scope，而不是外层项目）；没
 usageReport: false
 ```
 
+成员可在该 scope 的 `config.yaml` 中设置 `usageReportEnabled: false`（或 `true`），
+在本机覆盖团队设置；见 [config.yaml](reference.md#configyaml本地配置)。
+
 Pull 在上报步骤之后把每个 scope 的使用文件限制为最新 5,000 条事件，丢弃更早的
 事件。对 HTTP 源或 `usageReport: false` 的团队，该文件是 `teamai stats` 唯一的
 数据来源，因此文件保持有界而不会被清空；上报未完成且事件超过 5,000 条的上报

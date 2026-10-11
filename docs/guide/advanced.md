@@ -762,6 +762,10 @@ can turn this off in `teamai.yaml`:
 usageReport: false
 ```
 
+A member overrides the team's setting on their machine with
+`usageReportEnabled: false` (or `true`) in the scope's `config.yaml`; see
+[config.yaml](reference.md#configyaml-local-config).
+
 Pull keeps each scope's usage file to its newest 5,000 events, dropping the
 oldest after the report step. For an http source or a `usageReport: false`
 team, that file is the only record `teamai stats` has, so it stays bounded

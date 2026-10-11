@@ -255,6 +255,14 @@ export function isContributeHintEnabled(
   return teamConfig.sharing?.contributeHint?.enabled ?? true;
 }
 
+/** Resolve whether pull reports usage stats: user override > team config > default (true). */
+export function isUsageReportEnabled(
+  localConfig: { usageReportEnabled?: boolean },
+  teamConfig: { usageReport?: boolean },
+): boolean {
+  return localConfig.usageReportEnabled ?? teamConfig.usageReport ?? true;
+}
+
 /**
  * Resolve the effective co-author intent: user override > team config > no-op.
  *
@@ -737,6 +745,9 @@ export const LocalConfigSchema = z.object({
   gitExcludeEnabled: z.boolean().optional(),
   /** User-level override for the share-learnings hint. When set, takes precedence over team config. */
   contributeHintEnabled: z.boolean().optional(),
+  /** Per-machine override of the team's `usageReport`. When set, takes
+   *  precedence over the team config. Undefined defers to the team. */
+  usageReportEnabled: z.boolean().optional(),
   /** Per-machine override for the co-author trailer in AI-tool commits. When set,
    *  takes precedence over the team `sharing.coAuthor` default. Undefined means
    *  "defer to the team" (see resolveCoAuthor). */

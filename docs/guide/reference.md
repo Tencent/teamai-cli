@@ -85,6 +85,7 @@ inheritUserScope: true         # optional; project scope only, defaults to false
 coAuthorEnabled: true          # optional; per-machine co-author override
 gitExcludeEnabled: true        # optional; per-machine override of sharing.gitExclude.enabled
 contributeHintEnabled: false   # optional; per-machine override of sharing.contributeHint.enabled
+usageReportEnabled: false      # optional; per-machine override of usageReport
 codexTrustEnabled: false       # optional; per-machine, stops teamai trusting its Codex hooks and project (see Hooks)
 toolRoots:                     # optional; per-machine tool roots (see below)
   claude: ~/.claude-work
