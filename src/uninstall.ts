@@ -457,14 +457,17 @@ async function discoverToolResources(
   // (a) Hooks — settings.json / hooks.json
   if (toolPath.hooks) {
     const hooksPath = path.join(baseDir, toolPath.hooks);
+    const teamOnly = tool === 'copilot' && scope === 'project';
+    // A project's Copilot file holds only team hooks, so lost records leave no marker behind (#993).
     if (await pathExists(hooksPath)
       && (await hasTeamaiHooks(hooksPath, tool, standaloneHookManifestPath)
-        || isEmptyHooksResidue(await readJson<Record<string, unknown>>(hooksPath)))) {
+        || isEmptyHooksResidue(await readJson<Record<string, unknown>>(hooksPath))
+        || await hasUnrecordedTeamHooks(hooksPath, tool, { teamHookHistory: hookTargets[0]?.teamHookHistory, teamOnly }))) {
       res.hookFiles.push({
         path: hooksPath,
         tool,
         manifestPath: standaloneHookManifestPath,
-        ...(tool === 'copilot' && scope === 'project' ? { teamOnly: true } : {}),
+        ...(teamOnly ? { teamOnly } : {}),
       });
     }
   } else if (tool === 'dsh') {
