@@ -11,22 +11,39 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { shellQuoteValue } from './utils/shell-profile.js';
 
 const CURSOR_MARKER = '--tool cursor';
 const COPILOT_MARKER = '--tool copilot';
 
+/**
+ * The [event, matcher, command] entries Copilot runs from a parsed hook file.
+ * Copilot loads only version 1 files and runs none of a file's hooks under
+ * `disableAllHooks`, so any other file yields nothing. Every check of what
+ * Copilot runs goes through this one predicate. It stays self-contained:
+ * PROJECT_COPILOT_COPY_CHECK embeds its source in the shell guard.
+ */
+export function copilotRunsEntries(data: unknown): Array<[string, string | undefined, string]> {
+  const file = data as { version?: unknown; disableAllHooks?: unknown; hooks?: unknown } | null;
+  if (file?.version !== 1 || file.disableAllHooks || !file.hooks || typeof file.hooks !== 'object') return [];
+  return Object.entries(file.hooks).flatMap(([event, entries]) => !Array.isArray(entries) ? [] : entries
+    .filter(entry => entry?.type === 'command')
+    .flatMap(entry => [entry.bash, entry.powershell, entry.command]
+      .filter(command => typeof command === 'string')
+      .map((command): [string, string | undefined, string] => [event, entry.matcher, command])));
+}
+
 // Shell guards run outside the CLI, so read Copilot's project hook files with Node.
-// argv[2] is copilotCopyKey of the team hook; a file Copilot loads must hold it as an active entry.
+// argv[2] is copilotCopyKey of the team hook; a file Copilot runs must hold it.
 const PROJECT_COPILOT_COPY_CHECK = [
   'const fs = require("node:fs"), path = require("node:path"), crypto = require("node:crypto");',
+  `const runs = ${copilotRunsEntries.toString()};`,
   'const key = (event, matcher, command) => crypto.createHash("sha256")',
   '.update(JSON.stringify([event, matcher && matcher !== "*" ? matcher : "", command])).digest("hex");',
   'try { process.exit(fs.readdirSync(process.argv[1]).some(name => {',
   'if (!name.endsWith(".json")) return false;',
-  'try { const data = JSON.parse(fs.readFileSync(path.join(process.argv[1], name), "utf8"));',
-  'return data?.version === 1 && !data.disableAllHooks && Object.entries(data.hooks ?? {}).some(([event, entries]) =>',
-  'Array.isArray(entries) && entries.some(entry => entry?.type === "command" &&',
-  '[entry.bash, entry.command].some(command => typeof command === "string" && key(event, entry.matcher, command) === process.argv[2])));',
+  'try { return runs(JSON.parse(fs.readFileSync(path.join(process.argv[1], name), "utf8")))',
+  '.some(([event, matcher, command]) => key(event, matcher, command) === process.argv[2]);',
   '} catch { return false; } }) ? 0 : 1); } catch { process.exit(1); }',
 ].join(' ');
 
@@ -50,7 +67,7 @@ export const LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP = CURSOR_HOOK_SKIP
  */
 export function claudeHookOtherHostSkip(copilotEvent: string | undefined, copilotMatcher: string | undefined, command: string): string {
   if (!copilotEvent) return CURSOR_HOOK_SKIP;
-  return CURSOR_HOOK_SKIP + 'if [ -n "$COPILOT_PROJECT_DIR" ] && node -e \'' + PROJECT_COPILOT_COPY_CHECK + '\' '
+  return CURSOR_HOOK_SKIP + 'if [ -n "$COPILOT_PROJECT_DIR" ] && node -e ' + shellQuoteValue(PROJECT_COPILOT_COPY_CHECK) + ' '
     + `"$COPILOT_PROJECT_DIR/.github/hooks" ${copilotCopyKey(copilotEvent, copilotMatcher, command)} 2>/dev/null; then exit 0; fi; `;
 }
 
@@ -76,17 +93,13 @@ function cursorCopyInstalled(env: NodeJS.ProcessEnv): boolean {
 }
 
 /** Copilot loads every JSON hook file in these directories, including configured filenames. */
-function copilotHooksInstalled(dir: string, activeOnly = false): boolean {
+function copilotHooksInstalled(dir: string): boolean {
   try {
     return fs.readdirSync(dir).some(name => {
       if (!name.endsWith('.json')) return false;
-      const file = path.join(dir, name);
-      if (!activeOnly) return fileHasMarker(file, COPILOT_MARKER);
       try {
-        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-        return data?.version === 1 && !data.disableAllHooks && Object.values(data.hooks ?? {}).some(entries =>
-          Array.isArray(entries) && entries.some(entry => entry?.type === 'command' &&
-            [entry.bash, entry.powershell, entry.command].some(command => typeof command === 'string' && command.includes(COPILOT_MARKER))));
+        return copilotRunsEntries(JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')))
+          .some(([, , command]) => command.includes(COPILOT_MARKER));
       } catch {
         return false;
       }
@@ -101,7 +114,7 @@ function copilotCopyInstalled(env: NodeJS.ProcessEnv, includeGlobal: boolean): b
   if (!project) return false;
   const home = homeDir(env);
   const copilotHome = env.COPILOT_HOME?.trim() || (home ? path.join(home, '.copilot') : undefined);
-  return (includeGlobal && copilotHome !== undefined && copilotHooksInstalled(path.join(copilotHome, 'hooks'), true))
+  return (includeGlobal && copilotHome !== undefined && copilotHooksInstalled(path.join(copilotHome, 'hooks')))
     || copilotHooksInstalled(path.join(project, '.github', 'hooks'));
 }
 

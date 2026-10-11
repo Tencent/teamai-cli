@@ -88,7 +88,7 @@ describe('hookDispatchCli', () => {
     const copilotHooks = path.join(project, '.github', 'hooks', 'teamai.json');
     fs.writeFileSync(cursorHooks, '{"hooks":{"stop":[{"command":"teamai hook-dispatch stop --tool cursor"}]}}');
     fs.writeFileSync(projectCursorHooks, '{"hooks":{"stop":[{"command":"teamai hook-dispatch stop --tool cursor"}]}}');
-    fs.writeFileSync(copilotHooks, '{"hooks":{"sessionStart":[{"bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
+    fs.writeFileSync(copilotHooks, '{"version":1,"hooks":{"sessionStart":[{"type":"command","bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
 
     const bare = path.join(root, 'bare-home');
     fs.mkdirSync(bare);
@@ -101,7 +101,7 @@ describe('hookDispatchCli', () => {
     expect(claudeHookRunsInAnotherHost('claude', { COPILOT_PROJECT_DIR: project, HOME: home })).toBe(true);
     fs.writeFileSync(copilotHooks, '{}');
     expect(claudeHookRunsInAnotherHost('claude', { COPILOT_PROJECT_DIR: project })).toBe(false);
-    fs.writeFileSync(copilotHooks, '{"hooks":{"sessionStart":[{"bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
+    fs.writeFileSync(copilotHooks, '{"version":1,"hooks":{"sessionStart":[{"type":"command","bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
     expect(claudeHookRunsInAnotherHost('claude', {})).toBe(false);
     expect(claudeHookRunsInAnotherHost('claude', { CURSOR_VERSION: '', COPILOT_PROJECT_DIR: '', HOME: home })).toBe(false);
     expect(claudeHookRunsInAnotherHost('cursor', { CURSOR_VERSION: '1.2.3', HOME: home })).toBe(false);
@@ -182,7 +182,7 @@ describe('hookDispatchCli', () => {
       expect(mockDispatcher.dispatch).toHaveBeenCalledTimes(1);
 
       mockDispatcher.dispatch.mockClear();
-      fs.writeFileSync(copilotHooks, '{"hooks":{"sessionStart":[{"bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
+      fs.writeFileSync(copilotHooks, '{"version":1,"hooks":{"sessionStart":[{"type":"command","bash":"teamai hook-dispatch session-start --tool copilot"}]}}');
       process.env.COPILOT_PROJECT_DIR = project;
       await hookDispatchCli('stop', 'copilot', '*', { stdinFile });
       expect(mockDispatcher.dispatch).toHaveBeenCalledTimes(1);
@@ -199,6 +199,49 @@ describe('hookDispatchCli', () => {
       else process.env.COPILOT_CLI = previousCopilotCli;
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
+    }
+  });
+
+  it('steps Claude aside only for a Copilot hook file Copilot loads and runs', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'host-hooks-active-'));
+    const project = path.join(root, 'project');
+    const copilotHome = path.join(root, 'copilot');
+    const projectFile = path.join(project, '.github', 'hooks', 'teamai.json');
+    const globalFile = path.join(copilotHome, 'hooks', 'teamai.json');
+    fs.mkdirSync(path.dirname(projectFile), { recursive: true });
+    fs.mkdirSync(path.dirname(globalFile), { recursive: true });
+    const file = (entry: object, extra: object = {}) => JSON.stringify({ version: 1, ...extra, hooks: { Stop: [entry] } });
+    const builtin = { type: 'command', bash: 'teamai hook-dispatch stop --tool copilot' };
+    const team = { type: 'command', bash: 'echo RAN' };
+    // [case, builtin file, team file, Copilot runs it]
+    const rows: Array<[string, string, string, boolean]> = [
+      ['active', file(builtin), file(team), true],
+      ['powershell only', file({ type: 'command', powershell: builtin.bash }), file({ type: 'command', powershell: 'echo RAN' }), true],
+      ['disableAllHooks', file(builtin, { disableAllHooks: true }), file(team, { disableAllHooks: true }), false],
+      ['malformed', `${file(builtin)},`, `${file(team)},`, false],
+      ['no version', JSON.stringify({ hooks: { Stop: [builtin] } }), JSON.stringify({ hooks: { Stop: [team] } }), false],
+      ['version 2', file(builtin, { version: 2 }), file(team, { version: 2 }), false],
+      ['entry not a command', file({ ...builtin, type: 'prompt' }), file({ ...team, type: 'prompt' }), false],
+    ];
+    const env = { COPILOT_PROJECT_DIR: project, COPILOT_HOME: copilotHome, HOME: root };
+    const guard = (): string => execFileSync('sh', ['-c', `${claudeHookOtherHostSkip('Stop', undefined, 'echo RAN')}echo RAN`],
+      { env: { PATH: process.env.PATH ?? '', ...env }, encoding: 'utf8' });
+    try {
+      for (const [name, builtinFile, teamFile, runs] of rows) {
+        fs.writeFileSync(projectFile, builtinFile);
+        expect(claudeHookRunsInAnotherHost('claude', env, false), `project, self mode: ${name}`).toBe(runs);
+        expect(claudeHookRunsInAnotherHost('claude', env, true), `project: ${name}`).toBe(runs);
+        fs.rmSync(projectFile);
+        fs.writeFileSync(globalFile, builtinFile);
+        expect(claudeHookRunsInAnotherHost('claude', env, true), `global: ${name}`).toBe(runs);
+        expect(claudeHookRunsInAnotherHost('claude', env, false), `global, self mode: ${name}`).toBe(false);
+        fs.rmSync(globalFile);
+        fs.writeFileSync(projectFile, teamFile);
+        expect(guard(), `team guard: ${name}`).toBe(runs ? '' : 'RAN\n');
+        fs.rmSync(projectFile);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

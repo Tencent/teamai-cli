@@ -41,7 +41,7 @@ import { parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } 
 import { entryLayout } from './namespaced-entries.js';
 import { historicalContents } from './utils/team-history.js';
 import { getUserHome } from './utils/home.js';
-import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip } from './claude-hook-host.js';
+import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, copilotRunsEntries } from './claude-hook-host.js';
 import { listWorktrees, resolveAnchors } from './utils/git.js';
 import { findOnPath } from './utils/lookpath.js';
 import type { CodexHookTrustReport, CodexTrust } from './codex-trust.js';
@@ -1655,12 +1655,9 @@ export async function copilotBuiltinRunsInAnotherScope(
   if (!def) return false;
   // A stable owner also suppresses cached copies after sync.
   for (const { file, json } of await copilotGlobalHookFiles()) {
-    if (json.disableAllHooks) continue;
     const expected = toCopilotEntry(def, file);
-    const entries = json.hooks[CLAUDE_TO_COPILOT_EVENTS[def.event]];
-    if (Array.isArray(entries) && entries.some(entry => entry?.type === 'command'
-      && entry.matcher === expected.matcher
-      && copilotEntryCommands(entry).some(command => command === expected.bash || command === expected.powershell))) {
+    if (copilotRunsEntries(json).some(([event, entryMatcher, command]) => event === CLAUDE_TO_COPILOT_EVENTS[def.event]
+      && entryMatcher === expected.matcher && (command === expected.bash || command === expected.powershell))) {
       return globalSource !== copilotGlobalSource(file);
     }
   }
