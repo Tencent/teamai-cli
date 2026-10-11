@@ -13,13 +13,15 @@ afterEach(() => {
 });
 
 describe('real CLI lock filesystem errors (#999)', () => {
-  it('env set reports a parent-file error instead of waiting for a competing writer', () => {
+  it('env unset reports a parent-file error instead of waiting for a competing writer', () => {
     sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lock-error-'));
     const home = path.join(sandbox, 'home');
     const secrets = path.join(home, '.teamai', 'secrets');
     fs.mkdirSync(path.dirname(secrets), { recursive: true });
     fs.writeFileSync(secrets, 'keep');
-    const run = () => spawnSync(process.execPath, [cli, 'env', 'set', 'TEST_TOKEN', '--global', '--from-env', 'TEST_TOKEN'], {
+    // env set reads the store before locking: POSIX reports ENOTDIR there,
+    // while Windows reports ENOENT. Unset reaches the lock on both platforms.
+    const run = () => spawnSync(process.execPath, [cli, 'env', 'unset', 'TEST_TOKEN', '--global'], {
       cwd: sandbox,
       env: { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0' },
       encoding: 'utf8', windowsHide: true, timeout: 10_000,
@@ -34,10 +36,15 @@ describe('real CLI lock filesystem errors (#999)', () => {
     expect(fs.readFileSync(secrets, 'utf8')).toBe('keep');
 
     fs.unlinkSync(secrets);
+    fs.mkdirSync(secrets);
+    fs.writeFileSync(path.join(secrets, 'machine.json'), JSON.stringify({
+      TEST_TOKEN: { env: 'TEST_TOKEN', kind: 'secret' },
+      OTHER_TOKEN: { env: 'OTHER_TOKEN', kind: 'secret' },
+    }));
     const retry = run();
     expect(retry.error).toBeUndefined();
     expect(retry.status).toBe(0);
-    expect(JSON.parse(fs.readFileSync(path.join(secrets, 'machine.json'), 'utf8'))).toEqual({ TEST_TOKEN: { env: 'TEST_TOKEN', kind: 'secret' } });
+    expect(JSON.parse(fs.readFileSync(path.join(secrets, 'machine.json'), 'utf8'))).toEqual({ OTHER_TOKEN: { env: 'OTHER_TOKEN', kind: 'secret' } });
     expect(fs.existsSync(path.join(secrets, 'machine.json.lock'))).toBe(false);
   });
 });
