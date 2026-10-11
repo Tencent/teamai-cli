@@ -82,9 +82,10 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 **Q: 命令提示 `Cannot acquire lock <path>: <reason>`？**
 
-锁无法创建或回收。先修复提示中的文件系统错误（例如权限不足、磁盘已满，
+锁无法检查、创建或回收，dry-run 预览也可能报告此错误。
+先修复提示中的文件系统错误（例如权限不足、磁盘已满，
 或父路径是文件），再重试；等待其他 teamai 进程结束无法解决这类错误。
-另一个进程持有锁时仍使用该命令原有的占用或跳过提示；已有锁无法读取或
+另一个进程持有锁时仍使用该命令原有的占用或跳过提示；已有锁因权限不足无法读取或
 未记录所有者时，也会被视为已占用以保护它。
 
 **Q: User scope 和 Project scope 可以共存吗？**

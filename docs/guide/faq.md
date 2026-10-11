@@ -82,11 +82,13 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 **Q: A command says `Cannot acquire lock <path>: <reason>`?**
 
-The lock could not be created or reclaimed. Fix the filesystem error it names
+The lock could not be inspected, created or reclaimed, including during a
+dry-run preview. Fix the filesystem error it names
 (for example permissions, a full disk, or a parent path that is a file), then
 retry. Waiting for another teamai process will not fix these errors. A lock held
 by another process still uses the command's usual busy/skip message; an existing
-lock that cannot be read or names no owner is also treated as held to protect it.
+lock that cannot be read due to permissions or names no owner is also treated as
+held to protect it.
 
 **Q: Can user scope and project scope coexist?**
 

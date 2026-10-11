@@ -236,11 +236,11 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
  *
  * Only a verdict of stale lets a reclaimer rename over the lock, so only a
  * lock whose owner is provably gone reads as stale (#760). Anything that
- * cannot name a dead owner is held: a file that cannot be read (EACCES, e.g.
+ * cannot name a dead owner is held: a file denied by permissions (EACCES, e.g.
  * another user's 0600 lock), an empty or partly written one (its creator may
  * still be writing it: the O_EXCL fallback and older teamai open the file
  * before writing), and a pid that exists but belongs to another user (EPERM).
- * A lock that names no owner, or cannot be read, stays until removed by hand
+ * A lock that names no owner, or is permission-denied, stays until removed by hand
  * if a crash left it, so it is named in a warning.
  */
 async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
@@ -250,6 +250,7 @@ async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return 'missing';
+    if (code !== 'EACCES' && code !== 'EPERM') throw err;
     log.warn(`${resolved} cannot be read (${code}); treating it as held. Remove it if no teamai process is running.`);
     return 'live';
   }
@@ -366,9 +367,9 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
 }
 
 /**
- * Try to acquire a lock. Returns false when the lock is held (including an
- * unreadable or ownerless existing lock); filesystem failures reject with the
- * lock path and original cause, so callers do not retry them as contention.
+ * Try to acquire a lock. Returns false when the lock is held (including a
+ * permission-denied or ownerless existing lock); filesystem failures reject
+ * with the lock path and original cause, so callers do not retry them as contention.
  *
  * The happy path is a single atomic exclusive create (a fully written temp file
  * hard-linked to the lock name, or O_CREAT|O_EXCL without hard links), so exactly
@@ -395,15 +396,15 @@ export async function acquireLock(
   // it reads the lock's state instead of creating it: a live holder means the
   // real run would have reported contention, anything else means it would have
   // won. No owner is recorded, so `releaseLock` has nothing to undo.
-  if (options.dryRun) return (await lockState(resolved)) !== 'live';
-  const owner = randomUUID();
-  const payload = JSON.stringify({
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-    owner,
-  } satisfies LockPayload);
-
   try {
+    if (options.dryRun) return (await lockState(resolved)) !== 'live';
+    const owner = randomUUID();
+    const payload = JSON.stringify({
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      owner,
+    } satisfies LockPayload);
+
     await ensureDir(path.dirname(resolved));
     // Fast path: no lock present. A live holder means busy; only a stale lock
     // may be reclaimed.

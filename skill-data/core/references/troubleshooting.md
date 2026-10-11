@@ -14,10 +14,11 @@ reports before anything else.
 
 ## "Cannot acquire lock <path>: <reason>"
 
-The lock could not be created or reclaimed. Fix the filesystem error named in
+The lock could not be inspected, created or reclaimed, including during a
+dry-run preview. Fix the filesystem error named in
 the message (permissions, a full disk, or a parent path that is a file), then
 retry; waiting for another process does not fix it. Ordinary contention still
-uses the command's busy/skip message. An existing unreadable or ownerless lock
+uses the command's busy/skip message. An existing permission-denied or ownerless lock
 is treated as held: remove it only after confirming no teamai process uses it.
 
 ## "My skills / rules aren't showing up"

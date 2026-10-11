@@ -338,6 +338,68 @@ describe('acquireLock filesystem failures (#999)', () => {
   });
 });
 
+describe('acquireLock dry-run filesystem errors (#999)', () => {
+  it.each(['ENOTDIR', 'EISDIR', 'EIO'])('reports a read failure (%s) without writing a lock', async (code) => {
+    const error = Object.assign(new Error(`${code}: cannot read lock`), { code });
+    const read = vi.spyOn(fse, 'readFile').mockRejectedValueOnce(error);
+    try {
+      await expect(acquireLock(lockPath, { dryRun: true })).rejects.toMatchObject({
+        cause: error, message: expect.stringContaining(`Cannot acquire lock ${lockPath}:`),
+      });
+      expect(fs.readdirSync(tmpDir)).toEqual([]);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('rejects a directory at the lock path and leaves its contents untouched', async () => {
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, 'keep'), 'keep');
+    await expect(acquireLock(lockPath, { dryRun: true })).rejects.toThrow(lockPath);
+    await releaseLock(lockPath);
+    expect(fs.readdirSync(tmpDir)).toEqual(['.test-lock']);
+    expect(fs.readFileSync(path.join(lockPath, 'keep'), 'utf-8')).toBe('keep');
+  });
+
+  it.each(['EACCES', 'EPERM'])('still treats a permission-denied existing lock as held (%s)', async (code) => {
+    const payload = JSON.stringify({ pid: process.pid, owner: 'other', startedAt: 'x' });
+    fs.writeFileSync(lockPath, payload);
+    const read = vi.spyOn(fse, 'readFile').mockRejectedValueOnce(Object.assign(new Error(code), { code }));
+    try {
+      expect(await acquireLock(lockPath, { dryRun: true })).toBe(false);
+      await releaseLock(lockPath);
+      expect(fs.readFileSync(lockPath, 'utf-8')).toBe(payload);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('does not create a missing parent directory', async () => {
+    const nested = path.join(tmpDir, 'missing', '.lock');
+    expect(await acquireLock(nested, { dryRun: true })).toBe(true);
+    await releaseLock(nested);
+    expect(fs.readdirSync(tmpDir)).toEqual([]);
+  });
+
+  it.each([{ pid: process.pid, available: false }, { pid: 999999, available: true }])(
+    'preserves a lock owned by pid $pid, including after release', async ({ pid, available }) => {
+      const payload = JSON.stringify({ pid, owner: 'other', startedAt: 'x' });
+      fs.writeFileSync(lockPath, payload);
+      expect(await acquireLock(lockPath, { dryRun: true })).toBe(available);
+      await releaseLock(lockPath);
+      expect(fs.readFileSync(lockPath, 'utf-8')).toBe(payload);
+      expect(fs.readdirSync(tmpDir)).toEqual(['.test-lock']);
+    },
+  );
+
+  it('still treats an ownerless lock as held', async () => {
+    fs.writeFileSync(lockPath, '');
+    expect(await acquireLock(lockPath, { dryRun: true })).toBe(false);
+    await releaseLock(lockPath);
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe('');
+  });
+});
+
 describe('releaseLock (real fs)', () => {
   it('removes a lock this process owns', async () => {
     await acquireLock(lockPath);
