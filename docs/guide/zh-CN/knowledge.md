@@ -75,6 +75,8 @@ teamai recall status
 
 本机覆盖写在 `~/.teamai/config.yaml` 的 `recallEnabled`。`TEAMAI_RECALL_DISABLED=1` 强制关掉。关掉之后 pull 不再安装 recall；直接运行 `teamai recall` 仍然可以搜。
 
+关闭 recall 不会隐藏 SessionStart 的近期已合入 MR 提示。这条提示指向 `teamai import --from-mr`，团队在开启 recall 前也可以先提炼并发布 learning。要单独关闭这条提示，设置 `TEAMAI_MR_HINT_DISABLED=1`。
+
 `teamai.yaml` 的 `language` 可以是 `en` 或 `zh`。`en` 时，内置 recall 规则、TodoWrite 提示和已合入 MR 提示只用英文。不写或写 `zh`，保持中英双语。下一次 `teamai pull` 按这个重写。
 
 ### 知识库维护
