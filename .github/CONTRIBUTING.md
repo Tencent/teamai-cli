@@ -4,9 +4,12 @@ Thanks for your interest in improving TeamAI! This document explains how to get 
 
 ## Development Setup
 
+Fork [`Tencent/teamai-cli`](https://github.com/Tencent/teamai-cli), then clone your fork:
+
 ```bash
-git clone https://github.com/Tencent/teamai-cli.git
+git clone https://github.com/<your-user>/teamai-cli.git
 cd teamai-cli
+git remote add upstream https://github.com/Tencent/teamai-cli.git
 npm install
 ```
 
@@ -80,11 +83,11 @@ See [docs/dev/adding-a-provider.md](../docs/dev/adding-a-provider.md) for how to
 
 ## Making a Change
 
-1. Fork the repo and create a feature branch from the latest `origin/main`. Prefer a git worktree for code changes when practical.
+1. Update from `upstream/main`, then create a feature branch. Prefer a git worktree for code changes when practical.
 2. Write tests for your change (we target 80%+ coverage).
 3. Run `npx vitest run`, `npx tsc --noEmit` and `npm run lint` — all must pass.
 4. Use conventional commits where possible: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
-5. Open a PR with a clear description: what's the problem, what's the fix, anything reviewers should pay attention to.
+5. Push the branch to your fork and open a PR against `Tencent/teamai-cli:main`. Describe the problem, the fix, and anything reviewers should pay attention to.
 
 Your PR also gets an informational `Code Erosion` report (SlopCodeBench verbosity/erosion metrics) posted as a comment — it never blocks the merge and is just there to flag creeping complexity. See [docs/dev/ci-code-erosion.md](../docs/dev/ci-code-erosion.md).
 

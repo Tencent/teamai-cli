@@ -1,6 +1,6 @@
 # TeamAI CLI
 
-CLI for syncing team skills, rules, docs, and env across AI coding tools. Package: [`teamai-cli`](https://www.npmjs.com/package/teamai-cli).
+CLI for managing a team's skills, rules, agents, learnings, models, MCP, and other AI assets in a git repo, and syncing them into AI coding tools. Package: [`teamai-cli`](https://www.npmjs.com/package/teamai-cli).
 
 TypeScript, Node 20+ (`npm run lint` needs ^20.19 or >=22.12), tsup (ESM), Vitest. Commands: `npm run build`, `npx tsc --noEmit`, `npm run lint`, `npx vitest run`, `npm run test:e2e`.
 
@@ -8,30 +8,30 @@ TypeScript, Node 20+ (`npm run lint` needs ^20.19 or >=22.12), tsup (ESM), Vites
 
 - Default branch: `main`. Worktrees and PRs based on `origin/main`.
 - PR only to `Tencent/teamai-cli`. Before push, check `git log origin/main..HEAD`; rebase or cherry-pick if unrelated commits appear.
-- **必须使用 Worktree**：改代码前先 `EnterWorktree`，禁止在主工作目录修改。
+- **Use a worktree**: call `EnterWorktree` before changing code. Do not edit the main working directory.
 
 ## Rules
 
+- **Occam's razor**: do not add a new CLI command early. Skip it unless it is necessary. Reuse or extend an existing command or option.
 - CLI user-facing output must be English. No Chinese in production code. Tests assert English output.
-- **文档结构**：`docs/README.md` 是总目录，新增或移动文档必须同步登记。面向用户的文档中英双版：顶层 `name.md` / `name.zh-CN.md`，使用指南分页为 `docs/guide/<page>.md`（英文）与 `docs/guide/zh-CN/<page>.md`（中文），行为变更时两版同步改。`docs/designs/`（设计稿，开头一行 `> Status:`，并在 `docs/designs/README.md` 登记状态）与 `docs/dev/`（维护者文档）只写英文。Behavior changes must update every affected doc; grep old wording before opening the PR.
-- 文档不抄命令用法：命令与 flag 链接到 `teamai --help` / `skill-data/core/references/commands.md`，不要手工维护命令表。
-- **README 精简**：尽量少改动 README，保持简洁。确需改动时，所有语言版本（`README.md` 及全部 `README.*.md`，改前先 `ls README*` 确认清单）必须全部改完并保持一致。
-- **`skill-data/` 与文档同等对待**：那是 agent 真正读到的内容。行为变更必须同步更新受影响的 skill（`core` / `setup` / `wiki` / `share`），并在 PR 前 grep 旧措辞。
-- `skill-data/core/references/commands.md` 由 Commander 命令表生成，改动命令或 flag 后运行 `npx vitest run commands-reference -u` 重新生成。
-- **尽量不改 teamai skill 正文**：用法与 flag 的真源是 CLI 自己的 help（`teamai --help`、`teamai <cmd> --help`）和由它生成的 `commands.md`。想让 agent 更会用某命令，先把命令的 `description` / `option` help 文本写清楚，让 skill 指向 help，而不是把用法抄进 skill；只有工作流本身变化时才动 skill 正文。
-- 部署到 agent 的只有 `skills/teamai/SKILL.md`（发现入口），保持与版本无关：新增工作流是在 `skill-data/` 下加目录 + 在 stub 里加一行，不要把内容写进 stub。
-- **奥卡姆剃刀**：避免过早添加新 CLI 命令；非必要不加；优先复用或扩展现有命令与选项。
+- **Doc layout**: user-facing docs are bilingual. Top-level files are `name.md` / `name.zh-CN.md`. Guide pages are `docs/guide/<page>.md` (English) and `docs/guide/zh-CN/<page>.md` (Chinese). A behavior change updates both. `docs/designs/` (design notes: a `> Status:` line at the top, and a status entry in `docs/designs/README.md`) and `docs/dev/` (maintainer docs) are English only. Behavior changes must update every affected doc; grep old wording before opening the PR.
+- **Change docs rarely**: leave them alone when you can. A bugfix that does not change behavior a user runs into does not need a doc change. When you do edit docs, write them so you can understand them. Do not make them complicated.
+- **Keep the README short**: change it as little as possible. When a change is required, update every language (`README.md` and every `README.*.md`; run `ls README*` first) and keep them consistent.
+- **Treat `skill-data/` like docs**: that is what the agent actually reads. A behavior change must update the affected skills (`core` / `setup` / `wiki` / `share`), and grep the old wording before the PR.
+- `skill-data/core/references/commands.md` is generated from the Commander command table. After changing a command or flag, regenerate it with `npx vitest run commands-reference -u`.
+- **Leave the teamai skill body alone**: the source of truth for usage and flags is the CLI help (`teamai --help`, `teamai <cmd> --help`) and the generated `commands.md`. To make an agent better at a command, clarify that command's `description` and option help, and point the skill at help, instead of copying usage into the skill. Edit the skill body only when the workflow itself changes.
+- Only `skills/teamai/SKILL.md` (the discovery entry) is deployed to the agent. Keep it version-independent: a new workflow is a directory under `skill-data/` plus one line in the stub. Do not put the content in the stub.
 
-## PR 前测试
+## Testing before a PR
 
-改动运行时行为的 PR（docs-only / tests-only 之外），`npm run build` 后必须用真实 CLI 对本次改动做端到端验证，不能只跑 type check / unit test；**一次代表性的 real-CLI 运行即可**，把实际通过的验证记录贴进 PR。docs-only / tests-only 的改动无需 e2e 记录。
+A PR that changes runtime behavior (anything other than docs-only / tests-only) must, after `npm run build`, verify the change end to end with the real CLI. Type check and unit tests are not enough. **One representative real-CLI run is enough.** Paste the record of what actually passed into the PR. A docs-only or tests-only change needs no e2e record.
 
 Iterate with `npm run test:e2e -- <test-file>`; run the full suite only when changing the E2E runner, shared fixtures, or test isolation ([CONTRIBUTING.md](.github/CONTRIBUTING.md#testing-guidelines)).
 
-不要求覆盖下面的完整 provider × agent 矩阵——额外 provider / agent 的覆盖交给 CI，或在本地环境不具备时说明即可：
+Do not cover the full provider × agent matrix below. Leave extra providers and agents to CI, or say so when the local environment cannot run them:
 
-- Agent：Claude、Codex、CodeBuddy、OpenCode
-- Provider：`git`、`gitlab`、`github`
+- Agents: Claude, Codex, CodeBuddy, OpenCode
+- Providers: `git`, `gitlab`, `github`
 
 ## Self review before push
 

@@ -1,7 +1,5 @@
 # Git Providers
 
-> [English](providers.md) | [简体中文](zh-CN/providers.md)
-
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
 ---
@@ -11,11 +9,11 @@ TeamAI CLI talks to Git hosting platforms through a provider layer. Six provider
 | Provider | Host | Authentication | Suggested for |
 |----------|------|----------------|---------------|
 | `github` | github.com | `gh` CLI or the `GITHUB_TOKEN` environment variable | Open source projects, external users |
-| `tgit` | git.woa.com | `gf` CLI (downloaded automatically) + `~/.netrc` | Tencent internal teams |
 | `cnb` | cnb.cool | `cnb login` or the `CNB_TOKEN` environment variable | CNB (Cloud Native Build) users |
 | `gitlab` | gitlab.com or a self-hosted instance | `GITLAB_TOKEN` environment variable | GitLab, including enterprise self-hosted |
 | `gitcode` | gitcode.com | `GITCODE_TOKEN` environment variable, or paste a token during init | GitCode (CSDN) users |
 | `git` | any Git host | The system Git credential helper or an SSH key | Self-hosted Gitea and other platforms |
+| `tgit` | git.woa.com | `gf` CLI (downloaded automatically) + `~/.netrc` | Tencent internal teams |
 
 ## Provider auto-detection
 
@@ -33,25 +31,23 @@ https://gitlab.com/org/repo(.git)       → gitlab
 git@gitlab.com:org/repo.git             → gitlab
 https://gitcode.com/org/repo(.git)      → gitcode
 git@gitcode.com:org/repo.git            → gitcode
-https://git.example.com/group/repo.git  → probe for GitLab, otherwise git
-git@git.example.com:group/repo.git      → probe for GitLab, otherwise git
+https://git.example.com/group/repo.git  → git
+git@git.example.com:group/repo.git      → git
 ```
 
-Known hosts and an explicitly configured GitLab instance win. For an unknown host, `init` probes the GitLab sign-in page anonymously. If the host is confirmed to be an unconfigured GitLab instance, `init` asks you to set `GITLAB_URL` and `GITLAB_TOKEN` and run again; it never writes the probe result into the configuration. An unconfirmed host keeps using `git`.
-
-After a successful init the provider is written to the `provider` field of the team repo's `teamai.yaml`, and later `push` / `pull` runs follow that value. A member's own `--provider` choice, saved on their machine, takes precedence over it (next section). Probing never changes an existing provider.
+After a successful init the provider is written to the `provider` field of the team repo's `teamai.yaml`, and later `push` / `pull` runs follow that value. A member's own `--provider` choice, saved on their machine, takes precedence over it (next section).
 
 ### Choosing a provider by hand (`--provider`)
 
-`teamai init <input> --provider <name>` skips the auto-detection above, including the GitLab probe, and uses the named provider. The values are the same as in `teamai.yaml`: `tgit`, `github`, `cnb`, `gitlab`, `gitcode`, `git`. The typical case is a team repo on a self-hosted GitLab whose members only need plain Git: `--provider git` performs no platform login, does not check `GITLAB_TOKEN`, and runs clone/pull/push with your existing Git credentials.
+```bash
+teamai init https://gitlab.example.com/group/repo --provider git
+```
 
-The choice is written to the member's local configuration (`provider` field) and affects only that machine: creating PRs/MRs (`push`, `remove` and friends) and the provider check in `doctor` use it first; the existing `teamai.yaml` is unchanged. When `init` creates a new `teamai.yaml` (an empty repo, or the first init in single-repo mode), `--provider git` still writes the provider that would have been detected without the flag, GitLab probe included; if the probe finds a self-hosted GitLab that is not configured yet, `init` stops and asks for `GITLAB_URL` rather than writing `git` as the team default. Any other value is written as given. Running `init` again without `--provider` restores auto-detection.
-
-A self-hosted GitLab used with `--provider gitlab` still needs `GITLAB_URL` (and `GITLAB_TOKEN`). The GitLab API address comes from `GITLAB_URL`, and defaults to gitlab.com when unset, so when detection cannot recognize the host `init` exits with an error instead of sending the token somewhere else.
+Values: `tgit`, `github`, `cnb`, `gitlab`, `gitcode`, `git`. `git` needs no platform token and uses your existing Git credentials; open PRs/MRs on the Git host yourself. The choice only affects your machine. A self-hosted GitLab with `--provider gitlab` still needs `GITLAB_URL` and `GITLAB_TOKEN`.
 
 ## Generic Git provider (self-hosted and private repos)
 
-A full HTTPS or SSH URL whose host is not in the known list, does not match an explicit GitLab configuration, and is not confirmed as GitLab by the probe gets the `git` provider. For example:
+A full HTTPS or SSH URL whose host is not in the known list gets the `git` provider. For example:
 
 ```bash
 teamai init https://code.qschou.com/Enterprise/arb-workflow-kit.git --scope user
@@ -63,12 +59,6 @@ The generic provider neither reads nor stores a platform token; the system `git`
 
 - HTTPS: configure a Git credential helper first. Do not put a username, password or token in the URL.
 - SSH: configure an SSH key first and make sure `ssh-agent` can reach the private key.
-
-`teamai init .` is a limited exception: it only reads the `origin` already configured in the current business repo. If that origin is a legacy HTTP Basic URL (for example `http://user:token@host/group/repo.git`), init uses its host and path to identify the repo but strips the username and token before writing `.teamai/teamai.yaml`, the local TeamAI configuration and logs. A plain `teamai init <url>`, clone, and every other generic Git URL input still reject HTTP and embedded credentials. HTTP does not encrypt Git traffic; move to HTTPS with a credential helper, or to SSH, as soon as you can.
-
-clone, pull and push all work. Platform API operations (creating a repo, creating an MR/PR) cannot be implemented uniformly across services and are not supported: `teamai push` pushes the branch, asks you to open the MR on the platform by hand, and exits non-zero to signal that the automatic PR/MR creation did not happen.
-
-If a repo already configured with `provider: git` fails to create a PR, the CLI checks the host once more. When it is confirmed to be GitLab, the CLI asks you to set the instance URL and token and to change `provider` to `gitlab` in the team repo's `teamai.yaml`. The hint changes no configuration and does not undo the branch that was already pushed.
 
 ## GitHub provider
 
@@ -108,26 +98,13 @@ teamai init your-org/your-repo
 
 The token needs the `repo` scope. `GH_TOKEN` is recognized as an alias.
 
-### Supported operations
-
-| Operation | Implementation |
-|-----------|----------------|
-| clone | `git clone https://github.com/<org>/<repo>.git` (no credentials in the URL). Authentication happens in two stages: the clone call injects `Authorization: Basic x-access-token:<TOKEN>` via `-c http.extraHeader`; once the clone finishes, a `credential.https://github.com.helper` is persisted into the repo's **local** config for the following `push` / `pull`. The token never enters the URL, so it does not linger in the clone's `.git/config` ([#978](https://github.com/Tencent/teamai-cli/issues/978)) |
-
-> **Why the helper is cleared before it is written**: `credential.helper` is a multi-valued key and git invokes every helper in order (system → global → local) — **the first one to hand over credentials wins**. A plain `--local --add` in the cloned repo only appends to the end of that inherited list, so a user-level helper such as Git Credential Manager still answers first and `git push` authenticates as **its** account rather than the token used for this clone, failing with a 401 when that identity lacks write access. Persisting is therefore a two-step operation: `git config --local --replace-all credential.https://github.com.helper ''` to clear the inherited entries, then `--add` the helper that resolves `GITHUB_TOKEN` / `GH_TOKEN`. Both steps are scoped to `https://github.com`, so helpers for other hosts are unaffected.
-| create repo | `POST /user/repos` or `POST /orgs/:org/repos` |
-| create PR | `gh pr create` or `POST /repos/:o/:r/pulls` |
-| request reviewers | `gh pr create -r` or `POST .../requested_reviewers` |
-
 ### Default branch
 
 TeamAI detects the default branch with `getDefaultBranch()`: `origin/HEAD` first, then `origin/main` and `origin/master`. Both `main` and `master` work; no repository setting needs to change.
 
-### Minimum permissions when the default branch is protected
+### Branch permission
 
-Members need to push `teamai-reports` and `teamai-learnings` (including creating those two refs the first time), push the feature branches `teamai push` creates, and open PRs against the default branch. They do not need to push `main` / `master` directly, bypass branch protection, or hold admin rights. See the [project-scope section of Admin Setup](admin-setup.md#project-scope-default).
-
-Note: `provider: git` cannot open PRs; `teamai push` pushes the branch and prints the command for opening the PR by hand. `teamai contribute` pushes `teamai-learnings` directly, without a PR.
+Teammates need permission to push branches and to open pull requests. Leave the default branch protected. Reports and learnings use `teamai-reports` and `teamai-learnings`. See [Git permissions](distribution.md#git-permissions).
 
 ## TGit provider (Tencent Gongfeng)
 
@@ -136,15 +113,6 @@ Note: `provider: git` cannot open PRs; `teamai push` pushes the branch and print
 `teamai init` downloads the Gongfeng CLI `gf` to `~/.teamai/gf/` and, in an interactive terminal, runs `gf auth login` (iOA SSO, browser device code or a manual token). The token lands in `~/.netrc` and every later git operation carries it.
 
 An unattended run (stdin is not a TTY, or `CI` / `TEAMAI_NONINTERACTIVE` is set) does not start that login; it fails at once and asks you to run `gf auth login` once in an interactive terminal ([#711](https://github.com/Tencent/teamai-cli/issues/711)). There is no substitute token here: `TGIT_TOKEN` is only for the REST API, the git endpoints of git.woa.com do not accept it, so it cannot clone. After one login, unattended runs reuse the saved credentials.
-
-### Nested namespaces
-
-TGit supports `group/subgroup/repo` paths (GitHub does not), and the provider has dedicated path handling for them:
-
-```
-https://git.woa.com/Group/Subgroup/repo
-git@git.woa.com:Group/Subgroup/repo.git
-```
 
 ### Default email domain
 
@@ -176,24 +144,11 @@ teamai init https://cnb.cool/your-org/your-repo
 
 With `CNB_TOKEN` set, `cnb login` is not needed. The username is read from `cnb users get-user-info` and can be overridden with `CNB_USERNAME`.
 
-### Supported operations
-
-| Operation | Implementation |
-|-----------|----------------|
-| clone | `git clone https://cnb:$CNB_TOKEN@cnb.cool/...`, or `cnb git-credential` |
-| create repo | `cnb repositories create-repo` |
-| create PR | `cnb pulls post-pull` |
-| username | `cnb users get-user-info` (or `CNB_USERNAME`) |
-
 > **Organizations and repos must be created on the web.** The OAuth token from `cnb login` lacks the permissions to create an organization (`group-manage:rw`) or a repo (`group-resource:rw`), so the CLI cannot create them. When `teamai init` runs into one of these cases it prints the web link and asks you to run again afterwards:
 > - the organization does not exist → `https://cnb.cool/new/groups`
 > - the organization exists but you cannot create repos in it → `https://cnb.cool/new/repos`
 >
 > To let the CLI create them, use an access token with `group-manage:rw` / `group-resource:rw` instead (via `CNB_TOKEN`).
-
-### Nested namespaces
-
-Like TGit, CNB supports nested `org/subgroup/repo` paths.
 
 ### Default email domain
 
@@ -236,46 +191,6 @@ export GITLAB_API_PREFIX=api/gitlab
 export GITLAB_TOKEN=glpat-xxx
 ```
 
-### Detecting a self-hosted instance
-
-- **Public gitlab.com**: the URL host matches directly and the gitlab provider is selected.
-- **Self-hosted instance**: with `GITLAB_URL` set, a URL whose host equals the host of `GITLAB_URL` is recognized as gitlab. `TEAMAI_GITLAB_HOST` can name the host directly; without `GITLAB_URL` the API then points at `https://<that host>`. If both are set with different hosts, teamai stops with an error before sending the token. The repo argument must be a full HTTP(S) or SSH URL:
-  ```bash
-  export GITLAB_URL=https://git.example.com
-  teamai init https://git.example.com/yourgroup/yourrepo     # → gitlab
-  ```
-- **Unknown, unconfigured host**: `init` requests `/users/sign_in?auto_sign_in=false` under the root path anonymously and confirms GitLab only when the response carries clear GitLab page markers. Once confirmed, it stops before authenticating, cloning or writing configuration, and asks you to set `GITLAB_URL` and a `GITLAB_TOKEN` with the `api` scope and run again. The instance URL is never persisted automatically.
-- **Probe limits**: three seconds total, no token, no redirects, TLS verification on. An HTTP(S) repo URL keeps its scheme and web port; an SSH repo URL is probed over HTTPS on port 443, never on the SSH port. Timeouts, network errors, proxy interception, redirects and unrecognizable pages all fall back to `git`. Sub-path deployments, sign-in pages hidden behind SSO, and instances whose web address differs from the SSH host need an explicit `GITLAB_URL`.
-- **Existing `provider: git`**: after setting the instance URL and token, also change `provider` to `gitlab` in the team repo's `teamai.yaml`. Environment variables alone do not override the provider in the configuration. The GitLab probe after a failed PR creation only prints the fix; it does not switch automatically.
-
-### Division of labor with the generic `git` provider
-
-Detection order is **known host → explicitly configured self-hosted GitLab → anonymous GitLab probe → generic `git` fallback**. The anonymous probe serves only the configuration hint in `init` and the diagnostic after the generic provider fails to create a PR; it confirms only pages with clear GitLab markers and never configures an instance or token. An unconfirmed host uses the generic provider: clone/pull/push run with the system Git credentials, and repo creation and MR creation are unsupported. Repo creation, MR creation, MR data fetching and group repo listing become available once the GitLab provider is configured.
-
-### Nested namespaces
-
-GitLab supports `group/subgroup/repo` paths, and the provider keeps the full group path:
-
-```
-https://git.example.com/Group/Subgroup/repo
-git@git.example.com:Group/Subgroup/repo.git
-```
-
-A URL pasted from the browser address bar works too: GitLab's `/-/` route separator and everything after it (`/-/tree/main`, `/-/merge_requests/42`, `/-/blob/...`) is stripped and the URL resolves back to the project.
-
-### Supported operations
-
-| Operation | Implementation |
-|-----------|----------------|
-| clone | `git clone <base-url>/...`; the token is injected as `oauth2:` basic auth through `-c http.extraHeader`, not in the URL, so it does not linger in the clone's `.git/config` |
-| create repo | `POST /api/v4/projects` (the user namespace, or the group resolved exactly by path; an unresolved group is an error, not a fallback to the personal namespace) |
-| create MR | `POST /api/v4/projects/:id/merge_requests` |
-| request reviewers | resolve username → user id, submit `reviewer_ids` |
-| fetch MR data | `GET /api/v4/projects/:id/merge_requests/:iid` + commits + changes; the MR URL's host must match the configured instance (`GITLAB_URL` / `TEAMAI_GITLAB_HOST`, default gitlab.com) or the request is refused, so the token never goes to an unconfigured host |
-| list group repos | `GET /api/v4/groups/:path/projects` (paged, `include_subgroups=true`) |
-
-`/api/v4` in the table is the default prefix; with `GITLAB_API_PREFIX` set, API requests use the configured prefix.
-
 ### Default email domain
 
 The GitLab provider sets no default email domain (same as GitHub) and uses the user's global git configuration.
@@ -302,21 +217,7 @@ Generate the PAT under GitCode → Settings → Access Tokens.
 
 ### Namespaces
 
-GitCode namespaces are single-level (a user or an organization); repo addresses look like `owner/repo` and nested subgroups are not supported.
-
-### Supported operations
-
-| Operation | Implementation |
-|-----------|----------------|
-| clone | HTTPS with an embedded `oauth2:<token>@` (team repo, so the credential persists for later pushes) or `http.extraHeader` (shallow clones); SSH public keys also work |
-| createRepo | personal `POST /user/repos`; organization `POST /orgs/:org/repos` |
-| createPullRequest | `POST /repos/:owner/:repo/pulls` (`head`/`base`/`title`/`body`) |
-| fetchMergeRequest | `GET /repos/:owner/:repo/pulls/:n` + commits + files; the PR URL's host must be gitcode.com or the request is refused, so the token never goes to an unconfigured host |
-| listOrgRepos | `GET /orgs/:org/repos`, paged |
-
-> Only the public cloud `gitcode.com` is supported; self-hosted GitCode Enterprise is not.
-
-**Key dialect difference**: GitCode's git-over-HTTPS endpoints **reject `Authorization: Bearer`** and accept only Basic `oauth2:<token>` (verified against the live service), while the REST API uses Bearer. The team-repo clone therefore embeds the token in the remote URL (`oauth2:<token>@`) so that `git push` (the branch + PR flow) authenticates, as with TGit. (GitHub used to do the same; it now completes the clone with a one-off `-c http.extraHeader` and persists a URL-scoped `credential.helper` instead, so the token never enters `.git/config` — see the section above.)
+GitCode namespaces are single-level (a user or an organization); repo addresses look like `owner/repo` and nested subgroups are not supported. Only the public cloud `gitcode.com` is supported.
 
 ### Default email domain
 

@@ -1,0 +1,190 @@
+# Distribution mechanism
+
+> Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
+
+---
+
+Where files install, which repo they come from, and who receives them are all here. A file that is not in a namespace goes to everyone.
+
+## Scope
+
+### Separate teamai repo
+
+The team's assets live in their own repo. This project points at it.
+
+This project:
+
+```bash
+cd /path/to/my-project
+teamai init https://github.com/your-org/platform-teamai
+```
+
+This machine:
+
+```bash
+teamai init https://github.com/your-org/platform-teamai --scope user
+```
+
+Company files in `~/`, this service in the project:
+
+```bash
+teamai init https://github.com/your-org/engineering-practices --scope user
+cd /path/to/java-service
+teamai init https://github.com/your-org/java-service-teamai --inherit-user-scope
+```
+
+### Inside the project repo
+
+This repo is the team repo. Assets go in `.teamai/`.
+
+```bash
+cd /path/to/my-project
+teamai init . --agent claude,cursor
+```
+
+## Repo
+
+`init` writes `teamai.yaml`. A separate team repo keeps it at the repo root. When this repo is the team repo, the file is `.teamai/teamai.yaml` and includes `mode: self`.
+
+```yaml
+team: platform
+description: Platform team AI resources
+repo: https://github.com/your-org/platform-teamai.git
+provider: github
+sharing:
+  docs:
+    localDir: ./.teamai/docs
+  env:
+    injectShellProfile: true
+```
+
+`init .` also creates this layout on the current branch:
+
+```text
+.teamai/teamai.yaml
+.teamai/skills/
+.teamai/rules/
+.teamai/docs/
+.teamai/env/env.yaml
+.teamai/mcp/mcp.yaml
+```
+
+`teamai push` sends skills and rules. Commit `docs/`, `hooks/hooks.yaml`, `mcp/mcp.yaml`, and `models/models.yaml` yourself.
+
+### Git permissions
+
+Teammates push branches and open pull requests. The default branch stays protected.
+
+### Git submodules
+
+Turn this on in `teamai.yaml` when skills are git submodules. Each pull checks them out at the pinned revision.
+
+```yaml
+submodules: true
+```
+
+### Post-pull scripts
+
+A Node script runs after pull finishes. Project scope runs the project repo's script. Otherwise the user repo's script runs.
+
+```yaml
+scripts:
+  postPull:
+    path: scripts/deploy.mjs
+```
+
+The path is relative to the team repo root. A session start waits for it, then leaves it running if it times out. An interactive `teamai pull` does not wait. A failure is a line in `~/.teamai/debug.log` and does not fail the pull.
+
+## Roles and projects
+
+A role is a member's job, such as frontend. Someone who sets that role receives the resources the role lists.
+
+A project is the service they are working on. After this directory is set to that project, it also receives the resources the project lists.
+
+`knowledge` covers rules and shared instructions (`claudemd/`). A project can also declare learnings, env, hooks, mcp, models, docs, and wiki on its own.
+
+```yaml
+# manifest/roles.yaml
+version: 1
+roles:
+  - id: frontend
+    description: Web engineers
+    resources:
+      knowledge: [common, frontend]  # rules/<ns>/, claudemd/<ns>/
+      skills: [common, frontend]
+      agents: [common, frontend]
+```
+
+```yaml
+# manifest/projects.yaml
+version: 1
+projects:
+  - id: checkout
+    name: Checkout service
+    resources:
+      knowledge: [checkout]   # rules/checkout/, claudemd/checkout/
+      skills: [checkout]
+      learnings: [checkout]
+      agents: [checkout]
+      env: [checkout]          # env/checkout/env.yaml
+      hooks: [checkout]        # hooks/checkout/hooks.yaml
+      mcp: [checkout]          # mcp/checkout/mcp.yaml
+      models: [checkout]       # models/checkout/models.yaml
+      docs: [checkout]         # docs/checkout/
+      wiki: [checkout]         # codebase slug, evidence/code/checkout/
+```
+
+Commit both files. In the project:
+
+```bash
+teamai roles set frontend
+teamai projects set checkout
+teamai pull
+```
+
+## Tags
+
+A tag is on a skill or a rule, in the team repo's `tags.yaml`. A member subscribes on their own machine. With no subscription, tags do nothing. After a subscription, skills and rules that carry those tags are pulled too. Untagged ones still follow roles and projects.
+
+```yaml
+# tags.yaml
+skills:
+  hai-deploy: [hai, infra]
+rules:
+  code-style: [coding]
+```
+
+```bash
+teamai tags add skills hai-deploy hai infra
+teamai tags subscribe hai
+teamai pull
+```
+
+## Subscriptions
+
+A subscription is another team's public skills. That team lists them in its own `teamai.yaml`:
+
+```yaml
+publicSkills:
+  - deploy-helper
+```
+
+```bash
+teamai source add https://github.com/other-team/teamai-public.git --name other-team
+teamai source list
+teamai source browse other-team
+teamai source remove other-team
+teamai push
+```
+
+`source add` writes into this team's repo. After `push` merges, every member's `pull` installs them. A source with no `publicSkills` is empty.
+
+### HTTP source
+
+```bash
+teamai source add-http https://your-team-host/api --token <api-key>
+teamai source list
+teamai source remove-http
+```
+
+An install has one HTTP source. `add-http` is unavailable when the main repo is already `init --http`. The API is the [ClawPro HTTP backend](./http-contract.md).
