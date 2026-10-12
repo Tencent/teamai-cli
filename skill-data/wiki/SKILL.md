@@ -23,6 +23,8 @@ description: >-
 
 **The solution**: use architecture reverse-engineering to systematically compress a huge codebase into a **structured, verifiable, AI-Native** deep knowledge base. Every conclusion traces back to a code line, every relation carries a confidence label, and every update is incrementally verified. AI reads the knowledge base instead of the source, and gains global architecture awareness for about **1/50 of the tokens**.
 
+For recalled source freshness, `current` means only that the cited file matches the scan baseline; check current source when available before relying on claims marked `stale`, `missing` or `unknown`.
+
 ## Usage
 
 The user states the mode in natural language, or simply says "build a codebase knowledge base":

@@ -16,6 +16,7 @@ import {
 import { touchCacheEntry } from './utils/cache-index.js';
 import { log } from './utils/logger.js';
 import { hasFrontmatter, stripFrontmatter } from './utils/frontmatter.js';
+import { repoIdentity } from './utils/git.js';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -374,16 +375,56 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             if (incremental) {
                 const destIndices = path.join(teamwikiRoot, '.indices');
                 const cacheIndices = path.join(cacheDir, 'teamwiki', '.indices');
-                await fs.ensureDir(cacheIndices);
-                for (const f of ['facts-cache.json', 'interfaces-cache.json']) {
-                    const src = path.join(destIndices, f);
-                    if (await fs.pathExists(src)) {
-                        await fs.copy(src, path.join(cacheIndices, f));
-                    }
-                }
                 const existingManifest = path.join(teamwikiRoot, 'source-manifest.json');
-                if (await fs.pathExists(existingManifest)) {
+                const existingProjectManifest = path.join(teamwikiRoot, 'evidence', 'code', slug, 'source-manifest.json');
+                const globalManifest = await fs.readJson(existingManifest).catch(() => null) as {
+                    project?: string;
+                    repoUrl?: string;
+                    repoIdentity?: string;
+                    sourceSubdir?: string;
+                    headSha?: string;
+                } | null;
+                const projectManifest = await fs.readJson(existingProjectManifest).catch(() => null) as {
+                    project?: string;
+                    repoUrl?: string;
+                    repoIdentity?: string;
+                    sourceSubdir?: string;
+                } | null;
+                const expectedIdentity = repoIdentity(url);
+                const matchesSource = (manifest: typeof globalManifest): boolean => {
+                    if (!manifest || manifest.project !== slug || manifest.sourceSubdir !== '') return false;
+                    if (typeof manifest.repoIdentity === 'string' && manifest.repoIdentity.trim()) {
+                        return manifest.repoIdentity.trim() === expectedIdentity;
+                    }
+                    if (typeof manifest.repoUrl !== 'string' || !manifest.repoUrl.trim()) return false;
+                    try {
+                        return repoIdentity(manifest.repoUrl) === expectedIdentity;
+                    } catch {
+                        return false;
+                    }
+                };
+                const globalMatchesSource = matchesSource(globalManifest);
+                const projectManifestPresent = await fs.pathExists(existingProjectManifest);
+                const projectMatchesSource = !projectManifestPresent || matchesSource(projectManifest);
+                const cacheBaselineMatches = globalMatchesSource && projectMatchesSource
+                    && !!lastSync && globalManifest?.headSha === lastSync.sha;
+                if (cacheBaselineMatches) {
+                    await fs.ensureDir(cacheIndices);
+                    for (const f of ['facts-cache.json', 'interfaces-cache.json']) {
+                        const src = path.join(destIndices, f);
+                        if (await fs.pathExists(src)) {
+                            await fs.copy(src, path.join(cacheIndices, f));
+                        }
+                    }
                     await fs.copy(existingManifest, path.join(cacheDir, 'teamwiki', 'source-manifest.json'));
+                    if (projectManifestPresent) {
+                        await fs.copy(existingProjectManifest, path.join(cacheDir, 'teamwiki', 'evidence', 'code', slug, 'source-manifest.json'));
+                    }
+                } else {
+                    // The root manifest and shared indexes may belong to a
+                    // different imported repo. Force a full extraction rather
+                    // than combining their hashes or cached facts.
+                    extractIncremental = false;
                 }
                 const cacheManifest = path.join(cacheWiki, 'source-manifest.json');
                 if (await fs.pathExists(cacheManifest)) {

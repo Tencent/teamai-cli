@@ -16,6 +16,8 @@ import {
   resolveToolBaseDir,
   isAgentExcluded,
   scopedToolPaths,
+  getDataHome,
+  isUsageReportEnabled,
   type LocalConfig,
   type TeamaiConfig,
 } from './types.js';
@@ -237,7 +239,7 @@ function buildToolRootChecks(localConfig: LocalConfig, teamConfig: TeamaiConfig 
       fix: rejection
         ? `${envVar} is ${detected}, which teamai cannot sync to (${rejection}); `
           + `this config syncs ${label} to ${effective}. Point ${envVar} at a directory `
-          + 'in your home (or ~/.config/<name>) and re-run `teamai init`.'
+          + 'in your home, or anywhere under a `~/.config/<name>`, and re-run `teamai init`.'
         : `${envVar} is ${detected}; this config syncs ${label} to ${effective}`
           + `${recorded === undefined ? ' (no root recorded)' : ''}. `
           + 'Re-run `teamai init` to record it.',
@@ -286,15 +288,9 @@ async function buildHookChecks(
       });
       continue;
     }
-    // A standalone hooks file (Copilot) is injected at the config's own scope
-    // (`reconcileTeamHooksForConfig` joins resolveToolBaseDir with the
-    // config-scoped `hooks`), so it is probed from `toolPaths`. Settings-based
-    // hooks follow resolveHookScope and are probed from `hookToolPaths`.
-    // Mixing the two — userScope `hooks/teamai.json` under <projectRoot> —
-    // reported Copilot missing right after a successful `hooks inject` (#732).
     const settings = hookToolPaths[tool]?.settings;
-    const hookPath = paths.hooks
-      ? path.join(resolveToolBaseDir(tool, localConfig), paths.hooks)
+    const hookPath = hookToolPaths[tool]?.hooks
+      ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: resolveHookScope(localConfig).scope }), hookToolPaths[tool]?.hooks ?? paths.hooks)
       : settings
         ? path.join(baseDir, settings)
         : undefined;
@@ -302,7 +298,7 @@ async function buildHookChecks(
     const settingsPath = hookPath;
     const parentDir = path.dirname(settingsPath);
     const installed = tool === COPILOT_TOOL_ID
-      ? await isToolInstalledForConfig(tool, paths.hooks ?? paths.settings ?? '', localConfig)
+      ? await isToolInstalledForConfig(tool, hookToolPaths[tool]?.hooks ?? paths.settings ?? '', localConfig)
       : await pathExists(parentDir);
     // An uninstalled tool has no hooks to check. Whether it should be installed
     // at all is a different question — see buildEnabledToolChecks.
@@ -376,6 +372,21 @@ async function teamaiHookEntries(
       typeof entry?.command === 'string' && entry.command.includes(`teamai hook-dispatch ${subcommand}`));
 }
 
+
+/**
+ * Whether `teamai pull` reports this scope's usage stats to the team repo, and
+ * what decides it: the member's `usageReportEnabled`, the team's `usageReport`,
+ * or the default. An HTTP team repo is never reported to.
+ */
+function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
+  if (localConfig.repo.kind === 'http') return 'Usage reporting: off, from HTTP mode (no team repo to report to).';
+  const member = localConfig.usageReportEnabled;
+  const team = teamConfig?.usageReport;
+  const source = member !== undefined ? `usageReportEnabled: ${member} in ${path.join(getDataHome(localConfig), 'config.yaml')}`
+    : team !== undefined ? `usageReport: ${team} in the team's teamai.yaml`
+    : 'the default';
+  return `Usage reporting: ${isUsageReportEnabled(localConfig, teamConfig ?? {}) ? 'on' : 'off'}, from ${source}.`;
+}
 
 /**
  * Whether the public Codex will run the hooks teamai wrote in this scope (#955),
@@ -742,6 +753,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
     ...await ruleChannelNotes(localConfig),
     ...codexTrust.notes,
+    usageReportNote(ctx),
     // What git sees of the delivered team resources, and what no pull changes (#915).
     ...await deliveredGitExcludeNotes(ctx),
     ...await localAgentGitExcludeNotes(),

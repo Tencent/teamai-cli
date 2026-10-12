@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
-import { migrateLegacyManagedHooks, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, sweepLegacyProjectHooks, getHookStatus, reportCodexTrust, resolveMainCheckoutHooks, trustCodexForScope, type HookStatus } from './hooks.js';
+import { migrateLegacyManagedHooks, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, removeCopilotGlobalBuiltins, sweepLegacyProjectHooks, getHookStatus, reportCodexTrust, resolveMainCheckoutHooks, trustCodexForScope, type HookStatus } from './hooks.js';
 import { applyBuiltinOverride, installedBuiltinHookDefs } from './builtin-hooks.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices } from './namespaced-entries.js';
@@ -175,8 +175,8 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
             });
             continue;
         }
-        const hookPath = paths.hooks
-            ? path.join(resolveToolBaseDir(tool, localConfig), paths.hooks)
+        const hookPath = hookScopedPaths[tool]?.hooks
+            ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: hookScope }), hookScopedPaths[tool]?.hooks ?? paths.hooks)
             : hookScopedPaths[tool]?.settings
                 ? path.join(baseDir, hookScopedPaths[tool].settings)
                 : undefined;
@@ -286,6 +286,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     const reconciledMainTools = await reconcileHooksToAllTools(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope }), baseDir, [], manifestPath, {
         removeAll: true,
         scope: localConfig.scope,
+        toolRoots: localConfig.toolRoots,
         installedBaseDir: localConfig.scope === 'project' ? localConfig.projectRoot : undefined,
         teamHookProjectRoot: localConfig.scope === 'project' && !isSelfMode(localConfig)
             ? localConfig.projectRoot
@@ -305,8 +306,15 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
             {
                 manifestPath: getManagedHooksPath(localConfig),
                 removeAll: true,
+                teamOnly: localConfig.scope === 'project' && hookScope === 'user',
             },
         );
+    }
+
+    // Copilot loads every user hook file, so built-ins another project's filename
+    // installed would take over the dispatch.
+    if (teamConfig.toolPaths[COPILOT_TOOL_ID]) {
+        await removeCopilotGlobalBuiltins();
     }
 
     // Clean up the legacy <projectRoot> copy a pre-#370 CLI wrote alongside HOME

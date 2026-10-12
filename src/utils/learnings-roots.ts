@@ -13,6 +13,7 @@ import { listFiles } from './fs.js';
 import { log } from './logger.js';
 import { learningsBranch } from './learnings-branch.js';
 import { ForeignCheckoutError } from './branch-worktree.js';
+import type { UnreadableFile } from './search-index.js';
 import {
   getDataHome,
   getKnowledgeDir,
@@ -103,14 +104,25 @@ export function learningsRoots(localConfig: LocalConfig): LearningsRoots {
  * root when the learnings checkout there belongs to another repository (a
  * git/self mode switch, #808). Everything else this project owns, the queue
  * included, stays indexed. Probes the checkout, so only for index builds.
+ *
+ * With `unreadable`, a checkout whose owner cannot be told stays in its place
+ * and is recorded there as a root the build was given and could not read
+ * (#1006), instead of the error being thrown: the build reads nothing under it
+ * and puts back what the previous index held there, in that root's slot.
  */
-export async function indexableLearningsRoots(localConfig: LocalConfig): Promise<readonly string[]> {
+export async function indexableLearningsRoots(
+  localConfig: LocalConfig, unreadable?: UnreadableFile[],
+): Promise<readonly string[]> {
   const roots = learningsRoots(localConfig);
   try {
     await learningsBranch.checkOwner(localConfig);
     return roots.read;
   } catch (e) {
-    if (!(e instanceof ForeignCheckoutError)) throw e;
+    if (!(e instanceof ForeignCheckoutError)) {
+      if (!unreadable) throw e;
+      unreadable.push({ path: roots.write, reason: e instanceof Error ? e.message : String(e) });
+      return roots.read;
+    }
     return roots.read.filter((root) => root !== roots.write);
   }
 }

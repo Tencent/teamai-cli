@@ -13,7 +13,7 @@
 （先查标准安装位置，再查注册表 `HKLM\SOFTWARE\GitForWindows`），因此不会落到 WSL 的
 `bash.exe` 启动器上。每个 GUI 工具解析自己的钩子 shell：WorkBuddy 用它自带的 PortableGit
 `sh.exe`，CodeBuddy 用它在 Windows 上必需的 Git Bash。只有解析不到任何 shell 的工具才会被跳过。
-ZCode 的钩子通过 `wscript.exe` 启动器运行，完全不需要 bash。
+ZCode 的钩子通过 Node 启动器运行，完全不需要 bash。
 
 装了 Git for Windows 且 `teamai doctor` 通过，钩子就会触发。钩子没触发的话再往下看。
 

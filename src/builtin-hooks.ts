@@ -213,6 +213,27 @@ export function getDispatchCommand(event: string, tool: string, matcher?: string
 }
 
 /**
+ * Tools whose hook runner on Windows is PowerShell itself, so the rendered
+ * command must be PowerShell syntax there rather than the POSIX `bash -lc "…"`
+ * form. DSH is the one such host: its Claude-compatible bridge hands each
+ * command to its own shell, which on Windows is `@deepseek-ai/dsh-pwsh-local` —
+ * a PowerShell runner that prepends an encoding preamble to the command and
+ * parses the result. `"<git-bash>" -lc "…"` is a ParserError under it, so every
+ * dsh hook failed with `exitCode: 1` and, because the wrapper ends in
+ * `2>/dev/null || true`, failed silently (issue #1005).
+ */
+const WINDOWS_PWSH_TOOLS = new Set(['dsh']);
+
+/**
+ * True when this tool's hook runner is PowerShell on this platform, so the
+ * rendered command must be PowerShell syntax (getPwshDispatchCommand). Kept
+ * platform-gated: the same tool's POSIX hosts keep the bash wrapper.
+ */
+export function toolUsesPwshShell(tool: string): boolean {
+  return process.platform === 'win32' && WINDOWS_PWSH_TOOLS.has(tool);
+}
+
+/**
  * The command of a team-hook dispatcher entry (#915): it runs the team hooks of
  * the project the hook's cwd belongs to. Unlike the built-ins it keeps stderr
  * and the exit status, which carry a team hook's blocking decision (exit 2).
@@ -242,6 +263,27 @@ export function getRawDispatchCommand(event: string, tool: string, matcher?: str
 function getWrapperDispatchCommand(event: string, tool: string, matcher?: string): string {
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
   return `PATH="$HOME/${TEAMAI_BIN_DIR}:$PATH" teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null || true`;
+}
+
+/**
+ * PowerShell counterpart of getDispatchCommand, for tools whose Windows hook
+ * runner is PowerShell itself (see WINDOWS_PWSH_TOOLS).
+ *
+ * Two details carry the POSIX form's contract into PowerShell: `2>$null` is
+ * the `/dev/null` redirect, and `; exit 0` is the `|| true` fail-open so a
+ * hook that fails never reads as `allowed:false` to the host. The command is
+ * emitted bare rather than wrapped in `pwsh -Command "…"` because the host's
+ * own shell is already PowerShell — spawning a second one would only add a
+ * dependency on `pwsh` being installed. Only the dispatcher tail differs from
+ * the bash form, so the dispatching tool and matcher stay byte-identical.
+ *
+ * Deliberately not used for the GUI tools: WorkBuddy and CodeBuddy reach hook
+ * subprocesses with a limited PATH, so they keep the `$HOME/.teamai/bin`
+ * wrapper (getWrapperDispatchCommand) their hosts can parse.
+ */
+function getPwshDispatchCommand(event: string, tool: string, matcher?: string): string {
+  const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
+  return `teamai hook-dispatch ${event} --tool ${tool}${matcherArg} 2>$null; exit 0`;
 }
 
 /** Canonical, ordered description of each built-in hook. Order is load-bearing
@@ -337,9 +379,11 @@ export function builtinHookDefs(tool: string): HookDef[] {
   const withTimeout = tool === 'cursor' || tool === 'copilot' || tool === 'workbuddy' || tool === 'codebuddy';
   const buildCommand = tool === 'zcode'
     ? getRawDispatchCommand
-    : WRAPPER_TOOLS.has(tool)
-      ? getWrapperDispatchCommand
-      : getDispatchCommand;
+    : toolUsesPwshShell(tool)
+      ? getPwshDispatchCommand
+      : WRAPPER_TOOLS.has(tool)
+        ? getWrapperDispatchCommand
+        : getDispatchCommand;
   const specs = [
     ...BUILTIN_HOOK_SPECS,
     ...(tool === 'copilot' ? [COPILOT_SESSION_END_SPEC] : []),

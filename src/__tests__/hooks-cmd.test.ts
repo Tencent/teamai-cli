@@ -18,6 +18,7 @@ vi.mock('../hooks.js', async () => {
         reconcileHooks: vi.fn(),
         reconcileHooksToAllTools: vi.fn(),
         reconcileTeamHooksForConfig: vi.fn(),
+        removeCopilotGlobalBuiltins: vi.fn(),
         sweepLegacyProjectHooks: vi.fn(),
         trustCodexForScope: vi.fn(),
         resolveMainCheckoutHooks: vi.fn(),

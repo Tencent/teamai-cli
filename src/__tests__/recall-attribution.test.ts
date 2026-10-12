@@ -63,6 +63,7 @@ const { loadOpencodePlugin } = await import('./helpers/opencode-plugin.js');
 const { loadOmpExtension, loadPiExtension } = await import('./helpers/pi-extensions.js');
 const { showStats } = await import('../stats.js');
 const { setStderrOnly } = await import('../utils/logger.js');
+const { reconcileHooks } = await import('../hooks.js');
 
 const SESSION = 'sess-main';
 /** A Codex session started from the main session's shell, which also sees CLAUDE_CODE_SESSION_ID. */
@@ -147,6 +148,8 @@ class Harness {
   async setUp(options: { inheritUserScope?: boolean } = {}): Promise<void> {
     process.env.HOME = path.join(this.tmp, 'home');
     fs.mkdirSync(process.env.HOME, { recursive: true });
+    // Copilot runs the built-ins it has installed.
+    await reconcileHooks(path.join(process.env.HOME, '.copilot', 'hooks', 'teamai.json'), 'copilot');
 
     // User scope: one learning in the machine-local mirror, which is a knowledge root.
     const userRepo = path.join(process.env.HOME, '.teamai', 'team-repo');

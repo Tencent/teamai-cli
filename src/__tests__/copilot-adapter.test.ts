@@ -124,11 +124,11 @@ describe('GitHub Copilot adapter', () => {
     expect(detected?.absoluteSkillsPath).toBe(path.join(project, '.github', 'skills'));
   });
 
-  it('requires Copilot installation or explicit selection before writing project hooks', async () => {
+  it('requires Copilot installation or explicit selection before writing global hooks', async () => {
     await fse.remove(copilotHome);
     const config = localConfig('project');
     config.enabledAgents = undefined;
-    const hookPath = path.join(project, '.github', 'hooks', COPILOT_HOOK_FILE);
+    const hookPath = path.join(copilotHome, 'hooks', COPILOT_HOOK_FILE);
 
     await reconcileTeamHooksForConfig(teamConfig, config);
     expect(await fse.pathExists(hookPath)).toBe(false);
@@ -202,8 +202,8 @@ describe('GitHub Copilot adapter', () => {
 
   it.each([
     ['user', () => path.join(copilotHome, 'hooks', COPILOT_HOOK_FILE)],
-    ['project', () => path.join(project, '.github', 'hooks', COPILOT_HOOK_FILE)],
-  ] as const)('writes idempotent versioned Copilot hooks in %s scope without settings.json', async (scope, hookPath) => {
+    ['project', () => path.join(copilotHome, 'hooks', COPILOT_HOOK_FILE)],
+  ] as const)('writes idempotent global Copilot hooks from %s scope without settings.json', async (scope, hookPath) => {
     const settingsPath = path.join(copilotHome, COPILOT_SETTINGS_FILE);
     const settings = '{"theme":"dark"}\n';
     await fse.writeFile(settingsPath, settings);
@@ -387,7 +387,9 @@ describe('GitHub Copilot adapter', () => {
       };
       const entry = parsed.hooks.SessionStart[0];
       const bashExe = path.join(fakeGitRoot, 'Programs', 'Git', 'bin', 'bash.exe').split(path.sep).join('/');
-      const dispatch = 'teamai hook-dispatch session-start --tool copilot';
+      const source = entry.bash.match(/--copilot-global ([^ "]+)/)?.[1];
+      expect(source).toBeDefined();
+      const dispatch = `teamai hook-dispatch session-start --tool copilot --copilot-global ${source}`;
       expect(entry.bash).toBe(`"${bashExe}" -lc "${dispatch} 2>/dev/null" || true`);
       expect(entry.powershell).toBe(`& "${bashExe}" -lc "${dispatch} 2>/dev/null"; exit 0`);
       expect(entry.command).toBe(entry.bash);
