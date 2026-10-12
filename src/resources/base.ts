@@ -40,6 +40,30 @@ const ANTIGRAVITY_TOOL_ID = 'antigravity';
 const ANTIGRAVITY_OWN_PATHS = ['hooks.json', 'GEMINI.md', '.gemini'] as const;
 
 /**
+ * The PATH half of Antigravity's install evidence, cached per PATH value.
+ *
+ * `isOnPath` walks PATH with synchronous `statSync`, and this probe runs once
+ * per MCP target inside reconciliation (mcp-reconcile.ts calls
+ * `isToolInstalledForConfig` per tool and file) — measured on WSL, where most
+ * of PATH's 58 entries sit on a 9p mount and one stat costs ~1.6ms, a single
+ * uncached call is ~185ms of blocking I/O, which made reconciliation an order
+ * of magnitude slower and pushed its tests past the 15s timeout. The answer
+ * only changes when PATH does, so it is cached per PATH/PATHEXT value and a
+ * stubbed PATH (as the tests do) still gets a fresh scan.
+ *
+ * Readers: `isAntigravityInstalledWith` only. Writer: itself.
+ */
+let antigravityPathProbe: { key: string; found: boolean } | undefined;
+
+function antigravityOnPath(): boolean {
+  const key = `${process.env.PATH ?? process.env.Path ?? ''}\0${process.env.PATHEXT ?? ''}`;
+  if (antigravityPathProbe?.key !== key) {
+    antigravityPathProbe = { key, found: isOnPath('agy') || isOnPath('antigravity') };
+  }
+  return antigravityPathProbe.found;
+}
+
+/**
  * Antigravity's install evidence. `baseDir` is the scope's base — the project
  * root in project scope, HOME in user scope — so both the machine-level signals
  * and the tool's own files in that scope count.
@@ -47,17 +71,20 @@ const ANTIGRAVITY_OWN_PATHS = ['hooks.json', 'GEMINI.md', '.gemini'] as const;
  * The generic `toolInstallRoot` probe is NOT used: a project's `.agents/` tree
  * is shared with the central Agent Skills entry, so it would report Antigravity
  * installed for anyone who has ever used `.agents/`.
+ *
+ * The cheap checks come first so the costly (cached) PATH scan is only reached
+ * when nothing else says installed; the result is the same either way — the
+ * signals are OR'd.
  */
 async function isAntigravityInstalledWith(localConfig: LocalConfig, baseDir: string): Promise<boolean> {
   if (localConfig.enabledAgents?.includes(ANTIGRAVITY_TOOL_ID) === true) return true;
   const home = getUserHome();
   if (await pathExists(path.join(home, '.gemini', 'antigravity-cli'))) return true;
   if (await pathExists(path.join(home, '.gemini', 'config'))) return true;
-  if (isOnPath('agy') || isOnPath('antigravity')) return true;
   for (const ownPath of ANTIGRAVITY_OWN_PATHS) {
     if (await pathExists(path.join(baseDir, ownPath))) return true;
   }
-  return false;
+  return antigravityOnPath();
 }
 
 /** Detect an installed tool while respecting tool-specific user roots. */
