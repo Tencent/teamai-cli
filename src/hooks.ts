@@ -1903,11 +1903,24 @@ async function reconcileZcodeFormat(
   // ZCode validates the hooks block against a strict schema and REJECTS THE
   // WHOLE BLOCK on any unrecognized key (observed: `config_file_invalid —
   // hooks: Unrecognized key: "description"` → hookCount 0 → nothing fires).
-  // Heal the config by keeping only the keys the schema knows about.
-  const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => k !== 'enabled' && k !== 'events');
+  // Heal the config by keeping only the keys the schema documents. The
+  // documented root-level set is enabled, events, timeoutMs and
+  // maxOutputBytes (ZCode hooks docs, Configuration Sources example; the
+  // documented defaults are 60000 ms and 32768 bytes). We only ever write
+  // `enabled` and `events` ourselves, so a timeoutMs/maxOutputBytes value
+  // present in the file was necessarily put there by the user — the ZCode
+  // build this file lives with accepts those keys, and stripping them would
+  // silently reset the user's settings on every reconcile (#1049).
+  const knownHookKeys = new Set(['enabled', 'events', 'timeoutMs', 'maxOutputBytes']);
+  const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => !knownHookKeys.has(k));
   if (unknownHookKeys.length > 0) {
     for (const k of unknownHookKeys) delete cfg.hooks[k];
     changed = true;
+    log.warn(
+      `Removed unrecognized ZCode hooks key(s) ${unknownHookKeys.map((k) => `"${k}"`).join(', ')} from ${expanded}. ` +
+        `ZCode's strict schema would reject the whole hooks block otherwise; if your ZCode version ` +
+        `documents these keys, tell us so the keep-list can be widened.`,
+    );
   }
   // Config-file hooks are disabled by default in ZCode; entries we write would
   // never fire unless the runner is explicitly enabled. Persist the flip even
