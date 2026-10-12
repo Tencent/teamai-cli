@@ -140,6 +140,9 @@ const mockCreditAdoptedDocs = vi.hoisted(() => vi.fn());
 vi.mock('../recall-adoption.js', () => ({
   creditAdoptedDocs: mockCreditAdoptedDocs,
   recalledKeyOf: vi.fn(async () => () => undefined),
+  // The judge backfills a missing `File:` path from the recall log; these tests
+  // supply every path via the transcript, so the lookup is never consulted.
+  recalledPathOf: vi.fn(async () => () => undefined),
   recordToolCall: vi.fn(async () => undefined),
 }));
 

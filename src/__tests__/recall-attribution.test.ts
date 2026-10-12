@@ -2141,6 +2141,50 @@ describe('recall attribution acceptance (#884)', () => {
     expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
   });
 
+  // The recommended path: recall runs inside the teamai-recall subagent, so the
+  // main transcript carries only the `recalled-doc-ids` comment, never the
+  // `File:` lines. The judge backfills the doc's path from the recall log
+  // (recalledPathOf) so the candidate is still grounded and can be judged (#723).
+  it('12: judge on: a subagent recall (no File: line in the main transcript) is still grounded from the recall log → +1', async () => {
+    await h.setUp();
+    // The subagent ran the recall (its Bash claim settles the run + records the path).
+    await h.recall('redis timeout', { caller: 'teamai-recall' });
+    await h.stop();
+    expect(await h.upvotes(h.project)).toEqual({});
+    // The main transcript the Stop hook feeds the judge: only the doc-id comment,
+    // no recall region and no File: line — exactly what a subagent summary leaves.
+    await h.judgeStop([
+      { type: 'assistant', message: { id: 'msg-recall', content: [{ type: 'text', text: '<!-- teamai:recalled-doc-ids: [redis-timeout] -->' }] } },
+    ]);
+    // The path arg is backfilled from the recall log, not the (pathless) transcript.
+    expect(judgeAdoption).toHaveBeenCalledWith('Raised the pool size.', ['redis-timeout'], { 'redis-timeout': h.docs['redis-timeout'] }, expect.any(Array));
+    expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
+  });
+
+  // A `File:` basename the transcript parser gives the judge (`setup`) is NOT
+  // unique: this session recalled both `learnings/setup.md` (key `setup`) and
+  // `docs/learnings/setup.md` (key `learnings/setup`). The recall-log backfill
+  // must refuse to resolve an ambiguous basename, so the judge grounds the
+  // candidate against NO file (not the wrong one) and nothing is credited —
+  // rather than grounding/crediting the wrong doc (#723).
+  it('12: judge on: a subagent recall whose parser basename is ambiguous stays ungrounded, not mis-credited', async () => {
+    await h.setUp();
+    const { files } = await h.recall('setup installer flags', { caller: 'teamai-recall' });
+    // The query returns two docs that share the `setup` basename.
+    expect(files.some((f) => f.endsWith(path.join('docs', 'learnings', 'setup.md')))).toBe(true);
+    expect(files.some((f) => f.endsWith(path.join('team-repo', 'learnings', 'setup.md')))).toBe(true);
+    await h.stop();
+    await h.judgeStop([
+      { type: 'assistant', message: { id: 'msg-recall', content: [{ type: 'text', text: '<!-- teamai:recalled-doc-ids: [setup] -->' }] } },
+    ]);
+    // The handler refuses to backfill the ambiguous basename, so the judge gets
+    // an EMPTY path map for `setup`. In production judgeAdoption then drops it as
+    // ungrounded (votes-judge drops a candidate with no readable excerpt — see
+    // votes-judge.test.ts); the mock here echoes ids regardless, so this asserts
+    // the handler's contribution (no path handed over), which is the fix.
+    expect(judgeAdoption).toHaveBeenCalledWith('Raised the pool size.', ['setup'], {}, expect.any(Array));
+  });
+
   it('12: judge on: a doc the transcript shows only in a Glob listing, which the hook path does not credit, is judged → +1', async () => {
     await h.setUp();
     const { output, files } = await h.recall('redis timeout');

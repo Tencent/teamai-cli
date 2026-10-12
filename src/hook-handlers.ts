@@ -705,17 +705,34 @@ const votesJudgeHandler: HookHandler = {
       // votes-sync credits the turn, so run the same reducer pass first: a doc
       // opened in this turn is then in the ledger and never sent to the judge.
       // Safe to run twice: the ledger and consumed marks dedupe it.
-      const { creditAdoptedDocs, recalledKeyOf } = await import('./recall-adoption.js');
+      const { creditAdoptedDocs, recalledKeyOf, recalledPathOf } = await import('./recall-adoption.js');
       const dispatchSessionId = deriveDispatchSessionId(stdin, _tool);
       await creditAdoptedDocs(localConfig, dispatchSessionId);
       const { creditedDocIdsForSession } = await import('./votes.js');
       const ledgerCredited = await creditedDocIdsForSession(votePath, sessionId);
+      // Resolve each recalled doc's `File:` path. The parser fills it from the
+      // `File:` lines of a recall region in the transcript, but recall that ran
+      // inside a subagent (the recommended path) injects only the
+      // `recalled-doc-ids` comment into the main transcript, not the `File:`
+      // lines — so the parser's path is missing there. The recall log always has
+      // the path the run printed, so fall back to it (#723). The transcript
+      // path, when present, still wins. Both the vote-key mapping below and the
+      // judge's excerpt grounding read from this, so a subagent-recalled nested
+      // doc is keyed and judged the same as a main-agent one.
+      const pathOf = await recalledPathOf(localConfig, dispatchSessionId);
+      const docPaths: Record<string, string> = { ...voteData.recalledDocPaths };
+      for (const id of voteData.recalledDocIds) {
+        if (docPaths[id] === undefined) {
+          const printed = pathOf(id);
+          if (printed !== undefined) docPaths[id] = printed;
+        }
+      }
       // The parser names a doc by its `File:` basename (`setup`, a skill's
       // `SKILL`); the ledger and the votes use the key its run recorded
       // (`learnings/setup`, `retry`). A path no run printed keeps the parser's id.
       const printedKey = await recalledKeyOf(localConfig, dispatchSessionId);
       const keyOf = (id: string): string => {
-        const printed = voteData.recalledDocPaths[id];
+        const printed = docPaths[id];
         return (printed !== undefined ? printedKey(printed) : undefined) ?? id;
       };
 
@@ -745,8 +762,10 @@ const votesJudgeHandler: HookHandler = {
       const { knowledgeRoots } = await import('./utils/learnings-roots.js');
       const roots = await knowledgeRoots(localConfig);
 
+      // docPaths is backfilled from the recall log above, so a subagent-recalled
+      // doc the transcript gave no `File:` line for is still grounded here (#723).
       const { judgeAdoption } = await import('./votes-judge.js');
-      const adopted = await judgeAdoption(voteData.finalAssistantText, toJudge, voteData.recalledDocPaths, roots);
+      const adopted = await judgeAdoption(voteData.finalAssistantText, toJudge, docPaths, roots);
 
       // Gate again to recalled (defensive; judgeAdoption already restricts to toJudge).
       const verified = adopted.filter((id) => recalledSet.has(id));
