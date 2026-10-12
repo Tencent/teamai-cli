@@ -144,11 +144,13 @@ discovery.
 `env/secrets.yaml` that has no value on this machine, naming the MCP servers
 that need it and where to get one. It is a note, not a failure: `doctor` exits
 as it would without it. The value is the user's: ask them to run
-`teamai env set KEY` in their own terminal (it prompts without echo), then
-`teamai pull` to update the MCP servers; a CLI run through `teamai env exec`
-gets it on its next run. Never ask for the value in chat or pipe one to
-`teamai env set --stdin`. A note that an entry "may hold an old" value means an earlier pull wrote
-it and it stays until a pull finds the value.
+`teamai env set KEY` in their own terminal (it prompts without echo). That
+updates MCP servers for the current scope. Run `teamai pull` afterwards only
+to update `env.sh`, and only when the key is an env variable. A CLI run through
+`teamai env exec` gets the value on its next run. Never ask for the value in
+chat or pipe one to `teamai env set --stdin`. A note that an entry "may hold an
+old" value means an earlier write left it, and it stays until `teamai env set`
+or `teamai pull` finds the value.
 
 `KEY reads VAR, which is not set` means the user's value for KEY is a
 reference to VAR (`--from-env`) and VAR is unset in this environment. Ask the

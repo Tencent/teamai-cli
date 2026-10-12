@@ -815,12 +815,17 @@ function undeclaredMissingVars(
   return [...names].sort();
 }
 
-/** The command that declares each personal token the doctor just named as unresolved. */
+/**
+ * How to declare a missing `${VAR}` when it is a personal token (#1011).
+ * A shared value such as a host stays in env.yaml: declaring it as a secret
+ * would ignore that value and make every member set it.
+ */
 function declareSecretHint(keys: readonly string[]): string {
   if (keys.length === 0) return '';
   const adds = keys.map((key) => `\`teamai env add ${key} --secret\``).join(', ');
   const sets = keys.map((key) => `\`teamai env set ${key}\``).join(', ');
-  return ` A personal token is not an env.yaml value. Declare it with ${adds} (no value), then each member runs ${sets}.`;
+  const named = keys.length === 1 ? keys[0] : `any of ${keys.join(', ')}`;
+  return ` If ${named} is a personal token, do not put the value in env.yaml. Declare it with ${adds} (no value), then each member runs ${sets}. A shared value stays in env.yaml.`;
 }
 
 /**

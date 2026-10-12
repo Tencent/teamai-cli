@@ -148,8 +148,11 @@ describe('doctor — MCP servers delivered on disk', () => {
     expect(check.fix).toContain('jira');
     expect(check.fix).toContain('JIRA_PASSWORD');
     expect(check.fix).toContain('variables:');
+    expect(check.fix).toContain('If JIRA_PASSWORD is a personal token');
     expect(check.fix).toContain('teamai env add JIRA_PASSWORD --secret');
     expect(check.fix).toContain('teamai env set JIRA_PASSWORD');
+    expect(check.fix).toContain('A shared value stays in env.yaml.');
+    expect(check.fix).not.toContain('A personal token is not an env.yaml value');
   });
 
   it('stays silent about a server the member excluded on purpose', async () => {

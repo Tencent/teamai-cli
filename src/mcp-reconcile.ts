@@ -156,6 +156,12 @@ export interface McpReconcileResult {
    * and the reason was reported.
    */
   unresolved?: true;
+  /**
+   * Set when a tool's own MCP config did not parse, so that tool was left as it
+   * was. The team's servers were read, so this is not `unresolved`: pull still
+   * warns and continues. `env set` and `env unset` treat it as not reconciled.
+   */
+  unparsed?: true;
 }
 
 // ─── Manifest ────────────────────────────────────────────────
@@ -2175,6 +2181,7 @@ async function reconcileTargets(
 ): Promise<McpReconcileResult> {
   const changes: McpChange[] = [];
   let wrote = false;
+  let unparsed = false;
 
   const sharing = getMcpSharing(teamConfig);
   const removeAll = options.removeAll === true;
@@ -2305,7 +2312,10 @@ async function reconcileTargets(
     if (wroteTarget) written.add(target.file);
     wrote = wroteTarget || wrote;
     // Not read: its record stays as it was, or absent. An empty one would say teamai owns nothing there (#882).
-    if (wroteTarget === null) continue;
+    if (wroteTarget === null) {
+      unparsed = true;
+      continue;
+    }
     if (target.mappedFile && target.tool === 'opencode') {
       const other = target.file === target.mappedFile ? opencodeMcpFile(resolveToolBaseDir('opencode', localConfig)) : target.mappedFile;
       const judgeOther = judgeUnrecordedMcpEntry(localConfig, { ...target, file: other }, desired, desiredContext.vars,
@@ -2390,7 +2400,7 @@ async function reconcileTargets(
     const target = recorded[index];
     if (manifest[mcpManifestKey(target)]?.some((record) => record.resolved === true)) recorded.splice(index, 1);
   }
-  return { changes, wrote };
+  return unparsed ? { changes, wrote, unparsed } : { changes, wrote };
 }
 
 /**
