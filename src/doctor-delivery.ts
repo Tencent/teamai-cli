@@ -21,6 +21,7 @@ import {
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
+import { declaredSecretKeys } from './resources/secrets.js';
 
 /**
  * The checks that verify the payload rather than the plumbing: what each tool
@@ -790,6 +791,38 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
   return checks;
 }
 
+const UNRESOLVED_VARS_RE = /^unresolved variable\(s\): (.+)$/;
+
+/**
+ * `${VAR}` names a skipped server is missing that the team has not declared as
+ * secrets (#1011). A failed declaration can't say, so it names none.
+ */
+function undeclaredMissingVars(
+  skipped: ReadonlyArray<{ server: string; reason?: string }>,
+  kept: ReadonlySet<string>,
+  declared: ReadonlySet<string> | null,
+): string[] {
+  if (!declared) return [];
+  const names = new Set<string>();
+  for (const change of skipped) {
+    if (kept.has(change.server)) continue;
+    const match = UNRESOLVED_VARS_RE.exec(change.reason ?? '');
+    if (!match?.[1]) continue;
+    for (const key of match[1].split(', ')) {
+      if (key && !declared.has(key)) names.add(key);
+    }
+  }
+  return [...names].sort();
+}
+
+/** The command that declares each personal token the doctor just named as unresolved. */
+function declareSecretHint(keys: readonly string[]): string {
+  if (keys.length === 0) return '';
+  const adds = keys.map((key) => `\`teamai env add ${key} --secret\``).join(', ');
+  const sets = keys.map((key) => `\`teamai env set ${key}\``).join(', ');
+  return ` A personal token is not an env.yaml value. Declare it with ${adds} (no value), then each member runs ${sets}.`;
+}
+
 /**
  * Build one check per tool that receives MCP servers.
  *
@@ -888,9 +921,14 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
     // Judged with every tool mapping the file, detected or not, as pull judges it (#993).
     const member = problems.length === 0 ? [] : await memberMcpServers(
       localConfig, await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true }), target, desired, desiredContext.vars);
+    const declare = declareSecretHint(undeclaredMissingVars(
+      skipped,
+      kept,
+      declaredSecretKeys(ctx.teamEnv?.declarations ?? { kind: 'absent' }),
+    ));
     const delivery = problems.length === 0 ? [] : [`In ${target.file}, ${problems.join('; ')}. A server needing a variable reads it from `
       + '`env/env.yaml` or an active `env/<ns>/env.yaml`, whose top-level key is `variables:` — a plain `KEY: value` mapping '
-      + 'parses as no variables at all. Then run `teamai pull`.',
+      + `parses as no variables at all. Then run \`teamai pull\`.${declare}`,
       ...member.map((name) => describeKeptMemberServer(name, target.file)),
       ...member.length > 0 ? ['Or run `teamai mcp inject --force` to replace it with the team\'s.'] : []];
     checks.push({

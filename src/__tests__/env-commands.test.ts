@@ -301,6 +301,46 @@ scope: 'user',
       expect(process.exitCode).toBeUndefined();
     });
 
+    it('reconciles MCP for this scope after setting a secret, without asking for a pull', async () => {
+      await fse.writeFile(path.join(repoPath, 'teamai.yaml'), 'team: test\nrepo: https://git.woa.com/test/repo.git\n');
+      await fse.ensureDir(path.join(repoPath, 'mcp'));
+      await fse.writeFile(path.join(repoPath, 'mcp', 'mcp.yaml'), [
+        'servers:',
+        '  - name: tapd',
+        '    transport: http',
+        '    url: https://example.com/mcp',
+        '    headers:',
+        '      Authorization: Bearer ${GITHUB_TOKEN}',
+        '',
+      ].join('\n'));
+      await fse.ensureDir(path.join(tmpDir, 'home', '.cursor', 'skills'));
+      vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
+
+      await envSet('GITHUB_TOKEN', { stdin: true });
+
+      const mcp = await fse.readJson(path.join(tmpDir, 'home', '.cursor', 'mcp.json'));
+      expect(mcp.mcpServers.tapd.headers.Authorization).toBe('Bearer fixture-token-value');
+      expect(log.success).toHaveBeenCalledWith('MCP servers updated. Restart your AI tool session to load them.');
+      expect(logged()).not.toContain('Run `teamai pull` to update MCP servers.');
+      expect(logged()).not.toContain('fixture-token-value');
+
+      await envUnset('GITHUB_TOKEN', {});
+      const after = await fse.readJson(path.join(tmpDir, 'home', '.cursor', 'mcp.json'));
+      expect(after.mcpServers.tapd.headers.Authorization).toBe('Bearer fixture-token-value');
+      expect(logged()).not.toContain('Run `teamai pull` to update MCP servers.');
+    });
+
+    it('still asks for a pull to update env.sh after setting a variable, once MCP is reconciled', async () => {
+      await fse.writeFile(path.join(repoPath, 'teamai.yaml'), 'team: test\nrepo: https://git.woa.com/test/repo.git\n');
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      vi.mocked(readStdin).mockResolvedValue('https://mine.example');
+
+      await envSet('API_URL', { stdin: true });
+
+      expect(log.info).toHaveBeenCalledWith('Run `teamai pull` to update env.sh.');
+      expect(logged()).not.toContain('Run `teamai pull` to update MCP servers and env.sh.');
+    });
+
     it('reads the value from the hidden prompt without a flag', async () => {
       vi.mocked(askSecret).mockResolvedValue('fixture-prompt-value');
 

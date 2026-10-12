@@ -1,4 +1,4 @@
-import { requireInit, detectProjectConfig, describeUnreadableConfig, NotInitializedError } from './config.js';
+import { requireInit, detectProjectConfig, describeUnreadableConfig, loadTeamConfig, NotInitializedError } from './config.js';
 import { pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
 import { log, spinner } from './utils/logger.js';
@@ -19,6 +19,7 @@ import {
 } from './namespaced-entries.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 import { isSelfMode } from './types.js';
+import { reconcileMcpForConfig } from './mcp-reconcile.js';
 
 const envHandler = new EnvHandler();
 
@@ -137,7 +138,12 @@ export async function envSet(
     log.success(`Set ${key} ${target} (${file}).`);
   }
   if (localConfig) {
-    log.info(isVariable ? 'Run `teamai pull` to update MCP servers and env.sh.' : 'Run `teamai pull` to update MCP servers.');
+    await followUpAfterValueChange(localConfig, {
+      pull: isVariable
+        ? 'Run `teamai pull` to update MCP servers and env.sh.'
+        : 'Run `teamai pull` to update MCP servers.',
+      updatesEnvSh: isVariable,
+    });
   } else {
     log.info(`No teamai scope here, so no team declares ${key} yet. The value applies to every team on this machine that declares it.`);
   }
@@ -176,7 +182,11 @@ export async function envUnset(key: string, options: GlobalOptions & { global?: 
   }
   log.success(`Removed ${key}'s ${value} (${file}).`);
   if (!localConfig) return;
-  log.info(`Run \`teamai pull\` to ${await unsetApplies(localConfig, key, options.global)}.`);
+  const applies = await unsetApplies(localConfig, key, options.global);
+  await followUpAfterValueChange(localConfig, {
+    pull: `Run \`teamai pull\` to ${applies.phrase}.`,
+    updatesEnvSh: applies.updatesEnvSh,
+  });
 }
 
 /**
@@ -238,15 +248,54 @@ function valuesFile(
 }
 
 /**
+ * Reconcile MCP for this scope after `env set` / `env unset` (#1011). A value
+ * just stored is already visible to the next reconcile, so the member does not
+ * need a separate pull for MCP. `env.sh` still comes from pull, and only for a
+ * variable. When the team config cannot be read, or MCP files cannot, `pull`
+ * is the message this command used before, which names both jobs.
+ */
+async function followUpAfterValueChange(
+  localConfig: LocalConfig,
+  followUp: { pull: string; updatesEnvSh: boolean },
+): Promise<void> {
+  if (!await reconcileCurrentScopeMcp(localConfig)) {
+    log.info(followUp.pull);
+    return;
+  }
+  if (followUp.updatesEnvSh) log.info('Run `teamai pull` to update env.sh.');
+}
+
+/** True when this scope's MCP configs were reconciled. False when they were left for a pull. */
+async function reconcileCurrentScopeMcp(localConfig: LocalConfig): Promise<boolean> {
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  if (!teamConfig) return false;
+  try {
+    const { wrote, unresolved } = await reconcileMcpForConfig(teamConfig, localConfig);
+    if (unresolved) return false;
+    if (wrote) log.success('MCP servers updated. Restart your AI tool session to load them.');
+    return true;
+  } catch (e) {
+    log.debug(`MCP reconcile skipped: ${(e as Error).message}`);
+    return false;
+  }
+}
+
+/**
  * What the pull after `env unset` updates: env.sh exports a member's value for
  * a variable (#875), not for a secret. Declarations that fail can't say which
  * the key is.
  */
-async function unsetApplies(localConfig: LocalConfig, key: string, global: boolean | undefined): Promise<string> {
-  if (global) return 'update MCP servers';
+async function unsetApplies(
+  localConfig: LocalConfig,
+  key: string,
+  global: boolean | undefined,
+): Promise<{ phrase: string; updatesEnvSh: boolean }> {
+  if (global) return { phrase: 'update MCP servers', updatesEnvSh: false };
   const declared = declaredSecretKeys(await resolveSecretDeclarations(localConfig));
-  if (!declared) return 'apply it';
-  return declared.has(key) ? 'update MCP servers' : 'update MCP servers and env.sh';
+  if (!declared) return { phrase: 'apply it', updatesEnvSh: false };
+  return declared.has(key)
+    ? { phrase: 'update MCP servers', updatesEnvSh: false }
+    : { phrase: 'update MCP servers and env.sh', updatesEnvSh: true };
 }
 
 /** The entry `env set` stores: a `--from-env` reference, piped stdin, or the hidden prompt. */

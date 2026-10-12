@@ -95,7 +95,7 @@ teamai env unset GITHUB_TOKEN [--global]
   A project config that exists but can't be read makes `env set`, `env unset` and `env list` fail with its path and why, rather than use the user scope, whose team may not be this project's.
 - Outside any scope (no project here and no user scope), `env set --global` accepts any valid key name and notes that no team declares it yet, so a member can set a token they reuse across teams ahead of time. `env unset` accepts any key that has a value.
 - `--from-env` warns when the variable is not set in the current shell. While it is unset, the secret is `missing`: the next source in the [order](#resolution) is not used instead, since that could be another account's token.
-- Run `teamai pull` afterwards to update the MCP servers, and `env.sh` for a variable.
+- `env set` and `env unset` reconcile MCP servers for the current scope. Run `teamai pull` afterwards only to update `env.sh`, and only when the key is an env variable. When the team config or the MCP files cannot be read, the command still says to run `teamai pull`, which updates both.
 
 ## Storage
 
@@ -181,7 +181,7 @@ Project uninstall keeps and names a recorded MCP server you changed since teamai
 - A server an earlier pull wrote keeps its entry in each tool's config, as it is, and teamai still manages it: a later pull that finds a value updates it.
 - A server no pull has written yet is skipped, as before.
 - The entry is removed when its server leaves `mcp.yaml`, and by `teamai mcp remove`, `teamai uninstall`, and `teamai init` when it moves the Claude Code root.
-- A server that also misses a variable not declared as a secret is removed, as before. Variables that aren't declared as secrets keep today's behaviour.
+- A server that also misses a variable not declared as a secret is removed, as before. Variables that aren't declared as secrets keep today's behaviour. `doctor`'s MCP delivery check names that variable and says to declare it with `teamai env add KEY --secret` (no value), then `teamai env set KEY`.
 
 A kept entry holds the value the earlier pull wrote. After a secret is rotated or revoked, the server keeps the old value until a pull finds the new one.
 

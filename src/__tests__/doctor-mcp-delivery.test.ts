@@ -148,6 +148,8 @@ describe('doctor — MCP servers delivered on disk', () => {
     expect(check.fix).toContain('jira');
     expect(check.fix).toContain('JIRA_PASSWORD');
     expect(check.fix).toContain('variables:');
+    expect(check.fix).toContain('teamai env add JIRA_PASSWORD --secret');
+    expect(check.fix).toContain('teamai env set JIRA_PASSWORD');
   });
 
   it('stays silent about a server the member excluded on purpose', async () => {
