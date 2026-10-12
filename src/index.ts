@@ -1267,15 +1267,21 @@ program
 
 program
     .command('review [id]')
-    .description('Inspect and process .teamai/pending-review.jsonl items; --dry-run validates apply decisions and previews rejections without writing documents or removing pending items')
+    .description('Inspect and process .teamai/pending-review.jsonl items; --dry-run validates apply decisions and previews rejections without writing documents or removing pending items. With --branch <name>, run read-only health checks on a team repo branch instead')
     .option('--apply', 'Apply the change for the given id (only for codebase-section)')
     .option('--reject', 'Reject the given id without applying')
     .option('--reason <msg>', 'Reason for reject')
     .option('--all-apply', 'Apply all items at or below --max-risk')
     .option('--max-risk <level>', 'Risk ceiling for --all-apply: high|medium|low (default medium)', 'medium')
-    .option('--json', 'Machine-readable output (dry-run decisions include dryRun: true; ok reports validation only)')
+    .option('--branch <name>', 'Run read-only health checks on this team repo branch (e.g. teamai/push/<user>/<timestamp>) and report fail/warn/info findings')
+    .option('--json', 'Machine-readable output (dry-run decisions include dryRun: true; ok reports validation only; --branch prints the findings object)')
     .action(async (idArg, cmdOpts) => {
         const globalOpts = program.opts() as GlobalOptions;
+        if (cmdOpts.branch) {
+            const { reviewBranchCmd } = await import('./review-branch.js');
+            await reviewBranchCmd({ ...globalOpts, ...cmdOpts, branch: cmdOpts.branch });
+            return;
+        }
         const { reviewCmd } = await import('./review-cmd.js');
         await reviewCmd({ ...globalOpts, ...cmdOpts, idArg });
     });

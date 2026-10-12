@@ -380,13 +380,14 @@ Generated: do not edit by hand. Regenerate with
 
 ## review
 
-- `teamai review [id]` — Inspect and process .teamai/pending-review.jsonl items; --dry-run validates apply decisions and previews rejections without writing documents or removing pending items
+- `teamai review [id]` — Inspect and process .teamai/pending-review.jsonl items; --dry-run validates apply decisions and previews rejections without writing documents or removing pending items. With --branch <name>, run read-only health checks on a team repo branch instead
   - `--apply` — Apply the change for the given id (only for codebase-section)
   - `--reject` — Reject the given id without applying
   - `--reason <msg>` — Reason for reject
   - `--all-apply` — Apply all items at or below --max-risk
   - `--max-risk <level>` — Risk ceiling for --all-apply: high|medium|low (default medium)
-  - `--json` — Machine-readable output (dry-run decisions include dryRun: true; ok reports validation only)
+  - `--branch <name>` — Run read-only health checks on this team repo branch (e.g. teamai/push/<user>/<timestamp>) and report fail/warn/info findings
+  - `--json` — Machine-readable output (dry-run decisions include dryRun: true; ok reports validation only; --branch prints the findings object)
 
 ## ci
 
