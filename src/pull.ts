@@ -75,6 +75,7 @@ import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
 import { runDeclaredPostPull } from './post-pull.js';
+import { runTeamScript, teamScriptEnv } from './team-scripts.js';
 import {
   applyDeliveredGitExclude, createDeliveryRecorder, deliveredUnion, describeForeign, describeUnreadableGitExcludeSetting,
   type DeliveryRecorder, type GitExcludePaths, type ListedCheckout, type WriterId,
@@ -2633,8 +2634,10 @@ export async function pull(
   const heldLocks = new Map<LocalConfig, string>();
   let usageReport: Promise<void> | undefined;
   // Team repo whose pull completed, for `scripts.postPull` — run at the very
-  // end of pull().
+  // end of pull(). The config is kept so postPull and postDeploy receive the
+  // checkout identity, not only the repo path.
   let postPullRepo: string | null = null;
+  let scriptOwner: LocalConfig | null = null;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
     // git-mode guards its shared team clone; self mode guards its machine-data
     // writes (state/env/search-index) against a concurrent P2 migration relocating
@@ -2738,6 +2741,10 @@ export async function pull(
         } else {
           activeUserConfig = loadedUserConfig;
           if (await lockScope(activeUserConfig)) {
+            // Before this scope's sync. Inherited user scope is not the deploy
+            // owner and does not get here. An inline pull skips it: the script
+            // cannot prompt, and the hook cannot spare the wait.
+            if (!options.dryRun && !options.inline) await runTeamScript(activeUserConfig, 'prePull');
             await pullForScope(activeUserConfig, options, reported, {}, syncResult, teamEnvs, instructions);
           }
         }
@@ -2758,6 +2765,7 @@ export async function pull(
     if (!options.silent && !options.dryRun) await mentionGitHookFailure(projectConfig, reported);
     try {
       if (await lockScope(projectConfig)) {
+        if (!options.dryRun && !options.inline) await runTeamScript(projectConfig, 'prePull');
         await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder }, syncResult, teamEnvs, instructions);
       }
     } catch (e) {
@@ -2778,7 +2786,8 @@ export async function pull(
   // resources+knowledge only by design and deliberately runs no postPull:
   // postPull is part of the deploy surface, which follows the active scope
   // alone — the same boundary as its resourceTypes narrowing above.
-  postPullRepo = (reconcileProject ?? reconcileUser)?.repo.localPath ?? null;
+  scriptOwner = reconcileProject ?? reconcileUser ?? null;
+  postPullRepo = scriptOwner?.repo.localPath ?? null;
 
   // 3.4. Legacy hook-format migration (pre-dispatch era). Runs UNDER the scope
   // lock (unlike the old step-0 call) against a locked, non-contended scope, so
@@ -3006,13 +3015,22 @@ export async function pull(
     }
   }
 
-  // 6. Team post-pull scripts (teamai.yaml `scripts.postPull`), for the
+  // 6. Checkout preparation waits for `scripts.postDeploy` before git returns.
+  //    Inline pulls otherwise skip team scripts. Nothing here can fail the pull.
+  if (!options.dryRun && options.prepareCheckout && scriptOwner) {
+    await runTeamScript(scriptOwner, 'postDeploy');
+  }
+
+  // 7. Team post-pull scripts (teamai.yaml `scripts.postPull`), for the
   //    pull's deploy owner. Sync locks are usually released by now — a late
   //    usage report (above) may still hold them; its writes go to the reports
   //    worktree, not this clone's tree. Launch shape: post-pull.ts. Nothing
   //    here can fail the pull.
   if (!options.dryRun && !options.inline && postPullRepo) {
-    await runDeclaredPostPull(postPullRepo, { interactive: options.interactive === true });
+    await runDeclaredPostPull(postPullRepo, {
+      interactive: options.interactive === true,
+      env: scriptOwner ? await teamScriptEnv(scriptOwner) : undefined,
+    });
   }
 }
 

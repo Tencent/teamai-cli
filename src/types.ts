@@ -336,6 +336,11 @@ export const TEAMAI_SOURCES_DIR = path.join(getUserHome(), '.teamai', 'sources')
 export const ProviderNameSchema = z.enum(['tgit', 'github', 'cnb', 'gitlab', 'gitcode', 'git']);
 export type ProviderName = z.infer<typeof ProviderNameSchema>;
 
+/** One team-owned Node entrypoint. `path` is relative to the team repo root. */
+const TeamScriptSchema = z.object({
+  path: z.string().min(1),
+});
+
 export const TeamaiConfigBaseSchema = z.object({
   team: z.string(),
   description: z.string().default(''),
@@ -378,20 +383,27 @@ export const TeamaiConfigBaseSchema = z.object({
    * text, byte for byte (#1014).
    */
   language: z.enum(['en', 'zh']).optional(),
-  /** Team-owned scripts the CLI runs at defined points of a pull — repo-committed
-   * entrypoints, distinct from `sharing.hooks.requireTeamScripts` (the
-   * `~/.teamai/team-scripts/` trust boundary for hook commands). Every entry is
-   * optional, and older CLIs strip the unknown section instead of rejecting the
-   * file — so a team repo can adopt one before its members upgrade. */
+  /** Team-owned Node scripts. Distinct from `sharing.hooks.requireTeamScripts`
+   * (the `~/.teamai/team-scripts/` trust boundary for hook commands). Every
+   * entry is optional. An older CLI that only knows `postPull` strips the
+   * other keys instead of rejecting the file, so a team can add one before
+   * every member upgrades. Each `path` is relative to the team repo root and
+   * must stay inside it, symlinks included. */
   scripts: z.object({
-    /** Run at the end of a pull, after every sync step (resources,
-     * hooks, MCP, reports) has finished. `path` is a Node entrypoint (`.mjs`,
-     * `.js`, `.cjs`) relative to the team repo root, and must resolve inside it:
-     * a symlink leaving the clone is rejected, since this script runs on every
-     * member's machine. */
-    postPull: z.object({
-      path: z.string().min(1),
-    }).optional(),
+    /** During `teamai init`, after local config is saved and before hooks. */
+    preInit: TeamScriptSchema.optional(),
+    /** During `teamai init`, after hooks are installed, before the closing pull. */
+    postInit: TeamScriptSchema.optional(),
+    /** At the start of a full pull, before that scope is synced. Not on an inline pull. */
+    prePull: TeamScriptSchema.optional(),
+    /** At the end of a full pull, after resources, hooks, MCP and reports. Not on an inline pull. */
+    postPull: TeamScriptSchema.optional(),
+    /**
+     * After the inline delivery that prepares a new checkout (a linked
+     * worktree, or a submodule's first checkout that already runs teamai's
+     * git hook), before that git command returns. Init does not run there.
+     */
+    postDeploy: TeamScriptSchema.optional(),
   }).optional(),
   // MCP paths are only set for tools whose config location has been verified.
   // Tools left without `mcp` are skipped by MCP sync rather than guessed at, so a
@@ -1306,8 +1318,17 @@ export interface GlobalOptions {
    * session reads, without network when the team clone was fetched within
    * SOURCE_PULL_TTL_MS; sources come from their cached clones. Learnings,
    * reports, usage reporting and post-pull scripts are left to a full pull.
+   * `scripts.postDeploy` still runs when `prepareCheckout` is set.
    */
   inline?: boolean;
+  /**
+   * Internal (the new-worktree git hook, `pull` only): after this inline
+   * delivery, wait for `scripts.postDeploy` before returning. A new linked
+   * worktree does not run init, so `postInit` never runs for it. A submodule's
+   * first checkout hits the same hook when that repo already has teamai's
+   * git hooks.
+   */
+  prepareCheckout?: boolean;
   /**
    * Internal (post-merge/post-rewrite git hooks, with `inline`): fetch the team repo
    * whatever its fetch stamp says, and give up after this many ms; the scope

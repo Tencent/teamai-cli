@@ -660,6 +660,18 @@ program
     await uninstall({ ...globalOpts, ...cmdOpts });
   });
 
+const scriptCmd = program
+  .command('script')
+  .description('Run a Node script the team declared in teamai.yaml');
+
+scriptCmd
+  .command('run <event>')
+  .description('Run preInit, postInit, prePull, postPull, or postDeploy for this checkout. preInit and postInit need a terminal. postInit then syncs MCP servers.')
+  .action(async (event: string) => {
+    const { scriptRun } = await import('./script-commands.js');
+    await scriptRun(event);
+  });
+
 const envCmd = program
   .command('env')
   .description('Manage team environment variables')

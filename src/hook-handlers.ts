@@ -168,10 +168,14 @@ const newWorktreeHandler: HookHandler = {
       const { createProjectToolRoots } = await import('./project-agent-root.js');
       await createProjectToolRoots({ cwd });
       const { pull } = await import('./pull.js');
-      await pull({ silent: true, inline: true, gitHook: 'post-checkout' });
+      // prepareCheckout waits for scripts.postDeploy before this returns, so a
+      // link can exist before `git worktree add` (or a submodule's first
+      // checkout) returns. Init does not run on this path.
+      await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: true });
     });
     // Learnings, reports, sources and the team repo itself refresh after
     // `git worktree add` returns; it also retries what failed above.
+    // postDeploy already ran inside the pull.
     await spawnDetachedPull(cwd, 'post-checkout');
     return null;
   },

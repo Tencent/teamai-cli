@@ -123,6 +123,22 @@ describe('runPostPull (in-process)', () => {
     expect(debugSpy).toHaveBeenCalledWith(expect.stringMatching(/postPull: exited 0 in \d+ms/));
   });
 
+  it('forwards checkout context without dropping the repo or the budget', async () => {
+    mockSpawn.mockImplementationOnce(() => fakeScript(0) as never);
+
+    await runPostPull(path.join(dir, 'ok.mjs'), dir, 30, {
+      ...process.env,
+      TEAMAI_SCOPE: 'project',
+      TEAMAI_CHECKOUT: '/work',
+    });
+
+    const options = mockSpawn.mock.calls.at(-1)![2] as { env: NodeJS.ProcessEnv };
+    expect(options.env.TEAMAI_SCOPE).toBe('project');
+    expect(options.env.TEAMAI_CHECKOUT).toBe('/work');
+    expect(options.env.TEAMAI_REPO).toBe(dir);
+    expect(options.env.TEAMAI_POSTPULL_TIMEOUT_SEC).toBe('30');
+  });
+
   it('records a non-zero exit together with the output tail', async () => {
     mockSpawn.mockImplementationOnce(() => fakeScript(3, 'boom: missing config\n') as never);
 

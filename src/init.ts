@@ -763,6 +763,7 @@ export async function initHttp(
   // Step 5: inject hooks (built-in dispatch incl. the reporter) via the same
   // authoritative path the git init uses, so HTTP consumers behave identically.
   const filterAgents = requestedAgents.length > 0 ? requestedAgents : undefined;
+  await runInitScript(localConfig, 'preInit', options.dryRun);
   await reconcileHooksForInit(teamConfig, localConfig, filterAgents);
 
   // Step 6: also initialize local-agent config so the new hook-dispatch --stdin
@@ -773,6 +774,8 @@ export async function initHttp(
   } catch (e) {
     log.debug(`Local agent init: ${(e as Error).message}`);
   }
+
+  await runInitScript(localConfig, 'postInit', options.dryRun, true);
 
   log.success('teamai initialized (HTTP read-only)!');
   log.info('Skills/rules will auto-sync on each session start via report/sync. This team is read-only (no push).');
@@ -815,6 +818,25 @@ async function reconcileHooksForInit(
   // look delivered (#946).
   const { ruleChannelNotes } = await import('./resources/rules.js');
   for (const note of await ruleChannelNotes(localConfig)) log.info(note);
+}
+
+/**
+ * `scripts.preInit` or `scripts.postInit`. A non-interactive init skips them
+ * (they may read the terminal). A non-zero exit does not fail init. When
+ * `syncMcp` is set and the script ran, reconcile MCP so a value it collected
+ * is in the tool config. Git init leaves that to its closing pull.
+ */
+async function runInitScript(
+  localConfig: LocalConfig,
+  event: 'preInit' | 'postInit',
+  dryRun: boolean | undefined,
+  syncMcp = false,
+): Promise<void> {
+  if (dryRun) return;
+  const { isInteractive } = await import('./utils/prompt.js');
+  const { runTeamScript, syncMcpAfterPostInit } = await import('./team-scripts.js');
+  const result = await runTeamScript(localConfig, event, { interactive: isInteractive(), announce: true });
+  if (syncMcp && result.status === 'ran') await syncMcpAfterPostInit(localConfig);
 }
 
 /**
@@ -1346,6 +1368,7 @@ export async function initSelfRepo(options: GlobalOptions & {
   // settings file exists on disk and can be committed to main below. This is what
   // makes a teammate's fresh clone carry the session-start hook that triggers the
   // self-heal bootstrap — the core of "clone = initialized".
+  await runInitScript(localConfig, 'preInit', options.dryRun);
   await reconcileHooksForInit(teamConfig, localConfig, filterAgents);
 
   // Step 5.5: commit the .teamai/ knowledge skeleton + selected tools' hook
@@ -1454,6 +1477,11 @@ export async function initSelfRepo(options: GlobalOptions & {
   } catch {
     // state may not exist yet
   }
+
+  // After the skeleton commit, so a file the script creates for this member
+  // is not part of that commit. Self mode has no closing pull, so MCP is
+  // reconciled here when the script ran.
+  await runInitScript(localConfig, 'postInit', options.dryRun, true);
 
   log.success('teamai initialized (single-repo mode)!');
   log.info('Next steps:');
@@ -2163,6 +2191,7 @@ export async function init(options: GlobalOptions & {
       log.debug(`Tool-dir seeding skipped: ${(e as Error).message}`);
     }
 
+    await runInitScript(localConfig, 'preInit', options.dryRun);
     await reconcileHooksForInit(reloadedTeamConfig, localConfig, filterAgents);
 
     // Step 7.5: Deploy the built-in discovery stub immediately so the teamai
@@ -2177,6 +2206,11 @@ export async function init(options: GlobalOptions & {
     } catch (e) {
       log.warn(`The built-in teamai skill was not deployed: ${(e as Error).message}`);
     }
+
+    // After hooks, before the closing pull, so a value the script collects is
+    // in that pull. The pull is the MCP sync. Skipped when teamai.yaml did not
+    // load: there is no script, and a second read would report the same error.
+    await runInitScript(localConfig, 'postInit', options.dryRun);
   }
 
   // Step 8: deliver the team's resources now. Rules and MCP are read once at

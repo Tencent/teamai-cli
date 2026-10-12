@@ -71,7 +71,7 @@ function resolvePostPullScript(teamConfig: TeamaiConfig, repoPath: string): stri
  */
 export async function runDeclaredPostPull(
   repoPath: string,
-  { interactive = false }: { interactive?: boolean } = {},
+  { interactive = false, env }: { interactive?: boolean; env?: NodeJS.ProcessEnv } = {},
 ): Promise<void> {
   try {
     const teamConfig = await loadTeamConfig(repoPath);
@@ -89,9 +89,9 @@ export async function runDeclaredPostPull(
     // Checked after existence so the common missing case skips the walk.
     assertSafePath(scriptPath, [repoPath]);
     if (interactive) {
-      runPostPullInteractive(scriptPath, repoPath);
+      runPostPullInteractive(scriptPath, repoPath, env);
     } else {
-      await runPostPull(scriptPath, repoPath);
+      await runPostPull(scriptPath, repoPath, POST_PULL_BUDGET_SEC, env);
     }
   } catch (e) {
     log.debug(`postPull: skipped: ${(e as Error).message}`);
@@ -106,8 +106,8 @@ export async function runDeclaredPostPull(
  * no job object to escape, and no deadline to fit. The script still self-limits
  * its heavy step against the exported budget.
  */
-function runPostPullInteractive(scriptPath: string, repoPath: string): void {
-  const child = spawnScript(scriptPath, repoPath, ['ignore', 'inherit', 'inherit'], POST_PULL_BUDGET_SEC);
+function runPostPullInteractive(scriptPath: string, repoPath: string, env?: NodeJS.ProcessEnv): void {
+  const child = spawnScript(scriptPath, repoPath, ['ignore', 'inherit', 'inherit'], POST_PULL_BUDGET_SEC, env);
   detachChild(child);
   log.debug(`postPull: launched path=${scriptPath} budget=${POST_PULL_BUDGET_SEC}s (unawaited, terminal attached)`);
 }
@@ -124,12 +124,13 @@ function spawnScript(
   repoPath: string,
   stdio: StdioOptions,
   budgetSec: number,
+  env?: NodeJS.ProcessEnv,
 ): ChildProcess {
   const child = spawn(process.execPath, [scriptPath], {
     cwd: repoPath,
     stdio,
     env: {
-      ...process.env,
+      ...(env ?? process.env),
       TEAMAI_REPO: repoPath,
       TEAMAI_POSTPULL_TIMEOUT_SEC: String(budgetSec),
     },
@@ -158,10 +159,11 @@ export async function runPostPull(
   scriptPath: string,
   repoPath: string,
   budgetSec: number = POST_PULL_BUDGET_SEC,
+  env?: NodeJS.ProcessEnv,
 ): Promise<void> {
   log.debug(`postPull: launched path=${scriptPath} budget=${budgetSec}s`);
   const startedAt = Date.now();
-  const child = spawnScript(scriptPath, repoPath, ['ignore', 'pipe', 'pipe'], budgetSec);
+  const child = spawnScript(scriptPath, repoPath, ['ignore', 'pipe', 'pipe'], budgetSec, env);
   const readTail = captureTail(child, TAIL_CHARS);
 
   const exited = new Promise<number | null>((resolve) => {

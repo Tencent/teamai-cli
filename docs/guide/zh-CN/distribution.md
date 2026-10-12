@@ -83,17 +83,37 @@ skill 用 git submodule 发时，在 `teamai.yaml` 里打开。每次 pull 按�
 submodules: true
 ```
 
-### Pull 后脚本
+### 团队脚本
 
-pull 结束后跑一个 Node 脚本。项目 scope 跑项目仓的，否则跑用户仓的。
+`teamai.yaml` 可以声明 Node 脚本。CLI 用自己的 Node 跑，不经过 shell。`path` 相对团队仓库根目录，而且必须留在仓库里。指向仓库外的符号链接会被拒绝。脚本的工作目录是团队仓库。脚本失败不会让 init 或 pull 失败。
+
+项目 scope 下，脚本还会拿到 TeamAI 已经解析好的检出目录。写什么由脚本决定。TeamAI 不管理个人文件，也不会替脚本覆盖它打算保留的文件。
+
+- `TEAMAI_REPO` — 团队仓库
+- `TEAMAI_SCOPE` — `user` 或 `project`
+- `TEAMAI_CHECKOUT` — 当前检出目录，仅项目 scope
+- `TEAMAI_MAIN_CHECKOUT` — TeamAI 解析到的主检出目录，知道时才有
+- `TEAMAI_PROJECT` — 同一个解析结果，同一仓库的各个 worktree 都一样
 
 ```yaml
 scripts:
+  preInit:
+    path: scripts/pre-init.mjs
+  postInit:
+    path: scripts/post-init.mjs
+  prePull:
+    path: scripts/pre-pull.mjs
   postPull:
     path: scripts/deploy.mjs
+  postDeploy:
+    path: scripts/link-local.mjs
 ```
 
-路径相对团队仓库根目录。会话启动时会等它跑完，超时后留在后台；交互式 `teamai pull` 不等。失败不会让 pull 失败，记在 `~/.teamai/debug.log`。
+- `preInit` 在 `teamai init` 里跑，本地配置已保存、hook 还没装。它可以读终端。init 会一直等，没有超时。非交互 init（没有终端、设置了 `CI` 或 `TEAMAI_NONINTERACTIVE`）会跳过。之后在终端里执行 `teamai script run preInit`。
+- `postInit` 在 hook 装好之后跑。init 等它结束，再同步一次 MCP，这样脚本里填的值会生效。跳过规则和 `preInit` 一样。`teamai script run postInit` 会再跑一次并同步 MCP。
+- `prePull` 在一次完整 pull 的开头、该 scope 同步之前跑。它不能读终端。pull 最多等 90 秒，超时后让它继续在后台跑。inline pull 不跑它。
+- `postPull` 在完整 pull 结束之后跑。会话启动最多等 90 秒，超时后留在后台。交互式 `teamai pull` 不等。inline pull 不跑。失败记在 `~/.teamai/debug.log`。
+- `postDeploy` 在新建的 linked worktree，或 submodule 第一次检出时，在那条 git 命令返回前的交付做完后跑。这条路径不会跑 `teamai init`。pull 最多等 15 秒。用 `teamai script run postDeploy` 再跑。脚本应当可以重复执行，并且保留已经存在的个人文件。
 
 ## 角色和项目
 

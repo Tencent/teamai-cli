@@ -83,17 +83,37 @@ Turn this on in `teamai.yaml` when skills are git submodules. Each pull checks t
 submodules: true
 ```
 
-### Post-pull scripts
+### Team scripts
 
-A Node script runs after pull finishes. Project scope runs the project repo's script. Otherwise the user repo's script runs.
+`teamai.yaml` can name Node scripts. The CLI runs each one with its own Node, not a shell. `path` is relative to the team repo root and must stay inside that repo. A symlink that leaves the repo is rejected. The script's working directory is the team repo. A failure does not fail init or pull.
+
+In project scope the script also receives the checkout TeamAI already resolved. The script decides what to write. TeamAI does not manage personal files, and it does not replace a file the script chooses to keep.
+
+- `TEAMAI_REPO` — the team repo
+- `TEAMAI_SCOPE` — `user` or `project`
+- `TEAMAI_CHECKOUT` — this checkout, in project scope
+- `TEAMAI_MAIN_CHECKOUT` — the main checkout TeamAI resolved, when it knows one
+- `TEAMAI_PROJECT` — that same resolved identity, stable across worktrees of one repo
 
 ```yaml
 scripts:
+  preInit:
+    path: scripts/pre-init.mjs
+  postInit:
+    path: scripts/post-init.mjs
+  prePull:
+    path: scripts/pre-pull.mjs
   postPull:
     path: scripts/deploy.mjs
+  postDeploy:
+    path: scripts/link-local.mjs
 ```
 
-The path is relative to the team repo root. A session start waits for it, then leaves it running if it times out. An interactive `teamai pull` does not wait. A failure is a line in `~/.teamai/debug.log` and does not fail the pull.
+- `preInit` runs during `teamai init`, after local config is saved and before hooks are installed. It can read the terminal. Init waits with no timeout. A non-interactive init (no terminal, `CI`, or `TEAMAI_NONINTERACTIVE`) skips it. Run it later with `teamai script run preInit`.
+- `postInit` runs after hooks are installed. Init waits, then syncs MCP, so a value the script collected takes effect. The same skip rule applies. `teamai script run postInit` runs it again and syncs MCP.
+- `prePull` runs at the start of a full pull, before that scope is synced. It cannot read the terminal. Pull waits up to 90 seconds, then leaves it running. An inline pull does not run it.
+- `postPull` runs after a full pull. A session start waits up to 90 seconds, then leaves it running. An interactive `teamai pull` does not wait. An inline pull does not run it. A failure is a line in `~/.teamai/debug.log`.
+- `postDeploy` runs when a new linked worktree, or a submodule's first checkout, finishes the delivery that happens before that git command returns. That path does not run `teamai init`. Pull waits up to 15 seconds. Run the script again with `teamai script run postDeploy`. It should be safe to repeat, and it should leave an existing personal file alone.
 
 ## Roles and projects
 
