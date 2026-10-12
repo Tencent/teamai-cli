@@ -83,7 +83,7 @@ export async function buildClassifyContext(localConfig: LocalConfig): Promise<Cl
  * Walk the team repo `skills/` directory, returning a map of
  * skill name → namespace. Flat skills get an empty namespace.
  */
-async function collectTeamRepoSkills(repoPath: string): Promise<Map<string, { namespace?: string }>> {
+export async function collectTeamRepoSkills(repoPath: string): Promise<Map<string, { namespace?: string }>> {
   const teamSkillsDir = path.join(repoPath, 'skills');
   const result = new Map<string, { namespace?: string }>();
   if (!await pathExists(teamSkillsDir)) return result;

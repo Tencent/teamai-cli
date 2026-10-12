@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { readUsageEvents, truncateUsageAfterReport } from './usage-tracker.js';
 import { aggregateUsage } from './stats.js';
+import { collectTeamRepoSkills } from './agent-skills.js';
 import { readEvents, aggregateSessionMetrics, dataHomeKey } from './dashboard-collector.js';
 import {
   createGit,
@@ -132,6 +133,39 @@ export function mergeStats(
     ...(existing?.tokens !== undefined ? { tokens: existing.tokens } : {}),
     ...(existing?.daily !== undefined ? { daily: existing.daily } : {}),
   };
+}
+
+/**
+ * The set of skill names the team actually shares, enumerated from the team
+ * repo's default-branch checkout. The reports branch is an orphan branch and
+ * never carries `skills/`, so the catalog must always be enumerated from the
+ * main repo path, not from the worktree stats are written into (#1055).
+ */
+export async function teamSharedSkillNames(repoRoot: string): Promise<Set<string>> {
+  return new Set((await collectTeamRepoSkills(repoRoot)).keys());
+}
+
+/**
+ * Merge usage stats into the published file, keeping only skill names the team
+ * actually shares (#1055). `stats/<user>.yaml` is visible to everyone who
+ * pulls, so a member's local-only skills, slash-command names and stray
+ * SKILL.md reads must not be published; the local `usage.jsonl` keeps full
+ * fidelity. New stats are filtered before merging, and names published before
+ * this filter existed are pruned on the same rewrite — they were published by
+ * accident. An empty catalog (a team that shares no skills) therefore yields
+ * an empty skills map: every skill is local-only in such a team.
+ */
+export function mergeStatsWithinTeamSkills(
+  existing: UserStats | null,
+  username: string,
+  newEvents: { name: string; count: number; lastUsed: Date }[],
+  teamSkills: ReadonlySet<string>,
+): UserStats {
+  const merged = mergeStats(existing, username, newEvents.filter((s) => teamSkills.has(s.name)));
+  for (const name of Object.keys(merged.skills)) {
+    if (!teamSkills.has(name)) delete merged.skills[name];
+  }
+  return merged;
 }
 
 // ─── Human Intervention reporting (Issue #34) ──────────
@@ -974,6 +1008,10 @@ export async function reportUsageToTeam(
       writeRoot: string,
       votesStaged?: { syncedDeltas?: UserVotesV2['deltas'] },
     ): Promise<void> => {
+      // The team's shared-skill catalog for the #1055 privacy filter. Always
+      // enumerated from repoPath (the default-branch checkout): writeRoot may
+      // be the orphan reports-branch worktree, which never carries skills/.
+      const teamSkillNames = await teamSharedSkillNames(repoPath);
       // Process usage and/or intervention/prompt/token stats if anything is new to report.
       if (hasStats) {
         const statsDir = path.join(writeRoot, 'stats');
@@ -991,7 +1029,11 @@ export async function reportUsageToTeam(
           restoreStats = () => writeFile(statsPath, previousContent ?? '');
         }
         const newStats = hasUsage ? aggregateUsage(events) : [];
-        const merged = mergeStats(existing, username, newStats);
+        // #1055: only skill names the team actually shares may be published;
+        // already-published names outside the catalog are pruned on this same
+        // rewrite. The catalog comes from the default-branch repo path, never
+        // from writeRoot (the reports branch is an orphan without skills/).
+        const merged = mergeStatsWithinTeamSkills(existing, username, newStats, teamSkillNames);
         if (hasInterventions) {
           merged.interventions = mergeInterventionStats(existing?.interventions, interventionDelta);
         }
