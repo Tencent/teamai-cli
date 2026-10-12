@@ -251,9 +251,11 @@ function valuesFile(
  * Reconcile MCP for this scope after `env set` / `env unset` (#1011). A value
  * just stored is already visible to the next reconcile, so the member does not
  * need a separate pull for MCP. `env.sh` still comes from pull, and only for a
- * variable. When the team config cannot be read, a tool's MCP config does not
- * parse, or the team's MCP files cannot, `pull` is the message this command
- * used before, which names both jobs.
+ * variable. When the team config cannot be read, the team's MCP files cannot,
+ * or a tool's MCP config does not parse and nothing was written, `pull` is the
+ * message this command used before, which names both jobs. A file that does
+ * not parse is already warned; when another tool was updated, that success
+ * stands and pull is not asked for again.
  */
 async function followUpAfterValueChange(
   localConfig: LocalConfig,
@@ -273,9 +275,10 @@ async function reconcileCurrentScopeMcp(localConfig: LocalConfig): Promise<boole
   try {
     const { wrote, unresolved, unparsed } = await reconcileMcpForConfig(teamConfig, localConfig);
     if (wrote) log.success('MCP servers updated. Restart your AI tool session to load them.');
-    // A tool file that does not parse was left as it was. Pull hits the same
-    // file, and is the message this command used before.
-    if (unresolved || unparsed) return false;
+    // A tool file that does not parse was already warned, and pull cannot write
+    // it either. Ask for a pull only when nothing was written, so that line does
+    // not follow a success message for the tools that were updated.
+    if (unresolved || (unparsed && !wrote)) return false;
     return true;
   } catch (e) {
     log.debug(`MCP reconcile skipped: ${(e as Error).message}`);

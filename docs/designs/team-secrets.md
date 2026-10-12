@@ -95,7 +95,7 @@ teamai env unset GITHUB_TOKEN [--global]
   A project config that exists but can't be read makes `env set`, `env unset` and `env list` fail with its path and why, rather than use the user scope, whose team may not be this project's.
 - Outside any scope (no project here and no user scope), `env set --global` accepts any valid key name and notes that no team declares it yet, so a member can set a token they reuse across teams ahead of time. `env unset` accepts any key that has a value.
 - `--from-env` warns when the variable is not set in the current shell. While it is unset, the secret is `missing`: the next source in the [order](#resolution) is not used instead, since that could be another account's token.
-- `env set` and `env unset` reconcile MCP servers for the current scope. Run `teamai pull` afterwards only to update `env.sh`, and only when the key is an env variable. When the team config or the MCP files cannot be read, the command still says to run `teamai pull`, which updates both.
+- `env set` and `env unset` reconcile MCP servers for the current scope. Run `teamai pull` afterwards only to update `env.sh`, and only when the key is an env variable. When the team config or the MCP files cannot be read, and nothing was written, the command still says to run `teamai pull`, which updates both. A tool file that does not parse is warned and left as it is. When another tool was updated, the command says so and does not also ask for a pull: pull cannot write the file that does not parse.
 
 ## Storage
 
