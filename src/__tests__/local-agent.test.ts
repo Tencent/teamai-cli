@@ -1096,6 +1096,50 @@ describe('local-agent: full-snapshot workspace reporting', () => {
     expect(wsAEntry?.project_id).toBe(5);
   });
 
+  it('does not report HOME as a workspace when the session runs there', async () => {
+    await setupConfig();
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy', cwd: tmpDir }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    expect(payload).not.toHaveProperty('workspaces');
+  });
+
+  it('reports the cwd, not HOME, under a dotfiles repo rooted at HOME', async () => {
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'ignore' });
+    const notes = path.join(tmpDir, 'notes');
+    await fse.ensureDir(notes);
+    await setupConfig();
+
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const payload = await buildReportPayload(config!, { tool: 'codebuddy', cwd: notes }) as {
+      workspaces?: Array<Record<string, unknown>>;
+    };
+
+    expect((payload.workspaces ?? []).map((w) => w.path)).toEqual([fse.realpathSync(notes)]);
+  });
+
+  it('prunes a binding recorded on HOME', async () => {
+    const wsLive = path.join(tmpDir, 'ws-live-home');
+    await fse.ensureDir(wsLive);
+    await setupConfig({
+      [tmpDir]: { projectId: 9, projectName: 'home', boundAt: 'x', ideType: 'codebuddy' },
+      [wsLive]: { projectId: 3, projectName: 'live', boundAt: 'x', ideType: 'codebuddy' },
+    });
+
+    const { pruneDeadWorkspaceBindings, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    const pruned = await pruneDeadWorkspaceBindings(config!);
+
+    expect(pruned).toBe(true);
+    expect(Object.keys(config!.workspaceBindings)).toEqual([fse.realpathSync(wsLive)]);
+  });
+
   it('omits user_level skills/rules when none installed', async () => {
     // HOME is tmpDir (set in beforeEach); no codebuddy skills/rules written there.
     await setupConfig();

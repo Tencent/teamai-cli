@@ -1498,17 +1498,29 @@ function isEphemeralTaskDir(dir: string): boolean {
   return /^\d{4}-\d{2}-\d{2}/.test(segments[wbIdx + 1]);
 }
 
+async function isUserHomeDir(dir: string): Promise<boolean> {
+  return await canonicalizeWorkspacePath(dir) === await canonicalizeWorkspacePath(getUserHome());
+}
+
+/**
+ * HOME is never a workspace: it is the user scope's root, so a project scope
+ * there would scan and deliver into the same tool dirs as the user scope. A
+ * session opened in HOME has no workspace; under a dotfiles repo rooted at
+ * HOME, a subdirectory is its own workspace rather than HOME.
+ */
 async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
   if (!cwd) return undefined;
   const absolute = path.resolve(cwd);
   if (isEphemeralTaskDir(absolute)) return undefined;
+  if (await isUserHomeDir(absolute)) return undefined;
   try {
     const { stdout } = await execFileAsync('git', ['-C', absolute, 'rev-parse', '--show-toplevel']);
     const root = stdout.trim();
-    return await canonicalizeWorkspacePath(root || absolute);
+    if (root && !await isUserHomeDir(root)) return await canonicalizeWorkspacePath(root);
   } catch {
-    return await canonicalizeWorkspacePath(absolute);
+    // not inside a git repo
   }
+  return await canonicalizeWorkspacePath(absolute);
 }
 
 interface ReportedResource {
@@ -1755,6 +1767,8 @@ async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise
  * (full-sync snapshot) could never drop it. This prunes such stale
  * entries in place. Applies to skipped ('__skipped__', projectId 0)
  * entries too — a deleted directory should not leave a permanent sentinel.
+ * A binding on HOME, which earlier releases could record, is pruned as well:
+ * HOME is never a workspace (see resolveWorkspacePath).
  *
  * @param config - Loaded local-agent config; its workspaceBindings map is mutated in place.
  * @returns True if at least one binding was removed.
@@ -1762,6 +1776,11 @@ async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise
 export async function pruneDeadWorkspaceBindings(config: LocalAgentConfig): Promise<boolean> {
   let changed = false;
   for (const workspacePath of Object.keys(config.workspaceBindings)) {
+    if (await isUserHomeDir(workspacePath)) {
+      delete config.workspaceBindings[workspacePath];
+      changed = true;
+      continue;
+    }
     try {
       await fs.promises.stat(workspacePath);
     } catch (error) {
