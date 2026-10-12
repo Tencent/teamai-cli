@@ -68,8 +68,9 @@ teamai recall "GPU 内存不足"
 - recall 构建索引时（尚无索引或索引格式过旧），如果团队 manifest 无法读取，仍会索引 learnings（若损坏的是 `manifest/projects.yaml`，只索引共享根目录），并提示一次哪些内容被排除，例如：``Recall indexed learnings only: <cause>. Docs, rules and skills stay out of recall until the team manifest is fixed and `teamai pull` rebuilds the index; `teamai doctor` shows the problem.``。skills 冲突且没有旧索引可沿用 skills 时，同样会给出提示。如果这个较小的索引无法覆盖写入旧索引，recall 在该 scope 不检索任何内容，而不是检索会返回被排除内容的旧索引，并提示：``Recall could not build the <scope> search index: <cause>. 
 
   Recall skips the older index at <path>…``。其他原因导致的构建失败会显示具体原因，而不是 "No learnings available"
-- 提供轻量相关性预检 `teamai recall --check "<关键词>"`，输出 `RELEVANT score=<n> threshold=<n>` 或 `NOT_RELEVANT score=<n> threshold=<n>`，不读取文件、不 upvote —— recall subagent 用它在任务与团队知识无关时跳过检索。当 top 命中为 `RELEVANT` 时，还会输出 `matched=`/`missing=`，即命中/未命中其 title 与 tag 的查询词
+- 提供轻量相关性预检 `teamai recall --check "<关键词>"`，输出 `RELEVANT score=<n> threshold=<n>` 或 `NOT_RELEVANT score=<n> threshold=<n>`，不读取引用的源码文件来检查新鲜度，也不 upvote —— recall subagent 用它在任务与团队知识无关时跳过检索。当 top 命中为 `RELEVANT` 时，还会输出 `matched=`/`missing=`，即命中/未命中其 title 与 tag 的查询词
 - `RELEVANT` 表示分数越过阈值、值得花成本读文件，**不代表**知识库覆盖了你要找的主题。请用 `matched=`/`missing=`（以及完整结果里的 `Matched:`/`Missing:` 行）自行判断：若关键区分词全部落在 missing 里，那条只是主题相邻，并非答案
+- 返回的代码库源码可能带有 `Source freshness:` 行，按文件列出 `current`、`stale`、`missing` 或 `unknown`，并可附 `last scan` 时间。它将源码文件与知识库扫描基线比较；即使是 `current`，也不能证明知识文档正确。依赖实现细节前，应核对 `stale`、`missing` 或 `unknown` 的源码；状态含义与边界见[进阶功能](./advanced.md#代码知识图谱)
 
 ### Recall 采纳与 upvote
 
@@ -79,7 +80,7 @@ recall 会为返回的每篇文档计数（`recalled_count`）。运行 recall �
 
 **recall 日志。** 每次 run 都写入当前 scope 的本地 recall 日志 `<data home>/dashboard/recall.jsonl`，该日志仅所有者可读写，从不推送。run 记录环境中的 agent 会话，以及每篇返回文档的 id、scope 和打印出的 `File:` 路径；没有命中的搜索也会记录。PostToolUse hook 追加运行 `teamai recall` 的 shell 调用，以及每次读取团队知识根目录下文件的调用。日志从不包含查询词、prompt、工具输出或文件内容。`teamai pull` 会清理日志：
 
-先删除超过 30 天的行，再从最旧的开始删到只剩 5,000 行，但从不删除最近 24 小时内尚未投票的读取，也不删除它投票所需的行。`--check`、`--dry-run` 和 `TEAMAI_RECALL_DISABLED=1` 不记录任何内容，既不写这份日志，也不写 `contribute-check` 读取的会话 recall 质量缓存。需要构建索引（尚无索引或索引格式过旧）的 `--dry-run` 在内存中构建并搜索，不保存索引。如果同一个索引缩减保护会拒绝实际重建，则继续搜索现有索引。
+先删除超过 30 天的行，再从最旧的开始删到只剩 5,000 行，但从不删除最近 24 小时内尚未投票的读取，也不删除它投票所需的行。`--check`、`--dry-run` 和 `TEAMAI_RECALL_DISABLED=1` 不记录任何内容，既不写这份日志，也不写 `contribute-check` 读取的会话 recall 质量缓存。需要构建索引（尚无索引或索引格式过旧）的 `--dry-run` 在内存中构建并搜索，不保存索引。与实际重建一样，对仍会收到但读不了的文件，或位于无法列出的目录下、仍会收到的文件，沿用现有索引中该文件的条目，且只沿用这些条目。
 
 **run 归属哪个会话。** run 归属于自身直接运行 `teamai recall` 的 shell 调用所在的会话，因此一个 agent 运行另一个 agent 时（如 Claude 运行 `codex exec`），run 归内层 agent 的会话；只是打印了 recall 输出的调用不算。没有这样的调用时，只有环境中只设置了一个 agent 会话，run 才归该会话；否则该 run 从不投票。
 

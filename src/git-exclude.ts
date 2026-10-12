@@ -407,7 +407,7 @@ export async function updateFileLocked(
 ): Promise<ExcludeUpdate> {
   const { acquireLock, releaseLock } = await import('./update.js');
   const lockPath = `${file}.teamai-lock`;
-  // acquireLock reads a lock directory it cannot create as a held lock; no wait would change that (#993).
+  // Report exclude-specific permission guidance before taking the shared lock (#993).
   await fse.ensureDir(path.dirname(file)).catch(async (e: NodeJS.ErrnoException) => {
     if (!['EEXIST', 'ENOTDIR', 'EACCES', 'EPERM', 'EROFS'].includes(e.code ?? '')) throw e;
     throw new NotWritableError(file, await existingAncestor(file), e.code === 'EEXIST' || e.code === 'ENOTDIR');

@@ -16,7 +16,7 @@ On Windows, the hook commands teamai writes into each agent's settings reference
 `bash.exe` launcher. Each GUI tool resolves its own hook shell: WorkBuddy uses
 the PortableGit `sh.exe` it ships, CodeBuddy the Git Bash it requires on Windows.
 Only a tool with no resolvable shell is skipped. ZCode hooks launch through a
-`wscript.exe` launcher and need no bash at all.
+Node launcher and need no bash at all.
 
 If Git for Windows is installed and `teamai doctor` passes, hooks fire. Read on
 only if they do not.

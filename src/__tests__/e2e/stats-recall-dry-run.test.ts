@@ -306,28 +306,45 @@ describe('recall <query> --dry-run writes no local state (#900 C9)', () => {
     expect(snapshotTree(team.sandbox)).toEqual(before);
   });
 
-  it('with a shrunken corpus: searches the retained legacy index like a real run', async () => {
-    const team = setupTeam('teamai-c9-shrink-');
+  // chmod does not make a file unreadable on Windows or to root.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('with a corpus it cannot read: searches the retained legacy index like a real run', async () => {
+    const team = setupTeam('teamai-c9-unreadable-');
     sandboxes.push(team.sandbox);
     withLearning(team);
+    // Only the entry of the file it cannot read stays; the others are of files it no longer receives.
+    const learning = path.join(team.homeDir, '.teamai', 'learnings', 'deploy-timeout.md');
     const entries = Array.from({ length: 6 }, (_, i) => ({
-      author: 'alice', date: '2026-06-01', type: 'learnings', title: `Retained deployment timeout ${i}`,
-      filename: `retained-${i}.md`, tags: ['deployment', 'timeout'],
+      author: 'alice', date: '2026-06-01', type: 'learnings',
+      title: i === 0 ? 'Retained deployment timeout' : `Dropped deployment timeout ${i}`,
+      filename: i === 0 ? 'deploy-timeout.md' : `dropped-${i}.md`, ...(i === 0 ? { path: learning } : {}),
+      tags: ['deployment', 'timeout'],
       tokens: ['title:deployment', 'title:timeout', 'tag:deployment', 'tag:timeout'], votes: 0,
     }));
     fs.writeFileSync(indexPath(team), JSON.stringify({ version: 1, builtAt: '2026-01-01T00:00:00Z', entries }));
     const before = snapshotTree(team.sandbox);
+    // Unreadable only while recall runs: the snapshot reads every file.
+    const recallUnreadable = async (args: string[]) => {
+      fs.chmodSync(learning, 0o000);
+      try {
+        return await runCLI(['recall', 'deployment timeout', ...args], team.homeDir, team.cwd);
+      } finally {
+        fs.chmodSync(learning, 0o644);
+      }
+    };
 
-    const preview = await runCLI(['recall', 'deployment timeout', '--dry-run'], team.homeDir, team.cwd);
+    const preview = await recallUnreadable(['--dry-run']);
 
     expect(preview.code).toBe(0);
     expect(snapshotTree(team.sandbox)).toEqual(before);
+    expect(preview.output).toContain('Search index could not read 1 path(s)');
     expect(preview.output).toContain('Retained deployment timeout');
-    const real = await runCLI(['recall', 'deployment timeout'], team.homeDir, team.cwd);
+    expect(preview.output).not.toContain('Dropped deployment timeout');
+    const real = await recallUnreadable([]);
     expect(real.code).toBe(0);
     const hits = (output: string) => output.split('\n').filter((line) => line.includes('Retained deployment timeout'));
     expect(hits(preview.output)).toEqual(hits(real.output));
-    expect(fs.readFileSync(indexPath(team), 'utf-8')).toBe(JSON.stringify({ version: 1, builtAt: '2026-01-01T00:00:00Z', entries }));
+    const saved = JSON.parse(fs.readFileSync(indexPath(team), 'utf-8')) as { entries: Array<{ title: string }> };
+    expect(saved.entries.map((entry) => entry.title)).toEqual(['Retained deployment timeout']);
   });
 
   it('with a legacy index: searches a fresh build and leaves the file as it was', async () => {

@@ -257,6 +257,24 @@ describe('pull scope isolation (issue #73)', () => {
     expect(capUsageEvents).toHaveBeenCalledWith(userConfig);
   });
 
+  it('does not report a scope whose member set usageReportEnabled: false', async () => {
+    const optedOut = { ...userConfig, usageReportEnabled: false };
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(optedOut);
+    await pull({ silent: true });
+    expect(reportUsageToTeam).not.toHaveBeenCalled();
+    expect(capUsageEvents).toHaveBeenCalledWith(optedOut);
+  });
+
+  it('reports a scope whose member set usageReportEnabled: true over the team usageReport: false', async () => {
+    const optedIn = { ...userConfig, usageReportEnabled: true };
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(optedIn);
+    vi.mocked(loadTeamConfig).mockResolvedValue({ ...teamConfig, usageReport: false });
+    await pull({ silent: true });
+    expect(reportUsageToTeam).toHaveBeenCalledWith(userRepoPath, 'userscope', expect.objectContaining({ selfConfig: optedIn }));
+  });
+
   it.each([true, false])('keeps late completion alive without starting a second report: %s', async (success) => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);

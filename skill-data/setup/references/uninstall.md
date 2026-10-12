@@ -22,7 +22,11 @@ machine** (all tools)?"*
   earlier release wrote the blocks to, such as the project `AGENTS.md`, loses
   its teamai blocks, since no tool reads them there now. A file teamai created
   goes with its last block; one the user had before stays, even if empty.
-- **Whole machine** → no `--agent` flag.
+- **Whole machine** → no `--agent` flag. Run outside a project, it removes the
+  user scope but keeps the data of each project still set up, and names them
+  (`Kept the data of N project(s) still set up on this machine: ...`). Each of
+  those needs `teamai uninstall` run in it; after the last one, one more
+  `teamai uninstall` outside any project removes what is left in `~/.teamai`.
 
 Reassure them (in their language): *"This only removes things from your computer.
 Your team's repo on the website is untouched — you can rejoin any time with
@@ -97,6 +101,8 @@ and give it your team repo URL."*
 - A copy git tracks is never deleted: uninstall names it and lists it in its
   summary under `Kept (tracked)`. If the repository no longer needs it, have
   the user run `git rm -r <path>` and commit.
+- If the output kept the data of projects still set up, list them and say that
+  TeamAI stays in those projects until `teamai uninstall` is run in each.
 - If an OpenCode config entry cannot be removed, repair its config or permissions
   and retry the same uninstall command. Uninstall reports failure and keeps
   its ownership record and shared data directory, even for the last tool.

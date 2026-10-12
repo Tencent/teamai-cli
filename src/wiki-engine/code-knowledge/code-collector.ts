@@ -140,7 +140,7 @@ async function walk(directory: string, results: string[], includeTests: boolean)
   }
 }
 
-function isCodeFile(filePath: string): boolean {
+export function isCodeFile(filePath: string): boolean {
   return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".swift", ".scala", ".json", ".yaml", ".yml", ".toml", ".sql", ".conf", ".ini"].includes(
     path.extname(filePath).toLowerCase()
   );

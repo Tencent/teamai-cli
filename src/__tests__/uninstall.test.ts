@@ -60,6 +60,8 @@ import { ModelProfileSchema, resolveProfile } from '../models/profile.js';
 import { renderRuleForTool } from '../resources/rule-format.js';
 import { entryHash } from '../resources/mcp-format.js';
 import { switchModelProfile } from '../models/switch.js';
+import { getTeamSecretsPath } from '../secret-store.js';
+import YAML from 'yaml';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 // ─── Helpers ───────────────────────────────────────────
@@ -4029,5 +4031,245 @@ describe('uninstall', () => {
 
     // File should be deleted entirely when nothing remains
     expect(await fse.pathExists(path.join(homeDir, '.claude', 'CLAUDE.md'))).toBe(false);
+  });
+});
+
+describe('user-scope uninstall and the projects still set up (#1025)', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-uninstall-1025-'));
+    mockAutoDetectInit.mockReset();
+    mockReconcileHooks.mockReset();
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    await fse.remove(tmpDir);
+  });
+
+  /** A user scope set up in `homeDir`, its uninstall about to run. */
+  async function userScope(): Promise<{ homeDir: string; teamaiHome: string }> {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+    return { homeDir, teamaiHome };
+  }
+
+  /** A project partition under `teamaiHome` anchored at `<tmpDir>/<name>`, with `files` in it. */
+  async function partition(teamaiHome: string, name: string, files: Record<string, string>): Promise<{ dir: string; anchor: string }> {
+    const anchor = path.join(tmpDir, name);
+    await fse.ensureDir(anchor);
+    const dir = path.join(teamaiHome, 'projects', `${name}-0123456789abcdef`);
+    await fse.outputFile(path.join(dir, 'anchor'), `${anchor}\n`);
+    for (const [rel, content] of Object.entries(files)) await fse.outputFile(path.join(dir, rel), content);
+    return { dir, anchor };
+  }
+
+  it('keeps a partition holding a config.yaml, byte for byte, and removes the user scope\'s own config', async () => {
+    const { teamaiHome } = await userScope();
+    const { dir } = await partition(teamaiHome, 'app', {
+      'config.yaml': 'scope: project\nrepo:\n  localPath: /x\n',
+      'state.json': '{"a":1}',
+      'team-repo/README.md': '# team\n',
+    });
+
+    await uninstall({ force: true });
+
+    expect(await fse.readFile(path.join(dir, 'config.yaml'), 'utf8')).toBe('scope: project\nrepo:\n  localPath: /x\n');
+    expect(await fse.readFile(path.join(dir, 'state.json'), 'utf8')).toBe('{"a":1}');
+    expect(await fse.readFile(path.join(dir, 'team-repo', 'README.md'), 'utf8')).toBe('# team\n');
+    expect(await fse.pathExists(path.join(teamaiHome, 'config.yaml'))).toBe(false);
+    expect(await fse.pathExists(path.join(teamaiHome, 'state.json'))).toBe(false);
+  });
+
+  it('removes a partition with no config.yaml, and projects/ when nothing in it is kept', async () => {
+    const { teamaiHome } = await userScope();
+    await partition(teamaiHome, 'agent-only', { 'workspaces/abc/managed-mcp.json': '{}' });
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(path.join(teamaiHome, 'projects'))).toBe(false);
+  });
+
+  it('names each kept project and how to remove it, a gone checkout by its partition', async () => {
+    const { teamaiHome } = await userScope();
+    const { anchor } = await partition(teamaiHome, 'app', { 'config.yaml': 'scope: project\n' });
+    const gone = await partition(teamaiHome, 'gone', { 'config.yaml': 'scope: project\n' });
+    await fse.remove(gone.anchor);
+
+    await uninstall({ force: true });
+
+    expect(log.info).toHaveBeenCalledWith(
+      `Kept the data of 2 project(s) still set up on this machine: ${anchor}, ${gone.dir} (checkout ${gone.anchor} missing: delete it by hand). `
+      + `Run \`teamai uninstall\` in each project to remove it; after the last one, \`teamai uninstall\` outside any project removes ${teamaiHome}.`,
+    );
+  });
+
+  it('a dry run lists the kept projects and shared files, and no learnings of theirs as deleted', async () => {
+    const { teamaiHome } = await userScope();
+    const { dir, anchor } = await partition(teamaiHome, 'app', { 'config.yaml': 'scope: project\n', 'pending-learnings/a.md': '# a\n' });
+    await fse.outputFile(path.join(teamaiHome, 'pending-learnings', 'b.md'), '# b\n');
+    await fse.outputFile(path.join(teamaiHome, 'managed-hooks.json'), '{}\n');
+    const printed: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line?: unknown) => { printed.push(String(line ?? '')); });
+
+    await uninstall({ dryRun: true, force: true });
+
+    const out = printed.join('\n');
+    expect(out).toContain(`   Kept for the projects still set up on this machine (run \`teamai uninstall\` in each):\n     ${anchor}\n`
+      + `   and the shared files they read:\n     ${path.join(teamaiHome, 'managed-hooks.json')}\n`);
+    expect(out).toContain(`1 unpublished learning(s) in ${path.join(teamaiHome, 'pending-learnings')}`);
+    expect(out).not.toContain(path.join(dir, 'pending-learnings'));
+  });
+
+  it('leaves a kept project\'s servers in Claude\'s local scope, with their records, and removes those of a partition that is not a project', async () => {
+    const { homeDir, teamaiHome } = await userScope();
+    const server = { type: 'stdio', command: 'team-tool', args: [] };
+    const records = (key: string): string => JSON.stringify({ [`claude:local:${key}`]: [{ name: 'team-api', hash: entryHash(server) }] });
+    const app = await partition(teamaiHome, 'app', { 'config.yaml': 'scope: project\n' });
+    const stale = await partition(teamaiHome, 'stale', {});
+    await fse.outputFile(path.join(app.dir, 'managed-local-mcp.json'), records(app.anchor));
+    await fse.outputFile(path.join(stale.dir, 'managed-local-mcp.json'), records(stale.anchor));
+    const claudeJson = path.join(homeDir, '.claude.json');
+    await fse.writeJson(claudeJson, { projects: {
+      [app.anchor]: { mcpServers: { 'team-api': server } },
+      [stale.anchor]: { mcpServers: { 'team-api': server } },
+    } });
+
+    await uninstall({ force: true });
+
+    const projects = (await fse.readJson(claudeJson)).projects;
+    expect(projects[app.anchor].mcpServers).toEqual({ 'team-api': server });
+    expect(projects[stale.anchor]?.mcpServers ?? {}).toEqual({});
+    expect(await fse.readFile(path.join(app.dir, 'managed-local-mcp.json'), 'utf8')).toBe(records(app.anchor));
+  });
+
+  // The project-gated records a user-scope hook removal retains, and the project's Codex dispatchers.
+  it.each([
+    ['managed-hooks.json', '{"claude":[{"event":"SessionStart","matcher":"*","command":"if [ \\"$PWD\\" = \'/app\' ]; then teamai pull; fi"}]}\n'],
+    ['codex-team-hooks.json', '{"version":1,"projects":{"/app":{}}}\n'],
+  ])('keeps the shared %s a kept project\'s uninstall reads', async (file, content) => {
+    const { teamaiHome } = await userScope();
+    await partition(teamaiHome, 'app', { 'config.yaml': 'scope: project\n' });
+    await fse.outputFile(path.join(teamaiHome, file), content);
+
+    await uninstall({ force: true });
+
+    expect(await fse.readFile(path.join(teamaiHome, file), 'utf8')).toBe(content);
+  });
+
+  /** A kept project's config naming its team clone at `<tmpDir>/<name>-team`, which declares `secrets.yaml` when given. */
+  async function projectConfig(name: string, secretsYaml?: string): Promise<{ config: string; localConfig: LocalConfig }> {
+    const localPath = path.join(tmpDir, `${name}-team`);
+    await fse.outputFile(path.join(localPath, 'teamai.yaml'), `team: ${name}\n`);
+    if (secretsYaml) await fse.outputFile(path.join(localPath, 'env', 'secrets.yaml'), secretsYaml);
+    const localConfig = makeLocalConfig('', localPath, { scope: 'project', repo: { localPath, remote: `https://git.example.com/team/${name}.git` } });
+    return { config: YAML.stringify(localConfig), localConfig };
+  }
+
+  it.each([
+    { team: 'declares secrets', secrets: 'secrets:\n  - key: TOKEN\n', parses: true, machineKept: true, otherKept: false },
+    { team: 'declares none', secrets: undefined, parses: true, machineKept: false, otherKept: false },
+    { team: 'cannot be read', secrets: undefined, parses: false, machineKept: true, otherKept: true },
+  ])('keeps a kept project\'s team secrets; the machine\'s when its team $team', async ({ secrets, parses, machineKept, otherKept }) => {
+    const { teamaiHome } = await userScope();
+    const { config, localConfig } = await projectConfig('proj', secrets);
+    await partition(teamaiHome, 'app', { 'config.yaml': parses ? config : 'not: [valid\n' });
+    const teamFile = getTeamSecretsPath(localConfig);
+    const otherFile = path.join(teamaiHome, 'secrets', 'teams', `${'0'.repeat(64)}.json`);
+    const machineFile = path.join(teamaiHome, 'secrets', 'machine.json');
+    for (const file of [teamFile, otherFile, machineFile]) await fse.outputFile(file, '{}\n');
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(teamFile)).toBe(true);
+    expect(await fse.pathExists(otherFile)).toBe(otherKept);
+    expect(await fse.pathExists(machineFile)).toBe(machineKept);
+  });
+
+  it.each([
+    { config: 'reads', parses: true, otherKept: false },
+    { config: 'cannot be read', parses: false, otherKept: true },
+  ])('keeps the source installation records of a kept project whose config $config', async ({ parses, otherKept }) => {
+    const { teamaiHome } = await userScope();
+    const { config, localConfig } = await projectConfig('proj');
+    await partition(teamaiHome, 'app', { 'config.yaml': parses ? config : 'not: [valid\n' });
+    const installations = path.join(teamaiHome, 'sources', 'skills-src', 'installations');
+    const record = (teamCheckout: string): string => JSON.stringify({ teamCheckout, lastPull: '2026-01-01T00:00:00.000Z', installedSkills: ['s'] });
+    const projectRecord = path.join(installations, 'a.json');
+    const otherRecord = path.join(installations, 'b.json');
+    await fse.outputFile(projectRecord, record(localConfig.repo.localPath));
+    await fse.outputFile(otherRecord, record(path.join(teamaiHome, 'team-repo')));
+
+    await uninstall({ force: true });
+
+    expect(await fse.readFile(projectRecord, 'utf8')).toBe(record(localConfig.repo.localPath));
+    expect(await fse.pathExists(otherRecord)).toBe(otherKept);
+  });
+
+  /**
+   * A self-mode project with no remote at `<tmpDir>/app`, and a linked worktree
+   * at `<tmpDir>/app-sibling` whose `.teamai` declares a secret when asked. Its
+   * team files are each checkout's, as the checkout itself would hash them.
+   */
+  async function selfModeProject(siblingDeclares: boolean): Promise<{ config: string; anchor: string; sibling: string; teamFiles: string[] }> {
+    const anchor = path.join(tmpDir, 'app');
+    const sibling = path.join(tmpDir, 'app-sibling');
+    await fse.outputFile(path.join(anchor, '.teamai', 'teamai.yaml'), 'team: app\n');
+    execFileSync('git', ['init', '-q'], { cwd: anchor });
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: anchor });
+    execFileSync('git', ['worktree', 'add', '-q', sibling], { cwd: anchor });
+    await fse.outputFile(path.join(sibling, '.teamai', 'teamai.yaml'), 'team: app\n');
+    if (siblingDeclares) await fse.outputFile(path.join(sibling, '.teamai', 'env', 'secrets.yaml'), 'secrets:\n  - key: TOKEN\n');
+    const localConfig = makeLocalConfig('', path.join(anchor, '.teamai'), {
+      scope: 'project',
+      projectRoot: anchor,
+      repo: { localPath: path.join(anchor, '.teamai'), remote: '', kind: 'self', businessRepoRoot: anchor },
+    });
+    const teamFile = (root: string): string => getTeamSecretsPath({ ...localConfig, repo: { ...localConfig.repo, localPath: path.join(root, '.teamai') } });
+    return { config: YAML.stringify(localConfig), anchor, sibling, teamFiles: [teamFile(anchor), teamFile(await fse.realpath(sibling))] };
+  }
+
+  // A shared file goes only when no kept project can need it: what cannot be read or listed counts as needed.
+  it.each([
+    { project: 'its team clone is gone', setup: 'clone-gone', machineKept: true, unknownKept: false },
+    { project: 'its team clone is an empty folder', setup: 'clone-empty', machineKept: true, unknownKept: false },
+    { project: 'a self-mode sibling worktree has its own team file', setup: 'self', machineKept: false, unknownKept: false },
+    { project: 'a self-mode sibling worktree declares secrets', setup: 'self-sibling-declares', machineKept: true, unknownKept: false },
+    { project: 'a self-mode project names no checkout', setup: 'self-no-anchor', machineKept: true, unknownKept: true },
+    { project: 'a self-mode project\'s checkout is gone', setup: 'self-anchor-gone', machineKept: true, unknownKept: true },
+  ] as const)('keeps every secret and source record a kept project may read when $project', async ({ setup, machineKept, unknownKept }) => {
+    const { teamaiHome } = await userScope();
+    let teamFiles: string[];
+    if (setup === 'clone-gone' || setup === 'clone-empty') {
+      const { config, localConfig } = await projectConfig('proj');
+      await partition(teamaiHome, 'app', { 'config.yaml': config });
+      await fse.remove(localConfig.repo.localPath);
+      // A clone that is itself a mount point, unmounted, leaves its folder empty.
+      if (setup === 'clone-empty') await fse.ensureDir(localConfig.repo.localPath);
+      teamFiles = [getTeamSecretsPath(localConfig)];
+    } else {
+      const project = await selfModeProject(setup === 'self-sibling-declares');
+      const { dir } = await partition(teamaiHome, 'app', { 'config.yaml': project.config });
+      if (setup === 'self-no-anchor') await fse.remove(path.join(dir, 'anchor'));
+      if (setup === 'self-anchor-gone') await fse.remove(project.anchor);
+      teamFiles = project.teamFiles;
+    }
+    const otherFile = path.join(teamaiHome, 'secrets', 'teams', `${'0'.repeat(64)}.json`);
+    const machineFile = path.join(teamaiHome, 'secrets', 'machine.json');
+    const otherRecord = path.join(teamaiHome, 'sources', 'skills-src', 'installations', 'b.json');
+    for (const file of [...teamFiles, otherFile, machineFile]) await fse.outputFile(file, '{}\n');
+    await fse.outputFile(otherRecord, JSON.stringify({ teamCheckout: path.join(teamaiHome, 'team-repo'), lastPull: '2026-01-01T00:00:00.000Z', installedSkills: ['s'] }));
+
+    await uninstall({ force: true });
+
+    for (const file of teamFiles) expect(await fse.pathExists(file), file).toBe(true);
+    expect(await fse.pathExists(machineFile)).toBe(machineKept);
+    expect(await fse.pathExists(otherFile)).toBe(unknownKept);
+    expect(await fse.pathExists(otherRecord)).toBe(unknownKept);
   });
 });

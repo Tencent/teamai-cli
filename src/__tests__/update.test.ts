@@ -539,7 +539,7 @@ describe('doUpdate', () => {
     // so acquireLock backs off rather than reclaiming.
     const eexist = new Error('EEXIST') as NodeJS.ErrnoException;
     eexist.code = 'EEXIST';
-    mockedFse.writeFile.mockRejectedValue(eexist);
+    mockedFse.link.mockRejectedValue(eexist);
     mockedFse.readFile.mockResolvedValue(
       JSON.stringify({ pid: process.pid, owner: 'held', startedAt: 'x' }),
     );

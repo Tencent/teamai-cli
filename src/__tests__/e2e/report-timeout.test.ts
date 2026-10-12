@@ -158,6 +158,18 @@ describe('real CLI report completion', () => {
     expect(stats.tokens.input).toBe(10);
     expect(fs.readFileSync(f.usage, 'utf8')).toBe('');
   }, 60_000);
+
+  it('does not report for a member who set usageReportEnabled: false', async () => {
+    const f = fixture('claude', 'git');
+    const configPath = path.join(f.home, '.teamai/config.yaml');
+    const config = YAML.parse(fs.readFileSync(configPath, 'utf8'));
+    fs.writeFileSync(configPath, YAML.stringify({ ...config, usageReportEnabled: false }));
+    await f.seedEvents();
+    await f.pull();
+    expect(() => f.stats()).toThrow();
+    expect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
+    expect(f.run(['stats'])).toMatch(/review\s+1 uses/);
+  }, 60_000);
 });
 
 describe('real CLI usage cap (#788)', () => {

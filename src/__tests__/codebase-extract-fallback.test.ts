@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +18,7 @@ vi.mock('../utils/ai-client.js', () => ({
 
 import { callClaudeParallel } from '../utils/ai-client.js';
 import { extractCodebase } from '../codebase-extract.js';
+import { repoIdentity } from '../utils/git.js';
 import { codebaseCmd } from '../codebase-cmd.js';
 import { runHiddenDeepEnrich } from '../deep-enrich.js';
 import { scopeGlobalGraph } from '../graph-aggregate.js';
@@ -37,6 +40,15 @@ function createWidgetFixture(): string {
   fs.mkdirSync(path.join(root, 'src'));
   fs.writeFileSync(path.join(root, 'src', 'widget.ts'), WIDGET_SOURCE);
   return root;
+}
+
+function initializeGit(root: string, remote: string): void {
+  execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: root, stdio: 'ignore' });
+}
+
+function hashText(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function readEvidenceManifest(root: string, project: string): {
@@ -169,6 +181,148 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
     expect(manifest.components.length).toBeGreaterThanOrEqual(1);
     expect(manifest.components[0]?.slug).toBeTruthy();
     expect(manifest.components[0]?.docPath).toBeTruthy();
+  });
+
+  it('stores a credential-free per-codebase baseline for subdirectory extracts and refreshes it fully', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-source-manifest-repo-'));
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-source-manifest-output-'));
+    temporaryDirectories.push(repo, output);
+    const sourceRoot = path.join(repo, 'packages', 'api');
+    const sourceFile = path.join(sourceRoot, 'src', 'auth.ts');
+    fs.mkdirSync(path.dirname(sourceFile), { recursive: true });
+    const original = 'export const token = "before";\n';
+    fs.writeFileSync(sourceFile, original);
+    const remote = 'https://alice:secret-token@github.com/acme/orders.git';
+    initializeGit(repo, remote);
+
+    await extractCodebase({ path: sourceRoot, outputRoot: output, project: 'orders-api', json: true, skipEnrich: true });
+
+    const wikiRoot = path.join(output, 'teamwiki');
+    const projectManifestPath = path.join(wikiRoot, 'evidence', 'code', 'orders-api', 'source-manifest.json');
+    const first = JSON.parse(fs.readFileSync(projectManifestPath, 'utf8')) as {
+      project: string;
+      repoUrl: string;
+      repoIdentity: string;
+      sourceSubdir: string;
+      files: Array<{ relativePath: string; sha256: string }>;
+    };
+    expect(first).toMatchObject({
+      project: 'orders-api',
+      repoIdentity: repoIdentity('https://github.com/acme/orders.git'),
+      sourceSubdir: 'packages/api',
+      files: [{ relativePath: 'src/auth.ts', sha256: hashText(original) }],
+    });
+    expect(first.repoUrl).not.toContain('alice');
+    expect(first.repoUrl).not.toContain('secret-token');
+    expect(JSON.parse(fs.readFileSync(path.join(wikiRoot, 'source-manifest.json'), 'utf8'))).toEqual(first);
+
+    const changed = 'export const token = "after";\n';
+    fs.writeFileSync(sourceFile, changed);
+    await extractCodebase({
+      path: sourceRoot,
+      outputRoot: output,
+      project: 'orders-api',
+      json: true,
+      skipEnrich: true,
+      incremental: true,
+    });
+
+    const refreshed = JSON.parse(fs.readFileSync(projectManifestPath, 'utf8')) as typeof first;
+    expect(refreshed.files).toEqual([{ relativePath: 'src/auth.ts', sha256: hashText(changed), language: 'typescript' }]);
+  });
+
+  it('does not mix another repository manifest or facts cache into incremental extraction', async () => {
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-multi-source-output-'));
+    const repoA = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-source-a-'));
+    const repoB = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-source-b-'));
+    temporaryDirectories.push(output, repoA, repoB);
+    const fileA = 'export class Alpha { value() { return "a"; } }\n';
+    const fileB = 'export class Beta { value() { return "b"; } }\n';
+    fs.mkdirSync(path.join(repoA, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(repoB, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repoA, 'src', 'a.ts'), fileA);
+    fs.writeFileSync(path.join(repoB, 'src', 'b.ts'), fileB);
+    initializeGit(repoA, 'https://github.com/acme/repo-a.git');
+    initializeGit(repoB, 'https://github.com/acme/repo-b.git');
+
+    await extractCodebase({ path: repoA, outputRoot: output, project: 'repo-a', json: true, skipEnrich: true });
+    await extractCodebase({ path: repoB, outputRoot: output, project: 'repo-b', json: true, skipEnrich: true });
+    const changedA = 'export class Alpha { value() { return "updated"; } }\n';
+    fs.writeFileSync(path.join(repoA, 'src', 'a.ts'), changedA);
+    await extractCodebase({
+      path: repoA,
+      outputRoot: output,
+      project: 'repo-a',
+      json: true,
+      skipEnrich: true,
+      incremental: true,
+    });
+
+    const wikiRoot = path.join(output, 'teamwiki');
+    const manifest = JSON.parse(fs.readFileSync(path.join(wikiRoot, 'evidence', 'code', 'repo-a', 'source-manifest.json'), 'utf8')) as {
+      files: Array<{ relativePath: string; sha256: string }>;
+    };
+    expect(manifest.files.map((file) => file.relativePath)).toEqual(['src/a.ts']);
+    expect(manifest.files[0]?.sha256).toBe(hashText(changedA));
+    const cachedFacts = JSON.parse(fs.readFileSync(path.join(wikiRoot, '.indices', 'facts-cache.json'), 'utf8')) as Array<{ file: string }>;
+    expect(new Set(cachedFacts.map((fact) => fact.file))).toEqual(new Set(['src/a.ts']));
+  });
+
+  it('treats malformed repository metadata as an unavailable incremental baseline', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-malformed-source-repo-'));
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-malformed-source-output-'));
+    temporaryDirectories.push(repo, output);
+    fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'app.ts'), 'export class App {}\n');
+    initializeGit(repo, 'https://github.com/acme/malformed.git');
+    const wikiRoot = path.join(output, 'teamwiki');
+    fs.mkdirSync(path.join(wikiRoot, 'evidence', 'code', 'malformed'), { recursive: true });
+    const malformed = { project: 'malformed', repoUrl: 42, repoIdentity: null, sourceSubdir: '', files: [] };
+    fs.writeFileSync(path.join(wikiRoot, 'source-manifest.json'), JSON.stringify(malformed));
+    fs.writeFileSync(path.join(wikiRoot, 'evidence', 'code', 'malformed', 'source-manifest.json'), JSON.stringify(malformed));
+
+    await expect(extractCodebase({
+      path: repo,
+      outputRoot: output,
+      project: 'malformed',
+      json: true,
+      skipEnrich: true,
+      incremental: true,
+    })).resolves.toBeUndefined();
+
+    const refreshed = JSON.parse(fs.readFileSync(path.join(wikiRoot, 'source-manifest.json'), 'utf8')) as {
+      repoIdentity?: string;
+      files?: Array<{ relativePath: string }>;
+    };
+    expect(refreshed.repoIdentity).toBe(repoIdentity('https://github.com/acme/malformed.git'));
+    expect(refreshed.files?.map((file) => file.relativePath)).toEqual(['src/app.ts']);
+  });
+
+  it('refuses to write codebase sidecars through an evidence directory junction outside teamwiki', async ({ skip }) => {
+    const source = createWidgetFixture();
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-sidecar-output-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-sidecar-outside-'));
+    temporaryDirectories.push(output, outside);
+    await extractCodebase({ path: source, outputRoot: output, project: 'widget', json: true, skipEnrich: true });
+
+    const evidenceDir = path.join(output, 'teamwiki', 'evidence', 'code', 'widget');
+    fs.rmSync(evidenceDir, { recursive: true, force: true });
+    try {
+      fs.symlinkSync(outside, evidenceDir, 'junction');
+    } catch {
+      skip();
+      return;
+    }
+
+    await expect(extractCodebase({
+      path: source,
+      outputRoot: output,
+      project: 'widget',
+      json: true,
+      skipEnrich: true,
+    })).rejects.toThrow(/Path traversal detected/);
+    expect(fs.existsSync(path.join(outside, 'overview.md'))).toBe(false);
+    expect(fs.existsSync(path.join(outside, 'source-manifest.json'))).toBe(false);
   });
 
   it('writes a fallback when AI enrich is attempted and fails', async () => {

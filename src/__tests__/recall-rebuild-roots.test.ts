@@ -351,17 +351,45 @@ describe('recall rebuilding an older-format index with a team manifest it cannot
     expect(index.entries.map((e: { filename: string }) => e.filename).sort())
       .toEqual(Array.from({ length: 10 }, (_, i) => `note-${i}.md`).sort());
     expect(warnings()).toContainEqual(expect.stringContaining('Recall indexed learnings only'));
-    expect(warnings()).not.toContainEqual(expect.stringContaining('Index rebuild skipped'));
   });
-  it('keeps the shrink guard when the manifest reads and the rebuild is not partial', async () => {
+  it('replaces the older index when the manifest reads, however much smaller the rebuild is (#1006)', async () => {
     fs.rmSync(path.join(repo(), 'manifest', 'roles.yaml'));
 
     await recall('retry budget', {});
 
     const index = JSON.parse(fs.readFileSync(indexPath(), 'utf8'));
-    expect(index.entries).toHaveLength(100);
-    expect(warnings()).toContainEqual(expect.stringContaining('Index rebuild skipped'));
+    const filenames: string[] = index.entries.map((e: { filename: string }) => e.filename);
+    expect(filenames.filter((name) => name.startsWith('stale-'))).toEqual([]);
+    expect(filenames).toEqual(expect.arrayContaining(Array.from({ length: 10 }, (_, i) => `note-${i}.md`)));
+    expect(warnings()).not.toContainEqual(expect.stringContaining('Search index'));
   });
+
+  it('replaces the older index when no source directory is left (#1006)', async () => {
+    fs.rmSync(path.join(repo(), 'learnings'), { recursive: true });
+    fs.rmSync(path.join(repo(), 'rules'), { recursive: true });
+
+    await recall('retry budget', {});
+
+    expect(JSON.parse(fs.readFileSync(indexPath(), 'utf8')).entries).toEqual([]);
+  });
+
+  // Root reads a file whatever its mode.
+  it.skipIf(process.getuid?.() === 0).each([false, true])(
+    'searches nothing, not the older index, when none of the learnings left can be read (dry run: %s)',
+    async (dryRun) => {
+      for (let i = 0; i < 10; i++) fs.chmodSync(path.join(repo(), 'learnings', `note-${i}.md`), 0o000);
+      const out: string[] = [];
+      const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out.push(String(chunk)); return true; });
+      try {
+        await recall('retry budget', { dryRun });
+      } finally {
+        write.mockRestore();
+      }
+
+      expect(out.join('')).not.toContain('stale');
+      expect(warnings()).toContainEqual(expect.stringMatching(/^Search index could not read 10 path\(s\) \(.*EACCES/));
+    },
+  );
 
   // The atomic index write (#854) stages a temp sibling and renames it into
   // place, so a read-only index file no longer fails the write — rename needs
@@ -389,5 +417,59 @@ describe('recall rebuilding an older-format index with a team manifest it cannot
     expect(warnings()).toContainEqual(expect.stringMatching(
       /Recall could not build the user search index: .*EACCES[\s\S]*skips[\s\S]*teamai pull/,
     ));
+  });
+
+  it('searches nothing, not the older index, and removes it when the index cannot be written (#1006)', async () => {
+    fs.rmSync(path.join(repo(), 'manifest', 'roles.yaml'));
+    const out: string[] = [];
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out.push(String(chunk)); return true; });
+    const realWriteFile = fse.writeFile;
+    const failIndexWrites = vi.spyOn(fse, 'writeFile').mockImplementation(async (file: unknown, data: unknown) => {
+      if (typeof file !== 'string' || typeof data !== 'string') throw new Error('unexpected writeFile call in test');
+      if (file === indexPath() || file.startsWith(`${indexPath()}.`)) {
+        throw Object.assign(new Error(`ENOSPC: no space left on device, open '${file}'`), { code: 'ENOSPC' });
+      }
+      return realWriteFile(file, data, 'utf-8');
+    });
+    try {
+      await recall('retry budget', {});
+    } finally {
+      write.mockRestore();
+      failIndexWrites.mockRestore();
+    }
+
+    expect(out.join('')).not.toContain('stale');
+    expect(fs.existsSync(indexPath())).toBe(false);
+    expect(warnings()).toContainEqual(`Search index could not be written to ${indexPath()} (ENOSPC); the previous one was removed. `
+      + 'Fix the cause and run `teamai pull` to build it again.');
+  });
+});
+
+/**
+ * An index that exists and holds nothing is what pull leaves once the member
+ * receives nothing recall indexes (#1006). Telling them to pull first sends
+ * them to the command they just ran.
+ */
+describe('recall with an empty index (#1006)', () => {
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-recall-empty-'));
+    process.env.HOME = tmp;
+    vi.mocked(log.info).mockClear();
+  });
+
+  afterEach(() => {
+    process.env.HOME = realHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('says the index is empty instead of asking for a pull', async () => {
+    const { buildIndex } = await import('../utils/search-index.js');
+    await buildIndex({ learningsDirs: [], indexPath: path.join(tmp, '.teamai', 'search-index.json') });
+
+    await recall('retry budget', {});
+
+    expect(vi.mocked(log.info).mock.calls.map(([message]) => String(message))).toEqual([
+      'The search index is empty: nothing you receive from the team is indexed. `teamai pull` rebuilds it when that changes.',
+    ]);
   });
 });

@@ -206,7 +206,7 @@ describe('doctor checks the hook or extension that adds the project rules (#946)
   }
   const find = async (enabled: string[], name: string) => (await checks(enabled)).find((c) => c.name === name);
 
-  const ZCODE = 'Project rules reach zcode through its SessionStart hook';
+  const ZCODE = 'The teamai SessionStart hook is registered and enabled for zcode';
   const DSH = 'Project rules reach dsh through its session-start hook';
   const PI = 'pi adds the team instructions and rules to its prompt';
 

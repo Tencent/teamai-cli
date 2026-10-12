@@ -550,6 +550,11 @@ function sessionStartDispatches(eventMap: unknown): string[] {
  * through the patch, which the member passes to dsh (`ruleChannelNotes`).
  * Pi's extension is checked with the team instructions it also carries
  * (`buildInstructionDeliveryChecks`).
+ *
+ * The ZCode check is a registration check, not a delivery check: it reads the
+ * two things ZCode itself reads off the config, and nothing in that file tells
+ * it whether the hook's output actually reaches a session (#1030). Its name and
+ * fixes say so.
  */
 async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, teamConfig } = ctx;
@@ -567,18 +572,18 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
     const registered = sessionStartDispatches(hooks?.events).length > 0;
     const enabled = hooks?.enabled === true;
     checks.push({
-      name: 'Project rules reach zcode through its SessionStart hook',
+      name: 'The teamai SessionStart hook is registered and enabled for zcode',
       source: 'local',
       check: async () => registered && enabled,
       fix: read.kind === 'invalid'
-        ? `${file} is not valid JSON (${read.error}), so ZCode loads none of its hooks and sessions in this project `
-          + 'get none of the team rules. Fix the file by hand (teamai does not rewrite a file it cannot parse), then run '
-          + '`teamai hooks inject`.'
+        ? `${file} is not valid JSON (${read.error}), so ZCode reads no hooks from it: the teamai SessionStart hook `
+          + 'is neither registered nor enabled, and sessions in this project get none of the team rules. Fix the file '
+          + 'by hand (teamai does not rewrite a file it cannot parse), then run `teamai hooks inject`.'
         : !registered
-          ? `${file} has no teamai SessionStart hook, so ZCode sessions in this project get none of the team rules: `
+          ? `${file} registers no teamai SessionStart hook, so sessions in this project get none of the team rules: `
             + `ZCode runs only the hooks in this file, none from a project. ${inject}`
-          : `${file} sets hooks.enabled to something other than true, so ZCode runs none of its hooks and sessions in `
-            + 'this project get none of the team rules. Run `teamai hooks inject`, which turns them on.',
+          : `${file} sets hooks.enabled to something other than true, so ZCode runs none of the hooks it registers, `
+            + 'and sessions in this project get none of the team rules. Run `teamai hooks inject`, which turns them on.',
     });
   }
 

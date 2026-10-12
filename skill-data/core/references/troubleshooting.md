@@ -12,6 +12,15 @@ teamai doctor
 It checks provider config, hooks, paths, and package/plugin status. Fix what it
 reports before anything else.
 
+## "Cannot acquire lock <path>: <reason>"
+
+The lock could not be inspected, created or reclaimed, including during a
+dry-run preview. Fix the filesystem error named in
+the message (permissions, a full disk, or a parent path that is a file), then
+retry; waiting for another process does not fix it. Ordinary contention still
+uses the command's busy/skip message. An existing permission-denied or ownerless lock
+is treated as held: remove it only after confirming no teamai process uses it.
+
 ## "My skills / rules aren't showing up"
 
 This is the #1 onboarding issue. In order:
@@ -67,7 +76,8 @@ This is the #1 onboarding issue. In order:
    variable names is not the one this config syncs to. Re-run
    `teamai init` from a shell that has the variable exported; it records the root
    and moves the install. If the check says the value cannot be synced to (outside
-   your home, or nested deeper than `~/.config/<name>`), fix the variable first.
+   your home, or neither a plain directory in it nor one under `.config/`), fix the
+   variable first.
 6. **A command reports a broken manifest** (`Invalid roles manifest…`,
    `Invalid projects manifest…`, `Invalid manifests…`, or `…manifest … could not
    be read`). `pull` skips that scope on purpose, since syncing without the
@@ -206,7 +216,7 @@ broken machine):
 | Claude Code (`claude`)| Installed                 | Fully supported — this is the main, working path                    |
 | Codex                 | Installed and trusted     | Codex runs only trusted hooks; teamai trusts the ones it writes through `codex app-server`, and `teamai doctor` names any Codex will not run |
 | Cursor                | Installed                 | Also runs `~/.claude/settings.json`. That copy exits only when `~/.cursor/hooks.json` or the project `.cursor/hooks.json` contains `--tool cursor` |
-| Copilot CLI           | Installed in self mode    | Also runs a trusted project's `.claude/settings.json`. That copy exits only when `.github/hooks/teamai.json` contains `--tool copilot`. `COPILOT_CLI` alone does not skip |
+| Copilot CLI           | Installed                 | Built-ins use `$COPILOT_HOME/hooks/teamai.json` (default `~/.copilot/hooks/teamai.json`); self mode keeps them in the project. Claude built-ins exit for a valid, enabled version-1 file, global or project, with a `--tool copilot` command; self mode checks only the project directory. A Claude team hook exits only when a valid, enabled project version-1 file delivers the same command to Copilot for the same event and matcher. `COPILOT_CLI` alone does not skip |
 | CodeBuddy / WorkBuddy | Installed                 | Claude-format hooks in their own `settings.json`                    |
 
 Practical rule: if you set up with `--agent claude`, expect **only** Claude to show
@@ -250,7 +260,9 @@ Cursor writes hooks to `~/.cursor/hooks.json` and also runs `~/.claude/settings.
 
 ### Copilot CLI
 
-In self mode, teamai writes hooks into the project, and Copilot CLI runs a trusted project's `.claude/settings.json` as well as its own `.github/hooks/teamai.json`. `hook-dispatch --tool claude` and team hook commands written for `claude` exit only when `COPILOT_PROJECT_DIR` is set and that file contains `--tool copilot`. `COPILOT_CLI` is not a signal: Copilot sets it on every subprocess, including a Claude session started from its shell. Copilot does not run `~/.claude/settings.json`, so this duplicate does not happen outside self mode. Re-run `teamai pull` or `teamai hooks inject` so an already installed team hook picks up the guard.
+Built-in hooks use `$COPILOT_HOME/hooks/teamai.json` (default `~/.copilot/hooks/teamai.json`) for normal project installs. Custom team hooks stay in `.github/hooks/teamai.json`; self mode keeps built-ins there too. The next `init`, `pull`, or `hooks inject` migrates each project’s generated built-ins, preserving unrelated hooks. Self sessions skip the global copy. Otherwise each event runs once among the copies a session loaded (global files under any name, or a legacy project command a running host still holds): the first copy claims the event under `~/.teamai/copilot-hook-claims/` and the others exit. A payload without a `timestamp`, or a claim that cannot be written, runs every loaded copy. A cached copy stops once no enabled JSON file Copilot loads holds its built-in: a global copy checks `$COPILOT_HOME/hooks/`, and a legacy project copy checks that directory and its project’s `.github/hooks/`. Hook dispatch uses the working directory’s project config, including its `builtin.disabled`; `builtin.overrides` timeouts do not apply to the shared file. A custom hooks filename keeps its name in `$COPILOT_HOME/hooks/`. Project uninstall preserves the shared global hooks; `hooks remove` removes the built-ins from every JSON file in `$COPILOT_HOME/hooks/`, including filenames other projects configured.
+
+Copilot CLI runs a trusted project's `.claude/settings.json` as well as its own `.github/hooks/teamai.json`. `hook-dispatch --tool claude` exits only when `COPILOT_PROJECT_DIR` is set and a valid version-1 hook file without `disableAllHooks`, in the project or global hook directory, has a command containing `--tool copilot`; self mode checks only the project directory. A team hook command written for `claude` exits only when an active version-1 JSON file in `$COPILOT_PROJECT_DIR/.github/hooks/` holds the same command for the same event and matcher, so a hook the project sends only to Claude, or to Copilot for another event or matcher, keeps running. `COPILOT_CLI` is not a signal: Copilot sets it on every subprocess, including a Claude session started from its shell. Copilot does not run `~/.claude/settings.json`. Re-run `teamai pull` or `teamai hooks inject` so an already installed team hook picks up the guard.
 
 ### ChatGPT App
 

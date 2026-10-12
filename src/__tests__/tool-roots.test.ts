@@ -12,6 +12,7 @@ import {
   resolveHookScope,
   resolveToolRootDir,
   scopedToolPaths,
+  toolGateRoot,
   toolInstallRoot,
   type LocalConfig,
   type TeamaiConfig,
@@ -105,6 +106,34 @@ describe('toolRoots — re-rooting a relocated tool', () => {
     }));
     expect(paths.claude.skills).toBe('.config/claude-work/skills');
     expect(toolInstallRoot('.config/claude-work/settings.json')).toBe('.config/claude-work');
+  });
+
+  it('accepts a root nested below ~/.config/<name>', () => {
+    // The shape a per-directory profile manager produces: CLAUDE_CONFIG_DIR
+    // points several levels down, still under .config.
+    const paths = scopedToolPaths(teamConfig, localConfig({
+      toolRoots: { claude: path.join(home, '.config', 'cloak', 'profiles', 'work', 'claude') },
+    }));
+
+    expect(paths.claude.skills).toBe('.config/cloak/profiles/work/claude/skills');
+    expect(paths.claude.settings).toBe('.config/cloak/profiles/work/claude/settings.json');
+    expect(paths.claude.claudemd).toBe('.config/cloak/profiles/work/claude/CLAUDE.md');
+    // The gate still addresses the root: it keys on `.config/<name>`, which is
+    // on the recorded root's own path, not on an unrelated directory.
+    expect(toolInstallRoot('.config/cloak/profiles/work/claude/settings.json')).toBe('.config/cloak');
+  });
+
+  it('still refuses a nested root that is not under ~/.config', () => {
+    // `toolInstallRoot` would fall back to the bare first segment here, so the
+    // gate would probe a directory unrelated to the tool.
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const paths = scopedToolPaths(teamConfig, localConfig({
+      toolRoots: { claude: path.join(home, '.local', 'share', 'claude') },
+    }));
+
+    expect(paths.claude).toEqual(teamConfig.toolPaths.claude);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('~/.config/<name>');
   });
 
   it('refuses a root nested deeper than the gate can look for', () => {
@@ -445,7 +474,7 @@ describe('hook injection with a relocated root', () => {
     const { injectHooksToAllTools } = await import('../hooks.js');
     const config = localConfig({ toolRoots: { claude: path.join(home, '.claude-work') } });
 
-    await injectHooksToAllTools(hookScopedPaths(config), home, ['claude']);
+    await injectHooksToAllTools(hookScopedPaths(config), home, ['claude'], config.toolRoots);
 
     const settings = await fse.readJson(path.join(home, '.claude-work', 'settings.json'));
     expect(JSON.stringify(settings)).toContain('teamai hook-dispatch');
@@ -457,10 +486,135 @@ describe('hook injection with a relocated root', () => {
     const { injectHooksToAllTools } = await import('../hooks.js');
     const config = localConfig({ toolRoots: { codex: path.join(home, '.codex-alt') } });
 
-    await injectHooksToAllTools(hookScopedPaths(config), home, ['codex']);
+    await injectHooksToAllTools(hookScopedPaths(config), home, ['codex'], config.toolRoots);
 
     const hooks = await fse.readJson(path.join(home, '.codex-alt', 'hooks.json'));
     expect(JSON.stringify(hooks)).toContain('teamai hook-dispatch');
     expect(await fse.pathExists(path.join(home, '.codex'))).toBe(false);
+  });
+
+  it('injects hooks into a root nested below ~/.config/<name>', async () => {
+    // Only the recorded root exists, several levels down (issue #1010): the
+    // gate has to pass on what it can see on that path, and the settings file
+    // has to land where the tool actually reads it.
+    const deep = path.join(home, '.config', 'cloak', 'profiles', 'work', 'claude');
+    await fse.ensureDir(deep);
+    const { injectHooksToAllTools } = await import('../hooks.js');
+    const config = localConfig({ toolRoots: { claude: deep } });
+
+    await injectHooksToAllTools(hookScopedPaths(config), home, ['claude'], config.toolRoots);
+
+    const settings = await fse.readJson(path.join(deep, 'settings.json'));
+    expect(JSON.stringify(settings)).toContain('teamai hook-dispatch');
+    expect(await fse.pathExists(path.join(home, '.claude'))).toBe(false);
+  });
+
+  // The pair below differs in one variable only — whether the recorded root
+  // itself exists. The gate has to answer "installed" for one and "not
+  // installed" for the other, or it is reading something other than the root.
+  it('leaves a nested root alone when only its .config/<name> ancestor exists', async () => {
+    // `~/.config/cloak` exists for the profile manager itself, while the
+    // recorded root below it was deleted or is mistyped. Reading the two-segment
+    // prefix would call Claude installed and recreate the whole stale path.
+    const deep = path.join(home, '.config', 'cloak', 'profiles', 'work', 'claude');
+    await fse.ensureDir(path.join(home, '.config', 'cloak'));
+    const { injectHooksToAllTools } = await import('../hooks.js');
+    const config = localConfig({ toolRoots: { claude: deep } });
+
+    await injectHooksToAllTools(hookScopedPaths(config), home, ['claude'], config.toolRoots);
+
+    expect(await fse.pathExists(deep)).toBe(false);
+    // The ancestor that was already there is left exactly as it was.
+    expect(await fse.readdir(path.join(home, '.config', 'cloak'))).toEqual([]);
+  });
+
+  it('does not reconcile hooks for a nested root whose recorded directory is gone', async () => {
+    // The pull path goes through reconcileHooksToAllTools, not injectHooksToAllTools.
+    const deep = path.join(home, '.config', 'cloak', 'profiles', 'work', 'claude');
+    await fse.ensureDir(path.join(home, '.config', 'cloak'));
+    const { reconcileHooksToAllTools } = await import('../hooks.js');
+    const config = localConfig({ toolRoots: { claude: deep } });
+
+    await reconcileHooksToAllTools(
+      hookScopedPaths(config), home, [], path.join(home, 'managed-hooks.json'), { toolRoots: config.toolRoots },
+    );
+
+    expect(await fse.pathExists(deep)).toBe(false);
+  });
+});
+
+describe('toolGateRoot — the directory the installed-tool gate reads', () => {
+  let home: string;
+  let originalHome: string | undefined;
+
+  beforeEach(async () => {
+    originalHome = process.env.HOME;
+    home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-gate-root-'));
+    process.env.HOME = home;
+  });
+
+  afterEach(async () => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    await fse.remove(home);
+    vi.restoreAllMocks();
+  });
+
+  it('reads the recorded root, which the path shape cannot express', () => {
+    const roots = { claude: path.join(home, '.config', 'cloak', 'profiles', 'work', 'claude') };
+    const settings = '.config/cloak/profiles/work/claude/settings.json';
+
+    expect(toolGateRoot('claude', settings, roots)).toBe('.config/cloak/profiles/work/claude');
+    // What the shape alone would have said — and why the record is needed.
+    expect(toolInstallRoot(settings)).toBe('.config/cloak');
+  });
+
+  it('agrees with the path shape whenever the two can agree', () => {
+    // A relocated root outside .config/, a two-segment .config/<name> root, and
+    // a tool with no record at all: unchanged in every case.
+    expect(toolGateRoot('claude', '.claude-work/settings.json', { claude: path.join(home, '.claude-work') }))
+      .toBe('.claude-work');
+    expect(toolGateRoot('claude', '.config/cloak/settings.json', { claude: path.join(home, '.config', 'cloak') }))
+      .toBe('.config/cloak');
+    expect(toolGateRoot('claude', '.claude/skills', undefined)).toBe('.claude');
+    expect(toolGateRoot('opencode', '.config/opencode/skills', undefined)).toBe('.config/opencode');
+  });
+
+  it('ignores the record when the path does not hang off it', () => {
+    // Project scope reuses the same toolPaths unrelocated, so a HOME-relative
+    // member root must not be spliced into a project-root-relative path.
+    const roots = { claude: path.join(home, '.config', 'cloak', 'profiles', 'work', 'claude') };
+    expect(toolGateRoot('claude', '.claude/settings.json', roots)).toBe('.claude');
+  });
+
+  it('ignores a record the tool may not relocate', () => {
+    // The bad entry is diagnosed where it is applied; the gate just falls back.
+    vi.spyOn(log, 'warn').mockImplementation(() => {});
+    expect(toolGateRoot('opencode', '.config/opencode/skills', { opencode: path.join(home, '.config', 'opencode-work') }))
+      .toBe('.config/opencode');
+  });
+
+  it('skips a two-segment root that is missing, as it always did', async () => {
+    // The control for the nested case, one depth shallower and with a clean
+    // HOME: nothing to probe, so nothing is created.
+    const { injectHooksToAllTools } = await import('../hooks.js');
+    const config = localConfig({ toolRoots: { claude: path.join(home, '.claude-work') } });
+
+    await injectHooksToAllTools(hookScopedPaths(config), home, ['claude'], config.toolRoots);
+
+    expect(await fse.pathExists(path.join(home, '.claude-work'))).toBe(false);
+  });
+
+  it('is what isToolInstalledForConfig probes, as a single-variable pair', async () => {
+    const { isToolInstalledForConfig } = await import('../resources/base.js');
+    const deep = path.join(home, '.config', 'cloak', 'profiles', 'work', 'claude');
+    const settings = '.config/cloak/profiles/work/claude/settings.json';
+    await fse.ensureDir(path.join(home, '.config', 'cloak'));
+    const config = localConfig({ toolRoots: { claude: deep } });
+
+    // Only the recorded root's presence changes between these two assertions.
+    expect(await isToolInstalledForConfig('claude', settings, config)).toBe(false);
+    await fse.ensureDir(deep);
+    expect(await isToolInstalledForConfig('claude', settings, config)).toBe(true);
   });
 });

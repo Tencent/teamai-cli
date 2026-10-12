@@ -30,6 +30,8 @@ import { log, setSilent, setStderrOnly } from './utils/logger.js';
 import { clearGitHookRepositoryEnv, GIT_HOOK_TOOL } from './git-hook.js';
 import { deriveDispatchSessionId } from './utils/session-id.js';
 import { claudeHookRunsInAnotherHost } from './claude-hook-host.js';
+import { claimCopilotHookEvent } from './copilot-hook-claim.js';
+import { isSelfMode } from './types.js';
 
 export { claudeHookRunsInAnotherHost };
 
@@ -415,11 +417,11 @@ export async function hookDispatchCli(
   event: string,
   tool: string,
   matcher: string,
-  options: { bgOnly?: boolean; stdinFile?: string; hookArgs?: string[] } = {},
+  options: { bgOnly?: boolean; copilotGlobal?: string; stdinFile?: string; hookArgs?: string[] } = {},
 ): Promise<void> {
   const { bgOnly = false, stdinFile } = options;
   setStderrOnly(true);
-  if (claudeHookRunsInAnotherHost(tool)) {
+  if (claudeHookRunsInAnotherHost(tool, process.env, false)) {
     log.debug('hook-dispatch: skipping claude hooks because Cursor or Copilot CLI has its own teamai hooks');
     return;
   }
@@ -463,6 +465,21 @@ export async function hookDispatchCli(
       }
     }
     const localConfig = await resolveHookConfig(stdin, tool);
+    // A self project's overrides and local hooks remain authoritative where
+    // Copilot loaded them, so the global built-ins step aside there.
+    const copilotProject = process.env.COPILOT_PROJECT_DIR?.trim();
+    const selfRoot = localConfig?.scope === 'project' && isSelfMode(localConfig) ? localConfig.projectRoot : undefined;
+    const selfCopilotCopyLoaded = !!selfRoot && (!copilotProject || await import('./hooks.js')
+      .then(({ canonicalProjectRoot }) => canonicalProjectRoot(copilotProject) === canonicalProjectRoot(selfRoot)));
+    // Where the global copy steps aside, it is no replacement for the local Claude copy.
+    if (claudeHookRunsInAnotherHost(tool, process.env, !selfCopilotCopyLoaded)) return;
+    if (!bgOnly && tool === 'copilot') {
+      if (options.copilotGlobal && selfCopilotCopyLoaded) return;
+      const { copilotBuiltinDisabled, copilotBuiltinInstalled } = await import('./hooks.js');
+      if (!await copilotBuiltinInstalled(event, matcher, options.copilotGlobal ? null : localConfig)) return;
+      if (await copilotBuiltinDisabled(localConfig, event, matcher)) return;
+      if (!claimCopilotHookEvent(event, matcher, raw)) return;
+    }
     const handlers = filterHandlersForConfig(buildHandlerRegistry(), localConfig);
     const dispatcher = createDispatcher({ handlers, localConfig });
 

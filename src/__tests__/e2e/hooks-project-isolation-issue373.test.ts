@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { CLAUDE_HOOK_OTHER_HOST_SKIP } from '../../hooks.js';
+import { claudeHookOtherHostSkip } from '../../hooks.js';
 import { projectSlug } from '../../utils/partition.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -34,7 +34,7 @@ describe('issue #373 project hook isolation (real CLI)', () => {
 
   type Settings = { hooks: { SessionStart?: Array<unknown>; Stop: Array<{ description?: string; hooks: Array<{ command: string }> }> } };
   const expectedCommand = (file: string, command: string): string =>
-    file.includes('.claude') ? `${CLAUDE_HOOK_OTHER_HOST_SKIP}${command}` : command;
+    file.includes('.claude') ? `${claudeHookOtherHostSkip('Stop', undefined, command)}${command}` : command;
   const readSettings = (file: string): Settings => JSON.parse(fs.readFileSync(file, 'utf8')) as Settings;
   const mainFiles = (project: string): string[] => [
     path.join(project, '.claude', 'settings.local.json'),

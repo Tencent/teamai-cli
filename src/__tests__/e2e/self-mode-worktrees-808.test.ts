@@ -1507,12 +1507,14 @@ describe('a checkout an older git-mode install left (#808)', () => {
     const index = path.join(partitionOf(install), 'search-index.json');
     fs.writeFileSync(index, '{"version":6,"entries":[],"built":"team-a"}\n');
 
-    // The same team repo written another way changes nothing.
+    // The same team repo written another way changes nothing: the index stays
+    // team A's, rebuilt from what team A delivers, its queued note included (#1006).
     const initSame = await runCLI(['init', teamA.url.replace(/\.git$/, '/'), '--scope', 'project', '--force'], projectRoot, home);
     expect(initSame.code, initSame.output).toBe(0);
     expect(initSame.output).not.toContain('Set aside');
     expect(partitionQueue(install)).toContain(name);
-    expect(fs.readFileSync(index, 'utf8')).toContain('"built":"team-a"');
+    const indexed = (JSON.parse(fs.readFileSync(index, 'utf8')) as { entries: Array<{ filename: string }> }).entries;
+    expect(indexed.map((entry) => entry.filename)).toContain(name);
 
     const initB = await runCLI(['init', teamB.url, '--scope', 'project', '--force'], projectRoot, home);
     expect(initB.code, initB.output).toBe(0);
