@@ -28,7 +28,7 @@ import { log } from './utils/logger.js';
 import { captureTail, detachChild } from './utils/exec.js';
 import { assertSafePath } from './utils/path-safety.js';
 import { redactWithEnv } from './utils/redact.js';
-import type { TeamaiConfig } from './types.js';
+import type { LocalConfig, TeamaiConfig } from './types.js';
 
 /** Output kept from a failed script, for its log line. */
 const TAIL_CHARS = 400;
@@ -71,7 +71,10 @@ function resolvePostPullScript(teamConfig: TeamaiConfig, repoPath: string): stri
  */
 export async function runDeclaredPostPull(
   repoPath: string,
-  { interactive = false, env }: { interactive?: boolean; env?: NodeJS.ProcessEnv } = {},
+  {
+    interactive = false,
+    localConfig,
+  }: { interactive?: boolean; localConfig?: LocalConfig } = {},
 ): Promise<void> {
   try {
     const teamConfig = await loadTeamConfig(repoPath);
@@ -88,6 +91,12 @@ export async function runDeclaredPostPull(
     // must not be able to point it outside its own clone, symlinks included.
     // Checked after existence so the common missing case skips the walk.
     assertSafePath(scriptPath, [repoPath]);
+    // Checkout identity is resolved only once a script will actually run.
+    // Pull tests replace utils/git.js and never declare a script; asking the
+    // resolver on every pull fails those mocks.
+    const env = localConfig
+      ? await (await import('./team-scripts.js')).teamScriptEnv(localConfig)
+      : undefined;
     if (interactive) {
       runPostPullInteractive(scriptPath, repoPath, env);
     } else {

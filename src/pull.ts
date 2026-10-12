@@ -75,7 +75,7 @@ import { acquireLock, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
 import { runDeclaredPostPull } from './post-pull.js';
-import { runTeamScript, teamScriptEnv } from './team-scripts.js';
+import { runTeamScript } from './team-scripts.js';
 import {
   applyDeliveredGitExclude, createDeliveryRecorder, deliveredUnion, describeForeign, describeUnreadableGitExcludeSetting,
   type DeliveryRecorder, type GitExcludePaths, type ListedCheckout, type WriterId,
@@ -3029,7 +3029,7 @@ export async function pull(
   if (!options.dryRun && !options.inline && postPullRepo) {
     await runDeclaredPostPull(postPullRepo, {
       interactive: options.interactive === true,
-      env: scriptOwner ? await teamScriptEnv(scriptOwner) : undefined,
+      localConfig: scriptOwner ?? undefined,
     });
   }
 }
