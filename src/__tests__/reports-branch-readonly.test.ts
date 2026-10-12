@@ -291,7 +291,7 @@ describe('updateReports', () => {
   it('does not run the write callback when another reports write holds the lock', async () => {
     const write = vi.fn();
 
-    expect(await updateReports(config, write)).toBe(false);
+    expect(await updateReports(config, write)).toEqual({ status: 'busy' });
 
     expect(write).not.toHaveBeenCalled();
     expect(releaseLock).not.toHaveBeenCalled();

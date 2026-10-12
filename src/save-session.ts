@@ -143,9 +143,10 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
     const spin = spinner('Pushing session summary to team...').start();
     try {
       const { updateReports } = await import('./utils/reports-branch.js');
+      const { isPublished } = await import('./utils/branch-worktree.js');
       let rel: string | undefined;
       let ran = false;
-      const pushed = await withTimeout(
+      const pushed = isPublished(await withTimeout(
         updateReports(localConfig, async (wt) => {
           ran = true;
           const teamDir = path.join(wt, 'sessions', username);
@@ -156,7 +157,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
         }),
         10_000,
         'Push timeout (10s)',
-      );
+      ));
       if (ran && !rel) {
         spin.info('Session already present in the team log — nothing to push.');
         return;

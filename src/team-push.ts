@@ -16,7 +16,7 @@ import {
 import { writeFile, readFileSafe, ensureDir, pathExists, readJson, writeJson } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type {
-  UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig, RequestCostMetrics,
+  UserStats, UserInterventionStats, SessionMetrics, TokenUsage, DashboardEvent, LocalConfig, RequestCostMetrics, UserVotesV2,
 } from './types.js';
 import { getVotesDir, getDataHome, getReportsDir, emptyTokenUsage, addTokenUsage, usesBranchWorktree } from './types.js';
 import { filterEventsByScope, runsOfLog } from './dashboard-scope.js';
@@ -970,7 +970,10 @@ export async function reportUsageToTeam(
         ? `[teamai] Update session stats for ${username}`
         : `[teamai] Update votes for ${username}`;
 
-    const writeReportFiles = async (writeRoot: string): Promise<void> => {
+    const writeReportFiles = async (
+      writeRoot: string,
+      votesStaged?: { syncedDeltas?: UserVotesV2['deltas'] },
+    ): Promise<void> => {
       // Process usage and/or intervention/prompt/token stats if anything is new to report.
       if (hasStats) {
         const statsDir = path.join(writeRoot, 'stats');
@@ -1005,13 +1008,33 @@ export async function reportUsageToTeam(
         filesToPush.push(`stats/${username}.yaml`);
       }
 
-      // Always stage pending local votes (V2 delta-aware merge)
+      // Always stage pending local votes (V2 delta-aware merge). Through the
+      // reports branch the deltas are NOT cleared here: they are cleared by
+      // confirmVotesSynced once the push is confirmed delivered (#1027), so a
+      // failed push or a crash keeps them pending instead of losing the sync
+      // trigger forever. The plain-clone path keeps the merge-and-clear shape.
       try {
         if (votesDir && await pathExists(votesDir)) {
-          const { syncVotesToTeam } = await import('./votes.js');
-          const synced = await syncVotesToTeam(writeRoot, username, votesDir);
-          if (synced) {
-            filesToPush.push(`votes/${username}.yaml`);
+          if (votesStaged) {
+            const { stageVotesMerge, readUserVotesFromContent } = await import('./votes.js');
+            const { readReportsOriginFile } = await import('./utils/reports-branch.js');
+            const origin = await readReportsOriginFile(writeRoot, `votes/${username}.yaml`);
+            const staged = await stageVotesMerge(
+              writeRoot,
+              username,
+              votesDir,
+              origin === null ? null : readUserVotesFromContent(origin),
+            );
+            if (staged) {
+              votesStaged.syncedDeltas = staged.syncedDeltas;
+              filesToPush.push(`votes/${username}.yaml`);
+            }
+          } else {
+            const { syncVotesToTeam } = await import('./votes.js');
+            const synced = await syncVotesToTeam(writeRoot, username, votesDir);
+            if (synced) {
+              filesToPush.push(`votes/${username}.yaml`);
+            }
           }
         }
       } catch (e) {
@@ -1032,11 +1055,21 @@ export async function reportUsageToTeam(
         return true;
       }
       const { updateReports } = await import('./utils/reports-branch.js');
-      const pushed = await updateReports(reportsConfig, async (wt) => {
+      const { isPublished } = await import('./utils/branch-worktree.js');
+      const votesStaged: { syncedDeltas?: UserVotesV2['deltas'] } = {};
+      const result = await updateReports(reportsConfig, async (wt, { onDelivered }) => {
         filesToPush.length = 0;
-        await writeReportFiles(wt);
+        await writeReportFiles(wt, votesStaged);
+        if (votesStaged.syncedDeltas) {
+          // Clear the staged deltas only once origin holds them, under the
+          // reports lock (see the votes-sync handler) — a busy lock, a failed
+          // push, or a crash keeps them pending for the next report (#1027).
+          onDelivered(() => import('./votes.js').then(({ confirmVotesSynced }) =>
+            confirmVotesSynced(path.join(votesDir!, `${username}.yaml`), votesStaged.syncedDeltas!)));
+        }
         return filesToPush.length > 0 ? { files: [...filesToPush], message: commitMsg } : null;
       }, { pushIfUnchanged: true });
+      const pushed = isPublished(result);
       if (!pushed) {
         log.debug('Auto-report push was not confirmed; keeping local report data');
         await restoreStats?.();

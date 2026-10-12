@@ -73,6 +73,16 @@ export function isPublished(result: PublishResult): boolean {
 }
 
 /**
+ * True when origin provably holds the data: `published`, or the exact content
+ * was already there (`already-present`). `busy` and `failed` are NOT delivery.
+ * Callers that keep a durable local copy until delivery (the votes deltas of
+ * #1027) may drop it exactly on this predicate.
+ */
+export function isDelivered(result: PublishResult): boolean {
+  return result.status === 'published' || result.status === 'already-present';
+}
+
+/**
  * Git repository that owns the worktree.
  * - self: the business repo (knowledge lives in `.teamai/` inside it)
  * - git: the dedicated team clone (`localPath` itself)
@@ -645,16 +655,33 @@ async function commitAndPushImpl(
 }
 
 /**
+ * Handed to an `update()` write callback as its second argument.
+ */
+export interface BranchWriteContext {
+  /**
+   * Register work that must run only after the publish is DELIVERED (see
+   * {@link isDelivered}) and still under the branch lock, before any other
+   * writer can enter. The one user today: clearing the local vote deltas a
+   * stage wrote into the worktree — running that clear outside the lock lets a
+   * concurrent sync stage the same deltas between this publish and the clear,
+   * adding them twice (#1027). Never runs on `busy`/`failed`, and an exception
+   * in it is logged, never failing the already-confirmed publish.
+   */
+  onDelivered(fn: () => Promise<void>): void;
+}
+
+/**
  * Under this branch's lock: sync the worktree with origin, run `write`, commit,
  * push. The callback does not run when the lock is busy.
  *
- * `write` receives the worktree root and returns the worktree-relative paths it
- * touched, or null when it decided there was nothing to write.
+ * `write` receives the worktree root (plus a context to register
+ * `onDelivered` work) and returns the worktree-relative paths it touched, or
+ * null when it decided there was nothing to write.
  */
 async function updateImpl(
   spec: BranchWorktreeSpec,
   localConfig: LocalConfig,
-  write: (worktree: string) => Promise<BranchWrite | null>,
+  write: (worktree: string, ctx: BranchWriteContext) => Promise<BranchWrite | null>,
   options: { pushIfUnchanged?: boolean } = {},
 ): Promise<PublishResult> {
   if (!usesBranchWorktree(localConfig)) {
@@ -675,11 +702,26 @@ async function updateImpl(
       log.debug(`[${spec.logTag}] sync before write failed, writing onto the local copy: ${(e as Error).message}`);
     }
 
-    const change = await write(wt);
+    let delivered: (() => Promise<void>) | undefined;
+    const change = await write(wt, {
+      onDelivered: (fn) => {
+        if (!delivered) delivered = fn;
+      },
+    });
+    let result: PublishResult;
     if (!change || change.files.length === 0) {
-      return { status: 'already-present' };
+      result = { status: 'already-present' };
+    } else {
+      result = await commitAndPushAt(spec, wt, change.message, change.files, options);
     }
-    return await commitAndPushAt(spec, wt, change.message, change.files, options);
+    if (delivered && isDelivered(result)) {
+      try {
+        await delivered();
+      } catch (e) {
+        log.debug(`[${spec.logTag}] onDelivered hook failed (deltas stay pending): ${(e as Error).message}`);
+      }
+    }
+    return result;
   } catch (e) {
     log.debug(`[${spec.logTag}] update failed (non-blocking): ${(e as Error).message}`);
     return failedWith(e);
@@ -1026,7 +1068,7 @@ export interface BranchWorktree {
   ensure(localConfig: LocalConfig, options?: EnsureWorktreeOptions): Promise<string>;
   update(
     localConfig: LocalConfig,
-    write: (worktree: string) => Promise<BranchWrite | null>,
+    write: (worktree: string, ctx: BranchWriteContext) => Promise<BranchWrite | null>,
     options?: { pushIfUnchanged?: boolean },
   ): Promise<PublishResult>;
   commitAndPush(

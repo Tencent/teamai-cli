@@ -146,6 +146,8 @@ vi.mock('../recall-adoption.js', () => ({
 const voteMocks = vi.hoisted(() => ({
   hasPendingVoteDeltas: vi.fn().mockResolvedValue(false),
   creditedDocIdsForSession: vi.fn().mockResolvedValue(new Set<string>()),
+  stageVotesMerge: vi.fn().mockResolvedValue(null),
+  confirmVotesSynced: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../votes.js', () => ({
   incrementUpvoted: mockIncrementUpvoted,
@@ -153,13 +155,18 @@ vi.mock('../votes.js', () => ({
   hasPendingVoteDeltas: (...args: unknown[]) => voteMocks.hasPendingVoteDeltas(...args),
   creditedDocIdsForSession: (...args: unknown[]) => voteMocks.creditedDocIdsForSession(...args),
   pruneUpvoteLedger: vi.fn().mockResolvedValue(undefined),
+  stageVotesMerge: (...args: unknown[]) => voteMocks.stageVotesMerge(...args),
+  confirmVotesSynced: (...args: unknown[]) => voteMocks.confirmVotesSynced(...args),
+  readUserVotesFromContent: vi.fn(() => ({ version: 2, votes: {}, deltas: {} })),
 }));
 
 const reportsBranchMocks = vi.hoisted(() => ({
-  updateReports: vi.fn().mockResolvedValue(true),
+  updateReports: vi.fn().mockResolvedValue({ status: 'published' }),
+  readReportsOriginFile: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../utils/reports-branch.js', () => ({
   updateReports: (...args: unknown[]) => reportsBranchMocks.updateReports(...args),
+  readReportsOriginFile: (...args: unknown[]) => reportsBranchMocks.readReportsOriginFile(...args),
 }));
 
 const mockSeedProjectAgentRoot = vi.fn().mockResolvedValue(undefined);
@@ -1341,13 +1348,27 @@ describe('hook-handlers registry', () => {
       (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
     )!.handler;
 
+    const syncedDeltas = { 'doc-a': { recalled_delta: 0, upvoted_delta: 1 } };
     voteMocks.hasPendingVoteDeltas.mockResolvedValueOnce(true);
-    mockSyncVotesToTeam.mockResolvedValueOnce(true);
+    voteMocks.stageVotesMerge.mockResolvedValueOnce({ syncedDeltas });
+    voteMocks.confirmVotesSynced.mockClear();
     reportsBranchMocks.updateReports.mockClear();
+    reportsBranchMocks.readReportsOriginFile.mockResolvedValueOnce(null);
     reportsBranchMocks.updateReports.mockImplementationOnce(
-      async (_cfg: unknown, write: (wt: string) => Promise<unknown>) => {
-        await write('/wt');
-        return true;
+      async (
+        _cfg: unknown,
+        write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<unknown>,
+      ) => {
+        const delivered: (() => Promise<void>)[] = [];
+        const change = await write('/wt', { onDelivered: (fn) => { delivered.push(fn); } });
+        // The staged write is what the branch publishes, and the deltas are
+        // cleared only after delivery (#1027): the confirm hook runs here.
+        expect(change).toEqual({
+          files: ['votes/test.yaml'],
+          message: '[teamai] Update votes for test',
+        });
+        for (const fn of delivered) await fn();
+        return { status: 'published' };
       },
     );
 
@@ -1357,7 +1378,40 @@ describe('hook-handlers registry', () => {
     );
 
     expect(reportsBranchMocks.updateReports).toHaveBeenCalledOnce();
-    expect(mockSyncVotesToTeam).toHaveBeenCalledWith('/wt', 'test', expect.any(String));
+    // The merge base is origin's snapshot, not the worktree copy (#1027).
+    expect(voteMocks.stageVotesMerge).toHaveBeenCalledWith('/wt', 'test', expect.any(String), null);
+    expect(voteMocks.confirmVotesSynced).toHaveBeenCalledWith(expect.any(String), syncedDeltas);
+  });
+
+  it('votes-sync keeps the deltas pending when the reports push is not delivered (#1027)', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+    )!.handler;
+
+    voteMocks.hasPendingVoteDeltas.mockResolvedValueOnce(true);
+    voteMocks.stageVotesMerge.mockResolvedValueOnce({ syncedDeltas: {} });
+    voteMocks.confirmVotesSynced.mockClear();
+    reportsBranchMocks.readReportsOriginFile.mockResolvedValueOnce(null);
+    reportsBranchMocks.updateReports.mockImplementationOnce(
+      async (
+        _cfg: unknown,
+        write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<unknown>,
+      ) => {
+        await write('/wt', { onDelivered: () => {} });
+        // Push failed after its retries: delivery never confirmed.
+        return { status: 'failed', reason: 'push did not land' };
+      },
+    );
+
+    await handler.execute(
+      { session_id: 'sid-push-failed', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
+      'claude', scope,
+    );
+
+    expect(voteMocks.stageVotesMerge).toHaveBeenCalledOnce();
+    // Not delivered → the deltas are NOT cleared; the next Stop retries them.
+    expect(voteMocks.confirmVotesSynced).not.toHaveBeenCalled();
   });
 
   // ── votes-sync adopted-summary is skipped for stdout-less tools ──

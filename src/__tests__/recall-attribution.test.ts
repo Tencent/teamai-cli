@@ -47,7 +47,9 @@ vi.mock('../code-knowledge-recall.js', () => ({ queryCodeKnowledge: vi.fn(async 
 // The opt-in judge's local-CLI verdict: every candidate it is sent was used.
 const { judgeAdoption } = vi.hoisted(() => ({ judgeAdoption: vi.fn(async (_reply: string, ids: string[]) => ids) }));
 vi.mock('../votes-judge.js', () => ({ judgeAdoption }));
-// A vote sync lands in a reports checkout beside the clone instead of being pushed.
+// A vote sync lands in a reports checkout beside the clone instead of being
+// pushed. The mock publishes immediately: the write lands, `onDelivered` hooks
+// run, and "origin" is that same directory's current content.
 vi.mock('../utils/reports-branch.js', async () => {
   const nodePath = await import('node:path');
   const nodeFs = await import('node:fs');
@@ -58,7 +60,18 @@ vi.mock('../utils/reports-branch.js', async () => {
     return dir;
   };
   return {
-    updateReports: vi.fn(async (config: LocalConfig, write: (wt: string) => Promise<unknown>) => (await write(checkout(config))) !== null),
+    updateReports: vi.fn(async (
+      config: LocalConfig,
+      write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<unknown>,
+    ) => {
+      const delivered: (() => Promise<void>)[] = [];
+      const change = await write(checkout(config), { onDelivered: (fn) => { delivered.push(fn); } });
+      if (change != null) for (const fn of delivered) await fn();
+      return { status: change != null ? 'published' : 'already-present' };
+    }),
+    readReportsOriginFile: vi.fn(async (wt: string, relPath: string) => {
+      try { return nodeFs.readFileSync(nodePath.join(wt, relPath), 'utf8'); } catch { return null; }
+    }),
     ensureReportsWorktree: vi.fn(async (config: LocalConfig) => checkout(config)),
     readableReportsWorktree: vi.fn(async (config: LocalConfig) => checkout(config)),
     indexableVotesDir: vi.fn(async (config: LocalConfig) => nodePath.join(checkout(config), 'votes')),

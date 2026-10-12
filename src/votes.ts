@@ -178,16 +178,25 @@ async function parseUserVotes(votePath: string): Promise<{ data: UserVotesV2; mi
   const empty = { data: { version: 2, votes: {}, deltas: {} } as UserVotesV2, migrated: false };
   const content = await readFileSafe(votePath);
   if (!content) return empty;
+  return parseUserVotesContent(content) ?? empty;
+}
 
+/**
+ * Parse raw YAML content (never a file) into the v2 shape, or null when it is
+ * empty/unparseable. Callers that read the file's content from git (see
+ * `readReportsOriginFile`) get the same v1 tolerance and never-write guarantee
+ * as {@link readUserVotes}.
+ */
+function parseUserVotesContent(content: string): { data: UserVotesV2; migrated: boolean } | null {
   let parsed: unknown;
   try {
     parsed = YAML.parse(content);
   } catch {
-    return empty;
+    return null;
   }
 
   if (!parsed || typeof parsed !== 'object') {
-    return empty;
+    return null;
   }
 
   const obj = parsed as Record<string, unknown>;
@@ -202,7 +211,16 @@ async function parseUserVotes(votePath: string): Promise<{ data: UserVotesV2; mi
     return { data: migrateV1ToV2(obj as unknown as UserVotes), migrated: true };
   }
 
-  return empty;
+  return null;
+}
+
+/**
+ * A votes snapshot from raw content, e.g. `git show` of the file on the reports
+ * branch's remote-tracking ref. Unparseable content reads as empty, the same
+ * fallback `readUserVotes` gives a corrupt file. Never writes.
+ */
+export function readUserVotesFromContent(content: string): UserVotesV2 {
+  return parseUserVotesContent(content)?.data ?? { version: 2, votes: {}, deltas: {} };
 }
 
 /**
@@ -405,6 +423,27 @@ export async function hasPendingVoteDeltas(localVotesDir: string, username: stri
 }
 
 /**
+ * The local deltas that `current` still owes after `synced` was delivered:
+ * per-doc counters with the delivered amounts subtracted, keeping any nonzero
+ * remainder (a delta added after the snapshot, or adjusted by a downvote).
+ */
+function remainingDeltasAfter(
+  current: UserVotesV2['deltas'],
+  synced: UserVotesV2['deltas'],
+): UserVotesV2['deltas'] {
+  const remainingDeltas: UserVotesV2['deltas'] = {};
+  for (const [docId, delta] of Object.entries(current)) {
+    const s = synced[docId];
+    const recalled_delta = delta.recalled_delta - (s?.recalled_delta ?? 0);
+    const upvoted_delta = delta.upvoted_delta - (s?.upvoted_delta ?? 0);
+    if (recalled_delta !== 0 || upvoted_delta !== 0) {
+      remainingDeltas[docId] = { recalled_delta, upvoted_delta };
+    }
+  }
+  return remainingDeltas;
+}
+
+/**
  * Sync local vote deltas to the team repo votes file for a given user.
  * Returns true if sync was performed, false if deltas were empty.
  */
@@ -434,22 +473,84 @@ export async function syncVotesToTeam(
     // Clear ONLY the deltas we just synced. A concurrent incrementUpvoted cannot
     // interleave (we hold the lock), but this subtraction is still the correct
     // shape and keeps the local running tally (`local.votes`) intact.
-    const remainingDeltas: UserVotesV2['deltas'] = {};
-    for (const [docId, delta] of Object.entries(local.deltas)) {
-      const synced = syncedDeltas[docId];
-      const recalled_delta = delta.recalled_delta - (synced?.recalled_delta ?? 0);
-      const upvoted_delta = delta.upvoted_delta - (synced?.upvoted_delta ?? 0);
-      if (recalled_delta !== 0 || upvoted_delta !== 0) {
-        remainingDeltas[docId] = { recalled_delta, upvoted_delta };
-      }
-    }
-    await saveUserVotes(localVotePath, { ...local, deltas: remainingDeltas });
+    await saveUserVotes(localVotePath, {
+      ...local,
+      deltas: remainingDeltasAfter(local.deltas, syncedDeltas),
+    });
     return true;
   });
 
   // Lock not taken → nothing synced; the deltas remain for the next attempt.
   if (!acquired) return false;
   return value ?? false;
+}
+
+/** The delta set a {@link stageVotesMerge} wrote into the worktree. */
+export interface StagedVotes {
+  syncedDeltas: UserVotesV2['deltas'];
+}
+
+/**
+ * Merge local vote deltas into the reports worktree WITHOUT clearing them
+ * locally. The push follows after the write callback returns, and the deltas
+ * are dropped only by {@link confirmVotesSynced} once that push is confirmed —
+ * clearing before the push (the `syncVotesToTeam` shape) loses the sync
+ * trigger forever when the push fails or the process dies first (#1027).
+ *
+ * `confirmedRemote` is the merge base: the file's content on the reports
+ * branch's remote-tracking ref — the last state ORIGIN confirmed — never the
+ * worktree copy, which may already hold this machine's own merged-but-unpushed
+ * result. Basing on origin makes a retry idempotent: deltas whose push failed
+ * (or whose process crashed before confirming) are re-merged onto the same
+ * origin snapshot instead of being added on top of themselves. `null` (the
+ * branch or the file is not on origin yet) reads as an empty base, which is
+ * correct because then the worktree can only hold this machine's own staging.
+ *
+ * Returns null when there was nothing to stage (no deltas) or the votes lock
+ * could not be taken; the deltas then simply stay pending.
+ */
+export async function stageVotesMerge(
+  repoPath: string,
+  username: string,
+  localVotesDir: string,
+  confirmedRemote: UserVotesV2 | null,
+): Promise<StagedVotes | null> {
+  const localVotePath = path.join(localVotesDir, `${username}.yaml`);
+  const remoteVotePath = path.join(repoPath, 'votes', `${username}.yaml`);
+
+  const { acquired, value } = await withVotesLock(localVotePath, async () => {
+    const local = await loadUserVotes(localVotePath);
+    const syncedDeltas = local.deltas;
+    if (Object.keys(syncedDeltas).length === 0) return null;
+
+    const merged = mergeDeltas(local, confirmedRemote ?? { version: 2, votes: {}, deltas: {} });
+    await saveUserVotes(remoteVotePath, merged);
+    return { syncedDeltas } satisfies StagedVotes;
+  });
+
+  if (!acquired) return null;
+  return value ?? null;
+}
+
+/**
+ * Clear the deltas {@link stageVotesMerge} wrote once their publish is
+ * confirmed (published, or the exact content already on origin). Call this via
+ * the write callback's `onDelivered`, so it runs under the branch lock: a
+ * concurrent sync then cannot stage the same deltas between this publish and
+ * this clear. The votes lock IS released while the push is in flight, so
+ * deltas added in that window are kept — only the staged set is subtracted.
+ */
+export async function confirmVotesSynced(
+  localVotePath: string,
+  syncedDeltas: UserVotesV2['deltas'],
+): Promise<void> {
+  await withVotesLock(localVotePath, async () => {
+    const local = await loadUserVotes(localVotePath);
+    await saveUserVotes(localVotePath, {
+      ...local,
+      deltas: remainingDeltasAfter(local.deltas, syncedDeltas),
+    });
+  });
 }
 
 /**

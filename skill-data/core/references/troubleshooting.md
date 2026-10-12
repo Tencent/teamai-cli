@@ -311,6 +311,11 @@ session's runs, recalled docs and adopted docs. Per agent:
 A read after the session's last Stop is credited at SubagentStop, at Copilot CLI's
 SessionEnd, or at the next `teamai pull`.
 
+Pending votes reach the team repo's `teamai-reports` branch on the next Stop or
+`teamai pull`. A push that fails — offline, no write access, a crashed run —
+keeps the deltas pending; the next session re-sends them, and each delta is
+added to the team totals exactly once.
+
 ## OpenCode V2 rejects the hooks plugin
 
 If OpenCode reports “Plugin must export a default definition”, upgrade TeamAI,

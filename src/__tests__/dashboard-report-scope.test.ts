@@ -42,12 +42,20 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
-// Each scope's reports branch is a plain directory next to its team repo.
+// Each scope's reports branch is a plain directory next to its team repo. The
+// mock publishes immediately: the write lands, `onDelivered` hooks run, and
+// "origin" is that same directory's current content.
 vi.mock('../utils/reports-branch.js', () => ({
-  updateReports: vi.fn(async (cfg: LocalConfig, write: (wt: string) => Promise<unknown>) => {
+  updateReports: vi.fn(async (cfg: LocalConfig, write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<unknown>) => {
     const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
     fs.mkdirSync(dir, { recursive: true });
-    return (await write(dir)) != null;
+    const delivered: (() => Promise<void>)[] = [];
+    const change = await write(dir, { onDelivered: (fn) => { delivered.push(fn); } });
+    for (const fn of delivered) await fn();
+    return { status: change != null ? 'published' : 'already-present' };
+  }),
+  readReportsOriginFile: vi.fn(async (wt: string, relPath: string) => {
+    try { return fs.readFileSync(path.join(wt, relPath), 'utf8'); } catch { return null; }
   }),
 }));
 

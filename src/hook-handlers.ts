@@ -583,20 +583,36 @@ const votesSyncHandler: HookHandler = {
         // through an isolated worktree (never the default branch / active tree).
         // Stop fires every turn: skip the fetch when nothing is pending.
         try {
-          const { hasPendingVoteDeltas } = await import('./votes.js');
+          const { hasPendingVoteDeltas, stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('./votes.js');
           if (await hasPendingVoteDeltas(votesDir, localConfig.username)) {
-            const { updateReports } = await import('./utils/reports-branch.js');
-            await updateReports(localConfig, async (wt) => (
-              await syncVotesToTeam(wt, localConfig.username, votesDir)
-                ? {
-                  files: [`votes/${localConfig.username}.yaml`],
-                  message: `[teamai] Update votes for ${localConfig.username}`,
-                }
-                : null
-            ));
+            const { updateReports, readReportsOriginFile } = await import('./utils/reports-branch.js');
+            await updateReports(localConfig, async (wt, { onDelivered }) => {
+              // Origin's confirmed snapshot is the merge base, never the
+              // worktree copy: that copy may already hold this machine's own
+              // merged-but-unpushed deltas, and merging onto it again would
+              // count them twice on a retry (#1027).
+              const origin = await readReportsOriginFile(wt, `votes/${localConfig.username}.yaml`);
+              const staged = await stageVotesMerge(
+                wt,
+                localConfig.username,
+                votesDir,
+                origin === null ? null : readUserVotesFromContent(origin),
+              );
+              if (!staged) return null;
+              // Deltas are dropped only once origin holds them, and under the
+              // reports lock, so a concurrent sync cannot stage the same deltas
+              // between this publish and this clear. A busy lock, a failed
+              // push, or a crash before delivery keeps them pending for the
+              // next Stop (#1027).
+              onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
+              return {
+                files: [`votes/${localConfig.username}.yaml`],
+                message: `[teamai] Update votes for ${localConfig.username}`,
+              };
+            });
           }
         } catch {
-          // Push failed — will retry next session
+          // Push failed — the deltas stay pending and retry next session
         }
       } else {
         await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir).catch(() => {
@@ -752,7 +768,7 @@ const votesJudgeHandler: HookHandler = {
       const verified = adopted.filter((id) => recalledSet.has(id));
       if (verified.length === 0) return null;
 
-      const { incrementUpvoted, syncVotesToTeam, hasPendingVoteDeltas } = await import('./votes.js');
+      const { incrementUpvoted, syncVotesToTeam, hasPendingVoteDeltas, stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('./votes.js');
       // Pass sessionId so judge credits enter the SAME per-session ledger the
       // foreground handler uses, preventing a later foreground open from
       // double-counting the same doc (issue #723 review).
@@ -762,12 +778,24 @@ const votesJudgeHandler: HookHandler = {
       // Sync using the same path as the foreground handler.
       if (usesBranchWorktree(localConfig)) {
         if (await hasPendingVoteDeltas(votesDir, localConfig.username)) {
-          const { updateReports } = await import('./utils/reports-branch.js');
-          await updateReports(localConfig, async (wt) => (
-            await syncVotesToTeam(wt, localConfig.username, votesDir)
-              ? { files: [`votes/${localConfig.username}.yaml`], message: `[teamai] Update votes for ${localConfig.username}` }
-              : null
-          )).catch(() => undefined);
+          const { updateReports, readReportsOriginFile } = await import('./utils/reports-branch.js');
+          await updateReports(localConfig, async (wt, { onDelivered }) => {
+            // See the votes-sync handler: origin's snapshot is the merge base
+            // and the deltas are cleared only on delivery, under the lock (#1027).
+            const origin = await readReportsOriginFile(wt, `votes/${localConfig.username}.yaml`);
+            const staged = await stageVotesMerge(
+              wt,
+              localConfig.username,
+              votesDir,
+              origin === null ? null : readUserVotesFromContent(origin),
+            );
+            if (!staged) return null;
+            onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
+            return {
+              files: [`votes/${localConfig.username}.yaml`],
+              message: `[teamai] Update votes for ${localConfig.username}`,
+            };
+          }).catch(() => undefined);
         }
       } else {
         await syncVotesToTeam(localConfig.repo.localPath, localConfig.username, votesDir).catch(() => undefined);

@@ -8,8 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { simpleGit } from 'simple-git';
 
-import { getDataHome, getReportsDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
+import { getDataHome, getReportsDir, getVotesDir, REPORTS_WORKTREE_DIRNAME, type LocalConfig } from '../types.js';
 import { commitAndPushReports, ensureReportsWorktree, refreshReportsWorktree, updateReports } from '../utils/reports-branch.js';
+import { isPublished } from '../utils/branch-worktree.js';
 import { pushRepoDirectly } from '../utils/git.js';
 import { reportUsageToTeam } from '../team-push.js';
 import { dataHomeKey, resolveHookConfig } from '../dashboard-collector.js';
@@ -431,12 +432,12 @@ describe('git-kind reports: refresh before reading (#557)', () => {
     await ensureReportsWorktree(machineB);
     expect(await publish(machineA, 'stats/alice.yaml', 'n: 2\n')).toBe(true);
 
-    const pushed = await updateReports(machineB, async (wt) => {
+    const pushed = isPublished(await updateReports(machineB, async (wt) => {
       const statsPath = path.join(wt, 'stats', 'alice.yaml');
       const current = Number(/n: (\d+)/.exec(fs.readFileSync(statsPath, 'utf-8'))![1]);
       fs.writeFileSync(statsPath, `n: ${current + 10}\n`);
       return { files: ['stats/alice.yaml'], message: '[teamai] Update usage stats for alice' };
-    });
+    }));
 
     expect(pushed).toBe(true);
     expect(await originReportsFile(origin, 'stats/alice.yaml')).toBe('n: 12\n');
@@ -689,4 +690,78 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
     await reportUsageToTeam(c.config.repo.localPath, 'alice', { selfConfig: c.config });
     expect(await reportedSkills(c.origin)).toEqual(['skill-c']);
   });
+});
+
+describe('git-kind reports: votes deltas survive a failed push (#1027)', () => {
+  /**
+   * The exact write shape of the votes-sync Stop handler: stage the deltas
+   * onto origin's confirmed snapshot, confirm only on delivery. Real git, real
+   * locks, real worktree — only the hook dispatch around it is left out.
+   */
+  async function syncLikeTheHandler(cfg: LocalConfig, votesDir: string, votePath: string): Promise<boolean> {
+    const { updateReports, readReportsOriginFile } = await import('../utils/reports-branch.js');
+    const { isDelivered } = await import('../utils/branch-worktree.js');
+    const { stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('../votes.js');
+    const result = await updateReports(cfg, async (wt, { onDelivered }) => {
+      const originContent = await readReportsOriginFile(wt, `votes/${cfg.username}.yaml`);
+      const staged = await stageVotesMerge(
+        wt,
+        cfg.username,
+        votesDir,
+        originContent === null ? null : readUserVotesFromContent(originContent),
+      );
+      if (!staged) return null;
+      onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
+      return {
+        files: [`votes/${cfg.username}.yaml`],
+        message: `[teamai] Update votes for ${cfg.username}`,
+      };
+    });
+    return isDelivered(result);
+  }
+
+  it('keeps the deltas pending while origin rejects the push and delivers them exactly once on retry', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const cfg = gitConfig(clone, origin);
+
+    const votesDir = getVotesDir(cfg);
+    fs.mkdirSync(votesDir, { recursive: true });
+    const votePath = path.join(votesDir, 'alice.yaml');
+    const { incrementRecalled, incrementUpvoted, hasPendingVoteDeltas, readUserVotesFromContent } = await import('../votes.js');
+    await incrementRecalled(votePath, ['doc-a']);
+    await incrementUpvoted(votePath, ['doc-a']);
+    expect(await hasPendingVoteDeltas(votesDir, 'alice')).toBe(true);
+
+    // Reject reports-branch pushes while this flag exists (an offline or
+    // refusing host across two Stops).
+    const rejectFlag = path.join(origin, 'reject-reports');
+    const hook = path.join(origin, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, `#!/bin/sh
+if [ -f "$(dirname "$0")/../reject-reports" ]; then
+  echo "reports push rejected" >&2
+  exit 1
+fi
+exit 0
+`);
+    fs.writeFileSync(rejectFlag, '');
+    fs.chmodSync(hook, 0o755);
+
+    // Attempt 1: every push attempt is rejected. The old code had already
+    // cleared the deltas at this point, so votes never auto-pushed again.
+    expect(await syncLikeTheHandler(cfg, votesDir, votePath)).toBe(false);
+    expect(await hasPendingVoteDeltas(votesDir, 'alice')).toBe(true);
+
+    // Attempt 2: still rejected. The retry re-merges onto the same origin
+    // snapshot, so the worktree content does not double-count either.
+    expect(await syncLikeTheHandler(cfg, votesDir, votePath)).toBe(false);
+    expect(await hasPendingVoteDeltas(votesDir, 'alice')).toBe(true);
+
+    // Origin accepts again: the retry delivers exactly one recall + one upvote.
+    fs.rmSync(rejectFlag);
+    expect(await syncLikeTheHandler(cfg, votesDir, votePath)).toBe(true);
+    expect(await hasPendingVoteDeltas(votesDir, 'alice')).toBe(false);
+
+    const votes = readUserVotesFromContent(await originReportsFile(origin, 'votes/alice.yaml'));
+    expect(votes.votes['doc-a']).toMatchObject({ recalled_count: 1, upvoted_count: 1 });
+  }, 60_000);
 });
