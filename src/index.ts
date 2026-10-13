@@ -334,6 +334,7 @@ program
   .command('doctor')
   .description('Diagnose configuration issues')
   .option('--json', 'Output the report as JSON (suitable for CI)')
+  .option('--fix', 'Remove lock files left behind by dead processes')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { doctor } = await import('./doctor.js');

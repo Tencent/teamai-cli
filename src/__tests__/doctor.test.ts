@@ -52,6 +52,14 @@ vi.mock('../resources/docs.js', async (importOriginal) => ({
     resolveDocsDestination: vi.fn().mockReturnValue('/tmp/team-docs'),
 }));
 
+// The zombie-lock check walks the real HOME; a developer machine (unlike CI)
+// can legitimately hold leftover locks, so the doctor suite pins it empty.
+vi.mock('../update.js', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../update.js')>()),
+    listZombieLocks: vi.fn().mockResolvedValue([]),
+    removeZombieLocks: vi.fn().mockResolvedValue([]),
+}));
+
 // Mock the tgit provider to avoid side effects
 vi.mock('../providers/tgit/index.js', () => ({
     isGfInstalled: vi.fn().mockResolvedValue(true),

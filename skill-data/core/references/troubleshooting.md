@@ -21,6 +21,11 @@ retry; waiting for another process does not fix it. Ordinary contention still
 uses the command's busy/skip message. An existing permission-denied or ownerless lock
 is treated as held: remove it only after confirming no teamai process uses it.
 
+A lock whose owning process is dead blocks nothing: the next command that takes
+the same lock reclaims it, and a process exiting normally removes the locks it
+still holds. `teamai doctor` reports leftover lock files, and
+`teamai doctor --fix` removes the ones whose owner is provably dead.
+
 ## "My skills / rules aren't showing up"
 
 This is the #1 onboarding issue. In order:

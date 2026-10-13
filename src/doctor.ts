@@ -17,6 +17,7 @@ import {
   isAgentExcluded,
   scopedToolPaths,
   getDataHome,
+  getTeamaiHomeDir,
   isUsageReportEnabled,
   type LocalConfig,
   type TeamaiConfig,
@@ -114,6 +115,8 @@ export interface DoctorContext {
 export interface DoctorOptions extends GlobalOptions {
   /** Emit the report as JSON on stdout instead of the human rendering. */
   json?: boolean;
+  /** Remove the lock files left behind by dead processes (#1027). */
+  fix?: boolean;
 }
 
 /** One check after it ran. */
@@ -469,6 +472,17 @@ export async function resolveDoctorContext(): Promise<DoctorContext | null> {
 export type CheckStage = 'pull' | 'doctor';
 
 /**
+ * Directories whose lock files the zombie-lock check walks (#1027): the teamai
+ * home (the shared locks, every partition's worktree locks, votes/queue/…),
+ * plus the business repo's `.teamai` (the bootstrap lock), when there is one.
+ */
+function zombieLockRoots(localConfig: LocalConfig): string[] {
+  const roots = [getTeamaiHomeDir()];
+  if (localConfig.repo.businessRepoRoot) roots.push(path.join(localConfig.repo.businessRepoRoot, '.teamai'));
+  return roots;
+}
+
+/**
  * The check registry. Exported so callers other than `teamai doctor` can run
  * the same diagnostics and act on the result.
  */
@@ -566,6 +580,20 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
       },
       fix: 'Run `teamai pull` to publish them. If they stay queued, check that you '
         + 'can push to the team repo (run with --verbose to see the push error).',
+    },
+    {
+      // A dead process's lock cannot block anything — the next writer of that
+      // same lock reclaims it — but a leftover file is exactly the noise #1027
+      // reports, and the only way a SIGKILLed run ever gets cleaned up.
+      name: 'No lock files are left behind by dead processes',
+      source: 'local',
+      informational: true,
+      check: async () => {
+        const { listZombieLocks } = await import('./update.js');
+        return (await listZombieLocks(zombieLockRoots(localConfig))).length === 0;
+      },
+      fix: 'Run `teamai doctor --fix` to remove them. They are reclaimed anyway the '
+        + 'next time the same lock is taken; removing them only clears the noise.',
     },
     ...await buildGitHookChecks(localConfig, stage),
     ...await buildTrackedHookIndexCheck(localConfig),
@@ -728,6 +756,17 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   if (!jsonMode) {
     const scopeLabel = `${scope}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
     console.log(`  Scope: ${scopeLabel}\n`);
+  }
+
+  // --fix runs before the checks, so the report reflects the post-cleanup state.
+  if (options.fix) {
+    const { removeZombieLocks } = await import('./update.js');
+    const removed = await removeZombieLocks(zombieLockRoots(localConfig));
+    if (removed.length > 0) {
+      log.info(`Removed ${removed.length} lock file(s) left behind by dead processes:`);
+      for (const p of removed) log.info(`  ${p}`);
+      log.info('');
+    }
   }
 
   // Doctor only: it spawns `codex app-server`, which the post-pull pass skips.

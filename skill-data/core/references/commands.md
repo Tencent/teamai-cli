@@ -102,6 +102,7 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai doctor` — Diagnose configuration issues
   - `--json` — Output the report as JSON (suitable for CI)
+  - `--fix` — Remove lock files left behind by dead processes
 
 ## roles
 

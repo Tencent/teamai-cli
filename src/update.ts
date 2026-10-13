@@ -243,7 +243,7 @@ function parseLockContent(content: string): { pid: number; owner?: string } | nu
  * A lock that names no owner, or is permission-denied, stays until removed by hand
  * if a crash left it, so it is named in a warning.
  */
-async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
+export async function lockState(resolved: string): Promise<'live' | 'stale' | 'missing'> {
   let content: string;
   try {
     content = await fse.readFile(resolved, 'utf-8');
@@ -405,6 +405,9 @@ export async function acquireLock(
       owner,
     } satisfies LockPayload);
 
+    // From the first real lock on, a best-effort sweep at process exit removes
+    // whatever this process still holds (#1027). Dry runs never register it.
+    ensureExitSweep();
     await ensureDir(path.dirname(resolved));
     // Fast path: no lock present. A live holder means busy; only a stale lock
     // may be reclaimed.
@@ -466,6 +469,136 @@ export async function releaseLock(lockPath?: string): Promise<void> {
   } finally {
     heldLockOwners.delete(resolved);
   }
+}
+
+/**
+ * Synchronously remove the locks this process still holds when it exits —
+ * the same owner-verified removal `releaseLock` does, but with sync fs calls,
+ * because `process.on('exit')` handlers cannot await (#1027).
+ *
+ * This closes the common residue paths: a hook host's hard `process.exit(0)`
+ * while best-effort background work (the auto-report) still holds a lock, and
+ * any exit that skips a `finally releaseLock`. It cannot help against what no
+ * process can catch (SIGKILL, a Windows job-object teardown): those locks stay
+ * for the next `acquireLock` of the same path to reclaim, and for
+ * `teamai doctor` to report. Errors are ignored: a lock that cannot be read is
+ * left behind rather than guessed about.
+ */
+export function sweepHeldLocksOnExit(): void {
+  for (const [resolved, owner] of heldLockOwners) {
+    try {
+      const content = fs.readFileSync(resolved, 'utf-8');
+      const parsed = parseLockContent(content);
+      if (parsed?.owner && parsed.owner !== owner) continue; // someone else's now
+      fs.rmSync(resolved, { force: true });
+    } catch {
+      // best effort
+    }
+  }
+  heldLockOwners.clear();
+}
+
+let exitSweepRegistered = false;
+
+/** Register the exit sweep once, when this process first takes a real lock. */
+function ensureExitSweep(): void {
+  if (exitSweepRegistered) return;
+  exitSweepRegistered = true;
+  process.on('exit', sweepHeldLocksOnExit);
+}
+
+/** The named locks the acquireLock family writes (no `.lock` suffix). */
+const LOCK_BASENAMES = new Set([
+  '.update-lock',
+  '.sync-lock',
+  '.reports-lock',
+  '.learnings-lock',
+  '.bootstrap-lock',
+  '.local-agent-sync-lock',
+  '.source-lifecycle-lock',
+]);
+
+/**
+ * Every lock file under `roots` that the acquireLock family may have written:
+ * the shared named locks, plus the per-file `<name>.lock` siblings (votes,
+ * queue, secrets, models, …). `.git` and `node_modules` subtrees are skipped:
+ * locks sit beside what they guard, never inside those.
+ */
+async function walkLockCandidates(roots: string[]): Promise<string[]> {
+  const found: string[] = [];
+  const queue = [...roots];
+  while (queue.length > 0) {
+    const dir = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fse.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue; // missing or unreadable directory
+    }
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === '.git' || entry.name === 'node_modules') continue;
+        queue.push(p);
+      } else if (entry.isFile() && (LOCK_BASENAMES.has(entry.name) || entry.name.endsWith('.lock'))) {
+        found.push(p);
+      }
+    }
+  }
+  return found;
+}
+
+/** True when `content` is a lock payload whose owning process is provably gone. */
+function isDeadPidLock(content: string): boolean {
+  const parsed = parseLockContent(content);
+  if (!parsed) return false; // names no owner: never provably stale (#760)
+  try {
+    process.kill(parsed.pid, 0);
+    return false;
+  } catch (err) {
+    // EPERM: the pid exists, owned by another user. Anything else: gone.
+    return (err as NodeJS.ErrnoException).code !== 'EPERM';
+  }
+}
+
+/**
+ * Lock files under `roots` whose owning process is dead — the zombies #1027
+ * reports. A lock held by a live process, or one that names no owner (the
+ * dashboard's raw-O_EXCL locks, an empty file mid-create), is never listed:
+ * only a provably dead pid makes a lock removable.
+ */
+export async function listZombieLocks(roots: string[]): Promise<string[]> {
+  const zombies: string[] = [];
+  for (const p of await walkLockCandidates(roots)) {
+    try {
+      if (isDeadPidLock(await fse.readFile(p, 'utf-8'))) zombies.push(p);
+    } catch {
+      // unreadable: leave it alone
+    }
+  }
+  return zombies;
+}
+
+/**
+ * Remove the zombie locks under `roots`, returning the removed paths. Each one
+ * is reclaimed through `acquireLock`/`releaseLock` — the same serialized,
+ * owner-verified takeover the next real writer of that lock would run — so a
+ * lock that became live again mid-cleanup is adopted and released, never
+ * deleted out from under its holder.
+ */
+export async function removeZombieLocks(roots: string[]): Promise<string[]> {
+  const removed: string[] = [];
+  for (const p of await listZombieLocks(roots)) {
+    try {
+      if (await acquireLock(p)) {
+        await releaseLock(p);
+        removed.push(p);
+      }
+    } catch {
+      // filesystem failure: report it as still present by not removing it
+    }
+  }
+  return removed;
 }
 
 // ─── Core logic ─────────────────────────────────────────

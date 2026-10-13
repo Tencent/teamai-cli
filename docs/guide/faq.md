@@ -44,6 +44,15 @@ by another process still uses the command's usual busy/skip message; an existing
 lock that cannot be read due to permissions or names no owner is also treated as
 held to protect it.
 
+**Q: Lock files stay behind in `~/.teamai` after a crash?**
+
+A lock file records the PID of the process that took it. One whose owner is
+gone cannot block anything: the next command that takes the same lock reclaims
+it automatically, and a process that exits normally now removes the locks it
+still holds. `teamai doctor` reports any leftovers, and
+`teamai doctor --fix` removes the ones whose owner is provably dead — a lock
+held by a live process, or one that names no owner, is never removed.
+
 **Q: Can user scope and project scope coexist?**
 
 Yes, but project scope remains isolated by default. When the current working directory contains a project-scope config, it is active and user scope is skipped. Initialize user scope first, then initialize the project with `--inherit-user-scope` (or set `inheritUserScope: true` in the project's local config) to compose safe resources and Recall results. Executable and control-plane configuration (`env`, MCP) remains project-only; hooks are the exception — a non-self project scope injects the built-in hooks into HOME so `hook-dispatch` can gate on `cwd` (see the Hooks section).

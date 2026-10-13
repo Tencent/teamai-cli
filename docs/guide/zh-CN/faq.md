@@ -42,6 +42,14 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 另一个进程持有锁时仍使用该命令原有的占用或跳过提示；已有锁因权限不足无法读取或
 未记录所有者时，也会被视为已占用以保护它。
 
+**Q: 崩溃后 `~/.teamai` 里留下了锁文件？**
+
+锁文件记录了持有它的进程 PID。所有者已消失的锁不会阻塞任何操作：
+下一个获取同一把锁的命令会自动回收它，而正常退出的进程现在也会清掉
+自己仍持有的锁。`teamai doctor` 会报告遗留的锁文件，
+`teamai doctor --fix` 只删除所有者确认已死的锁——仍被存活进程持有、
+或未记录所有者的锁不会被删除。
+
 **Q: User scope 和 Project scope 可以共存吗？**
 
 可以，但 project scope 默认保持隔离。当前工作目录包含 project scope 配置时，该项目生效并跳过 user scope。先初始化 user scope，再使用 `--inherit-user-scope` 初始化项目（或在项目本地配置中设置 `inheritUserScope: true`），即可组合安全资源和 Recall 结果；可执行配置和控制面配置（`env`、MCP）仍只使用 project scope；hooks 例外——非-self 的 project scope 会把内置 hooks 注入到 HOME，以便 `hook-dispatch` 依据 `cwd` 门控（详见 Hooks 章节）。

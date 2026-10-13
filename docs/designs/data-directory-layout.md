@@ -384,6 +384,14 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
    - `releaseLock()` returns early when this process holds no owner token for the
      path, and otherwise deletes only when the on-disk `owner` still matches the token
      this process recorded — never another process's lock.
+   - Exit hygiene (#1027): a process that took at least one real lock registers a
+     synchronous `process.on('exit')` sweep that removes whatever it still holds
+     (same owner-verified removal, sync fs — `exit` handlers cannot await). This
+     covers a hook host's hard `process.exit(0)` killing best-effort background
+     work mid-lock; SIGKILL stays uncoverable by design. `teamai doctor` reports
+     the remaining dead-owner locks (informational), and `teamai doctor --fix`
+     removes them through the same serialized `acquireLock`/`releaseLock`
+     reclaim; ownerless and permission-denied locks are never touched.
    - Back-compatible with legacy plain-integer PID lock files.
    The three call sites (`update.ts`, `bootstrap.ts`, `utils/reports-branch.ts`)
    keep their signatures and all benefit.
