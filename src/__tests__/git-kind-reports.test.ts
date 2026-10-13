@@ -692,34 +692,34 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
   });
 });
 
-describe('git-kind reports: votes deltas survive a failed push (#1027)', () => {
-  /**
-   * The exact write shape of the votes-sync Stop handler: stage the deltas
-   * onto origin's confirmed snapshot, confirm only on delivery. Real git, real
-   * locks, real worktree — only the hook dispatch around it is left out.
-   */
-  async function syncLikeTheHandler(cfg: LocalConfig, votesDir: string, votePath: string): Promise<boolean> {
-    const { updateReports, readReportsOriginFile } = await import('../utils/reports-branch.js');
-    const { isDelivered } = await import('../utils/branch-worktree.js');
-    const { stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('../votes.js');
-    const result = await updateReports(cfg, async (wt, { onDelivered }) => {
-      const originContent = await readReportsOriginFile(wt, `votes/${cfg.username}.yaml`);
-      const staged = await stageVotesMerge(
-        wt,
-        cfg.username,
-        votesDir,
-        originContent === null ? null : readUserVotesFromContent(originContent),
-      );
-      if (!staged) return null;
-      onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
-      return {
-        files: [`votes/${cfg.username}.yaml`],
-        message: `[teamai] Update votes for ${cfg.username}`,
-      };
-    });
-    return isDelivered(result);
-  }
+/**
+ * The exact write shape of the votes-sync Stop handler: stage the deltas
+ * onto origin's confirmed snapshot, confirm only on delivery. Real git, real
+ * locks, real worktree — only the hook dispatch around it is left out.
+ */
+async function syncLikeTheHandler(cfg: LocalConfig, votesDir: string, votePath: string): Promise<boolean> {
+  const { updateReports, readReportsOriginFile } = await import('../utils/reports-branch.js');
+  const { isDelivered } = await import('../utils/branch-worktree.js');
+  const { stageVotesMerge, confirmVotesSynced, readUserVotesFromContent } = await import('../votes.js');
+  const result = await updateReports(cfg, async (wt, { onDelivered }) => {
+    const originContent = await readReportsOriginFile(wt, `votes/${cfg.username}.yaml`);
+    const staged = await stageVotesMerge(
+      wt,
+      cfg.username,
+      votesDir,
+      originContent === null ? null : readUserVotesFromContent(originContent),
+    );
+    if (!staged) return null;
+    onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
+    return {
+      files: [`votes/${cfg.username}.yaml`],
+      message: `[teamai] Update votes for ${cfg.username}`,
+    };
+  });
+  return isDelivered(result);
+}
 
+describe('git-kind reports: votes deltas survive a failed push (#1027)', () => {
   it('keeps the deltas pending while origin rejects the push and delivers them exactly once on retry', async () => {
     const { origin, clone } = await seedBareOrigin();
     const cfg = gitConfig(clone, origin);
@@ -761,6 +761,41 @@ exit 0
     expect(await syncLikeTheHandler(cfg, votesDir, votePath)).toBe(true);
     expect(await hasPendingVoteDeltas(votesDir, 'alice')).toBe(false);
 
+    const votes = readUserVotesFromContent(await originReportsFile(origin, 'votes/alice.yaml'));
+    expect(votes.votes['doc-a']).toMatchObject({ recalled_count: 1, upvoted_count: 1 });
+  }, 60_000);
+});
+
+describe('git-kind reports: a delivered push without its confirmation (#1027)', () => {
+  it('recognizes the landed counts on the next sync instead of replaying them', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const cfg = gitConfig(clone, origin);
+
+    const votesDir = getVotesDir(cfg);
+    fs.mkdirSync(votesDir, { recursive: true });
+    const votePath = path.join(votesDir, 'alice.yaml');
+    const { incrementRecalled, incrementUpvoted, hasPendingVoteDeltas, stageVotesMerge, readUserVotesFromContent } = await import('../votes.js');
+    const { readReportsOriginFile } = await import('../utils/reports-branch.js');
+    await incrementRecalled(votePath, ['doc-a']);
+    await incrementUpvoted(votePath, ['doc-a']);
+
+    // Stage into the worktree (this persists the delivery watermark locally)…
+    const wt = await ensureReportsWorktree(cfg);
+    const originContent = await readReportsOriginFile(wt, 'votes/alice.yaml');
+    expect(await stageVotesMerge(
+      wt, 'alice', votesDir,
+      originContent === null ? null : readUserVotesFromContent(originContent),
+    )).not.toBeNull();
+
+    // …then emulate the crash window: the push lands — straight through git,
+    // exactly what the CLI's own push did — but confirmVotesSynced never runs.
+    expect(await commitAndPushReports(cfg, '[teamai] Update votes for alice', ['votes/alice.yaml'])).toBe(true);
+    expect(await hasPendingVoteDeltas(votesDir, 'alice')).toBe(true);
+
+    // The next sync recognizes delivery: nothing is re-added, no second
+    // commit is needed, and the deltas clear.
+    expect(await syncLikeTheHandler(cfg, votesDir, votePath)).toBe(true);
+    expect(await hasPendingVoteDeltas(votesDir, 'alice')).toBe(false);
     const votes = readUserVotesFromContent(await originReportsFile(origin, 'votes/alice.yaml'));
     expect(votes.votes['doc-a']).toMatchObject({ recalled_count: 1, upvoted_count: 1 });
   }, 60_000);

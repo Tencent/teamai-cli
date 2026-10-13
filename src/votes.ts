@@ -491,6 +491,66 @@ export interface StagedVotes {
 }
 
 /**
+ * Delivery watermark for a stage whose push may have landed without its
+ * confirmation (#1027): the per-doc merged counts the stage produced, plus the
+ * delta set it staged. Persisted in the LOCAL votes file (a ride-along field,
+ * like `upvotedSessions`) at stage time — before the push — and consumed by
+ * {@link confirmVotesSynced} or by the next stage.
+ */
+export interface PendingVoteSync {
+  /** The counts the merged worktree file held, for the staged docs only. */
+  merged: Record<string, { recalled: number; upvoted: number }>;
+  /** The delta set that was staged, to subtract when delivery is recognized. */
+  deltas: UserVotesV2['deltas'];
+}
+
+/** Read the delivery watermark, shape-checked like the upvote ledger. */
+function readPendingSync(data: UserVotesV2): PendingVoteSync | undefined {
+  const raw = (data as unknown as { pendingSync?: unknown }).pendingSync;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const p = raw as Partial<PendingVoteSync>;
+  if (!p.merged || !p.deltas || typeof p.merged !== 'object' || typeof p.deltas !== 'object') {
+    return undefined;
+  }
+  return p as PendingVoteSync;
+}
+
+/** The same votes snapshot with the watermark set (or removed). */
+function withPendingSync(data: UserVotesV2, pending: PendingVoteSync | undefined): UserVotesV2 {
+  const out = { ...data } as UserVotesV2 & { pendingSync?: PendingVoteSync };
+  if (pending) out.pendingSync = pending;
+  else delete out.pendingSync;
+  return out;
+}
+
+/** The per-doc counts a merge produced, for the staged docs only. */
+function mergedCountsOf(merged: UserVotesV2, deltas: UserVotesV2['deltas']): PendingVoteSync['merged'] {
+  const out: PendingVoteSync['merged'] = {};
+  for (const docId of Object.keys(deltas)) {
+    const entry = merged.votes[docId];
+    out[docId] = { recalled: entry?.recalled_count ?? 0, upvoted: entry?.upvoted_count ?? 0 };
+  }
+  return out;
+}
+
+/**
+ * True when `remote` holds exactly the counts a stage's merged file had. Exact
+ * equality (not ≥) is required: origin merely having moved past those counts
+ * does not prove OUR push landed — another checkout may have advanced the file
+ * after ours was dropped by a rebase — and treating that as delivered would
+ * lose the deltas instead of re-sending them.
+ */
+function matchesMergedCounts(remote: UserVotesV2, merged: PendingVoteSync['merged']): boolean {
+  for (const [docId, counts] of Object.entries(merged)) {
+    const entry = remote.votes[docId];
+    if ((entry?.recalled_count ?? 0) !== counts.recalled || (entry?.upvoted_count ?? 0) !== counts.upvoted) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Merge local vote deltas into the reports worktree WITHOUT clearing them
  * locally. The push follows after the write callback returns, and the deltas
  * are dropped only by {@link confirmVotesSynced} once that push is confirmed —
@@ -500,11 +560,21 @@ export interface StagedVotes {
  * `confirmedRemote` is the merge base: the file's content on the reports
  * branch's remote-tracking ref — the last state ORIGIN confirmed — never the
  * worktree copy, which may already hold this machine's own merged-but-unpushed
- * result. Basing on origin makes a retry idempotent: deltas whose push failed
- * (or whose process crashed before confirming) are re-merged onto the same
- * origin snapshot instead of being added on top of themselves. `null` (the
- * branch or the file is not on origin yet) reads as an empty base, which is
- * correct because then the worktree can only hold this machine's own staging.
+ * result. Basing on origin makes a retry idempotent when the previous push
+ * never landed: the deltas re-merge onto the same origin snapshot instead of
+ * being added on top of themselves. `null` (the branch or the file is not on
+ * origin yet) reads as an empty base, which is correct because then the
+ * worktree can only hold this machine's own staging.
+ *
+ * A push that LANDED but was never confirmed (the process died between the
+ * push and the clear, or the clear's lock was exhausted) would otherwise
+ * double-count the same deltas on the retry. Each stage therefore persists a
+ * {@link PendingVoteSync} watermark in the local file before the push, and a
+ * later stage that finds origin holding exactly the watermark's counts
+ * recognizes delivery and only subtracts — never re-adds. Origin holding
+ * anything else cannot PROVE delivery (another checkout may have moved the
+ * counts past ours), so the deltas re-merge, accepting a double-count only in
+ * that already-ambiguous same-user-two-machines interleave.
  *
  * Returns null when there was nothing to stage (no deltas) or the votes lock
  * could not be taken; the deltas then simply stay pending.
@@ -519,12 +589,37 @@ export async function stageVotesMerge(
   const remoteVotePath = path.join(repoPath, 'votes', `${username}.yaml`);
 
   const { acquired, value } = await withVotesLock(localVotePath, async () => {
-    const local = await loadUserVotes(localVotePath);
+    let local = await loadUserVotes(localVotePath);
+
+    // A previous stage may have been delivered without its confirmation: the
+    // push landed and the process died (or the clear's lock was exhausted)
+    // before the local deltas went. Origin holding exactly the counts that
+    // stage wrote proves delivery — subtract the staged set now instead of
+    // re-adding it on top of itself. Origin holding anything else means the
+    // push never landed (or cannot be proven landed): the watermark is
+    // superseded and the deltas re-merge below, idempotently.
+    const pending = readPendingSync(local);
+    if (pending) {
+      const delivered = confirmedRemote !== null && matchesMergedCounts(confirmedRemote, pending.merged);
+      local = withPendingSync(
+        { ...local, deltas: delivered ? remainingDeltasAfter(local.deltas, pending.deltas) : local.deltas },
+        undefined,
+      );
+      await saveUserVotes(localVotePath, local);
+    }
+
     const syncedDeltas = local.deltas;
     if (Object.keys(syncedDeltas).length === 0) return null;
 
     const merged = mergeDeltas(local, confirmedRemote ?? { version: 2, votes: {}, deltas: {} });
     await saveUserVotes(remoteVotePath, merged);
+    // Persist the delivery watermark in the same locked write-path, before the
+    // push runs: whatever happens to the process afterwards, the next stage can
+    // tell a landed push from a failed one.
+    await saveUserVotes(localVotePath, withPendingSync(local, {
+      merged: mergedCountsOf(merged, syncedDeltas),
+      deltas: syncedDeltas,
+    }));
     return { syncedDeltas } satisfies StagedVotes;
   });
 
@@ -546,10 +641,10 @@ export async function confirmVotesSynced(
 ): Promise<void> {
   await withVotesLock(localVotePath, async () => {
     const local = await loadUserVotes(localVotePath);
-    await saveUserVotes(localVotePath, {
+    await saveUserVotes(localVotePath, withPendingSync({
       ...local,
       deltas: remainingDeltasAfter(local.deltas, syncedDeltas),
-    });
+    }, undefined));
   });
 }
 

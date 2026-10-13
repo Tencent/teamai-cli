@@ -657,7 +657,69 @@ describe('stageVotesMerge / confirmVotesSynced (#1027)', () => {
 
     // Delivery confirmed → the deltas go, exactly once.
     await confirmVotesSynced(localPath, (await stageVotesMerge(repoDir, 'jeff', localDir, originBase))!.syncedDeltas);
-    expect(YAML.parse(fs.readFileSync(localPath, 'utf-8')).deltas).toEqual({});
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({});
+  });
+
+  it('recognizes a push that landed without its confirmation, instead of replaying it (#1027)', async () => {
+    const { localDir, repoDir, localPath, remotePath } = seedPending();
+    await incrementRecalled(localPath, ['doc-a']);
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    const originBase: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 2, upvoted_count: 0, last_recalled_at: '2026-06-01T00:00:00Z' } },
+      deltas: {},
+    };
+    await stageVotesMerge(repoDir, 'jeff', localDir, originBase);
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf8')).votes['doc-a']).toMatchObject({
+      recalled_count: 3,
+      upvoted_count: 1,
+    });
+
+    // The push LANDED — origin now reads back exactly the merged content — but
+    // the process died before confirmVotesSynced ran: the deltas and the
+    // delivery watermark are both still local. The next stage must recognize
+    // delivery and only subtract, never re-add (R + 2D).
+    const originNow = readUserVotesFromContent(fs.readFileSync(remotePath, 'utf8'));
+    expect(await stageVotesMerge(repoDir, 'jeff', localDir, originNow)).toBeNull();
+
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf8')).votes['doc-a']).toMatchObject({
+      recalled_count: 3,
+      upvoted_count: 1,
+    });
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({});
+  });
+
+  it('re-merges when origin moved past an unconfirmed watermark (same user, another checkout)', async () => {
+    const { localDir, repoDir, localPath, remotePath } = seedPending();
+    await incrementRecalled(localPath, ['doc-a']);
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    const originBase: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 2, upvoted_count: 0, last_recalled_at: '2026-06-01T00:00:00Z' } },
+      deltas: {},
+    };
+    await stageVotesMerge(repoDir, 'jeff', localDir, originBase);
+
+    // Another checkout of the same user pushed: origin is neither base nor the
+    // exact merged content, so delivery cannot be proven. The deltas re-merge
+    // (the documented double-count in this already-ambiguous interleave) and
+    // the watermark is superseded by the new stage.
+    const originMoved: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 99, upvoted_count: 5, last_recalled_at: '2026-06-02T00:00:00Z' } },
+      deltas: {},
+    };
+    expect(await stageVotesMerge(repoDir, 'jeff', localDir, originMoved)).not.toBeNull();
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf8')).votes['doc-a']).toMatchObject({
+      recalled_count: 100,
+      upvoted_count: 6,
+    });
+    // Still unconfirmed: the deltas stay pending until delivery.
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({
+      'doc-a': { recalled_delta: 1, upvoted_delta: 1 },
+    });
   });
 
   it('confirm clears only the staged set: a delta added while the push was in flight survives', async () => {
