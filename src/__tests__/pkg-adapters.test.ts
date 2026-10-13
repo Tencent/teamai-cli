@@ -66,6 +66,79 @@ describe('NpmAdapter', () => {
     expect(lock[0]).toMatchObject({ name: 'typescript', version: '5.9.2' });
   });
 
+  it('uses pnpm for local installs when packageManager declares pnpm', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      packageManager: 'pnpm@10.20.0',
+    }));
+    const execute = vi.fn<CommandExecutor>().mockImplementation(async (command, args) => ({
+      code: 0,
+      stdout: command === 'pnpm' && args[0] === 'list'
+        ? JSON.stringify([{ dependencies: { typescript: { version: '5.9.2' } } }])
+        : '',
+      stderr: '',
+    }));
+
+    const lock = await new NpmAdapter(execute).install(
+      [{ name: 'typescript', version: '^5.9.0' }],
+      { cwd: dir, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', 'typescript@^5.9.0'],
+      expect.objectContaining({ cwd: dir }),
+    );
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['list', '--depth=0', '--json'],
+      expect.objectContaining({ cwd: dir }),
+    );
+    expect(lock).toEqual([{ name: 'typescript', version: '5.9.2', source: 'npm' }]);
+  });
+
+  it('detects a pnpm project from its lockfile', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: 9');
+    const execute = vi.fn<CommandExecutor>().mockResolvedValue({
+      code: 0,
+      stdout: '[]',
+      stderr: '',
+    });
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'is-odd', version: '*' }],
+      { cwd: dir, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', 'is-odd'],
+      expect.objectContaining({ cwd: dir }),
+    );
+  });
+
+  it('keeps global installs on npm in a pnpm project', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      packageManager: 'pnpm@10.20.0',
+    }));
+    const execute = vi.fn<CommandExecutor>().mockResolvedValue({
+      code: 0,
+      stdout: '',
+      stderr: '',
+    });
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'typescript', version: '^5.9.0', global: true }],
+      { cwd: dir, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'npm',
+      ['install', '--global', 'typescript@^5.9.0'],
+      expect.objectContaining({ cwd: dir }),
+    );
+  });
+
   it('does not execute npm in dry-run mode', async () => {
     fs.writeFileSync(path.join(dir, 'package.json'), '{}');
     const execute = vi.fn<CommandExecutor>();
