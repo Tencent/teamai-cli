@@ -137,6 +137,8 @@ teamai env set GITHUB_TOKEN
 teamai env exec -- gh pr create
 ```
 
+在一台有多个 **项目级（project）** 安装、且没有用户级（user）安装的机器上，shell 配置文件只保留一个项目的 env 块——最后 pull 的那个项目在新 shell 中生效。`teamai doctor` 不会把其它项目因此报为故障。
+
 ## Hooks
 
 `teamai init` 会装上这些内置 hook：

@@ -389,7 +389,35 @@ describe('doctor — env variables reach a shell', () => {
       expect(check.fix).not.toContain('backslash');
     });
 
-    it.skipIf(process.platform === 'win32')('still reports the backslash for this scope\'s own legacy block behind the other scope\'s (#661)', async () => {
+    // #1018: several project-scope installs and no user scope keep at most one
+  // project block in the profile (last-wins, #876). A project that was not the
+  // last to pull has no block of its own, yet its env still reaches a new shell
+  // through another project's block — so `doctor` must not report a failure.
+  describe('several project scopes, no user scope (#1018)', () => {
+    function useProjectScope(name: string): void {
+      const projectRoot = path.join(tempDir, 'work', name);
+      const dataHome = path.join(homeDir, '.teamai', 'projects', name);
+      vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, scope: 'project', projectRoot, dataHome });
+      envShPath = path.join(dataHome, 'env.sh');
+    }
+
+    const projectBlock = (envSh: string): string => `${new EnvHandler().generateShellBlock(path.dirname(envSh))}\n`;
+
+    it('passes when the only block present is another project\'s (last-wins)', async () => {
+      useProjectScope('api');
+      await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
+      // The profile carries only the "orders" project's block — the last one
+      // pulled. This "api" project's own block is absent, but that is the
+      // documented multi-project layout, not a delivery failure.
+      const ordersEnvSh = path.join(homeDir, '.teamai', 'projects', 'orders', 'env.sh');
+      await fse.writeFile(profilePath, projectBlock(ordersEnvSh));
+
+      const check = await envCheck();
+      expect(await check.check()).toBe(true);
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')('still reports the backslash for this scope\'s own legacy block behind the other scope\'s (#661)', async () => {
       await useWindowsDataHome('D:\\work\\api\\.teamai', { scope: 'project', projectRoot: 'D:\\work\\api' });
       await fse.writeFile(
         profilePath,

@@ -137,6 +137,8 @@ teamai env set GITHUB_TOKEN
 teamai env exec -- gh pr create
 ```
 
+On a machine with several **project-scope** installs and no user scope, the shell profile keeps at most one project's env block — the last one pulled wins in new shells. `teamai doctor` does not report the other projects as broken for it.
+
 ## Hooks
 
 `teamai init` installs these built-in hooks:

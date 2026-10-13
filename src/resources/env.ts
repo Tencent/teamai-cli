@@ -221,6 +221,39 @@ async function userScopeEnvShPath(): Promise<string | null> {
   return await pathExists(getUserConfigPath()) ? path.join(getTeamaiHome('user'), 'env.sh') : null;
 }
 
+/**
+ * True when `profileContent` carries a teamai env block for another project
+ * while this scope's own block is absent — the #1018 multi-project layout.
+ *
+ * With several project-scope installs and no user scope, `injectShellProfile`
+ * keeps at most one project block, the last one pulled (last-wins, #876). So a
+ * project that was not the last to pull legitimately has no block of its own in
+ * the profile, yet env still reaches a new shell through the other project's
+ * block. `doctor` must not report that as a delivery failure.
+ *
+ * The user scope's block is explicitly "not another project's" — its absence
+ * from a project scope's own block under only the user's block is a real
+ * breakage (#876, a project always has its own block beside the user's), so it
+ * stays a hard failure.
+ */
+export async function hasOtherProjectEnvBlock(profileContent: string, thisEnvShPath: string, scope: Scope): Promise<boolean> {
+  if (scope === 'user') return false;
+  const userEnvShPath = await userScopeEnvShPath();
+  // The user scope's default env.sh, resolvable without a user config: a block
+  // sourcing `~/.teamai/env.sh` is the user scope's even when no user scope is
+  // configured, so it is never "another project's" (#876, #1018).
+  const defaultUserEnvShPath = path.join(getTeamaiHome('user'), 'env.sh');
+  return findEnvBlocks(profileContent).some((block) => {
+    if (envBlockReferencesDataHome(block.text, thisEnvShPath)) return false;
+    // The user scope's block is either an inline-export (no env.sh source) or
+    // one sourcing the user data home's env.sh (mirrors injectShellProfile).
+    const isUserBlock = !SOURCES_ENV_SH.test(block.text)
+      || (userEnvShPath !== null && envBlockReferencesDataHome(block.text, userEnvShPath))
+      || envBlockReferencesDataHome(block.text, defaultUserEnvShPath);
+    return !isUserBlock;
+  });
+}
+
 // ─── Handler ─────────────────────────────────────────────
 
 export class EnvHandler extends ResourceHandler {

@@ -1426,7 +1426,7 @@ async function envDeliveryProblems(
   const none = { problems: [], staleProfiles: [] };
   if (teamConfig?.sharing?.env?.injectShellProfile === false) return none;
 
-  const { EnvHandler } = await import('./resources/env.js');
+  const { EnvHandler, hasOtherProjectEnvBlock } = await import('./resources/env.js');
   const envHandler = new EnvHandler();
 
   // The variables this member and directory receive: the same resolution pull
@@ -1510,7 +1510,15 @@ async function envDeliveryProblems(
   const block = profile === null ? null : findEnvBlockFor(profile, envShPath);
 
   if (block === null) {
-    problems.push(`${profilePath} carries no TeamAI env block for ${envShPath}`);
+    // #1018: with several project scopes and no user scope the profile keeps at
+    // most one project block (last-wins), so a project that was not the last to
+    // pull has no block of its own — yet env still reaches a new shell through
+    // another project's block. That is the documented multi-project layout, not
+    // a delivery failure; only a profile with no teamai block (or only the user
+    // scope's) is genuinely missing this scope's injection.
+    if (!(profile !== null && await hasOtherProjectEnvBlock(profile, envShPath, localConfig.scope))) {
+      problems.push(`${profilePath} carries no TeamAI env block for ${envShPath}`);
+    }
   } else if (envSh !== null && !envBlockSourcesPath(block.text, envShPath)) {
     problems.push(
       `the block in ${profilePath} does not load ${envShPath}: a POSIX shell reads an unquoted `
