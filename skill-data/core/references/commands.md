@@ -217,6 +217,16 @@ Generated: do not edit by hand. Regenerate with
     - `--global` — Remove the value set for every team on this machine instead
   - `teamai env exec <command...>` — Run a command with this directory's team env variables and secrets (put -- before the command)
 
+## workflow
+
+- `teamai workflow` — Run a command workflow from workflows/<name>.yaml
+  - `teamai workflow start <name>` — Create a run for a validated workflow. With --driver local, run each command and report it.
+    - `--driver <kind>` — Run the workflow in this process. Only local is available; it runs one command at a time.
+  - `teamai workflow next <run>` — Lease the next pending step of a run. Prints a JSON envelope.
+    - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}
+  - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
+    - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver
+
 ## hooks
 
 - `teamai hooks` — Manage teamai hooks in AI tool settings

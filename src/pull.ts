@@ -1633,6 +1633,7 @@ async function pullForScope(
           // on the fast path too, or an ordinary pull never surfaces a teammate's
           // learning until `pull --force` (#704).
           await syncLearningsAndRebuildIndex();
+          await syncWorkflows(localConfig, !!options.dryRun, scopeLabel);
           return;
         }
 
@@ -2231,6 +2232,8 @@ async function pullForScope(
     }
   }
 
+  await syncWorkflows(localConfig, !!options.dryRun, scopeLabel);
+
   // A real sync ran to completion for this scope. The "Already synced" fast path
   // and every error/skip path return before here, and dry-run is excluded so a
   // preview never reports completion (#702 follow-up).
@@ -2622,6 +2625,16 @@ async function reinjectLegacyHooks(localConfig: LocalConfig): Promise<void> {
   // injects into HOME, so it must use the user-scope paths there.
   await injectHooksToAllTools(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope }), baseDir, hookFilter, localConfig.toolRoots);
   log.debug('Hooks migrated to dispatch format');
+}
+
+/** Validate workflows without failing this pull when one file is invalid. */
+async function syncWorkflows(localConfig: LocalConfig, dryRun: boolean, scopeLabel: string): Promise<void> {
+  try {
+    const { syncWorkflowDefinitions } = await import('./workflow/cache.js');
+    await syncWorkflowDefinitions(localConfig, { dryRun, scopeLabel });
+  } catch (error) {
+    log.warn(`[${scopeLabel}] Workflows were not updated: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** Say the failure the git hook recorded. A pull that then completes clears it (see pull()). */

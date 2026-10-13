@@ -753,6 +753,37 @@ envCmd
     exitLike(await envExec(argv.slice(argv.indexOf('exec', argv.indexOf('env')) + 1), globalOpts));
   });
 
+const workflowCmd = program
+  .command('workflow')
+  .description('Run a command workflow from workflows/<name>.yaml');
+
+workflowCmd
+  .command('start <name>')
+  .description('Create a run for a validated workflow. With --driver local, run each command and report it.')
+  .option('--driver <kind>', 'Run the workflow in this process. Only local is available; it runs one command at a time.')
+  .action(async (name: string, cmdOpts: { driver?: string }) => {
+    const { workflowStart } = await import('./workflow-commands.js');
+    await workflowStart(name, cmdOpts);
+  });
+
+workflowCmd
+  .command('next <run>')
+  .description('Lease the next pending step of a run. Prints a JSON envelope.')
+  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}')
+  .action(async (run: string, cmdOpts: { json?: string }) => {
+    const { workflowNext } = await import('./workflow-commands.js');
+    await workflowNext(run, cmdOpts);
+  });
+
+workflowCmd
+  .command('report <run>')
+  .description('Report the outcome of a leased step. Prints a JSON envelope.')
+  .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver')
+  .action(async (run: string, cmdOpts: { json?: string }) => {
+    const { workflowReport } = await import('./workflow-commands.js');
+    await workflowReport(run, cmdOpts);
+  });
+
 // ─── Hooks commands ─────────────────────────────────────
 
 const hooksCmd = program
