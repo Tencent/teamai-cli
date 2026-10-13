@@ -103,4 +103,42 @@ describe('reconcileZcodeFormat hooks keep-list', () => {
       await fse.remove(home);
     }
   });
+
+  it('strips unknown keys without disturbing a populated events block', async () => {
+    const { home, configPath } = await zcodeHome();
+    try {
+      // A populated events block is what a working setup looks like:
+      // reconciled teamai entries plus a user hook. The heal must remove
+      // only the unrecognized root key (#1049 review).
+      const eventsBlock = {
+        SessionStart: [
+          {
+            matcher: 'startup',
+            hooks: [{ type: 'process', command: 'node', args: ['mine.mjs'], enabled: true }],
+          },
+        ],
+      };
+      await fse.writeJson(configPath, {
+        hooks: {
+          enabled: true,
+          timeoutMs: 90000,
+          maxOutputBytes: 16384,
+          description: 'leftover from an older schema',
+          events: eventsBlock,
+        },
+      });
+
+      await reconcileHooks(configPath, 'zcode');
+
+      const cfg = await fse.readJson(configPath);
+      expect(cfg.hooks.description).toBeUndefined();
+      expect(cfg.hooks.timeoutMs).toBe(90000);
+      expect(cfg.hooks.maxOutputBytes).toBe(16384);
+      // The user's own hook entry survives the heal untouched.
+      const session = cfg.hooks.events?.SessionStart as typeof eventsBlock.SessionStart;
+      expect(session.some((g) => g.hooks.some((h) => h.command === 'node' && h.args[0] === 'mine.mjs'))).toBe(true);
+    } finally {
+      await fse.remove(home);
+    }
+  });
 });

@@ -1904,13 +1904,24 @@ async function reconcileZcodeFormat(
   // WHOLE BLOCK on any unrecognized key (observed: `config_file_invalid —
   // hooks: Unrecognized key: "description"` → hookCount 0 → nothing fires).
   // Heal the config by keeping only the keys the schema documents. The
-  // documented root-level set is enabled, events, timeoutMs and
-  // maxOutputBytes (ZCode hooks docs, Configuration Sources example; the
-  // documented defaults are 60000 ms and 32768 bytes). We only ever write
-  // `enabled` and `events` ourselves, so a timeoutMs/maxOutputBytes value
-  // present in the file was necessarily put there by the user — the ZCode
-  // build this file lives with accepts those keys, and stripping them would
-  // silently reset the user's settings on every reconcile (#1049).
+  // documented root-level set is enabled, events, timeoutMs and maxOutputBytes
+  // (https://zcode.z.ai/en/docs/hooks, Configuration Sources example, accessed
+  // 2026-10-13; documented defaults 60000 ms and 32768 bytes; no hooks-schema
+  // change appears in the ZCode changelog from 3.10.2 through 3.15.1). We only
+  // ever write `enabled` and `events` ourselves, so a timeoutMs/maxOutputBytes
+  // value present in the file was put there by the user against the documented
+  // schema. Teamai declares no ZCode version floor, so the reader build is not
+  // guaranteed to accept those keys. Keeping them is still the deliberate
+  // choice, made on how each failure surfaces (#1049 review):
+  //   - strip the key → an old build silently loses the user's tuning on every
+  //     reconcile, with nothing to observe anywhere;
+  //   - keep the key → an old build rejects the whole hooks block, hooks stop,
+  //     and `config_file_invalid` lands in ~/.zcode/cli/log/zcode-<date>.jsonl
+  //     — the file ZCode's own docs direct users to when hooks don't fire. A
+  //     loud, diagnosable failure beats an invisible one.
+  // The keep branch is deliberately silent from teamai's side: a key inside the
+  // documented set triggers no warning, so a below-floor user's only signal is
+  // ZCode's own log above. Stripped keys, by contrast, warn above.
   const knownHookKeys = new Set(['enabled', 'events', 'timeoutMs', 'maxOutputBytes']);
   const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => !knownHookKeys.has(k));
   if (unknownHookKeys.length > 0) {
