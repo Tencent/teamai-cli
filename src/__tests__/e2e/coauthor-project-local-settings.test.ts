@@ -49,6 +49,15 @@ function git(args: string[], cwd: string, extraEnv: Record<string, string> = {})
   }).trim();
 }
 
+/** Init no longer copies team resources. The co-author setting is written by pull. */
+async function initThenPull(project: string, args: string[]): Promise<{ code: number | null; output: string }> {
+  const started = await runCLI(['init', ...args], project);
+  expect(started.code, started.output).toBe(0);
+  const pulled = await runCLI(['pull'], project);
+  expect(pulled.code, pulled.output).toBe(0);
+  return { code: pulled.code, output: `${started.output}${pulled.output}` };
+}
+
 function runCLI(args: string[], cwd: string): Promise<{ code: number | null; output: string }> {
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -172,8 +181,7 @@ describe.skipIf(process.platform === 'win32')('co-author setting in project scop
 
   it('writes attribution to settings.local.json and leaves the tracked settings.json unchanged', async () => {
     const project = makeBusinessRepo();
-    const result = await runCLI(['init', FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force'], project);
-    expect(result.code, result.output).toBe(0);
+    const result = await initThenPull(project, [FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force']);
     expect(result.output).toMatch(/Co-author trailer disabled for claude/);
 
     expect(modifiedTracked(project), result.output).toEqual([]);
@@ -187,8 +195,7 @@ describe.skipIf(process.platform === 'win32')('co-author setting in project scop
     const localFile = path.join(project, '.claude', 'settings.local.json');
     const broken = '{ "permissions": { "allow": ["Bash(npm test)"] }, \n';
     writeFile(localFile, broken);
-    const result = await runCLI(['init', FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force'], project);
-    expect(result.code, result.output).toBe(0);
+    await initThenPull(project, [FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force']);
     expect(fs.readFileSync(localFile, 'utf8')).toBe(broken);
 
     writeFile(localFile, '{ "permissions": { "allow": ["Bash(npm test)"] } }\n');
@@ -201,11 +208,7 @@ describe.skipIf(process.platform === 'win32')('co-author setting in project scop
 
   it('writes no project settings file of any other Claude-family tool', async () => {
     const project = makeBusinessRepo();
-    const result = await runCLI(
-      ['init', FAKE_URL, '--scope', 'project', '--agent', ['claude', ...CLAUDE_FAMILY].join(','), '--force'],
-      project,
-    );
-    expect(result.code, result.output).toBe(0);
+    const result = await initThenPull(project, [FAKE_URL, '--scope', 'project', '--agent', ['claude', ...CLAUDE_FAMILY].join(','), '--force']);
     expect(result.output).toMatch(/Co-author trailer disabled for claude\./);
 
     for (const tool of CLAUDE_FAMILY) {
@@ -217,8 +220,7 @@ describe.skipIf(process.platform === 'win32')('co-author setting in project scop
 
   it('writes no project settings file of a team-defined tool', async () => {
     const project = makeBusinessRepo();
-    const result = await runCLI(['init', CUSTOM_URL, '--scope', 'project', '--agent', 'claude,teamtool', '--force'], project);
-    expect(result.code, result.output).toBe(0);
+    const result = await initThenPull(project, [CUSTOM_URL, '--scope', 'project', '--agent', 'claude,teamtool', '--force']);
     expect(result.output).toMatch(/Co-author trailer disabled for claude\./);
     expect(fs.existsSync(path.join(project, '.teamtool', 'skills')), result.output).toBe(true);
     expect(fs.existsSync(path.join(project, '.teamtool', 'settings.json')), result.output).toBe(false);
@@ -226,8 +228,7 @@ describe.skipIf(process.platform === 'win32')('co-author setting in project scop
 
   it('removes the attribution an earlier release wrote to the tracked settings.json, keeping every other byte', async () => {
     const project = makeBusinessRepo();
-    const init = await runCLI(['init', FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force'], project);
-    expect(init.code, init.output).toBe(0);
+    await initThenPull(project, [FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force']);
 
     const before = '{\n  "permissions": {\n    "allow": ["Bash(npm test)"]\n  },\n'
       + '  "attribution": {\n    "commit": "",\n    "pr": ""\n  },\n  "model":   "opus"\n}\n';
@@ -244,8 +245,7 @@ describe.skipIf(process.platform === 'win32')('co-author setting in project scop
 
   it('leaves an attribution in the tracked settings.json alone when it is not teamai\'s value', async () => {
     const project = makeBusinessRepo();
-    const init = await runCLI(['init', FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force'], project);
-    expect(init.code, init.output).toBe(0);
+    await initThenPull(project, [FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force']);
 
     const before = '{\n  "attribution": {"commit": "Team trailer", "pr": ""},\n  "model": "opus"\n}\n';
     simulatePreFix(project, before);
@@ -259,9 +259,8 @@ describe.skipIf(process.platform === 'win32')('co-author setting in project scop
 
   it('moves a pre-fix attribution to settings.local.json when no co-author choice exists', async () => {
     const project = makeBusinessRepo();
-    const init = await runCLI(['init', NO_CHOICE_URL, '--scope', 'project', '--agent', 'claude', '--force'], project);
-    expect(init.code, init.output).toBe(0);
-    expect(fs.existsSync(path.join(project, '.claude', 'settings.local.json')), init.output).toBe(false);
+    await initThenPull(project, [NO_CHOICE_URL, '--scope', 'project', '--agent', 'claude', '--force']);
+    expect(fs.existsSync(path.join(project, '.claude', 'settings.local.json'))).toBe(false);
 
     const before = '{\n  "permissions": {\n    "allow": ["Bash(npm test)"]\n  },\n'
       + '  "attribution": {\n    "commit": "",\n    "pr": ""\n  },\n  "model":   "opus"\n}\n';
@@ -283,8 +282,7 @@ describe.skipIf(process.platform === 'win32')('co-author setting in project scop
 
   it('leaves a different attribution in the tracked settings.json alone when no co-author choice exists', async () => {
     const project = makeBusinessRepo();
-    const init = await runCLI(['init', NO_CHOICE_URL, '--scope', 'project', '--agent', 'claude', '--force'], project);
-    expect(init.code, init.output).toBe(0);
+    await initThenPull(project, [NO_CHOICE_URL, '--scope', 'project', '--agent', 'claude', '--force']);
 
     const before = '{\n  "attribution": {"commit": "Team trailer", "pr": ""},\n  "model": "opus"\n}\n';
     simulatePreFix(project, before);

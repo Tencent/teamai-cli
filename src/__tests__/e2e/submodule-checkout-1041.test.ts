@@ -368,6 +368,7 @@ describe('multi-repo checkout delivery', () => {
     m.git(['commit', '-qm', 'local skills'], m.checkout);
     const originalSkill = read(path.join(m.checkout, '.agents/skills/local/SKILL.md'));
     m.cli(['init', m.url, '--provider', 'git', '--scope', 'project', '--agent', 'claude,codex', '--force'], m.checkout);
+    m.cli(['pull'], m.checkout);
     const anchor = path.join(m.parent, '.git/modules/service');
     const claude = path.join(m.checkout, '.claude/settings.local.json');
     const codex = path.join(m.checkout, '.codex/hooks.json');
@@ -467,12 +468,14 @@ describe('multi-repo checkout delivery', () => {
     fs.mkdirSync(path.join(m.checkout, '.claude'));
     fs.symlinkSync(external, path.join(m.checkout, '.claude/skills'));
     m.cli(['init', m.url, '--provider', 'git', '--scope', 'project', '--agent', 'claude', '--force'], m.checkout);
+    m.cli(['pull'], m.checkout);
     expect(fs.readdirSync(external)).toEqual([]);
   });
 
   it.each(['remove', 'tombstone', 'uninstall'])('keeps delivered skills when the root is redirected outside the checkout during %s', (action) => {
     const m = fixture(`redirected-${action}`);
     m.cli(['init', m.url, '--provider', 'git', '--scope', 'project', '--agent', 'claude', '--force'], m.checkout);
+    m.cli(['pull'], m.checkout);
     const root = path.join(m.checkout, '.claude/skills');
     const external = path.join(m.base, 'external-skills');
     fs.renameSync(root, external);
