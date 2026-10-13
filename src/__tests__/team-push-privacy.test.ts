@@ -25,7 +25,17 @@ describe('mergeStatsWithinTeamSkills (#1055 privacy filter)', () => {
     expect(merged.skills['shared-skill'].count).toBe(3);
   });
 
-  it('prunes names published before the filter existed', () => {
+  it('publishes built-in skills that never appear in the team catalog', () => {
+    const merged = mergeStatsWithinTeamSkills(null, 'alice', [
+      stat('teamai', 4),
+      stat('my-private-skill', 2),
+    ], new Set(['teamai']));
+
+    expect(Object.keys(merged.skills).sort()).toEqual(['teamai']);
+    expect(merged.skills['teamai'].count).toBe(4);
+  });
+
+  it('keeps names published before the filter existed (maintainer call on #1056)', () => {
     const existing: UserStats = {
       username: 'alice',
       updatedAt: '2026-10-01T00:00:00Z',
@@ -36,11 +46,12 @@ describe('mergeStatsWithinTeamSkills (#1055 privacy filter)', () => {
     };
     const merged = mergeStatsWithinTeamSkills(existing, 'alice', [stat('shared-skill')], teamSkills);
 
-    expect(Object.keys(merged.skills).sort()).toEqual(['shared-skill']);
+    expect(Object.keys(merged.skills).sort()).toEqual(['leaked-private-skill', 'shared-skill']);
     expect(merged.skills['shared-skill'].count).toBe(3);
+    expect(merged.skills['leaked-private-skill'].count).toBe(5);
   });
 
-  it('yields an empty skills map for a team that shares no skills', () => {
+  it('only blocks new additions for a team that shares no skills', () => {
     const existing: UserStats = {
       username: 'alice',
       updatedAt: '2026-10-01T00:00:00Z',
@@ -48,7 +59,7 @@ describe('mergeStatsWithinTeamSkills (#1055 privacy filter)', () => {
     };
     const merged = mergeStatsWithinTeamSkills(existing, 'alice', [stat('whatever')], new Set());
 
-    expect(merged.skills).toEqual({});
+    expect(Object.keys(merged.skills)).toEqual(['anything-at-all']);
   });
 
   it('keeps partial-report fields intact (#425)', () => {
@@ -65,7 +76,7 @@ describe('mergeStatsWithinTeamSkills (#1055 privacy filter)', () => {
 });
 
 describe('teamSharedSkillNames', () => {
-  it('enumerates flat and namespaced skills from the team repo layout', async () => {
+  it('enumerates flat and namespaced skills plus built-ins', async () => {
     const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-skills-catalog-'));
     try {
       await fse.ensureDir(path.join(repo, 'skills', 'flat-skill'));
@@ -75,16 +86,16 @@ describe('teamSharedSkillNames', () => {
       await fse.ensureDir(path.join(repo, 'skills', 'not-a-skill'));
 
       const names = await teamSharedSkillNames(repo);
-      expect([...names].sort()).toEqual(['flat-skill', 'nested-skill']);
+      expect([...names].sort()).toEqual(['flat-skill', 'nested-skill', 'teamai']);
     } finally {
       await fse.remove(repo);
     }
   });
 
-  it('returns an empty set when the repo has no skills directory', async () => {
+  it('still carries the built-in names when the repo has no skills directory', async () => {
     const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-skills-empty-'));
     try {
-      expect(await teamSharedSkillNames(repo)).toEqual(new Set());
+      expect(await teamSharedSkillNames(repo)).toEqual(new Set(['teamai']));
     } finally {
       await fse.remove(repo);
     }
