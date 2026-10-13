@@ -1,10 +1,11 @@
 /**
- * index.ts — SessionFlow 公共 API 导出。
+ * index.ts — SessionFlow public API exports.
  *
- * SessionFlow 是跨平台 AI Agent 会话迁移引擎，在 Claude Code / Codex /
- * CodeBuddy / WorkBuddy / Cursor 等平台之间迁移和同步会话。
+ * SessionFlow is the cross-platform AI agent session migration engine. It
+ * migrates and syncs sessions among Claude Code, Codex, CodeBuddy, WorkBuddy,
+ * Cursor, and similar platforms.
  *
- * 通过 `teamai session migrate/push/pull/list/resume/search/rollback` 使用。
+ * Use it through `teamai session migrate/push/pull/list/resume/search/rollback`.
  */
 export * from './ir.js';
 export * from './migrate.js';

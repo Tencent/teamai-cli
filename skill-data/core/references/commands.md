@@ -294,14 +294,14 @@ Generated: do not edit by hand. Regenerate with
     - `--scrub` — Redact secrets (tokens/keys/passwords) from the session before writing it
     - `--all` — Migrate every session from source (not just the 5 most recent)
     - `--limit <n>` — Max sessions to migrate (only caps --all; ignored otherwise)
-    - `-y, --yes` — Skip confirmation prompt
+    - `-y, --yes` — Skip confirmation prompts, including archiving unredacted transcripts
   - `teamai session push` — Push local sessions to the team repo
     - `--source <platform>` — Source platform to read sessions from
     - `--repo-root <path>` — Team repo root (defaults to cwd)
     - `--cwd <path>` — Working directory (defaults to current directory)
     - `--limit <n>` — Max sessions to push (default: 5; ignored with --all)
     - `--all` — Push every session of the platform across all workspace directories (ignores --limit)
-    - `-y, --yes` — Skip the confirmation prompt for large batches (--all)
+    - `-y, --yes` — Skip confirmation prompts, including archiving unredacted transcripts (--all)
     - `--scrub` — Redact secrets before archiving (archived sessions are team-readable)
   - `teamai session pull` — Pull team sessions for the current project
     - `--repo-root <path>` — Team repo root (defaults to cwd)

@@ -1,20 +1,21 @@
 /**
- * session-cmd.ts — SessionFlow 子命令注册。
+ * session-cmd.ts — SessionFlow subcommand registration.
  *
- * 把 SessionFlow 的会话迁移/同步/搜索/恢复能力注册为 `teamai session` 的子命令：
+ * Registers SessionFlow's session migrate/sync/search/resume capabilities as
+ * subcommands of `teamai session`:
  *
- *   teamai session migrate   跨平台迁移会话（或同平台存档）
- *   teamai session push      推送会话到团队仓
- *   teamai session pull      从团队仓拉取当前项目的会话
- *   teamai session list      列出当前项目下团队成员的会话
- *   teamai session resume    恢复会话到本地平台，接着聊
- *   teamai session search    搜索历史会话内容
- *   teamai session rollback  回滚一次迁移
+ *   teamai session migrate   Migrate a session across platforms (or archive on the same platform)
+ *   teamai session push      Push sessions to the team repo
+ *   teamai session pull      Pull the current project's sessions from the team repo
+ *   teamai session list      List team members' sessions for the current project
+ *   teamai session resume    Restore a session onto a local platform and continue the chat
+ *   teamai session search    Search historical session content
+ *   teamai session rollback  Roll back one migration
  *
- * 与现有的 `teamai session save`（脱敏摘要）并列，互不干扰。
+ * Sits alongside the existing `teamai session save` (redacted summary); the two do not interfere.
  *
- * 项目隔离：按当前 cwd 的 git remote origin → canonical → 团队仓目录。
- * 非 git 目录降级到 _unattributed/，不报错。
+ * Project isolation: current cwd's git remote origin → canonical → team-repo directory.
+ * A non-git directory falls back to _unattributed/ without an error.
  */
 
 import type { Command } from 'commander';
@@ -25,10 +26,11 @@ import { scrubSession } from './scrub.js';
 import { MigrationEngine } from './migrate.js';
 import { SyncManager, getRepoIdentity, getGitAuthor, defaultSyncMeta } from './sync.js';
 import { SessionSearchEngine, type LoadedSession } from './search.js';
+import { isSafeSessionFileId } from './ids.js';
 import { isInteractive } from '../utils/prompt.js';
 
 // ---------------------------------------------------------------------------
-// 辅助
+// Helpers
 // ---------------------------------------------------------------------------
 
 function formatBytes(bytes: number): string {
@@ -38,11 +40,13 @@ function formatBytes(bytes: number): string {
 }
 
 /**
- * 去掉终端控制序列后再打印不可信文本。
+ * Strip terminal control sequences before printing untrusted text.
  *
- * 会话标题、作者名、仓库标识、搜索片段都来自团队仓——任何成员推送的内容都
- * 会进入别人的终端。ANSI/OSC 序列能移动光标、清屏、改标题，甚至把输出伪装成
- * 别的命令的结果（同源的 `\r` 覆写）。显示前一律剥掉控制字符。
+ * Session titles, author names, repo identities, and search snippets all come
+ * from the team repo — anything a member pushes lands in someone else's
+ * terminal. ANSI/OSC sequences can move the cursor, clear the screen, change
+ * the title, or even disguise the output as another command's result (the
+ * same class of overwrite as `\r`). Always strip control characters before display.
  */
 // oxlint-disable-next-line no-control-regex
 const CONTROL_SEQ_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-9;?]*[ -/]*[@-~]/g;
@@ -52,21 +56,22 @@ function safeText(value: string): string {
 }
 
 /**
- * 预读所有 stdin 行到队列，ask 从队列取。
+ * Prefetch every stdin line into a queue; ask consumes from the queue.
  *
- * 不能用 rl.question 逐次等待：管道批量输入时多个 question 的回调会竞争
- * （前一个问题 shift 回调后、下一个问题的回调尚未注册，中间的输入行会被丢弃）。
- * 队列式 reader 在 TTY 和管道下都稳定。
+ * Do not wait on rl.question one call at a time: with piped batch input,
+ * multiple question callbacks race (after the previous question shifts its
+ * callback and before the next callback is registered, intervening input
+ * lines are dropped). A queue reader is stable on both a TTY and a pipe.
  */
 let lineQueue: string[] = [];
 let lineResolver: ((line: string) => void) | null = null;
 let lineReaderStarted = false;
 
 let sharedRl: readline.Interface | null = null;
-/** --all 批量迁移时，超过这个条数先列清单要求确认（-y 跳过）。 */
+/** During --all batch migration, list the sessions and require confirmation above this count (-y skips it). */
 const BATCH_CONFIRM_THRESHOLD = 10;
 
-/** 交互式选择会话时每页显示多少条（n/p 翻页）。 */
+/** How many sessions to show per page in the interactive picker (n/p pages). */
 const SESSION_PICKER_PAGE_SIZE = 10;
 
 
@@ -87,8 +92,9 @@ function startLineReader(): void {
 }
 
 /**
- * 关闭 readline 接口，释放 event loop。
- * 必须在所有交互式输入结束后调用，否则进程会挂起不退出（终端不返回提示符）。
+ * Close the readline interface and release the event loop.
+ * Must be called after all interactive input, or the process hangs and never
+ * exits (the terminal does not return a prompt).
  */
 function closeStdin(): void {
   if (sharedRl) {
@@ -99,7 +105,8 @@ function closeStdin(): void {
 }
 
 /**
- * 读一行用户输入（交互式）。优先取预读队列，否则等待下一行。
+ * Read one line of user input (interactive). Prefer the prefetched queue;
+ * otherwise wait for the next line.
  */
 function ask(question: string): Promise<string> {
   startLineReader();
@@ -108,9 +115,10 @@ function ask(question: string): Promise<string> {
       resolve(lineQueue.shift() as string);
       return;
     }
-    // stdin 关闭（EOF/管道结束）时 'line' 永不触发，promise 悬挂到事件循环
-    // 清空后进程静默退出——脚本化调用得到 exit 0 + 无输出，被当成成功。
-    // 显式 resolve 空串，让调用方走各自的 "Cancelled." 分支。
+    // When stdin closes (EOF / pipe end), 'line' never fires and the promise
+    // hangs until the event loop drains, then the process exits silently —
+    // a scripted call gets exit 0 and no output, which looks like success.
+    // Resolve an empty string explicitly so callers take their own "Cancelled." branch.
     const onEnd = () => {
       if (lineResolver) {
         const r = lineResolver;
@@ -127,9 +135,34 @@ function ask(question: string): Promise<string> {
   });
 }
 
+type ArchiveConsent = 'ok' | 'declined' | 'refused';
+
 /**
- * 显示一个编号菜单，让用户选择一项。
- * 输入数字或名称都接受，返回选中的字符串。
+ * Unredacted transcripts are team-readable. Interactive runs ask first.
+ * `-y` is the explicit yes for scripts (it also skips the large-batch prompt).
+ * `--scrub` redacts before anything is written. A non-interactive run with
+ * neither flag used to archive anyway and only warn afterwards.
+ */
+async function confirmUnredactedArchive(
+  count: number,
+  sourceLabel: string,
+  opts: { scrub?: boolean; yes?: boolean },
+): Promise<ArchiveConsent> {
+  if (opts.scrub || opts.yes) return 'ok';
+  if (!isInteractive()) return 'refused';
+  console.log(`\n  ⚠ About to archive ${count} unredacted session(s) from ${sourceLabel}.`);
+  console.log(
+    '    Archived sessions are team-readable: full prompts, tool output, file paths and any secret in them.',
+  );
+  console.log('    Re-run with --scrub to redact secret-shaped values first, or -y to archive as-is.');
+  const ans = await ask('Archive as-is? (y/N): ');
+  if (!/^y(es)?$/i.test(ans.trim())) return 'declined';
+  return 'ok';
+}
+
+/**
+ * Show a numbered menu and let the user pick one item.
+ * A number or a name is accepted; returns the selected string.
  */
 async function promptSelect(question: string, options: string[]): Promise<string> {
   console.log(question);
@@ -149,7 +182,8 @@ async function promptSelect(question: string, options: string[]): Promise<string
 }
 
 /**
- * 安全获取适配器，无效平台给出友好提示而非 stack trace。
+ * Look up an adapter safely; an invalid platform gets a friendly message
+ * instead of a stack trace.
  */
 function safeGetAdapter(platform: string) {
   try {
@@ -163,11 +197,13 @@ function safeGetAdapter(platform: string) {
 }
 
 /**
- * 归档作者：优先取会话自身工作区的 git identity。
+ * Archive author: prefer the git identity of the session's own workspace.
  *
- * `push --all` 会把多个工作区（可能分属不同仓库、不同本地身份）的会话一起
- * 归档。用 CLI 运行目录那一套 identity 统一署名，会把别人的会话记到当前用户
- * 名下，也让 `--author` 过滤失真。取不到时回退到运行目录的 identity。
+ * `push --all` archives sessions from several workspaces (possibly different
+ * repos and different local identities) together. Signing them all with the
+ * identity of the directory the CLI happens to run in attributes other
+ * people's sessions to the current user and makes `--author` filtering lie.
+ * When that identity is unavailable, fall back to the run directory's identity.
  */
 function authorForCwd(cwd: string | undefined, fallback: string): string {
   if (!cwd || !path.isAbsolute(cwd)) return fallback;
@@ -180,22 +216,25 @@ function authorForCwd(cwd: string | undefined, fallback: string): string {
 }
 
 /**
- * 解析当前 cwd 的 repoIdentity（git remote canonical）。
- * 非 git 目录返回 null（降级到 _unattributed），不报错。
+ * Resolve the current cwd's repoIdentity (canonical git remote).
+ * A non-git directory returns null (falls back to _unattributed) without an error.
  */
 function resolveRepoIdentity(cwd?: string): string | null {
   return getRepoIdentity(cwd ?? process.cwd());
 }
 
 /**
- * 按会话**原生 cwd** 派生归档键（repoIdentity）——Key invariant：
- * 归档键来自会话自身的工作目录，绝不是 CLI 恰好运行所在的目录（设计文档 P3）。
+ * Derive the archive key (repoIdentity) from the session's **native cwd**.
+ * Key invariant: the archive key comes from the session's own working
+ * directory, never from the directory the CLI happens to be running in
+ * (design doc P3).
  *
- * 各适配器 readSession 已尽量恢复原生 cwd：
- * - codex / workbuddy：存储自带真实路径
- * - claude-code / codebuddy / cursor：从 JSONL 记录的 cwd 字段恢复
- * - codebuddy-ide：工作区目录是 md5(cwd) 不可逆——恢复不出真实路径时
- *   session.cwd 是 `md5:<hash>` 占位，归 `_unattributed` 并打印英文警告
+ * Each adapter's readSession already tries to recover the native cwd:
+ * - codex / workbuddy: storage includes the real path
+ * - claude-code / codebuddy / cursor: recovered from the cwd field recorded in JSONL
+ * - codebuddy-ide: the workspace directory is an irreversible md5(cwd). When
+ *   the real path cannot be recovered, session.cwd is an `md5:<hash>`
+ *   placeholder, the session goes under `_unattributed`, and an English warning is printed
  */
 function deriveArchiveIdentity(session: { cwd: string }, platform: string): string | null {
   const nativeCwd = session.cwd;
@@ -209,8 +248,8 @@ function deriveArchiveIdentity(session: { cwd: string }, platform: string): stri
 }
 
 /**
- * 获取团队仓根目录。
- * 优先用 --repo-root；否则用 cwd（假设 cwd 就是团队仓 clone）。
+ * Resolve the team-repo root.
+ * Prefer --repo-root; otherwise use cwd (assuming cwd is the team-repo clone).
  */
 async function resolveRepoRoot(
   repoRoot?: string,
@@ -238,18 +277,21 @@ async function resolveRepoRoot(
 }
 
 /**
- * 推送团队仓远端；失败时降级为警告而非崩溃。
+ * Push the team repo to the remote; on failure, degrade to a warning instead of crashing.
  *
- * 走到这里时本地 saveSession + gitCommit 已经成功——会话数据没有丢。
- * 远端失败的原因常常与数据无关（无 upstream、只读 HTTP 模式、网络），
- * 用堆栈炸掉会把一次成功的归档伪装成彻底失败，用户再跑一次还会造出重复提交。
+ * By the time we get here, the local saveSession + gitCommit have already
+ * succeeded — the session data is not lost. Remote failures are often
+ * unrelated to the data (no upstream, read-only HTTP mode, network). Blowing
+ * up with a stack trace would disguise a successful archive as a total
+ * failure, and running it again would create duplicate commits.
  */
 function pushToRemote(syncMgr: SyncManager): boolean {
   try {
     syncMgr.gitPush();
     return true;
   } catch (err) {
-    // "Command failed: git push origin" 首行没有信息量，git 的 fatal 行才是原因
+    // The first line "Command failed: git push origin" carries no information;
+    // git's fatal line is the actual reason
     const msg = err instanceof Error ? err.message : String(err);
     const fatal = msg.split('\n').find((l) => /^(fatal|error):/i.test(l.trim()));
     const reason = safeText(fatal?.trim() ?? msg.split('\n')[0]);
@@ -261,9 +303,10 @@ function pushToRemote(syncMgr: SyncManager): boolean {
 }
 
 /**
- * 包装 gitCommit / gitPull：git 层失败（非 git 目录、无 remote、index.lock
- * 竞态等）给出单行英文错误并 exit 1，而不是让 execFileSync 的异常以裸
- * stack trace 打到用户面（内部路径泄漏 + 伪造的崩溃感）。
+ * Wrap gitCommit / gitPull: a git-layer failure (not a git directory, no
+ * remote, index.lock race, and so on) prints a single English error line and
+ * exits 1, instead of letting execFileSync's exception hit the user as a raw
+ * stack trace (leaked internal paths plus a fake sense of a crash).
  */
 function runGitStep<T>(step: () => T, repoRoot: string, what: string): T {
   try {
@@ -277,23 +320,26 @@ function runGitStep<T>(step: () => T, repoRoot: string, what: string): T {
 }
 
 // ---------------------------------------------------------------------------
-// 命令注册
+// Command registration
 // ---------------------------------------------------------------------------
 
 /**
- * 在 `teamai session` 子命令对象上注册 SessionFlow 的 7 个子命令。
+ * Register SessionFlow's 7 subcommands on the `teamai session` command object.
  */
 export function registerSessionFlowCommands(sessionCmd: Command): void {
-  // 输出管道被下游关闭（如 `session push --all | head`）时，EPIPE 会让整条
-  // 命令以堆栈崩溃收场——数据早已写完，这不是错误，安静退出即可。
+  // When the output pipe is closed by a downstream consumer (e.g. `session push --all | head`),
+  // EPIPE would end the whole command in a stack-trace crash — the data was
+  // already written; this is not an error, so exit quietly.
   process.stdout?.on?.('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EPIPE') process.exit(0);
     throw err;
   });
 
-  // --dry-run / -v 是顶层 program 上的全局选项，不会自动出现在子命令的 opts 里。
-  // 原项目各命令统一用 `program.opts()` 取全局选项再与命令自身选项合并
-  // （见 src/index.ts 中 init/push/pull 的 action），这里保持一致。
+  // --dry-run / -v are global options on the top-level program and do not
+  // automatically appear in a subcommand's opts.
+  // Commands in the original project uniformly take globals via `program.opts()`
+  // and merge them with the command's own options (see the init/push/pull
+  // actions in src/index.ts); keep the same pattern here.
   const root = sessionCmd.parent ?? sessionCmd;
   const isDryRun = (): boolean => Boolean((root.opts() as { dryRun?: boolean }).dryRun);
 
@@ -325,13 +371,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--scrub', 'Redact secrets (tokens/keys/passwords) from the session before writing it')
     .option('--all', 'Migrate every session from source (not just the 5 most recent)')
     .option('--limit <n>', 'Max sessions to migrate (only caps --all; ignored otherwise)')
-    .option('-y, --yes', 'Skip confirmation prompt')
+    .option('-y, --yes', 'Skip confirmation prompts, including archiving unredacted transcripts')
     .action(async (sessionId, opts) => {
       try {
       let source = opts.source;
       let target = opts.target;
 
-      // 交互式：缺 source/target 时引导选择
+      // Interactive: when source/target is missing, guide the user to pick
       if (!source) {
         source = await promptSelect('Select source platform:', listAvailablePlatforms());
       }
@@ -340,36 +386,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         target = await promptSelect('Select target platform:', others);
       }
 
-      // 同平台迁移会复用原生会话 ID，写回源工作区时直接覆盖原会话，
-      // 之后的 rollback 再把原件删掉——不可恢复。必须显式指定目标工作区
-      // （--target-cwd）或明确 -y 才放行。
-      if (source === target && !opts.targetCwd) {
-        // isInteractive() (not process.stdin.isTTY): CI runners and agent
-        // sandboxes hand out a pseudo-terminal with nobody behind it, where
-        // ask() would block forever on a prompt no one can answer.
-        const confirmed =
-          opts.yes ||
-          (isInteractive() &&
-            /^y(es)?$/i.test(
-              (
-                await ask(
-                  `Migrating ${source} → ${target} reuses the native session id and overwrites the source transcript. Continue? (y/N): `,
-                )
-              ).trim(),
-            ));
-        if (!confirmed) {
-          console.error('Refusing to overwrite the source session.');
-          console.error('Pass --target-cwd <dir> to write a copy elsewhere, or -y to confirm in place.');
-          process.exit(1);
-        }
-      }
-
       let workCwd = opts.cwd ?? process.cwd();
       const sourceAdapter = safeGetAdapter(source);
       let metas = await sourceAdapter.listConversations(workCwd);
       let crossDirExpanded = false;
-      // --all 的语义是"这个源的全部会话"：无 --cwd 时跨所有工作区枚举，
-      // 而不是只看当前目录（那会让 --all 静默变成"当前目录的全部"）。
+      // --all means "every session from this source": with no --cwd, enumerate
+      // across all workspaces, rather than only the current directory (that
+      // would silently turn --all into "everything in the current directory").
       if (opts.all && !opts.cwd && !sessionId) {
         const allMetas = await sourceAdapter.listConversations();
         if (allMetas.length > 0) {
@@ -379,10 +402,11 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       }
 
 
-      // 当前 cwd 无会话时，交互式提示列出全部目录的会话
-      // 展开后这些会话**不属于 workCwd**，源端定位必须传 undefined 让适配器全局按 id 查找
-      // （各适配器 findSessionFile 都有该兜底）。此前仍把 workCwd 传给源适配器，
-      // claude-code 只在 encodeCwdClaude(workCwd) 一个目录里找 → 这条路径 100% 失败。
+      // When the current cwd has no sessions, interactively offer to list sessions from every directory.
+      // After expansion those sessions **do not belong to workCwd**; source lookup must pass
+      // undefined so the adapter searches globally by id (every adapter's findSessionFile has that fallback).
+      // Previously workCwd was still passed to the source adapter, and claude-code
+      // only looked in the single encodeCwdClaude(workCwd) directory, so this path failed 100% of the time.
       if (metas.length === 0 && !opts.cwd && !sessionId) {
         const allMetas = await sourceAdapter.listConversations();
         if (allMetas.length > 0) {
@@ -396,7 +420,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           }
         }
       }
-      /** 源端定位用的工作区：跨目录展开时会话不归属 workCwd，交给适配器全局查找。 */
+      /** Workspace used for source lookup: when expanded across directories, sessions do not belong to workCwd, so the adapter searches globally. */
       const sourceProjectPath = crossDirExpanded ? undefined : workCwd;
 
       if (metas.length === 0) {
@@ -404,19 +428,20 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
 
-      // 选择会话
+      // Select sessions
       let targets: typeof metas;
       if (opts.all) {
-        // --all 名副其实：迁移全部会话，不再静默截断到 5 条。
-        // 此前 slice(0, 5) 且无任何提示，用户会以为「全部迁完了」。
-        // 需要限量时用 --limit（与 session push 的语义一致）。
+        // --all means what it says: migrate every session, no longer silently truncated to 5.
+        // Previously slice(0, 5) with no notice, so users thought everything had been migrated.
+        // Use --limit when a cap is needed (same semantics as session push).
         const limitRaw = parseInt(opts.limit, 10);
         const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 0;
         const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         targets = limit > 0 ? sorted.slice(0, limit) : sorted;
 
-        // 大批量确认：--all 现在会迁全部（不再截断到 5 条），会话多时先列清单要求确认，
-        // -y 跳过。避免一次误迁几十上百条、回滚成本高。
+        // Large-batch confirmation: --all now migrates everything (no longer truncated to 5).
+        // When there are many sessions, list them and require confirmation; -y skips it.
+        // Avoid accidentally migrating dozens or hundreds at once, which is expensive to roll back.
         if (targets.length > BATCH_CONFIRM_THRESHOLD && !opts.yes) {
           console.log(`\nAbout to migrate ${targets.length} session(s) from ${source}:`);
           for (const m of targets) {
@@ -457,8 +482,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         }
         targets = matches;
       } else {
-        // 交互式分页：10 条一屏，n/p 翻页，编号是全局序号（翻页后仍可直选）。
-        // 只显示前 10 条又不给翻页手段时，会话一多用户就以为只有 10 条。
+        // Interactive paging: 10 per screen, n/p to change page. Numbers are global indexes (still selectable after paging).
+        // Showing only the first 10 with no way to page makes users think there are only 10 sessions once the list grows.
         const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
         const pageSize = SESSION_PICKER_PAGE_SIZE;
         const pages = Math.max(1, Math.ceil(sorted.length / pageSize));
@@ -516,8 +541,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const engine = new MigrationEngine(source, target);
       let migrated = 0;
       let failed = 0;
-      // 记录每次成功迁移产出的目标会话 ID + 真实保真度，
-      // --push 时精确回读这些 ID（而非"目标平台最近 N 条"，避免推错，见 P4/P7）。
+      // Record the target session ID and real fidelity of each successful migration.
+      // --push then reads those IDs back exactly (not "the N most recent on the target platform",
+      // which would push the wrong sessions; see P4/P7).
       const migratedTargets: { sessionId: string; fidelityScore: number; cwd?: string }[] = [];
 
       for (const m of targets) {
@@ -529,7 +555,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(`  Target:    ${preview.targetPlatform}`);
         console.log(`  Session:   ${safeText(preview.sessionTitle)} (${preview.sessionId.slice(0, 8)}...)`);
         console.log(`  CWD:       ${preview.cwd}`);
-        // 目标工作区默认保持源会话的工作区，只有 --target-cwd 才搬走
+        // Target workspace defaults to the source session's workspace; only --target-cwd moves it
         console.log(`  Target CWD:${opts.targetCwd ? ' ' + opts.targetCwd : ' (same as source)'}`);
         console.log(`  Messages:  ${preview.messageCount}`);
         console.log(`  ─────────────────────────────────`);
@@ -545,19 +571,20 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           console.log(`    ⚠ ${w}`);
         }
 
-        // --dry-run：Preview 打印完就停。
-        // 迁移没有确认环节（打完 Preview 就直接执行），不接全局 --dry-run 的话，
-        // 想看保真度和告警就只能真迁一次、不满意再 rollback。
+        // --dry-run: stop once the preview is printed.
+        // Migration has no confirmation step (it runs immediately after printing the preview).
+        // Without honoring the global --dry-run, the only way to see fidelity and warnings
+        // is to migrate for real and roll back if unhappy.
         if (isDryRun()) {
           console.log(`\n  · --dry-run: preview only, not migrated: ${m.sessionId.slice(0, 8)}...\n`);
           continue;
         }
 
-        // 目标 cwd 默认为当前工作目录（真实绝对路径）。
-        // 不传的话 writeSession 会回退到 session.cwd——那可能是源平台存的
-        // encoded 形式（如 `-Users-foo-project`），无法还原真实路径。
-        // 目标工作区默认 = 源会话工作区（保持目录一致）；
-        // 只有显式 --target-cwd 才把会话搬到别的工作区。
+        // Target cwd defaults to the current working directory (a real absolute path).
+        // If omitted, writeSession falls back to session.cwd, which may be the encoded
+        // form stored by the source platform (e.g. `-Users-foo-project`) and cannot be restored to a real path.
+        // Target workspace default = source session workspace (keep the directory the same);
+        // only an explicit --target-cwd moves the session to another workspace.
         const result = await engine.migrate(m.sessionId, sourceProjectPath, opts.targetCwd, Boolean(opts.scrub));
         if (result.success) {
           console.log(`\n  ✓ Migration successful`);
@@ -570,6 +597,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           }
           if (result.targetFilePath) {
             console.log(`  Target file: ${result.targetFilePath}`);
+          }
+          if (result.registrationNotice) {
+            console.error(`  ⚠ ${result.registrationNotice}`);
           }
           console.log(`  Fidelity: ${(result.preview.fidelity.score * 100).toFixed(1)}%`);
           migrated++;
@@ -586,15 +616,29 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         }
       }
 
-      // 脚本化语义：任何一条失败都以非 0 退出（--all 批量时不中断其余会话）。
+      // Scripted semantics: any single failure exits non-zero (--all batch does not stop the remaining sessions).
       if (failed > 0 && !isDryRun()) {
         process.exitCode = 1;
       }
 
-      // --push: 推送到团队仓
+      // --push: push to the team repo
       if (opts.push && migrated > 0) {
+        const consent = await confirmUnredactedArchive(migrated, `${source} → ${target}`, {
+          scrub: Boolean(opts.scrub),
+          yes: Boolean(opts.yes),
+        });
+        if (consent !== 'ok') {
+          console.error(`\n  ${migrated} session(s) migrated locally, not archived.`);
+          if (consent === 'refused') {
+            console.error('Pass --scrub to redact the archive, or -y to archive as-is.');
+            process.exitCode = 1;
+          } else {
+            console.log('Archive cancelled. Re-run with --scrub to archive a redacted copy.');
+          }
+          return;
+        }
         const repoRoot = await resolveRepoRoot(opts.repoRoot, { materialize: !isDryRun() });
-        // 跨目录展开时会话不属于 workCwd，author 应取自会话真实所在的仓库
+        // When expanded across directories, sessions do not belong to workCwd; author should come from the repo the session actually lives in
         const authorCwd = migratedTargets.find((t) => t.cwd)?.cwd ?? workCwd;
         const author = getGitAuthor(authorCwd);
         const targetAdapter = safeGetAdapter(target);
@@ -603,7 +647,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         let saved = 0;
         for (const t of migratedTargets) {
           const session = await targetAdapter.readSession(t.sessionId, t.cwd ?? opts.targetCwd ?? workCwd);
-          // P3：归档键按会话原生 cwd 派生，而非 migrate 运行目录（见 deriveArchiveIdentity）
+          // P3: the archive key is derived from the session's native cwd, not the directory migrate is running in (see deriveArchiveIdentity)
           const meta = defaultSyncMeta(
             {
               platform: target,
@@ -628,7 +672,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           }
           saved++;
         }
-        // [已修] gitCommit 失败（非 git 目录 / index.lock 竞态）此前裸堆栈崩溃
+        // [fixed] a gitCommit failure (not a git directory / index.lock race) used to crash with a raw stack trace
         const commit = runGitStep(
           () => syncMgr.gitCommit(`sync: migrate ${saved} session(s) ${source}→${target}`),
           repoRoot,
@@ -660,8 +704,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           : `\n  ${migrated} session(s) migrated.\n`,
       );
       } catch (err) {
-        // 交互取消（promptSelect 抛 'Selection cancelled'，EOF 时 ask 返回空串
-        // 触发该路径）不是故障——静默退出，不能变成 unhandled rejection 堆栈。
+        // Interactive cancel (promptSelect throws 'Selection cancelled'; on EOF, ask returns an empty string
+        // and hits that path) is not a failure. Exit quietly, and do not turn it into an unhandled-rejection stack.
         const msg = err instanceof Error ? err.message : String(err);
         if (/cancel/i.test(msg)) {
           console.log('Cancelled.');
@@ -683,7 +727,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .option('--cwd <path>', 'Working directory (defaults to current directory)')
     .option('--limit <n>', 'Max sessions to push (default: 5; ignored with --all)', '5')
     .option('--all', 'Push every session of the platform across all workspace directories (ignores --limit)')
-    .option('-y, --yes', 'Skip the confirmation prompt for large batches (--all)')
+    .option('-y, --yes', 'Skip confirmation prompts, including archiving unredacted transcripts (--all)')
     .option('--scrub', 'Redact secrets before archiving (archived sessions are team-readable)')
     .action(async (opts) => {
       try {
@@ -697,13 +741,13 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const repoRoot = await resolveRepoRoot(opts.repoRoot, { materialize: !isDryRun() });
       const author = getGitAuthor(workCwd);
       const adapter = safeGetAdapter(source);
-      // --all：listConversations() 无参即枚举该平台的全部工作区目录（P5），
-      // 影响面收敛在单一平台（与 status --all 一致）；单 cwd 模式保持原行为。
+      // --all: listConversations() with no argument enumerates every workspace directory of that platform (P5).
+      // The blast radius stays on a single platform (same as status --all); single-cwd mode keeps the old behavior.
       const metas = opts.all
         ? await adapter.listConversations()
         : await adapter.listConversations(workCwd);
       const limitRaw = parseInt(opts.limit, 10);
-      // 非数字/0/负数一律回退默认——slice(0, -1) 的负数语义会把结果悄悄吃掉一条
+      // Non-numeric / 0 / negative all fall back to the default. slice(0, -1)'s negative semantics would quietly drop one result
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 5;
       const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       const selected = opts.all ? sorted : sorted.slice(0, limit);
@@ -713,7 +757,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
 
-      // dry-run：列出将归档的会话后停止，不写盘、不提交、不推送
+      // dry-run: list the sessions that would be archived, then stop; do not write, commit, or push
       if (isDryRun()) {
         console.log(`\nDry-run: would archive ${selected.length} session(s) from ${source}:`);
         for (const m of selected) {
@@ -723,8 +767,14 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
 
-      // 大批量确认：--all 推送超过 5 条时列清单（id/标题/条数）要求确认，-y 跳过
+      // Large-batch confirmation: when --all would push more than 5, list them (id/title/count) and require confirmation; -y skips it
       if (opts.all && selected.length > 5 && !opts.yes) {
+        if (!isInteractive()) {
+          console.error(`\nRefusing to push ${selected.length} session(s) without confirmation.`);
+          console.error('Pass -y to confirm, or omit --all to push the recent few.');
+          process.exitCode = 1;
+          return;
+        }
         console.log(`\nAbout to push ${selected.length} session(s) from ${source}:`);
         for (const m of selected) {
           const title = safeText(m.title);
@@ -737,43 +787,41 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         }
       }
 
-      // 归档的是完整原文、团队可读：交互场景下先征得同意再落盘。
-      // 写完之后再提醒等于马后炮——文件已经进仓库、commit 已经建好了。
-      // 非交互（脚本/CI）没有 TTY，保持原行为：只警告，不阻断。
-      if (!opts.scrub && !opts.yes && isInteractive()) {
-        console.log(
-          `\n  ⚠ About to archive ${selected.length} unredacted session(s) from ${source}.`,
-        );
-        console.log(
-          '    Archived sessions are team-readable: full prompts, tool output, file paths and any secret in them.',
-        );
-        console.log('    Re-run with --scrub to redact secret-shaped values first.');
-        const ans = await ask('Archive as-is? (y/N): ');
-        if (!/^y(es)?$/i.test(ans.trim())) {
-          console.log('Cancelled. Re-run with --scrub to archive a redacted copy.');
-          return;
-        }
+      const consent = await confirmUnredactedArchive(selected.length, source, {
+        scrub: Boolean(opts.scrub),
+        yes: Boolean(opts.yes),
+      });
+      if (consent === 'refused') {
+        console.error(`\nRefusing to archive ${selected.length} unredacted session(s) without confirmation.`);
+        console.error('Pass --scrub to redact first, or -y to archive as-is.');
+        process.exitCode = 1;
+        return;
+      }
+      if (consent === 'declined') {
+        console.log('Cancelled. Re-run with --scrub to archive a redacted copy.');
+        return;
       }
 
       const syncMgr = new SyncManager(repoRoot);
       let saved = 0;
       let redactedTotal = 0;
       for (const m of selected) {
-        // --all 时会话可能来自任意工作区，scoped 查找（按 cwd 编码目录）会因
-        // 目录名解码有损而 miss——交由适配器全局查找；单 cwd 模式仍传 workCwd。
+        // With --all, sessions may come from any workspace. A scoped lookup (by the cwd-encoded directory)
+        // can miss because directory-name decoding is lossy, so leave it to a global adapter lookup.
+        // Single-cwd mode still passes workCwd.
         const readSession = await adapter.readSession(m.sessionId, opts.all ? undefined : workCwd);
-        // 归档的是完整原文，团队可读：--scrub 时先脱敏；未脱敏时明确提示一次。
+        // What gets archived is the full original text, and the team can read it: redact first when --scrub is set; when not redacted, say so once explicitly.
         const scrubbed = opts.scrub ? scrubSession(readSession) : null;
         const session = scrubbed ? scrubbed.session : readSession;
         if (scrubbed) redactedTotal += scrubbed.redactedCount;
         if (opts.all) {
           console.log(`  Source: ${safeText(session.cwd || 'unknown directory')}`);
         }
-        // P3：归档键按会话原生 cwd 派生（见 deriveArchiveIdentity），而非 CLI 运行目录
+        // P3: the archive key is derived from the session's native cwd (see deriveArchiveIdentity), not the directory the CLI is running in
         const meta = defaultSyncMeta(
           {
             platform: source,
-            // 每个会话按自己工作区的 git identity 署名（--all 跨工作区时尤其重要）
+            // Each session is signed with the git identity of its own workspace (especially important for --all across workspaces)
             author: authorForCwd(session.cwd, author),
             cwd: session.cwd || workCwd,
             sessionId: m.sessionId,
@@ -801,7 +849,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           '  ⚠ Archived as-is: full transcripts (possibly secrets/paths) are team-readable. Use --scrub to redact.',
         );
       }
-      // [已修] gitCommit 失败（非 git 目录 / index.lock 竞态）此前裸堆栈崩溃
+      // [fixed] a gitCommit failure (not a git directory / index.lock race) used to crash with a raw stack trace
       const commit = runGitStep(
         () => syncMgr.gitCommit(`sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`),
         repoRoot,
@@ -845,14 +893,14 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(`Dry-run: would pull from the team repo remote and rebuild indexes (repo root: ${repoRoot}).`);
         return;
       }
-      // [已修] gitPull 失败（无 remote / repoRoot 不存在）此前裸堆栈崩溃
+      // [fixed] a gitPull failure (no remote / repoRoot does not exist) used to crash with a raw stack trace
       runGitStep(() => {
         syncMgr.gitPull();
         return null;
       }, repoRoot, 'git pull');
       if (opts.all) {
-        // P2：按目录重建（含索引丢失/损坏的仓库——那才是最需要修复的对象），
-        // 而不是只重建能从 _index.json 反查出 identity 的那些。
+        // P2: rebuild by directory (including repos whose index is missing or corrupt — those are exactly the ones that most need repair),
+        // rather than only rebuilding the ones whose identity can be recovered from _index.json.
         const { repos, sessions } = syncMgr.rebuildAllIndexes();
         console.log(`\n  ✓ Pulled and indexed ${sessions} session(s) across ${repos} repo(s)\n`);
       } else {
@@ -876,7 +924,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const repoIdentity = resolveRepoIdentity(workCwd);
 
       const syncMgr = new SyncManager(repoRoot);
-      // P2：--all 走跨 repo 视图（含 _unattributed）；条目 repoIdentity 标识来源
+      // P2: --all uses the cross-repo view (including _unattributed); each entry's repoIdentity marks the source
       const sessions = opts.all
         ? syncMgr.listSessionsAcrossRepos(opts.author)
         : syncMgr.listSessions(repoIdentity, opts.author);
@@ -923,8 +971,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .command('resume')
     .description('Restore a team session to a local platform')
     .argument('<sessionName>', 'Session name (from `teamai session list`)')
-    // 选项名用 --platform 而非 --in：与 rollback 的 --platform 对齐，
-    // 也符合本项目其余命令的名词式命名（--source / --target / --agent / --role）。
+    // The option is named --platform rather than --in: aligned with rollback's --platform,
+    // and with the noun-style naming of the rest of this project's commands (--source / --target / --agent / --role).
     .requiredOption('--platform <platform>', 'Target platform to restore into')
     .option('--repo-root <path>', 'Team repo root (defaults to cwd)')
     .option('--cwd <path>', 'Working directory for the restored session (defaults to current directory)')
@@ -935,9 +983,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const repoIdentity = resolveRepoIdentity(workCwd);
 
       const syncMgr = new SyncManager(repoRoot);
-      // resume 无 try/catch 时 loadSession 的错误会以未捕获异常打到终端。
-      // 常见根因是会话归档在其他项目名下（repoIdentity 不匹配）——
-      // 给出可操作的指引而不是裸 stack trace（见设计文档 P9）。
+      // Without try/catch, a loadSession error on resume hits the terminal as an uncaught exception.
+      // The usual root cause is that the session was archived under another project name (repoIdentity mismatch).
+      // Give an actionable hint instead of a raw stack trace (see design doc P9).
       let session;
       try {
         ({ session } = syncMgr.loadSession(repoIdentity, sessionName, opts.author));
@@ -961,8 +1009,10 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       }
 
       const newSessionId = await resumeAdapter.writeSession(session, resumeCwd);
+      const registrationNotice = resumeAdapter.consumeWriteNotice?.();
 
       console.log(`\n  ✓ Session restored to ${opts.platform}`);
+      if (registrationNotice) console.error(`  ⚠ ${registrationNotice}`);
       console.log(`  Session ID: ${newSessionId}`);
       console.log(`  Messages: ${session.messages.length}`);
       console.log(`  CWD: ${resumeCwd}`);
@@ -988,10 +1038,10 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const syncMgr = new SyncManager(repoRoot);
       const loadedSessions: LoadedSession[] = [];
 
-      // P1：--all 遍历所有 repo（含 _unattributed）加载会话；
-      // 非 --all 只加载当前 repo。原实现的循环体是死代码——listRepos()
-      // 返回编码后的目录名且无解码器，canonical identity 只能从各 repo 的
-      // _index.json 反查（见 SyncManager.listAllRepoIdentities）。
+      // P1: --all walks every repo (including _unattributed) and loads sessions;
+      // without --all, only the current repo is loaded. The old implementation's loop body was dead code: listRepos()
+      // returns encoded directory names and has no decoder, so the canonical identity can only be
+      // recovered from each repo's _index.json (see SyncManager.listAllRepoIdentities).
       const identitiesToSearch: Array<string | null> = opts.all
         ? syncMgr.listAllRepoIdentities()
         : [repoIdentity];
@@ -1036,7 +1086,12 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
     .requiredOption('--platform <platform>', 'Platform where the session was written')
     .option('--cwd <cwd>', 'Only roll back the copy under this project path (default: all)')
     .action(async (sessionId, opts) => {
-      // 回滚是破坏性操作（删 CLI 文件 + 删 IDE 侧边栏条目），先看清楚再删。
+      if (!isSafeSessionFileId(sessionId)) {
+        console.error('\n  ✗ Refusing to roll back a session id that is not a single path segment.\n');
+        process.exitCode = 1;
+        return;
+      }
+      // Rollback is destructive (deletes the CLI file and the IDE sidebar entry); look first, then delete.
       if (isDryRun()) {
         console.log(
           `\n  · --dry-run: would delete ${opts.platform}/${sessionId}` +
@@ -1055,8 +1110,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         process.exitCode = 1;
         return;
       }
-      // 适配器返回 false 表示确认没删到任何东西（会话不存在）。
-      // 之前无论是否存在都打印 ✓，静默 no-op 却报成功，脚本无法判断是否生效。
+      // The adapter returning false means it confirmed nothing was deleted (session does not exist).
+      // Previously a checkmark was printed whether or not it existed, so a silent no-op reported success and scripts could not tell whether it took effect.
       if (deleted === false) {
         console.log(`\n  · Session not found: ${opts.platform}/${sessionId}, no changes (may have already been deleted)\n`);
         return;

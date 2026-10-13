@@ -1,25 +1,27 @@
 /**
- * ide-history.ts — CodeBuddy IDE 侧边栏「历史对话」同步。
+ * ide-history.ts — sync into the CodeBuddy IDE sidebar "history".
  *
- * CodeBuddy IDE（图形化）与 CodeBuddy CLI 的会话存储是**互相独立**的两套：
+ * CodeBuddy IDE (the GUI) and CodeBuddy CLI store sessions in **two independent** stores:
  *   - CLI: ~/.codebuddy/projects/<encoded-cwd>/<uuid>.jsonl
  *   - IDE: <userData>/CodeBuddyExtension/Data/<ext-id>/CodeBuddyIDE/<ext-id>/history/<md5(cwd)>/
  *
- * 只写 CLI 路径的话，用户在 IDE 侧边栏「历史对话」里看不到迁移过来的会话。
- * 本模块把迁移结果**同步**进 IDE 的 history 目录，使侧边栏可见且可点开继续聊。
+ * Writing only the CLI path means the user cannot see the migrated session in the IDE
+ * sidebar "history". This module **syncs** the migration result into the IDE history
+ * directory so the sidebar can show it and it can be opened to continue the chat.
  *
- * IDE 路径要点：
- * - workspace 哈希 = md5(cwd) 的 32 位小写 hex（cwd 用 path.resolve 规范化、去尾部斜杠）
- * - conversation id / messages 目录名 = 32 位 hex（无横线），故 UUID 需去横线
+ * IDE path notes:
+ * - workspace hash = 32-char lowercase hex of md5(cwd) (cwd is normalized with path.resolve and trailing slashes stripped)
+ * - conversation id / messages directory name = 32-char hex (no hyphens), so UUIDs must have hyphens removed
  * - index.json: { conversations: [{id,type,name,createdAt,lastMessageAt,modelMap?}], current }
  * - messages/<msg-id>.json: { role, message(stringified JSON), id, extra(stringified JSON), createdAt }
  *
- * IDE content block 类型：text / reasoning / tool-call / tool-result
- * - tool-result 在 IDE 中是**独立 role:"tool" 消息**，不合并进 user/assistant
+ * IDE content block types: text / reasoning / tool-call / tool-result
+ * - tool-result is an **independent role:"tool" message** in the IDE, not merged into user/assistant
  *
- * 设计原则：本模块是**增强功能**，任何失败都静默降级，绝不阻断主迁移流程。
+ * Design principle: this module is an **enhancement**. Any failure degrades silently and must never block the main migration flow.
  */
 
+import { assertSafeSessionFileId } from './ids.js';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -30,10 +32,10 @@ import { mayReadLocalImageFile, safeFileName } from './fs.js';
 import { isInjectedText, titleFromUserText , visibleUserText } from './title.js';
 
 // ---------------------------------------------------------------------------
-// 类型
+// Types
 // ---------------------------------------------------------------------------
 
-/** IDE 侧单条消息文件的结构（message / extra 为 stringified JSON）。 */
+/** Shape of one IDE-side message file (message / extra are stringified JSON). */
 interface IdeMessageFile {
   role: 'user' | 'assistant' | 'tool';
   message: string;
@@ -42,7 +44,7 @@ interface IdeMessageFile {
   createdAt: string;
 }
 
-/** IDE index.json 中的 conversation 条目。 */
+/** A conversation entry in the IDE index.json. */
 export interface IdeConversation {
   id: string;
   type: 'craft' | 'plan' | 'team-member';
@@ -53,56 +55,58 @@ export interface IdeConversation {
 }
 
 export interface IdeSyncResult {
-  /** 成功同步的 IDE 实例数 */
+  /** Number of IDE instances synced successfully */
   synced: number;
-  /** 写入的消息条数（按 IDE 计，tool-result 会拆成独立消息） */
+  /** Number of messages written (counted the IDE way; tool-result is split into its own message) */
   messageCount: number;
   /**
-   * 实际写入的 conversation id（32 位 hex）。
-   * 非 UUID 的 sessionId 会被哈希，调用方不能拿源 sessionId 直接当 IDE id。
+   * Conversation id actually written (32-char hex).
+   * A non-UUID sessionId is hashed, so the caller cannot use the source sessionId as the IDE id.
    */
   convId?: string;
-  /** 未同步时的原因（synced===0 时有值） */
+  /** Reason it was not synced (set when synced===0) */
   skipped?: string;
 }
 
 // ---------------------------------------------------------------------------
-// 工具
+// Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * IDE 的 workspace 哈希：md5(cwd) 的 32 位小写 hex。
- * cwd 先 resolve 再去掉尾部斜杠，保证与 IDE 内部算法一致。
+ * IDE workspace hash: 32-char lowercase hex of md5(cwd).
+ * cwd is resolved first, then trailing slashes are stripped, so it matches the IDE's internal algorithm.
  *
- * 必须是**真实绝对路径**。session.cwd 可能是源平台存的 encoded 形式
- * （如 `-Users-foo-project`），此时无法可靠反推真实路径（空格会丢失），
- * 返回 null 让调用方跳过——宁可不同步，也不能用错误 hash 写进无关目录。
+ * It must be a **real absolute path**. session.cwd may be the encoded form stored by the source
+ * platform (for example `-Users-foo-project`), which cannot be reliably reversed to a real path
+ * (spaces are lost). Return null so the caller skips — better not to sync than to write
+ * a wrong hash into an unrelated directory.
  */
 export function hashWorkspace(cwd: string): string | null {
-  // POSIX 绝对路径，或 Windows 盘符绝对路径（C:\ 或 C:/）
+  // POSIX absolute path, or a Windows drive absolute path (C:\ or C:/)
   if (!cwd || !(cwd.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(cwd))) return null;
   let normalized = path.resolve(cwd).replace(/\/+$/, '');
-  // macOS 上 /tmp 是 /private/tmp 的符号链接，VSCode 传给 IDE 的是解析后的真实路径。
-  // 不做 realpath 的话，「用 /tmp 写入、在 /private/tmp 列出」会算出两个不同的
-  // 工作区 hash：写入成功却列不出来，用户以为迁移丢了。
+  // On macOS /tmp is a symlink to /private/tmp, and VSCode passes the IDE the resolved real path.
+  // Without realpath, "write via /tmp, list via /private/tmp" computes two different workspace
+  // hashes: the write succeeds but listing cannot find it, and the user thinks the migration was lost.
   try {
     normalized = fs.realpathSync(normalized).replace(/\/+$/, '');
   } catch {
-    // 目录不存在（createIfMissing 场景）时保留原路径
+    // Keep the original path when the directory does not exist (createIfMissing case)
   }
   return crypto.createHash('md5').update(normalized).digest('hex');
 }
 
 /**
- * conversation id：IDE 用 32 位 hex（无横线）。
+ * Conversation id: the IDE uses 32-char hex (no hyphens).
  *
- * 三种输入都要能映射回**同一个** id，否则读与删会各算各的：
- * - 32 位 hex（IDE 原生 / codebuddy-ide 读出来的 id）→ 原样复用
- * - 带横线的 UUID（其他平台的 sessionId）→ 去横线
- * - 其余形态 → md5 兜底
+ * All three input shapes must map back to the **same** id, or reads and deletes each compute their own:
+ * - 32-char hex (native IDE / id read by codebuddy-ide) → reuse as-is
+ * - Hyphenated UUID (sessionId from other platforms) → strip hyphens
+ * - Anything else → md5 fallback
  *
- * 漏掉第一种会让 IDE 侧会话 id 被二次哈希：写入时生成一个新 id，
- * 回滚时再哈希一次又不同，目录删不掉 —— 报告成功却留下永久残留。
+ * Missing the first case double-hashes the IDE-side session id: write generates a new id,
+ * rollback hashes it again into a different one, and the directory cannot be deleted — success
+ * is reported but a permanent leftover remains.
  */
 function toIdeConvId(sessionId: string): string {
   if (/^[0-9a-f]{32}$/i.test(sessionId)) return sessionId.toLowerCase();
@@ -112,9 +116,9 @@ function toIdeConvId(sessionId: string): string {
 }
 
 /**
- * CodeBuddyExtension 的用户数据根目录（跨平台）。
+ * CodeBuddyExtension user-data root (cross-platform).
  */
-function getUserDataBase(): string | null {
+export function getUserDataBase(): string | null {
   const home = os.homedir();
   switch (process.platform) {
     case 'darwin':
@@ -135,14 +139,14 @@ function getUserDataBase(): string | null {
 }
 
 /**
- * 列出所有 IDE 实例的 history 根目录。
+ * List the history root of every IDE instance.
  *
- * 磁盘上有两种布局，都真实存在：
- *   - <base>/<extId>/CodeBuddyIDE/<instId>/history   常规实例（instId 通常与 extId 同名）
- *   - <base>/<extId>/CodeBuddyIDE/history            default 实例，少一层 instId
+ * Two layouts exist on disk, and both are real:
+ *   - <base>/<extId>/CodeBuddyIDE/<instId>/history   regular instance (instId usually matches extId)
+ *   - <base>/<extId>/CodeBuddyIDE/history            default instance, one fewer instId level
  *
- * 只认第一种会让 default 实例下的会话整体消失（既读不到也写不进），
- * 故两种都收集。
+ * Recognizing only the first makes every session under the default instance disappear
+ * (neither readable nor writable), so both are collected.
  */
 export function listIdeHistoryRoots(): string[] {
   const base = getUserDataBase();
@@ -171,15 +175,15 @@ export function listIdeHistoryRoots(): string[] {
 }
 
 /**
- * 找出所有 IDE 实例下该 cwd 对应的 history 目录。
+ * Find the history directory for this cwd under every IDE instance.
  *
- * 通常只有 1 个（单用户单实例）。多实例时全部返回，逐个写入。
- * createIfMissing=true 时，若该项目的 history 目录尚不存在（IDE 没打开过这个项目），
- * 仍返回待创建路径，使其下次打开即可见。
+ * Usually there is only 1 (single user, single instance). With multiple instances, return all of them and write each.
+ * When createIfMissing=true, if this project's history directory does not exist yet (the IDE has never opened this project),
+ * still return the path to be created so it is visible the next time the IDE opens.
  */
 export function findIdeHistoryDirs(cwd: string, createIfMissing = false): string[] {
   const hash = hashWorkspace(cwd);
-  if (!hash) return []; // cwd 不是真实绝对路径，放弃同步
+  if (!hash) return []; // cwd is not a real absolute path; skip sync
 
   const out: string[] = [];
   for (const historyRoot of listIdeHistoryRoots()) {
@@ -190,12 +194,12 @@ export function findIdeHistoryDirs(cwd: string, createIfMissing = false): string
 }
 
 // ---------------------------------------------------------------------------
-// IR → IDE 转换
+// IR → IDE conversion
 // ---------------------------------------------------------------------------
 
 /**
- * 挑一个模型名用于 modelMap / extra。
- * 优先 session.metadata.model，其次首条带 model 的消息。
+ * Pick a model name for modelMap / extra.
+ * Prefer session.metadata.model, then the first message that carries a model.
  */
 function pickModel(session: Session): string | undefined {
   if (session.metadata?.model) return String(session.metadata.model);
@@ -206,18 +210,18 @@ function pickModel(session: Session): string | undefined {
 }
 
 /**
- * IR Session → IDE 消息列表。
+ * IR Session → IDE message list.
  *
- * 一条 IR message 可能展开为多条 IDE 消息：
- * - thinking/text/tool_call 合成一条（role 保持 user/assistant）
- * - tool_result 拆成独立的 role:"tool" 消息
+ * One IR message may expand into several IDE messages:
+ * - thinking/text/tool_call are combined into one (role stays user/assistant)
+ * - tool_result is split into an independent role:"tool" message
  */
 /**
- * 确定性 32 位 hex id（内容派生）。
+ * Deterministic 32-char hex id (derived from content).
  *
- * 消息文件名就是消息 id，因此 id 必须对**相同输入稳定**——用 randomUUID
- * 会导致每次迁移都生成新文件名，旧文件既不被覆盖也不被清理，
- * messages/ 目录每次迁移泄漏一批孤儿。
+ * The message file name is the message id, so the id must be **stable for the same input** —
+ * randomUUID would generate a new file name on every migration. Old files would be neither
+ * overwritten nor cleaned up, and messages/ would leak a batch of orphans on each migration.
  */
 function stableId(parts: string[]): string {
   return crypto.createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 32);
@@ -230,12 +234,12 @@ function toEpochMs(iso: string | undefined): number | undefined {
 }
 
 /**
- * 解析每条消息的 createdAt。
+ * Resolve createdAt for each message.
  *
- * 源平台常常不记录 per-message 时间戳，若一律回落到 session.updatedAt，
- * 会让整个会话的消息共用一个时间（实测 484 条里 468 条完全相同），
- * IDE 的时间线分组 / 相对时间会明显异常。
- * 这里在已知时间戳之间线性插值，并强制严格递增。
+ * Source platforms often do not record per-message timestamps. Falling back to session.updatedAt
+ * for every message makes the whole session share one time (in practice 468 of 484 messages were
+ * identical), and the IDE timeline grouping / relative times look clearly wrong.
+ * Linearly interpolate between known timestamps here, and force them to be strictly increasing.
  */
 function resolveTimestamps(session: Session): string[] {
   const n = session.messages.length;
@@ -245,7 +249,7 @@ function resolveTimestamps(session: Session): string[] {
 
   if (n === 0) return [];
 
-  // 虚拟边界：index -1 = createdAt，index n = updatedAt
+  // Virtual bounds: index -1 = createdAt, index n = updatedAt
   const known: Array<{ i: number; t: number }> = [
     { i: -1, t: base },
     { i: n, t: tail },
@@ -269,7 +273,7 @@ function resolveTimestamps(session: Session): string[] {
     }
   }
 
-  // 强制严格递增（至少 +1ms）：插值在塌缩区间内仍会产生大量相同值
+  // Force strictly increasing (at least +1ms): interpolation still produces many identical values inside a collapsed range
   for (let i = 1; i < n; i++) {
     if (!(ts[i] > ts[i - 1])) ts[i] = ts[i - 1] + 1;
   }
@@ -277,13 +281,13 @@ function resolveTimestamps(session: Session): string[] {
   return ts.map((t) => new Date(Number.isFinite(t) ? t : base).toISOString());
 }
 
-/** 待落盘的会话资源（图片）。data 优先，其次从 sourcePath 复制。 */
+/** Session asset (image) waiting to be written. Prefer data, then copy from sourcePath. */
 export interface IdeAsset {
-  /** assets/ 下的文件名（沿用原生命名 image.<hash8>.<ext> 风格） */
+  /** File name under assets/ (keeps the native image.<hash8>.<ext> naming style) */
   name: string;
-  /** 源端文件绝对路径（有它优先复制，避免 base64 往返） */
+  /** Absolute path of the source file (copy this first when present, to avoid a base64 round trip) */
   sourcePath?: string;
-  /** base64 内容（filePath 不可读时的兜底） */
+  /** base64 content (fallback when filePath is unreadable) */
   data?: string;
 }
 
@@ -294,7 +298,7 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
   const model = pickModel(session);
   const timestamps = resolveTimestamps(session);
 
-  // callId → toolName 映射（tool-result 需要回填 toolName）
+  // callId → toolName map (tool-result needs toolName filled back in)
   const toolNameByCallId = new Map<string, string>();
   for (const msg of session.messages) {
     for (const b of msg.content) {
@@ -302,7 +306,7 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
     }
   }
 
-  // IR 图片块 → assets/<name> + codebuddy-asset:// 引用（与原生存储一致）
+  // IR image block → assets/<name> + codebuddy-asset:// ref (matches native storage)
   const assetRef = (b: Extract<ContentBlock, { type: 'image' }>): string | null => {
     // The label is archive-controlled when the session came from the team
     // repo: `../../evil` would otherwise become a path component and write
@@ -318,7 +322,7 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
     } else if (b.data) {
       assets.push({ name, data: b.data });
     } else {
-      return null; // 无内容可用：调用方降级为占位文本
+      return null; // No usable content: the caller degrades to placeholder text
     }
     return `codebuddy-asset://assets/${name}`;
   };
@@ -333,7 +337,7 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
       isHelperMessage: false,
     });
 
-    // 1) thinking + text + image + tool_call → 一条
+    // 1) thinking + text + image + tool_call → one message
     const content: Record<string, unknown>[] = [];
     for (const b of msg.content) {
       if (b.type === 'thinking') {
@@ -385,7 +389,7 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
       });
     }
 
-    // 2) tool_result → 独立 role:"tool" 消息
+    // 2) tool_result → independent role:"tool" message
     for (const b of msg.content) {
       if (b.type !== 'tool_result') continue;
       out.push({
@@ -397,8 +401,8 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
               type: 'tool-result',
               toolCallId: b.callId,
               toolName: toolNameByCallId.get(b.callId) ?? 'Agent',
-              // 元素级 isError：IDE 靠它把失败的 tool 渲染成错误态。
-              // 缺失会被当成成功（falsy），失败的调用看起来像正常返回。
+              // Element-level isError: the IDE uses it to render a failed tool as an error state.
+              // If it is missing it is treated as success (falsy), and a failed call looks like a normal return.
               isError: Boolean(b.isError),
               result: {
                 status: b.isError ? 'failed' : 'success',
@@ -425,7 +429,7 @@ function irToIdeMessages(session: Session): { messages: IdeMessageFile[]; assets
 }
 
 // ---------------------------------------------------------------------------
-// index.json 读写
+// index.json read/write
 // ---------------------------------------------------------------------------
 
 interface IdeIndex {
@@ -442,7 +446,7 @@ function readIndex(historyDir: string): IdeIndex {
     if (!Array.isArray(data.conversations)) data.conversations = [];
     return data;
   } catch {
-    // index.json 损坏时，尝试用备份恢复
+    // When index.json is corrupt, try to restore from the backup
     const bakPath = path.join(historyDir, '.index_bak.json');
     try {
       const data = JSON.parse(fs.readFileSync(bakPath, 'utf-8')) as IdeIndex;
@@ -456,12 +460,12 @@ function readIndex(historyDir: string): IdeIndex {
 
 function writeIndex(historyDir: string, data: IdeIndex): void {
   const idxPath = path.join(historyDir, 'index.json');
-  // 写前备份，与 IDE 自身的 .index_bak.json 约定保持一致
+  // Back up before writing, matching the IDE's own .index_bak.json convention
   if (fs.existsSync(idxPath)) {
     try {
       fs.copyFileSync(idxPath, path.join(historyDir, '.index_bak.json'));
     } catch {
-      // 备份失败不阻断写入
+      // A failed backup must not block the write
     }
   }
   fs.writeFileSync(idxPath, JSON.stringify(data, null, 2), 'utf-8');
@@ -474,8 +478,9 @@ function upsertConversation(historyDir: string, conv: IdeConversation): void {
   if (i >= 0) convs[i] = conv;
   else convs.push(conv);
   data.conversations = convs;
-  // 原生 index.json 顶层必有 current（指向当前会话）。新建工作区时不会天然存在，
-  // 缺失可能让 IDE 打开该工作区时没有选中项 → 补上刚写入的这条。
+  // A native index.json always has top-level current (pointing at the current session). A new
+  // workspace does not have it naturally. If it is missing, the IDE may open that workspace with
+  // nothing selected → fill in the conversation just written.
   if (!data.current) data.current = conv.id;
   writeIndex(historyDir, data);
 }
@@ -483,7 +488,7 @@ function upsertConversation(historyDir: string, conv: IdeConversation): void {
 function removeConversation(historyDir: string, convId: string): void {
   const data = readIndex(historyDir);
   const convs = (data.conversations as IdeConversation[]).filter((c) => c.id !== convId);
-  if (convs.length === (data.conversations as IdeConversation[]).length) return; // 无变化
+  if (convs.length === (data.conversations as IdeConversation[]).length) return; // No change
   data.conversations = convs;
   if (data.current === convId) data.current = convs[convs.length - 1]?.id;
   writeIndex(historyDir, data);
@@ -494,23 +499,23 @@ function removeDirRecursive(dir: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// 对外 API
+// Public API
 // ---------------------------------------------------------------------------
 
 /**
- * 把会话同步进 CodeBuddy IDE 的 history（侧边栏「历史对话」可见）。
- * 失败静默降级，不抛异常。
+ * Sync a session into CodeBuddy IDE history (visible in the sidebar "history").
+ * Failures degrade silently and do not throw.
  */
 /**
- * 源平台注入的系统前缀。首条「用户消息」常常是这类包装文本，
- * 直接当标题会把提示词原文泄漏到 IDE 侧边栏历史列表里。
+ * System prefixes injected by the source platform. The first "user message" is often this
+ * wrapper text, and using it as the title would leak raw prompt text into the IDE sidebar history list.
  */
 const SYSTEM_INJECTED_TITLE = /^\s*<(local-command-caveat|local-command-stdout|system-reminder|system|command-name|command-message|command-args|command-contents|timestamp)\b/i;
 
 /**
- * 会话标题：清洗系统注入文本，拿不到有效标题时退回首条真实用户文本。
+ * Session title: clean system-injected text, and fall back to the first real user text when no usable title is found.
  */
-/** 源适配器给不出标题时的占位名（如 "Session 2bf4d3be"）——不能拿它当会话标题。 */
+/** Placeholder name when the source adapter cannot produce a title (for example "Session 2bf4d3be") — must not be used as the session title. */
 const PLACEHOLDER_TITLE = /^session\s+[0-9a-f]{8}$/i;
 
 function cleanTitle(session: Session, convId: string): string {
@@ -521,14 +526,16 @@ function cleanTitle(session: Session, convId: string): string {
     if (m.role !== 'user') continue;
     for (const b of m.content) {
       if (b.type !== 'text') continue;
-      // 源平台的首条用户消息常被 <user_info>/<rules>/<additional_data> 与附件路径包裹，
-      // 直接用原文当标题会整段被判定为注入文本 → 退回 "Session xxxxxxxx"。
-      // 先走清洗（解 <user_query> 包裹 + 剥元信息 + 去附件路径）再取标题。
+      // The source platform's first user message is often wrapped in <user_info>/<rules>/<additional_data>
+      // and attachment paths. Using the raw text as the title makes the whole span look injected →
+      // fall back to "Session xxxxxxxx". Clean first (unwrap <user_query> + strip metadata + drop
+      // attachment paths), then take the title.
       const cleaned = titleFromUserText(b.text);
       if (cleaned) return cleaned.slice(0, 100);
       const t = b.text.replace(/\s+/g, ' ').trim();
-      // isInjectedText 是 title.ts 维护的完整注入标签头清单（与 META_BLOCK_RE 同源演进），
-      // SYSTEM_INJECTED_TITLE 只保留作双保险——单一来源，避免再加标签时两边漏同步。
+      // isInjectedText is the full injected-tag-head list maintained in title.ts (it evolves with META_BLOCK_RE).
+      // SYSTEM_INJECTED_TITLE is kept only as a second check — one source of truth, so adding a tag
+      // does not miss one of the two sides.
       if (t && !isInjectedText(t) && !SYSTEM_INJECTED_TITLE.test(t)) return t.slice(0, 100);
     }
   }
@@ -538,24 +545,24 @@ function cleanTitle(session: Session, convId: string): string {
 interface IdeRequest {
   id: string;
   type: 'craft';
-  /** 该 turn 包含的消息 id（含 user 及其后的 assistant/tool） */
+  /** Message ids in this turn (the user message and the assistant/tool messages after it) */
   messages: string[];
   state: string;
-  /** epoch 毫秒，与 IDE 原生一致（number，不是 ISO 串） */
+  /** Epoch milliseconds, matching native IDE (a number, not an ISO string) */
   startedAt: number;
   usage?: Record<string, unknown>;
 }
 
 /**
- * 按 user turn 切分出 IDE 的 requests 数组。
+ * Split IDE requests by user turn.
  *
- * 为什么必须写：消费方 `dashboard-collector` 用
- * `if (!Array.isArray(data.requests)) return null` 做守卫，缺了这个数组会让
- * prompts（user turn 数）等统计**整体**静默归零，而不只是 token 归零。
+ * Why it must be written: the consumer `dashboard-collector` guards with
+ * `if (!Array.isArray(data.requests)) return null`. Missing this array makes stats such as
+ * prompts (user-turn count) silently go to zero **as a whole**, not just tokens.
  *
- * 为什么不给 usage：IR 不携带 token 用量，凭空写 0 会把「未知」伪装成「实测为 0」。
- * 消费方对缺失 usage 直接跳过累加，因此不写是安全且诚实的——token 仍为 0，
- * 但 prompts 等其余统计能恢复正常。
+ * Why usage is omitted: IR does not carry token usage. Writing 0 out of nowhere would disguise
+ * "unknown" as "measured as 0". The consumer skips accumulation when usage is missing, so omitting
+ * it is safe and honest — tokens stay 0, but prompts and the other stats recover.
  */
 function buildIdeRequests(session: Session, messages: IdeMessageFile[]): IdeRequest[] {
   const requests: IdeRequest[] = [];
@@ -574,7 +581,7 @@ function buildIdeRequests(session: Session, messages: IdeMessageFile[]): IdeRequ
       if (cur) requests.push(cur);
       cur = openRequest(m.createdAt);
     } else if (!cur) {
-      // 首条不是 user（少见）：兜底开一个 turn，避免消息无归属
+      // First message is not user (rare): open a fallback turn so the message is not unowned
       cur = openRequest(m.createdAt);
     }
     cur.messages.push(m.id);
@@ -604,9 +611,10 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
     type: 'craft',
     name: cleanTitle(session, convId),
     createdAt: session.createdAt,
-    // lastMessageAt 用迁移时刻而非源会话时间：IDE 列表按最近活动排序分组，
-    // 保留源时间会把迁移会话埋进「N 天前」分组，用户迁完在顶部找不到。
-    // 源时间轴保留在 createdAt（列表详情）与消息时间戳（打开会话后）里。
+    // lastMessageAt uses the migration time, not the source session time: the IDE list groups by
+    // recent activity. Keeping the source time buries the migrated session in an "N days ago"
+    // group, so the user cannot find it at the top after migrating. The source timeline stays in
+    // createdAt (list details) and in message timestamps (after the session is opened).
     lastMessageAt: new Date().toISOString(),
     ...(model ? { modelMap: { ask: model, craft: model, plan: model } } : {}),
   };
@@ -617,9 +625,9 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
       const convDir = path.join(historyDir, convId);
       const msgDir = path.join(convDir, 'messages');
 
-      // 幂等：重跑迁移必须先清空 messages/。
-      // 消息文件名 = 消息 id，旧版本残留的文件既不会被覆盖也不会被索引，
-      // 会变成孤儿并让目录随迁移次数无上限增长。
+      // Idempotent: rerunning a migration must clear messages/ first.
+      // Message file name = message id. Leftover files from older versions are neither overwritten
+      // nor indexed, so they become orphans and the directory grows without bound as migrations repeat.
       const marker = path.join(msgDir, '.teamai-migrated');
       if (fs.existsSync(msgDir) && !fs.existsSync(marker)) {
         const backup = path.join(convDir, `messages.backup-${Date.now()}`);
@@ -632,15 +640,15 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
       fs.mkdirSync(msgDir, { recursive: true });
       fs.writeFileSync(marker, new Date().toISOString(), 'utf-8');
 
-      // 落盘图片资源：与原生存储一致放 <convDir>/assets/，消息里用
-      // codebuddy-asset://assets/<name> 相对引用。某个资源失败只降级该图片
-      // （替换成占位文本），不阻断整个会话写入。
+      // Write image assets: put them in <convDir>/assets/ like native storage, and reference them
+      // in messages as codebuddy-asset://assets/<name>. If one asset fails, degrade only that image
+      // (replace it with placeholder text) and do not block writing the whole session.
       if (assets.length > 0) {
         const assetsDir = path.join(convDir, 'assets');
         try {
           fs.mkdirSync(assetsDir, { recursive: true });
         } catch {
-          // 建不了目录时下方逐个写入会失败并走占位降级
+          // If the directory cannot be created, the per-asset writes below fail and fall back to placeholders
         }
         for (const asset of assets) {
           let ok = false;
@@ -681,23 +689,23 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
         }
       }
 
-      // 写每条消息，同时收集顺序索引。
-      // conversation 级 index.json 是**消息顺序索引**——IDE 靠它决定显示顺序，
-      // 只写 messages/*.json 而没有它的话，会话打开会是空白。
+      // Write each message and collect the order index at the same time.
+      // The conversation-level index.json is the **message order index** — the IDE uses it to decide
+      // display order. Writing only messages/*.json without it opens a blank session.
       const messageIndex: Array<Record<string, unknown>> = [];
       for (const m of messages) {
         fs.writeFileSync(path.join(msgDir, `${m.id}.json`), JSON.stringify(m, null, 2), 'utf-8');
         messageIndex.push({ id: m.id, type: 'text', role: m.role, isComplete: true });
       }
 
-      // 写前备份，与 IDE 自身的 .index_bak.json 约定保持一致
-      // （原生会话目录都带它，用于在 index 损坏时自愈）
+      // Back up before writing, matching the IDE's own .index_bak.json convention
+      // (native session directories all carry it, so a corrupt index can heal itself)
       const convIdxPath = path.join(convDir, 'index.json');
       if (fs.existsSync(convIdxPath)) {
         try {
           fs.copyFileSync(convIdxPath, path.join(convDir, '.index_bak.json'));
         } catch {
-          // 备份失败不阻断写入
+          // A failed backup must not block the write
         }
       }
 
@@ -710,7 +718,7 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
       upsertConversation(historyDir, conv);
       synced++;
     } catch {
-      // 单个 IDE 实例同步失败不影响其他实例，也不影响 CLI 路径的主流程
+      // A failed sync of one IDE instance does not affect other instances or the main CLI-path flow
     }
   }
 
@@ -722,11 +730,11 @@ export function writeIdeSession(session: Session, cwd: string): IdeSyncResult {
 }
 
 /**
- * 遍历所有 IDE 实例的 history，按 convId 定位会话目录。
+ * Walk every IDE instance's history and locate the session directory by convId.
  *
- * rollback 时拿到的 cwd 往往是 encoded 的目录名（decodeCwdGeneric 是恒等函数，
- * 无法还原真实路径），算不出 workspace hash。而 convId 是全局唯一的，
- * 故直接全局搜索，不依赖 cwd。
+ * On rollback the cwd is often an encoded directory name (decodeCwdGeneric is the identity
+ * function and cannot restore the real path), so the workspace hash cannot be computed. convId
+ * is globally unique, so search globally and do not depend on cwd.
  */
 export function findIdeConversationDirs(convId: string): Array<{ historyDir: string; convDir: string }> {
   const out: Array<{ historyDir: string; convDir: string }> = [];
@@ -746,23 +754,26 @@ export function findIdeConversationDirs(convId: string): Array<{ historyDir: str
 }
 
 /**
- * 从 CodeBuddy IDE 的 history 中删除会话（rollback 时清理）。
- * 返回清理的 IDE 实例数。
+ * Delete a session from CodeBuddy IDE history (cleanup on rollback).
+ * Returns the number of IDE instances cleaned.
  *
- * cwd 可选：给了就额外兜底清理该项目的 index 孤儿条目，但即使不给也能按 convId 清理。
+ * cwd is optional: when given, also clean orphan index entries for that project as a fallback,
+ * but cleanup by convId still works when it is omitted.
  */
 export function deleteIdeSession(sessionId: string, cwd?: string): number {
+  assertSafeSessionFileId(sessionId);
   const convId = toIdeConvId(sessionId);
 
-  // 有 cwd 且能解析出 workspace 时，只清理该工作区：
-  // findIdeConversationDirs 遍历的是所有 workspace hash，而同一个 sessionId 完全可能
-  // 同时存在于多个工作区（把同一会话迁移到 A、B 两个项目）。此时按 convId 全局删
-  // 会连带删掉另一个工作区的副本——那是不可恢复的数据丢失。
+  // When cwd is given and a workspace can be resolved, clean only that workspace:
+  // findIdeConversationDirs walks every workspace hash, and the same sessionId can exist in
+  // several workspaces at once (the same session migrated into projects A and B). A global
+  // delete by convId would also delete the copy in the other workspace — unrecoverable data loss.
   //
-  // cwd 一旦给出就是**用户的显式界定**（rollback --cwd <真实路径>）：解析不出
-  // 工作区时只能报没删到，绝不能回退成全局删除。全局回退会把别的项目的同名
-  // 副本一起删掉——那是不可恢复的数据丢失，比留下残留严重得多。
-  // 调用方没给 cwd 时（migrate 失败后的自动回滚）才按 convId 全局清理。
+  // Once cwd is given it is the **user's explicit scope** (rollback --cwd <real path>): if the
+  // workspace cannot be resolved, report that nothing was deleted. Never fall back to a global
+  // delete. A global fallback would delete the same-named copy in other projects — unrecoverable
+  // data loss, much worse than leaving a leftover.
+  // Only when the caller omits cwd (automatic rollback after a failed migrate) is cleanup global by convId.
   const scoped = cwd ? findIdeHistoryDirs(cwd, false) : [];
   if (cwd && scoped.length === 0) {
     console.warn(
@@ -776,14 +787,15 @@ export function deleteIdeSession(sessionId: string, cwd?: string): number {
 
   let cleaned = 0;
   for (const { historyDir, convDir } of targets) {
-    // 目录删除与 index 条目清理必须分成两个 try。
-    // 合在一个 try 里时，rm 一旦抛异常（大会话容易和运行中的 IDE 进程回写竞争），
-    // 后面的 removeConversation 就被跳过，index 条目永远清不掉——
-    // 结果是目录还在、侧边栏也还显示，用户以为回滚失败且无法补救。
+    // Directory deletion and index-entry cleanup must be two separate try blocks.
+    // In one try, once rm throws (a large session easily races a running IDE process writing back),
+    // the later removeConversation is skipped and the index entry can never be cleared —
+    // the directory is still there, the sidebar still shows it, and the user thinks rollback failed
+    // with no way to recover.
     try {
       removeDirRecursive(convDir);
     } catch {
-      // ignore：目录删不掉至少要让它从侧边栏消失
+      // ignore: if the directory cannot be deleted, at least make it disappear from the sidebar
     }
     try {
       removeConversation(historyDir, convId);
@@ -797,10 +809,10 @@ export function deleteIdeSession(sessionId: string, cwd?: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// IDE → IR 读取（供 codebuddy-ide 适配器使用）
+// IDE → IR read (used by the codebuddy-ide adapter)
 // ---------------------------------------------------------------------------
 
-/** 解析后的单条 IDE 消息（content 为 IDE 原生 block 数组）。 */
+/** One parsed IDE message (content is the native IDE block array). */
 export interface IdeMessageParsed {
   id: string;
   role: 'user' | 'assistant' | 'tool';
@@ -809,7 +821,7 @@ export interface IdeMessageParsed {
   model?: string;
 }
 
-/** 一个 IDE 会话条目，带定位信息，适配器可直接命中目录而不必二次搜索。 */
+/** One IDE session entry, with location info so the adapter can hit the directory directly without a second search. */
 export interface IdeConversationEntry {
   id: string;
   name: string;
@@ -818,25 +830,27 @@ export interface IdeConversationEntry {
   lastMessageAt: string;
   /** history/<workspace-hash> */
   historyDir: string;
-  /** md5(cwd)，不可逆——cwd 只能由调用方传入才能还原 */
+  /** md5(cwd), irreversible — cwd can be restored only if the caller passes it in */
   workspaceHash: string;
   convDir: string;
 }
 
 /**
- * 读取某个工作区（history/<hash>）下 index.json 里的会话元数据。
+ * Read session metadata from index.json under one workspace (history/<hash>).
  *
- * 注意入参是**工作区目录**而非 history 根——两者的子目录语义完全不同
- * （工作区下是会话目录，history 根下是工作区目录），传错会得到空列表。
+ * The argument is the **workspace directory**, not the history root — their subdirectory
+ * meanings are completely different (a workspace contains session directories; the history root
+ * contains workspace directories). Passing the wrong one returns an empty list.
  */
 export function readIdeConversations(historyDir: string): IdeConversation[] {
   return (readIndex(historyDir).conversations ?? []).filter((c) => Boolean(c?.id));
 }
 
 /**
- * 列出 IDE 侧的全部会话。
+ * List every session on the IDE side.
  *
- * 不传 historyDirs 时遍历所有 IDE 实例；传入则只遍历指定工作区（按 md5(cwd) 定位）。
+ * When historyDirs is omitted, walk every IDE instance; when it is passed, walk only the given
+ * workspaces (located by md5(cwd)).
  */
 export function listIdeConversations(historyDirs?: string[]): IdeConversationEntry[] {
   const roots = historyDirs ?? listIdeHistoryRoots();
@@ -883,8 +897,8 @@ function parseIdeMessageFile(file: string): IdeMessageParsed | null {
     return null;
   }
 
-  // message 是 stringified JSON；损坏（IDE 正在写的半截文件）时整条跳过，
-  // 半截 JSON 无法降级为文本——拼回去只会得到无法阅读的乱码。
+  // message is stringified JSON. When it is corrupt (a half-written file while the IDE is writing),
+  // skip the whole message. Half JSON cannot be degraded to text — stitching it back only yields unreadable garbage.
   let body: { role?: string; content?: unknown };
   try {
     body = JSON.parse(raw.message) as { role?: string; content?: unknown };
@@ -899,7 +913,7 @@ function parseIdeMessageFile(file: string): IdeMessageParsed | null {
     const extra = JSON.parse(raw.extra ?? '{}') as { modelName?: string };
     if (extra?.modelName) model = String(extra.modelName).replace(/^custom-local:/, '');
   } catch {
-    // extra 缺失不影响消息本身
+    // A missing extra does not affect the message itself
   }
 
   const role = (raw.role ?? body.role ?? 'user') as IdeMessageParsed['role'];
@@ -914,11 +928,11 @@ function parseIdeMessageFile(file: string): IdeMessageParsed | null {
 }
 
 /**
- * 按会话目录读取消息，保持 IDE 侧显示顺序。
+ * Read messages from a session directory, keeping the IDE display order.
  *
- * 顺序来源是 convDir/index.json 的 messages 数组——IDE 靠它决定展示顺序，
- * 文件名的字典序与真实顺序无关（消息 id 是内容哈希/UUID）。
- * index 缺失时才退回文件名排序，并在末尾补上 index 未覆盖的孤儿文件。
+ * Order comes from the messages array in convDir/index.json — the IDE uses it to decide display
+ * order. Filename dictionary order is unrelated to the real order (message ids are content hashes/UUIDs).
+ * Fall back to filename sort only when the index is missing, and append orphan files the index does not cover at the end.
  */
 export function readIdeConversation(convDir: string, limit?: number): IdeMessageParsed[] {
   const msgDir = path.join(convDir, 'messages');

@@ -1,7 +1,7 @@
 /**
- * adapters/index.ts — 适配器注册。
+ * adapters/index.ts — Adapter registration.
  *
- * 将所有平台适配器注册到 ADAPTER_REGISTRY，供迁移引擎使用。
+ * Register every platform adapter in ADAPTER_REGISTRY for the migration engine.
  */
 
 import type { AgentAdapter } from './base.js';
@@ -23,17 +23,17 @@ import {
 export type AdapterFactory = () => AgentAdapter;
 
 export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
-  // 基础平台
+  // Base platforms
   'claude-code': () => new ClaudeCodeAdapter('claude-code', getClaudeCodeProjectsDir()),
   codex: () => new CodexAdapter('codex', getCodexSessionsDir()),
-  // CodeBuddy 有两套独立存储，拆成两个平台：
-  //   codebuddy     = CLI（~/.codebuddy/projects/...）
-  //   codebuddy-ide = IDE 图形化（CodeBuddyExtension/.../history）
+  // CodeBuddy has two independent stores, split into two platforms:
+  //   codebuddy     = CLI (~/.codebuddy/projects/...)
+  //   codebuddy-ide = IDE GUI (CodeBuddyExtension/.../history)
   codebuddy: () => new CodeBuddyAdapter(),
   'codebuddy-ide': () => new CodeBuddyIdeAdapter(),
   workbuddy: () => new WorkBuddyAdapter(),
   cursor: () => new CursorAdapter(),
-  // TeamAI 变体（路径前缀不同，格式完全相同）
+  // TeamAI variants (different path prefixes, identical format)
   'claude-internal': () => new ClaudeCodeAdapter('claude-internal', getClaudeInternalProjectsDir()),
   tclaude: () => new ClaudeCodeAdapter('tclaude', getTClaudeProjectsDir()),
   'codex-internal': () => new CodexAdapter('codex-internal', getCodexInternalSessionsDir()),

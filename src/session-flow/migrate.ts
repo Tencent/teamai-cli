@@ -1,11 +1,13 @@
 /**
- * migrate.ts — 迁移引擎。
+ * migrate.ts — migration engine.
  *
- * 编排源平台适配器读取 → IR → 目标平台适配器写入的完整流程，
- * 同时计算保真度（FidelityReport）、生成迁移预览（MigrationPreview）。
+ * Orchestrates the full flow of source-platform adapter read → IR → target-platform
+ * adapter write, and also computes fidelity (FidelityReport) and a migration preview
+ * (MigrationPreview).
  *
- * 增强保真度：ThinkingBlock 迁移到不支持思考块的平台时，降级为 TextBlock
- * 而非直接丢弃，用 <thinking> 标签包裹保留内容。
+ * Enhanced fidelity: when a ThinkingBlock is migrated to a platform that does not
+ * support thinking blocks, degrade it to a TextBlock instead of dropping it, wrapping
+ * the content in a <thinking> tag.
  */
 
 import type { Session, ContentBlock } from './ir.js';
@@ -13,7 +15,7 @@ import { getAdapter, listAvailablePlatforms, listInstalledPlatforms } from './ad
 import { scrubSession } from './scrub.js';
 
 // ---------------------------------------------------------------------------
-// 各平台能力矩阵
+// Per-platform capability matrix
 // ---------------------------------------------------------------------------
 
 export const THINKING_SUPPORT: Record<string, boolean> = {
@@ -26,7 +28,7 @@ export const THINKING_SUPPORT: Record<string, boolean> = {
   codebuddy: true,
   'codebuddy-ide': true,
   workbuddy: true,
-  cursor: false, // Cursor 无 thinking，降级为 text
+  cursor: false, // Cursor has no thinking; degrade to text
 };
 
 export const NATIVE_TOOLS: Record<string, Set<string>> = {
@@ -48,16 +50,16 @@ export const NATIVE_TOOLS: Record<string, Set<string>> = {
   codebuddy: new Set([
     'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'task', 'todo_write',
   ]),
-  // IDE 侧工具名与 CLI 不完全一致（write_to_file / execute_command / search_content …），
-  // 不登记的话迁移预览会把这些正常工具全报成 tool_not_in_target。
+  // IDE tool names do not fully match the CLI (write_to_file / execute_command / search_content …).
+  // If they are not registered, the migration preview reports every one of these normal tools as tool_not_in_target.
   'codebuddy-ide': new Set([
     'read_file', 'write_file', 'write_to_file', 'edit_file', 'replace_in_file', 'delete_file',
     'bash', 'execute_command', 'grep', 'search_content', 'glob', 'list_dir', 'codebase_search',
     'web_search', 'web_fetch', 'preview_url', 'lsp', 'task', 'todo_write', 'use_skill',
     'update_memory', 'image_gen',
   ]),
-  // workbuddy 与 codebuddy 同构，但此前完全没登记：保真度会把未知工具算成
-  // preserved（100%）且**一条警告都不产生**，用户完全看不到工具不兼容。
+  // workbuddy has the same shape as codebuddy, but was not registered at all before: fidelity
+  // counted unknown tools as preserved (100%) and produced **no warnings**, so the user never saw tool incompatibility.
   workbuddy: new Set([
     'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'task', 'todo_write',
   ]),
@@ -68,15 +70,16 @@ export const NATIVE_TOOLS: Record<string, Set<string>> = {
 };
 
 /**
- * 图片支持矩阵。目标平台能原生表示消息内嵌图片（用户消息 content 里的 image 块）
- * 才算 true；false 时图片降级为占位文本（保真度计 degraded，见 fidelityFromSession）。
+ * Image support matrix. True only when the target platform can natively represent an inline
+ * image in a message (an image block in user-message content). When false, images degrade to
+ * placeholder text (counted as degraded in fidelity; see fidelityFromSession).
  */
 export const IMAGE_SUPPORT: Record<string, boolean> = {
   'claude-code': true,
   'claude-internal': true,
   tclaude: true,
-  'codebuddy-ide': true, // 写回 assets/ + codebuddy-asset:// 引用，完整还原
-  codex: false, // rollout UserMessage 只支持 text
+  'codebuddy-ide': true, // Write back assets/ + codebuddy-asset:// refs, fully restored
+  codex: false, // rollout UserMessage supports text only
   'codex-internal': false,
   tcodex: false,
   codebuddy: false,
@@ -134,7 +137,7 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
       } else if (block.type === 'text') {
         preservedBlocks++;
       } else if (block.type === 'tool_result') {
-        // Cursor 不存储 tool_result，降级为 text
+        // Cursor does not store tool_result; degrade to text
         if (targetPlatform === 'cursor') {
           degradedBlocks++;
           platformSpecificLosses.push('tool_result_degraded_to_text (cursor)');
@@ -142,8 +145,9 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
           preservedBlocks++;
         }
       } else if (block.type === 'tool_call') {
-        // 未知工具不再计满分：工具本身会写进去，但目标端不认识 → 执行语义丢失，
-        // 与 thinking 降级同类，计 degraded（0.7 权重），让虚高的 100% 真实回落。
+        // Unknown tools no longer score full marks: the tool itself is written, but the target
+        // does not recognize it → execution semantics are lost. Same class as thinking degradation,
+        // counted as degraded (weight 0.7), so an inflated 100% falls back to a real score.
         if (nativeTools.size > 0 && !nativeTools.has(block.toolName)) {
           unknownTools.add(block.toolName);
           degradedBlocks++;
@@ -155,7 +159,7 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
         if (targetSupportsImage) {
           preservedBlocks++;
         } else {
-          // 降级为占位文本（保留文件名/大小的指针，视觉内容丢失）
+          // Degrade to placeholder text (keep a pointer to the file name/size; visual content is lost)
           degradedBlocks++;
         }
       }
@@ -191,7 +195,7 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
 }
 
 // ---------------------------------------------------------------------------
-// 增强处理：降级 ThinkingBlock
+// Enhancement: degrade ThinkingBlock
 // ---------------------------------------------------------------------------
 
 export function degradeThinkingBlocks(session: Session, targetPlatform: string): Session {
@@ -231,29 +235,35 @@ export interface MigrationResult {
   preview: MigrationPreview;
   success: boolean;
   targetSessionId?: string;
-  /** 实际写入的目标工作区（默认 = 源会话 cwd，显式 --target-cwd 时为其值）。 */
+  /** Target workspace actually written (default = source session cwd; the explicit --target-cwd value when given). */
   targetCwd?: string;
-  /** --scrub 时被替换掉的疑似密钥数量（未脱敏时无此字段）。 */
+  /** Number of suspected secrets replaced when --scrub is set (absent when not redacted). */
   redactedCount?: number;
   targetFilePath?: string;
+  /**
+   * The transcript was written, but the target client may not list it
+   * (Cursor/WorkBuddy registration or Codex indexing failed).
+   */
+  registrationNotice?: string;
   error?: string;
   startedAt: string;
   completedAt?: string;
 }
 
-/** cwd 是否是可写入的真实绝对路径（排除 md5:<hash> 这类不可逆占位）。 */
+/** Whether cwd is a writable real absolute path (excludes irreversible placeholders such as md5:<hash>). */
 function isUsableCwd(cwd: string | undefined): cwd is string {
   if (!cwd) return false;
-  // Windows 盘符路径（C:\... / C:/...）同样是合法绝对路径
+  // Windows drive paths (C:\... / C:/...) are valid absolute paths too
   return cwd.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(cwd);
 }
 
 /**
- * 解析目标工作区：**默认保持源会话的工作区**。
+ * Resolve the target workspace: **keep the source session's workspace by default**.
  *
- * 优先级：显式指定 > 源会话 cwd > 源端定位用的 projectPath。
- * 源会话 cwd 可能是 `md5:<hash>` 占位（codebuddy-ide 未传工作区时），不是可写路径，
- * 此时回退到 projectPath（通常是命令运行的目录），让 writeSession 有确定的落点。
+ * Priority: explicit value > source session cwd > projectPath used to locate the source.
+ * The source session cwd may be an `md5:<hash>` placeholder (when codebuddy-ide was not given
+ * a workspace), which is not a writable path. Fall back to projectPath (usually the directory
+ * the command is running in) so writeSession has a definite destination.
  */
 export function resolveTargetCwd(
   explicit: string | undefined,
@@ -304,8 +314,8 @@ export class MigrationEngine {
       const source = getAdapter(this.sourcePlatform);
       const target = getAdapter(this.targetPlatform);
 
-      // 目标端安装检查：没装客户端时写入只会落到一个无人读取的目录，
-      // 之前会照样报「迁移成功」。这里提前失败并给出明确原因。
+      // Target install check: if the client is not installed, the write only lands in a directory
+      // nobody reads, and it used to still report "migration succeeded". Fail early with a clear reason.
       if (!target.isReady()) {
         throw new Error(
           `Target platform "${this.targetPlatform}" is not installed or its storage directory was not found. ` +
@@ -315,30 +325,34 @@ export class MigrationEngine {
 
       const session = await source.readSession(sessionId, projectPath);
 
-      // 脱敏在 thinking 降级**之前**：--scrub 时整份 IR 过一遍 redact，
-      // 让敏感内容不会随会话扩散到目标端（以及后续可能的团队归档）。
-      // 本地→本地迁移保留图片 filePath：目标端仍能读到该文件，去掉只会把图片
-      // 变成占位文本（归档路径才必须丢——那里会把家目录布局写进团队仓）。
+      // Redaction happens **before** thinking degradation: with --scrub, the whole IR is passed
+      // through redact so sensitive content does not spread to the target with the session
+      // (or into a later team archive).
+      // Local-to-local migration keeps image filePath: the target can still read that file, and
+      // dropping it would only turn the image into placeholder text (the archive path must drop
+      // it — that path would write the home-directory layout into the team repo).
       const scrubbed = scrub ? scrubSession(session, { dropImagePaths: false }) : null;
       const base = scrubbed ? scrubbed.session : session;
-      // fidelity 取「脱敏后、降级前」：fidelityFromSession 统计的正是 thinking
-      // 被降级成 text 的块，降级之后再算，它们已经是 text 了——评分虚高、
-      // degradedBlocks 告警消失，还会与 --dry-run 的 preview（用未降级 IR）
-      // 互相打架。此时 scrub 造成的丢块已经计入。
+      // Fidelity is taken "after redaction, before degradation": fidelityFromSession counts
+      // exactly the thinking blocks that will be degraded to text. If it runs after degradation,
+      // they are already text — the score is inflated, degradedBlocks warnings disappear, and it
+      // conflicts with the --dry-run preview (which uses the undegraded IR). Blocks dropped by
+      // scrub are already included at this point.
       const fidelity = fidelityFromSession(base, this.targetPlatform);
       const enhancedSession = degradeThinkingBlocks(base, this.targetPlatform);
 
-      // 目标工作区语义：**默认保持源会话的工作区**。
-      // 迁移是「把 thpc 的会话搬到 Codex/WorkBuddy」，而不是「搬到我当前所在的目录」；
-      // 只有显式指定 targetProjectPath（--target-cwd）才搬走。
+      // Target workspace semantics: **keep the source session's workspace by default**.
+      // Migration means "move thpc's session to Codex/WorkBuddy", not "move it to the directory
+      // I am in now". It is moved only when targetProjectPath (--target-cwd) is set explicitly.
       const targetCwd = resolveTargetCwd(targetProjectPath, session.cwd, projectPath);
       targetSid = await target.writeSession(enhancedSession, targetCwd);
+      const registrationNotice = target.consumeWriteNotice?.();
 
-      // 尝试定位目标文件路径
+      // Try to locate the target file path
       let targetFilePath: string | undefined;
       try {
         const targetAdapter = getAdapter(this.targetPlatform);
-        // 通过 list 查找刚写入的会话
+        // Find the session just written via list
         const metas = await targetAdapter.listConversations(targetCwd);
         const found = metas.find((m) => m.sessionId === targetSid);
         if (found) targetFilePath = found.filePath;
@@ -362,18 +376,19 @@ export class MigrationEngine {
         targetSessionId: targetSid,
         targetCwd,
         ...(scrubbed ? { redactedCount: scrubbed.redactedCount } : {}),
+        ...(registrationNotice ? { registrationNotice } : {}),
         targetFilePath,
         startedAt,
         completedAt,
       };
     } catch (e) {
-      // 自动回退
+      // Automatic rollback
       if (targetSid) {
         try {
           const target = getAdapter(this.targetPlatform);
           await target.deleteSession(targetSid);
         } catch {
-          // 回退失败不掩盖原始错误
+          // A failed rollback must not hide the original error
         }
       }
 

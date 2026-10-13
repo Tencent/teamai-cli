@@ -1,8 +1,8 @@
 /**
- * 会话检索引擎 — BM25 + 时间衰减。
+ * Session search engine — BM25 + time decay.
  *
- * 对已迁移的会话建立 BM25 索引，支持关键词检索。
- * 标题加权 3x，时间衰减半衰期 30 天（影响 30% 权重）。
+ * Builds a BM25 index over migrated sessions and supports keyword search.
+ * Titles are weighted 3x; time decay has a 30-day half-life (30% of the weight).
  *
  * Ported from sessionflow/core/search.py
  */
@@ -10,7 +10,7 @@
 import type { Session, Message } from './ir.js';
 
 // ---------------------------------------------------------------------------
-// 数据结构
+// Data structures
 // ---------------------------------------------------------------------------
 
 export interface SearchHit {
@@ -31,7 +31,7 @@ export interface SearchHit {
 }
 
 // ---------------------------------------------------------------------------
-// 分词
+// Tokenization
 // ---------------------------------------------------------------------------
 
 export function tokenize(text: string): string[] {
@@ -48,7 +48,7 @@ export function tokenize(text: string): string[] {
         tokens.push(currentWord);
         currentWord = '';
       }
-      // 中文字符单独成 token
+      // Each CJK character is its own token
       if (/[\u4e00-\u9fff]/.test(ch)) {
         tokens.push(ch);
       }
@@ -98,7 +98,7 @@ function makeSnippet(text: string, query: string, maxLen = 200): string {
 }
 
 // ---------------------------------------------------------------------------
-// 时间衰减
+// Time decay
 // ---------------------------------------------------------------------------
 
 function timeDecay(createdAt: string, halfLifeDays = 30): number {
@@ -111,7 +111,7 @@ function timeDecay(createdAt: string, halfLifeDays = 30): number {
 }
 
 // ---------------------------------------------------------------------------
-// BM25 Okapi（自行实现，零依赖）
+// BM25 Okapi (hand-rolled, zero dependencies)
 // ---------------------------------------------------------------------------
 
 class BM25Okapi {
@@ -132,7 +132,7 @@ class BM25Okapi {
       ? this.docLen.reduce((s, n) => s + n, 0) / this.docLen.length
       : 0;
 
-    // 计算 document frequency
+    // Compute document frequency
     this.docFreq = new Map();
     for (const doc of corpus) {
       const seen = new Set(doc);
@@ -141,7 +141,7 @@ class BM25Okapi {
       }
     }
 
-    // 计算 IDF (Okapi BM25 variant)
+    // Compute IDF (Okapi BM25 variant)
     const N = corpus.length;
     this.idf = new Map();
     for (const [term, df] of this.docFreq) {
@@ -177,7 +177,7 @@ class BM25Okapi {
 }
 
 // ---------------------------------------------------------------------------
-// 搜索引擎
+// Search engine
 // ---------------------------------------------------------------------------
 
 export interface LoadedSession {
@@ -188,11 +188,11 @@ export interface LoadedSession {
 
 export class SessionSearchEngine {
   /**
-   * 搜索已加载的会话列表。
+   * Search the already-loaded session list.
    *
-   * @param sessions 已加载的会话列表（sessionName + author + Session）
-   * @param query 搜索关键词
-   * @param options 搜索选项
+   * @param sessions Already-loaded sessions (sessionName + author + Session)
+   * @param query Search keywords
+   * @param options Search options
    */
   async search(
     sessions: LoadedSession[],
@@ -208,23 +208,23 @@ export class SessionSearchEngine {
 
     if (sessions.length === 0) return [];
 
-    // 构建文档
+    // Build documents
     const docs = sessions.map((s) => {
       const msgTexts = s.session.messages.map(extractTextFromMessage);
       const fullText = msgTexts.join(' ');
       let tokens = tokenize(fullText);
-      // 标题加权 3x
+      // Title weighted 3x
       const titleTokens = tokenize(s.session.title);
       tokens = [...titleTokens, ...titleTokens, ...titleTokens, ...tokens];
       return { meta: s, tokens, fullText, msgTexts };
     });
 
-    // BM25 检索
+    // BM25 retrieval
     const corpus = docs.map((d) => d.tokens);
     const bm25 = new BM25Okapi(corpus);
     const scores = bm25.getScores(queryTokens);
 
-    // 构建结果
+    // Build results
     const results: SearchHit[] = [];
     for (let i = 0; i < docs.length; i++) {
       const rawScore = scores[i];
@@ -234,7 +234,7 @@ export class SessionSearchEngine {
       const decay = enableDecay ? timeDecay(doc.meta.session.createdAt) : 1.0;
       const finalScore = rawScore * (0.7 + 0.3 * decay);
 
-      // 找到匹配的消息
+      // Find matching messages
       const lowerQuery = query.toLowerCase();
       const matched: SearchHit['matchedMessages'] = [];
       for (let j = 0; j < doc.msgTexts.length; j++) {

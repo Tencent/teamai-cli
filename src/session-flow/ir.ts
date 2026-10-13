@@ -1,17 +1,18 @@
 /**
- * Canonical IR — 跨平台归一化的会话表示。
+ * Canonical IR — cross-platform normalized session representation.
  *
- * 所有适配器读取的源平台会话都会被归一化为本模块定义的 IR 结构，
- * 所有写入操作也基于 IR 进行，从而实现平台无关的会话迁移。
+ * Every source-platform session read by an adapter is normalized into the IR
+ * defined by this module, and every write is also based on IR, so session
+ * migration stays platform-agnostic.
  *
- * 增强点（vs Python 版）：
- * - ThinkingBlock 保留 signature 字段（同平台迁移可用）
- * - MessageMetadata 增加 isMeta/promptId（CC 特有）
- * - SessionMetadata 增加 originator/sourcePlatform
+ * Enhancements (vs the Python version):
+ * - ThinkingBlock keeps the signature field (usable for same-platform migration)
+ * - MessageMetadata adds isMeta/promptId (Claude Code specific)
+ * - SessionMetadata adds originator/sourcePlatform
  */
 
 // ---------------------------------------------------------------------------
-// 内容块（ContentBlock）
+// Content blocks (ContentBlock)
 // ---------------------------------------------------------------------------
 
 export interface TextBlock {
@@ -22,7 +23,7 @@ export interface TextBlock {
 export interface ThinkingBlock {
   type: 'thinking';
   text: string;
-  signature?: string; // 保留原始签名（同平台迁移时可用）
+  signature?: string; // Keep the original signature (usable for same-platform migration)
 }
 
 export interface ToolCallBlock {
@@ -40,22 +41,22 @@ export interface ToolResultBlock {
 }
 
 /**
- * 消息内嵌图片块。
+ * Inline image block in a message.
  *
- * - `data`：图片内容的 base64（优先使用；claude-code 等原生支持 base64 图片的平台直接写回）
- * - `filePath`：源端文件绝对路径（codebuddy-ide 的 assets；写回 IDE / 落地到支持文件引用的平台用）
- * - 两者至少有一个，读取侧保证；都没有时写入侧降级为占位文本
+ * - `data`: base64 image content (preferred; platforms that natively support base64 images, such as claude-code, write it back directly)
+ * - `filePath`: absolute path of the source file (codebuddy-ide assets; used when writing back to the IDE or to platforms that support file references)
+ * - At least one of the two is guaranteed by the read side; if both are missing, the write side degrades to placeholder text
  */
 export interface ImageBlock {
   type: 'image';
   mimeType: string; // image/png | image/jpeg | image/gif | image/webp
-  data?: string; // base64，不带 data: 前缀
-  filePath?: string; // 源端绝对路径
-  /** 展示名（占位符用），如 image.b9f683a0a9.png */
+  data?: string; // base64, without a data: prefix
+  filePath?: string; // Absolute path on the source side
+  /** Display name (used in placeholders), e.g. image.b9f683a0a9.png */
   label?: string;
 }
 
-/** 目标平台不支持图片时的占位文本（保真度计 degraded，而非静默丢弃）。 */
+/** Placeholder text when the target platform does not support images (counted as degraded in fidelity, rather than silently dropped). */
 export function imagePlaceholderText(block: ImageBlock): string {
   const sizeKb = block.data ? Math.round((block.data.length * 3) / 4 / 1024) : null;
   const sizePart = sizeKb !== null ? `, ${sizeKb}KB` : '';
@@ -120,7 +121,7 @@ export function blockFromDict(data: Record<string, unknown>): ContentBlock {
 }
 
 // ---------------------------------------------------------------------------
-// 消息（Message）
+// Messages (Message)
 // ---------------------------------------------------------------------------
 
 export interface MessageMetadata {
@@ -163,7 +164,7 @@ export function messageFromDict(data: Record<string, unknown>): Message {
 }
 
 // ---------------------------------------------------------------------------
-// 会话（Session）
+// Sessions (Session)
 // ---------------------------------------------------------------------------
 
 export interface SessionMetadata {

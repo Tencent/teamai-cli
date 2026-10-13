@@ -1,24 +1,24 @@
 /**
- * adapters/codebuddy.ts — CodeBuddy **CLI** 平台适配器。
+ * adapters/codebuddy.ts — CodeBuddy **CLI** platform adapter.
  *
- * 只覆盖 CLI 存储；CodeBuddy **IDE**（图形化侧边栏「历史对话」）是另一套
- * 独立存储，由 `adapters/codebuddy-ide.ts` 负责。两者会话互不通用，
- * 本适配器不再读写 IDE 侧。
+ * Covers CLI storage only. CodeBuddy **IDE** (the GUI sidebar "history") is a separate
+ * store, handled by `adapters/codebuddy-ide.ts`. Sessions are not interchangeable between the two,
+ * and this adapter no longer reads or writes the IDE side.
  *
- * 读取/写入 `~/.codebuddy/projects/<encoded-cwd>/<session-uuid>.jsonl` 格式。
- * cwd 编码: `/` → `-`，无前导 `-`。
- * 同目录下有 `<session-uuid>/subagents/` 子目录存子代理会话（首版不迁移）。
+ * Reads and writes `~/.codebuddy/projects/<encoded-cwd>/<session-uuid>.jsonl`.
+ * cwd encoding: `/` → `-`, with no leading `-`.
+ * A `<session-uuid>/subagents/` subdirectory in the same directory holds subagent sessions (not migrated in the first version).
  *
- * JSONL 行类型（7 种）：
- *   读取：message/function_call/function_call_result/reasoning → IR；其余跳过
- *   写入：message + function_call + function_call_result + reasoning +
- *         ai-title + file-history-snapshot（辅助行）
+ * JSONL line types (7 kinds):
+ *   Read: message/function_call/function_call_result/reasoning → IR; the rest are skipped
+ *   Write: message + function_call + function_call_result + reasoning +
+ *         ai-title + file-history-snapshot (auxiliary lines)
  *
- * 增强点（vs Python 版）：
- * - reasoning 块写入为独立 reasoning 行（而非跳过）
- * - 写入时生成 ai-title 行
- * - 写入时生成 file-history-snapshot 行
- * - timestamp 使用 Unix ms 整数
+ * Enhancements (vs the Python version):
+ * - Write reasoning blocks as their own reasoning lines (instead of skipping them)
+ * - Write an ai-title line
+ * - Write a file-history-snapshot line
+ * - timestamp is a Unix ms integer
  */
 
 import * as crypto from 'node:crypto';
@@ -27,7 +27,7 @@ import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
 import { imagePlaceholderText } from '../ir.js';
-import { resolveWriteSessionId } from '../ids.js';
+import { assertSafeSessionFileId, resolveWriteSessionId } from '../ids.js';
 import {
   getCodeBuddyProjectsDir,
   encodeCwdCodeBuddy,
@@ -42,7 +42,7 @@ import {
 import { isInjectedText, fallbackTitle, titleFromCandidates } from '../title.js';
 
 // ---------------------------------------------------------------------------
-// 工具名归一化映射
+// Tool-name normalization map
 // ---------------------------------------------------------------------------
 
 const CB_TO_IR_TOOL: Record<string, string> = {
@@ -57,13 +57,13 @@ const CB_TO_IR_TOOL: Record<string, string> = {
 };
 
 /**
- * IR → CodeBuddy 工具名。
+ * IR → CodeBuddy tool name.
  *
- * CodeBuddy / WorkBuddy 客户端按「UI 工具名」查表渲染图标与折叠标题，实测原生行里是
- * `Bash` / `Read` / `Write` / `Edit` / `Grep` / `Glob` / `Task` / `TodoWrite` 这类驼峰名。
- * 直接把 IR 的 `read_file` / `bash` 写进去，客户端查不到 → 工具调用显示为空白。
- * 同时把源平台别名（execute_command / replace_in_file / search_file …）收口到这里，
- * 否则它们会原样落到目标文件里。
+ * The CodeBuddy / WorkBuddy client looks up icons and collapsed titles by "UI tool name". Native rows use
+ * camel-case names such as `Bash` / `Read` / `Write` / `Edit` / `Grep` / `Glob` / `Task` / `TodoWrite`.
+ * Writing the IR names `read_file` / `bash` directly means the client finds nothing → the tool call renders blank.
+ * Source-platform aliases (execute_command / replace_in_file / search_file ...) are folded in here too,
+ * otherwise they would land in the target file unchanged.
  */
 const IR_TO_CB_TOOL: Record<string, string> = {
   read_file: 'Read',
@@ -78,7 +78,7 @@ const IR_TO_CB_TOOL: Record<string, string> = {
   web_fetch: 'WebFetch',
   web_search: 'WebSearch',
   semantic_search: 'SemanticSearch',
-  // 源平台别名 → CodeBuddy 语义工具
+  // Source-platform aliases → CodeBuddy semantic tools
   execute_command: 'Bash',
   run_command: 'Bash',
   write_to_file: 'Write',
@@ -99,7 +99,7 @@ function denormalizeToolName(irName: string): string {
   return IR_TO_CB_TOOL[irName] ?? irName;
 }
 
-/** 工具调用在折叠态显示的摘要文本（原生 providerData.argumentsDisplayText）。 */
+/** Summary text shown for a tool call when collapsed (native providerData.argumentsDisplayText). */
 function argumentsDisplayText(name: string, args: Record<string, unknown> | undefined): string {
   if (!args) return name;
   const preferred =
@@ -117,12 +117,12 @@ function argumentsDisplayText(name: string, args: Record<string, unknown> | unde
 }
 
 // ---------------------------------------------------------------------------
-// UUID / 时间戳工具
+// UUID / timestamp helpers
 // ---------------------------------------------------------------------------
 
-// 不校验 version 位：源平台的 sessionId 可能是 UUID v7（codex / codex-internal / tcodex）。
-// 只认 v4 会让这些会话每次迁移都重新生成一个 v4 ID —— 既不幂等（反复迁移堆积副本），
-// 也无法再按源 sessionId 追踪或回滚。放宽到「任意合法 UUID 形状」即可复用源 ID。
+// Do not check the version nibble: a source sessionId may be UUID v7 (codex / codex-internal / tcodex).
+// Accepting only v4 would mint a new v4 ID on every migration — not idempotent (repeated migrations pile up copies)
+// and the source sessionId could no longer be used to track or roll back. Any well-formed UUID shape is enough to reuse the source ID.
 function uuidV4(): string {
   return crypto.randomUUID();
 }
@@ -179,10 +179,10 @@ export class CodeBuddyAdapter extends AgentAdapter {
   }
 
   /**
-   * 找出该 sessionId 的**全部**副本（跨工作区）。
+   * Find every copy of this sessionId (across workspaces).
    *
-   * findSessionFile 命中首个即返回，用于读取没问题；但删除时只删首个会让其他
-   * 工作区里的副本变成孤儿（无 IDE 条目、用户看不见、占空间）。
+   * findSessionFile returns on the first hit, which is fine for reads; deleting only the first hit leaves
+   * copies in other workspaces as orphans (no IDE entry, invisible to the user, still taking space).
    */
   private findAllSessionFiles(sessionId: string, projectPath?: string): string[] {
     if (projectPath) {
@@ -269,9 +269,9 @@ export class CodeBuddyAdapter extends AgentAdapter {
     if (!createdAt) createdAt = new Date().toISOString();
     if (!updatedAt) updatedAt = createdAt;
 
-    // ai-title 是 CodeBuddy 自己起的标题，最可靠；否则退回首条用户文本。
-    // 首条「用户消息」常常是 system-reminder 等注入块，不清洗的话
-    // 会话列表里显示的就是一整段提示词原文。
+    // ai-title is the title CodeBuddy itself chose, so it is the most reliable; otherwise fall back to the first user text.
+    // The first "user message" is often an injected block such as system-reminder. Without cleaning,
+    // the session list shows the entire prompt verbatim.
     if (aiTitle && !isInjectedText(aiTitle)) {
       title = aiTitle.slice(0, 60);
     } else {
@@ -307,9 +307,9 @@ export class CodeBuddyAdapter extends AgentAdapter {
     const cwd = decodeCwdGeneric(path.basename(path.dirname(jsonlPath)));
     const records = [...readJsonl(jsonlPath)];
 
-    // writeSession 写入的每行都带 cwd（真实绝对路径）。目录名解码是恒等函数
-    // （还原不出真实路径），归档键（repoIdentity）必须优先用记录里的原生 cwd
-    // （设计文档 Key invariant）；恢复失败退回目录名。
+    // Every line written by writeSession carries cwd (the real absolute path). Decoding the directory name is the identity function
+    // (it cannot recover the real path), so the archive key (repoIdentity) must prefer the native cwd in the record
+    // (design doc Key invariant); if recovery fails, fall back to the directory name.
     let nativeCwd: string | undefined;
     for (const rec of records) {
       if (typeof rec.cwd === 'string' && path.isAbsolute(rec.cwd)) {
@@ -325,13 +325,13 @@ export class CodeBuddyAdapter extends AgentAdapter {
     const sessionMetadata: Record<string, unknown> = {};
     const messages: Message[] = [];
 
-    // 第一遍：提取 title/时间戳/元数据
+    // First pass: extract title / timestamps / metadata
     for (const rec of records) {
       const rtype = rec.type as string;
 
       if (rtype === 'ai-title') {
-        // CodeBuddy 偶尔把注入块原文存成 ai-title，照收会污染整个迁移链路
-        // （预览、目标侧标题全是提示词原文）。
+        // CodeBuddy sometimes stores injected-block text as ai-title. Taking it as-is pollutes the whole migration path
+        // (preview and target-side titles are the prompt verbatim).
         const t = String(rec.aiTitle ?? '');
         if (t && !isInjectedText(t)) title = t.slice(0, 100);
         continue;
@@ -345,7 +345,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
       }
     }
 
-    // 第二遍：构建消息
+    // Second pass: build messages
     for (const rec of records) {
       const rtype = rec.type as string;
 
@@ -362,7 +362,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
           timestamp: rec.timestamp !== undefined ? fromUnixMs(Number(rec.timestamp)) : undefined,
         };
 
-        // 提取 model
+        // Extract model
         const providerData = rec.providerData as Record<string, unknown> | undefined;
         if (providerData?.model) {
           msg.metadata = { model: String(providerData.model) };
@@ -427,7 +427,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     }
 
     if (!title) {
-      // 与 claude-code 同策略：候选文本统一解包（注入头 + 真实提问的混合消息也能救回）
+      // Same strategy as claude-code: unwrap candidate text together (mixed messages with an injection header plus a real question can still be recovered)
       const candidates: string[] = [];
       for (const msg of messages) {
         if (msg.role !== 'user') continue;
@@ -490,7 +490,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
     const records: Record<string, unknown>[] = [];
 
-    // callId → 工具名：让 function_call_result 行带上真实工具名（而不是一律 'Agent'）
+    // callId → tool name: so function_call_result lines carry the real tool name (instead of always 'Agent')
     const toolNamesByCallId = new Map<string, string>();
     for (const m of session.messages) {
       for (const b of m.content) {
@@ -501,7 +501,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
     }
     const resultToolName = (callId: string): string | undefined => toolNamesByCallId.get(callId);
 
-    // 1. ai-title 行
+    // 1. ai-title line
     records.push({
       timestamp: toUnixMs(session.createdAt),
       type: 'ai-title',
@@ -515,11 +515,11 @@ export class CodeBuddyAdapter extends AgentAdapter {
     for (const msg of session.messages) {
       const msgId = msg.messageId ?? uuidV4();
 
-      // 分离 thinking blocks 和其他 blocks
+      // Split thinking blocks from the other blocks
       const thinkingBlocks = msg.content.filter((b) => b.type === 'thinking');
       const otherBlocks = msg.content.filter((b) => b.type !== 'thinking');
 
-      // reasoning 行（thinking blocks → reasoning）
+      // reasoning lines (thinking blocks → reasoning)
       for (const tb of thinkingBlocks) {
         const reasoningId = uuidV4();
         records.push({
@@ -536,7 +536,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
         parentId = reasoningId;
       }
 
-      // message 行（text blocks）
+      // message line (text blocks)
       if (otherBlocks.length > 0) {
         const cbContent: Record<string, unknown>[] = [];
         let hasText = false;
@@ -548,7 +548,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
             });
             hasText = true;
           } else if (block.type === 'image') {
-            // CLI 存储不含图片，降级为占位文本（保真度计 degraded）
+            // CLI storage has no images; degrade to placeholder text (counted as degraded fidelity)
             cbContent.push({
               type: msg.role === 'user' ? 'input_text' : 'output_text',
               text: imagePlaceholderText(block),
@@ -574,9 +574,9 @@ export class CodeBuddyAdapter extends AgentAdapter {
         }
       }
 
-      // function_call 行（tool_call blocks）
-      // 原生结构要点：顶层 `arguments` 是 JSON 字符串（客户端展开参数面板读它）、
-      // providerData.argumentsDisplayText 是折叠态摘要、callId 必须非空（与结果配对）。
+      // function_call lines (tool_call blocks)
+      // Native shape: top-level `arguments` is a JSON string (the client reads it to expand the parameter panel),
+      // providerData.argumentsDisplayText is the collapsed summary, and callId must be non-empty (paired with the result).
       for (const block of otherBlocks) {
         if (block.type === 'tool_call') {
           const fcId = block.callId || uuidV4();
@@ -602,8 +602,8 @@ export class CodeBuddyAdapter extends AgentAdapter {
         }
       }
 
-      // function_call_result 行（tool_result blocks）
-      // name 用真实工具名：写死 'Agent' 会让所有工具结果都显示成 "Agent"。
+      // function_call_result lines (tool_result blocks)
+      // name uses the real tool name: hardcoding 'Agent' would make every tool result display as "Agent".
       for (const block of otherBlocks) {
         if (block.type === 'tool_result') {
           const fcrId = uuidV4();
@@ -624,7 +624,7 @@ export class CodeBuddyAdapter extends AgentAdapter {
         }
       }
 
-      // file-history-snapshot 行（每条消息后）
+      // file-history-snapshot line (after each message)
       records.push({
         id: uuidV4(),
         timestamp: toUnixMs(msg.timestamp),
@@ -640,16 +640,17 @@ export class CodeBuddyAdapter extends AgentAdapter {
 
     writeJsonl(jsonlPath, records);
 
-    // 这里**不再**顺带写 CodeBuddy IDE 的 history。
-    // CLI（~/.codebuddy/projects/...）与 IDE（CodeBuddyExtension/.../history）是两套
-    // 独立存储，而本适配器的 list/read/delete 只覆盖 CLI 一侧——写入时偷偷双写会造
-    // 成读写不对称：迁进来的会话出现在 IDE 侧边栏，却既列不出来也删不掉。
-    // 需要 IDE 侧会话请显式迁移到 `codebuddy-ide` 平台。
+    // This no longer also writes CodeBuddy IDE history.
+    // CLI (~/.codebuddy/projects/...) and IDE (CodeBuddyExtension/.../history) are two
+    // independent stores, and this adapter's list/read/delete cover only the CLI side — a silent dual-write would
+    // make reads and writes asymmetric: migrated sessions show up in the IDE sidebar, yet cannot be listed or deleted.
+    // To get an IDE-side session, migrate explicitly to the `codebuddy-ide` platform.
 
     return sessionId;
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
+    assertSafeSessionFileId(sessionId);
     const jsonlPaths = this.findAllSessionFiles(sessionId, projectPath);
 
     let cliDeleted = false;
@@ -661,15 +662,15 @@ export class CodeBuddyAdapter extends AgentAdapter {
         // ignore
       }
 
-      // 删除同名子目录（subagents 等）
+      // Delete the same-named subdirectory (subagents and similar)
       const subdir = jsonlPath.replace(/\.jsonl$/, '');
       if (dirExists(subdir)) {
         removeDirRecursive(subdir);
       }
     }
 
-    // 只清理 CLI 侧。IDE 侧会话由 `codebuddy-ide` 平台负责，
-    // 本适配器不再越界删除自己从未写入过的存储。
+    // Clean up the CLI side only. IDE-side sessions belong to the `codebuddy-ide` platform;
+    // this adapter no longer reaches into storage it never wrote.
     return cliDeleted;
   }
 }

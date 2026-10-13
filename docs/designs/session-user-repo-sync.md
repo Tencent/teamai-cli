@@ -62,7 +62,8 @@ re-pushing updates the existing entry instead of generating `_1` suffixes.
 - `session search --all` — replace the dead loop with the same cross-repo iteration.
 - `session push --all` — `--source` stays required; enumerates every workspace directory of that
   one platform (bounded blast radius, consistent with `status --all`). Confirmation list when
-  more than 5 sessions would be pushed; `-y` skips.
+  more than 5 sessions would be pushed; `-y` skips that prompt and also confirms an
+  unredacted archive. Without `-y` or `--scrub`, a non-interactive push refuses.
 - `migrate --push` — re-read exactly the `result.targetSessionId`s recorded during the migration
   loop; archive under the session's native identity.
 - `resume` failure — append a hint: the session may be archived under another project; try

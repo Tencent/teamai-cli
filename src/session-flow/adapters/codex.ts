@@ -1,19 +1,19 @@
 /**
- * adapters/codex.ts — Codex (OpenAI Codex CLI) 适配器。
+ * adapters/codex.ts — Codex (OpenAI Codex CLI) adapter.
  *
- * 读取/写入 `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid-v7>.jsonl` 格式。
+ * Reads and writes `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid-v7>.jsonl`.
  *
- * JSONL 行类型（5 种顶层 type）：
- *   - session_meta: 会话元数据（第一行）
- *   - response_item: 核心消息载体（message / function_call / function_call_output / reasoning）
- *   - event_msg: 事件日志（task_started / task_complete / user_message / agent_message / token_count）
- *   - turn_context: turn 上下文（cwd / sandbox_policy / model）
+ * JSONL line types (5 top-level types):
+ *   - session_meta: session metadata (first line)
+ *   - response_item: core message carrier (message / function_call / function_call_output / reasoning)
+ *   - event_msg: event log (task_started / task_complete / user_message / agent_message / token_count)
+ *   - turn_context: turn context (cwd / sandbox_policy / model)
  *
- * 增强点（vs Python 版）：
- * - 写入时生成 turn_context 行
- * - 写入时生成 event_msg:task_started + task_complete
- * - reasoning 块写入为 response_item:reasoning（而非跳过）
- * - 支持 custom_tool_call / custom_tool_call_output
+ * Enhancements (vs the Python version):
+ * - Write a turn_context line
+ * - Write event_msg:task_started + task_complete
+ * - Write reasoning blocks as response_item:reasoning (instead of skipping them)
+ * - Support custom_tool_call / custom_tool_call_output
  *
  * The written rollout must be directly indexable by Codex, or the session never
  * appears in the Codex Desktop history list:
@@ -44,7 +44,7 @@ import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
 import { imagePlaceholderText } from '../ir.js';
 import { titleFromUserText, visibleUserText } from '../title.js';
-import { resolveWriteSessionId } from '../ids.js';
+import { assertSafeSessionFileId, resolveWriteSessionId } from '../ids.js';
 import { findSqlite3 } from '../sqlite.js';
 import { log } from '../../utils/logger.js';
 import {
@@ -59,7 +59,7 @@ import {
 } from '../fs.js';
 
 // ---------------------------------------------------------------------------
-// 工具名归一化映射
+// Tool-name normalization map
 // ---------------------------------------------------------------------------
 
 const CODEX_TO_IR_TOOL: Record<string, string> = {
@@ -82,7 +82,7 @@ function denormalizeToolName(irName: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// UUIDv7 生成
+// UUIDv7 generation
 // ---------------------------------------------------------------------------
 
 function generateUuidV7(): string {
@@ -117,7 +117,7 @@ function isUuidV7(sid: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// 时间戳工具
+// Timestamp helpers
 // ---------------------------------------------------------------------------
 
 function parseCodexTimestamp(ts: unknown): string {
@@ -135,12 +135,12 @@ function parseCodexTimestamp(ts: unknown): string {
 }
 
 function formatFilenameTimestamp(isoStr: string): string {
-  // 2026-07-09T00-00-00（: → -）
+  // 2026-07-09T00-00-00 (: → -)
   return isoStr.replace(/\.\d{3}Z$/, '').replace(/:/g, '-');
 }
 
 // ---------------------------------------------------------------------------
-// Codex 配置探测 / 元信息清理 / CLI 探测
+// Codex config detection / metadata cleanup / CLI detection
 // ---------------------------------------------------------------------------
 
 /**
@@ -162,10 +162,10 @@ function readCodexModelProvider(configPath: string): string {
 }
 
 /**
- * 文本是否值得生成 ThreadItem。
- * 源平台会把水平线/围栏/空列表项序列化成独立文本块（"-" / "---" / "*" / "```" 等），
- * 它们作为消息渲染出来就是一颗颗空 bullet。这类纯 markdown 修饰符块跳过不发 item
- * （response_item 仍保留原文，不影响保真度）。
+ * Whether the text is worth emitting as a ThreadItem.
+ * Source platforms serialize horizontal rules, fences, and empty list items as standalone text blocks ("-" / "---" / "*" / "```" and similar).
+ * Rendered as messages they become empty bullets. Skip these pure markdown-decoration blocks and do not emit an item
+ * (the response_item still keeps the original text, so fidelity is unaffected).
  */
 function isRenderableText(text: string): boolean {
   return /[^\s\-*•·>#`|~_+=()[\]!.,;:?"'\\/0-9—–‘’“”…]/.test(text);
@@ -181,12 +181,12 @@ interface ItemCompletedArgs {
 }
 
 /**
- * event_msg:item_completed —— Codex Desktop 真正渲染（并用于生成标题/预览）的 ThreadItem。
- * UserMessage 与 AgentMessage 的 content type 大小写不一致（text / Text），照抄原生格式。
- * 对齐 0.155 原生格式：
- * - payload 必须带 started_at_ms / completed_at_ms（缺失导致反序列化失败、item 被丢弃）
- * - UserMessage item 不写 client_id（原生无此字段，写入会导致 UserMessage 解析失败，
- *   表现为 thread/items/list 投影为空、会话打开后一片空白）
+ * event_msg:item_completed — the ThreadItem that Codex Desktop actually renders (and uses for the title/preview).
+ * UserMessage and AgentMessage disagree on content-type casing (text / Text); copy the native format.
+ * Aligned with the 0.155 native format:
+ * - payload must include started_at_ms / completed_at_ms (missing them fails deserialization and the item is dropped)
+ * - UserMessage items do not write client_id (native has no such field; writing it makes UserMessage fail to parse,
+ *   which shows up as an empty thread/items/list projection and a blank session after it opens)
  */
 function buildItemCompletedRecord(args: ItemCompletedArgs): Record<string, unknown> {
   const isUser = args.itemType === 'UserMessage';
@@ -218,7 +218,7 @@ function pushItemCompleted(records: Record<string, unknown>[], args: ItemComplet
 
 const execFileAsync = promisify(execFile);
 
-/** Codex Desktop (ChatGPT.app) 自带的 codex CLI 位置（macOS）。 */
+/** Location of the codex CLI bundled with Codex Desktop (ChatGPT.app) on macOS. */
 const DESKTOP_CODEX_CANDIDATES = [
   '/Applications/ChatGPT.app/Contents/Resources/codex',
   `${homedir()}/Applications/ChatGPT.app/Contents/Resources/codex`,
@@ -226,7 +226,7 @@ const DESKTOP_CODEX_CANDIDATES = [
 ];
 
 function findCodexCli(): string | null {
-  // 1) PATH 上的 codex（npm / brew 安装）
+  // 1) codex on PATH (npm / brew install)
   const pathEnv = process.env.PATH ?? '';
   for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir) continue;
@@ -238,7 +238,7 @@ function findCodexCli(): string | null {
       // continue
     }
   }
-  // 2) Codex Desktop 自带的 CLI
+  // 2) CLI bundled with Codex Desktop
   for (const p of DESKTOP_CODEX_CANDIDATES) {
     try {
       fs.accessSync(p, fs.constants.X_OK);
@@ -259,8 +259,8 @@ export class CodexAdapter extends AgentAdapter {
   private readonly storageRoot: string;
 
   /**
-   * @param platform 平台标识（默认 'codex'，变体可传 'codex-internal' / 'tcodex'）
-   * @param storageRoot 存储根路径（默认 ~/.codex/sessions，变体传 ~/.codex-internal/sessions 等）
+   * @param platform Platform id (default 'codex'; variants may pass 'codex-internal' / 'tcodex')
+   * @param storageRoot Storage root (default ~/.codex/sessions; variants pass ~/.codex-internal/sessions and similar)
    */
   constructor(platform = 'codex', storageRoot?: string) {
     super();
@@ -286,8 +286,8 @@ export class CodexAdapter extends AgentAdapter {
 
   private findSessionFile(sessionId: string, projectPath?: string): string | null {
     for (const f of this.scanJsonlFiles()) {
-      // 文件名是 rollout-<时间戳>-<sessionId>，中缀匹配；但前缀只认 ≥8 位，
-      // 否则 4 位前缀的子串会读到别人的会话
+      // The filename is rollout-<timestamp>-<sessionId>, matched as an infix; but the prefix is only accepted at 8+ characters,
+      // otherwise a 4-character prefix substring would read someone else's session
       const base = path.basename(f, '.jsonl');
       if (!(base === sessionId || (sessionId.length >= 8 && base.endsWith(sessionId)))) continue;
       // rollback --cwd: only the copy that belongs to this project. Without
@@ -298,7 +298,7 @@ export class CodexAdapter extends AgentAdapter {
     return null;
   }
 
-  /** rollout 首行 session_meta 里带真实 cwd，用它做 --cwd 作用域过滤。 */
+  /** The first-line session_meta of a rollout carries the real cwd; use it for --cwd scope filtering. */
   private rolloutMatchesCwd(file: string, projectPath: string): boolean {
     try {
       const rec = this.readFirstLine(file);
@@ -353,9 +353,9 @@ export class CodexAdapter extends AgentAdapter {
       const tsRaw = payload.timestamp;
 
       if (projectPath) {
-        // 不能用精确字符串比较：macOS 上 /tmp 与 /private/tmp 是同一目录的两种拼写
-        // （symlink），写入时与列出时的拼写不一致会让会话「列出为空」。
-        // 与 encodeCwd*/hashWorkspace 一致，先 realpath 再比较。
+        // An exact string compare is not enough: on macOS /tmp and /private/tmp are two spellings of the same directory
+        // (a symlink). A spelling mismatch between write and list makes the session "list as empty".
+        // Match encodeCwd*/hashWorkspace: realpath first, then compare.
         if (resolveRealCwd(cwd) !== resolveRealCwd(projectPath)) continue;
       }
 
@@ -521,7 +521,7 @@ export class CodexAdapter extends AgentAdapter {
 
       if (ptype === 'message') {
         const role = payload.role as string;
-        if (role === 'developer') continue; // 系统提示跳过
+        if (role === 'developer') continue; // skip the system prompt
 
         const irRole = role === 'user' ? 'user' : 'assistant';
         const content = this.parseMessageContent(payload);
@@ -607,19 +607,19 @@ export class CodexAdapter extends AgentAdapter {
     // Random ids would give every re-migration a fresh target id -- a fully
     // duplicated second thread in Codex (threads doubled). Derived ids make a
     // re-migration an overwrite: idempotent by construction.
-    // cwd 参与派生：Codex rollout 的 sessionId 是全局键，同一源会话迁到两个
-    // 工作区若共用 id，第二份会把第一份顶掉。
+    // cwd participates in the derivation: a Codex rollout sessionId is a global key. If the same source session
+    // is migrated into two workspaces under one id, the second copy overwrites the first.
     const cwd = projectPath ?? session.cwd;
     const sessionId = resolveWriteSessionId(this.platform, session, cwd);
 
-    // 损坏输入防御：session.createdAt 非法时 new Date(...) 得到 Invalid Date，
-    // 直接 toISOString() 会抛 RangeError 让整个写入崩溃。
+    // Guard against corrupt input: an invalid session.createdAt makes new Date(...) an Invalid Date,
+    // and calling toISOString() directly throws RangeError and crashes the whole write.
     const rawCreated = new Date(session.createdAt);
     const createdAt = isNaN(rawCreated.getTime()) ? new Date() : rawCreated;
     const tsIso = createdAt.toISOString();
     const fileTs = formatFilenameTimestamp(tsIso);
 
-    // 文件路径
+    // File path
     const dateDir = path.join(
       this.storageRoot,
       `${createdAt.getFullYear()}`,
@@ -629,7 +629,7 @@ export class CodexAdapter extends AgentAdapter {
     const filename = `rollout-${fileTs}-${sessionId}.jsonl`;
     const filePath = path.join(dateDir, filename);
 
-    // 构建 JSONL 记录
+    // Build JSONL records
     const records: Record<string, unknown>[] = [];
 
     // 1. session_meta
@@ -658,14 +658,14 @@ export class CodexAdapter extends AgentAdapter {
       },
     });
 
-    // 2. 遍历 messages，写 response_item + turn_context + event_msg
+    // 2. Walk messages and write response_item + turn_context + event_msg
     let turnId = generateUuidV7();
     let turnStarted = false;
-    // 消息原生时间戳优先——全部用迁移时刻会让时间线塌缩成一点，
-    // 经 claude-code 中转后甚至无法恢复先后顺序
+    // Prefer the message's own timestamp — using the migration time for everything collapses the timeline to a point,
+    // and after a claude-code hop the order cannot even be recovered
     let lastTs = tsIso;
-    // Codex Desktop 的会话界面渲染的是 event_msg:item_completed 里的 ThreadItem
-    // （UserMessage / AgentMessage），只写 response_item 会导致会话能打开但内容空白。
+    // Codex Desktop's session UI renders the ThreadItem inside event_msg:item_completed
+    // (UserMessage / AgentMessage). Writing only response_item lets the session open with a blank body.
     let itemCount = 0;
     let lastAgentMessage: string | undefined;
     let userItemEmitted = false;
@@ -688,9 +688,9 @@ export class CodexAdapter extends AgentAdapter {
         parsedTs && !isNaN(parsedTs.getTime()) ? parsedTs.toISOString() : lastTs;
       lastTs = msgTs;
 
-      // 每个 user 消息开始一个新 turn
+      // Each user message starts a new turn
       if (msg.role === 'user') {
-        // 如果上一个 turn 已开始，先完成它
+        // If the previous turn already started, finish it first
         if (turnStarted) {
           records.push({
             timestamp: msgTs,
@@ -704,7 +704,7 @@ export class CodexAdapter extends AgentAdapter {
           });
         }
         lastAgentMessage = undefined;
-        // 新 turn
+        // New turn
         turnId = generateUuidV7();
         records.push({
           timestamp: msgTs,
@@ -722,8 +722,8 @@ export class CodexAdapter extends AgentAdapter {
             turn_id: turnId,
             cwd: projectPath ?? session.cwd,
             workspace_roots: [projectPath ?? session.cwd],
-            // Codex 端 TurnContextItem 的 approval_policy / sandbox_policy 为必填字段，
-            // 缺失会导致整行反序列化失败
+            // On the Codex side, TurnContextItem requires approval_policy / sandbox_policy.
+            // Missing them makes the whole line fail to deserialize.
             approval_policy: 'on-request',
             sandbox_policy: {
               type: 'workspace-write',
@@ -740,19 +740,19 @@ export class CodexAdapter extends AgentAdapter {
         }
       }
 
-      // 写消息的每个 content block
+      // Write each content block of the message
       for (const block of msg.content) {
         const rec = this.blockToResponseItem(msg.role, block, msgTs);
         if (rec) records.push(rec);
 
-        // 同步生成 UI 渲染用的 item_completed 事件（对齐 0.155 原生格式，见
-        // buildItemCompletedRecord 注释）。
+        // Also emit the item_completed event used for UI rendering (aligned with the 0.155 native format; see
+        // the buildItemCompletedRecord comment).
         if (block.type !== 'text') continue;
 
         if (msg.role === 'user') {
           // Injected metadata (<user_info>/<rules>/<additional_data>/...) and attachment paths
           // (@image:/path) are not real input; what remains becomes the title/preview text.
-          // 整块都是元信息则跳过。
+          // Skip when the whole block is metadata.
           const userText = visibleUserText(block.text);
           if (!isRenderableText(userText)) continue;
           userItemEmitted = true;
@@ -791,7 +791,7 @@ export class CodexAdapter extends AgentAdapter {
       records.splice(firstTurnInsertAt, 0, fallbackRecord);
     }
 
-    // 最后一个 turn 的 task_complete
+    // task_complete for the last turn
     if (turnStarted) {
       records.push({
         timestamp: lastTs,
@@ -823,10 +823,10 @@ export class CodexAdapter extends AgentAdapter {
   }
 
   /**
-   * 触发 `codex migrate-rollouts --apply --thread <id>`，把刚写入的 legacy rollout 转成
-   * 分页历史并建立 items 投影。
+   * Run `codex migrate-rollouts --apply --thread <id>` to convert the freshly written legacy rollout into
+   * paginated history and build the items projection.
    *
-   * 不跑这一步，会话在 Codex Desktop 里：列表无标题/预览（不可见），打开后内容空白
+   * Without this step, a session in Codex Desktop has no title/preview in the list (invisible) and opens with a blank body
    * (the items projection is only built during the legacy->paginated migration).
    *
    * A freshly written rollout is not in state_5.sqlite yet, so the targeted migration
@@ -836,7 +836,12 @@ export class CodexAdapter extends AgentAdapter {
    */
   private async paginateRollout(sessionId: string, codexHome: string): Promise<void> {
     const bin = findCodexCli();
-    if (!bin) return;
+    if (!bin) {
+      this.noteWrite(
+        'Codex CLI was not found. The rollout was written, but Codex will not list it until the CLI indexes it.',
+      );
+      return;
+    }
     const env = { ...process.env, CODEX_HOME: codexHome };
     const opts = { env, timeout: 120_000, maxBuffer: 16 * 1024 * 1024 };
 
@@ -869,13 +874,20 @@ export class CodexAdapter extends AgentAdapter {
     if (status === 'migrated' || status === 'already_paginated') return;
     // A missing JSON report (timeout, incompatible CLI) must not scan every rollout.
     if (status !== 'missing_sqlite_metadata') {
-      log.warn(
-        `Codex indexing skipped for ${sessionId}: ${status ?? 'no JSON report'}. The session may stay invisible until Codex reindexes.`,
-      );
+      const notice =
+        `Codex indexing skipped for ${sessionId}: ${status ?? 'no JSON report'}. The rollout was written; the session may stay invisible until Codex reindexes.`;
+      log.debug(notice);
+      this.noteWrite(notice);
       return;
     }
     await this.indexThreadViaAppServer(bin, codexHome);
-    await runApply();
+    status = await runApply();
+    if (status !== 'migrated' && status !== 'already_paginated') {
+      const notice =
+        `Codex indexing did not finish for ${sessionId}: ${status ?? 'no JSON report'}. The rollout was written; the session may stay invisible until Codex reindexes.`;
+      log.debug(notice);
+      this.noteWrite(notice);
+    }
   }
 
   /**
@@ -1012,7 +1024,7 @@ export class CodexAdapter extends AgentAdapter {
         };
       }
       case 'thinking': {
-        // Codex 支持 reasoning，写入为 reasoning response_item
+        // Codex supports reasoning; write it as a reasoning response_item
         return {
           timestamp: ts,
           type: 'response_item',
@@ -1028,6 +1040,7 @@ export class CodexAdapter extends AgentAdapter {
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
+    assertSafeSessionFileId(sessionId);
     // Scope first: unregisterThread is global, so running it before the lookup
     // would drop another workspace's copy when `rollback --cwd` matched nothing.
     const f = this.findSessionFile(sessionId, projectPath);

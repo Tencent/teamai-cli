@@ -1,22 +1,22 @@
 /**
- * adapters/cursor.ts — Cursor 平台适配器。
+ * adapters/cursor.ts — Cursor platform adapter.
  *
- * 读取/写入 `~/.cursor/projects/<encoded-cwd>/agent-transcripts/<uuid>/<uuid>.jsonl` 格式。
- * cwd 编码: `/` → `-`，无前导 `-`。
+ * Reads and writes `~/.cursor/projects/<encoded-cwd>/agent-transcripts/<uuid>/<uuid>.jsonl`.
+ * cwd encoding: `/` → `-`, with no leading `-`.
  *
- * JSONL 行类型（2 种）：
- *   - 消息行（无 type 字段）：{role, message:{content:[block...]}}
- *   - turn_ended 行：{type:"turn_ended", status:"success"}
+ * JSONL line types (2 kinds):
+ *   - Message line (no type field): {role, message:{content:[block...]}}
+ *   - turn_ended line: {type:"turn_ended", status:"success"}
  *
- * 特点：
- * - 消息行没有 type 字段，靠 role + message 结构识别
- * - content block 类型：text / tool_use（无 tool_result，工具结果不写入 transcript）
- * - 迁移时 ToolResultBlock 降级为 TextBlock
+ * Notes:
+ * - Message lines have no type field; they are recognized by the role + message shape
+ * - Content block types: text / tool_use (no tool_result; tool results are not written into the transcript)
+ * - On migration, ToolResultBlock is degraded to a TextBlock
  *
- * 增强点（vs Python 版）：
- * - 写入时生成 turn_ended 行
- * - 目录结构正确创建 agent-transcripts/<uuid>/
- * - tool_result 降级处理
+ * Enhancements (vs the Python version):
+ * - Write a turn_ended line
+ * - Create the agent-transcripts/<uuid>/ directory structure correctly
+ * - Degrade tool_result
  */
 
 import * as fs from 'node:fs';
@@ -37,11 +37,11 @@ import {
 } from '../fs.js';
 import { cleanTitleText, fallbackTitle, titleFromCandidates, titleFromUserText, isRenderableText, visibleUserText } from '../title.js';
 import { registerCursorComposer, unregisterCursorComposer, type CursorComposerMessage, type CursorComposerTool } from '../cursor-store.js';
-import { resolveWriteSessionId } from '../ids.js';
+import { assertSafeSessionFileId, resolveWriteSessionId } from '../ids.js';
 import { log } from '../../utils/logger.js';
 
 // ---------------------------------------------------------------------------
-// 工具名归一化映射
+// Tool-name normalization map
 // ---------------------------------------------------------------------------
 
 const CURSOR_TO_IR_TOOL: Record<string, string> = {
@@ -61,12 +61,12 @@ const CURSOR_TO_IR_TOOL: Record<string, string> = {
 };
 
 /**
- * IR → Cursor 工具名。
+ * IR → Cursor tool name.
  *
- * 不能由 CURSOR_TO_IR_TOOL 反转得到：反转时同键后者覆盖前者，短别名（Read/Write/Edit）
- * 会盖掉完整名（ReadFile/WriteFile/EditFile），写进 Cursor 的名字与预期相反。
- * 另外源平台（CodeBuddy / Claude Code）的别名也要在这里收口，否则会原样透传成
- * execute_command / replace_in_file 之类的「Cursor 认不出的工具」。
+ * This cannot be produced by reversing CURSOR_TO_IR_TOOL: reversal lets the later value win for a shared key, so short aliases (Read/Write/Edit)
+ * would overwrite the full names (ReadFile/WriteFile/EditFile) and the name written into Cursor would be the opposite of what was intended.
+ * Source-platform aliases (CodeBuddy / Claude Code) are folded in here too, otherwise they would pass through unchanged as
+ * tools Cursor does not recognize, such as execute_command / replace_in_file.
  */
 const IR_TO_CURSOR_TOOL: Record<string, string> = {
   read_file: 'ReadFile',
@@ -79,7 +79,7 @@ const IR_TO_CURSOR_TOOL: Record<string, string> = {
   web_fetch: 'WebFetch',
   web_search: 'WebSearch',
   semantic_search: 'SemanticSearch',
-  // 源平台别名 → Cursor 语义工具
+  // Source-platform aliases → Cursor semantic tools
   execute_command: 'Shell',
   run_command: 'Shell',
   write_to_file: 'WriteFile',
@@ -92,10 +92,10 @@ const IR_TO_CURSOR_TOOL: Record<string, string> = {
 };
 
 /**
- * 工具结果与 thinking 不进 DB 气泡正文：
- * - thinking：引擎把 ThinkingBlock 降级成 `<thinking>…</thinking>` 文本块（Cursor 不支持
- *   thinking）。这层包裹留在正文里会让 Cursor 按 HTML 块渲染，markdown 与换行全部失效。
- * - 工具结果：原生存在 assistant 的 tool 气泡 `toolFormerData.result` 里，不单独成消息。
+ * Tool results and thinking do not go into the DB bubble body:
+ * - thinking: the engine degrades ThinkingBlock to a `<thinking>…</thinking>` text block (Cursor does not support
+ *   thinking). Leaving that wrapper in the body makes Cursor render it as an HTML block, and markdown plus newlines all break.
+ * - Tool results: natively they live in the assistant tool bubble's `toolFormerData.result`, not as a standalone message.
  */
 const THINKING_WRAP_RE = /<thinking>\s*[\s\S]*?\s*<\/thinking>/gi;
 
@@ -104,12 +104,12 @@ function normalizeToolName(cursorName: string): string {
 }
 
 function denormalizeToolName(irName: string): string {
-  // 优先用 ReadFile/WriteFile 等完整名
+  // Prefer full names such as ReadFile/WriteFile
   return IR_TO_CURSOR_TOOL[irName] ?? irName;
 }
 
 // ---------------------------------------------------------------------------
-// UUID 工具
+// UUID helpers
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ export class CursorAdapter extends AgentAdapter {
       );
       return fileExists(target) ? target : null;
     }
-    // 遍历所有项目目录
+    // Walk every project directory
     const root = getCursorProjectsDir();
     if (!dirExists(root)) return null;
     for (const projDir of fs.readdirSync(root)) {
@@ -207,7 +207,7 @@ export class CursorAdapter extends AgentAdapter {
     try {
       // 50 lines are often all injected blocks; a too-small budget makes sessions with real questions fall back to "Session <id>"
       for (const record of readJsonlHead(jsonlPath, 200)) {
-        // 消息行没有 type 字段
+        // Message lines have no type field
         if (record.type === 'turn_ended') continue;
 
         const role = record.role as string | undefined;
@@ -260,16 +260,16 @@ export class CursorAdapter extends AgentAdapter {
       throw new Error(`Cursor session file not found: session_id=${sessionId}`);
     }
 
-    // 目录层级是 <encoded-cwd>/agent-transcripts/<uuid>/<uuid>.jsonl，
-    // 需要往上取 3 层才到项目目录；取 2 层会得到中间层 agent-transcripts，
-    // 导致 session.cwd 变成这个占位目录名（migrate 的 Preview 会直接显示它）。
+    // The directory layout is <encoded-cwd>/agent-transcripts/<uuid>/<uuid>.jsonl.
+    // Go up 3 levels to reach the project directory; 2 levels lands on the intermediate agent-transcripts layer,
+    // so session.cwd becomes that placeholder directory name (migrate Preview would show it directly).
     const cwd = decodeCwdGeneric(
       path.basename(path.dirname(path.dirname(path.dirname(jsonlPath)))),
     );
     const records = [...readJsonl(jsonlPath)];
 
-    // 归档键（repoIdentity）优先用记录里的原生 cwd（真实绝对路径）；
-    // 目录名解码有损，恢复失败退回解码目录名（设计文档 Key invariant）。
+    // The archive key (repoIdentity) prefers the native cwd in the record (a real absolute path);
+    // decoding the directory name is lossy, so if recovery fails fall back to the decoded directory name (design doc Key invariant).
     let nativeCwd: string | undefined;
     for (const rec of records) {
       if (typeof rec.cwd === 'string' && path.isAbsolute(rec.cwd)) {
@@ -282,10 +282,10 @@ export class CursorAdapter extends AgentAdapter {
     const messages: Message[] = [];
 
     for (const rec of records) {
-      // turn_ended 行跳过
+      // Skip turn_ended lines
       if (rec.type === 'turn_ended') continue;
 
-      // 消息行（无 type 字段）
+      // Message line (no type field)
       const role = rec.role as string | undefined;
       if (role !== 'user' && role !== 'assistant') continue;
 
@@ -299,7 +299,7 @@ export class CursorAdapter extends AgentAdapter {
       });
     }
 
-    // 提取标题
+    // Extract the title
     let title = '';
     // Same unwrap strategy as the listing path: slash-command messages are
     // "injection head + real question", so dropping the whole block loses the
@@ -309,7 +309,7 @@ export class CursorAdapter extends AgentAdapter {
       if (msg.role === 'user') {
         for (const block of msg.content) {
           if (block.type === 'text' && block.text) {
-            // 写入端把 tool_result 降级为带该前缀的 text 块——工具输出不是标题
+            // The write side degrades tool_result to a text block with this prefix — tool output is not a title
             if (block.text.startsWith('[tool_result')) continue;
             candidates.push(block.text);
           }
@@ -476,7 +476,7 @@ export class CursorAdapter extends AgentAdapter {
             cursorContent.push({ type: 'text', text: block.text });
             break;
           case 'thinking':
-            // Cursor 无 thinking，降级为 text
+            // Cursor has no thinking; degrade to text
             cursorContent.push({ type: 'text', text: `<thinking>\n${block.text}\n</thinking>` });
             break;
           case 'tool_call':
@@ -530,19 +530,20 @@ export class CursorAdapter extends AgentAdapter {
         messages: this.toComposerMessages(session),
       });
       if (!reg.ok) {
-        // Never silent: the transcript is on disk but list registration failed -- the user would not see it in Cursor.
+        const notice =
+          `Cursor session list registration failed (transcript written, session may be invisible in Cursor): ${reg.reason ?? 'unknown'}`;
         log.debug(`cursor register failed: composer=${sessionId} reason=${reg.reason ?? 'unknown'}`);
-        log.warn(
-          `Cursor session list registration failed (transcript written, session may be invisible in Cursor): ${reg.reason ?? 'unknown'}`,
-        );
+        this.noteWrite(notice);
       }
     } catch (e) {
-      log.warn(`Cursor session list registration error: ${(e as Error).message}`);
+      const notice = `Cursor session list registration error: ${(e as Error).message}`;
+      log.debug(notice);
+      this.noteWrite(notice);
     }
     return sessionId;
   }
 
-  /** 会话标题：首条真实用户提问 > 源会话标题清洗 > Session <id>。 */
+  /** Session title: first real user question > cleaned source-session title > Session <id>. */
   private buildComposerTitle(session: Session, sessionId: string): string {
     for (const msg of session.messages) {
       if (msg.role !== 'user') continue;
@@ -555,7 +556,7 @@ export class CursorAdapter extends AgentAdapter {
     return cleanTitleText(session.title) || fallbackTitle(sessionId);
   }
 
-  /** IR 消息 → Cursor composer 的 bubble 素材（文本 + 工具调用/结果）。 */
+  /** IR message → bubble material for a Cursor composer (text + tool calls/results). */
   private toComposerMessages(session: Session): CursorComposerMessage[] {
     // Collect tool results by callId first: natively they hang on the assistant's tool bubble,
     // never a standalone user message (the UI would sprout hundreds of `[tool_result] {json}` bubbles).
@@ -589,7 +590,7 @@ export class CursorAdapter extends AgentAdapter {
           // MigrationEngine degrades Cursor-unsupported ThinkingBlocks into `<thinking>...</thinking>`,
           // wrapped text blocks (migrate.ts degradeThinkingBlocks). Left in the body they make Cursor
           // rendered as an HTML block (markdown broken, newlines swallowed) -- strip before the DB bubble; the original stays in the
-          // transcript 里。
+          // transcript.
           const stripped = block.text.replace(THINKING_WRAP_RE, '').trim();
           // user bubbles show the real question only: injected blocks (<user_info>/<rules>/<additional_data>/...) and attachment
           // paths are noise (Cursor renders them as chips natively; we cannot).
@@ -622,6 +623,7 @@ export class CursorAdapter extends AgentAdapter {
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
+    assertSafeSessionFileId(sessionId);
     // Resolve the scoped transcript before touching the global registration:
     // unregistering first would drop another workspace's copy of the same
     // session id when `rollback --cwd` matched nothing here.
@@ -635,7 +637,7 @@ export class CursorAdapter extends AgentAdapter {
       // best-effort: leftover registration rows only affect the list display, never data safety
     }
 
-    // 删除整个 session 目录
+    // Delete the whole session directory
     const sessionDir = path.dirname(jsonlPath);
     if (dirExists(sessionDir)) {
       removeDirRecursive(sessionDir);

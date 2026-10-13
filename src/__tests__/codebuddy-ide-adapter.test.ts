@@ -20,6 +20,7 @@ vi.mock('node:os', async (importOriginal) => {
 });
 
 import {
+  getUserDataBase,
   listIdeHistoryRoots,
   readIdeConversation,
 } from '../session-flow/ide-history.js';
@@ -41,7 +42,11 @@ function md5(s: string): string {
 }
 
 function userDataBase(home: string): string {
-  return path.join(home, 'Library', 'Application Support', 'CodeBuddyExtension', 'Data');
+  const base = getUserDataBase();
+  if (!base?.startsWith(home)) {
+    throw new Error(`CodeBuddy IDE data dir ${base} is not under the test home ${home}`);
+  }
+  return base;
 }
 
 /** 常规实例：<extId>/CodeBuddyIDE/<instId>/history */
@@ -276,19 +281,29 @@ describe('CodeBuddyIdeAdapter', () => {
     expect(session.metadata?.model).toBe('test-model');
   });
 
-  it('reuses the 32-hex conversation id across write, read, and delete', async () => {
+  it('writes a new conversation id and leaves the source session in place', async () => {
     seed();
     const adapter = new CodeBuddyIdeAdapter();
     const targetCwd = path.join(tmpHome, 'ws-target');
     fs.mkdirSync(targetCwd, { recursive: true });
+    const sourceId = '33333333333333333333333333333333';
 
-    const source = await adapter.readSession('33333333333333333333333333333333', cwdA);
+    const source = await adapter.readSession(sourceId, cwdA);
     const writtenId = await adapter.writeSession({ ...source, title: 'round trip' }, targetCwd);
-    expect(writtenId).toBe('33333333333333333333333333333333');
+    expect(writtenId).toMatch(/^[0-9a-f]{32}$/);
+    expect(writtenId).not.toBe(sourceId);
 
     const back = await adapter.readSession(writtenId, targetCwd);
     expect(back.title).toBe('round trip');
     expect(back.messages).toHaveLength(source.messages.length);
+
+    const again = await adapter.writeSession({ ...source, title: 'round trip' }, targetCwd);
+    expect(again).toBe(writtenId);
+
+    const replaced = await adapter.writeSession({ ...source, title: 'should not clobber' }, cwdA);
+    expect(replaced).not.toBe(sourceId);
+    const still = await adapter.readSession(sourceId, cwdA);
+    expect(still.title).not.toBe('should not clobber');
 
     expect(await adapter.deleteSession(writtenId, targetCwd)).toBe(true);
 
@@ -300,7 +315,7 @@ describe('CodeBuddyIdeAdapter', () => {
     }
 
     // 同名会话在别的工作区另有副本，按 cwd 限定删除不能连带误删
-    expect(fs.existsSync(path.join(historyRootA(tmpHome), md5(cwdA), writtenId))).toBe(true);
+    expect(fs.existsSync(path.join(historyRootA(tmpHome), md5(cwdA), sourceId))).toBe(true);
   });
 
   it('refuses to write when the target cwd is not an absolute path', async () => {

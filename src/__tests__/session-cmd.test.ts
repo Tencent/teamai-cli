@@ -361,6 +361,12 @@ describe('session push --all', () => {
   it('asks for confirmation before pushing more than five sessions', async () => {
     const adapter = fakeAdapter(manySessions(6));
     mocks.remotes['/proj/beta'] = 'https://gitlab.com/team/beta.git';
+    const prevCi = process.env.CI;
+    const prevNonInteractive = process.env.TEAMAI_NONINTERACTIVE;
+    delete process.env.CI;
+    delete process.env.TEAMAI_NONINTERACTIVE;
+    const tty = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
 
     const armed = new Promise<void>((resolve) => {
       mocks.lineArmed = resolve;
@@ -372,12 +378,39 @@ describe('session push --all', () => {
     await armed;
     mocks.lineCb!('n');
     await parsed;
+    if (prevCi === undefined) delete process.env.CI;
+    else process.env.CI = prevCi;
+    if (prevNonInteractive === undefined) delete process.env.TEAMAI_NONINTERACTIVE;
+    else process.env.TEAMAI_NONINTERACTIVE = prevNonInteractive;
+    if (tty) Object.defineProperty(process.stdin, 'isTTY', tty);
+    else delete (process.stdin as { isTTY?: boolean }).isTTY;
 
     const text = out.join('\n');
     expect(text).toContain('About to push 6 session(s) from fakeplat:');
     expect(text).toContain('Push all of the above?');
     expect(text).toContain('Cancelled.');
     // 拒绝后不读取、不落盘任何会话
+    expect(adapter.readSession).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(repoRoot, 'sessions'))).toBe(false);
+  });
+
+  it('refuses a non-interactive push --all over the batch threshold', async () => {
+    const adapter = fakeAdapter(manySessions(6));
+    await runSession(
+      'push', '--source', 'fakeplat', '--all',
+      '--repo-root', repoRoot, '--cwd', '/run/dir',
+    );
+    expect(process.exitCode).toBe(1);
+    expect(errored.join('\n')).toContain('Refusing to push 6 session(s) without confirmation.');
+    expect(adapter.readSession).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(repoRoot, 'sessions'))).toBe(false);
+  });
+
+  it('refuses a non-interactive unredacted push unless -y or --scrub is set', async () => {
+    const adapter = fakeAdapter([mkSession({ sessionId: 'secret-1' })]);
+    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/dir');
+    expect(process.exitCode).toBe(1);
+    expect(errored.join('\n')).toContain('Refusing to archive 1 unredacted session(s) without confirmation.');
     expect(adapter.readSession).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(repoRoot, 'sessions'))).toBe(false);
   });
@@ -401,7 +434,7 @@ describe('session push --all', () => {
     mocks.remotes['/proj/beta'] = 'https://gitlab.com/team/beta.git';
     mocks.porcelain = ''; // git status --porcelain 无暂存变更 → commit 为 null
 
-    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/dir');
+    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/dir', '-y');
 
     const text = out.join('\n');
     expect(text).toContain('No changes to push');
@@ -419,7 +452,7 @@ describe('session push --all', () => {
     mocks.remotes['/proj/beta'] = 'https://gitlab.com/team/beta.git';
     mocks.commitError = 'Command failed: git commit -m x\nfatal: cannot run hooks/pre-commit: permission denied';
 
-    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/dir');
+    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/dir', '-y');
 
     const text = [...out, ...warned, ...errored].join('\n');
     expect(text).not.toContain('No changes to push');
@@ -433,7 +466,7 @@ describe('session push --all', () => {
     mocks.remotes['/proj/beta'] = 'https://gitlab.com/team/beta.git';
     mocks.pushError = 'Command failed: git push origin\nfatal: The current branch main has no upstream branch.';
 
-    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/dir');
+    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/dir', '-y');
 
     const text = [...out, ...warned, ...errored].join('\n');
     // git's own fatal line, not the contentless first line of the error
@@ -452,7 +485,7 @@ describe('session push archive key (native cwd, not the run directory)', () => {
     mocks.remotes['/proj/beta'] = 'https://gitlab.com/team/beta.git';
     mocks.remotes['/run/other'] = 'https://github.com/org/other.git';
 
-    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/other');
+    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--cwd', '/run/other', '-y');
 
     const betaDir = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('gitlab.com/team/beta'), 'tester');
     expect(fs.readdirSync(betaDir).filter((f) => f.endsWith('.jsonl'))).toHaveLength(1);
@@ -470,7 +503,7 @@ describe('session push archive key (native cwd, not the run directory)', () => {
       'codebuddy-ide',
     );
 
-    await runSession('push', '--source', 'codebuddy-ide', '--repo-root', repoRoot, '--cwd', '/run/other');
+    await runSession('push', '--source', 'codebuddy-ide', '--repo-root', repoRoot, '--cwd', '/run/other', '-y');
 
     expect(warned.join('\n')).toContain(
       'native cwd unknowable for codebuddy-ide session, archived under _unattributed',
@@ -591,7 +624,7 @@ describe('session migrate --push archive key', () => {
 
     await runSession(
       'migrate', 'src-1', '-s', 'fakeplat', '-t', 'fakeplat2',
-      '--push', '--repo-root', repoRoot, '--cwd', '/run/dir',
+      '--push', '-y', '--repo-root', repoRoot, '--cwd', '/run/dir',
     );
 
     const dir = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('github.com/org/target'), 'tester');
@@ -607,6 +640,89 @@ describe('session migrate --push archive key', () => {
     const text = out.join('\n');
     expect(text).toContain('Pushed 1 session(s) to team repo');
     expect(text).not.toMatch(CJK);
+  });
+
+  it('does not archive migrate --push without --scrub or -y when nobody can confirm', async () => {
+    mocks.previewResult = {
+      sourcePlatform: 'fakeplat',
+      targetPlatform: 'fakeplat2',
+      sessionTitle: 'migrate me',
+      sessionId: 'src-1',
+      cwd: '/run/dir',
+      messageCount: 2,
+      fidelity: { score: 1, mode: 1, preservedBlocks: 2, totalBlocks: 2, degradedBlocks: 0, degradations: [], warnings: [] },
+    };
+    mocks.migrateResult = {
+      success: true,
+      targetSessionId: 'tgt-1',
+      preview: { fidelity: { score: 1 } },
+    };
+    fakeAdapter([mkSession({ sessionId: 'src-1' })], 'fakeplat');
+    mocks.adaptersByPlatform['fakeplat2'] = {
+      platform: 'fakeplat2',
+      listConversations: vi.fn(async () => []),
+      readSession: vi.fn(async () => mkSession({ sessionId: 'tgt-1' })),
+    };
+
+    await runSession(
+      'migrate', 'src-1', '-s', 'fakeplat', '-t', 'fakeplat2',
+      '--push', '--repo-root', repoRoot, '--cwd', '/run/dir',
+    );
+
+    expect(process.exitCode).toBe(1);
+    expect(errored.join('\n')).toContain('migrated locally, not archived');
+    expect(fs.existsSync(path.join(repoRoot, 'sessions'))).toBe(false);
+    expect(out.join('\n')).toContain('Migration successful');
+  });
+
+  it('prints a registration warning and still reports the migration as written', async () => {
+    mocks.previewResult = {
+      sourcePlatform: 'fakeplat',
+      targetPlatform: 'tgtplat',
+      sessionTitle: 'task',
+      sessionId: 's-1',
+      cwd: '/run/dir',
+      messageCount: 1,
+      fidelity: { score: 1, mode: 1, preservedBlocks: 1, totalBlocks: 1, degradedBlocks: 0, degradations: [], warnings: [] },
+    };
+    mocks.migrateResult = {
+      success: true,
+      targetSessionId: 'tgt-1',
+      registrationNotice: 'Cursor session list registration failed (transcript written, session may be invisible in Cursor): state db not found',
+      preview: { fidelity: { score: 1 } },
+    };
+    fakeAdapter([mkSession()], 'fakeplat');
+    mocks.adaptersByPlatform['tgtplat'] = {
+      platform: 'tgtplat',
+      listConversations: vi.fn(async () => []),
+      readSession: vi.fn(async () => mkSession()),
+    };
+
+    await runSession('migrate', 's-1', '-s', 'fakeplat', '-t', 'tgtplat', '--cwd', '/run/dir');
+
+    const text = [...out, ...errored].join('\n');
+    expect(text).toContain('Migration successful');
+    expect(text).toContain('transcript written, session may be invisible');
+    expect(process.exitCode).not.toBe(1);
+  });
+});
+
+describe('session rollback', () => {
+  it('refuses a session id that is not a single path segment', async () => {
+    const outside = path.join(repoRoot, 'outside.jsonl');
+    fs.writeFileSync(outside, '{}\n');
+    const storage = path.join(repoRoot, 'store');
+    fs.mkdirSync(storage);
+    const adapter = new ClaudeCodeAdapter('claude-code', storage);
+    await expect(adapter.deleteSession('../../outside', path.join(repoRoot, 'proj'))).rejects.toThrow(
+      /single path segment/,
+    );
+    expect(fs.existsSync(outside)).toBe(true);
+
+    await runSession('rollback', '../../outside', '--platform', 'claude-code');
+    expect(process.exitCode).toBe(1);
+    expect(errored.join('\n')).toContain('single path segment');
+    expect(fs.existsSync(outside)).toBe(true);
   });
 });
 

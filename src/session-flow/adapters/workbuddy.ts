@@ -1,23 +1,23 @@
 /**
- * adapters/workbuddy.ts — WorkBuddy 平台适配器。
+ * adapters/workbuddy.ts — WorkBuddy platform adapter.
  *
- * 读取/写入 `~/.workbuddy/projects/<encoded-cwd>/<session-uuid>.jsonl` 格式。
- * cwd 编码: `/` → `-`，无前导 `-`（与 CodeBuddy 一致）。
+ * Reads and writes `~/.workbuddy/projects/<encoded-cwd>/<session-uuid>.jsonl`.
+ * cwd encoding: `/` → `-`, with no leading `-` (same as CodeBuddy).
  *
- * 实测格式（2026-09-10 本机 ~/.workbuddy/projects/... 采样）：
+ * Observed format (sampled on this machine at ~/.workbuddy/projects/... on 2026-09-10):
  *   {"id":"65d9...","logicalParentId":"65d9...","timestamp":1773734800538,
  *    "type":"message","role":"user","sessionId":"6d7b...",
  *    "content":[{"type":"input_text","text":"..."}],
  *    "providerData":{"references":[{"type":"memory","enabled":true,"memories":[]}]}}
  *
- * 行类型与 CodeBuddy 完全同构：
+ * Line types are fully isomorphic with CodeBuddy:
  *   message / function_call / function_call_result / reasoning / ai-title
  *
- * 增强点（vs CodeBuddy）：
- * - 同目录存在 `<uuid>.meta.json`，内含**真实 cwd**，优先于目录名反解
- *   （目录名编码不可逆：'-' 可能来自 '/'、空格等，反解有损）
- * - meta.json 还提供 createdAt / updatedAt，优先于从行内时间戳推断
- * - providerData 完整保留到 Message.metadata（含 memory references 等扩展字段）
+ * Enhancements (vs CodeBuddy):
+ * - The same directory has `<uuid>.meta.json`, which contains the real cwd and is preferred over decoding the directory name
+ *   (directory-name encoding is irreversible: '-' may come from '/', a space, and similar, so decoding is lossy)
+ * - meta.json also provides createdAt / updatedAt, preferred over inferring them from in-line timestamps
+ * - providerData is kept in full on Message.metadata (including extension fields such as memory references)
  */
 
 import * as crypto from 'node:crypto';
@@ -38,12 +38,12 @@ import {
   removeDirRecursive,
 } from '../fs.js';
 import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates, titleFromUserText } from '../title.js';
-import { resolveWriteSessionId } from '../ids.js';
+import { assertSafeSessionFileId, resolveWriteSessionId } from '../ids.js';
 import { registerWorkBuddySession, unregisterWorkBuddySession } from '../workbuddy-store.js';
 import { log } from '../../utils/logger.js';
 
 // ---------------------------------------------------------------------------
-// 工具名归一化映射
+// Tool-name normalization map
 // ---------------------------------------------------------------------------
 
 const WB_TO_IR_TOOL: Record<string, string> = {
@@ -58,11 +58,10 @@ const WB_TO_IR_TOOL: Record<string, string> = {
 };
 
 /**
- * IR → WorkBuddy 工具名。
+ * IR → WorkBuddy tool name.
  *
- * 与 CodeBuddy 同构：客户端按驼峰 UI 名（Bash / Read / Write / Edit / Grep / Glob /
- * Task / TodoWrite …）查表渲染图标与折叠标题；直接写 IR 的 `read_file`/`bash` 会导致
- * 工具调用显示为空白。源平台别名也在这里收口，避免原样透传。
+ * Isomorphic with CodeBuddy: the client looks up icons and collapsed titles by camel-case UI names (Bash / Read / Write / Edit / Grep / Glob /
+ * Task / TodoWrite ...). Writing the IR names `read_file`/`bash` directly makes the tool call render blank. Source-platform aliases are folded in here too, so they are not passed through unchanged.
  */
 const IR_TO_WB_TOOL: Record<string, string> = {
   read_file: 'Read',
@@ -97,7 +96,7 @@ function denormalizeToolName(irName: string): string {
   return IR_TO_WB_TOOL[irName] ?? irName;
 }
 
-/** 会话标题：首条真实用户提问 > 源标题清洗 > Session <id>（与 codebuddy-ide 写入侧同策略）。 */
+/** Session title: first real user question > cleaned source title > Session <id> (same write-side strategy as codebuddy-ide). */
 function resolveSessionTitle(session: Session, sessionId: string): string {
   for (const m of session.messages) {
     if (m.role !== 'user') continue;
@@ -110,7 +109,7 @@ function resolveSessionTitle(session: Session, sessionId: string): string {
   return cleanTitleText(session.title) || fallbackTitle(sessionId);
 }
 
-/** 工具调用折叠态显示的摘要文本（原生 providerData.argumentsDisplayText）。 */
+/** Summary text shown for a tool call when collapsed (native providerData.argumentsDisplayText). */
 function argumentsDisplayText(name: string, args: Record<string, unknown> | undefined): string {
   if (!args) return name;
   const preferred =
@@ -128,7 +127,7 @@ function argumentsDisplayText(name: string, args: Record<string, unknown> | unde
 }
 
 // ---------------------------------------------------------------------------
-// UUID / 时间戳工具
+// UUID / timestamp helpers
 // ---------------------------------------------------------------------------
 
 function uuidV4(): string {
@@ -159,8 +158,8 @@ interface WorkBuddyMeta {
 }
 
 /**
- * 读取与会话 jsonl 同目录的 `<uuid>.meta.json`。
- * 缺失或损坏时返回空对象（调用方回退到目录名反解）。
+ * Read `<uuid>.meta.json` from the same directory as the session jsonl.
+ * Return an empty object when it is missing or corrupt (the caller falls back to decoding the directory name).
  */
 function readMeta(jsonlPath: string): WorkBuddyMeta {
   const metaPath = jsonlPath.replace(/\.jsonl$/, '.meta.json');
@@ -203,9 +202,9 @@ export class WorkBuddyAdapter extends AgentAdapter {
   private resolveProjectDir(projectPath?: string): string {
     const root = getWorkBuddyProjectsDir();
     if (projectPath) {
-      // 必须与 writeSession 用同一个编码（encodeCwdCodeBuddy，保留空格）：
-      // 原生工作区目录名是保留空格的，用 encodeCwdGeneric（空格→'-'）会指到空目录，
-      // 表现为「按 cwd 列出 = 0 条」——读得到全量、按工作区过滤却漏光。
+      // Must use the same encoding as writeSession (encodeCwdCodeBuddy, which keeps spaces):
+      // native workspace directory names keep spaces. encodeCwdGeneric (space → '-') points at an empty directory,
+      // which shows up as "list by cwd = 0" — the full set can be read, but workspace filtering drops everything.
       return path.join(root, encodeCwdCodeBuddy(projectPath));
     }
     return root;
@@ -265,7 +264,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
           continue;
         }
 
-        // meta.json 未覆盖时才从行内推断
+        // Infer from in-line timestamps only when meta.json did not cover them
         const tsRaw = record.timestamp;
         if (tsRaw !== undefined) {
           const ts = fromUnixMs(Number(tsRaw));
@@ -297,7 +296,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     if (!createdAt) createdAt = new Date().toISOString();
     if (!updatedAt) updatedAt = createdAt;
 
-    // aiTitle 是 WorkBuddy 自己起的标题，最可靠；注入文本清洗同 codebuddy 适配器
+    // aiTitle is the title WorkBuddy itself chose, so it is the most reliable; injected-text cleaning matches the codebuddy adapter
     title =
       (aiTitle && !isInjectedText(aiTitle) && aiTitle.slice(0, 60)) ||
       titleFromCandidates(userTextCandidates) ||
@@ -343,12 +342,12 @@ export class WorkBuddyAdapter extends AgentAdapter {
     if (metaInfo.isPlayground !== undefined) sessionMetadata.isPlayground = metaInfo.isPlayground;
     if (metaInfo.migratedFrom) sessionMetadata.originator = metaInfo.migratedFrom;
 
-    // 第一遍：提取 title/时间戳
+    // First pass: extract title / timestamps
     for (const rec of records) {
       const rtype = rec.type as string;
 
       if (rtype === 'ai-title') {
-        // 与 codebuddy 适配器一致：注入块原文偶尔会被存成 ai-title，照收会污染迁移链路
+        // Same as the codebuddy adapter: injected-block text is occasionally stored as ai-title, and taking it as-is pollutes the migration path
         const t = String(rec.aiTitle ?? '');
         if (t && !isInjectedText(t)) title = t.slice(0, 100);
         continue;
@@ -362,7 +361,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
       }
     }
 
-    // 第二遍：构建消息
+    // Second pass: build messages
     for (const rec of records) {
       const rtype = rec.type as string;
 
@@ -379,7 +378,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
           timestamp: rec.timestamp !== undefined ? fromUnixMs(Number(rec.timestamp)) : undefined,
         };
 
-        // providerData 完整保留（含 memory references 等 WorkBuddy 扩展字段）
+        // Keep providerData in full (including WorkBuddy extension fields such as memory references)
         const providerData = rec.providerData as Record<string, unknown> | undefined;
         if (providerData) {
           const md: Record<string, unknown> = { ...providerData };
@@ -451,7 +450,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
         if (msg.role === 'user') {
           for (const block of msg.content) {
             if (block.type === 'text' && block.text) {
-              if (isInjectedText(block.text)) continue; // 注入块不当标题
+              if (isInjectedText(block.text)) continue; // injected blocks are not titles
               title = cleanTitleText(block.text);
               if (title) break;
             }
@@ -503,18 +502,18 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
   async writeSession(session: Session, projectPath?: string): Promise<string> {
     const cwd = projectPath ?? session.cwd;
-    // 非 UUID 源 id 用确定性派生（同一源会话反复迁移命中同一个 id → 不产生重复会话）
-    // cwd 参与派生：WorkBuddy 的会话记录是全局键，同名 id 迁到两个工作区会互相覆盖。
+    // Non-UUID source ids use a deterministic derivation (repeated migrations of the same source session hit the same id → no duplicate sessions)
+    // cwd participates in the derivation: a WorkBuddy session record is a global key, so the same id migrated into two workspaces would overwrite each other.
     const sessionId = resolveWriteSessionId(this.platform, session, cwd);
-    // WorkBuddy 与 CodeBuddy 同构：项目目录名**保留空格**（实测 CodeBuddy 落盘为
-    // `Users-caiwenzhe-Desktop-Code-teamai cli`）。用 encodeCwdGeneric 会把空格也换成
-    // `-`，目录名与客户端按当前 cwd 算出的不一致 → 会话不出现在该项目列表里。
+    // WorkBuddy is isomorphic with CodeBuddy: project directory names keep spaces (observed CodeBuddy on disk as
+    // `Users-caiwenzhe-Desktop-Code-teamai cli`). encodeCwdGeneric would also turn spaces into
+    // `-`, so the directory name would not match what the client computes from the current cwd → the session would not appear in that project's list.
     const projDir = path.join(getWorkBuddyProjectsDir(), encodeCwdCodeBuddy(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
     const records: Record<string, unknown>[] = [];
 
-    // callId → 工具名：让 function_call_result 行带上真实工具名（而不是一律 'Agent'）
+    // callId → tool name: so function_call_result lines carry the real tool name (instead of always 'Agent')
     const toolNamesByCallId = new Map<string, string>();
     for (const m of session.messages) {
       for (const b of m.content) {
@@ -525,7 +524,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
     }
     const resultToolName = (callId: string): string | undefined => toolNamesByCallId.get(callId);
 
-    // 1. ai-title 行
+    // 1. ai-title line
     records.push({
       timestamp: toUnixMs(session.createdAt),
       type: 'ai-title',
@@ -542,7 +541,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
       const thinkingBlocks = msg.content.filter((b) => b.type === 'thinking');
       const otherBlocks = msg.content.filter((b) => b.type !== 'thinking');
 
-      // reasoning 行
+      // reasoning line
       for (const tb of thinkingBlocks) {
         const reasoningId = uuidV4();
         records.push({
@@ -559,7 +558,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
         parentId = reasoningId;
       }
 
-      // message 行
+      // message line
       if (otherBlocks.length > 0) {
         const wbContent: Record<string, unknown>[] = [];
         let hasText = false;
@@ -571,7 +570,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
             });
             hasText = true;
           } else if (block.type === 'image') {
-            // WorkBuddy 消息体不存图片，降级为占位文本（保真度计 degraded）
+            // WorkBuddy message bodies do not store images; degrade to placeholder text (counted as degraded fidelity)
             wbContent.push({
               type: msg.role === 'user' ? 'input_text' : 'output_text',
               text: imagePlaceholderText(block),
@@ -597,9 +596,9 @@ export class WorkBuddyAdapter extends AgentAdapter {
         }
       }
 
-      // function_call 行
-      // 与 CodeBuddy/原生一致：顶层 arguments 是 JSON 字符串、折叠摘要放
-      // argumentsDisplayText、callId 必须非空（否则与结果无法配对）。
+      // function_call line
+      // Same as CodeBuddy/native: top-level arguments is a JSON string, the collapsed summary goes in
+      // argumentsDisplayText, and callId must be non-empty (otherwise it cannot be paired with the result).
       for (const block of otherBlocks) {
         if (block.type === 'tool_call') {
           const fcId = block.callId || uuidV4();
@@ -625,7 +624,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
         }
       }
 
-      // function_call_result 行
+      // function_call_result line
       for (const block of otherBlocks) {
         if (block.type === 'tool_result') {
           const fcrId = uuidV4();
@@ -649,7 +648,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
 
     writeJsonl(jsonlPath, records);
 
-    // 写入 meta.json —— 保留真实 cwd，使后续读取无需依赖有损的目录名反解
+    // Write meta.json — keep the real cwd so later reads do not depend on lossy directory-name decoding
     try {
       const metaPath = jsonlPath.replace(/\.jsonl$/, '.meta.json');
       fs.writeFileSync(
@@ -660,7 +659,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
             updatedAt: toUnixMs(session.updatedAt),
             cwd,
             sourceConversationId: sessionId,
-            // 与 DB 的 is_playground 保持一致：0 / false → 归入「空间」列表
+            // Stay consistent with the DB is_playground flag: 0 / false → listed under "spaces"
             isPlayground: false,
           },
           null,
@@ -669,42 +668,45 @@ export class WorkBuddyAdapter extends AgentAdapter {
         'utf-8',
       );
     } catch {
-      // meta.json 写入失败不影响主流程
+      // A failed meta.json write does not affect the main flow
     }
 
-    // 注册进 workbuddy.db —— WorkBuddy 的列表查的是 sessions 表，不注册则完全不可见
-    // （jsonl 只是会话正文，列表项/空间归属都在 DB 里）。best-effort。
+    // Register into workbuddy.db — WorkBuddy's list queries the sessions table, and without registration the session is completely invisible
+    // (jsonl is only the session body; list entries and space membership live in the DB). Best-effort.
     try {
       const reg = registerWorkBuddySession({
         cwd,
         sessionId,
         title: resolveSessionTitle(session, sessionId),
         createdAtMs: toUnixMs(session.createdAt),
-        // 最近活动 = 迁移时刻：列表按 updated_at 排序，保留源时间会埋进旧日期分组
+        // Latest activity = migration time: the list sorts by updated_at, and keeping the source time would bury the session in an old date group
         updatedAtMs: Date.now(),
         model: session.metadata?.model,
       });
       if (!reg.ok) {
+        const notice =
+          `WorkBuddy session list registration failed (transcript written, session may be invisible in WorkBuddy): ${reg.reason ?? 'unknown'}`;
         log.debug(`workbuddy register failed: session=${sessionId} reason=${reg.reason ?? 'unknown'}`);
-        log.warn(
-          `WorkBuddy session list registration failed (transcript written, session may be invisible in WorkBuddy): ${reg.reason ?? 'unknown'}`,
-        );
+        this.noteWrite(notice);
       }
     } catch (e) {
-      log.warn(`WorkBuddy session list registration error: ${(e as Error).message}`);
+      const notice = `WorkBuddy session list registration error: ${(e as Error).message}`;
+      log.debug(notice);
+      this.noteWrite(notice);
     }
 
     return sessionId;
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
+    assertSafeSessionFileId(sessionId);
     // Resolve the scoped transcript first: unregistering is global, so doing
     // it before the lookup would drop another workspace's copy of the same
     // session id when `rollback --cwd` matched nothing here.
     const jsonlPath = this.findSessionFile(sessionId, projectPath);
     if (!jsonlPath) return false;
 
-    // 摘掉 DB 注册（否则删了 jsonl，WorkBuddy 列表里还留着一条点不开的会话）
+    // Drop the DB registration (otherwise deleting the jsonl leaves an unopenable session in the WorkBuddy list)
     try {
       unregisterWorkBuddySession(sessionId);
     } catch {
@@ -728,7 +730,7 @@ export class WorkBuddyAdapter extends AgentAdapter {
       }
     }
 
-    // 删除同名子目录（subagents 等）
+    // Delete the same-named subdirectory (subagents and similar)
     const subdir = jsonlPath.replace(/\.jsonl$/, '');
     if (dirExists(subdir)) {
       removeDirRecursive(subdir);

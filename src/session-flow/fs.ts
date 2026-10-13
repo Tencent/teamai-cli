@@ -1,8 +1,9 @@
 /**
- * fs.ts — 路径解析与 JSONL 读写工具。
+ * fs.ts — path resolution and JSONL read/write helpers.
  *
- * 提供各平台会话存储路径的解析，以及 cwd 编码/解码（不同平台对工作目录
- * 的编码规则不同），还有流式 JSONL 读写。
+ * Resolves each platform's session storage path, encodes and decodes cwd
+ * (each platform encodes the working directory differently), and reads and
+ * writes JSONL as a stream.
  */
 
 import * as fs from 'node:fs';
@@ -10,19 +11,19 @@ import * as path from 'node:path';
 import { homedir } from 'node:os';
 
 // ---------------------------------------------------------------------------
-// 平台默认存储路径
+// Default per-platform storage paths
 // ---------------------------------------------------------------------------
 
 export function getClaudeCodeProjectsDir(): string {
   return path.join(homedir(), '.claude', 'projects');
 }
 
-/** TeamAI 变体: claude-internal */
+/** TeamAI variant: claude-internal */
 export function getClaudeInternalProjectsDir(): string {
   return path.join(homedir(), '.claude-internal', 'projects');
 }
 
-/** TeamAI 变体: tclaude */
+/** TeamAI variant: tclaude */
 export function getTClaudeProjectsDir(): string {
   return path.join(homedir(), '.tclaude', 'projects');
 }
@@ -31,12 +32,12 @@ export function getCodexSessionsDir(): string {
   return path.join(homedir(), '.codex', 'sessions');
 }
 
-/** TeamAI 变体: codex-internal */
+/** TeamAI variant: codex-internal */
 export function getCodexInternalSessionsDir(): string {
   return path.join(homedir(), '.codex-internal', 'sessions');
 }
 
-/** TeamAI 变体: tcodex */
+/** TeamAI variant: tcodex */
 export function getTCodexSessionsDir(): string {
   return path.join(homedir(), '.tcodex', 'sessions');
 }
@@ -46,8 +47,9 @@ export function getCodeBuddyProjectsDir(): string {
 }
 
 /**
- * WorkBuddy 会话目录。与 CodeBuddy 同构（<encoded-cwd>/<uuid>.jsonl），
- * 但额外提供 <uuid>.meta.json，其中带真实 cwd —— 可绕开目录名反解的有损问题。
+ * WorkBuddy session directory. Same layout as CodeBuddy (<encoded-cwd>/<uuid>.jsonl),
+ * but it also provides <uuid>.meta.json with the real cwd — avoiding the lossy
+ * problem of reversing the directory name.
  */
 export function getWorkBuddyProjectsDir(): string {
   return path.join(homedir(), '.workbuddy', 'projects');
@@ -58,17 +60,17 @@ export function getCursorProjectsDir(): string {
 }
 
 // ---------------------------------------------------------------------------
-// cwd 编码/解码
+// cwd encode/decode
 // ---------------------------------------------------------------------------
 
 /**
- * 把 cwd 解析为真实路径后再编码。
+ * Resolve cwd to its real path before encoding.
  *
- * macOS 上 `/tmp` 是 `/private/tmp` 的符号链接，同一个目录有两种拼写。
- * AI 工具以 `process.cwd()` 落盘——那是**解析后**的路径——于是用未解析拼写
- * 写入（如 `--target-cwd /tmp/x`）会落进一个谁也读不回的目录：
- * 写入成功，列出却为空。与 ide-history.hashWorkspace 的处理保持一致。
- * 路径不存在（待创建场景）时回退原路径。
+ * On macOS `/tmp` is a symlink to `/private/tmp`, so the same directory has two spellings.
+ * AI tools persist `process.cwd()` — the **resolved** path — so writing with the unresolved
+ * spelling (for example `--target-cwd /tmp/x`) lands in a directory nobody can read back:
+ * the write succeeds, but listing is empty. This matches ide-history.hashWorkspace.
+ * If the path does not exist (create-pending case), fall back to the original path.
  */
 export function resolveRealCwd(cwd: string): string {
   const resolved = path.resolve(cwd);
@@ -80,55 +82,57 @@ export function resolveRealCwd(cwd: string): string {
 }
 
 /**
- * Claude Code 的 cwd 编码: 所有非字母数字字符 → `-`，有前导 `-`。
- * 例: `/home/user/project` → `-home-user-project`
- *     `/Users/foo/my project` → `-Users-foo-my-project`
+ * Claude Code cwd encoding: every non-alphanumeric character → `-`, with a leading `-`.
+ * Example: `/home/user/project` → `-home-user-project`
+ *          `/Users/foo/my project` → `-Users-foo-my-project`
  */
 export function encodeCwdClaude(cwd: string): string {
   return resolveRealCwd(cwd).replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 /**
- * CodeBuddy / Cursor 的 cwd 编码: 所有非字母数字字符 → `-`，无前导 `-`。
- * 例: `/home/user/project` → `home-user-project`
- *     `/Users/foo/my project` → `Users-foo-my-project`
+ * CodeBuddy / Cursor cwd encoding: every non-alphanumeric character → `-`, no leading `-`.
+ * Example: `/home/user/project` → `home-user-project`
+ *          `/Users/foo/my project` → `Users-foo-my-project`
  */
 export function encodeCwdGeneric(cwd: string): string {
   return resolveRealCwd(cwd).replace(/[^a-zA-Z0-9]/g, '-').replace(/^-+/, '');
 }
 
 /**
- * CodeBuddy CLI 的 cwd → 目录名编码：只把路径分隔符换成 `-`。
+ * CodeBuddy CLI cwd → directory-name encoding: replace only path separators with `-`.
  *
- * 不能用上面的通用版本——它把所有非字母数字都换成 `-`，而 CodeBuddy 自己
- * **保留空格**，实测 `.../Desktop/Code/teamai cli` 落盘为
- * `Users-caiwenzhe-Desktop-Code-teamai cli`。通用版会算成 `...-teamai-cli`，
- * 于是这类工作区永远匹配不上：列出为空、读取报「文件未找到」，
- * 而带空格的项目目录很常见。
+ * The generic version above cannot be used — it turns every non-alphanumeric character
+ * into `-`, while CodeBuddy itself **keeps spaces**. In practice `.../Desktop/Code/teamai cli`
+ * is stored as `Users-caiwenzhe-Desktop-Code-teamai cli`. The generic version would compute
+ * `...-teamai-cli`, so these workspaces never match: listing is empty and reads report
+ * "file not found". Project directories that contain spaces are common.
  */
 export function encodeCwdCodeBuddy(cwd: string): string {
   return resolveRealCwd(cwd)
-    .replace(/^([a-zA-Z]:)?[\\/]+/, '') // 去掉盘符与根分隔符
+    .replace(/^([a-zA-Z]:)?[\\/]+/, '') // Drop the drive letter and root separator
     .replace(/[\\/]/g, '-');
 }
 
 /**
- * Claude Code 的 cwd 解码: 无法精确还原（`-` 可能来自 `/`、空格等），
- * 但目录名本身不需要解码为可用路径——仅用于显示。
- * 这里返回原始 encoded 字符串作为显示用 cwd。
+ * Claude Code cwd decoding: cannot be restored exactly (`-` may have come from `/`, a space, and so on),
+ * but the directory name itself does not need to become a usable path — it is for display only.
+ * Return the original encoded string as the display cwd.
  */
 export function decodeCwdClaude(encoded: string): string {
-  // 无法精确反推，返回 encoded 本身（调用方应从 session_meta 等获取真实 cwd）
+  // Cannot be reversed exactly; return encoded itself (the caller should get the real cwd from session_meta and the like)
   return encoded;
 }
 
 /**
- * 最佳努力反解 Claude Code 的项目目录名 → 真实工作区路径。
+ * Best-effort reverse of a Claude Code project directory name → real workspace path.
  *
- * 部分版本的 Claude Code 会把编码后的目录名（`-Users-foo-project`）直接写进记录里的
- * cwd 字段，导致迁移时拿不到真实工作区：目标 cwd 只能回退到「命令运行的目录」，
- * 会话就被搬到了错误的项目下。这里按编码规则还原（前导 `-` → `/`，其余 `-` → `/`）
- * 并用磁盘存在性校验；路径本身含 `-` 或空格时还原结果会不存在，直接放弃（返回 undefined）。
+ * Some Claude Code versions write the encoded directory name (`-Users-foo-project`) straight
+ * into the cwd field of the record, so migration cannot get the real workspace: the target cwd
+ * can only fall back to "the directory the command is running in", and the session is moved
+ * under the wrong project. Restore it by the encoding rule (leading `-` → `/`, remaining `-` → `/`)
+ * and check that it exists on disk. If the path itself contains `-` or a space, the restored
+ * result will not exist; give up (return undefined).
  */
 export function bestEffortDecodeCwdClaude(encoded: string): string | undefined {
   if (!encoded.startsWith('-')) return undefined;
@@ -143,19 +147,19 @@ export function bestEffortDecodeCwdClaude(encoded: string): string | undefined {
 }
 
 /**
- * CodeBuddy / Cursor 的 cwd 解码: 同上，无法精确还原。
+ * CodeBuddy / Cursor cwd decoding: same as above, cannot be restored exactly.
  */
 export function decodeCwdGeneric(encoded: string): string {
   return encoded;
 }
 
 // ---------------------------------------------------------------------------
-// JSONL 流式读写
+// Streaming JSONL read/write
 // ---------------------------------------------------------------------------
 
 /**
- * 流式读取 JSONL 文件，逐行返回解析后的对象。
- * 空行自动跳过；解析失败的行抛出 SyntaxError。
+ * Stream-read a JSONL file, yielding one parsed object per line.
+ * Blank lines are skipped; a line that fails to parse throws SyntaxError.
  */
 export function* readJsonl(filePath: string): Generator<Record<string, unknown>> {
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -167,7 +171,7 @@ export function* readJsonl(filePath: string): Generator<Record<string, unknown>>
 }
 
 /**
- * 逐行读取 JSONL 文件的前 N 行（用于提取元信息，避免加载大文件）。
+ * Read the first N lines of a JSONL file (for extracting metadata without loading a large file).
  */
 export function* readJsonlHead(filePath: string, maxLines: number): Generator<Record<string, unknown>> {
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -182,8 +186,8 @@ export function* readJsonlHead(filePath: string, maxLines: number): Generator<Re
 }
 
 /**
- * 流式写入 JSONL 文件，每个对象写一行。
- * 自动创建父目录。
+ * Stream-write a JSONL file, one object per line.
+ * Parent directories are created automatically.
  */
 export function writeJsonl(filePath: string, records: Iterable<Record<string, unknown>>): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -195,7 +199,7 @@ export function writeJsonl(filePath: string, records: Iterable<Record<string, un
 }
 
 // ---------------------------------------------------------------------------
-// 文件系统辅助
+// Filesystem helpers
 // ---------------------------------------------------------------------------
 
 export function fileExists(p: string): boolean {
@@ -215,7 +219,7 @@ export function dirExists(p: string): boolean {
 }
 
 /**
- * 递归扫描目录下所有匹配的文件，按修改时间降序排列。
+ * Recursively scan a directory for matching files, sorted by modification time descending.
  */
 export function scanFiles(rootDir: string, pattern: RegExp): string[] {
   if (!dirExists(rootDir)) return [];
@@ -243,22 +247,22 @@ export function scanFiles(rootDir: string, pattern: RegExp): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// 归档内容的安全边界（untrusted input）
+// Safety boundary for archived content (untrusted input)
 // ---------------------------------------------------------------------------
 
-/** 只有这些后缀才可能是真正的图片，值得按本地文件读取。 */
+/** Only these extensions can be real images worth reading as local files. */
 const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
 
 /**
- * 是否允许读取图片块里的本地 `filePath`。
+ * Whether the local `filePath` inside an image block may be read.
  *
- * 团队归档里的 `filePath` 是别人写进去的不可信输入：伪造一条指向
- * `~/.ssh/id_rsa`（或任意可读文件）的图片块，写入侧一旦照读就会把文件内容
- * base64 塞进恢复出来的会话里——等于用一次 `session resume` 把本机文件
- * 带出去。因此：
+ * A `filePath` in a team archive is untrusted input written by someone else: a forged image
+ * block pointing at `~/.ssh/id_rsa` (or any readable file) would, if the write side read it,
+ * stuff the file contents as base64 into the restored session — one `session resume` would
+ * carry a local file out. Therefore:
  *
- * - 会话来自归档（`metadata.untrusted`）时一律不读本地文件，只用块内 data；
- * - 其余情形也要求绝对路径 + 图片后缀，避免读到随便什么文件。
+ * - If the session came from an archive (`metadata.untrusted`), never read local files; use only in-block data.
+ * - Otherwise also require an absolute path plus an image extension, so arbitrary files are not read.
  */
 export function mayReadLocalImageFile(
   session: { metadata?: Record<string, unknown> | undefined } | undefined,
@@ -271,10 +275,11 @@ export function mayReadLocalImageFile(
 }
 
 /**
- * 把归档里任意字符串压成安全的文件名（用于 assets/、messages/ 等落盘名）。
+ * Collapse an arbitrary archive string into a safe file name (for on-disk names under assets/, messages/, and so on).
  *
- * 归档里的 label / message id 由推送方控制，`../../foo` 之类的值会直接变成
- * 路径片段写穿 assets 目录。这里强制只取 basename 并清掉分隔符与控制字符。
+ * Labels and message ids in an archive are controlled by the pusher. Values such as `../../foo`
+ * would become path segments and write through the assets directory. Force basename only, and
+ * strip separators and control characters.
  */
 export function safeFileName(raw: string, fallback = 'image.png'): string {
   const base = path
@@ -287,7 +292,7 @@ export function safeFileName(raw: string, fallback = 'image.png'): string {
 }
 
 /**
- * 递归删除目录（用于 delete_session 清理子目录）。
+ * Recursively delete a directory (used by delete_session to clean up subdirectories).
  */
 export function removeDirRecursive(dirPath: string): void {
   try {

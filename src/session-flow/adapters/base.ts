@@ -1,8 +1,8 @@
 /**
- * adapters/base.ts — AgentAdapter 抽象基类与 SessionMeta。
+ * adapters/base.ts — AgentAdapter abstract base class and SessionMeta.
  *
- * 所有平台适配器（Claude Code / Codex / CodeBuddy / Cursor）都继承 AgentAdapter，
- * 实现统一的 list/read/write/delete 接口，使上层迁移逻辑与具体平台解耦。
+ * Every platform adapter (Claude Code / Codex / CodeBuddy / Cursor) extends AgentAdapter
+ * and implements a shared list/read/write/delete interface so migration logic stays decoupled from a specific platform.
  */
 
 import type { Session } from '../ir.js';
@@ -22,37 +22,54 @@ export interface SessionMeta {
 export abstract class AgentAdapter {
   static readonly platform: string;
 
+  private writeNotice: string | undefined;
+
+  /**
+   * The transcript is already on disk. A failed list registration must not
+   * throw — that would look like the write never happened — but the command
+   * has to show the warning instead of a silent success.
+   */
+  protected noteWrite(message: string): void {
+    this.writeNotice = message;
+  }
+
+  consumeWriteNotice(): string | undefined {
+    const notice = this.writeNotice;
+    this.writeNotice = undefined;
+    return notice;
+  }
+
   abstract get platform(): string;
 
-  /** 列出该平台指定项目（工作目录）下的所有会话。projectPath 为 undefined 时列出所有。 */
+  /** List every session under the given project (working directory) on this platform. When projectPath is undefined, list all. */
   abstract listConversations(projectPath?: string): Promise<SessionMeta[]>;
 
-  /** 读取单个会话，返回归一化 IR Session。 */
+  /** Read one session and return a normalized IR Session. */
   abstract readSession(sessionId: string, projectPath?: string): Promise<Session>;
 
-  /** 将归一化 IR Session 写入目标平台，返回写入后的 session ID。 */
+  /** Write a normalized IR Session to the target platform and return the written session ID. */
   abstract writeSession(session: Session, projectPath?: string): Promise<string>;
 
   /**
-   * 删除目标平台上的会话（用于回滚）。
+   * Delete a session on the target platform (used for rollback).
    *
-   * 返回值区分「真的删掉了」和「压根没找到」：`false` 表示确认没有任何东西
-   * 被删除（会话不存在，或 `projectPath` 作用域内没有它）。回滚必须能报出
-   * no-op——否则脚本无法判断回滚是否生效。所有适配器都要给出明确布尔值。
+   * The return value distinguishes "actually deleted" from "not found at all": `false` means
+   * nothing was deleted (the session does not exist, or it is outside the `projectPath` scope). Rollback must be able to report a
+   * no-op — otherwise a script cannot tell whether rollback took effect. Every adapter must return an explicit boolean.
    */
   abstract deleteSession(sessionId: string, projectPath?: string): Promise<boolean>;
 
-  /** 检测该平台 CLI 是否已安装且可用（静态，检查基础路径）。 */
+  /** Check whether this platform's CLI is installed and usable (static; checks the base path). */
   static isAvailable(): boolean {
     return false;
   }
 
-  /** 检测该适配器实例的存储路径是否可用（实例方法，变体可覆盖）。 */
+  /** Check whether this adapter instance's storage path is usable (instance method; variants may override). */
   isReady(): boolean {
     return false;
   }
 
-  /** 返回该平台会话的默认存储根路径。 */
+  /** Return the default storage root for this platform's sessions. */
   static getDefaultStoragePath(): string {
     return '';
   }

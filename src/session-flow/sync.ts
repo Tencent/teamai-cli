@@ -1,30 +1,30 @@
 /**
- * sync.ts — 会话团队同步引擎。
+ * sync.ts — Team session sync engine.
  *
- * 管理团队仓中完整会话 IR 的存储布局、索引、Git 操作。
+ * Manages storage layout, indexes, and Git operations for full session IR in the team repo.
  *
- * 目录结构（团队仓或 reports branch）：
+ * Directory layout (team repo or reports branch):
  *
  *   sessions/
- *   ├── repos/                                ← 按仓库标识隔离（与 AI agent 行为一致）
- *   │   ├── github.com_org_payment-service/   ← canonical remote（/ → _）
- *   │   │   ├── _index.json                   ← 该仓库所有会话的索引
- *   │   │   ├── alice/                        ← 按成员分子目录
+ *   ├── repos/                                ← isolated by repo identity (same as AI agent behavior)
+ *   │   ├── github.com_org_payment-service/   ← canonical remote (/ → _)
+ *   │   │   ├── _index.json                   ← index of every session in this repo
+ *   │   │   ├── alice/                        ← one subdirectory per member
  *   │   │   │   ├── claude-code_fix-port_20260910.jsonl
  *   │   │   │   └── claude-code_fix-port_20260910.meta.json
  *   │   │   └── bob/
  *   │   │       └── ...
  *   │   └── github.com_org_infra-tools/
  *   │       └── ...
- *   └── _unattributed/                        ← 非 git 仓库下的会话（降级）
+ *   └── _unattributed/                        ← sessions from a non-git directory (fallback)
  *       └── alice/
  *           └── ...
  *
- * 设计约束：
- * - repoIdentity 从 cwd 的 git remote 采集，canonical 化后不可变
- * - 隔离在下行（pull）时按 repoIdentity 过滤，与 AI agent 按 cwd 隔离一致
- * - _index.json 是 per-repo 的，rebuild_index 可从磁盘幂等重建
- * - 与 TeamAI projects.yaml 零耦合（可选增强，不阻塞核心功能）
+ * Design constraints:
+ * - repoIdentity is collected from the cwd's git remote and is immutable once canonicalized
+ * - Isolation filters by repoIdentity on the way down (pull), matching AI agents isolating by cwd
+ * - _index.json is per-repo; rebuild_index can rebuild it idempotently from disk
+ * - Zero coupling to TeamAI projects.yaml (optional enhancement; does not block the core feature)
  */
 
 import * as fs from 'node:fs';
@@ -34,7 +34,7 @@ import type { Session } from './ir.js';
 import { messageToDict, messageFromDict } from './ir.js';
 
 // ---------------------------------------------------------------------------
-// 辅助函数
+// Helpers
 // ---------------------------------------------------------------------------
 
 function utcNow(): string {
@@ -42,8 +42,8 @@ function utcNow(): string {
 }
 
 /**
- * 获取当前 git user.name 或 user.email 作为 author 标识。
- * 优先 user.name（更人类友好），fallback 到 user.email，再 fallback 'unknown'。
+ * Use the current git user.name or user.email as the author identifier.
+ * Prefer user.name (more human-friendly), fall back to user.email, then to 'unknown'.
  */
 export function getGitAuthor(cwd?: string): string {
   for (const key of ['user.name', 'user.email']) {
@@ -64,14 +64,14 @@ export function getGitAuthor(cwd?: string): string {
 }
 
 /**
- * 从 cwd 获取 git remote canonical 标识。
+ * Get the canonical git remote identity from cwd.
  *
- * 归一化规则：
+ * Normalization rules:
  *   https://github.com/org/repo.git     → github.com/org/repo
  *   git@github.com:org/repo.git         → github.com/org/repo
  *   https://gitlab.company.com/g/repo   → gitlab.company.com/g/repo
  *
- * 非 git 仓库或无 remote 时返回 null。
+ * Returns null when the directory is not a git repo or has no remote.
  */
 export function getRepoIdentity(cwd?: string): string | null {
   try {
@@ -113,7 +113,7 @@ export function canonicalizeRemote(remote: string): string {
   s = s.replace(/^[^/@]+@/, '');
   // git@github.com:org/repo → github.com/org/repo (scp-style colon separator)
   s = s.replace(/^([^/:]+):(?!\d+(?:\/|$))/, '$1/');
-  // 去前导 /
+  // Strip a leading /
   s = s.replace(/^\/+/, '');
   // Hosts are case-insensitive: GitHub.com/Org/Repo and github.com/org/repo are
   // one repository, and two spellings would mean two archive directories and
@@ -139,7 +139,7 @@ export function canonicalizeRemote(remote: string): string {
  * Reversible via decodeRepoIdentity.
  */
 export function encodeRepoIdentity(identity: string): string {
-  // Per character: charCodeAt().toString(16) emitted %4E2D for '中', which the
+  // Per character: charCodeAt().toString(16) emitted %4E2D for U+4E2D (one CJK character), which the
   // 2-hex-digit decoder read back as 'N' + '2D'. encodeURIComponent gives the
   // UTF-8 bytes (%E4%B8%AD) that decodeURIComponent reverses exactly.
   let out = '';
@@ -181,7 +181,7 @@ function sanitizePathSegment(name: string): string {
 }
 
 /**
- * 将标题转为文件名安全的 slug。
+ * Turn a title into a filename-safe slug.
  */
 function slugify(title: string, maxLength = 50): string {
   const slug = title.toLowerCase().replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, '-').replace(/^-+|-+$/g, '');
@@ -189,7 +189,7 @@ function slugify(title: string, maxLength = 50): string {
 }
 
 /**
- * 生成 session_name: `{platform}_{title_slug}_{YYYYMMDD}`。
+ * Build session_name: `{platform}_{title_slug}_{YYYYMMDD}`.
  */
 export function generateSessionName(platform: string, title: string, createdAt: string): string {
   const date = createdAt.slice(0, 10).replace(/-/g, '');
@@ -197,7 +197,7 @@ export function generateSessionName(platform: string, title: string, createdAt: 
 }
 
 // ---------------------------------------------------------------------------
-// SessionSyncMeta — meta.json 数据模型
+// SessionSyncMeta — meta.json data model
 // ---------------------------------------------------------------------------
 
 export interface SessionSyncMeta {
@@ -226,12 +226,12 @@ export interface SessionSyncMeta {
 }
 
 /**
- * 构造默认 meta。
+ * Build the default meta.
  *
- * @param partial 基础字段
- * @param createdAt 会话原生创建时间（session.createdAt）。不传时降级为当前时间——
- *   但调用方（push / migrate --push）应始终传入，否则 origin.createdAt 记录的是
- *   推送时间而非会话创建时间，会破坏 search 的时间衰减排序（见设计文档 P7）。
+ * @param partial Base fields
+ * @param createdAt The session's native creation time (session.createdAt). When omitted, falls back to now.
+ *   Callers (push / migrate --push) should always pass it; otherwise origin.createdAt records
+ *   the push time instead of the session creation time and breaks search's time-decay ranking (see design doc P7).
  */
 export function defaultSyncMeta(
   partial: {
@@ -286,11 +286,11 @@ export interface IndexEntry {
   updatedAt: string;
   status: string;
   /**
-   * 源平台的会话 ID（origin.sessionId）。
+   * Source-platform session ID (origin.sessionId).
    *
-   * push 去重键（P8）= sessionId + author：重复推送同一会话时更新既有条目，
-   * 而不是 resolveNameConflict 生成 `xxx_1` 副本。可选项——旧索引/损坏索引
-   * 重建前没有该字段，此时去重退化为旧的名冲突行为。
+   * Push dedup key (P8) = sessionId + author: pushing the same session again updates the existing entry
+   * instead of resolveNameConflict creating an `xxx_1` copy. Optional: old or corrupt indexes
+   * lack this field until rebuilt, and dedup then falls back to the old name-conflict behavior.
    */
   sessionId?: string;
 }
@@ -302,7 +302,7 @@ interface RepoIndex {
   sessions: IndexEntry[];
 }
 
-/** `gitCommit` 的三种结局（成功 / 无变更 / 失败），不可再合并成 null。 */
+/** The three outcomes of `gitCommit` (committed / no changes / failed). They must not be collapsed back into null. */
 export type GitCommitResult =
   | { status: 'committed'; commit: string }
   | { status: 'no-changes' }
@@ -313,20 +313,20 @@ export type GitCommitResult =
 // ---------------------------------------------------------------------------
 
 /**
- * 旧编码（`github.com_org_alpha`）的目录名解码：只用于索引丢失时的兜底，
- * 因为旧规则把 `_` 一律当分隔符，本身有歧义（`a_b` / `a/b` 同码）。
+ * Decode a directory name from the old encoding (`github.com_org_alpha`). Used only as a fallback when the index is missing,
+ * because the old rule treated every `_` as a separator and is itself ambiguous (`a_b` and `a/b` encode the same).
  */
 function decodeLegacyRepoDirName(dirName: string): string {
   return dirName.includes('%') ? decodeRepoIdentity(dirName) : dirName.replace(/_/g, '/');
 }
 
 /**
- * 拒绝写入路径中经过 symlink 的目标。
+ * Refuse to write a target whose path passes through a symlink.
  *
- * `sessions/` 下的目录来自团队仓 checkout——仓库内容不由本机控制，而 git 会
- * 原样记录 symlink。若 `sessions/repos/x` 或某个 author 目录被换成指向
- * `~/.ssh` 的链接，下面的每次 writeFileSync 都会写穿链接落到仓库之外，
- * 覆盖任意可写文件。写入前逐个祖先 lstat，命中 symlink 直接报错放弃。
+ * Directories under `sessions/` come from the team-repo checkout. The repo contents are not controlled by this machine, and git
+ * records symlinks as-is. If `sessions/repos/x` or some author directory is replaced with a link to
+ * `~/.ssh`, every writeFileSync below follows the link and lands outside the repo,
+ * overwriting any writable file. lstat each ancestor before writing; on a symlink, error and abort.
  */
 function assertNoSymlinkedAncestors(target: string, root: string): void {
   const rel = path.relative(root, target);
@@ -349,20 +349,20 @@ function assertNoSymlinkedAncestors(target: string, root: string): void {
 }
 
 /**
- * 管理团队仓 `sessions/` 目录下的完整会话存储。
+ * Manages full session storage under the team repo's `sessions/` directory.
  *
- * 与 AI agent 行为一致：
- * - 同一 git 仓库（remote）的会话聚在一起
- * - 不同仓库的会话天然隔离
- * - pull 时只拉当前 cwd 匹配的 repo 子目录
+ * Matches AI agent behavior:
+ * - Sessions from the same git repo (remote) are grouped together
+ * - Sessions from different repos are isolated by default
+ * - pull only fetches the repo subdirectory that matches the current cwd
  */
 export class SyncManager {
   private readonly sessionsDir: string;
   /**
-   * 本次进程写入过的归档文件（相对 repoRoot）。
+   * Archive files this process has written (relative to repoRoot).
    *
-   * `gitCommit` 只 `git add` 这些路径——此前是 `git add sessions/`，会把用户在
-   * `sessions/` 下的其它既有改动（甚至删除）一起提交进去。
+   * `gitCommit` only `git add`s these paths. Previously it was `git add sessions/`, which also committed
+   * other pre-existing changes under `sessions/` (including deletions).
    */
   private readonly writtenPaths = new Set<string>();
 
@@ -370,17 +370,17 @@ export class SyncManager {
     this.sessionsDir = path.join(repoRoot, 'sessions');
   }
 
-  /** 记录写入路径，并在写入前确认没有 symlink 劫持。 */
+  /** Record the write path, and confirm there is no symlink hijack before writing. */
   private guardWrite(target: string): void {
     assertNoSymlinkedAncestors(target, this.repoRoot);
     this.writtenPaths.add(path.relative(this.repoRoot, target).split(path.sep).join('/'));
   }
 
   // ------------------------------------------------------------------
-  // 路径解析
+  // Path resolution
   // ------------------------------------------------------------------
 
-  /** 获取 repo 子目录路径。null identity → _unattributed */
+  /** Repo subdirectory path. null identity → _unattributed */
   private repoDir(repoIdentity: string | null): string {
     if (!repoIdentity) {
       return path.join(this.sessionsDir, '_unattributed');
@@ -405,7 +405,7 @@ export class SyncManager {
   }
 
   // ------------------------------------------------------------------
-  // 索引操作
+  // Index operations
   // ------------------------------------------------------------------
 
   private readIndex(repoIdentity: string | null): RepoIndex {
@@ -415,8 +415,8 @@ export class SyncManager {
         return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
       }
     } catch {
-      // 索引损坏（解析失败）时静默重建会让 dedup 键丢失——同一会话再推
-      // 会生成 _1 副本而用户毫无感知。至少喊一声，并给出自救命令。
+      // A silent rebuild of a corrupt index (parse failure) drops the dedup key, so pushing the same session again
+      // creates an _1 copy with no signal to the user. At least say so, and give the recovery command.
       console.warn(`Warning: corrupted session index at ${p}, treating as empty.`);
       console.warn(`Run 'teamai session pull --all --repo-root <repo>' to rebuild indexes.`);
     }
@@ -438,9 +438,9 @@ export class SyncManager {
     fs.mkdirSync(dir, { recursive: true });
     index.updatedAt = utcNow();
     const target = path.join(dir, '_index.json');
-    // 原子写：先落临时文件再 rename。直接 writeFileSync 时，两个并发 push 会
-    // 互相截断，留下半截（甚至空）的 _index.json——那会让整个仓库的会话
-    // 看起来凭空消失。rename 在同一文件系统上是原子的，读者只会看到旧值或新值。
+    // Atomic write: land a temp file, then rename. A direct writeFileSync lets two concurrent pushes
+    // truncate each other and leave a partial (or empty) _index.json, which makes every session in the repo
+    // look like it vanished. rename is atomic on the same filesystem, so readers see either the old value or the new one.
     const tmp = `${target}.${process.pid}.tmp`;
     try {
       fs.writeFileSync(tmp, JSON.stringify(index, null, 2), 'utf-8');
@@ -456,11 +456,11 @@ export class SyncManager {
   }
 
   /**
-   * 写入路径专用的索引读取：索引损坏时先按磁盘重建，救不回来就报错。
+   * Index read used only on the write path: if the index is corrupt, rebuild from disk first; if that fails, throw.
    *
-   * readIndex() 对解析失败返回空数组，upsert 随即用「本次这 1 条」覆盖写回，
-   * 该仓库其余会话就从索引里整体消失了（并发 push 留下冲突标记时最易触发）。
-   * 会话文件本身还在，所以重建能救回来——重建不了说明问题更大，宁可中止。
+   * readIndex() returns an empty array on parse failure, and upsert then overwrites the file with "just this 1 entry",
+   * so every other session in that repo disappears from the index (easiest to trigger when a concurrent push left conflict markers).
+   * The session files themselves are still there, so a rebuild can recover them. If it cannot, the problem is larger; abort instead.
    */
   private readIndexForWrite(repoIdentity: string | null): RepoIndex {
     const p = this.indexPath(repoIdentity);
@@ -504,7 +504,7 @@ export class SyncManager {
   }
 
   // ------------------------------------------------------------------
-  // 名字冲突处理
+  // Name-conflict handling
   // ------------------------------------------------------------------
 
   private resolveNameConflict(repoIdentity: string | null, author: string, baseName: string): string {
@@ -518,14 +518,14 @@ export class SyncManager {
   }
 
   // ------------------------------------------------------------------
-  // 保存 / 加载
+  // Save / load
   // ------------------------------------------------------------------
 
   /**
-   * 按源平台 sessionId（+可选 author）在 repo 索引中查找既有条目。
+   * Look up an existing entry in the repo index by source-platform sessionId (and optional author).
    *
-   * push 去重键（P8）：origin.sessionId + author。命中说明该会话曾推送过，
-   * 应更新既有条目与文件，而不是再写一个 `_1` 副本。
+   * Push dedup key (P8): origin.sessionId + author. A hit means this session was pushed before
+   * and the existing entry and files should be updated, not written again as an `_1` copy.
    */
   private findByOriginSessionId(
     repoIdentity: string | null,
@@ -541,28 +541,28 @@ export class SyncManager {
       (s) =>
         s.sessionId === sessionId &&
         (!author || s.author === author) &&
-        // platform 参与去重键：同一 sessionId 迁移到不同平台是不同的归档物
-        // （meta.platform 各自独立），不能互相顶替——否则先 push codebuddy
-        // 再 migrate --push 到 claude-code 会把前一条归档覆盖掉。
+        // platform is part of the dedup key: the same sessionId migrated to a different platform is a different archive
+        // (each has its own meta.platform) and must not replace the other. Otherwise pushing codebuddy first
+        // and then migrate --push to claude-code would overwrite the earlier archive.
         (!platform || s.platform === platform),
     );
   }
 
   /**
-   * 保存会话到团队仓。
+   * Save a session into the team repo.
    *
    * @param session IR Session
-   * @param meta 同步元数据
-   * @returns 写入的 jsonl 文件路径（相对于 repoRoot）
+   * @param meta Sync metadata
+   * @returns Path of the written jsonl file (relative to repoRoot)
    */
   saveSession(session: Session, meta: SessionSyncMeta): string {
     const repoId = meta.origin.repoIdentity;
     const author = meta.origin.author;
 
     let sessionName = generateSessionName(session.platform, session.title, session.createdAt);
-    // P8 去重：同一 origin.sessionId + author 重复推送时，复用原 sessionName
-    // 覆盖写（upsertIndexEntry 按 sessionName:author 命中既有条目原地更新），
-    // 而不是 resolveNameConflict 生成 `xxx_1` 副本。
+    // P8 dedup: when the same origin.sessionId + author is pushed again, reuse the original sessionName
+    // and overwrite (upsertIndexEntry updates the existing entry in place on sessionName:author),
+    // instead of resolveNameConflict creating an `xxx_1` copy.
     const existing = this.findByOriginSessionId(repoId, meta.origin.sessionId, author, session.platform);
     if (existing) {
       sessionName = existing.sessionName;
@@ -575,15 +575,15 @@ export class SyncManager {
     this.guardWrite(paths.meta);
     fs.mkdirSync(path.dirname(paths.jsonl), { recursive: true });
 
-    // 写 JSONL — 每条消息一行
+    // Write JSONL — one message per line
     const lines = session.messages.map((m) => JSON.stringify(messageToDict(m)));
     fs.writeFileSync(paths.jsonl, lines.join('\n') + '\n', 'utf-8');
 
-    // 写 meta.json
+    // Write meta.json
     meta.sync.pushedAt = utcNow();
     fs.writeFileSync(paths.meta, JSON.stringify(meta, null, 2), 'utf-8');
 
-    // 更新索引
+    // Update the index
     this.upsertIndexEntry(repoId, {
       sessionName,
       author,
@@ -602,7 +602,7 @@ export class SyncManager {
   }
 
   /**
-   * 从团队仓加载会话。
+   * Load a session from the team repo.
    */
   loadSession(
     repoIdentity: string | null,
@@ -624,17 +624,17 @@ export class SyncManager {
       throw new Error(`Meta file not found: ${paths.meta}`);
     }
 
-    // 读 meta
+    // Read meta
     const meta = JSON.parse(fs.readFileSync(paths.meta, 'utf-8')) as SessionSyncMeta;
 
-    // 读 JSONL → 重建 Session
+    // Read JSONL → rebuild Session
     const content = fs.readFileSync(paths.jsonl, 'utf-8');
     const messages = content
       .split('\n')
       .filter((l) => l.trim())
       .map((l) => messageFromDict(JSON.parse(l) as Record<string, unknown>));
 
-    // 从 meta + sessionName 提取标题
+    // Extract the title from meta + sessionName
     // Prefer the persisted title; the file name slug is truncated + lowercased
     // and would otherwise rewrite every restored session's title.
     const title = meta.origin.title || this.extractTitleFromSessionName(sessionName);
@@ -661,7 +661,7 @@ export class SyncManager {
     return { session, meta };
   }
 
-  /** 在 repo 目录下搜索 sessionName 属于哪个 author */
+  /** Search the repo directory for which author owns sessionName */
   private findAuthor(repoIdentity: string | null, sessionName: string): string {
     const dir = this.repoDir(repoIdentity);
     if (!fs.existsSync(dir)) throw new Error(`Repo directory not found: ${dir}`);
@@ -696,23 +696,23 @@ export class SyncManager {
   }
 
   private extractTitleFromSessionName(sessionName: string): string {
-    // 格式: {platform}_{title_slug}_{YYYYMMDD}
+    // Format: {platform}_{title_slug}_{YYYYMMDD}
     const parts = sessionName.split('_');
     if (parts.length >= 3) {
-      // 去掉首段(platform)和末段(date)
+      // Drop the first segment (platform) and the last segment (date)
       return parts.slice(1, -1).join('_').replace(/-/g, ' ');
     }
     return sessionName;
   }
 
   // ------------------------------------------------------------------
-  // 列表 / 删除
+  // List / delete
   // ------------------------------------------------------------------
 
   /**
-   * 列出指定 repo 下的会话。
-   * repoIdentity=null → _unattributed。
-   * author 可选过滤。
+   * List sessions under the given repo.
+   * repoIdentity=null → _unattributed.
+   * author is an optional filter.
    */
   listSessions(repoIdentity: string | null, author?: string): IndexEntry[] {
     const index = this.readIndex(repoIdentity);
@@ -724,7 +724,7 @@ export class SyncManager {
   }
 
   /**
-   * 列出所有 repo 的 repoIdentity。
+   * List repoIdentity for every repo.
    */
   listRepos(): string[] {
     const reposDir = path.join(this.sessionsDir, 'repos');
@@ -735,13 +735,13 @@ export class SyncManager {
   }
 
   /**
-   * 列出团队仓中**所有** repo 的 canonical identity（含 `_unattributed` → null）。
+   * List the canonical identity of **every** repo in the team repo (including `_unattributed` → null).
    *
-   * 目录名是编码后的（`/` → `_`）且解码有损，不能反推 canonical 原文——
-   * 每个 repo 目录的 `_index.json` 存有 RepoIndex.repoIdentity（canonical 原文），
-   * 从索引反查。目录损坏 / 无索引 / 无 identity 的目录跳过。
+   * Directory names are encoded (`/` → `_`) and decoding is lossy, so they cannot be reversed to the canonical string.
+   * Each repo directory's `_index.json` stores RepoIndex.repoIdentity (the canonical string);
+   * look it up from the index. Skip directories that are corrupt, have no index, or have no identity.
    *
-   * `_unattributed` 在其 `_index.json` 存在或目录下有会话文件时以 null 一并返回。
+   * `_unattributed` is also returned as null when its `_index.json` exists or the directory contains session files.
    */
   listAllRepoIdentities(): Array<string | null> {
     const identities: Array<string | null> = [];
@@ -761,7 +761,7 @@ export class SyncManager {
       }
     }
 
-    // _unattributed：索引存在，或目录下有会话内容（author 子目录）时纳入
+    // _unattributed: include it when the index exists, or when the directory has session content (author subdirectories)
     const unattrDir = path.join(this.sessionsDir, '_unattributed');
     if (fs.existsSync(unattrDir)) {
       let hasContent = fs.existsSync(path.join(unattrDir, '_index.json'));
@@ -786,11 +786,11 @@ export class SyncManager {
   }
 
   /**
-   * 跨 repo 列出全部会话（`list --all` / `search --all` 的数据源）。
+   * List every session across repos (the data source for `list --all` / `search --all`).
    *
-   * 对 listAllRepoIdentities() 的每个 identity 调 listSessions 并合并。
-   * 每个条目的 repoIdentity 字段标识来源 repo（null → `_unattributed`），
-   * 供展示层输出「来源」列；旧索引条目缺该值时用所在 repo 的 identity 回填。
+   * Calls listSessions for each identity from listAllRepoIdentities() and merges the results.
+   * Each entry's repoIdentity field marks the source repo (null → `_unattributed`).
+   * The display layer uses it for the source column; when an old index entry lacks the value, backfill it from the repo's identity.
    */
   listSessionsAcrossRepos(author?: string): IndexEntry[] {
     const out: IndexEntry[] = [];
@@ -816,13 +816,13 @@ export class SyncManager {
   }
 
   // ------------------------------------------------------------------
-  // 索引重建
+  // Index rebuild
   // ------------------------------------------------------------------
 
   /**
-   * 扫描 repo 目录，幂等重建 _index.json。
+   * Scan the repo directory and rebuild _index.json idempotently.
    *
-   * `dirOverride` 指向实际目录（旧编码目录名的兜底重建用）。
+   * `dirOverride` points at the actual directory (fallback rebuild for an old-encoding directory name).
    */
   rebuildIndex(repoIdentity: string | null, dirOverride?: string): number {
     const dir = dirOverride ?? this.repoDir(repoIdentity);
@@ -886,14 +886,14 @@ export class SyncManager {
   }
 
   /**
-   * 重建团队仓里**所有**仓库目录的索引，包括索引丢失/损坏的目录。
+   * Rebuild the index of **every** repo directory in the team repo, including directories whose index is missing or corrupt.
    *
-   * listAllRepoIdentities() 依赖 `_index.json` 反查 canonical identity，
-   * 索引没了的仓库会被直接跳过——可它们恰恰是最需要 `pull --all` 修复的对象。
-   * 所以这里按目录遍历：identity 优先取索引原文，取不到再从目录名解码兜底。
+   * listAllRepoIdentities() depends on `_index.json` to recover the canonical identity,
+   * so a repo with no index is skipped outright — and those are exactly the ones `pull --all` most needs to repair.
+   * So walk by directory: prefer the identity stored in the index, and if it is missing, fall back to decoding the directory name.
    */
   rebuildAllIndexes(): { repos: number; sessions: number } {
-    /** identity → 实际目录（旧编码目录名与新编码不一致，必须带目录走）。 */
+    /** identity → actual directory (old-encoding directory names differ from the new encoding, so the directory must travel with the identity). */
     const targets: Array<{ identity: string | null; dir?: string }> = [];
     const seen = new Set<string>();
 
@@ -948,7 +948,7 @@ export class SyncManager {
     return { repos: targets.length, sessions };
   }
 
-  /** 目录索引里的 canonical identity；无索引/损坏时返回 null。 */
+  /** Canonical identity stored in the directory's index; returns null when there is no index or it is corrupt. */
   private identityOfRepoDir(dir: string): string | null {
     try {
       const idxPath = path.join(dir, '_index.json');
@@ -961,7 +961,7 @@ export class SyncManager {
   }
 
   // ------------------------------------------------------------------
-  // Git 操作
+  // Git operations
   // ------------------------------------------------------------------
 
   private runGit(args: string[], check = true): string {
@@ -979,17 +979,17 @@ export class SyncManager {
   }
 
   /**
-   * 提交本次写入的归档文件。
+   * Commit the archive files written in this run.
    *
-   * 三种结果必须区分开：成功提交 / 无变更 / 提交失败。此前三者统一返回 null，
-   * 于是 gpg 签名失败、pre-commit hook 拒绝、git identity 缺失都被当成
-   * “没有要提交的东西”，界面上只显示一行无害的 “No changes to push”，
-   * 而归档文件其实还留在暂存区没人管。
+   * The three outcomes must stay distinct: committed / no changes / commit failed. Previously all three returned null,
+   * so a gpg signing failure, a rejected pre-commit hook, and a missing git identity were all treated as
+   * "nothing to commit". The UI then showed only a harmless "No changes to push",
+   * while the archive files were still sitting in the index with nobody to commit them.
    */
   gitCommit(message: string): GitCommitResult {
     const paths = [...this.writtenPaths];
-    // 没有本次写入的路径时退回目录级 add（例如索引重建后的提交），
-    // 但仍然只在 sessions/ 内操作。
+    // When this run wrote no paths, fall back to a directory-level add (for example a commit after an index rebuild),
+    // but still only operate inside sessions/.
     const addArgs = paths.length > 0 ? ['add', '--', ...paths] : ['add', 'sessions/'];
     this.runGit(addArgs);
 

@@ -81,3 +81,14 @@ export function resolveWriteSessionId(
 export function isSafeSessionFileId(sessionId: string): boolean {
   return SAFE_SESSION_FILE_ID_RE.test(sessionId);
 }
+
+/**
+ * Reject a session id that is not one path segment.
+ * Rollback concatenates the id into a file path; `../` would unlink outside
+ * the platform's storage directory.
+ */
+export function assertSafeSessionFileId(sessionId: string): void {
+  if (!isSafeSessionFileId(sessionId)) {
+    throw new Error('Refusing to delete a session id that is not a single path segment.');
+  }
+}

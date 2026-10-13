@@ -62,7 +62,7 @@ teamai session resume <sessionName> --platform claude-code   # restore into a lo
 
 All of these accept `--dry-run` and `-v`. `migrate --push` migrates and archives in one step; `resume` prints the new session id — continue it with your tool's own resume flag.
 
-**Confirmations.** `--all` asks for confirmation once it passes 10 sessions (push: more than 5) and refuses outright in a non-interactive run, so a script cannot silently skip the batch — pass `-y` to confirm. Migrating a platform onto itself reuses the native session id and overwrites the source transcript, so it needs `--target-cwd <dir>` (write a copy elsewhere) or `-y`. `push` also asks before archiving unredacted transcripts; `--scrub` redacts them first.
+**Confirmations.** `--all` asks for confirmation once it passes 10 sessions (push: more than 5) and refuses outright in a non-interactive run, so a script cannot silently skip the batch — pass `-y` to confirm. Same-platform migration writes a new session id and leaves the source transcript in place, including CodeBuddy IDE. `push` and `migrate --push` ask before archiving unredacted transcripts. `--scrub` redacts them first. `-y` is an explicit yes for both the batch prompt and an unredacted archive. A non-interactive run that passes neither `--scrub` nor `-y` refuses to archive and exits non-zero.
 
 **Picking a session.** `migrate` without a session id lists 10 at a time: `n` / `p` move to the next / previous page, a number selects (numbering is global, so page 2 starts at 11), Enter cancels. Use `--all` (optionally `--limit <n>`) to migrate without picking, or pass a session-id prefix to select one directly.
 

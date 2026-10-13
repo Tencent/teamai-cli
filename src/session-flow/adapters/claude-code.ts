@@ -1,21 +1,21 @@
 /**
- * adapters/claude-code.ts — Claude Code 平台适配器。
+ * adapters/claude-code.ts — Claude Code platform adapter.
  *
- * 读取/写入 `~/.claude/projects/<encoded-cwd>/<session>.jsonl` 格式。
+ * Reads and writes `~/.claude/projects/<encoded-cwd>/<session>.jsonl`.
  *
- * JSONL 行类型（13 种）：
- *   读取：user/assistant → IR Message；其余 11 种跳过
- *   写入：user/assistant + mode + permission-mode + file-history-snapshot +
- *         attachment + last-prompt（6 种辅助行确保 CC 能加载）
+ * JSONL line types (13 kinds):
+ *   Read: user/assistant → IR Message; the other 11 kinds are skipped
+ *   Write: user/assistant + mode + permission-mode + file-history-snapshot +
+ *         attachment + last-prompt (6 auxiliary line kinds so CC can load the session)
  *
- * DAG 拍平：按 parentUuid 构建主链，跳过 isSidechain=true 的侧链。
+ * DAG flatten: build the main chain by parentUuid and skip sidechains where isSidechain=true.
  *
- * 增强点（vs Python 版）：
- * - 写入时生成 last-prompt 行（CC --resume 依赖）
- * - 写入时生成 attachment 行（工具/MCP/Agent 清单占位）
- * - 写入时生成 file-history-snapshot 行（文件历史占位）
- * - 写入时生成 mode + permission-mode 行
- * - thinking 块保留 signature
+ * Enhancements (vs the Python version):
+ * - Write a last-prompt line (CC --resume depends on it)
+ * - Write an attachment line (placeholder tool/MCP/Agent inventory)
+ * - Write a file-history-snapshot line (file-history placeholder)
+ * - Write mode + permission-mode lines
+ * - Keep the signature on thinking blocks
  */
 
 import * as crypto from 'node:crypto';
@@ -23,7 +23,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta } from './base.js';
 import type { Session, Message, ContentBlock } from '../ir.js';
-import { resolveWriteSessionId } from '../ids.js';
+import { assertSafeSessionFileId, resolveWriteSessionId } from '../ids.js';
 import { imagePlaceholderText } from '../ir.js';
 import {
   getClaudeCodeProjectsDir,
@@ -45,7 +45,7 @@ import {
 } from '../title.js';
 
 // ---------------------------------------------------------------------------
-// 工具名归一化映射
+// Tool-name normalization map
 // ---------------------------------------------------------------------------
 
 const CC_TO_IR_TOOL: Record<string, string> = {
@@ -77,8 +77,8 @@ function denormalizeToolName(irName: string): string {
   return IR_TO_CC_TOOL[irName] ?? irName;
 }
 
-// CC 默认工具清单（用于 attachment 行的 deferred_tools_delta.addedNames）
-// CC 加载会话时需要这个清单来重建工具上下文
+// Default CC tool inventory (used for deferred_tools_delta.addedNames on the attachment line)
+// CC needs this inventory when loading a session so it can rebuild tool context
 const CC_DEFAULT_TOOLS = [
   'Bash',
   'Glob',
@@ -99,7 +99,7 @@ const CC_DEFAULT_TOOLS = [
 ];
 
 // ---------------------------------------------------------------------------
-// 读取时跳过的行类型
+// Line types skipped on read
 // ---------------------------------------------------------------------------
 
 const SKIP_TYPES = new Set([
@@ -116,7 +116,7 @@ const SKIP_TYPES = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
-// UUID / 时间戳工具
+// UUID / timestamp helpers
 // ---------------------------------------------------------------------------
 
 function uuidV4(): string {
@@ -124,12 +124,12 @@ function uuidV4(): string {
 }
 
 /**
- * 解析 CC 的 ISO8601 带 Z 后缀时间戳。
+ * Parse a CC ISO8601 timestamp with a Z suffix.
  */
 function parseCcTimestamp(tsStr: string | undefined): string | undefined {
   if (!tsStr) return undefined;
   try {
-    // 验证可解析
+    // Verify it parses
     const d = new Date(tsStr);
     if (isNaN(d.getTime())) return undefined;
     return tsStr;
@@ -139,7 +139,7 @@ function parseCcTimestamp(tsStr: string | undefined): string | undefined {
 }
 
 /**
- * 格式化为 CC 时间戳（毫秒精度，带 Z 后缀）。
+ * Format a CC timestamp (millisecond precision, Z suffix).
  */
 function toCcTimestamp(isoStr: string | undefined): string {
   const d = isoStr ? new Date(isoStr) : new Date();
@@ -148,7 +148,7 @@ function toCcTimestamp(isoStr: string | undefined): string {
 }
 
 // ---------------------------------------------------------------------------
-// content 块解析（CC → IR）
+// Content-block parsing (CC → IR)
 // ---------------------------------------------------------------------------
 
 function parseCcContentBlocks(content: unknown): ContentBlock[] {
@@ -203,9 +203,9 @@ function parseCcContentBlocks(content: unknown): ContentBlock[] {
         isError: Boolean(b.is_error ?? false),
       });
     } else if (btype === 'image') {
-      // 用户贴进输入框的截图：Anthropic 格式是
-      // {type:'image', source:{type:'base64', media_type, data}}（也可能 {type:'url', url}）。
-      // 不解析的话图片既不进 IR 也不写进目标，保真度还照样算 100%（静默漏报）。
+      // Screenshot pasted into the input box: Anthropic format is
+      // {type:'image', source:{type:'base64', media_type, data}} (also {type:'url', url}).
+      // If it is not parsed, the image never enters the IR or the target, yet fidelity still reports 100% (silent undercount).
       const src = b.source as Record<string, unknown> | undefined;
       const data = typeof src?.data === 'string' ? src.data : undefined;
       const url = typeof b.url === 'string' ? b.url : (typeof src?.url === 'string' ? src.url : undefined);
@@ -213,7 +213,7 @@ function parseCcContentBlocks(content: unknown): ContentBlock[] {
       blocks.push({
         type: 'image',
         mimeType: String(src?.media_type ?? 'image/png'),
-        // base64 直接带；纯 URL 形态只留指针（写入侧按目标能力降级）
+        // Carry base64 as-is; a URL-only form keeps just the pointer (the write side degrades by target capability)
         ...(data ? { data } : {}),
         ...(url ? { filePath: url } : {}),
         label: guessImageLabel(String(src?.media_type ?? 'image/png')),
@@ -223,14 +223,14 @@ function parseCcContentBlocks(content: unknown): ContentBlock[] {
   return blocks;
 }
 
-/** 内联图片没有文件名，按 mime 给一个可读的占位名（写回/降级占位符用）。 */
+/** Inline images have no filename; derive a readable placeholder from the mime type (used when writing back or degrading to a placeholder). */
 function guessImageLabel(mimeType: string): string {
   const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') ?? 'png';
   return `image.${ext}`;
 }
 
 // ---------------------------------------------------------------------------
-// content 块序列化（IR → CC）
+// Content-block serialization (IR → CC)
 // ---------------------------------------------------------------------------
 
 function irBlockToCc(block: ContentBlock, session?: Session): Record<string, unknown> | null {
@@ -258,8 +258,8 @@ function irBlockToCc(block: ContentBlock, session?: Session): Record<string, unk
         is_error: block.isError,
       };
     case 'image': {
-      // CC 原生支持用户消息里的 base64 图片块。data 缺失（源文件读不到）时
-      // 从 filePath 现读；再不行降级占位文本，绝不静默丢块。
+      // CC natively supports base64 image blocks in user messages. When data is missing (the source file cannot be read),
+      // read it from filePath; if that also fails, degrade to placeholder text and never drop the block silently.
       let data = block.data;
       // Untrusted sessions (restored from a team archive) must never read a
       // local path: an archived image block can point at any readable file,
@@ -289,8 +289,8 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   private readonly storageRoot: string;
 
   /**
-   * @param platform 平台标识（默认 'claude-code'，变体可传 'claude-internal' / 'tclaude'）
-   * @param storageRoot 存储根路径（默认 ~/.claude/projects，变体传 ~/.claude-internal/projects 等）
+   * @param platform Platform id (default 'claude-code'; variants may pass 'claude-internal' / 'tclaude')
+   * @param storageRoot Storage root (default ~/.claude/projects; variants pass ~/.claude-internal/projects and similar)
    */
   constructor(platform = 'claude-code', storageRoot?: string) {
     super();
@@ -322,7 +322,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       const target = path.join(this.resolveProjectDir(projectPath), `${sessionId}.jsonl`);
       return fileExists(target) ? target : null;
     }
-    // 遍历所有编码目录
+    // Walk every encoded directory
     if (!dirExists(this.storageRoot)) return null;
     for (const projDir of fs.readdirSync(this.storageRoot)) {
       const candidate = path.join(this.storageRoot, projDir, `${sessionId}.jsonl`);
@@ -362,8 +362,8 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     let summaryTitle = '';
 
     try {
-      // 50 行常常全是注入块（system-reminder / 命令记录 / snapshot），预算不够会让
-      // 有真实提问的会话也 fallback 成 "Session <id>"；200 行与 codex/workbuddy 对齐。
+      // 50 lines are often all injected blocks (system-reminder / command records / snapshot); too small a budget makes
+      // sessions that do have a real question fall back to "Session <id>" as well. 200 lines matches the codex/workbuddy budget.
       for (const record of readJsonlHead(jsonlPath, 200)) {
         const rtype = record.type as string;
         const ts = parseCcTimestamp(record.timestamp as string);
@@ -403,9 +403,9 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     if (!createdAt) createdAt = new Date().toISOString();
     if (!updatedAt) updatedAt = createdAt;
 
-    // 标题：summary 行（CC /resume 用的就是它）> 用户文本解包 > id 兜底。
-    // 不再按「整条是否注入」跳过——<command-name> 等注入头后跟真实提问的混合消息
-    // 会被整条丢掉；titleFromUserText 能解 <user_query> 包裹并剥元信息。
+    // Title: summary line (that is what CC /resume uses) > unwrapped user text > id fallback.
+    // Do not skip a whole message just because it is injected — mixed messages with an injection header such as <command-name>
+    // followed by a real question would be dropped entirely; titleFromUserText unwraps <user_query> and strips metadata.
     title = summaryTitle ? cleanTitleText(summaryTitle) : '';
     if (!title) title = titleFromCandidates(userTextCandidates);
     if (!title) title = fallbackTitle(sessionId);
@@ -440,38 +440,38 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       bestEffortDecodeCwdClaude(path.basename(path.dirname(jsonlPath))) ??
       decodeCwdClaude(path.basename(path.dirname(jsonlPath)));
 
-    // 收集所有消息记录
+    // Collect every message record
     const rawRecords: Record<string, unknown>[] = [];
     let nativeCwd: string | undefined;
     let summaryTitle: string | undefined;
     for (const record of readJsonl(jsonlPath)) {
       const rtype = record.type as string;
       if (rtype === 'summary') {
-        // writeSession 落盘的标题行（CC /resume 也以它为准）。读取侧不认的话，
-        // roundtrip 后标题会漂移成首条用户文本（可能是注入清洗后的残句）。
+        // Title line written by writeSession (CC /resume uses it too). If the read side ignores it,
+        // the title drifts to the first user text after a roundtrip (which may be a leftover fragment after injection cleaning).
         const t = String(record.summary ?? '');
-        if (t) summaryTitle = t; // 取最后一条（writeSession 追加在文件末尾）
+        if (t) summaryTitle = t; // Take the last one (writeSession appends it at the end of the file)
         continue;
       }
       if (SKIP_TYPES.has(rtype)) continue;
       if (rtype !== 'user' && rtype !== 'assistant') continue;
-      // 每条消息记录都带真实 cwd（绝对路径）。目录名解码是有损的
-      // （`-` 可能来自 `/` 或空格），归档键（repoIdentity）必须优先用
-      // 记录里的原生 cwd（设计文档 Key invariant）；恢复失败退回解码目录名。
+      // Every message record carries the real cwd (absolute path). Decoding the directory name is lossy
+      // (`-` may come from `/` or a space), so the archive key (repoIdentity) must prefer
+      // the native cwd in the record (design doc Key invariant); if recovery fails, fall back to the decoded directory name.
       if (nativeCwd === undefined && typeof record.cwd === 'string' && path.isAbsolute(record.cwd)) {
         nativeCwd = record.cwd;
       }
       rawRecords.push(record);
     }
-    // 记录里的 cwd 有时是编码目录名（`-Users-foo-project`），不是真实路径：
-    // 反解成真实工作区，迁移才能「保持源会话的工作区」而不是回退到当前目录。
+    // The cwd in the record is sometimes an encoded directory name (`-Users-foo-project`), not a real path:
+    // decode it back to the real workspace so migration can "keep the source session's workspace" rather than falling back to the current directory.
     const sessionCwd = nativeCwd ?? bestEffortDecodeCwdClaude(cwd) ?? cwd;
 
-    // DAG 拍平
+    // Flatten the DAG
     const messages = this.flattenDag(rawRecords);
 
-    // 提取标题：优先 summary 标题行（写入侧落盘、CC /resume 亦采用），
-    // 其次用户文本解包（注入头 + 真实提问的混合消息也能解），最后退回 id 前缀。
+    // Extract the title: prefer the summary title line (written on disk, and also used by CC /resume),
+    // then unwrapped user text (mixed messages with an injection header plus a real question can still be unwrapped), and finally fall back to the id prefix.
     let title = summaryTitle ? cleanTitleText(summaryTitle) : '';
     if (!title) {
       const candidates: string[] = [];
@@ -486,7 +486,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     }
     if (!title) title = fallbackTitle(sessionId);
 
-    // 时间戳
+    // Timestamps
     let createdAt: string | undefined;
     let updatedAt: string | undefined;
     for (const record of rawRecords) {
@@ -499,7 +499,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     if (!createdAt) createdAt = new Date().toISOString();
     if (!updatedAt) updatedAt = createdAt;
 
-    // 元数据
+    // Metadata
     const metadata: Record<string, unknown> = {};
     for (let i = rawRecords.length - 1; i >= 0; i--) {
       if (rawRecords[i].type === 'assistant') {
@@ -525,16 +525,16 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   }
 
   /**
-   * DAG 拍平：按 parentUuid 构建主链，跳过 isSidechain=true 的侧链。
+   * DAG flatten: build the main chain by parentUuid and skip sidechains where isSidechain=true.
    *
-   * 注意：parentUuid 链可能经过被跳过的行类型（attachment/file-history-snapshot 等），
-   * 导致链断裂。对于 parentUuid 指向不存在记录的 orphan 节点，将它们作为根节点处理。
+   * Note: the parentUuid chain may pass through skipped line types (attachment/file-history-snapshot and similar),
+   * which breaks the chain. Orphan nodes whose parentUuid points at a missing record are treated as roots.
    */
   private flattenDag(rawRecords: Record<string, unknown>[]): Message[] {
-    // 过滤侧链
+    // Filter out sidechains
     const mainChain = rawRecords.filter((r) => !r.isSidechain);
 
-    // uuid → record（仅主链记录）
+    // uuid → record (main-chain records only)
     const uuidToRecord = new Map<string, Record<string, unknown>>();
     for (const record of mainChain) {
       const uid = record.uuid as string | undefined;
@@ -549,16 +549,16 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       if (parent === null) {
         roots.push(record);
       } else if (uuidToRecord.has(parent)) {
-        // parent 在主链中
+        // parent is on the main chain
         if (!childrenMap.has(parent)) childrenMap.set(parent, []);
         childrenMap.get(parent)!.push(record);
       } else {
-        // parent 不在主链中（被跳过的行类型），作为根节点处理
+        // parent is not on the main chain (skipped line type); treat it as a root
         roots.push(record);
       }
     }
 
-    // BFS 遍历主链
+    // BFS over the main chain
     const ordered: Record<string, unknown>[] = [];
     const visited = new Set<string>();
     const queue: Record<string, unknown>[] = [...roots];
@@ -574,7 +574,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       }
     }
 
-    // 转换为 IR Message
+    // Convert to IR Message
     const messages: Message[] = [];
     for (const record of ordered) {
       const msg = this.recordToMessage(record);
@@ -621,12 +621,12 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     // id in two directories is already two files.
     const sessionId = resolveWriteSessionId(this.platform, session);
 
-    // 确定目标目录
+    // Resolve the target directory
     const cwd = projectPath ?? session.cwd;
     const projDir = path.join(this.storageRoot, encodeCwdClaude(cwd));
     const jsonlPath = path.join(projDir, `${sessionId}.jsonl`);
 
-    // 生成 JSONL 记录（含辅助行）
+    // Build JSONL records (including auxiliary lines)
     const records = this.sessionToCcRecords(session, sessionId, cwd);
     writeJsonl(jsonlPath, records);
 
@@ -634,14 +634,14 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   }
 
   /**
-   * 将 IR Session 转换为 CC JSONL 记录列表（含辅助行）。
+   * Convert an IR Session into a list of CC JSONL records (including auxiliary lines).
    *
-   * 辅助行生成顺序：
-   * 1. mode 行（首行）
-   * 2. permission-mode 行
-   * 3. 消息行（user/assistant），每条消息后跟 file-history-snapshot
-   * 4. 首条 assistant 消息前插入 attachment 行（空工具清单）
-   * 5. last-prompt 行（末行）
+   * Auxiliary-line order:
+   * 1. mode line (first line)
+   * 2. permission-mode line
+   * 3. Message lines (user/assistant), each followed by a file-history-snapshot
+   * 4. Insert an attachment line before the first assistant message (empty tool inventory)
+   * 5. last-prompt line (last line)
    */
   private sessionToCcRecords(session: Session, sessionId: string, cwd: string): Record<string, unknown>[] {
     const records: Record<string, unknown>[] = [];
@@ -650,14 +650,14 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     let lastUserUuid: string | null = null;
     let lastUserText = '';
 
-    // 1. mode 行
+    // 1. mode line
     records.push({
       type: 'mode',
       mode: 'normal',
       sessionId,
     });
 
-    // 2. permission-mode 行
+    // 2. permission-mode line
     records.push({
       type: 'permission-mode',
       permissionMode: 'default',
@@ -667,20 +667,20 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     for (const msg of session.messages) {
       const msgUuid = msg.messageId ?? uuidV4();
 
-      // 构建 content 块
+      // Build content blocks
       const ccBlocks: Record<string, unknown>[] = [];
       for (const block of msg.content) {
         const ccBlock = irBlockToCc(block, session);
         if (ccBlock) ccBlocks.push(ccBlock);
       }
 
-      // CC 消息对象
+      // CC message object
       const ccMessage: Record<string, unknown> = { role: msg.role, content: ccBlocks };
       if (msg.role === 'assistant') {
         ccMessage.model = msg.metadata?.model ?? 'claude-sonnet-4-20250514';
       }
 
-      // 首条 assistant 消息前插入 attachment 行
+      // Insert an attachment line before the first assistant message
       if (msg.role === 'assistant' && firstAssistantUuid === null) {
         firstAssistantUuid = msgUuid;
         const attachmentUuid = uuidV4();
@@ -703,7 +703,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
         parentUuid = attachmentUuid;
       }
 
-      // 消息行
+      // Message line
       const record: Record<string, unknown> = {
         parentUuid,
         isSidechain: false,
@@ -724,7 +724,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       records.push(record);
       parentUuid = msgUuid;
 
-      // file-history-snapshot 行（每条消息后）
+      // file-history-snapshot line (after each message)
       records.push({
         type: 'file-history-snapshot',
         messageId: msgUuid,
@@ -736,7 +736,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
         isSnapshotUpdate: false,
       });
 
-      // 记录最后一条 user 消息
+      // Remember the last user message
       if (msg.role === 'user') {
         for (const block of msg.content) {
           if (block.type === 'text' && block.text) {
@@ -748,7 +748,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       }
     }
 
-    // 3. last-prompt 行（末尾）
+    // 3. last-prompt line (at the end)
     records.push({
       type: 'last-prompt',
       lastPrompt: lastUserText,
@@ -756,10 +756,10 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       sessionId,
     });
 
-    // 4. summary 行（标题）
-    // Claude Code 的 /resume 列表靠 type:"summary" 记录显示会话标题，
-    // 缺失时退回显示 session id 前缀（如 824ff784），迁移来的会话全中招。
-    // 源适配器读出的 title 已经过注入清洗，这里直接落盘。
+    // 4. summary line (title)
+    // Claude Code's /resume list shows the session title from a type:"summary" record.
+    // When it is missing, the list falls back to the session id prefix (for example 824ff784), which hits every migrated session.
+    // The title read by the source adapter is already cleaned of injections, so persist it as-is.
     const summary = cleanTitleText(session.title ?? '') || fallbackTitle(sessionId);
     if (summary) {
       records.push({
@@ -774,10 +774,10 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   }
 
   /**
-   * 找出该 sessionId 的**全部**副本（跨工作区）。
+   * Find every copy of this sessionId (across workspaces).
    *
-   * findSessionFile 命中首个即返回，读取没问题；但删除时只删首个会让别的
-   * 工作区里的同名副本变成孤儿——而 rollback 不带 --cwd 的语义正是「全部」。
+   * findSessionFile returns on the first hit, which is fine for reads; deleting only the first hit leaves
+   * same-named copies in other workspaces as orphans — and rollback without --cwd means "all of them".
    */
   private findAllSessionFiles(sessionId: string, projectPath?: string): string[] {
     if (projectPath) {
@@ -794,6 +794,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
   }
 
   async deleteSession(sessionId: string, projectPath?: string): Promise<boolean> {
+    assertSafeSessionFileId(sessionId);
     const jsonlPaths = this.findAllSessionFiles(sessionId, projectPath);
     // Nothing to delete under this project: report it instead of printing ✓.
     if (jsonlPaths.length === 0) return false;
@@ -807,7 +808,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
         // ignore
       }
 
-      // 删除同名子目录
+      // Delete the same-named subdirectory
       const subdir = jsonlPath.replace(/\.jsonl$/, '');
       if (dirExists(subdir)) {
         removeDirRecursive(subdir);

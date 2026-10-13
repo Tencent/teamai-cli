@@ -34,6 +34,7 @@ import { degradeThinkingBlocks, fidelityFromSession } from '../session-flow/migr
 import type { Session, Message } from '../session-flow/ir.js';
 import type { AgentAdapter } from '../session-flow/adapters/base.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
+import { getUserDataBase } from '../session-flow/ide-history.js';
 
 // ---------------------------------------------------------------------------
 // 报告容器
@@ -280,17 +281,9 @@ function newWorkspace(name: string): string {
 }
 
 function ideHistoryRoot(): string {
-  const root = path.join(
-    tmpHome,
-    'Library',
-    'Application Support',
-    'CodeBuddyExtension',
-    'Data',
-    'ext-x',
-    'CodeBuddyIDE',
-    'ext-x',
-    'history',
-  );
+  const base = getUserDataBase();
+  if (!base) throw new Error('CodeBuddy IDE data dir is unavailable');
+  const root = path.join(base, 'ext-x', 'CodeBuddyIDE', 'ext-x', 'history');
   fs.mkdirSync(root, { recursive: true });
   return root;
 }
