@@ -256,12 +256,12 @@ describe('IDF domain isolation (regression)', () => {
       const resultsB = search(query, indexB);
 
       // Extract only the rank-test entries from each result set, in score order
-      const rankFiles = ['tech-rank-0.md', 'tech-rank-1.md', 'tech-rank-2.md'];
+      const rankFiles = new Set(['tech-rank-0.md', 'tech-rank-1.md', 'tech-rank-2.md']);
       const orderA = resultsA
-        .filter((r) => rankFiles.includes(r.entry.filename ?? ''))
+        .filter((r) => rankFiles.has(r.entry.filename ?? ''))
         .map((r) => r.entry.filename);
       const orderB = resultsB
-        .filter((r) => rankFiles.includes(r.entry.filename ?? ''))
+        .filter((r) => rankFiles.has(r.entry.filename ?? ''))
         .map((r) => r.entry.filename);
 
       // All three tech entries must appear in both result sets

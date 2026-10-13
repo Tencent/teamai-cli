@@ -216,8 +216,8 @@ const READERS: Record<string, (args: string[]) => string[]> = {
 };
 
 /** Get-Content's parameters that name its files, and its switches: every other parameter takes a value. */
-const GET_CONTENT_PATHS = ['path', 'literalpath', 'pspath', 'lp'];
-const GET_CONTENT_SWITCHES = ['raw', 'wait', 'force', 'asbytestream', 'verbose', 'debug'];
+const GET_CONTENT_PATHS = new Set(['path', 'literalpath', 'pspath', 'lp']);
+const GET_CONTENT_SWITCHES = new Set(['raw', 'wait', 'force', 'asbytestream', 'verbose', 'debug']);
 
 /**
  * The files PowerShell's Get-Content reads: its positional operands and the
@@ -234,9 +234,9 @@ function getContentFiles(args: string[]): string[] {
       continue;
     }
     const [, name, colon, inline] = param;
-    if (GET_CONTENT_SWITCHES.includes(name.toLowerCase())) continue;
+    if (GET_CONTENT_SWITCHES.has(name.toLowerCase())) continue;
     const value = colon ? inline : args[++i];
-    if (GET_CONTENT_PATHS.includes(name.toLowerCase()) && value) files.push(value);
+    if (GET_CONTENT_PATHS.has(name.toLowerCase()) && value) files.push(value);
   }
   return files;
 }

@@ -160,13 +160,13 @@ describe('Codex hook ownership', () => {
     ];
     try {
       await fse.outputJson(file, { hooks: { PreToolUse: memberGroups, Stop: [memberGroups[0]] } });
-      const memberKeys = (await codexEntries(file)).map((e) => e.key);
+      const memberKeys = new Set((await codexEntries(file)).map((e) => e.key));
 
       await writeAndTrust(config);
 
       expect((await fse.readJson(file)).hooks.PreToolUse.slice(0, 2)).toEqual(memberGroups);
       expect((await fse.readJson(file)).hooks.Stop).toEqual([memberGroups[0]]);
-      expect(trustedKeys().some((key) => memberKeys.includes(key))).toBe(false);
+      expect(trustedKeys().some((key) => memberKeys.has(key))).toBe(false);
       await writeYaml(LINT_HOOK.replace('npm run lint', 'npm run lint:fix'));
       await writeAndTrust(config);
       expect((await fse.readJson(file)).hooks.PreToolUse.slice(0, 2)).toEqual(memberGroups);
@@ -187,16 +187,16 @@ describe('Codex hook ownership', () => {
       { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint', timeout: 17, additionalContextLimit: 0 }] },
     ];
     await fse.writeJson(file, { hooks: { [event]: memberGroups } });
-    const memberKeys = (await codexEntries(file)).map((e) => e.key);
+    const memberKeys = new Set((await codexEntries(file)).map((e) => e.key));
 
     await writeAndTrust(userConfig());
 
-    const teamKeys = (await codexEntries(file)).filter((e) => !memberKeys.includes(e.key)).map((e) => e.key);
+    const teamKeys = (await codexEntries(file)).filter((e) => !memberKeys.has(e.key)).map((e) => e.key);
     expect(trustedKeys().sort()).toEqual(teamKeys.sort());
     expect((await fse.readJson(file)).hooks[event].slice(0, 2)).toEqual(memberGroups);
     await writeAndTrust(userConfig());
     expect((await fse.readJson(file)).hooks[event].slice(0, 2)).toEqual(memberGroups);
-    expect(trustedKeys().some((key) => memberKeys.includes(key))).toBe(false);
+    expect(trustedKeys().some((key) => memberKeys.has(key))).toBe(false);
     await writeAndTrust(userConfig(), { removeAll: true });
     expect((await fse.readJson(file)).hooks[event]).toEqual(memberGroups);
   });
@@ -265,7 +265,7 @@ describe('Codex hook ownership', () => {
     await fse.outputJson(path.join(home, '.teamai', 'managed-hooks.json'), {
       codex: [{ id: 'lint', event: 'PreToolUse', matcher: 'Bash', command: 'npm run lint' }],
     });
-    const memberKeys = (await codexEntries(file)).map((e) => e.key);
+    const memberKeys = new Set((await codexEntries(file)).map((e) => e.key));
 
     expect(await trustCodexForScope(teamConfig, userConfig())).toBeUndefined();
     await writeAndTrust(userConfig());
@@ -273,7 +273,7 @@ describe('Codex hook ownership', () => {
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([
       ...groups, { matcher: 'Bash', hooks: [{ type: 'command', command: 'npm run lint' }] },
     ]);
-    expect(trustedKeys().some((key) => memberKeys.includes(key))).toBe(false);
+    expect(trustedKeys().some((key) => memberKeys.has(key))).toBe(false);
     await writeAndTrust(userConfig(), { removeAll: true });
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual(groups);
   });
