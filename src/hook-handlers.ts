@@ -398,6 +398,11 @@ const trackSlashHandler: HookHandler = {
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: the dispatcher's scope (#810).
     if (!config) return null;
+    if (['codex', 'codex-internal', 'tcodex'].includes(tool)) {
+      const { trackPromptSkills } = await import('./usage-tracker.js');
+      await trackPromptSkills(stdin, tool, config);
+      return null;
+    }
     const { isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
 
     const prompt = stdin.prompt;

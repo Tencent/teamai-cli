@@ -73,6 +73,8 @@ The monthly file's read, full-session-ID deduplication and atomic replacement ar
 #### 2. Skill Usage Tracker (Local)
 **What:** A PostToolUse hook detects Claude Code Skill tool calls and appends to the scope's `<dataHome>/usage.jsonl` (the configured project the session directory belongs to, otherwise user scope's `~/.teamai/user-usage.jsonl`; a directory without teamai configured records nothing, #748; a deleted directory keeps the scope the session last recorded, #810).
 
+Codex prompt-submit hooks also track explicit leading skill selections: installed slash commands, dollar cards selecting an installed `SKILL.md`, and validated skill-directory cards. Source directories must stay under the current working directory's `skills` tree after resolving symlinks, name an installed skill, and have matching valid frontmatter. Both the dispatcher and legacy tracker use the same bounded, scope-local receipt file (`<usage path>.prompts.json`, mode `0600`) to deduplicate retries after usage truncation. Receipts contain only hashes and timestamps; without a host event identifier, identical prompts are deduplicated for five seconds. Ordinary links and prose mentions are not invocations.
+
 **Data format (JSONL, one event per line):**
 ```jsonl
 {"skill":"code-review","timestamp":"2026-03-19T10:30:00Z","tool":"claude"}
