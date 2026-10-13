@@ -141,4 +141,74 @@ describe('reconcileZcodeFormat hooks keep-list', () => {
       await fse.remove(home);
     }
   });
+
+  it('strips timeoutMs/maxOutputBytes that fail the positive-integer schema and warns (#1059 value check)', async () => {
+    const { home, configPath } = await zcodeHome();
+    try {
+      // zcode-app-cli validates both keys as optional positive integers
+      // (number().int().positive(), vendor/zcode.cjs). A value failing that
+      // check would make ZCode reject the whole hooks block, so it goes
+      // through the same strip-and-warn path as an unknown key.
+      await fse.writeJson(configPath, {
+        hooks: {
+          enabled: true,
+          timeoutMs: 0,
+          maxOutputBytes: 'big',
+          events: {},
+        },
+      });
+
+      await reconcileHooks(configPath, 'zcode');
+
+      const cfg = await fse.readJson(configPath);
+      expect(cfg.hooks.timeoutMs).toBeUndefined();
+      expect(cfg.hooks.maxOutputBytes).toBeUndefined();
+      expect(cfg.hooks.enabled).toBe(true);
+      const warned = vi.mocked(log.warn).mock.calls.map((c) => String(c[0]));
+      expect(warned.some((w) => w.includes('"timeoutMs"'))).toBe(true);
+      expect(warned.some((w) => w.includes('"maxOutputBytes"'))).toBe(true);
+    } finally {
+      await fse.remove(home);
+    }
+  });
+
+  it('strips negative and non-integer values for each key; valid integers stay silent', async () => {
+    const { home, configPath } = await zcodeHome();
+    try {
+      await fse.writeJson(configPath, {
+        hooks: {
+          enabled: true,
+          timeoutMs: 1.5,
+          maxOutputBytes: -1,
+          events: {},
+        },
+      });
+
+      await reconcileHooks(configPath, 'zcode');
+
+      let cfg = await fse.readJson(configPath);
+      expect(cfg.hooks.timeoutMs).toBeUndefined();
+      expect(cfg.hooks.maxOutputBytes).toBeUndefined();
+
+      // Valid positive integers keep the keep-branch silent: no warning.
+      await fse.writeJson(configPath, {
+        hooks: {
+          enabled: true,
+          timeoutMs: 45000,
+          maxOutputBytes: 8192,
+          events: {},
+        },
+      });
+      vi.mocked(log.warn).mockClear();
+
+      await reconcileHooks(configPath, 'zcode');
+
+      cfg = await fse.readJson(configPath);
+      expect(cfg.hooks.timeoutMs).toBe(45000);
+      expect(cfg.hooks.maxOutputBytes).toBe(8192);
+      expect(vi.mocked(log.warn)).not.toHaveBeenCalled();
+    } finally {
+      await fse.remove(home);
+    }
+  });
 });

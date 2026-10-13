@@ -1906,22 +1906,19 @@ async function reconcileZcodeFormat(
   // Heal the config by keeping only the keys the schema documents. The
   // documented root-level set is enabled, events, timeoutMs and maxOutputBytes
   // (https://zcode.z.ai/en/docs/hooks, Configuration Sources example, accessed
-  // 2026-10-13; documented defaults 60000 ms and 32768 bytes; no hooks-schema
-  // change appears in the ZCode changelog from 3.10.2 through 3.15.1). We only
-  // ever write `enabled` and `events` ourselves, so a timeoutMs/maxOutputBytes
+  // 2026-10-13; documented defaults 60000 ms and 32768 bytes). We only ever
+  // write `enabled` and `events` ourselves, so a timeoutMs/maxOutputBytes
   // value present in the file was put there by the user against the documented
-  // schema. Teamai declares no ZCode version floor, so the reader build is not
-  // guaranteed to accept those keys. Keeping them is still the deliberate
-  // choice, made on how each failure surfaces (#1049 review):
-  //   - strip the key → an old build silently loses the user's tuning on every
-  //     reconcile, with nothing to observe anywhere;
-  //   - keep the key → an old build rejects the whole hooks block, hooks stop,
-  //     and `config_file_invalid` lands in ~/.zcode/cli/log/zcode-<date>.jsonl
-  //     — the file ZCode's own docs direct users to when hooks don't fire. A
-  //     loud, diagnosable failure beats an invisible one.
-  // The keep branch is deliberately silent from teamai's side: a key inside the
-  // documented set triggers no warning, so a below-floor user's only signal is
-  // ZCode's own log above. Stripped keys, by contrast, warn above.
+  // schema. Every published zcode-app-cli accepts both keys: the oldest
+  // package, 3.3.5-1 (2026-07-14), already validates the hooks block with
+  // timeoutMs and maxOutputBytes as optional positive integers
+  // (number().int().positive(), vendor/zcode.cjs) next to enabled and events,
+  // and teamai's ZCode support landed on 2026-09-09, after 3.10.2. So a value
+  // that passes that schema is kept silently — stripping it would silently
+  // lose the user's tuning on every reconcile (#1049's failure mode). A value
+  // that fails it (zero, negative, non-integer) would make ZCode reject the
+  // whole hooks block, so it takes the same strip-and-warn path as an
+  // unrecognized key (#1059's value check).
   const knownHookKeys = new Set(['enabled', 'events', 'timeoutMs', 'maxOutputBytes']);
   const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => !knownHookKeys.has(k));
   if (unknownHookKeys.length > 0) {
@@ -1932,6 +1929,20 @@ async function reconcileZcodeFormat(
         `ZCode's strict schema would reject the whole hooks block otherwise; if your ZCode version ` +
         `documents these keys, tell us so the keep-list can be widened.`,
     );
+  }
+  for (const k of ['timeoutMs', 'maxOutputBytes'] as const) {
+    const v = cfg.hooks[k];
+    if (v === undefined) continue;
+    // Mirror zcode-app-cli's own schema (number().int().positive(),
+    // vendor/zcode.cjs): a failing value would drop the whole hooks block.
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+      delete cfg.hooks[k];
+      changed = true;
+      log.warn(
+        `Removed invalid ZCode hooks value for "${k}" (${JSON.stringify(v)}) from ${expanded}: ` +
+        `ZCode requires a positive integer there and would reject the whole hooks block otherwise.`,
+      );
+    }
   }
   // Config-file hooks are disabled by default in ZCode; entries we write would
   // never fire unless the runner is explicitly enabled. Persist the flip even
