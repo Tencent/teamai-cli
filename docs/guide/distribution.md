@@ -168,6 +168,38 @@ teamai projects set checkout
 teamai pull
 ```
 
+## Restricting skills to some members
+
+Namespaces gate delivery only for members who have chosen a role. A member with no `primaryRole` gets an unfiltered sync: every skill in every namespace reaches them. This is a backward-compat default — `manifest/roles.yaml` alone restricts no one.
+
+When the manifest declares roles, `teamai init` forces the choice: one role is auto-selected, several roles bring a picker, and a non-interactive run without `--role <id>` fails instead of guessing. Members who were initialized before the manifest existed stay unfiltered until they run:
+
+```bash
+teamai roles set <role-id>
+teamai pull
+```
+
+The pull after a role switch withdraws teamai-delivered copies of skills outside the new namespaces; locally modified copies are kept and named.
+
+To close the remaining gap (old members who never set a role), ship an enforced rule — `sharing.rules.enforced` entries cannot be deleted by members — that makes agents check and prompt:
+
+```yaml
+# teamai.yaml
+sharing:
+  rules:
+    enforced: [set-your-role]
+```
+
+```markdown
+# rules/set-your-role.md
+When the conversation touches team skills or sync, run `teamai roles list`.
+Without a `Your primary role:` line this machine syncs every namespace
+unfiltered. Prompt the member to run `teamai roles set <role-id>` — list
+the team's roles — then `teamai pull` to converge.
+```
+
+Tags never restrict: a subscription only adds matching tagged skills, and unsubscribed members lose nothing. Restrict with namespaces + roles; use tags for opt-in extras.
+
 ## Tags
 
 A tag is on a skill or a rule, in the team repo's `tags.yaml`. A member subscribes on their own machine. With no subscription, tags do nothing. After a subscription, skills and rules that carry those tags are pulled too. Untagged ones still follow roles and projects.

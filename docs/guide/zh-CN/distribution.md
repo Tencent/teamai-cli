@@ -168,6 +168,38 @@ teamai projects set checkout
 teamai pull
 ```
 
+## 把技能限定给部分成员
+
+Namespace 只对设置了角色的成员过滤。`primaryRole` 未设置的成员走无过滤同步：所有 namespace 的技能都会送达。这是向后兼容的默认行为——只有 `manifest/roles.yaml` 本身不限定任何人。
+
+manifest 声明了角色时，`teamai init` 会强制选择：只有一个角色时自动选中；多个角色给出选择器；非交互环境不传 `--role <id>` 会直接报错，而不是猜一个。在 manifest 之前入队的成员，在执行下面命令之前仍是无过滤状态：
+
+```bash
+teamai roles set <role-id>
+teamai pull
+```
+
+切换角色后的这次 pull 会收回新 namespace 之外、由 teamai 下发的技能副本；本地改过的副本会保留并点名。
+
+要收掉剩余的缺口（一直没设角色的老成员），用强制规则——`sharing.rules.enforced` 里的条目成员不可删除——让 agent 主动检查并催促：
+
+```yaml
+# teamai.yaml
+sharing:
+  rules:
+    enforced: [set-your-role]
+```
+
+```markdown
+# rules/set-your-role.md
+当会话涉及团队技能或同步时，运行 `teamai roles list`。
+输出没有 `Your primary role:` 一行时，本机正在无过滤同步全部 namespace。
+提醒成员运行 `teamai roles set <role-id>`（列出团队的角色供选择），
+然后 `teamai pull` 收敛。
+```
+
+标签从不做限定：订阅只会额外拉取匹配标签的技能，未订阅的成员不会因此少收任何技能。限定用 namespace + 角色，标签用于自愿加法。
+
 ## 标签
 
 标签打在 skill 或 rule 上，存在团队仓库的 `tags.yaml`。成员在自己机器上订阅。没订阅任何标签时，标签不参与。订阅之后，带这些标签的 skill 和 rule 也会拉下来。没打标签的仍按角色和项目发。
