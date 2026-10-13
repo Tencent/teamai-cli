@@ -398,15 +398,11 @@ const trackSlashHandler: HookHandler = {
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: the dispatcher's scope (#810).
     if (!config) return null;
-    if (['codex', 'codex-internal', 'tcodex'].includes(tool)) {
-      const { trackPromptSkills } = await import('./usage-tracker.js');
-      await trackPromptSkills(stdin, tool, config);
-      return null;
-    }
-    const { isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
+    const { isValidSkillName, appendUsageEvent, updateKnownSkills, normalizeSkillCardPrompt } = await import('./usage-tracker.js');
 
-    const prompt = stdin.prompt;
-    if (typeof prompt !== 'string' || !prompt.startsWith('/')) return null;
+    if (typeof stdin.prompt !== 'string') return null;
+    const prompt = await normalizeSkillCardPrompt(stdin.prompt, tool);
+    if (!prompt.startsWith('/')) return null;
 
     // Extract skill name: first word after "/". Character class must match
     // SKILL_NAME_REGEX (types.ts) — the CLI path (trackSlashCommand) already

@@ -4,19 +4,7 @@
 
 ---
 
-Codex also records explicit leading skill cards such as
-`[$sample-review](/path/to/skills/sample-review/SKILL.md)` or
-`[sample-review](teamai/skills/general/sample-review/)`. A dollar card must resolve
-to the selected installed local skill. A directory card, with or without a
-trailing slash, must select an installed directory or a source under the current
-directory's `skills` tree, name an installed skill, and contain a regular
-`SKILL.md` with matching `name` and a non-empty `description` in valid frontmatter.
-Directory containment is checked after resolving symlinks. Ordinary links, prose mentions and arbitrary
-`@text` are not skill invocations. Repeated selections in one prompt and immediate
-hook retries count once. A bounded, owner-only receipt file beside the scope's
-usage file stores only hashes and timestamps; it survives usage truncation and
-is not reported. Without a host event identifier, identical prompts are
-deduplicated only within five seconds. Other tools keep their existing behavior.
+Codex also counts a leading skill directory card such as `[sample-review](teamai/skills/general/sample-review/)`, with or without the trailing slash. The selected directory must contain a `SKILL.md` with valid matching `name` and a non-empty `description`. The card uses the existing slash-command tracking flow.
 
 `teamai pull` commits session and usage counts into the team repo. Turn that off with:
 

@@ -12,7 +12,6 @@ const mockParseHookEvent = vi.fn().mockResolvedValue({ type: 'session_start', ti
 const mockAppendEvent = vi.fn().mockResolvedValue(undefined);
 const mockTrackFromParsed = vi.fn().mockResolvedValue(undefined);
 const mockTrackSlashFromParsed = vi.fn().mockResolvedValue(undefined);
-const mockTrackPromptSkills = vi.fn().mockResolvedValue(undefined);
 const mockContributeCheckForSession = vi.fn().mockResolvedValue({ hint: null });
 const mockTakePendingHint = vi.fn().mockResolvedValue(null);
 // Default: no doc has been credited yet this session → every adopted doc is
@@ -55,10 +54,10 @@ vi.mock('../usage-tracker.js', async () => {
   return {
     trackFromStdin: mockTrackFromParsed,
     trackSlashCommand: mockTrackSlashFromParsed,
-    trackPromptSkills: mockTrackPromptSkills,
     resolveSkillUse: actual.resolveSkillUse,
     extractSkillName: actual.extractSkillName,
     isValidSkillName: actual.isValidSkillName,
+    normalizeSkillCardPrompt: actual.normalizeSkillCardPrompt,
     appendUsageEvent: vi.fn().mockResolvedValue(undefined),
     updateKnownSkills: vi.fn().mockResolvedValue(undefined),
   };
@@ -1875,16 +1874,24 @@ describe('track handler: Muse Code', () => {
 });
 
 describe('track-slash handler: dotted and colon skill names', () => {
-  it.each(['codex', 'codex-internal', 'tcodex'])('uses the shared card tracker for %s', async (tool) => {
-    const handler = buildHandlerRegistry().find(
-      (r) => r.event === 'prompt-submit' && r.handler.name === 'track-slash',
-    )!.handler;
-    const payload = { prompt: '[sample-review](teamai/skills/general/sample-review/) Review', event_id: 'card-event' };
-    mockTrackPromptSkills.mockClear();
-
-    await handler.execute(payload, tool, scope);
-
-    expect(mockTrackPromptSkills).toHaveBeenCalledExactlyOnceWith(payload, tool, scope);
+  it.each(['codex', 'codex-internal', 'tcodex'])('tracks a directory card through the existing flow for %s', async (tool) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-card-handler-'));
+    const selected = path.join(directory, 'sample-review');
+    fs.mkdirSync(selected);
+    fs.writeFileSync(path.join(selected, 'SKILL.md'), '---\nname: sample-review\ndescription: Synthetic review\n---\n');
+    const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
+    const handler = buildHandlerRegistry().find((r) => r.event === 'prompt-submit' && r.handler.name === 'track-slash')!.handler;
+    vi.mocked(appendUsageEvent).mockClear();
+    vi.mocked(updateKnownSkills).mockClear();
+    try {
+      await handler.execute({ prompt: `[sample-review](${selected}/) Review` }, tool, scope);
+      expect(appendUsageEvent).toHaveBeenCalledExactlyOnceWith(
+        { skill: 'sample-review', timestamp: expect.any(String), tool }, scope,
+      );
+      expect(updateKnownSkills).toHaveBeenCalledWith('sample-review');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('tracks a skill name that contains a dot', async () => {

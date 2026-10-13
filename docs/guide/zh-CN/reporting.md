@@ -4,16 +4,7 @@
 
 ---
 
-Codex 也会记录提示开头明确选择的技能卡片，例如
-`[$sample-review](/path/to/skills/sample-review/SKILL.md)` 或
-`[sample-review](teamai/skills/general/sample-review/)`。带 `$` 的卡片必须指向选中的
-本机已安装技能。目录卡片可带或不带尾斜杠，必须指向已安装目录或当前工作目录下的
-`skills` 树中的源目录，名称对应已安装技能，且含有普通文件 `SKILL.md`，其有效
-frontmatter 中的 `name` 必须匹配，`description` 必须非空。解析符号链接后校验目录范围。
-普通链接、正文提及和任意 `@文字` 不作为技能调用。一次提示中的
-重复选择及 Hook 的即时重试只计一次。各作用域使用文件旁的有界去重文件仅保存哈希
-和时间，权限仅限当前用户，使用记录清空后仍保留，且不参与上传。没有宿主事件标识
-时，相同提示只在五秒内去重。其他工具保持现有行为。
+Codex 也会统计提示开头的技能目录卡片，例如 `[sample-review](teamai/skills/general/sample-review/)`，可带或不带尾斜杠。所选目录必须包含 `SKILL.md`，且有效 frontmatter 的 `name` 匹配、`description` 非空。卡片复用原有斜杠命令的统计流程。
 
 `teamai pull` 默认把会话和使用次数提交进团队仓库。不想要这些提交时：
 

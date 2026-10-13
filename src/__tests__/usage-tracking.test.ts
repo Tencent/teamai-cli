@@ -30,6 +30,7 @@ import {
   readKnownSkills,
   extractSkillName,
   skillExistsOnDisk,
+  normalizeSkillCardPrompt,
 } from '../usage-tracker.js';
 import { aggregateUsage, showStats } from '../stats.js';
 import { mergeStats } from '../team-push.js';
@@ -1917,6 +1918,48 @@ describe('hook command strings', () => {
     expect(result.hooks.Stop).toHaveLength(1);
     expect(result.hooks.Stop[0].hooks[0].command).toContain('hook-dispatch stop');
     expect(result.hooks.Stop[0].hooks[0].command).toContain('--tool codebuddy');
+  });
+});
+
+describe('Codex skill directory cards', () => {
+  const directory = 'teamai/skills/general/sample-review';
+  const frontmatter = '---\nname: sample-review\ndescription: Synthetic review\n---\n';
+
+  it.each(['', '/'])('tracks the real directory-card format with suffix "%s"', async (suffix) => {
+    await createFakeSkill('sample-review');
+    await fse.outputFile(path.join(tmpDir, directory, 'SKILL.md'), frontmatter);
+    const cwd = process.cwd();
+    const restore = mockStdin(JSON.stringify({ prompt: `[sample-review](${directory}${suffix}) Review`, cwd: tmpDir }));
+    try {
+      process.chdir(tmpDir);
+      await trackSlashCommand('codex');
+    } finally {
+      process.chdir(cwd);
+      restore();
+    }
+    expect(await readUsageEvents(userScope())).toEqual([
+      { skill: 'sample-review', tool: 'codex', timestamp: expect.any(String) },
+    ]);
+  });
+
+  it.each(['# Ordinary document', '---\nname: other-review\ndescription: Review\n---\n',
+    '---\nname: sample-review\n---\n', '---\nname: [broken\n---\n'])('leaves invalid skill metadata uncounted', async (content) => {
+    const selected = path.join(tmpDir, directory);
+    await fse.outputFile(path.join(selected, 'SKILL.md'), content);
+    const prompt = `[sample-review](${selected}/) Review`;
+    expect(await normalizeSkillCardPrompt(prompt, 'codex')).toBe(prompt);
+  });
+
+  it('leaves other clients, ordinary links, prose and slash prompts unchanged', async () => {
+    const selected = path.join(tmpDir, directory);
+    await fse.outputFile(path.join(selected, 'SKILL.md'), frontmatter);
+    const card = `[sample-review](${selected}/) Review`;
+    expect(await normalizeSkillCardPrompt(card, 'claude')).toBe(card);
+    for (const prompt of ['Use ' + card, '/sample-review text /other-review',
+      `[sample-review](${selected}/SKILL.md)`, '[sample-review](https://example.invalid/sample-review/)',
+      '[sample-review](missing/skills/sample-review/)']) {
+      expect(await normalizeSkillCardPrompt(prompt, 'codex')).toBe(prompt);
+    }
   });
 });
 

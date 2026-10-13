@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
@@ -18,7 +17,6 @@ import { appendJsonl, readJsonl, rewriteJsonl, type JsonlStoreOptions } from './
 import { getUserHome } from './utils/home.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { resolveConfigForDir, resolveMemberToolRoots } from './config.js';
-import { acquireLock, releaseLock } from './update.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
 
 /**
@@ -201,12 +199,8 @@ const PROJECT_SKILL_DIRS = [...SKILL_DIRS, '.github/skills'];
  *
  * Performance: Checks a bounded list of user and project directories with one stat() each.
  */
-export async function skillExistsOnDisk(skillName: string, toolRoots?: Record<string, string>, selectedPath?: string): Promise<boolean> {
+export async function skillExistsOnDisk(skillName: string, toolRoots?: Record<string, string>): Promise<boolean> {
   const home = getUserHome();
-  const selected = selectedPath ? await fs.promises.realpath(selectedPath).catch(() => null) : undefined;
-  if (selectedPath && !selected) return false;
-  const matches = async (file: string) => await pathExists(file)
-    && (selected === undefined || await fs.promises.realpath(file).catch(() => null) === selected);
   // A relocated tool (Claude Code with CLAUDE_CONFIG_DIR, Codex with
   // CODEX_HOME) keeps its skills under the recorded root, which the static list
   // cannot know; the caller resolves it from the hook's directory
@@ -220,14 +214,14 @@ export async function skillExistsOnDisk(skillName: string, toolRoots?: Record<st
   // Check user-level directories
   for (const dir of userSkillDirs) {
     const skillMd = path.join(dir, skillName, 'SKILL.md');
-    if (await matches(skillMd)) return true;
+    if (await pathExists(skillMd)) return true;
   }
   // Check project-level directories (cwd)
   const cwd = process.cwd();
   if (path.resolve(cwd) !== path.resolve(home)) {
     for (const dir of PROJECT_SKILL_DIRS) {
       const skillMd = path.join(cwd, dir, skillName, 'SKILL.md');
-      if (await matches(skillMd)) return true;
+      if (await pathExists(skillMd)) return true;
     }
   }
   return false;
@@ -537,88 +531,16 @@ export async function trackFromStdin(toolArg?: string): Promise<void> {
   await updateKnownSkills(skillName);
 }
 
-/** A plain folder card must select a real, known skill, not an ordinary directory link. */
-async function isSkillDirectoryReference(name: string, selectedPath: string, toolRoots?: LocalConfig['toolRoots']): Promise<boolean> {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(selectedPath) || selectedPath.startsWith('//')) return false;
-  const directory = await fs.promises.realpath(selectedPath).catch(() => null);
-  if (!directory || path.basename(directory) !== name) return false;
-  if (!await fs.promises.stat(directory).then((s) => s.isDirectory(), () => false)) return false;
-  const skillMd = path.join(directory, 'SKILL.md');
-  if (!await skillExistsOnDisk(name, toolRoots, skillMd)) {
-    // Codex also references source copies under <cwd>/.../skills/<namespace>/<name>.
-    // Resolve symlinks before checking containment; an arbitrary external copy is not a card.
-    const cwd = await fs.promises.realpath(process.cwd());
-    const relative = path.relative(cwd, directory);
-    if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)
-      || !relative.split(path.sep).includes('skills') || !await skillExistsOnDisk(name, toolRoots)) return false;
-  }
-  if (!await fs.promises.stat(skillMd).then((s) => s.isFile(), () => false)) return false;
-  const { data, valid } = splitFrontmatter(await fs.promises.readFile(skillMd, 'utf8').catch(() => ''));
-  return valid && data.name === name && typeof data.description === 'string' && data.description.trim().length > 0;
-}
-
-/** Explicit leading skill selections only; prose mentions and ordinary links are not invocations. */
-export async function resolvePromptSkills(
-  prompt: string, tool: string, toolRoots?: LocalConfig['toolRoots'],
-): Promise<string[]> {
-  const names = new Set<string>();
-  let remaining = prompt.trimStart();
-  while (remaining) {
-    const slash = remaining.match(/^\/([a-zA-Z0-9_\-:.]+)(?=\s|$)/);
-    const chip = ['codex', 'codex-internal', 'tcodex'].includes(tool)
-      ? remaining.match(/^\[\$([a-zA-Z0-9_\-:.]+)\]\(([^)\r\n]+)\)(?=\s|$)/) : null;
-    const directory = ['codex', 'codex-internal', 'tcodex'].includes(tool)
-      ? remaining.match(/^\[([a-zA-Z0-9_\-:.]+)\]\(([^)\r\n]+)\)(?=\s|$)/) : null;
-    const match = slash ?? chip ?? directory;
-    if (!match) break;
-    const name = match[1];
-    if (directory && isValidSkillName(name)) {
-      if (await isSkillDirectoryReference(name, directory[2], toolRoots)) names.add(name);
-    } else if (isValidSkillName(name) && await skillExistsOnDisk(name, toolRoots, chip?.[2])) {
-      // A chip must point at the selected local skill, not a web link or a different file.
-      if (!chip || (!/^[a-z]+:/i.test(chip[2]) && extractSkillName({ skill: chip[2] }) === name
-        && /\/SKILL\.md$/i.test(chip[2]) && await pathExists(chip[2]))) names.add(name);
-    }
-    remaining = remaining.slice(match[0].length).trimStart();
-  }
-  return [...names];
-}
-
-/** Shared by hook-dispatch and the legacy track-slash entry point. No prompt text is persisted. */
-export async function trackPromptSkills(
-  stdin: Record<string, unknown>, tool: string, config: LocalConfig,
-): Promise<void> {
-  if (typeof stdin.prompt !== 'string') return;
-  const toolRoots = config.toolRoots ?? await resolveMemberToolRoots(resolveHookCwd(stdin));
-  const skills = await resolvePromptSkills(stdin.prompt, tool, toolRoots);
-  if (!skills.length) return;
-  const identity = stdin.event_id ?? stdin.prompt_id ?? stdin.turn_id ?? stdin.timestamp;
-  const key = createHash('sha256').update(JSON.stringify([
-    tool, stdin.session_id, identity ?? stdin.prompt,
-  ])).digest('hex');
-  const receiptPath = `${getUsagePath(config)}.prompts.json`;
-  await fs.promises.mkdir(path.dirname(receiptPath), { recursive: true });
-  const lockPath = `${receiptPath}.lock`;
-  const deadline = Date.now() + 250;
-  while (!await acquireLock(lockPath)) {
-    if (Date.now() >= deadline) throw new Error('Skill prompt receipt lock is busy');
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  try {
-    const receipts = await readJson<{ key: string; at: number }[]>(receiptPath) ?? [];
-    const now = Date.now();
-    // Stable host event IDs survive upload/truncation. Without one, suppress only
-    // immediate retries: later identical prompts are separate invocations.
-    if (receipts.some((r) => r.key === key && (identity !== undefined || now - r.at < 5_000))) return;
-    for (const skill of skills) {
-      // Keep this version's usage lock and pending-file handling intact.
-      await appendUsageEvent({ skill, timestamp: new Date().toISOString(), tool }, config);
-      await updateKnownSkills(skill);
-    }
-    await writeFileAtomic(receiptPath, JSON.stringify([...receipts.filter((r) => r.key !== key), { key, at: now }].slice(-256)), { mode: 0o600 });
-  } finally {
-    await releaseLock(lockPath);
-  }
+/** Convert Codex's selected skill directory card to the existing slash-command format. */
+export async function normalizeSkillCardPrompt(prompt: string, tool: string): Promise<string> {
+  if (!['codex', 'codex-internal', 'tcodex'].includes(tool)) return prompt;
+  const card = prompt.match(/^\[([a-zA-Z0-9_\-:.]+)\]\(([^)\r\n]+)\)(?=\s|$)/);
+  if (!card || !isValidSkillName(card[1])) return prompt;
+  const directory = path.resolve(card[2]);
+  if (path.basename(directory) !== card[1]) return prompt;
+  const { data, valid } = splitFrontmatter(await fs.promises.readFile(path.join(directory, 'SKILL.md'), 'utf8').catch(() => ''));
+  if (!valid || data.name !== card[1] || typeof data.description !== 'string' || !data.description.trim()) return prompt;
+  return `/${card[1]}${prompt.slice(card[0].length)}`;
 }
 
 /**
@@ -640,7 +562,7 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
     return;
   }
 
-  let hookData: Record<string, unknown>;
+  let hookData: { prompt?: string; cwd?: unknown };
   try {
     hookData = JSON.parse(raw);
   } catch {
@@ -648,15 +570,9 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
     return;
   }
 
-  if (['codex', 'codex-internal', 'tcodex'].includes(toolArg ?? 'claude')) {
-    const { resolveHookConfig } = await import('./dashboard-collector.js');
-    const config = await resolveHookConfig(hookData, toolArg ?? 'claude');
-    if (config) await trackPromptSkills(hookData, toolArg ?? 'claude', config);
-    return;
-  }
-
-  const prompt = hookData.prompt;
-  if (typeof prompt !== 'string' || !prompt.startsWith('/')) {
+  if (typeof hookData.prompt !== 'string') return;
+  const prompt = await normalizeSkillCardPrompt(hookData.prompt, toolArg ?? 'claude');
+  if (!prompt.startsWith('/')) {
     return;
   }
 
