@@ -58,7 +58,7 @@ teamai init --repo https://github.com/your-org/your-repo --force
 
 **Q: 在项目里执行 `teamai init` 后没有 `.claude/`（或 `.cursor/`、`.codebuddy/`）目录？**
 
-对于内置工具，如果 `init` 没带 `--agent`，且在非交互终端中运行（不会显示选择器），它不会创建工具根目录，因为你还没有选择 Agent。执行 `teamai init <repo> --agent claude`（或其他 Agent ID），可在 `init` 结束前创建并填充该工具的根目录。你也可以在项目中打开该工具。它的 SessionStart hook 会创建根目录并拉取资源。
+对于内置工具，如果 `init` 没带 `--agent`，且在非交互终端中运行（不会显示选择器），它不会创建工具根目录，因为你还没有选择 Agent。`teamai init` 不会复制团队的 skills、rules 或 MCP。执行 `teamai init <repo> --agent claude`（或其他 Agent ID）会创建该工具的根目录并装上 hook。团队资源要等该工具开始一次会话，或执行 `teamai pull` 后才到达。你也可以在项目中打开该工具。它的 SessionStart hook 会创建根目录并拉取资源。
 
 `teamai pull` 不会创建缺失的 Agent 根目录。例外是在继承配置的子模块克隆中首次 pull，它会根据原始子模块配置创建根目录（见[项目 checkout](./distribution.md#项目-checkout)）。对于只在 `teamai.yaml` 的 `toolPaths` 中定义的自定义 Agent，git 模式的 init 会通过 `init --agent <id>` 创建其根目录。HTTP init 无法读取本地 `teamai.yaml` 路径，因此只会为已安装的内置 Agent 创建根目录。
 

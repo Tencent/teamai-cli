@@ -136,6 +136,7 @@ function machine(base: string, opts: MachineOptions): Machine {
   };
   const excludeFile = path.join(realDir, '.git', 'info', 'exclude');
   ok(['init', url, '--provider', 'git', '--agent', opts.agents, '--scope', 'project', '--force']);
+  ok(['pull']);
   return {
     dir: realDir,
     home,

@@ -136,7 +136,9 @@ function business(name: string, files: Record<string, string> = {}): string {
 }
 
 function init(t: Team, dir: string, ...extra: string[]): Run {
-  return teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force', ...extra], dir);
+  const started = teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force', ...extra], dir);
+  const pulled = teamaiOk(['pull'], dir);
+  return { ...pulled, output: `${started.output}${pulled.output}` };
 }
 
 /** What a restore from backup or a `cp -a` copy does to the checkout: `.git` gets a new inode. */
@@ -302,6 +304,7 @@ describe('ownership of unrecorded rule and agent files (#993 bugs 2 and 12)', ()
     const t = team('rule-link-synced', { 'rules/team-rule.md': TEAM_RULE });
     const dir = business('rule-link-synced-biz', { '.claude/rules/.keep': '' });
     teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'claude,cursor', '--scope', 'project', '--force'], dir);
+    teamaiOk(['pull'], dir);
     const cursorRule = path.join(dir, '.cursor', 'rules', 'team-rule.mdc');
     const claudeRule = path.join(dir, '.claude', 'rules', 'team-rule.md');
     expect(read(cursorRule)).toContain('# Team rule');
@@ -433,7 +436,9 @@ describe('ownership of unrecorded rule and agent files (#993 bugs 2 and 12)', ()
     const dir = business('old-agent-render-biz', { '.qoder/agents/reviewer.md': old, '.claude/agents/.keep': '' });
     const qoder = path.join(dir, '.qoder', 'agents', 'reviewer.md');
 
-    const initRun = teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'claude,qoder', '--scope', 'project', '--force'], dir);
+    const started = teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'claude,qoder', '--scope', 'project', '--force'], dir);
+    const initRun = teamaiOk(['pull'], dir);
+    initRun.output = `${started.output}${initRun.output}`;
 
     expect(initRun.output).not.toContain('not teamai\'s');
     expect(read(qoder)).toBe('---\nname: reviewer\ndescription: Reviews code\n---\nReview the change.\n');
@@ -455,6 +460,7 @@ describe('ownership of unrecorded rule and agent files (#993 bugs 2 and 12)', ()
       '.cursor/rules/old-layout.md': '# Old layout v1\n',
     });
     teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'cursor', '--scope', 'project', '--force'], dir);
+    teamaiOk(['pull'], dir);
 
     expect(fs.existsSync(rules('old-layout.md'))).toBe(false);
     expect(read(rules('old-layout.mdc'))).toContain('# Old layout v2');

@@ -143,6 +143,7 @@ function machine(base: string, opts: { version: string; committed?: Record<strin
   };
   const excludeFile = path.join(realDir, '.git', 'info', 'exclude');
   ok(['init', url, '--provider', 'git', '--agent', 'opencode', '--scope', 'project', '--force']);
+  ok(['pull']);
   return {
     dir: realDir,
     home,

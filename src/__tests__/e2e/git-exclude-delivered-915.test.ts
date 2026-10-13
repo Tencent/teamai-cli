@@ -240,6 +240,7 @@ function machine(base: string, opts: MachineOptions = {}): Machine {
   };
   if (opts.init !== false) {
     ok(['init', url, '--provider', 'git', '--agent', opts.agents ?? 'claude,codex', '--scope', 'project', '--force', ...opts.initArgs ?? []]);
+    ok(['pull']);
   }
   return m;
 }

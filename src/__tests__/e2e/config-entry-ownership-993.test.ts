@@ -106,9 +106,10 @@ function business(name: string, files: Record<string, string> = {}): string {
 }
 
 function init(t: Team, dir: string, agents: string): Run {
-  const r = teamai(['init', t.url, '--provider', 'git', '--agent', agents, '--scope', 'project', '--force'], dir);
-  if (r.code !== 0) throw new Error(`teamai init failed: ${r.output}`);
-  return r;
+  const started = teamai(['init', t.url, '--provider', 'git', '--agent', agents, '--scope', 'project', '--force'], dir);
+  if (started.code !== 0) throw new Error(`teamai init failed: ${started.output}`);
+  const pulled = pull(dir);
+  return { ...pulled, output: `${started.output}${pulled.output}` };
 }
 
 function pull(dir: string, ...args: string[]): Run {

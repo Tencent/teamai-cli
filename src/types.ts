@@ -392,7 +392,7 @@ export const TeamaiConfigBaseSchema = z.object({
   scripts: z.object({
     /** During `teamai init`, after local config is saved and before hooks. */
     preInit: TeamScriptSchema.optional(),
-    /** During `teamai init`, after hooks are installed, before the closing pull. */
+    /** During `teamai init`, after hooks are installed. Init then syncs MCP. */
     postInit: TeamScriptSchema.optional(),
     /** At the start of a full pull, before that scope is synced. Not on an inline pull. */
     prePull: TeamScriptSchema.optional(),

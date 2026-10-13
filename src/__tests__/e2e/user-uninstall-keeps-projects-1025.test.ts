@@ -115,8 +115,12 @@ describe.skipIf(process.platform === 'win32')('user-scope uninstall keeps the pr
     const init = ['--provider', 'git', '--agent', 'claude', '--role', 'fe', '--force'];
     const userInit = await teamai(['init', userUrl, '--scope', 'user', ...init], home);
     expect(userInit.code, userInit.output).toBe(0);
+    const userPull = await teamai(['pull'], home);
+    expect(userPull.code, userPull.output).toBe(0);
     const projectInit = await teamai(['init', projectUrl, '--scope', 'project', ...init], app);
     expect(projectInit.code, projectInit.output).toBe(0);
+    const projectPull = await teamai(['pull'], app);
+    expect(projectPull.code, projectPull.output).toBe(0);
 
     const teamaiHome = path.join(home, '.teamai');
     const [slug] = fs.readdirSync(path.join(teamaiHome, 'projects'));

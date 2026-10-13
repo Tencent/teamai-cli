@@ -154,6 +154,7 @@ function member(name: string, sharing = ON): Member {
       git(['commit', '-q', '-m', 'app'], dir);
       const real = fs.realpathSync.native(dir);
       teamai(['init', url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--role', 'fe', '--force'], real);
+      teamai(['pull'], real);
       return real;
     },
     worktree: async (repo, dir) => {

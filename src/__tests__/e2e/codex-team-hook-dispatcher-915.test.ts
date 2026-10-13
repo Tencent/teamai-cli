@@ -146,6 +146,7 @@ function machine(base: string, opts: MachineOptions): Machine {
   const excludeFile = path.join(realDir, '.git', 'info', 'exclude');
   const homeHooksFile = path.join(home, '.codex', 'hooks.json');
   ok(['init', url, '--provider', 'git', '--agent', 'codex', '--scope', 'project', '--force']);
+  ok(['pull']);
   return {
     caseDir,
     dir: realDir,

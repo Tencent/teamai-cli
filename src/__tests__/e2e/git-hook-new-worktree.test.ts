@@ -78,6 +78,8 @@ describe.skipIf(!configHooks)('git hook: a new worktree gets the team\'s resourc
     gitOk(['commit', '-q', '-m', 'project'], dir);
     const init = teamai(['init', FAKE_URL, '--scope', 'project', '--force', ...initArgs], dir);
     if (init.code !== 0) throw new Error(`teamai init failed: ${init.output}`);
+    const pulled = teamai(['pull'], dir);
+    if (pulled.code !== 0) throw new Error(`teamai pull failed: ${pulled.output}`);
     return dir;
   };
 

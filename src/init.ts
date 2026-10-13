@@ -824,7 +824,7 @@ async function reconcileHooksForInit(
  * `scripts.preInit` or `scripts.postInit`. A non-interactive init skips them
  * (they may read the terminal). A non-zero exit does not fail init. When
  * `syncMcp` is set and the script ran, reconcile MCP so a value it collected
- * is in the tool config. Git init leaves that to its closing pull.
+ * is in the tool config. Git init has no closing pull, so it syncs MCP here too.
  */
 async function runInitScript(
   localConfig: LocalConfig,
@@ -1417,8 +1417,9 @@ export async function initSelfRepo(options: GlobalOptions & {
   }
 
   // Step 5.6: keep the hook files init wrote out of git while sharing.gitExclude
-  // is on (#915). Git-mode init ends with a pull that does this; self mode has
-  // none, so it syncs here, after its last writer. Dry run stopped at the top.
+  // is on (#915). Self mode has no resource pull, so it syncs here, after its
+  // last writer. Git-mode init does the same after it writes hooks. Dry run
+  // stopped at the top.
   try {
     const { createDeliveryRecorder } = await import('./git-exclude-delivered.js');
     const { syncDeliveredGitExclude } = await import('./pull.js');
@@ -2097,8 +2098,8 @@ export async function init(options: GlobalOptions & {
   // Persist --agent into enabledAgents (additive across runs)
   const requestedAgents = normalizeAgentList(options.agent);
   // Interactive project init without --agent asks which tools the member uses.
-  // Non-interactive runs skip this on purpose: the picker's own non-TTY branch
-  // mirrors HOME tools, while project init then creates no root.
+  // Non-interactive runs skip the picker. Calling it would copy tools found in
+  // HOME, and this init enables nothing unless --agent names a tool.
   if (scope === 'project' && requestedAgents.length === 0
     && !options.silent && !options.force && isInteractive()) {
     requestedAgents.push(...await promptForSelfModeAgents({ projectScope: true }));
@@ -2156,10 +2157,11 @@ export async function init(options: GlobalOptions & {
   }
 
   // Step 6.6: project scope creates the roots of the tools the member chose
-  // (`--agent`), so the stub below and the closing pull have somewhere to
+  // (`--agent` or the interactive picker), so the stub below has somewhere to
   // write. Runs after the config is saved: createProjectToolRoots filters by
-  // the saved enabledAgents, which now includes this run's choice. Without
-  // `--agent` no root is invented, as before.
+  // the saved enabledAgents, which now includes this run's choice. Without a
+  // chosen tool no root is invented; the directory appears when that agent
+  // starts a session.
   if (scope === 'project' && requestedAgents.length > 0) {
     const { createProjectToolRoots } = await import('./project-agent-root.js');
     await createProjectToolRoots({ cwd: projectRoot, tools: requestedAgents });
@@ -2207,19 +2209,30 @@ export async function init(options: GlobalOptions & {
       log.warn(`The built-in teamai skill was not deployed: ${(e as Error).message}`);
     }
 
-    // After hooks, before the closing pull, so a value the script collects is
-    // in that pull. The pull is the MCP sync. Skipped when teamai.yaml did not
+    // After hooks. There is no closing pull; sync MCP here so a value the
+    // script collected is in the tool config. Skipped when teamai.yaml did not
     // load: there is no script, and a second read would report the same error.
-    await runInitScript(localConfig, 'postInit', options.dryRun);
+    await runInitScript(localConfig, 'postInit', options.dryRun, true);
   }
 
-  // Step 8: deliver the team's resources now. Rules and MCP are read once at
-  // session start, before the SessionStart hook syncs, so without this the
-  // first session after init runs without them. Failures are reported by pull
-  // in its own words; init itself has succeeded.
-  const { pull } = await import('./pull.js');
-  // Inside a project checkout, a bare pull would detect that project instead.
-  await pull({ verbose: options.verbose, interactive: true, userScopeOnly: localConfig.scope === 'user' });
+  // Init does not copy team resources (#1065). The next session start creates
+  // the current agent's project directory when it is missing and pulls.
+  // `teamai pull` pulls into directories that already exist. A tool that reads
+  // rules and MCP once, before that hook, sees them from the following session.
+  //
+  // Hook files written above stay out of git while sharing.gitExclude is on.
+  // The pull that used to record them no longer runs here.
+  if (reloadedTeamConfig) {
+    try {
+      const { createDeliveryRecorder } = await import('./git-exclude-delivered.js');
+      const { syncDeliveredGitExclude } = await import('./pull.js');
+      const recorder = createDeliveryRecorder();
+      for (const file of await deliveredHookFiles(reloadedTeamConfig, localConfig)) recorder.report('hooks', file);
+      await syncDeliveredGitExclude(localConfig, recorder);
+    } catch (e) {
+      log.warn(`Could not update teamai's delivered git exclude block: ${(e as Error).message}. Fix the cause, then run \`teamai pull\`.`);
+    }
+  }
 
   log.success('teamai initialized successfully!');
   if (stubDeployed > 0) {
@@ -2227,7 +2240,7 @@ export async function init(options: GlobalOptions & {
   } else {
     log.warn('The built-in teamai skill was not deployed to any AI tool, so agents cannot find TeamAI yet. The reason is printed above or recorded in ~/.teamai/debug.log; the usual one is that none of the selected tools is installed. Run `teamai pull` once it is fixed.');
   }
-  log.info('Skills, rules, env and docs auto-sync on each session start when the selected agent has active TeamAI hooks.');
+  log.info('Team skills, rules, env and docs are not copied during init. They sync on the next session start, or when you run `teamai pull`.');
   log.info('Run `teamai status` to check current config.');
 
   // Close the readline singleton so the process can exit cleanly.

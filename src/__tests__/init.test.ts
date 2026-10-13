@@ -771,6 +771,7 @@ describe('init', () => {
       await initWithTeamConfig();
 
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('The built-in teamai skill is ready in your IDE'));
+      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('not copied during init'));
       expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('not deployed'));
     });
 

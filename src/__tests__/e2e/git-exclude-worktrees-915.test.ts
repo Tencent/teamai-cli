@@ -167,6 +167,7 @@ function member(name: string, files: Record<string, string> = TEAM, sharing = ON
       git(['commit', '-q', '-m', 'app'], dir);
       const real = fs.realpathSync.native(dir);
       teamai(['init', url, '--provider', 'git', '--agent', opts.agents ?? 'claude', '--scope', 'project', '--role', 'fe', '--force'], real);
+      teamai(['pull'], real);
       return real;
     },
     worktree: async (repo, dir, branch = path.basename(dir)) => {
@@ -312,6 +313,7 @@ describe.skipIf(process.platform === 'win32')('one delivered block serves every 
     m.git(['commit', '-q', '-m', 'lib'], superRepo);
     const lib = fs.realpathSync.native(path.join(superRepo, 'lib'));
     m.teamai(['init', m.url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--role', 'fe', '--force'], lib);
+    m.teamai(['pull'], lib);
     const wt = await m.worktree(lib, path.join(root, 'lib-wt'));
 
     m.teamai(['roles', 'set', 'be'], wt);

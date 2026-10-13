@@ -1,11 +1,8 @@
 /**
- * E2E: `teamai init` ends with a pull, so the member's first session already
- * has the team's skills, rules and MCP servers (sync-before-session, ticket 02).
- *
- * Claude reads rules and MCP once, at session start, before teamai's
- * SessionStart hook can sync. Unless init itself delivers, the first session
- * after init runs without them; in project scope nothing at all landed,
- * because no tool root existed in the checkout yet.
+ * E2E: `teamai init` does not pull (#1065). It saves config and installs hooks.
+ * Team skills, rules, agents and MCP arrive on the next session start, which
+ * creates the current agent's project directory when it is missing, or when
+ * the member runs `teamai pull`.
  *
  * The team remote is a synthetic HTTPS URL that git's `insteadOf` rewrites to a
  * local bare repo in the sandbox HOME (see init-project-all.test.ts), so no
@@ -119,7 +116,7 @@ function makeBusinessRepo(name: string): string {
 
 const TOOL_ROOTS = ['.claude', '.codex', '.cursor', '.codebuddy', '.opencode', '.config'];
 
-describe.skipIf(process.platform === 'win32')('teamai init ends with a pull', () => {
+describe.skipIf(process.platform === 'win32')('teamai init does not pull team resources', () => {
   beforeAll(() => {
     if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
     sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-init-pull-e2e-')));
@@ -171,63 +168,61 @@ describe.skipIf(process.platform === 'win32')('teamai init ends with a pull', ()
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  it('user scope: skills, agents, rules, MCP and team hooks are delivered when init exits', async () => {
+  it('user scope: init succeeds without copying team skills, rules, agents or MCP', async () => {
     const cwd = path.join(sandbox, 'elsewhere');
     fs.mkdirSync(cwd, { recursive: true });
     const result = await runCLI(['init', FAKE_URL, '--scope', 'user', '--agent', 'claude', '--force'], cwd);
     expect(result.code, result.output).toBe(0);
     expect(result.output).toMatch(/teamai initialized successfully/);
+    expect(result.output).toMatch(/not copied during init/);
+    expect(result.output).not.toMatch(/Synced \d+/);
 
-    expect(fs.existsSync(path.join(home, '.claude', 'skills', 'team-skill', 'SKILL.md')), result.output).toBe(true);
-    expect(fs.readFileSync(path.join(home, '.claude', 'rules', 'team-rule.md'), 'utf8')).toContain('Team rule');
-    const claudeJson = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8')) as {
-      mcpServers?: Record<string, unknown>;
-    };
-    expect(Object.keys(claudeJson.mcpServers ?? {})).toContain('team-api');
-    expect(fs.readFileSync(path.join(home, '.claude', 'agents', 'team-agent.md'), 'utf8')).toContain('Team agent v1');
-    expect(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).toContain('echo team-hook-v1');
+    expect(fs.existsSync(path.join(home, '.claude', 'skills', 'team-skill', 'SKILL.md'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.claude', 'rules', 'team-rule.md'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.claude', 'agents', 'team-agent.md'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.claude.json'))).toBe(false);
   }, 90_000);
 
-  it('user scope run inside a project-scoped checkout pulls the user scope it just configured', async () => {
+  it('user scope run inside a project checkout does not pull that user scope', async () => {
     const project = makeBusinessRepo(`app-${Math.random().toString(36).slice(2)}`);
     const first = await runCLI(['init', FAKE_URL, '--scope', 'project', '--agent', 'codex', '--force'], project);
     expect(first.code, first.output).toBe(0);
 
     const result = await runCLI(['init', FAKE_URL, '--scope', 'user', '--agent', 'claude', '--force'], project);
     expect(result.code, result.output).toBe(0);
-    expect(fs.existsSync(path.join(home, '.claude', 'skills', 'team-skill', 'SKILL.md')), result.output).toBe(true);
-    expect(fs.readFileSync(path.join(home, '.claude', 'rules', 'team-rule.md'), 'utf8')).toContain('Team rule');
+    expect(result.output).not.toMatch(/Synced \d+/);
+    expect(fs.existsSync(path.join(home, '.claude', 'skills', 'team-skill', 'SKILL.md'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.claude', 'rules', 'team-rule.md'))).toBe(false);
   }, 120_000);
 
-  it('project scope with --agent claude: .claude/ is created and filled, .mcp.json holds the team server', async () => {
+  it('project scope with --agent creates that root and does not fill it', async () => {
     const project = makeBusinessRepo(`app-${Math.random().toString(36).slice(2)}`);
     const result = await runCLI(['init', FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force'], project);
     expect(result.code, result.output).toBe(0);
     expect(result.output).toMatch(/teamai initialized successfully/);
+    expect(result.output).not.toMatch(/Synced \d+/);
 
-    expect(fs.existsSync(path.join(project, '.claude', 'skills', 'team-skill', 'SKILL.md')), result.output).toBe(true);
-    expect(fs.readFileSync(path.join(project, '.claude', 'rules', 'team-rule.md'), 'utf8')).toContain('Team rule');
-    const mcp = JSON.parse(fs.readFileSync(path.join(project, '.mcp.json'), 'utf8')) as {
-      mcpServers?: Record<string, unknown>;
-    };
-    expect(Object.keys(mcp.mcpServers ?? {})).toContain('team-api');
-    expect(fs.readFileSync(path.join(project, '.claude', 'agents', 'team-agent.md'), 'utf8')).toContain('Team agent v1');
-    expect(fs.readFileSync(path.join(project, '.claude', 'settings.local.json'), 'utf8')).toContain('echo team-hook-v1');
+    expect(fs.existsSync(path.join(project, '.claude'))).toBe(true);
+    expect(fs.existsSync(path.join(project, '.claude', 'skills', 'team-skill', 'SKILL.md'))).toBe(false);
+    expect(fs.existsSync(path.join(project, '.claude', 'rules', 'team-rule.md'))).toBe(false);
+    expect(fs.existsSync(path.join(project, '.claude', 'agents', 'team-agent.md'))).toBe(false);
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
     expect(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).toContain('teamai hook-dispatch');
-    expect(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')).not.toContain('echo team-hook-v1');
     // Only the chosen tool's root, although Codex is installed too.
     expect(fs.existsSync(path.join(project, '.codex'))).toBe(false);
   }, 90_000);
 
-  it('project scope re-init with another --agent adds that root even if enabledAgents was narrower', async () => {
+  it('project scope re-init with another --agent adds that root and still does not fill it', async () => {
     const project = makeBusinessRepo(`app-${Math.random().toString(36).slice(2)}`);
     const first = await runCLI(['init', FAKE_URL, '--scope', 'project', '--agent', 'codex', '--force'], project);
     expect(first.code, first.output).toBe(0);
     expect(fs.existsSync(path.join(project, '.claude'))).toBe(false);
+    expect(fs.existsSync(path.join(project, '.codex'))).toBe(true);
 
     const second = await runCLI(['init', FAKE_URL, '--scope', 'project', '--agent', 'claude', '--force'], project);
     expect(second.code, second.output).toBe(0);
-    expect(fs.existsSync(path.join(project, '.claude', 'skills', 'team-skill', 'SKILL.md')), second.output).toBe(true);
+    expect(fs.existsSync(path.join(project, '.claude'))).toBe(true);
+    expect(fs.existsSync(path.join(project, '.claude', 'skills', 'team-skill', 'SKILL.md'))).toBe(false);
   }, 120_000);
 
   it('project scope without a terminal, --agent or installed tools: no tool root is created', async () => {
@@ -236,13 +231,13 @@ describe.skipIf(process.platform === 'win32')('teamai init ends with a pull', ()
     const result = await runCLI(['init', FAKE_URL, '--scope', 'project', '--force'], project);
     expect(result.code, result.output).toBe(0);
     expect(result.output).toMatch(/teamai initialized successfully/);
+    expect(result.output).not.toMatch(/Synced \d+/);
     for (const root of TOOL_ROOTS) {
       expect(fs.existsSync(path.join(project, root)), `${root} was created:\n${result.output}`).toBe(false);
     }
   }, 90_000);
 
-  it('a pull failure inside init is reported the way pull reports it, and init still succeeds', async () => {
-    // init's own clone works; the pull that follows cannot refresh the clone.
+  it('init does not run a pull, so a fetch failure after the clone is not a pull failure', async () => {
     const cwd = path.join(sandbox, 'elsewhere');
     fs.mkdirSync(cwd, { recursive: true });
     const result = await runCLI(
@@ -250,7 +245,7 @@ describe.skipIf(process.platform === 'win32')('teamai init ends with a pull', ()
       cwd,
       { TEST_FAIL_FETCH: '1' },
     );
-    expect(result.output).toMatch(/\[user\] Pull failed:/);
+    expect(result.output).not.toMatch(/Pull failed:/);
     expect(result.output).toMatch(/teamai initialized successfully/);
     expect(result.code, result.output).toBe(0);
   }, 90_000);

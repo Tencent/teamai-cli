@@ -25,11 +25,13 @@ is treated as held: remove it only after confirming no teamai process uses it.
 
 This is the #1 onboarding issue. In order:
 
-1. **Did init pick this tool?** `teamai init` ends with a pull, but a project-scope
-   init creates only the directories of tools named with `--agent` or picked in
-   its interactive tool picker. Run without a terminal and without `--agent`, it
-   creates none, and a tool's project directory appears when that tool opens a session there. Re-run
-   `teamai init <repo> --agent <tool>` to add the tool and fill it now.
+1. **Did init pick this tool?** `teamai init` does not copy team resources. A
+   project-scope init creates only the directories of tools named with `--agent`
+   or picked in its interactive tool picker. Run without a terminal and without
+   `--agent`, it creates none, and a tool's project directory appears when that
+   tool opens a session there. The resources arrive on that session start, or
+   when you run `teamai pull`. Re-run `teamai init <repo> --agent <tool>` to add
+   the tool's directory now, then pull or open the tool to fill it.
 2. **Sync manually to confirm:**
    ```bash
    teamai pull

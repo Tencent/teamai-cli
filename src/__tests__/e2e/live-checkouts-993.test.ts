@@ -94,6 +94,7 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
    */
   const initTeamai = async (dir: string): Promise<void> => {
     teamaiOk(['init', FAKE_URL, '--scope', 'project', '--force', '--agent', 'claude'], dir);
+    teamaiOk(['pull'], dir);
     await detached.waitForExit();
   };
 
@@ -372,6 +373,7 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
     const main = path.join(base, 'main');
     commitApp(main);
     teamaiOk(['init', url, '--scope', 'project', '--force', '--agent', 'claude'], main);
+    teamaiOk(['pull'], main);
     await detached.waitForExit();
     const sibling = await addWorktree(main, `${name}/sibling`);
     const mcpJson = (checkout: string): string => fs.readFileSync(path.join(checkout, '.mcp.json'), 'utf8');

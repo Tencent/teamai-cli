@@ -261,12 +261,12 @@ carries counts + tool names only, on a separate branch of that same repo.)
    URL filled in. The `/teamai` prefix stays as-is; translate the rest:
    `/teamai Help me join my team's TeamAI, repo URL is <URL>`
    Tell them to send the URL + this line to each member.
-3. Remind them (in their language): a member's `teamai init` ends with a pull, so
-   the team's resources are in place when it exits (in project scope, for each
-   tool named with `--agent` or picked in init's tool picker; otherwise a tool's
-   directory fills when the
-   member first opens that tool in the project). Resources the team adds later
-   arrive at the next session start.
+3. Remind them (in their language): a member's `teamai init` does not copy team
+   resources. They arrive on the next session start, or when the member runs
+   `teamai pull`. In project scope, init creates a tool directory only for a tool
+   named with `--agent` or picked in init's tool picker; otherwise that directory
+   appears when the member first opens that tool in the project. Resources the
+   team adds later arrive at the next session start.
 
 ## Step 9 — What's next (guide them, don't just list commands)
 

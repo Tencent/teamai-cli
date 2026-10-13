@@ -115,7 +115,9 @@ function business(name: string, files: Record<string, string> = {}): string {
 }
 
 function init(t: Team, dir: string): Run {
-  return teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force'], dir);
+  const started = teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force'], dir);
+  const pulled = teamaiOk(['pull'], dir);
+  return { ...pulled, output: `${started.output}${pulled.output}` };
 }
 
 const membersLine = (file: string, resource: string): string =>
@@ -496,6 +498,7 @@ describe('ownership of unrecorded skills and docs (#993 bug 12)', () => {
     t.publish({}, 'link');
     const dir = business('ns-link-bytes-biz');
     teamaiOk(['init', t.url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force', '--role', 'frontend'], dir);
+    teamaiOk(['pull'], dir);
     const linked = path.join(dir, '.teamai', 'docs', 'frontend', 'linked.md');
     expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true);
     // The member replaces the delivered link with a file of their own holding the same text.

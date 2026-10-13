@@ -153,8 +153,8 @@ export async function runTeamScript(
 
 /**
  * One MCP reconcile after `postInit`, so a token the script just collected is
- * in the tool config without a second command. A git init does not call this:
- * its closing pull is that reconcile.
+ * in the tool config without a second command. Init calls this because it
+ * does not pull team resources before it exits.
  */
 export async function syncMcpAfterPostInit(localConfig: LocalConfig): Promise<void> {
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
