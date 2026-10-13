@@ -2367,7 +2367,13 @@ async function reconcileTargets(
     const wroteTarget = target.format === 'codex'
       ? await applyCodex(target, desired, keep, ownedNames, nextRecords, changes, judge, options, restoreConfigs)
       : await applyJson(target, desired, keep, owned, ownedNames, nextRecords, changes, judge, options, restoreConfigs);
-    if (wroteTarget) written.add(target.file);
+    if (wroteTarget) {
+      written.add(target.file);
+      // A project config a pull leaves with no team server goes, as one a cleanup empties.
+      if (!removeAll && target.projectScope && target.projectKey === undefined) {
+        await deleteEmptiedMcpFile(target.file, target.format === 'codex' ? null : MCP_SERVER_KEY[target.format]);
+      }
+    }
     wrote = wroteTarget || wrote;
     // Not read: its record stays as it was, or absent. An empty one would say teamai owns nothing there (#882).
     if (wroteTarget === null) {
@@ -2981,15 +2987,20 @@ export async function removeLocalScopeMcpServers(dataHome: string, toolRoots?: R
 }
 
 /**
- * Delete a project MCP file a cleanup just emptied, when it holds nothing at
- * all, no other key either, so nothing but teamai's servers made it (#915).
- * A symlink is the member's, and a file git tracks, or cannot say it does
- * not, stays.
+ * Delete a project MCP file a cleanup or a pull just emptied, when it holds
+ * nothing at all, no other key either, so nothing but teamai's servers made
+ * it (#915). `serverKey` is null for a Codex config.toml, which then holds no
+ * text. A symlink is the member's, and a file git tracks, or cannot say it
+ * does not, stays.
  */
-export async function deleteEmptiedMcpFile(file: string): Promise<boolean> {
+export async function deleteEmptiedMcpFile(file: string, serverKey: string | null = MCP_SERVER_KEY.claude): Promise<boolean> {
   if (await fs.promises.lstat(file).then((stat) => stat.isSymbolicLink(), () => true)) return false;
-  const doc = await readJsonDoc(file, MCP_SERVER_KEY.claude);
-  if (!doc || Object.keys(doc.servers).length > 0 || Object.keys(doc.data).some((key) => key !== MCP_SERVER_KEY.claude)) return false;
+  if (serverKey === null) {
+    if ((await readFileSafe(file))?.trim() !== '') return false;
+  } else {
+    const doc = await readJsonDoc(file, serverKey);
+    if (!doc || Object.keys(doc.servers).length > 0 || Object.keys(doc.data).some((key) => key !== serverKey)) return false;
+  }
   if (await keepsTrackedCopy(file) || (await gitTracks(file)).kind === 'unknown') return false;
   await fs.promises.rm(file, { force: true });
   return true;

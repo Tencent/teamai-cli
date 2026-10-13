@@ -903,6 +903,31 @@ servers:
     expect(await fse.readFile(projectFile, 'utf-8')).toContain(own.trimEnd());
   });
 
+  it('deletes a project config the team\'s last server leaves empty, unless git tracks it', async () => {
+    const projectRoot = path.join(tmpDir, 'empty-project');
+    execFileSync('git', ['init', '-q', projectRoot]);
+    await fse.ensureDir(path.join(projectRoot, '.codex', 'skills'));
+    await fse.ensureDir(path.join(projectRoot, '.cursor', 'skills'));
+    const codexFile = path.join(projectRoot, '.codex', 'config.toml');
+    const cursorFile = path.join(projectRoot, '.cursor', 'mcp.json');
+    const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'r', provider: 'git' });
+    const projectConfig: LocalConfig = { ...localConfig, scope: 'project', projectRoot };
+    const files = async (): Promise<string[]> => (await resolveMcpTargets(defaults, projectConfig)).map((target) => target.file);
+    await writeMcpYaml('servers:\n  - name: team-docs\n    transport: stdio\n    command: docs-server\n');
+
+    await reconcileMcpForConfig(defaults, projectConfig);
+    expect(await files()).toEqual(expect.arrayContaining([codexFile, cursorFile]));
+    expect(codexServerNames(await fse.readFile(codexFile, 'utf-8'))).toEqual(['team-docs']);
+    expect((await fse.readJson(cursorFile)).mcpServers['team-docs']).toBeDefined();
+    execFileSync('git', ['add', '-f', '.cursor/mcp.json'], { cwd: projectRoot });
+
+    await writeMcpYaml('servers: []\n');
+    await reconcileMcpForConfig(defaults, projectConfig);
+
+    expect(await fse.pathExists(codexFile)).toBe(false);
+    expect(await fse.readJson(cursorFile)).toEqual({ mcpServers: {} });
+  });
+
   it('resolves a project secret to plaintext in every tool, keyed off `type`', async () => {
     const projectRoot = path.join(tmpDir, 'proj2');
     for (const d of ['.claude', '.cursor', '.codebuddy']) {
