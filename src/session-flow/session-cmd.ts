@@ -646,7 +646,11 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         const syncMgr = new SyncManager(repoRoot);
         let saved = 0;
         for (const t of migratedTargets) {
-          const session = await targetAdapter.readSession(t.sessionId, t.cwd ?? opts.targetCwd ?? workCwd);
+          // Migration keeps image paths so the target can still open the file.
+          // The copy that lands in the team repo must not: re-read the target
+          // and scrub again with the archive default, which drops filePath.
+          const readBack = await targetAdapter.readSession(t.sessionId, t.cwd ?? opts.targetCwd ?? workCwd);
+          const session = opts.scrub ? scrubSession(readBack).session : readBack;
           // P3: the archive key is derived from the session's native cwd, not the directory migrate is running in (see deriveArchiveIdentity)
           const meta = defaultSyncMeta(
             {
@@ -1003,7 +1007,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
 
       if (isDryRun()) {
         console.log(
-          `Dry-run: would restore "${session.title}" (${session.messages.length} msgs) into ${opts.platform} at ${resumeCwd}.`,
+          `Dry-run: would restore "${safeText(session.title)}" (${session.messages.length} msgs) into ${opts.platform} at ${resumeCwd}.`,
         );
         return;
       }

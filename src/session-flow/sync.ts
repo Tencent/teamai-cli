@@ -166,6 +166,11 @@ export function decodeRepoIdentity(encoded: string): string {
  * Collisions are acceptable here -- the canonical identity lives in
  * meta/_index.json, not in the directory name.
  */
+/** `_index.json` is the index file, not an author directory. Author names may start with `_`. */
+function isIndexFileName(name: string): boolean {
+  return name === '_index.json';
+}
+
 function sanitizePathSegment(name: string): string {
   const cleaned = name
     // `\` is a separator on Windows: an author name of `..\..\evil` would
@@ -465,6 +470,16 @@ export class SyncManager {
   private readIndexForWrite(repoIdentity: string | null): RepoIndex {
     const p = this.indexPath(repoIdentity);
     if (!fs.existsSync(p)) {
+      // A missing index with session files already on disk is the same hole as
+      // a corrupt one: dedup would miss and the new index would contain only
+      // the session being pushed. Rebuild first when the directory exists.
+      const dir = this.repoDir(repoIdentity);
+      if (fs.existsSync(dir)) {
+        this.rebuildIndex(repoIdentity);
+        if (fs.existsSync(p)) {
+          return JSON.parse(fs.readFileSync(p, 'utf-8')) as RepoIndex;
+        }
+      }
       return { version: 1, repoIdentity, updatedAt: utcNow(), sessions: [] };
     }
     try {
@@ -667,7 +682,7 @@ export class SyncManager {
     if (!fs.existsSync(dir)) throw new Error(`Repo directory not found: ${dir}`);
     const matches: string[] = [];
     for (const entry of fs.readdirSync(dir)) {
-      if (entry.startsWith('_')) continue;
+      if (isIndexFileName(entry)) continue;
       const candidate = path.join(dir, entry);
       // Skip symlinked author dirs: they come from the team repo checkout and
       // would make "which author owns this session" resolve outside the archive.
@@ -768,7 +783,7 @@ export class SyncManager {
       if (!hasContent) {
         try {
           hasContent = fs.readdirSync(unattrDir).some((e) => {
-            if (e.startsWith('_')) return false;
+            if (isIndexFileName(e)) return false;
             try {
               return fs.statSync(path.join(unattrDir, e)).isDirectory();
             } catch {
@@ -831,7 +846,7 @@ export class SyncManager {
     const entries: IndexEntry[] = [];
 
     for (const authorName of fs.readdirSync(dir)) {
-      if (authorName.startsWith('_')) continue;
+      if (isIndexFileName(authorName)) continue;
       const authorDir = path.join(dir, authorName);
       const authorSt = fs.lstatSync(authorDir);
       if (!authorSt.isDirectory() || authorSt.isSymbolicLink()) continue;

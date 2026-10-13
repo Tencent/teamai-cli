@@ -126,6 +126,12 @@ describe('listAllRepoIdentities', () => {
     expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual([null]);
   });
 
+  it('includes _unattributed when the only author directory starts with an underscore', () => {
+    fs.mkdirSync(path.join(unattrDir(), '_bob'), { recursive: true });
+
+    expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual([null]);
+  });
+
   it('excludes an empty _unattributed directory', () => {
     writeRepoIndex('github.com/org/alpha', { version: 1, repoIdentity: 'github.com/org/alpha', updatedAt: '2026-01-01T00:00:00.000Z', sessions: [] });
     fs.mkdirSync(unattrDir(), { recursive: true });
@@ -255,6 +261,23 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     expect(fs.existsSync(path.join(authorDir, `${base}_1.jsonl`))).toBe(true);
     expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(2);
   });
+
+  it('rebuilds a missing index before dedup so a re-push keeps the other sessions', () => {
+    const mgr = new SyncManager(repoRoot);
+    mgr.saveSession(mkSession({ sessionId: 's-1', title: 'fix payment' }), mkMeta({ sessionId: 's-1' }));
+    mgr.saveSession(mkSession({ sessionId: 's-2', title: 'other task' }), mkMeta({ sessionId: 's-2' }));
+    fs.unlinkSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'));
+
+    mgr.saveSession(mkSession({ sessionId: 's-1', title: 'fix payment v2' }), mkMeta({ sessionId: 's-1' }));
+
+    const authorDir = path.join(repoDirOf('github.com/org/alpha'), 'alice');
+    const jsonls = fs.readdirSync(authorDir).filter((f) => f.endsWith('.jsonl'));
+    expect(jsonls.some((f) => f.includes('_1'))).toBe(false);
+    const sessions = readRepoIndex('github.com/org/alpha').sessions;
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find((s) => s.sessionId === 's-1')).toMatchObject({ title: 'fix payment v2' });
+    expect(sessions.find((s) => s.sessionId === 's-2')).toBeTruthy();
+  });
 });
 
 describe('rebuildIndex', () => {
@@ -270,6 +293,15 @@ describe('rebuildIndex', () => {
 
     const idx = readRepoIndex('github.com/org/alpha');
     expect(idx.sessions[0]).toMatchObject({ sessionName: 'claude-code_fix-payment_20260102', sessionId: 's-1' });
+  });
+
+  it('keeps an author directory whose name starts with an underscore', () => {
+    const mgr = new SyncManager(repoRoot);
+    mgr.saveSession(mkSession(), mkMeta({ author: '_alice' }));
+    fs.unlinkSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'));
+
+    expect(mgr.rebuildIndex('github.com/org/alpha')).toBe(1);
+    expect(readRepoIndex('github.com/org/alpha').sessions[0]).toMatchObject({ author: '_alice', sessionId: 's-1' });
   });
 
   it('is idempotent across repeated rebuilds', () => {

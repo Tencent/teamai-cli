@@ -171,6 +171,7 @@ afterEach(() => {
 
 async function runSession(...argv: string[]): Promise<void> {
   const program = new Command();
+  program.option('--dry-run', 'preview');
   const sessionCmd = program.command('session').description('session commands');
   registerSessionFlowCommands(sessionCmd);
   // from:'node'（默认）会消耗 argv[0]=executable、argv[1]=script path，
@@ -642,6 +643,54 @@ describe('session migrate --push archive key', () => {
     expect(text).not.toMatch(CJK);
   });
 
+  it('drops local image paths when migrate --push --scrub archives the target', async () => {
+    const imagePath = '/Users/alice/secret-shot.png';
+    mocks.previewResult = {
+      sourcePlatform: 'fakeplat',
+      targetPlatform: 'fakeplat2',
+      sessionTitle: 'migrate me',
+      sessionId: 'src-1',
+      cwd: '/run/dir',
+      messageCount: 1,
+      fidelity: { score: 1, mode: 1, preservedBlocks: 1, totalBlocks: 1, degradedBlocks: 0, degradations: [], warnings: [] },
+    };
+    mocks.migrateResult = {
+      success: true,
+      targetSessionId: 'tgt-1',
+      preview: { fidelity: { score: 1 } },
+    };
+    fakeAdapter([mkSession({ sessionId: 'src-1', cwd: '/run/dir' })], 'fakeplat');
+    const targetSession = mkSession({
+      sessionId: 'tgt-1',
+      title: 'migrated',
+      cwd: '/proj/target',
+      platform: 'fakeplat2',
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'image', mimeType: 'image/png', filePath: imagePath }],
+        },
+      ],
+    });
+    mocks.adaptersByPlatform['fakeplat2'] = {
+      platform: 'fakeplat2',
+      listConversations: vi.fn(async () => []),
+      readSession: vi.fn(async () => targetSession),
+    };
+    mocks.remotes['/proj/target'] = 'https://github.com/org/target.git';
+
+    await runSession(
+      'migrate', 'src-1', '-s', 'fakeplat', '-t', 'fakeplat2',
+      '--push', '--scrub', '--repo-root', repoRoot, '--cwd', '/run/dir',
+    );
+
+    const dir = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('github.com/org/target'), 'tester');
+    const jsonl = fs.readdirSync(dir).find((f) => f.endsWith('.jsonl'))!;
+    const body = fs.readFileSync(path.join(dir, jsonl), 'utf-8');
+    expect(body).not.toContain(imagePath);
+    expect(body).toContain('[image:');
+  });
+
   it('does not archive migrate --push without --scrub or -y when nobody can confirm', async () => {
     mocks.previewResult = {
       sourcePlatform: 'fakeplat',
@@ -704,6 +753,43 @@ describe('session migrate --push archive key', () => {
     expect(text).toContain('Migration successful');
     expect(text).toContain('transcript written, session may be invisible');
     expect(process.exitCode).not.toBe(1);
+  });
+});
+
+describe('session resume --dry-run', () => {
+  it('strips terminal control sequences from the archived title', async () => {
+    const title = 'pay\u001b[31mment\u001b[0m';
+    mocks.remotes['/run/dir'] = 'https://github.com/org/alpha.git';
+    const session = mkSession({ title, cwd: '/run/dir', platform: 'claude-code' });
+    new SyncManager(repoRoot).saveSession(
+      session,
+      defaultSyncMeta(
+        {
+          platform: 'claude-code',
+          author: 'tester',
+          cwd: '/run/dir',
+          sessionId: session.sessionId,
+          repoIdentity: 'github.com/org/alpha',
+          title,
+        },
+        session.createdAt,
+      ),
+    );
+    const indexPath = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('github.com/org/alpha'), '_index.json');
+    const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8')) as { sessions: Array<{ sessionName: string }> };
+    const writeSession = vi.fn(async () => 'should-not-write');
+    mocks.adaptersByPlatform['claude-code'] = { platform: 'claude-code', writeSession };
+
+    await runSession(
+      'resume', index.sessions[0].sessionName,
+      '--platform', 'claude-code', '--repo-root', repoRoot, '--cwd', '/run/dir', '--dry-run',
+    );
+
+    const text = out.join('\n');
+    expect(text).toContain('Dry-run: would restore');
+    expect(text).toContain('[31mment');
+    expect(text).not.toContain('\u001b');
+    expect(writeSession).not.toHaveBeenCalled();
   });
 });
 
