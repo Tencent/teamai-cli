@@ -29,7 +29,7 @@ function error(code: string, message: string): WorkflowEnvelope {
   return { error: { code, message } };
 }
 
-function data(value: Record<string, unknown>): WorkflowEnvelope {
+function ok(value: Record<string, unknown>): WorkflowEnvelope {
   return { data: value };
 }
 
@@ -101,30 +101,30 @@ export async function startRun(config: LocalConfig, name: string): Promise<Workf
     updatedAt: now,
   };
   await writeRun(config, run);
-  return data({ run: run.id, name: run.name, status: run.status, revision: run.revision });
+  return ok({ run: run.id, name: run.name, status: run.status, revision: run.revision });
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity): Promise<WorkflowEnvelope> {
   return withRun(config, runId, async (run) => {
     if (run.status !== 'running') {
-      return { save: false, envelope: data({ done: { run: run.id, outcome: run.status } }) };
+      return { save: false, envelope: ok({ done: { run: run.id, outcome: run.status } }) };
     }
     const leased = run.steps.find((step) => step.status === 'leased');
     if (leased?.lease) {
       if (sameDriver(leased.lease.driver, driver)) {
-        return { save: false, envelope: data({ lease: leasePayload(run, leased) }) };
+        return { save: false, envelope: ok({ lease: leasePayload(run, leased) }) };
       }
-      return { save: false, envelope: data({ wait: { reason: `${leased.id} is leased` } }) };
+      return { save: false, envelope: ok({ wait: { reason: `${leased.id} is leased` } }) };
     }
     const index = run.steps.findIndex((step) => step.status === 'pending');
     if (index < 0) {
       const outcome = run.steps.every((step) => step.status === 'succeeded') ? 'succeeded' : 'failed';
       run.status = outcome;
-      return { save: true, envelope: data({ done: { run: run.id, outcome } }) };
+      return { save: true, envelope: ok({ done: { run: run.id, outcome } }) };
     }
     if (run.steps.slice(0, index).some((step) => step.status !== 'succeeded')) {
       run.status = 'failed';
-      return { save: true, envelope: data({ done: { run: run.id, outcome: 'failed' } }) };
+      return { save: true, envelope: ok({ done: { run: run.id, outcome: 'failed' } }) };
     }
     const step = run.steps[index];
     if (!step) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no step to lease`) };
@@ -133,7 +133,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     step.attempt = attempt;
     step.outcome = undefined;
     step.lease = { attempt, revision: run.revision, driver };
-    return { save: true, envelope: data({ lease: leasePayload(run, step) }) };
+    return { save: true, envelope: ok({ lease: leasePayload(run, step) }) };
   });
 }
 
@@ -227,7 +227,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     run.revision += 1;
     return {
       save: true,
-      envelope: data({
+      envelope: ok({
         accepted: true,
         revision: run.revision,
         step: { id: step.id, status: step.status, outcome },

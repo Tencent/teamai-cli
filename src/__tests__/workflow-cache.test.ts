@@ -82,6 +82,36 @@ describe('workflow cache', () => {
     expect(leased).toMatchObject({ data: { lease: { command: 'node compile.js' } } });
   });
 
+  it('keeps a runnable cache when dry-run sees a deleted source file', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'build', VALID);
+    await syncWorkflowDefinitions(config);
+    fs.rmSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'));
+
+    await syncWorkflowDefinitions(config, { dryRun: true });
+
+    const started = await startRun(config, 'build');
+    expect(started).toMatchObject({ data: { name: 'build', status: 'running' } });
+  });
+
+  it('does not read a symlinked workflows directory', async () => {
+    const config = testConfig();
+    const workflows = path.join(config.repo.localPath, 'workflows');
+    fs.rmSync(workflows, { recursive: true, force: true });
+    const outside = path.join(path.dirname(config.repo.localPath), 'outside-workflows');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'build.yaml'), VALID.replace('command: node compile.js', 'command: node outside-dir.js'));
+    fs.symlinkSync(outside, workflows);
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached).toEqual([]);
+    const cacheFile = path.join(config.dataHome ?? '', 'workflows', 'cache', 'build.json');
+    expect(fs.existsSync(cacheFile)).toBe(false);
+    const started = await startRun(config, 'build');
+    expect(started).toMatchObject({ error: { code: 'workflow_not_found' } });
+  });
+
   it('does not read or cache a symlinked yaml outside workflows', async () => {
     const config = testConfig();
     const outside = path.join(path.dirname(config.repo.localPath), 'outside-build.yaml');

@@ -35,4 +35,4 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 `outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。
 
-运行状态保存在当前 scope 的 TeamAI 数据目录里。命令结束后进程就退出，不会留下常驻的工作流进程。
+运行状态保存在当前 scope 的 TeamAI 数据目录里。命令结束后进程就退出。本地运行以 `failed` 结束时，退出码是 1。不会留下常驻的工作流进程。

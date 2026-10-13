@@ -78,8 +78,15 @@ export async function syncWorkflowDefinitions(
 ): Promise<SyncWorkflowResult> {
   const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [] };
   const dir = path.join(getKnowledgeDir(config), 'workflows');
-  await dropCachesForMissingFiles(config);
-  if (!await pathExists(dir)) return result;
+  if (!options.dryRun) await dropCachesForMissingFiles(config);
+  let dirStat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    dirStat = await fs.lstat(dir);
+  } catch {
+    return result;
+  }
+  // readdir follows a directory symlink, so reject the directory itself before listing it.
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return result;
 
   let names: string[];
   try {

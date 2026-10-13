@@ -158,5 +158,18 @@ steps:
     const missing = await runCLI(['workflow', 'start', 'broken', '--driver', 'local'], repo);
     expect(missing.code, missing.stdout).toBe(1);
     expect(envelope(missing.stdout).error?.code).toBe('workflow_not_found');
+
+    fs.writeFileSync(path.join(workflows, 'fail.yaml'), `schemaVersion: v1alpha1
+name: fail
+description: A command that exits with an error.
+steps:
+  - id: fail
+    command: node -e "process.exit(1)"
+`);
+    const failPull = await runCLI(['pull'], repo);
+    expect(failPull.code, `${failPull.stdout}\n${failPull.stderr}`).toBe(0);
+    const failed = await runCLI(['workflow', 'start', 'fail', '--driver', 'local'], repo);
+    expect(failed.code, `${failed.stdout}\n${failed.stderr}`).toBe(1);
+    expect(envelope(failed.stdout)).toMatchObject({ data: { done: { outcome: 'failed' } } });
   });
 });

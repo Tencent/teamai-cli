@@ -7,7 +7,14 @@ import type { WorkflowEnvelope } from './workflow/types.js';
 
 function writeEnvelope(envelope: WorkflowEnvelope): void {
   process.stdout.write(`${JSON.stringify(envelope)}\n`);
-  if ('error' in envelope) process.exitCode = 1;
+  if ('error' in envelope) {
+    process.exitCode = 1;
+    return;
+  }
+  const done = envelope.data.done;
+  if (done && typeof done === 'object' && (done as { outcome?: unknown }).outcome === 'failed') {
+    process.exitCode = 1;
+  }
 }
 
 async function loadConfig(): Promise<{ config: LocalConfig } | WorkflowEnvelope> {

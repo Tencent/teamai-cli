@@ -35,4 +35,4 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 `outcome` is `success`, `failed`, or `released`. `released` puts the step back to pending. It does not use up a retry. A report for an attempt that was already settled returns `repeated_report`, even when the revision is old. The run keeps recent settled attempts for that check. An older attempt uses the other checks: an old revision returns `stale_revision`, and a current revision that is not the leased attempt returns `wrong_attempt`. Another driver returns `wrong_driver`.
 
-The run is stored in this scope's TeamAI data directory. The command exits when it finishes. No workflow process keeps running.
+The run is stored in this scope's TeamAI data directory. The command exits when it finishes. A local run that ends `failed` exits with status 1. No workflow process keeps running.
