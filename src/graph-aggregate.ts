@@ -149,9 +149,9 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
  *
  * A withheld codebase is NOT tag-covered when its content predates this
  * tagging (an older aggregation, before this field existed) or was
- * extracted directly via `teamai codebase --extract` (outside `teamai
- * import`'s cache-then-copy orchestration, which writes only the global
- * `teamwiki/.indices/graph-index.json` and never populates
+ * extracted directly by the since-removed `teamai codebase --extract`
+ * (outside `teamai import`'s staging orchestration, which wrote only the
+ * global `teamwiki/.indices/graph-index.json` and never populated
  * `evidence/code/<slug>/.indices/graph-index.json` at all). Only THOSE
  * codebases fall back to reading their per-repo file, with the same
  * fail-closed guards as before: missing, unreadable, or failing to
@@ -166,7 +166,7 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
  * all for this query) rather than a result that fallback cannot vouch for.
  * Note this fallback, and the fail-closed guard on it, is now reached only
  * by codebases tagging hasn't covered yet; the next aggregation that runs
- * for them (any `teamai import` or `codebase --extract`) tags them too.
+ * for them (any `teamai import`) tags them too.
  *
  * Collision handling (two codebases sharing one unqualified fact-level
  * slug) still needs an ALLOWED codebase's per-repo file regardless of

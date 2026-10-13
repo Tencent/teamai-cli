@@ -1191,13 +1191,13 @@ program
   .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
   .addOption(new Option('--resume', 'Resume an interrupted import session').hideHelp())
   .option('--all', 'Accept all suggestions without interactive confirmation')
-  .addOption(new Option('--output <path>', 'Write drafts to this directory instead of pushing to team repo').hideHelp())
+  .addOption(new Option('--output <path>', 'Write drafts to this directory instead of pushing to team repo; code knowledge goes to <path>/teamwiki').hideHelp())
   .option('--from-repo <url>', 'Clone a remote repo and generate per-repo codebase summary')
   .addOption(new Option('--ssh', 'Force SSH clone even if HTTPS token is available').hideHelp())
   .addOption(new Option('--domain <name>', 'Skip AI recommendation and assign repo to this domain explicitly').hideHelp())
   .option('--from-repo-list <path>', 'Batch import repos from a YAML whitelist')
   .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)').default('3').hideHelp())
-  .option('--incremental', 'Use cached clone with fetch+reset (with --from-repo or --from-repo-list)')
+  .option('--incremental', 'Re-extract only files changed since the last import (with --dir, --from-repo or --from-repo-list; remote repos also reuse the cached clone)')
   .option('--skip-enrich', 'Skip AI enrichment (only clone + extract + graph, no LLM calls)')
   .option('--from-org <org>', 'List repos under an org and generate a repo whitelist')
   .addOption(new Option('--max-repos <n>', 'Cap on repos pulled from --from-org (default 200)').default('200').hideHelp())
@@ -1245,11 +1245,8 @@ program
 
 program
   .command('codebase')
-  .description('Inspect and maintain team-codebase outputs')
-  .option('--extract [path]', 'Extract code knowledge and build graph from source')
-  .addOption(new Option('--incremental', 'Only re-extract changed files (requires prior manifest)').hideHelp())
-  .addOption(new Option('--project <name>', 'Project slug for --extract (defaults to the directory name; a checkout\'s root uses the repo\'s name) and required for --deep-enrich').hideHelp())
-  .addOption(new Option('--max-files <n>', 'Max source files to scan (default: 200)').hideHelp())
+  .description('Inspect and maintain the teamwiki that `teamai import` writes')
+  .addOption(new Option('--project <name>', 'Codebase slug under teamwiki/evidence/code/, required for --deep-enrich').hideHelp())
   .addOption(new Option('--upgrade-wiki', 'Migrate docs/team-codebase/ to teamwiki/ graph format').hideHelp())
   .option('--lint', 'Run global consistency lint over the teamwiki knowledge graph')
   .option('--reconcile', 'Reconcile product and code knowledge in teamwiki')
@@ -1258,7 +1255,7 @@ program
   .option('--status', 'Show knowledge-base git baseline (headSha / repoUrl / branch)')
   .addOption(new Option('--severity <level>', 'Minimum severity to report: high|medium|low|info').default('info').hideHelp())
   .option('--json', 'Output report as JSON (suitable for CI)')
-  .addOption(new Option('--output <path>', 'Custom teamwiki output root directory').hideHelp())
+  .addOption(new Option('--output <path>', 'Use <path>/teamwiki, as written by `teamai import --output <path>`, instead of the team repo\'s').hideHelp())
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { codebaseCmd } = await import('./codebase-cmd.js');

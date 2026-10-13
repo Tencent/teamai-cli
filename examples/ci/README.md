@@ -15,7 +15,7 @@
 `github-actions-mr-extract.yml` / `coding-ci-mr-extract.yaml` 在 MR/PR 生命周期中自动提炼知识：
 
 - **MR/PR 创建/更新时**：`teamai ci extract-mr --mode comment`，把知识建议以评论贴到 MR/PR 上
-- **MR/PR 合入后**：`teamai ci extract-mr --mode write`，将 learning、`teamwiki/` 图谱写入团队知识仓库并 push
+- **MR/PR 合入后**：`teamai ci extract-mr --mode write`，将 learning、`teamwiki/` 图谱写入团队知识仓库并 push。`teamwiki/` 走 `teamai import --dir . --incremental` 的同一流程：在合入后的源码 checkout 中运行，只重新提取改过的文件，写入 `teamwiki/evidence/code/<provider>__<owner>__<repo>/`（与 `teamai import --from-repo` 同一 slug）
 
 ### 使用前提
 
@@ -25,6 +25,7 @@
    - 智研 / Coding CI（工蜂）：`ANTHROPIC_AUTH_TOKEN`、`TGIT_TOKEN`（均为 Secret）
 3. 需要对团队知识仓库有 push 权限的 token：GitHub 用 `TEAMAI_SYNC_TOKEN`，工蜂用 `TGIT_TOKEN`。
 4. 智研 / Coding CI（工蜂）的 MR 触发规则**必须写在 YAML 的 `mr:` 块**，仅在 UI 勾选无效。
+5. write 模式的工作目录必须是合入后的源码 checkout，团队知识仓库必须克隆在 checkout **之外**（模板分别用并排目录和 `/tmp/teamai-team-repo`）；克隆在 checkout 内时，CLI 会跳过 `teamwiki/` 更新，只写 learning。
 
 ## teamwiki 一致性检查示例（`codebase-lint.yml`）
 

@@ -31,16 +31,22 @@ describe('wiki builtin skill content (issue #360 slice 1)', () => {
     }
   });
 
-  it('tells Phase 0 to run teamai codebase --extract', () => {
+  it('tells Phase 0 to run teamai import --dir', () => {
     for (const file of PHASE0_FILES) {
       const text = fs.readFileSync(file, 'utf8');
-      expect(text, file).toContain('teamai codebase --extract');
+      expect(text, file).toContain('teamai import --dir');
+    }
+  });
+
+  it('no longer points at the removed teamai codebase --extract', () => {
+    for (const file of SKILL_FILES) {
+      expect(fs.readFileSync(file, 'utf8'), file).not.toContain('codebase --extract');
     }
   });
 
   it('tells agents to run teamai codebase --deep-enrich', () => {
     const skill = fs.readFileSync(path.join(SKILL_DIR, 'SKILL.md'), 'utf8');
-    expect(skill).toMatch(/`teamai codebase --deep-enrich --project <slug> --output <repo>`/);
+    expect(skill).toMatch(/`teamai codebase --deep-enrich --project <slug>`/);
   });
 
   it('does not point at GRAPH-CAPABILITIES.md', () => {

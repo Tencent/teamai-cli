@@ -161,6 +161,45 @@ async function writeKnowledgeToRepo(
   }
 }
 
+// ─── teamwiki 增量更新 ───────────────────────────────────
+
+/**
+ * Import the merged checkout (the working directory) into the team repo's
+ * teamwiki, as `teamai import --dir . --incremental` does, under the slug
+ * `teamai import --from-repo` and `--from-mr` use for this repo. The baseline
+ * published with that codebase's evidence makes the run incremental, even on a
+ * fresh CI clone of the team repo.
+ *
+ * Non-blocking: a failure is logged and leaves the teamwiki as it was.
+ *
+ * @returns whether the teamwiki changed
+ */
+async function importMergedCheckout(teamRepo: string, repoUrl: string, mrUrl: string): Promise<boolean> {
+  const sourceDir = process.cwd();
+  const teamRepoDir = path.resolve(teamRepo);
+  const relative = path.relative(sourceDir, teamRepoDir);
+  if (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+    log.warn(`Skipped the teamwiki update: the team repo (${teamRepoDir}) is inside the source checkout `
+      + `(${sourceDir}), so its files would be extracted as source. Clone it outside the checkout (see examples/ci/).`);
+    return false;
+  }
+  try {
+    const { repoSlugForUrl } = await import('../import-repo.js');
+    const { importLocalCheckout } = await import('../import-codebase.js');
+    return await importLocalCheckout({
+      sourceDir,
+      slug: repoSlugForUrl(repoUrl),
+      wikiRoot: path.join(teamRepoDir, 'teamwiki'),
+      incremental: true,
+      repoUrl,
+      sourceMrUrl: mrUrl,
+    });
+  } catch (err) {
+    log.warn(`teamwiki update failed (non-blocking): ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 // ─── 输出 artifacts ─────────────────────────────────────
 
 async function writeArtifacts(
@@ -236,6 +275,8 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
 
   // ── Codebase 图谱变更 ──────────────────────────────────────
   let graphChangeSummary: { added: string[]; removed: string[] } | undefined;
+  // The merge touched a source file (added, changed or deleted) in a git checkout.
+  let sourceChanged = false;
   try {
     const { collectCode, extractCodeFacts, buildCodeGraph } = await import('../wiki-engine/adapters/index.js');
     const { execFileSync } = await import('node:child_process');
@@ -265,6 +306,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
     if (changedFiles.length === 0) {
       log.debug('[codebase-graph] 所有 git diff 方式均失败或无源文件变更');
     }
+    sourceChanged = changedFiles.length > 0;
 
     if (changedFiles.length > 0) {
       const { files } = await collectCode({ root: businessRepo, changedFiles, maxFiles: 50 });
@@ -312,9 +354,11 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
       }
     }
 
-    // ── 图谱变更写入 team-repo/teamwiki/ ───────────────────
+    // ── 图谱变更写入 <team-repo>/teamwiki/（经 teamai import 同一流程，增量） ──
+    // Gated on any changed source file, not on graph nodes added: a merge that
+    // only deletes or empties files still has to prune them from the teamwiki.
     let graphWritten = false;
-    if (graphChangeSummary && graphChangeSummary.added.length > 0 && !opts.dryRun) {
+    if (sourceChanged && !opts.dryRun) {
       let graphRejected = false;
       if (opts.individualComments) {
         const parsed = parseMrUrl(opts.url);
@@ -326,54 +370,7 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
       }
 
       if (!graphRejected) {
-        try {
-          const { extractCodebase } = await import('../codebase-extract.js');
-          const businessRepo = process.cwd();
-          const parsed = parseMrUrl(opts.url);
-          const projectName = parsed.repo;
-
-          await extractCodebase({ path: businessRepo, project: projectName });
-
-          const fse = await import('fs-extra');
-          const srcWiki = path.join(businessRepo, 'teamwiki');
-          const teamWikiRoot = path.join(path.resolve(opts.teamRepo!), 'teamwiki');
-          try {
-            if (await fse.pathExists(srcWiki)) {
-              const evidenceSrc = path.join(srcWiki, 'evidence', 'code', projectName);
-              const evidenceDest = path.join(teamWikiRoot, 'evidence', 'code', projectName);
-              if (await fse.pathExists(evidenceSrc)) {
-                await fse.ensureDir(evidenceDest);
-                await fse.copy(evidenceSrc, evidenceDest, { overwrite: true });
-              }
-              const srcGraph = path.join(srcWiki, '.indices', 'graph-index.json');
-              if (await fse.pathExists(srcGraph)) {
-                const destGraphDir = path.join(evidenceDest, '.indices');
-                await fse.ensureDir(destGraphDir);
-                await fse.copy(srcGraph, path.join(destGraphDir, 'graph-index.json'));
-              }
-              const { aggregateGlobalGraph } = await import('../graph-aggregate.js');
-              await aggregateGlobalGraph(teamWikiRoot);
-              try {
-                const { deepEnrich } = await import('../deep-enrich.js');
-                await deepEnrich({
-                  project: projectName,
-                  evidenceDir: evidenceDest,
-                  wikiRoot: teamWikiRoot,
-                  cacheDir: businessRepo,
-                });
-                log.success(`teamwiki/ deep enrich 完成: ${projectName}`);
-              } catch (enrichErr) {
-                log.debug(`[deep-enrich] 失败（非阻塞）: ${enrichErr instanceof Error ? enrichErr.message : enrichErr}`);
-              }
-              graphWritten = true;
-              log.success(`teamwiki/ 知识库增量更新完成`);
-            }
-          } finally {
-            await fse.remove(srcWiki).catch(() => {});
-          }
-        } catch (err) {
-          log.debug(`[codebase-graph] 图谱写入失败（非阻塞）: ${err instanceof Error ? err.message : err}`);
-        }
+        graphWritten = await importMergedCheckout(opts.teamRepo!, result.repoUrl, opts.url);
       }
     }
 

@@ -33,4 +33,9 @@ describe('codebase command registration', () => {
     const output = await readCodebaseHelp();
     expect(output).toContain('--deep-enrich');
   });
+
+  it('no longer offers --extract: teamai import extracts code knowledge', async () => {
+    const output = await readCodebaseHelp();
+    expect(output).not.toContain('--extract');
+  });
 });

@@ -11,20 +11,31 @@ import type { WikiLintSeverity } from './codebase-wiki-lint.js';
 export interface CodebaseCmdOptions extends GlobalOptions {
     lint?: boolean;
     fix?: boolean;
-    extract?: boolean | string;
-    incremental?: boolean;
     upgradeWiki?: boolean;
     severity?: WikiLintSeverity;
     json?: boolean;
     output?: string;
     project?: string;
-    maxFiles?: string;
     status?: boolean;
     reconcile?: boolean;
     deepEnrich?: boolean;
 }
 
 // ─── Command handler ─────────────────────────────────────────────────────────
+
+/**
+ * The teamwiki `teamai import` writes: `<output>/teamwiki` with `--output`,
+ * else the team repo's. Undefined when there is neither.
+ */
+async function teamwikiDirFor(opts: CodebaseCmdOptions, readOnly: boolean): Promise<string | undefined> {
+    const { resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+    try {
+        // A read never persists a config migration (#893).
+        return (await resolveTeamwiki({ output: opts.output, dryRun: opts.dryRun || readOnly })).wikiRoot;
+    } catch {
+        return undefined;
+    }
+}
 
 /**
  * Handler for the `teamai codebase` subcommand.
@@ -38,20 +49,6 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         return;
     }
 
-
-    if (opts.extract) {
-        const { extractCodebase } = await import('./codebase-extract.js');
-        const extractPath = typeof opts.extract === 'string' ? opts.extract : cwd;
-        await extractCodebase({
-            path: extractPath,
-            incremental: opts.incremental,
-            json: opts.json,
-            project: opts.project,
-            maxFiles: opts.maxFiles ? parseInt(opts.maxFiles, 10) : undefined,
-        });
-        return;
-    }
-
     if (opts.status) {
         await printCodebaseStatus(opts);
         return;
@@ -61,35 +58,22 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
         console.log('teamai codebase — team codebase knowledge management');
         console.log('');
         console.log('Usage:');
-        console.log('  teamai codebase --extract [path]        Extract code knowledge + build graph');
-        console.log('  teamai codebase --extract --incremental Incremental mode');
         console.log('  teamai codebase --lint                  Run teamwiki consistency lint');
         console.log('  teamai codebase --lint --json           Output JSON report (for CI)');
         console.log('  teamai codebase --lint --severity high  Only report high-severity issues');
         console.log('  teamai codebase --reconcile             Reconcile product and code knowledge');
         console.log('  teamai codebase --deep-enrich           Generate deep knowledge from extracted evidence');
         console.log('  teamai codebase --status                Show knowledge-base git baseline');
+        console.log('');
+        console.log('Extract code knowledge with `teamai import --dir <path>` or `teamai import --from-repo <url>`.');
         return;
     }
 
-    // Resolve teamwiki directory
+    // `--lint` alone only reads.
     const { pathExists } = await import('./utils/fs.js');
-    let teamwikiDir: string;
-    if (opts.output) {
-        teamwikiDir = path.resolve(opts.output, 'teamwiki');
-    } else {
-        try {
-            const { autoDetectInit } = await import('./config.js');
-            // `--lint` alone only reads, so it never persists a migration (#893).
-            const readOnly = !opts.reconcile && !opts.deepEnrich;
-            const { localConfig: lc } = await autoDetectInit(undefined, { dryRun: opts.dryRun || readOnly });
-            teamwikiDir = path.join(lc.repo.localPath, 'teamwiki');
-        } catch {
-            teamwikiDir = path.join(cwd, '.teamai', 'team-repo', 'teamwiki');
-        }
-    }
+    const teamwikiDir = await teamwikiDirFor(opts, !opts.reconcile && !opts.deepEnrich);
 
-    if (!(await pathExists(teamwikiDir))) {
+    if (!teamwikiDir || !(await pathExists(teamwikiDir))) {
         console.log('No teamwiki found. Run `teamai import` first.');
         if (opts.reconcile || opts.deepEnrich) process.exitCode = 1;
         return;
@@ -113,7 +97,7 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
             return;
         }
         if (!(await pathExists(evidenceDir))) {
-            console.log(`No extracted evidence found for project "${project}". Run \`teamai codebase --extract\` first.`);
+            console.log(`No extracted evidence found for project "${project}". Run \`teamai import\` first.`);
             process.exitCode = 1;
             return;
         }
@@ -195,19 +179,15 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
  * tell which commit the knowledge base corresponds to.
  */
 async function printCodebaseStatus(opts: CodebaseCmdOptions): Promise<void> {
-    const cwd = process.cwd();
-    let teamwikiDir: string;
-    if (opts.output) {
-        teamwikiDir = path.resolve(opts.output, 'teamwiki');
-    } else {
-        try {
-            const { autoDetectInit } = await import('./config.js');
-            // Read-only: the load never persists a migration (#893).
-            const { localConfig: lc } = await autoDetectInit(undefined, { dryRun: true });
-            teamwikiDir = path.join(lc.repo.localPath, 'teamwiki');
-        } catch {
-            teamwikiDir = path.join(cwd, '.teamai', 'team-repo', 'teamwiki');
+    const teamwikiDir = await teamwikiDirFor(opts, true);
+    if (!teamwikiDir) {
+        if (opts.json) {
+            console.log(JSON.stringify({ error: 'no-teamwiki' }));
+        } else {
+            console.log(chalk.yellow('No teamwiki found. Run `teamai init` and `teamai import` first, or pass --output.'));
         }
+        process.exitCode = 1;
+        return;
     }
     const manifestPath = path.join(teamwikiDir, 'source-manifest.json');
     let manifest: {

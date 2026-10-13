@@ -65,6 +65,7 @@ describe('import --dir', () => {
       await fs.writeFile(path.join(evidenceDir, 'index.md'), '# test\n');
       await fs.ensureDir(path.join(wikiRoot, '.indices'));
       await fs.writeFile(path.join(wikiRoot, '.indices', 'graph-index.json'), JSON.stringify({ nodes: [{ slug: 'a' }], edges: [] }));
+      return true;
     });
 
     (aggregateGlobalGraph as ReturnType<typeof vi.fn>).mockResolvedValue({ nodes: 1, edges: 0 });
@@ -75,9 +76,9 @@ describe('import --dir', () => {
     await fs.remove(tmpDir);
   });
 
-  async function runImportDir(opts: { dir: string; dryRun?: boolean; output?: string; skipEnrich?: boolean }) {
+  async function runImportDir(opts: { dir: string; dryRun?: boolean; output?: string; skipEnrich?: boolean; incremental?: boolean }) {
     const { importCmd } = await import('../import.js');
-    await importCmd({ dir: opts.dir, dryRun: opts.dryRun, output: opts.output, skipEnrich: opts.skipEnrich });
+    await importCmd({ dir: opts.dir, dryRun: opts.dryRun, output: opts.output, skipEnrich: opts.skipEnrich, incremental: opts.incremental });
   }
 
   it('calls extractCodebase with outputRoot (not source dir) and skipEnrich', { timeout: 60_000 }, async () => {
@@ -107,26 +108,44 @@ describe('import --dir', () => {
 
     await runImportDir({ dir: projectDir, output: outputDir });
 
-    // Should write to output dir
+    // Should write to output dir, with its own graph and indexes
     expect(await fs.pathExists(path.join(outputDir, 'teamwiki', 'evidence', 'code', 'my-project', 'index.md'))).toBe(true);
+    expect(aggregateGlobalGraph).toHaveBeenCalledWith(path.join(path.resolve(outputDir), 'teamwiki'));
     // Should NOT touch team-repo
     expect(await fs.pathExists(path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project'))).toBe(false);
-    // Should NOT call push or aggregate
+    expect(autoDetectInit).not.toHaveBeenCalled();
+    expect(autoPushTeamRepo).not.toHaveBeenCalled();
+  });
+
+  it('--incremental keeps the published evidence and pushes nothing when the source is unchanged', async () => {
+    await runImportDir({ dir: projectDir });
+    const evidence = path.join(teamRepoDir, 'teamwiki', 'evidence', 'code', 'my-project', 'index.md');
+    expect(await fs.pathExists(evidence)).toBe(true);
+    vi.clearAllMocks();
+    (extractCodebase as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+
+    await runImportDir({ dir: projectDir, incremental: true });
+
+    expect(extractCodebase).toHaveBeenCalledWith(expect.objectContaining({ path: projectDir, project: 'my-project' }));
+    expect(await fs.pathExists(evidence)).toBe(true);
     expect(aggregateGlobalGraph).not.toHaveBeenCalled();
     expect(autoPushTeamRepo).not.toHaveBeenCalled();
   });
 
   it('cleans up tmpdir even when extractCodebase throws', async () => {
-    (extractCodebase as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('AI unavailable'));
+    // The staging dir this import created: other test files stage concurrently in the same tmpdir.
+    let staging: string | undefined;
+    (extractCodebase as ReturnType<typeof vi.fn>).mockImplementation(async (opts: { outputRoot?: string }) => {
+      staging = opts.outputRoot;
+      throw new Error('AI unavailable');
+    });
 
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
     await runImportDir({ dir: projectDir });
     exitSpy.mockRestore();
 
-    // Verify no teamai-extract- tmpdir leaked
-    const tmpFiles = await fs.readdir(os.tmpdir());
-    const leaked = tmpFiles.filter(f => f.startsWith('teamai-extract-'));
-    expect(leaked).toHaveLength(0);
+    expect(staging).toContain(path.join(os.tmpdir(), 'teamai-extract-'));
+    expect(await fs.pathExists(staging!)).toBe(false);
   });
 
   it('source directory is not polluted with teamwiki/', async () => {

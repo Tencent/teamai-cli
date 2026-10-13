@@ -340,13 +340,13 @@ Generated: do not edit by hand. Regenerate with
   - `--from-iwiki <space-id-or-url>` — Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)
   - `--resume` (hidden) — Resume an interrupted import session
   - `--all` — Accept all suggestions without interactive confirmation
-  - `--output <path>` (hidden) — Write drafts to this directory instead of pushing to team repo
+  - `--output <path>` (hidden) — Write drafts to this directory instead of pushing to team repo; code knowledge goes to <path>/teamwiki
   - `--from-repo <url>` — Clone a remote repo and generate per-repo codebase summary
   - `--ssh` (hidden) — Force SSH clone even if HTTPS token is available
   - `--domain <name>` (hidden) — Skip AI recommendation and assign repo to this domain explicitly
   - `--from-repo-list <path>` — Batch import repos from a YAML whitelist
   - `--concurrency <n>` (hidden) — Concurrent repos for --from-repo-list (default 3)
-  - `--incremental` — Use cached clone with fetch+reset (with --from-repo or --from-repo-list)
+  - `--incremental` — Re-extract only files changed since the last import (with --dir, --from-repo or --from-repo-list; remote repos also reuse the cached clone)
   - `--skip-enrich` — Skip AI enrichment (only clone + extract + graph, no LLM calls)
   - `--from-org <org>` — List repos under an org and generate a repo whitelist
   - `--max-repos <n>` (hidden) — Cap on repos pulled from --from-org (default 200)
@@ -364,11 +364,8 @@ Generated: do not edit by hand. Regenerate with
 
 ## codebase
 
-- `teamai codebase` — Inspect and maintain team-codebase outputs
-  - `--extract [path]` — Extract code knowledge and build graph from source
-  - `--incremental` (hidden) — Only re-extract changed files (requires prior manifest)
-  - `--project <name>` (hidden) — Project slug for --extract (defaults to the directory name; a checkout's root uses the repo's name) and required for --deep-enrich
-  - `--max-files <n>` (hidden) — Max source files to scan (default: 200)
+- `teamai codebase` — Inspect and maintain the teamwiki that `teamai import` writes
+  - `--project <name>` (hidden) — Codebase slug under teamwiki/evidence/code/, required for --deep-enrich
   - `--upgrade-wiki` (hidden) — Migrate docs/team-codebase/ to teamwiki/ graph format
   - `--lint` — Run global consistency lint over the teamwiki knowledge graph
   - `--reconcile` — Reconcile product and code knowledge in teamwiki
@@ -377,7 +374,7 @@ Generated: do not edit by hand. Regenerate with
   - `--status` — Show knowledge-base git baseline (headSha / repoUrl / branch)
   - `--severity <level>` (hidden) — Minimum severity to report: high|medium|low|info
   - `--json` — Output report as JSON (suitable for CI)
-  - `--output <path>` (hidden) — Custom teamwiki output root directory
+  - `--output <path>` (hidden) — Use <path>/teamwiki, as written by `teamai import --output <path>`, instead of the team repo's
 
 ## review
 

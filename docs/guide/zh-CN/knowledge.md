@@ -101,10 +101,11 @@ teamai recall promote <learningId> --dry-run
 
 ## 代码知识图谱
 
-`teamai import` 把源码仓库写成团队仓库里的 `teamwiki/`，`teamai recall` 会一起搜。
+`teamai import` 把源码仓库写成团队仓库里的 `teamwiki/`，`teamai recall` 会一起搜。所有来源都写进同一个位置：`<团队仓库>/teamwiki/evidence/code/<slug>/`，源码目录本身不会多出 `teamwiki/`。
 
 ```bash
 teamai import --dir /path/to/project
+teamai import --dir /path/to/project --incremental
 teamai import --from-repo https://github.com/org/repo
 teamai import --from-org myorg
 teamai import --from-repo-list repos.yaml
@@ -113,16 +114,19 @@ teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
-已经提过一次之后，用 `teamai codebase` 刷新和检查：
+`--incremental` 只重新提取上次导入后改过的文件，基线随每个代码库存在它自己的 `evidence/code/<slug>/` 里。远端仓库的 slug 是 `<provider>__<owner>__<repo>`，`--from-repo`、`--from-mr` 和 `teamai ci extract-mr` 用的都是它；`--dir` 用仓库名。
+
+导入之后，用 `teamai codebase` 检查和加工同一份 `teamwiki/`：
 
 ```bash
-teamai codebase --extract /path/to/repo --project my-service
-teamai codebase --extract /path/to/repo --project my-service --incremental
-teamai codebase --deep-enrich --project my-service --output /path/to/repo
-teamai codebase --lint --output /path/to/repo
+teamai codebase --status
+teamai codebase --deep-enrich --project <slug>
+teamai codebase --lint
 ```
 
-`--output` 指向仓库根目录。`--project` 的值会成为 `teamwiki/evidence/code/<slug>/`。
+没有团队仓库时，给 `teamai import` 和 `teamai codebase` 都加上 `--output <dir>`，两者都用 `<dir>/teamwiki/`。
+
+`teamai codebase --extract` 已移除，改用 `teamai import --dir`。
 
 recall 结果里的 `Source freshness:`：`current` 是内容和上次扫描一致，`stale` 是变了，`missing` 是文件不在了，`unknown` 是对不上。`current` 也不代表文档本身正确。
 
@@ -144,8 +148,10 @@ projects:
 
 ```bash
 teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
-teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ./team-repo --individual-comments
+teamai ci extract-mr --url "$MR_URL" --mode write --team-repo ../team-repo --individual-comments
 ```
+
+write 模式在合并后的源码 checkout 里运行，代码知识走和 `teamai import --dir . --incremental` 相同的流程，写进 `<team-repo>/teamwiki/evidence/code/<provider>__<owner>__<repo>/`，只重新提取改过的文件。团队仓库要克隆在 checkout 之外，否则它的文件会被当成源码提取，这一步会被跳过。
 
 不要的建议打上拒绝标记：GitHub 用 👎，工蜂用 ☝️。模板在 [`examples/ci/`](../../../examples/ci/README.md)。
 

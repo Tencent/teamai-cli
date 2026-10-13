@@ -288,7 +288,7 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
       json: true,
       skipEnrich: true,
       incremental: true,
-    })).resolves.toBeUndefined();
+    })).resolves.toBe(true);
 
     const refreshed = JSON.parse(fs.readFileSync(path.join(wikiRoot, 'source-manifest.json'), 'utf8')) as {
       repoIdentity?: string;
@@ -472,7 +472,7 @@ describe('extract writes a fallback evidence manifest (#508)', () => {
   });
 });
 
-describe('a direct `teamai codebase --extract` stamps origin on the graph it writes (#974 review round 19 P1)', () => {
+describe('a direct extractCodebase call stamps origin on the graph it writes (#974 review round 19 P1)', () => {
   it('tags every node and edge it writes straight to teamwiki/.indices/graph-index.json with the project slug', async () => {
     const root = createWidgetFixture();
     vi.spyOn(console, 'log').mockImplementation(() => undefined);

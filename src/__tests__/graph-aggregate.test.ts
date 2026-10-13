@@ -246,7 +246,7 @@ describe('aggregateGlobalGraph', () => {
       expect(graph?.edges).toContainEqual({ from: 'docs/product/billing', to: 'a/svc', relation: 'MAPS_TO' });
     });
 
-    it("fails closed (returns null) when a withheld codebase's per-repo graph file is missing — e.g. extracted via `teamai codebase --extract` directly, which never writes one (#912 review round 5 P1)", async () => {
+    it("fails closed (returns null) when a withheld codebase's per-repo graph file is missing — e.g. extracted by the since-removed `teamai codebase --extract`, which never wrote one (#912 review round 5 P1)", async () => {
       writeRepoGraph('svc-a', {
         schemaVersion: 1, generatedAt: '2026-01-01',
         nodes: [{ slug: 'a/svc', title: 'ServiceA', type: 'component', confidence: 'high' }],
