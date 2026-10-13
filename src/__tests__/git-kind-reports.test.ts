@@ -39,7 +39,7 @@ async function configureGit(dir: string): Promise<void> {
   await git.addConfig('user.name', 't');
 }
 
-async function seedBareOrigin(base = tmp): Promise<{ origin: string; clone: string }> {
+async function seedBareOrigin(base = tmp, skills: string[] = []): Promise<{ origin: string; clone: string }> {
   const seed = path.join(base, 'seed');
   fs.mkdirSync(seed, { recursive: true });
   const seedGit = simpleGit(seed);
@@ -48,6 +48,12 @@ async function seedBareOrigin(base = tmp): Promise<{ origin: string; clone: stri
   fs.writeFileSync(path.join(seed, 'teamai.yaml'), 'team: acme\n');
   fs.mkdirSync(path.join(seed, 'skills'), { recursive: true });
   fs.writeFileSync(path.join(seed, 'skills', '.gitkeep'), '');
+  // Skills the seeded team actually shares; #1055 filters published stats to
+  // catalog names, so tests that expect a skill to be reported must share it.
+  for (const skill of skills) {
+    fs.mkdirSync(path.join(seed, 'skills', skill), { recursive: true });
+    fs.writeFileSync(path.join(seed, 'skills', skill, 'SKILL.md'), `# ${skill}\n`);
+  }
   await seedGit.add(['.']);
   await seedGit.commit('init knowledge');
 
@@ -644,9 +650,9 @@ describe('self-mode reports: shared stash', () => {
 
 describe('skill usage stays in the scope that recorded it (#748)', () => {
   /** A project initialized in project scope against its own team repo. */
-  async function initProject(name: string): Promise<{ root: string; origin: string; config: LocalConfig }> {
+  async function initProject(name: string, skill: string): Promise<{ root: string; origin: string; config: LocalConfig }> {
     const base = path.join(tmp, name);
-    const { origin, clone } = await seedBareOrigin(base);
+    const { origin, clone } = await seedBareOrigin(base, [skill]);
     fs.mkdirSync(path.join(base, 'project'));
     const root = fs.realpathSync.native(path.join(base, 'project'));
     const git = simpleGit(root);
@@ -678,8 +684,8 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
   }
 
   it("each project's report carries only its own skills, and one report does not consume the other's", async () => {
-    const a = await initProject('team-a');
-    const c = await initProject('team-c');
+    const a = await initProject('team-a', 'skill-a');
+    const c = await initProject('team-c', 'skill-c');
     await useSkill(a.root, 'skill-a');
     await useSkill(c.root, 'skill-c');
 
