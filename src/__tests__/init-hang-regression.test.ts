@@ -17,6 +17,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { simpleGit } from 'simple-git';
@@ -131,36 +132,42 @@ describe('createGit hang guards (init-hang regression)', () => {
 });
 
 describe('credential-prompt guard (init-hang regression)', () => {
-  // Reproduces the original bug precisely: a push to a remote that requires
-  // credentials, with NO credential helper available. Without
-  // GIT_TERMINAL_PROMPT=0, git opens an interactive username/password prompt
-  // on the tty — and since teamai runs git with no tty, the push hangs
-  // forever. With the guard, git fails immediately with "terminal prompts
-  // disabled" / "could not read Username".
-  //
-  // We stand up a local HTTP git endpoint that always answers 401 Unauthorized
-  // (demanding Basic auth), then push to it with every credential source
-  // stripped: empty HOME, no GIT_CONFIG_GLOBAL, no credential helper. The push
-  // must fail fast rather than block on a prompt.
+  // The spawn-level block timeout is what actually ends a hang. To verify it,
+  // push at a remote that accepts the request and then never responds: git
+  // blocks on the read and `withTimeout` (a Promise.race) cannot interrupt a
+  // blocking subprocess. Only `createGitForInitPush`'s `timeout.block` killing
+  // that process ends the await — so removing the guard would time the test
+  // out instead of failing fast.
   let server: http.Server;
   let remoteUrl: string;
+  let sockets: Set<net.Socket>;
 
   beforeEach(async () => {
-    server = http.createServer((_req, res) => {
-      // Always require authentication — git will look for a credential, find
-      // none, and (without the guard) try to prompt.
-      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="teamai-test"' });
-      res.end('Unauthorized');
-    });
+    sockets = new Set();
+    server = http.createServer((req, res) => {
+      // Accept the request and hold the socket open without ever responding.
+      // This is the actual hang: git's push expects a response and sits in
+      // read() until killed. Track the underlying socket so afterEach tears it down.
+      const sock = res.socket;
+      if (sock) {
+        sockets.add(sock);
+        sock.on('close', () => sockets.delete(sock));
+      }
+      // Write a status line and stall — git keeps waiting for the body/headers.
+      res.write('HTTP/1.1 200 OK\r\n');
+  });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address();
     if (!addr || typeof addr === 'string') throw new Error('failed to bind test server');
     remoteUrl = `http://127.0.0.1:${addr.port}/team.git`;
   });
 
-  afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  afterEach(async () => {
+    for (const s of sockets) s.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
 
-  it('a credential-less push to a 401 HTTP remote fails fast instead of prompting', async () => {
+  it('a stalled-remote push is killed by the spawn-level block timeout', async () => {
     const clone = path.join(tmp, 'credless-clone');
     fs.mkdirSync(clone, { recursive: true });
     const git = simpleGit(clone);
@@ -210,8 +217,7 @@ describe('credential-prompt guard (init-hang regression)', () => {
     try {
       // initPush:true uses createGitForInitPush (spawn-level block timeout),
       // mirroring how init actually calls this. The push must reject within
-      // the timeout budget — a regression to no spawn timeout would hang
-      // forever (a credential helper/401 can block past any await-only guard).
+      // the timeout budget — a regression to no spawn timeout would hang on a blocking read.
       await expect(
         pushRepoDirectly(clone, '[teamai] Register member: alice', ['members/alice.yaml'], { initPush: true }),
       ).rejects.toThrow();
@@ -228,8 +234,9 @@ describe('credential-prompt guard (init-hang regression)', () => {
     }
     const elapsed = Date.now() - start;
 
-    // The spawn-level block timeout (3s here) kills the hung push; without it
-    // the push would block indefinitely. Allow headroom for git startup.
-    expect(elapsed).toBeLessThan(10_000);
-  }, 30_000);
+    // Killed at the 3s spawn timeout, not the 15s test ceiling. A regression
+    // letting the child run would blow past this by ~12s.
+    expect(elapsed).toBeGreaterThanOrEqual(2_000);
+    expect(elapsed).toBeLessThan(8_000);
+  }, 15_000);
 });

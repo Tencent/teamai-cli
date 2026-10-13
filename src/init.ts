@@ -2078,6 +2078,7 @@ export async function init(options: GlobalOptions & {
               const mrLocalConfig = {
                 repo: { remote: repoInfo.httpsUrl, localPath },
                 username,
+                ...(forcedProvider ? { provider: forcedProvider } : {}),
               };
               if (mrTeamConfig) {
                 const prUrl = await withTimeout(
