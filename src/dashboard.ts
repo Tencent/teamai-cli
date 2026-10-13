@@ -207,6 +207,35 @@ export async function startDashboard(port?: number): Promise<void> {
       return;
     }
 
+    if (url.pathname === '/api/resources/rules') {
+      // Rules inventory for the Resources page (#1028): names and metadata
+      // only, never rule bodies or environment values. The user scope and the
+      // unassigned bucket pull no team repo, so they get an explicit state.
+      try {
+        const config = workspace?.config ?? null;
+        if (!config) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ configured: false, rules: [] }));
+          return;
+        }
+        const [{ loadTeamConfig }, { buildRolePullContext }, { collectRulesInventory }] = await Promise.all([
+          import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources.js'),
+        ]);
+        const teamConfig = await loadTeamConfig(config.repo.localPath);
+        // A scope whose clone carries no teamai.yaml pulls no rules.
+        const rules = teamConfig
+          ? await collectRulesInventory(teamConfig, config, await buildRolePullContext(config))
+          : [];
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ configured: true, rules }));
+      } catch (e) {
+        log.debug(`dashboard: /api/resources/rules failed: ${(e as Error).message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to load rules.' }));
+      }
+      return;
+    }
+
     if (url.pathname === '/events') {
       // SSE stream
       res.writeHead(200, {

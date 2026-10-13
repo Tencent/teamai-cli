@@ -194,5 +194,22 @@ export const dashboardMessages: Record<string, string> = {
   "learnings": "经验",
   "skills": "技能",
   "rules": "规则",
-  "docs": "文档"
+  "docs": "文档",
+  "Resources": "资源",
+  "delivered to this workspace": "条规则已交付到此工作区",
+  "RULE": "规则",
+  "NAMESPACE": "命名空间",
+  "DESCRIPTION": "描述",
+  "DELIVERY": "交付状态",
+  "Root": "根级别",
+  "Delivered": "已交付",
+  "Not delivered": "未交付",
+  "Outside the active namespaces": "不在活跃命名空间内",
+  "Omitted by tag subscriptions": "未订阅其标签",
+  "Replaced by an active namespace rule": "已被活跃命名空间的同名规则取代",
+  "Loading rules…": "正在加载规则…",
+  "Could not load rules.": "无法加载规则。",
+  "No rules in the team repo": "团队仓库中没有规则",
+  "No TeamAI scope in this workspace": "此工作区未安装 TeamAI",
+  "Pick a project workspace above, or set one up with teamai init.": "请在上方选择一个项目工作区，或先运行 teamai init 初始化。"
 };
