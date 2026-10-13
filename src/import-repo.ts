@@ -266,6 +266,21 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     const cacheExists = await fs.pathExists(path.join(cacheDir, '.git'));
     const useIncremental = incremental && cacheExists && lastSync !== null;
 
+    // Where the evidence goes: <output>/teamwiki, else the team repo's teamwiki/.
+    // Resolved before the clone so a missing team repo fails fast; a preview
+    // without one still reports what it can.
+    const target = await resolveTeamwiki({ output, dryRun }).catch((error: unknown) => {
+        if (!dryRun) throw error;
+        return undefined;
+    });
+    const evidenceDest = target ? path.join(target.wikiRoot, 'evidence', 'code', slug) : undefined;
+    // LAST_SYNC belongs to the shared clone cache: an unchanged cache is skipped
+    // only when this teamwiki already holds that commit, not when another
+    // --output or team repo was imported at it.
+    const publishedHead = async (): Promise<string | undefined> => evidenceDest
+        ? ((await fs.readJson(path.join(evidenceDest, 'source-manifest.json')).catch(() => null)) as { headSha?: string } | null)?.headSha
+        : undefined;
+
     // A preview asks for the target remote commit and stops: the clone replaces the
     // cache (or fetches and resets it), and the lock and LLM scan follow (#900).
     if (dryRun) {
@@ -281,21 +296,17 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
             head = await remoteHeadSha(url, providerName, { forceSsh, forceAnonymous });
             previewIncremental = false;
         }
+        const skips = previewIncremental && (await publishedHead()) === head;
         const cache = !cacheExists
             ? `not cached yet, a real run would clone it into ${cacheDir}`
             : lastSync?.sha === head
-                ? `cache is current at ${head.slice(0, 8)}${previewIncremental ? ', so an incremental run would skip it' : ''}`
+                ? `cache is current at ${head.slice(0, 8)}${skips ? ', so an incremental run would skip it' : ''}`
                 : `cache would be refreshed from ${lastSync ? lastSync.sha.slice(0, 8) : 'an unrecorded commit'} to ${head.slice(0, 8)}`;
-        const previewWiki = output ? path.resolve(output, 'teamwiki') : 'teamwiki';
-        log.info(`[dry-run] Would import ${owner}/${repoName} at ${head.slice(0, 8)} into ${path.join(previewWiki, 'evidence', 'code', slug)}; ${cache}`);
+        log.info(`[dry-run] Would import ${owner}/${repoName} at ${head.slice(0, 8)} into ${evidenceDest ?? path.join('teamwiki', 'evidence', 'code', slug)}; ${cache}`);
         return;
     }
-
-    // Where the evidence goes: <output>/teamwiki, else the team repo's teamwiki/.
-    // Resolved before the clone so a missing team repo fails fast.
-    const target = await resolveTeamwiki({ output });
+    if (!target || !evidenceDest) throw new Error('unreachable: the teamwiki resolves outside a dry run');
     const { wikiRoot: teamwikiRoot, team } = target;
-    const evidenceDest = path.join(teamwikiRoot, 'evidence', 'code', slug);
 
     await ensureCacheRoot();
 
@@ -344,10 +355,8 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     log.info(`Clone/Fetch complete: SHA=${cloneSha.slice(0, 8)}, branch=${cloneBranch}`);
 
     // 2.5 Skip the AI scan if the cache did not move and the target teamwiki
-    // already holds this commit. LAST_SYNC belongs to the shared clone cache,
-    // so another --output or team repo may not have been imported at it yet.
-    const published = await fs.readJson(path.join(evidenceDest, 'source-manifest.json')).catch(() => null) as { headSha?: string } | null;
-    if (useIncremental && oldSha && cloneSha === oldSha && published?.headSha === cloneSha) {
+    // already holds this commit (incremental fast path).
+    if (useIncremental && oldSha && cloneSha === oldSha && (await publishedHead()) === cloneSha) {
         log.info(`[incremental] SHA unchanged (${cloneSha.slice(0, 8)}), skipping AI scan`);
         await writeLastSync(cacheDir, cloneSha);
         try {
