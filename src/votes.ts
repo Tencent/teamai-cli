@@ -1,4 +1,5 @@
 // -*- coding: utf-8 -*-
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import YAML from 'yaml';
@@ -491,31 +492,35 @@ export interface StagedVotes {
 }
 
 /**
- * Delivery watermark for a stage whose push may have landed without its
- * confirmation (#1027): the per-doc merged counts the stage produced, plus the
- * delta set it staged. Persisted in the LOCAL votes file (a ride-along field,
- * like `upvotedSessions`) at stage time — before the push — and consumed by
- * {@link confirmVotesSynced} or by the next stage.
+ * Delivery record for a stage whose push may have landed without its
+ * confirmation (#1027): the unique id the stage stamped into the remote file's
+ * `deliveredSyncIds`, plus the delta set it staged. Persisted in the LOCAL
+ * votes file (a ride-along field, like `upvotedSessions`) at stage time —
+ * before the push — and consumed by {@link confirmVotesSynced} or by the next
+ * stage.
  */
 export interface PendingVoteSync {
-  /** The counts the merged worktree file held, for the staged docs only. */
-  merged: Record<string, { recalled: number; upvoted: number }>;
+  /** The id the stage appended to the remote `deliveredSyncIds` list. */
+  syncId: string;
   /** The delta set that was staged, to subtract when delivery is recognized. */
   deltas: UserVotesV2['deltas'];
 }
 
-/** Read the delivery watermark, shape-checked like the upvote ledger. */
+/** How many recent delivery ids the remote file keeps. */
+const MAX_DELIVERED_SYNC_IDS = 10;
+
+/** Read the local delivery record, shape-checked like the upvote ledger. */
 function readPendingSync(data: UserVotesV2): PendingVoteSync | undefined {
   const raw = (data as unknown as { pendingSync?: unknown }).pendingSync;
   if (!raw || typeof raw !== 'object') return undefined;
   const p = raw as Partial<PendingVoteSync>;
-  if (!p.merged || !p.deltas || typeof p.merged !== 'object' || typeof p.deltas !== 'object') {
+  if (typeof p.syncId !== 'string' || !p.deltas || typeof p.deltas !== 'object') {
     return undefined;
   }
   return p as PendingVoteSync;
 }
 
-/** The same votes snapshot with the watermark set (or removed). */
+/** The same votes snapshot with the delivery record set (or removed). */
 function withPendingSync(data: UserVotesV2, pending: PendingVoteSync | undefined): UserVotesV2 {
   const out = { ...data } as UserVotesV2 & { pendingSync?: PendingVoteSync };
   if (pending) out.pendingSync = pending;
@@ -523,31 +528,11 @@ function withPendingSync(data: UserVotesV2, pending: PendingVoteSync | undefined
   return out;
 }
 
-/** The per-doc counts a merge produced, for the staged docs only. */
-function mergedCountsOf(merged: UserVotesV2, deltas: UserVotesV2['deltas']): PendingVoteSync['merged'] {
-  const out: PendingVoteSync['merged'] = {};
-  for (const docId of Object.keys(deltas)) {
-    const entry = merged.votes[docId];
-    out[docId] = { recalled: entry?.recalled_count ?? 0, upvoted: entry?.upvoted_count ?? 0 };
-  }
-  return out;
-}
-
-/**
- * True when `remote` holds exactly the counts a stage's merged file had. Exact
- * equality (not ≥) is required: origin merely having moved past those counts
- * does not prove OUR push landed — another checkout may have advanced the file
- * after ours was dropped by a rebase — and treating that as delivered would
- * lose the deltas instead of re-sending them.
- */
-function matchesMergedCounts(remote: UserVotesV2, merged: PendingVoteSync['merged']): boolean {
-  for (const [docId, counts] of Object.entries(merged)) {
-    const entry = remote.votes[docId];
-    if ((entry?.recalled_count ?? 0) !== counts.recalled || (entry?.upvoted_count ?? 0) !== counts.upvoted) {
-      return false;
-    }
-  }
-  return true;
+/** The delivery ids a remote snapshot records, from its ride-along field. */
+function deliveredSyncIdsOf(remote: UserVotesV2): string[] {
+  const raw = (remote as unknown as { deliveredSyncIds?: unknown }).deliveredSyncIds;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((id): id is string => typeof id === 'string');
 }
 
 /**
@@ -568,13 +553,17 @@ function matchesMergedCounts(remote: UserVotesV2, merged: PendingVoteSync['merge
  *
  * A push that LANDED but was never confirmed (the process died between the
  * push and the clear, or the clear's lock was exhausted) would otherwise
- * double-count the same deltas on the retry. Each stage therefore persists a
- * {@link PendingVoteSync} watermark in the local file before the push, and a
- * later stage that finds origin holding exactly the watermark's counts
- * recognizes delivery and only subtracts — never re-adds. Origin holding
- * anything else cannot PROVE delivery (another checkout may have moved the
- * counts past ours), so the deltas re-merge, accepting a double-count only in
- * that already-ambiguous same-user-two-machines interleave.
+ * double-count the same deltas on the retry. Each stage therefore stamps its
+ * merge with a unique delivery id, carried in the remote file's
+ * `deliveredSyncIds` list, and records it in a local {@link PendingVoteSync}
+ * before the push runs. A later stage that finds the id on origin recognizes
+ * delivery and only subtracts — never re-adds. Counter equality could not
+ * prove that: another checkout of the same user publishing identical
+ * increments would fake it and drop undelivered deltas; a random per-stage id
+ * cannot be faked by anyone but this stage's own landed push. A missing id
+ * means the push never landed (or cannot be proven landed), so the deltas
+ * re-merge onto origin, accepting a double-count only when our landed push was
+ * superseded by a same-user checkout that rewrote the list without our id.
  *
  * Returns null when there was nothing to stage (no deltas) or the votes lock
  * could not be taken; the deltas then simply stay pending.
@@ -590,17 +579,18 @@ export async function stageVotesMerge(
 
   const { acquired, value } = await withVotesLock(localVotePath, async () => {
     let local = await loadUserVotes(localVotePath);
+    const base = confirmedRemote ?? { version: 2, votes: {}, deltas: {} };
 
     // A previous stage may have been delivered without its confirmation: the
     // push landed and the process died (or the clear's lock was exhausted)
-    // before the local deltas went. Origin holding exactly the counts that
-    // stage wrote proves delivery — subtract the staged set now instead of
-    // re-adding it on top of itself. Origin holding anything else means the
-    // push never landed (or cannot be proven landed): the watermark is
-    // superseded and the deltas re-merge below, idempotently.
+    // before the local deltas went. The remote file's deliveredSyncIds holding
+    // that stage's id proves delivery — subtract the staged set now instead of
+    // re-adding it on top of itself. A missing id means the push never landed
+    // (or cannot be proven landed): the record is superseded and the deltas
+    // re-merge below, idempotently.
     const pending = readPendingSync(local);
     if (pending) {
-      const delivered = confirmedRemote !== null && matchesMergedCounts(confirmedRemote, pending.merged);
+      const delivered = deliveredSyncIdsOf(base).includes(pending.syncId);
       local = withPendingSync(
         { ...local, deltas: delivered ? remainingDeltasAfter(local.deltas, pending.deltas) : local.deltas },
         undefined,
@@ -611,15 +601,19 @@ export async function stageVotesMerge(
     const syncedDeltas = local.deltas;
     if (Object.keys(syncedDeltas).length === 0) return null;
 
-    const merged = mergeDeltas(local, confirmedRemote ?? { version: 2, votes: {}, deltas: {} });
+    // Stamp the merge with a fresh delivery id, carried on the branch: any
+    // later reader — including this machine's own retry — can tell this stage's
+    // landed push from every other writer's by membership alone.
+    const syncId = randomUUID();
+    const merged: UserVotesV2 & { deliveredSyncIds: string[] } = {
+      ...mergeDeltas(local, base),
+      deliveredSyncIds: [...deliveredSyncIdsOf(base), syncId].slice(-MAX_DELIVERED_SYNC_IDS),
+    };
     await saveUserVotes(remoteVotePath, merged);
-    // Persist the delivery watermark in the same locked write-path, before the
+    // Persist the delivery record in the same locked write-path, before the
     // push runs: whatever happens to the process afterwards, the next stage can
     // tell a landed push from a failed one.
-    await saveUserVotes(localVotePath, withPendingSync(local, {
-      merged: mergedCountsOf(merged, syncedDeltas),
-      deltas: syncedDeltas,
-    }));
+    await saveUserVotes(localVotePath, withPendingSync(local, { syncId, deltas: syncedDeltas }));
     return { syncedDeltas } satisfies StagedVotes;
   });
 
