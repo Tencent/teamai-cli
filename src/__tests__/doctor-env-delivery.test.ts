@@ -410,10 +410,25 @@ describe('doctor — env variables reach a shell', () => {
       // pulled. This "api" project's own block is absent, but that is the
       // documented multi-project layout, not a delivery failure.
       const ordersEnvSh = path.join(homeDir, '.teamai', 'projects', 'orders', 'env.sh');
+      await fse.outputFile(ordersEnvSh, "export ORDERS_DB='orders-peer'\n");
       await fse.writeFile(profilePath, projectBlock(ordersEnvSh));
 
       const check = await envCheck();
       expect(await check.check()).toBe(true);
+    });
+
+    it('still reports when the other project\'s block sources a missing env.sh', async () => {
+      useProjectScope('api');
+      await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
+      // The only block names another project whose data home is gone: its
+      // `[ -f ... ] && source ...` never runs, so nothing reaches a new shell
+      // and this scope's gap is real rather than a last-wins layout.
+      const ordersEnvSh = path.join(homeDir, '.teamai', 'projects', 'orders', 'env.sh');
+      await fse.writeFile(profilePath, projectBlock(ordersEnvSh));
+
+      const check = await envCheck();
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain(`${profilePath} carries no TeamAI env block for ${envShPath}`);
     });
   });
 

@@ -235,6 +235,12 @@ async function userScopeEnvShPath(): Promise<string | null> {
  * from a project scope's own block under only the user's block is a real
  * breakage (#876, a project always has its own block beside the user's), so it
  * stays a hard failure.
+ *
+ * A block only excuses this scope's missing one when it actually reaches a new
+ * shell: a generated block is `[ -f '<home>/env.sh' ] && source '<home>/env.sh'`,
+ * so if the other project's env.sh is gone (its data home deleted while the
+ * profile block lingered) the source never runs and nothing is delivered. In
+ * that state the gap is real and must keep being reported (#1018 review).
  */
 export async function hasOtherProjectEnvBlock(profileContent: string, thisEnvShPath: string, scope: Scope): Promise<boolean> {
   if (scope === 'user') return false;
@@ -243,7 +249,7 @@ export async function hasOtherProjectEnvBlock(profileContent: string, thisEnvShP
   // sourcing `~/.teamai/env.sh` is the user scope's even when no user scope is
   // configured, so it is never "another project's" (#876, #1018).
   const defaultUserEnvShPath = path.join(getTeamaiHome('user'), 'env.sh');
-  return findEnvBlocks(profileContent).some((block) => {
+  const otherBlock = findEnvBlocks(profileContent).find((block) => {
     if (envBlockReferencesDataHome(block.text, thisEnvShPath)) return false;
     // The user scope's block is either an inline-export (no env.sh source) or
     // one sourcing the user data home's env.sh (mirrors injectShellProfile).
@@ -252,6 +258,20 @@ export async function hasOtherProjectEnvBlock(profileContent: string, thisEnvShP
       || envBlockReferencesDataHome(block.text, defaultUserEnvShPath);
     return !isUserBlock;
   });
+  if (otherBlock === undefined) return false;
+  const sourced = sourcedEnvShPath(otherBlock.text);
+  return sourced !== null && await pathExists(sourced);
+}
+
+/**
+ * The `env.sh` path a generated project block `source`s, or null when the
+ * block carries no resolvable source line. Generated blocks are
+ * `[ -f '<home>/env.sh' ] && source '<home>/env.sh'`; only a source line we can
+ * map back to a real file proves a delivery reachable from a new shell.
+ */
+function sourcedEnvShPath(block: string): string | null {
+  const m = /(?:^|[\s;&|])(?:source|\.)\s+['"]?([^'"\s;&|]*env\.sh)/.exec(block);
+  return m ? m[1] : null;
 }
 
 // ─── Handler ─────────────────────────────────────────────
