@@ -644,23 +644,24 @@ async function otherVersionFiles(repoPath: string, item: ResourceItem): Promise<
  * count such an extra as a change, so it may never have been pushed. One at a
  * path another version has is named, since it may be an edited leftover.
  * `delivered` tells them apart (#822): a file still as teamai recorded writing
- * it is a leftover, and one it has no record of is the member's own.
+ * it is a leftover, and one it has no record of is the member's own. So a file
+ * the team deleted from this skill goes too, or the next push would add it back.
  */
 async function removeLeftoverVersionFiles(
   source: string, dest: string, otherVersions: Map<string, string[]>, delivered: DeliveredHashes | undefined,
 ): Promise<void> {
-  if (otherVersions.size === 0) return;
+  if (otherVersions.size === 0 && delivered === undefined) return;
   const sourceFiles = new Set(await listFilesRecursive(source));
   let removed = false;
   for (const file of await listFilesRecursive(dest)) {
-    const versions = otherVersions.get(file);
-    if (sourceFiles.has(file) || !versions) continue;
+    if (sourceFiles.has(file)) continue;
+    const versions = otherVersions.get(file) ?? [];
     const installed = path.join(dest, file);
     const recorded = delivered?.[installed];
     const leftover = (recorded !== undefined && await fileHash(installed) === recorded)
       || (await Promise.all(versions.map((version) => fileContentEqual(installed, version)))).some(Boolean);
     if (!leftover) {
-      if (delivered !== undefined && recorded === undefined) continue;
+      if (versions.length === 0 || (delivered !== undefined && recorded === undefined)) continue;
       log.warn(
         `Kept ${installed}: another team version of this skill has a file at that path with different content, `
         + 'so it may be yours or an edited copy. Delete it if you do not need it.',

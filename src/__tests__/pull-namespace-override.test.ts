@@ -582,6 +582,22 @@ describe('pull: an active namespace item replaces the root item of the same name
         expect(await exists('.claude/skills/review/front-only.md')).toBe(false);
         expect(logged('warn', /front-only\.md/)).toBe(false);
       });
+
+      it('removes a file the team deleted from the skill, and keeps the member\'s own', async () => {
+        await team('skills/frontend/deploy/SKILL.md', skillMd('deploy', 'Deploy'));
+        await team('skills/frontend/deploy/scripts/run.sh', 'echo run\n');
+        commitTeamRepo(repoPath);
+        keepState();
+        await pull({});
+        expect(await read('.claude/skills/deploy/scripts/run.sh')).toBe('echo run\n');
+        await fse.outputFile(path.join(homeDir, '.claude/skills/deploy/my-notes.md'), 'mine\n');
+
+        await fse.remove(path.join(repoPath, 'skills/frontend/deploy/scripts/run.sh'));
+        await pull({ force: true });
+
+        expect(await exists('.claude/skills/deploy/scripts/run.sh')).toBe(false);
+        expect(await read('.claude/skills/deploy/my-notes.md')).toBe('mine\n');
+      });
     });
 
     // A directory without SKILL.md is not a skill: it must neither replace the
