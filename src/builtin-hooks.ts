@@ -215,14 +215,19 @@ export function getDispatchCommand(event: string, tool: string, matcher?: string
 /**
  * Tools whose hook runner on Windows is PowerShell itself, so the rendered
  * command must be PowerShell syntax there rather than the POSIX `bash -lc "…"`
- * form. DSH is the one such host: its Claude-compatible bridge hands each
- * command to its own shell, which on Windows is `@deepseek-ai/dsh-pwsh-local` —
- * a PowerShell runner that prepends an encoding preamble to the command and
- * parses the result. `"<git-bash>" -lc "…"` is a ParserError under it, so every
- * dsh hook failed with `exitCode: 1` and, because the wrapper ends in
- * `2>/dev/null || true`, failed silently (issue #1005).
+ * form. Two such hosts so far:
+ *
+ * - DSH: its Claude-compatible bridge hands each command to its own shell,
+ *   which on Windows is `@deepseek-ai/dsh-pwsh-local` — a PowerShell runner
+ *   that prepends an encoding preamble to the command and parses the result
+ *   (issue #1005).
+ * - Codex: its hook runtime executes command hooks with PowerShell on
+ *   Windows, so the `"<git-bash>" -lc "…"` wrapper is a ParserError and the
+ *   hook panel reports every entry as failed with `exitCode: 1` — and,
+ *   because the wrapper ends in `2>/dev/null || true`, it fails silently
+ *   (issue #1074).
  */
-const WINDOWS_PWSH_TOOLS = new Set(['dsh']);
+const WINDOWS_PWSH_TOOLS = new Set(['dsh', ...CODEX_TOOL_IDS]);
 
 /**
  * True when this tool's hook runner is PowerShell on this platform, so the
