@@ -28,6 +28,21 @@ function writeWorkflow(config: LocalConfig, name: string, body: string): void {
   fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${name}.yaml`), body);
 }
 
+function cachedText(config: LocalConfig): string {
+  const home = config.dataHome ?? '';
+  if (!fs.existsSync(home)) return '';
+  const files: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else files.push(full);
+    }
+  };
+  walk(home);
+  return files.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+}
+
 const VALID = `schemaVersion: v1alpha1
 name: build
 description: Compile the project.
@@ -106,8 +121,7 @@ describe('workflow cache', () => {
     const result = await syncWorkflowDefinitions(config);
 
     expect(result.cached).toEqual([]);
-    const cacheFile = path.join(config.dataHome ?? '', 'workflows', 'cache', 'build.json');
-    expect(fs.existsSync(cacheFile)).toBe(false);
+    expect(cachedText(config)).not.toContain('outside-dir.js');
     const started = await startRun(config, 'build');
     expect(started).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
@@ -124,13 +138,52 @@ describe('workflow cache', () => {
     expect(result.cached).not.toContain('build');
     expect(result.invalid).toEqual([]);
     expect(result.unrunnable).toEqual([]);
-    const cacheDir = path.join(config.dataHome ?? '', 'workflows', 'cache');
-    expect(fs.existsSync(path.join(cacheDir, 'build.json'))).toBe(false);
-    const cachedText = fs.existsSync(cacheDir)
-      ? fs.readdirSync(cacheDir).map((name) => fs.readFileSync(path.join(cacheDir, name), 'utf8')).join('\n')
-      : '';
-    expect(cachedText).not.toContain('outside-only.js');
+    expect(cachedText(config)).not.toContain('outside-only.js');
     const started = await startRun(config, 'build');
     expect(started).toMatchObject({ error: { code: 'workflow_not_found' } });
+  });
+
+  it('keeps each self-mode checkout on its own cache', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-cache-'));
+    dirs.push(root);
+    const dataHome = path.join(root, 'data');
+    const checkout = (name: string, command: string): LocalConfig => {
+      const business = path.join(root, name);
+      const knowledge = path.join(business, 'knowledge');
+      fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
+      const config: LocalConfig = {
+        repo: { localPath: knowledge, remote: 'local', kind: 'self', businessRepoRoot: business },
+        username: 'tester',
+        scope: 'project',
+        additionalRoles: [],
+        projectRoot: business,
+        dataHome,
+      };
+      writeWorkflow(config, 'build', VALID.replace('command: node compile.js', `command: ${command}`));
+      return config;
+    };
+
+    const first = checkout('a', 'echo main-command');
+    const second = checkout('b', 'echo second-command');
+    await syncWorkflowDefinitions(first);
+    await syncWorkflowDefinitions(second);
+
+    const started = await startRun(first, 'build');
+    if ('error' in started) throw new Error(started.error.message);
+    const leased = await leaseNext(first, String(started.data.run), { kind: 'local', machine: 'test', workspace: '/work' });
+    expect(leased).toMatchObject({ data: { lease: { command: 'echo main-command' } } });
+
+    writeWorkflow(first, 'build', 'schemaVersion: [\n');
+    const kept = await syncWorkflowDefinitions(first);
+    expect(kept.kept).toEqual(['build']);
+    const afterInvalid = await startRun(first, 'build');
+    if ('error' in afterInvalid) throw new Error(afterInvalid.error.message);
+    const stillFirst = await leaseNext(first, String(afterInvalid.data.run), { kind: 'local', machine: 'test', workspace: '/work' });
+    expect(stillFirst).toMatchObject({ data: { lease: { command: 'echo main-command' } } });
+
+    fs.rmSync(path.join(second.repo.localPath, 'workflows', 'build.yaml'));
+    await syncWorkflowDefinitions(second);
+    const afterDelete = await startRun(first, 'build');
+    expect(afterDelete).toMatchObject({ data: { name: 'build', status: 'running' } });
   });
 });

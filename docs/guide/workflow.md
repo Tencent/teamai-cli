@@ -19,7 +19,7 @@ steps:
 
 `schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and one `command`. `output` is optional. When you set it, a successful command must print one JSON value on stdout. The shorthand is `string`, `number`, `boolean`, a literal union such as `pass | fix`, an object, or an array with one item type. An object matches when every declared field is present and has the right type. Extra fields are allowed.
 
-`teamai pull` and `teamai push` check each file on its own. A problem names the file, the line, and the field. Other workflows and other resources still sync. A file that was valid before keeps that version in the local cache. The invalid text does not run. A file that has never been valid has nothing to run.
+`teamai pull` and `teamai push` check each file on its own. A problem names the file, the line, and the field. Other workflows and other resources still sync. A file that was valid before keeps that version in the local cache. The invalid text does not run. A file that has never been valid has nothing to run. In single-repo mode, each checkout keeps its own cache.
 
 ```text
 teamai workflow start build --driver local

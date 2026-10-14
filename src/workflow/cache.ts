@@ -3,7 +3,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { log } from '../utils/logger.js';
 import { pathExists, readFileSafe, remove, writeJsonAtomic } from '../utils/fs.js';
-import { getDataHome, getKnowledgeDir, type LocalConfig } from '../types.js';
+import {
+  getBusinessRoot,
+  getDataHome,
+  getKnowledgeDir,
+  isSelfMode,
+  managedMcpWorkspaceId,
+  type LocalConfig,
+} from '../types.js';
 import { formatDiagnostic, parseWorkflow } from './parse.js';
 import type { CachedWorkflow, WorkflowDiagnostic } from './types.js';
 
@@ -20,7 +27,12 @@ export interface SyncWorkflowResult {
 }
 
 function cacheDir(config: LocalConfig): string {
-  return path.join(getDataHome(config), 'workflows', 'cache');
+  const home = getDataHome(config);
+  // Self mode shares one data home across checkouts, and each checkout has its own workflows/.
+  if (isSelfMode(config)) {
+    return path.join(home, 'workspaces', managedMcpWorkspaceId(getBusinessRoot(config)), 'workflows', 'cache');
+  }
+  return path.join(home, 'workflows', 'cache');
 }
 
 function cachePath(config: LocalConfig, name: string): string {

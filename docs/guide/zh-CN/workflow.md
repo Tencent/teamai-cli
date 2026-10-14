@@ -19,7 +19,7 @@ steps:
 
 `schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且只有一条 `command`。`output` 可选。写了它，成功的命令就必须在 stdout 上打印一个 JSON 值。简写类型是 `string`、`number`、`boolean`、字面量联合（例如 `pass | fix`）、对象，或只含一种元素类型的数组。对象在每个声明字段都存在且类型正确时匹配，允许多余字段。
 
-`teamai pull` 和 `teamai push` 分别检查每个文件。报错会给出文件、行号和字段。其他工作流和其他资源仍会同步。以前校验通过的文件会在本地缓存里保留那一版，无效的内容不会被运行。从未校验通过的文件没有可运行的版本。
+`teamai pull` 和 `teamai push` 分别检查每个文件。报错会给出文件、行号和字段。其他工作流和其他资源仍会同步。以前校验通过的文件会在本地缓存里保留那一版，无效的内容不会被运行。从未校验通过的文件没有可运行的版本。单仓库模式下，每个检出各自保留一份缓存。
 
 ```text
 teamai workflow start build --driver local
