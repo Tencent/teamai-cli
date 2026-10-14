@@ -20,12 +20,20 @@
  * the user (`plan-readonly-guard`, `dangerous-commands-guard`, ...) and is
  * preserved byte-for-byte — never overwritten, never removed. `teamai hooks
  * remove` / `pull --remove-all` deletes only that one key.
+ *
+ * The file teamai manages is the one the CLI actually executes: the
+ * `hooks.json` of a customization root — `<project>/.agents/hooks.json`, or
+ * `~/.gemini/config/hooks.json` in user scope (see toolPaths.antigravity).
+ * Verified against agy 1.3.4: it loads every hooks.json it finds (and dedupes
+ * by hook name across them) but only runs the handlers of the global root's
+ * file; the CLI's app-data copy (`~/.gemini/antigravity-cli/hooks.json`) is
+ * read and discarded.
  */
 
 import type { HookDef } from './types.js';
 import { pathExists, readFileSafe, writeFile } from './utils/fs.js';
 import { log } from './utils/logger.js';
-import { getDispatchCommand } from './builtin-hooks.js';
+import { getAntigravityDispatchCommand } from './builtin-hooks.js';
 
 /** The single top-level hooks.json key teamai owns. */
 export const TEAMAI_ANTIGRAVITY_HOOKS_KEY = 'teamai-hooks';
@@ -46,6 +54,7 @@ export interface AntigravityMatcherGroup {
 /** The events an Antigravity hook block can carry. */
 export interface AntigravityHookBlock {
   enabled?: boolean;
+  SessionStart?: AntigravityHookCommand[];
   PreToolUse?: AntigravityMatcherGroup[];
   PostToolUse?: AntigravityMatcherGroup[];
   PreInvocation?: AntigravityHookCommand[];
@@ -62,13 +71,17 @@ export type AntigravityHookConfig = Record<string, unknown>;
 /**
  * Claude PascalCase event → the Antigravity block that carries it.
  *
- * Antigravity has no session-start event of its own: `PreInvocation` fires
- * before each invocation, so both teamai's session-start and prompt-submit
- * dispatches (which are idempotent) ride it. `PreToolUse` is listed for
- * completeness even though teamai ships no built-in for it.
+ * Antigravity has a `SessionStart` event of its own (once per new session), so
+ * the session-start dispatch rides it rather than `PreInvocation`, which fires
+ * before *every* model call: verified against agy 1.3.4, where a `SessionStart`
+ * handler ran once in a session whose `PreInvocation` handler ran on each
+ * invocation. `UserPromptSubmit` has no equivalent and rides `PreInvocation`
+ * (an idempotent prompt-submit dispatch, as on the other adapter tools).
+ * `PreToolUse` is listed for completeness even though teamai ships no built-in
+ * for it.
  */
 const EVENT_TO_BLOCK: Readonly<Record<string, keyof AntigravityHookBlock>> = {
-  SessionStart: 'PreInvocation',
+  SessionStart: 'SessionStart',
   UserPromptSubmit: 'PreInvocation',
   PreToolUse: 'PreToolUse',
   PostToolUse: 'PostToolUse',
@@ -116,7 +129,8 @@ export function renderAntigravityHooks(defs: readonly HookDef[], tool = 'antigra
     PreToolUse: [],
     PostToolUse: [],
   };
-  const flatCommands: Record<'PreInvocation' | 'PostInvocation' | 'Stop', AntigravityHookCommand[]> = {
+  const flatCommands: Record<'SessionStart' | 'PreInvocation' | 'PostInvocation' | 'Stop', AntigravityHookCommand[]> = {
+    SessionStart: [],
     PreInvocation: [],
     PostInvocation: [],
     Stop: [],
@@ -124,7 +138,7 @@ export function renderAntigravityHooks(defs: readonly HookDef[], tool = 'antigra
   for (const def of defs) {
     const target = EVENT_TO_BLOCK[def.event];
     if (target === undefined) continue;
-    const command = def.command || getDispatchCommand(def.event, tool, def.matcher);
+    const command = def.command || getAntigravityDispatchCommand(def.event, tool, def.matcher);
     const entry: AntigravityHookCommand = {
       command,
       type: 'command',
@@ -134,14 +148,14 @@ export function renderAntigravityHooks(defs: readonly HookDef[], tool = 'antigra
       const block = target as 'PreToolUse' | 'PostToolUse';
       matcherGroups[block].push({ matcher: def.matcher && def.matcher !== '*' ? def.matcher : '*', hooks: [entry] });
     } else {
-      flatCommands[target as 'PreInvocation' | 'PostInvocation' | 'Stop'].push(entry);
+      flatCommands[target as 'SessionStart' | 'PreInvocation' | 'PostInvocation' | 'Stop'].push(entry);
     }
   }
   const block: AntigravityHookBlock = { enabled: true };
   for (const [name, groups] of Object.entries(matcherGroups) as Array<['PreToolUse' | 'PostToolUse', AntigravityMatcherGroup[]]>) {
     if (groups.length > 0) block[name] = groups;
   }
-  for (const [name, commands] of Object.entries(flatCommands) as Array<['PreInvocation' | 'PostInvocation' | 'Stop', AntigravityHookCommand[]]>) {
+  for (const [name, commands] of Object.entries(flatCommands) as Array<['SessionStart' | 'PreInvocation' | 'PostInvocation' | 'Stop', AntigravityHookCommand[]]>) {
     if (commands.length > 0) block[name] = commands;
   }
   return block;

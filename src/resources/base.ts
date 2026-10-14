@@ -31,13 +31,15 @@ const ANTIGRAVITY_TOOL_ID = 'antigravity';
 
 /**
  * Paths in the tool's own base dir that are Antigravity's and nobody else's:
- * its hooks config, its instruction file, and its own hidden directory.
- * `.agents/` is deliberately absent — that tree is shared with the central
- * Agent Skills entry, so its presence says nothing about Antigravity (and
- * accepting it would add Antigravity's MCP/skills targets to every project
- * that merely uses `.agents/`).
+ * its hooks config (the project root one older teamai wrote, and the
+ * customization-root one the CLI actually runs), its instruction file, and its
+ * own hidden directory. `.agents/` as a whole is deliberately absent — that
+ * tree is shared with the central Agent Skills entry, so its presence says
+ * nothing about Antigravity (and accepting it would add Antigravity's
+ * MCP/skills targets to every project that merely uses `.agents/`); the
+ * `.agents/hooks.json` file inside it is Antigravity's alone.
  */
-const ANTIGRAVITY_OWN_PATHS = ['hooks.json', 'GEMINI.md', '.gemini'] as const;
+const ANTIGRAVITY_OWN_PATHS = ['hooks.json', '.agents/hooks.json', 'GEMINI.md', '.gemini'] as const;
 
 /**
  * The PATH half of Antigravity's install evidence, cached per PATH value.

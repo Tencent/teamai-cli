@@ -28,6 +28,7 @@ import {
   renderAntigravityHooks,
 } from '../antigravity-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
+import { builtinHookDefs, getAntigravityDispatchCommand } from '../builtin-hooks.js';
 import { TeamaiConfigSchema } from '../types.js';
 import type { HookDef, LocalConfig } from '../types.js';
 import type { AntigravityHookConfig } from '../antigravity-hooks.js';
@@ -63,17 +64,17 @@ describe('Antigravity CLI (agy) support', () => {
     expect(config.toolPaths[AGY]).toEqual({
       skills: '.agents/skills',
       rules: '.agents/rules',
-      settings: 'hooks.json',
+      settings: '.agents/hooks.json',
       claudemd: 'GEMINI.md',
       agents: '.agents/agents',
       mcp: '.gemini/config/mcp_config.json',
       mcpProject: '.agents/mcp_config.json',
       userScope: {
-        skills: '.gemini/antigravity/skills',
+        skills: '.gemini/config/skills',
         rules: '.gemini/config/rules',
-        settings: '.gemini/antigravity-cli/hooks.json',
+        settings: '.gemini/config/hooks.json',
         claudemd: '.gemini/config/GEMINI.md',
-        agents: '.gemini/antigravity-cli/agents',
+        agents: '.gemini/config/agents',
       },
     });
   });
@@ -81,7 +82,7 @@ describe('Antigravity CLI (agy) support', () => {
   it('registers Antigravity for discovery and native resources', () => {
     expect(KNOWN_AGENTS.find((agent) => agent.id === AGY)).toMatchObject({
       displayName: 'Antigravity CLI',
-      skillsPath: '.gemini/antigravity/skills',
+      skillsPath: '.gemini/config/skills',
     });
     expect(ALL_SUPPORTED_TOOLS).toContain(AGY);
     // Antigravity subagents are Markdown, the extension agent-format's default
@@ -125,6 +126,14 @@ describe('Antigravity CLI (agy) support', () => {
       await fse.ensureDir(path.join(projectRoot, '.agents', 'skills'));
       expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig())).toBe(false);
 
+      // The CLI's own hooks file inside that tree is evidence: it is the
+      // project-scope customization root's hooks.json, and nothing else
+      // declares that path.
+      await fse.outputJson(path.join(projectRoot, '.agents', 'hooks.json'), {});
+      expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig())).toBe(true);
+      await fse.remove(path.join(projectRoot, '.agents', 'hooks.json'));
+      expect(await isToolInstalledForConfig(AGY, '.agents/skills', localConfig())).toBe(false);
+
       // Antigravity's OWN files are evidence — the contract the upstream #945
       // suite sets up before asserting delivery (its fixture creates
       // `hooks.json`, `GEMINI.md` and `.gemini/` next to `.agents/`).
@@ -138,7 +147,7 @@ describe('Antigravity CLI (agy) support', () => {
 
       // The product's own roots count with no project evidence at all: probe a
       // path whose project root is absent, so only the machine signal can answer.
-      const noProjectEvidence = '.gemini/antigravity/skills';
+      const noProjectEvidence = '.gemini/config/skills';
       await fse.ensureDir(path.join(home, '.gemini', 'antigravity-cli'));
       expect(await isToolInstalledForConfig(AGY, noProjectEvidence, localConfig())).toBe(true);
 
@@ -194,6 +203,7 @@ describe('Antigravity CLI (agy) support', () => {
     it('maps Claude events onto the Antigravity blocks and drops unknown ones', () => {
       const block = renderAntigravityHooks([
         hookDef(),
+        hookDef({ key: 'prompt', event: 'UserPromptSubmit', command: 'teamai hook-dispatch prompt-submit --tool antigravity' }),
         hookDef({ key: 'stop', event: 'Stop', command: 'teamai hook-dispatch stop --tool antigravity' }),
         hookDef({
           key: 'post',
@@ -208,14 +218,40 @@ describe('Antigravity CLI (agy) support', () => {
       ]);
 
       expect(block.enabled).toBe(true);
-      expect(block.PreInvocation).toEqual([
+      // SessionStart rides the CLI's own SessionStart event, not PreInvocation
+      // (which fires before every model call): see EVENT_TO_BLOCK.
+      expect(block.SessionStart).toEqual([
         { command: 'bash -lc "teamai hook-dispatch session-start --tool antigravity 2>/dev/null" || true', type: 'command' },
+      ]);
+      expect(block.PreInvocation).toEqual([
+        { command: 'teamai hook-dispatch prompt-submit --tool antigravity', type: 'command' },
       ]);
       expect(block.Stop).toEqual([{ command: 'teamai hook-dispatch stop --tool antigravity', type: 'command' }]);
       expect(block.PostToolUse).toEqual([
         { matcher: 'Skill', hooks: [{ command: 'teamai hook-dispatch post-tool-use --tool antigravity --matcher Skill', type: 'command', timeout: 10 }] },
       ]);
       expect(JSON.stringify(block)).not.toContain('nope');
+    });
+
+    it('uses a dispatch command the CLI can actually run on this platform', () => {
+      // agy runs hook commands through cmd /c on Windows, where the POSIX
+      // `"<bash>" -lc "…"` wrapper's quotes arrive backslash-escaped and the
+      // command never starts (verified against agy 1.3.4); the bare form runs.
+      const expected = process.platform === 'win32'
+        ? 'teamai hook-dispatch session-start --tool antigravity'
+        : 'bash -lc "teamai hook-dispatch session-start --tool antigravity 2>/dev/null" || true';
+      expect(getAntigravityDispatchCommand('session-start', AGY)).toBe(expected);
+
+      // The built-in defs the adapter writes go through the same builder.
+      const commands = builtinHookDefs(AGY).map((def) => def.command);
+      expect(commands.length).toBeGreaterThan(0);
+      for (const command of commands) {
+        if (process.platform === 'win32') {
+          expect(command).toMatch(/^teamai hook-dispatch [a-z-]+ --tool antigravity(?: --matcher \S+)?$/);
+        } else {
+          expect(command).toContain('bash -lc "teamai hook-dispatch ');
+        }
+      }
     });
 
     it('merges into the teamai-hooks key only, never mutating its input', () => {
@@ -288,13 +324,13 @@ describe('Antigravity CLI (agy) support', () => {
   });
 
   describe('hook injection through the pull pipeline', () => {
-    const toolPaths = () => ({ [AGY]: { skills: '.agents/skills', settings: 'hooks.json' } }) as Record<string, { settings?: string }>;
+    const toolPaths = () => ({ [AGY]: { skills: '.agents/skills', settings: '.agents/hooks.json' } }) as Record<string, { settings?: string }>;
 
     it('writes the teamai-hooks block into the project hooks.json the user already has', async () => {
       const tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-antigravity-pull-'));
       try {
         const projectRoot = path.join(tmp, 'project');
-        const file = path.join(projectRoot, 'hooks.json');
+        const file = path.join(projectRoot, '.agents', 'hooks.json');
         await fse.outputJson(file, USER_BLOCK);
 
         await reconcileHooksToAllTools(toolPaths(), projectRoot, [], path.join(tmp, 'managed-hooks.json'));
@@ -302,7 +338,7 @@ describe('Antigravity CLI (agy) support', () => {
         const written = JSON.parse(await fse.readFile(file, 'utf8')) as Record<string, Record<string, unknown>>;
         expect(written['dangerous-commands-guard']).toEqual(USER_BLOCK['dangerous-commands-guard']);
         expect(JSON.stringify(written)).toContain('--tool antigravity');
-        expect(written[TEAMAI_ANTIGRAVITY_HOOKS_KEY]!['PreInvocation']).toBeDefined();
+        expect(written[TEAMAI_ANTIGRAVITY_HOOKS_KEY]!['SessionStart']).toBeDefined();
 
         // Idempotent across a second pull.
         const bytes = await fse.readFile(file, 'utf8');
@@ -324,6 +360,7 @@ describe('Antigravity CLI (agy) support', () => {
 
         await reconcileHooksToAllTools(toolPaths(), projectRoot, [], path.join(tmp, 'managed-hooks.json'));
 
+        expect(await fse.pathExists(path.join(projectRoot, '.agents', 'hooks.json'))).toBe(false);
         expect(await fse.pathExists(path.join(projectRoot, 'hooks.json'))).toBe(false);
       } finally {
         await fse.remove(tmp);
