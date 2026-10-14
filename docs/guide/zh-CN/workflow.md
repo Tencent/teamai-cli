@@ -2,7 +2,7 @@
 
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
-工作流是团队仓库里的 `workflows/<name>.yaml`。这一版按顺序运行 command 步骤。
+工作流是团队仓库里的 `workflows/<name>.yaml`。它按顺序运行命令步骤和只读提示词步骤。
 
 ```yaml
 schemaVersion: v1alpha1
@@ -15,17 +15,31 @@ steps:
     command: npm test
     output:
       ok: boolean
+  - id: review
+    prompt_file: prompts/review.md
+    agent: reviewer
 ```
 
-`schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且只有一条 `command`。`output` 可选。写了它，成功的命令就必须在 stdout 上打印一个 JSON 值。简写类型是 `string`、`number`、`boolean`、字面量联合（例如 `pass | fix`）、对象，或只含一种元素类型的数组。对象在每个声明字段都存在且类型正确时匹配，允许多余字段。
+`schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且必须且只能使用 `command`、`prompt`、`prompt_file` 之一。提示词步骤可选填 `agent`。`output` 沿用已有简写：`string`、`number`、`boolean`、字面量联合、对象，或只含一种元素类型的数组。TeamAI 会用它校验成功命令的 stdout 或提示词工具返回的 `output`。
 
-`teamai pull` 和 `teamai push` 分别检查每个文件。报错会给出文件、行号和字段。其他工作流和其他资源仍会同步。以前校验通过的文件会在本地缓存里保留那一版，无效的内容不会被运行。从未校验通过的文件没有可运行的版本。单仓库模式下，每个检出各自保留一份缓存。
+`teamai pull` 和 `teamai push` 分别检查每个文件。`prompt_file` 必须是团队仓库内的普通文件，不能是符号链接。校验时会把文件内容和工作流一起缓存，因此已经开始的运行会继续使用对应修订版，即使源文件后来被修改或删除。新修订版无效时，仍保留上一份有效缓存。
+
+在本地配置中按机器选择无界面工具：
+
+```yaml
+workflows:
+  tools:
+    default: claude
+    implementer: codex
+```
+
+有 agent 专用配置时优先于 `default`。支持 `claude`、`codex` 和 `opencode`。CI 可以在单次启动时用 `--tools default=claude,implementer=codex` 覆盖。命名 agent 从 `teamai pull` 已经部署到该工具、该 scope 目录里的文件读取。
 
 ```text
 teamai workflow start build --driver local
 ```
 
-`--driver local` 在当前目录里一次运行一条命令。它调用的 `next` 和 `report` 与外部驱动相同：
+`--driver local` 在当前目录里一次运行一个步骤。每次 attempt 的 `result.json` 位于当前 scope 的 TeamAI 数据目录中，不在产品检出目录内。提示词步骤只读；如果工具修改了仓库，步骤会失败，同时保留文件供检查。驱动调用的 `next` 和 `report` 与下面相同：
 
 ```text
 teamai workflow start build

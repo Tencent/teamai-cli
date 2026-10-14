@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { leaseNext, reportAttempt, SETTLED_ATTEMPTS_LIMIT, startRun } from '../workflow/engine.js';
+import { leaseNext, parseReport, reportAttempt, SETTLED_ATTEMPTS_LIMIT, startRun } from '../workflow/engine.js';
 import { runLocalDriver } from '../workflow/local-driver.js';
 import { outputMismatch } from '../workflow/output.js';
 import { readRun, runLockPath, writeRun } from '../workflow/store.js';
@@ -62,6 +62,28 @@ afterEach(() => {
 });
 
 describe('workflow engine', () => {
+  it('parses and stores tool report metadata', async () => {
+    const parsed = parseReport({
+      attempt: 'a00000000',
+      revision: 1,
+      outcome: 'success',
+      driver: driverA,
+      tool: 'claude',
+      model: 'sonnet',
+      session: 'session-1',
+      tokens: { input: 2, output: 1, cachedInput: 1 },
+      failure: { code: 'tool_failed', message: 'failed' },
+    });
+    expect(parsed).toMatchObject({ tool: 'claude', model: 'sonnet', session: 'session-1', tokens: { input: 2 } });
+    expect(parseReport({
+      attempt: 'a00000000',
+      revision: 1,
+      outcome: 'success',
+      driver: driverA,
+      tokens: { input: Number.NaN },
+    })).toBe('tokens.input must be a finite number');
+  });
+
   it('leases steps in order and stores the outcome', async () => {
     const { config, runId } = await startBuild(TWO_STEPS);
     const first = await leaseNext(config, runId, driverA);

@@ -6,7 +6,7 @@ function isYamlNode(value: unknown): value is Node {
 import type { OutputSchema, WorkflowDefinition, WorkflowDiagnostic, WorkflowStep } from './types.js';
 
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'steps']);
-const STEP_KEYS = new Set(['id', 'command', 'output']);
+const STEP_KEYS = new Set(['id', 'command', 'prompt', 'prompt_file', 'agent', 'output']);
 const TYPE_NAMES = new Set(['string', 'number', 'boolean']);
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -93,8 +93,13 @@ function parseOutput(
  * Parse one workflow file. A failure is a list of diagnostics; it does not throw,
  * so one bad file cannot stop the rest of a sync.
  */
-export function parseWorkflow(file: string, content: string): { ok: true; definition: WorkflowDefinition } | { ok: false; diagnostics: WorkflowDiagnostic[] } {
+export function parseWorkflow(file: string, content: string): {
+  ok: true;
+  definition: WorkflowDefinition;
+  promptFileLocations: Record<number, { line: number; column: number }>;
+} | { ok: false; diagnostics: WorkflowDiagnostic[] } {
   const diagnostics: WorkflowDiagnostic[] = [];
+  const promptFileLocations: Record<number, { line: number; column: number }> = {};
   if (content.trim() === '') {
     return { ok: false, diagnostics: [{ file, line: 1, column: 1, field: '(root)', message: 'workflow file is empty' }] };
   }
@@ -158,13 +163,13 @@ export function parseWorkflow(file: string, content: string): { ok: true; defini
     stepsNode.items.forEach((item, index) => {
       const field = `steps[${index}]`;
       if (!isMap(item)) {
-        diagnostics.push(locate(file, lineCounter, item, field, 'a step must be a mapping with one command'));
+        diagnostics.push(locate(file, lineCounter, item, field, 'a step must be a mapping with exactly one action'));
         return;
       }
       for (const pair of item.items) {
         const key = scalarString(pair.key);
         if (!key || !STEP_KEYS.has(key)) {
-          diagnostics.push(locate(file, lineCounter, pair.key ?? item, `${field}.${key ?? 'key'}`, 'a step has exactly one command'));
+          diagnostics.push(locate(file, lineCounter, pair.key ?? item, `${field}.${key ?? 'key'}`, 'unsupported field'));
         }
       }
       const idPair = item.items.find((pair) => scalarString(pair.key) === 'id');
@@ -178,8 +183,35 @@ export function parseWorkflow(file: string, content: string): { ok: true; defini
       }
       const commandPair = item.items.find((pair) => scalarString(pair.key) === 'command');
       const command = scalarString(commandPair?.value);
-      if (command === undefined || command.trim() === '') {
+      const promptPair = item.items.find((pair) => scalarString(pair.key) === 'prompt');
+      const prompt = scalarString(promptPair?.value);
+      const promptFilePair = item.items.find((pair) => scalarString(pair.key) === 'prompt_file');
+      const promptFile = scalarString(promptFilePair?.value);
+      const actions = [commandPair, promptPair, promptFilePair].filter(Boolean);
+      if (actions.length !== 1) {
+        diagnostics.push(locate(file, lineCounter, item, field, 'a step has exactly one action: command, prompt, or prompt_file'));
+      }
+      if (commandPair && (command === undefined || command.trim() === '')) {
         diagnostics.push(locate(file, lineCounter, commandPair?.value ?? commandPair?.key ?? item, `${field}.command`, 'command must be a non-empty string'));
+      }
+      if (promptPair && (prompt === undefined || prompt.trim() === '')) {
+        diagnostics.push(locate(file, lineCounter, promptPair.value ?? promptPair.key ?? item, `${field}.prompt`, 'prompt must be a non-empty string'));
+      }
+      if (promptFilePair) {
+        const segments = promptFile?.split(/[\\/]/);
+        if (!promptFile || promptFile.trim() === '' || pathIsAbsolute(promptFile) || segments?.includes('..')) {
+          diagnostics.push(locate(file, lineCounter, promptFilePair.value ?? promptFilePair.key ?? item, `${field}.prompt_file`, 'prompt_file must be a relative path without ".." segments'));
+        } else if (isYamlNode(promptFilePair.value)) {
+          const position = locate(file, lineCounter, promptFilePair.value, `${field}.prompt_file`, '');
+          promptFileLocations[index] = { line: position.line, column: position.column };
+        }
+      }
+      const agentPair = item.items.find((pair) => scalarString(pair.key) === 'agent');
+      const agent = scalarString(agentPair?.value)?.trim();
+      if (agentPair && (!agent || !TOKEN.test(agent))) {
+        diagnostics.push(locate(file, lineCounter, agentPair.value ?? agentPair.key ?? item, `${field}.agent`, 'agent must be a non-empty token'));
+      } else if (agentPair && commandPair) {
+        diagnostics.push(locate(file, lineCounter, agentPair.key ?? item, `${field}.agent`, 'agent is only allowed on a prompt or prompt_file step'));
       }
       let output: OutputSchema | undefined;
       const outputPair = item.items.find((pair) => scalarString(pair.key) === 'output');
@@ -188,8 +220,15 @@ export function parseWorkflow(file: string, content: string): { ok: true; defini
       } else if (outputPair) {
         diagnostics.push(locate(file, lineCounter, outputPair.key ?? item, `${field}.output`, 'output must be a shorthand type'));
       }
-      if (id && TOKEN.test(id) && command && command.trim() !== '' && !diagnostics.some((d) => d.field.startsWith(field))) {
-        steps.push({ id, command, ...(output ? { output } : {}) });
+      if (id && TOKEN.test(id) && actions.length === 1 && !diagnostics.some((d) => d.field.startsWith(field))) {
+        steps.push({
+          id,
+          ...(command ? { command } : {}),
+          ...(prompt ? { prompt } : {}),
+          ...(promptFile ? { promptFile } : {}),
+          ...(agent ? { agent } : {}),
+          ...(output ? { output } : {}),
+        });
       }
     });
   }
@@ -198,5 +237,10 @@ export function parseWorkflow(file: string, content: string): { ok: true; defini
   return {
     ok: true,
     definition: { schemaVersion: 'v1alpha1', name, description, steps },
+    promptFileLocations,
   };
+}
+
+function pathIsAbsolute(value: string): boolean {
+  return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
 }

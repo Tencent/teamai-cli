@@ -825,6 +825,10 @@ export const LocalConfigSchema = z.object({
   toolRoots: z.record(z.string(), z.string()).optional(),
   /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
   disabledAgents: z.array(z.string()).optional(),
+  /** Per-machine tool selection for locally executed workflow prompt steps. */
+  workflows: z.object({
+    tools: z.record(z.string(), z.string().min(1)).default({}),
+  }).optional(),
   /**
    * Per-machine map from a gateway/proxy model alias to a known Claude model
    * name, so cost/cache estimation works when the transcript records an opaque

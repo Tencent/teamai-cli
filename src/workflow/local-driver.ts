@@ -1,9 +1,20 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { LocalConfig } from '../types.js';
+import {
+  agentFileExtensionForTool,
+  reverseFromClaude,
+  reverseFromCodex,
+  reverseFromOpencode,
+  type AgentSpec,
+  type ToolName,
+} from '../resources/agent-format.js';
+import { getDataHome, resolveToolBaseDir, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { leaseNext, reportAttempt } from './engine.js';
-import type { DriverIdentity, WorkflowEnvelope } from './types.js';
+import { createLocalToolAdapter, type LocalToolAdapter, type LocalWorkflowTool } from './local-tool-adapter.js';
+import type { DriverIdentity, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isWorkflowError } from './types.js';
 
 export function localDriver(cwd: string): DriverIdentity {
@@ -38,12 +49,88 @@ function jsonStdout(stdout: string): unknown | undefined {
   }
 }
 
+export interface LocalDriverOptions {
+  tools?: Record<string, string>;
+  toolPaths?: TeamaiConfig['toolPaths'];
+  adapter?: LocalToolAdapter;
+}
+
+interface Lease {
+  attempt: string;
+  revision: number;
+  command?: string;
+  prompt?: string;
+  agent?: string;
+}
+
+function resultPath(config: LocalConfig, runId: string, attempt: string): string {
+  return path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts', attempt, 'result.json');
+}
+
+function supportedTool(value: string): value is LocalWorkflowTool {
+  return value === 'claude' || value === 'codex' || value === 'opencode';
+}
+
+function reverseAgent(tool: LocalWorkflowTool, file: string, content: string) {
+  if (tool === 'claude') return reverseFromClaude(file, content);
+  if (tool === 'codex') return reverseFromCodex(file, content);
+  return reverseFromOpencode(file, content);
+}
+
+async function loadAgent(
+  tool: LocalWorkflowTool,
+  name: string,
+  config: LocalConfig,
+  toolPaths: TeamaiConfig['toolPaths'] | undefined,
+): Promise<AgentSpec | null> {
+  const agents = toolPaths?.[tool]?.agents;
+  if (!agents) return null;
+  // The same directory `teamai pull` writes: the tool base for this scope, not the step's cwd.
+  const file = path.join(resolveToolBaseDir(tool, config), agents, `${name}${agentFileExtensionForTool(tool as ToolName)}`);
+  const content = await readFileSafe(file);
+  if (content === null) return null;
+  const reversed = reverseAgent(tool, file, content);
+  return reversed.ok ? reversed.spec : null;
+}
+
+interface GitStatus {
+  ok: boolean;
+  text: string;
+}
+
+function gitStatus(workspace: string): Promise<GitStatus> {
+  return new Promise((resolve) => {
+    execFile('git', ['status', '--porcelain'], { cwd: workspace, env: process.env }, (error, stdout, stderr) => {
+      resolve(error ? { ok: false, text: stderr.trim() } : { ok: true, text: stdout });
+    });
+  });
+}
+
+function changedPaths(before: GitStatus, after: GitStatus): string[] {
+  if (!after.ok || (before.ok && before.text === after.text) || (!before.ok && after.text === '')) return [];
+  const changed = after.text === '' ? before.text : after.text;
+  return changed.split('\n')
+    .filter(Boolean)
+    .map((line) => line.length > 3 ? line.slice(3).trim() : line.trim());
+}
+
+function failureReport(failure: WorkflowFailure): { outcome: 'failed'; message: string; failure: WorkflowFailure } {
+  return { outcome: 'failed', message: failure.message, failure };
+}
+
 /**
  * Run leased commands one at a time. Each lease and report goes through the
  * same engine operations an external driver calls.
  */
-export async function runLocalDriver(config: LocalConfig, runId: string, cwd: string): Promise<WorkflowEnvelope> {
+export async function runLocalDriver(
+  config: LocalConfig,
+  runId: string,
+  cwd: string,
+  options: LocalDriverOptions = {},
+): Promise<WorkflowEnvelope> {
   const driver = localDriver(cwd);
+  const tools = { ...config.workflows?.tools, ...options.tools };
+  const adapter = options.adapter ?? createLocalToolAdapter();
   const reported = new Set<string>();
   for (;;) {
     const next = await leaseNext(config, runId, driver);
@@ -55,26 +142,97 @@ export async function runLocalDriver(config: LocalConfig, runId: string, cwd: st
         : 'the next step is not available';
       return { error: { code: 'busy', message: reason } };
     }
-    const lease = next.data.lease as { attempt?: unknown; revision?: unknown; command?: unknown } | undefined;
-    if (!lease || typeof lease.attempt !== 'string' || typeof lease.revision !== 'number' || typeof lease.command !== 'string') {
+    const rawLease = next.data.lease as Record<string, unknown> | undefined;
+    if (!rawLease || typeof rawLease.attempt !== 'string' || typeof rawLease.revision !== 'number') {
+      return { error: { code: 'run_unreadable', message: `Run ${runId} returned a lease the local driver cannot run` } };
+    }
+    const lease: Lease = {
+      attempt: rawLease.attempt,
+      revision: rawLease.revision,
+      ...(typeof rawLease.command === 'string' ? { command: rawLease.command } : {}),
+      ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
+      ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
+    };
+    if ((lease.command === undefined) === (lease.prompt === undefined)) {
       return { error: { code: 'run_unreadable', message: `Run ${runId} returned a lease the local driver cannot run` } };
     }
     if (reported.has(lease.attempt)) {
       return { error: { code: 'driver_stuck', message: `Attempt ${lease.attempt} was leased again before it could be reported` } };
     }
-    const result = await runCommand(lease.command, driver.workspace);
-    const outputs = jsonStdout(result.stdout);
-    const snippet = result.stderr.trim().slice(0, 400);
+    let body: Parameters<typeof reportAttempt>[2];
+    const attemptResultPath = resultPath(config, runId, lease.attempt);
+    if (lease.command !== undefined) {
+      const result = await runCommand(lease.command, driver.workspace);
+      const output = jsonStdout(result.stdout);
+      await fs.mkdir(path.dirname(attemptResultPath), { recursive: true });
+      await writeJsonAtomic(attemptResultPath, output !== undefined ? { output } : {});
+      const snippet = result.stderr.trim().slice(0, 400);
+      body = {
+        attempt: lease.attempt,
+        revision: lease.revision,
+        outcome: result.exitCode === 0 ? 'success' : 'failed',
+        driver,
+        ...(output !== undefined ? { outputs: output } : {}),
+        exitCode: result.exitCode,
+        ...(result.exitCode !== 0
+          ? { message: snippet === '' ? `command exited with status ${result.exitCode}` : `command exited with status ${result.exitCode}: ${snippet}` }
+          : {}),
+      };
+    } else {
+      const selected = lease.agent && tools[lease.agent] ? tools[lease.agent] : tools.default;
+      if (!selected) {
+        const failure = { code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' };
+        body = { attempt: lease.attempt, revision: lease.revision, driver, ...failureReport(failure) };
+      } else if (!supportedTool(selected)) {
+        const failure = { code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` };
+        body = { attempt: lease.attempt, revision: lease.revision, driver, tool: selected, ...failureReport(failure) };
+      } else {
+        const agent = lease.agent ? await loadAgent(selected, lease.agent, config, options.toolPaths) : undefined;
+        if (lease.agent && !agent) {
+          const failure = {
+            code: 'agent_unavailable',
+            message: `Agent "${lease.agent}" is not available for ${selected}. Run teamai pull and try again.`,
+          };
+          body = { attempt: lease.attempt, revision: lease.revision, driver, tool: selected, ...failureReport(failure) };
+        } else {
+          const before = await gitStatus(driver.workspace);
+          let result;
+          try {
+            result = await adapter.run(selected, {
+              prompt: lease.prompt!,
+              cwd: driver.workspace,
+              resultPath: attemptResultPath,
+              ...(agent ? { agent: { name: lease.agent!, instructions: agent.instructions, ...(agent.model ? { model: agent.model } : {}) } } : {}),
+            });
+          } catch {
+            result = {
+              exitCode: 1,
+              failure: { code: 'tool_failed', message: `${selected} could not complete the workflow step` },
+            };
+          }
+          const after = await gitStatus(driver.workspace);
+          const paths = changedPaths(before, after);
+          const dirtyFailure = paths.length > 0
+            ? { code: 'read_only_dirty', message: `Read-only prompt step changed repository paths: ${paths.join(', ')}` }
+            : undefined;
+          const failure = dirtyFailure ?? result.failure;
+          body = {
+            attempt: lease.attempt,
+            revision: lease.revision,
+            driver,
+            tool: selected,
+            ...(result.model ?? agent?.model ? { model: result.model ?? agent?.model } : {}),
+            ...(result.session ? { session: result.session } : {}),
+            ...(result.tokens ? { tokens: result.tokens } : {}),
+            ...(result.output !== undefined ? { outputs: result.output } : {}),
+            exitCode: result.exitCode,
+            ...(failure ? failureReport(failure) : { outcome: result.exitCode === 0 ? 'success' : 'failed' }),
+          };
+        }
+      }
+    }
     const reportedEnvelope = await reportAttempt(config, runId, {
-      attempt: lease.attempt,
-      revision: lease.revision,
-      outcome: result.exitCode === 0 ? 'success' : 'failed',
-      driver,
-      ...(outputs !== undefined ? { outputs } : {}),
-      exitCode: result.exitCode,
-      ...(result.exitCode !== 0
-        ? { message: snippet === '' ? `command exited with status ${result.exitCode}` : `command exited with status ${result.exitCode}: ${snippet}` }
-        : {}),
+      ...body,
     });
     if (isWorkflowError(reportedEnvelope)) return reportedEnvelope;
     reported.add(lease.attempt);

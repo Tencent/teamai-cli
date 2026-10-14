@@ -2,7 +2,7 @@ import { autoDetectInit } from './config.js';
 import { setStderrOnly } from './utils/logger.js';
 import { leaseNext, parseDriverPayload, parseReport, reportAttempt, startRun } from './workflow/engine.js';
 import { runLocalDriver } from './workflow/local-driver.js';
-import type { LocalConfig } from './types.js';
+import { scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 
 function writeEnvelope(envelope: WorkflowEnvelope): void {
@@ -17,10 +17,10 @@ function writeEnvelope(envelope: WorkflowEnvelope): void {
   }
 }
 
-async function loadConfig(): Promise<{ config: LocalConfig } | WorkflowEnvelope> {
+async function loadConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | WorkflowEnvelope> {
   try {
-    const { localConfig } = await autoDetectInit();
-    return { config: localConfig };
+    const { localConfig, teamConfig } = await autoDetectInit();
+    return { config: localConfig, teamConfig };
   } catch (error) {
     return {
       error: {
@@ -46,21 +46,40 @@ function readJson(payload: string | undefined, missing: string): JsonRead {
   }
 }
 
-async function readyConfig(): Promise<LocalConfig | undefined> {
+async function readyConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | undefined> {
   const loaded = await loadConfig();
   if (!('config' in loaded)) {
     writeEnvelope(loaded);
     return undefined;
   }
-  return loaded.config;
+  return loaded;
 }
 
-export async function workflowStart(name: string, options: { driver?: string }): Promise<void> {
+function parseTools(value: string | undefined): Record<string, string> | string {
+  if (value === undefined) return {};
+  const tools: Record<string, string> = {};
+  for (const pair of value.split(',')) {
+    const separator = pair.indexOf('=');
+    const name = pair.slice(0, separator).trim();
+    const tool = pair.slice(separator + 1).trim();
+    if (separator < 1 || name === '' || tool === '') return 'Pass --tools as comma-separated name=tool pairs';
+    tools[name] = tool;
+  }
+  return tools;
+}
+
+export async function workflowStart(name: string, options: { driver?: string; tools?: string }): Promise<void> {
   setStderrOnly(true);
-  const config = await readyConfig();
-  if (!config) return;
+  const loaded = await readyConfig();
+  if (!loaded) return;
+  const { config, teamConfig } = loaded;
   if (options.driver !== undefined && options.driver !== 'local') {
     writeEnvelope({ error: { code: 'unsupported_driver', message: `Driver "${options.driver}" is not available. Use --driver local.` } });
+    return;
+  }
+  const tools = parseTools(options.tools);
+  if (typeof tools === 'string') {
+    writeEnvelope({ error: { code: 'invalid_tools', message: tools } });
     return;
   }
   const started = await startRun(config, name);
@@ -73,13 +92,14 @@ export async function workflowStart(name: string, options: { driver?: string }):
     writeEnvelope({ error: { code: 'run_unreadable', message: 'The new run id was missing' } });
     return;
   }
-  writeEnvelope(await runLocalDriver(config, runId, process.cwd()));
+  writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: scopedToolPaths(teamConfig, config) }));
 }
 
 export async function workflowNext(runId: string, options: { json?: string }): Promise<void> {
   setStderrOnly(true);
-  const config = await readyConfig();
-  if (!config) return;
+  const loaded = await readyConfig();
+  if (!loaded) return;
+  const { config } = loaded;
   const payload = readJson(options.json, 'Pass --json with a driver object');
   if (!payload.ok) {
     writeEnvelope(payload.envelope);
@@ -95,8 +115,9 @@ export async function workflowNext(runId: string, options: { json?: string }): P
 
 export async function workflowReport(runId: string, options: { json?: string }): Promise<void> {
   setStderrOnly(true);
-  const config = await readyConfig();
-  if (!config) return;
+  const loaded = await readyConfig();
+  if (!loaded) return;
+  const { config } = loaded;
   const payload = readJson(options.json, 'Pass --json with attempt, revision, outcome, and driver');
   if (!payload.ok) {
     writeEnvelope(payload.envelope);

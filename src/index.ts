@@ -755,13 +755,14 @@ envCmd
 
 const workflowCmd = program
   .command('workflow')
-  .description('Run a command workflow from workflows/<name>.yaml');
+  .description('Run a validated workflow from workflows/<name>.yaml');
 
 workflowCmd
   .command('start <name>')
-  .description('Create a run for a validated workflow. With --driver local, run each command and report it.')
-  .option('--driver <kind>', 'Run the workflow in this process. Only local is available; it runs one command at a time.')
-  .action(async (name: string, cmdOpts: { driver?: string }) => {
+  .description('Create a run. With --driver local, execute command and prompt steps in this process.')
+  .option('--driver <kind>', 'Run the workflow in this process. Only local is available.')
+  .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs')
+  .action(async (name: string, cmdOpts: { driver?: string; tools?: string }) => {
     const { workflowStart } = await import('./workflow-commands.js');
     await workflowStart(name, cmdOpts);
   });

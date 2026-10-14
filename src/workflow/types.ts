@@ -1,4 +1,4 @@
-/** Command-only workflow types for the v1alpha1 subset. */
+/** Workflow types for the v1alpha1 local-driver subset. */
 
 export interface DriverIdentity {
   kind: string;
@@ -16,7 +16,12 @@ export type OutputSchema =
 
 export interface WorkflowStep {
   id: string;
-  command: string;
+  command?: string;
+  /** Resolved, revision-bound prompt text. */
+  prompt?: string;
+  /** Original team-repo-relative source path for a cached prompt. */
+  promptFile?: string;
+  agent?: string;
   output?: OutputSchema;
 }
 
@@ -54,6 +59,22 @@ export interface StepState {
   outputs?: unknown;
   exitCode?: number;
   message?: string;
+  tool?: string;
+  model?: string;
+  session?: string;
+  tokens?: TokenUsage;
+  failure?: WorkflowFailure;
+}
+
+export interface TokenUsage {
+  input?: number;
+  output?: number;
+  cachedInput?: number;
+}
+
+export interface WorkflowFailure {
+  code: string;
+  message: string;
 }
 
 /** Durable run file. `revision` rejects stale reports; `definition` is the cached snapshot. */

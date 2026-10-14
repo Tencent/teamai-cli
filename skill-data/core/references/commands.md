@@ -219,9 +219,10 @@ Generated: do not edit by hand. Regenerate with
 
 ## workflow
 
-- `teamai workflow` — Run a command workflow from workflows/<name>.yaml
-  - `teamai workflow start <name>` — Create a run for a validated workflow. With --driver local, run each command and report it.
-    - `--driver <kind>` — Run the workflow in this process. Only local is available; it runs one command at a time.
+- `teamai workflow` — Run a validated workflow from workflows/<name>.yaml
+  - `teamai workflow start <name>` — Create a run. With --driver local, execute command and prompt steps in this process.
+    - `--driver <kind>` — Run the workflow in this process. Only local is available.
+    - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
   - `teamai workflow next <run>` — Lease the next pending step of a run. Prints a JSON envelope.
     - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}
   - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.

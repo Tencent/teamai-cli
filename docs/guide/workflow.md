@@ -2,7 +2,7 @@
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
-A workflow is a YAML file at `workflows/<name>.yaml` in the team repo. This version runs command steps, in order.
+A workflow is a YAML file at `workflows/<name>.yaml` in the team repo. It runs command and read-only prompt steps in order.
 
 ```yaml
 schemaVersion: v1alpha1
@@ -15,17 +15,31 @@ steps:
     command: npm test
     output:
       ok: boolean
+  - id: review
+    prompt_file: prompts/review.md
+    agent: reviewer
 ```
 
-`schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and one `command`. `output` is optional. When you set it, a successful command must print one JSON value on stdout. The shorthand is `string`, `number`, `boolean`, a literal union such as `pass | fix`, an object, or an array with one item type. An object matches when every declared field is present and has the right type. Extra fields are allowed.
+`schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and exactly one of `command`, `prompt`, or `prompt_file`. `agent` is optional on prompt steps. `output` uses the existing shorthand: `string`, `number`, `boolean`, a literal union, an object, or an array with one item type. TeamAI validates successful command stdout or a prompt tool's `output` against it.
 
-`teamai pull` and `teamai push` check each file on its own. A problem names the file, the line, and the field. Other workflows and other resources still sync. A file that was valid before keeps that version in the local cache. The invalid text does not run. A file that has never been valid has nothing to run. In single-repo mode, each checkout keeps its own cache.
+`teamai pull` and `teamai push` check each file on its own. A `prompt_file` must be a regular, non-symlink file inside the team repo. Its text is cached with the validated workflow, so an existing run keeps that revision even if the source is later changed or deleted. A file that was valid before keeps that version in the local cache when a new revision is invalid.
+
+Choose headless tools per machine in the local config:
+
+```yaml
+workflows:
+  tools:
+    default: claude
+    implementer: codex
+```
+
+An agent-specific entry wins over `default`. `claude`, `codex`, and `opencode` are supported. For CI, override this selection for one start with `--tools default=claude,implementer=codex`. A named agent is read from the file `teamai pull` already deployed for the selected tool, in that tool's directory for this scope.
 
 ```text
 teamai workflow start build --driver local
 ```
 
-`--driver local` runs one command at a time in the current directory. It calls the same `next` and `report` operations an external driver uses:
+`--driver local` runs one step at a time in the current directory. Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. Prompt steps are read-only: if a tool changes the repository, the step fails and leaves those files in place for inspection. The driver calls the same `next` and `report` operations shown below:
 
 ```text
 teamai workflow start build

@@ -4,7 +4,15 @@ import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow } from './cache.js';
 import { outputMismatch } from './output.js';
 import { isRunId, readRun, runLockPath, writeRun } from './store.js';
-import type { DriverIdentity, RunState, StepOutcome, StepState, WorkflowEnvelope } from './types.js';
+import type {
+  DriverIdentity,
+  RunState,
+  StepOutcome,
+  StepState,
+  TokenUsage,
+  WorkflowEnvelope,
+  WorkflowFailure,
+} from './types.js';
 
 const LOCK_ATTEMPTS = 40;
 const LOCK_WAIT_MS = 25;
@@ -23,6 +31,11 @@ export interface ReportInput {
   outputs?: unknown;
   exitCode?: number;
   message?: string;
+  tool?: string;
+  model?: string;
+  session?: string;
+  tokens?: TokenUsage;
+  failure?: WorkflowFailure;
 }
 
 function error(code: string, message: string): WorkflowEnvelope {
@@ -76,7 +89,9 @@ function leasePayload(run: RunState, step: StepState): Record<string, unknown> {
     step: step.id,
     attempt: step.lease?.attempt,
     revision: step.lease?.revision,
-    command: definition?.command,
+    ...(definition?.command !== undefined ? { command: definition.command } : {}),
+    ...(definition?.prompt !== undefined ? { prompt: definition.prompt } : {}),
+    ...(definition?.agent !== undefined ? { agent: definition.agent } : {}),
     ...(definition?.output ? { output: definition.output } : {}),
   };
 }
@@ -166,6 +181,29 @@ export function parseReport(value: unknown): ReportInput | string {
     if (typeof record.message !== 'string') return 'message must be a string';
     report.message = record.message;
   }
+  for (const field of ['tool', 'model', 'session'] as const) {
+    if (record[field] === undefined) continue;
+    if (typeof record[field] !== 'string') return `${field} must be a string`;
+    report[field] = record[field];
+  }
+  if (record.tokens !== undefined) {
+    if (!record.tokens || typeof record.tokens !== 'object' || Array.isArray(record.tokens)) return 'tokens must be an object';
+    const value = record.tokens as Record<string, unknown>;
+    const tokens: TokenUsage = {};
+    for (const field of ['input', 'output', 'cachedInput'] as const) {
+      if (value[field] === undefined) continue;
+      if (typeof value[field] !== 'number' || !Number.isFinite(value[field])) return `tokens.${field} must be a finite number`;
+      tokens[field] = value[field];
+    }
+    report.tokens = tokens;
+  }
+  if (record.failure !== undefined) {
+    if (!record.failure || typeof record.failure !== 'object' || Array.isArray(record.failure)) return 'failure must be an object';
+    const value = record.failure as Record<string, unknown>;
+    if (typeof value.code !== 'string') return 'failure.code must be a string';
+    if (typeof value.message !== 'string') return 'failure.message must be a string';
+    report.failure = { code: value.code, message: value.message };
+  }
   return report;
 }
 
@@ -201,11 +239,13 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     const defined = run.definition.steps.find((item) => item.id === step.id);
     let outcome = report.outcome;
     let message = report.message;
+    let failure = report.failure;
     if (outcome === 'success' && defined?.output) {
       const mismatch = outputMismatch(defined.output, report.outputs);
       if (mismatch) {
         outcome = 'failed';
         message = `stdout JSON does not match output: ${mismatch}`;
+        failure = { code: 'invalid_output', message };
       }
     }
 
@@ -213,6 +253,11 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     step.attempt = undefined;
     step.exitCode = report.exitCode;
     step.message = message;
+    step.tool = report.tool;
+    step.model = report.model;
+    step.session = report.session;
+    step.tokens = report.tokens;
+    step.failure = failure;
     step.outcome = outcome;
     if (outcome === 'released') {
       step.status = 'pending';
