@@ -63,10 +63,18 @@ describe('teamai doctor CLI (e2e)', () => {
       'sharing:',
       '  env:',
       '    injectShellProfile: false',
+      // Every key the default table provides: a `toolPaths:` section replaces
+      // the table whole, and the completeness finding (#1115) reports a
+      // built-in entry that drops keys — this fixture wants a clean report.
       'toolPaths:',
       '  claude:',
       '    settings: .claude/settings.json',
       '    skills: .claude/skills',
+      '    rules: .claude/rules',
+      '    claudemd: .claude/CLAUDE.md',
+      '    agents: .claude/agents',
+      '    mcp: .claude.json',
+      '    mcpProject: .mcp.json',
     ].join('\n'));
     fs.writeFileSync(
       path.join(initializedHome, '.claude', 'settings.json'),
