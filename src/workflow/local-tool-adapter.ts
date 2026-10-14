@@ -1,9 +1,32 @@
-import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import crossSpawn from 'cross-spawn';
+import { resolveCliPath } from '../utils/cli-path.js';
 import type { TokenUsage, WorkflowFailure } from './types.js';
 
-export type LocalWorkflowTool = 'claude' | 'codex' | 'opencode';
+export type LocalWorkflowTool =
+  | 'claude'
+  | 'claude-internal'
+  | 'tclaude'
+  | 'codex'
+  | 'codex-internal'
+  | 'tcodex'
+  | 'opencode';
+
+const LOCAL_WORKFLOW_TOOLS = new Set<string>([
+  'claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode',
+]);
+
+export function isLocalWorkflowTool(value: string): value is LocalWorkflowTool {
+  return LOCAL_WORKFLOW_TOOLS.has(value);
+}
+
+export function localToolFamily(tool: LocalWorkflowTool): 'claude' | 'codex' | 'opencode' {
+  if (tool === 'codex' || tool === 'codex-internal' || tool === 'tcodex') return 'codex';
+  if (tool === 'opencode') return 'opencode';
+  return 'claude';
+}
 
 export interface LocalToolRun {
   prompt: string;
@@ -26,6 +49,7 @@ export interface LocalToolAdapter {
 }
 
 export type ToolSpawn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+export type ToolResolve = (command: string) => string | null;
 
 interface ResultFile {
   output?: unknown;
@@ -36,29 +60,30 @@ interface ResultFile {
 }
 
 function resultInstruction(input: LocalToolRun, prompt: string): string {
-  return `${prompt}\n\nWrite the final workflow result as JSON to ${input.resultPath}. `
-    + 'Use this shape: {"output":{},"model":"optional","session":"optional","tokens":{"input":1,"output":2,"cachedInput":0},"failure":{"code":"optional","message":"optional"}}.';
+  return `${prompt}\n\nWrite the workflow result as JSON to ${input.resultPath}. `
+    + 'Use this shape: {"output":{},"failure":{"code":"optional","message":"optional"}}.';
 }
 
 function invocation(tool: LocalWorkflowTool, input: LocalToolRun): { command: string; args: string[] } {
+  const family = localToolFamily(tool);
   const agentPrompt = input.agent?.instructions
     ? `${input.agent.instructions}\n\n${input.prompt}`
     : input.prompt;
-  const prompt = resultInstruction(input, tool === 'codex' ? agentPrompt : input.prompt);
-  if (tool === 'claude') {
+  const prompt = resultInstruction(input, family === 'codex' ? agentPrompt : input.prompt);
+  if (family === 'claude') {
     return {
-      command: 'claude',
+      command: tool,
       args: ['-p', prompt, '--output-format', 'json', ...(input.agent ? ['--agent', input.agent.name] : [])],
     };
   }
-  if (tool === 'codex') {
+  if (family === 'codex') {
     return {
-      command: 'codex',
+      command: tool,
       args: ['exec', ...(input.agent?.model ? ['--model', input.agent.model] : []), prompt],
     };
   }
   return {
-    command: 'opencode',
+    command: tool,
     args: ['run', prompt, ...(input.agent ? ['--agent', input.agent.name] : [])],
   };
 }
@@ -67,27 +92,11 @@ function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function parseTokens(value: unknown): TokenUsage | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  const tokens: TokenUsage = {};
-  const input = finiteNumber(record.input);
-  const output = finiteNumber(record.output);
-  const cachedInput = finiteNumber(record.cachedInput);
-  if (input !== undefined) tokens.input = input;
-  if (output !== undefined) tokens.output = output;
-  if (cachedInput !== undefined) tokens.cachedInput = cachedInput;
-  return Object.keys(tokens).length > 0 ? tokens : undefined;
-}
-
 function parseResultFile(value: unknown): ResultFile | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const result: ResultFile = {};
   if ('output' in record) result.output = record.output;
-  if (typeof record.model === 'string') result.model = record.model;
-  if (typeof record.session === 'string') result.session = record.session;
-  result.tokens = parseTokens(record.tokens);
   if (record.failure !== undefined) {
     if (!record.failure || typeof record.failure !== 'object' || Array.isArray(record.failure)) return null;
     const failure = record.failure as Record<string, unknown>;
@@ -145,15 +154,38 @@ function claudeStdout(stdout: string): ResultFile | null {
   }
 }
 
-export function createLocalToolAdapter(spawnTool: ToolSpawn = spawn): LocalToolAdapter {
+function combineResults(fileResult: ResultFile | null, reported: ResultFile | null): ResultFile | null {
+  if (!fileResult && !reported) return null;
+  const result: ResultFile = {};
+  if (fileResult && 'output' in fileResult) result.output = fileResult.output;
+  else if (reported && 'output' in reported) result.output = reported.output;
+  if (fileResult?.failure) result.failure = fileResult.failure;
+  else if (reported?.failure) result.failure = reported.failure;
+  if (reported?.model) result.model = reported.model;
+  if (reported?.session) result.session = reported.session;
+  if (reported?.tokens) result.tokens = reported.tokens;
+  return result;
+}
+
+export function createLocalToolAdapter(
+  spawnTool: ToolSpawn = crossSpawn,
+  resolveTool: ToolResolve = resolveCliPath,
+): LocalToolAdapter {
   return {
     async run(tool, input) {
       await fs.mkdir(path.dirname(input.resultPath), { recursive: true });
       const call = invocation(tool, input);
+      const executable = resolveTool(call.command);
+      if (!executable) {
+        return {
+          exitCode: 1,
+          failure: { code: 'tool_unavailable', message: `The ${tool} executable is not available on PATH` },
+        };
+      }
       const completed = await new Promise<{ exitCode: number; stdout: string; error?: NodeJS.ErrnoException }>((resolve) => {
         let child: ChildProcess;
         try {
-          child = spawnTool(call.command, call.args, {
+          child = spawnTool(executable, call.args, {
             cwd: input.cwd,
             env: { ...process.env, TEAMAI_WORKFLOW_RESULT: input.resultPath },
             windowsHide: true,
@@ -181,7 +213,8 @@ export function createLocalToolAdapter(spawnTool: ToolSpawn = spawn): LocalToolA
         };
       }
       const fileResult = await readResultFile(input.resultPath);
-      const result = fileResult ?? (tool === 'claude' ? claudeStdout(completed.stdout) : null);
+      const reported = localToolFamily(tool) === 'claude' ? claudeStdout(completed.stdout) : null;
+      const result = combineResults(fileResult, reported);
       if (!result) {
         return {
           exitCode: completed.exitCode,

@@ -12,8 +12,9 @@ import {
 } from '../resources/agent-format.js';
 import { getDataHome, resolveToolBaseDir, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
+import { log } from '../utils/logger.js';
 import { leaseNext, reportAttempt } from './engine.js';
-import { createLocalToolAdapter, type LocalToolAdapter, type LocalWorkflowTool } from './local-tool-adapter.js';
+import { createLocalToolAdapter, isLocalWorkflowTool, localToolFamily, type LocalToolAdapter, type LocalWorkflowTool } from './local-tool-adapter.js';
 import type { DriverIdentity, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isWorkflowError } from './types.js';
 
@@ -68,7 +69,12 @@ function resultPath(config: LocalConfig, runId: string, attempt: string): string
 }
 
 function supportedTool(value: string): value is LocalWorkflowTool {
-  return value === 'claude' || value === 'codex' || value === 'opencode';
+  return isLocalWorkflowTool(value);
+}
+
+function ignoredCodexSettings(agent: AgentSpec): string[] {
+  const extras = Object.keys(agent.tool_extras?.codex ?? {});
+  return agent.tools?.length ? ['tools', ...extras] : extras;
 }
 
 function reverseAgent(tool: LocalWorkflowTool, file: string, content: string) {
@@ -195,6 +201,12 @@ export async function runLocalDriver(
           };
           body = { attempt: lease.attempt, revision: lease.revision, driver, tool: selected, ...failureReport(failure) };
         } else {
+          if (agent && localToolFamily(selected) === 'codex') {
+            const ignored = ignoredCodexSettings(agent);
+            if (ignored.length > 0) {
+              log.warn(`Agent "${agent.name}" on ${selected} does not apply ${ignored.join(', ')} from the deployed agent file. codex exec still has a shell. The step is not blocked.`);
+            }
+          }
           const before = await gitStatus(driver.workspace);
           let result;
           try {

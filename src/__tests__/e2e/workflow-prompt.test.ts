@@ -50,11 +50,11 @@ describe('local prompt workflow CLI', () => {
     fs.writeFileSync(fake, `#!/usr/bin/env node
 const fs = require('node:fs');
 fs.mkdirSync(require('node:path').dirname(process.env.TEAMAI_WORKFLOW_RESULT), { recursive: true });
-fs.writeFileSync(process.env.TEAMAI_WORKFLOW_RESULT, JSON.stringify({
-  output: { ok: true },
+fs.writeFileSync(process.env.TEAMAI_WORKFLOW_RESULT, JSON.stringify({ output: { ok: true } }));
+process.stdout.write(JSON.stringify({
   model: 'fake-claude',
-  session: 'fake-session',
-  tokens: { input: 4, output: 2, cachedInput: 1 }
+  session_id: 'fake-session',
+  usage: { input_tokens: 4, output_tokens: 2, cache_read_input_tokens: 1 }
 }));
 `);
     fs.chmodSync(fake, 0o755);

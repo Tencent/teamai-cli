@@ -14,6 +14,13 @@ export function formatDiagnostic(diagnostic: WorkflowDiagnostic): string {
   return `${diagnostic.file}:${diagnostic.line}: field "${diagnostic.field}": ${diagnostic.message}`;
 }
 
+function unknownKey(file: string, lineCounter: LineCounter, node: Node | null | undefined, field: string, key: string): WorkflowDiagnostic {
+  return {
+    ...locate(file, lineCounter, node, field, `${file} uses \`${key}\`, which this teamai does not know. Update teamai.`),
+    code: 'unknown_key',
+  };
+}
+
 function locate(file: string, lineCounter: LineCounter, node: Node | null | undefined, field: string, message: string): WorkflowDiagnostic {
   let line = 1;
   let column = 1;
@@ -128,7 +135,7 @@ export function parseWorkflow(file: string, content: string): {
   for (const pair of root.items) {
     const key = scalarString(pair.key);
     if (!key || !HEADER_KEYS.has(key)) {
-      diagnostics.push(locate(file, lineCounter, pair.key ?? root, key ?? '(root)', 'unsupported field'));
+      diagnostics.push(unknownKey(file, lineCounter, pair.key ?? root, key ?? '(root)', key ?? '(root)'));
     }
   }
 
@@ -169,7 +176,7 @@ export function parseWorkflow(file: string, content: string): {
       for (const pair of item.items) {
         const key = scalarString(pair.key);
         if (!key || !STEP_KEYS.has(key)) {
-          diagnostics.push(locate(file, lineCounter, pair.key ?? item, `${field}.${key ?? 'key'}`, 'unsupported field'));
+          diagnostics.push(unknownKey(file, lineCounter, pair.key ?? item, `${field}.${key ?? 'key'}`, key ?? 'key'));
         }
       }
       const idPair = item.items.find((pair) => scalarString(pair.key) === 'id');

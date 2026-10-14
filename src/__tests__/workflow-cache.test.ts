@@ -197,6 +197,21 @@ steps:
     expect(started).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
+  it('drops the last valid version when a revision uses a key this version does not know', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'build', VALID);
+    await syncWorkflowDefinitions(config);
+    expect(await loadCachedWorkflow(config, 'build')).not.toBeNull();
+
+    writeWorkflow(config, 'build', VALID.replace('command: node compile.js', 'command: node compile.js\n    if: success'));
+    const synced = await syncWorkflowDefinitions(config);
+
+    expect(synced.unrunnable).toContain('workflows/build.yaml');
+    expect(synced.kept).not.toContain('build');
+    expect(await loadCachedWorkflow(config, 'build')).toBeNull();
+    expect(await startRun(config, 'build')).toMatchObject({ error: { code: 'workflow_not_found' } });
+  });
+
   it('keeps each self-mode checkout on its own cache', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-cache-'));
     dirs.push(root);

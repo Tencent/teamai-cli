@@ -122,6 +122,26 @@ steps:
     ]));
   });
 
+  it('names a step key this version does not know', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: one
+    command: npm test
+    if: success
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'unknown_key',
+        field: 'steps[0].if',
+        message: 'workflows/build.yaml uses `if`, which this teamai does not know. Update teamai.',
+      }),
+    ]));
+  });
+
   it('rejects a YAML syntax error with the file and line', () => {
     const result = parse('schemaVersion: [\n');
     expect(result.ok).toBe(false);

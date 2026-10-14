@@ -38,6 +38,8 @@ export interface WorkflowDiagnostic {
   column: number;
   field: string;
   message: string;
+  /** A key this version does not know. The cache must not keep an older runnable copy. */
+  code?: 'unknown_key';
 }
 
 export type StepStatus = 'pending' | 'leased' | 'succeeded' | 'failed';

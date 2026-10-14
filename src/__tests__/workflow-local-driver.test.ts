@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { startRun } from '../workflow/engine.js';
 import type { LocalToolAdapter, LocalToolRun } from '../workflow/local-tool-adapter.js';
@@ -230,6 +231,32 @@ Do not use this copy.
     expect(await readRun(config, runId)).toMatchObject({
       steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('dirty-before.txt') } }],
     });
+  });
+
+  it('warns when codex exec cannot apply the deployed agent settings, and still runs the step', async () => {
+    const { config, workspace, runId } = await fixture('reviewer');
+    config.workflows = { tools: { reviewer: 'codex' } };
+    const agents = path.join(workspace, '.codex', 'agents');
+    fs.mkdirSync(agents, { recursive: true });
+    fs.writeFileSync(path.join(agents, 'reviewer.toml'), `name = "reviewer"
+description = "Reviews changes."
+developer_instructions = "Read only."
+sandbox_mode = "read-only"
+`);
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const adapter: LocalToolAdapter = {
+      run: vi.fn(async () => ({ exitCode: 0, output: { ok: true } })),
+    };
+
+    await runLocalDriver(config, runId, workspace, {
+      adapter,
+      toolPaths: { ...toolPaths, codex: { agents: '.codex/agents' } } as TeamaiConfig['toolPaths'],
+    });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('sandbox_mode'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not blocked'));
+    expect(adapter.run).toHaveBeenCalledWith('codex', expect.anything());
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ status: 'succeeded' }] });
   });
 
   it('stores a structured child failure', async () => {
