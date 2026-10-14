@@ -208,9 +208,9 @@ function getHookShellCommand(): string {
 /**
  * Generate the hook-dispatch command for a given event, tool, and optional matcher.
  * A Codex tool keeps bare `bash` on Windows too: Codex runs its Windows form from
- * the entry's `commandWindows` (hooks.ts), and a machine-specific Git Bash path
- * here would change the project `hooks.json` a repository commits on every
- * Windows pull.
+ * the entry's `commandWindows` (toCodexEntry in hooks.ts), and a machine-specific
+ * Git Bash path here would change the project `hooks.json` a repository commits on
+ * every Windows pull.
  */
 export function getDispatchCommand(event: string, tool: string, matcher?: string, binPath?: string): string {
   const bin = binPath ?? 'teamai';
@@ -228,13 +228,13 @@ export function getDispatchCommand(event: string, tool: string, matcher?: string
  *   which on Windows is `@deepseek-ai/dsh-pwsh-local` — a PowerShell runner
  *   that prepends an encoding preamble to the command and parses the result
  *   (issue #1005).
- * - Codex: its hook runtime executes command hooks with PowerShell on
- *   Windows, so the `"<git-bash>" -lc "…"` wrapper is a ParserError and the
- *   hook panel reports every entry as failed with `exitCode: 1` — and,
- *   because the wrapper ends in `2>/dev/null || true`, it fails silently
- *   (issue #1074).
+ * Codex also runs command hooks with PowerShell on Windows (issue #1074), but
+ * its entries have a Windows-only `commandWindows`, which toCodexEntry in
+ * hooks.ts fills with the PowerShell form; its `command` stays the POSIX form
+ * on every platform, so a project `.codex/hooks.json` a repository commits does
+ * not change with the platform of the member who pulled last.
  */
-const WINDOWS_PWSH_TOOLS = new Set(['dsh', ...CODEX_TOOL_IDS]);
+const WINDOWS_PWSH_TOOLS = new Set(['dsh']);
 
 /**
  * True when this tool's hook runner is PowerShell on this platform, so the

@@ -127,49 +127,28 @@ describe('builtinHookDefs — dsh shell syntax by platform (#1005)', () => {
   });
 });
 
-describe('builtinHookDefs — codex shell syntax by platform (#1074)', () => {
+describe('builtinHookDefs — codex command is the POSIX form on every platform (#1074)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('renders a bare PowerShell dispatch on Windows for the codex family', () => {
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    for (const tool of ['codex', 'codex-internal', 'tcodex']) {
-      const defs = builtinHookDefs(tool);
-      expect(defs.length).toBeGreaterThan(0);
-      for (const def of defs) {
-        expect(def.command).toMatch(new RegExp(`^teamai hook-dispatch \\S+ --tool ${tool}(?: --matcher \\S+)? 2>\\$null; exit 0$`));
-        // Nothing the PowerShell parser would reject, and no second PowerShell.
-        expect(def.command).not.toContain('-lc');
-        expect(def.command).not.toContain('2>/dev/null');
-        expect(def.command).not.toContain('|| true');
-        expect(def.command).not.toContain('bash');
-      }
-    }
-  });
-
-  it('differs from the POSIX form only in the shell contract', () => {
+  // The PowerShell form Codex needs on Windows lives in the entry's commandWindows
+  // (toCodexEntry in hooks.ts), so the committed project hooks.json reads the same
+  // after a Windows pull and after a Linux pull.
+  it('renders the same bare bash dispatch on Windows and on Linux for the codex family', () => {
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
-    const posix = builtinHookDefs('codex');
-    platform.mockReturnValue('win32');
-    const windows = builtinHookDefs('codex');
-    expect(windows.map((d) => d.key)).toEqual(posix.map((d) => d.key));
-    windows.forEach((def, i) => {
-      const dispatch = posix[i].command.replace(/^bash -lc "(.+) 2>\/dev\/null" \|\| true$/, '$1');
-      expect(dispatch).not.toBe(posix[i].command);
-      expect(def.command).toBe(`${dispatch} 2>$null; exit 0`);
-    });
-  });
-
-  it('keeps the bash form on non-Windows platforms', () => {
-    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
-    const defs = builtinHookDefs('codex');
-    expect(defs.length).toBeGreaterThan(0);
-    for (const def of defs) {
-      expect(def.command).toContain('-lc');
-      expect(def.command).toContain('2>/dev/null');
-      expect(def.command).toContain('|| true');
-      expect(def.command).not.toContain('2>$null');
+    for (const tool of ['codex', 'codex-internal', 'tcodex']) {
+      platform.mockReturnValue('linux');
+      const posix = builtinHookDefs(tool);
+      platform.mockReturnValue('win32');
+      const windows = builtinHookDefs(tool);
+      expect(posix.length).toBeGreaterThan(0);
+      expect(windows.map((d) => d.command)).toEqual(posix.map((d) => d.command));
+      for (const def of windows) {
+        expect(def.command).toMatch(new RegExp(`^bash -lc "teamai hook-dispatch \\S+ --tool ${tool}(?: --matcher \\S+)? 2>/dev/null" \\|\\| true$`));
+        expect(def.command).not.toContain('bash.exe');
+        expect(def.command).not.toContain('2>$null');
+      }
     }
   });
 });

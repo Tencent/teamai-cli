@@ -1542,19 +1542,18 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
 const BUILTIN_DISPATCH_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
 
 /**
- * The `commandWindows` of a built-in Codex entry. Codex on Windows runs hook
- * commands in PowerShell, where the bash wrapper does not parse, `${VAR:-...}`
- * does not expand and a bare `bash` is the WSL launcher, so every dispatch hook
- * failed and Codex ran the session without the team instructions. git runs a
- * `!` alias with its own shell, Git Bash on Windows, so this form needs no
- * machine-specific path and the committed project `hooks.json` stays the same on
- * every machine; `; exit 0` keeps the fail-open of `|| true`. A team hook keeps
+ * The `commandWindows` of a built-in Codex entry: the PowerShell form of its
+ * dispatch (the contract of getPwshDispatchCommand in builtin-hooks.ts), since
+ * Codex runs hook commands in PowerShell on Windows (#1074). Carrying it in
+ * Codex' Windows-only override instead of in `command` keeps `command` the POSIX
+ * form on every platform, so a project `.codex/hooks.json` a repository commits
+ * reads the same after a Windows pull and after a Linux pull. A team hook keeps
  * the single command its author wrote.
  */
 function codexWindowsCommand(command: string): string | undefined {
   const match = command.match(BUILTIN_DISPATCH_COMMAND_RE);
   if (!match) return undefined;
-  return `git -c "alias.teamai-hook=!${match[2]} 2>/dev/null" teamai-hook; exit 0`;
+  return `${match[2]} 2>$null; exit 0`;
 }
 
 /** Render a valid PowerShell equivalent for TeamAI's generated bash wrapper. */
