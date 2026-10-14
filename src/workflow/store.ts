@@ -1,12 +1,24 @@
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import type { RunState, WorkflowDefinition } from './types.js';
 
-const RUN_ID = /^r[0-9a-f]{8}$/;
+/**
+ * Run ids: `r` + 16 hex digits. Records are a team-wide key on the reports
+ * branch (#1083), and 8 hex digits reach ~1% collision odds by 10,000 runs —
+ * a collision would overwrite another member's record, so new runs get 16.
+ * The legacy 8-hex form still resolves for runs created before the switch.
+ */
+const RUN_ID = /^r[0-9a-f]{8}(?:[0-9a-f]{8})?$/;
 
 export function isRunId(runId: string): boolean {
   return RUN_ID.test(runId);
+}
+
+/** A fresh run id: 16 hex digits (see RUN_ID for why not 8). */
+export function generateRunId(): string {
+  return `r${randomBytes(8).toString('hex')}`;
 }
 
 export function runFilePath(config: LocalConfig, runId: string): string {

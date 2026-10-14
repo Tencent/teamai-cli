@@ -3059,6 +3059,14 @@ export async function pull(
           } catch (e) {
             log.error(`Auto-report to ${t.repoPath} skipped: ${(e as Error).message}`);
           }
+          // Drain queued workflow run records (#1083): a publication that
+          // failed at run start/end is retried here, once per pull.
+          try {
+            const { publishPendingRecords } = await import('./workflow/records.js');
+            await publishPendingRecords(t.opts.selfConfig, t.username);
+          } catch (e) {
+            log.debug(`Workflow record publish to ${t.repoPath} deferred: ${(e as Error).message}`);
+          }
         }
 
         // Cap every active scope, reporting or not (#788): http and

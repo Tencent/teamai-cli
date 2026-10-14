@@ -1577,6 +1577,12 @@ export interface UserStats {
   tokens?: TokenUsage;
   /** UTC-day buckets used by digest trends. Existing cumulative fields remain for compatibility. */
   daily?: Record<string, DailyUserStats>;
+  /**
+   * Cumulative workflow run totals for this user (#1083): end-phase records
+   * folded at publication time. Privacy: counts and durations only — the
+   * record files under workflows/runs/ carry the per-run allowlist.
+   */
+  workflows?: { runs: number; succeeded: number; failed: number; totalDurationMs: number };
 }
 
 /** Aggregated, privacy-preserving activity for one UTC day. */

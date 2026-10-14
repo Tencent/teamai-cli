@@ -473,6 +473,25 @@ export async function generateDigest(): Promise<void> {
     console.log(`🔧 Unique skills used: ${health.length}`);
     console.log('');
 
+    // Workflow run totals (#1083): counts and durations only, from the
+    // end-phase records each member published to the reports branch.
+    const workflowTotals = teamStats.reduce(
+      (sum, u) => ({
+        runs: sum.runs + (u.workflows?.runs ?? 0),
+        succeeded: sum.succeeded + (u.workflows?.succeeded ?? 0),
+        failed: sum.failed + (u.workflows?.failed ?? 0),
+        durationMs: sum.durationMs + (u.workflows?.totalDurationMs ?? 0),
+      }),
+      { runs: 0, succeeded: 0, failed: 0, durationMs: 0 },
+    );
+    if (workflowTotals.runs > 0) {
+      const minutes = Math.round(workflowTotals.durationMs / 60000);
+      console.log('⚙️ Workflow runs:');
+      console.log(`  ${workflowTotals.runs} total · ${workflowTotals.succeeded} succeeded · ${workflowTotals.failed} failed`);
+      console.log(`  ${minutes} min cumulative run time`);
+      console.log('');
+    }
+
     // Session highlights
     if (sessions.length > 0) {
       console.log('📝 Session Highlights:');
