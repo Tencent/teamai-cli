@@ -35,7 +35,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
 });
 
 import { planMigration, runMigration, maybeMigrate, queueKeptInCheckout } from '../migrate.js';
-import { readConfigFrom } from '../config.js';
+import { readConfigFrom, saveLocalConfigForScope } from '../config.js';
 import { log } from '../utils/logger.js';
 import { projectDataHome } from '../utils/partition.js';
 import { queueLockPath, savePendingLearning, setAsideQueueOnModeSwitch, type QueueWrite } from '../utils/pending-learnings.js';
@@ -157,6 +157,29 @@ afterEach(() => {
   } catch {
     /* best effort */
   }
+});
+
+// The config leaving the checkout was what told the env loader a project governs it.
+describe('the checkout of a project whose data lives in the partition', () => {
+  const pending = () => fse.pathExists(path.join(repoRoot, '.git', 'teamai-env-pending'));
+
+  it.each(['full', 'retire-only'] as const)('is marked for the env loader when its config moves out (%s)', async (mode) => {
+    await seedLegacyLayout();
+    if (mode === 'retire-only') await writePartitionConfig(projectDataHome(repoRoot));
+    const plan = await planMigration(repoRoot);
+    expect(plan!.mode).toBe(mode);
+    expect(await runMigration(plan!)).toBe('migrated');
+    expect(await pending()).toBe(true);
+  });
+
+  it('is marked for the env loader when its config is first saved there', async () => {
+    const dataHome = projectDataHome(repoRoot);
+    await saveLocalConfigForScope({
+      repo: { localPath: path.join(dataHome, 'team-repo'), remote: 'git@example.com:team/repo.git' },
+      username: 'tester', updatePolicy: 'auto', additionalRoles: [], scope: 'project', projectRoot: repoRoot, dataHome,
+    });
+    expect(await pending()).toBe(true);
+  });
 });
 
 describe('planMigration', () => {

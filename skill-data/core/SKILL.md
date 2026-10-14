@@ -90,11 +90,13 @@ says so and why.)
    session, use the name of **this** tool — do not assume Claude Code or Cursor.
    Some hosts need extra manual steps for hooks — see the troubleshooting
    reference ("Agent-specific caveats").
-5. **Team secrets: the user types the value, you run the CLI.** When the team
-   declares secrets (the session-start context lists them; `teamai env list`
-   shows them), run the CLIs that use them through `teamai env exec -- <command>`,
-   `--` first, so they get this team's value. It is for CLIs, not for starting
-   an agent: a secret named like a model profile's (`ANTHROPIC_*`) overrides it.
+5. **Team env: run the CLI through `teamai env exec`; the user types secret values.**
+   When the team delivers env variables or secrets (the session-start context
+   lists them; `teamai env list` shows them), run the CLIs that use them through
+   `teamai env exec -- <command>`, `--` first, so they get this directory's team
+   values: the shell you run commands in may carry another project's. It is for
+   CLIs, not for starting an agent: a secret named like a model profile's
+   (`ANTHROPIC_*`) overrides it.
    When a secret is missing, ask the user to run `teamai env set KEY` in their
    own terminal. Never ask for a value in chat, pass one to `--stdin` or
    `--secret`, read the files under `~/.teamai/secrets/`, or print one

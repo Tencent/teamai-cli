@@ -674,7 +674,8 @@ async function writeMuse(snapshot: MuseSnapshot): Promise<void> {
     else settings[key] = snapshot[key];
   }
   const keyFile = museKeyFilePath();
-  const profiles = SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(getUserHome(), name));
+  // The file the block goes in for zsh may be under ZDOTDIR.
+  const profiles = [...new Set([...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(getUserHome(), name)), await detectShellProfile()])];
   if (snapshot.keyExport === null) {
     await writeAgentJson(file, settings);
     await fs.promises.rm(keyFile, { force: true });

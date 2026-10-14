@@ -28,6 +28,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   listWorktrees: vi.fn().mockResolvedValue([]),
   // Git cannot name the repository: every other checkout's record is kept.
   gitCommonDir: vi.fn().mockResolvedValue(null),
+  nearestGitEntry: vi.fn().mockResolvedValue(null),
   resolveAnchors: vi.fn().mockResolvedValue(null),
 }));
 

@@ -36,7 +36,6 @@ vi.mock('../config.js', async (importOriginal) => ({
 import { importFromRepo } from '../import-repo.js';
 import { shallowClone, shallowFetch } from '../clone.js';
 import { extractCodebase } from '../codebase-extract.js';
-import { repoIdentity } from '../utils/git.js';
 
 // ─── Constants ──────────────────────────────────────────
 
@@ -74,10 +73,14 @@ async function makeWorkdir(): Promise<string> {
 
 describe('importFromRepo — AI narrative appended to overview.md', () => {
     let workdir: string;
+    let output: string;
+    let evidenceDir: string;
     const TEST_URL = 'https://github.com/owner/mergetest';
 
     beforeEach(async () => {
         workdir = await makeWorkdir();
+        output = path.join(workdir, '.teamai', 'team-repo');
+        evidenceDir = path.join(output, 'teamwiki', 'evidence', 'code', SLUG);
         vi.spyOn(process, 'cwd').mockReturnValue(workdir);
         process.env.TEAMAI_CACHE_DIR = path.join(workdir, 'cache');
 
@@ -86,19 +89,21 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
             return { sha: CLONE_SHA, branch: 'main', cloneMethod: 'https-token' as const };
         });
 
-        // Mock extractCodebase to simulate writing teamwiki evidence files
+        // Mock extractCodebase to simulate writing teamwiki evidence files into its staging root
         vi.mocked(extractCodebase).mockImplementation(async (opts) => {
-            const cacheDir = opts.path ?? '.';
-            const project = opts.project || 'test';
-            const wikiRoot = path.join(cacheDir, 'teamwiki');
-            const evidenceDir = path.join(wikiRoot, 'evidence', 'code', project);
+            const wikiRoot = path.join(opts.outputRoot!, 'teamwiki');
+            const stagedEvidence = path.join(wikiRoot, 'evidence', 'code', opts.project!);
             const indicesDir = path.join(wikiRoot, '.indices');
 
-            await fs.ensureDir(evidenceDir);
+            await fs.ensureDir(stagedEvidence);
             await fs.ensureDir(indicesDir);
-            await fs.writeFile(path.join(evidenceDir, 'overview.md'), DETERMINISTIC_OVERVIEW, 'utf8');
-            const emptyGraph = JSON.stringify({ nodes: [], edges: [] });
-            await fs.writeFile(path.join(indicesDir, 'graph-index.json'), emptyGraph, 'utf8');
+            await fs.writeFile(path.join(stagedEvidence, 'overview.md'), DETERMINISTIC_OVERVIEW, 'utf8');
+            const manifest = JSON.stringify({ project: opts.project, headSha: CLONE_SHA, files: [] });
+            await fs.writeFile(path.join(stagedEvidence, 'source-manifest.json'), manifest, 'utf8');
+            await fs.writeFile(path.join(wikiRoot, 'source-manifest.json'), manifest, 'utf8');
+            await fs.writeFile(path.join(indicesDir, 'graph-index.json'), JSON.stringify({ nodes: [], edges: [] }), 'utf8');
+            await fs.writeFile(path.join(indicesDir, 'facts-cache.json'), '[]', 'utf8');
+            return true;
         });
     });
 
@@ -109,16 +114,10 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
     });
 
     it('AI 叙事追加到 teamwiki evidence overview.md 末尾', async () => {
-        await importFromRepo({
-            url: TEST_URL,
-        });
+        await importFromRepo({ url: TEST_URL, output });
 
-        const overviewPath = path.join(
-            workdir, '.teamai', 'team-repo', 'teamwiki', 'evidence', 'code',
-            SLUG, 'overview.md',
-        );
-        const exists = await fs.pathExists(overviewPath);
-        expect(exists).toBe(true);
+        const overviewPath = path.join(evidenceDir, 'overview.md');
+        expect(await fs.pathExists(overviewPath)).toBe(true);
 
         const content = await fs.readFile(overviewPath, 'utf8');
         // 确定性内容（模块表格）在前
@@ -130,38 +129,47 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
     });
 
     it('docs/team-codebase/repos/ 不再被创建', async () => {
-        await importFromRepo({
-            url: TEST_URL,
-        });
+        await importFromRepo({ url: TEST_URL, output });
 
-        const oldPath = path.join(
-            workdir, '.teamai', 'team-repo', 'docs', 'team-codebase', 'repos',
-            `${SLUG}.md`,
-        );
-        const exists = await fs.pathExists(oldPath);
-        expect(exists).toBe(false);
+        const oldPath = path.join(output, 'docs', 'team-codebase', 'repos', `${SLUG}.md`);
+        expect(await fs.pathExists(oldPath)).toBe(false);
     });
 
     it('skipEnrich 时不追加 AI 叙事', async () => {
-        await importFromRepo({
-            url: TEST_URL,
-            skipEnrich: true,
-        });
+        await importFromRepo({ url: TEST_URL, output, skipEnrich: true });
 
-        const overviewPath = path.join(
-            workdir, '.teamai', 'team-repo', 'teamwiki', 'evidence', 'code',
-            SLUG, 'overview.md',
-        );
-        if (await fs.pathExists(overviewPath)) {
-            const content = await fs.readFile(overviewPath, 'utf8');
-            expect(content).not.toContain('## AI Architecture Narrative');
-        }
+        const content = await fs.readFile(path.join(evidenceDir, 'overview.md'), 'utf8');
+        expect(content).not.toContain('## AI Architecture Narrative');
+    });
+
+    it('--output <dir> writes <dir>/teamwiki, not a sibling of <dir>', async () => {
+        await importFromRepo({ url: TEST_URL, output, skipEnrich: true });
+
+        expect(await fs.pathExists(path.join(output, 'teamwiki', 'evidence', 'code', SLUG, 'overview.md'))).toBe(true);
+        expect(await fs.pathExists(path.join(workdir, '.teamai', 'teamwiki'))).toBe(false);
+    });
+
+    it('extracts in a staging dir: the clone cache gets no teamwiki/, the codebase keeps its own graph and caches', async () => {
+        await importFromRepo({ url: TEST_URL, output, skipEnrich: true });
+
+        const cacheDir = path.join(workdir, 'cache', 'github', 'owner', 'mergetest');
+        expect(vi.mocked(extractCodebase).mock.calls[0]?.[0]).toMatchObject({ path: cacheDir, project: SLUG });
+        expect(vi.mocked(extractCodebase).mock.calls[0]?.[0]?.outputRoot).not.toContain(cacheDir);
+        expect(await fs.pathExists(path.join(cacheDir, 'teamwiki'))).toBe(false);
+        expect(await fs.pathExists(path.join(evidenceDir, '.indices', 'graph-index.json'))).toBe(true);
+        expect(await fs.pathExists(path.join(evidenceDir, '.indices', 'facts-cache.json'))).toBe(true);
+        expect(await fs.pathExists(path.join(evidenceDir, 'source-manifest.json'))).toBe(true);
+    });
+
+    it('fails before cloning when there is neither a team repo nor --output', async () => {
+        await expect(importFromRepo({ url: TEST_URL })).rejects.toThrow('no config in test');
+        expect(shallowClone).not.toHaveBeenCalled();
     });
 
     it('retries extraction after a failed import of the same commit', async () => {
         vi.mocked(extractCodebase).mockRejectedValueOnce(new Error('write failed'));
         vi.mocked(shallowFetch).mockResolvedValue({ sha: CLONE_SHA });
-        const options = { url: TEST_URL, incremental: true, skipEnrich: true, skipAutoPush: true };
+        const options = { url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true };
         const lastSyncPath = path.join(workdir, 'cache', 'github', 'owner', 'mergetest', 'LAST_SYNC');
         await fs.ensureDir(path.join(path.dirname(lastSyncPath), '.git'));
         await fs.writeFile(lastSyncPath, 'previous-sha\n2024-01-01T00:00:00.000Z\n');
@@ -175,90 +183,47 @@ describe('importFromRepo — AI narrative appended to overview.md', () => {
         expect(await fs.readFile(lastSyncPath, 'utf8')).toContain(CLONE_SHA);
     });
 
-    it('re-extracts when cleanup fails after publishing the new manifest', async () => {
+    it('does not skip an unchanged clone cache when the target teamwiki has not been imported at that commit', async () => {
         vi.mocked(shallowFetch).mockResolvedValue({ sha: CLONE_SHA });
-        vi.mocked(extractCodebase).mockImplementation(async (opts) => {
-            const wikiRoot = path.join(opts.path ?? '.', 'teamwiki');
-            const manifestPath = path.join(wikiRoot, 'source-manifest.json');
-            if (opts.incremental && await fs.pathExists(manifestPath)
-                && (await fs.readJson(manifestPath)).headSha === CLONE_SHA) {
-                return; // The real extractor skips when the copied manifest matches HEAD.
-            }
-            const evidenceDir = path.join(wikiRoot, 'evidence', 'code', SLUG);
-            await fs.ensureDir(evidenceDir);
-            await fs.writeFile(path.join(evidenceDir, 'overview.md'), DETERMINISTIC_OVERVIEW);
-            const manifest = {
-                project: SLUG,
-                repoUrl: TEST_URL,
-                repoIdentity: repoIdentity(TEST_URL),
-                sourceSubdir: '',
-                headSha: CLONE_SHA,
-                files: [],
-            };
-            await fs.writeJson(manifestPath, manifest);
-            await fs.writeJson(path.join(evidenceDir, 'source-manifest.json'), manifest);
-        });
-
-        const options = { url: TEST_URL, incremental: true, skipEnrich: true, skipAutoPush: true };
         const cacheDir = path.join(workdir, 'cache', 'github', 'owner', 'mergetest');
-        const lastSyncPath = path.join(cacheDir, 'LAST_SYNC');
-        const publishedManifest = path.join(workdir, '.teamai', 'team-repo', 'teamwiki', 'source-manifest.json');
         await fs.ensureDir(path.join(cacheDir, '.git'));
-        await fs.writeFile(lastSyncPath, 'previous-sha\n2024-01-01T00:00:00.000Z\n');
-        await fs.ensureDir(path.dirname(publishedManifest));
-        await fs.writeJson(publishedManifest, {
-            project: SLUG,
-            repoUrl: TEST_URL,
-            repoIdentity: repoIdentity(TEST_URL),
-            sourceSubdir: '',
-            headSha: 'previous-sha',
-            files: [],
-        });
+        await fs.writeFile(path.join(cacheDir, 'LAST_SYNC'), `${CLONE_SHA}\n2024-01-01T00:00:00.000Z\n`);
 
-        const remove = fs.remove;
-        let failOnce = true;
-        const removeSpy = vi.spyOn(fs, 'remove').mockImplementation(async (target) => {
-            if (target === path.join(cacheDir, 'teamwiki') && failOnce) {
-                failOnce = false;
-                throw new Error('cache cleanup failed');
-            }
-            return remove(target);
-        });
-        try {
-            await expect(importFromRepo(options)).rejects.toThrow('Knowledge extraction failed: cache cleanup failed');
-        } finally {
-            removeSpy.mockRestore();
-        }
+        // Another --output (or team repo) imported this commit; this one has nothing yet.
+        await importFromRepo({ url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true });
+        expect(extractCodebase).toHaveBeenCalledTimes(1);
+        expect(await fs.pathExists(path.join(evidenceDir, 'overview.md'))).toBe(true);
 
-        expect((await fs.readJson(publishedManifest)).headSha).toBe(CLONE_SHA);
-        expect(await fs.readFile(lastSyncPath, 'utf8')).toContain('previous-sha');
-
-        await importFromRepo(options);
-        expect(vi.mocked(extractCodebase).mock.calls.map(([opts]) => opts.incremental)).toEqual([true, false]);
-        expect(await fs.readFile(lastSyncPath, 'utf8')).toContain(CLONE_SHA);
+        // Now it holds the commit, so the next run skips it.
+        await importFromRepo({ url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true });
+        expect(extractCodebase).toHaveBeenCalledTimes(1);
     });
 
-    it('forces a full extraction when a persisted source manifest has malformed identity metadata', async () => {
-        vi.mocked(shallowFetch).mockResolvedValue({ sha: CLONE_SHA });
-        const options = { url: TEST_URL, incremental: true, skipEnrich: true, skipAutoPush: true };
-        const cacheDir = path.join(workdir, 'cache', 'github', 'owner', 'mergetest');
-        const lastSyncPath = path.join(cacheDir, 'LAST_SYNC');
-        const publishedManifest = path.join(workdir, '.teamai', 'team-repo', 'teamwiki', 'source-manifest.json');
-        await fs.ensureDir(path.join(cacheDir, '.git'));
-        await fs.writeFile(lastSyncPath, 'previous-sha\n2024-01-01T00:00:00.000Z\n');
-        await fs.ensureDir(path.dirname(publishedManifest));
-        await fs.writeJson(publishedManifest, {
-            project: SLUG,
-            repoUrl: 42,
-            repoIdentity: null,
-            sourceSubdir: '',
-            headSha: 'previous-sha',
-            files: [],
+    it('seeds the codebase\'s own baseline, so an incremental run extracts incrementally', async () => {
+        await importFromRepo({ url: TEST_URL, output, skipEnrich: true, skipAutoPush: true });
+        vi.mocked(shallowFetch).mockResolvedValue({ sha: 'cafebabe1234567890abcdef1234567890abcdef' });
+
+        let seededManifest: unknown = null;
+        vi.mocked(extractCodebase).mockImplementationOnce(async (opts) => {
+            seededManifest = await fs.readJson(path.join(opts.outputRoot!, 'teamwiki', 'source-manifest.json')).catch(() => null);
+            return true;
         });
+        await importFromRepo({ url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true });
 
-        await importFromRepo(options);
+        expect(vi.mocked(extractCodebase).mock.calls.map(([opts]) => opts.incremental)).toEqual([false, true]);
+        expect(seededManifest).toMatchObject({ project: SLUG, headSha: CLONE_SHA });
+    });
 
-        expect(extractCodebase).toHaveBeenCalledTimes(1);
-        expect(vi.mocked(extractCodebase).mock.calls[0]?.[0]?.incremental).toBe(false);
+    it('keeps the published evidence when an incremental run finds no source changes', async () => {
+        await importFromRepo({ url: TEST_URL, output, skipEnrich: true, skipAutoPush: true });
+        const before = await fs.readFile(path.join(evidenceDir, 'overview.md'), 'utf8');
+        vi.mocked(shallowFetch).mockResolvedValue({ sha: 'cafebabe1234567890abcdef1234567890abcdef' });
+        // A commit that touched no source file: the extractor writes nothing.
+        vi.mocked(extractCodebase).mockResolvedValueOnce(false);
+
+        await importFromRepo({ url: TEST_URL, output, incremental: true, skipEnrich: true, skipAutoPush: true });
+
+        expect(await fs.readFile(path.join(evidenceDir, 'overview.md'), 'utf8')).toBe(before);
+        expect(await fs.pathExists(path.join(evidenceDir, '.indices', 'graph-index.json'))).toBe(true);
     });
 });

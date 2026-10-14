@@ -23,8 +23,8 @@ Architecture reverse-engineering **compresses the huge codebase into a structure
 - Every generation run produces accuracy statistics, with automatic warnings when thresholds are exceeded
 - AI reads the knowledge base instead of the source and gains global architecture awareness for **about 1/50 of the tokens**
 - For recalled source freshness, `current` means only that the cited file matches the scan baseline; check current source when available before relying on claims marked `stale`, `missing` or `unknown`.
-- In Phase 0, `teamai codebase --extract` can generate evidence-backed structural edges (TS/JS/Python/Go/Swift AST + multi-language heuristics)
-- After extraction, `teamai codebase --deep-enrich --project <slug> --output <repo>` can generate deterministic graph documents (G1/G2/G3) and deep knowledge; no separate team-wiki CLI is needed
+- In Phase 0, `teamai import --dir` can generate evidence-backed structural edges (TS/JS/Python/Go/Swift AST + multi-language heuristics)
+- After the import, `teamai codebase --deep-enrich --project <slug>` can generate deterministic graph documents (G1/G2/G3) and deep knowledge; no separate team-wiki CLI is needed
 
 ---
 

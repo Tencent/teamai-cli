@@ -137,6 +137,23 @@ teamai env set GITHUB_TOKEN
 teamai env exec -- gh pr create
 ```
 
+### Shell environment by directory
+
+A shell gets the team env of the directory it starts in, so several projects open at once each get their own. `teamai pull` adds one block to your shell profile (`.zshenv` for zsh, the bash startup files for bash). An interactive shell switches env on `cd` and puts your own values back when you leave a project.
+
+- In a project: the project's env. With `inheritUserScope: true`, the user scope's variables load too, but a key the project declares stays the project's, and user-scope secrets never load.
+- In a project no pull has registered yet: nothing, until you pull there.
+- Anywhere else: the user scope's env.
+- Where git cannot read the repository (git missing, a broken `.git`, `safe.directory`): nothing.
+
+`injectShellProfile: false` turns this off for that team's scope.
+
+Limits:
+
+- Only bash and zsh load env by directory. In fish, PowerShell, or a tool that does not start one of them, run commands through `teamai env exec --`.
+- Team env cannot set names that control the shell or the loader, such as `BASH_ENV`, `HOME`, `IFS`, `PROMPT_COMMAND`, or names starting `__TEAMAI_`. Pull warns and ignores them.
+- `teamai doctor` checks that a shell in this directory loads this scope's env.
+
 ## Hooks
 
 `teamai init` installs these built-in hooks:

@@ -73,6 +73,11 @@ beforeEach(async () => {
   userKey = await dataHomeKey(path.join(tmpDir, '.teamai'));
   repoDir = path.join(tmpDir, 'repo');
   fs.mkdirSync(repoDir, { recursive: true });
+  // The 'review' skill these tests record usage for must be part of the team's
+  // shared catalog: #1055 filters published stats to catalog names, and these
+  // tests exercise reporting mechanics, not the privacy filter.
+  fs.mkdirSync(path.join(repoDir, 'skills', 'review'), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, 'skills', 'review', 'SKILL.md'), '# review\n');
   pushRepoDirectly.mockReset().mockResolvedValue(undefined);
   reportsMocks.updateReports.mockReset().mockImplementation(async (cfg: LocalConfig, write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<{ files: string[]; message: string } | null>) => {
     const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');

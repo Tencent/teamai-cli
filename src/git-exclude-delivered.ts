@@ -6,6 +6,7 @@ import {
   existingAncestor,
   GitContext,
   gitExcludeFile,
+  ignoredByMembersRule,
   realFilePath,
   remove,
   report,
@@ -182,9 +183,9 @@ const PERSONAL = new Set(['.claude/settings.local.json']);
  * lists of its live checkouts, less each path that is foreign in another live
  * checkout, since one line in the exclude file they share would hide that
  * checkout's file too. A path is foreign in checkout X when X's root joined
- * with its path from its own checkout's root exists (lstat) and is not in X's
- * list. A checkout without a list yet (never pulled, or not since an older
- * CLI) proves nothing about its files, so one there is foreign unless it holds
+ * with its path from its own checkout's root exists (lstat), is not in X's
+ * list, and no rule of the member's already ignores it in X. A checkout
+ * without a list yet (never pulled, or not since an older CLI) proves nothing about its files, so one there is foreign unless it holds
  * the same bytes as the listed copy. A listed
  * path outside its own checkout (the main checkout's hook file) is not
  * tested. Read-only.
@@ -222,6 +223,8 @@ async function foreignIn(
     if (set.has(file) || !await fse.lstat(file).then(() => true, () => false)) return null;
     // A checkout with no list proves nothing either way: a file equal to teamai's copy is teamai's.
     if (unlisted && await sameBytes(file, delivered)) return null;
+    // The member's own rule already hides it there: a line of teamai's would hide nothing more.
+    if (await ignoredByMembersRule(file)) return null;
     return { root, file, unlisted };
   }));
   return found.filter((f) => f !== null);

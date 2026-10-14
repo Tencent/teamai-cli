@@ -98,13 +98,14 @@ Write to `_review/metadata.json`:
 Before the K1 deep read, use TeamAI to extract evidence-backed import/call structural edges (Python/Go/TS/Swift etc., `code-ast`) and merge them with the regex baseline (`code-heuristic`):
 
 ```bash
-# For each repo. Writes <repo>/teamwiki/ (evidence pages + .indices/graph-index.json).
-# Existing flags only: --extract [path], optional --project <slug>, optional --incremental.
-teamai codebase --extract <repo_abs_path> --project <project_slug>
+# For each repo. Writes the team repo's teamwiki/ and prints "(project: <slug>)".
+# Without a team repo (no `teamai init`), add --output <dir> to write <dir>/teamwiki/ instead.
+teamai import --dir <repo_abs_path> --skip-enrich
 ```
 
-- Output: `teamwiki/evidence/code/<project>/` pages; `teamwiki/.indices/graph-index.json` (structural edges).
-- When K1/K2/K3 write `edges[]` in `_manifest.json`: **prefer citing** the `code-ast` edges from extract + their `evidenceRefs` (`path:line`); label Agent inferences `INFERRED`/`AMBIGUOUS`.
+- Output: `teamwiki/evidence/code/<slug>/` pages and `teamwiki/evidence/code/<slug>/.indices/graph-index.json` (structural edges), merged into `teamwiki/.indices/graph-index.json`. `<slug>` is the repository name; reuse it for `teamai codebase --deep-enrich --project <slug>`.
+- The source repository itself is left untouched.
+- When K1/K2/K3 write `edges[]` in `_manifest.json`: **prefer citing** the `code-ast` edges from the import + their `evidenceRefs` (`path:line`); label Agent inferences `INFERRED`/`AMBIGUOUS`.
 - After Phase K3, skip any extra graph compile / merge step that is not a `teamai` command. TeamAI does not ship a separate team-wiki CLI. Continue with this skill using `teamai` and the files under this skill directory. No extra plugin is required.
 
 Write the initial progress.json (current_phase: "phase0_done") and enter **Phase K1**.

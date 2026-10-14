@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
-  CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, getDataHome, getMcpSharing, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
+  CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
   resolveToolBaseDir, resolveToolRootDir, scopedToolPaths,
 } from './types.js';
 import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, McpServerDef, ResourceItem, TeamaiConfig } from './types.js';
@@ -12,6 +12,8 @@ import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
 import { isToolInstalledForConfig, type ResourceHandler } from './resources/base.js';
 import type { Check, DoctorContext } from './doctor.js';
+import type { DirectoryEnv } from './resources/env-loader.js';
+import type { EnvVariable } from './resources/env.js';
 import type { DesiredMcpContext, McpTarget } from './mcp-reconcile.js';
 import type { ResolvedMcpFile } from './mcp-resolved-files.js';
 import {
@@ -23,6 +25,7 @@ import {
 import { getUserHome } from './utils/home.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { declaredSecretKeys } from './resources/secrets.js';
+import { isReservedTeamEnvKey } from './env-reserved.js';
 
 /**
  * The checks that verify the payload rather than the plumbing: what each tool
@@ -866,7 +869,8 @@ const UNRESOLVED_VARS_RE = /^unresolved variable\(s\): (.+)$/;
 
 /**
  * `${VAR}` names a skipped server is missing that the team has not declared as
- * secrets (#1011). A failed declaration can't say, so it names none.
+ * secrets (#1011). A failed declaration can't say, so it names none. A reserved
+ * name is never one: a team value for it is ignored, so declaring it would not help.
  */
 function undeclaredMissingVars(
   skipped: ReadonlyArray<{ server: string; reason?: string }>,
@@ -880,7 +884,7 @@ function undeclaredMissingVars(
     const match = UNRESOLVED_VARS_RE.exec(change.reason ?? '');
     if (!match?.[1]) continue;
     for (const key of match[1].split(', ')) {
-      if (key && !declared.has(key)) names.add(key);
+      if (key && !declared.has(key) && !isReservedTeamEnvKey(key)) names.add(key);
     }
   }
   return [...names].sort();
@@ -1447,7 +1451,11 @@ async function resolveEntryTypes(
  * skipped for `unresolved variable(s)`, with nothing pointing back here.
  */
 export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]> {
-  const { problems, staleProfiles } = await envDeliveryProblems(ctx);
+  const { problems, staleProfiles, isLoaderOwed } = await envDeliveryProblems(ctx);
+  const { localConfig } = ctx;
+  const { directoryEnv } = await import('./resources/env-loader.js');
+  const dir = localConfig.scope === 'project' && localConfig.projectRoot ? localConfig.projectRoot : process.cwd();
+  const directory = isLoaderOwed ? await directoryEnv(localConfig, dir) : null;
   return [
     {
       name: 'Env variables injected in shell profile',
@@ -1456,6 +1464,15 @@ export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]
       fix: problems.length === 0
         ? 'Run `teamai pull` to inject env variables into shell profile'
         : `${problems.join('; ')}. Run \`teamai pull\` after fixing the cause, then open a new shell.`,
+    },
+    // Several projects open at once each load their own env (#1018): this
+    // asks the loader, in a real shell started here, which env.sh it loads.
+    // A shell that runs no loader passes here; envLoaderNotes names the gap.
+    {
+      name: 'This directory resolves its team env',
+      source: 'local',
+      check: async () => directoryEnvFix(directory, dir) === undefined,
+      fix: directoryEnvFix(directory, dir),
     },
     // A separate check, not folded into the one above: a stray leftover
     // block for this same scope (e.g. from before #682 changed which file
@@ -1477,36 +1494,136 @@ export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]
   ];
 }
 
+/** What to do about what a shell started in `dir` loads, or undefined when there is nothing to do. */
+function directoryEnvFix(directory: DirectoryEnv | null, dir: string): string | undefined {
+  if (directory === null) return undefined;
+  switch (directory.kind) {
+    case 'loads-scope':
+    case 'shell-without-loader':
+      return undefined;
+    case 'loads-other':
+      return `A shell started in ${dir} loads ${directory.loaded.length > 0 ? nameList([...directory.loaded]) : 'no team env'} `
+        + `instead of ${nameList([...directory.expected])}. Run \`teamai pull\` here, then open a new shell.`;
+    case 'shell-failed':
+      return `Could not run ${directory.shell} in ${dir} to check which team env it loads: ${directory.reason}. `
+        + 'Check that SHELL names a shell that starts.';
+    default: {
+      const unhandled: never = directory;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * Info for a member whose shell runs no env loader (#1018): the team env does
+ * not reach it, and `env exec` does. Not a check, since nothing here is
+ * broken and no pull changes it.
+ */
+export async function envLoaderNotes(ctx: DoctorContext): Promise<string[]> {
+  const { localConfig, teamConfig } = ctx;
+  if (teamConfig?.sharing?.env?.injectShellProfile === false) return [];
+  const { loaderShell, scopeEnvFiles } = await import('./resources/env-loader.js');
+  const shell = process.env.SHELL ?? '';
+  if (loaderShell(shell)) return [];
+  // Only name the gap when a loader would apply a value. An empty project
+  // env.sh can exist solely as the readability gate for inherited user env.
+  const { parseEnvFile } = await import('./resources/env.js');
+  const files = await scopeEnvFiles(localConfig);
+  const loadsValues = await Promise.all(files.map(async (file) => {
+    const content = await readFileSafe(file);
+    return content !== null && parseEnvFile(content).size > 0;
+  }));
+  if (!loadsValues.some(Boolean)) return [];
+  return [`Team env does not load in ${path.basename(shell) || 'a shell without SHELL'}: only zsh and bash run the teamai env loader. `
+    + 'Run the commands that need it through `teamai env exec -- <command>`.'];
+}
+
 /** Every reason the team's env variables are not reaching a shell, and any stray leftover blocks found along the way. */
 async function envDeliveryProblems(
   ctx: DoctorContext,
-): Promise<{ problems: string[]; staleProfiles: string[] }> {
+): Promise<{ problems: string[]; staleProfiles: string[]; isLoaderOwed?: true }> {
   const { localConfig, teamConfig } = ctx;
   const none = { problems: [], staleProfiles: [] };
   if (teamConfig?.sharing?.env?.injectShellProfile === false) return none;
-
-  const { EnvHandler } = await import('./resources/env.js');
-  const envHandler = new EnvHandler();
 
   // The variables this member and directory receive: the same resolution pull
   // writes env.sh from, not a second copy of it. A file that cannot be used, or
   // a name defined twice, is reported here as pull reports it (#662), and a
   // deliberate `variables: []` is not.
   const { describeEntryFailure } = await import('./namespaced-entries.js');
-  const { envShVariables, resolveTeamEnv } = await import('./env-resolution.js');
+  const { envShVariables, keptFromUserScope, resolveTeamEnv } = await import('./env-resolution.js');
   const teamEnv = ctx.teamEnv ?? await resolveTeamEnv(localConfig);
   const { variables: resolution, declarations: secrets, variableValues: values } = teamEnv;
-  if (resolution.kind === 'failed') return { problems: [describeEntryFailure(resolution.failure)], staleProfiles: [] };
+  const { parseEnvFile, parseEnvFileKept } = await import('./resources/env.js');
+  const { sameEnvName } = await import('./resources/env-key.js');
+  /** The keys of `owed` that `delivered` lacks, and those it holds another value for, in any case on Windows. */
+  const compare = (owed: readonly EnvVariable[], delivered: ReadonlyMap<string, string>): { undelivered: string[]; stale: string[] } => {
+    const valueOf = (key: string): string | undefined => {
+      const name = sameEnvName(delivered.keys(), key);
+      return name === undefined ? undefined : delivered.get(name);
+    };
+    return {
+      undelivered: owed.filter(({ key }) => valueOf(key) === undefined).map(({ key }) => key),
+      stale: owed.filter(({ key, value }) => valueOf(key) !== undefined && valueOf(key) !== value).map(({ key }) => key),
+    };
+  };
+
+  // An inheriting project's shells load the user scope's env.sh first, which
+  // the user scope's own pull writes: its variables are owed here too, whatever
+  // state the project's own declarations are in.
+  const { userEnvInShells } = await import('./resources/env-loader.js');
+  // While the user scope's env can't be resolved, its pull keeps its env.sh as
+  // it is: nothing to compare, but shells still load it, so it must be there.
+  const inheritsUser = localConfig.scope === 'project' && await userEnvInShells();
+  const inherited = inheritsUser && teamEnv.inheritedValues.kind === 'resolved' && teamEnv.inheritedVariables.length > 0
+    ? envShVariables(teamEnv.inheritedVariables, teamEnv.inheritedValues.values)
+    : [];
+  const keptInherited = inheritsUser && (teamEnv.keptInheritedValues?.size ?? 0) > 0;
+  const inheritedProblems: string[] = [];
+  const userEnvShPath = path.join(getTeamaiHome('user'), 'env.sh');
+  if (keptInherited && !await pathExists(userEnvShPath)) {
+    const reason = teamEnv.inheritedValues.kind === 'store-unreadable' ? `${teamEnv.inheritedValues.reason}; fix that, then ` : '';
+    inheritedProblems.push(`${userEnvShPath}, which this project inherits, is missing: ${reason}run \`teamai pull\` outside any project to rewrite it`);
+  } else if (inheritsUser && teamEnv.inheritedValues.kind === 'store-unreadable') {
+    // Shells keep loading the user scope's last env.sh, and env exec and MCP warn with this same reason.
+    inheritedProblems.push(teamEnv.inheritedValues.reason);
+  }
+  const pullUser = 'run `teamai pull` outside any project to rewrite it';
+  if (inherited.length > 0) {
+    const userEnvSh = await readFileSafe(userEnvShPath);
+    const { undelivered, stale } = compare(inherited, parseEnvFile(userEnvSh ?? ''));
+    if (userEnvSh === null) inheritedProblems.push(`${userEnvShPath}, which this project inherits, is missing: ${pullUser}`);
+    else if (undelivered.length > 0) inheritedProblems.push(`${userEnvShPath} is missing ${nameList(undelivered)}, which this project inherits: ${pullUser}`);
+    if (stale.length > 0) inheritedProblems.push(`${userEnvShPath} has a stale value for ${nameList(stale)}, which this project inherits: ${pullUser}`);
+  }
+
   // A key the team also declares as a secret is not delivered (#875); declarations
-  // that cannot be read keep env.sh as it is, as a broken env file does.
-  if (secrets.kind === 'failed') return { problems: [describeEntryFailure(secrets.failure)], staleProfiles: [] };
-  // A variable the member set for this team is owed their value, and one set
+  // that cannot be read keep env.sh as it is, as a broken env file does. A
+  // variable the member set for this team is owed their value, and one set
   // with `--from-env` is not owed at all (#875); a values file that cannot be
-  // read keeps env.sh as it is, as pull does.
-  if (values.kind === 'store-unreadable') return { problems: [values.reason], staleProfiles: [] };
-  const declared = envShVariables(resolution.entries, values.values);
-  const deliverable = new Set(declared.map((variable) => variable.key));
-  const problems: string[] = [];
+  // read keeps env.sh as it is, as pull does. Either way shells still load the
+  // kept env.sh and the inherited one through the profile block, checked below.
+  const projectFailure = resolution.kind === 'failed' ? describeEntryFailure(resolution.failure)
+    : secrets.kind === 'failed' ? describeEntryFailure(secrets.failure)
+      : values.kind === 'store-unreadable' ? values.reason : null;
+  let declared: EnvVariable[] = [];
+  let kept: string[] = [];
+  // What the last pull wrote while this scope can't be resolved: pull keeps it, and shells load it.
+  const keptOwn = (teamEnv.keptValues?.size ?? 0) > 0;
+  if (resolution.kind === 'resolved' && secrets.kind !== 'failed' && values.kind !== 'store-unreadable') {
+    declared = envShVariables(resolution.entries, values.values);
+    kept = keptFromUserScope(localConfig, teamEnv, declared);
+  }
+  // The user scope's env.sh holds only what its pull wrote: a key there that it
+  // no longer delivers, and this project does not set, still reaches this
+  // project's shells, where `env exec` and MCP leave it out.
+  if (inheritsUser && localConfig.inheritUserScope === true && teamEnv.inheritedValues.kind === 'resolved' && resolution.kind === 'resolved' && projectFailure === null) {
+    const { declaredSecretKeys } = await import('./resources/secrets.js');
+    const owed = [...inherited.map(({ key }) => key), ...resolution.entries.map(({ name }) => name), ...declaredSecretKeys(secrets) ?? []];
+    const extra = [...parseEnvFile(await readFileSafe(userEnvShPath) ?? '').keys()].filter((key) => sameEnvName(owed, key) === undefined);
+    if (extra.length > 0) inheritedProblems.push(`${userEnvShPath} still exports ${nameList(extra)}, which the user scope no longer delivers and this project inherits: ${pullUser}`);
+  }
+  const problems: string[] = [...projectFailure === null ? [] : [projectFailure], ...inheritedProblems];
 
   // env.sh lives under teamaiHome, which is <projectRoot>/.teamai in project
   // scope and ~/.teamai in user scope — mirror the path that `teamai pull`
@@ -1516,23 +1633,16 @@ async function envDeliveryProblems(
   if (envSh === null) {
     // Nothing reaches this member and nothing was ever written: there is
     // nothing to deliver, so there is nothing to report missing.
-    if (declared.length === 0) return none;
-    problems.push(`${envShPath} is missing`);
-  } else {
+    if (declared.length === 0 && kept.length === 0 && inherited.length === 0 && !keptOwn && !keptInherited) return problems.length === 0 ? none : { problems, staleProfiles: [] };
+    if (declared.length > 0 || kept.length > 0 || keptOwn) problems.push(`${envShPath} is missing`);
+  } else if (projectFailure === null) {
     // Read the file back through the generator's own inverse, value included:
     // a key whose value changed in env.yaml exports the old one until the next
     // pull rewrites the file, and every shell and MCP server reads that. It is
     // a parse rather than a line scan because a value may be multiline — a
     // YAML block scalar quotes into an export spanning several lines.
-    const { parseEnvFile } = await import('./resources/env.js');
     const delivered = parseEnvFile(envSh);
-    const undelivered: string[] = [];
-    const stale: string[] = [];
-    for (const variable of declared) {
-      const value = delivered.get(variable.key);
-      if (value === undefined) undelivered.push(variable.key);
-      else if (value !== variable.value) stale.push(variable.key);
-    }
+    const { undelivered, stale } = compare(declared, delivered);
     if (undelivered.length > 0) problems.push(`${envShPath} is missing ${nameList(undelivered)}`);
     if (stale.length > 0) {
       problems.push(
@@ -1542,16 +1652,22 @@ async function envDeliveryProblems(
     // env.sh holds only what pull wrote, so a key the resolved set lacks is
     // left over from before a namespace deactivated or the team removed it,
     // and still live in every new shell until the next pull.
-    const leftover = [...delivered.keys()].filter((key) => !deliverable.has(key));
+    const deliverable = declared.map((variable) => variable.key);
+    const leftover = [...delivered.keys()].filter((key) => sameEnvName(deliverable, key) === undefined);
     if (leftover.length > 0) {
       problems.push(
         `${envShPath} still exports ${nameList(leftover)}, which the team no longer delivers to this `
         + 'directory (removed, or its namespace is no longer active)',
       );
     }
+    // A key the project declares but does not export keeps the member's own
+    // value, not the one the user scope's env.sh set before it.
+    const keptInFile = parseEnvFileKept(envSh);
+    const unkept = kept.filter((key) => sameEnvName(keptInFile, key) === undefined);
+    if (unkept.length > 0) problems.push(`${envShPath} does not keep ${nameList(unkept)} from the user scope's env.sh`);
     // Nothing is owed, so the profile block has nothing to load: a leftover is
     // the only thing that can be wrong here.
-    if (declared.length === 0) return { problems, staleProfiles: [] };
+    if (declared.length === 0 && kept.length === 0 && inherited.length === 0 && !keptInherited) return { problems, staleProfiles: [] };
   }
 
   // Same resolution the injection runs, not a second copy of it. Expanded
@@ -1560,21 +1676,26 @@ async function envDeliveryProblems(
   // candidates that are always absolute — an unexpanded `~/...` override
   // would never match its own resolved file and get reported as a stray
   // copy of itself (#693 review round 4).
-  const profilePath = expandHome(
-    teamConfig?.sharing?.env?.shellProfilePath ?? await envHandler.detectShellProfile(envShPath),
-  );
-  // This scope's own block: the profile can also carry another scope's
-  // (#876), and that one is not this scope's to judge.
-  const profile = await readFileSafe(profilePath);
-  const block = profile === null ? null : findEnvBlockFor(profile, envShPath);
-
-  if (block === null) {
-    problems.push(`${profilePath} carries no TeamAI env block for ${envShPath}`);
-  } else if (envSh !== null && !envBlockSourcesPath(block.text, envShPath)) {
-    problems.push(
-      `the block in ${profilePath} does not load ${envShPath}: a POSIX shell reads an unquoted `
-      + 'backslash as an escape, so the `[ -f ... ]` test fails and `source` never runs',
-    );
+  const { envLoaderPath } = await import('./resources/env-loader.js');
+  const { envLoaderProfiles } = await import('./utils/shell-profile.js');
+  const loaderPath = envLoaderPath();
+  // For zsh, a file every zsh reads, whatever shellProfilePath names (#1018).
+  // The other shell's profile and bash's login file too, when they exist, as pull writes them.
+  const override = teamConfig?.sharing?.env?.shellProfilePath;
+  const { paths: profilePaths } = await envLoaderProfiles(override, loaderPath);
+  // One block for every scope: it sources the loader, which picks the env.sh
+  // for the shell's directory (#1018).
+  for (const profilePath of profilePaths) {
+    const profile = await readFileSafe(profilePath);
+    const block = profile === null ? null : findEnvBlockFor(profile, loaderPath);
+    if (block === null) {
+      problems.push(`${profilePath} carries no TeamAI env block for ${loaderPath}`);
+    } else if (!envBlockSourcesPath(block.text, loaderPath)) {
+      problems.push(
+        `the block in ${profilePath} does not load ${loaderPath}: a POSIX shell reads an unquoted `
+        + 'backslash as an escape, so the `[ -f ... ]` test fails and `source` never runs',
+      );
+    }
   }
 
   // A stray block can also sit in a different candidate file: which file
@@ -1584,14 +1705,13 @@ async function envDeliveryProblems(
   // sits in, say, `.bashrc` from a pre-#682/#661 install (#693 review).
   const home = getUserHome();
   const staleProfiles: string[] = [];
-  for (const name of SHELL_PROFILE_CANDIDATE_NAMES) {
-    const candidate = path.join(home, name);
-    if (sameFile(candidate, profilePath)) continue;
+  for (const candidate of new Set([...override ? [expandHome(override)] : [], ...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(home, name))])) {
+    if (profilePaths.some((profilePath) => sameFile(candidate, profilePath))) continue;
     const content = await readFileSafe(candidate);
     if (content && findEnvBlockFor(content, envShPath)) staleProfiles.push(candidate);
   }
 
-  return { problems, staleProfiles };
+  return { problems, staleProfiles, isLoaderOwed: true };
 }
 
 /**

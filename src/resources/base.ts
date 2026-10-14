@@ -79,6 +79,8 @@ export interface ScanForPushOptions {
   namespace?: string;
   /** Open-PR records whose branch is still on origin. */
   pending?: readonly PendingPush[];
+  /** The real path of the copy `push --skill` names: --skill, not the scan, says why it is left out as another namespace's. */
+  requestedSkillPath?: string;
 }
 
 export abstract class ResourceHandler {

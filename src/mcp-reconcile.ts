@@ -12,7 +12,6 @@ import type {
 import {
   applyToolRoots,
   getMcpSharing,
-  getEnvBackupPath,
   isAgentExcluded,
   getDataHome,
   isGitExcludeEnabled,
@@ -42,9 +41,12 @@ import { mcpEntryReader, parseTeamMcpServers, teamMcpToDef } from './resources/m
 import { historicalContents } from './utils/team-history.js';
 import { describeMembersFile, keepsTrackedCopy } from './resources/delivered-copies.js';
 import { envName, envTable } from './resources/env-key.js';
+import { isReservedTeamEnvKey, reservedTeamEnvWarning } from './env-reserved.js';
 import { declaredSecretKeys, type SecretDeclarations } from './resources/secrets.js';
-import { resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
+import { appliedTeamEnv, resolvesTeamEnv, resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
+import { readEnvBackup } from './resources/env.js';
 import { isEnvShMarker } from './env-sh-exports.js';
+import { memberEnvironmentWithoutScope } from './member-env.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import { entryLayout, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import {
@@ -184,32 +186,47 @@ async function readManifest(manifestPath: string): Promise<ManagedMcpManifest> {
  * own environment (not a value a teamai env.sh exported); its env.yaml value,
  * if the team also sets one, is ignored.
  *
- * The installed KEY=value backup is read instead only when that set cannot be
- * resolved, or the secret declarations or the member's values cannot (pull
- * then keeps env.sh as it is, so MCP sees what the shell sees), or the team has no repo tree to
- * resolve it from (HTTP mode, which declares no secrets).
+ * The variables are what `env exec` applies (`appliedTeamEnv`): the user
+ * variables a project inherits under its own, each part by its own scope's
+ * state, and the installed env backup of a part that can't be resolved
+ * (pull then keeps env.sh as it is, so MCP sees what the shell sees). The
+ * backup is read too when the team has no repo tree to resolve it from (HTTP
+ * mode, which declares no secrets, unless a project inherits the user scope:
+ * see `resolvesTeamEnv`).
  *
  * `teamEnv` is for a caller that already resolved it, so one command reads
- * each file once. HTTP mode ignores it.
+ * each file once. HTTP mode without that inheritance ignores it.
  */
 export async function buildVarTable(localConfig: LocalConfig, teamEnv?: TeamEnv): Promise<Record<string, string>> {
   const table = envTable<string>();
-  const resolved = localConfig.repo.kind === 'http' ? null : teamEnv ?? await resolveTeamEnv(localConfig);
+  const resolved = resolvesTeamEnv(localConfig) ? teamEnv ?? await resolveTeamEnv(localConfig) : null;
   const secretKeys = resolved ? declaredSecretKeys(resolved.declarations) : new Set<string>();
-  const isSecret = (key: string): boolean => secretKeys?.has(key) ?? false;
-  const variables = resolved?.variables.kind === 'resolved' && secretKeys ? resolved.variableValues : null;
-  if (variables?.kind === 'resolved') {
-    for (const [key, variable] of variables.values) table[key] = variable.value;
+  const reservedWarning = reservedTeamEnvWarning([
+    ...(resolved?.variables.kind === 'resolved' ? resolved.variables.entries.map(({ name }) => name) : []),
+    ...(secretKeys ?? []),
+  ]);
+  if (reservedWarning) warnOnce(reservedWarning);
+  const isSecret = (key: string): boolean => !isReservedTeamEnvKey(key) && (secretKeys?.has(key) ?? false);
+  if (resolved) {
+    // Each part by its own scope's state, as `env exec` applies it: one that
+    // can't be resolved keeps what its last pull wrote, as its shells do.
+    for (const values of [resolved.variableValues, resolved.inheritedValues]) {
+      if (values.kind === 'store-unreadable') warnOnce(variablesKeptWarning(values.reason));
+    }
+    for (const [key, value] of appliedTeamEnv(resolved).variables) table[key] = value;
   } else {
-    if (variables) warnOnce(variablesKeptWarning(variables.reason));
-    for (const [key, value] of Object.entries(await readEnvBackup(localConfig))) if (!isSecret(key)) table[key] = value;
+    for (const [key, value] of Object.entries(await readEnvBackup(localConfig))) if (!isReservedTeamEnvKey(key)) table[key] = value;
   }
   // The environment fills only what the team sets nothing for (#875): a
   // member overrides a team variable with `teamai env set`, for that team.
+  // Only the member's own value (member-env.ts), as `env exec` gives a command:
+  // a shell that left another directory still carries that scope's env.sh (#1018).
   // An env.sh marker says what a shell sourced, and is no server's value.
   // On Windows `api_url` is the team's `API_URL`: names compare as the platform does.
   const teamSet = new Set(Object.keys(table).map(envName));
-  for (const [k, v] of Object.entries(process.env)) {
+  const member = resolved?.member ?? await memberEnvironmentWithoutScope([getDataHome(localConfig)]);
+  for (const k of Object.keys(process.env)) {
+    const v = member(k);
     if (v !== undefined && !isSecret(k) && !isEnvShMarker(k) && !teamSet.has(envName(k))) table[k] = v;
   }
   if (!resolved || !secretKeys || secretKeys.size === 0) return table;
@@ -217,26 +234,7 @@ export async function buildVarTable(localConfig: LocalConfig, teamEnv?: TeamEnv)
     warnOnce(`${resolved.secrets.reason} Team secrets have no value until it is fixed.`);
     return table;
   }
-  for (const [key, secret] of resolved.secrets.values) table[key] = secret.value;
-  return table;
-}
-
-/** The KEY=value file the env channel last wrote. */
-async function readEnvBackup(localConfig: LocalConfig): Promise<Record<string, string>> {
-  const table = envTable<string>();
-  // Must use the same path the env channel wrote (getEnvBackupPath) — self mode
-  // uses env.local, not env (which is a committed directory there).
-  const envFile = getEnvBackupPath(localConfig);
-  const content = await readFileSafe(envFile);
-  if (content) {
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq <= 0) continue;
-      table[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
-    }
-  }
+  for (const [key, secret] of resolved.secrets.values) if (!isReservedTeamEnvKey(key)) table[key] = secret.value;
   return table;
 }
 
@@ -844,8 +842,8 @@ export async function buildDesiredMcpContext(
   localConfig: LocalConfig,
   options: McpReconcileOptions = {},
 ): Promise<DesiredMcpContext> {
-  // HTTP mode has no repo tree to declare secrets in.
-  const teamEnv = localConfig.repo.kind === 'http' ? undefined : options.teamEnv ?? await resolveTeamEnv(localConfig);
+  // HTTP mode has no repo tree to declare secrets in; a project that inherits the user scope has the user scope's.
+  const teamEnv = resolvesTeamEnv(localConfig) ? options.teamEnv ?? await resolveTeamEnv(localConfig) : undefined;
   return {
     sharing: getMcpSharing(teamConfig),
     excluded: new Set(localConfig.excludedSkills ?? []),

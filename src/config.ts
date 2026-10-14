@@ -18,7 +18,7 @@ import {
   getDataHome,
 } from './types.js';
 import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic, expandHome, pathExists } from './utils/fs.js';
-import { resolveAnchors } from './utils/git.js';
+import { nearestGitEntry, resolveAnchors } from './utils/git.js';
 import { getUserHome } from './utils/home.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { log } from './utils/logger.js';
@@ -330,6 +330,12 @@ export async function saveLocalConfigForScope(
   } catch {
     // anchor file is a best-effort convenience for status --all; never fail a save
   }
+  // Nothing in the checkout says a partition project governs it until its first
+  // pull registers it, so the env loader must not give it the user env meanwhile.
+  if (config.scope === 'project' && config.projectRoot) {
+    const { markEnvScopePending } = await import('./resources/env-loader.js');
+    await markEnvScopePending(config.projectRoot);
+  }
 }
 
 /**
@@ -411,7 +417,9 @@ export async function resolveDataHomeForScope(scope: Scope, projectRoot?: string
  * never the user scope, nor a lower-priority project config that detection
  * reads after it (a legacy `.teamai/` behind a broken partition may name
  * another team): that project's hooks and usage must not reach a team it may
- * not belong to (#748). The hook dispatcher and every usage reader and writer
+ * not belong to (#748). So is a directory with a `.git` entry in it or above
+ * whose repository git cannot read: which project governs it is unknown, and
+ * `onUnreadable` is told that `.git`. The hook dispatcher and every usage reader and writer
  * resolve through this, so they always agree on the scope. A directory that no
  * longer exists (a hook payload naming a deleted worktree) holds no project
  * config; git refuses to open it, so it is not asked. Hooks go through
@@ -426,6 +434,11 @@ export async function resolveConfigForDir(
 ): Promise<LocalConfig | null> {
   const target = dir ?? process.cwd();
   if (!(await pathExists(target))) return loadLocalConfig(options);
+  const gitEntry = await nearestGitEntry(target);
+  if (gitEntry && !(await resolveAnchors(target))) {
+    onUnreadable?.(gitEntry, 'git could not read this repository, so which project governs this directory is unknown. Run `git status` here to see why');
+    return null;
+  }
   let unreadable = false;
   const project = await detectProjectConfig(target, (configPath, error) => {
     unreadable = true;

@@ -879,7 +879,7 @@ export function buildSelfModeGitignore(): string {
     'env.sh',
     // What env.sh has exported, as hashes (#879 Conflict 10).
     'env.sh.exports.json',
-    // env.local is the machine-local KEY=value backup pull writes for ${VAR}
+    // env.local is the machine-local env backup pull writes for ${VAR}
     // resolution (self mode uses this name to avoid colliding with the env/ dir).
     'env.local',
     'usage.jsonl',

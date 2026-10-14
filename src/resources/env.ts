@@ -1,27 +1,33 @@
 import path from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
 import { z } from 'zod';
 import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
-import type { ResourceItem, TeamaiConfig, LocalConfig, Scope } from '../types.js';
-import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, getTeamaiHome, getUserConfigPath, isSelfMode } from '../types.js';
-import { loadLocalConfigForScope } from '../config.js';
-import { pathExists, readFileSafe, writeFile, ensureDir, fileContentEqual } from '../utils/fs.js';
+import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
+import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, getTeamaiHome, isSelfMode } from '../types.js';
+import { pathExists, readFileIfExists, readFileSafe, writeFile, ensureDir, fileContentEqual, remove, symlinkTarget } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { envShMarker, isEnvShMarker, recordEnvShExports } from '../env-sh-exports.js';
-import { ENV_KEY_RE } from './env-key.js';
+import { envShExportsPath, envShMarker, isEnvShMarker, recordEnvShExports } from '../env-sh-exports.js';
+import { ENV_KEY_RE, envNamePattern, envNamePatternKey, envTable, sameEnvName } from './env-key.js';
 import { SECRETS_LAYOUT } from './secrets.js';
+import { envLoaderPath, hasEnvLoadingScope, markEnvScopePending, registerEnvScope, writeEnvLoader } from './env-loader.js';
 import {
   listEntryFiles, readEntryFileText, reportEntryResolution, resolveEntriesFor,
   unknownEntryKeys, writtenList, type EntryFile, type EntryReader,
 } from '../namespaced-entries.js';
 import {
+  SHELL_PROFILE_CANDIDATE_NAMES,
+  envLoaderProfiles,
   resolveActiveShellProfile,
   shellQuoteValue,
   isWindowsFormPath,
   findEnvBlocks,
   envBlockReferencesDataHome,
+  sameFile,
   type EnvBlock,
 } from '../utils/shell-profile.js';
+import { expandHome, getUserHome } from '../utils/home.js';
+import { isReservedTeamEnvKey, reservedTeamEnvWarning } from '../env-reserved.js';
 
 // ─── Schema for env.yaml ────────────────────────────────
 
@@ -181,6 +187,84 @@ export function parseEnvFile(content: string): Map<string, string> {
   return assignments;
 }
 
+/** Whether env.sh exports `key`: a shell identifier the loader does not reserve. The env backup and the export record hold the same keys. */
+function isExportedEnvKey(key: string): boolean {
+  return ENV_KEY_RE.test(key) && !isReservedTeamEnvKey(key);
+}
+
+/**
+ * Put `file` back as it was before a write that failed: `before`, or not
+ * there when null. A file that already holds `before` is left alone, as a
+ * write refused at the start (a read-only file) changed nothing.
+ */
+async function putBack(file: string, before: string | null): Promise<void> {
+  if (before === null) await remove(file);
+  else if (await readFileIfExists(file) !== before) await writeFile(file, before);
+}
+
+const KEEP_PREFIX = 'case " ${__teamai_keys-} " in *" "';
+
+/**
+ * Read back the keys `generateEnvFile` keeps from the user scope's env.sh: the
+ * lines before its first export, so a line inside a multiline value is not one.
+ */
+export function parseEnvFileKept(content: string): Set<string> {
+  const lines = content.split('\n');
+  const exports = lines.findIndex((line) => !line.startsWith(KEEP_PREFIX));
+  return new Set(lines.slice(0, exports === -1 ? lines.length : exports).flatMap((line) => {
+    const key = envNamePatternKey(line.slice(KEEP_PREFIX.length).split('"')[0]);
+    return ENV_KEY_RE.test(key) ? [key] : [];
+  }));
+}
+
+/**
+ * What the last pull exported, from the env backup it wrote: a JSON object,
+ * so a value with newlines or surrounding spaces reads back as env.sh exports
+ * it. A backup an older version wrote, one `KEY=value` per line, is read as
+ * before until the next pull rewrites it. Empty before a pull; one that cannot
+ * be read, or starts as JSON and does not parse, throws.
+ */
+export async function readEnvBackup(localConfig: LocalConfig): Promise<Record<string, string>> {
+  const table = envTable<string>();
+  // Must use the same path the env channel wrote (getEnvBackupPath) — self mode
+  // uses env.local, not env (which is a committed directory there).
+  const backupPath = getEnvBackupPath(localConfig);
+  let content: string;
+  try {
+    content = await readFile(backupPath, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return table;
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Env backup is unreadable at ${backupPath}: ${reason}`);
+  }
+  if (content.trimStart().startsWith('{')) {
+    const values = backupValues(content);
+    if (typeof values === 'string') throw new Error(`Env backup is unreadable at ${backupPath}: ${values}`);
+    for (const [key, value] of Object.entries(values)) table[key] = value;
+    return table;
+  }
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    table[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+  }
+  return table;
+}
+
+/** The values of a JSON env backup, or why it holds none. */
+function backupValues(content: string): Record<string, string> | string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'not a JSON object';
+  return Object.values(parsed).every((value) => typeof value === 'string') ? parsed as Record<string, string> : 'a value is not a string';
+}
+
 /** Validate a parsed env.yaml document; `label` names the file in the reason. */
 function parseEnvYamlDocument(raw: unknown, label: string): EnvYamlRead {
   // An empty document is a file with nothing to deliver, not a broken one.
@@ -209,16 +293,29 @@ function envPushItem(relativePath: string, sourcePath: string): ResourceItem {
 const SOURCES_ENV_SH = /(?:^|[\s;&|])(?:source|\.)\s[^\n;&|]*env\.sh/m;
 
 /**
- * The env.sh a user-scope pull writes, or null when no user scope is
- * configured. How a project pull recognises the user scope's profile block,
- * which it must keep (#876).
+ * `content` without the per-scope blocks versions before #1018 wrote: a block
+ * that sources an env.sh, or the inline-export format from before env.sh.
+ * The loader's own block, an unclosed one, and anything else stay. With
+ * `scopeEnvSh`, only that scope's blocks go: the ones that source its env.sh,
+ * and for the user scope the inline-export one, which only it ever wrote
+ * (project scopes came after env.sh).
  */
-async function userScopeEnvShPath(): Promise<string | null> {
-  const userConfig = await loadLocalConfigForScope('user');
-  if (userConfig) return path.join(getDataHome(userConfig), 'env.sh');
-  // A config that exists but does not parse is still a configured user scope:
-  // keep the block at its default env.sh rather than taking it over.
-  return await pathExists(getUserConfigPath()) ? path.join(getTeamaiHome('user'), 'env.sh') : null;
+function withoutOldBlocks(content: string, loaderPath: string, scopeEnvSh?: string): { content: string; dropped: EnvBlock[] } {
+  const userEnvSh = path.join(getTeamaiHome('user'), 'env.sh');
+  const dropped = findEnvBlocks(content).filter((block): block is EnvBlock & { end: number } => {
+    if (block.end === null || envBlockReferencesDataHome(block.text, loaderPath)) return false;
+    if (SOURCES_ENV_SH.test(block.text)) return scopeEnvSh === undefined || envBlockReferencesDataHome(block.text, scopeEnvSh);
+    const inline = block.text.split('\n').slice(1).every((line) => line === '' || line.startsWith('#') || line.startsWith('export '));
+    return inline && (scopeEnvSh === undefined || scopeEnvSh === userEnvSh);
+  });
+  let kept = content;
+  // One blank line stays between the text around a block, none at either end.
+  for (const block of [...dropped].reverse()) {
+    const head = kept.substring(0, block.start).replace(/\n+$/, '');
+    const tail = kept.substring(block.end).replace(/^\n+/, '');
+    kept = head && tail ? `${head}\n\n${tail}` : head ? `${head}\n` : tail;
+  }
+  return { content: kept, dropped };
 }
 
 // ─── Handler ─────────────────────────────────────────────
@@ -323,47 +420,140 @@ export class EnvHandler extends ResourceHandler {
   }
 
   /**
-   * Write env.sh, its KEY=VALUE backup and the shell profile block from the
+   * Write env.sh, its env backup and the shell profile block from the
    * resolved variables. Runs with an empty set too, which is what removes the
    * variables of a namespace that deactivated or a file that was emptied; only
-   * a machine that never had env delivered is left alone (returns false), so
-   * a team without env does not get a profile block for nothing.
+   * a scope that never had env delivered writes no env.sh (returns false). It
+   * installs the loader whenever this pull leaves any registered scope loading
+   * env, including an inherited user scope under an env-less project.
    */
-  async writeResolvedEnv(variables: EnvVariable[], teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<boolean> {
+  async writeResolvedEnv(variables: EnvVariable[], teamConfig: TeamaiConfig, localConfig: LocalConfig, kept: readonly string[] = []): Promise<boolean> {
+    const warning = reservedTeamEnvWarning(variables.map(({ key }) => key));
+    if (warning) log.warn(warning);
     // getEnvBackupPath returns <teamaiHome>/env normally, but <teamaiHome>/env.local
     // in self mode — where <teamaiHome>/env is a committed DIRECTORY (env/env.yaml)
     // and writing a file there would throw EISDIR.
     const teamaiHome = getDataHome(localConfig);
     const envShPath = path.join(teamaiHome, 'env.sh');
-    if (variables.length === 0 && !await pathExists(envShPath)) return false;
+    const inject = teamConfig.sharing.env.injectShellProfile !== false;
+    const needsEnvGate = localConfig.scope === 'project' && localConfig.inheritUserScope === true;
+    // Until its row is written, nothing else tells the loader this checkout is a project's.
+    if (localConfig.scope === 'project' && localConfig.projectRoot) await markEnvScopePending(localConfig.projectRoot);
+    if (variables.length === 0 && kept.length === 0 && !await pathExists(envShPath) && !needsEnvGate) {
+      await this.updateShellProfile(teamConfig, envShPath, inject, localConfig);
+      await registerEnvScope(localConfig, inject);
+      return false;
+    }
 
-    // The machine-local KEY=VALUE backup (for loadEnvFile).
-    const backupLines = variables.map(v => `${v.key}=${v.value}`);
     await ensureDir(teamaiHome);
-    await writeFile(getEnvBackupPath(localConfig), backupLines.join('\n') + '\n');
 
     // <teamaiHome>/env.sh (sourceable export file). What it exported before
     // and after is recorded first: a shell opened before this rewrite still
     // carries those values, and they are the team's, not the member's (#879
     // Conflict 10). The old ones are there too for an env.sh an older CLI wrote.
-    const previous = parseEnvFile(await readFileSafe(envShPath) ?? '');
-    const recorded = await recordEnvShExports(envShPath, [...previous, ...variables.map((v): [string, string] => [v.key, v.value])]);
-    const envSh = this.generateEnvFile(variables);
+    const before = await readFileIfExists(envShPath);
+    const recordFile = envShExportsPath(envShPath);
+    const recordBefore = await readFileIfExists(recordFile);
+    const backupPath = getEnvBackupPath(localConfig);
+    const backupBefore = await readFileIfExists(backupPath);
+    const exported = variables.filter(({ key }) => isExportedEnvKey(key));
+    const previous = parseEnvFile(before ?? '');
+    const recorded = await recordEnvShExports(envShPath, [
+      ...previous,
+      ...exported.map((v): [string, string] => [v.key, v.value]),
+    ]);
+    const envSh = this.generateEnvFile(variables, kept);
     const marker = envShMarker(teamaiHome, parseEnvFile(envSh), recorded);
-    await writeFile(envShPath, marker ? `${envSh}export ${marker[0]}='${marker[1]}'\n` : envSh);
-
-    // Inject source line into shell profile if enabled
-    const inject = teamConfig.sharing.env.injectShellProfile !== false;
-
-    if (inject) {
-      const profilePath = teamConfig.sharing.env.shellProfilePath
-        ? teamConfig.sharing.env.shellProfilePath
-        : await this.detectShellProfile(envShPath);
-
-      const shellBlock = this.generateShellBlock(teamaiHome);
-      await this.injectShellProfile(profilePath, shellBlock, envShPath, localConfig.scope);
+    const content = marker ? `${envSh}export ${marker[0]}='${marker[1]}'\n` : envSh;
+    // The machine-local backup of what this pull exports (readEnvBackup), which
+    // env exec and MCP read: it changes only with env.sh, so they never get
+    // values the shells do not. The record goes back with them: an export that
+    // never happened must not count as the team's. A file counts as changed
+    // once its write starts, as one that fails part way has emptied it.
+    const writes: [file: string, before: string | null, content: string][] = [
+      [envShPath, before, content],
+      [backupPath, backupBefore, `${JSON.stringify(Object.fromEntries(exported.map((v) => [v.key, v.value])), null, 2)}\n`],
+    ];
+    const started: [file: string, before: string | null][] = [[recordFile, recordBefore]];
+    try {
+      for (const [file, previousContent, next] of writes) {
+        started.push([file, previousContent]);
+        await writeFile(file, next);
+      }
+    } catch (error) {
+      try {
+        for (const [file, previousContent] of started) await putBack(file, previousContent);
+      } catch (restoreError) {
+        // env.sh is neither the old one nor the new one: no shell loads it.
+        const closed = await registerEnvScope(localConfig, false).then(() => true, () => false);
+        throw new Error(`Could not write ${envShPath} and the env backup (${String(error)}), nor put them and ${recordFile} back as they were (${String(restoreError)}). `
+          + `${closed ? 'Shells load no team env from it' : 'Shells may load what was written of it'} until teamai pull runs again once all are writable.`, { cause: error });
+      }
+      throw error;
     }
+
+    // Migrate profile blocks before changing an existing row to opted out.
+    // If a profile write fails, the old route remains active and visible.
+    await this.updateShellProfile(teamConfig, envShPath, inject, localConfig);
+    await registerEnvScope(localConfig, inject, { envChanged: content !== before });
     return true;
+  }
+
+  /**
+   * Register a scope whose current env could not resolve, after its profile is
+   * ready. Its last env.sh and backup stay, so shells keep loading what env
+   * exec and MCP keep; a scope never delivered loads none. A key it now
+   * declares a secret (`secretKeys`) leaves them, as it leaves what env exec and
+   * MCP keep, and an inheriting project keeps the member's own value of it.
+   */
+  async registerUnresolvedScope(teamConfig: TeamaiConfig, localConfig: LocalConfig, secretKeys: readonly string[]): Promise<void> {
+    const envShPath = path.join(getDataHome(localConfig), 'env.sh');
+    const last = await readFileIfExists(envShPath);
+    if (last !== null && secretKeys.length > 0) {
+      const exports = [...parseEnvFile(last)];
+      const keeps = [...parseEnvFileKept(last)];
+      const kept = exports.filter(([key]) => sameEnvName(secretKeys, key) === undefined);
+      const inherits = localConfig.scope === 'project' && localConfig.inheritUserScope === true;
+      const newKeeps = inherits ? secretKeys.filter((key) => sameEnvName(keeps, key) === undefined && !isReservedTeamEnvKey(key)) : [];
+      if (kept.length < exports.length || newKeeps.length > 0) {
+        await this.writeResolvedEnv(kept.map(([key, value]) => ({ key, value })), teamConfig, localConfig, [...keeps, ...newKeeps]);
+        return;
+      }
+    }
+    const inject = teamConfig.sharing.env.injectShellProfile !== false;
+    if (localConfig.scope === 'project' && localConfig.projectRoot) await markEnvScopePending(localConfig.projectRoot);
+    await this.updateShellProfile(teamConfig, envShPath, inject, localConfig);
+    await registerEnvScope(localConfig, inject && await pathExists(envShPath));
+  }
+
+  /**
+   * Install the loader while any registered scope loads env. Otherwise no
+   * shell loads this scope's env through it, so the blocks an older version
+   * wrote to source this scope's env.sh are the only way left, and they go;
+   * another scope's stay for its own pull to move.
+   */
+  private async updateShellProfile(teamConfig: TeamaiConfig, envShPath: string, inject: boolean, localConfig?: LocalConfig): Promise<void> {
+    if (inject || await hasEnvLoadingScope(localConfig)) return this.installEnvLoader(teamConfig);
+    const override = teamConfig.sharing.env.shellProfilePath;
+    await this.injectShellProfile(null, envLoaderPath(), override ? [expandHome(override)] : [], envShPath);
+  }
+
+  /**
+   * Write the loader and put its block into each profile it goes in (`envLoaderProfiles`).
+   */
+  private async installEnvLoader(teamConfig: TeamaiConfig): Promise<void> {
+    const loaderPath = envLoaderPath();
+    const override = teamConfig.sharing.env.shellProfilePath;
+    const { paths: profilePaths, ignoredOverride } = await envLoaderProfiles(override, loaderPath);
+    // An older version wrote its block to the override whatever the shell.
+    const overridden = override ? [expandHome(override)] : [];
+    if (ignoredOverride) {
+      log.warn(`teamai.yaml sets sharing.env.shellProfilePath to ${ignoredOverride}, which not every zsh reads: `
+        + `the team env loader goes in ${profilePaths[0]} instead.`);
+    }
+    await writeEnvLoader();
+    const shellBlock = this.generateShellBlock(loaderPath);
+    await this.injectShellProfile({ files: profilePaths, block: shellBlock }, loaderPath, overridden);
   }
 
   /**
@@ -416,19 +606,20 @@ export class EnvHandler extends ResourceHandler {
   }
 
   /**
-   * Generate the shell block with a source line (instead of inline exports).
+   * Generate the shell block: one line that sources the env loader (#1018),
+   * the same block for every scope.
    *
    * The block is read back by a POSIX shell (bash/zsh/sh) even on Windows,
-   * where `teamaiHome` is a native path such as `C:\Users\me\.teamai`. The
-   * block used to interpolate that path as-is, so on Windows `[ -f ... ]`
+   * where `loaderPath` is a native path such as `C:\Users\me\.teamai\env-loader.sh`.
+   * The block used to interpolate such a path as-is, so on Windows `[ -f ... ]`
    * tested a backslash path the shell treats as an escape sequence, and
    * `source` never ran — while nothing reported a failure (#661).
    *
-   * A Windows-form home is rewritten to forward slashes, which Git Bash, WSL
+   * A Windows-form path is rewritten to forward slashes, which Git Bash, WSL
    * and MSYS all accept, so one block loads on every shell the CLI supports.
    * The rewrite keys off the path's own shape, never `path.sep`, so the output
    * is byte-identical across platforms and the Windows form stays assertable
-   * from the Linux/macOS CI runners. A POSIX home is passed through untouched:
+   * from the Linux/macOS CI runners. A POSIX path is passed through untouched:
    * its backslashes are filename characters, not separators.
    *
    * The path is quoted unconditionally (`shellQuoteValue`). It sits inside a
@@ -436,13 +627,12 @@ export class EnvHandler extends ResourceHandler {
    * directory would break that test and split the `source` builtin. Quoting
    * only "when needed" would put the quoted form out of reach of the runner.
    */
-  generateShellBlock(teamaiHome: string): string {
-    const shellHome = isWindowsFormPath(teamaiHome) ? teamaiHome.replace(/\\/g, '/') : teamaiHome;
-    const envShPath = shellQuoteValue(`${shellHome}/env.sh`);
+  generateShellBlock(loaderPath: string): string {
+    const quoted = shellQuoteValue(isWindowsFormPath(loaderPath) ? loaderPath.replace(/\\/g, '/') : loaderPath);
     const lines = [
       TEAMAI_ENV_START,
       '# DO NOT EDIT: This section is auto-managed by teamai',
-      `[ -f ${envShPath} ] && source ${envShPath}`,
+      `[ -f ${quoted} ] && . ${quoted}`,
       TEAMAI_ENV_END,
     ];
     return lines.join('\n');
@@ -464,12 +654,21 @@ export class EnvHandler extends ResourceHandler {
    * shell. Dropping keeps the write and read sides in agreement — a line
    * `parseEnvFile` must skip anyway is better left unwritten. One member's bad
    * key must not take the whole file down with it, so the rest still ship.
+   *
+   * `kept` are keys a project that inherits the user scope declares and its
+   * exports may not overwrite (`keptFromUserScope`): the loader sources the
+   * user scope's env.sh first, and these lines, before the exports, put back
+   * the member's own value of each name it set that is the same environment
+   * variable, in any spelling on Windows (`__teamai_env_keep`, env-loader.ts).
    */
-  generateEnvFile(variables: EnvVariable[]): string {
+  generateEnvFile(variables: EnvVariable[], kept: readonly string[] = []): string {
     const lines = variables
-      .filter(v => ENV_KEY_RE.test(v.key))
+      .filter(v => isExportedEnvKey(v.key))
       .map(v => `export ${v.key}=${shellQuoteValue(v.value)}`);
-    return lines.join('\n') + '\n';
+    const keeps = kept
+      .filter(isExportedEnvKey)
+      .map(key => `${KEEP_PREFIX}${envNamePattern(key)}" "*) __teamai_env_keep '${envNamePattern(key)}' ;; esac`);
+    return [...keeps, ...lines].join('\n') + '\n';
   }
 
   /**
@@ -480,61 +679,104 @@ export class EnvHandler extends ResourceHandler {
    * wrote `.zshrc`, and report a correct install as broken. Delegates to the
    * shared `utils/shell-profile.js` so `teamai uninstall` resolves the same
    * file too (#682), and follows the chain of files the order-based pick
-   * actually `source`s to reuse a candidate that already carries this
-   * scope's block, rather than injecting a duplicate every time a new file
-   * enters that chain (#693 review rounds 7-9).
+   * actually `source`s to reuse a candidate that already carries the block
+   * sourcing `sourcedPath`, rather than injecting a duplicate every time a new
+   * file enters that chain (#693 review rounds 7-9).
    */
-  detectShellProfile(envShPath: string, platform: NodeJS.Platform = process.platform): Promise<string> {
-    return resolveActiveShellProfile(envShPath, platform);
+  detectShellProfile(sourcedPath: string, platform: NodeJS.Platform = process.platform): Promise<string> {
+    return resolveActiveShellProfile(sourcedPath, platform);
   }
 
   /**
-   * Inject this scope's shell block into the profile file (idempotent).
+   * Put the loader block into the profile file (idempotent), and take out
+   * every per-scope block an older version wrote (#1018), from this file and
+   * from every other profile file a version could have written to: one left
+   * in `.zshrc` would load its scope's env in every interactive shell, on top
+   * of what the loader picked for the directory. An unclosed block has no end
+   * to cut up to, so it is left as it is. All or nothing: the older blocks
+   * still load the team env without the loader block, and one left beside it
+   * loads its scope's env on top of the directory's, so a failed write puts
+   * back every file this one changed, and the failure propagates.
    *
-   * The profile keeps the user scope's block plus at most one project block,
-   * the user's first so a project value wins on a key both define (#876). A
-   * scope replaces its own block. Otherwise a project takes over another
-   * project's block, never the user scope's, which keeps the project block
-   * last-wins; a user scope goes in right before the project block. Any other
-   * blocks (a hand-edited profile) are left alone.
+   * With no `loader`, only the older blocks that source `scopeEnvSh` go.
+   *
+   * Each file is planned and written once, by the file its links end at: a
+   * `.zshrc` linked to `.zshenv` is one file, and a second write through the
+   * other name would put back what the first took out, or erase the loader
+   * block. It is written through the name the member uses, so a link stays,
+   * and a failed pull puts back the file the link ends at: one it created,
+   * even behind a link that pointed nowhere yet, is removed, never the link.
    */
-  private async injectShellProfile(profilePath: string, block: string, envShPath: string, scope: Scope): Promise<void> {
-    const original = await readFileSafe(profilePath) ?? '';
-    let content = original;
-
-    // An unclosed block has no end to replace up to, so it is left as it is.
-    const blocks = findEnvBlocks(content).filter((b): b is EnvBlock & { end: number } => b.end !== null);
-    let target = blocks.find((b) => envBlockReferencesDataHome(b.text, envShPath));
-    if (!target) {
-      // Only now does a project pull need the user config, so a steady-state
-      // pull never reads it.
-      const userEnvShPath = scope === 'user' ? envShPath : await userScopeEnvShPath();
-      // A block that sources no env.sh is the inline-export format from before
-      // env.sh and project scopes existed: the user scope's too.
-      const isUserBlock = (b: EnvBlock): boolean => !SOURCES_ENV_SH.test(b.text)
-        || (userEnvShPath !== null && envBlockReferencesDataHome(b.text, userEnvShPath));
-      target = blocks.find((b) => (scope === 'user' ? isUserBlock(b) : !isUserBlock(b)));
+  private async injectShellProfile(loader: { files: string[]; block: string } | null, loaderPath: string, overridden: string[], scopeEnvSh?: string): Promise<void> {
+    const removed: EnvBlock[] = [];
+    const home = getUserHome();
+    // The loader's files first: if its block cannot go in, no older block is touched.
+    const files = new Map<string, string>();
+    for (const file of [...loader?.files ?? [], ...overridden, ...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(home, name))]) {
+      const target = await realpath(file).catch(() => symlinkTarget(file));
+      if (![...files.keys()].some((known) => sameFile(known, target))) files.set(target, file);
     }
-
-    if (target) {
-      // Replace existing block
-      content = content.substring(0, target.start) + block + content.substring(target.end);
-    } else if (scope === 'user' && blocks.length > 0) {
-      // Every block left is a project's: go in before it
-      content = content.substring(0, blocks[0].start) + block + '\n\n' + content.substring(blocks[0].start);
-    } else {
-      // Append block
-      if (content.length > 0 && !content.endsWith('\n')) {
-        content += '\n';
+    // `created` is the first directory a write makes on the way to a new
+    // file, as when a link points into a dotfiles directory not there yet.
+    const writes: { file: string; target: string; before: string | null; created: string | null; content: string }[] = [];
+    for (const [target, file] of files) {
+      const original = await readFileIfExists(file);
+      const stripped = withoutOldBlocks(original ?? '', loaderPath, scopeEnvSh);
+      removed.push(...stripped.dropped);
+      let content = stripped.content;
+      if (loader?.files.includes(file)) {
+        const own = findEnvBlocks(content).find((b) => b.end !== null && envBlockReferencesDataHome(b.text, loaderPath));
+        if (own?.end != null) {
+          content = content.substring(0, own.start) + loader.block + content.substring(own.end);
+        } else {
+          if (content.length > 0 && !content.endsWith('\n')) content += '\n';
+          content += '\n' + loader.block + '\n';
+        }
       }
-      content += '\n' + block + '\n';
+      // Skip the write when nothing changed: this runs on every pull,
+      // including the one a SessionStart hook runs each session.
+      if (content === (original ?? '')) continue;
+      const exists = await pathExists(target);
+      let created: string | null = null;
+      for (let dir = path.dirname(target); !exists && !await pathExists(dir); dir = path.dirname(dir)) created = dir;
+      writes.push({ file, target, before: exists ? original ?? '' : null, created, content });
+    }
+    const written: typeof writes = [];
+    try {
+      for (const write of writes) {
+        // Before the write: one that fails part way has emptied the file.
+        written.push(write);
+        // Through the end of the link, so its directory is made too.
+        await writeFile(write.target, write.content);
+      }
+    } catch (error) {
+      const unrestored: string[] = [];
+      for (const { file, target, before, created } of written.reverse()) {
+        try {
+          await putBack(before === null ? created ?? target : file, before);
+        } catch (restoreError) {
+          unrestored.push(`${file} (${String(restoreError)})`);
+        }
+      }
+      if (unrestored.length > 0) {
+        throw new Error(`Could not update the shell profile (${String(error)}), nor put back as they were: ${unrestored.join(', ')}. Check the teamai env blocks in those files.`, { cause: error });
+      }
+      throw error;
     }
 
-    // Skip the write when nothing changed: this runs on every pull, including
-    // the revision fast path a SessionStart hook takes each session, and the
-    // member's shell profile should not churn for it.
-    if (content === original) return;
-    await writeFile(profilePath, content);
+    // A shell in a project loaded the user scope's block too; now only a
+    // project that inherits the user scope does.
+    const userEnvSh = path.join(getTeamaiHome('user'), 'env.sh');
+    // A removed block that sources no env.sh is the inline-export one, the user scope's.
+    const hadUserBlock = removed.some((b) => !SOURCES_ENV_SH.test(b.text) || envBlockReferencesDataHome(b.text, userEnvSh));
+    const hadProjectBlock = removed.some((b) => SOURCES_ENV_SH.test(b.text) && !envBlockReferencesDataHome(b.text, userEnvSh));
+    if (hadUserBlock && hadProjectBlock) {
+      const notice = 'User-scope env no longer loads inside project directories: each directory now gets its own scope\'s env. '
+        + 'To keep user env variables in a project, set `inheritUserScope: true` there (`teamai init <repo> --inherit-user-scope`).';
+      log.info(notice);
+      // The session-start pull is silent: debug.log keeps it.
+      log.persist(notice);
+    }
   }
 
   async removeItem(_name: string, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<string[]> {

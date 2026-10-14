@@ -368,7 +368,8 @@ describe.skipIf(process.platform === 'win32')('the HTTP local agent installs a p
 
     expect(out.code, out.output).toBe(0);
     expect(out.output).toContain('home directory only');
-    expect(fs.existsSync(path.join(m.home, '.teamai')), out.output).toBe(false);
+    // The project is still registered: its state, the env registry and the loader stay (#1018).
+    expect(fs.readdirSync(path.join(m.home, '.teamai')).sort(), out.output).toEqual(['env-loader.sh', 'env-scopes', 'projects']);
     expect(servers(m.readJson(m.claudeJson), app), out.output).toEqual({ 'my-local': MY_LOCAL, 'edited-api': edited });
     expect(out.output).toContain(`Kept MCP server edited-api in ${m.claudeJson} (projects[${JSON.stringify(app)}]): you changed it since teamai wrote it`);
     expect(servers(m.readJson(m.codebuddyJson), app), out.output).toEqual({ 'my-local': MY_LOCAL });
@@ -401,12 +402,13 @@ describe.skipIf(process.platform === 'win32')('the HTTP local agent installs a p
     expect(out.output).toContain(m.claudeJson);
     expect(records(), out.output).toHaveLength(1);
 
-    // Repaired, the same uninstall removes the server and the home.
+    // Repaired, the same uninstall removes the server and the rest of the home.
     fs.writeFileSync(m.claudeJson, good);
     const retry = await m.cli(['uninstall', '--force'], m.base);
     expect(retry.code, retry.output).toBe(0);
     expect(servers(m.readJson(m.claudeJson), app), retry.output).toEqual({ 'my-local': MY_LOCAL });
     expect(fs.readFileSync(m.claudeJson, 'utf8')).not.toContain(TOKEN);
-    expect(fs.existsSync(path.join(m.home, '.teamai')), retry.output).toBe(false);
+    // The project is still registered: its state, the env registry and the loader stay (#1018).
+    expect(fs.readdirSync(path.join(m.home, '.teamai')).sort(), retry.output).toEqual(['env-loader.sh', 'env-scopes', 'projects']);
   }, 180_000);
 });

@@ -328,11 +328,12 @@ export interface ReincludingRule {
 
 /**
  * Whether the rule `git check-ignore -v` says ignores `file` is the member's:
- * not a line inside one of teamai's `# [teamai:<owner>:…]` blocks. False when
- * git names no rule or its source cannot be read: the caller then lists the
- * path itself, the safe direction.
+ * not a line inside one of teamai's `# [teamai:<owner>:…]` blocks. git is
+ * asked from `file`'s own checkout, so that checkout's rules decide. False when
+ * git names no rule or its source cannot be read: the caller then treats the
+ * path as git would commit it, the safe direction.
  */
-async function ignoredByMembersRule(file: string): Promise<boolean> {
+export async function ignoredByMembersRule(file: string): Promise<boolean> {
   const landed = await realFilePath(file);
   const dir = await existingAncestor(landed);
   const result = await runGit(['check-ignore', '-v', '--', path.relative(dir, landed)], dir);

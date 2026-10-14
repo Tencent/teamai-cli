@@ -468,7 +468,8 @@ describe('codebase reconciliation', () => {
     fs.writeFileSync(path.join(root, 'teamwiki', 'product', 'auth.md'), '# Auth\nUse `AuthService` for login.\n');
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
 
-    await codebaseCmd({ extract: root, project: 'auth', json: true });
+    const { extractCodebase } = await import('../codebase-extract.js');
+    await extractCodebase({ path: root, project: 'auth', json: true });
     const extracted = await loadGraphIndex(path.join(root, 'teamwiki'));
     expect(extracted?.edges).toContainEqual(
       expect.objectContaining({ from: 'src/auth.ts', to: 'src/auth.ts', relation: 'IMPLEMENTS', source: 'code-ast' }),

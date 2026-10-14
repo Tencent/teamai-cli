@@ -214,14 +214,21 @@ describe('one repo, many worktrees (#809)', () => {
     expect(log, r.output).toContain(`- Directory: \`${worktree}\``);
   });
 
-  it('import --dir and codebase --extract in a worktree use the repo name as the wiki slug', async () => {
+  it('import --dir in a worktree uses the repo name as the wiki slug', async () => {
     const imported = await runCLI(['import', '--dir', '.', '--dry-run'], worktree, home);
     expect(imported.code, imported.output).toBe(0);
     expect(imported.output).toContain('(project: my-repo)');
 
-    const extracted = await runCLI(['codebase', '--extract', worktree, '--json', '--max-files', '10'], worktree, home);
-    expect(extracted.code, extracted.output).toBe(0);
-    expect(fs.readdirSync(path.join(worktree, 'teamwiki', 'evidence', 'code')), extracted.output).toEqual(['my-repo']);
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-809-import-'));
+    try {
+      const extracted = await runCLI(['import', '--dir', '.', '--output', output, '--skip-enrich'], worktree, home);
+      expect(extracted.code, extracted.output).toBe(0);
+      expect(fs.readdirSync(path.join(output, 'teamwiki', 'evidence', 'code')), extracted.output).toEqual(['my-repo']);
+      // Nothing is written into the worktree.
+      expect(fs.existsSync(path.join(worktree, 'teamwiki'))).toBe(false);
+    } finally {
+      fs.rmSync(output, { recursive: true, force: true });
+    }
   });
 
   it('keeps a removed worktree\'s sessions in the repo\'s dashboard workspace, listed once in the Repository filter', async () => {

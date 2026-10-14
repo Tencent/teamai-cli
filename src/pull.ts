@@ -67,8 +67,10 @@ import { resetWarnOnce, warnOnce } from './utils/warn-once.js';
 import { describeNoLongerTeamaiOnly, describeUnknownTracking, judgeTeamaiOnlyFiles, keptOutByMcpExclude, type SharedFileJudgement } from './teamai-only-files.js';
 import { realFilePath } from './git-exclude.js';
 import type { EnvVariable } from './resources/env.js';
+import { EnvScopesUnreadableError } from './resources/env-loader.js';
 import { declaredSecretKeys } from './resources/secrets.js';
-import { envShVariables, resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
+import { envShVariables, keptFromUserScope, resolvesTeamEnv, resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
+import { reservedTeamEnvWarning } from './env-reserved.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
@@ -690,6 +692,11 @@ function deliverableEnvVariables(teamEnv: TeamEnv): EnvVariable[] | null {
   const { variables, declarations } = teamEnv;
   reportEntryResolution(variables);
   if (declarations.kind !== 'absent') reportEntryResolution(declarations);
+  const reservedWarning = reservedTeamEnvWarning([
+    ...(variables.kind === 'resolved' ? variables.entries.map(({ name }) => name) : []),
+    ...(declaredSecretKeys(declarations) ?? []),
+  ]);
+  if (reservedWarning) log.warn(reservedWarning);
   if (variables.kind === 'failed' || !declaredSecretKeys(declarations)) return null;
   if (teamEnv.variableValues.kind === 'store-unreadable') {
     log.warn(variablesKeptWarning(teamEnv.variableValues.reason));
@@ -724,10 +731,15 @@ async function reconcileEnvForUnchangedRepo(
   teamEnvs: Map<LocalConfig, TeamEnv> | undefined,
 ): Promise<void> {
   try {
-    const variables = deliverableEnvVariables(await resolvePullEnv(localConfig, roleContext, teamEnvs));
-    if (!variables) return;
-    await new EnvHandler().writeResolvedEnv(variables, freshConfig, localConfig);
+    const teamEnv = await resolvePullEnv(localConfig, roleContext, teamEnvs);
+    const variables = deliverableEnvVariables(teamEnv);
+    if (!variables) {
+      await new EnvHandler().registerUnresolvedScope(freshConfig, localConfig, [...declaredSecretKeys(teamEnv.declarations) ?? []]);
+      return;
+    }
+    await new EnvHandler().writeResolvedEnv(variables, freshConfig, localConfig, keptFromUserScope(localConfig, teamEnv, variables));
   } catch (e) {
+    // The scope's row stays: only a scope never delivered is registered as loading none.
     // Visible rather than debug-only, and still not rethrown. This is the path
     // that REMOVES a variable the member is no longer scoped to, so a failed
     // write leaves a withheld variable exported while the only thing on screen
@@ -735,6 +747,7 @@ async function reconcileEnvForUnchangedRepo(
     // the failure is reported where the member can act on it instead of taking
     // that pull down with it.
     const envShPath = path.join(getDataHome(localConfig), 'env.sh');
+    process.exitCode = 1;
     log.warn(
       `[${localConfig.scope}] Could not refresh env variables: ${(e as Error).message}. `
       + `${envShPath} may still export variables the team no longer delivers to this directory. `
@@ -1702,8 +1715,17 @@ async function pullForScope(
       // even when the root file is absent or empty: rewriting env.sh from the
       // resolved set is what removes a deactivated namespace's variables. A
       // file that cannot be used, or a name defined twice, keeps env.sh as is.
-      const variables = deliverableEnvVariables(await resolvePullEnv(localConfig, roleContext, teamEnvs));
+      const teamEnv = await resolvePullEnv(localConfig, roleContext, teamEnvs);
+      const variables = deliverableEnvVariables(teamEnv);
       if (!variables) {
+        if (!options.dryRun) {
+          try {
+            await new EnvHandler().registerUnresolvedScope(freshConfig, localConfig, [...declaredSecretKeys(teamEnv.declarations) ?? []]);
+          } catch (error) {
+            if (result) result.resourceSyncFailed = true;
+            throw error;
+          }
+        }
         if (result) result.resourceSyncFailed = true;
         continue;
       }
@@ -1711,8 +1733,18 @@ async function pullForScope(
 
       if (options.dryRun) {
         if (variables.length > 0) log.info(`[${scopeLabel}] [dry-run] Would sync ${countLabel}`);
-      } else if (await new EnvHandler().writeResolvedEnv(variables, freshConfig, localConfig)) {
-        log.success(`[${scopeLabel}] Synced ${countLabel} to ${getDataHome(localConfig)}/env.sh`);
+      } else {
+        // A failed write or registration keeps the scope's row: only an env
+        // that could not be resolved (above) is registered as loading none.
+        try {
+          if (await new EnvHandler().writeResolvedEnv(variables, freshConfig, localConfig, keptFromUserScope(localConfig, teamEnv, variables))) {
+            log.success(`[${scopeLabel}] Synced ${countLabel} to ${getDataHome(localConfig)}/env.sh`);
+          }
+        } catch (error) {
+          if (result) result.resourceSyncFailed = true;
+          process.exitCode = 1;
+          throw error;
+        }
       }
       if (variables.length > 0) totalSynced += 1;
       continue;
@@ -2155,8 +2187,8 @@ async function pullForScope(
   // double-truncation when both user and project scopes share events.
   // (no-op here; see pull() for the unified reporting logic)
 
-  // Step 6: Show skill recommendations
-  if (!options.silent && !options.dryRun) {
+  // Step 6: Show skill recommendations, among the skills Step 2 delivers
+  if (!options.silent && !options.dryRun && desiredSkillNames) {
     try {
       const YAML = (await import('yaml')).default;
       const { listFiles, readFileSafe } = await import('./utils/fs.js');
@@ -2176,7 +2208,7 @@ async function pullForScope(
         } catch { /* skip */ }
       }
       if (teamStats.length > 0) {
-        const recs = await getRecommendations(teamStats);
+        const recs = await getRecommendations(teamStats, desiredSkillNames);
         displayRecommendations(recs);
       }
     } catch {
@@ -2761,8 +2793,11 @@ export async function pull(
           inheritedUserConfig = loadedUserConfig;
           log.info('project scope detected, inheriting user-scope resources and knowledge');
           if (await lockScope(inheritedUserConfig)) {
+            // Env too: the project's shells load the user env.sh, so it follows
+            // the user repo this pull refreshes, as `env exec` and MCP do. It
+            // holds values only; the user scope's hooks and MCP stay undelivered.
             await pullForScope(inheritedUserConfig, options, reported, {
-              resourceTypes: ['skills', 'rules', 'docs', 'agents'],
+              resourceTypes: ['skills', 'rules', 'docs', 'env', 'agents'],
               revisionField: 'lastInheritedPullRev',
             }, syncResult);
           }
@@ -2782,6 +2817,7 @@ export async function pull(
         log.debug('No user-scope config found, skipping user pull');
       }
     } catch (e) {
+      if (e instanceof EnvScopesUnreadableError) process.exitCode = 1;
       log.warn(`User-scope pull error: ${(e as Error).message}`);
       startupErrors.push(`User-scope pull: ${(e as Error).message}`);
     }
@@ -2797,6 +2833,7 @@ export async function pull(
         await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder }, syncResult, teamEnvs, instructions);
       }
     } catch (e) {
+      if (e instanceof EnvScopesUnreadableError) process.exitCode = 1;
       log.warn(`Project-scope pull error: ${(e as Error).message}`);
       startupErrors.push(`Project-scope pull: ${(e as Error).message}`);
     }
@@ -2811,7 +2848,7 @@ export async function pull(
   // The deploy owner for this pull: the project scope's repo when a project
   // is active, else the user scope's — the two are mutually exclusive by
   // derivation above. An inherited user scope (inheritUserScope) is
-  // resources+knowledge only by design and deliberately runs no postPull:
+  // resources, env values and knowledge only by design and deliberately runs no postPull:
   // postPull is part of the deploy surface, which follows the active scope
   // alone — the same boundary as its resourceTypes narrowing above.
   scriptOwner = reconcileProject ?? reconcileUser ?? null;
@@ -3538,7 +3575,7 @@ async function reportEnvAdvisories(
  * stage did not run (HTTP mode delivers none). Kept for the next stage.
  */
 async function scopeEnv(localConfig: LocalConfig, teamEnvs: Map<LocalConfig, TeamEnv>): Promise<TeamEnv | undefined> {
-  if (localConfig.repo.kind === 'http') return undefined;
+  if (!resolvesTeamEnv(localConfig)) return undefined;
   const known = teamEnvs.get(localConfig);
   if (known) return known;
   const teamEnv = await resolveTeamEnv(localConfig);

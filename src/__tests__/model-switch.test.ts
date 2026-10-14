@@ -15,7 +15,7 @@ const SHELL_KEYS = (key: string) => key.startsWith('ANTHROPIC_') || key.startsWi
   || key === 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY';
 
 beforeEach(async () => {
-  const keys = ['HOME', 'SHELL', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'PI_CODING_AGENT_DIR', 'TEAMAI_TEST_MODEL_KEY',
+  const keys = ['HOME', 'SHELL', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'PI_CODING_AGENT_DIR', 'TEAMAI_TEST_MODEL_KEY', 'ZDOTDIR',
     ...Object.keys(process.env).filter(SHELL_KEYS)];
   originalEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -328,9 +328,11 @@ describe('Muse Code model switching', () => {
     });
     expect(await fse.readFile(museKeyFile(), 'utf8')).toBe("export META_API_KEY='local-secret'\n");
     expect((await fse.stat(museKeyFile())).mode & 0o777).toBe(0o600);
-    const zshrc = await fse.readFile(path.join(home, '.zshrc'), 'utf8');
-    expect(zshrc).toContain(`. '${museKeyFile()}'`);
-    expect(zshrc).not.toContain('[teamai:env:start]');
+    // The file the team env loader goes in for zsh, which every zsh reads.
+    const zshenv = await fse.readFile(path.join(home, '.zshenv'), 'utf8');
+    expect(zshenv).toContain(`. '${museKeyFile()}'`);
+    expect(zshenv).not.toContain('[teamai:env:start]');
+    expect(await fse.readFile(path.join(home, '.zshrc'), 'utf8')).toBe('export KEEP=1\n');
 
     const [restored] = await restoreModelProfiles(['muse']);
     expect(restored.status).toBe('restored');
@@ -338,6 +340,19 @@ describe('Muse Code model switching', () => {
     expect(await fse.readJson(museFile())).toEqual(original);
     expect(await fse.pathExists(museKeyFile())).toBe(false);
     expect(await fse.readFile(path.join(home, '.zshrc'), 'utf8')).toBe('export KEEP=1\n');
+    expect(await fse.readFile(path.join(home, '.zshenv'), 'utf8')).not.toContain('[teamai:models:start]');
+  });
+
+  it('takes the key block back out of the zsh startup file ZDOTDIR names', async () => {
+    process.env.SHELL = '/bin/zsh';
+    const zdotdir = path.join(home, 'zdot');
+    process.env.ZDOTDIR = zdotdir;
+    await fse.outputJson(museFile(), { schema_version: 1 });
+    await switchModelProfile(routed({ 'openai-responses': ['glm-5.3'] }), ['muse']);
+    expect(await fse.readFile(path.join(zdotdir, '.zshenv'), 'utf8')).toContain(`. '${museKeyFile()}'`);
+
+    await restoreModelProfiles(['muse']);
+    expect(await fse.readFile(path.join(zdotdir, '.zshenv'), 'utf8')).not.toContain('[teamai:models:start]');
   });
 
   it('exports the variable that holds the key instead of the key', async () => {

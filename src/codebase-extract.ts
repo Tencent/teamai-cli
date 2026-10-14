@@ -659,7 +659,13 @@ async function sourceRepositoryMetadata(
   };
 }
 
-export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<void> {
+/**
+ * Extract code knowledge from `opts.path` into `<outputRoot>/teamwiki`.
+ *
+ * @returns false when nothing was written: an incremental run found no
+ *          changes, or the source has no extractable files
+ */
+export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boolean> {
   const root = path.resolve(opts.path || '.');
   const project = opts.project || await defaultProjectSlug(root);
   const sourceRepo = await sourceRepositoryMetadata(root, opts.repoUrl);
@@ -708,7 +714,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
         } else {
           console.log(chalk.green(`[extract] ${project}: no changes, skipped.`));
         }
-        return;
+        return false;
       }
       changedFiles = [...changes.added, ...changes.changed];
       deletedFiles = changes.deleted;
@@ -765,7 +771,7 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
     } else {
       console.log(chalk.yellow(`[extract] ${project}: no extractable source files found.`));
     }
-    return;
+    return false;
   }
 
   // 增量模式下，跨文件解析（通配展开、符号定位到声明文件）需要未变更文件的
@@ -929,8 +935,8 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
 
   // Stamp ownership before writing, same as buildAggregatedGraph does for an
   // orchestrated `teamai import` (#974 review round 19 P1): when this write
-  // target IS the real teamwiki root (a direct `teamai codebase --extract`,
-  // not routed through import's cache-dir redirection), it lands straight in
+  // target IS the real teamwiki root (a direct extractCodebase call, not
+  // routed through import's staging directory), it lands straight in
   // `teamwiki/.indices/graph-index.json` with no later aggregation step ever
   // tagging it. Leaving it untagged would let a withheld codebase's fresh
   // re-extraction bypass origin-based removal entirely, and the stale
@@ -1166,4 +1172,5 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<voi
       console.log(`  ${manifestNote}`);
     }
   }
+  return true;
 }

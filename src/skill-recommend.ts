@@ -4,8 +4,10 @@ import type { UserStats } from './types.js';
 // ─── Skill Recommendations ─────────────────────────────
 //
 //  After teamai pull, suggest skills that:
-//  1. Are popular with the team (used by many members)
-//  2. The current user hasn't tried yet
+//  1. The team repo delivers to this scope (not a teammate's personal skill
+//     or a CLI built-in, which the stats also count)
+//  2. Are popular with the team (used by many members)
+//  3. The current user hasn't tried yet
 //
 //  User's skill history is read from two sources:
 //  - usage.jsonl (unreported events since last truncation)
@@ -41,10 +43,12 @@ function getTeamSkillPopularity(
 }
 
 /**
- * Generate skill recommendations for the current user.
+ * Generate skill recommendations for the current user, among `deliveredSkills`:
+ * the names of the team skills pull delivers to this scope.
  */
 export async function getRecommendations(
   teamStats: UserStats[],
+  deliveredSkills: ReadonlySet<string>,
 ): Promise<Array<{ skill: string; percentage: number; reason: string }>> {
   if (teamStats.length === 0) return [];
 
@@ -54,6 +58,8 @@ export async function getRecommendations(
   const recommendations: Array<{ skill: string; percentage: number; reason: string }> = [];
 
   for (const item of popularity) {
+    if (!deliveredSkills.has(item.skill)) continue;
+
     // Only recommend skills the user hasn't tried
     if (userSkills.has(item.skill)) continue;
 

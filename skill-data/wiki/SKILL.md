@@ -17,7 +17,7 @@ description: >-
 > The methodology, sub-agent prompts, templates and scripts ship with the CLI. Run `teamai skill path wiki` to get their absolute path;
 > `{SKILL_DIR}` in this document refers to that path; a reference file you open on its own writes that directory as `SKILL_DIR` in braces.
 > Write the knowledge-base documents in Simplified Chinese, as earlier releases did. When updating an existing knowledge base, keep its file names and headings; `validate_kb.py` accepts both the current English and the earlier Chinese headings.
-> The Phase 0 structural baseline uses `teamai codebase --extract`. TeamAI does not ship a separate team-wiki CLI. No extra plugin is required.
+> The Phase 0 structural baseline uses `teamai import --dir`. TeamAI does not ship a separate team-wiki CLI. No extra plugin is required.
 
 **The problem**: large projects (10+ repositories, dozens of microservices, years of iteration) defeat global understanding by AI. The context window cannot hold all the code, component relations are scattered everywhere, and business rules hide deep in call chains. Letting AI read the code directly is both slow (huge token counts) and inaccurate (no global view).
 
@@ -215,7 +215,7 @@ The full steps of each phase live in separate files. Load a file when its phase 
 
 | Phase | File | Content |
 |---|---|---|
-| Phase 0 | `{SKILL_DIR}/references/phases/phase0-init.md` | Initialisation, `teamai codebase --extract` structural baseline, repository inventory |
+| Phase 0 | `{SKILL_DIR}/references/phases/phase0-init.md` | Initialisation, `teamai import --dir` structural baseline, repository inventory |
 | Phase K1 | `{SKILL_DIR}/references/phases/k1-reverse-engineering.md` | Architecture reverse-engineering and source material collection, scan script, architecture analysis report |
 | Phase K2 | `{SKILL_DIR}/references/phases/k2-documents.md` | Document generation (parallel batches + intermediate quality confirmation) |
 | Phase K3 | `{SKILL_DIR}/references/phases/k3-ai-native.md` | AI-Native enhancement + Graph RAG graph document set |
@@ -303,13 +303,14 @@ _review/                                ← Process files (not part of the knowl
 
 | Phase | Command / path |
 |------|-------------|
-| Phase 0 structural baseline | `teamai codebase --extract <repo> --project <slug>` (writes `<repo>/teamwiki/`) |
-| Deep knowledge | Use `teamai codebase --deep-enrich --project <slug> --output <repo>` after extract has written `teamwiki/evidence/code/<slug>/`. `--output` is the repository root, not the `teamwiki/` directory. Prefix with `teamai --dry-run` to preview without writing. TeamAI does not ship a separate team-wiki CLI. No extra plugin is required. |
+| Phase 0 structural baseline | `teamai import --dir <repo> --skip-enrich` (writes `teamwiki/evidence/code/<slug>/` in the team repo; `<slug>` is the `project:` it prints) |
+| Deep knowledge | Use `teamai codebase --deep-enrich --project <slug>` after the import has written `teamwiki/evidence/code/<slug>/`. Prefix with `teamai --dry-run` to preview without writing. TeamAI does not ship a separate team-wiki CLI. No extra plugin is required. |
 | Compile into the wiki after K3 | Skip. TeamAI does not ship a separate team-wiki CLI. Continue with this skill using `teamai` and the files under this skill directory. No extra plugin is required. |
 | Product docs into the graph | Skip. Same English note as above. |
-| Product ↔ code bridging | Use `teamai codebase --reconcile --output <repo>` after product pages and extracted code pages are under `<repo>/teamwiki/`. Prefix with `teamai --dry-run` to preview without updating the graph. |
-| One-shot refresh | Use `teamai codebase --extract <repo> --project <slug> --incremental`, reusing the Phase 0 repository path and project slug even when running from another directory. Do not look for another CLI. |
-| Quality assessment | Use `python3 "{SKILL_DIR}/scripts/validate_kb.py" <output_dir>` and `teamai codebase --lint --output <repo>` to check `<repo>/teamwiki/` (`--output` takes the repository root, not the `teamwiki/` directory). Skip any extra evaluate binary. |
+| Product ↔ code bridging | Use `teamai codebase --reconcile` after product pages are under `teamwiki/product/` next to the imported code pages. Prefix with `teamai --dry-run` to preview without updating the graph. |
+| One-shot refresh | Use `teamai import --dir <repo> --incremental --skip-enrich`, reusing the Phase 0 repository path even when running from another directory. Do not look for another CLI. |
+| Quality assessment | Use `python3 "{SKILL_DIR}/scripts/validate_kb.py" <output_dir>` and `teamai codebase --lint`. Skip any extra evaluate binary. |
+| No team repo | When `teamai init` has not run, add `--output <dir>` to every `teamai import` and `teamai codebase` command above: they all use `<dir>/teamwiki/`. |
 
 **Path convention**: `{SKILL_DIR}` is the directory printed by `teamai skill path wiki`. The methodology is in `{SKILL_DIR}/references/methodology/`, sub-agent prompts in `{SKILL_DIR}/references/agents/`, and scripts in `{SKILL_DIR}/scripts/`.
 

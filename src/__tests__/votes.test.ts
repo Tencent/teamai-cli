@@ -690,7 +690,7 @@ describe('stageVotesMerge / confirmVotesSynced (#1027)', () => {
     expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({});
   });
 
-  it('re-merges when origin moved past an unconfirmed watermark (same user, another checkout)', async () => {
+  it('re-merges when origin moved past an unconfirmed delivery id (same user, another checkout)', async () => {
     const { localDir, repoDir, localPath, remotePath } = seedPending();
     await incrementRecalled(localPath, ['doc-a']);
     await incrementUpvoted(localPath, ['doc-a']);
@@ -702,21 +702,58 @@ describe('stageVotesMerge / confirmVotesSynced (#1027)', () => {
     };
     await stageVotesMerge(repoDir, 'jeff', localDir, originBase);
 
-    // Another checkout of the same user pushed: origin is neither base nor the
-    // exact merged content, so delivery cannot be proven. The deltas re-merge
-    // (the documented double-count in this already-ambiguous interleave) and
-    // the watermark is superseded by the new stage.
-    const originMoved: UserVotesV2 = {
+    // Another checkout of the same user pushed: its file carries its own
+    // delivery id, not ours, so delivery cannot be proven. The deltas re-merge
+    // (the documented double-count when our landed push was superseded) and
+    // the local record is superseded by the new stage.
+    const originMoved = {
       version: 2,
       votes: { 'doc-a': { recalled_count: 99, upvoted_count: 5, last_recalled_at: '2026-06-02T00:00:00Z' } },
       deltas: {},
-    };
+      deliveredSyncIds: ['b3f1c0de-0000-4000-8000-000000000001'],
+    } as UserVotesV2 & { deliveredSyncIds: string[] };
     expect(await stageVotesMerge(repoDir, 'jeff', localDir, originMoved)).not.toBeNull();
     expect(YAML.parse(fs.readFileSync(remotePath, 'utf8')).votes['doc-a']).toMatchObject({
       recalled_count: 100,
       upvoted_count: 6,
     });
     // Still unconfirmed: the deltas stay pending until delivery.
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({
+      'doc-a': { recalled_delta: 1, upvoted_delta: 1 },
+    });
+  });
+
+  it("does not treat another checkout's identical counts as this one's delivery (#1027)", async () => {
+    const { localDir, repoDir, localPath, remotePath } = seedPending();
+    await incrementRecalled(localPath, ['doc-a']);
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    const originBase: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 2, upvoted_count: 0, last_recalled_at: '2026-06-01T00:00:00Z' } },
+      deltas: {},
+    };
+    await stageVotesMerge(repoDir, 'jeff', localDir, originBase);
+    // This stage's push fails, so its delivery id never reaches origin…
+
+    // …and checkout B of the SAME username independently publishes identical
+    // increments: the counts match this stage's merge exactly, but under B's
+    // own id. Counter equality must not clear our undelivered deltas — the
+    // team would lose one of the two contributions.
+    const originFromB = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 3, upvoted_count: 1, last_recalled_at: '2026-06-02T00:00:00Z' } },
+      deltas: {},
+      deliveredSyncIds: ['b3f1c0de-0000-4000-8000-000000000002'],
+    } as UserVotesV2 & { deliveredSyncIds: string[] };
+    expect(await stageVotesMerge(repoDir, 'jeff', localDir, originFromB)).not.toBeNull();
+
+    // Our deltas were re-merged on top, not silently dropped…
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf8')).votes['doc-a']).toMatchObject({
+      recalled_count: 4,
+      upvoted_count: 2,
+    });
+    // …and they stay pending until OUR push is delivered.
     expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({
       'doc-a': { recalled_delta: 1, upvoted_delta: 1 },
     });

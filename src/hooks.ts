@@ -1766,7 +1766,6 @@ async function reconcileCopilotFormat(
     log.debug(`No teamai hooks to remove from ${hooksPath}`);
     return;
   }
-  await ensureDir(path.dirname(expanded));
   const hooksJson: CopilotHooksJson = await readHookFile<CopilotHooksJson>(expanded, {
     version: COPILOT_HOOK_SCHEMA_VERSION,
     hooks: {},
@@ -1813,7 +1812,19 @@ async function reconcileCopilotFormat(
     changed = true;
   }
 
-  if (changed || !existed) {
+  // A file left holding no hooks and nothing else does nothing in Copilot:
+  // never create one, and delete one git does not track. Not on a removal: it
+  // keeps the events it empties, so an empty file it finds was already empty
+  // and may be the member's (removeCopilotGlobalBuiltins visits every file).
+  const holdsNothing = Object.keys(hooksJson.hooks).length === 0
+    && Object.keys(hooksJson).every((key) => key === 'version' || key === 'hooks');
+  const { gitUntracked } = await import('./git-exclude.js');
+  if (holdsNothing && !existed) {
+    log.debug(`No teamai hooks to write to ${hooksPath}`);
+  } else if (holdsNothing && !opts.removeAll && await gitUntracked(expanded, 'entry')) {
+    await rm(expanded, { force: true });
+    log.success(`Removed ${hooksPath}: no hooks left in it`);
+  } else if (changed || !existed) {
     await writeJson(expanded, hooksJson);
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
   } else {
@@ -1969,11 +1980,46 @@ async function reconcileZcodeFormat(
   // ZCode validates the hooks block against a strict schema and REJECTS THE
   // WHOLE BLOCK on any unrecognized key (observed: `config_file_invalid —
   // hooks: Unrecognized key: "description"` → hookCount 0 → nothing fires).
-  // Heal the config by keeping only the keys the schema knows about.
-  const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => k !== 'enabled' && k !== 'events');
+  // Heal the config by keeping only the keys the schema documents. The
+  // documented root-level set is enabled, events, timeoutMs and maxOutputBytes
+  // (https://zcode.z.ai/en/docs/hooks, Configuration Sources example, accessed
+  // 2026-10-13; documented defaults 60000 ms and 32768 bytes). We only ever
+  // write `enabled` and `events` ourselves, so a timeoutMs/maxOutputBytes
+  // value present in the file was put there by the user against the documented
+  // schema. Every published zcode-app-cli accepts both keys: the oldest
+  // package, 3.3.5-1 (2026-07-14), already validates the hooks block with
+  // timeoutMs and maxOutputBytes as optional positive integers
+  // (number().int().positive(), vendor/zcode.cjs) next to enabled and events,
+  // and teamai's ZCode support landed on 2026-09-09, after 3.10.2. So a value
+  // that passes that schema is kept silently — stripping it would silently
+  // lose the user's tuning on every reconcile (#1049's failure mode). A value
+  // that fails it (zero, negative, non-integer) would make ZCode reject the
+  // whole hooks block, so it takes the same strip-and-warn path as an
+  // unrecognized key (#1059's value check).
+  const knownHookKeys = new Set(['enabled', 'events', 'timeoutMs', 'maxOutputBytes']);
+  const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => !knownHookKeys.has(k));
   if (unknownHookKeys.length > 0) {
     for (const k of unknownHookKeys) delete cfg.hooks[k];
     changed = true;
+    log.warn(
+      `Removed unrecognized ZCode hooks key(s) ${unknownHookKeys.map((k) => `"${k}"`).join(', ')} from ${expanded}. ` +
+        `ZCode's strict schema would reject the whole hooks block otherwise; if your ZCode version ` +
+        `documents these keys, tell us so the keep-list can be widened.`,
+    );
+  }
+  for (const k of ['timeoutMs', 'maxOutputBytes'] as const) {
+    const v = cfg.hooks[k];
+    if (v === undefined) continue;
+    // Mirror zcode-app-cli's own schema (number().int().positive(),
+    // vendor/zcode.cjs): a failing value would drop the whole hooks block.
+    if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
+      delete cfg.hooks[k];
+      changed = true;
+      log.warn(
+        `Removed invalid ZCode hooks value for "${k}" (${JSON.stringify(v)}) from ${expanded}: ` +
+        `ZCode requires a positive integer there and would reject the whole hooks block otherwise.`,
+      );
+    }
   }
   // Config-file hooks are disabled by default in ZCode; entries we write would
   // never fire unless the runner is explicitly enabled. Persist the flip even

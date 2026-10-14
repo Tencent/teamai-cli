@@ -15,6 +15,7 @@ import {
   loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError, type RolesManifest,
 } from '../roles.js';
 import { loadProjectsManifest, resolveProjectResourceNamespaces } from '../projects.js';
+import { deliversEveryNamespace } from '../resource-namespaces.js';
 import { assertSafeFallbackNamespaces } from '../manifest-schema.js';
 import { assertWithinRoot, resolveReal } from '../utils/path-safety.js';
 import { openPrDestinations, recordedNamespace } from '../utils/pending-push.js';
@@ -446,8 +447,9 @@ async function resolveSkillNamespaces(localConfig: LocalConfig): Promise<string[
  * (`resolveSkillNamespaces`, legacy fallbacks included), then those of the
  * active projects, the same union pull delivers from. Without the project
  * half, a project skill was pushable only through legacy mode's first-match
- * scan, which can pick another project's skill of the same name. Null when no
- * role or active project scopes this directory, so every namespace is given.
+ * scan, which can pick another project's skill of the same name. Null only
+ * when pull delivers every namespace here (`deliversEveryNamespace`); a team
+ * with projects and none active gets the role half, as pull delivers it.
  * When the active projects cannot be resolved this is the role half alone,
  * never null: an unscoped scan would match a local skill to any project's
  * skill of its name. Push without `--role` or `--project` stops before that.
@@ -455,7 +457,10 @@ async function resolveSkillNamespaces(localConfig: LocalConfig): Promise<string[
 export async function resolvePushSkillNamespaces(localConfig: LocalConfig): Promise<string[] | null> {
   const roleNamespaces = await resolveSkillNamespaces(localConfig);
   const activeProjects = localConfig.projects ?? [];
-  if (activeProjects.length === 0) return roleNamespaces.length > 0 ? roleNamespaces : null;
+  if (activeProjects.length === 0) {
+    if (roleNamespaces.length === 0 && await deliversEveryNamespace(localConfig)) return null;
+    return roleNamespaces;
+  }
   const manifest = await loadProjectsManifest(localConfig.repo.localPath);
   if (!manifest) return roleNamespaces;
   let projectNamespaces: string[];
@@ -535,6 +540,19 @@ function warnUnprovenOrigin(
     `[skills] Skipped ${name}${sourcePath ? ` at ${sourcePath}` : ''}: teamai delivered this copy, but its record matches `
     + `${copies.length === 0 ? 'no current team skill' : copies.length === 1 ? `no version of ${holders}` : `no single one of ${holders}`}, `
     + 'so push cannot prove where it came from. To send the edit as a new skill, copy it under a new name and push that.',
+  );
+}
+
+/**
+ * Say why push leaves out a local skill no record ties to the team: the team
+ * keeps a skill of its name only in `copies`, namespaces this scope does not
+ * select, so pushing it would replace a skill pull never delivered here.
+ */
+function warnOutOfScope(name: string, copies: readonly { dir: string }[], repoPath: string): void {
+  const holders = copies.map((copy) => path.relative(repoPath, copy.dir).split(path.sep).join('/')).join(', ');
+  warnOnce(
+    `[skills] Skipped ${name}: the team keeps a skill of this name only outside your active namespaces (${holders}). `
+    + 'Rename yours to share it, or run `teamai projects set <id>` or `teamai roles set <role>` if it is that skill.',
   );
 }
 
@@ -948,7 +966,10 @@ export class SkillsHandler extends ResourceHandler {
           );
           continue;
         }
-        if (destination.kind === 'outOfScope') continue;
+        if (destination.kind === 'outOfScope') {
+          if (physicalPath !== options?.requestedSkillPath) warnOutOfScope(dir, destination.candidates, localConfig.repo.localPath);
+          continue;
+        }
         if (destination.kind === 'ambiguousOpenPr') {
           // Returned with the reason it is skipped, so its open PRs' records survive the prune.
           const awaitingAt = destination.records.map((r) => `${r.relativePath} (branch ${r.branch})`).join(', ');

@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commitTeamRepo } from '../helpers/team-repo-history.js';
+import { writeEnvLoader } from '../../resources/env-loader.js';
+import { envLoaderProfiles } from '../../utils/shell-profile.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -164,7 +166,7 @@ describe('teamai doctor delivery checks (e2e)', () => {
     expect(env.fix).toContain('declares no variables');
   });
 
-  it('passes every check once each file is where its tool reads it', () => {
+  it('passes every check once each file is where its tool reads it', async () => {
     write(path.join(home, '.claude/skills/alpha/SKILL.md'), '---\nname: alpha\ndescription: d\n---\n');
     write(path.join(home, '.claude/rules/coding-style.md'), 'Coding style body\n');
     write(path.join(home, '.cursor/rules/coding-style.mdc'), '---\nalwaysApply: true\n---\n\nCoding style body\n');
@@ -187,12 +189,28 @@ describe('teamai doctor delivery checks (e2e)', () => {
     // The machine-local KEY=VALUE backup the env channel writes beside env.sh;
     // it is what the MCP placeholder resolution reads.
     write(path.join(home, '.teamai', 'env'), 'JIRA_PASSWORD=s3cret\n');
-    const envSh = path.join(home, '.teamai', 'env.sh');
-    write(path.join(home, '.bashrc'), [
-      '# [teamai:env:start]',
-      `[ -f ${envSh} ] && source ${envSh}`,
-      '# [teamai:env:end]',
-    ].join('\n'));
+    // The profile block and the loader it sources, as a pull writes them (#1018).
+    const loader = path.join(home, '.teamai', 'env-loader.sh');
+    const realHome = process.env.HOME;
+    const realShell = process.env.SHELL;
+    process.env.HOME = home;
+    process.env.SHELL = '/bin/bash';
+    let profiles: string[];
+    try {
+      await writeEnvLoader();
+      // Every file a pull puts the block in on this machine, e.g. ~/.zshenv when zsh is installed.
+      ({ paths: profiles } = await envLoaderProfiles(undefined, loader));
+    } finally {
+      process.env.HOME = realHome;
+      process.env.SHELL = realShell;
+    }
+    for (const profile of profiles) {
+      write(profile, [
+        '# [teamai:env:start]',
+        `[ -f '${loader}' ] && . '${loader}'`,
+        '# [teamai:env:end]',
+      ].join('\n'));
+    }
 
     const report = runDoctor();
     const failed = report.checks.filter((c) => !c.ok).map((c) => c.name);

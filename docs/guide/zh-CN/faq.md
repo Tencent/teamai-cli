@@ -6,7 +6,7 @@
 
 ## 卸载
 
-`teamai uninstall` 删除 TeamAI 装上去的资源。你自己建的文件会留下。
+`teamai uninstall` 删除 TeamAI 装上去的资源。你自己建的文件会留下。user scope 卸载会保留本机仍登记的项目的数据。请先逐个卸载项目，再在任何项目之外运行 `teamai uninstall`，移除剩余的共享数据。
 
 使用共享数据分区的项目中，完整卸载会先移除所有 checkout 的共享 hooks 和注册，再删除分区。`uninstall --agent <tool>` 只移除当前 checkout 中该工具的 hooks 和注册；若该工具是分区中最后一个工具，则会删除分区以及所有 checkout 的 hooks。bare 仓库的 worktree 分别拥有自己的 hook 文件。
 
@@ -54,7 +54,7 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 **Q: User scope 和 Project scope 可以共存吗？**
 
-可以，但 project scope 默认保持隔离。当前工作目录包含 project scope 配置时，该项目生效并跳过 user scope。先初始化 user scope，再使用 `--inherit-user-scope` 初始化项目（或在项目本地配置中设置 `inheritUserScope: true`），即可组合安全资源和 Recall 结果；可执行配置和控制面配置（`env`、MCP）仍只使用 project scope；hooks 例外——非-self 的 project scope 会把内置 hooks 注入到 HOME，以便 `hook-dispatch` 依据 `cwd` 门控（详见 Hooks 章节）。
+可以，但 project scope 默认保持隔离。当前工作目录包含 project scope 配置时，该项目生效并跳过 user scope。先初始化 user scope，再使用 `--inherit-user-scope` 初始化项目（或在项目本地配置中设置 `inheritUserScope: true`），即可组合安全资源和 Recall 结果；MCP 和密钥仍只使用 project scope。设置了 `inheritUserScope: true` 的项目也会接收 user scope 的环境变量，但项目已将同名 key 声明为变量或密钥时除外。hooks 例外：非-self 的 project scope 会把内置 hooks 注入到 HOME，以便 `hook-dispatch` 依据 `cwd` 门控（详见 Hooks 章节）。
 
 **Q: `teamai init` 提示已初始化？**
 

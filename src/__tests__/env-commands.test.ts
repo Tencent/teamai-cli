@@ -301,6 +301,16 @@ scope: 'user',
       expect(process.exitCode).toBeUndefined();
     });
 
+    it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'home', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply'])('warns when env set targets reserved loader control %s', async (key) => {
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), `secrets:\n  - key: ${key}\n`);
+      vi.mocked(readStdin).mockResolvedValue('reserved-value');
+
+      await envSet(key, { stdin: true });
+
+      expect(log.warn).toHaveBeenCalledWith(`${key} is reserved for TeamAI shell routing; those team env values are ignored.`);
+      expect(process.exitCode).toBeUndefined();
+    });
+
     it('reconciles MCP for this scope after setting a secret, without asking for a pull', async () => {
       await fse.writeFile(path.join(repoPath, 'teamai.yaml'), 'team: test\nrepo: https://git.woa.com/test/repo.git\n');
       await fse.ensureDir(path.join(repoPath, 'mcp'));

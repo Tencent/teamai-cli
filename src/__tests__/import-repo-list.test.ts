@@ -12,6 +12,11 @@ vi.mock('../import-repo.js', () => ({
     importFromRepo: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../import-codebase.js', () => ({
+    refreshTeamwikiIndexes: vi.fn().mockResolvedValue(undefined),
+    publishTeamwikiViaMR: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
     autoDetectInit: vi.fn().mockRejectedValue(new Error('no config in test')),
@@ -21,6 +26,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 import { importFromRepoList } from '../import-repo-list.js';
 import { importFromRepo } from '../import-repo.js';
+import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from '../import-codebase.js';
 
 // ─── Tests ──────────────────────────────────────────────
 
@@ -57,7 +63,7 @@ describe('importFromRepoList', () => {
             ],
         });
 
-        const result = await importFromRepoList({ listPath: filePath });
+        const result = await importFromRepoList({ listPath: filePath, output: tmpDir });
 
         expect(importFromRepo).toHaveBeenCalledTimes(2);
         expect(result.succeeded).toBe(2);
@@ -74,7 +80,7 @@ describe('importFromRepoList', () => {
             ],
         });
 
-        const result = await importFromRepoList({ listPath: filePath });
+        const result = await importFromRepoList({ listPath: filePath, output: tmpDir });
 
         expect(importFromRepo).toHaveBeenCalledTimes(1);
         expect(result.skipped).toHaveLength(1);
@@ -95,7 +101,7 @@ describe('importFromRepoList', () => {
             ],
         });
 
-        const result = await importFromRepoList({ listPath: filePath });
+        const result = await importFromRepoList({ listPath: filePath, output: tmpDir });
 
         expect(result.failed).toHaveLength(1);
         expect(result.failed[0].url).toBe('https://github.com/org/fail-repo');
@@ -117,9 +123,34 @@ describe('importFromRepoList', () => {
             ],
         });
 
-        await importFromRepoList({ listPath: filePath, concurrency: 1 });
+        await importFromRepoList({ listPath: filePath, concurrency: 1, output: tmpDir });
 
         expect(callOrder[0]).toBe('https://github.com/org/high-repo');
         expect(callOrder[1]).toBe('https://github.com/org/normal-repo');
+    });
+
+    it('--output: every repo and the index rebuild use <output>/teamwiki, and nothing is pushed', async () => {
+        const output = path.join(tmpDir, 'out');
+        await fs.ensureDir(path.join(output, 'teamwiki'));
+        const filePath = await writeYaml('repos.yaml', {
+            version: 1,
+            repos: [{ url: 'https://github.com/org/repo-1' }],
+        });
+
+        await importFromRepoList({ listPath: filePath, output });
+
+        expect(importFromRepo).toHaveBeenCalledWith(expect.objectContaining({ output, skipAutoPush: true }));
+        expect(refreshTeamwikiIndexes).toHaveBeenCalledWith(path.join(output, 'teamwiki'));
+        expect(publishTeamwikiViaMR).not.toHaveBeenCalled();
+    });
+
+    it('fails before importing anything when there is neither a team repo nor --output', async () => {
+        const filePath = await writeYaml('repos.yaml', {
+            version: 1,
+            repos: [{ url: 'https://github.com/org/repo-1' }],
+        });
+
+        await expect(importFromRepoList({ listPath: filePath })).rejects.toThrow('no config in test');
+        expect(importFromRepo).not.toHaveBeenCalled();
     });
 });

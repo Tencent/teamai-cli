@@ -39,6 +39,7 @@ import {
   buildCodexProjectTrustCheck,
   buildMcpGitExcludeCheck,
   buildEnvDeliveryCheck,
+  envLoaderNotes,
   buildEntryResolutionChecks,
   buildSecretValuesCheck,
   buildEntryScopeKeyCheck,
@@ -61,7 +62,7 @@ import {
 export type CheckSource = 'local' | 'provider';
 import { hasPiHooks } from './pi-hooks.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
-import { resolveTeamEnv, type TeamEnv } from './env-resolution.js';
+import { resolvesTeamEnv, resolveTeamEnv, type TeamEnv } from './env-resolution.js';
 
 export interface Check {
   name: string;
@@ -452,7 +453,7 @@ export async function resolveDoctorContext(): Promise<DoctorContext | null> {
     )
     : {};
   const baseDir = hookScope.baseDir;
-  const teamEnv = localConfig.repo.kind === 'http' ? undefined : await resolveTeamEnv(localConfig);
+  const teamEnv = resolvesTeamEnv(localConfig) ? await resolveTeamEnv(localConfig) : undefined;
 
   return { localConfig, teamConfig, toolPaths, hookToolPaths, baseDir, teamEnv };
 }
@@ -793,6 +794,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
     // A team MCP server a tool cannot use over its transport.
     ...await mcpTransportNotes(ctx),
+    ...await envLoaderNotes(ctx),
     ...await ruleChannelNotes(localConfig),
     ...codexTrust.notes,
     usageReportNote(ctx),

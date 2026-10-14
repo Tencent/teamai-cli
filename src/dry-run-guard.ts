@@ -94,7 +94,7 @@ export const DRY_RUN_PREVIEW: ReadonlySet<string> = new Set([
   'recall maintenance',
   'recall promote',
   'import', // source-specific refusals below
-  'codebase', // `--extract` is refused below
+  'codebase',
   'review',
   'ci extract-mr', // `--output` is refused below
 ]);
@@ -136,7 +136,6 @@ export function dryRunRefusal(command: Command): string | undefined {
   const names: string[] = [];
   for (let current: Command | null = command; current?.parent; current = current.parent) names.unshift(current.name());
   const path = names.join(' ');
-  if (path === 'codebase' && command.opts().extract !== undefined) return noDryRunPreview('codebase --extract');
   if (path === 'ci extract-mr' && command.opts().output !== undefined) return noDryRunPreview('ci extract-mr --output');
   if (path === 'import') {
     const opts = command.opts();

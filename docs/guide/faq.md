@@ -6,7 +6,7 @@
 
 ## Uninstall
 
-`teamai uninstall` removes resources TeamAI installed. Files you created stay.
+`teamai uninstall` removes resources TeamAI installed. Files you created stay. A user-scope uninstall keeps data for projects still registered on this machine. Uninstall each project first. Then run `teamai uninstall` outside any project to remove the remaining shared data.
 
 In a project using a shared data partition, full uninstall removes shared hooks and registrations from every checkout before removing the partition. `uninstall --agent <tool>` removes that tool's hooks and registration only from the current checkout, unless that tool is the last one using the partition; in that case the partition and every checkout's hooks are removed. Bare-repository worktrees own their hook files independently.
 
@@ -57,7 +57,7 @@ held by a live process, or one that names no owner, is never removed.
 
 **Q: Can user scope and project scope coexist?**
 
-Yes, but project scope remains isolated by default. When the current working directory contains a project-scope config, it is active and user scope is skipped. Initialize user scope first, then initialize the project with `--inherit-user-scope` (or set `inheritUserScope: true` in the project's local config) to compose safe resources and Recall results. Executable and control-plane configuration (`env`, MCP) remains project-only; hooks are the exception — a non-self project scope injects the built-in hooks into HOME so `hook-dispatch` can gate on `cwd` (see the Hooks section).
+Yes, but project scope remains isolated by default. When the current working directory contains a project-scope config, it is active and user scope is skipped. Initialize user scope first, then initialize the project with `--inherit-user-scope` (or set `inheritUserScope: true` in the project's local config) to compose safe resources and Recall results. MCP and secrets remain project-only. A project with `inheritUserScope: true` also receives user-scope env variables unless the project declares the same key as a variable or a secret. Hooks are the exception: a non-self project scope injects the built-in hooks into HOME so `hook-dispatch` can gate on `cwd` (see the Hooks section).
 
 **Q: `teamai init` says it's already initialized?**
 

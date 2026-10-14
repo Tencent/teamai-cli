@@ -87,9 +87,10 @@ describe('importFromRepo — incremental mode', () => {
 
         vi.mocked(generateCodebaseMd).mockResolvedValue('# Codebase\n\n生成的 codebase 文档内容\n');
         vi.mocked(extractCodebase).mockImplementation(async (opts) => {
-            const evidenceDir = path.join(opts.path!, 'teamwiki', 'evidence', 'code', opts.project!);
+            const evidenceDir = path.join(opts.outputRoot!, 'teamwiki', 'evidence', 'code', opts.project!);
             await fs.ensureDir(evidenceDir);
             await fs.writeFile(path.join(evidenceDir, 'overview.md'), '---\ntitle: test\n---\n\n# Overview\n');
+            return true;
         });
     });
 
@@ -102,6 +103,7 @@ describe('importFromRepo — incremental mode', () => {
     it('缓存不存在时走全量 clone，不调 shallowFetch', async () => {
         await importFromRepo({
             url: TEST_URL,
+            output: path.join(workdir, '.teamai', 'team-repo'),
             incremental: true,
         });
 
@@ -114,6 +116,7 @@ describe('importFromRepo — incremental mode', () => {
 
         await importFromRepo({
             url: TEST_URL,
+            output: path.join(workdir, '.teamai', 'team-repo'),
             incremental: true,
         });
 
@@ -127,6 +130,7 @@ describe('importFromRepo — incremental mode', () => {
 
         await importFromRepo({
             url: TEST_URL,
+            output: path.join(workdir, '.teamai', 'team-repo'),
             incremental: true,
         });
 
@@ -139,6 +143,7 @@ describe('importFromRepo — incremental mode', () => {
 
         await importFromRepo({
             url: TEST_URL,
+            output: path.join(workdir, '.teamai', 'team-repo'),
             incremental: false,
         });
 
@@ -149,6 +154,7 @@ describe('importFromRepo — incremental mode', () => {
     it('全量 clone 后写入 LAST_SYNC', async () => {
         await importFromRepo({
             url: TEST_URL,
+            output: path.join(workdir, '.teamai', 'team-repo'),
             incremental: false,
         });
 

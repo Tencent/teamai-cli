@@ -31,6 +31,10 @@ function fixture(agent: keyof typeof agents, provider: string, team: Record<stri
     GIT_AUTHOR_NAME: 'Report Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
     GIT_COMMITTER_NAME: 'Report Test', GIT_COMMITTER_EMAIL: 'test@example.invalid', FORCE_COLOR: '0' };
   fs.writeFileSync(path.join(seed, 'teamai.yaml'), YAML.stringify({ team: 'report-test', repo: remote, provider, ...team }));
+  // The 'review' skill the fixture records usage for must be in the team's
+  // shared catalog: #1055 filters published stats to catalog names.
+  fs.mkdirSync(path.join(seed, 'skills', 'review'), { recursive: true });
+  fs.writeFileSync(path.join(seed, 'skills', 'review', 'SKILL.md'), '# review\n');
   git(['init', '-q', '-b', 'main'], seed, env);
   git(['add', '.'], seed, env);
   git(['commit', '-q', '-m', 'fixture'], seed, env);

@@ -802,7 +802,8 @@ export async function runHiddenDeepEnrich(opts: {
   wikiRoot?: string;
   maxModules?: number;
 }): Promise<DeepEnrichResult> {
-  const wikiRoot = opts.wikiRoot ?? path.join(process.cwd(), '.teamai', 'team-repo', 'teamwiki');
+  const { resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+  const wikiRoot = opts.wikiRoot ?? (await resolveTeamwiki()).wikiRoot;
   const evidenceDir = path.join(wikiRoot, 'evidence', 'code', opts.project);
   const result = await deepEnrich({
     project: opts.project,

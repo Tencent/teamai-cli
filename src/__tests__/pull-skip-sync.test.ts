@@ -20,6 +20,8 @@ vi.mock('../utils/git.js', () => ({
   pullRepo: vi.fn().mockResolvedValue('already up to date'),
   getHeadRev: vi.fn().mockResolvedValue('abc1234'),
   createGit: vi.fn(),
+  gitCommonDir: vi.fn().mockResolvedValue(null),
+  nearestGitEntry: vi.fn().mockResolvedValue(null),
   resolveAnchors: vi.fn().mockResolvedValue(null),
 }));
 
@@ -254,6 +256,26 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     // Names the file that may still be stale, and the way out.
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(envShPath));
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('teamai pull --force'));
+  });
+
+  it('fails the pull and leaves the env registry as it is when it cannot be read', async () => {
+    await fse.ensureDir(path.join(repoPath, 'env'));
+    await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), 'variables:\n  - key: SHARED_URL\n    value: https://shared.example\n');
+    // A directory where the registry goes: reading it throws, on every platform and as root.
+    const registry = path.join(homeDir, '.teamai', 'env-scopes');
+    await fse.ensureDir(registry);
+    vi.mocked(getHeadRev).mockResolvedValue('abc1234');
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({ lastPullRev: 'abc1234', lastPullTargets: ['claude'] }));
+
+    try {
+      await pull({});
+
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = undefined;
+    }
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(`Could not read ${registry}`));
+    expect((await fse.stat(registry)).isDirectory()).toBe(true);
   });
 
   it('stops before the revision fast path when role-scoped resources cannot be resolved', async () => {

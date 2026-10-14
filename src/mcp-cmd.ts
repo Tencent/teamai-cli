@@ -18,7 +18,7 @@ import {
 } from './mcp-reconcile.js';
 import { placeholderValue, referencedVars } from './resources/mcp-format.js';
 import { reportMissingSecrets } from './env-advisories.js';
-import { resolveTeamEnv } from './env-resolution.js';
+import { resolvesTeamEnv, resolveTeamEnv } from './env-resolution.js';
 import { carriesResolvedValue, ensureExcludedFromGit } from './mcp-git-exclude.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
@@ -46,8 +46,8 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   reportUndeliveredEntryNotices(resolution);
   const servers = resolution.entries;
 
-  // HTTP mode has no repo tree to declare secrets in.
-  const teamEnv = localConfig.repo.kind === 'http' ? undefined : await resolveTeamEnv(localConfig);
+  // HTTP mode has no repo tree to declare secrets in; a project that inherits the user scope has the user scope's.
+  const teamEnv = resolvesTeamEnv(localConfig) ? await resolveTeamEnv(localConfig) : undefined;
   // A failed declaration is not "no secrets" (#879 Conflict 14): nothing says
   // which of a server's variables are secrets, so none is called set.
   const declarationsFailed = teamEnv?.declarations.kind === 'failed';

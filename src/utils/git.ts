@@ -966,6 +966,23 @@ export async function gitCommonDir(cwd: string): Promise<string | null> {
 }
 
 /**
+ * The `.git` entry in directory `dir` or the nearest one above it, or null. Where
+ * git cannot name the repository of a directory that has one, git failed
+ * there (not installed, a broken `.git`, unreadable metadata, `safe.directory`)
+ * rather than found none, so which project governs the directory is unknown.
+ */
+export async function nearestGitEntry(dir: string): Promise<string | null> {
+  const exists = (p: string): Promise<boolean> => fs.promises.lstat(p).then(() => true, () => false);
+  // A directory that does not exist is in no repository git failed to read.
+  if (!await exists(dir)) return null;
+  for (let at = path.resolve(dir); ; at = path.dirname(at)) {
+    const entry = path.join(at, '.git');
+    if (await exists(entry)) return entry;
+    if (path.dirname(at) === at) return null;
+  }
+}
+
+/**
  * Whether `root` is still a checkout of the repository whose common directory
  * is `commonDir` (see gitCommonDir): it holds a `.git` entry, and git there
  * names the same common directory. A removed worktree fails the first test, a

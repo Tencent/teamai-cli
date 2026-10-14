@@ -2741,8 +2741,10 @@ export function getTeamaiHome(scope: Scope, projectRoot?: string): string {
 }
 
 /**
- * Path of the machine-local KEY=value env backup file that the env channel writes
- * on pull and mcp-reconcile reads for ${VAR} resolution.
+ * Path of the machine-local record of what this CLI's pull wrote to env.sh,
+ * which mcp-reconcile reads for ${VAR} resolution. env.sh cannot replace this
+ * backup: an older version may have left a secret there that the failed pull
+ * must not apply.
  *
  * Normally this is `<teamaiHome>/env`. But in single-repo mode `<teamaiHome>` is
  * `<repo>/.teamai`, where `env/` is a committed DIRECTORY holding the shared
@@ -2755,7 +2757,7 @@ export function getEnvBackupPath(localConfig: LocalConfig): string {
   // Route through getDataHome (not getTeamaiHome directly) so the plaintext
   // env backup follows the machine-data home together with env.sh. Otherwise
   // P1-2's partition redirect would move env.sh into ~/.teamai/projects/<slug>/
-  // while leaving the KEY=value backup (which carries plaintext values) behind
+  // while leaving the env backup (which carries plaintext values) behind
   // in <projectRoot>/.teamai — breaking "zero workspace residue" and leaking
   // sensitive values into the business repo directory.
   const home = getDataHome(localConfig);

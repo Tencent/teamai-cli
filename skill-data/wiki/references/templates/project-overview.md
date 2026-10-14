@@ -79,7 +79,7 @@
 
 ### Knowledge base update notes
 
-- **Incremental update**: `teamai codebase --extract <repo> --project <slug> --incremental` re-extracts only the changed files
+- **Incremental update**: `teamai import --dir <repo> --incremental --skip-enrich` re-extracts only the changed files
 - **Full rebuild**: recommended after large-scale code refactoring
 - **Last updated**: `<ISO8601>`
 
@@ -139,7 +139,7 @@
 
 ## Code baseline version
 
-> ⚠️ This knowledge base was generated from the code version below. After the code evolves, run `teamai codebase --extract <repo> --project <slug> --incremental` for an incremental update.
+> ⚠️ This knowledge base was generated from the code version below. After the code evolves, run `teamai import --dir <repo> --incremental --skip-enrich` for an incremental update.
 
 - **Commit**: `<git commit SHA>`
 - **Tag**: `<tag or "no tag">`

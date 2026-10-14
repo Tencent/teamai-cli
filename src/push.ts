@@ -847,6 +847,13 @@ async function pushGroup(args: {
   }
 }
 
+/** The `--skill` path as given (`~` expanded, made absolute), and the skill directory it resolves to. */
+async function resolveRequestedSkill(skill: string): Promise<{ requestedPath: string; skillPath: string }> {
+  const os = await import('node:os');
+  const requestedPath = skill.startsWith('~') ? path.join(os.homedir(), skill.slice(1)) : path.resolve(skill);
+  return { requestedPath, skillPath: resolveReal(requestedPath) };
+}
+
 export async function push(
   options: GlobalOptions & { all?: boolean; role?: string; project?: string; branch?: string },
   /**
@@ -1366,6 +1373,9 @@ async function pushCore(
   const recordedPushes = pushState.pendingPushes ?? [];
   const openPushes = await dropClosedPendingPushes(localConfig.repo.localPath, recordedPushes);
 
+  // The copy `--skill` names. The skills scan leaves its outcome to --skill below.
+  const requestedSkill = options.skill ? await resolveRequestedSkill(options.skill) : undefined;
+
   for (const type of pushableTypes) {
     const handler = getHandler(type);
     try {
@@ -1373,7 +1383,9 @@ async function pushCore(
         scanTeamConfig,
         localConfig,
         type === 'agents' ? { namespace: requestedAgentsNamespace }
-          : type === 'skills' ? { pending: openPushes, namespace: requestedSkillsNamespace } : undefined,
+          : type === 'skills'
+            ? { pending: openPushes, namespace: requestedSkillsNamespace, requestedSkillPath: requestedSkill?.skillPath }
+            : undefined,
       );
       fullScan.push(...items);
     } catch (e) {
@@ -1442,16 +1454,11 @@ async function pushCore(
   spin.stop();
 
   // ── Handle --skill parameter: filter to a single specific skill ──────
-  if (options.skill) {
-    // Normalize the input path (expand ~ and resolve to absolute). Messages
-    // name it as given; the skill is the directory a symlink points to, and is
-    // named after that directory. Validate that name: it defends against path
-    // traversal, URL-encoded bypasses, and other illegal characters.
-    const os = await import('node:os');
-    const requestedPath = options.skill.startsWith('~')
-      ? path.join(os.homedir(), options.skill.slice(1))
-      : path.resolve(options.skill);
-    const skillPath = resolveReal(requestedPath);
+  if (requestedSkill) {
+    // Messages name the path as given; the skill is the directory a symlink
+    // points to, and is named after that directory. Validate that name: it
+    // defends against path traversal, URL-encoded bypasses, and other illegal characters.
+    const { requestedPath, skillPath } = requestedSkill;
     try {
       assertSafeResourceName(path.basename(skillPath));
     } catch (e) {
