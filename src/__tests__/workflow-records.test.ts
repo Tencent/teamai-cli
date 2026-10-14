@@ -80,7 +80,8 @@ describe('#1083 workflow run records', () => {
     expect(record.run).toBe('r1234567890abcdef');
     expect(record.workflow).toBe('build');
     expect(record.phase).toBe('start');
-    expect(record.driver).toEqual({ kind: 'local', machine: 'host-a' });
+    // Kind only: the hostname is machine-identifying and is not published.
+    expect(record.driver).toEqual({ kind: 'local' });
     expect(record.status).toBe('running');
     expect(record.username).toBe('tester');
     expect(typeof record.startedAt).toBe('string');
@@ -121,8 +122,34 @@ describe('#1083 workflow run records', () => {
     expect(record.status).toBe('succeeded');
     expect(record.durationMs).toBe(150000);
     expect(record.iterations).toBe(3);
-    expect(record.steps).toEqual({ total: 2, succeeded: 2, failed: 0 });
+    expect(record.stepCounts).toEqual({ total: 2, succeeded: 2, failed: 0 });
+    expect(record.steps).toEqual([
+      { step: 'one', outcome: 'success' },
+      { step: 'two', outcome: 'success' },
+    ]);
     expect(record.endedAt).toBe('2026-10-14T10:02:30.000Z');
+  });
+
+  it('records per-step agent fields: a Codex implementer beside a Claude reviewer', () => {
+    // SaulMoro's P1: run-level tool/model cannot express a mixed-agent run.
+    const mixed = runState({
+      definition: {
+        ...definition,
+        steps: [
+          { id: 'one', command: 'node one.js', agent: 'implementer' },
+          { id: 'two', command: 'node two.js', agent: 'reviewer' },
+        ],
+      },
+      steps: [
+        { id: 'one', status: 'succeeded', attempt: 'a1', outcome: 'success', exitCode: 0, tool: 'codex', model: 'gpt-5.4-codex', tokens: { input: 100, output: 50 } },
+        { id: 'two', status: 'succeeded', attempt: 'a2', outcome: 'success', exitCode: 0, tool: 'claude', model: 'claude-sonnet-4.6' },
+      ],
+    });
+    const record = buildEndRecord(mixed, driver, 'tester');
+    expect(record.steps).toEqual([
+      { step: 'one', agent: 'implementer', tool: 'codex', model: 'gpt-5.4-codex', outcome: 'success', tokens: { input: 100, output: 50 } },
+      { step: 'two', agent: 'reviewer', tool: 'claude', model: 'claude-sonnet-4.6', outcome: 'success' },
+    ]);
   });
 
   it('reports the cumulative iteration count, not the bounded history length', () => {

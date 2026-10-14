@@ -128,7 +128,7 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 每次运行都会向团队的 `teamai-reports` 分支发布一条保护隐私的记录：开始时一次，结束时一次。记录存放在 `workflows/runs/<run id>.json`，以 run id 为键，重试的发布会更新同一条记录而不是产生副本。
 
-记录只包含：run id、工作流名、阶段（`start` 或 `end`）、驱动的 kind 与 machine、状态、开始和结束时间、时长、步骤计数、已结算 attempt 数、可选的 agent/tool/model 字段，以及发布者用户名。提示词、命令文本、输出、diff、秘密值和本地工作区路径没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。驱动的 workspace 永远不会发布。
+记录只包含：run id、工作流名、阶段（`start` 或 `end`）、驱动的 kind、状态、开始和结束时间、时长、逐步条目（step、agent、tool、model、outcome、tokens——混合 agent 的运行会分别记录每步自己的字段）、步骤汇总计数、累计已结算 attempt 数，以及发布者用户名。提示词、命令文本、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
 
 发布失败时——没有远端、reports 锁被占用、push 被拒——记录会进入当前 scope 数据目录的本地队列，在下一次 `teamai pull` 时重试。此时 `start`、`next`、`report` 的返回会带 `record: pending` 而不是 `record: published`。运行本身不受影响：一台机器在运行开始后崩溃，该运行会以"已开始未结束"的状态保持可见。
 

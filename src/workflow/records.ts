@@ -16,7 +16,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { LocalConfig } from '../types.js';
 import { getDataHome } from '../types.js';
-import type { DriverIdentity, RunState, RunStatus } from './types.js';
+import type { DriverIdentity, RunState, RunStatus, StepOutcome, TokenUsage } from './types.js';
 
 /** The record's schema tag; see #1083 for the field contract. */
 export type WorkflowRunRecord = {
@@ -26,24 +26,32 @@ export type WorkflowRunRecord = {
   workflow: string;
   /** Which publication wrote this record; the end phase completes the file. */
   phase: 'start' | 'end';
-  /** Driver identity without the workspace: a local path is banned (#1083). */
-  driver?: { kind: string; machine: string };
+  /**
+   * Driver kind only. The workspace is a local path (banned, #1083) and the
+   * hostname is machine-identifying (#1126 review) — neither is published.
+   */
+  driver?: { kind: string };
   status: RunStatus;
   startedAt: string;
   endedAt?: string;
   durationMs?: number;
-  steps?: { total: number; succeeded: number; failed: number };
-  /** Settled attempts across the run — the iteration count. */
+  /**
+   * Per-step entries (#1083: step, agent, tool/model, outcome, tokens) — a
+   * run whose implementer runs on Codex and reviewer on Claude records each
+   * step's own fields. Unsettled steps carry no outcome.
+   */
+  steps?: Array<{
+    step: string;
+    agent?: string;
+    tool?: string;
+    model?: string;
+    outcome?: StepOutcome;
+    tokens?: TokenUsage;
+  }>;
+  /** Summary counts derived from the per-step entries. */
+  stepCounts?: { total: number; succeeded: number; failed: number };
+  /** Settled attempts across the run — the cumulative iteration count. */
   iterations?: number;
-  /** Optional agent fields (SaulMoro, #1083): comparable aliases + pricing input. */
-  tool?: string;
-  model?: string;
-  modelAlias?: string;
-  /** Scorer labels (#1085) when they exist; `source` keeps sessions pluggable later. */
-  labels?: Array<{ scorer: string; label: string; agent?: string; model?: string; source: 'workflow' }>;
-  teamRevision?: string;
-  prUrl?: string;
-  ciJobUrl?: string;
   username: string;
   publishedAt: string;
 };
@@ -75,7 +83,9 @@ export function buildStartRecord(
     phase: 'start',
     // A start record may have no driver yet (a remote driver leases later);
     // the end record always carries the driver that completed the run.
-    ...(driver ? { driver: { kind: driver.kind, machine: driver.machine } } : {}),
+    // Kind only: the workspace is a banned local path and the hostname is
+    // machine-identifying (#1126 review).
+    ...(driver ? { driver: { kind: driver.kind } } : {}),
     status: 'running',
     startedAt: run.createdAt,
     username,
@@ -97,6 +107,19 @@ export function buildEndRecord(
   const ended = Date.parse(run.updatedAt);
   const succeeded = run.steps.filter((step) => step.status === 'succeeded').length;
   const failed = run.steps.filter((step) => step.status === 'failed').length;
+  // Per-step entries: id + agent from the definition, the rest from the
+  // settled step state. Message, outputs, and session ids never cross.
+  const steps = run.steps.map((step) => {
+    const defined = run.definition.steps.find((item) => item.id === step.id);
+    return {
+      step: step.id,
+      ...(defined?.agent ? { agent: defined.agent } : {}),
+      ...(step.tool ? { tool: step.tool } : {}),
+      ...(step.model ? { model: step.model } : {}),
+      ...(step.outcome ? { outcome: step.outcome } : {}),
+      ...(step.tokens ? { tokens: step.tokens } : {}),
+    };
+  });
   return {
     ...buildStartRecord(run, driver, username, now),
     phase: 'end',
@@ -105,7 +128,8 @@ export function buildEndRecord(
     ...(Number.isFinite(started) && Number.isFinite(ended) && ended >= started
       ? { durationMs: ended - started }
       : {}),
-    steps: { total: run.steps.length, succeeded, failed },
+    steps,
+    stepCounts: { total: run.steps.length, succeeded, failed },
     // Cumulative when present; runs from before the counter fall back to the
     // bounded history length (their true count is unknowable now).
     iterations: run.settledCount ?? run.settledAttempts.length,
