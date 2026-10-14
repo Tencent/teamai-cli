@@ -22,7 +22,7 @@ steps:
 
 `schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且必须且只能使用 `command`、`prompt`、`prompt_file` 之一。提示词步骤可选填 `agent`。`output` 沿用已有简写：`string`、`number`、`boolean`、字面量联合、对象，或只含一种元素类型的数组。TeamAI 会用它校验成功命令的 stdout 或提示词工具返回的 `output`。
 
-`teamai pull` 和 `teamai push` 分别检查每个文件。`prompt_file` 必须是团队仓库内的普通文件，不能是符号链接。校验时会把文件内容和工作流一起缓存，因此已经开始的运行会继续使用对应修订版，即使源文件后来被修改或删除。新修订版无效时，仍保留上一份有效缓存。这一版 teamai 不认识的字段除外：该工作流没有可运行版本，需要先更新 teamai。
+`teamai pull` 和 `teamai push` 分别检查每个文件。`prompt_file` 必须是团队仓库 `prompts/` 下的普通文件，不能是符号链接。校验时会把文件内容和工作流一起缓存，因此已经开始的运行会继续使用对应修订版，即使源文件后来被修改或删除。新修订版无效时，仍保留上一份有效缓存。这一版 teamai 不认识的字段除外：该工作流没有可运行版本，需要先更新 teamai。
 
 在本地配置中按机器选择无界面工具：
 

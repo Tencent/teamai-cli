@@ -214,7 +214,7 @@ async function resolvePromptFiles(
     const location = locations[index] ?? { line: 1, column: 1 };
     let prompt: string | null = null;
     try {
-      assertWithinRoot(root, target);
+      assertWithinRoot(path.join(root, 'prompts'), target);
       const stat = await fs.lstat(target);
       if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('not a regular file');
       assertSafePath(target, [root]);
@@ -226,7 +226,7 @@ async function resolvePromptFiles(
         line: location.line,
         column: location.column,
         field: `steps[${index}].prompt_file`,
-        message: `prompt_file "${step.promptFile}" must be a readable, non-symlink file inside the team repo`,
+        message: `prompt_file "${step.promptFile}" must be a readable, non-symlink file under prompts/`,
       });
       continue;
     }

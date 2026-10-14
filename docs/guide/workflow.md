@@ -22,7 +22,7 @@ steps:
 
 `schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and exactly one of `command`, `prompt`, or `prompt_file`. `agent` is optional on prompt steps. `output` uses the existing shorthand: `string`, `number`, `boolean`, a literal union, an object, or an array with one item type. TeamAI validates successful command stdout or a prompt tool's `output` against it.
 
-`teamai pull` and `teamai push` check each file on its own. A `prompt_file` must be a regular, non-symlink file inside the team repo. Its text is cached with the validated workflow, so an existing run keeps that revision even if the source is later changed or deleted. A file that was valid before keeps that version in the local cache when a new revision is invalid. A field this version of teamai does not know is different: that workflow has nothing to run until teamai is updated.
+`teamai pull` and `teamai push` check each file on its own. A `prompt_file` must be a regular, non-symlink file under `prompts/` in the team repo. Its text is cached with the validated workflow, so an existing run keeps that revision even if the source is later changed or deleted. A file that was valid before keeps that version in the local cache when a new revision is invalid. A field this version of teamai does not know is different: that workflow has nothing to run until teamai is updated.
 
 Choose headless tools per machine in the local config:
 

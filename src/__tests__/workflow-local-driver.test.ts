@@ -215,6 +215,25 @@ Do not use this copy.
     });
   });
 
+  it('fails when a prompt step edits a file that was already dirty', async () => {
+    const { config, workspace, runId } = await fixture();
+    const tracked = path.join(workspace, 'tracked.txt');
+    fs.writeFileSync(tracked, 'already dirty\n');
+    const adapter: LocalToolAdapter = {
+      run: vi.fn(async () => {
+        fs.writeFileSync(tracked, 'changed again\n');
+        return { exitCode: 0, output: { ok: true } };
+      }),
+    };
+
+    await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
+
+    expect(fs.readFileSync(tracked, 'utf8')).toBe('changed again\n');
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('tracked.txt') } }],
+    });
+  });
+
   it('detects when a tool removes a path that was dirty before the step', async () => {
     const { config, workspace, runId } = await fixture();
     const dirty = path.join(workspace, 'dirty-before.txt');
@@ -230,6 +249,37 @@ Do not use this copy.
 
     expect(await readRun(config, runId)).toMatchObject({
       steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('dirty-before.txt') } }],
+    });
+  });
+
+  it.each(['codex-internal', 'tcodex'] as const)('loads a named %s agent with the Codex reader', async (tool) => {
+    const { config, workspace, runId } = await fixture('reviewer');
+    config.workflows = { tools: { reviewer: tool } };
+    const agentsDir = tool === 'tcodex' ? '.tcodex/agents' : '.codex-internal/agents';
+    const agents = path.join(workspace, agentsDir);
+    fs.mkdirSync(agents, { recursive: true });
+    fs.writeFileSync(path.join(agents, 'reviewer.toml'), `name = "reviewer"
+description = "Reviews changes."
+developer_instructions = "Implement the change."
+model = "gpt-5.4"
+`);
+    let input: LocalToolRun | undefined;
+    const adapter: LocalToolAdapter = {
+      run: vi.fn(async (_selected, value) => {
+        input = value;
+        return { exitCode: 0, output: { ok: true } };
+      }),
+    };
+
+    await runLocalDriver(config, runId, workspace, {
+      adapter,
+      toolPaths: { ...toolPaths, [tool]: { agents: agentsDir } } as TeamaiConfig['toolPaths'],
+    });
+
+    expect(adapter.run).toHaveBeenCalledWith(tool, expect.anything());
+    expect(input?.agent).toMatchObject({
+      instructions: 'Implement the change.',
+      model: 'gpt-5.4',
     });
   });
 

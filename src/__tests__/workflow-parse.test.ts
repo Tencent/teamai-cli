@@ -113,12 +113,15 @@ steps:
     prompt: ''
   - id: two
     prompt_file: ../secret.md
+  - id: three
+    prompt_file: .git/config
 `);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ field: 'steps[0].prompt', message: 'prompt must be a non-empty string' }),
-      expect.objectContaining({ field: 'steps[1].prompt_file', message: 'prompt_file must be a relative path without ".." segments' }),
+      expect.objectContaining({ field: 'steps[1].prompt_file', message: 'prompt_file must be a relative path under prompts/' }),
+      expect.objectContaining({ field: 'steps[2].prompt_file', message: 'prompt_file must be a relative path under prompts/' }),
     ]));
   });
 

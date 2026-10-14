@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,8 +79,9 @@ function ignoredCodexSettings(agent: AgentSpec): string[] {
 }
 
 function reverseAgent(tool: LocalWorkflowTool, file: string, content: string) {
-  if (tool === 'claude') return reverseFromClaude(file, content);
-  if (tool === 'codex') return reverseFromCodex(file, content);
+  const family = localToolFamily(tool);
+  if (family === 'claude') return reverseFromClaude(file, content);
+  if (family === 'codex') return reverseFromCodex(file, content);
   return reverseFromOpencode(file, content);
 }
 
@@ -99,12 +101,12 @@ async function loadAgent(
   return reversed.ok ? reversed.spec : null;
 }
 
-interface GitStatus {
+interface WorktreeSnapshot {
   ok: boolean;
-  text: string;
+  files: Map<string, string>;
 }
 
-function gitStatus(workspace: string): Promise<GitStatus> {
+function gitStatus(workspace: string): Promise<{ ok: boolean; text: string }> {
   return new Promise((resolve) => {
     execFile('git', ['status', '--porcelain'], { cwd: workspace, env: process.env }, (error, stdout, stderr) => {
       resolve(error ? { ok: false, text: stderr.trim() } : { ok: true, text: stdout });
@@ -112,12 +114,39 @@ function gitStatus(workspace: string): Promise<GitStatus> {
   });
 }
 
-function changedPaths(before: GitStatus, after: GitStatus): string[] {
-  if (!after.ok || (before.ok && before.text === after.text) || (!before.ok && after.text === '')) return [];
-  const changed = after.text === '' ? before.text : after.text;
-  return changed.split('\n')
-    .filter(Boolean)
-    .map((line) => line.length > 3 ? line.slice(3).trim() : line.trim());
+function porcelainPath(line: string): string {
+  const body = line.length > 3 ? line.slice(3) : line;
+  const renamed = body.split(' -> ').at(-1) ?? body;
+  return renamed.trim().replaceAll(/^"|"$/g, '');
+}
+
+async function hashPath(workspace: string, relative: string): Promise<string> {
+  try {
+    const content = await fs.readFile(path.resolve(workspace, relative));
+    return createHash('sha256').update(content).digest('hex');
+  } catch {
+    return 'missing';
+  }
+}
+
+async function snapshotWorktree(workspace: string): Promise<WorktreeSnapshot> {
+  const status = await gitStatus(workspace);
+  if (!status.ok) return { ok: false, files: new Map() };
+  const files = new Map<string, string>();
+  for (const line of status.text.split('\n')) {
+    if (!line.trim()) continue;
+    const relative = porcelainPath(line.replace(/\r$/, ''));
+    if (!relative || files.has(relative)) continue;
+    files.set(relative, await hashPath(workspace, relative));
+  }
+  return { ok: true, files };
+}
+
+function changedPaths(before: WorktreeSnapshot, after: WorktreeSnapshot): string[] {
+  if (!after.ok) return [];
+  if (!before.ok) return after.files.size === 0 ? [] : [...after.files.keys()];
+  const names = new Set([...before.files.keys(), ...after.files.keys()]);
+  return [...names].filter((name) => before.files.get(name) !== after.files.get(name));
 }
 
 function failureReport(failure: WorkflowFailure): { outcome: 'failed'; message: string; failure: WorkflowFailure } {
@@ -207,7 +236,7 @@ export async function runLocalDriver(
               log.warn(`Agent "${agent.name}" on ${selected} does not apply ${ignored.join(', ')} from the deployed agent file. codex exec still has a shell. The step is not blocked.`);
             }
           }
-          const before = await gitStatus(driver.workspace);
+          const before = await snapshotWorktree(driver.workspace);
           let result;
           try {
             result = await adapter.run(selected, {
@@ -222,7 +251,7 @@ export async function runLocalDriver(
               failure: { code: 'tool_failed', message: `${selected} could not complete the workflow step` },
             };
           }
-          const after = await gitStatus(driver.workspace);
+          const after = await snapshotWorktree(driver.workspace);
           const paths = changedPaths(before, after);
           const dirtyFailure = paths.length > 0
             ? { code: 'read_only_dirty', message: `Read-only prompt step changed repository paths: ${paths.join(', ')}` }

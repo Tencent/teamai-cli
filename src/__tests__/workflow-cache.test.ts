@@ -94,20 +94,46 @@ steps:
     const config = testConfig();
     const outside = path.join(path.dirname(config.repo.localPath), 'outside-prompt.md');
     fs.writeFileSync(outside, 'secret');
-    fs.symlinkSync(outside, path.join(config.repo.localPath, 'prompt.md'));
+    const prompts = path.join(config.repo.localPath, 'prompts');
+    fs.mkdirSync(prompts);
+    fs.symlinkSync(outside, path.join(prompts, 'prompt.md'));
     writeWorkflow(config, 'build', `schemaVersion: v1alpha1
 name: build
 description: Review the project.
 steps:
   - id: review
-    prompt_file: prompt.md
+    prompt_file: prompts/prompt.md
 `);
 
     const result = await syncWorkflowDefinitions(config);
 
     expect(result.cached).toEqual([]);
     expect(result.unrunnable).toEqual(['workflows/build.yaml']);
-    expect(result.invalid[0]).toMatchObject({ file: 'workflows/build.yaml', line: 6, field: 'steps[0].prompt_file' });
+    expect(result.invalid[0]).toMatchObject({
+      file: 'workflows/build.yaml',
+      line: 6,
+      field: 'steps[0].prompt_file',
+      message: expect.stringContaining('prompts/'),
+    });
+  });
+
+  it('does not cache a prompt_file outside prompts/', async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, '.git'));
+    fs.writeFileSync(path.join(config.repo.localPath, '.git', 'config'), 'oauth2:token@host');
+    writeWorkflow(config, 'build', `schemaVersion: v1alpha1
+name: build
+description: Review the project.
+steps:
+  - id: review
+    prompt_file: .git/config
+`);
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached).toEqual([]);
+    expect(result.unrunnable).toEqual(['workflows/build.yaml']);
+    expect(await loadCachedWorkflow(config, 'build')).toBeNull();
   });
 
   it('caches a valid workflow and leaves a new invalid file unrunnable', async () => {

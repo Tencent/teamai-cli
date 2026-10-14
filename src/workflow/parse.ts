@@ -205,9 +205,8 @@ export function parseWorkflow(file: string, content: string): {
         diagnostics.push(locate(file, lineCounter, promptPair.value ?? promptPair.key ?? item, `${field}.prompt`, 'prompt must be a non-empty string'));
       }
       if (promptFilePair) {
-        const segments = promptFile?.split(/[\\/]/);
-        if (!promptFile || promptFile.trim() === '' || pathIsAbsolute(promptFile) || segments?.includes('..')) {
-          diagnostics.push(locate(file, lineCounter, promptFilePair.value ?? promptFilePair.key ?? item, `${field}.prompt_file`, 'prompt_file must be a relative path without ".." segments'));
+        if (!isPromptFilePath(promptFile)) {
+          diagnostics.push(locate(file, lineCounter, promptFilePair.value ?? promptFilePair.key ?? item, `${field}.prompt_file`, 'prompt_file must be a relative path under prompts/'));
         } else if (isYamlNode(promptFilePair.value)) {
           const position = locate(file, lineCounter, promptFilePair.value, `${field}.prompt_file`, '');
           promptFileLocations[index] = { line: position.line, column: position.column };
@@ -250,4 +249,10 @@ export function parseWorkflow(file: string, content: string): {
 
 function pathIsAbsolute(value: string): boolean {
   return value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\');
+}
+
+function isPromptFilePath(value: string | undefined): value is string {
+  if (!value || value.trim() === '' || pathIsAbsolute(value)) return false;
+  const segments = value.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.');
+  return segments.length >= 2 && segments[0] === 'prompts' && !segments.includes('..');
 }
