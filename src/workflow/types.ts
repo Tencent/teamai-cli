@@ -161,6 +161,8 @@ export interface RunState {
   /** Step instances in declaration order; a sub-workflow's steps follow the step that runs it. */
   steps: StepState[];
   settledAttempts: string[];
+  /** Cumulative settled-attempt count; settledAttempts is bounded at 32 for dedup. */
+  settledCount?: number;
   createdAt: string;
   updatedAt: string;
 }

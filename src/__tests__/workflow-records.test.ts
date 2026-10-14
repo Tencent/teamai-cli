@@ -125,6 +125,30 @@ describe('#1083 workflow run records', () => {
     expect(record.endedAt).toBe('2026-10-14T10:02:30.000Z');
   });
 
+  it('reports the cumulative iteration count, not the bounded history length', () => {
+    // settledAttempts is a 32-entry dedup history; a run with 40 settled
+    // attempts still has 32 entries. The record must say 40.
+    const bounded = runState({ settledCount: 40 });
+    const record = buildEndRecord(bounded, driver, 'tester');
+    expect(record.iterations).toBe(40);
+    // A run from before the counter exists falls back to the history length.
+    const legacy = buildEndRecord(runState(), driver, 'tester');
+    expect(legacy.iterations).toBe(3);
+  });
+
+  it('seeds the required stats shape so digest never skips workflow-only stats', async () => {
+    const { ensureStatsShape } = await import('../workflow/records.js');
+    // digest's loadTeamStats requires username AND skills; a first workflow
+    // run with no prior stats file must still produce a digest-visible file.
+    const seeded = ensureStatsShape({}, 'tester');
+    expect(seeded.username).toBe('tester');
+    expect(seeded.skills).toEqual({});
+    expect(typeof seeded.updatedAt).toBe('string');
+    // An existing stats file keeps its shape untouched.
+    const existing = { username: 'tester', skills: { review: { count: 5 } }, updatedAt: 'x' };
+    expect(ensureStatsShape(existing, 'tester')).toBe(existing);
+  });
+
   it('merges retry-safe: end wins, a late start retry cannot regress phase', () => {
     const start = buildStartRecord(runState({ status: 'running' }), driver, 'tester');
     const end = buildEndRecord(runState(), driver, 'tester');

@@ -106,7 +106,9 @@ export function buildEndRecord(
       ? { durationMs: ended - started }
       : {}),
     steps: { total: run.steps.length, succeeded, failed },
-    iterations: run.settledAttempts.length,
+    // Cumulative when present; runs from before the counter fall back to the
+    // bounded history length (their true count is unknowable now).
+    iterations: run.settledCount ?? run.settledAttempts.length,
   };
 }
 
@@ -262,7 +264,10 @@ export async function publishPendingRecords(
         existingStats = {};
       }
     }
-    const mergedStats = mergeWorkflowStats(existingStats, statsDeltaRecords(originByRun, delivered));
+    const mergedStats = mergeWorkflowStats(
+      ensureStatsShape(existingStats, username),
+      statsDeltaRecords(originByRun, delivered),
+    );
     await fs.mkdir(path.join(worktree, 'stats'), { recursive: true });
     await fs.writeFile(path.join(worktree, statsRel), YAML.stringify(mergedStats), 'utf-8');
     files.push(statsRel);
@@ -280,6 +285,25 @@ export async function publishPendingRecords(
 }
 
 // ─── Stats totals ───────────────────────────────────────
+
+/**
+ * Guarantee the fields digest's loadTeamStats requires (`username` AND
+ * `skills`). A member whose first report is a workflow run — no usage events,
+ * no session stats — still gets a digest-visible stats file (#1126 P1).
+ * An existing well-formed stats object passes through untouched.
+ */
+export function ensureStatsShape(
+  existing: Record<string, unknown>,
+  username: string,
+): Record<string, unknown> {
+  if (existing.username === username && existing.skills) return existing;
+  return {
+    updatedAt: new Date().toISOString(),
+    ...existing,
+    ...(existing.username === username ? {} : { username }),
+    ...(existing.skills ? {} : { skills: {} }),
+  };
+}
 
 export interface WorkflowStats {
   runs: number;
