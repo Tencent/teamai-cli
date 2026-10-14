@@ -91,7 +91,7 @@ describe('#1083 workflow run records reach the reports branch', () => {
     const endRecord = JSON.parse(endRaw) as Record<string, unknown>;
     expect(endRecord.phase).toBe('end');
     expect(endRecord.status).toBe('succeeded');
-    expect(endRecord.stepCounts).toEqual({ total: 2, succeeded: 2, failed: 0 });
+    expect(endRecord.stepCounts).toEqual({ total: 2, succeeded: 2, failed: 0, skipped: 0 });
     expect(endRecord.steps).toEqual([
       { step: 'one', outcome: 'success' },
       { step: 'two', outcome: 'success' },

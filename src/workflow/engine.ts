@@ -7,8 +7,9 @@ import {
   type Expression, type ExpressionPath, type ExpressionStep, type VisibleOutcome,
 } from './expression.js';
 import { outputMismatch } from './output.js';
+import { noteRunRecord, pendingRecords } from './records.js';
 import { parseTemplate, renderStrings, renderText, templatedTexts, templatePaths, type TemplateContext, type TemplateError } from './template.js';
-import { isRunId, readRun, runLockPath, writeRun } from './store.js';
+import { generateRunId, isRunId, readRun, runLockPath, writeRun } from './store.js';
 import type {
   CachedWorkflow,
   DriverIdentity,
@@ -69,9 +70,9 @@ function delay(ms: number): Promise<void> {
 async function withRun<T extends WorkflowEnvelope>(
   config: LocalConfig,
   runId: string,
-  mutate: (run: RunState) => Promise<{ envelope: T; save: boolean }>,
+  mutate: (run: RunState, now: string) => Promise<{ envelope: T; save: boolean }>,
 ): Promise<T> {
-  if (!isRunId(runId)) return error('invalid_run', 'Run id must look like r followed by 8 hex digits') as T;
+  if (!isRunId(runId)) return error('invalid_run', 'Run id must look like r followed by 8 or 16 hex digits') as T;
   const lock = runLockPath(config, runId);
   let held = false;
   for (let attempt = 0; attempt < LOCK_ATTEMPTS && !held; attempt += 1) {
@@ -83,9 +84,11 @@ async function withRun<T extends WorkflowEnvelope>(
     const loaded = await readRun(config, runId);
     if (loaded === 'missing') return error('run_not_found', `Run ${runId} was not found`) as T;
     if (loaded === 'corrupt') return error('run_unreadable', `Run ${runId} could not be read`) as T;
-    const result = await mutate(loaded);
+    // One timestamp per operation, so a settled run's end record and its run file agree.
+    const now = new Date().toISOString();
+    const result = await mutate(loaded, now);
     if (result.save) {
-      loaded.updatedAt = new Date().toISOString();
+      loaded.updatedAt = now;
       await writeRun(config, loaded);
     }
     return result.envelope;
@@ -136,7 +139,7 @@ function localId(scope: Scope, state: StepState): string {
 }
 
 /** The scope and definition of the step instance at `path`, or undefined when the run file does not describe it. */
-function locateStep(run: RunState, path: string): { scope: Scope; step: WorkflowStep } | undefined {
+export function locateStep(run: RunState, path: string): { scope: Scope; step: WorkflowStep } | undefined {
   let scope = topScope(run);
   const ids = path.split('.');
   for (const [index, id] of ids.entries()) {
@@ -220,11 +223,15 @@ interface WorkflowResult {
   outputs?: Record<string, unknown>;
 }
 
-/** Ends the run. Every path that settles a run goes through here, so anything that reacts to a settled run hooks in here. */
-function settleRun(run: RunState, outcome: FinalRunStatus, end?: string): void {
+/**
+ * Ends the run. Every path that settles a run goes through here, so anything that reacts to a settled run hooks in here.
+ * Returns a copy of the settled run for the end record, which publishes after the run lock is released (#1126).
+ */
+function settleRun(run: RunState, now: string, outcome: FinalRunStatus, end?: string): RunState {
   run.status = outcome;
   if (end !== undefined) run.end = end;
-  run.updatedAt = new Date().toISOString();
+  run.updatedAt = now;
+  return { ...run, steps: run.steps.map((step) => ({ ...step })) };
 }
 
 function doneEnvelope(run: RunState): WorkflowEnvelope {
@@ -499,7 +506,12 @@ async function loadWorkflows(
 }
 
 /** Creates a run. `inputs` are checked against the declared inputs before the run file exists. */
-export async function startRun(config: LocalConfig, name: string, inputs: unknown = {}): Promise<WorkflowEnvelope> {
+export async function startRun(
+  config: LocalConfig,
+  name: string,
+  inputs: unknown = {},
+  options: { driver?: DriverIdentity } = {},
+): Promise<WorkflowEnvelope> {
   const cached = await loadCachedWorkflow(config, name);
   if (!cached) {
     return error('workflow_not_found', `Workflow "${name}" has no runnable version. Check workflows/${name}.yaml and pull again.`);
@@ -511,7 +523,7 @@ export async function startRun(config: LocalConfig, name: string, inputs: unknow
   const now = new Date().toISOString();
   const run: RunState = {
     schemaVersion: 'v1alpha1',
-    id: `r${randomBytes(4).toString('hex')}`,
+    id: generateRunId(),
     name: cached.definition.name,
     revision: 1,
     status: 'running',
@@ -525,7 +537,10 @@ export async function startRun(config: LocalConfig, name: string, inputs: unknow
     updatedAt: now,
   };
   await writeRun(config, run);
-  return ok({ run: run.id, name: run.name, status: run.status, revision: run.revision });
+  // #1083: publish the start record; a failed publication is queued locally
+  // and retried on the next pull — it never fails the run itself.
+  const record = await noteRunRecord(config, run, options.driver, 'start');
+  return ok({ run: run.id, name: run.name, status: run.status, revision: run.revision, record });
 }
 
 /** A run started before `needs` existed ran its steps in order; settling it as a graph would run every such step as a root. */
@@ -538,8 +553,18 @@ function missingNeeds(run: RunState): string | undefined {
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity): Promise<WorkflowEnvelope> {
-  return withRun(config, runId, async (run) => {
-    if (run.status !== 'running') return { save: false, envelope: doneEnvelope(run) };
+  // The end record publishes AFTER withRun releases the run lock (#1126 P3):
+  // publication does a reports-branch push, and no network I/O may hold the
+  // lock other engine operations wait on.
+  let settledRun: RunState | undefined;
+  let alreadySettled = false;
+  const envelope = await withRun(config, runId, async (run, now) => {
+    if (run.status !== 'running') {
+      // Settled by an earlier next, which published the end record; the
+      // done envelope still reports the queue-derived record state.
+      alreadySettled = true;
+      return { save: false, envelope: doneEnvelope(run) };
+    }
     const older = missingNeeds(run);
     if (older) return { save: false, envelope: error('run_unreadable', older) };
     const leased = run.steps.find((step) => step.status === 'leased');
@@ -557,7 +582,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     const result = settleScope(run, topScope(run));
     if ('unreadable' in result) return { save: false, envelope: error('run_unreadable', result.unreadable) };
     if ('outcome' in result) {
-      settleRun(run, result.outcome, result.end);
+      settledRun = settleRun(run, now, result.outcome, result.end);
       return { save: true, envelope: doneEnvelope(run) };
     }
     const step = result.lease;
@@ -568,6 +593,14 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     step.lease = { attempt, revision: run.revision, driver };
     return { save: true, envelope: leaseEnvelope(run, step, result.definition, result.rendered) };
   });
+  if (settledRun || alreadySettled) {
+    const record = settledRun
+      ? await noteRunRecord(config, settledRun, driver, 'end')
+      : ((await pendingRecords(config)).length > 0 ? 'pending' : 'published');
+    const done = (envelope as { data?: { done?: Record<string, unknown> } }).data?.done;
+    if (done) done.record = record;
+  }
+  return envelope;
 }
 
 function driverFrom(value: unknown): DriverIdentity | undefined {
@@ -635,6 +668,9 @@ function rememberSettledAttempt(run: RunState, attempt: string): void {
   run.settledAttempts.push(attempt);
   const extra = run.settledAttempts.length - SETTLED_ATTEMPTS_LIMIT;
   if (extra > 0) run.settledAttempts.splice(0, extra);
+  // settledAttempts is a bounded dedup history; the cumulative count feeds the
+  // run record's iterations field, which must not cap at SETTLED_ATTEMPTS_LIMIT.
+  run.settledCount = (run.settledCount ?? 0) + 1;
 }
 
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope> {

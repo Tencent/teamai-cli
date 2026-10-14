@@ -16,6 +16,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { LocalConfig } from '../types.js';
 import { getDataHome } from '../types.js';
+import { locateStep } from './engine.js';
 import type { DriverIdentity, RunState, RunStatus, StepOutcome, TokenUsage } from './types.js';
 
 /** The record's schema tag; see #1083 for the field contract. */
@@ -32,6 +33,8 @@ export type WorkflowRunRecord = {
    */
   driver?: { kind: string };
   status: RunStatus;
+  /** The named end the run reached, when it reached one. */
+  end?: string;
   startedAt: string;
   endedAt?: string;
   durationMs?: number;
@@ -49,7 +52,7 @@ export type WorkflowRunRecord = {
     tokens?: TokenUsage;
   }>;
   /** Summary counts derived from the per-step entries. */
-  stepCounts?: { total: number; succeeded: number; failed: number };
+  stepCounts?: { total: number; succeeded: number; failed: number; skipped: number };
   /** Settled attempts across the run — the cumulative iteration count. */
   iterations?: number;
   username: string;
@@ -107,16 +110,19 @@ export function buildEndRecord(
   const ended = Date.parse(run.updatedAt);
   const succeeded = run.steps.filter((step) => step.status === 'succeeded').length;
   const failed = run.steps.filter((step) => step.status === 'failed').length;
-  // Per-step entries: id + agent from the definition, the rest from the
+  const skipped = run.steps.filter((step) => step.status === 'skipped').length;
+  // Per-step entries: path + agent from the definition, the rest from the
   // settled step state. Message, outputs, and session ids never cross.
   const steps = run.steps.map((step) => {
-    const defined = run.definition.steps.find((item) => item.id === step.id);
+    const defined = locateStep(run, step.id)?.step;
+    // An end-only step settles without a report, so it has a status but no outcome.
+    const outcome = step.outcome ?? (step.status === 'succeeded' ? 'success' : undefined);
     return {
       step: step.id,
       ...(defined?.agent ? { agent: defined.agent } : {}),
       ...(step.tool ? { tool: step.tool } : {}),
       ...(step.model ? { model: step.model } : {}),
-      ...(step.outcome ? { outcome: step.outcome } : {}),
+      ...(outcome ? { outcome } : {}),
       ...(step.tokens ? { tokens: step.tokens } : {}),
     };
   });
@@ -124,12 +130,13 @@ export function buildEndRecord(
     ...buildStartRecord(run, driver, username, now),
     phase: 'end',
     status: run.status,
+    ...(run.end !== undefined ? { end: run.end } : {}),
     endedAt: run.updatedAt,
     ...(Number.isFinite(started) && Number.isFinite(ended) && ended >= started
       ? { durationMs: ended - started }
       : {}),
     steps,
-    stepCounts: { total: run.steps.length, succeeded, failed },
+    stepCounts: { total: run.steps.length, succeeded, failed, skipped },
     // Cumulative when present; runs from before the counter fall back to the
     // bounded history length (their true count is unknowable now).
     iterations: run.settledCount ?? run.settledAttempts.length,

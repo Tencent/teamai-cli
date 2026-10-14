@@ -122,7 +122,7 @@ describe('#1083 workflow run records', () => {
     expect(record.status).toBe('succeeded');
     expect(record.durationMs).toBe(150000);
     expect(record.iterations).toBe(3);
-    expect(record.stepCounts).toEqual({ total: 2, succeeded: 2, failed: 0 });
+    expect(record.stepCounts).toEqual({ total: 2, succeeded: 2, failed: 0, skipped: 0 });
     expect(record.steps).toEqual([
       { step: 'one', outcome: 'success' },
       { step: 'two', outcome: 'success' },

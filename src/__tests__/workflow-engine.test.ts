@@ -5,9 +5,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { leaseNext, parseReport, reportAttempt, SETTLED_ATTEMPTS_LIMIT, startRun } from '../workflow/engine.js';
+import { leaseNext, parseReport, reportAttempt, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
 import { runLocalDriver } from '../workflow/local-driver.js';
 import { outputMismatch } from '../workflow/output.js';
+import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { readRun, runLockPath, writeRun } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
 
@@ -384,6 +385,67 @@ describe('workflow engine', () => {
     expect(fs.readFileSync(path.join(work, 'step-two.txt'), 'utf8')).toBe('2');
   });
 
+  // #1083: run records publish at start and end; a publication failure is
+  // queued durably and surfaced as `record: pending`, never failing the run.
+  it('surfaces record publication state on start and done envelopes', async () => {
+    const { config, runId } = await startBuild(TWO_STEPS);
+    // The fixture has no reports remote, so publication cannot succeed —
+    // the run must still start, and the record must be queued for the next
+    // pull.
+    const stored = await readRun(config, runId);
+    if (typeof stored !== 'object') throw new Error('run missing');
+    const { pendingRecords } = await import('../workflow/records.js');
+    const queued = await pendingRecords(config);
+    expect(queued).toHaveLength(1);
+    expect(queued[0].phase).toBe('start');
+    expect(queued[0].run).toBe(runId);
+    // A machine that dies after start stays visible as started-but-not-ended:
+    // the queued record has no endedAt and status running.
+    expect(queued[0].status).toBe('running');
+    expect(queued[0]).not.toHaveProperty('endedAt');
+    // The driver workspace never crosses into the record.
+    expect(JSON.stringify(queued)).not.toContain('/work');
+  });
+
+  it('queues an end record on the next that settles a run after a failed report (#1126 P1)', async () => {
+    const failing = `schemaVersion: v1alpha1
+name: build
+description: One command.
+steps:
+  - id: one
+    command: node one.js
+`;
+    const { config, runId } = await startBuild(failing);
+    const { pendingRecords } = await import('../workflow/records.js');
+    const leased = await leaseNext(config, runId, driverA);
+    if ('error' in leased) throw new Error(leased.error.message);
+    const lease = leased.data.lease as { attempt: string; revision: number };
+    await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', driver: driverA });
+    // A failed report does not settle the run; the next `next` does.
+    expect((await pendingRecords(config)).find((record) => record.phase === 'end')).toBeUndefined();
+
+    const done = await leaseNext(config, runId, driverA);
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const end = (await pendingRecords(config)).find((record) => record.phase === 'end');
+    expect(end).toBeDefined();
+    expect(end!.status).toBe('failed');
+    expect(end!.stepCounts).toEqual({ total: 1, succeeded: 0, failed: 1, skipped: 0 });
+  });
+
+  it('queues an end record when the run settles', async () => {
+    const { config, work, runId } = await startBuild(TWO_STEPS);
+    fs.writeFileSync(path.join(work, 'one.js'), "process.stdout.write(JSON.stringify({ ok: true }))\n");
+    fs.writeFileSync(path.join(work, 'two.js'), "process.stdout.write(JSON.stringify({ ok: true }))\n");
+    const done = await runLocalDriver(config, runId, work);
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const { pendingRecords } = await import('../workflow/records.js');
+    const queued = await pendingRecords(config);
+    const end = queued.find((record) => record.phase === 'end');
+    expect(end).toBeDefined();
+    expect(end!.status).toBe('succeeded');
+    expect(end!.stepCounts).toEqual({ total: 2, succeeded: 2, failed: 0, skipped: 0 });
+  });
+
   it('passes env to a command as variables over the inherited environment, never as shell', async () => {
     const fixture = testConfig();
     fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: label
@@ -536,7 +598,7 @@ describe('workflow engine', () => {
     const { leased, done } = await drive(config, runId);
 
     expect(leased).toEqual(['check']);
-    expect(done).toEqual({ run: runId, outcome: 'succeeded', end: 'dropped' });
+    expect(done).toEqual({ run: runId, record: 'pending', outcome: 'succeeded', end: 'dropped' });
     expect(await readRun(config, runId)).toMatchObject({
       status: 'succeeded',
       revision: 2,
@@ -575,8 +637,8 @@ describe('workflow engine', () => {
     const { leased, done } = await drive(config, runId, failing);
 
     expect(leased).toEqual(order);
-    expect(done).toEqual({ run: runId, ...expected });
-    expect(await leaseNext(config, runId, driverA)).toEqual({ data: { done: { run: runId, ...expected } } });
+    expect(done).toEqual({ run: runId, record: 'pending', ...expected });
+    expect(await leaseNext(config, runId, driverA)).toEqual({ data: { done: { run: runId, record: 'pending', ...expected } } });
   });
 
   it('reaches a ready end before it leases a step declared earlier', async () => {
@@ -593,7 +655,7 @@ describe('workflow engine', () => {
     const { leased, done } = await drive(config, runId);
 
     expect(leased).toEqual(['check']);
-    expect(done).toEqual({ run: runId, outcome: 'succeeded', end: 'dropped' });
+    expect(done).toEqual({ run: runId, record: 'pending', outcome: 'succeeded', end: 'dropped' });
   });
   it('runs a recovery step that reads a failed check, and the run still fails', async () => {
     const { config, runId } = await startBuild(graph(`  - id: check
@@ -756,7 +818,7 @@ describe('workflow engine', () => {
     const result = await drive(config, runId, failing);
 
     expect(result.leased).toEqual(order);
-    expect(result.done).toEqual({ run: runId, ...done });
+    expect(result.done).toEqual({ run: runId, record: 'pending', ...done });
   });
 
   it.each([
@@ -928,18 +990,6 @@ ${header}steps:
 ${steps}`;
 }
 
-/**
- * Saves the cached copy of `name`; the returned function writes it back, as a cache another teamai build wrote
- * can be left. Pull no longer keeps a copy that does not fit the workflows it runs, and start still refuses one.
- */
-function saveCachedCopy(config: LocalConfig, name: string): () => void {
-  const home = config.dataHome ?? '';
-  const entry = fs.readdirSync(home, { recursive: true, encoding: 'utf8' }).find((file) => file.endsWith(`cache${path.sep}${name}.json`));
-  if (entry === undefined) throw new Error(`no cached copy of ${name}`);
-  const saved = fs.readFileSync(path.join(home, entry));
-  return () => fs.writeFileSync(path.join(home, entry), saved);
-}
-
 const CHECK = workflow('check', `  - id: classify
     command: node classify.js
   - id: comment
@@ -959,7 +1009,7 @@ describe('file sub-workflows', () => {
     const { leased, done } = await drive(config, runId);
 
     expect(leased).toEqual(['check.classify', 'check.comment', 'ship']);
-    expect(done).toEqual({ run: runId, outcome: 'succeeded' });
+    expect(done).toEqual({ run: runId, record: 'pending', outcome: 'succeeded' });
     expect(await readRun(config, runId)).toMatchObject({
       revision: 4,
       steps: [
@@ -979,10 +1029,8 @@ describe('file sub-workflows', () => {
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), CHECK);
     await syncWorkflowDefinitions(fixture.config);
-    const restoreShip = saveCachedCopy(fixture.config, 'ship');
     fs.writeFileSync(path.join(workflows, 'check.yaml'), `${CHECK}    for_each: [1]\n`);
     await syncWorkflowDefinitions(fixture.config);
-    restoreShip();
 
     expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
       code: 'workflow_not_found',
@@ -1104,7 +1152,7 @@ describe('file sub-workflows', () => {
     const { leased, done } = await drive(config, runId);
 
     expect(leased).toEqual(['label']);
-    expect(done).toEqual({ run: runId, outcome: 'failed' });
+    expect(done).toEqual({ run: runId, record: 'pending', outcome: 'failed' });
     expect(await readRun(config, runId)).toMatchObject({ revision: 2, steps: [
       { id: 'check', status: 'failed', failure: { code: 'invalid_inputs', message: 'step "check" with does not fit workflow "check": inputs.issue must be a number' } },
       { id: 'label', status: 'succeeded' },
@@ -1149,7 +1197,7 @@ describe('file sub-workflows', () => {
     const done = await leaseNext(config, runId, driverA);
 
     expect(close).toMatchObject({ data: { lease: { step: 'close', env: { VERDICT: 'drop' } } } });
-    expect(done).toEqual({ data: { done: { run: runId, outcome: 'succeeded' } } });
+    expect(done).toEqual({ data: { done: { run: runId, record: 'pending', outcome: 'succeeded' } } });
     expect(await readRun(config, runId)).toMatchObject({ steps: [
       { id: 'check', status: 'succeeded', end: 'dropped', outputs: { verdict: 'drop' } },
       { id: 'check.classify', status: 'succeeded' },
@@ -1175,7 +1223,7 @@ describe('file sub-workflows', () => {
     const { leased, done } = await drive(config, runId, failing);
 
     expect(leased).toEqual(order);
-    expect(done).toEqual({ run: runId, ...expected });
+    expect(done).toEqual({ run: runId, record: 'pending', ...expected });
   });
 
   it('fails the workflow step when its child fails, so a recovery step in the parent runs', async () => {
@@ -1190,7 +1238,7 @@ describe('file sub-workflows', () => {
     const { leased, done } = await drive(config, runId, ['check.comment']);
 
     expect(leased).toEqual(['check.classify', 'check.comment', 'label']);
-    expect(done).toEqual({ run: runId, outcome: 'failed' });
+    expect(done).toEqual({ run: runId, record: 'pending', outcome: 'failed' });
     expect(await readRun(config, runId)).toMatchObject({ steps: [
       { id: 'check', status: 'failed', outcome: 'failed' },
       { id: 'check.classify', status: 'succeeded' },
@@ -1232,7 +1280,7 @@ describe('file sub-workflows', () => {
     expect(reported).toMatchObject({ data: { step: { id: 'check.classify', status: 'failed', outcome: 'failed' } } });
   });
 
-  it('refuses to start a workflow that runs itself through a cached copy', async () => {
+  it('refuses to start a workflow that runs itself through the version a sub-workflow kept', async () => {
     const fixture = testConfig();
     const workflows = path.join(fixture.config.repo.localPath, 'workflows');
     fs.writeFileSync(path.join(workflows, 'ship.yaml'), workflow('ship', `  - id: check
@@ -1240,16 +1288,14 @@ describe('file sub-workflows', () => {
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), CHECK);
     await syncWorkflowDefinitions(fixture.config);
-    const restoreShip = saveCachedCopy(fixture.config, 'ship');
+    // ship's new revision runs a missing workflow, so ship keeps the version that runs check.
     fs.writeFileSync(path.join(workflows, 'ship.yaml'), workflow('ship', `  - id: check
-    command: node check.js
+    workflow: gone
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), workflow('check', `  - id: again
     workflow: ship
 `));
     await syncWorkflowDefinitions(fixture.config);
-    // The cache now holds check running ship next to the ship that runs check.
-    restoreShip();
 
     expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
       code: 'workflow_recursion',
@@ -1349,7 +1395,7 @@ describe('with on prompt steps', () => {
     const { leased, done } = await drive(config, runId);
 
     expect(leased).toEqual(['label']);
-    expect(done).toEqual({ run: runId, outcome: 'failed' });
+    expect(done).toEqual({ run: runId, record: 'pending', outcome: 'failed' });
     expect(await readRun(config, runId)).toMatchObject({ steps: [
       { id: 'fix', status: 'failed', failure: { code: 'invalid_template', message: 'step "fix" with template {{ inputs.task == 1 }}: a template reads one path' } },
       { id: 'label', status: 'succeeded' },
@@ -1390,7 +1436,7 @@ describe('inline workflows', () => {
 
     expect(classify).toMatchObject({ data: { lease: { step: 'check.classify', prompt: 'Classify Bug for fix.' } } });
     expect(leased).toEqual(['check.comment', 'ship']);
-    expect(done).toEqual({ run: runId, outcome: 'succeeded' });
+    expect(done).toEqual({ run: runId, record: 'pending', outcome: 'succeeded' });
   });
 
   it('finishes only the inline workflow at its end, and the parent reads its end and outputs', async () => {
@@ -1486,7 +1532,7 @@ describe('inline workflows', () => {
     const { leased, done } = await drive(config, runId);
 
     expect(leased).toEqual(['plan', 'outer.inner.note', 'outer.inner.check.classify', 'outer.inner.check.comment']);
-    expect(done).toEqual({ run: runId, outcome: 'succeeded' });
+    expect(done).toEqual({ run: runId, record: 'pending', outcome: 'succeeded' });
     expect(await readRun(config, runId)).toMatchObject({ workflows: { check: { name: 'check' } } });
   });
 
@@ -1501,16 +1547,14 @@ describe('inline workflows', () => {
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), CHECK);
     await syncWorkflowDefinitions(fixture.config);
-    const restoreShip = saveCachedCopy(fixture.config, 'ship');
+    // ship's new revision runs a missing workflow, so ship keeps the version that runs check from its inline workflow.
     fs.writeFileSync(path.join(workflows, 'ship.yaml'), workflow('ship', `  - id: outer
-    command: node check.js
+    workflow: gone
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), workflow('check', `  - id: again
     workflow: ship
 `));
     await syncWorkflowDefinitions(fixture.config);
-    // The cache now holds check running ship next to the ship that runs check.
-    restoreShip();
 
     expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
       code: 'workflow_recursion',
@@ -1545,5 +1589,180 @@ describe('inline workflows', () => {
     const fix = await leaseNext(config, runId, driverA);
 
     expect(fix).toMatchObject({ data: { lease: { step: 'check.fix', prompt: 'Fix inner.' } } });
+  });
+});
+
+/** The end record the run queued; the fixtures have no reports remote, so it stays queued. */
+async function endRecord(config: LocalConfig): Promise<WorkflowRunRecord | undefined> {
+  return (await pendingRecords(config)).find((record) => record.phase === 'end');
+}
+
+/** Drives a run to done, reporting each step with the fields `reports` gives for its path. */
+async function driveWith(config: LocalConfig, runId: string, reports: Record<string, Partial<ReportInput>> = {}): Promise<void> {
+  for (;;) {
+    const next = await leaseNext(config, runId, driverA);
+    if ('error' in next) throw new Error(next.error.message);
+    if (next.data.done) return;
+    const lease = next.data.lease as { step: string; attempt: string; revision: number };
+    await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: driverA, ...reports[lease.step] });
+  }
+}
+
+describe('run records of graph runs', () => {
+  it('lists the steps of a sub-workflow by path, each with its own agent, tool, model and tokens', async () => {
+    const { config, runId } = await startTree({
+      review: workflow('review', `  - id: classify
+    prompt: Classify the issue.
+    agent: classifier
+  - id: comment
+    needs: [classify]
+    command: node comment.js
+`),
+      ship: workflow('ship', `  - id: check
+    workflow: review
+  - id: fix
+    needs: [check]
+    prompt: Fix the issue.
+    agent: implementer
+`),
+    }, 'ship');
+
+    await driveWith(config, runId, {
+      'check.classify': { tool: 'claude', model: 'claude-sonnet', tokens: { input: 10, output: 5 } },
+      fix: { tool: 'codex', model: 'gpt-codex', tokens: { input: 20, output: 8 } },
+    });
+
+    expect((await endRecord(config))?.steps).toEqual([
+      { step: 'check', outcome: 'success' },
+      { step: 'check.classify', agent: 'classifier', tool: 'claude', model: 'claude-sonnet', outcome: 'success', tokens: { input: 10, output: 5 } },
+      { step: 'check.comment', outcome: 'success' },
+      { step: 'fix', agent: 'implementer', tool: 'codex', model: 'gpt-codex', outcome: 'success', tokens: { input: 20, output: 8 } },
+    ]);
+  });
+
+  it('counts skipped steps, and not the steps of a sub-workflow that never started', async () => {
+    const { config, runId } = await startTree({ check: CHECK, ship: workflow('ship', `  - id: plan
+    command: node plan.js
+  - id: check
+    needs: [plan]
+    workflow: check
+  - id: docs
+    needs: []
+    command: node docs.js
+`) }, 'ship');
+
+    await driveWith(config, runId, { plan: { outcome: 'failed' } });
+
+    expect(await endRecord(config)).toMatchObject({
+      status: 'failed',
+      stepCounts: { total: 3, succeeded: 1, failed: 1, skipped: 1 },
+    });
+  });
+
+  it('carries the end the run reached, and no end when it reached none', async () => {
+    const shipped = await startTree({ ship: workflow('ship', `  - id: build
+    command: node build.js
+  - id: done
+    needs: [build]
+    end: shipped
+`, 'ends:\n  shipped: succeeded\n') }, 'ship');
+    const plain = await startBuild(TWO_STEPS);
+
+    await driveWith(shipped.config, shipped.runId);
+    await driveWith(plain.config, plain.runId);
+
+    expect(await endRecord(shipped.config)).toMatchObject({ status: 'succeeded', end: 'shipped' });
+    expect(await endRecord(plain.config)).not.toHaveProperty('end');
+  });
+
+  it('gives an end-only step that succeeded a success outcome, and a skipped step none', async () => {
+    const { config, runId } = await startTree({ ship: workflow('ship', `  - id: build
+    command: node build.js
+  - id: retry
+    needs: [build]
+    if: steps.build.outcome == 'failed'
+    command: node retry.js
+  - id: done
+    needs: [build]
+    end: shipped
+`, 'ends:\n  shipped: succeeded\n') }, 'ship');
+
+    await driveWith(config, runId);
+
+    expect((await endRecord(config))?.steps).toEqual([
+      { step: 'build', outcome: 'success' },
+      { step: 'retry' },
+      { step: 'done', outcome: 'success' },
+    ]);
+  });
+
+  it('lists inline steps by path with their agent, and a failed workflow step by its outcome alone', async () => {
+    const { config, runId } = await startTree({ check: CHECK, ship: workflow('ship', `  - id: review
+    workflow:
+      steps:
+        - id: read
+          prompt: Read the diff.
+          agent: reviewer
+  - id: check
+    needs: [review]
+    workflow: check
+`) }, 'ship');
+
+    await driveWith(config, runId, { 'check.comment': { outcome: 'failed', message: 'comment failed' } });
+
+    const record = await endRecord(config);
+    expect(record?.steps).toEqual([
+      { step: 'review', outcome: 'success' },
+      { step: 'review.read', agent: 'reviewer', outcome: 'success' },
+      { step: 'check', outcome: 'failed' },
+      { step: 'check.classify', outcome: 'success' },
+      { step: 'check.comment', outcome: 'failed' },
+    ]);
+    expect(JSON.stringify(record)).not.toContain('undefined');
+    expect(JSON.stringify(record)).not.toContain('comment failed');
+  });
+
+  it('publishes no input value, rendered env or prompt, or child definition', async () => {
+    const sentinel = 'SENTINEL-7f3a';
+    const child = workflow('triage', `  - id: classify
+    prompt: "Classify {{ inputs.title }}."
+    agent: classifier
+`, 'inputs:\n  title: string\n');
+    const { config, runId } = await startTree({ triage: child, ship: workflow('ship', `  - id: label
+    command: node label.js
+    env:
+      TITLE: "{{ inputs.title }}"
+  - id: triage
+    needs: [label]
+    workflow: triage
+    with:
+      title: "{{ inputs.title }}"
+`, 'inputs:\n  title: string\n') }, 'ship', { title: sentinel });
+
+    await driveWith(config, runId);
+
+    const records = await pendingRecords(config);
+    expect(records.map((record) => record.phase).sort()).toEqual(['end', 'start']);
+    expect(await readRun(config, runId)).toMatchObject({ inputs: { title: sentinel } });
+    const published = JSON.stringify(records);
+    expect(published).not.toContain(sentinel);
+    expect(published).not.toContain('Classify');
+    expect(published).not.toContain('node label.js');
+  });
+
+  it('ends the record at the time the run file was saved', async () => {
+    const { config, runId } = await startBuild(TWO_STEPS);
+    // A clock that moves on every reading, so two readings of "now" never agree.
+    let tick = 0;
+    const clock = vi.spyOn(Date.prototype, 'toISOString').mockImplementation(() => `2026-01-01T00:00:${String(10 + Math.floor(tick / 1000)).padStart(2, '0')}.${String(tick++ % 1000).padStart(3, '0')}Z`);
+    try {
+      await driveWith(config, runId);
+    } finally {
+      clock.mockRestore();
+    }
+
+    const stored = await readRun(config, runId);
+    if (typeof stored !== 'object') throw new Error('run missing');
+    expect((await endRecord(config))?.endedAt).toBe(stored.updatedAt);
   });
 });
