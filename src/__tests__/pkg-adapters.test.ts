@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClaudePluginAdapter } from '../pkg/adapters/claude-plugin.js';
 import { extractNpmLockEntries, NpmAdapter } from '../pkg/adapters/npm.js';
 import type { CommandExecutor } from '../utils/exec.js';
+import { log } from '../utils/logger.js';
 
 describe('NpmAdapter', () => {
   let dir: string;
@@ -172,6 +173,139 @@ describe('NpmAdapter', () => {
       registry: 'https://mirrors.tencent.com/npm/',
     }], { cwd: dir, scope: 'user', dryRun: true });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('routes installs through pnpm add when pnpm-workspace.yaml is present', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages: []\n');
+    const execute = vi.fn<CommandExecutor>().mockImplementation(async (_command, args) => ({
+      code: 0,
+      stdout: args[0] === 'list'
+        ? JSON.stringify([{
+            dependencies: { typescript: { version: '5.9.2' } },
+          }])
+        : '',
+      stderr: '',
+    }));
+    const adapter = new NpmAdapter(execute);
+
+    const lock = await adapter.install(
+      [{ name: 'typescript', version: '^5.9.0' }],
+      { cwd: dir, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', 'typescript@^5.9.0'],
+      expect.objectContaining({ cwd: dir }),
+    );
+    expect(execute).not.toHaveBeenCalledWith(
+      'npm',
+      expect.arrayContaining(['install']),
+      expect.any(Object),
+    );
+    expect(lock[0]).toMatchObject({ name: 'typescript', version: '5.9.2', source: 'npm' });
+  });
+
+  it('routes installs through pnpm add when the packageManager field declares pnpm', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      packageManager: 'pnpm@10.28.1',
+    }));
+    const execute = vi.fn<CommandExecutor>().mockImplementation(async (_command, args) => ({
+      code: 0,
+      stdout: args[0] === 'list' ? '[]' : '',
+      stderr: '',
+    }));
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'typescript', version: '^5.9.0' }],
+      { cwd: dir, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', 'typescript@^5.9.0'],
+      expect.objectContaining({ cwd: dir }),
+    );
+  });
+
+  it('installs global CLI tools through pnpm add --global in a pnpm project', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
+    const declaration = [{
+      name: '@tencent/tokenlint',
+      version: 'latest',
+      global: true,
+      registry: 'https://mirrors.tencent.com/npm/',
+    }];
+    const execute = vi.fn<CommandExecutor>().mockImplementation(async (_command, args) => ({
+      code: 0,
+      stdout: args[0] === 'list'
+        ? JSON.stringify([{
+            dependencies: { '@tencent/tokenlint': { version: '1.3.3' } },
+          }])
+        : '',
+      stderr: '',
+    }));
+
+    const lock = await new NpmAdapter(execute).install(declaration, { cwd: dir, scope: 'user' });
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      [
+        'add',
+        '--global',
+        '@tencent/tokenlint@latest',
+        '--registry',
+        'https://mirrors.tencent.com/npm/',
+      ],
+      expect.objectContaining({ cwd: dir }),
+    );
+    expect(execute).not.toHaveBeenCalledWith(
+      'npm',
+      expect.anything(),
+      expect.any(Object),
+    );
+    expect(lock).toEqual([{
+      name: '@tencent/tokenlint',
+      version: '1.3.3',
+      source: 'npm',
+      global: true,
+      registry: 'https://mirrors.tencent.com/npm/',
+    }]);
+  });
+
+  it('keeps pnpm dry-run command-free and logs the pnpm command', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages: []\n');
+    const execute = vi.fn<CommandExecutor>();
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {});
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'typescript', version: '^5.9.0' }],
+      { cwd: dir, scope: 'project', dryRun: true },
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(
+      expect.stringContaining('Would run: pnpm add "typescript@^5.9.0"'),
+    );
+    info.mockRestore();
+  });
+
+  it('names pnpm add in the failure message of a pnpm project', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages: []\n');
+    const execute = vi.fn<CommandExecutor>().mockResolvedValue({
+      code: 1,
+      stdout: '',
+      stderr: 'pnpm error Something failed',
+    });
+
+    await expect(new NpmAdapter(execute).install(
+      [{ name: 'typescript', version: '^5.9.0' }],
+      { cwd: dir, scope: 'project' },
+    )).rejects.toThrow('pnpm add failed (exit 1): pnpm error Something failed');
   });
 
   it('reports an installed package whose version does not satisfy the declaration', async () => {

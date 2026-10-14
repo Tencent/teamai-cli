@@ -25,6 +25,14 @@ interface NpmListOutput {
   dependencies?: Record<string, LockPackage>;
 }
 
+interface NpmPackageManifest {
+  packageManager?: string;
+}
+
+interface PnpmListProject {
+  dependencies?: Record<string, LockPackage>;
+}
+
 function satisfiesDeclaredVersion(semver: typeof import('semver'), declared: string, actual: string): boolean {
   // npm dist-tags such as latest/next cannot be checked without a registry
   // lookup. Exact versions and ranges can be verified entirely from the lock.
@@ -35,6 +43,19 @@ function satisfiesDeclaredVersion(semver: typeof import('semver'), declared: str
 
 function packageArgument(spec: NpmSpec): string {
   return spec.version === '*' ? spec.name : `${spec.name}@${spec.version}`;
+}
+
+/**
+ * A pnpm project is one that opts into pnpm through a workspace file, a
+ * pnpm lockfile, or a `packageManager` field. Installing there with
+ * `npm install` walks pnpm's symlink farm (`node_modules/.pnpm/**`) and
+ * crashes arborist (`Cannot read properties of null (reading 'matches')`).
+ */
+export async function detectPnpmProject(cwd: string): Promise<boolean> {
+  if (await pathExists(path.join(cwd, 'pnpm-workspace.yaml'))) return true;
+  if (await pathExists(path.join(cwd, 'pnpm-lock.yaml'))) return true;
+  const manifest = await readJson<NpmPackageManifest>(path.join(cwd, 'package.json'));
+  return !!manifest?.packageManager?.trim().toLowerCase().startsWith('pnpm');
 }
 
 export function extractNpmLockEntries(
@@ -53,6 +74,31 @@ export function extractNpmLockEntries(
       ...(value.integrity ? { integrity: value.integrity } : {}),
       ...(value.resolved ? { resolved: value.resolved } : {}),
     });
+  }
+  return entries;
+}
+
+export function extractPnpmListEntries(
+  projects: PnpmListProject[],
+  declared: NpmSpec[],
+  global = false,
+): NpmLockEntry[] {
+  const entries: NpmLockEntry[] = [];
+  for (const spec of declared) {
+    for (const project of projects) {
+      const value = project.dependencies?.[spec.name];
+      if (!value?.version) continue;
+      entries.push({
+        name: spec.name,
+        version: value.version,
+        source: 'npm',
+        ...(global ? { global: true } : {}),
+        ...(global && spec.registry ? { registry: spec.registry } : {}),
+        ...(value.integrity ? { integrity: value.integrity } : {}),
+        ...(value.resolved ? { resolved: value.resolved } : {}),
+      });
+      break;
+    }
   }
   return entries;
 }
@@ -104,7 +150,52 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
     }
   }
 
+  private async snapshotPnpmLocal(cwd: string, declaration: NpmSpec[]): Promise<NpmLockEntry[]> {
+    const local = declaration.filter((spec) => !spec.global);
+    if (local.length === 0) return [];
+    try {
+      const result = await this.execute('pnpm', ['list', '--depth=0', '--json'], {
+        cwd,
+        timeoutMs: 30_000,
+      });
+      if (!result.stdout.trim()) return [];
+      return extractPnpmListEntries(
+        JSON.parse(result.stdout) as PnpmListProject[],
+        local,
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  private async snapshotPnpmGlobal(declaration: NpmSpec[]): Promise<NpmLockEntry[]> {
+    const global = declaration.filter((spec) => spec.global);
+    if (global.length === 0) return [];
+    try {
+      const result = await this.execute(
+        'pnpm',
+        ['list', '--global', '--depth=0', '--json'],
+        { timeoutMs: 30_000 },
+      );
+      if (!result.stdout.trim()) return [];
+      return extractPnpmListEntries(
+        JSON.parse(result.stdout) as PnpmListProject[],
+        global,
+        true,
+      );
+    } catch {
+      return [];
+    }
+  }
+
   async snapshot(cwd: string, declaration: NpmSpec[]): Promise<NpmLockEntry[]> {
+    if (await detectPnpmProject(cwd)) {
+      const [local, global] = await Promise.all([
+        this.snapshotPnpmLocal(cwd, declaration),
+        this.snapshotPnpmGlobal(declaration),
+      ]);
+      return [...local, ...global];
+    }
     const [local, global] = await Promise.all([
       this.snapshotLocal(cwd, declaration),
       this.snapshotGlobal(declaration),
@@ -117,6 +208,9 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
     context: PackageInstallContext,
   ): Promise<NpmLockEntry[]> {
     if (declaration.length === 0) return [];
+    const usePnpm = await detectPnpmProject(context.cwd);
+    const command = usePnpm ? 'pnpm' : 'npm';
+    const installVerb = usePnpm ? 'add' : 'install';
     const local = declaration.filter((spec) => !spec.global);
     if (local.length > 0 && !await this.detect(context.cwd)) {
       throw new Error(`npm packages are declared, but package.json was not found in ${context.cwd}`);
@@ -134,31 +228,33 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
       for (const group of groups.values()) {
         const first = group[0];
         const args = [
-          'install',
+          installVerb,
           ...(first.global ? ['--global'] : []),
           ...group.map(packageArgument),
           ...(first.registry ? ['--registry', first.registry] : []),
         ];
-        log.info(`[dry-run] Would run: ${formatCommand('npm', args)}`);
+        log.info(`[dry-run] Would run: ${formatCommand(command, args)}`);
       }
+      // Dry-run stays command-free: only the file-based snapshot, never a
+      // package-manager query. The return value is discarded by callers.
       return this.snapshotLocal(context.cwd, declaration);
     }
 
     for (const group of groups.values()) {
       const first = group[0];
       const args = [
-        'install',
+        installVerb,
         ...(first.global ? ['--global'] : []),
         ...group.map(packageArgument),
         ...(first.registry ? ['--registry', first.registry] : []),
       ];
-      const result = await this.execute('npm', args, {
+      const result = await this.execute(command, args, {
         cwd: context.cwd,
         timeoutMs: 10 * 60_000,
         stream: true,
       });
       if (result.code !== 0) {
-        throw new Error(`npm install failed (exit ${result.code}): ${result.stderr.trim()}`);
+        throw new Error(`${command} ${installVerb} failed (exit ${result.code}): ${result.stderr.trim()}`);
       }
     }
     return this.snapshot(context.cwd, declaration);
