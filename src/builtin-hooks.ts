@@ -205,11 +205,18 @@ function getHookShellCommand(): string {
   return _winBashLauncherCache;
 }
 
-/** Generate the hook-dispatch command for a given event, tool, and optional matcher. */
+/**
+ * Generate the hook-dispatch command for a given event, tool, and optional matcher.
+ * A Codex tool keeps bare `bash` on Windows too: Codex runs its Windows form from
+ * the entry's `commandWindows` (hooks.ts), and a machine-specific Git Bash path
+ * here would change the project `hooks.json` a repository commits on every
+ * Windows pull.
+ */
 export function getDispatchCommand(event: string, tool: string, matcher?: string, binPath?: string): string {
   const bin = binPath ?? 'teamai';
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
-  return `${getHookShellCommand()} -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
+  const shell = isCodexTool(tool) ? 'bash' : getHookShellCommand();
+  return `${shell} -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
 }
 
 /**

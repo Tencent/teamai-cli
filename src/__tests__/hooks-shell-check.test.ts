@@ -39,7 +39,7 @@ vi.mock('node:child_process', async () => {
   };
 });
 
-import { hasShell, _resetShellCache } from '../builtin-hooks.js';
+import { hasShell, _resetShellCache, getDispatchCommand } from '../builtin-hooks.js';
 import { injectHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
 
@@ -202,6 +202,16 @@ describe('injectHooksToAllTools — codebuddy runs hooks through Git Bash (win32
       else process.env[key] = savedEnv[key];
     }
     await fse.remove(tmp);
+  });
+
+  it('keeps bare bash in the codex dispatch command while claude gets the Git Bash path', async () => {
+    await fse.ensureFile(fakeGitBash(tmp));
+
+    const claudeCommand = getDispatchCommand('session-start', 'claude');
+    const codexCommand = getDispatchCommand('session-start', 'codex');
+
+    expect(claudeCommand.startsWith(`"${fakeGitBash(tmp).split(path.sep).join('/')}" -lc `)).toBe(true);
+    expect(codexCommand).toBe('bash -lc "teamai hook-dispatch session-start --tool codex 2>/dev/null" || true');
   });
 
   it('injects codebuddy hooks in POSIX syntax, without /bin/sh', async () => {

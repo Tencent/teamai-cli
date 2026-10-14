@@ -121,6 +121,22 @@ describe('hooks', () => {
       expect(result.hooks.Stop[0].hooks[0]).not.toHaveProperty('additionalContextLimit');
     });
 
+    it('Codex format: gives every built-in entry a PowerShell form that needs no Git Bash path', async () => {
+      await injectHooks('/test/codex-hooks.json', 'codex');
+
+      const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>> };
+      expect(result.hooks.SessionStart[0].hooks[0].commandWindows).toBe(
+        'git -c "alias.teamai-hook=!teamai hook-dispatch session-start --tool codex 2>/dev/null" teamai-hook; exit 0',
+      );
+      const todoWrite = result.hooks.PostToolUse.flatMap((group) => group.hooks).find((hook) => hook.command.includes('--matcher TodoWrite'));
+      expect(todoWrite?.commandWindows).toBe(
+        'git -c "alias.teamai-hook=!teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>/dev/null" teamai-hook; exit 0',
+      );
+      for (const hook of Object.values(result.hooks).flat().flatMap((group) => group.hooks)) {
+        expect(hook.commandWindows).toBeDefined();
+      }
+    });
+
     it('Claude uses PascalCase event names', async () => {
       await injectHooks('/test/settings.json', 'claude');
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
