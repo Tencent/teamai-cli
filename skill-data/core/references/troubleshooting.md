@@ -109,6 +109,10 @@ This is the #1 onboarding issue. In order:
    `recall` refuses the same way with `Nothing was searched: <file>: <reason>`:
    no team knowledge was searched, so do not report that the team has none.
 
+## Path names appear in skill usage statistics
+
+Slash-command tracking accepts complete `/skill-name` tokens followed by whitespace or the end of the prompt. Absolute paths such as `/Volumes/External/project` and URL components are not skill invocations. Updating prevents new false counts; already recorded usage remains.
+
 ## Submodule checkouts and linked skill directories
 
 A submodule's Git directory is an identity, not a delivery directory. Team hooks and Codex project trust use its real main checkout. An initialized submodule in a superproject worktree inherits the original submodule's configuration when it exists; run `teamai pull` there without repeating init. The first pull installs Git hooks in that clone. If the parent's hook initializes submodules, follow the admin guide's initialization-and-pull sequence before starting an AI session. With Git < 2.54 and a shared versioned `core.hooksPath`, one dispatch line in each parent hook covers its submodules.

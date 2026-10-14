@@ -1450,6 +1450,22 @@ describe('mergeStats', () => {
 // ─── trackSlashCommand tests ──────────────────────────
 
 describe('trackSlashCommand', () => {
+  it('does not count path segments or URL components that match installed skills', async () => {
+    for (const name of ['tdd', 'Volumes', 'External', 'project']) await createFakeSkill(name);
+    const restore = mockStdin(JSON.stringify({
+      prompt: '/tdd /Volumes/External/project https://example.test/project /tdd/notes /tdd\\notes',
+      hook_event_name: 'UserPromptSubmit',
+    }));
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+
+    expect((await readUsageEvents(userScope())).map((event) => event.skill)).toEqual(['tdd']);
+    expect(await readKnownSkills()).toEqual(new Set(['tdd']));
+  });
+
   it('tracks a valid slash command', async () => {
     await createFakeSkill('plan-eng-review');
     const hookData = JSON.stringify({

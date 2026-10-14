@@ -1946,6 +1946,28 @@ describe('track-slash handler: dotted and colon skill names', () => {
     expect(vi.mocked(appendUsageEvent).mock.calls[0][0].skill).toBe('ns:deploy');
     expect(updateKnownSkills).toHaveBeenCalledWith('ns:deploy');
   });
+
+  it.each([
+    '/Volumes/External/project/.claude/skills/tdd/SKILL.md',
+    '/Users/alice/project',
+    '/tmp/project',
+    '/tdd/notes',
+    '/tdd\\notes',
+    '//server/share',
+    '/tdd+invalid',
+  ])('does not record a path or a partial skill name: %s', async (prompt) => {
+    const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
+    const handler = buildHandlerRegistry().find(
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'track-slash',
+    )!.handler;
+    vi.mocked(appendUsageEvent).mockClear();
+    vi.mocked(updateKnownSkills).mockClear();
+
+    await handler.execute({ prompt, hook_event_name: 'UserPromptSubmit' }, 'claude', scope);
+
+    expect(appendUsageEvent).not.toHaveBeenCalled();
+    expect(updateKnownSkills).not.toHaveBeenCalled();
+  });
 });
 
 describe('buildAdoptedSummary', () => {
