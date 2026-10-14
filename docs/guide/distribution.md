@@ -170,18 +170,9 @@ teamai pull
 
 ## Restricting skills to some members
 
-Namespaces gate delivery only for members who have chosen a role. A member with no `primaryRole` gets an unfiltered sync: every skill in every namespace reaches them. This is a backward-compat default — `manifest/roles.yaml` alone restricts no one.
+Namespaces only filter for members who have set a role: a member with no `primaryRole` syncs everything, so `manifest/roles.yaml` alone restricts no one. `teamai init` makes new members pick a role; members from before the manifest need `teamai roles set <role-id>` once. Their next pull withdraws teamai-delivered copies outside the new namespaces (locally modified copies are kept).
 
-When the manifest declares roles, `teamai init` forces the choice: one role is auto-selected, several roles bring a picker, and a non-interactive run without `--role <id>` fails instead of guessing. Members who were initialized before the manifest existed stay unfiltered until they run:
-
-```bash
-teamai roles set <role-id>
-teamai pull
-```
-
-The pull after a role switch withdraws teamai-delivered copies of skills outside the new namespaces; locally modified copies are kept and named.
-
-To close the remaining gap (old members who never set a role), ship an enforced rule — `sharing.rules.enforced` entries cannot be deleted by members — that makes agents check and prompt:
+To remind members who never set a role, enforce a rule that asks the agent to check `teamai roles list` and prompt them — enforced rules cannot be deleted:
 
 ```yaml
 # teamai.yaml
@@ -190,15 +181,7 @@ sharing:
     enforced: [set-your-role]
 ```
 
-```markdown
-# rules/set-your-role.md
-When the conversation touches team skills or sync, run `teamai roles list`.
-Without a `Your primary role:` line this machine syncs every namespace
-unfiltered. Prompt the member to run `teamai roles set <role-id>` — list
-the team's roles — then `teamai pull` to converge.
-```
-
-Tags never restrict: a subscription only adds matching tagged skills, and unsubscribed members lose nothing. Restrict with namespaces + roles; use tags for opt-in extras.
+Tags never restrict: a subscription only adds matching tagged skills. Restrict with namespaces + roles; use tags for opt-in extras.
 
 ## Tags
 

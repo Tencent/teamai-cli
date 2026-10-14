@@ -170,18 +170,9 @@ teamai pull
 
 ## 把技能限定给部分成员
 
-Namespace 只对设置了角色的成员过滤。`primaryRole` 未设置的成员走无过滤同步：所有 namespace 的技能都会送达。这是向后兼容的默认行为——只有 `manifest/roles.yaml` 本身不限定任何人。
+Namespace 只对设置了角色的成员过滤：`primaryRole` 未设置的成员会同步全部技能，因此只有 `manifest/roles.yaml` 并不限定任何人。`teamai init` 会让新成员选择角色；manifest 之前入队的成员需要执行一次 `teamai roles set <role-id>`。之后的 pull 会收回新 namespace 之外、由 teamai 下发的副本（本地改过的保留）。
 
-manifest 声明了角色时，`teamai init` 会强制选择：只有一个角色时自动选中；多个角色给出选择器；非交互环境不传 `--role <id>` 会直接报错，而不是猜一个。在 manifest 之前入队的成员，在执行下面命令之前仍是无过滤状态：
-
-```bash
-teamai roles set <role-id>
-teamai pull
-```
-
-切换角色后的这次 pull 会收回新 namespace 之外、由 teamai 下发的技能副本；本地改过的副本会保留并点名。
-
-要收掉剩余的缺口（一直没设角色的老成员），用强制规则——`sharing.rules.enforced` 里的条目成员不可删除——让 agent 主动检查并催促：
+要提醒一直没设角色的成员，可以用强制规则让 agent 检查 `teamai roles list` 并催促设置——强制规则成员不可删除：
 
 ```yaml
 # teamai.yaml
@@ -190,15 +181,7 @@ sharing:
     enforced: [set-your-role]
 ```
 
-```markdown
-# rules/set-your-role.md
-当会话涉及团队技能或同步时，运行 `teamai roles list`。
-输出没有 `Your primary role:` 一行时，本机正在无过滤同步全部 namespace。
-提醒成员运行 `teamai roles set <role-id>`（列出团队的角色供选择），
-然后 `teamai pull` 收敛。
-```
-
-标签从不做限定：订阅只会额外拉取匹配标签的技能，未订阅的成员不会因此少收任何技能。限定用 namespace + 角色，标签用于自愿加法。
+标签从不做限定：订阅只会额外拉取匹配标签的技能。限定用 namespace + 角色，标签用于自愿加法。
 
 ## 标签
 
