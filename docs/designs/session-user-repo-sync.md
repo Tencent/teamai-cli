@@ -123,8 +123,8 @@ regression suite):
   you resume with is always the target's. Copies made by an older TeamAI kept a source UUID,
   or (claude-code, codebuddy) left the workspace out of the hash. A re-migration also looks
   for those ids in the target workspace, and reports a copy it finds there as reused.
-- **claude-code flattenDag** drops sidechain branches and can promote orphan nodes early;
-  fork branches interleave into the main timeline.
+- **claude-code flattenDag** drops sidechain branches; fork branches follow one another
+  in file order instead of merging into one timeline.
 - **cursor has no stored title** — the title is derived from the first real user text;
   sessions whose only real content is tool output may title from that snippet.
 - **codex has no on-disk title mechanism** — roundtrip titles degrade to `Session <ts>`.

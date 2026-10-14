@@ -1512,6 +1512,34 @@ describe('session rollback', () => {
   });
 });
 
+describe('claude-code readSession: message order', () => {
+  it('keeps turn order when the chain runs through system and attachment lines', async () => {
+    const SID = '11111111-2222-4333-8444-555555555555';
+    const projDir = path.join(mocks.home, '.claude', 'projects', '-work-app');
+    fs.mkdirSync(projDir, { recursive: true });
+    const rec = (uuid: string, parentUuid: string | null, extra: Record<string, unknown>) => ({
+      parentUuid, isSidechain: false, uuid, cwd: '/work/app', sessionId: SID, timestamp: '2026-10-01T10:00:00.000Z', ...extra,
+    });
+    const user = (text: string) => ({ type: 'user', message: { role: 'user', content: text } });
+    const asst = (text: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+    const lines = [
+      rec('u1', null, user('Q1')),
+      rec('a1', 'u1', asst('A1')),
+      rec('s1', 'a1', { type: 'system', subtype: 'turn_duration', durationMs: 1200 }),
+      rec('u2', 's1', user('Q2')),
+      rec('a2', 'u2', asst('A2')),
+      rec('t1', 'a2', { type: 'attachment', attachment: { type: 'todo_reminder', content: [] } }),
+      rec('u3', 't1', user('Q3')),
+      rec('a3', 'u3', asst('A3')),
+    ];
+    fs.writeFileSync(path.join(projDir, `${SID}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+    const session = await new ClaudeCodeAdapter().readSession({ sessionId: SID });
+    const order = session.messages.map((m) => (m.content[0] as { text: string }).text);
+    expect(order).toEqual(['Q1', 'A1', 'Q2', 'A2', 'Q3', 'A3']);
+  });
+});
+
 describe('adapters: native cwd recovery from JSONL records', () => {
   // 带空格的路径：目录名编码有损（空格与 / 无法区分），记录里的 cwd 才是真相。
   // 归档键（repoIdentity）依赖 readSession 返回记录 cwd 而非解码目录名。

@@ -569,19 +569,19 @@ export class ClaudeCodeAdapter extends AgentAdapter {
       }
     }
 
-    // BFS over the main chain
+    // Depth-first over the main chain, so each root's chain stays in one piece
     const ordered: Record<string, unknown>[] = [];
     const visited = new Set<string>();
-    const queue: Record<string, unknown>[] = [...roots];
+    const stack: Record<string, unknown>[] = [...roots].reverse();
 
-    while (queue.length > 0) {
-      const record = queue.shift()!;
+    while (stack.length > 0) {
+      const record = stack.pop()!;
       const uid = record.uuid as string | undefined;
       if (uid && visited.has(uid)) continue;
       if (uid) visited.add(uid);
       ordered.push(record);
       if (uid) {
-        queue.push(...(childrenMap.get(uid) ?? []));
+        stack.push(...[...(childrenMap.get(uid) ?? [])].reverse());
       }
     }
 
