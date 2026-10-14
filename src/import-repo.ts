@@ -42,7 +42,7 @@ export interface ImportFromRepoOptions {
     /** Skip AI enrichment (only clone + extract + graph, no LLM calls) */
     skipEnrich?: boolean;
     /** Source MR/PR URL to record as ingested in source-manifest.json (P5). */
-    sourceMrUrl?: string;
+    sourceMrUrl?: string | readonly string[];
 }
 
 // ─── Cross-Repo Edge Detection ─────────────────────────

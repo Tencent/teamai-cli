@@ -366,35 +366,41 @@ async function listGitHubMergedMRs(
  * @returns    Hint string. English only when language is `en`; otherwise the historical bilingual text.
  */
 export function buildHintMessage(mrs: MRSummary[], language?: 'en' | 'zh'): string {
+  // One command for every MR: `--from-mr` takes several URLs, publishes the
+  // accepted learnings once and updates each repository's teamwiki once (#1104).
+  const command = `  teamai import --from-mr ${mrs.map((mr) => mr.url).join(' ')}`;
   if (language === 'en') {
     const lines = [
       `[teamai:mr-hint] Found ${mrs.length} recently merged MR(s) not yet imported into the team knowledge base.`,
       '',
-      'After this task, tell the user they can turn each MR into a learning and update codebase.md with:',
+      'After this task, tell the user they can turn these MRs into learnings with:',
       '',
     ];
     for (const mr of mrs) {
       lines.push(`- ${mr.title} (merged: ${mr.mergedAt.slice(0, 10)})`);
-      lines.push(`  teamai import --from-mr ${mr.url}`);
     }
+    lines.push('');
+    lines.push(command);
     return lines.join('\n');
   }
   const lines: string[] = [
     `[teamai:mr-hint] 发现 ${mrs.length} 个近期已合入但尚未提炼的 MR。`,
     '',
-    '请在任务完成后告知用户，可运行以下命令将 MR 提炼为 learning 并更新 codebase.md：',
+    '请在任务完成后告知用户，可运行以下命令将这些 MR 提炼为 learning：',
     '',
   ];
 
   for (const mr of mrs) {
     const date = mr.mergedAt.slice(0, 10);
     lines.push(`- ${mr.title}（merged: ${date}）`);
-    lines.push(`  teamai import --from-mr ${mr.url}`);
   }
 
   lines.push('');
+  lines.push(command);
+
+  lines.push('');
   lines.push('[teamai:mr-hint] Found merged MR(s) not yet imported into team knowledge base.');
-  lines.push('Please remind the user to run `teamai import --from-mr <url>` when convenient.');
+  lines.push('Please remind the user to run `teamai import --from-mr <url...>` when convenient.');
 
   return lines.join('\n');
 }

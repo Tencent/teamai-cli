@@ -63,7 +63,7 @@ export interface ExtractCodebaseOptions {
   /** Branch name, persisted into source-manifest.json baseline. */
   branch?: string;
   /** Source MR/PR URL to record as ingested into source-manifest.json (P5). */
-  sourceMrUrl?: string;
+  sourceMrUrl?: string | readonly string[];
 }
 
 interface ExtractResult {
@@ -1115,10 +1115,14 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
   if (branch && (sameSource || opts.branch)) manifestObject.branch = branch;
   // P5: record ingested MR (upsert by url) when invoked via --from-mr
   let ingestedMrs = sameSource ? prevIngestedMrs : [];
-  if (opts.sourceMrUrl) {
+  const sourceMrUrls = typeof opts.sourceMrUrl === 'string' ? [opts.sourceMrUrl] : (opts.sourceMrUrl ?? []);
+  if (sourceMrUrls.length > 0) {
     const at = new Date().toISOString();
-    const entry = { url: opts.sourceMrUrl, headSha, at };
-    ingestedMrs = [...ingestedMrs.filter((m) => m.url !== opts.sourceMrUrl), entry];
+    // One run can ingest several MRs of the same repo (#1104); each is upserted by url.
+    ingestedMrs = [
+      ...ingestedMrs.filter((m) => !sourceMrUrls.includes(m.url)),
+      ...sourceMrUrls.map((url) => ({ url, headSha, at })),
+    ];
   }
   if (ingestedMrs.length > 0) manifestObject.ingestedMrs = ingestedMrs;
   const manifestContent = JSON.stringify(manifestObject, null, 2);

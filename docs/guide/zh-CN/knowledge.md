@@ -110,9 +110,12 @@ teamai import --from-repo https://github.com/org/repo
 teamai import --from-org myorg
 teamai import --from-repo-list repos.yaml
 teamai import --from-mr https://github.com/org/repo/pull/123
+teamai import --from-mr https://github.com/org/repo/pull/123 https://github.com/org/repo/pull/124
 teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
+
+`--from-mr` 可以一次传多个 MR URL：每个草稿照旧单独确认（`--all` 则都不问），接受的 learning 在最后一次性发布，每个仓库的 teamwiki 只更新一次。其中一个 MR 失败不影响其余，运行结束时给出汇总，有失败则退出码非零。
 
 `--incremental` 只重新提取上次导入后改过的文件，基线随每个代码库存在它自己的 `evidence/code/<slug>/` 里。远端仓库的 slug 是 `<provider>__<owner>__<repo>`，`--from-repo`、`--from-mr` 和 `teamai ci extract-mr` 用的都是它；`--dir` 用仓库名。
 

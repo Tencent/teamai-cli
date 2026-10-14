@@ -68,7 +68,7 @@ function git(args: string[], cwd: string): string {
  * project owning the learnings namespace of the same name, and the install
  * has it active.
  */
-function scenario(opts: { project?: string } = {}) {
+function scenario(opts: { project?: string; ghFailsFor?: string } = {}) {
   const sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-issue823-e2e-')));
   const home = path.join(sandbox, 'home');
   const bin = path.join(sandbox, 'bin');
@@ -94,7 +94,12 @@ function scenario(opts: { project?: string } = {}) {
     fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
     fs.mkdirSync(path.join(home, '.claude')); // the enabled agent's root, so pull has somewhere to deliver
     fs.mkdirSync(bin);
-    fs.writeFileSync(path.join(bin, 'gh'), FAKE_GH, { mode: 0o755 });
+    // One MR the host cannot answer for, so a run of several can lose one.
+    const gh = opts.ghFailsFor
+      ? `#!/usr/bin/env bash\ncase "$*" in *${opts.ghFailsFor}*) echo "fake gh: no such pull request" >&2; exit 1 ;; esac\n`
+        + FAKE_GH.replace('#!/usr/bin/env bash\n', '')
+      : FAKE_GH;
+    fs.writeFileSync(path.join(bin, 'gh'), gh, { mode: 0o755 });
     fs.writeFileSync(path.join(bin, 'claude'), FAKE_CLAUDE, { mode: 0o755 });
     const seed = path.join(sandbox, 'seed');
     fs.mkdirSync(seed);
@@ -190,6 +195,53 @@ describe('import --from-mr publishes its learning (#823)', () => {
 
     it('publishes it at the shared root when no project is active', () => {
       expect(s.published().map((f) => path.posix.dirname(f))).toEqual(['learnings', 'learnings']);
+    });
+  });
+
+  describe('with several MR URLs in one run (#1104)', () => {
+    const s = scenario();
+    let imported: RunResult = { code: null, output: '' };
+    beforeAll(async () => {
+      if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
+      await s.setup();
+      imported = await s.run([
+        'import', '--from-mr',
+        'https://github.com/acme/app/pull/7',
+        'https://github.com/acme/app/pull/8',
+        '--all',
+      ]);
+    }, 120_000);
+    afterAll(() => s.cleanup());
+
+    it('publishes a learning for every URL, in one publish', () => {
+      expect(imported.code, imported.output).toBe(0);
+      expect(s.published(), imported.output).toHaveLength(2);
+      expect(s.queued(), imported.output).toEqual([]);
+      expect(imported.output).toContain('[1/2] https://github.com/acme/app/pull/7');
+      expect(imported.output).toContain('[2/2] https://github.com/acme/app/pull/8');
+      expect(imported.output).toContain('Import from MR complete: 2 succeeded, 0 failed');
+    });
+  });
+
+  describe('with one of several MR URLs failing (#1104)', () => {
+    const s = scenario({ ghFailsFor: 'pull/8' });
+    let imported: RunResult = { code: null, output: '' };
+    beforeAll(async () => {
+      if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
+      await s.setup();
+      imported = await s.run([
+        'import', '--from-mr',
+        'https://github.com/acme/app/pull/8',
+        'https://github.com/acme/app/pull/7',
+        '--all',
+      ]);
+    }, 120_000);
+    afterAll(() => s.cleanup());
+
+    it('still imports the rest and exits non-zero', () => {
+      expect(s.published(), imported.output).toHaveLength(1);
+      expect(imported.output).toContain('Import from MR complete: 1 succeeded, 1 failed');
+      expect(imported.code, imported.output).toBe(1);
     });
   });
 

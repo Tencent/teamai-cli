@@ -173,6 +173,7 @@ function extractRepoUrlFromMrUrl(mrUrl: string): string {
  * @param opts.learningsNamespaces The active project namespaces compared under each root
  * @param opts.all          Skip interactive confirmation, accept all
  * @param opts.outputDir    Output mode: write to this directory (learning.md)
+ * @param opts.outputFileName The file name to write under outputDir, when several MRs would share learning.md (#1104)
  * @param opts.queueLearning  Queues a new learning (its file name, its content) when outputDir is not set, returning the file written
  * @param opts.dryRun       Dry run, no disk writes
  * @returns                 Extraction result containing the learning draft and inferred repo URL
@@ -185,6 +186,8 @@ export async function importFromMR(opts: {
   learningsNamespaces?: readonly string[];
   all?: boolean;
   outputDir?: string;
+  /** Written instead of `learning.md`, so several MRs of one run do not overwrite each other. */
+  outputFileName?: string;
   queueLearning?: (filename: string, content: string) => Promise<string>;
   dryRun?: boolean;
 }): Promise<{ learning?: LearningDraft; repoUrl: string; learningFile?: string }> {
@@ -253,7 +256,7 @@ export async function importFromMR(opts: {
   // ── 步骤 6：写文件 ─────────────────────────────────────
   let learningFile: string | undefined;
   if (!opts.dryRun && acceptLearning) {
-    learningFile = await writeLearning(learning, opts.outputDir, opts.queueLearning);
+    learningFile = await writeLearning(learning, opts.outputDir, opts.queueLearning, opts.outputFileName);
   }
 
   // 推断仓库 URL
@@ -275,15 +278,17 @@ export async function importFromMR(opts: {
  * @param draft         The learning draft
  * @param outputDir     Output directory (optional)
  * @param learningsDir  Where new learnings are written (the write root, optional)
+ * @param outputFileName File name under outputDir, default `learning.md`
  */
 async function writeLearning(
   draft: LearningDraft,
   outputDir?: string,
   queueLearning?: (filename: string, content: string) => Promise<string>,
+  outputFileName?: string,
 ): Promise<string | undefined> {
   if (outputDir) {
     await fs.mkdir(outputDir, { recursive: true });
-    const filePath = path.join(outputDir, 'learning.md');
+    const filePath = path.join(outputDir, outputFileName ?? 'learning.md');
     await fs.writeFile(filePath, draft.content, 'utf-8');
     log.info(`Learning written: ${filePath}`);
     return filePath;

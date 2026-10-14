@@ -110,9 +110,12 @@ teamai import --from-repo https://github.com/org/repo
 teamai import --from-org myorg
 teamai import --from-repo-list repos.yaml
 teamai import --from-mr https://github.com/org/repo/pull/123
+teamai import --from-mr https://github.com/org/repo/pull/123 https://github.com/org/repo/pull/124
 teamai import --from-repo https://github.com/org/repo --incremental
 teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
+
+`--from-mr` takes several MR URLs. Each draft is still confirmed on its own (or none with `--all`), the accepted learnings are published once at the end, and each repository's teamwiki is updated once. An MR that fails does not stop the rest; the run ends with a summary and exits non-zero if any failed.
 
 `--incremental` re-extracts only the files changed since the last import; each codebase keeps that baseline in its own `evidence/code/<slug>/`. A remote repo's slug is `<provider>__<owner>__<repo>`, shared by `--from-repo`, `--from-mr` and `teamai ci extract-mr`; `--dir` uses the repo name.
 

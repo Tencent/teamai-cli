@@ -23,7 +23,7 @@ export interface ImportCodebaseOptions {
   repoUrl?: string;
   branch?: string;
   /** MR/PR recorded as ingested in source-manifest.json. */
-  sourceMrUrl?: string;
+  sourceMrUrl?: string | readonly string[];
 }
 
 /**

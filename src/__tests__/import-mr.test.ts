@@ -46,6 +46,8 @@ vi.mock('node:readline/promises', () => ({
 import { importFromMR, parseLearningDraft } from '../import-mr.js';
 import { importCmd } from '../import.js';
 import { log, setSilent } from '../utils/logger.js';
+import { callClaude } from '../utils/ai-client.js';
+import { fetchGitHubPR } from '../providers/github/mr-fetch.js';
 
 describe('parseLearningDraft', () => {
   it('parses well-formed frontmatter', () => {
@@ -205,5 +207,102 @@ describe('importFromMR possible-duplicate notice', () => {
 
     expect(warnings()).toContainEqual(expect.stringMatching(/duplicate check reads the shared learnings only: Invalid projects manifest YAML/));
     expect(warnings()).toContainEqual(expect.stringMatching(/Possible duplicate.*shared\.md/));
+  });
+});
+
+
+describe('teamai import --from-mr <url...> (#1104)', () => {
+  let root: string;
+  let exitCode: number | string | undefined;
+  const urls = ['https://github.com/o/r/pull/1', 'https://github.com/o/r/pull/2'];
+  const warnings = (): string[] => vi.mocked(log.warn).mock.calls.map(([message]) => String(message));
+  const infos = (): string[] => vi.mocked(log.info).mock.calls.map(([message]) => String(message));
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-import-mr-many-'));
+    teamRepo = path.join(root, 'team-repo');
+    fs.mkdirSync(teamRepo, { recursive: true });
+    vi.mocked(log.warn).mockClear();
+    vi.mocked(log.info).mockClear();
+    vi.mocked(log.error).mockClear();
+    vi.mocked(callClaude).mockClear();
+    vi.mocked(fetchGitHubPR).mockClear();
+    exitCode = process.exitCode;
+  });
+
+  afterEach(() => {
+    process.exitCode = exitCode;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('extracts a draft from every URL in one run', async () => {
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await importCmd({ fromMr: urls, dryRun: true, all: true });
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(vi.mocked(fetchGitHubPR).mock.calls.map(([url]) => url)).toEqual(urls);
+    expect(callClaude).toHaveBeenCalledTimes(2);
+    expect(infos()).toContainEqual(`[1/2] ${urls[0]}`);
+    expect(infos()).toContainEqual(`[2/2] ${urls[1]}`);
+  });
+
+  it('keeps going when one MR fails, reports it and exits non-zero', async () => {
+    vi.mocked(fetchGitHubPR).mockRejectedValueOnce(new Error('MR not found'));
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await importCmd({ fromMr: urls, dryRun: true, all: true });
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(callClaude).toHaveBeenCalledTimes(1);
+    expect(warnings()).toContainEqual(expect.stringContaining(`${urls[0]}`) && expect.stringContaining('MR not found'));
+    expect(infos()).toContainEqual('Import from MR complete: 1 succeeded, 1 failed');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('still reports the failure of the only URL as before', async () => {
+    vi.mocked(fetchGitHubPR).mockRejectedValueOnce(new Error('MR not found'));
+    // mockRestore() forgets the calls, so they are collected here.
+    const exits: unknown[] = [];
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code: unknown) => {
+      exits.push(code);
+    }) as never);
+    try {
+      await importCmd({ fromMr: [urls[0]!], dryRun: true, all: true });
+    } finally {
+      exit.mockRestore();
+    }
+
+    expect(vi.mocked(log.error).mock.calls.map(([message]) => String(message))).toContainEqual('MR not found');
+    expect(exits).toEqual([1]);
+    expect(infos()).not.toContainEqual(expect.stringContaining('Import from MR complete'));
+  });
+
+  it('writes one draft per URL with --output, which a shared learning.md would overwrite', async () => {
+    const out = path.join(root, 'out');
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await importCmd({ fromMr: urls, output: out, all: true });
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(fs.readdirSync(out).sort()).toEqual(['learning-1.md', 'learning-2.md']);
+  });
+
+  it('writes learning.md for a single URL, as before', async () => {
+    const out = path.join(root, 'out');
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await importCmd({ fromMr: urls[0]!, output: out, all: true });
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(fs.readdirSync(out)).toEqual(['learning.md']);
   });
 });
