@@ -20,7 +20,80 @@ steps:
     agent: reviewer
 ```
 
-`schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and exactly one of `command`, `prompt`, or `prompt_file`. `agent` is optional on prompt steps. `output` uses the existing shorthand: `string`, `number`, `boolean`, a literal union, an object, or an array with one item type. TeamAI validates successful command stdout or a prompt tool's `output` against it.
+`schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and at most one action: `command`, `prompt`, `prompt_file`, or `workflow` (or a pure `end` step). `agent` is optional on prompt steps. `output` uses the existing shorthand: `string`, `number`, `boolean`, a literal union, an object, or an array with one item type. TeamAI validates successful command stdout or a prompt tool's `output` against it.
+
+### Dependencies and Conditions
+
+Use `needs` to declare dependencies as a directed acyclic graph (DAG). When steps do not declare `needs`, they run sequentially.
+
+```yaml
+steps:
+  - id: build
+    command: npm run build
+  - id: test
+    needs: [build]
+    command: npm test
+  - id: notify_failure
+    needs: [test]
+    if: steps.test.outcome == 'failed'
+    command: node notify.js
+```
+
+- **Join rule**: a step with multiple dependencies is skipped only when every dependency was skipped.
+- **Conditions (`if`)**: expressions evaluate boolean logic, comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`), and access `inputs.*` or settled step results `steps.<id>.outcome`, `steps.<id>.outputs.*`, and `steps.<id>.end`. JavaScript `eval` is not used.
+- **Recovery branches**: when a dependency fails, downstream steps are skipped unless their `if` condition explicitly reads the failed step.
+
+### Inputs and Command Environment
+
+Inputs are declared at the workflow root. Command steps receive inputs only through explicit `env:` mappings. Command strings are never template-expanded, preventing shell injection when values contain characters like `$(...)`.
+
+```yaml
+inputs:
+  target:
+    type: string
+steps:
+  - id: deploy
+    command: ./deploy.sh
+    env:
+      DEPLOY_TARGET: "{{ inputs.target }}"
+```
+
+### Sub-workflows and Composition
+
+A step can run another workflow by name (file sub-workflow) or define an inline sub-workflow.
+
+```yaml
+steps:
+  - id: sub
+    workflow: build
+    with:
+      target: prod
+  - id: inline_step
+    workflow:
+      steps:
+        - id: nested
+          command: echo "running nested step"
+      outputs:
+        status: steps.nested.outcome
+```
+
+File sub-workflows isolate their inputs to only what is passed in `with:`. Inline workflows can read values from their enclosing scope.
+
+### Outputs and Named Ends
+
+Declare `outputs` to export settled values from a workflow. Declare `ends` to define named terminal outcomes (`succeeded` or `failed`) that settle the workflow early and expose their outcome to parent steps as `steps.<id>.end`.
+
+```yaml
+ends:
+  rejected: failed
+  approved: succeeded
+steps:
+  - id: check
+    command: node check.js
+    end: approved
+outputs:
+  decision: steps.check.end
+```
 
 `teamai pull` and `teamai push` check each file on its own. A `prompt_file` must be a regular, non-symlink file under `prompts/` in the team repo. Its text is cached with the validated workflow, so an existing run keeps that revision even if the source is later changed or deleted. A file that was valid before keeps that version in the local cache when a new revision is invalid. A field this version of teamai does not know is different: that workflow has nothing to run until teamai is updated.
 

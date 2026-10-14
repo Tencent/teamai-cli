@@ -14,6 +14,8 @@ import {
 import { formatDiagnostic, parseWorkflow } from './parse.js';
 import type { CachedWorkflow, WorkflowDefinition, WorkflowDiagnostic } from './types.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
+import { resolveResourceNamespaces } from '../resource-namespaces.js';
+import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 
 export interface SyncWorkflowOptions {
   dryRun?: boolean;
@@ -80,6 +82,11 @@ async function dropCachesForMissingFiles(config: LocalConfig): Promise<void> {
   }
 }
 
+interface WorkflowCandidateFile {
+  relativePath: string;
+  fullPath: string;
+}
+
 /**
  * Validate each `workflows/*.yaml` on its own and cache only files that pass.
  * An invalid file keeps its last cached definition; a file that was never valid
@@ -101,26 +108,83 @@ export async function syncWorkflowDefinitions(
   // readdir follows a directory symlink, so reject the directory itself before listing it.
   if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return result;
 
-  let names: string[];
+  // Scan root workflows and namespaced workflows
+  const candidates: Array<NamespaceCandidate<WorkflowCandidateFile>> = [];
   try {
-    names = (await fs.readdir(dir)).filter((name) => name.endsWith('.yaml')).sort();
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.yaml')) {
+        const name = entry.name.replace(/\.yaml$/, '');
+        const relativePath = `workflows/${entry.name}`;
+        candidates.push({
+          name,
+          source: relativePath,
+          namespace: null,
+          value: { relativePath, fullPath: path.join(dir, entry.name) },
+        });
+      } else if (entry.isDirectory() && !entry.name.startsWith('.')) {
+        const subDir = path.join(dir, entry.name);
+        try {
+          const subEntries = await fs.readdir(subDir, { withFileTypes: true });
+          for (const sub of subEntries) {
+            if (sub.isFile() && sub.name.endsWith('.yaml')) {
+              const name = sub.name.replace(/\.yaml$/, '');
+              const relativePath = `workflows/${entry.name}/${sub.name}`;
+              candidates.push({
+                name,
+                source: relativePath,
+                namespace: entry.name,
+                value: { relativePath, fullPath: path.join(subDir, sub.name) },
+              });
+            }
+          }
+        } catch {
+          // ignore unreadable subdir
+        }
+      }
+    }
   } catch {
     return result;
   }
 
-  let wrote = 0;
-  for (const name of names) {
-    const relativePath = `workflows/${name}`;
-    const full = path.join(dir, name);
+  // Resolve against active namespaces
+  const nsContext = await resolveResourceNamespaces(config);
+  const activeNs = nsContext ? (nsContext.activeNamespaces.skills ?? []) : [];
+  const resolution = resolveNamespacedItems(candidates, activeNs);
+
+  if (resolution.kind === 'conflict') {
+    const diagnostic: WorkflowDiagnostic = {
+      file: resolution.first.source,
+      line: 1,
+      column: 1,
+      field: '(namespace)',
+      message: `workflow "${resolution.name}" conflicts between ${resolution.first.source} and ${resolution.second.source}`,
+    };
+    result.invalid.push(diagnostic);
+    log.warn(`[workflows] ${formatDiagnostic(diagnostic)}`);
+    return result;
+  }
+
+  const resolvedItems = resolution.items;
+
+  // First pass: parse each workflow file
+  const parsedByWorkflow = new Map<string, {
+    item: typeof resolvedItems[number];
+    definition: WorkflowDefinition;
+    content: string;
+    promptFileLocations: Record<number, { line: number; column: number }>;
+  }>();
+
+  for (const item of resolvedItems) {
+    const { relativePath, fullPath } = item.value;
     let stat: Awaited<ReturnType<typeof fs.lstat>>;
     try {
-      stat = await fs.lstat(full);
+      stat = await fs.lstat(fullPath);
     } catch {
       continue;
     }
-    // A symlink is not a workflow file, even when the target is a YAML file outside this directory.
     if (stat.isSymbolicLink() || !stat.isFile()) continue;
-    const content = await readFileSafe(full);
+    const content = await readFileSafe(fullPath);
     if (content === null) {
       const diagnostic: WorkflowDiagnostic = {
         file: relativePath,
@@ -137,48 +201,137 @@ export async function syncWorkflowDefinitions(
     if (!parsed.ok) {
       result.invalid.push(...parsed.diagnostics);
       for (const diagnostic of parsed.diagnostics) log.warn(`[workflows] ${formatDiagnostic(diagnostic)}`);
-      const stem = name.replace(/\.yaml$/, '');
-      // A key this version does not know must not keep running the previous definition.
-      if (parsed.diagnostics.some((diagnostic) => diagnostic.code === 'unknown_key')) {
-        if (!options.dryRun) await remove(cachePath(config, stem));
+      if (parsed.diagnostics.some((d) => d.code === 'unknown_key')) {
+        if (!options.dryRun) await remove(cachePath(config, item.name));
         result.unrunnable.push(relativePath);
         log.warn(`[workflows] ${relativePath} has no runnable version`);
         continue;
       }
-      const previous = await readCache(config, stem);
+      const previous = await readCache(config, item.name);
       if (previous) {
-        result.kept.push(stem);
-        log.warn(`[workflows] Kept the last valid version of ${stem}; this revision was not cached`);
+        result.kept.push(item.name);
+        log.warn(`[workflows] Kept the last valid version of ${item.name}; this revision was not cached`);
       } else {
         result.unrunnable.push(relativePath);
         log.warn(`[workflows] ${relativePath} has no runnable version`);
       }
       continue;
     }
-    const resolved = await resolvePromptFiles(config, parsed.definition, parsed.promptFileLocations, relativePath);
+
+    parsedByWorkflow.set(item.name, {
+      item,
+      definition: parsed.definition,
+      content,
+      promptFileLocations: parsed.promptFileLocations,
+    });
+  }
+
+  // Cross-file validation: sub-workflow existence and recursion
+  const subWorkflowDeps = new Map<string, string[]>();
+  for (const [name, entry] of parsedByWorkflow) {
+    const deps: string[] = [];
+    for (const [stepIndex, step] of entry.definition.steps.entries()) {
+      if (typeof step.workflow === 'string') {
+        const target = step.workflow;
+        deps.push(target);
+        // Check if target workflow exists in parsed files or cached files
+        const exists = parsedByWorkflow.has(target) || (await readCache(config, target)) !== null;
+        if (!exists) {
+          const diag: WorkflowDiagnostic = {
+            file: entry.item.source,
+            line: 1,
+            column: 1,
+            field: `steps[${stepIndex}].workflow`,
+            message: `referenced sub-workflow "${target}" does not exist`,
+          };
+          result.invalid.push(diag);
+          log.warn(`[workflows] ${formatDiagnostic(diag)}`);
+        }
+      }
+    }
+    subWorkflowDeps.set(name, deps);
+  }
+
+  // Detect recursion cycles across file sub-workflows
+  const recursionCycles = new Set<string>();
+  function checkSubWorkflowRecursion(start: string, current: string, callPath: string[]): boolean {
+    const deps = subWorkflowDeps.get(current) ?? [];
+    for (const dep of deps) {
+      if (dep === start) {
+        callPath.push(dep);
+        return true;
+      }
+      if (!callPath.includes(dep)) {
+        callPath.push(dep);
+        if (checkSubWorkflowRecursion(start, dep, callPath)) return true;
+        callPath.pop();
+      }
+    }
+    return false;
+  }
+
+  for (const [name, entry] of parsedByWorkflow) {
+    const pathTrace = [name];
+    if (checkSubWorkflowRecursion(name, name, pathTrace)) {
+      const cycleKey = pathTrace.join(' -> ');
+      if (!recursionCycles.has(cycleKey)) {
+        recursionCycles.add(cycleKey);
+        const stepIndex = entry.definition.steps.findIndex((s) => s.workflow === pathTrace[1] || s.workflow === name);
+        const diag: WorkflowDiagnostic = {
+          file: entry.item.source,
+          line: 1,
+          column: 1,
+          field: stepIndex >= 0 ? `steps[${stepIndex}].workflow` : 'steps',
+          message: `sub-workflow forms a recursion cycle: ${cycleKey}`,
+        };
+        result.invalid.push(diag);
+        log.warn(`[workflows] ${formatDiagnostic(diag)}`);
+      }
+    }
+  }
+
+  // Filter out any workflows that had cross-file diagnostics
+  const invalidFiles = new Set(result.invalid.map((d) => d.file));
+
+  let wrote = 0;
+  for (const [name, entry] of parsedByWorkflow) {
+    if (invalidFiles.has(entry.item.source)) {
+      const previous = await readCache(config, name);
+      if (previous) {
+        result.kept.push(name);
+        log.warn(`[workflows] Kept the last valid version of ${name}; this revision was not cached`);
+      } else {
+        result.unrunnable.push(entry.item.source);
+        log.warn(`[workflows] ${entry.item.source} has no runnable version`);
+      }
+      continue;
+    }
+
+    const resolved = await resolvePromptFiles(config, entry.definition, entry.promptFileLocations, entry.item.source);
     if (!resolved.ok) {
       result.invalid.push(...resolved.diagnostics);
       for (const diagnostic of resolved.diagnostics) log.warn(`[workflows] ${formatDiagnostic(diagnostic)}`);
-      const previous = await readCache(config, parsed.definition.name);
+      const previous = await readCache(config, name);
       if (previous) {
-        result.kept.push(parsed.definition.name);
-        log.warn(`[workflows] Kept the last valid version of ${parsed.definition.name}; this revision was not cached`);
+        result.kept.push(name);
+        log.warn(`[workflows] Kept the last valid version of ${name}; this revision was not cached`);
       } else {
-        result.unrunnable.push(relativePath);
-        log.warn(`[workflows] ${relativePath} has no runnable version`);
+        result.unrunnable.push(entry.item.source);
+        log.warn(`[workflows] ${entry.item.source} has no runnable version`);
       }
       continue;
     }
-    const hash = createHash('sha256').update(content);
+
+    const hash = createHash('sha256').update(entry.content);
     for (const source of resolved.sources) {
       hash.update('\0').update(source.path).update('\0').update(source.content);
     }
     const sourceHash = hash.digest('hex');
-    const previous = await readCache(config, parsed.definition.name);
-    result.cached.push(parsed.definition.name);
+    const previous = await readCache(config, name);
+    result.cached.push(name);
     if (options.dryRun || previous?.sourceHash === sourceHash) continue;
-    await writeJsonAtomic(cachePath(config, parsed.definition.name), {
-      relativePath,
+    await writeJsonAtomic(cachePath(config, name), {
+      relativePath: entry.item.source,
       sourceHash,
       definition: resolved.definition,
       validatedAt: new Date().toISOString(),

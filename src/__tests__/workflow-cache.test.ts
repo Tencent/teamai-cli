@@ -229,7 +229,7 @@ steps:
     await syncWorkflowDefinitions(config);
     expect(await loadCachedWorkflow(config, 'build')).not.toBeNull();
 
-    writeWorkflow(config, 'build', VALID.replace('command: node compile.js', 'command: node compile.js\n    if: success'));
+    writeWorkflow(config, 'build', VALID.replace('command: node compile.js', 'command: node compile.js\n    retry: 3'));
     const synced = await syncWorkflowDefinitions(config);
 
     expect(synced.unrunnable).toContain('workflows/build.yaml');

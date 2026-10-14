@@ -99,7 +99,7 @@ steps:
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: 'steps[0]', message: 'a step has exactly one action: command, prompt, or prompt_file' }),
+      expect.objectContaining({ field: 'steps[0]', message: 'a step has at most one action: command, prompt, prompt_file, or workflow' }),
       expect.objectContaining({ field: 'steps[0].agent', message: 'agent is only allowed on a prompt or prompt_file step' }),
     ]));
   });
@@ -132,15 +132,15 @@ description: Build it.
 steps:
   - id: one
     command: npm test
-    if: success
+    retry: 3
 `);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: 'unknown_key',
-        field: 'steps[0].if',
-        message: 'workflows/build.yaml uses `if`, which this teamai does not know. Update teamai.',
+        field: 'steps[0].retry',
+        message: 'workflows/build.yaml uses `retry`, which this teamai does not know. Update teamai.',
       }),
     ]));
   });
@@ -152,5 +152,189 @@ steps:
     expect(result.diagnostics[0]).toMatchObject({ file: FILE, field: '(document)' });
     expect(result.diagnostics[0]?.line).toBeGreaterThan(0);
     expect(formatDiagnostic(result.diagnostics[0]!)).toContain(`${FILE}:`);
+  });
+
+  it('parses valid DAG workflow with inputs, outputs, ends, needs, if, env, with, workflow and end', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: DAG build.
+inputs:
+  ticket: string
+outputs:
+  verdict: steps.review.outputs.verdict
+ends:
+  ready: succeeded
+  failed: failed
+steps:
+  - id: compile
+    command: npm run build
+    env:
+      TICKET: "{{inputs.ticket}}"
+  - id: test
+    needs: [compile]
+    command: npm test
+  - id: review
+    needs: [test]
+    workflow: review-sub
+    with:
+      ticket: "{{inputs.ticket}}"
+  - id: finalize
+    needs: [review]
+    if: steps.review.outputs.verdict == 'pass'
+    end: ready
+  - id: on-fail
+    needs: [review]
+    if: steps.review.outputs.verdict != 'pass'
+    end: failed
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.inputs).toBeDefined();
+    expect(result.definition.outputs).toBeDefined();
+    expect(result.definition.ends).toBeDefined();
+    expect(result.definition.steps).toHaveLength(5);
+    expect(result.definition.steps[0]?.env).toEqual({ TICKET: '{{inputs.ticket}}' });
+    expect(result.definition.steps[2]?.workflow).toBe('review-sub');
+    expect(result.definition.steps[3]?.end).toBe('ready');
+    expect(result.definition.steps[4]?.end).toBe('failed');
+  });
+
+  it('rejects missing references in needs, identifying file and step', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Bad needs.
+steps:
+  - id: one
+    command: echo 1
+  - id: two
+    needs: [nonexistent]
+    command: echo 2
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        file: FILE,
+        field: 'steps[1].needs',
+        message: 'step "nonexistent" needed by "two" does not exist in this workflow',
+      }),
+    ]));
+  });
+
+  it('rejects dependency cycles, identifying file and step', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Cycle.
+steps:
+  - id: a
+    needs: [b]
+    command: echo a
+  - id: b
+    needs: [a]
+    command: echo b
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        file: FILE,
+        field: expect.stringMatching(/steps\[\d+\].needs/),
+        message: expect.stringContaining('cycle detected in step dependencies'),
+      }),
+    ]));
+  });
+
+  it('rejects unreachable steps, identifying file and step', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Unreachable step.
+steps:
+  - id: a
+    needs: [b]
+    command: echo a
+  - id: b
+    needs: [a]
+    command: echo b
+  - id: root
+    command: echo root
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        file: FILE,
+        message: expect.stringContaining('is unreachable'),
+      }),
+    ]));
+  });
+
+  it('rejects invalid outputs referencing missing steps or undeclared inputs', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Invalid outputs.
+inputs:
+  known: string
+outputs:
+  bad_step: steps.ghost.outputs.val
+  bad_input: inputs.unknown_prop
+steps:
+  - id: first
+    command: echo 1
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: 'outputs.bad_step',
+        message: 'output "bad_step" references step "ghost" which does not exist in this workflow',
+      }),
+      expect.objectContaining({
+        field: 'outputs.bad_input',
+        message: 'output "bad_input" references input "unknown_prop" which is not declared in inputs',
+      }),
+    ]));
+  });
+
+  it('rejects unreachable declared ends per file', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Unreachable end.
+ends:
+  shipped: succeeded
+  unreachable_end: failed
+steps:
+  - id: finish
+    command: echo done
+    end: shipped
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: 'ends.unreachable_end',
+        message: 'declared end "unreachable_end" is not reached by any step in this workflow',
+      }),
+    ]));
+  });
+
+  it('rejects step specifying end not declared in workflow ends', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Undeclared end.
+ends:
+  shipped: succeeded
+steps:
+  - id: finish
+    command: echo done
+    end: bogus
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: 'steps[0].end',
+        message: 'step "finish" specifies end "bogus" which is not declared in workflow ends',
+      }),
+    ]));
   });
 });

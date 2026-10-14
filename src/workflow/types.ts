@@ -14,21 +14,35 @@ export type OutputSchema =
   | { type: 'object'; fields: Record<string, OutputSchema> }
   | { type: 'array'; items: OutputSchema };
 
+export interface InlineWorkflow {
+  outputs?: Record<string, string>;
+  steps: WorkflowStep[];
+}
+
 export interface WorkflowStep {
   id: string;
+  needs?: string[];
+  if?: string;
   command?: string;
+  env?: Record<string, string>;
   /** Resolved, revision-bound prompt text. */
   prompt?: string;
   /** Original team-repo-relative source path for a cached prompt. */
   promptFile?: string;
   agent?: string;
+  workflow?: string | InlineWorkflow;
+  with?: Record<string, unknown>;
   output?: OutputSchema;
+  end?: string;
 }
 
 export interface WorkflowDefinition {
   schemaVersion: 'v1alpha1';
   name: string;
   description: string;
+  inputs?: Record<string, OutputSchema>;
+  outputs?: Record<string, string>;
+  ends?: Record<string, 'succeeded' | 'failed'>;
   steps: WorkflowStep[];
 }
 
@@ -42,9 +56,9 @@ export interface WorkflowDiagnostic {
   code?: 'unknown_key';
 }
 
-export type StepStatus = 'pending' | 'leased' | 'succeeded' | 'failed';
-export type StepOutcome = 'success' | 'failed' | 'released';
-export type RunStatus = 'running' | 'succeeded' | 'failed';
+export type StepStatus = 'pending' | 'leased' | 'succeeded' | 'failed' | 'skipped' | 'stopped';
+export type StepOutcome = 'success' | 'failed' | 'released' | 'skipped' | 'stopped';
+export type RunStatus = 'running' | 'succeeded' | 'failed' | 'stopped';
 
 export interface StepLease {
   attempt: string;
@@ -59,6 +73,7 @@ export interface StepState {
   lease?: StepLease;
   outcome?: StepOutcome;
   outputs?: unknown;
+  end?: string;
   exitCode?: number;
   message?: string;
   tool?: string;
@@ -66,6 +81,7 @@ export interface StepState {
   session?: string;
   tokens?: TokenUsage;
   failure?: WorkflowFailure;
+  subRun?: RunState;
 }
 
 export interface TokenUsage {
@@ -88,6 +104,9 @@ export interface RunState {
   status: RunStatus;
   sourceHash: string;
   definition: WorkflowDefinition;
+  inputs?: Record<string, unknown>;
+  outputs?: Record<string, unknown>;
+  settledEnd?: string;
   steps: StepState[];
   settledAttempts: string[];
   createdAt: string;

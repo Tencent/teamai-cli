@@ -29,9 +29,10 @@ export function localDriver(cwd: string): DriverIdentity {
   return { kind: 'local', machine, workspace: path.resolve(cwd) };
 }
 
-function runCommand(command: string, cwd: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+function runCommand(command: string, cwd: string, env?: Record<string, string>): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, env: process.env, windowsHide: true });
+    const mergedEnv = env ? { ...process.env, ...env } : process.env;
+    const child = spawn(command, { cwd, shell: true, env: mergedEnv, windowsHide: true });
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -63,6 +64,7 @@ interface Lease {
   command?: string;
   prompt?: string;
   agent?: string;
+  env?: Record<string, string>;
 }
 
 function resultPath(config: LocalConfig, runId: string, attempt: string): string {
@@ -187,6 +189,9 @@ export async function runLocalDriver(
       ...(typeof rawLease.command === 'string' ? { command: rawLease.command } : {}),
       ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
       ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
+      ...(rawLease.env && typeof rawLease.env === 'object' && !Array.isArray(rawLease.env)
+        ? { env: rawLease.env as Record<string, string> }
+        : {}),
     };
     if ((lease.command === undefined) === (lease.prompt === undefined)) {
       return { error: { code: 'run_unreadable', message: `Run ${runId} returned a lease the local driver cannot run` } };
@@ -197,7 +202,7 @@ export async function runLocalDriver(
     let body: Parameters<typeof reportAttempt>[2];
     const attemptResultPath = resultPath(config, runId, lease.attempt);
     if (lease.command !== undefined) {
-      const result = await runCommand(lease.command, driver.workspace);
+      const result = await runCommand(lease.command, driver.workspace, lease.env);
       const output = jsonStdout(result.stdout);
       await fs.mkdir(path.dirname(attemptResultPath), { recursive: true });
       await writeJsonAtomic(attemptResultPath, output !== undefined ? { output } : {});

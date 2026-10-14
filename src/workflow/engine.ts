@@ -2,6 +2,13 @@ import { randomBytes } from 'node:crypto';
 import { acquireLock, releaseLock } from '../update.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow } from './cache.js';
+import {
+  evaluateDeepTemplates,
+  evaluateExpression,
+  evaluateTemplate,
+  extractReferencesFromText,
+  type ExprContext,
+} from './expr.js';
 import { outputMismatch } from './output.js';
 import { isRunId, readRun, runLockPath, writeRun } from './store.js';
 import type {
@@ -10,8 +17,10 @@ import type {
   StepOutcome,
   StepState,
   TokenUsage,
+  WorkflowDefinition,
   WorkflowEnvelope,
   WorkflowFailure,
+  WorkflowStep,
 } from './types.js';
 
 const LOCK_ATTEMPTS = 40;
@@ -82,21 +91,117 @@ async function withRun<T extends WorkflowEnvelope>(
   }
 }
 
-function leasePayload(run: RunState, step: StepState): Record<string, unknown> {
-  const definition = run.definition.steps.find((item) => item.id === step.id);
+function buildExprContext(run: RunState, enclosing?: ExprContext): ExprContext {
+  const steps: Record<string, { outcome?: StepOutcome; outputs?: unknown; end?: string; exitCode?: number }> = {};
+  for (const step of run.steps) {
+    steps[step.id] = {
+      outcome: step.outcome,
+      outputs: step.outputs,
+      end: step.end,
+      exitCode: step.exitCode,
+    };
+  }
   return {
-    run: run.id,
-    step: step.id,
-    attempt: step.lease?.attempt,
-    revision: step.lease?.revision,
-    ...(definition?.command !== undefined ? { command: definition.command } : {}),
-    ...(definition?.prompt !== undefined ? { prompt: definition.prompt } : {}),
-    ...(definition?.agent !== undefined ? { agent: definition.agent } : {}),
-    ...(definition?.output ? { output: definition.output } : {}),
+    inputs: run.inputs ?? {},
+    steps,
+    enclosing,
   };
 }
 
-export async function startRun(config: LocalConfig, name: string): Promise<WorkflowEnvelope> {
+function computeOutputs(outputsDef: Record<string, string> | undefined, context: ExprContext): Record<string, unknown> {
+  if (!outputsDef) return {};
+  const res: Record<string, unknown> = {};
+  for (const [k, expr] of Object.entries(outputsDef)) {
+    try {
+      if (expr.includes('{{')) {
+        res[k] = evaluateTemplate(expr, context);
+      } else {
+        res[k] = evaluateExpression(expr, context);
+      }
+    } catch {
+      res[k] = undefined;
+    }
+  }
+  return res;
+}
+
+function settleWorkflowWithEnd(run: RunState, endId: string, context: ExprContext): void {
+  run.settledEnd = endId;
+  const endSpec = run.definition.ends?.[endId];
+  run.status = endSpec ?? 'succeeded';
+  for (const s of run.steps) {
+    if (s.status === 'pending') {
+      s.status = 'skipped';
+      s.outcome = 'skipped';
+    }
+  }
+  run.outputs = computeOutputs(run.definition.outputs, context);
+}
+
+function settleWorkflowFinished(run: RunState, context: ExprContext): void {
+  if (run.settledEnd) {
+    const endSpec = run.definition.ends?.[run.settledEnd];
+    run.status = endSpec ?? 'succeeded';
+  } else {
+    const hasFailed = run.steps.some((s) => s.status === 'failed');
+    run.status = hasFailed ? 'failed' : 'succeeded';
+  }
+  run.outputs = computeOutputs(run.definition.outputs, context);
+}
+
+function getStepDependencies(stepDef: WorkflowStep, allSteps: WorkflowStep[]): string[] {
+  const hasAnyNeeds = allSteps.some((s) => s.needs && s.needs.length > 0);
+  if (hasAnyNeeds) {
+    return stepDef.needs ?? [];
+  }
+  const idx = allSteps.findIndex((s) => s.id === stepDef.id);
+  if (idx > 0) {
+    const prev = allSteps[idx - 1];
+    return prev ? [prev.id] : [];
+  }
+  return [];
+}
+
+function leasePayload(
+  run: RunState,
+  step: StepState,
+  stepDef: WorkflowStep,
+  stepPath: string,
+  context: ExprContext,
+): Record<string, unknown> {
+  let evaluatedEnv: Record<string, string> | undefined;
+  if (stepDef.env) {
+    evaluatedEnv = {};
+    for (const [k, v] of Object.entries(stepDef.env)) {
+      const rendered = evaluateTemplate(v, context);
+      evaluatedEnv[k] = rendered === undefined || rendered === null ? '' : String(rendered);
+    }
+  }
+
+  let promptText = stepDef.prompt;
+  if (promptText) {
+    const rendered = evaluateTemplate(promptText, context);
+    promptText = rendered === undefined || rendered === null ? '' : String(rendered);
+  }
+
+  return {
+    run: run.id,
+    step: stepPath,
+    attempt: step.lease?.attempt,
+    revision: step.lease?.revision,
+    ...(stepDef.command !== undefined ? { command: stepDef.command } : {}),
+    ...(evaluatedEnv !== undefined ? { env: evaluatedEnv } : {}),
+    ...(promptText !== undefined ? { prompt: promptText } : {}),
+    ...(stepDef.agent !== undefined ? { agent: stepDef.agent } : {}),
+    ...(stepDef.output ? { output: stepDef.output } : {}),
+  };
+}
+
+export async function startRun(
+  config: LocalConfig,
+  name: string,
+  inputs?: Record<string, unknown>,
+): Promise<WorkflowEnvelope> {
   const cached = await loadCachedWorkflow(config, name);
   if (!cached) {
     return error('workflow_not_found', `Workflow "${name}" has no runnable version. Check workflows/${name}.yaml and pull again.`);
@@ -110,6 +215,7 @@ export async function startRun(config: LocalConfig, name: string): Promise<Workf
     status: 'running',
     sourceHash: cached.sourceHash,
     definition: cached.definition,
+    ...(inputs ? { inputs } : {}),
     steps: cached.definition.steps.map((step) => ({ id: step.id, status: 'pending' })),
     settledAttempts: [],
     createdAt: now,
@@ -119,36 +225,289 @@ export async function startRun(config: LocalConfig, name: string): Promise<Workf
   return ok({ run: run.id, name: run.name, status: run.status, revision: run.revision });
 }
 
+interface ActiveLease {
+  step: StepState;
+  payload: Record<string, unknown>;
+}
+
+function findActiveLease(
+  rootRun: RunState,
+  run: RunState,
+  prefix = '',
+  enclosing?: ExprContext,
+): ActiveLease | undefined {
+  const context = buildExprContext(run, enclosing);
+  for (const step of run.steps) {
+    const stepDef = run.definition.steps.find((s) => s.id === step.id);
+    const stepPath = prefix ? `${prefix}.${step.id}` : step.id;
+    if (step.subRun && step.subRun.status === 'running') {
+      const subEnclosing = typeof stepDef?.workflow === 'object' ? context : undefined;
+      const found = findActiveLease(rootRun, step.subRun, stepPath, subEnclosing);
+      if (found) return found;
+    }
+    if (step.status === 'leased' && step.lease && stepDef) {
+      return {
+        step,
+        payload: leasePayload(rootRun, step, stepDef, stepPath, context),
+      };
+    }
+  }
+  return undefined;
+}
+
+type AdvanceResult =
+  | { kind: 'lease'; lease: Record<string, unknown> }
+  | { kind: 'wait'; reason: string }
+  | { kind: 'done'; outcome: string }
+  | { kind: 'error'; envelope: WorkflowEnvelope };
+
+async function advanceWorkflow(
+  config: LocalConfig,
+  rootRun: RunState,
+  run: RunState,
+  driver: DriverIdentity,
+  enclosing?: ExprContext,
+  prefix = '',
+): Promise<AdvanceResult> {
+  for (;;) {
+    if (run.status !== 'running') {
+      return { kind: 'done', outcome: run.status };
+    }
+
+    const context = buildExprContext(run, enclosing);
+    let stateChanged = false;
+
+    // 1. Check for active or finished subRuns
+    for (const step of run.steps) {
+      if (step.subRun) {
+        const stepDef = run.definition.steps.find((s) => s.id === step.id);
+        const stepPath = prefix ? `${prefix}.${step.id}` : step.id;
+        const subEnclosing = typeof stepDef?.workflow === 'object' ? context : undefined;
+
+        if (step.subRun.status === 'running') {
+          const subResult = await advanceWorkflow(config, rootRun, step.subRun, driver, subEnclosing, stepPath);
+          if (subResult.kind === 'lease' || subResult.kind === 'wait' || subResult.kind === 'error') {
+            return subResult;
+          }
+        }
+
+        if (step.subRun.status !== 'running' && step.status === 'leased') {
+          const subRun = step.subRun;
+          step.status = subRun.status === 'succeeded' ? 'succeeded' : (subRun.status === 'stopped' ? 'stopped' : 'failed');
+          step.outcome = subRun.status === 'succeeded' ? 'success' : (subRun.status === 'stopped' ? 'stopped' : 'failed');
+          step.outputs = subRun.outputs;
+          step.end = subRun.settledEnd;
+          if (stepDef?.end) {
+            step.end = stepDef.end;
+            settleWorkflowWithEnd(run, stepDef.end, context);
+          }
+          stateChanged = true;
+        }
+      }
+    }
+    if (stateChanged) {
+      continue;
+    }
+
+    // 2. Look for ready steps or skips
+    let foundReadyStep: { step: StepState; stepDef: WorkflowStep } | undefined;
+
+    for (const stepDef of run.definition.steps) {
+      const step = run.steps.find((s) => s.id === stepDef.id);
+      if (!step || step.status !== 'pending') continue;
+
+      const deps = getStepDependencies(stepDef, run.definition.steps);
+      const depStates = deps.map((id) => run.steps.find((s) => s.id === id)).filter((s): s is StepState => s !== undefined);
+
+      const allDepsSettled = depStates.every(
+        (d) => d.status === 'succeeded' || d.status === 'failed' || d.status === 'skipped' || d.status === 'stopped',
+      );
+      if (!allDepsSettled) {
+        continue; // Still waiting for dependencies
+      }
+
+      // Join rule: a step with several dependencies is skipped only when every dependency was skipped.
+      if (deps.length > 0 && depStates.every((d) => d.status === 'skipped')) {
+        step.status = 'skipped';
+        step.outcome = 'skipped';
+        stateChanged = true;
+        break;
+      }
+
+      // Failure/stopped propagation & recovery branch
+      const failedDeps = depStates.filter((d) => d.status === 'failed' || d.status === 'stopped');
+      if (failedDeps.length > 0) {
+        if (!stepDef.if) {
+          step.status = 'skipped';
+          step.outcome = 'skipped';
+          stateChanged = true;
+          break;
+        }
+        const refs = extractReferencesFromText(stepDef.if).steps;
+        if (failedDeps.some((d) => !refs.includes(d.id))) {
+          step.status = 'skipped';
+          step.outcome = 'skipped';
+          stateChanged = true;
+          break;
+        }
+        let cond = false;
+        try {
+          cond = Boolean(evaluateExpression(stepDef.if, context));
+        } catch {
+          cond = false;
+        }
+        if (!cond) {
+          step.status = 'skipped';
+          step.outcome = 'skipped';
+          stateChanged = true;
+          break;
+        }
+        foundReadyStep = { step, stepDef };
+        break;
+      }
+
+      // Normal dependencies (none failed)
+      if (stepDef.if) {
+        let cond = false;
+        try {
+          cond = Boolean(evaluateExpression(stepDef.if, context));
+        } catch {
+          cond = false;
+        }
+        if (!cond) {
+          step.status = 'skipped';
+          step.outcome = 'skipped';
+          stateChanged = true;
+          break;
+        }
+      }
+
+      foundReadyStep = { step, stepDef };
+      break;
+    }
+
+    if (stateChanged) {
+      continue;
+    }
+
+    if (foundReadyStep) {
+      const { step, stepDef } = foundReadyStep;
+
+      // Pure end step
+      if (!stepDef.command && !stepDef.prompt && !stepDef.promptFile && !stepDef.workflow && stepDef.end) {
+        step.status = 'succeeded';
+        step.outcome = 'success';
+        step.end = stepDef.end;
+        settleWorkflowWithEnd(run, stepDef.end, context);
+        return { kind: 'done', outcome: run.status };
+      }
+
+      // Sub-workflow step
+      if (stepDef.workflow !== undefined) {
+        let subDef: WorkflowDefinition | undefined = typeof stepDef.workflow === 'object'
+          ? {
+              schemaVersion: 'v1alpha1' as const,
+              name: `${run.name}.${step.id}`,
+              description: '',
+              steps: stepDef.workflow.steps,
+              outputs: stepDef.workflow.outputs,
+            }
+          : undefined;
+        let sourceHash = run.sourceHash;
+
+        if (typeof stepDef.workflow === 'string') {
+          const cached = await loadCachedWorkflow(config, stepDef.workflow);
+          if (!cached) {
+            step.status = 'failed';
+            step.outcome = 'failed';
+            step.failure = { code: 'subworkflow_not_found', message: `Sub-workflow "${stepDef.workflow}" not found` };
+            run.status = 'failed';
+            return { kind: 'error', envelope: error('subworkflow_not_found', `Sub-workflow "${stepDef.workflow}" not found`) };
+          }
+          subDef = cached.definition;
+          sourceHash = cached.sourceHash;
+        }
+
+        if (!subDef) {
+          return { kind: 'error', envelope: error('run_unreadable', `Invalid workflow reference on step ${step.id}`) };
+        }
+
+        const evaluatedWith = stepDef.with
+          ? (evaluateDeepTemplates(stepDef.with, context) as Record<string, unknown>)
+          : {};
+        const now = new Date().toISOString();
+
+        step.subRun = {
+          schemaVersion: 'v1alpha1',
+          id: `${run.id}_${step.id}`,
+          name: subDef.name,
+          revision: 1,
+          status: 'running',
+          sourceHash,
+          definition: subDef,
+          inputs: evaluatedWith,
+          steps: subDef.steps.map((s: WorkflowStep) => ({ id: s.id, status: 'pending' as const })),
+          settledAttempts: [],
+          createdAt: now,
+          updatedAt: now,
+        };
+        step.status = 'leased';
+        continue;
+      }
+
+      // Leaf step to lease
+      const attempt = `a${randomBytes(4).toString('hex')}`;
+      step.status = 'leased';
+      step.attempt = attempt;
+      step.outcome = undefined;
+      step.lease = { attempt, revision: rootRun.revision, driver };
+      const stepPath = prefix ? `${prefix}.${step.id}` : step.id;
+      const payload = leasePayload(rootRun, step, stepDef, stepPath, context);
+      return { kind: 'lease', lease: payload };
+    }
+
+    // No step ready or changed. Check if all steps settled
+    const pendingSteps = run.steps.filter((s) => s.status === 'pending');
+    if (pendingSteps.length === 0) {
+      settleWorkflowFinished(run, context);
+      return { kind: 'done', outcome: run.status };
+    }
+
+    // Deadlock: remaining pending steps cannot be satisfied
+    for (const p of pendingSteps) {
+      p.status = 'skipped';
+      p.outcome = 'skipped';
+    }
+    settleWorkflowFinished(run, context);
+    return { kind: 'done', outcome: run.status };
+  }
+}
+
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity): Promise<WorkflowEnvelope> {
   return withRun(config, runId, async (run) => {
     if (run.status !== 'running') {
       return { save: false, envelope: ok({ done: { run: run.id, outcome: run.status } }) };
     }
-    const leased = run.steps.find((step) => step.status === 'leased');
-    if (leased?.lease) {
-      if (sameDriver(leased.lease.driver, driver)) {
-        return { save: false, envelope: ok({ lease: leasePayload(run, leased) }) };
+
+    const leased = findActiveLease(run, run);
+    if (leased?.step.lease) {
+      if (sameDriver(leased.step.lease.driver, driver)) {
+        return { save: false, envelope: ok({ lease: leased.payload }) };
       }
-      return { save: false, envelope: ok({ wait: { reason: `${leased.id} is leased` } }) };
+      return { save: false, envelope: ok({ wait: { reason: `${leased.step.id} is leased` } }) };
     }
-    const index = run.steps.findIndex((step) => step.status === 'pending');
-    if (index < 0) {
-      const outcome = run.steps.every((step) => step.status === 'succeeded') ? 'succeeded' : 'failed';
-      run.status = outcome;
-      return { save: true, envelope: ok({ done: { run: run.id, outcome } }) };
+
+    const result = await advanceWorkflow(config, run, run, driver);
+    if (result.kind === 'error') {
+      return { save: true, envelope: result.envelope };
     }
-    if (run.steps.slice(0, index).some((step) => step.status !== 'succeeded')) {
-      run.status = 'failed';
-      return { save: true, envelope: ok({ done: { run: run.id, outcome: 'failed' } }) };
+    if (result.kind === 'lease') {
+      return { save: true, envelope: ok({ lease: result.lease }) };
     }
-    const step = run.steps[index];
-    if (!step) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no step to lease`) };
-    const attempt = `a${randomBytes(4).toString('hex')}`;
-    step.status = 'leased';
-    step.attempt = attempt;
-    step.outcome = undefined;
-    step.lease = { attempt, revision: run.revision, driver };
-    return { save: true, envelope: ok({ lease: leasePayload(run, step) }) };
+    if (result.kind === 'wait') {
+      return { save: false, envelope: ok({ wait: { reason: result.reason } }) };
+    }
+    return { save: true, envelope: ok({ done: { run: run.id, outcome: result.outcome } }) };
   });
 }
 
@@ -219,6 +578,35 @@ function rememberSettledAttempt(run: RunState, attempt: string): void {
   if (extra > 0) run.settledAttempts.splice(0, extra);
 }
 
+function findLeasedStep(
+  run: RunState,
+  attempt: string,
+): { step: StepState; ownerRun: RunState; stepDef: WorkflowStep } | undefined {
+  for (const step of run.steps) {
+    if (step.subRun && step.subRun.status === 'running') {
+      const found = findLeasedStep(step.subRun, attempt);
+      if (found) return found;
+    }
+    if (step.status === 'leased' && step.lease?.attempt === attempt) {
+      const stepDef = run.definition.steps.find((s) => s.id === step.id);
+      if (stepDef) {
+        return { step, ownerRun: run, stepDef };
+      }
+    }
+  }
+  return undefined;
+}
+
+function hasRecoveryBranchFor(stepId: string, steps: WorkflowStep[]): boolean {
+  for (const step of steps) {
+    if (step.if) {
+      const refs = extractReferencesFromText(step.if).steps;
+      if (refs.includes(stepId)) return true;
+    }
+  }
+  return false;
+}
+
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope> {
   return withRun(config, runId, async (run) => {
     // Settled membership wins. An old revision of a settled attempt is still repeated_report.
@@ -228,20 +616,22 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     if (report.revision !== run.revision) {
       return { save: false, envelope: error('stale_revision', `Revision ${report.revision} is stale; the run is at ${run.revision}`) };
     }
-    const step = run.steps.find((item) => item.status === 'leased' && item.lease?.attempt === report.attempt);
-    if (!step?.lease) {
+
+    const found = findLeasedStep(run, report.attempt);
+    if (!found?.step.lease) {
       return { save: false, envelope: error('wrong_attempt', `Attempt ${report.attempt} is not the leased attempt`) };
     }
-    if (!sameDriver(step.lease.driver, report.driver)) {
+    const { step, ownerRun, stepDef } = found;
+
+    if (!step.lease || !sameDriver(step.lease.driver, report.driver)) {
       return { save: false, envelope: error('wrong_driver', 'This lease belongs to a different driver') };
     }
 
-    const defined = run.definition.steps.find((item) => item.id === step.id);
     let outcome = report.outcome;
     let message = report.message;
     let failure = report.failure;
-    if (outcome === 'success' && defined?.output) {
-      const mismatch = outputMismatch(defined.output, report.outputs);
+    if (outcome === 'success' && stepDef.output) {
+      const mismatch = outputMismatch(stepDef.output, report.outputs);
       if (mismatch) {
         outcome = 'failed';
         message = `stdout JSON does not match output: ${mismatch}`;
@@ -259,15 +649,23 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     step.tokens = report.tokens;
     step.failure = failure;
     step.outcome = outcome;
+
     if (outcome === 'released') {
       step.status = 'pending';
     } else if (outcome === 'success') {
       step.status = 'succeeded';
       if (report.outputs !== undefined) step.outputs = report.outputs;
+      if (stepDef.end) {
+        step.end = stepDef.end;
+        settleWorkflowWithEnd(ownerRun, stepDef.end, buildExprContext(ownerRun));
+      }
     } else {
       step.status = 'failed';
-      run.status = 'failed';
+      if (!hasRecoveryBranchFor(step.id, ownerRun.definition.steps)) {
+        ownerRun.status = 'failed';
+      }
     }
+
     rememberSettledAttempt(run, report.attempt);
     run.revision += 1;
     return {

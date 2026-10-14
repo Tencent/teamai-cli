@@ -20,7 +20,80 @@ steps:
     agent: reviewer
 ```
 
-`schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且必须且只能使用 `command`、`prompt`、`prompt_file` 之一。提示词步骤可选填 `agent`。`output` 沿用已有简写：`string`、`number`、`boolean`、字面量联合、对象，或只含一种元素类型的数组。TeamAI 会用它校验成功命令的 stdout 或提示词工具返回的 `output`。
+`schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，最多指定一个动作：`command`、`prompt`、`prompt_file`、`workflow` 之一（或纯 `end` 步骤）。提示词步骤可选填 `agent`。`output` 沿用已有简写：`string`、`number`、`boolean`、字面量联合、对象，或只含一种元素类型的数组。TeamAI 会用它校验成功命令的 stdout 或提示词工具返回的 `output`。
+
+### 依赖关系与条件执行
+
+使用 `needs` 声明有向无环图（DAG）依赖。当步骤未声明 `needs` 时，按顺序执行。
+
+```yaml
+steps:
+  - id: build
+    command: npm run build
+  - id: test
+    needs: [build]
+    command: npm test
+  - id: notify_failure
+    needs: [test]
+    if: steps.test.outcome == 'failed'
+    command: node notify.js
+```
+
+- **汇聚规则（Join rule）**：具有多个依赖的步骤，仅当其所有依赖项均被跳过（skipped）时才会被跳过。
+- **条件表达式（`if`）**：支持布尔逻辑、比较（`==`、`!=`、`<`、`<=`、`>`、`>=`），可读取 `inputs.*` 或已结算的步骤属性 `steps.<id>.outcome`、`steps.<id>.outputs.*` 与 `steps.<id>.end`。不使用 JavaScript `eval`。
+- **故障恢复分支（Recovery branches）**：当依赖项失败时，后续步骤默认会被跳过，除非其 `if` 条件明确读取了失败的依赖项。
+
+### 输入与命令环境变量
+
+在工作流根层级声明 `inputs`。命令步骤仅通过声明的 `env:` 映射接收输入值。命令字符串本身不会进行模板展开，能防止输入包含 `$(...)` 等字符时被 shell 误执行。
+
+```yaml
+inputs:
+  target:
+    type: string
+steps:
+  - id: deploy
+    command: ./deploy.sh
+    env:
+      DEPLOY_TARGET: "{{ inputs.target }}"
+```
+
+### 子工作流与组合
+
+步骤可通过名称调用另一个工作流（文件子工作流），或声明内联子工作流。
+
+```yaml
+steps:
+  - id: sub
+    workflow: build
+    with:
+      target: prod
+  - id: inline_step
+    workflow:
+      steps:
+        - id: nested
+          command: echo "running nested step"
+      outputs:
+        status: steps.nested.outcome
+```
+
+文件子工作流的输入仅限于 `with:` 传入的参数，作用域相互隔离。内联工作流可访问外层作用域中的变量。
+
+### 输出与命名结束状态
+
+声明 `outputs` 导出工作流结算后的值。声明 `ends` 定义命名的终态（`succeeded` 或 `failed`），可提前结算工作流，并将终态名称暴露给父级步骤（如 `steps.<id>.end`）。
+
+```yaml
+ends:
+  rejected: failed
+  approved: succeeded
+steps:
+  - id: check
+    command: node check.js
+    end: approved
+outputs:
+  decision: steps.check.end
+```
 
 `teamai pull` 和 `teamai push` 分别检查每个文件。`prompt_file` 必须是团队仓库 `prompts/` 下的普通文件，不能是符号链接。校验时会把文件内容和工作流一起缓存，因此已经开始的运行会继续使用对应修订版，即使源文件后来被修改或删除。新修订版无效时，仍保留上一份有效缓存。这一版 teamai 不认识的字段除外：该工作流没有可运行版本，需要先更新 teamai。
 
