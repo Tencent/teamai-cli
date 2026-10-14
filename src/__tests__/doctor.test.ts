@@ -104,6 +104,10 @@ const mockTeamConfig = {
     team: 'test-team',
     repo: 'team/repo',
     provider: 'tgit' as const,
+    // Deliberately partial: a full claude entry would give it an instruction
+    // target, which this suite's mocks cannot satisfy. The completeness
+    // finding (#1115) reports the missing keys; the tests that need a green
+    // run assert around it.
     toolPaths: {
         claude: { settings: '.claude/settings.json', skills: '.claude/skills' },
     },
@@ -151,7 +155,7 @@ beforeEach(() => {
 // ── Tests ────────────────────────────────────────────────
 
 describe('doctor — hook checks', () => {
-    it('should pass when all subcommands are present in settings', async () => {
+    it('passes the hooks check when all subcommands are present in settings', async () => {
         mockedLoadTeamConfig.mockResolvedValue({
             ...mockTeamConfig,
             sharing: { env: { injectShellProfile: false } },
@@ -162,7 +166,13 @@ describe('doctor — hook checks', () => {
         expect(consoleSpy).toHaveBeenCalledWith(
             expect.stringContaining('✔'),
         );
-        expect(allPassed).toBe(true);
+        // The run is not green: the fixture's claude entry maps only
+        // skills/settings, so the completeness finding (#1115) reports the
+        // keys a `toolPaths:` section this small drops from the default table.
+        const allLines = consoleSpy.mock.calls.map((c) => String(c[0]));
+        expect(allLines.some((line) => line.includes('✔') && line.includes('teamai hooks in claude settings'))).toBe(true);
+        expect(allLines.some((line) => line.includes('claude toolPaths entry is missing'))).toBe(true);
+        expect(allPassed).toBe(false);
     });
 
     it('should fail when a subcommand is missing from settings', async () => {
@@ -394,7 +404,9 @@ describe('doctor — hook checks', () => {
             .some((message) => message.includes('hooks in copilot'));
 
         expect(hasCopilotCheck).toBe(false);
-        expect(allPassed).toBe(true);
+        // The copilot entry maps only `hooks`, so the run fails on the
+        // completeness finding for it (#1115) — never on a copilot hooks check.
+        expect(allPassed).toBe(false);
     });
 
     it('skips enabled tools that have no hook configuration', async () => {
@@ -414,7 +426,11 @@ describe('doctor — hook checks', () => {
 
         const allLines = consoleSpy.mock.calls.map((call) => String(call[0]));
         expect(allLines.some((line) => line.includes('hooks in codex'))).toBe(false);
-        expect(allPassed).toBe(true);
+        // The entry itself is not green: a built-in codex entry without
+        // `settings` drops the hooks surface whole (#1115), and the run fails
+        // on that finding — not on any hooks check.
+        expect(allLines.some((line) => line.includes('codex toolPaths entry is missing'))).toBe(true);
+        expect(allPassed).toBe(false);
     });
 
     it('should pass env check when env/env.yaml does not exist in team repo', async () => {
@@ -528,9 +544,11 @@ describe('doctor — hook checks', () => {
 
         await doctor({});
 
-        // Should NOT show codex-internal check at all (skipped)
+        // Should NOT show codex-internal check at all (skipped). The string is
+        // scoped to the hooks check: the completeness finding (#1115) names the
+        // partial `codex-internal` entry too, and that report is correct.
         const allCalls = consoleSpy.mock.calls.map((c) => c[0]);
-        expect(allCalls.some((msg: string) => msg.includes('codex-internal'))).toBe(false);
+        expect(allCalls.some((msg: string) => msg.includes('hooks in codex-internal'))).toBe(false);
         // Should still show claude check
         expect(allCalls.some((msg: string) => msg.includes('claude'))).toBe(true);
     });
@@ -583,7 +601,10 @@ describe('doctor — hook checks', () => {
         const allLines = consoleSpy.mock.calls.map((c) => String(c[0]));
         expect(allLines.some((line) => line.includes('hooks in claude settings'))).toBe(true);
         expect(allLines.some((line) => line.includes('hooks in codex settings'))).toBe(false);
-        expect(allPassed).toBe(true);
+        // enabledAgents keeps codex out of the registry, so the only finding is
+        // the partial claude entry (#1115) — nothing reports codex's.
+        expect(allLines.filter((line) => line.includes('toolPaths entry is missing')).length).toBe(1);
+        expect(allPassed).toBe(false);
     });
 });
 
@@ -609,13 +630,18 @@ describe('doctor — JSON report', () => {
         expect(setStderrOnly).toHaveBeenCalledWith(true);
 
         const report = emittedReport();
-        expect(allPassed).toBe(true);
-        expect(report.ok).toBe(true);
+        expect(allPassed).toBe(false);
+        expect(report.ok).toBe(false);
         expect(report.scope).toBe('user');
         const names = report.checks.map((c) => c.name);
         expect(names).toContain('Team repo exists locally');
         expect(names).toContain('teamai hooks in claude settings');
-        expect(report.checks.every((c) => c.ok)).toBe(true);
+        // One check fails, and it is the partial claude entry (#1115): a full
+        // entry would give the tool an instruction target this suite's mocks
+        // cannot satisfy, so the fixture stays partial and the report says so.
+        expect(report.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual([
+            'claude toolPaths entry is missing 5 default paths',
+        ]);
     });
 
     it('carries the fix string of a failing check', async () => {

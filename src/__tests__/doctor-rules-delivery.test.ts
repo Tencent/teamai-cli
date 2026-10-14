@@ -863,6 +863,10 @@ describe('doctor — rules delivered on disk', () => {
       'Rules delivered to claude',
       'Rules delivered to cursor',
       'Team instructions are current for cursor',
+      // The partial entries this suite's fixture writes on purpose (#1115):
+      // the completeness finding is doctor-only too.
+      'claude toolPaths entry is missing 5 default paths',
+      'cursor toolPaths entry is missing 5 default paths',
     ]);
     // Everything the pull stage keeps is also in the doctor stage.
     expect(forPull.filter((n) => !forDoctor.includes(n))).toEqual([]);
