@@ -233,7 +233,8 @@ describe('ownership of unrecorded MCP servers and hook entries (#993 bug 12)', (
 
     t.publish({ 'mcp/mcp.yaml': 'servers: []\n' }, 'drop');
     pull(dir);
-    expect(mcpServer(dir, 'plain-api')).toBeUndefined();
+    // It was the file's only server: the emptied file goes too.
+    expect(fs.existsSync(path.join(dir, '.mcp.json'))).toBe(false);
   });
 
   it('records an adopted MCP server that already equals the current team render, so uninstall removes it', () => {
@@ -272,7 +273,7 @@ describe('ownership of unrecorded MCP servers and hook entries (#993 bug 12)', (
     );
     expect(mcpServer(pulled, 'plain-api')).toEqual({ type: 'http', url: 'https://team.example.com/v1' });
     pull(pulled);
-    expect(mcpServer(pulled, 'plain-api')).toBeUndefined();
+    expect(fs.existsSync(path.join(pulled, '.mcp.json'))).toBe(false);
 
     const t2 = team('removed-uninstall', { 'mcp/mcp.yaml': mcpYaml('https://team.example.com/v1') });
     const uninstalled = business('removed-uninstall-biz', { '.claude/.keep': '' });

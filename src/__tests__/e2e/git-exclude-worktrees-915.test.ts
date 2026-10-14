@@ -282,7 +282,8 @@ describe.skipIf(process.platform === 'win32')('one delivered block serves every 
     m.teamCommit({ 'mcp/mcp.yaml': 'servers: []\n' });
     const out = m.teamai(['pull'], wt);
 
-    expect(read(path.join(wt, '.mcp.json'))).not.toContain(TOKEN);
+    // The worktree's config held only the team's server: the emptied file goes.
+    expect(fs.existsSync(path.join(wt, '.mcp.json'))).toBe(false);
     // The main checkout's own pull cleans its config; until then git must not see it.
     expect(read(path.join(main, '.mcp.json'))).toContain(TOKEN);
     expect(mcpLines(exclude)).toEqual(['/.mcp.json']);
@@ -291,7 +292,7 @@ describe.skipIf(process.platform === 'win32')('one delivered block serves every 
 
     const mainOut = m.teamai(['pull'], main);
 
-    expect(read(path.join(main, '.mcp.json'))).not.toContain(TOKEN);
+    expect(fs.existsSync(path.join(main, '.mcp.json'))).toBe(false);
     expect(mcpLines(exclude)).toEqual([]);
     expect(mainOut).toContain(`Removed /.mcp.json from ${exclude}`);
   }, 120_000);

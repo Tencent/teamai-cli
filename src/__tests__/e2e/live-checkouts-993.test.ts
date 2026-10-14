@@ -390,7 +390,8 @@ describe.skipIf(process.platform === 'win32')('live checkouts are probed, not in
 
     teamaiOk(['pull', '--force'], main, oldGit);
 
-    expect(mcpJson(main)).not.toContain(token);
+    // The main checkout's config held only the team's server: the emptied file goes.
+    expect(fs.existsSync(path.join(main, '.mcp.json'))).toBe(false);
     expect(mcpJson(sibling)).toContain(token);
     expect(excludeLines()).toContain('/.mcp.json');
     expect(siblingStatus()).toBe('');
