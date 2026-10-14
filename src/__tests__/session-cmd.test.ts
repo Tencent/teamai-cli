@@ -123,6 +123,7 @@ import type { Session } from '../session-flow/ir.js';
 import { ClaudeCodeAdapter } from '../session-flow/adapters/claude-code.js';
 import { CodeBuddyAdapter } from '../session-flow/adapters/codebuddy.js';
 import { CursorAdapter } from '../session-flow/adapters/cursor.js';
+import { CodexAdapter } from '../session-flow/adapters/codex.js';
 
 let repoRoot: string;
 /** console.log + process.stdout.write 的合并捕获（ask 的提示走 stdout.write） */
@@ -875,5 +876,28 @@ describe('adapters: native cwd recovery from JSONL records', () => {
 
     const session = await new CursorAdapter().readSession(SID);
     expect(session.cwd).toBe(NATIVE);
+  });
+});
+
+describe('codex readSession: freeform tool calls', () => {
+  it('keeps the apply_patch input of a custom_tool_call', async () => {
+    const SID = '019e0000-1111-7222-8333-444444444444';
+    const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '01');
+    fs.mkdirSync(dir, { recursive: true });
+    const patch = '*** Begin Patch\n*** Update File: src/main.ts\n@@\n-a\n+b\n*** End Patch\n';
+    const lines = [
+      { type: 'session_meta', payload: { id: SID, timestamp: '2026-10-01T10:00:00.000Z', cwd: '/work/app' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'edit it' }] } },
+      { type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_1', name: 'apply_patch', input: patch } },
+      { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call_1', output: 'Success.' } },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `rollout-2026-10-01T10-00-00-${SID}.jsonl`),
+      lines.map((l) => JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', ...l })).join('\n') + '\n',
+    );
+
+    const session = await new CodexAdapter().readSession(SID);
+    const call = session.messages.flatMap((m) => m.content).find((b) => b.type === 'tool_call');
+    expect(call).toMatchObject({ type: 'tool_call', toolName: 'edit_file', callId: 'call_1', arguments: { input: patch } });
   });
 });

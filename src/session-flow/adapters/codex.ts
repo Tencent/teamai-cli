@@ -538,10 +538,15 @@ export class CodexAdapter extends AgentAdapter {
         const callId = String(payload.call_id ?? '');
         const argsRaw = payload.arguments;
         let arguments_: Record<string, unknown>;
-        try {
-          arguments_ = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : (argsRaw as Record<string, unknown>) ?? {};
-        } catch {
-          arguments_ = { _raw: String(argsRaw) };
+        if (ptype === 'custom_tool_call' && typeof payload.input === 'string') {
+          // Freeform tools (apply_patch) send plain text in `input`, not JSON `arguments`
+          arguments_ = { input: payload.input };
+        } else {
+          try {
+            arguments_ = typeof argsRaw === 'string' ? JSON.parse(argsRaw) : (argsRaw as Record<string, unknown>) ?? {};
+          } catch {
+            arguments_ = { _raw: String(argsRaw) };
+          }
         }
 
         const block: ToolCallBlock = { type: 'tool_call', toolName: irName, callId, arguments: arguments_ };
