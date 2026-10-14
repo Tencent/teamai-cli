@@ -6,7 +6,7 @@ import { isToolInstalledForConfig, ResourceHandler, type PlacementRecords, type 
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveToolBaseDir, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
+import { resolveToolBaseDir, installScopeName, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
@@ -1055,12 +1055,12 @@ export class AgentsHandler extends ResourceHandler {
         const recorded = records[item.name]?.[tool];
         const recordedRender = recorded ? await this.renderedForTool(item, tool, aliases, recorded) : null;
         if (current !== expected.content && current !== recordedRender?.content) {
-          log.warn(`[${localConfig.scope}] Kept agent "${item.name}" (${tool}): it differs from the team source ${item.relativePath}. Back it up, then delete it manually.`);
+          log.warn(`[${installScopeName(localConfig.scope)}] Kept agent "${item.name}" (${tool}): it differs from the team source ${item.relativePath}. Back it up, then delete it manually.`);
           continue;
         }
         if (await keepsTrackedCopy(deployed)) continue;
         await remove(deployed);
-        log.debug(`[${localConfig.scope}] Removed inactive role-scoped agent ${item.name} from ${tool}`);
+        log.debug(`[${installScopeName(localConfig.scope)}] Removed inactive role-scoped agent ${item.name} from ${tool}`);
       }
     }
   }

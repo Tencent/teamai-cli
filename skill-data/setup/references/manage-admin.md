@@ -86,7 +86,7 @@ workspace also lists a file an older local agent wrote a credential into; `teama
 
 ### Pi MCP delivery
 
-Pi 0.99.0+ receives stdio and streamable HTTP servers through the existing MCP commands and `teamai pull`; SSE is skipped. User scope writes `~/.pi/agent/mcp.json`, project scope writes `.pi/mcp.json` (Pi requires project trust). TeamAI keeps Pi's default codemode exposure and converts timeout milliseconds to seconds. Relocated Pi agent directories (`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`) are unsupported. Local exposure/enabled edits on managed servers survive until the team definition changes; doctor reports differences from the team entry. Extensions that replace `/mcp` must be removed to use Pi's built-in MCP.
+Pi 0.99.0+ receives stdio and streamable HTTP servers through the existing MCP commands and `teamai pull`; SSE is skipped. User scope writes `~/.pi/agent/mcp.json`, workspace scope writes `.pi/mcp.json` (Pi requires project trust). TeamAI keeps Pi's default codemode exposure and converts timeout milliseconds to seconds. Relocated Pi agent directories (`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`) are unsupported. Local exposure/enabled edits on managed servers survive until the team definition changes; doctor reports differences from the team entry. Extensions that replace `/mcp` must be removed to use Pi's built-in MCP.
 
 ## Invite a member
 

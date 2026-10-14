@@ -136,9 +136,9 @@ program
   .option('--provider <name>', 'Git provider for the team repo on this machine: tgit, github, cnb, gitlab, gitcode, or git. Skips auto-detection. `git` uses your existing Git auth and needs no platform token, but opens no PR/MR.')
   .option('--self', 'Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.')
   .option('--token <key>', 'API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.')
-  .option('--scope <scope>', 'Install scope: project (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude)')
-  .option('--inherit-user-scope', 'In project scope, also sync safe user-scope resources, load its env variables (not its secrets) in the project, and search its knowledge')
-  .option('--no-inherit-user-scope', 'Disable user-scope inheritance for this project')
+  .option('--scope <scope>', 'Install scope: workspace (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude); project is the older name for workspace')
+  .option('--inherit-user-scope', 'In workspace scope, also sync safe user-scope resources, load its env variables (not its secrets) in the workspace, and search its knowledge')
+  .option('--no-inherit-user-scope', 'Disable user-scope inheritance for this workspace')
   .option('--role <id>', 'Primary role ID (e.g. hai_dev) for non-interactive setup')
   .option('--project <ids>', 'Active logical project(s) from manifest/projects.yaml (comma-separated); scopes which project resources and learnings this directory syncs. Pass "all" to activate every project the manifest declares (a snapshot taken now)')
   // Non-variadic + a collecting coercer: repeatable (`--agent a --agent b`) and
@@ -175,7 +175,7 @@ program
 
 program
   .command('pull')
-  .description('Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a project by default, a hidden directory, so search that path directly')
+  .description('Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a workspace by default, a hidden directory, so search that path directly')
   .option('--silent', 'Silent mode (for hooks)')
   .option('--force', 'Force full sync even if repo is unchanged')
   .action(async (cmdOpts) => {
@@ -754,6 +754,37 @@ envCmd
     exitLike(await envExec(argv.slice(argv.indexOf('exec', argv.indexOf('env')) + 1), globalOpts));
   });
 
+const workflowCmd = program
+  .command('workflow')
+  .description('Run a command workflow from workflows/<name>.yaml');
+
+workflowCmd
+  .command('start <name>')
+  .description('Create a run for a validated workflow. With --driver local, run each command and report it.')
+  .option('--driver <kind>', 'Run the workflow in this process. Only local is available; it runs one command at a time.')
+  .action(async (name: string, cmdOpts: { driver?: string }) => {
+    const { workflowStart } = await import('./workflow-commands.js');
+    await workflowStart(name, cmdOpts);
+  });
+
+workflowCmd
+  .command('next <run>')
+  .description('Lease the next pending step of a run. Prints a JSON envelope.')
+  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}')
+  .action(async (run: string, cmdOpts: { json?: string }) => {
+    const { workflowNext } = await import('./workflow-commands.js');
+    await workflowNext(run, cmdOpts);
+  });
+
+workflowCmd
+  .command('report <run>')
+  .description('Report the outcome of a leased step. Prints a JSON envelope.')
+  .option('--json <payload>', 'attempt, revision, outcome (success, failed, or released), and driver')
+  .action(async (run: string, cmdOpts: { json?: string }) => {
+    const { workflowReport } = await import('./workflow-commands.js');
+    await workflowReport(run, cmdOpts);
+  });
+
 // ─── Hooks commands ─────────────────────────────────────
 
 const hooksCmd = program
@@ -984,7 +1015,7 @@ sessionCmd
   .option('--push', 'Also push the summary to the team repo (feeds `teamai digest`)')
   .option('--force', 'Push even if the session is not flagged as valuable')
   .option('--include-prompt', 'Include the redacted first-prompt line in the pushed summary (default: off)')
-  .option('--scope <scope>', 'Config scope for --push: user | project (default: auto-detect)')
+  .option('--scope <scope>', 'Config scope for --push: user | workspace (default: auto-detect)')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { saveSession } = await import('./save-session.js');
@@ -1134,7 +1165,7 @@ program
   .option('--title <title>', 'Title for the contribution document')
   .option('--namespace <ns>', 'Write to an active learnings namespace (default: the only active namespace, or the shared root when none or several are active)')
   .option('--session-id <id>', 'Session ID for dedup tracking')
-  .option('--scope <scope>', 'Target scope: user or project')
+  .option('--scope <scope>', 'Target scope: user or workspace')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { contribute } = await import('./contribute.js');
@@ -1370,7 +1401,7 @@ recallCmd
 
     const { autoDetectInit } = await import('./config.js');
     const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
-    const paths = await maintenancePathsOrExit(localConfig);
+    const paths = await maintenancePathsOrExit(localConfig, cmdOpts.dryRun);
     if (!paths) return;
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
@@ -1457,7 +1488,7 @@ recallCmd
       findPromotionCandidates,
       executePromotion,
     } = await import('./maintenance/index.js');
-    const paths = await maintenancePathsOrExit(localConfig);
+    const paths = await maintenancePathsOrExit(localConfig, cmdOpts.dryRun);
     if (!paths) return;
     const {
       repoPath, votesDir, learningsReadDirs, learningsWriteDir,
@@ -1505,11 +1536,11 @@ recallCmd
  * the checkout and the way out, and has already been printed. Also when the
  * reports or learnings lock cannot be taken, so the checkout cannot be checked.
  */
-async function maintenancePathsOrExit(localConfig: LocalConfig): Promise<MaintenancePaths | undefined> {
+async function maintenancePathsOrExit(localConfig: LocalConfig, dryRun?: boolean): Promise<MaintenancePaths | undefined> {
   const { CheckoutLockedError, CheckoutUnavailableError, resolveMaintenancePaths } = await import('./maintenance/index.js');
   const { CheckoutRefusedError } = await import('./utils/branch-worktree.js');
   try {
-    return await resolveMaintenancePaths(localConfig);
+    return await resolveMaintenancePaths(localConfig, { dryRun });
   } catch (e) {
     if (e instanceof CheckoutLockedError || e instanceof CheckoutUnavailableError) {
       const { log } = await import('./utils/logger.js');

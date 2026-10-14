@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import fse from 'fs-extra';
 import { ResourceHandler } from './base.js';
-import { isSelfMode, resolveBaseDir, type ResourceItem, type TeamaiConfig, type LocalConfig } from '../types.js';
+import { installScopeName, isSelfMode, resolveBaseDir, type ResourceItem, type TeamaiConfig, type LocalConfig } from '../types.js';
 import { expandHome, listDirs, pruneEmptyDirs } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { caseFoldKey } from '../manifest-schema.js';
@@ -603,12 +603,12 @@ async function withdrawInactiveNamespaces(desired: DesiredDocs, localDocsDir: st
         continue;
       }
       await fs.rm(deployed, { force: true });
-      log.debug(`[${localConfig.scope}] Removed ${dir}/${file} of inactive docs namespace "${dir}"`);
+      log.debug(`[${installScopeName(localConfig.scope)}] Removed ${dir}/${file} of inactive docs namespace "${dir}"`);
     }
     await pruneEmptyDirs(path.join(localDocsDir, dir));
     if (kept.length > 0) {
       log.warn(
-        `[${localConfig.scope}] Kept ${kept.length} doc(s) of docs namespace "${dir}", which is not active here: `
+        `[${installScopeName(localConfig.scope)}] Kept ${kept.length} doc(s) of docs namespace "${dir}", which is not active here: `
         + `they differ from the team copy (${kept.join(', ')} in ${localDocsDir}). Back them up, then delete them manually.`,
       );
     }
@@ -669,7 +669,7 @@ export class DocsHandler extends ResourceHandler {
     // A root that is a link is the member's: nothing is copied, pruned or withdrawn through it (#993).
     // It holds the docs back, as a file of the member's does, so the next pull tries again.
     if (await isLinkedDocsRoot(localDocsDir)) {
-      log.warn(`[${localConfig.scope}] ${describeLinkedDocsRoot(localDocsDir, 'pull')}`);
+      log.warn(`[${installScopeName(localConfig.scope)}] ${describeLinkedDocsRoot(localDocsDir, 'pull')}`);
       return 1;
     }
     await fse.ensureDir(localDocsDir);
@@ -683,13 +683,13 @@ export class DocsHandler extends ResourceHandler {
     }
     const members = await membersDocs(desired, localDocsDir, localConfig.repo.localPath);
     for (const file of members) {
-      log.warn(`[${localConfig.scope}] ${await describeKeptEntry(path.join(localDocsDir, file), `docs/${file}`)}`);
+      log.warn(`[${installScopeName(localConfig.scope)}] ${await describeKeptEntry(path.join(localDocsDir, file), `docs/${file}`)}`);
     }
     if (entries.length > 0) {
       await copyDocs(src, localDocsDir, new Set(desired.withheld.map(({ dir }) => dir)), new Set(members));
     }
     // Copy first: a failed copy must not trigger deletion of the previous bundle.
-    await pruneDocs(src, localDocsDir, localConfig.repo.localPath, localConfig.scope);
+    await pruneDocs(src, localDocsDir, localConfig.repo.localPath, installScopeName(localConfig.scope));
     await withdrawInactiveNamespaces(desired, localDocsDir, localConfig);
     for (const file of deliveredDocFiles(desired, members)) recorder?.report('docs', path.join(destination, file));
     log.debug(`Synced docs → ${localDocsDir}`);

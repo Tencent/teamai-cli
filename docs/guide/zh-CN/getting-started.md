@@ -19,7 +19,7 @@
    ```
    或在终端里：
    ```bash
-   cd /path/to/my-project
+   cd /path/to/my-workspace
    teamai init https://github.com/your-org/your-repo
    ```
    `init` 会识别 Git 平台、需要时让你登录、把你登记为成员、给找到的 AI 工具装上会话启动钩子，最后做一次 pull。
@@ -45,7 +45,7 @@
    ```
    或在终端里：
    ```bash
-   cd /path/to/my-project
+   cd /path/to/my-workspace
    teamai init https://github.com/your-org/your-repo
    ```
    加上 `--scope user` 会装到用户主目录，这台机器上的每个项目都能看见。不加的话，文件只进当前项目。

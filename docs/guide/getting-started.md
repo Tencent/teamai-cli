@@ -19,7 +19,7 @@
    ```
    Or in a terminal:
    ```bash
-   cd /path/to/my-project
+   cd /path/to/my-workspace
    teamai init https://github.com/your-org/your-repo
    ```
    `init` detects the Git host, signs you in if needed, registers you as a member, installs a session-start hook in the AI tools it finds, and pulls.
@@ -45,7 +45,7 @@ You need the repo URL.
    ```
    Or in a terminal:
    ```bash
-   cd /path/to/my-project
+   cd /path/to/my-workspace
    teamai init https://github.com/your-org/your-repo
    ```
    Add `--scope user` to install into your home directory. Every project on this machine then sees the files. Without that flag, files install into this project.

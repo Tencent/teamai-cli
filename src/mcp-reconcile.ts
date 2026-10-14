@@ -763,23 +763,26 @@ async function removeCreatedMcpFile(file: string): Promise<void> {
 
 /**
  * Replace or delete a `[mcp_servers.<name>]` block by text surgery, leaving the
- * rest of config.toml byte-identical (comments included).
+ * rest of config.toml byte-identical (comments included). A written block
+ * always ends in a blank line, appended or replaced, so splicing the same
+ * block again changes nothing.
  */
 export function spliceCodexBlock(source: string, name: string, block: string | null): string {
   const re = codexBlockRe(name);
   const match = source.match(re);
+  const padded = block === null ? null : block.endsWith('\n') ? block + '\n' : block + '\n\n';
 
   if (match) {
-    if (block === null) {
+    if (padded === null) {
       const cleaned = source.replace(re, '');
       return cleaned.replace(/\n{3,}/g, '\n\n');
     }
-    return source.replace(re, block.endsWith('\n') ? block + '\n' : block + '\n\n');
+    return source.replace(re, padded);
   }
 
-  if (block === null) return source;
+  if (padded === null) return source;
   const sep = source.length === 0 || source.endsWith('\n\n') ? '' : source.endsWith('\n') ? '\n' : '\n\n';
-  return source + sep + block;
+  return source + sep + padded;
 }
 
 /**

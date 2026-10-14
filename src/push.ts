@@ -854,6 +854,16 @@ async function resolveRequestedSkill(skill: string): Promise<{ requestedPath: st
   return { requestedPath, skillPath: resolveReal(requestedPath) };
 }
 
+/** Validate workflows without failing this push when one file is invalid. */
+async function validateWorkflows(localConfig: LocalConfig, dryRun: boolean): Promise<void> {
+  try {
+    const { syncWorkflowDefinitions } = await import('./workflow/cache.js');
+    await syncWorkflowDefinitions(localConfig, { dryRun, scopeLabel: localConfig.scope });
+  } catch (error) {
+    log.warn(`Workflows were not updated: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export async function push(
   options: GlobalOptions & { all?: boolean; role?: string; project?: string; branch?: string },
   /**
@@ -925,6 +935,7 @@ export async function push(
       return;
     }
     try {
+      await validateWorkflows(localConfig, !!options.dryRun);
       // Self-heal an older .teamai/.gitignore that still ignores `env` (pre-beta.5).
       // Run against the ACTIVE tree (original localConfig, projectRoot intact) BEFORE
       // swapping into the worktree, so the fixed .gitignore lets env changes surface.
@@ -981,6 +992,7 @@ export async function push(
     return;
   }
   try {
+    await validateWorkflows(localConfig, !!options.dryRun);
     await pushCore(localConfig, teamConfig, options, null, result);
   } finally {
     await releaseLock(syncLock);

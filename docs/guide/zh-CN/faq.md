@@ -52,9 +52,9 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 `teamai doctor --fix` 只删除所有者确认已死的锁——仍被存活进程持有、
 或未记录所有者的锁不会被删除。
 
-**Q: User scope 和 Project scope 可以共存吗？**
+**Q: User scope 和 Workspace scope 可以共存吗？**
 
-可以，但 project scope 默认保持隔离。当前工作目录包含 project scope 配置时，该项目生效并跳过 user scope。先初始化 user scope，再使用 `--inherit-user-scope` 初始化项目（或在项目本地配置中设置 `inheritUserScope: true`），即可组合安全资源和 Recall 结果；MCP 和密钥仍只使用 project scope。设置了 `inheritUserScope: true` 的项目也会接收 user scope 的环境变量，但项目已将同名 key 声明为变量或密钥时除外。hooks 例外：非-self 的 project scope 会把内置 hooks 注入到 HOME，以便 `hook-dispatch` 依据 `cwd` 门控（详见 Hooks 章节）。
+可以，但 workspace scope 默认保持隔离。当前工作目录包含 workspace scope 配置时，该工作区生效并跳过 user scope。先初始化 user scope，再使用 `--inherit-user-scope` 初始化工作区（或在工作区本地配置中设置 `inheritUserScope: true`），即可组合安全资源和 Recall 结果；MCP 和密钥仍只使用 workspace scope。设置了 `inheritUserScope: true` 的工作区也会接收 user scope 的环境变量，但工作区已将同名 key 声明为变量或密钥时除外。hooks 例外：非-self 的 workspace scope 会把内置 hooks 注入到 HOME，以便 `hook-dispatch` 依据 `cwd` 门控（详见 Hooks 章节）。
 
 **Q: `teamai init` 提示已初始化？**
 

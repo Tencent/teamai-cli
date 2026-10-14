@@ -66,8 +66,8 @@ repo:
   remote: https://github.com/your-org/your-repo.git
 username: your-name
 updatePolicy: auto             # auto / prompt / skip
-scope: project                 # project（init 默认）或 user
-projectRoot: /path/to/project
+scope: workspace               # workspace（init 默认）或 user；project 按 workspace 读取
+projectRoot: /path/to/my-workspace
 inheritUserScope: true
 coAuthorEnabled: true
 gitExcludeEnabled: true

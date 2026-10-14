@@ -7,7 +7,7 @@ import type { BuildIndexOptions, SearchResult, UnreadableFile } from './utils/se
 import { ensureDir, pathExists } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, SearchIndex, LocalConfig, KnowledgeDomain } from './types.js';
-import { getProjectSearchIndexPath, getUserSearchIndexPath, getVotesDir } from './types.js';
+import { getProjectSearchIndexPath, getUserSearchIndexPath, getVotesDir, installScopeName } from './types.js';
 import { queryCodeKnowledge } from './code-knowledge-recall.js';
 import type { SourceAnchor } from './code-knowledge-recall.js';
 import { annotateCodebaseSourceFreshness } from './codebase-freshness.js';
@@ -232,7 +232,7 @@ export function formatResults(results: ScopedSearchResult[], runId?: string): st
   for (let i = 0; i < results.length; i++) {
     const { entry, score, scope, sources, matchedTerms, missingTerms } = results[i];
     const voteStr = entry.votes > 0 ? ` ★${entry.votes}` : '';
-    const scopeStr = scope ? ` [${scope}]` : '';
+    const scopeStr = scope ? ` [${installScopeName(scope)}]` : '';
     // Phase 1: prepend a [type] tag so callers can quickly tell which knowledge
     // bucket each hit came from. Falls back to no tag for legacy entries that
     // pre-date the schema bump (these are auto-rebuilt on the next pull).
@@ -503,13 +503,13 @@ async function loadOrBuildScopeIndex(
       const cause = e instanceof Error ? e.message : String(e);
       if (partial && index) {
         // The index on disk predates the broken manifest and holds what the warning above left out.
-        log.warn(`Recall could not build the ${scopeLabel} search index: ${cause}. `
+        log.warn(`Recall could not build the ${installScopeName(scopeLabel)} search index: ${cause}. `
           + `Recall skips the older index at ${indexPath}, which would return what the manifest error leaves out. `
           + 'Resolve that error, fix the manifest, and run `teamai pull` to rebuild it.');
         return 'build-failed';
       }
       // Never the older index either: it predates what this build was given (#1006).
-      log.warn(`Recall could not build the ${scopeLabel} search index: ${cause}`);
+      log.warn(`Recall could not build the ${installScopeName(scopeLabel)} search index: ${cause}`);
       return 'build-failed';
     }
   }
@@ -585,7 +585,7 @@ export async function recall(
     // resolveConfigForDir.
     const gone = typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT';
     if (!gone) projectUnreadable = true;
-    log.debug('recall: project scope detection failed');
+    log.debug('recall: workspace scope detection failed');
   }
   // Detection skips a project config it cannot read and answers with what
   // loads next — a legacy `.teamai/` that may name another team, or the user
@@ -628,7 +628,7 @@ export async function recall(
         scopeIndexes.push({ index: result.index, scope: 'project', config: projectConfig, learningsBase: result.learningsBase });
       } else if (result) indexEmpty = true;
     } catch (e) {
-      log.debug(`recall: project scope not available: ${(e as Error).message}`);
+      log.debug(`recall: workspace scope not available: ${(e as Error).message}`);
     }
 
     if (projectConfig.inheritUserScope === true) {
@@ -818,7 +818,7 @@ export async function recall(
         try {
           await autoUpvote(scopeResults, scopeInfo.config);
         } catch (e) {
-          log.error(`autoUpvote skipped for ${scopeInfo.scope}: ${(e as Error).message}`);
+          log.error(`autoUpvote skipped for ${installScopeName(scopeInfo.scope)}: ${(e as Error).message}`);
         }
       }
     }

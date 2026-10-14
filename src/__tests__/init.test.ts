@@ -911,7 +911,7 @@ describe('init', () => {
 
       await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git' });
 
-      expect(log.info).toHaveBeenCalledWith(expect.stringMatching(/^Scope: project /));
+      expect(log.info).toHaveBeenCalledWith(expect.stringMatching(/^Scope: workspace /));
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('config    →'));
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('--scope user'));
       expect(saveLocalConfigForScope).toHaveBeenCalledWith(

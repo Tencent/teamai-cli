@@ -263,7 +263,7 @@ describe('pull reports what reached the tool directory (#585)', () => {
     },
   );
 
-  it.each(['user', 'project', 'none'])('aggregates inherited scope completion when docs fail in %s', async (failure) => {
+  it.each(['user', 'workspace', 'none'])('aggregates inherited scope completion when docs fail in %s', async (failure) => {
     const projectRoot = path.join(tmpDir, 'project');
     await fse.ensureDir(projectRoot);
     vi.mocked(detectProjectConfig).mockResolvedValue({
@@ -275,7 +275,7 @@ describe('pull reports what reached the tool directory (#585)', () => {
     const outcome = { completed: false };
     await pull({ silent: true, force: true }, outcome);
     expect(outcome.completed).toBe(failure === 'none');
-    for (const scope of ['user', 'project']) {
+    for (const scope of ['user', 'workspace']) {
       const succeeded = scope !== failure;
       expect(successLines().includes(`[${scope}] Synced 1 docs`)).toBe(succeeded);
       if (!succeeded) {
@@ -295,7 +295,7 @@ describe('pull reports what reached the tool directory (#585)', () => {
 
     await pull({ silent: true, force: true });
 
-    expect(vi.mocked(log.warn).mock.calls.flat()).toContainEqual(expect.stringContaining('[project] Failed to sync docs:'));
+    expect(vi.mocked(log.warn).mock.calls.flat()).toContainEqual(expect.stringContaining('[workspace] Failed to sync docs:'));
     // The marker stays cleared for a retry, and the record keeps its rev.
     expect(state.lastPullRev).toBeNull();
     // It also records what the pull delivered, docs failure or not (#822).

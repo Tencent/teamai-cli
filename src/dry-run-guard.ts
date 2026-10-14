@@ -124,6 +124,9 @@ export const NO_DRY_RUN_PREVIEW: Readonly<Record<string, string>> = {
   'contribute-check': 'hook-only',
   'todowrite-hint': 'hook-only',
   'mr-hint': 'hook-only',
+  'workflow start': 'creates a run and, with --driver local, runs its commands',
+  'workflow next': 'leases a step and writes the run',
+  'workflow report': 'writes the reported step outcome',
 };
 
 /** The refusal printed when a command has no `--dry-run` preview. */

@@ -84,6 +84,8 @@ workspaceRoot  = `git rev-parse --show-toplevel`
                  → the CURRENT checkout, DISTINCT per worktree.
                  → where project-scope AI-tool resources (skills/rules/agents,
                    tool config, CLAUDE.md) must be written.
+                 → an internal name for the checkout root, unrelated to the
+                   `workspace` install scope (#1099).
 ```
 
 All three are equal for a plain repository. An initialized submodule clone in

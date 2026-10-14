@@ -55,9 +55,9 @@ still holds. `teamai doctor` reports any leftovers, and
 `teamai doctor --fix` removes the ones whose owner is provably dead — a lock
 held by a live process, or one that names no owner, is never removed.
 
-**Q: Can user scope and project scope coexist?**
+**Q: Can user scope and workspace scope coexist?**
 
-Yes, but project scope remains isolated by default. When the current working directory contains a project-scope config, it is active and user scope is skipped. Initialize user scope first, then initialize the project with `--inherit-user-scope` (or set `inheritUserScope: true` in the project's local config) to compose safe resources and Recall results. MCP and secrets remain project-only. A project with `inheritUserScope: true` also receives user-scope env variables unless the project declares the same key as a variable or a secret. Hooks are the exception: a non-self project scope injects the built-in hooks into HOME so `hook-dispatch` can gate on `cwd` (see the Hooks section).
+Yes, but workspace scope remains isolated by default. When the current working directory contains a workspace-scope config, it is active and user scope is skipped. Initialize user scope first, then initialize the workspace with `--inherit-user-scope` (or set `inheritUserScope: true` in the workspace's local config) to compose safe resources and Recall results. MCP and secrets remain workspace-only. A workspace with `inheritUserScope: true` also receives user-scope env variables unless the workspace declares the same key as a variable or a secret. Hooks are the exception: a non-self workspace scope injects the built-in hooks into HOME so `hook-dispatch` can gate on `cwd` (see the Hooks section).
 
 **Q: `teamai init` says it's already initialized?**
 

@@ -21,7 +21,7 @@ The team's assets live in their own repo. This project points at it.
 This project:
 
 ```bash
-cd /path/to/my-project
+cd /path/to/my-workspace
 teamai init https://github.com/your-org/platform-teamai
 ```
 
@@ -44,7 +44,7 @@ teamai init https://github.com/your-org/java-service-teamai --inherit-user-scope
 This repo is the team repo. Assets go in `.teamai/`.
 
 ```bash
-cd /path/to/my-project
+cd /path/to/my-workspace
 teamai init . --agent claude,cursor
 ```
 
@@ -93,11 +93,11 @@ submodules: true
 
 `teamai.yaml` can name Node scripts. The CLI runs each one with its own Node, not a shell. `path` is relative to the team repo root and must stay inside that repo. A symlink that leaves the repo is rejected. The script's working directory is the team repo. A failure does not fail init or pull.
 
-In project scope the script also receives the checkout TeamAI already resolved. The script decides what to write. TeamAI does not manage personal files, and it does not replace a file the script chooses to keep.
+In workspace scope the script also receives the checkout TeamAI already resolved. The script decides what to write. TeamAI does not manage personal files, and it does not replace a file the script chooses to keep.
 
 - `TEAMAI_REPO` — the team repo
-- `TEAMAI_SCOPE` — `user` or `project`
-- `TEAMAI_CHECKOUT` — this checkout, in project scope
+- `TEAMAI_SCOPE` — `user`, or `project` for the workspace scope
+- `TEAMAI_CHECKOUT` — this checkout, in workspace scope
 - `TEAMAI_MAIN_CHECKOUT` — the main checkout TeamAI resolved, when it knows one
 - `TEAMAI_PROJECT` — that same resolved identity, stable across worktrees of one repo
 

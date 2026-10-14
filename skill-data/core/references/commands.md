@@ -23,9 +23,9 @@ Generated: do not edit by hand. Regenerate with
   - `--provider <name>` — Git provider for the team repo on this machine: tgit, github, cnb, gitlab, gitcode, or git. Skips auto-detection. `git` uses your existing Git auth and needs no platform token, but opens no PR/MR.
   - `--self` — Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.
   - `--token <key>` — API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.
-  - `--scope <scope>` — Install scope: project (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude)
-  - `--inherit-user-scope` — In project scope, also sync safe user-scope resources, load its env variables (not its secrets) in the project, and search its knowledge
-  - `--no-inherit-user-scope` — Disable user-scope inheritance for this project
+  - `--scope <scope>` — Install scope: workspace (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude); project is the older name for workspace
+  - `--inherit-user-scope` — In workspace scope, also sync safe user-scope resources, load its env variables (not its secrets) in the workspace, and search its knowledge
+  - `--no-inherit-user-scope` — Disable user-scope inheritance for this workspace
   - `--role <id>` — Primary role ID (e.g. hai_dev) for non-interactive setup
   - `--project <ids>` — Active logical project(s) from manifest/projects.yaml (comma-separated); scopes which project resources and learnings this directory syncs. Pass "all" to activate every project the manifest declares (a snapshot taken now)
   - `--agent <name>` — AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml's toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.
@@ -42,7 +42,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## pull
 
-- `teamai pull` — Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a project by default, a hidden directory, so search that path directly
+- `teamai pull` — Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a workspace by default, a hidden directory, so search that path directly
   - `--silent` — Silent mode (for hooks)
   - `--force` — Force full sync even if repo is unchanged
 
@@ -217,6 +217,16 @@ Generated: do not edit by hand. Regenerate with
     - `--global` — Remove the value set for every team on this machine instead
   - `teamai env exec <command...>` — Run a command with this directory's team env variables and secrets (put -- before the command)
 
+## workflow
+
+- `teamai workflow` — Run a command workflow from workflows/<name>.yaml
+  - `teamai workflow start <name>` — Create a run for a validated workflow. With --driver local, run each command and report it.
+    - `--driver <kind>` — Run the workflow in this process. Only local is available; it runs one command at a time.
+  - `teamai workflow next <run>` — Lease the next pending step of a run. Prints a JSON envelope.
+    - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}
+  - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
+    - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver
+
 ## hooks
 
 - `teamai hooks` — Manage teamai hooks in AI tool settings
@@ -282,7 +292,7 @@ Generated: do not edit by hand. Regenerate with
     - `--push` — Also push the summary to the team repo (feeds `teamai digest`)
     - `--force` — Push even if the session is not flagged as valuable
     - `--include-prompt` — Include the redacted first-prompt line in the pushed summary (default: off)
-    - `--scope <scope>` — Config scope for --push: user | project (default: auto-detect)
+    - `--scope <scope>` — Config scope for --push: user | workspace (default: auto-detect)
   - `teamai session platforms` — List supported and installed AI agent platforms
   - `teamai session migrate [sessionId]` — Migrate a session from one platform to another (or archive to same platform)
     - `-s, --source <platform>` — Source platform (e.g. claude-code, codebuddy)
@@ -348,7 +358,7 @@ Generated: do not edit by hand. Regenerate with
   - `--title <title>` — Title for the contribution document
   - `--namespace <ns>` — Write to an active learnings namespace (default: the only active namespace, or the shared root when none or several are active)
   - `--session-id <id>` — Session ID for dedup tracking
-  - `--scope <scope>` — Target scope: user or project
+  - `--scope <scope>` — Target scope: user or workspace
 
 ## recall
 

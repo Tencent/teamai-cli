@@ -15,6 +15,7 @@ import {
 } from '../types.js';
 import {
   detectProjectConfig,
+  findUnreadableProjectConfig,
   loadLocalConfigForScope,
   saveLocalConfigForScope,
   loadStateForScope,
@@ -225,6 +226,38 @@ describe('detectProjectConfig', () => {
     expect(result!.projectRoot).toBe(tmpDir);
   });
 
+  it('reads scope: workspace as the workspace scope', async () => {
+    const configDir = path.join(tmpDir, '.teamai');
+    await fse.ensureDir(configDir);
+    await fse.writeFile(
+      path.join(configDir, 'config.yaml'),
+      YAML.stringify({
+        repo: { localPath: '/tmp/repo', remote: 'https://example.com' },
+        username: 'test',
+        scope: 'workspace',
+        projectRoot: tmpDir,
+      }),
+    );
+    const result = await detectProjectConfig(tmpDir);
+    expect(result?.scope).toBe('project');
+    expect(result?.projectRoot).toBe(tmpDir);
+  });
+
+  it('says to update teamai when the config names a scope it does not know', async () => {
+    const configDir = path.join(tmpDir, '.teamai');
+    await fse.ensureDir(configDir);
+    await fse.writeFile(
+      path.join(configDir, 'config.yaml'),
+      YAML.stringify({
+        repo: { localPath: '/tmp/repo', remote: 'https://example.com' },
+        username: 'test',
+        scope: 'galaxy',
+      }),
+    );
+    const problem = await findUnreadableProjectConfig(tmpDir);
+    expect(problem).toContain('scope "galaxy" is not one this teamai knows; a newer teamai may have written it. Run `teamai update`');
+  });
+
   it('should return null for invalid YAML', async () => {
     const configDir = path.join(tmpDir, '.teamai');
     await fse.ensureDir(configDir);
@@ -286,6 +319,21 @@ scope: 'project',
     expect(loaded!.projectRoot).toBe(projectRoot);
   });
 
+  it('writes the workspace scope as scope: workspace', async () => {
+    const projectRoot = path.join(tmpDir, 'my-project');
+    await fse.ensureDir(path.join(projectRoot, '.teamai'));
+    const config: LocalConfig = {
+      repo: { localPath: path.join(projectRoot, '.teamai/team-repo'), remote: 'https://example.com' },
+      username: 'projuser',
+      additionalRoles: [],
+      scope: 'project',
+      projectRoot,
+    };
+    await saveLocalConfigForScope(config, 'project', projectRoot);
+    const written = YAML.parse(await fse.readFile(path.join(projectRoot, '.teamai', 'config.yaml'), 'utf-8'));
+    expect(written.scope).toBe('workspace');
+  });
+
   it('migrates a legacy user config without roles to default hai role and persists it', async () => {
     const repoPath = path.join(tmpDir, 'team-repo');
     await fse.ensureDir(path.join(repoPath, 'manifest'));
@@ -330,6 +378,32 @@ scope: 'project',
     expect(persisted.primaryRole).toBe('hai');
     expect(persisted.additionalRoles).toEqual([]);
     expect(persisted.resourceProfileVersion).toBe(1);
+  });
+
+  it('persists a migrated workspace config the way a save does', async () => {
+    const projectRoot = path.join(tmpDir, 'my-project');
+    const repoPath = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(path.join(repoPath, 'manifest'));
+    await fse.writeFile(
+      path.join(repoPath, 'manifest', 'roles.yaml'),
+      YAML.stringify({ version: 1, roles: [{ id: 'hai', resources: { knowledge: [], skills: ['hai'] } }] }),
+    );
+    const configPath = path.join(projectRoot, '.teamai', 'config.yaml');
+    await fse.ensureDir(path.dirname(configPath));
+    await fse.writeFile(configPath, YAML.stringify({
+      repo: { localPath: repoPath, remote: 'https://example.com' },
+      username: 'legacy-user',
+      scope: 'project',
+      projectRoot,
+    }));
+
+    const loaded = await loadLocalConfigForScope('project', projectRoot);
+    const persisted = YAML.parse(await fse.readFile(configPath, 'utf8'));
+
+    expect(loaded?.primaryRole).toBe('hai');
+    expect(persisted.primaryRole).toBe('hai');
+    expect(persisted.scope).toBe('workspace');
+    expect(persisted).not.toHaveProperty('dataHome');
   });
 
   it('does not overwrite an existing role profile during config load', async () => {

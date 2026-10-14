@@ -13,7 +13,7 @@ const PROJECT_TITLE = 'Java Project Review Workflow';
 const USER_TITLE = 'Organization Review Workflow';
 const PROJECT_COLLISION_TITLE = 'Project Shared Collision Policy';
 const USER_COLLISION_TITLE = 'Organization Shared Collision Policy';
-const INHERIT_MSG = 'project scope detected, inheriting user-scope resources and knowledge';
+const INHERIT_MSG = 'workspace scope detected, inheriting user-scope resources and knowledge';
 
 interface RunResult {
   code: number | null;
@@ -219,7 +219,7 @@ describe('opt-in user-scope inheritance (e2e)', () => {
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain(PROJECT_TITLE);
     expect(result.output).toContain(USER_TITLE);
-    expect(result.output).toContain('[project]');
+    expect(result.output).toContain('[workspace]');
     expect(result.output).toContain('[user]');
   });
 

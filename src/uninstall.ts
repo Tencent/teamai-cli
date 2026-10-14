@@ -48,6 +48,7 @@ import {
   type LocalConfig,
   type Scope,
   type ManagedMcpManifest,
+  installScopeName,
 } from './types.js';
 import { BUILTIN_RULE_NAMES, TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
 import { isLegacyCursorRuleFile, keptLegacyCopiesWarning, ruleStemFromFilename, usesMdcRules, type InstructionBlock, type LegacyRuleDir } from './resources/rule-format.js';
@@ -1467,7 +1468,7 @@ function isPlanEmpty(plan: RemovalPlan): boolean {
 
 function printSummary(plan: RemovalPlan, agentFilter?: string): void {
   console.log('');
-  console.log(`⚠  Uninstalling ${plan.scope} scope — ${plan.teamaiHome}`);
+  console.log(`⚠  Uninstalling ${installScopeName(plan.scope)} scope — ${plan.teamaiHome}`);
   if (agentFilter) {
     const sharedNote = plan.includeShared
       ? ' (last tool — shared resources removed too)'
@@ -2113,7 +2114,7 @@ async function executeRemoval(
         }
       }
     } catch (e) {
-      log.warn(`Failed to remove OpenCode hook (${scope} scope): ${(e as Error).message}`);
+      log.warn(`Failed to remove OpenCode hook (${installScopeName(scope)} scope): ${(e as Error).message}`);
     }
   }
 

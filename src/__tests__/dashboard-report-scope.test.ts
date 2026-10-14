@@ -4,7 +4,7 @@
  * each scope pushes. Only the reports-branch push and the handlers that reach
  * the network or spawn processes are stubbed.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it as vitestIt, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -68,24 +68,38 @@ const { dataHomeKey } = await import('../dashboard-collector.js');
 const dataHomeKeyOf = (config: LocalConfig) => dataHomeKey(getDataHome(config));
 
 let tmp: string;
-let originalHome: string | undefined;
-let originalCwd: string;
+const originalHome = process.env.HOME;
+const originalCwd = process.cwd();
+
+// HOME is process-wide, and Vitest does not stop a test body that times out:
+// left running, it writes into the next test's HOME and fails that test. So
+// each test's body is kept, and afterEach waits for it before that HOME goes.
+let body: Promise<void> | undefined;
+const keep = <A extends unknown[]>(fn: (...args: A) => Promise<void>) => (...args: A) => (body = fn(...args));
+const it = Object.assign((name: string, fn: () => Promise<void>) => vitestIt(name, keep(fn)), {
+  each: <T extends unknown[] | [unknown]>(cases: readonly T[]) =>
+    (name: string, fn: (...args: T) => Promise<void>) => vitestIt.each(cases)(name, keep(fn)),
+});
 
 beforeEach(async () => {
   tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dashboard-scope-')));
-  originalHome = process.env.HOME;
-  originalCwd = process.cwd();
   process.env.HOME = path.join(tmp, 'home');
   fs.mkdirSync(process.env.HOME);
   // Copilot runs the built-ins it has installed.
   await reconcileHooks(path.join(process.env.HOME, '.copilot', 'hooks', 'teamai.json'), 'copilot');
 });
 
-afterEach(() => {
-  process.chdir(originalCwd);
-  if (originalHome === undefined) delete process.env.HOME;
-  else process.env.HOME = originalHome;
-  fs.rmSync(tmp, { recursive: true, force: true });
+afterEach(async () => {
+  // A wait that outlives hookTimeout lets the next test start: this teardown
+  // then removes only its own directory and leaves that test's HOME alone.
+  const own = { tmp, home: process.env.HOME };
+  await Promise.allSettled([body]);
+  if (process.env.HOME === own.home) {
+    process.chdir(originalCwd);
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+  fs.rmSync(own.tmp, { recursive: true, force: true });
 });
 
 const teamaiHome = () => path.join(tmp, 'home', '.teamai');

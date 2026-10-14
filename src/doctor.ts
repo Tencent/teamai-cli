@@ -21,6 +21,7 @@ import {
   isUsageReportEnabled,
   type LocalConfig,
   type TeamaiConfig,
+  installScopeName,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import { skillsDirForTool } from './resources/skills.js';
@@ -194,7 +195,7 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
       check: isInstalled,
       fix: `enabledAgents lists ${tool}, but it has no directory under `
         + `${resolveToolBaseDir(tool, localConfig)}, so a pull delivers nothing to it. `
-        + `Install ${tool} (in project scope, opening a session there creates its root), `
+        + `Install ${tool} (in workspace scope, opening a session there creates its root), `
         + `or run \`teamai uninstall --agent ${tool}\` to stop syncing to it.`,
     });
   }
@@ -756,7 +757,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   const { localConfig } = ctx;
   const scope = localConfig.scope ?? 'user';
   if (!jsonMode) {
-    const scopeLabel = `${scope}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
+    const scopeLabel = `${installScopeName(scope)}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
     console.log(`  Scope: ${scopeLabel}\n`);
   }
 

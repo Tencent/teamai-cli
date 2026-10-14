@@ -78,7 +78,7 @@ The `remote commands` and `init project scope` describes in `src/__tests__/e2e/e
 | `dashboard -p 37210` | Spawns the web server, checks it with curl, kills it |
 | `uninstall --dry-run` / `uninstall --force` | Uninstall preview, real uninstall, re-init recovery |
 | `roles set + pull` | The skill set changes after switching role |
-| `init <repo> --force` (default project scope) | Fresh init (sandbox cwd + isolated HOME) |
+| `init <repo> --force` (default workspace scope) | Fresh init (sandbox cwd + isolated HOME) |
 
 Without a token: `--version` / `--help` / `tags --help` / `members --help` / `uninstall --help` / source sanity checks, plus the source add → list → browse → pull/deploy → remove/cleanup lifecycle in `source-project-scope-e2e.test.ts`, which uses a real local Git repo. PRs from forks can run these.
 

@@ -27,7 +27,7 @@ team:
 
 They are not written into the project's `AGENTS.md`. Each tool gets its own file, or the text is added when a session starts:
 
-| Tool | User scope | Project scope |
+| Tool | User scope | Workspace scope |
 |---|---|---|
 | Claude Code | `~/.claude/CLAUDE.md` | `.claude/rules/teamai-context.md` |
 | Codex family | `$CODEX_HOME/AGENTS.md` | session-start hook |

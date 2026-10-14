@@ -672,7 +672,7 @@ describe('pull: recorded agent models on an unchanged team revision', () => {
       await pull({ silent: true }, outcome);
 
       expect(logged('success', /\[user\] Already synced/)).toBe(false);
-      expect(logged('success', /\[project\] Already synced at abc1234/)).toBe(true);
+      expect(logged('success', /\[workspace\] Already synced at abc1234/)).toBe(true);
       expect(heldLines().some((line) => line.includes('Held implementer.yaml'))).toBe(true);
       expect(outcome.completed).toBe(false);
     });

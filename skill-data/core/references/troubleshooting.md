@@ -31,7 +31,7 @@ still holds. `teamai doctor` reports leftover lock files, and
 This is the #1 onboarding issue. In order:
 
 1. **Did init pick this tool?** `teamai init` does not copy team resources. A
-   project-scope init creates only the directories of tools named with `--agent`
+   workspace-scope init creates only the directories of tools named with `--agent`
    or picked in its interactive tool picker. Run without a terminal and without
    `--agent`, it creates none, and a tool's project directory appears when that
    tool opens a session there. The resources arrive on that session start, or
@@ -47,7 +47,7 @@ This is the #1 onboarding issue. In order:
    ```bash
    teamai hooks inject
    ```
-4. **Wrong scope?** Project-scope built-in hooks are written to your HOME tool
+4. **Wrong scope?** Workspace-scope built-in hooks are written to your HOME tool
    settings (e.g. `~/.claude/settings.json`), not the project folder; the team's own
    hooks for Claude Code and Codex go to the main checkout
    (`.claude/settings.local.json`, `.codex/hooks.json`). That is intentional.
@@ -65,7 +65,7 @@ This is the #1 onboarding issue. In order:
    error and retains exit code 1 while completing local setup, including HTTP
    initialization. Bootstrap records the error in the debug log and continues
    local setup.
-   In project scope, `teamai hooks remove` preserves other projects' gated team
+   In workspace scope, `teamai hooks remove` preserves other projects' gated team
    hooks in HOME, while removing the shared built-in hooks.
    If `source remove-http` reports incomplete hook removal, the HTTP source is
    disabled and the failed hooks stay on record. Fix the settings file it names,
@@ -73,7 +73,7 @@ This is the #1 onboarding issue. In order:
    If removal cannot acquire the HTTP source lock, it leaves the source intact.
    Wait for sync or plugin reconciliation to finish, check directory permissions,
    then retry removal.
-   If you initialized project scope but expected machine-wide resources, re-run
+   If you initialized workspace scope but expected machine-wide resources, re-run
    with `--scope user`.
 5. **Tool has no hook surface** (e.g. Gemini CLI, JoyCode): there is no auto-sync;
    run `teamai pull` manually each time.
@@ -119,7 +119,7 @@ Pull removes proven TeamAI hook entries left in a Git directory. Older releases 
 
 ## "Last git hook run failed: ..." / a new worktree lacks team resources
 
-In project scope, teamai's git hook syncs on `git worktree add` and `git pull`
+In workspace scope, teamai's git hook syncs on `git worktree add` and `git pull`
 through merge or a completed rebase (`post-rewrite`, including `pull.rebase=true`; on Git 2.32
 and older, a fast-forward rebase with autostash syncs on `post-checkout`).
 A conflicting rebase syncs only on completion; `git commit --amend` does not sync. It runs

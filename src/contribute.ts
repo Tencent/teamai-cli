@@ -11,8 +11,8 @@ import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
 import { resolveActiveLearningsNamespaces } from './projects.js';
 import { isSafeNamespaceSegment } from './manifest-schema.js';
-import type { GlobalOptions, LocalConfig } from './types.js';
-import { getProjectSearchIndexPath, isSelfMode } from './types.js';
+import type { GlobalOptions, LocalConfig, Scope } from './types.js';
+import { getProjectSearchIndexPath, isSelfMode, parseInstallScope } from './types.js';
 
 /**
  * Decide which learnings subdirectory a contribution lands in — resolved from
@@ -170,12 +170,20 @@ export async function contribute(
   // reaches the loaders: a bare load migrates the legacy role config in place,
   // which would write under --dry-run (#850).
   const loadOpts = { dryRun: options.dryRun };
+  let scope: Scope | undefined;
+  try {
+    scope = options.scope === undefined ? undefined : parseInstallScope(options.scope);
+  } catch (e) {
+    log.error((e as Error).message);
+    process.exitCode = 1;
+    return;
+  }
   let localConfig: LocalConfig;
-  if (options.scope === 'project') {
+  if (scope === 'project') {
     const cfg = await loadLocalConfigForScope('project', process.cwd(), loadOpts);
-    if (!cfg) { log.error('No project-level teamai config in this directory'); return; }
+    if (!cfg) { log.error('No workspace teamai config in this directory'); return; }
     localConfig = cfg;
-  } else if (options.scope === 'user') {
+  } else if (scope === 'user') {
     const { localConfig: userCfg } = await requireInit(loadOpts);
     localConfig = userCfg;
   } else {

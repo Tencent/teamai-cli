@@ -1,9 +1,11 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
 import { execCommand, type ExecResult } from './utils/exec.js';
 import { pathExists, readFileIfExists, readFileSafe, symlinkTarget, writeFileAtomic } from './utils/fs.js';
 import { withoutGitRepositoryEnv } from './utils/git-env.js';
+import { getUserHome } from './utils/home.js';
 
 // ─── Git exclude blocks ──────────────────────────────────────
 //
@@ -327,18 +329,21 @@ export interface ReincludingRule {
 }
 
 /**
- * Whether the rule `git check-ignore -v` says ignores `file` is the member's:
- * not a line inside one of teamai's `# [teamai:<owner>:…]` blocks. git is
- * asked from `file`'s own checkout, so that checkout's rules decide. False when
- * git names no rule or its source cannot be read: the caller then treats the
- * path as git would commit it, the safe direction.
+ * Whether a rule of the member's ignores `file`, whatever teamai's
+ * `# [teamai:<owner>:…]` blocks hold: the rule `git check-ignore -v` names
+ * when it is outside them, else the member's rules asked again without them
+ * ({@link ignoredWithoutTeamaiBlocks}). git is asked from `file`'s own
+ * checkout, so that checkout's rules decide. False when git names no rule or
+ * one that re-includes `file`, or a source or git cannot be read: the caller
+ * then treats the path as git would commit it, the safe direction.
  */
 export async function ignoredByMembersRule(file: string): Promise<boolean> {
   const landed = await realFilePath(file);
   const dir = await existingAncestor(landed);
   const result = await runGit(['check-ignore', '-v', '--', path.relative(dir, landed)], dir);
   const match = result.code === 0 ? /^(.*):(\d+):(.*)\t/.exec(result.stdout) : null;
-  if (!match) return false;
+  // A deciding `!` rule re-includes the file: git sees it.
+  if (!match || match[3].startsWith('!')) return false;
   // git names the source from the toplevel, whatever the cwd.
   const location = await locateExclude(dir);
   const source = 'error' in location ? path.resolve(dir, match[1]) : path.resolve(location.root, match[1]);
@@ -349,7 +354,45 @@ export async function ignoredByMembersRule(file: string): Promise<boolean> {
     const marker = MARKER.exec(line.trim());
     if (marker) inBlock = marker[2] === 'start';
   }
-  return !inBlock;
+  if (!inBlock) return true;
+  // teamai's own line decides, and it hides a member's rule of lower precedence (an earlier line, core.excludesFile).
+  return 'error' in location ? false : ignoredWithoutTeamaiBlocks(landed, location.root, location.excludeFile);
+}
+
+/**
+ * Whether git ignores `file` in the checkout at `root` by the member's rules
+ * alone: `git ls-files` with every `.gitignore`, then copies of core.excludesFile
+ * (none when it is set empty, as git reads none) and of `excludeFile` (the
+ * checkout's `info/exclude`) without teamai's blocks, outside the repository,
+ * in git's order of precedence. False when git or the copies fail.
+ */
+async function ignoredWithoutTeamaiBlocks(file: string, root: string, excludeFile: string): Promise<boolean> {
+  const configured = await runGit(['config', '--path', 'core.excludesFile'], root);
+  if (configured.code !== 0 && configured.code !== 1) return false;
+  const copies = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-member-rules-')).catch(() => null);
+  if (copies === null) return false;
+  try {
+    // Unset (exit 1), git reads its default global file; set but empty, none.
+    const value = configured.stdout.trim();
+    const globalFile = configured.code === 1
+      ? path.join(process.env.XDG_CONFIG_HOME || path.join(getUserHome(), '.config'), 'git', 'ignore')
+      : value ? path.resolve(root, value) : null;
+    // --exclude-from files rank below every .gitignore, as git's own exclude files do, and the later one
+    // wins, as info/exclude wins over core.excludesFile.
+    const args = ['--literal-pathspecs', 'ls-files', '--others', '--ignored', '--exclude-per-directory=.gitignore'];
+    for (const [i, source] of [globalFile, excludeFile].entries()) {
+      const parsed = parseExclude((source === null ? null : await readFileSafe(source)) ?? '');
+      const copy = path.join(copies, String(i));
+      await fse.writeFile(copy, parsed.segments.map((s) => s.kind === 'text' ? s.raw : '').join(''));
+      args.push(`--exclude-from=${copy}`);
+    }
+    const listed = await runGit([...args, '--', path.relative(root, file)], root);
+    return listed.code === 0 && listed.stdout.trim() !== '';
+  } catch {
+    return false;
+  } finally {
+    await fse.remove(copies).catch(() => {});
+  }
 }
 
 /** The negated rule `git check-ignore -v` says decides `file` in the checkout at `root`, or null when it names none. */

@@ -28,7 +28,7 @@ export interface TranscriptVoteData {
   recalledDocPaths: Record<string, string>;
   /**
    * Recalled doc-id → the SCOPE it was recalled from (`project` / `user`), taken
-   * from the `[project]`/`[user]` label recall prints on each hit. `'unknown'`
+   * from the `[workspace]` (older recalls: `[project]`) / `[user]` label recall prints on each hit. `'unknown'`
    * when no label was present (legacy/forged region). The judge uses this so a
    * doc recalled from the inherited USER scope is not upvoted into the active
    * PROJECT team's vote file — inherited user hits are read-only while a
@@ -270,17 +270,18 @@ function extractRecalledDocIds(
     const region = text.slice(startIdx + RECALL_REGION_START.length, endIdx);
     // Walk the region line-by-line so each `File:` inherits the scope label
     // from the hit header that precedes it. recall prints a header per hit —
-    // `[i/N] [type] Title ★votes [project]` — then a `File:` line. The `[user]`
-    // / `[project]` tag is how we attribute the upvote to the right scope.
+    // `[i/N] [type] Title ★votes [workspace]` — then a `File:` line. The `[user]`
+    // / `[workspace]` tag is how we attribute the upvote to the right scope;
+    // `[project]` is what a recall older than #1099 printed for the workspace.
     let currentScope: 'project' | 'user' | 'unknown' = 'unknown';
     for (const rawLine of region.split('\n')) {
       const line = rawLine.trim();
       const header = line.match(/^\[\d+\/\d+\]/);
       if (header) {
-        // Reset per hit, then read the trailing [project]/[user] tag if present.
+        // Reset per hit, then read the trailing [workspace]/[project]/[user] tag if present.
         currentScope = 'unknown';
-        const scopeTag = line.match(/\[(project|user)\]\s*$/);
-        if (scopeTag) currentScope = scopeTag[1] as 'project' | 'user';
+        const scopeTag = line.match(/\[(workspace|project|user)\]\s*$/);
+        if (scopeTag) currentScope = scopeTag[1] === 'user' ? 'user' : 'project';
         continue;
       }
       const fileMatch = line.match(/^File:\s*(.+)$/);

@@ -32,14 +32,27 @@ const SKILL_MD = 'SKILL.md';
 export const CODEX_TOOL = 'codex';
 export const SHARED_AGENT_SKILLS_PATH = '.agents/skills';
 
+/** Why delivery may not write a skill directory: the path itself, or a link on the way to it. */
+export type SkillDirectoryBlock =
+  | { kind: 'outside-base'; target: string; baseDir: string }
+  | { kind: 'members-link'; link: string }
+  | { kind: 'broken-link'; link: string }
+  | { kind: 'link-outside-base'; link: string; resolved: string; baseDir: string }
+  | { kind: 'link-to-other-repository'; link: string; resolved: string };
+
 /**
  * Root links may share skills under the base within one repository (its checkouts share a project
  * identity); a skill's own link remains the member's.
  * Delivery and every team-skill delete apply it, so a root redirected outside the checkout is neither written nor emptied.
+ * Null when `target` may be written; otherwise the reason, naming the path or link that stops it.
  */
-export async function allowsSkillDirectory(baseDir: string, target: string, { keepSkillLink = false } = {}): Promise<boolean> {
+export async function findSkillDirectoryBlock(
+  baseDir: string,
+  target: string,
+  { keepSkillLink = false } = {},
+): Promise<SkillDirectoryBlock | null> {
   const relative = path.relative(baseDir, target);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false;
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return { kind: 'outside-base', target, baseDir };
   let walked = baseDir;
   for (const segment of relative.split(path.sep).filter(Boolean)) {
     walked = path.join(walked, segment);
@@ -47,17 +60,45 @@ export async function allowsSkillDirectory(baseDir: string, target: string, { ke
     if (!entry) break;
     if (!entry.isSymbolicLink()) continue;
     // Team-skill ownership checks name and preserve a leaf link without following it.
-    if (walked === target) return keepSkillLink;
+    if (walked === target) return keepSkillLink ? null : { kind: 'members-link', link: walked };
     const resolved = await realpath(walked).catch(() => null);
-    if (!resolved) return false;
+    if (!resolved) return { kind: 'broken-link', link: walked };
     const base = await realpath(baseDir);
     const rel = path.relative(base, resolved);
-    if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return false;
+    if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return { kind: 'link-outside-base', link: walked, resolved, baseDir };
     const [from, to] = await Promise.all([resolveAnchors(base), resolveAnchors(resolved)]);
     // Outside Git (a user-scope home), staying under the base is enough.
-    if (from && from.projectAnchor !== to?.projectAnchor) return false;
+    if (from && from.projectAnchor !== to?.projectAnchor) return { kind: 'link-to-other-repository', link: walked, resolved };
   }
-  return true;
+  return null;
+}
+
+/** Whether delivery may write `target` (`findSkillDirectoryBlock` finds nothing in the way). */
+export async function allowsSkillDirectory(baseDir: string, target: string, options: { keepSkillLink?: boolean } = {}): Promise<boolean> {
+  return await findSkillDirectoryBlock(baseDir, target, options) === null;
+}
+
+/** The warning for a skill delivery skips at `block`. */
+export function describeSkippedSkillDirectory(skillName: string, tool: string, block: SkillDirectoryBlock): string {
+  const why = describeSkillDirectoryBlock(block);
+  const next = block.kind === 'members-link'
+    ? 'Remove the link to let teamai deliver this skill.'
+    : 'Point the skill directory inside the same repository.';
+  return `Skipped ${skillName} (${tool}): ${why}. ${next}`;
+}
+
+function describeSkillDirectoryBlock(block: SkillDirectoryBlock): string {
+  switch (block.kind) {
+    case 'outside-base': return `${block.target} is outside ${block.baseDir}`;
+    case 'members-link': return `${block.link} is your own link`;
+    case 'broken-link': return `${block.link} is a link whose target does not exist`;
+    case 'link-outside-base': return `${block.link} links to ${block.resolved}, outside ${block.baseDir}`;
+    case 'link-to-other-repository': return `${block.link} links to ${block.resolved}, in another repository`;
+    default: {
+      const unhandled: never = block;
+      return unhandled;
+    }
+  }
 }
 
 /** Whether a team-skill delete may reach `skillDir` by the delivery rule; warns and keeps it when not. */
@@ -644,23 +685,24 @@ async function otherVersionFiles(repoPath: string, item: ResourceItem): Promise<
  * count such an extra as a change, so it may never have been pushed. One at a
  * path another version has is named, since it may be an edited leftover.
  * `delivered` tells them apart (#822): a file still as teamai recorded writing
- * it is a leftover, and one it has no record of is the member's own.
+ * it is a leftover, and one it has no record of is the member's own. So a file
+ * the team deleted from this skill goes too, or the next push would add it back.
  */
 async function removeLeftoverVersionFiles(
   source: string, dest: string, otherVersions: Map<string, string[]>, delivered: DeliveredHashes | undefined,
 ): Promise<void> {
-  if (otherVersions.size === 0) return;
+  if (otherVersions.size === 0 && delivered === undefined) return;
   const sourceFiles = new Set(await listFilesRecursive(source));
   let removed = false;
   for (const file of await listFilesRecursive(dest)) {
-    const versions = otherVersions.get(file);
-    if (sourceFiles.has(file) || !versions) continue;
+    if (sourceFiles.has(file)) continue;
+    const versions = otherVersions.get(file) ?? [];
     const installed = path.join(dest, file);
     const recorded = delivered?.[installed];
     const leftover = (recorded !== undefined && await fileHash(installed) === recorded)
       || (await Promise.all(versions.map((version) => fileContentEqual(installed, version)))).some(Boolean);
     if (!leftover) {
-      if (delivered !== undefined && recorded === undefined) continue;
+      if (versions.length === 0 || (delivered !== undefined && recorded === undefined)) continue;
       log.warn(
         `Kept ${installed}: another team version of this skill has a file at that path with different content, `
         + 'so it may be yours or an edited copy. Delete it if you do not need it.',
@@ -1187,8 +1229,9 @@ export class SkillsHandler extends ResourceHandler {
       const skillsDir = await skillsDirForTool(tool, toolPaths[tool].skills, localConfig);
       if (!skillsDir) continue;
       const guard = await skillsGuardBase(resolveBaseDir(localConfig), skillsDir);
-      if (!await allowsSkillDirectory(guard, path.join(skillsDir, item.name), { keepSkillLink: true })) {
-        log.warn(`Skipped ${item.name} (${tool}): the skill path leaves this checkout or is a member-owned link. Point the skill directory inside the same repository.`);
+      const block = await findSkillDirectoryBlock(guard, path.join(skillsDir, item.name), { keepSkillLink: true });
+      if (block) {
+        warnOnce(describeSkippedSkillDirectory(item.name, tool, block));
         continue;
       }
       const ownsShared = async (dest: string): Promise<boolean> =>

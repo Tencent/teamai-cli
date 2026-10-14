@@ -186,6 +186,32 @@ servers:
     expect((await fse.stat(claudeJson)).mtimeMs).toBe(mtimeBefore);
   });
 
+  // `teamai pull` and `teamai mcp inject` both reconcile: whichever runs second
+  // must find nothing to change in what the first wrote.
+  it.each([
+    ['no config.toml', null],
+    ['a config.toml of the member\'s', 'model = "gpt-5"\n'],
+  ])('is idempotent for Codex — a second run over %s changes nothing', async (_label, initial) => {
+    const configToml = path.join(homeDir, '.codex', 'config.toml');
+    await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
+    if (initial !== null) await fse.writeFile(configToml, initial);
+    await writeMcpYaml(`
+servers:
+  - name: s1
+    transport: http
+    url: https://example.com/mcp
+    tools: [codex]
+`);
+
+    expect((await reconcileMcpForConfig(teamConfig, localConfig)).wrote).toBe(true);
+    const written = await fse.readFile(configToml, 'utf-8');
+
+    const second = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(second.changes).toEqual([]);
+    expect(second.wrote).toBe(false);
+    expect(await fse.readFile(configToml, 'utf-8')).toBe(written);
+  });
+
   it('does not overwrite a user-owned server with a colliding name', async () => {
     const cursorMcp = path.join(homeDir, '.cursor', 'mcp.json');
     await fse.writeJson(cursorMcp, { mcpServers: { shared: { url: 'https://mine.example/mcp' } } });
@@ -4310,6 +4336,16 @@ describe('spliceCodexBlock', () => {
     const out = spliceCodexBlock(src, 'newone', '[mcp_servers.newone]\ncommand = "x"\n');
     expect(out).toContain('model = "gpt-5"');
     expect(out).toContain('[mcp_servers.newone]');
+  });
+
+  it.each([
+    ['an empty file', ''],
+    ['a file of the member\'s', 'model = "gpt-5"\n'],
+    ['a file ending in another server', '[mcp_servers.other]\ncommand = "y"\n'],
+  ])('splices the same block into %s once and only once', (_label, src) => {
+    const block = '[mcp_servers.newone]\ncommand = "x"\n';
+    const once = spliceCodexBlock(src, 'newone', block);
+    expect(spliceCodexBlock(once, 'newone', block)).toBe(once);
   });
 
   it('lists existing server names', () => {

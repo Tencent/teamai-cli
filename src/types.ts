@@ -61,6 +61,28 @@ export const ToolPathsSchema = z.object({
 export const ScopeEnum = z.enum(['user', 'project']);
 export type Scope = z.infer<typeof ScopeEnum>;
 
+/**
+ * The install scope a member names in `--scope` and in config.yaml (#1099).
+ * `workspace` is the current name of the scope rooted at a directory; `project`
+ * is its older name and stays accepted. Both parse to the internal `project`,
+ * so code compares against one value; the serializer writes `workspace`.
+ */
+export const InstallScopeSchema = z
+  .enum(['user', 'workspace', 'project'])
+  .transform((scope): Scope => (scope === 'workspace' ? 'project' : scope));
+
+/** The value of a `--scope` option. Every command that takes one reads it here. */
+export function parseInstallScope(value: string): Scope {
+  const parsed = InstallScopeSchema.safeParse(value);
+  if (!parsed.success) throw new Error(`Invalid scope "${value}". Use "workspace" or "user".`);
+  return parsed.data;
+}
+
+/** The name a member sees and config.yaml stores for an install scope. */
+export function installScopeName(scope: Scope): 'user' | 'workspace' {
+  return scope === 'project' ? 'workspace' : scope;
+}
+
 // ─── Team config (teamai.yaml) ───────────────────────────
 
 export const SharingConfigSchema = z.object({
@@ -750,8 +772,8 @@ export const LocalConfigSchema = z.object({
   provider: ProviderNameSchema.optional(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
   // Read-compat default for historical configs that omit `scope` (pre-project era).
-  // NOT the write default for `teamai init` — init defaults to project (issue #250).
-  scope: ScopeEnum.default('user'),
+  // NOT the write default for `teamai init` — init defaults to workspace (issue #250).
+  scope: InstallScopeSchema.default('user'),
   primaryRole: z.string().min(1).optional(),
   additionalRoles: z.array(z.string()).default([]),
   /**

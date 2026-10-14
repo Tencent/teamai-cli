@@ -127,7 +127,7 @@ section "Which tools actually get hooks".
 ## Step 6 — Confirm the skills actually arrived
 
 `teamai init` does not copy team skills, rules or MCP. They arrive on the next
-session start, or when you run `teamai pull`. A project-scope init run without a
+session start, or when you run `teamai pull`. A workspace-scope init run without a
 terminal and without `--agent` creates no tool directory; that directory appears
 when the user first opens that tool in the project, and that session start pulls.
 To confirm after a session start or a pull:

@@ -27,7 +27,7 @@ team:
 
 不写进项目的 `AGENTS.md`。每个工具用自己的文件，或在会话开始时加进去：
 
-| 工具 | 用户范围 | 项目范围 |
+| 工具 | 用户范围 | 工作区范围 |
 |---|---|---|
 | Claude Code | `~/.claude/CLAUDE.md` | `.claude/rules/teamai-context.md` |
 | Codex 系列 | `$CODEX_HOME/AGENTS.md` | session-start hook |

@@ -88,9 +88,11 @@ import {
   ProviderNameSchema,
   type ProviderName,
   type Scope,
+  parseInstallScope,
   getTeamaiHome,
   getConfigPath,
   getDataHome,
+  installScopeName,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { describeRoles, listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
@@ -425,9 +427,9 @@ async function resolveProjectsForInit(
 /**
  * Resolve init install scope from `--scope` / default.
  *
- * - Explicit `user` / `project` → use as-is (`explicit: true`)
+ * - Explicit `user` / `workspace` (or its older name `project`) → use as-is (`explicit: true`)
  * - Invalid value → throw
- * - Omitted → **project** (cwd), unless cwd === home (E1: fall back to user)
+ * - Omitted → **workspace** (cwd), unless cwd === home (E1: fall back to user)
  *
  * Local install location is decided only by the CLI; remote `teamai.yaml.scope`
  * is ignored (see issue #250).
@@ -442,18 +444,16 @@ export function resolveInitScope(
   const atHome = cwdResolved === homeResolved;
 
   if (rawScope !== undefined && rawScope !== '') {
-    if (rawScope !== 'user' && rawScope !== 'project') {
-      throw new Error(`Invalid scope "${rawScope}". Use "project" (default) or "user".`);
-    }
-    if (rawScope === 'project' && atHome) {
+    const scope = parseInstallScope(rawScope);
+    if (scope === 'project' && atHome) {
       throw new Error(
-        'Cannot use --scope project in your home directory (paths would collide with user scope). ' +
-        'cd to a project directory first, or omit --scope / use --scope user.',
+        'Cannot use the workspace scope in your home directory (paths would collide with user scope). ' +
+        'cd to a workspace directory first, or omit --scope / use --scope user.',
       );
     }
     return {
-      scope: rawScope,
-      projectRoot: rawScope === 'project' ? cwdResolved : undefined,
+      scope,
+      projectRoot: scope === 'project' ? cwdResolved : undefined,
       explicit: true,
     };
   }
@@ -488,7 +488,7 @@ export function resolveInheritUserScope(
   existing: boolean | undefined,
 ): boolean | undefined {
   if (requested === true && scope !== 'project') {
-    throw new Error('--inherit-user-scope can only be used with project scope.');
+    throw new Error('--inherit-user-scope can only be used with workspace scope.');
   }
   if (scope !== 'project') return undefined;
   return requested ?? existing;
@@ -574,7 +574,7 @@ function printScopeSummary(
 ): void {
   const configPath = getConfigPath(scope, projectRoot);
   const baseDir = scope === 'project' ? (projectRoot ?? process.cwd()) : getUserHome();
-  log.info(`Scope: ${scope}${scope === 'project' ? ` (${projectRoot})` : ''}`);
+  log.info(`Scope: ${installScopeName(scope)}${scope === 'project' ? ` (${projectRoot})` : ''}`);
   log.info(`  config    → ${configPath}`);
   log.info(`  resources → ${baseDir}/.claude/skills, ...`);
   if (!explicit && scope === 'project') {
@@ -1178,7 +1178,7 @@ export async function initSelfRepo(options: GlobalOptions & {
     return;
   }
 
-  log.info(`Scope: project (${businessRepoRoot})`);
+  log.info(`Scope: workspace (${businessRepoRoot})`);
   log.info(`  knowledge → ${localPath}/{skills,rules,docs,learnings} (committed to main)`);
   log.info(`  reports   → ${REPORTS_BRANCH} orphan branch (members/sessions/votes/stats)`);
 
@@ -1188,7 +1188,7 @@ export async function initSelfRepo(options: GlobalOptions & {
   const existingConfigPath = path.join(partitionHome, 'config.yaml');
   const legacyConfigPath = getConfigPath('project', businessRepoRoot);
   if ((await pathExists(existingConfigPath)) || (await pathExists(legacyConfigPath))) {
-    log.warn(`teamai is already initialized (project scope) at ${existingConfigPath}`);
+    log.warn(`teamai is already initialized (workspace scope) at ${existingConfigPath}`);
     if (options.force) {
       log.info('Overwriting existing config (--force)');
     } else {
@@ -1607,7 +1607,7 @@ export async function init(options: GlobalOptions & {
 
   // Step 0.5: Re-init guard — warn if config already exists
   if (await pathExists(existingConfigPath)) {
-    log.warn(`teamai is already initialized for ${scope} scope at ${existingConfigPath}`);
+    log.warn(`teamai is already initialized for ${installScopeName(scope)} scope at ${existingConfigPath}`);
     if (options.force) {
       log.info('Overwriting existing config (--force)');
     } else {
@@ -2142,7 +2142,7 @@ export async function init(options: GlobalOptions & {
     const gitignorePath = path.join(teamaiHome, '.gitignore');
     if (!await pathExists(gitignorePath)) {
       await writeFile(gitignorePath, buildProjectScopeGitignore());
-      log.debug('Generated .teamai/.gitignore for project scope');
+      log.debug('Generated .teamai/.gitignore for workspace scope');
     }
   } else {
     log.success(`Local config saved to ${getTeamaiHomeDir()}/config.yaml`);

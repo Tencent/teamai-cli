@@ -66,8 +66,8 @@ repo:
   remote: https://github.com/your-org/your-repo.git
 username: your-name
 updatePolicy: auto             # auto, prompt, or skip
-scope: project                 # project (default from init) or user
-projectRoot: /path/to/project
+scope: workspace               # workspace (default from init) or user; project is read as workspace
+projectRoot: /path/to/my-workspace
 inheritUserScope: true
 coAuthorEnabled: true
 gitExcludeEnabled: true

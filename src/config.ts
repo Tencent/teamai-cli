@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   TeamaiConfigSchema,
   LocalConfigSchema,
+  installScopeName,
   StateSchema,
   getUserConfigPath,
   getUserStatePath,
@@ -79,7 +80,7 @@ async function migrateLegacyRoleConfig(
     if (!options.suppressMigrationNotice) log.info('[dry-run] Would migrate legacy teamai config to default role profile: hai');
     return migrated;
   }
-  await writeFileAtomic(expandHome(configPath), YAML.stringify(migrated));
+  await writeFileAtomic(expandHome(configPath), serializeLocalConfig(migrated));
   log.info('Migrated legacy teamai config to default role profile: hai');
   return migrated;
 }
@@ -154,10 +155,13 @@ export async function loadLocalConfig(options: LoadOptions = {}): Promise<LocalC
  * lives inside that directory, so it must never be persisted (a stale absolute
  * path would defeat the anchor-derived design and break on another machine).
  * `roleUnresolved` describes one load of the roles manifest, not the member.
+ * The workspace scope is written under its current name, `workspace` (#1099).
+ * Only a write that happens anyway uses it (a save, or the legacy role
+ * migration); a plain load leaves a `scope: project` file as it is.
  */
 function serializeLocalConfig(config: LocalConfig): string {
   const { dataHome: _dataHome, roleUnresolved: _roleUnresolved, ...persisted } = config;
-  return YAML.stringify(persisted);
+  return YAML.stringify({ ...persisted, scope: installScopeName(persisted.scope) });
 }
 
 /**
@@ -295,7 +299,7 @@ export async function loadLocalConfigForScope(
     const parsed = LocalConfigSchema.parse(raw);
     return await migrateLegacyRoleConfig(parsed, configPath, options);
   } catch (e) {
-    log.error(`Invalid ${scope} config at ${configPath}: ${describeConfigError(e)}`);
+    log.error(`Invalid ${installScopeName(scope)} config at ${configPath}: ${describeConfigError(e)}`);
     return null;
   }
 }
@@ -592,7 +596,7 @@ export async function readConfigFrom(
       // Anywhere else a config here that is not scope: project cannot say which
       // project it serves, and detection would read past it to the user config.
       if (!isUserTeamaiDir(dataHomeDir, projectRoot)) {
-        onUnreadable?.(configPath, `it is scope: ${config.scope}, but a config inside a project must be scope: project`);
+        onUnreadable?.(configPath, `it is scope: ${installScopeName(config.scope)}, but a config inside a workspace must be scope: workspace`);
       }
       return null;
     }
@@ -665,10 +669,17 @@ function isUserTeamaiDir(dataHomeDir: string, projectRoot: string): boolean {
 /**
  * One line naming what is wrong. A Zod message is a JSON dump of its issues,
  * whose first line is `[`; each issue's field and reason is what a member fixes.
+ * A scope this CLI does not know is most likely one a newer teamai wrote, as
+ * `workspace` is for a CLI older than #1099, so it says how to get past it.
  */
 function describeConfigError(e: unknown): string {
   if (e instanceof ZodError) {
-    return e.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
+    return e.issues.map((issue) => {
+      if (issue.code === 'invalid_enum_value' && issue.path.join('.') === 'scope') {
+        return `scope "${String(issue.received)}" is not one this teamai knows; a newer teamai may have written it. Run \`teamai update\``;
+      }
+      return `${issue.path.join('.') || '(root)'}: ${issue.message}`;
+    }).join('; ');
   }
   return e instanceof Error ? e.message : String(e);
 }
@@ -699,7 +710,7 @@ export async function requireInitForScope(
   const localConfig = await loadLocalConfigForScope(scope, projectRoot);
   if (!localConfig) {
     if (scope === 'project') {
-      throw new NotInitializedError(`teamai is not initialized in project scope at ${projectRoot}. Run \`teamai init\` first.`);
+      throw new NotInitializedError(`teamai is not initialized in workspace scope at ${projectRoot}. Run \`teamai init\` first.`);
     }
     return throwMissingOrInvalid(expandHome(getConfigPath(scope, projectRoot)));
   }

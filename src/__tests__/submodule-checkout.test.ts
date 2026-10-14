@@ -15,7 +15,7 @@ import { dashboardWorkspaces, workspaceEvents } from '../dashboard/workspaces.js
 import { status } from '../status.js';
 import { localAgentCheckouts } from '../local-agent.js';
 import { deployBuiltinSkills } from '../builtin-skills.js';
-import { allowsSkillDirectory } from '../resources/skills.js';
+import { allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock } from '../resources/skills.js';
 
 let base: string;
 let parent: string;
@@ -248,6 +248,29 @@ describe('submodule checkouts', () => {
     fs.mkdirSync(path.join(checkout, '.claude'));
     fs.symlinkSync(path.join(nested, '.claude/skills'), path.join(checkout, '.claude/skills'));
     expect(await allowsSkillDirectory(checkout, path.join(checkout, '.claude/skills/fixture'))).toBe(sameRepo);
+  });
+
+  it('names the link into another repository that keeps a skill out', async () => {
+    const nested = path.join(checkout, 'vault');
+    fs.mkdirSync(nested);
+    git(nested, 'init', '-q');
+    fs.mkdirSync(path.join(nested, '.codex/skills'), { recursive: true });
+    fs.symlinkSync('vault/.codex', path.join(checkout, '.codex'));
+    const block = await findSkillDirectoryBlock(checkout, path.join(checkout, '.codex/skills/fixture'));
+    expect(block && describeSkippedSkillDirectory('fixture', 'codex', block)).toBe(
+      `Skipped fixture (codex): ${path.join(checkout, '.codex')} links to ${fs.realpathSync(path.join(nested, '.codex'))}, in another repository. `
+      + 'Point the skill directory inside the same repository.',
+    );
+  });
+
+  it('tells the member to remove their own skill link rather than move the directory', async () => {
+    fs.mkdirSync(path.join(checkout, 'mine'));
+    fs.mkdirSync(path.join(checkout, '.claude/skills'), { recursive: true });
+    fs.symlinkSync('../../mine', path.join(checkout, '.claude/skills/fixture'));
+    const block = await findSkillDirectoryBlock(checkout, path.join(checkout, '.claude/skills/fixture'));
+    expect(block && describeSkippedSkillDirectory('fixture', 'claude', block)).toBe(
+      `Skipped fixture (claude): ${path.join(checkout, '.claude/skills/fixture')} is your own link. Remove the link to let teamai deliver this skill.`,
+    );
   });
 
   it('inherits the original submodule config in a superproject worktree', async () => {

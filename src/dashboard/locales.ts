@@ -2,7 +2,6 @@
 export const dashboardMessages: Record<string, string> = {
   "User scope": "用户范围",
   "Unassigned sessions": "未归类会话",
-  "Project": "项目",
   "No ended sessions in prior period": "无已结束会话",
   "No priced sessions": "暂无已定价会话",
   "No usage data": "暂无用量数据",
@@ -127,7 +126,7 @@ export const dashboardMessages: Record<string, string> = {
   "sessions priced": "个会话有定价数据",
   "Loading local sessions…": "正在加载本机会话…",
   "No active sessions": "暂无活跃会话",
-  "Start a supported AI tool in a TeamAI project. Dashboard hooks report sessions automatically.": "在 TeamAI 项目中启动受支持的 AI 工具，Dashboard 钩子会自动上报会话。",
+  "Start a supported AI tool in a TeamAI workspace. Dashboard hooks report sessions automatically.": "在 TeamAI 工作区中启动受支持的 AI 工具，Dashboard 钩子会自动上报会话。",
   "Active": "活跃会话",
   "Recently Ended": "最近结束",
   "Tokens": "Token",

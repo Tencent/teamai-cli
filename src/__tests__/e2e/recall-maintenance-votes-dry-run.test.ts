@@ -122,9 +122,10 @@ describe('recall maintenance --dry-run leaves v1 votes files alone (#900 C7)', (
     ['--update-quality'],
     ['--prune'],
   ])('maintenance %s --dry-run keeps them v1 on disk', async (mode) => {
-    // First run materializes the reports worktree; snapshot after that so the
-    // comparison is about the scan, not about the checkout appearing.
-    await runCLI(['recall', 'maintenance', mode, '--dry-run'], homeDir, sandbox);
+    // A dry run no longer creates the reports worktree, so a read-only
+    // `members` materializes it; snapshot after that so the comparison is
+    // about the scan, not about the checkout appearing.
+    await runCLI(['members'], homeDir, sandbox);
     const before = votesSnapshot();
     expect(Object.keys(before).sort()).toEqual(['alice.yaml', 'bob.yaml']);
     expect(before['alice.yaml']).not.toContain('version: 2');

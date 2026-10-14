@@ -118,7 +118,7 @@ import { drainRecallLog } from '../recall-adoption.js';
 import { releaseLock } from '../update.js';
 import { SYNC_LOCK_FILENAME, type TeamaiConfig, type LocalConfig, type State } from '../types.js';
 
-const SKIP_MSG = 'project scope detected, skipped user scope';
+const SKIP_MSG = 'workspace scope detected, skipped user scope';
 
 describe('pull scope isolation (issue #73)', () => {
   let tmpDir: string;
@@ -498,7 +498,7 @@ describe('pull scope isolation (issue #73)', () => {
     expect(loadStateForScope).toHaveBeenCalledWith(expect.objectContaining({ scope: 'user' }));
     expect(loadStateForScope).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project', projectRoot }));
     expect(log.info).toHaveBeenCalledWith(
-      'project scope detected, inheriting user-scope resources and knowledge',
+      'workspace scope detected, inheriting user-scope resources and knowledge',
     );
     expect(log.info).not.toHaveBeenCalledWith(SKIP_MSG);
     expect(await fse.pathExists(

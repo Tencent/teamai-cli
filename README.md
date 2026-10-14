@@ -87,8 +87,8 @@ Create a shared repo on your git host (GitHub, GitLab, GitCode, CNB, TGit, or a 
 ```bash
 # Choose one, depending on where you want resources installed
 
-# Project-scope init (default, resources installed under the project directory)
-cd /path/to/my-project
+# Workspace-scope init (default, resources installed under the workspace directory)
+cd /path/to/my-workspace
 teamai init https://github.com/your-org/your-repo
 
 # Or, user-scope init (resources installed under ~/)

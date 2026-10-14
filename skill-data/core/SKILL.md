@@ -140,7 +140,7 @@ history (a skill: every file in it); any other is kept as the user's
 (`Kept <path>: it is not teamai's ...`): rename or delete it, then `teamai pull`,
 to receive the team version.
 
-In project scope, `init` and `pull` also install a git hook in the repository's
+In workspace scope, `init` and `pull` also install a git hook in the repository's
 local git config (`hook.teamai-post-checkout`, `hook.teamai-post-merge`, `hook.teamai-post-rewrite`; Git
 2.54+; older Git without `core.hooksPath` gets a marked block in `.git/hooks/`
 scripts, and with it `teamai doctor` advises), beside any `core.hooksPath` manager or `.git/hooks` script. When a

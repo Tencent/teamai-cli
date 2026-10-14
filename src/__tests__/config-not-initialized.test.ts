@@ -200,7 +200,7 @@ describe('findUnreadableProjectConfig', () => {
     expect(problem).not.toContain('\n');
   });
 
-  it('names a project config that is not scope: project, which detection alone skips', async () => {
+  it('names a workspace config that is not scope: workspace, which detection alone skips', async () => {
     // `scope` omitted defaults to user: detection would read past the file to
     // the user config, another team's.
     const configPath = path.join(dir, '.teamai', 'config.yaml');
@@ -209,7 +209,7 @@ describe('findUnreadableProjectConfig', () => {
 
     const problem = await findUnreadableProjectConfig(dir);
     expect(problem).toContain(configPath);
-    expect(problem).toContain('scope: project');
+    expect(problem).toContain('must be scope: workspace');
   });
 
   it('does not name the user config when the directory is HOME itself', async () => {

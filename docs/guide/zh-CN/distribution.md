@@ -21,7 +21,7 @@
 只进当前项目：
 
 ```bash
-cd /path/to/my-project
+cd /path/to/my-workspace
 teamai init https://github.com/your-org/platform-teamai
 ```
 
@@ -44,7 +44,7 @@ teamai init https://github.com/your-org/java-service-teamai --inherit-user-scope
 业务仓库自己就是团队仓库。资产写在这个仓库的 `.teamai/` 里。
 
 ```bash
-cd /path/to/my-project
+cd /path/to/my-workspace
 teamai init . --agent claude,cursor
 ```
 
@@ -93,11 +93,11 @@ submodules: true
 
 `teamai.yaml` 可以声明 Node 脚本。CLI 用自己的 Node 跑，不经过 shell。`path` 相对团队仓库根目录，而且必须留在仓库里。指向仓库外的符号链接会被拒绝。脚本的工作目录是团队仓库。脚本失败不会让 init 或 pull 失败。
 
-项目 scope 下，脚本还会拿到 TeamAI 已经解析好的检出目录。写什么由脚本决定。TeamAI 不管理个人文件，也不会替脚本覆盖它打算保留的文件。
+workspace scope 下，脚本还会拿到 TeamAI 已经解析好的检出目录。写什么由脚本决定。TeamAI 不管理个人文件，也不会替脚本覆盖它打算保留的文件。
 
 - `TEAMAI_REPO` — 团队仓库
-- `TEAMAI_SCOPE` — `user` 或 `project`
-- `TEAMAI_CHECKOUT` — 当前检出目录，仅项目 scope
+- `TEAMAI_SCOPE` — `user`，workspace scope 下为 `project`
+- `TEAMAI_CHECKOUT` — 当前检出目录，仅 workspace scope
 - `TEAMAI_MAIN_CHECKOUT` — TeamAI 解析到的主检出目录，知道时才有
 - `TEAMAI_PROJECT` — 同一个解析结果，同一仓库的各个 worktree 都一样
 

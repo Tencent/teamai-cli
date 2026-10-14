@@ -1478,6 +1478,63 @@ describe('SkillsHandler.pullItem honors disabledAgents', () => {
   });
 });
 
+describe('SkillsHandler.pullItem through a skills directory that links away', () => {
+  let tmpDir: string;
+  let homeDir: string;
+  let teamConfig: TeamaiConfig;
+  let localConfig: LocalConfig;
+  let sourcePath: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.realpath(await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-skills-link-away-')));
+    homeDir = path.join(tmpDir, 'home');
+    const repoPath = path.join(tmpDir, 'team-repo');
+    sourcePath = path.join(repoPath, 'skills', 'team-skill');
+    await fse.ensureDir(sourcePath);
+    await fse.writeFile(path.join(sourcePath, 'SKILL.md'), '---\nname: team-skill\ndescription: X\n---\n');
+    vi.stubEnv('HOME', homeDir);
+    teamConfig = {
+      team: 'test',
+      description: '',
+      repo: 'https://git.woa.com/test/repo.git',
+      provider: 'tgit' as const,
+      reviewers: [],
+      sharing: { skills: {}, rules: { enforced: [] }, docs: { localDir: '' }, env: { injectShellProfile: true } },
+      toolPaths: { claude: { skills: '.claude/skills' } },
+    };
+    localConfig = {
+      repo: { localPath: repoPath, remote: 'https://git.woa.com/test/repo.git' },
+      username: 'testuser',
+      updatePolicy: 'auto',
+      additionalRoles: [],
+      scope: 'user',
+      disabledAgents: [],
+    };
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  it('names the link and where it points, once per pull', async () => {
+    const elsewhere = path.join(tmpDir, 'elsewhere');
+    await fse.ensureDir(elsewhere);
+    await fse.ensureDir(path.join(homeDir, '.claude'));
+    await fse.symlink(elsewhere, path.join(homeDir, '.claude', 'skills'), 'dir');
+    const item = { name: 'team-skill', type: 'skills' as const, sourcePath, relativePath: 'skills/team-skill' };
+    vi.mocked(log.warn).mockClear();
+
+    await new SkillsHandler().pullItem(item, teamConfig, localConfig);
+    await new SkillsHandler().pullItem(item, teamConfig, localConfig);
+
+    const expected = `Skipped team-skill (claude): ${path.join(homeDir, '.claude', 'skills')} links to ${elsewhere}, outside ${homeDir}. `
+      + 'Point the skill directory inside the same repository.';
+    expect(vi.mocked(log.warn).mock.calls.map(([message]) => String(message)).filter((message) => message === expected)).toHaveLength(1);
+    expect(await fse.pathExists(path.join(elsewhere, 'team-skill'))).toBe(false);
+  });
+});
+
 describe('SkillsHandler.pullItem skips hermes when not installed', () => {
   let tmpDir: string;
   let homeDir: string;

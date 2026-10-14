@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
@@ -32,6 +32,7 @@ describe('deliveredUnion', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await fse.remove(tmp);
   });
 
@@ -43,6 +44,57 @@ describe('deliveredUnion', () => {
   it('lists a path a member\'s line in the shared info/exclude already hides in another checkout', async () => {
     await fse.outputFile(exclude(), `.claude/\n# [teamai:delivered:start]\n/${rel}\n# [teamai:delivered:end]\n`);
     expect(await union()).toEqual({ paths: [path.join(main, rel)], foreign: [] });
+  });
+
+  it('keeps listing a path a member\'s rule for that file hides once teamai\'s delivered block below it lists the path too', async () => {
+    const listed = { paths: [path.join(main, rel)], foreign: [] };
+    await fse.outputFile(exclude(), `/${rel}\n`);
+    expect(await union()).toEqual(listed);
+    // The block the pull writes for it; its line now decides for git.
+    await fse.outputFile(exclude(), `/${rel}\n# [teamai:delivered:start]\n/${rel}\n# [teamai:delivered:end]\n`);
+    expect(await union()).toEqual(listed);
+  });
+
+  it('keeps listing a path the member\'s core.excludesFile hides once teamai\'s delivered block lists the path too', async () => {
+    const listed = { paths: [path.join(main, rel)], foreign: [] };
+    const globalFile = path.join(tmp, 'global-ignore');
+    await fse.outputFile(globalFile, `/${rel}\n`);
+    git(main, 'config', 'core.excludesFile', globalFile);
+    expect(await union()).toEqual(listed);
+    await fse.outputFile(exclude(), `# [teamai:delivered:start]\n/${rel}\n# [teamai:delivered:end]\n`);
+    expect(await union()).toEqual(listed);
+  });
+
+  it('holds a path back while the member\'s own rule re-includes another checkout\'s file there, before and after teamai\'s block', async () => {
+    const foreign = { paths: [], foreign: [{ path: path.join(main, rel), rel, checkout: wt, file: path.join(wt, rel) }] };
+    await fse.outputFile(exclude(), `!/${rel}\n`);
+    expect(await union()).toEqual(foreign);
+    await fse.outputFile(exclude(), `!/${rel}\n# [teamai:delivered:start]\n/${rel}\n# [teamai:delivered:end]\n`);
+    expect(await union()).toEqual(foreign);
+  });
+
+  it('holds a path back when the other checkout\'s .gitignore re-includes the directory the member\'s core.excludesFile hides', async () => {
+    const globalFile = path.join(tmp, 'global-ignore');
+    await fse.outputFile(globalFile, '/.claude/\n');
+    git(main, 'config', 'core.excludesFile', globalFile);
+    await fse.outputFile(path.join(wt, '.gitignore'), '!/.claude/\n');
+    await fse.outputFile(exclude(), `# [teamai:delivered:start]\n/${rel}\n# [teamai:delivered:end]\n`);
+    expect(await union()).toEqual({
+      paths: [],
+      foreign: [{ path: path.join(main, rel), rel, checkout: wt, file: path.join(wt, rel) }],
+    });
+  });
+
+  it('holds a path back when core.excludesFile is set empty, whatever git\'s default ignore file holds', async () => {
+    const xdg = path.join(tmp, 'xdg');
+    vi.stubEnv('XDG_CONFIG_HOME', xdg);
+    await fse.outputFile(path.join(xdg, 'git', 'ignore'), `/${rel}\n`);
+    git(main, 'config', 'core.excludesFile', '');
+    await fse.outputFile(exclude(), `# [teamai:delivered:start]\n/${rel}\n# [teamai:delivered:end]\n`);
+    expect(await union()).toEqual({
+      paths: [],
+      foreign: [{ path: path.join(main, rel), rel, checkout: wt, file: path.join(wt, rel) }],
+    });
   });
 
   it('holds a path back while another checkout\'s own file there is visible to git', async () => {

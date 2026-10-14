@@ -41,7 +41,7 @@ In the **CLI clone** (not as `teamai init .`):
 
 ```bash
 npm run build && npm link
-teamai init https://github.com/teamai-hub/teamai-cli-dev --scope project --role dev
+teamai init https://github.com/teamai-hub/teamai-cli-dev --scope workspace --role dev
 teamai pull
 git status   # nothing under .teamai/ or tool dirs should be staged for this repo
 ```

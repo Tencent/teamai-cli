@@ -152,10 +152,10 @@ For GitHub/GitLab, `teamai init` installs any helper CLI it needs automatically.
 
 ## Step 4 — Decide the scope (ASK)
 
-One choice — project-only or whole machine?
+One choice — this workspace or the whole machine?
 
-- Default (project): resources land in the current project's `.claude/` etc.
-  `cd` into the project first.
+- Default (workspace): resources land in the current workspace's `.claude/` etc.
+  `cd` into the workspace first.
 - Whole machine: add `--scope user` so every project gets the team resources.
 
 (The repo name was already chosen when the user created the repo in Step 2c —
@@ -175,7 +175,7 @@ non-interactive run, ask first and pass `--project`: without it, init keeps
 waiting for a choice.
 
 ```bash
-# project scope (default) — run from inside the project directory
+# workspace scope (default) — run from inside the project directory
 teamai init https://<platform>/<org>/<repo-name>
 
 # or whole machine
@@ -263,7 +263,7 @@ carries counts + tool names only, on a separate branch of that same repo.)
    Tell them to send the URL + this line to each member.
 3. Remind them (in their language): a member's `teamai init` does not copy team
    resources. They arrive on the next session start, or when the member runs
-   `teamai pull`. In project scope, init creates a tool directory only for a tool
+   `teamai pull`. In workspace scope, init creates a tool directory only for a tool
    named with `--agent` or picked in init's tool picker; otherwise that directory
    appears when the member first opens that tool in the project. Resources the
    team adds later arrive at the next session start.

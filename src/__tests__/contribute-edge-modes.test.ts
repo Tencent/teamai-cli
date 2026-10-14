@@ -157,3 +157,36 @@ describe('marking the agent session contributed', () => {
     expect((await readContributeState('pi-session')).contributed).toBe(true);
   });
 });
+
+describe('contribute --scope', () => {
+  it('reads --scope workspace as the workspace config of this directory', async () => {
+    mode = 'http';
+    fs.mkdirSync(path.join(tmp, 'team-repo'), { recursive: true });
+    const { loadLocalConfigForScope } = await import('../config.js');
+    vi.mocked(loadLocalConfigForScope).mockClear();
+
+    await expect(
+      contribute({ scope: 'workspace', title: 'workspace scope', file: note('# knowledge') }),
+    ).rejects.toThrow(/read-only HTTP/);
+
+    expect(loadLocalConfigForScope).toHaveBeenCalledWith('project', process.cwd(), expect.anything());
+  });
+
+  it('refuses a scope it does not know instead of guessing one', async () => {
+    const { log } = await import('../utils/logger.js');
+    const { requireInit, detectProjectConfig } = await import('../config.js');
+    vi.mocked(requireInit).mockClear();
+    vi.mocked(detectProjectConfig).mockClear();
+    const exitCode = process.exitCode;
+    try {
+      await contribute({ scope: 'global', title: 'unknown scope', file: note('# knowledge') });
+
+      expect(log.error).toHaveBeenCalledWith('Invalid scope "global". Use "workspace" or "user".');
+      expect(process.exitCode).toBe(1);
+      expect(requireInit).not.toHaveBeenCalled();
+      expect(detectProjectConfig).not.toHaveBeenCalled();
+    } finally {
+      process.exitCode = exitCode;
+    }
+  });
+});

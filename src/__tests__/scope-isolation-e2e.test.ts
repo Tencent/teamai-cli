@@ -21,7 +21,7 @@ const CLI = path.join(ROOT, 'dist', 'index.js');
 
 const PROJECT_TITLE = 'Project Deployment Timeout Fix';
 const USER_TITLE = 'User Deployment Timeout Fix';
-const SKIP_MSG = 'project scope detected, skipped user scope';
+const SKIP_MSG = 'workspace scope detected, skipped user scope';
 
 interface RunResult {
   code: number | null;
@@ -174,6 +174,6 @@ describe('scope isolation e2e (issue #73)', () => {
   it('uninstall --dry-run: states it is acting on the project scope', async () => {
     const res = await runCLI(['uninstall', '--dry-run', '--force'], { HOME: homeDir }, projectRoot);
     expect(res.code, res.output).toBe(0);
-    expect(res.output).toContain('Uninstalling project scope');
+    expect(res.output).toContain('Uninstalling workspace scope');
   });
 });

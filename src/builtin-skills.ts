@@ -4,12 +4,16 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import { pathExists, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { warnOnce } from './utils/warn-once.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
 import { getCopilotHome, resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
 import { getHermesHome } from './hermes-home.js';
 import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
 import { ResourceHandler } from './resources/base.js';
-import { CODEX_TOOL, allowsSkillDirectory, resolveSkillDestination, SHARED_AGENT_SKILLS_PATH, skillsDirForTool, skillTargetsFor } from './resources/skills.js';
+import {
+  CODEX_TOOL, allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock, resolveSkillDestination,
+  SHARED_AGENT_SKILLS_PATH, skillsDirForTool, skillTargetsFor,
+} from './resources/skills.js';
 import { getUserHome } from './utils/home.js';
 import { packagedSkillRoots } from './skill-content.js';
 import { PACKAGED_SKILL_DIGESTS } from './packaged-skill-digests.js';
@@ -567,8 +571,9 @@ export async function deployBuiltinSkills(
 
       try {
         // Deployment and pruning follow the same repository boundary.
-        if (!await allowsSkillDirectory(baseDir, destDir)) {
-          log.warn(`Skipped ${skillName} (${tool}): ${destDir} leaves this checkout or is a member-owned link. Point the skill directory inside the same repository.`);
+        const block = await findSkillDirectoryBlock(baseDir, destDir);
+        if (block) {
+          warnOnce(describeSkippedSkillDirectory(skillName, tool, block));
           continue;
         }
         const stub = path.join(destDir, 'SKILL.md');

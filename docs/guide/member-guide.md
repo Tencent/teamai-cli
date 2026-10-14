@@ -6,7 +6,7 @@
 
 ```bash
 npm install -g teamai-cli
-cd /path/to/my-project
+cd /path/to/my-workspace
 teamai init https://github.com/your-org/your-repo
 ```
 
