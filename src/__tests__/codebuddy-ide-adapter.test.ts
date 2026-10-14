@@ -36,6 +36,13 @@ import { CodeBuddyIdeAdapter } from '../session-flow/adapters/codebuddy-ide.js';
  */
 
 let tmpHome: string;
+let previousIdeData: string | undefined;
+
+function useIdeData(home: string): void {
+  mocks.home = home;
+  previousIdeData = process.env.TEAMAI_CODEBUDDY_IDE_DATA;
+  process.env.TEAMAI_CODEBUDDY_IDE_DATA = path.join(home, 'CodeBuddyExtension', 'Data');
+}
 
 function md5(s: string): string {
   return crypto.createHash('md5').update(s).digest('hex');
@@ -123,11 +130,13 @@ function buildWorkspace(
 
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-cbide-'));
-  mocks.home = tmpHome;
+  useIdeData(tmpHome);
 });
 
 afterEach(() => {
   mocks.home = '';
+  if (previousIdeData === undefined) delete process.env.TEAMAI_CODEBUDDY_IDE_DATA;
+  else process.env.TEAMAI_CODEBUDDY_IDE_DATA = previousIdeData;
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 

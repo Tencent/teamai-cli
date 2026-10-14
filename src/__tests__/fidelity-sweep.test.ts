@@ -280,6 +280,16 @@ function newWorkspace(name: string): string {
   return dir;
 }
 
+function useIdeData(home: string): void {
+  mocks.home = home;
+  process.env.TEAMAI_CODEBUDDY_IDE_DATA = path.join(home, 'CodeBuddyExtension', 'Data');
+}
+
+function clearIdeData(): void {
+  mocks.home = '';
+  delete process.env.TEAMAI_CODEBUDDY_IDE_DATA;
+}
+
 function ideHistoryRoot(): string {
   const base = getUserDataBase();
   if (!base) throw new Error('CodeBuddy IDE data dir is unavailable');
@@ -352,7 +362,7 @@ async function sweepRoute(aName: string, bName: string): Promise<void> {
 describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json)', () => {
   it('runs all 5 roundtrip routes', async () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fidelity-'));
-    mocks.home = tmpHome;
+    useIdeData(tmpHome);
     ideHistoryRoot();
     try {
       await sweepRoute('codebuddy-ide', 'claude-code');
@@ -361,7 +371,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
       await sweepRoute('workbuddy', 'claude-code');
       await sweepRoute('codex', 'claude-code');
     } finally {
-      mocks.home = '';
+      clearIdeData();
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
   }, 120_000);
@@ -370,7 +380,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
 
   it('flattenDag: multi-branch + sidechain behavior', async () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fidelity-dag-'));
-    mocks.home = tmpHome;
+    useIdeData(tmpHome);
     try {
       const cwd = newWorkspace('dag-proj');
       const ts = '2026-09-01T10:00:00.000Z';
@@ -417,7 +427,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
         orphanKept: outline.some((o) => o.includes('ORPHAN-Q')),
       };
     } finally {
-      mocks.home = '';
+      clearIdeData();
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
   });
@@ -426,7 +436,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
 
   it('fidelityScore honesty audit', async () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fidelity-f-'));
-    mocks.home = tmpHome;
+    useIdeData(tmpHome);
     ideHistoryRoot();
     try {
       const audit = REPORT.fidelityAudit as Array<Record<string, unknown>>;
@@ -482,7 +492,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
       audit.push({ case: 'F4 fixture fidelity→cursor', score: Number(fidCursor.score.toFixed(4)), degradedBlocks: fidCursor.degradedBlocks, platformSpecificLosses: fidCursor.platformSpecificLosses });
       void cursor; void claude;
     } finally {
-      mocks.home = '';
+      clearIdeData();
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
   });
@@ -491,7 +501,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
 
   it('stress: 600-message session migrate timing + memory', async () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fidelity-stress-'));
-    mocks.home = tmpHome;
+    useIdeData(tmpHome);
     try {
       const cwd = newWorkspace('stress-proj');
       const messages: Message[] = [];
@@ -556,7 +566,7 @@ describe('fidelity sweep (QA, writes report to /tmp/session-fidelity-report.json
         rssMB: Number((mem1.rss / 1048576).toFixed(1)),
       };
     } finally {
-      mocks.home = '';
+      clearIdeData();
       fs.rmSync(tmpHome, { recursive: true, force: true });
     }
   }, 180_000);

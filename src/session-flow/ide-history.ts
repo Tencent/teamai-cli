@@ -119,6 +119,11 @@ function toIdeConvId(sessionId: string): string {
  * CodeBuddyExtension user-data root (cross-platform).
  */
 export function getUserDataBase(): string | null {
+  // Tests set this so fixtures stay under a temp directory. Coverage runs do
+  // not apply the node:os homedir mock, and writing the real home pollutes
+  // later tests on the same machine.
+  const override = process.env.TEAMAI_CODEBUDDY_IDE_DATA?.trim();
+  if (override) return override;
   const home = os.homedir();
   switch (process.platform) {
     case 'darwin':
