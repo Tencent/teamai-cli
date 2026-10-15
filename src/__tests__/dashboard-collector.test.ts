@@ -58,6 +58,7 @@ const TOOL_ERROR_LINE = JSON.stringify({
 // Use a temp dir for each test to avoid cross-test interference
 let tmpDir: string;
 let originalHome: string;
+let originalXdgDataHome: string | undefined;
 
 /** Simulate Copilot flushing its current shutdown after SessionEnd fires. */
 function appendCopilotShutdownLater(transcript: string, entry: object): NodeJS.Timeout {
@@ -81,12 +82,16 @@ function writeResumedCopilotLog(transcript: string, oldInputTokens: number): voi
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dashboard-test-'));
   originalHome = process.env.HOME ?? '';
+  originalXdgDataHome = process.env.XDG_DATA_HOME;
   process.env.HOME = tmpDir;
+  delete process.env.XDG_DATA_HOME;
   _setLogFilePath(path.join(tmpDir, '.teamai', 'debug.log'));
 });
 
 afterEach(() => {
   process.env.HOME = originalHome;
+  if (originalXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
+  else process.env.XDG_DATA_HOME = originalXdgDataHome;
   resetLogger();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
@@ -1502,6 +1507,18 @@ describe('parseHookEvent: Muse Code session tokens', () => {
       tokens: { input: 212, output: 44, cacheRead: 10, cacheCreation: 0 },
       tokenScope: 'session',
     }));
+  });
+
+  it('finds the session log under XDG_DATA_HOME', async () => {
+    const dataHome = path.join(tmpDir, 'custom-data');
+    process.env.XDG_DATA_HOME = dataHome;
+    const customSessionDir = path.join(dataHome, 'muse', 'sessions', '2026', '10', '12', sessionId);
+    fs.mkdirSync(customSessionDir, { recursive: true });
+    fs.writeFileSync(path.join(customSessionDir, 'session.jsonl'), usageRecord('provider', 60, 7, 10) + '\n');
+
+    const event = await stop();
+
+    expect(event?.tokens).toEqual({ input: 50, output: 7, cacheRead: 10, cacheCreation: 0 });
   });
 
   it('records no tokens when the session has no log', async () => {
