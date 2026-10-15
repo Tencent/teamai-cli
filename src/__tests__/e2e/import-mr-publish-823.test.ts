@@ -96,7 +96,7 @@ function scenario(opts: { project?: string; ghFailsFor?: string } = {}) {
     fs.mkdirSync(bin);
     // One MR the host cannot answer for, so a run of several can lose one.
     const gh = opts.ghFailsFor
-      ? `#!/usr/bin/env bash\ncase "$*" in *${opts.ghFailsFor}*) echo "fake gh: no such pull request" >&2; exit 1 ;; esac\n`
+      ? `#!/usr/bin/env bash\ncase "$*" in *"${opts.ghFailsFor}"*) echo "fake gh: no such pull request" >&2; exit 1 ;; esac\n`
         + FAKE_GH.replace('#!/usr/bin/env bash\n', '')
       : FAKE_GH;
     fs.writeFileSync(path.join(bin, 'gh'), gh, { mode: 0o755 });
@@ -224,7 +224,8 @@ describe('import --from-mr publishes its learning (#823)', () => {
   });
 
   describe('with one of several MR URLs failing (#1104)', () => {
-    const s = scenario({ ghFailsFor: 'pull/8' });
+    // The stub sees gh's argv (`gh pr view 8 --repo acme/app ...`), not the URL.
+    const s = scenario({ ghFailsFor: 'view 8 --repo acme/app' });
     let imported: RunResult = { code: null, output: '' };
     beforeAll(async () => {
       if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);

@@ -284,6 +284,9 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
             } else if (report.refused) {
               const { KEPT_UNTIL_CHECKOUT_SETTLED } = await import('./contribute.js');
               task.title = `Learning saved locally (${report.lastError ?? 'not published yet'}). ${KEPT_UNTIL_CHECKOUT_SETTLED}`;
+            } else if (unpublished.length > 0 && queued.length === 1) {
+              task.title = `Learning saved locally (${report.lastError ?? 'not published yet'}); `
+                + 'the next `teamai pull` publishes it';
             } else if (unpublished.length > 0) {
               task.title = `${unpublished.length} of ${queued.length} learning(s) saved locally `
                 + `(${report.lastError ?? 'not published yet'}); the next \u0060teamai pull\u0060 publishes them`;
