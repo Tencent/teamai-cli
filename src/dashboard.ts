@@ -415,8 +415,8 @@ export async function startDashboard(port?: number): Promise<void> {
           res.end(JSON.stringify({ ok: false, error: 'invalid_request' }));
           return;
         }
-        const [{ loadTeamConfig }, { setSkillExclusion }, { readWorkspaceChildren }] = await Promise.all([
-          import('./config.js'), import('./dashboard/resources-skills.js'), import('./workspace-children.js'),
+        const [{ loadTeamConfig }, { buildRolePullContext }, { setSkillExclusion }, { readWorkspaceChildren }] = await Promise.all([
+          import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources-skills.js'), import('./workspace-children.js'),
         ]);
         const config = await readWorkspaceChildren(ownConfig);
         const teamConfig = await loadTeamConfig(config.repo.localPath);
@@ -425,7 +425,9 @@ export async function startDashboard(port?: number): Promise<void> {
           res.end(JSON.stringify({ ok: false, error: 'unknown_skill' }));
           return;
         }
-        const result = await setSkillExclusion(teamConfig, config, name, excluded);
+        // The same role context the GET endpoints use, so the response's
+        // delivered flag matches the inventory the client reloads next.
+        const result = await setSkillExclusion(teamConfig, config, name, excluded, await buildRolePullContext(config));
         if (!result.ok) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(result));

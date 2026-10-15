@@ -138,6 +138,27 @@ describe('collectSkillsInventory', () => {
     expect(byName.get('ui')).toMatchObject({ delivered: true });
   });
 
+  it('marks a root skill replaced when an active namespace copy delivers (#1143 P1)', async () => {
+    // Root review AND backend/review share the basename; only the namespace
+    // copy delivers. The root entry must say `replaced`, not `delivered`.
+    await writeSkill('backend/review', '---\nname: review\ndescription: Namespaced copy\n---\n');
+    const roleContext = rolesOver(['backend']);
+    const skills = await collectSkillsInventory(teamConfig, localConfig, roleContext);
+    const byPath = new Map(skills.map((skill) => [skill.path, skill]));
+    expect(byPath.get('skills/backend/review')).toMatchObject({ delivered: true, undeliveredReason: undefined });
+    expect(byPath.get('skills/review')).toMatchObject({ delivered: false, undeliveredReason: 'replaced' });
+  });
+
+  it('labels the losing same-name copy replaced without a role context too', async () => {
+    // No roles: the name-keyed merge keeps the scan-order winner (the root
+    // copy here); the namespaced twin's truthful label is `replaced`.
+    await writeSkill('backend/review', '---\nname: review\ndescription: Namespaced copy\n---\n');
+    const skills = await collectSkillsInventory(teamConfig, localConfig, null);
+    const byPath = new Map(skills.map((skill) => [skill.path, skill]));
+    expect(byPath.get('skills/review')).toMatchObject({ delivered: true, undeliveredReason: undefined });
+    expect(byPath.get('skills/backend/review')).toMatchObject({ delivered: false, undeliveredReason: 'replaced' });
+  });
+
   it('marks a personally excluded skill and lets exclusion win over delivery', async () => {
     localConfig = { ...localConfig, excludedSkills: ['review'] };
     const skills = await collectSkillsInventory(teamConfig, localConfig, null);
@@ -170,6 +191,15 @@ describe('collectSkillsInventory', () => {
 });
 
 describe('setSkillExclusion', () => {
+  function rolesOver(namespaces: string[]): RolePullContext {
+    return {
+      activeNamespaces: { knowledge: [], skills: namespaces, learnings: [], agents: [] },
+      activeSkillNames: new Set(),
+      inactiveSkillNames: new Set(),
+      inactiveSkillSources: new Map(),
+      inactiveDocsNamespaces: [],
+    };
+  }
   let tempDir: string;
   let homeDir: string;
   let repoPath: string;
@@ -223,9 +253,33 @@ describe('setSkillExclusion', () => {
     expect(state.lastPullRev).toBeNull();
   });
 
+  it('keeps both of two concurrent exclusion writes (#1143 P1)', async () => {
+    await fse.ensureDir(path.join(repoPath, 'skills', 'alpha'));
+    await fse.writeFile(path.join(repoPath, 'skills', 'alpha', 'SKILL.md'), '---\nname: alpha\ndescription: A\n---\nbody\n');
+    await Promise.all([
+      setSkillExclusion(teamConfig, localConfig, 'review', true),
+      setSkillExclusion(teamConfig, localConfig, 'alpha', true),
+    ]);
+    const { loadLocalConfig } = await import('../config.js');
+    const reloaded = await loadLocalConfig();
+    expect(reloaded?.excludedSkills ?? []).toEqual(['alpha', 'review']);
+  });
+
   it('rejects an unknown skill name', async () => {
     const result = await setSkillExclusion(teamConfig, localConfig, 'nope', true);
     expect(result).toEqual({ ok: false, error: 'unknown_skill' });
+  });
+
+  it('answers the exclusion response with the workspace role context (#1143 P2)', async () => {
+    // api sits in the backend namespace; with that role context active, a
+    // re-include must answer delivered: false (outside the namespaces), not
+    // the null-context delivered: true.
+    // Root review sits outside the active namespaces: a re-include must
+    // answer delivered: false under that context, not the null-context
+    // delivered: true.
+    const roleContext = rolesOver(['backend']);
+    const result = await setSkillExclusion(teamConfig, localConfig, 'review', false, roleContext);
+    expect(result).toMatchObject({ ok: true, skill: { name: 'review', delivered: false, undeliveredReason: 'namespace' } });
   });
 
   it('re-includes a skill and drops the empty list', async () => {

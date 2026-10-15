@@ -313,11 +313,12 @@ async function loadDistribution() { if(distLoading)return;const generation=works
 async function loadSkills() { if(skillsLoading)return;const generation=workspaceGeneration;skillsLoading=true;try{const data=await json(api('/api/resources/skills'));if(generation===workspaceGeneration){skills=data;skillsError=false;}}catch{if(generation===workspaceGeneration)skillsError=true;}finally{if(generation===workspaceGeneration){skillsLoading=false;if(page==='resources')render();}} }
 async function toggleSkillExclude(name, excluded) {
  if(skillBusy)return;skillBusy=name;render();
+ const generation=workspaceGeneration;
  try {
   const response=await fetch(api('/api/resources/skills/exclusions'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,excluded})});
   if(!response.ok)throw new Error('exclude failed');
   await loadSkills();
- } catch { skillsError=true; } finally { skillBusy='';if(page==='resources')render(); }
+ } catch { if(generation===workspaceGeneration)skillsError=true; } finally { if(generation===workspaceGeneration){skillBusy='';if(page==='resources')render();} }
 }
 function receive(data) {
  if(!Array.isArray(data))return;

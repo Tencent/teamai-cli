@@ -15,7 +15,7 @@ import { loadTagsConfig } from '../utils/tags.js';
 import { readFileSafe } from '../utils/fs.js';
 import { pathExists } from '../utils/fs.js';
 import { scopedToolPaths, type LocalConfig, type TeamaiConfig } from '../types.js';
-import { loadStateForScope, saveLocalConfig, saveLocalConfigForScope, saveStateForScope } from '../config.js';
+import { loadLocalConfig, loadLocalConfigForScope, loadStateForScope, saveLocalConfig, saveLocalConfigForScope, saveStateForScope } from '../config.js';
 import type { RolePullContext } from '../resources/desired.js';
 
 export interface DashboardSkill {
@@ -78,8 +78,16 @@ export async function collectSkillsInventory(
 ): Promise<DashboardSkill[]> {
   const resolved = await resolveDesiredSkills(teamConfig, localConfig, roleContext);
   if (resolved.kind === 'conflict') return [];
-  const delivered = new Set(resolved.items.map((item) => item.name));
-  const replacedRoots = new Set(resolved.overrides.map((override) => override.replaces));
+  // Delivery is keyed by source identity (the team-repo path), not the
+  // basename: a root skill and a namespaced copy can share a name, and only
+  // the copy actually delivers (#1143 review).
+  const delivered = new Set(resolved.items.map((item) => item.relativePath));
+  // Delivery is name-keyed in resolveDesiredSkills: among same-name skills
+  // (a root copy and a namespaced one) exactly one wins the merge — with
+  // roles the namespace copy, without them the scan-order winner. The
+  // loser's truthful label is `replaced`: a same-name skill stands in for
+  // it. This covers both directions and the overrides the resolver reports.
+  const winnerByName = new Map(resolved.items.map((item) => [item.name, item]));
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
 
@@ -97,12 +105,15 @@ export async function collectSkillsInventory(
     const root = item.namespace === undefined || item.namespace === null;
     let undeliveredReason: DashboardSkill['undeliveredReason'];
     const excluded = excludedSkills.has(item.name);
-    if (delivered.has(item.name)) undeliveredReason = undefined;
+    if (delivered.has(item.relativePath)) undeliveredReason = undefined;
     else if (excluded) undeliveredReason = 'excluded';
-    else if (root && replacedRoots.has(`skills/${item.name}`)) undeliveredReason = 'replaced';
-    else if (catalogued.has(item.name)) undeliveredReason = 'tags';
-    else if (roleContext) undeliveredReason = 'namespace';
-    else undeliveredReason = 'tags';
+    else {
+      const winner = winnerByName.get(item.name);
+      if (winner && winner.relativePath !== item.relativePath) undeliveredReason = 'replaced';
+      else if (catalogued.has(item.name)) undeliveredReason = 'tags';
+      else if (roleContext) undeliveredReason = 'namespace';
+      else undeliveredReason = 'tags';
+    }
     skills.push({
       name: item.name,
       namespace: root ? null : item.namespace ?? null,
@@ -171,16 +182,46 @@ export async function setSkillExclusion(
   localConfig: LocalConfig,
   name: string,
   excluded: boolean,
+  roleContext: RolePullContext | null = null,
 ): Promise<SkillExclusionResult> {
-  const skills = await collectSkillsInventory(teamConfig, localConfig, null);
+  // Two requests excluding different skills must not race: both start from
+  // the same cached config and the last save would drop the first's change.
+  // Writes are serialized per workspace, and the config is reloaded inside
+  // the critical section so each write sees the previous one (#1143 review).
+  const key = `${localConfig.scope}:${localConfig.projectRoot ?? localConfig.repo.localPath}`;
+  const run = exclusionQueues.get(key) ?? Promise.resolve();
+  const queued = run.then(
+    () =>
+      setSkillExclusionSerialized(teamConfig, localConfig, name, excluded, roleContext),
+    () => setSkillExclusionSerialized(teamConfig, localConfig, name, excluded, roleContext),
+  );
+  exclusionQueues.set(
+    key,
+    queued.catch(() => undefined),
+  );
+  return queued;
+}
+const exclusionQueues = new Map<string, Promise<unknown>>();
+
+async function setSkillExclusionSerialized(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  name: string,
+  excluded: boolean,
+  roleContext: RolePullContext | null,
+): Promise<SkillExclusionResult> {
+  // Reload from disk inside the serialized section: the endpoint's in-memory
+  // copy may predate another write.
+  const diskConfig = (await reloadLocalConfig(localConfig)) ?? localConfig;
+  const skills = await collectSkillsInventory(teamConfig, diskConfig, roleContext);
   if (!skills.some((skill) => skill.name === name)) {
     return { ok: false, error: 'unknown_skill' };
   }
-  const existing = new Set(localConfig.excludedSkills ?? []);
+  const existing = new Set(diskConfig.excludedSkills ?? []);
   if (excluded) existing.add(name);
   else existing.delete(name);
   const nextConfig: LocalConfig = {
-    ...localConfig,
+    ...diskConfig,
     excludedSkills: existing.size > 0 ? [...existing].sort() : undefined,
   };
 
@@ -202,6 +243,17 @@ export async function setSkillExclusion(
     // Missing/corrupt state is non-critical: the next pull performs a full sync.
   }
 
-  const updated = await skillDetail(teamConfig, nextConfig, null, name);
+  // The response answers with the same role context the GET endpoints use,
+  // so a re-included skill outside the active namespaces reports
+  // delivered: false here too (#1143 review).
+  const updated = await skillDetail(teamConfig, nextConfig, roleContext, name);
   return { ok: true, skill: updated! };
+}
+
+/** The scope's config as last saved on disk; null when unreadable. */
+async function reloadLocalConfig(localConfig: LocalConfig): Promise<LocalConfig | null> {
+  if (localConfig.scope === 'project') {
+    return loadLocalConfigForScope('project', localConfig.projectRoot);
+  }
+  return loadLocalConfig();
 }
