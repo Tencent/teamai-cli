@@ -1,0 +1,34 @@
+# teamai single-repo mode — machine-local state (never commit).
+config.yaml
+config.yaml.*.tmp
+state.json
+token
+teamai.lock
+.update-lock
+.reports-lock
+.learnings-lock
+.bootstrap-lock
+.sync-lock
+env.sh
+env.sh.exports.json
+env.local
+usage.jsonl
+usage.jsonl.*
+usage.pending-*.jsonl
+known-skills.json
+search-index.json
+managed-mcp.json
+workspaces/
+dashboard/
+reports-wt/
+learnings-wt/
+knowledge-wt/
+pending-learnings/
+members/
+sessions/
+votes/
+stats/
+pending-review.jsonl
+
+# skills/, rules/, docs/, learnings/, env/, agents/, hooks/ and mcp/
+# are shared team resources and are intentionally committed to main.

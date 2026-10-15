@@ -1,0 +1,12 @@
+team: Gitbook
+mode: self
+description: TeamAI single-repo for shared documents, skills, rules, and learnings
+repo: https://github.com/memoio/Gitbook.git
+provider: github
+sharing:
+  rules:
+    enforced: []
+  docs:
+    localDir: ./.teamai/docs
+  env:
+    injectShellProfile: true

@@ -18,10 +18,10 @@ __pycache__/
 
 # Local AI tool / agent workspaces (worktrees, scratch state)
 .claude/
+.codex/skills/
 .gstack/
 .worktrees/
 .codebuddy/
-.teamai/
 # TeamAI-managed Copilot sync artifacts
 .github/hooks/teamai.json
 .github/skills/
