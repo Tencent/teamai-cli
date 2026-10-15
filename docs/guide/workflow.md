@@ -112,7 +112,7 @@ An agent-specific entry wins over `default`. `claude`, `codex`, and `opencode` a
 teamai workflow start build --driver local
 ```
 
-`--driver local` runs one step at a time in the current directory. Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. Prompt steps are read-only: if a tool changes the repository, the step fails and leaves those files in place for inspection. The driver calls the same `next` and `report` operations shown below:
+`--driver local` runs one step at a time in the current directory. Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. Prompt steps are read-only: if a tool changes the repository, the step fails and leaves those files in place for inspection. This includes changes to files inside an existing untracked directory; leaving that directory unchanged does not fail the step. The driver calls the same `next` and `report` operations shown below:
 
 ```text
 teamai workflow start build

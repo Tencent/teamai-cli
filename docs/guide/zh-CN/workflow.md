@@ -112,7 +112,7 @@ workflows:
 teamai workflow start build --driver local
 ```
 
-`--driver local` 在当前目录里一次运行一个步骤。每次 attempt 的 `result.json` 位于当前 scope 的 TeamAI 数据目录中，不在产品检出目录内。提示词步骤只读；如果工具修改了仓库，步骤会失败，同时保留文件供检查。驱动调用的 `next` 和 `report` 与下面相同：
+`--driver local` 在当前目录里一次运行一个步骤。每次 attempt 的 `result.json` 位于当前 scope 的 TeamAI 数据目录中，不在产品检出目录内。提示词步骤只读；如果工具修改了仓库，步骤会失败，同时保留文件供检查。这也包括已有未跟踪目录内的文件变化；该目录保持不变时，步骤不会因此失败。驱动调用的 `next` 和 `report` 与下面相同：
 
 ```text
 teamai workflow start build

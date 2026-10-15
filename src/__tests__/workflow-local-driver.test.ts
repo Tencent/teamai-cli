@@ -234,6 +234,44 @@ Do not use this copy.
     });
   });
 
+  it.each(['edit', 'add', 'remove'] as const)('detects a file change (%s) inside an existing untracked directory', async (change) => {
+    const { config, workspace, runId } = await fixture();
+    const directory = path.join(workspace, 'notes');
+    fs.mkdirSync(directory);
+    const existing = path.join(directory, 'draft.txt');
+    fs.writeFileSync(existing, 'before\n');
+    fs.writeFileSync(path.join(directory, 'keep.txt'), 'unchanged\n');
+    const changed = change === 'add' ? path.join(directory, 'new.txt') : existing;
+    const adapter: LocalToolAdapter = {
+      run: vi.fn(async () => {
+        if (change === 'remove') fs.rmSync(changed);
+        else fs.writeFileSync(changed, 'after\n');
+        return { exitCode: 0, output: { ok: true } };
+      }),
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining(`notes/${path.basename(changed)}`) } }],
+    });
+    if (change === 'remove') expect(fs.existsSync(changed)).toBe(false);
+    else expect(fs.readFileSync(changed, 'utf8')).toBe('after\n');
+  });
+
+  it('allows an unchanged untracked directory', async () => {
+    const { config, workspace, runId } = await fixture();
+    fs.mkdirSync(path.join(workspace, 'notes'));
+    fs.writeFileSync(path.join(workspace, 'notes', 'draft.txt'), 'before\n');
+    const adapter: LocalToolAdapter = {
+      run: vi.fn(async () => ({ exitCode: 0, output: { ok: true } })),
+    };
+
+    expect(await runLocalDriver(config, runId, workspace, { adapter, toolPaths }))
+      .toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
   it('detects when a tool removes a path that was dirty before the step', async () => {
     const { config, workspace, runId } = await fixture();
     const dirty = path.join(workspace, 'dirty-before.txt');
