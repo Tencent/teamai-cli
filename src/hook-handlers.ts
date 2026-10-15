@@ -1186,7 +1186,9 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
 
     // ─── PostToolUse ──────────────────────────────────
     { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    // Skill usage: must be '*' so Cursor Read of SKILL.md reaches trackHandler;
+    // resolveSkillUse filters to Skill tool or SKILL.md Read (#1156).
+    { event: 'post-tool-use', matcher: '*', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: recallAttributionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
