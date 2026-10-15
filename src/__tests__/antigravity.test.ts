@@ -162,10 +162,17 @@ describe('Antigravity CLI (agy) support', () => {
     }
   });
 
-  it('takes team rules verbatim, as plain Markdown', () => {
+  it('renders a team rule with the trigger the CLI requires', () => {
     const teamRule = '---\ndescription: team rule\n---\n\nAlways run the tests.\n';
 
-    expect(renderRuleForTool(AGY, teamRule)).toBe(teamRule);
+    // agy parses a rule's frontmatter and rejects one without a `trigger`
+    // ("Invalid rule trigger: CORTEX_MEMORY_TRIGGER_UNSPECIFIED"), so a team
+    // rule is not a verbatim `.md` copy (verified against agy 1.3.4).
+    expect(renderRuleForTool(AGY, teamRule)).toBe('---\ntrigger: always_on\n---\n\nAlways run the tests.\n');
+
+    // A rule that declares its own trigger keeps it.
+    const scoped = '---\ntrigger: model_decision\n---\n\nOnly when asked.\n';
+    expect(renderRuleForTool(AGY, scoped)).toBe('---\ntrigger: model_decision\n---\n\nOnly when asked.\n');
   });
 
   it('renders and reverses an Antigravity subagent as Markdown frontmatter', () => {
