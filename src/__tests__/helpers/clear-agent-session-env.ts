@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll } from 'vitest';
+import { GIT_REPOSITORY_ENV } from '../../utils/git-env.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 
 // Tests run inside an agent's shell (Claude Code sets CLAUDE_CODE_SESSION_ID),
@@ -19,6 +20,14 @@ for (const name of AGENT_SESSION_ENV) {
 // would still read, write or remove the developer's real Claude Code, Copilot
 // or OpenClaw files. A test that needs one sets it.
 for (const name of ['CLAUDE_CONFIG_DIR', 'COPILOT_HOME', 'OPENCLAW_STATE_DIR']) {
+  delete process.env[name];
+}
+
+// Git exports GIT_DIR and the rest to what it runs, as `rebase --exec` does in
+// a linked worktree. A fixture's `git init` or `commit` in its temp dir would
+// then write to the developer's repository instead: a commit on their branch
+// and core.bare=true in its shared config.
+for (const name of GIT_REPOSITORY_ENV) {
   delete process.env[name];
 }
 
