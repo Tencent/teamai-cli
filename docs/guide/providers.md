@@ -98,6 +98,8 @@ teamai init your-org/your-repo
 
 The token needs the `repo` scope. `GH_TOKEN` is recognized as an alias.
 
+When MR/PR import falls back to the GitHub REST API, a failed metadata, commits, or diff request reports its HTTP status and response body before AI extraction. Check the PR's visibility, credentials, or rate limit before retrying.
+
 ### Default branch
 
 TeamAI detects the default branch with `getDefaultBranch()`: `origin/HEAD` first, then `origin/main` and `origin/master`. Both `main` and `master` work; no repository setting needs to change.

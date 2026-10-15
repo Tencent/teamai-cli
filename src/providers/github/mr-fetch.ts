@@ -74,8 +74,13 @@ async function githubApiGet(path: string): Promise<unknown> {
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf-8');
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+            reject(new Error(`GitHub API error ${res.statusCode}: ${body}`));
+            return;
+          }
           try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+            resolve(JSON.parse(body));
           } catch (e) {
             reject(e);
           }
@@ -121,7 +126,14 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
       (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
-        res.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8').slice(0, 50000)));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf-8');
+          if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+            reject(new Error(`GitHub API diff error ${res.statusCode}: ${body}`));
+            return;
+          }
+          resolve(body.slice(0, 50000));
+        });
       },
     );
     req.on('error', reject);

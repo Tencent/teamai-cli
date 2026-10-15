@@ -98,6 +98,8 @@ teamai init your-org/your-repo
 
 token 需要 `repo` 权限。`GH_TOKEN` 作为别名也会被识别。
 
+MR/PR 导入回退到 GitHub REST API 时，元信息、提交列表或 diff 请求失败会在 AI 提炼前报告 HTTP 状态码和响应正文。请检查 PR 可见性、凭据或限流状态后重试。
+
 ### 默认分支
 
 TeamAI 通过 `getDefaultBranch()` 自动识别默认分支：先看 `origin/HEAD`，再依次探测

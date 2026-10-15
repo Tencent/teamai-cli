@@ -397,3 +397,10 @@ If the state write fails, repair the state directory's permissions and retry
 `teamai pull`; the entry is not activated without its removal ownership.
 If the config write fails, ownership stays available for retry. Entries the
 member already listed are never claimed.
+
+## GitHub MR/PR import API error
+
+When import falls back from `gh` to the REST API, a failed metadata, commits,
+or diff request stops before AI extraction and names the HTTP status and
+response body. Check PR visibility and authentication for 404/403, the rate
+limit for 429, or retry a temporary server failure. The error page is not a diff.
