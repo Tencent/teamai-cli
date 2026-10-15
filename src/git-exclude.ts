@@ -778,9 +778,9 @@ async function trackedPaths(placed: Placed[], failed: GitCheckFailure[]): Promis
       failed.push({ checkout: root, error: listed.stderr.trim() || `git exited with ${listed.code}` });
       continue;
     }
-    const files = listed.stdout.split('\0').filter(Boolean);
+    const files = new Set(listed.stdout.split('\0').filter(Boolean));
     for (const p of group) {
-      if (files.includes(p.rel)) tracked.push({ path: p.path, checkout: root });
+      if (files.has(p.rel)) tracked.push({ path: p.path, checkout: root });
     }
   }
   return tracked;

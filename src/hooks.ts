@@ -1373,10 +1373,10 @@ async function placeCodexTeamHooks(
  * for the checkout's own `settings.local.json` while `sharing.gitExclude` is
  * on. Their built-ins stay committed, so a fresh clone still has them.
  */
-const SELF_LOCAL_TEAM_HOOK_TOOLS: readonly string[] = ['claude'];
+const SELF_LOCAL_TEAM_HOOK_TOOLS: ReadonlySet<string> = new Set(['claude']);
 
 function selfLocalHookFile(baseDir: string, tool: string, settings: string): string | null {
-  return SELF_LOCAL_TEAM_HOOK_TOOLS.includes(tool) ? path.join(baseDir, path.dirname(settings), 'settings.local.json') : null;
+  return SELF_LOCAL_TEAM_HOOK_TOOLS.has(tool) ? path.join(baseDir, path.dirname(settings), 'settings.local.json') : null;
 }
 
 /** This self-mode checkout's `settings.local.json` that can hold `tool`'s team hooks, or null. */

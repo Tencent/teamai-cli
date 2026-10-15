@@ -785,8 +785,8 @@ function printKeptForProjects({ projects, paths }: KeptForProjects): void {
   if (projects.length === 0) return;
   console.log('   Kept for the projects still set up on this machine (run `teamai uninstall` in each):');
   for (const { name } of projects) console.log(`     ${name}`);
-  const dataHomes = projects.map(({ dataHome }) => dataHome);
-  const shared = paths.filter((kept) => !dataHomes.includes(kept));
+  const dataHomes = new Set(projects.map(({ dataHome }) => dataHome));
+  const shared = paths.filter((kept) => !dataHomes.has(kept));
   if (shared.length > 0) console.log('   and the shared files they read:');
   for (const file of shared) console.log(`     ${file}`);
   console.log('');
@@ -1419,8 +1419,8 @@ async function buildRemovalPlan(
       if (localConfig.projectRoot) {
         const { removeGitHook } = await import('./git-hook.js');
         const checkouts: string[] = [];
-        let entries: string[] = [];
         const seen = new Set<string>();
+        const entries = new Set<string>();
         for (const root of plan.checkouts) {
           const common = await gitCommonDir(root);
           if (!common || seen.has(common)) continue;
@@ -1428,9 +1428,9 @@ async function buildRemovalPlan(
           const owned = await removeGitHook(root, { dryRun: true }).catch(() => []);
           if (owned.length === 0) continue;
           checkouts.push(root);
-          entries = [...new Set([...entries, ...owned])];
+          for (const entry of owned) entries.add(entry);
         }
-        if (checkouts.length > 0) plan.gitHook = { repoDir: checkouts[0], entries, checkouts };
+        if (checkouts.length > 0) plan.gitHook = { repoDir: checkouts[0], entries: [...entries], checkouts };
       }
     }
   }
@@ -1942,8 +1942,8 @@ async function dropToolGitExcludePaths(
   const codexShared = (id: string): string[] => id === CODEX_TOOL ? [SHARED_AGENT_SKILLS_PATH] : [];
   // The tool's roots (`.claude`, `.github`), less what another tool in use reads there (WorkBuddy's `.codebuddy/rules`).
   const roots = [...new Set([...pathsOf(tool).map(toolInstallRoot), ...codexShared(tool)])];
-  const others = Object.keys(toolPaths).filter((id) => id !== tool && !isAgentExcluded(localConfig, id))
-    .flatMap((id) => [...pathsOf(id), ...codexShared(id)]);
+  const others = Object.keys(toolPaths).flatMap((id) =>
+    id === tool || isAgentExcluded(localConfig, id) ? [] : [...pathsOf(id), ...codexShared(id)]);
   const state = await loadStateForScope(localConfig);
   const records = state.lastPullByWorkspace ?? {};
   const checkouts = [...new Set([await realpath(projectRoot).catch(() => projectRoot), ...Object.values(records).flatMap(({ root }) => root ? [root] : [])])];

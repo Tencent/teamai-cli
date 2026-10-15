@@ -1576,7 +1576,7 @@ describe('codex readSession: freeform tool calls', () => {
       lines.map((l) => JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', ...l })).join('\n') + '\n',
     );
 
-    const session = await new CodexAdapter().readSession(SID);
+    const session = await new CodexAdapter().readSession({ sessionId: SID });
     const call = session.messages.flatMap((m) => m.content).find((b) => b.type === 'tool_call');
     expect(call).toMatchObject({ type: 'tool_call', toolName: 'edit_file', callId: 'call_1', arguments: { input: patch } });
   });
