@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -173,6 +173,61 @@ describe('Muse Code resource delivery', () => {
     // A project init writes no project hooks file: Muse runs user hooks in every workspace.
     expect(fs.existsSync(path.join(projectRoot, '.muse'))).toBe(false);
     expect(fs.readFileSync(path.join(projectRoot, '.agents', 'agents', 'reviewer.md'), 'utf8')).toContain('  - read_file\n');
+  }, 90_000);
+
+  it('collects Muse tokens from XDG_DATA_HOME through the built hook dispatcher', async () => {
+    const projectRoot = path.join(sandbox, 'project-xdg-usage');
+    const home = makeHome('home-xdg-usage');
+    const dataHome = path.join(sandbox, 'xdg-data');
+    const sessionId = '01a131de-7a62-70c3-bc37-60b3e2c6575b';
+    const sessionDir = path.join(dataHome, 'muse', 'sessions', '2026', '10', '15', sessionId);
+    fs.mkdirSync(projectRoot, { recursive: true });
+    fs.mkdirSync(path.join(home, '.config', 'muse'), { recursive: true });
+
+    const initialized = await runCLI(
+      ['init', FAKE_URL, '--scope', 'user', '--role', 'dev', '--agent', 'muse', '--force'],
+      projectRoot,
+      home,
+    );
+    expect(initialized.code, initialized.output).toBe(0);
+
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, 'session.jsonl'), JSON.stringify({
+      payload: {
+        event: {
+          kind: 'goal_usage_attribution',
+          record: { quantity: { unit: 'tokens', input_tokens: 60, output_tokens: 7, cached_tokens: 10 } },
+        },
+      },
+    }) + '\n');
+
+    const dispatched = spawnSync('node', [CLI, 'hook-dispatch', 'stop', '--tool', 'muse', '--stdin', '--bg-only'], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      input: JSON.stringify({ hook_event_name: 'Stop', session_id: sessionId, cwd: projectRoot, transcript_path: null }),
+      env: {
+        ...process.env,
+        ...GIT_ENV,
+        HOME: home,
+        USERPROFILE: home,
+        XDG_DATA_HOME: dataHome,
+        FORCE_COLOR: '0',
+        TEAMAI_NONINTERACTIVE: '1',
+      },
+    });
+    expect(dispatched.status, dispatched.stderr).toBe(0);
+
+    const eventsPath = path.join(home, '.teamai', 'dashboard', 'events.jsonl');
+    const deadline = Date.now() + 5_000;
+    while (!fs.existsSync(eventsPath) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const events = fs.readFileSync(eventsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(events.at(-1)).toMatchObject({
+      type: 'stop',
+      tool: 'muse',
+      tokens: { input: 50, output: 7, cacheRead: 10, cacheCreation: 0 },
+    });
   }, 90_000);
 
   // Muse and Codex both read <root>/.agents/skills in project scope.
