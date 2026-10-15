@@ -639,6 +639,38 @@ describe('fetchGitLabMR', () => {
     expect(mr.diff).toContain('@@');
   });
 
+  it.each(['api/v4', 'api/gateway'])('keeps the instance root with API prefix %s when fetching an MR', async (prefix) => {
+    process.env.GITLAB_URL = 'https://gitlab.com/gitlab/';
+    process.env.GITLAB_API_PREFIX = prefix;
+    const base = `https://gitlab.com/gitlab/${prefix}/projects/g%2Fsub%2Frepo/merge_requests/7`;
+    const seen: string[] = [];
+    global.fetch = vi.fn(async (url: string) => {
+      seen.push(String(url));
+      if (String(url) === `${base}/commits?per_page=50`) {
+        return new Response(JSON.stringify([{ id: 'abc123', title: 'Fix' }]), { status: 200 });
+      }
+      if (String(url) === `${base}/changes`) {
+        return new Response(JSON.stringify({ changes: [{ diff: '+fixed' }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ title: 'T', description: null, author: { username: 'a' } }), { status: 200 });
+    }) as never;
+
+    const mr = await fetchGitLabMR('https://gitlab.com/gitlab/g/sub/repo/-/merge_requests/7');
+
+    expect(seen).toEqual([base, `${base}/commits?per_page=50`, `${base}/changes`]);
+    expect(mr.commits).toEqual([{ hash: 'abc123', message: 'Fix' }]);
+    expect(mr.diff).toBe('+fixed');
+  });
+
+  it('rejects an MR outside the configured instance root before fetching', async () => {
+    process.env.GITLAB_URL = 'https://gitlab.com/gitlab';
+    const fetchSpy = vi.fn();
+    global.fetch = fetchSpy;
+    await expect(fetchGitLabMR('https://gitlab.com/gitlab-other/g/repo/-/merge_requests/7'))
+      .rejects.toThrow(/does not match the configured GitLab instance path/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('refuses to send the token to a host that is not the configured instance (SSRF guard)', async () => {
     // GITLAB_HOST defaults to gitlab.com; an MR URL on a different host must be
     // rejected BEFORE any network call, so the PAT is never exfiltrated.

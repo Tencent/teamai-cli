@@ -229,6 +229,10 @@ teamai init https://git.example.com/yourgroup/yourrepo
 A member who only syncs and never needs the CLI to open merge requests can skip
 both: `teamai init <url> --provider git` uses their existing Git authentication.
 
+For a GitLab deployed at a sub-path, include that path in `GITLAB_URL`, for
+example `https://git.example.com/gitlab`. MR import keeps it in the API base
+and removes it from the project id. An MR outside that instance path is refused.
+
 ## Which tools actually get hooks
 
 `teamai hooks inject` prints **"Hooks injected into all AI tool settings"** even

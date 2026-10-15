@@ -1,6 +1,6 @@
 import { type MRData } from '../../types.js';
 import { log } from '../../utils/logger.js';
-import { getGitLabToken } from './gitlab-api.js';
+import { getGitLabToken, gitlabBaseUrl } from './gitlab-api.js';
 import { GITLAB_HOST } from './repo-url.js';
 
 /** GitLab MR URL 解析结果 */
@@ -25,7 +25,7 @@ function parseGitLabMRUrl(url: string): ParsedGitLabMR {
   }
   const scheme = match[1].toLowerCase();
   const host = match[2];
-  const projectPath = match[3];
+  let projectPath = match[3];
   if (!projectPath.includes('/')) {
     throw new Error(`Invalid GitLab MR URL: ${url}`);
   }
@@ -42,10 +42,19 @@ function parseGitLabMRUrl(url: string): ParsedGitLabMR {
         `instance if it is trusted.`,
     );
   }
+  const instancePath = new URL(gitlabBaseUrl()).pathname.replace(/\/+$/, '');
+  if (instancePath) {
+    const prefix = `${instancePath.slice(1)}/`;
+    if (!projectPath.startsWith(prefix)) {
+      throw new Error(`GitLab MR URL does not match the configured GitLab instance path "${instancePath}": ${url}`);
+    }
+    projectPath = projectPath.slice(prefix.length);
+    if (!projectPath.includes('/')) throw new Error(`Invalid GitLab MR URL: ${url}`);
+  }
   // Use the same API prefix as gitlabApiBase() for consistency with MR creation.
   const apiPrefix = process.env.GITLAB_API_PREFIX?.trim().replace(/^\/+|\/+$/g, '') || 'api/v4';
   return {
-    apiBase: `${scheme}://${host}/${apiPrefix}`,
+    apiBase: `${scheme}://${host}${instancePath}/${apiPrefix}`,
     projectPath,
     mrIid: match[4],
   };
