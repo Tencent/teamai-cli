@@ -990,6 +990,18 @@ ${header}steps:
 ${steps}`;
 }
 
+/**
+ * Saves the cached copy of `name`; the returned function writes it back, as a cache another teamai build wrote
+ * can be left. Pull no longer keeps a copy that does not fit the workflows it runs, and start still refuses one.
+ */
+function saveCachedCopy(config: LocalConfig, name: string): () => void {
+  const home = config.dataHome ?? '';
+  const entry = fs.readdirSync(home, { recursive: true, encoding: 'utf8' }).find((file) => file.endsWith(`cache${path.sep}${name}.json`));
+  if (entry === undefined) throw new Error(`no cached copy of ${name}`);
+  const saved = fs.readFileSync(path.join(home, entry));
+  return () => fs.writeFileSync(path.join(home, entry), saved);
+}
+
 const CHECK = workflow('check', `  - id: classify
     command: node classify.js
   - id: comment
@@ -1029,8 +1041,10 @@ describe('file sub-workflows', () => {
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), CHECK);
     await syncWorkflowDefinitions(fixture.config);
+    const restoreShip = saveCachedCopy(fixture.config, 'ship');
     fs.writeFileSync(path.join(workflows, 'check.yaml'), `${CHECK}    for_each: [1]\n`);
     await syncWorkflowDefinitions(fixture.config);
+    restoreShip();
 
     expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
       code: 'workflow_not_found',
@@ -1280,7 +1294,7 @@ describe('file sub-workflows', () => {
     expect(reported).toMatchObject({ data: { step: { id: 'check.classify', status: 'failed', outcome: 'failed' } } });
   });
 
-  it('refuses to start a workflow that runs itself through the version a sub-workflow kept', async () => {
+  it('refuses to start a workflow that runs itself through a cached copy', async () => {
     const fixture = testConfig();
     const workflows = path.join(fixture.config.repo.localPath, 'workflows');
     fs.writeFileSync(path.join(workflows, 'ship.yaml'), workflow('ship', `  - id: check
@@ -1288,14 +1302,16 @@ describe('file sub-workflows', () => {
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), CHECK);
     await syncWorkflowDefinitions(fixture.config);
-    // ship's new revision runs a missing workflow, so ship keeps the version that runs check.
+    const restoreShip = saveCachedCopy(fixture.config, 'ship');
     fs.writeFileSync(path.join(workflows, 'ship.yaml'), workflow('ship', `  - id: check
-    workflow: gone
+    command: node check.js
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), workflow('check', `  - id: again
     workflow: ship
 `));
     await syncWorkflowDefinitions(fixture.config);
+    // The cache now holds check running ship next to the ship that runs check.
+    restoreShip();
 
     expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
       code: 'workflow_recursion',
@@ -1547,14 +1563,16 @@ describe('inline workflows', () => {
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), CHECK);
     await syncWorkflowDefinitions(fixture.config);
-    // ship's new revision runs a missing workflow, so ship keeps the version that runs check from its inline workflow.
+    const restoreShip = saveCachedCopy(fixture.config, 'ship');
     fs.writeFileSync(path.join(workflows, 'ship.yaml'), workflow('ship', `  - id: outer
-    workflow: gone
+    command: node check.js
 `));
     fs.writeFileSync(path.join(workflows, 'check.yaml'), workflow('check', `  - id: again
     workflow: ship
 `));
     await syncWorkflowDefinitions(fixture.config);
+    // The cache now holds check running ship next to the ship that runs check.
+    restoreShip();
 
     expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
       code: 'workflow_recursion',
