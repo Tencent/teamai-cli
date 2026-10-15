@@ -145,7 +145,7 @@ describe('single-repo mode: env + agents direct .teamai scan', () => {
     ).resolves.not.toThrow();
     // Backup landed at env.local, NOT clobbering the env/ directory.
     const backup = await fse.readFile(path.join(bizRoot, '.teamai', 'env.local'), 'utf8');
-    expect(backup).toContain('TEAM_API=https://api.example.com');
+    expect(JSON.parse(backup).TEAM_API).toBe('https://api.example.com');
     expect((await fse.stat(path.join(bizRoot, '.teamai', 'env'))).isDirectory()).toBe(true);
   });
 

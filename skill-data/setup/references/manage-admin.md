@@ -86,7 +86,7 @@ workspace also lists a file an older local agent wrote a credential into; `teama
 
 ### Pi MCP delivery
 
-Pi 0.99.0+ receives stdio and streamable HTTP servers through the existing MCP commands and `teamai pull`; SSE is skipped. User scope writes `~/.pi/agent/mcp.json`, project scope writes `.pi/mcp.json` (Pi requires project trust). TeamAI keeps Pi's default codemode exposure and converts timeout milliseconds to seconds. Relocated Pi agent directories (`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`) are unsupported. Local exposure/enabled edits on managed servers survive until the team definition changes; doctor reports differences from the team entry. Extensions that replace `/mcp` must be removed to use Pi's built-in MCP.
+Pi 0.99.0+ receives stdio and streamable HTTP servers through the existing MCP commands and `teamai pull`; SSE is skipped. User scope writes `~/.pi/agent/mcp.json`, workspace scope writes `.pi/mcp.json` (Pi requires project trust). TeamAI keeps Pi's default codemode exposure and converts timeout milliseconds to seconds. Relocated Pi agent directories (`PI_CODING_AGENT_DIR` / `PI_CONFIG_DIR`) are unsupported. Local exposure/enabled edits on managed servers survive until the team definition changes; doctor reports differences from the team entry. Extensions that replace `/mcp` must be removed to use Pi's built-in MCP.
 
 ## Invite a member
 
@@ -136,6 +136,11 @@ teamai projects add <id> --namespaces common,<id>   # add a project (creates pro
 teamai projects update <id> --add-namespaces <ns>   # or --remove-namespaces / --name / --description
 teamai projects remove <id>  # remove a project
 ```
+
+A workspace (a folder set up with `init`) also delivers the projects of the
+repos set up inside it, up to three levels down, with no list to keep: `teamai
+projects list` there shows each one and what it selects. A repo that uses
+another team repo, or single-repo mode, is left out and named.
 
 A member gets the union of their role resources and their active project's
 resources. Admins declare projects in `manifest/projects.yaml` with the commands
@@ -282,7 +287,8 @@ and push it with git. `teamai doctor` lists each override.
   takes none and rejects one. Declare with it or edit the file in the team repo;
   `teamai push` picks it up. Each member sets their own value with `teamai env set KEY`
   in their terminal (`--global` for every team on their machine; a team value still
-  wins). `teamai env list` shows each secret as `team`, `global`, `environment`,
+  wins). That updates MCP servers for the current scope. Run `teamai pull` afterwards
+  only to update `env.sh`, and only when the key is an env variable. `teamai env list` shows each secret as `team`, `global`, `environment`,
   `missing` or `unreadable` and never shows a value, `--reveal` included. The `description` is what
   agents see: the session-start hook lists each declared key with it and tells the
   agent to run the CLIs that need them through `teamai env exec --`, so say which
@@ -309,6 +315,14 @@ worth sharing, TeamAI prompts the member and the dedicated
 `share` workflow (`teamai skill get share`) summarizes the session and runs
 `teamai contribute`. Nobody has to invoke it by hand. (A member whose teamai config
 cannot be loaded gets no prompt; `teamai skill get share` names the file and the error.)
+
+Teams that work in English set `language: en` in `teamai.yaml` and `teamai push`.
+That makes the built-in teamai-recall rule, the TodoWrite hint, and the merged-MR
+hint English only. Omit `language`, or set `zh`, to keep the historical bilingual
+text. Each scope reads its own team repo, so a project install and a user install
+can differ. Members receive the recall rule in that language on the next
+`teamai pull`.
+
 (Publishing a **reusable skill** someone authored is a different task — any member
 can do it, see `"$(teamai skill path core)/references/contribute-member.md"`.)
 
@@ -334,3 +348,7 @@ the nudge; members can still contribute on request.
 - Don't hand-run raw `git` commands.
 - Don't create a second team repo.
 - Don't use `owner/repo` short form — always the full URL.
+
+### Superproject worktrees
+
+Initialize each original submodule once. After the parent initializes submodules in a new worktree, run `teamai pull --silent` in each initialized child before starting an AI session; the children inherit the original config and install their own Git hooks. Independent child clones need separate init. On Git < 2.54, if the children use the parent's versioned `core.hooksPath`, put the dispatch line once in each applicable parent hook. Follow the admin guide for the full sequence.

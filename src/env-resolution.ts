@@ -8,16 +8,20 @@
  * lists, delivers or advises from it, so it reads each file once and every
  * part of its output gives the same answer.
  */
+import path from 'node:path';
 import { memberEnvironment, type MemberEnvironment } from './member-env.js';
-import { resolveEntries, resolveEntriesFor, type EntryResolution, type ResolvedEntry } from './namespaced-entries.js';
-import { envEntryReader, type EnvVariable } from './resources/env.js';
-import { sameEnvName } from './resources/env-key.js';
+import { loadLocalConfigForScope } from './config.js';
+import { describeEntryFailure, resolveEntries, resolveEntriesFor, type EntryResolution, type ResolvedEntry } from './namespaced-entries.js';
+import { envEntryReader, parseEnvFileKept, readEnvBackup, type EnvVariable } from './resources/env.js';
+import { envName, sameEnvName } from './resources/env-key.js';
 import { declaredSecretKeys, resolveSecretDeclarations, type KnownNamespaces, type SecretDeclarations } from './resources/secrets.js';
 import {
   getMachineSecretsPath, getTeamSecretsPath, readSecretStore, storedEntryKind, storedSecretValue, type SecretStore,
   type SecretStoreRead, type StoredEntryKind, type StoredSecret,
 } from './secret-store.js';
-import type { LocalConfig } from './types.js';
+import { getDataHome, getEnvBackupPath, type LocalConfig } from './types.js';
+import { readFileSafe } from './utils/fs.js';
+import { isReservedTeamEnvKey } from './env-reserved.js';
 
 export interface SecretValue {
   readonly source: 'team' | 'global' | 'environment';
@@ -51,6 +55,23 @@ export type StoreResolution<V> =
 export interface TeamEnv {
   /** The env.yaml variables this scope receives, a declared secret's included. */
   readonly variables: EntryResolution<EnvVariable>;
+  /** User-scope variables inherited by this project: those it declares neither as a variable nor as a secret. */
+  readonly inheritedVariables: readonly ResolvedEntry<EnvVariable>[];
+  /**
+   * Their values, decided by the user scope's own state alone: unusable while
+   * its env.yaml or secret declarations fail (any of its variables may be a
+   * secret) or its values file can't be read, whatever the project's state.
+   */
+  readonly inheritedValues: StoreResolution<VariableValue>;
+  /**
+   * While this scope's own variables can't be resolved (its env.yaml, its
+   * secret declarations or its values file fails), what its last pull wrote,
+   * which pull keeps and shells load: the env backup, empty before a pull,
+   * without a key it declares as a secret. Null while they resolve.
+   */
+  readonly keptValues: ReadonlyMap<string, string> | null;
+  /** The same for the inherited part, by the user scope's own state, without a key the project declares. */
+  readonly keptInheritedValues: ReadonlyMap<string, string> | null;
   readonly declarations: SecretDeclarations;
   /**
    * Each declared secret's value: the member's value for this team, then for
@@ -66,7 +87,7 @@ export interface TeamEnv {
    * unset (`--from-env`): the variable, and whether it is the machine's entry.
    */
   readonly unsetReferences: ReadonlyMap<string, UnsetReference>;
-  /** The value of each variable that isn't a declared secret (each one when the declarations failed). */
+  /** The value of each of this scope's variables that isn't a declared secret (each one when the declarations failed). */
   readonly variableValues: StoreResolution<VariableValue>;
   /**
    * The keys whose entry for this team is of the other kind, so it is not
@@ -95,9 +116,9 @@ export async function resolveTeamEnv(
   namespaces?: KnownNamespaces,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<TeamEnv> {
-  const variables = namespaces
+  const variables = await withHeldValues(namespaces
     ? await resolveEntries(envEntryReader, localConfig, namespaces.active)
-    : await resolveEntriesFor(envEntryReader, localConfig);
+    : await resolveEntriesFor(envEntryReader, localConfig), localConfig, env);
   const declarations = await resolveSecretDeclarations(localConfig, namespaces);
   const secretKeys = declaredSecretKeys(declarations) ?? new Set<string>();
   const received = variables.kind === 'resolved' ? variables.entries : [];
@@ -107,15 +128,131 @@ export async function resolveTeamEnv(
   const team = secretKeys.size > 0 || plain.length > 0 ? await readSecretStore(getTeamSecretsPath(localConfig)) : NO_VALUES;
   const machine = secretKeys.size > 0 ? await readSecretStore(getMachineSecretsPath()) : NO_VALUES;
   const secrets = secretValues(secretKeys, team, machine, member, env);
+  const ownValues = variableValues(plain, team, env);
+  const ownResolves = variables.kind === 'resolved' && declarations.kind !== 'failed' && ownValues.kind === 'resolved';
+  const lastPull = ownResolves ? null : await lastPullOf(localConfig);
+  const keptValues = lastPull && new Map([...lastPull.values].filter(([key]) => sameEnvName(secretKeys, key) === undefined && !isReservedTeamEnvKey(key)));
+  let inheritedVariables: readonly ResolvedEntry<EnvVariable>[] = [];
+  let inheritedValues: StoreResolution<VariableValue> = { kind: 'resolved', values: new Map() };
+  let keptInheritedValues: ReadonlyMap<string, string> | null = null;
+  if (localConfig.scope === 'project' && localConfig.inheritUserScope === true) {
+    // Whatever its source: the user scope's own pull writes its env.sh from
+    // this same resolution, an HTTP team repo's included, and shells load it.
+    const userConfig = await loadLocalConfigForScope('user');
+    if (userConfig) {
+      const userEnv = await resolveTeamEnv(userConfig, undefined, env);
+      const userSecretKeys = declaredSecretKeys(userEnv.declarations) ?? new Set<string>();
+      // A key the project declares, as a variable or a secret, is the project's:
+      // a secret without a value stays missing rather than take the user's value.
+      // While the project's own part can't be resolved, so is each its last pull declared, as in its shells.
+      const projectKeys = [...secretKeys, ...received.map(({ name }) => name), ...lastPull?.values.keys() ?? [], ...lastPull?.kept ?? []];
+      const inherits = (key: string): boolean => sameEnvName(userSecretKeys, key) === undefined && sameEnvName(projectKeys, key) === undefined;
+      inheritedVariables = userEnv.variables.kind === 'resolved' ? userEnv.variables.entries.filter(({ name }) => inherits(name)) : [];
+      const failed = [userEnv.variables, userEnv.declarations].find((entries) => entries.kind === 'failed');
+      // Named as pull names the scope, so a file of the same name in the project is not taken for it.
+      inheritedValues = failed?.kind === 'failed'
+        ? { kind: 'store-unreadable', reason: `[user] ${describeEntryFailure(failed.failure)}` }
+        : userEnv.variableValues.kind === 'store-unreadable'
+          ? { kind: 'store-unreadable', reason: `[user] ${userEnv.variableValues.reason}` }
+          : { kind: 'resolved', values: new Map([...userEnv.variableValues.values].filter(([key]) => inherits(key))) };
+      keptInheritedValues = userEnv.keptValues && new Map([...userEnv.keptValues].filter(([key]) => inherits(key)));
+    }
+  }
   return {
     variables,
+    inheritedVariables,
+    inheritedValues,
+    keptValues,
+    keptInheritedValues,
     declarations,
     secrets: secrets.values,
     unsetReferences: secrets.unsetReferences,
-    variableValues: variableValues(plain, team, env),
+    variableValues: ownValues,
     staleEntries: staleEntries(secretKeys, plain, team),
     member,
   };
+}
+
+/**
+ * Whether this scope has env to resolve. An HTTP team repo has no env files,
+ * but a project that inherits the user scope gets the user scope's env from
+ * it, as its shells do: pull's env stage resolves every scope.
+ */
+export function resolvesTeamEnv(localConfig: LocalConfig): boolean {
+  return localConfig.repo.kind !== 'http' || (localConfig.scope === 'project' && localConfig.inheritUserScope === true);
+}
+
+/** What `teamai env exec` gives a command from a resolution. See `appliedTeamEnv`. */
+export interface AppliedTeamEnv {
+  /** Each variable it sets, the inherited ones included, with its value. */
+  readonly variables: ReadonlyMap<string, string>;
+  /** Each declared secret, set to its value or removed; none while the declarations fail. */
+  readonly secretKeys: readonly string[];
+}
+
+/**
+ * What `teamai env exec` applies from this resolution, each part (this
+ * scope's own variables, the inherited ones) by its own scope's state: its
+ * resolved values, or while it can't be resolved what its last pull wrote,
+ * as its shells and MCP servers keep. Every declared secret while the
+ * declarations resolve; a secret never comes from a last pull. A reserved key never.
+ */
+export function appliedTeamEnv(teamEnv: TeamEnv): AppliedTeamEnv {
+  const part = (values: StoreResolution<VariableValue>, kept: ReadonlyMap<string, string> | null): [string, string][] =>
+    kept ? [...kept] : values.kind === 'resolved' ? [...values.values].map(([key, { value }]) => [key, value]) : [];
+  const values = [...part(teamEnv.inheritedValues, teamEnv.keptInheritedValues), ...part(teamEnv.variableValues, teamEnv.keptValues)];
+  return {
+    variables: new Map(values.filter(([key]) => !isReservedTeamEnvKey(key))),
+    secretKeys: [...declaredSecretKeys(teamEnv.declarations) ?? []].filter((key) => !isReservedTeamEnvKey(key)),
+  };
+}
+
+/**
+ * `variables` with each key a workspace holds back (#913) as its last pull
+ * exported it, from the env backup, so env.sh, env exec and MCP keep what is
+ * installed. A key the member set with `--from-env`, which env.sh and so the
+ * backup leave out, is kept while that variable is set, and read from it as
+ * when the key is not held. Any other held key the backup lacks stays out. A
+ * backup that cannot be read throws, as `lastPullOf` does: nothing is
+ * rewritten from a guess.
+ */
+async function withHeldValues(
+  variables: EntryResolution<EnvVariable>,
+  localConfig: LocalConfig,
+  env: NodeJS.ProcessEnv,
+): Promise<EntryResolution<EnvVariable>> {
+  if (variables.kind !== 'resolved' || !variables.held?.length) return variables;
+  const backup = await readEnvBackup(localConfig);
+  const unexported = variables.held.filter((key) => !Object.hasOwn(backup, key));
+  const team = unexported.length > 0 ? await readSecretStore(getTeamSecretsPath(localConfig)) : NO_VALUES;
+  const fromEnv = (key: string): boolean => {
+    const entry = team.ok ? storeEntry(team.values, key, 'variable') : undefined;
+    return entry !== undefined && 'env' in entry && storedSecretValue(entry, env) !== undefined;
+  };
+  const kept = variables.held.flatMap((key): ResolvedEntry<EnvVariable>[] => {
+    if (!Object.hasOwn(backup, key) && !fromEnv(key)) return [];
+    // Without a backup value, the member's entry decides the value (variableValues): this one is never read.
+    const [value, source] = Object.hasOwn(backup, key) ? [backup[key], getEnvBackupPath(localConfig)] : ['', getTeamSecretsPath(localConfig)];
+    return [{ entry: { key, value }, name: key, namespace: null, source, replaces: null, replacedEntry: null }];
+  });
+  return { ...variables, entries: [...variables.entries, ...kept] };
+}
+
+/** What this scope's last pull wrote: the values its env backup holds, and the keys its env.sh keeps from the user scope. */
+async function lastPullOf(localConfig: LocalConfig): Promise<{ values: ReadonlyMap<string, string>; kept: ReadonlySet<string> }> {
+  const envSh = await readFileSafe(path.join(getDataHome(localConfig), 'env.sh'));
+  return { values: new Map(Object.entries(await readEnvBackup(localConfig))), kept: envSh ? parseEnvFileKept(envSh) : new Set() };
+}
+
+/** The variable declarations a scope delivers, with project declarations taking precedence over inherited user ones. */
+export function effectiveTeamEnvVariables(teamEnv: TeamEnv): readonly ResolvedEntry<EnvVariable>[] {
+  const effective = new Map<string, ResolvedEntry<EnvVariable>>();
+  for (const variable of [...teamEnv.inheritedVariables, ...(teamEnv.variables.kind === 'resolved' ? teamEnv.variables.entries : [])]) {
+    const key = envName(variable.name);
+    effective.delete(key);
+    effective.set(key, variable);
+  }
+  return [...effective.values()];
 }
 
 /** The entry for `key` when it is of this kind: a secret never resolves from a variable override, nor the reverse. */
@@ -162,7 +299,7 @@ function secretValues(
     const entry = teamEntry ?? machineEntry;
     const [source, value]: [SecretValue['source'], string | undefined] = teamEntry ? ['team', storedSecretValue(teamEntry, env)]
       : machineEntry ? ['global', storedSecretValue(machineEntry, env)]
-      : ['environment', member(key)];
+      : ['environment', member(key) || undefined];
     if (value !== undefined) values.set(key, { source, value });
     else if (entry && 'env' in entry) unsetReferences.set(key, { variable: entry.env, global: teamEntry === undefined });
   }
@@ -199,8 +336,25 @@ export function envShVariables(
 ): EnvVariable[] {
   return variables.flatMap((variable) => {
     const resolved = values.get(variable.name);
-    return resolved && !resolved.fromEnv ? [{ ...variable.entry, value: resolved.value }] : [];
+    return resolved && !resolved.fromEnv && !isReservedTeamEnvKey(variable.name) ? [{ ...variable.entry, value: resolved.value }] : [];
   });
+}
+
+/**
+ * The keys an inheriting project's env.sh keeps from the user scope's env.sh,
+ * which the loader sources first: every key the project declares, as a
+ * variable or a secret, that its env.sh does not export. Another spelling of
+ * an exported key is unset by the loader before the export, on Windows
+ * (`__teamai_env_spellings`, env-loader.ts).
+ */
+export function keptFromUserScope(localConfig: LocalConfig, teamEnv: TeamEnv, exported: readonly EnvVariable[]): string[] {
+  if (localConfig.scope !== 'project' || localConfig.inheritUserScope !== true) return [];
+  const exportedKeys = exported.map(({ key }) => key);
+  const declared = new Set([
+    ...(teamEnv.variables.kind === 'resolved' ? teamEnv.variables.entries.map(({ name }) => name) : []),
+    ...(declaredSecretKeys(teamEnv.declarations) ?? []),
+  ]);
+  return [...declared].filter((key) => !exportedKeys.includes(key) && !isReservedTeamEnvKey(key));
 }
 
 /** What a pull and MCP do while the member's values can't be read: keep what the last pull wrote. */

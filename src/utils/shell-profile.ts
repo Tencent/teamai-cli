@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { pathExists, readFileSafe } from './fs.js';
-import { getUserHome } from './home.js';
+import { expandHome, getUserHome } from './home.js';
+import { isOnPath } from './lookpath.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 
 /** Every profile file `detectShellProfile()` could ever have resolved to, across platforms and CLI versions. */
-export const SHELL_PROFILE_CANDIDATE_NAMES = ['.zshrc', '.bashrc', '.bash_profile', '.bash_login', '.profile'];
+export const SHELL_PROFILE_CANDIDATE_NAMES = ['.zshenv', '.zshrc', '.bashrc', '.bash_profile', '.bash_login', '.profile'];
 
 /**
  * Detect the shell profile file `teamai`'s env block should be injected into.
@@ -39,12 +40,16 @@ export const SHELL_PROFILE_CANDIDATE_NAMES = ['.zshrc', '.bashrc', '.bash_profil
  */
 export async function detectShellProfile(
   platform: NodeJS.Platform = process.platform,
+  shell: string = process.env.SHELL ?? '',
 ): Promise<string> {
   const home = getUserHome();
-  const shell = process.env.SHELL ?? '';
 
+  // `.zshenv`, not `.zshrc`: zsh reads it for every invocation, so the
+  // `zsh -c` a tool runs a command with gets the env too (#1018). zsh reads
+  // it from the ZDOTDIR it starts with: a ZDOTDIR this process inherited is
+  // one every zsh it starts inherits too, and those never read ~/.zshenv.
   if (shell.includes('zsh')) {
-    return path.join(home, '.zshrc');
+    return path.join(process.env.ZDOTDIR || home, '.zshenv');
   }
 
   if (platform === 'win32') {
@@ -55,6 +60,121 @@ export async function detectShellProfile(
   }
 
   return path.join(home, '.bashrc');
+}
+
+/** Whether `file` is one of zsh's startup files, or named for zsh: no bash reads it. */
+function isZshFile(file: string): boolean {
+  return /zsh|^\.z/.test(path.basename(file));
+}
+
+/**
+ * The profile file the env loader's block goes in (#1018), and the team's
+ * `sharing.env.shellProfilePath` override when it is not that file.
+ *
+ * For zsh, the file every zsh reads, `zsh -c` included: `.zshenv` (or a
+ * file it sources), whatever the override names. The override is for bash,
+ * where it picks the file a Git Bash login shell reads, so it is used there
+ * unless it names a zsh file. `ignoredOverride` is set when the override
+ * names a zsh file that is not where the block goes.
+ */
+export async function envLoaderProfile(
+  override: string | undefined,
+  loaderPath: string,
+  platform: NodeJS.Platform = process.platform,
+  shell: string = process.env.SHELL ?? '',
+): Promise<{ path: string; ignoredOverride: string | null }> {
+  const overridePath = override ? expandHome(override) : null;
+  if (overridePath !== null && !isZshFile(overridePath) && !shell.includes('zsh')) {
+    return { path: overridePath, ignoredOverride: null };
+  }
+  const profile = await resolveActiveShellProfile(loaderPath, platform, shell);
+  const ignored = overridePath !== null && isZshFile(overridePath) && !sameFile(overridePath, profile, platform);
+  return { path: profile, ignoredOverride: ignored ? overridePath : null };
+}
+
+/**
+ * Every profile file the env loader's block goes in: `$SHELL`'s
+ * (`envLoaderProfile`), and the one the other loader shell (zsh or bash)
+ * reads. A member who also starts the other shell then gets each directory's
+ * env there too, rather than the env of the directory it started in. Off
+ * Windows the other shell's file is created when that shell is installed;
+ * otherwise, and on Windows, it is used only when it already exists.
+ * Off Windows, a `shellProfilePath` that names bash's file serves the startup
+ * mode that reads it: `.bashrc` too, unless it reaches a listed file. Then
+ * bash's login file, when a login bash would miss the block (`bashLoginProfile`).
+ * Bash counts when it is `$SHELL` or installed: a fish member without bash
+ * gets no bash file, only zsh's when zsh is there.
+ */
+export async function envLoaderProfiles(
+  override: string | undefined,
+  loaderPath: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<{ paths: string[]; ignoredOverride: string | null }> {
+  const shell = process.env.SHELL ?? '';
+  const otherShell = shell.includes('zsh') ? 'bash' : 'zsh';
+  const own = await envLoaderProfile(override, loaderPath, platform, shell);
+  const other = await envLoaderProfile(override, loaderPath, platform, otherShell);
+  const bashInstalled = platform === 'win32' || path.basename(shell) === 'bash' || isOnPath('bash', { platform });
+  // A `$SHELL` that is neither zsh nor bash (fish) reads none of bash's files.
+  const ownRead = otherShell === 'bash' || bashInstalled;
+  const paths = ownRead ? [own.path] : [];
+  if (!sameFile(other.path, own.path, platform)
+    && ((platform !== 'win32' && isOnPath(otherShell, { platform })) || await pathExists(other.path))) {
+    paths.push(other.path);
+  }
+  // A bash override names the file for the startup mode it serves: an
+  // interactive bash still reads `.bashrc` (or a file it sources).
+  if (ownRead && platform !== 'win32' && override && !isZshFile(expandHome(override))) {
+    const interactive = await resolveActiveShellProfile(loaderPath, platform, 'bash');
+    if (!await reachesAny(interactive, paths, platform) && (bashInstalled || await pathExists(interactive))) {
+      paths.push(interactive);
+    }
+  }
+  const login = ownRead ? await bashLoginProfile(loaderPath, platform, paths, bashInstalled) : null;
+  if (login !== null) paths.push(login);
+  return { paths, ignoredOverride: ownRead ? own.ignoredOverride : null };
+}
+
+/** Whether `start`, or a file along its sourcing chain, is one of `paths`. */
+async function reachesAny(start: string, paths: string[], platform: NodeJS.Platform): Promise<boolean> {
+  for await (const { file } of profileChain(start)) {
+    if (paths.some((known) => sameFile(known, file, platform))) return true;
+  }
+  return false;
+}
+
+/**
+ * Off Windows, the bash file above is `.bashrc` (or a file it sources), which
+ * only an interactive non-login bash reads. A login bash, `bash -l` or a macOS
+ * Terminal, reads the first of `.bash_profile`, `.bash_login` and `.profile`
+ * that exists, and never `BASH_ENV`. That file, or the file along its chain
+ * that already carries the block, when the chain reaches none of `paths`;
+ * null when it does.
+ *
+ * With none of the three, `.profile` when bash is `$SHELL` or installed: it is
+ * last in bash's order, so a `.bash_profile` the member adds later still wins
+ * over it, where a created `.bash_profile` would shadow their `.profile`.
+ */
+async function bashLoginProfile(
+  loaderPath: string,
+  platform: NodeJS.Platform,
+  paths: string[],
+  bashInstalled: boolean,
+): Promise<string | null> {
+  if (platform === 'win32') return null;
+  const home = getUserHome();
+  let login: string | null = null;
+  for (const name of ['.bash_profile', '.bash_login', '.profile']) {
+    const candidate = path.join(home, name);
+    if (await pathExists(candidate)) { login = candidate; break; }
+  }
+  if (login === null) return bashInstalled ? path.join(home, '.profile') : null;
+  let withBlock: string | null = null;
+  for await (const { file, content } of profileChain(login)) {
+    if (paths.some((known) => sameFile(known, file, platform))) return null;
+    if (withBlock === null && content && findEnvBlockFor(content, loaderPath)) withBlock = file;
+  }
+  return withBlock ?? login;
 }
 
 /**
@@ -76,7 +196,7 @@ export function isWindowsFormPath(value: string): boolean {
 }
 
 /** `envShPath` rewritten to the forward-slash form the generator writes, regardless of which host built it. */
-function toGeneratedForm(envShPath: string): string {
+export function toGeneratedForm(envShPath: string): string {
   return isWindowsFormPath(envShPath) ? envShPath.replace(/\\/g, '/') : envShPath;
 }
 
@@ -434,22 +554,37 @@ async function referencesCandidate(content: string, name: string): Promise<boole
 export async function resolveActiveShellProfile(
   envShPath: string,
   platform: NodeJS.Platform = process.platform,
+  shell: string = process.env.SHELL ?? '',
 ): Promise<string> {
-  const home = getUserHome();
-  const activePick = await detectShellProfile(platform);
+  const activePick = await detectShellProfile(platform, shell);
 
-  const visited = new Set<string>();
-  const queue: string[] = [activePick];
   let firstWithBlock: string | null = null;
+  for await (const { file, content } of profileChain(activePick)) {
+    if (!content) continue;
+    if (findEnvBlockFor(content, envShPath)) return file;
+    if (firstWithBlock === null && findEnvBlocks(content).length > 0) firstWithBlock = file;
+  }
+
+  return firstWithBlock ?? activePick;
+}
+
+/**
+ * `start` and every candidate profile it sources, transitively, breadth-first
+ * and each once, with its content: null for a file not there yet, which
+ * sources nothing, as `.bashrc` before the pull that creates it.
+ */
+async function* profileChain(start: string): AsyncGenerator<{ file: string; content: string | null }> {
+  const home = getUserHome();
+  const visited = new Set<string>();
+  const queue: string[] = [start];
   while (queue.length > 0) {
     const current = queue.shift() as string;
     if (visited.has(current)) continue;
     visited.add(current);
 
     const content = await readFileSafe(current);
+    yield { file: current, content };
     if (!content) continue;
-    if (findEnvBlockFor(content, envShPath)) return current;
-    if (firstWithBlock === null && findEnvBlocks(content).length > 0) firstWithBlock = current;
 
     for (const name of SHELL_PROFILE_CANDIDATE_NAMES) {
       const candidate = path.join(home, name);
@@ -458,6 +593,4 @@ export async function resolveActiveShellProfile(
       }
     }
   }
-
-  return firstWithBlock ?? activePick;
 }

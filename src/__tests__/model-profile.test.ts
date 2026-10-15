@@ -677,7 +677,7 @@ describe('model profiles', () => {
       'openai-chat-completions': ['glm-5.3'],
       'openai-responses': ['glm-5.3'],
     });
-    expect(profileAgents(parsed)).toEqual(['claude', 'codex', 'opencode', 'codebuddy', 'workbuddy', 'pi', 'omp']);
+    expect(profileAgents(parsed)).toEqual(['claude', 'codex', 'opencode', 'codebuddy', 'workbuddy', 'pi', 'omp', 'muse']);
     expect(profileAgents(profile('tokenhub'))).toEqual(['claude', 'opencode', 'codebuddy', 'workbuddy', 'pi', 'omp']);
   });
 

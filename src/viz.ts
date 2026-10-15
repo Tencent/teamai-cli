@@ -9,7 +9,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { loadIndex, buildIndex } from './utils/search-index.js';
+import { loadIndex, buildIndex, type BuildIndexOptions } from './utils/search-index.js';
 import { readUserVotes } from './votes.js';
 import { BROKEN_CONFIG_ADVICE, findUnreadableProjectConfig, resolveConfigForDir } from './config.js';
 import {
@@ -21,7 +21,7 @@ import {
   getReportsDir,
   getProjectSearchIndexPath,
 } from './types.js';
-import type { SearchIndexEntry } from './types.js';
+import type { LocalConfig, SearchIndexEntry } from './types.js';
 import { findPromotionCandidates, type PromotionCandidate } from './maintenance/promote.js';
 import { findPruneCandidates, type PruneCandidate } from './maintenance/prune.js';
 import { findStaleEntries, type StaleEntry } from './maintenance/quality-update.js';
@@ -133,6 +133,10 @@ interface VizPaths {
    * recall's and pull's do; why none, when manifest/projects.yaml cannot be read.
    */
   learningsNamespaces: { ok: true; namespaces: string[] } | { ok: false; reason: string };
+  /** The workspace children this scope reads now (#913): an index built for others is not used. */
+  children?: string;
+  /** The scope, with its children, whose delivered docs, rules and skills a workspace's index is built from; none for `--repo`. */
+  scope?: LocalConfig;
   statsDir: string;
   indexPath: string | undefined;
   source: VizSource;
@@ -207,8 +211,16 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
       : [getUserLearningsDir(), ...await indexableLearningsRoots(config)];
     const { pendingLearningsDir } = await import('./utils/pending-learnings.js');
     const indexLearningsDirs = [pendingLearningsDir(config), ...learningsDirs];
-    const { resolveActiveLearningsNamespaces } = await import('./projects.js');
-    const learningsNamespaces: VizPaths['learningsNamespaces'] = await resolveActiveLearningsNamespaces(config.repo.localPath, config.projects ?? [])
+    // A workspace's children's projects too (#913).
+    const { deliveredLearningsNamespaces, readWorkspaceChildren } = await import('./workspace-children.js');
+    let children: string | undefined;
+    let scope: LocalConfig = config;
+    const learningsNamespaces: VizPaths['learningsNamespaces'] = await readWorkspaceChildren(config)
+      .then((workspace) => {
+        children = workspace.children?.fingerprint;
+        scope = workspace;
+        return deliveredLearningsNamespaces(workspace);
+      })
       .then((namespaces) => ({ ok: true as const, namespaces }))
       .catch((e: unknown) => ({ ok: false as const, reason: e instanceof Error ? e.message : String(e) }));
     const source: VizSource = config.repo.kind === 'self'
@@ -222,6 +234,8 @@ export async function resolveVizRoot(opts: VizOptions): Promise<VizPaths> {
       learningsDirs,
       indexLearningsDirs,
       learningsNamespaces,
+      ...(children ? { children } : {}),
+      scope,
       statsDir: path.join(reportsRoot, 'stats'),
       indexPath,
       source,
@@ -303,7 +317,9 @@ async function loadEntries(paths: VizPaths): Promise<SearchIndexEntry[]> {
   // undefined to loadIndex would silently fall back to the global user index,
   // which can misrepresent an explicit --repo corpus.
   let index = paths.indexPath ? await loadIndex(paths.indexPath) : null;
-  if (!index || index.entries.length === 0) {
+  // As recall: an index built before a workspace child changed what it selects is stale (#913).
+  const stale = !!index && index.entries.length > 0 && index.children !== paths.children;
+  if (!index || index.entries.length === 0 || stale) {
     // Build into a unique throwaway path. A fixed shared temp file would let
     // buildIndex keep a previous run's index when it can read none of this
     // corpus, leaving this run reading a stale corpus from a different repo.
@@ -315,6 +331,8 @@ async function loadEntries(paths: VizPaths): Promise<SearchIndexEntry[]> {
       console.warn(`Warning: the report shows the shared learnings only: ${namespaces.reason}. `
         + 'Your projects\' learnings are left out until manifest/projects.yaml is fixed; `teamai doctor` shows the problem.');
     }
+    // For a workspace with children, or one whose children changed: what the scope delivers, as recall indexes it (#913).
+    const delivered = (stale || paths.children !== undefined) && paths.scope ? await deliveredSources(paths.scope) : {};
     try {
       await buildIndex({
         learningsDirs: paths.indexLearningsDirs,
@@ -322,6 +340,7 @@ async function loadEntries(paths: VizPaths): Promise<SearchIndexEntry[]> {
         docsDir: path.join(paths.knowledgeRoot, 'docs'),
         rulesDir: path.join(paths.knowledgeRoot, 'rules'),
         skillsDir: path.join(paths.knowledgeRoot, 'skills'),
+        ...delivered,
         votesDir: paths.votesDir,
         indexPath: tmpIndexPath,
       });
@@ -333,6 +352,17 @@ async function loadEntries(paths: VizPaths): Promise<SearchIndexEntry[]> {
     }
   }
   return index?.entries ?? [];
+}
+
+/** The docs, rules and skills `scope` delivers, or none when its manifests cannot be read: never the whole trees. */
+async function deliveredSources(scope: LocalConfig): Promise<Pick<BuildIndexOptions, 'docFiles' | 'ruleFiles' | 'skills'>> {
+  const { deliveredIndexSources } = await import('./resources/desired.js');
+  try {
+    return await deliveredIndexSources(scope);
+  } catch (err) {
+    console.warn(`Warning: the report leaves out docs, rules and skills: ${(err as Error).message}. \`teamai doctor\` shows the problem.`);
+    return { docFiles: [], ruleFiles: [], skills: { kind: 'dirs', dirs: [] } };
+  }
 }
 
 // ─── Aggregation helpers ──────────────────────────────────────────────────────

@@ -18,6 +18,9 @@ import {
   hasPendingVoteDeltas,
   pruneUpvoteLedger,
   creditedDocIdsForSession,
+  readUserVotesFromContent,
+  stageVotesMerge,
+  confirmVotesSynced,
 } from '../votes.js';
 import type { UserVotes, UserVotesV2 } from '../types.js';
 
@@ -589,6 +592,228 @@ describe('syncVotesToTeam', () => {
     expect(remote.votes['doc-a'].upvoted_count).toBe(1);
     expect(remote.votes['doc-b'].upvoted_count).toBe(1);
     expect(YAML.parse(fs.readFileSync(localPath, 'utf-8')).deltas).toEqual({});
+  });
+});
+
+describe('stageVotesMerge / confirmVotesSynced (#1027)', () => {
+  /** Local votes dir seeded with one pending upvote for doc-a. */
+  const seedPending = (): { localDir: string; repoDir: string; localPath: string; remotePath: string } => {
+    const localDir = path.join(tmpDir, 'local-votes');
+    const repoDir = path.join(tmpDir, 'repo');
+    fs.mkdirSync(localDir, { recursive: true });
+    fs.mkdirSync(path.join(repoDir, 'votes'), { recursive: true });
+    const localPath = path.join(localDir, 'jeff.yaml');
+    const remotePath = path.join(repoDir, 'votes', 'jeff.yaml');
+    return { localDir, repoDir, localPath, remotePath };
+  };
+
+  it('staging merges into the worktree but keeps the local deltas until confirmed', async () => {
+    const { localDir, repoDir, localPath, remotePath } = seedPending();
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    const staged = await stageVotesMerge(repoDir, 'jeff', localDir, null);
+    expect(staged).not.toBeNull();
+
+    // The merged result reached the worktree…
+    const remote = YAML.parse(fs.readFileSync(remotePath, 'utf-8'));
+    expect(remote.votes['doc-a'].upvoted_count).toBe(1);
+    // …but the local deltas survive: an unpublished push must not lose the
+    // sync trigger (#1027).
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf-8')).deltas).toEqual({
+      'doc-a': { recalled_delta: 0, upvoted_delta: 1 },
+    });
+
+    // Once the publish is confirmed, the staged set is cleared.
+    await confirmVotesSynced(localPath, staged!.syncedDeltas);
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf-8')).deltas).toEqual({});
+    expect(await hasPendingVoteDeltas(localDir, 'jeff')).toBe(false);
+  });
+
+  it('re-staging onto the same origin snapshot is idempotent (a failed push does not double-count)', async () => {
+    const { localDir, repoDir, localPath, remotePath } = seedPending();
+    await incrementRecalled(localPath, ['doc-a']);
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    // Origin holds R; attempt 1 stages D onto R. Its push fails, so origin
+    // stays R and the worktree file keeps R+D.
+    const originBase: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 2, upvoted_count: 0, last_recalled_at: '2026-06-01T00:00:00Z' } },
+      deltas: {},
+    };
+    await stageVotesMerge(repoDir, 'jeff', localDir, originBase);
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf-8')).votes['doc-a']).toMatchObject({
+      recalled_count: 3,
+      upvoted_count: 1,
+    });
+
+    // Retry with the SAME origin snapshot (the push never landed): merging the
+    // same deltas again must reproduce the same content, not add them twice.
+    await stageVotesMerge(repoDir, 'jeff', localDir, originBase);
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf-8')).votes['doc-a']).toMatchObject({
+      recalled_count: 3,
+      upvoted_count: 1,
+    });
+
+    // Delivery confirmed → the deltas go, exactly once.
+    await confirmVotesSynced(localPath, (await stageVotesMerge(repoDir, 'jeff', localDir, originBase))!.syncedDeltas);
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({});
+  });
+
+  it('recognizes a push that landed without its confirmation, instead of replaying it (#1027)', async () => {
+    const { localDir, repoDir, localPath, remotePath } = seedPending();
+    await incrementRecalled(localPath, ['doc-a']);
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    const originBase: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 2, upvoted_count: 0, last_recalled_at: '2026-06-01T00:00:00Z' } },
+      deltas: {},
+    };
+    await stageVotesMerge(repoDir, 'jeff', localDir, originBase);
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf8')).votes['doc-a']).toMatchObject({
+      recalled_count: 3,
+      upvoted_count: 1,
+    });
+
+    // The push LANDED — origin now reads back exactly the merged content — but
+    // the process died before confirmVotesSynced ran: the deltas and the
+    // delivery watermark are both still local. The next stage must recognize
+    // delivery and only subtract, never re-add (R + 2D).
+    const originNow = readUserVotesFromContent(fs.readFileSync(remotePath, 'utf8'));
+    expect(await stageVotesMerge(repoDir, 'jeff', localDir, originNow)).toBeNull();
+
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf8')).votes['doc-a']).toMatchObject({
+      recalled_count: 3,
+      upvoted_count: 1,
+    });
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({});
+  });
+
+  it('re-merges when origin moved past an unconfirmed delivery id (same user, another checkout)', async () => {
+    const { localDir, repoDir, localPath, remotePath } = seedPending();
+    await incrementRecalled(localPath, ['doc-a']);
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    const originBase: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 2, upvoted_count: 0, last_recalled_at: '2026-06-01T00:00:00Z' } },
+      deltas: {},
+    };
+    await stageVotesMerge(repoDir, 'jeff', localDir, originBase);
+
+    // Another checkout of the same user pushed: its file carries its own
+    // delivery id, not ours, so delivery cannot be proven. The deltas re-merge
+    // (the documented double-count when our landed push was superseded) and
+    // the local record is superseded by the new stage.
+    const originMoved = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 99, upvoted_count: 5, last_recalled_at: '2026-06-02T00:00:00Z' } },
+      deltas: {},
+      deliveredSyncIds: ['b3f1c0de-0000-4000-8000-000000000001'],
+    } as UserVotesV2 & { deliveredSyncIds: string[] };
+    expect(await stageVotesMerge(repoDir, 'jeff', localDir, originMoved)).not.toBeNull();
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf8')).votes['doc-a']).toMatchObject({
+      recalled_count: 100,
+      upvoted_count: 6,
+    });
+    // Still unconfirmed: the deltas stay pending until delivery.
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({
+      'doc-a': { recalled_delta: 1, upvoted_delta: 1 },
+    });
+  });
+
+  it("does not treat another checkout's identical counts as this one's delivery (#1027)", async () => {
+    const { localDir, repoDir, localPath, remotePath } = seedPending();
+    await incrementRecalled(localPath, ['doc-a']);
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    const originBase: UserVotesV2 = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 2, upvoted_count: 0, last_recalled_at: '2026-06-01T00:00:00Z' } },
+      deltas: {},
+    };
+    await stageVotesMerge(repoDir, 'jeff', localDir, originBase);
+    // This stage's push fails, so its delivery id never reaches origin…
+
+    // …and checkout B of the SAME username independently publishes identical
+    // increments: the counts match this stage's merge exactly, but under B's
+    // own id. Counter equality must not clear our undelivered deltas — the
+    // team would lose one of the two contributions.
+    const originFromB = {
+      version: 2,
+      votes: { 'doc-a': { recalled_count: 3, upvoted_count: 1, last_recalled_at: '2026-06-02T00:00:00Z' } },
+      deltas: {},
+      deliveredSyncIds: ['b3f1c0de-0000-4000-8000-000000000002'],
+    } as UserVotesV2 & { deliveredSyncIds: string[] };
+    expect(await stageVotesMerge(repoDir, 'jeff', localDir, originFromB)).not.toBeNull();
+
+    // Our deltas were re-merged on top, not silently dropped…
+    expect(YAML.parse(fs.readFileSync(remotePath, 'utf8')).votes['doc-a']).toMatchObject({
+      recalled_count: 4,
+      upvoted_count: 2,
+    });
+    // …and they stay pending until OUR push is delivered.
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf8')).deltas).toEqual({
+      'doc-a': { recalled_delta: 1, upvoted_delta: 1 },
+    });
+  });
+
+  it('confirm clears only the staged set: a delta added while the push was in flight survives', async () => {
+    const { localDir, repoDir, localPath, remotePath } = seedPending();
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    const staged = (await stageVotesMerge(repoDir, 'jeff', localDir, null))!;
+
+    // The detached judge (or the user) votes doc-b while the push is in flight,
+    // and doc-a gets one more upvote too.
+    await incrementUpvoted(localPath, ['doc-b']);
+    await incrementUpvoted(localPath, ['doc-a']);
+
+    await confirmVotesSynced(localPath, staged.syncedDeltas);
+    const local = YAML.parse(fs.readFileSync(localPath, 'utf-8'));
+    expect(local.deltas).toEqual({
+      'doc-a': { recalled_delta: 0, upvoted_delta: 1 },
+      'doc-b': { recalled_delta: 0, upvoted_delta: 1 },
+    });
+
+    // The next stage delivers the remainder onto the now-confirmed snapshot.
+    const remote = readUserVotesFromContent(fs.readFileSync(remotePath, 'utf-8'));
+    const next = (await stageVotesMerge(repoDir, 'jeff', localDir, remote))!;
+    const merged = YAML.parse(fs.readFileSync(remotePath, 'utf-8'));
+    expect(merged.votes['doc-a'].upvoted_count).toBe(2);
+    expect(merged.votes['doc-b'].upvoted_count).toBe(1);
+    await confirmVotesSynced(localPath, next.syncedDeltas);
+    expect(YAML.parse(fs.readFileSync(localPath, 'utf-8')).deltas).toEqual({});
+  });
+
+  it('staging returns null when there is nothing pending', async () => {
+    const { localDir, repoDir, localPath } = seedPending();
+    await incrementUpvoted(localPath, ['doc-a']);
+    await stageVotesMerge(repoDir, 'jeff', localDir, null);
+    const local = YAML.parse(fs.readFileSync(localPath, 'utf-8'));
+    fs.writeFileSync(localPath, YAML.stringify({ ...local, deltas: {} }));
+
+    expect(await stageVotesMerge(repoDir, 'jeff', localDir, null)).toBeNull();
+  });
+});
+
+describe('readUserVotesFromContent', () => {
+  it('parses v2 content', () => {
+    const votes = readUserVotesFromContent(
+      YAML.stringify({ version: 2, votes: { d: { recalled_count: 1, upvoted_count: 0, last_recalled_at: '' } }, deltas: { d: { recalled_delta: 1, upvoted_delta: 0 } } }),
+    );
+    expect(votes.votes['d'].recalled_count).toBe(1);
+    expect(votes.deltas['d'].recalled_delta).toBe(1);
+  });
+
+  it('migrates v1 content in memory and reads unparseable content as empty', () => {
+    const v1 = readUserVotesFromContent(YAML.stringify({ votes: { d: { at: '2026-01-01T00:00:00Z' } } }));
+    expect(v1.version).toBe(2);
+    expect(v1.votes['d'].recalled_count).toBe(1);
+
+    expect(readUserVotesFromContent('::: not yaml [').votes).toEqual({});
+    expect(readUserVotesFromContent('').votes).toEqual({});
   });
 });
 

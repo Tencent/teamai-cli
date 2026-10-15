@@ -64,23 +64,34 @@ Status and skill inspection identify nested source installations by their record
 
 Do not run source installation/removal and push concurrently. The source mutex serializes source mutations, but push does not retain it through its entire staging/publication transaction; full cross-command snapshot isolation remains a limitation.
 
-## The two anchors (the core model)
+## Project identity and checkout roots
 
-A git worktree has two distinct "roots", and teamai needs both:
+A Git repository has one identity and checkout paths with separate purposes:
 
 ```
-projectAnchor  = first entry of `git worktree list --porcelain` (the main worktree)
-                 → the MAIN checkout, SHARED by the repo and all its worktrees.
+projectAnchor  = first entry of `git worktree list --porcelain`
+                 → a checkout or Git directory, SHARED by the repo and its worktrees.
                  → the stable per-project identity; P1 keys machine data under
                    ~/.teamai/projects/<slug(projectAnchor)>/ by it.
+
+mainCheckout   = first entry when it is a checkout, else the common dir's
+                 core.worktree, else show-toplevel for a main separate-git-dir
+                 checkout, else null
+                 → where agents read shared project hooks and Codex trust applies.
+                 → null means every checkout keeps its own hook files.
 
 workspaceRoot  = `git rev-parse --show-toplevel`
                  → the CURRENT checkout, DISTINCT per worktree.
                  → where project-scope AI-tool resources (skills/rules/agents,
                    tool config, CLAUDE.md) must be written.
+                 → an internal name for the checkout root, unrelated to the
+                   `workspace` install scope (#1099).
 ```
 
-They are equal for a plain (non-worktree) repository.
+All three are equal for a plain repository. An initialized submodule clone in
+a superproject worktree inherits `<common>/modules/<name>` as its identity when
+that original Git directory exists. Its checkout paths still refer to its own
+clone, so shared configuration does not share delivery destinations (#1041).
 
 **Why resources must go to `workspaceRoot`, not `projectAnchor`:** every AI tool
 (Claude, Codex, CodeBuddy, OpenCode) discovers project resources by scanning up
@@ -105,6 +116,12 @@ The fast path also needs the entry's `gitExcludePaths`, what each writer of
 the pull delivered into the checkout (the paths teamai's `delivered` git
 exclude block lists, #915). An entry saved by an older CLI has none, so the
 first pull after the upgrade is a full sync, whatever `sharing.gitExclude` says.
+The entry's `rootsSeeded` says pull's tool-root seeding step completed or did
+not apply, as a new linked worktree's post-checkout does, for a submodule clone
+the superproject created (#1041). Pull leaves it absent when the original
+checkout cannot be recovered, so the next pull retries. An entry without it,
+older CLI's included, is seeded on the next pull, and a root the member removes
+afterwards stays removed.
 The block is the union of the `gitExcludePaths` of the live checkouts
 (`liveCheckoutRecords`), less paths that hold a file outside another live
 checkout's list; paths in another repository (a submodule, a nested clone, a tool
@@ -132,7 +149,9 @@ A `.codex/hooks.json` that is not teamai's alone (tracked, or holding a member's
 entry; always in self mode) gets no team hooks while the flag is on: pull takes
 teamai's entries out of it through its hook manifest and records the project's
 Codex team hooks in `~/.teamai/codex-team-hooks.json` (machine-wide, keyed by the
-main checkout, or by the checkout in self mode; locked by
+project identity, or by the checkout in self mode; each entry lists the checkouts
+whose Codex file it stands for, so submodule clones sharing an identity keep
+separate entries (#1041); locked by
 `codex-team-hooks.json.lock`; a project whose directory is gone is dropped). The
 same pull makes `~/.codex/hooks.json` hold one
 `teamai hook-dispatch <Event> --tool codex --team-hooks` entry per event any
@@ -384,12 +403,20 @@ is a P1 concern. This keeps P0 independently reviewable (issue R7).
    - `releaseLock()` returns early when this process holds no owner token for the
      path, and otherwise deletes only when the on-disk `owner` still matches the token
      this process recorded — never another process's lock.
+   - Exit hygiene (#1027): a process that took at least one real lock registers a
+     synchronous `process.on('exit')` sweep that removes whatever it still holds
+     (same owner-verified removal, sync fs — `exit` handlers cannot await). This
+     covers a hook host's hard `process.exit(0)` killing best-effort background
+     work mid-lock; SIGKILL stays uncoverable by design. `teamai doctor` reports
+     the remaining dead-owner locks (informational), and `teamai doctor --fix`
+     removes them through the same serialized `acquireLock`/`releaseLock`
+     reclaim; ownerless and permission-denied locks are never touched.
    - Back-compatible with legacy plain-integer PID lock files.
    The three call sites (`update.ts`, `bootstrap.ts`, `utils/reports-branch.ts`)
    keep their signatures and all benefit.
 
 2. **Anchor primitive** — `src/utils/git.ts` `resolveAnchors(cwd?)`.
-   Returns `{ workspaceRoot, projectAnchor }`, or `null` outside a git repo (callers
+   Returns `{ workspaceRoot, projectAnchor, mainCheckout }`, or `null` outside a git repo (callers
    fall back to cwd-based behavior).
 
 3. **Subdirectory / worktree-aware discovery** — `src/config.ts`
@@ -623,7 +650,8 @@ every checkout, so that is where they live now:
 ├── learnings-wt/                              getWorktreeDir → <dataHome>/<dirname>
 ├── reports-wt/                                (the side-branch locks sit beside them)
 ├── pending-learnings/                         pendingLearningsDir → <dataHome>/pending-learnings
-├── managed-main-checkout-hooks.json           team hooks teamai wrote ungated into the main checkout's Claude Code / Codex
+├── managed-main-checkout-hooks.json           legacy ownership, adopted into the original main checkout's workspace index (#1041)
+│                                              team hooks teamai wrote ungated into the main checkout's Claude Code / Codex
 │                                              settings, shared by every checkout (#955; the built-in hooks stay in HOME)
 │                                              project toolPaths choose the files; Claude uses settings.local.json beside its settings file
 │                                              Codex records event, matcher-group position and complete rendered entry; unique definitions recover moved entries
@@ -650,7 +678,10 @@ every checkout, so that is where they live now:
     │                                          doctor names a tracked one. Other records stay there for the pre-#370 import and legacy sweep.
     │                                          Self mode with sharing.gitExclude on: Claude's records describe .claude/settings.local.json, the
     │                                          tracked settings.json keeps only the built-ins; off, they describe settings.json again (#915)
-    ├── managed-main-checkout-hooks.json       bare repositories only: this workspace owns its Claude / Codex team-hook files and trust target, without sibling registrations
+    ├── managed-main-checkout-hooks.json        Claude / Codex team hooks indexed by their actual target checkout (#1041),
+    │                                          with sibling registrations when Git supplies a main checkout. Inherited submodule
+    │                                          clones have separate target indexes; a null mainCheckout keeps ownership per workspace.
+    │                                          The original checkout adopts the legacy flat index; inherited clones never adopt it.
     ├── managed-mcp.json                       managedMcpManifestPath, one per checkout; Copilot placement is true for bare, false for keyed, absent when unproven
     ├── managed-mcp-files.json                 resolvedMcpFilesPath: project MCP configs teamai may have written a resolved ${VAR} to, and whether
     │                                          the paths earlier teamai.yaml revisions mapped were read; one of those git tracks is marked tracked (#882);
@@ -1157,18 +1188,20 @@ A session written before that field existed is attributed by its first
 `cwd`: to the scope `resolveConfigForDir` resolves that directory to now, the
 dispatcher's rule, so a nested clone under a project is not the project's; no
 `cwd`, or one removed since, is no scope's. Inside git an event also carries `projectAnchor`, the repo's
-main checkout, which all of its worktrees share (#809); a Copilot event, with no
+stable identity, which all of its worktrees share (#809); a Copilot event, with no
 `cwd`, carries none. `stats --by-repo`,
 `session save` and the dashboard's Repository filter key a session by the last
 anchor it recorded, else by its `cwd`, and the dashboard gives an event to the
-project rooted at its anchor, so a worktree counts as its repo, also after it
-is removed. 
+project identified by its anchor, so a worktree counts as its repo, also after it
+is removed. Checkout recovery uses `mainCheckout`, `core.worktree`, recorded
+live checkout roots and Git's worktree list; it never exposes a Git directory as
+a dashboard workspace or local-agent checkout (#1041).
 
 A hook whose `cwd` no longer exists (a session that outlives its
 worktree) would resolve to the user scope, or be dropped without one, so it
 keeps the scope its session last recorded instead (#810): the config at that
-event's `projectAnchor` (for a bare repo, at one of its worktrees that still
-exists), used only while the key of its `getDataHome()` is still the recorded
+event's `projectAnchor`, resolved through a live checkout when the anchor is a
+Git directory, used only while the key of its `getDataHome()` is still the recorded
 `dataHomeKey`. Its events and skill uses stay with the project, and the share
 reminder's gate reads the project too. A project config there that
 cannot be read records nothing, and with nothing recorded to match the hook

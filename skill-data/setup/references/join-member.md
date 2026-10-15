@@ -34,6 +34,10 @@ If it fails, Node.js ≥ 20 is missing — have them install Node 20+ first.
 
 - **This project only** (default): `cd` into the project directory first.
 - **Whole machine**: add `--scope user`.
+- **A folder holding several repos** (a workspace): set up each repo from
+  inside it, then run the same `init` in the folder. The folder also receives
+  what each repo inside selects; pass `--project` there only for a project the
+  folder itself belongs to.
 
 ## Step 3 — Log in to the same platform as the URL
 
@@ -126,12 +130,11 @@ section "Which tools actually get hooks".
 
 ## Step 6 — Confirm the skills actually arrived
 
-`teamai init` ends with a pull, so the team's skills, rules and MCP servers are
-already in place in user scope, and in project scope for each tool named with
-`--agent` or picked in init's interactive tool picker. A project-scope init run
-without a terminal and without `--agent` creates no tool directory; a
-tool's directory fills when the user first opens that tool in the project. To
-confirm:
+`teamai init` does not copy team skills, rules or MCP. They arrive on the next
+session start, or when you run `teamai pull`. A workspace-scope init run without a
+terminal and without `--agent` creates no tool directory; that directory appears
+when the user first opens that tool in the project, and that session start pulls.
+To confirm after a session start or a pull:
 
 ```bash
 teamai list        # see the team skills / rules / docs you now have

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { COPILOT_TOOL_ID, getCopilotHome, resolveToolBaseDir, toolGateRoot, toolInstallRoot } from '../types.js';
-import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig, State } from '../types.js';
+import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiConfig, LocalConfig, PendingPush, State } from '../types.js';
 
 /** The placement records `publishedNameFor` resolves a bare name through. */
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
@@ -17,6 +17,13 @@ const TOMBSTONE_FILE = '.removed';
  * `.codebuddy/rules` (#946), which says nothing about WorkBuddy.
  */
 const INSTALL_ROOTS: Readonly<Record<string, string>> = { workbuddy: '.workbuddy' };
+
+/**
+ * The HOME root that says a tool is installed, in every scope, for a tool with
+ * no project path of its own: Muse Code's `.agents` and `.mcp.json` are read
+ * by Codex and Claude Code too.
+ */
+const HOME_INSTALL_ROOTS: Readonly<Record<string, string>> = { muse: '.config/muse' };
 
 /** Each edition of a product sharing one project directory, and the HOME root that alone says the member runs it. */
 const EDITION_HOME_ROOTS: Readonly<Record<string, string>> = {
@@ -113,10 +120,10 @@ export async function isToolInstalledForConfig(
     if (localConfig.enabledAgents?.includes(tool) === true) return true;
     return pathExists(path.join(getUserHome(), editionHomeRoot));
   }
-  // Antigravity must be probed by ITS OWN roots, never by the generic one:
-  // its project skills live in the `.agents/` tree that the central Agent
-  // Skills entry also uses, so the generic probe would report it installed for
-  // any project that merely has `.agents/` — which adds Antigravity's MCP and
+  // Antigravity must be probed by ITS OWN roots, never by the generic one: its
+  // project skills live in the `.agents/` tree that the central Agent Skills
+  // entry also uses, so the generic probe would report it installed for any
+  // project that merely has `.agents/` — which adds Antigravity's MCP and
   // skills targets to teams that do not run it (#882's MCP reconciliation
   // assertions catch exactly that). `isAntigravityInstalledWith` therefore
   // looks at the machine-level roots plus Antigravity's own files in `baseDir`,
@@ -124,6 +131,7 @@ export async function isToolInstalledForConfig(
   // `toolGateRoot` is not consulted here: it resolves a recorded `toolRoots`
   // entry, and Antigravity is not in RELOCATABLE_TOOLS.
   if (tool === ANTIGRAVITY_TOOL_ID) return isAntigravityInstalledWith(localConfig, baseDir);
+  if (Object.hasOwn(HOME_INSTALL_ROOTS, tool)) return pathExists(path.join(getUserHome(), HOME_INSTALL_ROOTS[tool]));
   const probe = Object.hasOwn(INSTALL_ROOTS, tool) ? INSTALL_ROOTS[tool] : toolPath;
   return ResourceHandler.isToolInstalled(probe, baseDir, toolGateRoot(tool, probe, localConfig.toolRoots));
 }
@@ -133,15 +141,21 @@ export async function isToolInstalledForConfig(
  * Each resource type (skills, rules, docs, env, agents, hooks, mcp) implements this.
  */
 /**
- * What `push` knows before it scans. Only the destination an explicit
- * `--role`/`--project` names, and only agents read it: their scan has to
+ * What `push` knows before it scans. The destination an explicit
+ * `--role`/`--project` names, which only agents read: their scan has to
  * decide which team file a local edit is an edit OF, and that answer changes
  * when the user has named a namespace (see `AgentsHandler.scanLocalForPush`).
- * Rules and skills are placed after selection, so their scan needs nothing.
+ * And the open-PR records, which only skills read: an open PR is proof of
+ * where a new skill goes, so it decides the copy's destination before copies
+ * from several tools are merged (see `SkillsHandler.scanLocalForPush`).
  */
 export interface ScanForPushOptions {
   /** The namespace `--role <ns>` / `--project <id>` resolved to, if any. */
   namespace?: string;
+  /** Open-PR records whose branch is still on origin. */
+  pending?: readonly PendingPush[];
+  /** The real path of the copy `push --skill` names: --skill, not the scan, says why it is left out as another namespace's. */
+  requestedSkillPath?: string;
 }
 
 export abstract class ResourceHandler {

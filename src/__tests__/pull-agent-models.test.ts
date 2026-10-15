@@ -6,6 +6,7 @@
  * Asserted through `pull`, on the files in tool dirs and the state it saves.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
@@ -329,7 +330,8 @@ describe('pull: recorded agent models on an unchanged team revision', () => {
       await writeAgent(IMPLEMENTER);
       await writeLocal('aliases:\n  strong:\n    claude: sonnet\n');
       const projectRoot = path.join(tmpDir, 'project');
-      await fse.ensureDir(path.join(projectRoot, '.git'));
+      await fse.ensureDir(projectRoot);
+      execFileSync('git', ['init', '-q', projectRoot]);
       await fse.ensureDir(path.join(projectRoot, '.claude'));
       vi.mocked(detectProjectConfig).mockResolvedValue({ ...localConfig, scope: 'project', projectRoot });
 
@@ -623,7 +625,8 @@ describe('pull: recorded agent models on an unchanged team revision', () => {
       await writeAliases(STRONG);
       await writeAgent(IMPLEMENTER);
       const projectRoot = path.join(tmpDir, 'project');
-      await fse.ensureDir(path.join(projectRoot, '.git'));
+      await fse.ensureDir(projectRoot);
+      execFileSync('git', ['init', '-q', projectRoot]);
       await fse.ensureDir(path.join(projectRoot, '.claude'));
       const projectConfig: LocalConfig = { ...localConfig, scope: 'project', projectRoot };
       vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
@@ -657,7 +660,8 @@ describe('pull: recorded agent models on an unchanged team revision', () => {
       await writeAliases(STRONG);
       await writeAgent(IMPLEMENTER);
       const projectRoot = path.join(tmpDir, 'project');
-      await fse.ensureDir(path.join(projectRoot, '.git'));
+      await fse.ensureDir(projectRoot);
+      execFileSync('git', ['init', '-q', projectRoot]);
       await fse.ensureDir(path.join(projectRoot, '.claude'));
       vi.mocked(detectProjectConfig).mockResolvedValue({ ...localConfig, scope: 'project', projectRoot, inheritUserScope: true });
       await pullOnce();
@@ -668,7 +672,7 @@ describe('pull: recorded agent models on an unchanged team revision', () => {
       await pull({ silent: true }, outcome);
 
       expect(logged('success', /\[user\] Already synced/)).toBe(false);
-      expect(logged('success', /\[project\] Already synced at abc1234/)).toBe(true);
+      expect(logged('success', /\[workspace\] Already synced at abc1234/)).toBe(true);
       expect(heldLines().some((line) => line.includes('Held implementer.yaml'))).toBe(true);
       expect(outcome.completed).toBe(false);
     });
@@ -891,7 +895,8 @@ describe('pull: recorded agent models on an unchanged team revision', () => {
     await pullOnce();
 
     const projectRoot = path.join(tmpDir, 'project');
-    await fse.ensureDir(path.join(projectRoot, '.git'));
+    await fse.ensureDir(projectRoot);
+    execFileSync('git', ['init', '-q', projectRoot]);
     await fse.ensureDir(path.join(projectRoot, '.claude'));
     const projectConfig: LocalConfig = { ...localConfig, scope: 'project', projectRoot };
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);

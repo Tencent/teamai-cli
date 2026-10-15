@@ -69,14 +69,21 @@ function assertCheckoutReady(checkout: 'learnings' | 'reports', refreshed: Refre
  * Votes live in the teamai-reports worktree for every non-HTTP repo. HTTP keeps
  * both data sets under localConfig.repo.localPath. Maintenance is a report
  * reader, so a cold start may create its local cache but never publishes a new
- * reports branch as a side effect. Throws CheckoutLockedError when the
- * reports or learnings lock cannot be taken, and CheckoutUnavailableError when
- * either checkout could not be set up.
+ * reports branch as a side effect. A dry run creates and refreshes nothing.
+ * Throws CheckoutLockedError when the reports or learnings lock cannot be
+ * taken, and CheckoutUnavailableError when either checkout could not be set up.
  */
 export async function resolveMaintenancePaths(
   localConfig: LocalConfig,
+  options: { dryRun?: boolean } = {},
 ): Promise<MaintenancePaths> {
-  if (usesBranchWorktree(localConfig)) {
+  if (usesBranchWorktree(localConfig) && options.dryRun) {
+    // A dry run reads both checkouts as they are: neither refreshed nor created.
+    const { readableReportsWorktree } = await import('../utils/reports-branch.js');
+    await readableReportsWorktree(localConfig, { dryRun: true });
+    const { learningsBranch } = await import('../utils/learnings-branch.js');
+    await learningsBranch.checkOwner(localConfig);
+  } else if (usesBranchWorktree(localConfig)) {
     const { refreshReportsWorktree } = await import('../utils/reports-branch.js');
     assertCheckoutReady('reports', await refreshReportsWorktree(localConfig, { pushIfCreated: false }));
     // Maintenance reads and rewrites learnings, so it needs the branch as other

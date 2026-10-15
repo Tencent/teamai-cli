@@ -301,6 +301,110 @@ scope: 'user',
       expect(process.exitCode).toBeUndefined();
     });
 
+    it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'home', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply'])('warns when env set targets reserved loader control %s', async (key) => {
+      await fse.writeFile(path.join(repoPath, 'env', 'secrets.yaml'), `secrets:\n  - key: ${key}\n`);
+      vi.mocked(readStdin).mockResolvedValue('reserved-value');
+
+      await envSet(key, { stdin: true });
+
+      expect(log.warn).toHaveBeenCalledWith(`${key} is reserved for TeamAI shell routing; those team env values are ignored.`);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('reconciles MCP for this scope after setting a secret, without asking for a pull', async () => {
+      await fse.writeFile(path.join(repoPath, 'teamai.yaml'), 'team: test\nrepo: https://git.woa.com/test/repo.git\n');
+      await fse.ensureDir(path.join(repoPath, 'mcp'));
+      await fse.writeFile(path.join(repoPath, 'mcp', 'mcp.yaml'), [
+        'servers:',
+        '  - name: tapd',
+        '    transport: http',
+        '    url: https://example.com/mcp',
+        '    headers:',
+        '      Authorization: Bearer ${GITHUB_TOKEN}',
+        '',
+      ].join('\n'));
+      await fse.ensureDir(path.join(tmpDir, 'home', '.cursor', 'skills'));
+      vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
+
+      await envSet('GITHUB_TOKEN', { stdin: true });
+
+      const mcp = await fse.readJson(path.join(tmpDir, 'home', '.cursor', 'mcp.json'));
+      expect(mcp.mcpServers.tapd.headers.Authorization).toBe('Bearer fixture-token-value');
+      expect(log.success).toHaveBeenCalledWith('MCP servers updated. Restart your AI tool session to load them.');
+      expect(logged()).not.toContain('Run `teamai pull` to update MCP servers.');
+      expect(logged()).not.toContain('fixture-token-value');
+
+      await envUnset('GITHUB_TOKEN', {});
+      const after = await fse.readJson(path.join(tmpDir, 'home', '.cursor', 'mcp.json'));
+      expect(after.mcpServers.tapd.headers.Authorization).toBe('Bearer fixture-token-value');
+      expect(logged()).not.toContain('Run `teamai pull` to update MCP servers.');
+    });
+
+    it('still asks for a pull to update env.sh after setting a variable, once MCP is reconciled', async () => {
+      await fse.writeFile(path.join(repoPath, 'teamai.yaml'), 'team: test\nrepo: https://git.woa.com/test/repo.git\n');
+      await fse.writeFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({ variables: [{ key: 'API_URL', value: 'u' }] }));
+      vi.mocked(readStdin).mockResolvedValue('https://mine.example');
+
+      await envSet('API_URL', { stdin: true });
+
+      expect(log.info).toHaveBeenCalledWith('Run `teamai pull` to update env.sh.');
+      expect(logged()).not.toContain('Run `teamai pull` to update MCP servers and env.sh.');
+    });
+
+    it('asks for a pull when the tool MCP config does not parse', async () => {
+      await fse.writeFile(path.join(repoPath, 'teamai.yaml'), 'team: test\nrepo: https://git.woa.com/test/repo.git\n');
+      await fse.ensureDir(path.join(repoPath, 'mcp'));
+      await fse.writeFile(path.join(repoPath, 'mcp', 'mcp.yaml'), [
+        'servers:',
+        '  - name: tapd',
+        '    transport: http',
+        '    url: https://example.com/mcp',
+        '    headers:',
+        '      Authorization: Bearer ${GITHUB_TOKEN}',
+        '',
+      ].join('\n'));
+      const mcpFile = path.join(tmpDir, 'home', '.cursor', 'mcp.json');
+      await fse.ensureDir(path.dirname(mcpFile));
+      await fse.ensureDir(path.join(tmpDir, 'home', '.cursor', 'skills'));
+      await fse.writeFile(mcpFile, '{');
+      vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
+
+      await envSet('GITHUB_TOKEN', { stdin: true });
+
+      expect(await fse.readFile(mcpFile, 'utf8')).toBe('{');
+      expect(log.info).toHaveBeenCalledWith('Run `teamai pull` to update MCP servers.');
+      expect(log.success).not.toHaveBeenCalledWith('MCP servers updated. Restart your AI tool session to load them.');
+      expect(logged()).not.toContain('fixture-token-value');
+    });
+
+    it('reports the tools it updated when another tool config does not parse', async () => {
+      await fse.writeFile(path.join(repoPath, 'teamai.yaml'), 'team: test\nrepo: https://git.woa.com/test/repo.git\n');
+      await fse.ensureDir(path.join(repoPath, 'mcp'));
+      await fse.writeFile(path.join(repoPath, 'mcp', 'mcp.yaml'), [
+        'servers:',
+        '  - name: tapd',
+        '    transport: http',
+        '    url: https://example.com/mcp',
+        '    headers:',
+        '      Authorization: Bearer ${GITHUB_TOKEN}',
+        '',
+      ].join('\n'));
+      await fse.ensureDir(path.join(tmpDir, 'home', '.claude', 'skills'));
+      const cursorFile = path.join(tmpDir, 'home', '.cursor', 'mcp.json');
+      await fse.ensureDir(path.join(tmpDir, 'home', '.cursor', 'skills'));
+      await fse.writeFile(cursorFile, '{');
+      vi.mocked(readStdin).mockResolvedValue('fixture-token-value');
+
+      await envSet('GITHUB_TOKEN', { stdin: true });
+
+      const claude = await fse.readJson(path.join(tmpDir, 'home', '.claude.json'));
+      expect(claude.mcpServers.tapd.headers.Authorization).toBe('Bearer fixture-token-value');
+      expect(await fse.readFile(cursorFile, 'utf8')).toBe('{');
+      expect(log.success).toHaveBeenCalledWith('MCP servers updated. Restart your AI tool session to load them.');
+      expect(logged()).not.toContain('Run `teamai pull` to update MCP servers.');
+      expect(logged()).not.toContain('fixture-token-value');
+    });
+
     it('reads the value from the hidden prompt without a flag', async () => {
       vi.mocked(askSecret).mockResolvedValue('fixture-prompt-value');
 

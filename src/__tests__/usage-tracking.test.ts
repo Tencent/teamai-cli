@@ -1234,7 +1234,7 @@ describe('getRecommendations', () => {
       },
     ];
 
-    const recs = await getRecommendations(teamStats);
+    const recs = await getRecommendations(teamStats, new Set(['code-review']));
     expect(recs.length).toBeGreaterThan(0);
     expect(recs[0].skill).toBe('code-review');
   });
@@ -1256,7 +1256,7 @@ describe('getRecommendations', () => {
       },
     ];
 
-    const recs = await getRecommendations(teamStats);
+    const recs = await getRecommendations(teamStats, new Set(['code-review']));
     expect(recs.length).toBe(0);
   });
 
@@ -1279,14 +1279,34 @@ describe('getRecommendations', () => {
       },
     ];
 
-    const recs = await getRecommendations(teamStats);
+    const recs = await getRecommendations(teamStats, new Set(['tdd']));
     // tdd should NOT be recommended because it's in known-skills.json
     expect(recs.find((r) => r.skill === 'tdd')).toBeUndefined();
   });
 
   it('returns empty for no team data', async () => {
-    const recs = await getRecommendations([]);
+    const recs = await getRecommendations([], new Set());
     expect(recs).toEqual([]);
+  });
+
+  it('recommends only skills the team repo delivers, not teammates\' personal or built-in ones', async () => {
+    const used = (...names: string[]): UserStats['skills'] =>
+      Object.fromEntries(names.map((name) => [name, { count: 3, lastUsed: '2026-10-12T10:00:00Z' }]));
+    const teamStats: UserStats[] = [
+      { username: 'alice', updatedAt: '2026-10-12T10:00:00Z', skills: used('tdd', 'pr', 'code-review', 'grilling') },
+      { username: 'bob', updatedAt: '2026-10-12T10:00:00Z', skills: used('tnpm-beta-release') },
+      { username: 'carol', updatedAt: '2026-10-12T10:00:00Z', skills: used('teamai', 'vertical-clip', 'tgit', 'npm-beta-release') },
+    ];
+    await updateKnownSkills('tdd');
+    await updateKnownSkills('pr');
+    await updateKnownSkills('code-review');
+    await updateKnownSkills('grilling');
+    // The skills pull delivers here: the team repo's. The others are teammates' own or the CLI's built-in.
+    const delivered = new Set(['npm-beta-release', 'eli5', 'grill-me', 'grilling', 'i-have-adhd', 'archify']);
+
+    const recs = await getRecommendations(teamStats, delivered);
+
+    expect(recs.map((r) => r.skill)).toEqual(['npm-beta-release']);
   });
 });
 
@@ -1430,6 +1450,22 @@ describe('mergeStats', () => {
 // ─── trackSlashCommand tests ──────────────────────────
 
 describe('trackSlashCommand', () => {
+  it('does not count path segments or URL components that match installed skills', async () => {
+    for (const name of ['tdd', 'Volumes', 'External', 'project']) await createFakeSkill(name);
+    const restore = mockStdin(JSON.stringify({
+      prompt: '/tdd /Volumes/External/project https://example.test/project /tdd/notes /tdd\\notes',
+      hook_event_name: 'UserPromptSubmit',
+    }));
+    try {
+      await trackSlashCommand();
+    } finally {
+      restore();
+    }
+
+    expect((await readUsageEvents(userScope())).map((event) => event.skill)).toEqual(['tdd']);
+    expect(await readKnownSkills()).toEqual(new Set(['tdd']));
+  });
+
   it('tracks a valid slash command', async () => {
     await createFakeSkill('plan-eng-review');
     const hookData = JSON.stringify({

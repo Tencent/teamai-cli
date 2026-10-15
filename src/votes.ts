@@ -1,4 +1,5 @@
 // -*- coding: utf-8 -*-
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import YAML from 'yaml';
@@ -178,16 +179,25 @@ async function parseUserVotes(votePath: string): Promise<{ data: UserVotesV2; mi
   const empty = { data: { version: 2, votes: {}, deltas: {} } as UserVotesV2, migrated: false };
   const content = await readFileSafe(votePath);
   if (!content) return empty;
+  return parseUserVotesContent(content) ?? empty;
+}
 
+/**
+ * Parse raw YAML content (never a file) into the v2 shape, or null when it is
+ * empty/unparseable. Callers that read the file's content from git (see
+ * `readReportsOriginFile`) get the same v1 tolerance and never-write guarantee
+ * as {@link readUserVotes}.
+ */
+function parseUserVotesContent(content: string): { data: UserVotesV2; migrated: boolean } | null {
   let parsed: unknown;
   try {
     parsed = YAML.parse(content);
   } catch {
-    return empty;
+    return null;
   }
 
   if (!parsed || typeof parsed !== 'object') {
-    return empty;
+    return null;
   }
 
   const obj = parsed as Record<string, unknown>;
@@ -202,7 +212,16 @@ async function parseUserVotes(votePath: string): Promise<{ data: UserVotesV2; mi
     return { data: migrateV1ToV2(obj as unknown as UserVotes), migrated: true };
   }
 
-  return empty;
+  return null;
+}
+
+/**
+ * A votes snapshot from raw content, e.g. `git show` of the file on the reports
+ * branch's remote-tracking ref. Unparseable content reads as empty, the same
+ * fallback `readUserVotes` gives a corrupt file. Never writes.
+ */
+export function readUserVotesFromContent(content: string): UserVotesV2 {
+  return parseUserVotesContent(content)?.data ?? { version: 2, votes: {}, deltas: {} };
 }
 
 /**
@@ -405,6 +424,27 @@ export async function hasPendingVoteDeltas(localVotesDir: string, username: stri
 }
 
 /**
+ * The local deltas that `current` still owes after `synced` was delivered:
+ * per-doc counters with the delivered amounts subtracted, keeping any nonzero
+ * remainder (a delta added after the snapshot, or adjusted by a downvote).
+ */
+function remainingDeltasAfter(
+  current: UserVotesV2['deltas'],
+  synced: UserVotesV2['deltas'],
+): UserVotesV2['deltas'] {
+  const remainingDeltas: UserVotesV2['deltas'] = {};
+  for (const [docId, delta] of Object.entries(current)) {
+    const s = synced[docId];
+    const recalled_delta = delta.recalled_delta - (s?.recalled_delta ?? 0);
+    const upvoted_delta = delta.upvoted_delta - (s?.upvoted_delta ?? 0);
+    if (recalled_delta !== 0 || upvoted_delta !== 0) {
+      remainingDeltas[docId] = { recalled_delta, upvoted_delta };
+    }
+  }
+  return remainingDeltas;
+}
+
+/**
  * Sync local vote deltas to the team repo votes file for a given user.
  * Returns true if sync was performed, false if deltas were empty.
  */
@@ -434,22 +474,172 @@ export async function syncVotesToTeam(
     // Clear ONLY the deltas we just synced. A concurrent incrementUpvoted cannot
     // interleave (we hold the lock), but this subtraction is still the correct
     // shape and keeps the local running tally (`local.votes`) intact.
-    const remainingDeltas: UserVotesV2['deltas'] = {};
-    for (const [docId, delta] of Object.entries(local.deltas)) {
-      const synced = syncedDeltas[docId];
-      const recalled_delta = delta.recalled_delta - (synced?.recalled_delta ?? 0);
-      const upvoted_delta = delta.upvoted_delta - (synced?.upvoted_delta ?? 0);
-      if (recalled_delta !== 0 || upvoted_delta !== 0) {
-        remainingDeltas[docId] = { recalled_delta, upvoted_delta };
-      }
-    }
-    await saveUserVotes(localVotePath, { ...local, deltas: remainingDeltas });
+    await saveUserVotes(localVotePath, {
+      ...local,
+      deltas: remainingDeltasAfter(local.deltas, syncedDeltas),
+    });
     return true;
   });
 
   // Lock not taken → nothing synced; the deltas remain for the next attempt.
   if (!acquired) return false;
   return value ?? false;
+}
+
+/** The delta set a {@link stageVotesMerge} wrote into the worktree. */
+export interface StagedVotes {
+  syncedDeltas: UserVotesV2['deltas'];
+}
+
+/**
+ * Delivery record for a stage whose push may have landed without its
+ * confirmation (#1027): the unique id the stage stamped into the remote file's
+ * `deliveredSyncIds`, plus the delta set it staged. Persisted in the LOCAL
+ * votes file (a ride-along field, like `upvotedSessions`) at stage time —
+ * before the push — and consumed by {@link confirmVotesSynced} or by the next
+ * stage.
+ */
+export interface PendingVoteSync {
+  /** The id the stage appended to the remote `deliveredSyncIds` list. */
+  syncId: string;
+  /** The delta set that was staged, to subtract when delivery is recognized. */
+  deltas: UserVotesV2['deltas'];
+}
+
+/** How many recent delivery ids the remote file keeps. */
+const MAX_DELIVERED_SYNC_IDS = 10;
+
+/** Read the local delivery record, shape-checked like the upvote ledger. */
+function readPendingSync(data: UserVotesV2): PendingVoteSync | undefined {
+  const raw = (data as unknown as { pendingSync?: unknown }).pendingSync;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const p = raw as Partial<PendingVoteSync>;
+  if (typeof p.syncId !== 'string' || !p.deltas || typeof p.deltas !== 'object') {
+    return undefined;
+  }
+  return p as PendingVoteSync;
+}
+
+/** The same votes snapshot with the delivery record set (or removed). */
+function withPendingSync(data: UserVotesV2, pending: PendingVoteSync | undefined): UserVotesV2 {
+  const out = { ...data } as UserVotesV2 & { pendingSync?: PendingVoteSync };
+  if (pending) out.pendingSync = pending;
+  else delete out.pendingSync;
+  return out;
+}
+
+/** The delivery ids a remote snapshot records, from its ride-along field. */
+function deliveredSyncIdsOf(remote: UserVotesV2): string[] {
+  const raw = (remote as unknown as { deliveredSyncIds?: unknown }).deliveredSyncIds;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((id): id is string => typeof id === 'string');
+}
+
+/**
+ * Merge local vote deltas into the reports worktree WITHOUT clearing them
+ * locally. The push follows after the write callback returns, and the deltas
+ * are dropped only by {@link confirmVotesSynced} once that push is confirmed —
+ * clearing before the push (the `syncVotesToTeam` shape) loses the sync
+ * trigger forever when the push fails or the process dies first (#1027).
+ *
+ * `confirmedRemote` is the merge base: the file's content on the reports
+ * branch's remote-tracking ref — the last state ORIGIN confirmed — never the
+ * worktree copy, which may already hold this machine's own merged-but-unpushed
+ * result. Basing on origin makes a retry idempotent when the previous push
+ * never landed: the deltas re-merge onto the same origin snapshot instead of
+ * being added on top of themselves. `null` (the branch or the file is not on
+ * origin yet) reads as an empty base, which is correct because then the
+ * worktree can only hold this machine's own staging.
+ *
+ * A push that LANDED but was never confirmed (the process died between the
+ * push and the clear, or the clear's lock was exhausted) would otherwise
+ * double-count the same deltas on the retry. Each stage therefore stamps its
+ * merge with a unique delivery id, carried in the remote file's
+ * `deliveredSyncIds` list, and records it in a local {@link PendingVoteSync}
+ * before the push runs. A later stage that finds the id on origin recognizes
+ * delivery and only subtracts — never re-adds. Counter equality could not
+ * prove that: another checkout of the same user publishing identical
+ * increments would fake it and drop undelivered deltas; a random per-stage id
+ * cannot be faked by anyone but this stage's own landed push. A missing id
+ * means the push never landed (or cannot be proven landed), so the deltas
+ * re-merge onto origin, accepting a double-count only when our landed push was
+ * superseded by a same-user checkout that rewrote the list without our id.
+ *
+ * Returns null when there was nothing to stage (no deltas) or the votes lock
+ * could not be taken; the deltas then simply stay pending.
+ */
+export async function stageVotesMerge(
+  repoPath: string,
+  username: string,
+  localVotesDir: string,
+  confirmedRemote: UserVotesV2 | null,
+): Promise<StagedVotes | null> {
+  const localVotePath = path.join(localVotesDir, `${username}.yaml`);
+  const remoteVotePath = path.join(repoPath, 'votes', `${username}.yaml`);
+
+  const { acquired, value } = await withVotesLock(localVotePath, async () => {
+    let local = await loadUserVotes(localVotePath);
+    const base = confirmedRemote ?? { version: 2, votes: {}, deltas: {} };
+
+    // A previous stage may have been delivered without its confirmation: the
+    // push landed and the process died (or the clear's lock was exhausted)
+    // before the local deltas went. The remote file's deliveredSyncIds holding
+    // that stage's id proves delivery — subtract the staged set now instead of
+    // re-adding it on top of itself. A missing id means the push never landed
+    // (or cannot be proven landed): the record is superseded and the deltas
+    // re-merge below, idempotently.
+    const pending = readPendingSync(local);
+    if (pending) {
+      const delivered = deliveredSyncIdsOf(base).includes(pending.syncId);
+      local = withPendingSync(
+        { ...local, deltas: delivered ? remainingDeltasAfter(local.deltas, pending.deltas) : local.deltas },
+        undefined,
+      );
+      await saveUserVotes(localVotePath, local);
+    }
+
+    const syncedDeltas = local.deltas;
+    if (Object.keys(syncedDeltas).length === 0) return null;
+
+    // Stamp the merge with a fresh delivery id, carried on the branch: any
+    // later reader — including this machine's own retry — can tell this stage's
+    // landed push from every other writer's by membership alone.
+    const syncId = randomUUID();
+    const merged: UserVotesV2 & { deliveredSyncIds: string[] } = {
+      ...mergeDeltas(local, base),
+      deliveredSyncIds: [...deliveredSyncIdsOf(base), syncId].slice(-MAX_DELIVERED_SYNC_IDS),
+    };
+    await saveUserVotes(remoteVotePath, merged);
+    // Persist the delivery record in the same locked write-path, before the
+    // push runs: whatever happens to the process afterwards, the next stage can
+    // tell a landed push from a failed one.
+    await saveUserVotes(localVotePath, withPendingSync(local, { syncId, deltas: syncedDeltas }));
+    return { syncedDeltas } satisfies StagedVotes;
+  });
+
+  if (!acquired) return null;
+  return value ?? null;
+}
+
+/**
+ * Clear the deltas {@link stageVotesMerge} wrote once their publish is
+ * confirmed (published, or the exact content already on origin). Call this via
+ * the write callback's `onDelivered`, so it runs under the branch lock: a
+ * concurrent sync then cannot stage the same deltas between this publish and
+ * this clear. The votes lock IS released while the push is in flight, so
+ * deltas added in that window are kept — only the staged set is subtracted.
+ */
+export async function confirmVotesSynced(
+  localVotePath: string,
+  syncedDeltas: UserVotesV2['deltas'],
+): Promise<void> {
+  await withVotesLock(localVotePath, async () => {
+    const local = await loadUserVotes(localVotePath);
+    await saveUserVotes(localVotePath, withPendingSync({
+      ...local,
+      deltas: remainingDeltasAfter(local.deltas, syncedDeltas),
+    }, undefined));
+  });
 }
 
 /**

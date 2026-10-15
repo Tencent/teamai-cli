@@ -28,7 +28,7 @@ import {
 import { log, spinner } from './utils/logger.js';
 import { withTimeout } from './utils/async.js';
 import { agentSessionIdFromEnv } from './utils/session-id.js';
-import { getSessionLogsDir, usesBranchWorktree } from './types.js';
+import { getSessionLogsDir, parseInstallScope, usesBranchWorktree } from './types.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 
 export interface SaveSessionOptions extends GlobalOptions {
@@ -102,14 +102,15 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
   const loadOpts = { dryRun: options.dryRun };
   let localConfig: LocalConfig;
   try {
-    if (options.scope === 'project') {
+    const scope = options.scope === undefined ? undefined : parseInstallScope(options.scope);
+    if (scope === 'project') {
       const cfg = await loadLocalConfigForScope('project', process.cwd(), loadOpts);
       if (!cfg) {
-        log.error('No project-level teamai config in the current directory.');
+        log.error('No workspace teamai config in the current directory.');
         return;
       }
       localConfig = cfg;
-    } else if (options.scope === 'user') {
+    } else if (scope === 'user') {
       localConfig = (await requireInit(loadOpts)).localConfig;
     } else {
       const projectConfig = await detectProjectConfig(undefined, undefined, loadOpts);
@@ -143,9 +144,10 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
     const spin = spinner('Pushing session summary to team...').start();
     try {
       const { updateReports } = await import('./utils/reports-branch.js');
+      const { isPublished } = await import('./utils/branch-worktree.js');
       let rel: string | undefined;
       let ran = false;
-      const pushed = await withTimeout(
+      const pushed = isPublished(await withTimeout(
         updateReports(localConfig, async (wt) => {
           ran = true;
           const teamDir = path.join(wt, 'sessions', username);
@@ -156,7 +158,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
         }),
         10_000,
         'Push timeout (10s)',
-      );
+      ));
       if (ran && !rel) {
         spin.info('Session already present in the team log — nothing to push.');
         return;

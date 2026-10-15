@@ -154,6 +154,37 @@ describe('MCP servers and declared secrets', () => {
     expect(Object.hasOwn(await buildVarTable(localConfig), name)).toBe(false);
   });
 
+  // `cd project-b` in Bash: the prompt hook has not run yet, so the shell
+  // still carries what project A's env.sh applied, with its marker.
+  it.each([
+    ['a marker', 'elsewhere'],
+    ['a project partition', 'partition'],
+  ] as const)("does not fill a name the team leaves undeclared from another scope's env.sh, found by %s", async (_, where) => {
+    await write('mcp/mcp.yaml', [
+      'servers:',
+      '  - name: github',
+      '    transport: http',
+      '    url: https://api.example.com/mcp/',
+      '    headers:',
+      '      Authorization: Bearer ${TOKEN}',
+    ].join('\n'));
+    vi.stubEnv('TOKEN', 'project-a-token');
+    if (where === 'partition') {
+      await fse.outputFile(path.join(homeDir, '.teamai', 'projects', 'project-a', 'env.sh'), "export TOKEN='project-a-token'\n");
+    } else {
+      const [name, digests] = envShMarker(path.join(tmpDir, 'project-a', '.teamai'), [['TOKEN', 'project-a-token']]) ?? ['', ''];
+      vi.stubEnv(name, digests);
+    }
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(await githubAuthorization()).toBeUndefined();
+
+    // The member's own value of the same name still fills it (#875).
+    vi.stubEnv('TOKEN', 'member-token');
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(await githubAuthorization()).toBe('Bearer member-token');
+  });
+
   it("ignores the env.yaml value of a key declared as a secret, and the shell's copy of it", async () => {
     await write('env/env.yaml', 'variables:\n  - key: GITHUB_TOKEN\n    value: repo-token\n  - key: API_URL\n    value: u\n');
     vi.stubEnv('GITHUB_TOKEN', 'repo-token');
@@ -162,6 +193,15 @@ describe('MCP servers and declared secrets', () => {
 
     expect(vars.GITHUB_TOKEN).toBeUndefined();
     expect(vars.API_URL).toBe('u');
+  });
+
+  it.each(['BASH_ENV', 'ENV', 'ZDOTDIR', 'HOME', 'PROMPT_COMMAND', 'chpwd_functions', 'precmd_functions', 'preexec_functions', 'periodic_functions', 'zshaddhistory_functions', 'zshexit_functions', 'zsh_directory_name_functions', '__TEAMAI_ENV_FILES', '__teamai_env_apply', '__teamai_keys', 'IFS', 'BASH_VERSION', 'ZSH_VERSION'])('does not deliver reserved team variable %s to MCP', async (key) => {
+    await write('env/env.yaml', `variables:\n  - key: ${key}\n    value: team-value\n`);
+
+    const vars = await buildVarTable(localConfig);
+
+    expect(vars[key]).not.toBe('team-value');
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining(key));
   });
 
   // #879: secrets and variable overrides share the team store; an entry is used only as the kind it was set as.
@@ -206,6 +246,38 @@ describe('MCP servers and declared secrets', () => {
     }
     expect(vars.API_URL).toBe('team-url');
     expect(Object.hasOwn(vars, 'api_url')).toBe(false);
+  });
+
+  it("on Windows, gives a server the team secret over the member's export under another case of its name", async () => {
+    await writeSecretStore(getTeamSecretsPath(localConfig), { GITHUB_TOKEN: { value: 'team-token' } });
+    vi.stubEnv('github_token', 'exported-token');
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    let vars: Record<string, string>;
+    try {
+      vars = await buildVarTable(localConfig);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    }
+    expect(vars.GITHUB_TOKEN).toBe('team-token');
+    expect(Object.hasOwn(vars, 'github_token')).toBe(false);
+  });
+
+  // Windows looks `${TOKEN}` up case-insensitively, so a member's `token` must not sit beside the secret.
+  it("on Windows, keeps a member's export under another case of a secret's name out of a server's table", async () => {
+    await write('env/secrets.yaml', 'secrets:\n  - key: TOKEN\n');
+    await writeSecretStore(getTeamSecretsPath(localConfig), { TOKEN: { value: 'team-secret' } });
+    vi.stubEnv('token', 'member');
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    let vars: Record<string, string>;
+    try {
+      vars = await buildVarTable(localConfig);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    }
+    expect(vars.TOKEN).toBe('team-secret');
+    expect(Object.keys(vars).filter((key) => key.toUpperCase() === 'TOKEN')).toEqual(['TOKEN']);
   });
 
   // #875 (#879 S9): one order for a variable, member team value > env.yaml,

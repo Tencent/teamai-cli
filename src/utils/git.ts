@@ -4,6 +4,8 @@ import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import fse from 'fs-extra';
 import simpleGit, { type SimpleGit } from 'simple-git';
+import { execCommand } from './exec.js';
+import { gitFindsNoRepository, linkedWorktreesStamp, repositoryStamp } from './git-discovery.js';
 import { log } from './logger.js';
 
 /** What simple-git accepts as a custom binary without its unsafe opt-in. */
@@ -79,7 +81,31 @@ function lookUpGit(pathEnv: string): string {
  * status does not matter.
  */
 function spawnsByPath(candidate: string): boolean {
+  if (isNativeExecutable(candidate)) return true;
   return spawnSync(candidate, ['--version'], { stdio: 'ignore', timeout: 10_000 }).error === undefined;
+}
+
+/** ELF, Mach-O (thin or universal): a format the kernel starts without an interpreter. */
+const NATIVE_MAGIC = ['7f454c46', 'feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe'];
+
+/**
+ * Whether `file` is a native executable this user may run, which starts when
+ * spawned: only a script can fail to, its interpreter gone. Read from its
+ * first bytes, where the spawn that proves it costs every command a process.
+ */
+function isNativeExecutable(file: string): boolean {
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    const fd = fs.openSync(file, 'r');
+    try {
+      const head = Buffer.alloc(4);
+      return fs.readSync(fd, head, 0, 4, 0) === 4 && NATIVE_MAGIC.includes(head.toString('hex'));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -89,10 +115,18 @@ function spawnsByPath(candidate: string): boolean {
  * facilities such as credential helpers, SSH config, and SSH agents.
  */
 export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
-  if (basePath) {
-    return simpleGit({ baseDir: basePath, binary: gitBinary(), abort });
-  }
-  return simpleGit({ binary: gitBinary(), abort });
+  const git = basePath
+    ? simpleGit({ baseDir: basePath, binary: gitBinary(), abort })
+    : simpleGit({ binary: gitBinary(), abort });
+  // simple-git already waits for the process to close, then sleeps 50ms more
+  // when it printed nothing (`deferClose` in its completion plugin, not
+  // configurable). Silent commands (`add`, `fetch`, `worktree prune`, a config
+  // write) are common, so a pull spent much of its time in that sleep. An empty
+  // chunk once stdout ends marks the output seen: `end` precedes the `close`
+  // simple-git waits for, and an empty chunk adds nothing to the output.
+  return git.outputHandler((_command, stdout) => {
+    stdout.once('end', () => stdout.emit('data', Buffer.alloc(0)));
+  });
 }
 
 /**
@@ -348,7 +382,6 @@ export async function commitPaths(
  */
 export async function pullRepo(localPath: string, abort?: AbortSignal): Promise<string> {
   const git = createGit(localPath, abort);
-  const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
 
   try {
     const result = await git.pull(['--ff-only']);
@@ -364,6 +397,8 @@ export async function pullRepo(localPath: string, abort?: AbortSignal): Promise<
     if (!dedicated) {
       throw err;
     }
+    // Only a recovery needs the branch: a pull that fast-forwards never asks.
+    const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
     const reason = err instanceof Error ? err.message : String(err);
     log.debug(`ff-only pull failed (${branch}), attempting fetch + hard reset: ${reason}`);
     await git.fetch(['origin', branch]);
@@ -782,6 +817,26 @@ export function generateBranchName(username: string): string {
 }
 
 /**
+ * generateBranchName's name, or when the clone at `localPath` already has a
+ * branch by it (local, or origin's as last fetched), the first of `-2`, `-3`…
+ * after it that is free. Names are per second: a push that opens two PRs, or
+ * follows another within the second, would otherwise reuse one and fail.
+ */
+export async function unusedBranchName(localPath: string, username: string): Promise<string> {
+  const name = generateBranchName(username);
+  const prefixes = ['refs/heads/', 'refs/remotes/origin/'];
+  // A ref name holds no glob character, so `name` matches only itself.
+  const listed = await createGit(localPath)
+    .raw(['for-each-ref', '--format=%(refname)', ...prefixes.flatMap((p) => [`${p}${name}`, `${p}${name}-*`])])
+    .catch(() => '');
+  const taken = new Set(listed.split('\n').filter(Boolean)
+    .map((ref) => ref.slice(prefixes.find((p) => ref.startsWith(p))?.length ?? 0)));
+  let candidate = name;
+  for (let n = 2; taken.has(candidate); n++) candidate = `${name}-${n}`;
+  return candidate;
+}
+
+/**
  * Check whether repoPath is a dedicated git repository root of its own — i.e. safe
  * to run destructive maintenance (reset --hard, checkout) against as a disposable
  * cache clone.
@@ -796,10 +851,10 @@ export function generateBranchName(username: string): string {
  * @returns True if repoPath is its own git top level; false if unconfirmed/unsafe.
  */
 export async function isDedicatedRepoRoot(repoPath: string): Promise<boolean> {
-  const git = createGit(repoPath);
+  if (await gitFindsNoRepository(repoPath)) return true;
   let toplevel: string;
   try {
-    toplevel = (await git.revparse(['--show-toplevel'])).trim();
+    toplevel = (await checkoutLocation(repoPath))?.toplevel ?? (await createGit(repoPath).revparse(['--show-toplevel'])).trim();
   } catch {
     // Not inside a git repository at all — there is no enclosing repo to damage,
     // so treat repoPath as a plain dedicated dir (historical behavior). fail-open.
@@ -818,27 +873,18 @@ export async function isDedicatedRepoRoot(repoPath: string): Promise<boolean> {
 }
 
 /**
- * The two path anchors teamai derives from a git checkout (issue #374).
- *
- * These are deliberately distinct because a git worktree has two different
- * "roots":
- *  - `workspaceRoot` is the CURRENT checkout (`git rev-parse --show-toplevel`).
- *    Each worktree has its own. This is where project-scope AI-tool resources
- *    (skills/rules/agents) must be written, because every tool discovers them by
- *    scanning up from the launch directory to the current repository root — it
- *    does NOT follow `git-common-dir` back to the main checkout.
- *  - `projectAnchor` is the MAIN checkout, shared by the main repo and all of its
- *    worktrees (the first entry of `git worktree list --porcelain`). This is the
- *    stable per-project identity that P1 will use to key machine-local data under
- *    `~/.teamai/projects/<slug>/`.
- *
- * For a plain (non-worktree) repository the two are identical.
+ * Checkout paths and the stable identity used for project partitions.
+ * `workspaceRoot` receives this checkout's resources; `mainCheckout` receives
+ * shared tool files, or is null when each checkout needs its own files.
+ * `projectAnchor` remains Git's first worktree entry, including Git-directory
+ * identities, except initialized submodule clones in superproject worktrees
+ * inherit the original submodule's identity.
  */
 export interface ProjectAnchors {
   workspaceRoot: string;
   projectAnchor: string;
-  /** The shared identity is a bare repository, not a checkout suitable for project files. */
-  projectAnchorIsBare?: boolean;
+  /** Checkout whose shared project files tools read; null when Git cannot locate one. */
+  mainCheckout: string | null;
 }
 
 /**
@@ -849,7 +895,7 @@ export interface ProjectAnchors {
  *
  * Implementation notes:
  *  - `workspaceRoot` is `--show-toplevel` (the current checkout).
- *  - `projectAnchor` is the MAIN worktree, taken from the FIRST entry of
+ *  - `projectAnchor` is the stable identity, taken from the FIRST entry of
  *    `git worktree list --porcelain` (git always lists the main worktree first).
  *    Every linked worktree reports the same first entry, so all worktrees of a
  *    repo share one anchor. This is deliberately NOT `dirname(--git-common-dir)`:
@@ -857,7 +903,7 @@ export interface ProjectAnchors {
  *    outside the checkout and its parent (e.g. a shared `gitdirs/`) would collide
  *    across unrelated repos. The porcelain first entry stays a stable, distinct
  *    identity in that case.
- *  - Both anchors are realpath-normalized so a symlinked prefix (macOS `/tmp` →
+ *  - Identity and checkout paths are realpath-normalized so a symlinked prefix (macOS `/tmp` →
  *    `/private/tmp`) does not make the same checkout look like two different ones.
  *    Case-insensitive-filesystem normalization is intentionally NOT done here; it
  *    is only needed for the P1 slug hash and belongs with that change.
@@ -880,28 +926,36 @@ export async function resolveAnchors(cwd?: string): Promise<ProjectAnchors | nul
 }
 
 async function readAnchors(cwd?: string): Promise<ProjectAnchors | null> {
-  const git = createGit(cwd);
-  let toplevel: string;
-  let mainWorktree: string;
-  let projectAnchorIsBare = false;
+  if (await gitFindsNoRepository(cwd ?? process.cwd())) return null;
   try {
-    toplevel = (await git.revparse(['--show-toplevel'])).trim();
-    const list = await git.raw(['worktree', 'list', '--porcelain']);
-    // The first `worktree <path>` line is the main worktree, shared by all
-    // linked worktrees of this repository.
-    const first = list.split('\n').find((l) => l.startsWith('worktree '));
-    mainWorktree = first ? first.slice('worktree '.length).trim() : '';
-    projectAnchorIsBare = list.split('\n\n')[0].split('\n').some((line) => line.trim() === 'bare');
-  } catch {
-    return null;
-  }
-  if (!toplevel || !mainWorktree) return null;
-  try {
-    const [workspaceRoot, projectAnchor] = await Promise.all([
-      realpath(toplevel),
-      realpath(mainWorktree),
-    ]);
-    return { workspaceRoot, projectAnchor, ...(projectAnchorIsBare ? { projectAnchorIsBare: true } : {}) };
+    const git = createGit(cwd);
+    const toplevel = (await checkoutLocation(cwd ?? process.cwd()))?.toplevel ?? (await git.revparse(['--show-toplevel'])).trim();
+    const entries = await readWorktreeList(cwd) ?? await readWorktreeList(cwd, true);
+    const first = entries?.[0];
+    if (!toplevel || !first) return null;
+    const workspaceRoot = await realpath(toplevel);
+    let projectAnchor = first.path;
+    const commonDir = await gitCommonDir(workspaceRoot);
+    let mainCheckout: string | null = first.bare ? null : projectAnchor;
+    if (!first.bare && projectAnchor === commonDir) {
+      const worktree = await git.raw(['--git-dir', commonDir, 'config', '--get', 'core.worktree']).catch(() => '');
+      if (worktree.trim()) {
+        mainCheckout = await realpath(path.resolve(commonDir, worktree.trim()));
+      } else {
+        const gitDir = await realpath(path.resolve(cwd ?? process.cwd(), (await git.revparse(['--git-dir'])).trim()));
+        mainCheckout = gitDir === commonDir ? workspaceRoot : null;
+      }
+    }
+    // Superproject worktrees clone submodules into their own modules directory.
+    // Only an existing original submodule can supply their shared identity.
+    if (commonDir && projectAnchor === commonDir) {
+      const clone = commonDir.match(/^(.*)[\\/]worktrees[\\/][^\\/]+[\\/]modules[\\/](.+)$/);
+      if (clone) {
+        const original = path.join(clone[1], 'modules', clone[2]);
+        if (await fse.pathExists(original)) projectAnchor = await realpath(original);
+      }
+    }
+    return { workspaceRoot, projectAnchor, mainCheckout };
   } catch {
     return null;
   }
@@ -935,9 +989,59 @@ export function parseWorktreeList(output: string): WorktreeListEntry[] {
   return entries;
 }
 
-// CLI invocations keep checkout locations stable. Cache successful probes only;
-// a failed probe must be retried if the repository becomes available later.
-const commonDirs = new Map<string, string>();
+/** Where a directory sits in its checkout, from one `git rev-parse` (checkoutLocation). */
+export interface CheckoutLocation {
+  /** The checkout's root, as git prints it. */
+  toplevel: string;
+  /** The directory's path from `toplevel`, `/`-separated with a trailing `/`; empty at the root. */
+  prefix: string;
+  /** The realpath of the git directory shared by every worktree of the repository. */
+  commonDir: string;
+  /** The `info/exclude` git reads there. */
+  excludeFile: string;
+}
+
+const checkoutLocations = new Map<string, { stamp: string; location: Promise<CheckoutLocation | null> }>();
+
+/**
+ * Where `dir` sits in its checkout, from one `git rev-parse` for what
+ * gitCommonDir, resolveAnchors, isDedicatedRepoRoot and the git exclude files
+ * each asked git for: a pull asked about four directories eleven times.
+ * Remembered while the repository git finds for `dir` stays the same
+ * (repositoryStamp), and shared by callers asking at the same time. Null when
+ * git cannot say it this way: no repository, a directory outside any work tree
+ * (a bare repository, inside `.git`), the environment handing git a
+ * repository, git opening another git directory than the stamp's (one it
+ * passed over, which no stamp would follow), or git failing. Callers then ask
+ * git as before, for its answer or its error. A null is not remembered.
+ */
+export async function checkoutLocation(dir: string): Promise<CheckoutLocation | null> {
+  const found = await repositoryStamp(dir);
+  if (found === null) return null;
+  const { stamp } = found;
+  const key = path.resolve(dir);
+  const known = checkoutLocations.get(key);
+  if (known?.stamp === stamp) return known.location;
+  const location = readCheckoutLocation(dir, found.gitDir);
+  checkoutLocations.set(key, { stamp, location });
+  if (await location === null && checkoutLocations.get(key)?.location === location) checkoutLocations.delete(key);
+  return location;
+}
+
+async function readCheckoutLocation(dir: string, stampGitDir: string): Promise<CheckoutLocation | null> {
+  try {
+    const result = await execCommand('git', ['rev-parse', '--show-toplevel', '--show-prefix', '--git-common-dir', '--git-path', 'info/exclude', '--git-dir'], { cwd: dir, timeoutMs: 10_000 });
+    const [toplevel = '', prefix = '', commonDir = '', gitPath = '', gitDir = ''] = result.code === 0 ? result.stdout.split(/\r?\n/) : [];
+    if (!toplevel || !commonDir || !gitPath || !gitDir) return null;
+    // Git prints relative paths from where it runs: the real path, symlinks resolved.
+    const base = await realpath(dir);
+    const [opened, stamped] = await Promise.all([realpath(path.resolve(base, gitDir)), realpath(stampGitDir)]);
+    if (opened !== stamped) return null;
+    return { toplevel, prefix, commonDir: await realpath(path.resolve(base, commonDir)), excludeFile: path.resolve(base, gitPath) };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * The realpath of the git common directory of the repository containing
@@ -946,16 +1050,34 @@ const commonDirs = new Map<string, string>();
  * directory was pruned).
  */
 export async function gitCommonDir(cwd: string): Promise<string | null> {
-  const known = commonDirs.get(cwd);
-  if (known) return known;
+  if (await gitFindsNoRepository(cwd)) return null;
+  // Remembered by checkoutLocation while the repository on disk stays the same;
+  // anything else asks git each time.
+  const located = await checkoutLocation(cwd);
+  if (located) return located.commonDir;
   try {
     // Inside the try: simple-git throws at once for a directory that does not exist.
-    const out = await createGit(cwd).revparse(['--git-common-dir']);
-    const found = await realpath(path.resolve(cwd, out.replace(/\r?\n$/, '')));
-    commonDirs.set(cwd, found);
-    return found;
+    const out = (await createGit(cwd).revparse(['--git-common-dir'])).replace(/\r?\n$/, '');
+    return await realpath(path.resolve(await realpath(cwd), out));
   } catch {
     return null;
+  }
+}
+
+/**
+ * The `.git` entry in directory `dir` or the nearest one above it, or null. Where
+ * git cannot name the repository of a directory that has one, git failed
+ * there (not installed, a broken `.git`, unreadable metadata, `safe.directory`)
+ * rather than found none, so which project governs the directory is unknown.
+ */
+export async function nearestGitEntry(dir: string): Promise<string | null> {
+  const exists = (p: string): Promise<boolean> => fs.promises.lstat(p).then(() => true, () => false);
+  // A directory that does not exist is in no repository git failed to read.
+  if (!await exists(dir)) return null;
+  for (let at = path.resolve(dir); ; at = path.dirname(at)) {
+    const entry = path.join(at, '.git');
+    if (await exists(entry)) return entry;
+    if (path.dirname(at) === at) return null;
   }
 }
 
@@ -972,10 +1094,38 @@ export async function isLiveCheckout(root: string, commonDir: string): Promise<b
   return await gitCommonDir(root) === commonDir;
 }
 
+/** A live checkout sharing a TeamAI identity, including inherited submodule clones. */
+export async function isLiveProjectCheckout(root: string, projectAnchor: string): Promise<boolean> {
+  if (!await fse.pathExists(path.join(root, '.git'))) return false;
+  return (await resolveAnchors(root))?.projectAnchor === projectAnchor;
+}
+
+/** Recover a checkout from a persisted identity without treating a Git directory as one. */
+export async function checkoutForProjectAnchor(anchor: string, recordedRoot?: string): Promise<string | null> {
+  if (!await fse.pathExists(anchor)) return null;
+  const worktree = await createGit(anchor).raw(['config', '--get', 'core.worktree']).catch(() => '');
+  const candidates = [anchor, ...(worktree.trim() ? [path.resolve(anchor, worktree.trim())] : []),
+    ...recordedRoot ? [recordedRoot] : [], ...await listWorktrees(anchor)];
+  for (const candidate of candidates) {
+    if (!await fse.pathExists(path.join(candidate, '.git'))) continue;
+    const anchors = await resolveAnchors(candidate);
+    if (anchors?.projectAnchor === anchor) return anchors.mainCheckout ?? anchors.workspaceRoot;
+  }
+  return null;
+}
+
 /** A `git worktree list` entry, with `path` realpath'd and `listed` as git printed it. */
 interface ListedWorktree extends WorktreeListEntry {
   listed: string;
 }
+
+/**
+ * `git worktree list` output by directory and form, kept while the directory
+ * stays in the same repository (checkoutLocation) and its linked worktrees are
+ * unchanged (linkedWorktreesStamp): one pull asks for the same list several
+ * times.
+ */
+const worktreeLists = new Map<string, { stamp: string; list: string }>();
 
 /**
  * The entries of `git worktree list --porcelain -z` for the repo containing
@@ -985,12 +1135,24 @@ interface ListedWorktree extends WorktreeListEntry {
  * path holding one: never a proof of liveness (#993).
  */
 async function readWorktreeList(cwd?: string, newlineSplit = false): Promise<ListedWorktree[] | null> {
+  const dir = cwd ?? process.cwd();
+  if (await gitFindsNoRepository(dir)) return null;
+  // Taken before git runs: a worktree changed meanwhile changes the next stamp.
+  const commonDir = (await checkoutLocation(dir))?.commonDir ?? null;
+  const stamp = commonDir === null ? null : JSON.stringify([commonDir, await linkedWorktreesStamp(commonDir)]);
+  const key = `${newlineSplit}\0${dir}`;
+  const known = worktreeLists.get(key);
   let list: string;
-  try {
-    // Inside the try: simple-git throws at once for a directory that does not exist.
-    list = await createGit(cwd).raw(['worktree', 'list', '--porcelain', ...newlineSplit ? [] : ['-z']]);
-  } catch {
-    return null;
+  if (stamp !== null && known?.stamp === stamp) {
+    list = known.list;
+  } else {
+    try {
+      // Inside the try: simple-git throws at once for a directory that does not exist.
+      list = await createGit(cwd).raw(['worktree', 'list', '--porcelain', ...newlineSplit ? [] : ['-z']]);
+    } catch {
+      return null;
+    }
+    if (stamp !== null) worktreeLists.set(key, { stamp, list });
   }
   if (newlineSplit) list = list.split(/\r?\n/).join('\0');
   return Promise.all(parseWorktreeList(list)

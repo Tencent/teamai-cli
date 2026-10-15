@@ -169,6 +169,7 @@ function member(name: string, opts: { files?: Record<string, string>; gitExclude
       git(['commit', '-q', '-m', 'app'], dir);
       const real = fs.realpathSync.native(dir);
       teamai(['init', url, '--provider', 'git', '--agent', popts.agents ?? 'codebuddy', '--scope', 'project', '--force'], real);
+      teamai(['pull'], real);
       return real;
     },
     worktree: async (repo, dir, wopts = {}) => {

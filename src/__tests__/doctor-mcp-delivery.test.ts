@@ -148,6 +148,26 @@ describe('doctor — MCP servers delivered on disk', () => {
     expect(check.fix).toContain('jira');
     expect(check.fix).toContain('JIRA_PASSWORD');
     expect(check.fix).toContain('variables:');
+    expect(check.fix).toContain('If JIRA_PASSWORD is a personal token');
+    expect(check.fix).toContain('teamai env add JIRA_PASSWORD --secret');
+    expect(check.fix).toContain('teamai env set JIRA_PASSWORD');
+    expect(check.fix).toContain('A shared value stays in env.yaml.');
+    expect(check.fix).not.toContain('A personal token is not an env.yaml value');
+  });
+
+  it.each(['__TEAMAI_TOKEN', 'ZDOTDIR'])('does not suggest declaring reserved %s as a secret', async (reserved) => {
+    vi.stubEnv(reserved, undefined);
+    await writeTeamMcp(
+      'servers:\n  - name: jira\n    transport: stdio\n    command: jira-server\n'
+      + `    env:\n      TOKEN: "\${${reserved}}"\n      PASSWORD: "\${JIRA_PASSWORD}"\n`,
+    );
+    await writeClaudeConfig({});
+
+    const check = await mcpCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain(reserved);
+    expect(check.fix).toContain('teamai env add JIRA_PASSWORD --secret');
+    expect(check.fix).not.toContain(`teamai env add ${reserved}`);
   });
 
   it('stays silent about a server the member excluded on purpose', async () => {

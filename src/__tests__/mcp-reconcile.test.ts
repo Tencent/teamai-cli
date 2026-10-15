@@ -22,6 +22,19 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
+// Makes every `git ls-files` spawn fail, as a process table at its limit does.
+const failLsFilesSpawn = vi.hoisted(() => ({ on: false }));
+vi.mock('../utils/exec.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/exec.js')>();
+  return {
+    ...actual,
+    execCommand: (cmd: string, args: string[], opts?: Parameters<typeof actual.execCommand>[2]) =>
+      failLsFilesSpawn.on && cmd === 'git' && args.includes('ls-files')
+        ? Promise.reject(new Error('spawn git EAGAIN'))
+        : actual.execCommand(cmd, args, opts),
+  };
+});
+
 // What .git/info/exclude held at the moment each JSON config was written (#882).
 const excludeAtWrite = vi.hoisted(() => new Map<string, string | null>());
 // Runs just before each JSON config write, as a concurrent command would.
@@ -108,6 +121,7 @@ describe('MCP reconcile', () => {
   });
 
   afterEach(async () => {
+    failLsFilesSpawn.on = false;
     vi.unstubAllEnvs();
     await fse.remove(tmpDir);
   });
@@ -184,6 +198,32 @@ servers:
     const second = await reconcileMcpForConfig(teamConfig, localConfig);
     expect(second.wrote).toBe(false);
     expect((await fse.stat(claudeJson)).mtimeMs).toBe(mtimeBefore);
+  });
+
+  // `teamai pull` and `teamai mcp inject` both reconcile: whichever runs second
+  // must find nothing to change in what the first wrote.
+  it.each([
+    ['no config.toml', null],
+    ['a config.toml of the member\'s', 'model = "gpt-5"\n'],
+  ])('is idempotent for Codex — a second run over %s changes nothing', async (_label, initial) => {
+    const configToml = path.join(homeDir, '.codex', 'config.toml');
+    await fse.ensureDir(path.join(homeDir, '.codex', 'skills'));
+    if (initial !== null) await fse.writeFile(configToml, initial);
+    await writeMcpYaml(`
+servers:
+  - name: s1
+    transport: http
+    url: https://example.com/mcp
+    tools: [codex]
+`);
+
+    expect((await reconcileMcpForConfig(teamConfig, localConfig)).wrote).toBe(true);
+    const written = await fse.readFile(configToml, 'utf-8');
+
+    const second = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(second.changes).toEqual([]);
+    expect(second.wrote).toBe(false);
+    expect(await fse.readFile(configToml, 'utf-8')).toBe(written);
   });
 
   it('does not overwrite a user-owned server with a colliding name', async () => {
@@ -875,6 +915,31 @@ servers:
     await reconcileMcpForConfig(defaults, projectConfig);
     expect(codexServerNames(await fse.readFile(projectFile, 'utf-8'))).toEqual([]);
     expect(await fse.readFile(projectFile, 'utf-8')).toContain(own.trimEnd());
+  });
+
+  it('deletes a project config the team\'s last server leaves empty, unless git tracks it', async () => {
+    const projectRoot = path.join(tmpDir, 'empty-project');
+    execFileSync('git', ['init', '-q', projectRoot]);
+    await fse.ensureDir(path.join(projectRoot, '.codex', 'skills'));
+    await fse.ensureDir(path.join(projectRoot, '.cursor', 'skills'));
+    const codexFile = path.join(projectRoot, '.codex', 'config.toml');
+    const cursorFile = path.join(projectRoot, '.cursor', 'mcp.json');
+    const defaults = TeamaiConfigSchema.parse({ team: 't', repo: 'r', provider: 'git' });
+    const projectConfig: LocalConfig = { ...localConfig, scope: 'project', projectRoot };
+    const files = async (): Promise<string[]> => (await resolveMcpTargets(defaults, projectConfig)).map((target) => target.file);
+    await writeMcpYaml('servers:\n  - name: team-docs\n    transport: stdio\n    command: docs-server\n');
+
+    await reconcileMcpForConfig(defaults, projectConfig);
+    expect(await files()).toEqual(expect.arrayContaining([codexFile, cursorFile]));
+    expect(codexServerNames(await fse.readFile(codexFile, 'utf-8'))).toEqual(['team-docs']);
+    expect((await fse.readJson(cursorFile)).mcpServers['team-docs']).toBeDefined();
+    execFileSync('git', ['add', '-f', '.cursor/mcp.json'], { cwd: projectRoot });
+
+    await writeMcpYaml('servers: []\n');
+    await reconcileMcpForConfig(defaults, projectConfig);
+
+    expect(await fse.pathExists(codexFile)).toBe(false);
+    expect(await fse.readJson(cursorFile)).toEqual({ mcpServers: {} });
   });
 
   it('resolves a project secret to plaintext in every tool, keyed off `type`', async () => {
@@ -1923,6 +1988,30 @@ servers:
 
           expect(Object.keys((await ledger()).files)).not.toContain(customFile());
           expect(await excludeOf(projectRoot)).not.toMatch(/team-mcp\.json/);
+        });
+
+        // Gone from disk, still in git's index: only git saying it no longer tracks the file forgets it.
+        it('keeps its record when git cannot say whether it still tracks it', async () => {
+          commitIt();
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+          expect((await ledger()).files[customFile()]).toEqual({ tools: ['cursor'], tracked: true });
+          await fse.remove(customFile());
+          failLsFilesSpawn.on = true;
+
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+
+          expect((await ledger()).files[customFile()]).toEqual({ tools: ['cursor'], tracked: true });
+        });
+
+        it('forgets it once it is gone from disk and no repository holds it', async () => {
+          commitIt();
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+          await fse.remove(customFile());
+          await fse.remove(path.join(projectRoot, '.git'));
+
+          await reconcileMcpForConfig(teamConfig, projectConfig);
+
+          expect(Object.keys((await ledger()).files)).not.toContain(customFile());
         });
       });
 
@@ -4310,6 +4399,16 @@ describe('spliceCodexBlock', () => {
     const out = spliceCodexBlock(src, 'newone', '[mcp_servers.newone]\ncommand = "x"\n');
     expect(out).toContain('model = "gpt-5"');
     expect(out).toContain('[mcp_servers.newone]');
+  });
+
+  it.each([
+    ['an empty file', ''],
+    ['a file of the member\'s', 'model = "gpt-5"\n'],
+    ['a file ending in another server', '[mcp_servers.other]\ncommand = "y"\n'],
+  ])('splices the same block into %s once and only once', (_label, src) => {
+    const block = '[mcp_servers.newone]\ncommand = "x"\n';
+    const once = spliceCodexBlock(src, 'newone', block);
+    expect(spliceCodexBlock(once, 'newone', block)).toBe(once);
   });
 
   it('lists existing server names', () => {

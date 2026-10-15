@@ -11,6 +11,7 @@ import { buildRolePullContext, resolveDesiredSkills } from './resources/desired.
 import { loadTagsConfig, collectTagStats, saveTagsConfig } from './utils/tags.js';
 import { log } from './utils/logger.js';
 import type { GlobalOptions, LocalConfig, TagsConfig } from './types.js';
+import { readWorkspaceChildren } from './workspace-children.js';
 
 /**
  * Resolve the active scope for tag operations: project scope when the cwd has
@@ -280,7 +281,9 @@ async function countUntaggedDeliveredSkills(localConfig: LocalConfig, tagsConfig
     const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
     if (!teamConfig) return null;
     try {
-        const desired = await resolveDesiredSkills(teamConfig, localConfig, await buildRolePullContext(localConfig));
+        // A workspace's skills include its children's (#913).
+        const delivered = await readWorkspaceChildren(localConfig);
+        const desired = await resolveDesiredSkills(teamConfig, delivered, await buildRolePullContext(delivered));
         if (desired.kind !== 'resolved') return null;
         return desired.items.filter((item) => !tagsConfig.skills[item.name]?.length).length;
     } catch (e) {

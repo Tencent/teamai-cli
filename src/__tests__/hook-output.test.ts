@@ -79,7 +79,14 @@ describe('stopStdoutUnsupported', () => {
     },
   );
 
-  it.each(['claude', 'cursor', 'opencode', undefined])('lets %s take the Stop payload', (tool) => {
+  it.each([
+    'claude', 'claude-internal', 'tclaude', 'Claude', 'cursor', 'copilot', 'qoder', 'qoder-cn',
+    'zcode', 'omp', 'pi', 'opencode', 'dsh', undefined,
+  ])('lets %s take the Stop payload', (tool) => {
     expect(stopStdoutUnsupported(tool)).toBe(false);
+  });
+
+  it('stashes for a tool nobody has confirmed takes the Stop payload', () => {
+    expect(stopStdoutUnsupported('some-new-agent')).toBe(true);
   });
 });

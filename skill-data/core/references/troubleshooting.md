@@ -21,15 +21,22 @@ retry; waiting for another process does not fix it. Ordinary contention still
 uses the command's busy/skip message. An existing permission-denied or ownerless lock
 is treated as held: remove it only after confirming no teamai process uses it.
 
+A lock whose owning process is dead blocks nothing: the next command that takes
+the same lock reclaims it, and a process exiting normally removes the locks it
+still holds. `teamai doctor` reports leftover lock files, and
+`teamai doctor --fix` removes the ones whose owner is provably dead.
+
 ## "My skills / rules aren't showing up"
 
 This is the #1 onboarding issue. In order:
 
-1. **Did init pick this tool?** `teamai init` ends with a pull, but a project-scope
-   init creates only the directories of tools named with `--agent` or picked in
-   its interactive tool picker. Run without a terminal and without `--agent`, it
-   creates none, and a tool's project directory appears when that tool opens a session there. Re-run
-   `teamai init <repo> --agent <tool>` to add the tool and fill it now.
+1. **Did init pick this tool?** `teamai init` does not copy team resources. A
+   workspace-scope init creates only the directories of tools named with `--agent`
+   or picked in its interactive tool picker. Run without a terminal and without
+   `--agent`, it creates none, and a tool's project directory appears when that
+   tool opens a session there. The resources arrive on that session start, or
+   when you run `teamai pull`. Re-run `teamai init <repo> --agent <tool>` to add
+   the tool's directory now, then pull or open the tool to fill it.
 2. **Sync manually to confirm:**
    ```bash
    teamai pull
@@ -40,7 +47,7 @@ This is the #1 onboarding issue. In order:
    ```bash
    teamai hooks inject
    ```
-4. **Wrong scope?** Project-scope built-in hooks are written to your HOME tool
+4. **Wrong scope?** Workspace-scope built-in hooks are written to your HOME tool
    settings (e.g. `~/.claude/settings.json`), not the project folder; the team's own
    hooks for Claude Code and Codex go to the main checkout
    (`.claude/settings.local.json`, `.codex/hooks.json`). That is intentional.
@@ -58,7 +65,7 @@ This is the #1 onboarding issue. In order:
    error and retains exit code 1 while completing local setup, including HTTP
    initialization. Bootstrap records the error in the debug log and continues
    local setup.
-   In project scope, `teamai hooks remove` preserves other projects' gated team
+   In workspace scope, `teamai hooks remove` preserves other projects' gated team
    hooks in HOME, while removing the shared built-in hooks.
    If `source remove-http` reports incomplete hook removal, the HTTP source is
    disabled and the failed hooks stay on record. Fix the settings file it names,
@@ -66,7 +73,7 @@ This is the #1 onboarding issue. In order:
    If removal cannot acquire the HTTP source lock, it leaves the source intact.
    Wait for sync or plugin reconciliation to finish, check directory permissions,
    then retry removal.
-   If you initialized project scope but expected machine-wide resources, re-run
+   If you initialized workspace scope but expected machine-wide resources, re-run
    with `--scope user`.
 5. **Tool has no hook surface** (e.g. Gemini CLI, JoyCode): there is no auto-sync;
    run `teamai pull` manually each time.
@@ -102,9 +109,21 @@ This is the #1 onboarding issue. In order:
    `recall` refuses the same way with `Nothing was searched: <file>: <reason>`:
    no team knowledge was searched, so do not report that the team has none.
 
+## Path names appear in skill usage statistics
+
+Slash-command tracking accepts complete `/skill-name` tokens followed by whitespace or the end of the prompt. Absolute paths such as `/Volumes/External/project` and URL components are not skill invocations. Updating prevents new false counts; already recorded usage remains.
+
+## Submodule checkouts and linked skill directories
+
+A submodule's Git directory is an identity, not a delivery directory. Team hooks and Codex project trust use its real main checkout. An initialized submodule in a superproject worktree inherits the original submodule's configuration when it exists; run `teamai pull` there without repeating init. The first pull installs Git hooks in that clone. If the parent's hook initializes submodules, follow the admin guide's initialization-and-pull sequence before starting an AI session. With Git < 2.54 and a shared versioned `core.hooksPath`, one dispatch line in each parent hook covers its submodules.
+
+Both team skills and the built-in stub accept root-directory links within the same checkout and repository. Links outside it or into child repositories are rejected. Individual skill links, tracked skills, edited stubs and unrelated files stay. Remove a kept stub to receive the packaged one.
+
+Pull removes proven TeamAI hook entries left in a Git directory. Older releases did not record file creation or project trust ownership: empty legacy files and unrecorded Codex grants stay. Remove a grant manually only after checking that it is not the member's choice.
+
 ## "Last git hook run failed: ..." / a new worktree lacks team resources
 
-In project scope, teamai's git hook syncs on `git worktree add` and `git pull`
+In workspace scope, teamai's git hook syncs on `git worktree add` and `git pull`
 through merge or a completed rebase (`post-rewrite`, including `pull.rebase=true`; on Git 2.32
 and older, a fast-forward rebase with autostash syncs on `post-checkout`).
 A conflicting rebase syncs only on completion; `git commit --amend` does not sync. It runs
@@ -144,11 +163,13 @@ discovery.
 `env/secrets.yaml` that has no value on this machine, naming the MCP servers
 that need it and where to get one. It is a note, not a failure: `doctor` exits
 as it would without it. The value is the user's: ask them to run
-`teamai env set KEY` in their own terminal (it prompts without echo), then
-`teamai pull` to update the MCP servers; a CLI run through `teamai env exec`
-gets it on its next run. Never ask for the value in chat or pipe one to
-`teamai env set --stdin`. A note that an entry "may hold an old" value means an earlier pull wrote
-it and it stays until a pull finds the value.
+`teamai env set KEY` in their own terminal (it prompts without echo). That
+updates MCP servers for the current scope. Run `teamai pull` afterwards only
+to update `env.sh`, and only when the key is an env variable. A CLI run through
+`teamai env exec` gets the value on its next run. Never ask for the value in
+chat or pipe one to `teamai env set --stdin`. A note that an entry "may hold an
+old" value means an earlier write left it, and it stays until `teamai env set`
+or `teamai pull` finds the value.
 
 `KEY reads VAR, which is not set` means the user's value for KEY is a
 reference to VAR (`--from-env`) and VAR is unset in this environment. Ask the
@@ -168,6 +189,19 @@ them. For an exclude file that is not writable, one another teamai command
 held, or a git error, relay the fix the line gives.
 
 For new HTTP local-agent MCP installs, a failed initial ownership-manifest write leaves the MCP config and Git exclusions unchanged. Retry the install after fixing the manifest write error. A bare Copilot entry beside `mcpServers` is removed only with a matching ownership record proving a completed bare write. Older records without that evidence preserve the bare entry. A bare ownership record cannot claim a same-named member entry under `mcpServers`: updates skip the collision, and removal leaves that keyed entry alone. An unmarked Copilot record needs a matching keyed hash that does not also match the bare entry. Completed writes record `bare: true` or `bare: false`; missing placement remains unproven, including after a failed placement-record write. Existing JSON MCP updates keep the old ownership until the config write completes; a later manifest failure restores the config. `uninstall_mcp` keeps ownership if reading or writing the config fails, and restores the entry if removing its manifest record fails. MCP reconcile also restores all configs written before an ownership-save failure. If restoration fails too, repair the named configs and ownership records before retrying; the error reports both failures, and configs still carrying credentials stay excluded from Git.
+
+## "Workspace child <path> is left out" / "<item> differs between ..."
+
+`pull` in a workspace prints these; `teamai doctor` repeats the first.
+
+- **Left out**: that repo uses another team repo, is in single-repo mode, or
+  its config cannot be read. The line gives the reason. To include it, run
+  `teamai init <this workspace's team repo>` in it; otherwise it keeps working
+  on its own and nothing needs doing.
+- **Differs between**: two repos inside the workspace receive an item of that
+  name with different content, so the workspace holds it: what teamai
+  installed for it before stays, in the place the workspace's rules give it. Tell the user to make the two copies equal in the team repo or
+  rename one. Each repo still receives its own copy.
 
 ## Permission / access denied
 
@@ -235,7 +269,7 @@ step — do not assume auto-sync just works.
 
 Codex runs a non-managed hook only once it is **trusted**. `teamai init`, `pull`
 and `teamai hooks inject` trust the hooks they write (and, in a project, the main
-checkout, or the current worktree for a bare repository) through `codex app-server`.
+checkout, or the current worktree when Git cannot locate a main checkout) through `codex app-server`.
 Trust written by a session-start pull applies from the next Codex session. `teamai doctor` names any teamai hook Codex will not
 run. Then: run `teamai pull`; if `codex` is not on PATH or `codexTrustEnabled: false`
 is set in `config.yaml`, guide the user to trust the teamai hooks in Codex `/hooks`,
@@ -280,6 +314,10 @@ hook entry; if unsure of the exact config, run `teamai doctor` and `teamai hooks
 to see what should be present, then have them replicate it. Until then, they can
 sync with a manual `teamai pull`.
 
+### Muse Code
+
+Hooks go in the `hooks` block of `~/.config/muse/settings.json`, which Muse runs in every workspace; a project's `.muse/hooks.json` runs only once the workspace is trusted. Muse starts each hook with an emptied environment, so a variable set only on the command that launched `muse` (such as `TEAMAI_HOOKS_DISABLED=1 muse`) does not reach the hook. The hook command runs `bash -lc`, so export it in `~/.bash_profile` or `~/.profile` instead.
+
 ### Tools without a writable hook surface
 
 Gemini CLI, JoyCode, and similar tools have no TeamAI-writable hook surface —
@@ -308,6 +346,11 @@ session's runs, recalled docs and adopted docs. Per agent:
 
 A read after the session's last Stop is credited at SubagentStop, at Copilot CLI's
 SessionEnd, or at the next `teamai pull`.
+
+Pending votes reach the team repo's `teamai-reports` branch on the next Stop or
+`teamai pull`. A push that fails — offline, no write access, a crashed run —
+keeps the deltas pending; the next session re-sends them, and each delta is
+added to the team totals exactly once.
 
 ## OpenCode V2 rejects the hooks plugin
 

@@ -90,12 +90,12 @@ describe('--dry-run on a command with no preview', () => {
     expect(cli(['models', 'list']).output).toContain('local:gw');
   });
 
-  it('refuses codebase --extract and lets a read-only sibling through', () => {
+  it('no longer accepts codebase --extract and lets a read-only sibling through', () => {
     const before = snapshot(home);
 
     const extract = cli(['codebase', '--extract', '--dry-run']);
     expect(extract.code, extract.output).toBe(1);
-    expect(extract.output).toContain('teamai codebase --extract has no --dry-run preview, nothing was run');
+    expect(extract.output).toContain("unknown option '--extract'");
 
     const list = cli(['models', 'list', '--dry-run']);
     expect(list.code, list.output).toBe(0);

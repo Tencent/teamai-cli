@@ -4,7 +4,9 @@ import path from 'node:path';
 import chalk from 'chalk';
 import matter from 'gray-matter';
 
-import { extractCodebase } from './codebase-extract.js';
+import { autoDetectInit } from './config.js';
+import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from './import-codebase.js';
+import { importFromRepo } from './import-repo.js';
 import { log } from './utils/logger.js';
 import { pathExists } from './utils/fs.js';
 
@@ -65,24 +67,23 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
       }
 
       if (opts.dryRun) {
-        result.migrated.push(`${slug} → teamwiki/evidence/code/${slug}/`);
+        result.migrated.push(`${slug} → teamai import --from-repo ${String(source)}`);
         continue;
       }
 
-      // 尝试从缓存目录查找已有 clone
-      const cacheBase = path.join(process.env['HOME'] ?? '', '.teamai', 'cache', 'repos');
-      const urlParts = String(source).replace(/^https?:\/\//, '').replace(/@.*$/, '').split('/');
-      const cachePath = path.join(cacheBase, ...urlParts.slice(0, 3));
-
-      if (await pathExists(cachePath)) {
-        await extractCodebase({ path: cachePath, project: slug });
-        result.migrated.push(slug);
-      } else {
-        result.skipped.push(`${slug}: 缓存不存在 (${cachePath}), 请先执行 teamai import --from-repo`);
-      }
+      // The same import as `teamai import --from-repo`: the evidence lands in
+      // the team repo's teamwiki/, published once for the whole migration below.
+      await importFromRepo({ url: String(source), incremental: true, skipAutoPush: true });
+      result.migrated.push(slug);
     } catch (err) {
       result.errors.push(`${slug}: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  if (!opts.dryRun && result.migrated.length > 0) {
+    const team = await autoDetectInit();
+    await refreshTeamwikiIndexes(path.join(team.localConfig.repo.localPath, 'teamwiki'));
+    await publishTeamwikiViaMR(team, '[teamai] Migrate docs/team-codebase to teamwiki');
   }
 
   if (opts.json) {

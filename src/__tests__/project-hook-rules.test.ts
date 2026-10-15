@@ -84,8 +84,8 @@ afterEach(async () => {
   await fse.remove(tmpDir);
 });
 
-describe('ZCode and DeepSeek Harness get the project\'s rules from their session-start hook (#946)', () => {
-  it.each(['zcode', 'dsh'])('%s: adds the project rules once at session start, a path-scoped rule after its globs', async (tool) => {
+describe('ZCode, DeepSeek Harness and Muse Code get the project\'s rules from their session-start hook (#946)', () => {
+  it.each(['zcode', 'dsh', 'muse'])('%s: adds the project rules once at session start, a path-scoped rule after its globs', async (tool) => {
     const text = await sessionStart(tool, config('project'));
 
     expect(count(text, 'PROJ-RULE-7')).toBe(1);
@@ -93,19 +93,19 @@ describe('ZCode and DeepSeek Harness get the project\'s rules from their session
     expect(text).not.toContain('paths:');
   });
 
-  it.each(['zcode', 'dsh'])('%s: adds nothing in a session outside a project, whose rules are in its own AGENTS.md', async (tool) => {
+  it.each(['zcode', 'dsh', 'muse'])('%s: adds nothing in a session outside a project, whose rules are in its own AGENTS.md', async (tool) => {
     expect(await sessionStart(tool, config('user'))).toBeNull();
   });
 
-  it.each(['zcode', 'dsh'])('%s: adds nothing on resume, whose history already holds them', async (tool) => {
+  it.each(['zcode', 'dsh', 'muse'])('%s: adds nothing on resume, whose history already holds them', async (tool) => {
     expect(await sessionStart(tool, config('project'), 'resume')).toBeNull();
   });
 
-  it.each(['zcode', 'dsh'])('%s: adds nothing once the project excludes it', async (tool) => {
+  it.each(['zcode', 'dsh', 'muse'])('%s: adds nothing once the project excludes it', async (tool) => {
     expect(await sessionStart(tool, config('project', ['claude']))).toBeNull();
   });
 
-  it.each(['zcode', 'dsh'])('%s: adds the rules only, not the instruction blocks, which #945 gives it no channel for', async (tool) => {
+  it.each(['zcode', 'dsh', 'muse'])('%s: adds the rules only, not the instruction blocks, which #945 gives it no channel for', async (tool) => {
     await fse.outputFile(path.join(repoPath, 'culture.md'), '---\ncompany:\n  name: Acme\n---\n\nBe kind to teammates.\n');
 
     const text = await sessionStart(tool, config('project'));
@@ -160,6 +160,7 @@ describe('with teamai in both scopes, each rule reaches the tool once (#946)', (
     { tool: 'zcode', root: '.zcode', file: '.zcode/AGENTS.md', project: (cfg: LocalConfig) => sessionStart('zcode', cfg) },
     { tool: 'dsh', root: '.dsh', file: '.dsh/AGENTS.md', project: (cfg: LocalConfig) => sessionStart('dsh', cfg) },
     { tool: 'pi', root: '.pi/agent', file: '.pi/agent/AGENTS.md', project: piInstructions },
+    { tool: 'muse', root: '.config/muse', file: '.config/muse/AGENTS.md', project: (cfg: LocalConfig) => sessionStart('muse', cfg) },
   ];
   const teamConfig = () => TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' });
 
@@ -207,6 +208,7 @@ describe('doctor checks the hook or extension that adds the project rules (#946)
   const find = async (enabled: string[], name: string) => (await checks(enabled)).find((c) => c.name === name);
 
   const ZCODE = 'The teamai SessionStart hook is registered and enabled for zcode';
+  const DELIVERS = 'The teamai SessionStart hook for zcode returns its reply to the session';
   const DSH = 'Project rules reach dsh through its session-start hook';
   const PI = 'pi adds the team instructions and rules to its prompt';
 
@@ -250,6 +252,58 @@ describe('doctor checks the hook or extension that adds the project rules (#946)
     await fse.outputJson(zcodeConfig(), { hooks: { enabled: true, events: {} } });
 
     expect(await (await find(['zcode'], ZCODE))!.check()).toBe(false);
+  });
+
+  it('zcode: runs the registered entry and passes when its reply comes back', async () => {
+    await reconcileHooks(zcodeConfig(), 'zcode');
+
+    const passing = (await find(['zcode'], DELIVERS))!;
+    expect(passing).toBeDefined();
+    expect(await passing.check()).toBe(true);
+  });
+
+  it('zcode: fails when the registered entry cannot answer, while registration still passes', async () => {
+    await reconcileHooks(zcodeConfig(), 'zcode');
+    const cfg = await fse.readJson(zcodeConfig());
+    // The entry keeps the shape ZCode reads, but its command cannot run here:
+    // registration is intact and delivery is not, which is the gap #1030 left.
+    cfg.hooks.events.SessionStart = [{
+      hooks: [{
+        type: 'process',
+        command: 'teamai-no-such-binary',
+        args: ['teamai hook-dispatch session-start --tool zcode'],
+      }],
+    }];
+    await fse.writeJson(zcodeConfig(), cfg);
+
+    const failing = (await find(['zcode'], DELIVERS))!;
+    expect(await failing.check()).toBe(false);
+    expect(failing.fix).toContain(zcodeConfig());
+    expect(failing.fix).toContain('teamai hooks inject');
+    // The two checks answer different questions: registration is still true.
+    expect(await (await find(['zcode'], ZCODE))!.check()).toBe(true);
+  });
+
+  it.skipIf(process.platform !== 'win32')('zcode: fails when the launcher drops the dispatch\'s output (#1030)', async () => {
+    await reconcileHooks(zcodeConfig(), 'zcode');
+    // The launcher #1030 replaced: it ran the dispatch, and dropped its stdout.
+    await fse.outputFile(
+      path.join(homeDir, '.zcode', 'cli', 'teamai-hook-dispatch.mjs'),
+      "import { spawnSync } from 'node:child_process';\n"
+        + "spawnSync(process.argv[2], { shell: true, stdio: 'ignore', windowsHide: true });\n",
+    );
+
+    expect(await (await find(['zcode'], DELIVERS))!.check()).toBe(false);
+  });
+
+  it('zcode: reports no delivery check while the entry is missing or turned off', async () => {
+    await reconcileHooks(zcodeConfig(), 'zcode');
+    const cfg = await fse.readJson(zcodeConfig());
+    await fse.writeJson(zcodeConfig(), { ...cfg, hooks: { ...cfg.hooks, enabled: false } });
+    expect(await find(['zcode'], DELIVERS)).toBeUndefined();
+
+    await fse.outputJson(zcodeConfig(), { hooks: { enabled: true, events: {} } });
+    expect(await find(['zcode'], DELIVERS)).toBeUndefined();
   });
 
   it('dsh: passes once the hook config and the patch are written', async () => {

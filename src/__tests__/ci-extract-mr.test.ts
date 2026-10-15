@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -23,6 +24,11 @@ vi.mock('../utils/git.js', () => ({
 const mockAppendPendingReview = vi.fn();
 vi.mock('../review-store.js', () => ({
   appendPendingReview: (...args: unknown[]) => mockAppendPendingReview(...args),
+}));
+
+const mockImportLocalCheckout = vi.fn();
+vi.mock('../import-codebase.js', () => ({
+  importLocalCheckout: (...args: unknown[]) => mockImportLocalCheckout(...args),
 }));
 
 const mockApplyCodebaseSuggestions = vi.fn();
@@ -179,5 +185,90 @@ describe('ciExtractMr', () => {
       undefined,
       true,
     );
+  });
+});
+
+describe('ciExtractMr write: the teamwiki update goes through teamai import', () => {
+  let tmpDir: string;
+  let source: string;
+
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd: source, stdio: 'ignore' });
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-ci-import-'));
+    // The merged checkout CI runs in: its last commit changed a source file.
+    source = path.join(tmpDir, 'checkout');
+    await fse.outputFile(path.join(source, 'src', 'a.ts'), 'export const a = 1;\n');
+    git('init', '-q');
+    git('add', '.');
+    git('commit', '-q', '-m', 'init');
+    await fse.outputFile(path.join(source, 'src', 'b.ts'), 'export function b() { return 2; }\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'merge');
+    vi.spyOn(process, 'cwd').mockReturnValue(source);
+
+    mockImportFromMR.mockReset();
+    mockPushRepoDirectly.mockReset();
+    mockImportLocalCheckout.mockReset();
+    mockImportFromMR.mockResolvedValue({ learning: undefined, repoUrl: 'https://github.com/org/repo' });
+    mockImportLocalCheckout.mockResolvedValue(true);
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fse.remove(tmpDir);
+  });
+
+  it('imports the checkout incrementally under the slug import --from-repo uses, then pushes teamwiki/', async () => {
+    const teamRepo = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(teamRepo);
+
+    await ciExtractMr({ url: 'https://github.com/org/repo/pull/7', mode: 'write', teamRepo });
+
+    expect(mockImportLocalCheckout).toHaveBeenCalledWith({
+      sourceDir: source,
+      slug: 'github__org__repo',
+      wikiRoot: path.join(teamRepo, 'teamwiki'),
+      incremental: true,
+      repoUrl: 'https://github.com/org/repo',
+      sourceMrUrl: 'https://github.com/org/repo/pull/7',
+    });
+    expect(mockPushRepoDirectly).toHaveBeenCalledWith(teamRepo, expect.any(String), ['teamwiki']);
+    // Nothing is written into the checkout.
+    expect(await fse.pathExists(path.join(source, 'teamwiki'))).toBe(false);
+  });
+
+  it('pushes no teamwiki/ when the import changed nothing', async () => {
+    mockImportLocalCheckout.mockResolvedValue(false);
+    const teamRepo = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(teamRepo);
+
+    await ciExtractMr({ url: 'https://github.com/org/repo/pull/7', mode: 'write', teamRepo });
+
+    expect(mockImportLocalCheckout).toHaveBeenCalled();
+    expect(mockPushRepoDirectly).not.toHaveBeenCalled();
+  });
+
+  it('updates the teamwiki for a merge that only deletes a source file', async () => {
+    await fse.remove(path.join(source, 'src', 'b.ts'));
+    git('add', '-A');
+    git('commit', '-q', '-m', 'delete b');
+    const teamRepo = path.join(tmpDir, 'team-repo');
+    await fse.ensureDir(teamRepo);
+
+    await ciExtractMr({ url: 'https://github.com/org/repo/pull/8', mode: 'write', teamRepo });
+
+    expect(mockImportLocalCheckout).toHaveBeenCalledWith(expect.objectContaining({ incremental: true }));
+  });
+
+  it('skips the teamwiki update when the team repo is cloned inside the checkout', async () => {
+    const teamRepo = path.join(source, 'team-repo');
+    await fse.ensureDir(teamRepo);
+
+    await ciExtractMr({ url: 'https://github.com/org/repo/pull/7', mode: 'write', teamRepo: './team-repo' });
+
+    expect(mockImportLocalCheckout).not.toHaveBeenCalled();
+    expect(mockPushRepoDirectly).not.toHaveBeenCalled();
   });
 });

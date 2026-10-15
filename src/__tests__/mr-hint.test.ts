@@ -71,6 +71,24 @@ describe('buildHintMessage', () => {
     expect(msg).toContain('[teamai:mr-hint]');
   });
 
+  it('is English-only when the team language is en (#1014)', () => {
+    const msg = buildHintMessage(sampleMRs, 'en');
+    expect(msg).toContain('[teamai:mr-hint]');
+    expect(msg).toContain('feat: add new feature');
+    expect(msg).toContain('teamai import --from-mr');
+    expect(msg).toContain('https://git.woa.com/owner/repo/merge_requests/42');
+    expect(msg).toContain('2024-06-01');
+    expect(msg).toContain('1');
+    expect(msg).not.toMatch(/[\u4e00-\u9fff]/);
+  });
+
+  it('stays byte-identical to the bilingual hint when language is omitted or zh (#1014)', () => {
+    const omitted = buildHintMessage(sampleMRs);
+    expect(buildHintMessage(sampleMRs, 'zh')).toBe(omitted);
+    expect(omitted).toContain('发现');
+    expect(omitted).toContain('Found merged MR(s) not yet imported');
+  });
+
   it('handles multiple MRs', () => {
     const mrs: MRSummary[] = [
       { id: '1', title: 'MR One', url: 'https://git.woa.com/a/b/merge_requests/1', mergedAt: '2024-06-01T00:00:00Z' },

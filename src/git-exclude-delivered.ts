@@ -4,7 +4,9 @@ import path from 'node:path';
 import { loadStateForScope, saveStateForScope } from './config.js';
 import {
   existingAncestor,
+  GitContext,
   gitExcludeFile,
+  ignoredByMembersRule,
   realFilePath,
   remove,
   report,
@@ -181,9 +183,9 @@ const PERSONAL = new Set(['.claude/settings.local.json']);
  * lists of its live checkouts, less each path that is foreign in another live
  * checkout, since one line in the exclude file they share would hide that
  * checkout's file too. A path is foreign in checkout X when X's root joined
- * with its path from its own checkout's root exists (lstat) and is not in X's
- * list. A checkout without a list yet (never pulled, or not since an older
- * CLI) proves nothing about its files, so one there is foreign unless it holds
+ * with its path from its own checkout's root exists (lstat), is not in X's
+ * list, and no rule of the member's already ignores it in X. A checkout
+ * without a list yet (never pulled, or not since an older CLI) proves nothing about its files, so one there is foreign unless it holds
  * the same bytes as the listed copy. A listed
  * path outside its own checkout (the main checkout's hook file) is not
  * tested. Read-only.
@@ -221,6 +223,8 @@ async function foreignIn(
     if (set.has(file) || !await fse.lstat(file).then(() => true, () => false)) return null;
     // A checkout with no list proves nothing either way: a file equal to teamai's copy is teamai's.
     if (unlisted && await sameBytes(file, delivered)) return null;
+    // The member's own rule already hides it there: a line of teamai's would hide nothing more.
+    if (await ignoredByMembersRule(file)) return null;
     return { root, file, unlisted };
   }));
   return found.filter((f) => f !== null);
@@ -275,13 +279,15 @@ export interface DeliveredGitExcludeOutcome {
  * and prints one line per block it would change instead.
  */
 export async function applyDeliveredGitExclude(
-  localConfig: LocalConfig, enabled: boolean, paths: Iterable<string>, options: { dryRun?: boolean } = {},
+  localConfig: LocalConfig, enabled: boolean, paths: Iterable<string>, options: { dryRun?: boolean; context?: GitContext } = {},
 ): Promise<DeliveredGitExcludeOutcome> {
   const outcome: DeliveredGitExcludeOutcome = { failures: [], notices: [] };
   const projectRoot = localConfig.projectRoot;
   if (!projectRoot) return outcome;
   const { dryRun } = options;
-  const own = await gitExcludeFile(projectRoot);
+  // One context for the run: what git says of a directory holds across both owners' syncs.
+  const context = options.context ?? new GitContext();
+  const own = await gitExcludeFile(projectRoot, context);
   const here = deliveredOwner(localConfig);
   const elsewhere = deliveredOwnerElsewhere(localConfig);
   const unwritten = (excludeFile: string, write: GitExcludeWrite, action: 'update' | 'remove'): void => {
@@ -292,10 +298,10 @@ export async function applyDeliveredGitExclude(
     if (why !== null) outcome.failures.push(`Could not ${action} teamai's delivered git exclude block in ${excludeFile}: ${why}. Fix the cause, then run \`teamai pull\` again.`);
   };
   if (enabled) {
-    const split = await byRepository(own?.excludeFile ?? null, paths);
+    const split = await byRepository(own?.excludeFile ?? null, paths, context);
     // A path git cannot place goes to both blocks: each sync then keeps every line it holds.
     for (const [owner, list] of [[here, [...split.here, ...split.unlocated]], [elsewhere, split.elsewhere]] as const) {
-      const result = await sync(owner, list, { dryRun });
+      const result = await sync(owner, list, { dryRun, context });
       for (const file of result.files) {
         unwritten(file.excludeFile, file.write, 'update');
         // Listed, yet git can still commit it: the sync did not do its job. Doctor's words.
@@ -333,12 +339,17 @@ export async function applyDeliveredGitExclude(
  * `paths` (what they should list), both owners, each path judged in the
  * block of the repository git reads it from. Writes nothing, creates no lock.
  */
-export async function reportDeliveredGitExclude(localConfig: LocalConfig, paths: Iterable<string>): Promise<GitExcludeReport[]> {
+export async function reportDeliveredGitExclude(
+  localConfig: LocalConfig, paths: Iterable<string>, context = new GitContext(),
+): Promise<GitExcludeReport[]> {
   const projectRoot = localConfig.projectRoot;
   if (!projectRoot) return [];
-  const own = await gitExcludeFile(projectRoot);
-  const split = await byRepository(own?.excludeFile ?? null, paths);
-  return [await report(deliveredOwner(localConfig), split.here), await report(deliveredOwnerElsewhere(localConfig), split.elsewhere)];
+  const own = await gitExcludeFile(projectRoot, context);
+  const split = await byRepository(own?.excludeFile ?? null, paths, context);
+  return [
+    await report(deliveredOwner(localConfig), split.here, context),
+    await report(deliveredOwnerElsewhere(localConfig), split.elsewhere, context),
+  ];
 }
 
 /**
@@ -351,15 +362,13 @@ export async function reportDeliveredGitExclude(localConfig: LocalConfig, paths:
  * named in `unlocated`: its line may be in either block.
  */
 async function byRepository(
-  ownExclude: string | null, paths: Iterable<string>,
+  ownExclude: string | null, paths: Iterable<string>, context: GitContext,
 ): Promise<{ here: string[]; elsewhere: string[]; unlocated: string[] }> {
-  const excludeOf = new Map<string, Promise<string | null>>();
   const split = { here: [] as string[], elsewhere: [] as string[], unlocated: [] as string[] };
   for (const file of paths) {
     let dir: string | null = await existingAncestor(await realFilePath(file));
     while (dir !== null && !await pathExists(path.join(dir, '.git'))) dir = path.dirname(dir) === dir ? null : path.dirname(dir);
-    if (dir !== null && !excludeOf.has(dir)) excludeOf.set(dir, gitExcludeFile(dir).then((found) => found?.excludeFile ?? null));
-    const excludeFile = dir === null ? null : await excludeOf.get(dir);
+    const excludeFile = dir === null ? null : (await gitExcludeFile(dir, context))?.excludeFile ?? null;
     (excludeFile !== null && excludeFile === ownExclude ? split.here : split.elsewhere).push(file);
     if (dir !== null && excludeFile === null) split.unlocated.push(file);
   }

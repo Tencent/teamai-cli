@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
+import { MUSE_TOOL_ID, TEAMAI_HOOK_DESCRIPTION_PREFIX } from './types.js';
 import { CODEX_TOOL_IDS, isCodexTool } from './utils/tool-names.js';
 import type { HookDef } from './types.js';
 import { getUserHome } from './utils/home.js';
@@ -205,11 +205,18 @@ function getHookShellCommand(): string {
   return _winBashLauncherCache;
 }
 
-/** Generate the hook-dispatch command for a given event, tool, and optional matcher. */
+/**
+ * Generate the hook-dispatch command for a given event, tool, and optional matcher.
+ * A Codex tool keeps bare `bash` on Windows too: Codex runs its Windows form from
+ * the entry's `commandWindows` (toCodexEntry in hooks.ts), and a machine-specific
+ * Git Bash path here would change the project `hooks.json` a repository commits on
+ * every Windows pull.
+ */
 export function getDispatchCommand(event: string, tool: string, matcher?: string, binPath?: string): string {
   const bin = binPath ?? 'teamai';
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
-  return `${getHookShellCommand()} -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
+  const shell = isCodexTool(tool) ? 'bash' : getHookShellCommand();
+  return `${shell} -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
 }
 
 /**
@@ -236,12 +243,17 @@ export function getAntigravityDispatchCommand(event: string, tool: string, match
 /**
  * Tools whose hook runner on Windows is PowerShell itself, so the rendered
  * command must be PowerShell syntax there rather than the POSIX `bash -lc "…"`
- * form. DSH is the one such host: its Claude-compatible bridge hands each
- * command to its own shell, which on Windows is `@deepseek-ai/dsh-pwsh-local` —
- * a PowerShell runner that prepends an encoding preamble to the command and
- * parses the result. `"<git-bash>" -lc "…"` is a ParserError under it, so every
- * dsh hook failed with `exitCode: 1` and, because the wrapper ends in
- * `2>/dev/null || true`, failed silently (issue #1005).
+ * form. Two such hosts so far:
+ *
+ * - DSH: its Claude-compatible bridge hands each command to its own shell,
+ *   which on Windows is `@deepseek-ai/dsh-pwsh-local` — a PowerShell runner
+ *   that prepends an encoding preamble to the command and parses the result
+ *   (issue #1005).
+ * Codex also runs command hooks with PowerShell on Windows (issue #1074), but
+ * its entries have a Windows-only `commandWindows`, which toCodexEntry in
+ * hooks.ts fills with the PowerShell form; its `command` stays the POSIX form
+ * on every platform, so a project `.codex/hooks.json` a repository commits does
+ * not change with the platform of the member who pulled last.
  */
 const WINDOWS_PWSH_TOOLS = new Set(['dsh']);
 
@@ -380,10 +392,11 @@ const SUBAGENT_STOP_TOOLS = new Set([
 /**
  * Build the built-in hook definitions for a tool.
  *
- * Tool-specific by design: Cursor, WorkBuddy and CodeBuddy entries carry
- * per-hook timeouts so a slow/unreachable backend hook cannot hang the host;
- * only Claude/Codex entries carry no timeout. The reconcile engine renders the
- * same HookDef into each tool's on-disk shape.
+ * Tool-specific by design: Cursor, WorkBuddy, CodeBuddy and the Codex family
+ * entries carry per-hook timeouts so a slow dispatch cannot hang the host (or,
+ * for Codex, get killed by its own shorter default instead — #1070); only
+ * Claude entries carry no timeout. The reconcile engine renders the same
+ * HookDef into each tool's on-disk shape.
  *
  * GUI tools (WorkBuddy, CodeBuddy) use the wrapper dispatch command so their
  * hook subprocesses can find `teamai` even without the user's full PATH. Both
@@ -394,10 +407,13 @@ const SUBAGENT_STOP_TOOLS = new Set([
 const WRAPPER_TOOLS = SHELL_DEPENDENT_TOOLS;
 
 
+/** What a tool names its Skill tool, where not `Skill`; the dispatcher still routes it as Skill. */
+const SKILL_TOOL_MATCHER: Readonly<Record<string, string>> = { copilot: 'skill', [MUSE_TOOL_ID]: 'read_skill' };
+
 export function builtinHookDefs(tool: string): HookDef[] {
   // ZCode renders per-event timeouts from the ZCODE_TIMEOUT_MS table in its own
   // writer (toZcodeEntry), so def.timeout stays unset for it.
-  const withTimeout = tool === 'cursor' || tool === 'copilot' || tool === 'workbuddy' || tool === 'codebuddy';
+  const withTimeout = tool === 'cursor' || tool === 'copilot' || tool === 'workbuddy' || tool === 'codebuddy' || isCodexTool(tool);
   const buildCommand = tool === 'zcode'
     ? getRawDispatchCommand
     : tool === 'antigravity'
@@ -417,7 +433,7 @@ export function builtinHookDefs(tool: string): HookDef[] {
     source: 'builtin' as const,
     key: spec.key,
     event: spec.event,
-    matcher: spec.matcher,
+    matcher: spec.matcher === 'Skill' ? SKILL_TOOL_MATCHER[tool] ?? spec.matcher : spec.matcher,
     command: buildCommand(spec.dispatchEvent, tool, spec.matcher),
     timeout: withTimeout ? spec.timeoutSec : undefined,
     // The team rules reach the Codex family through its start hooks (#938);

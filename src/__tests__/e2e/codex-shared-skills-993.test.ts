@@ -129,6 +129,13 @@ function machine(base: string, files: Record<string, string>): Machine {
 const initArgs = (m: Machine, scope: 'project' | 'user'): string[] =>
   ['init', m.url, '--provider', 'git', '--agent', 'codex', '--scope', scope, '--force'];
 
+/** Init no longer copies skills. Deliver them the way the old closing pull did. */
+const deliver = (m: Machine, scope: 'project' | 'user', dir: string): Run => {
+  const started = m.ok(initArgs(m, scope), dir);
+  const pulled = m.ok(['pull'], dir);
+  return { ...pulled, output: `${started.output}${pulled.output}` };
+};
+
 const TEAM = {
   'skills/fe-skill/SKILL.md': skillMd('fe-skill', 'Team skill.'),
   'skills/fe-skill/scripts/run.sh': 'echo team\n',
@@ -150,7 +157,7 @@ describe('Codex skills in the shared .agents/skills directory (#993 bug 3)', () 
     const shared = path.join(dir, '.agents', 'skills', 'fe-skill');
     const codex = path.join(dir, '.codex', 'skills', 'fe-skill');
 
-    const initRun = m.ok(initArgs(m, 'project'), dir);
+    const initRun = deliver(m, 'project', dir);
     expect(read(path.join(shared, 'SKILL.md'))).toBe(MY_SKILL);
     expect(fs.readdirSync(shared)).toEqual(['SKILL.md']);
     expect(read(path.join(codex, 'SKILL.md'))).toBe(skillMd('fe-skill', 'Team skill.'));
@@ -178,7 +185,7 @@ describe('Codex skills in the shared .agents/skills directory (#993 bug 3)', () 
     const dir = m.business();
     const shared = path.join(dir, '.agents', 'skills', 'fe-skill');
     const codex = path.join(dir, '.codex', 'skills', 'fe-skill');
-    m.ok(initArgs(m, 'project'), dir);
+    deliver(m, 'project', dir);
     expect(read(path.join(codex, 'SKILL.md'))).toBe(skillMd('fe-skill', 'Team skill.'));
 
     writeFile(path.join(shared, 'SKILL.md'), MY_SKILL);
@@ -206,7 +213,7 @@ describe('Codex skills in the shared .agents/skills directory (#993 bug 3)', () 
     const shared = path.join(dir, '.agents', 'skills', 'fe-skill');
     const codex = path.join(dir, '.codex', 'skills', 'fe-skill');
 
-    const initRun = m.ok(initArgs(m, 'project'), dir);
+    const initRun = deliver(m, 'project', dir);
     expect(fs.existsSync(codex)).toBe(false);
     expect(read(path.join(shared, 'SKILL.md'))).toBe(skillMd('fe-skill', 'Team skill.'));
     expect(initRun.output).not.toContain('Codex skill conflict');
@@ -220,6 +227,7 @@ describe('Codex skills in the shared .agents/skills directory (#993 bug 3)', () 
     expect(read(path.join(shared, 'scripts', 'run.sh'))).toBe('echo two\n');
     expect(fs.existsSync(codex)).toBe(false);
     expect(pulled.output).not.toContain('Codex skill conflict');
+    expect(pulled.output).not.toContain('new: fe-skill');
 
     // teamai's copy in the shared directory is the one uninstall deletes.
     m.ok(['uninstall', '--force'], dir);
@@ -239,7 +247,7 @@ describe('Codex skills in the shared .agents/skills directory (#993 bug 3)', () 
     });
     const shared = path.join(dir, '.agents', 'skills', 'fe-skill');
 
-    const initRun = m.ok(initArgs(m, 'project'), dir);
+    const initRun = deliver(m, 'project', dir);
 
     expect(read(path.join(shared, 'SKILL.md'))).toBe(skillMd('fe-skill', 'Version two.'));
     expect(read(path.join(shared, 'scripts', 'run.sh'))).toBe('echo two\n');
@@ -254,7 +262,7 @@ describe('Codex skills in the shared .agents/skills directory (#993 bug 3)', () 
     const codex = path.join(m.home, '.codex', 'skills', 'fe-skill');
     writeFile(path.join(shared, 'SKILL.md'), MY_SKILL);
 
-    const initRun = m.ok(initArgs(m, 'user'), m.home);
+    const initRun = deliver(m, 'user', m.home);
     expect(read(path.join(shared, 'SKILL.md'))).toBe(MY_SKILL);
     expect(fs.readdirSync(shared)).toEqual(['SKILL.md']);
     expect(read(path.join(codex, 'SKILL.md'))).toBe(skillMd('fe-skill', 'Team skill.'));

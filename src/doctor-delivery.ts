@@ -1,17 +1,20 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
+import { spawnSync } from 'node:child_process';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
-  CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, getDataHome, getMcpSharing, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey,
+  CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
   resolveToolBaseDir, resolveToolRootDir, scopedToolPaths,
 } from './types.js';
-import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, ResourceItem, TeamaiConfig } from './types.js';
+import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, McpServerDef, ResourceItem, TeamaiConfig } from './types.js';
 import type { EntryLayout, EntryResolution } from './namespaced-entries.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
 import { isToolInstalledForConfig, type ResourceHandler } from './resources/base.js';
 import type { Check, DoctorContext } from './doctor.js';
-import type { DesiredMcpContext } from './mcp-reconcile.js';
+import type { DirectoryEnv } from './resources/env-loader.js';
+import type { EnvVariable } from './resources/env.js';
+import type { DesiredMcpContext, McpTarget } from './mcp-reconcile.js';
 import type { ResolvedMcpFile } from './mcp-resolved-files.js';
 import {
   findEnvBlockFor,
@@ -21,6 +24,8 @@ import {
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
+import { declaredSecretKeys } from './resources/secrets.js';
+import { isReservedTeamEnvKey } from './env-reserved.js';
 
 /**
  * The checks that verify the payload rather than the plumbing: what each tool
@@ -528,18 +533,70 @@ async function buildRulesActivationChecks(ctx: DoctorContext, items: ResourceIte
   return checks;
 }
 
+/** The entries under `SessionStart` that dispatch a teamai session-start. */
+function sessionStartDispatchEntries(eventMap: unknown): { command: string; args: string[] }[] {
+  const groups = (eventMap as Record<string, unknown> | null | undefined)?.SessionStart;
+  if (!Array.isArray(groups)) return [];
+  return groups
+    .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
+    .map((entry: { command?: unknown; args?: unknown }) => ({
+      command: String(entry?.command ?? ''),
+      args: (Array.isArray(entry?.args) ? entry.args : []).map(String),
+    }))
+    .filter(({ command, args }) => [command, ...args].join(' ').includes('hook-dispatch session-start'));
+}
+
 /**
  * The teamai `hook-dispatch session-start` commands under `SessionStart` in a
  * Claude-shaped map of hook events (ZCode's `hooks.events`, the dsh bridge's
  * `hooks`).
  */
 function sessionStartDispatches(eventMap: unknown): string[] {
-  const groups = (eventMap as Record<string, unknown> | null | undefined)?.SessionStart;
-  if (!Array.isArray(groups)) return [];
-  return groups
-    .flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
-    .map((entry: { command?: unknown; args?: unknown }) => [entry?.command, ...(Array.isArray(entry?.args) ? entry.args : [])].join(' '))
-    .filter((command) => command.includes('hook-dispatch session-start'));
+  return sessionStartDispatchEntries(eventMap).map(({ command, args }) => [command, ...args].join(' '));
+}
+
+/**
+ * Whether the registered ZCode entry hands back what it is given.
+ *
+ * ZCode talks to a `process` hook over stdio — one JSON line in, the reply on
+ * stdout — and on Windows the entry runs a Node launcher written beside the
+ * config, so the dispatch's bytes have to survive that hop. In #1030 they did
+ * not: the launcher's predecessor dropped the dispatch's stdout outright, so
+ * sessions got no rules while the entry stayed registered and enabled and the
+ * registration check above stayed green.
+ *
+ * This exercises that hop with the entry's own command and arguments, swapping
+ * its tail for two stubs: one that echoes its stdin, one that exits 7. The tail
+ * is the dispatch itself, which must not be run — a session-start dispatch
+ * carries a network pull (`toZcodeEntry`). Both stubs are bounded by
+ * `ZCODE_PROBE_TIMEOUT_MS` and touch nothing but the three stdio handles, so
+ * the check stays read-only.
+ */
+const ZCODE_PROBE_TIMEOUT_MS = 10_000;
+
+function zcodeEntryCarriesItsReply(entry: { command: string; args: string[] }): boolean {
+  // The tail is the entry's last argument: the dispatch command on POSIX
+  // (`bash -lc <tail>`), the same command behind the launcher on Windows
+  // (`node <launcher> <tail>`). Replacing only that slot leaves the rest of the
+  // entry — the launcher included — exactly as ZCode will invoke it, which is
+  // the point: the launcher is where #1030 broke.
+  if (!entry.command || entry.args.length === 0) return false;
+  const head = entry.args.slice(0, -1);
+  const run = (tail: string, input?: Buffer) => spawnSync(entry.command, [...head, tail], {
+    input,
+    timeout: ZCODE_PROBE_TIMEOUT_MS,
+    windowsHide: true,
+  });
+
+  const probe = Buffer.from('{"probe":"teamai-zcode-delivery"}', 'utf8');
+  const echoed = run('node -e "process.stdin.pipe(process.stdout)"', probe);
+  if (echoed.error || echoed.status !== 0 || !Buffer.isBuffer(echoed.stdout)) return false;
+  // A substring rather than an exact match: on POSIX the entry runs its tail
+  // through `bash -lc`, and a login profile that prints puts its own bytes in
+  // front of the reply. What this has to catch is the reply going missing, not
+  // extra bytes around it.
+  if (!echoed.stdout.includes(probe)) return false;
+  return run('node -e "process.exit(7)"').status === 7;
 }
 
 /**
@@ -551,10 +608,11 @@ function sessionStartDispatches(eventMap: unknown): string[] {
  * Pi's extension is checked with the team instructions it also carries
  * (`buildInstructionDeliveryChecks`).
  *
- * The ZCode check is a registration check, not a delivery check: it reads the
- * two things ZCode itself reads off the config, and nothing in that file tells
- * it whether the hook's output actually reaches a session (#1030). Its name and
- * fixes say so.
+ * The ZCode checks are split by what each one can see: registration reads the
+ * two things ZCode itself reads off the config — `hooks.enabled` and the
+ * SessionStart entry — and delivery runs that entry's own command with its
+ * dispatch tail swapped for a stub, because nothing in the file says whether
+ * the hook's output actually reaches a session (#1030).
  */
 async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, teamConfig } = ctx;
@@ -569,7 +627,8 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
     const file = path.join(home, zcodeSettings);
     const read = await readJsonObject(file);
     const hooks = read.kind === 'ok' ? read.value.hooks as { enabled?: unknown; events?: unknown } | undefined : undefined;
-    const registered = sessionStartDispatches(hooks?.events).length > 0;
+    const entries = sessionStartDispatchEntries(hooks?.events);
+    const registered = entries.length > 0;
     const enabled = hooks?.enabled === true;
     checks.push({
       name: 'The teamai SessionStart hook is registered and enabled for zcode',
@@ -585,6 +644,22 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
           : `${file} sets hooks.enabled to something other than true, so ZCode runs none of the hooks it registers, `
             + 'and sessions in this project get none of the team rules. Run `teamai hooks inject`, which turns them on.',
     });
+    // Registration is not delivery: nothing below is worth probing until the
+    // entry is there and turned on, and while it is not, the check above
+    // already fails and names the reason.
+    const entry = entries[0];
+    if (entry && enabled) {
+      checks.push({
+        name: 'The teamai SessionStart hook for zcode returns its reply to the session',
+        source: 'local',
+        check: async () => zcodeEntryCarriesItsReply(entry),
+        fix: `${file} registers the teamai SessionStart hook and turns hooks on, but running that entry's own `
+          + 'command handed back nothing where the dispatch should have answered (or lost its exit status), so a '
+          + 'session would start with none of the team rules while registration still looks healthy (#1030). On '
+          + `Windows the entry goes through the Node launcher beside this file. ${inject} If it keeps failing, `
+          + "the entry's launch command cannot run in this shell.",
+      });
+    }
   }
 
   const { isDshInstalled } = await import('./dsh-hooks.js');
@@ -790,6 +865,44 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
   return checks;
 }
 
+const UNRESOLVED_VARS_RE = /^unresolved variable\(s\): (.+)$/;
+
+/**
+ * `${VAR}` names a skipped server is missing that the team has not declared as
+ * secrets (#1011). A failed declaration can't say, so it names none. A reserved
+ * name is never one: a team value for it is ignored, so declaring it would not help.
+ */
+function undeclaredMissingVars(
+  skipped: ReadonlyArray<{ server: string; reason?: string }>,
+  kept: ReadonlySet<string>,
+  declared: ReadonlySet<string> | null,
+): string[] {
+  if (!declared) return [];
+  const names = new Set<string>();
+  for (const change of skipped) {
+    if (kept.has(change.server)) continue;
+    const match = UNRESOLVED_VARS_RE.exec(change.reason ?? '');
+    if (!match?.[1]) continue;
+    for (const key of match[1].split(', ')) {
+      if (key && !declared.has(key) && !isReservedTeamEnvKey(key)) names.add(key);
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * How to declare a missing `${VAR}` when it is a personal token (#1011).
+ * A shared value such as a host stays in env.yaml: declaring it as a secret
+ * would ignore that value and make every member set it.
+ */
+function declareSecretHint(keys: readonly string[]): string {
+  if (keys.length === 0) return '';
+  const adds = keys.map((key) => `\`teamai env add ${key} --secret\``).join(', ');
+  const sets = keys.map((key) => `\`teamai env set ${key}\``).join(', ');
+  const named = keys.length === 1 ? keys[0] : `any of ${keys.join(', ')}`;
+  return ` If ${named} is a personal token, do not put the value in env.yaml. Declare it with ${adds} (no value), then each member runs ${sets}. A shared value stays in env.yaml.`;
+}
+
 /**
  * Build one check per tool that receives MCP servers.
  *
@@ -800,56 +913,97 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
  * skipped — an unresolved `${VAR}` is the reason behind "MCP does not work"
  * that no other output points at (#662).
  */
-export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
+/**
+ * The team MCP servers doctor judges and the targets it judges them in: none
+ * when nothing is owed (no team config, an HTTP-backed team, or `autoApply`
+ * off), unreadable when the team's MCP files cannot be read.
+ */
+type TeamMcpForDoctor =
+  | { kind: 'none' }
+  | { kind: 'unreadable'; fix: string }
+  | { kind: 'read'; teamConfig: TeamaiConfig; teamDefs: McpServerDef[]; targets: McpTarget[] };
+
+async function teamMcpForDoctor(ctx: DoctorContext): Promise<TeamMcpForDoctor> {
   const { localConfig, teamConfig } = ctx;
-  if (!teamConfig) return [];
+  if (!teamConfig) return { kind: 'none' };
   // HTTP-backed teams have no repo tree: servers arrive through the local-agent
   // install channel, and the desired set here would always be empty.
-  if (localConfig.repo.kind === 'http') return [];
-
-  const sharing = getMcpSharing(teamConfig);
+  if (localConfig.repo.kind === 'http') return { kind: 'none' };
   // Nothing was promised automatically, so nothing is owed until the member
   // runs `teamai mcp inject`.
-  if (!sharing.autoApply) return [];
+  if (!getMcpSharing(teamConfig).autoApply) return { kind: 'none' };
 
-  const {
-    resolveMcpTargets, buildDesiredMcpContext, desiredMcpForTarget,
-    mcpTargetExcluded, installedMcpEntries, memberMcpServers, describeKeptMemberServer,
-  } = await import('./mcp-reconcile.js');
-  const { carriesResolvedValue, ensureExcludedFromGit } = await import('./mcp-git-exclude.js');
+  const { resolveMcpTargets, mcpTargetExcluded } = await import('./mcp-reconcile.js');
   const { mcpEntryReader, teamMcpToDef } = await import('./resources/mcp.js');
   const { describeEntryFailure, resolveEntriesFor } = await import('./namespaced-entries.js');
+  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
+  if (resolution.kind === 'failed') return { kind: 'unreadable', fix: describeEntryFailure(resolution.failure) };
+  const teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
+  if (teamDefs.length === 0) return { kind: 'none' };
+  const targets = (await resolveMcpTargets(teamConfig, localConfig)).filter((target) => !mcpTargetExcluded(localConfig, target));
+  return { kind: 'read', teamConfig, teamDefs, targets };
+}
 
+/** The team servers `target` gets none of because its format cannot express their transport, less those the member excluded. */
+async function unsupportedTransportServers(localConfig: LocalConfig, target: McpTarget, teamDefs: McpServerDef[]): Promise<McpServerDef[]> {
+  const { supportsTransport } = await import('./resources/mcp-format.js');
+  const { mcpTargetTakes } = await import('./mcp-reconcile.js');
+  const excludedByUser = new Set(localConfig.excludedSkills ?? []);
+  return teamDefs.filter((def) => mcpTargetTakes(target, def.tools)
+    && !excludedByUser.has(def.name) && !supportsTransport(target.format, def.transport));
+}
+
+/**
+ * A team server a tool cannot use over its transport, such as an sse server
+ * for Muse Code or Pi. Its tool skips it on every pull, and no pull or
+ * `teamai` command can change that, so it is a note, not a failed delivery.
+ */
+export async function mcpTransportNotes(ctx: DoctorContext): Promise<string[]> {
+  const team = await teamMcpForDoctor(ctx);
+  if (team.kind !== 'read') return [];
+  const { mcpTargetAgent } = await import('./mcp-reconcile.js');
+  const notes: string[] = [];
+  for (const target of team.targets) {
+    const unsupported = await unsupportedTransportServers(ctx.localConfig, target, team.teamDefs);
+    if (unsupported.length === 0) continue;
+    const agent = mcpTargetAgent(target);
+    notes.push(`MCP servers ${agent} cannot use: ${unsupported.map((def) => `${def.name} (${def.transport})`).join(', ')} `
+      + `in ${target.file}, over a transport ${agent} does not support.`);
+  }
+  return notes;
+}
+
+export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {
+  const { localConfig } = ctx;
   // A file that does not parse, or a server name defined twice, is not a team
   // without MCP: the pull logs the reason once and changes nothing in any tool,
   // and every later run is silent. Flattening it to an empty desired set is
   // what let `doctor --json` answer `ok: true` over a team whose MCP is stuck.
-  const resolution = await resolveEntriesFor(mcpEntryReader, localConfig);
-  if (resolution.kind === 'failed') {
-    return [{
-      name: 'Team MCP servers can be read',
-      source: 'local',
-      check: async () => false,
-      fix: describeEntryFailure(resolution.failure),
-    }];
+  const team = await teamMcpForDoctor(ctx);
+  if (team.kind === 'none') return [];
+  if (team.kind === 'unreadable') {
+    return [{ name: 'Team MCP servers can be read', source: 'local', check: async () => false, fix: team.fix }];
   }
+  const { teamConfig, teamDefs, targets } = team;
 
-  const teamDefs = resolution.entries.map((entry) => teamMcpToDef(entry.entry));
-  if (teamDefs.length === 0) return [];
+  const {
+    resolveMcpTargets, buildDesiredMcpContext, desiredMcpForTarget,
+    mcpTargetAgent, mcpTargetAgents, installedMcpEntries, memberMcpServers, describeKeptMemberServer,
+  } = await import('./mcp-reconcile.js');
+  const { carriesResolvedValue, ensureExcludedFromGit } = await import('./mcp-git-exclude.js');
 
-  const targets = await resolveMcpTargets(teamConfig, localConfig);
   const desiredContext = await buildDesiredMcpContext(teamConfig, localConfig, { teamEnv: ctx.teamEnv });
   const excludedByUser = new Set(localConfig.excludedSkills ?? []);
 
   const checks: Check[] = [];
   for (const target of targets) {
-    if (mcpTargetExcluded(localConfig, target)) continue;
-
     const { desired, skipped, kept } = desiredMcpForTarget(target, teamDefs, desiredContext);
-    // A server skipped only for a missing declared secret (#875) is a note
-    // doctor prints with the command that fixes it, not a failed delivery.
+    // A server skipped only for a missing declared secret (#875), or for a
+    // transport its tool cannot use (`mcpTransportNotes`), is a note doctor
+    // prints, not a failed delivery.
+    const unsupported = new Set((await unsupportedTransportServers(localConfig, target, teamDefs)).map((def) => def.name));
     const blocked = skipped
-      .filter((change) => !excludedByUser.has(change.server) && !kept.has(change.server))
+      .filter((change) => !excludedByUser.has(change.server) && !kept.has(change.server) && !unsupported.has(change.server))
       .map((change) => `${change.server} (${change.reason ?? 'skipped'})`);
 
     const problems: string[] = [];
@@ -882,19 +1036,42 @@ export async function buildMcpDeliveryChecks(ctx: DoctorContext): Promise<Check[
     }
     if (blocked.length > 0) problems.push(`skipped: ${nameList(blocked)}`);
 
+    // Muse Code rejects a config holding one sse server and then loads no MCP
+    // server at all, so an sse entry in a file it reads breaks Muse's MCP as a
+    // whole. In a project that is the .mcp.json the claude target writes.
+    const museReads = mcpTargetAgents(target).includes(MUSE_TOOL_ID);
+    if (museReads && installed) {
+      const sse = [...installed]
+        .filter(([, entry]) => typeof entry === 'object' && entry !== null && (entry as { type?: unknown }).type === 'sse')
+        .map(([name]) => name);
+      checks.push({
+        name: 'MCP servers load in muse',
+        source: 'local',
+        check: async () => sse.length === 0,
+        fix: `In ${target.file}, ${nameList(sse)} ${sse.length === 1 ? 'uses' : 'use'} the sse transport, which Muse Code rejects, `
+          + 'so it loads no MCP server at all. If the server speaks streamable HTTP, set `transport: http` for it in the team\'s '
+          + 'mcp.yaml and run `teamai pull`. Otherwise Muse Code has no MCP servers while this file holds it.',
+      });
+    }
+
     if (problems.length === 0 && !withheld && desired.size === 0) continue;
 
     // A pull keeps a server of the member's own under a team name, and names it (#993).
     // Judged with every tool mapping the file, detected or not, as pull judges it (#993).
     const member = problems.length === 0 ? [] : await memberMcpServers(
       localConfig, await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true }), target, desired, desiredContext.vars);
+    const declare = declareSecretHint(undeclaredMissingVars(
+      skipped,
+      kept,
+      declaredSecretKeys(ctx.teamEnv?.declarations ?? { kind: 'absent' }),
+    ));
     const delivery = problems.length === 0 ? [] : [`In ${target.file}, ${problems.join('; ')}. A server needing a variable reads it from `
       + '`env/env.yaml` or an active `env/<ns>/env.yaml`, whose top-level key is `variables:` — a plain `KEY: value` mapping '
-      + 'parses as no variables at all. Then run `teamai pull`.',
+      + `parses as no variables at all. Then run \`teamai pull\`.${declare}`,
       ...member.map((name) => describeKeptMemberServer(name, target.file)),
       ...member.length > 0 ? ['Or run `teamai mcp inject --force` to replace it with the team\'s.'] : []];
     checks.push({
-      name: `MCP servers delivered to ${target.tool}`,
+      name: `MCP servers delivered to ${mcpTargetAgent(target)}`,
       source: 'local',
       check: async () => problems.length === 0 && !withheld,
       fix: [...withheld ? [withheld] : [], ...delivery].join(' '),
@@ -1047,7 +1224,7 @@ export async function buildCodexProjectTrustCheck(ctx: DoctorContext): Promise<C
   const { realFilePath } = await import('./git-exclude.js');
   const root = await realFilePath(projectRoot);
   const anchors = await resolveAnchors(projectRoot);
-  const main = anchors?.projectAnchor ?? root;
+  const main = anchors?.mainCheckout ?? root;
   const dirs = [...new Set([root, anchors?.workspaceRoot ?? root, main])];
   const configFile = path.join(resolveToolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, localConfig.toolRoots), 'config.toml');
   const trust = await codexProjectTrust(configFile, dirs);
@@ -1274,7 +1451,11 @@ async function resolveEntryTypes(
  * skipped for `unresolved variable(s)`, with nothing pointing back here.
  */
 export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]> {
-  const { problems, staleProfiles } = await envDeliveryProblems(ctx);
+  const { problems, staleProfiles, isLoaderOwed } = await envDeliveryProblems(ctx);
+  const { localConfig } = ctx;
+  const { directoryEnv } = await import('./resources/env-loader.js');
+  const dir = localConfig.scope === 'project' && localConfig.projectRoot ? localConfig.projectRoot : process.cwd();
+  const directory = isLoaderOwed ? await directoryEnv(localConfig, dir) : null;
   return [
     {
       name: 'Env variables injected in shell profile',
@@ -1283,6 +1464,15 @@ export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]
       fix: problems.length === 0
         ? 'Run `teamai pull` to inject env variables into shell profile'
         : `${problems.join('; ')}. Run \`teamai pull\` after fixing the cause, then open a new shell.`,
+    },
+    // Several projects open at once each load their own env (#1018): this
+    // asks the loader, in a real shell started here, which env.sh it loads.
+    // A shell that runs no loader passes here; envLoaderNotes names the gap.
+    {
+      name: 'This directory resolves its team env',
+      source: 'local',
+      check: async () => directoryEnvFix(directory, dir) === undefined,
+      fix: directoryEnvFix(directory, dir),
     },
     // A separate check, not folded into the one above: a stray leftover
     // block for this same scope (e.g. from before #682 changed which file
@@ -1304,36 +1494,136 @@ export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]
   ];
 }
 
+/** What to do about what a shell started in `dir` loads, or undefined when there is nothing to do. */
+function directoryEnvFix(directory: DirectoryEnv | null, dir: string): string | undefined {
+  if (directory === null) return undefined;
+  switch (directory.kind) {
+    case 'loads-scope':
+    case 'shell-without-loader':
+      return undefined;
+    case 'loads-other':
+      return `A shell started in ${dir} loads ${directory.loaded.length > 0 ? nameList([...directory.loaded]) : 'no team env'} `
+        + `instead of ${nameList([...directory.expected])}. Run \`teamai pull\` here, then open a new shell.`;
+    case 'shell-failed':
+      return `Could not run ${directory.shell} in ${dir} to check which team env it loads: ${directory.reason}. `
+        + 'Check that SHELL names a shell that starts.';
+    default: {
+      const unhandled: never = directory;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * Info for a member whose shell runs no env loader (#1018): the team env does
+ * not reach it, and `env exec` does. Not a check, since nothing here is
+ * broken and no pull changes it.
+ */
+export async function envLoaderNotes(ctx: DoctorContext): Promise<string[]> {
+  const { localConfig, teamConfig } = ctx;
+  if (teamConfig?.sharing?.env?.injectShellProfile === false) return [];
+  const { loaderShell, scopeEnvFiles } = await import('./resources/env-loader.js');
+  const shell = process.env.SHELL ?? '';
+  if (loaderShell(shell)) return [];
+  // Only name the gap when a loader would apply a value. An empty project
+  // env.sh can exist solely as the readability gate for inherited user env.
+  const { parseEnvFile } = await import('./resources/env.js');
+  const files = await scopeEnvFiles(localConfig);
+  const loadsValues = await Promise.all(files.map(async (file) => {
+    const content = await readFileSafe(file);
+    return content !== null && parseEnvFile(content).size > 0;
+  }));
+  if (!loadsValues.some(Boolean)) return [];
+  return [`Team env does not load in ${path.basename(shell) || 'a shell without SHELL'}: only zsh and bash run the teamai env loader. `
+    + 'Run the commands that need it through `teamai env exec -- <command>`.'];
+}
+
 /** Every reason the team's env variables are not reaching a shell, and any stray leftover blocks found along the way. */
 async function envDeliveryProblems(
   ctx: DoctorContext,
-): Promise<{ problems: string[]; staleProfiles: string[] }> {
+): Promise<{ problems: string[]; staleProfiles: string[]; isLoaderOwed?: true }> {
   const { localConfig, teamConfig } = ctx;
   const none = { problems: [], staleProfiles: [] };
   if (teamConfig?.sharing?.env?.injectShellProfile === false) return none;
-
-  const { EnvHandler } = await import('./resources/env.js');
-  const envHandler = new EnvHandler();
 
   // The variables this member and directory receive: the same resolution pull
   // writes env.sh from, not a second copy of it. A file that cannot be used, or
   // a name defined twice, is reported here as pull reports it (#662), and a
   // deliberate `variables: []` is not.
   const { describeEntryFailure } = await import('./namespaced-entries.js');
-  const { envShVariables, resolveTeamEnv } = await import('./env-resolution.js');
+  const { envShVariables, keptFromUserScope, resolveTeamEnv } = await import('./env-resolution.js');
   const teamEnv = ctx.teamEnv ?? await resolveTeamEnv(localConfig);
   const { variables: resolution, declarations: secrets, variableValues: values } = teamEnv;
-  if (resolution.kind === 'failed') return { problems: [describeEntryFailure(resolution.failure)], staleProfiles: [] };
+  const { parseEnvFile, parseEnvFileKept } = await import('./resources/env.js');
+  const { sameEnvName } = await import('./resources/env-key.js');
+  /** The keys of `owed` that `delivered` lacks, and those it holds another value for, in any case on Windows. */
+  const compare = (owed: readonly EnvVariable[], delivered: ReadonlyMap<string, string>): { undelivered: string[]; stale: string[] } => {
+    const valueOf = (key: string): string | undefined => {
+      const name = sameEnvName(delivered.keys(), key);
+      return name === undefined ? undefined : delivered.get(name);
+    };
+    return {
+      undelivered: owed.filter(({ key }) => valueOf(key) === undefined).map(({ key }) => key),
+      stale: owed.filter(({ key, value }) => valueOf(key) !== undefined && valueOf(key) !== value).map(({ key }) => key),
+    };
+  };
+
+  // An inheriting project's shells load the user scope's env.sh first, which
+  // the user scope's own pull writes: its variables are owed here too, whatever
+  // state the project's own declarations are in.
+  const { userEnvInShells } = await import('./resources/env-loader.js');
+  // While the user scope's env can't be resolved, its pull keeps its env.sh as
+  // it is: nothing to compare, but shells still load it, so it must be there.
+  const inheritsUser = localConfig.scope === 'project' && await userEnvInShells();
+  const inherited = inheritsUser && teamEnv.inheritedValues.kind === 'resolved' && teamEnv.inheritedVariables.length > 0
+    ? envShVariables(teamEnv.inheritedVariables, teamEnv.inheritedValues.values)
+    : [];
+  const keptInherited = inheritsUser && (teamEnv.keptInheritedValues?.size ?? 0) > 0;
+  const inheritedProblems: string[] = [];
+  const userEnvShPath = path.join(getTeamaiHome('user'), 'env.sh');
+  if (keptInherited && !await pathExists(userEnvShPath)) {
+    const reason = teamEnv.inheritedValues.kind === 'store-unreadable' ? `${teamEnv.inheritedValues.reason}; fix that, then ` : '';
+    inheritedProblems.push(`${userEnvShPath}, which this project inherits, is missing: ${reason}run \`teamai pull\` outside any project to rewrite it`);
+  } else if (inheritsUser && teamEnv.inheritedValues.kind === 'store-unreadable') {
+    // Shells keep loading the user scope's last env.sh, and env exec and MCP warn with this same reason.
+    inheritedProblems.push(teamEnv.inheritedValues.reason);
+  }
+  const pullUser = 'run `teamai pull` outside any project to rewrite it';
+  if (inherited.length > 0) {
+    const userEnvSh = await readFileSafe(userEnvShPath);
+    const { undelivered, stale } = compare(inherited, parseEnvFile(userEnvSh ?? ''));
+    if (userEnvSh === null) inheritedProblems.push(`${userEnvShPath}, which this project inherits, is missing: ${pullUser}`);
+    else if (undelivered.length > 0) inheritedProblems.push(`${userEnvShPath} is missing ${nameList(undelivered)}, which this project inherits: ${pullUser}`);
+    if (stale.length > 0) inheritedProblems.push(`${userEnvShPath} has a stale value for ${nameList(stale)}, which this project inherits: ${pullUser}`);
+  }
+
   // A key the team also declares as a secret is not delivered (#875); declarations
-  // that cannot be read keep env.sh as it is, as a broken env file does.
-  if (secrets.kind === 'failed') return { problems: [describeEntryFailure(secrets.failure)], staleProfiles: [] };
-  // A variable the member set for this team is owed their value, and one set
+  // that cannot be read keep env.sh as it is, as a broken env file does. A
+  // variable the member set for this team is owed their value, and one set
   // with `--from-env` is not owed at all (#875); a values file that cannot be
-  // read keeps env.sh as it is, as pull does.
-  if (values.kind === 'store-unreadable') return { problems: [values.reason], staleProfiles: [] };
-  const declared = envShVariables(resolution.entries, values.values);
-  const deliverable = new Set(declared.map((variable) => variable.key));
-  const problems: string[] = [];
+  // read keeps env.sh as it is, as pull does. Either way shells still load the
+  // kept env.sh and the inherited one through the profile block, checked below.
+  const projectFailure = resolution.kind === 'failed' ? describeEntryFailure(resolution.failure)
+    : secrets.kind === 'failed' ? describeEntryFailure(secrets.failure)
+      : values.kind === 'store-unreadable' ? values.reason : null;
+  let declared: EnvVariable[] = [];
+  let kept: string[] = [];
+  // What the last pull wrote while this scope can't be resolved: pull keeps it, and shells load it.
+  const keptOwn = (teamEnv.keptValues?.size ?? 0) > 0;
+  if (resolution.kind === 'resolved' && secrets.kind !== 'failed' && values.kind !== 'store-unreadable') {
+    declared = envShVariables(resolution.entries, values.values);
+    kept = keptFromUserScope(localConfig, teamEnv, declared);
+  }
+  // The user scope's env.sh holds only what its pull wrote: a key there that it
+  // no longer delivers, and this project does not set, still reaches this
+  // project's shells, where `env exec` and MCP leave it out.
+  if (inheritsUser && localConfig.inheritUserScope === true && teamEnv.inheritedValues.kind === 'resolved' && resolution.kind === 'resolved' && projectFailure === null) {
+    const { declaredSecretKeys } = await import('./resources/secrets.js');
+    const owed = [...inherited.map(({ key }) => key), ...resolution.entries.map(({ name }) => name), ...declaredSecretKeys(secrets) ?? []];
+    const extra = [...parseEnvFile(await readFileSafe(userEnvShPath) ?? '').keys()].filter((key) => sameEnvName(owed, key) === undefined);
+    if (extra.length > 0) inheritedProblems.push(`${userEnvShPath} still exports ${nameList(extra)}, which the user scope no longer delivers and this project inherits: ${pullUser}`);
+  }
+  const problems: string[] = [...projectFailure === null ? [] : [projectFailure], ...inheritedProblems];
 
   // env.sh lives under teamaiHome, which is <projectRoot>/.teamai in project
   // scope and ~/.teamai in user scope — mirror the path that `teamai pull`
@@ -1343,23 +1633,16 @@ async function envDeliveryProblems(
   if (envSh === null) {
     // Nothing reaches this member and nothing was ever written: there is
     // nothing to deliver, so there is nothing to report missing.
-    if (declared.length === 0) return none;
-    problems.push(`${envShPath} is missing`);
-  } else {
+    if (declared.length === 0 && kept.length === 0 && inherited.length === 0 && !keptOwn && !keptInherited) return problems.length === 0 ? none : { problems, staleProfiles: [] };
+    if (declared.length > 0 || kept.length > 0 || keptOwn) problems.push(`${envShPath} is missing`);
+  } else if (projectFailure === null) {
     // Read the file back through the generator's own inverse, value included:
     // a key whose value changed in env.yaml exports the old one until the next
     // pull rewrites the file, and every shell and MCP server reads that. It is
     // a parse rather than a line scan because a value may be multiline — a
     // YAML block scalar quotes into an export spanning several lines.
-    const { parseEnvFile } = await import('./resources/env.js');
     const delivered = parseEnvFile(envSh);
-    const undelivered: string[] = [];
-    const stale: string[] = [];
-    for (const variable of declared) {
-      const value = delivered.get(variable.key);
-      if (value === undefined) undelivered.push(variable.key);
-      else if (value !== variable.value) stale.push(variable.key);
-    }
+    const { undelivered, stale } = compare(declared, delivered);
     if (undelivered.length > 0) problems.push(`${envShPath} is missing ${nameList(undelivered)}`);
     if (stale.length > 0) {
       problems.push(
@@ -1369,16 +1652,22 @@ async function envDeliveryProblems(
     // env.sh holds only what pull wrote, so a key the resolved set lacks is
     // left over from before a namespace deactivated or the team removed it,
     // and still live in every new shell until the next pull.
-    const leftover = [...delivered.keys()].filter((key) => !deliverable.has(key));
+    const deliverable = declared.map((variable) => variable.key);
+    const leftover = [...delivered.keys()].filter((key) => sameEnvName(deliverable, key) === undefined);
     if (leftover.length > 0) {
       problems.push(
         `${envShPath} still exports ${nameList(leftover)}, which the team no longer delivers to this `
         + 'directory (removed, or its namespace is no longer active)',
       );
     }
+    // A key the project declares but does not export keeps the member's own
+    // value, not the one the user scope's env.sh set before it.
+    const keptInFile = parseEnvFileKept(envSh);
+    const unkept = kept.filter((key) => sameEnvName(keptInFile, key) === undefined);
+    if (unkept.length > 0) problems.push(`${envShPath} does not keep ${nameList(unkept)} from the user scope's env.sh`);
     // Nothing is owed, so the profile block has nothing to load: a leftover is
     // the only thing that can be wrong here.
-    if (declared.length === 0) return { problems, staleProfiles: [] };
+    if (declared.length === 0 && kept.length === 0 && inherited.length === 0 && !keptInherited) return { problems, staleProfiles: [] };
   }
 
   // Same resolution the injection runs, not a second copy of it. Expanded
@@ -1387,21 +1676,26 @@ async function envDeliveryProblems(
   // candidates that are always absolute — an unexpanded `~/...` override
   // would never match its own resolved file and get reported as a stray
   // copy of itself (#693 review round 4).
-  const profilePath = expandHome(
-    teamConfig?.sharing?.env?.shellProfilePath ?? await envHandler.detectShellProfile(envShPath),
-  );
-  // This scope's own block: the profile can also carry another scope's
-  // (#876), and that one is not this scope's to judge.
-  const profile = await readFileSafe(profilePath);
-  const block = profile === null ? null : findEnvBlockFor(profile, envShPath);
-
-  if (block === null) {
-    problems.push(`${profilePath} carries no TeamAI env block for ${envShPath}`);
-  } else if (envSh !== null && !envBlockSourcesPath(block.text, envShPath)) {
-    problems.push(
-      `the block in ${profilePath} does not load ${envShPath}: a POSIX shell reads an unquoted `
-      + 'backslash as an escape, so the `[ -f ... ]` test fails and `source` never runs',
-    );
+  const { envLoaderPath } = await import('./resources/env-loader.js');
+  const { envLoaderProfiles } = await import('./utils/shell-profile.js');
+  const loaderPath = envLoaderPath();
+  // For zsh, a file every zsh reads, whatever shellProfilePath names (#1018).
+  // The other shell's profile and bash's login file too, when they exist, as pull writes them.
+  const override = teamConfig?.sharing?.env?.shellProfilePath;
+  const { paths: profilePaths } = await envLoaderProfiles(override, loaderPath);
+  // One block for every scope: it sources the loader, which picks the env.sh
+  // for the shell's directory (#1018).
+  for (const profilePath of profilePaths) {
+    const profile = await readFileSafe(profilePath);
+    const block = profile === null ? null : findEnvBlockFor(profile, loaderPath);
+    if (block === null) {
+      problems.push(`${profilePath} carries no TeamAI env block for ${loaderPath}`);
+    } else if (!envBlockSourcesPath(block.text, loaderPath)) {
+      problems.push(
+        `the block in ${profilePath} does not load ${loaderPath}: a POSIX shell reads an unquoted `
+        + 'backslash as an escape, so the `[ -f ... ]` test fails and `source` never runs',
+      );
+    }
   }
 
   // A stray block can also sit in a different candidate file: which file
@@ -1411,14 +1705,13 @@ async function envDeliveryProblems(
   // sits in, say, `.bashrc` from a pre-#682/#661 install (#693 review).
   const home = getUserHome();
   const staleProfiles: string[] = [];
-  for (const name of SHELL_PROFILE_CANDIDATE_NAMES) {
-    const candidate = path.join(home, name);
-    if (sameFile(candidate, profilePath)) continue;
+  for (const candidate of new Set([...override ? [expandHome(override)] : [], ...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(home, name))])) {
+    if (profilePaths.some((profilePath) => sameFile(candidate, profilePath))) continue;
     const content = await readFileSafe(candidate);
     if (content && findEnvBlockFor(content, envShPath)) staleProfiles.push(candidate);
   }
 
-  return { problems, staleProfiles };
+  return { problems, staleProfiles, isLoaderOwed: true };
 }
 
 /**
@@ -1620,7 +1913,7 @@ async function readNamespaceNoteInputs(teamConfig: TeamaiConfig, localConfig: Lo
     skills: await desired.resolveDesiredSkills(teamConfig, localConfig, roleContext),
     agents: await desired.resolveDesiredAgents(teamConfig, localConfig, roleContext),
     rules: await desired.resolveDesiredRules(teamConfig, localConfig, roleContext),
-    claudemd: await desired.collectClaudemdFiles(localConfig.repo.localPath, roleContext),
+    claudemd: await desired.collectClaudemdFiles(localConfig, roleContext),
   };
 }
 

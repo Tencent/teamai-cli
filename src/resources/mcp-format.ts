@@ -15,7 +15,7 @@ import { sameEnvName } from './env-key.js';
 //  Keeping the differences here — rather than in the reconcile engine — is the
 //  same split agents uses between agent-format.ts and its handler.
 
-export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi';
+export type McpFormat = 'claude' | 'cursor' | 'buddy' | 'codex' | 'opencode' | 'copilot' | 'pi' | 'muse';
 
 const CLAUDE_TOOLS = new Set(['claude', 'claude-internal', 'tclaude', 'qoder', 'qoder-cn', 'kiro', 'zcode', 'omp', 'trae', 'trae-cn', 'antigravity']);
 const CURSOR_TOOLS = new Set(['cursor']);
@@ -27,6 +27,7 @@ const COPILOT_ALL_TOOLS = '*';
 
 export function detectMcpFormat(tool: string): McpFormat | null {
   if (tool === 'pi') return 'pi';
+  if (tool === 'muse') return 'muse';
   if (CLAUDE_TOOLS.has(tool)) return 'claude';
   if (CURSOR_TOOLS.has(tool)) return 'cursor';
   if (CODEX_TOOLS.has(tool)) return 'codex';
@@ -43,6 +44,7 @@ export function detectMcpFormat(tool: string): McpFormat | null {
  */
 export const MCP_SERVER_KEY: Record<Exclude<McpFormat, 'codex'>, string> = {
   pi: 'mcpServers',
+  muse: 'mcpServers',
   claude: 'mcpServers',
   cursor: 'mcpServers',
   buddy: 'mcpServers',
@@ -59,6 +61,9 @@ export function sameServerKey(a: McpFormat, b: McpFormat): boolean {
 /** Transports each format can actually express. */
 const SUPPORTED_TRANSPORTS: Record<McpFormat, Set<McpTransport>> = {
   pi: new Set<McpTransport>(['stdio', 'http']),
+  // Muse Code fails startup validation on a single `type: sse` server and then
+  // loads no MCP server at all.
+  muse: new Set<McpTransport>(['stdio', 'http']),
   claude: new Set<McpTransport>(['stdio', 'http', 'sse']),
   cursor: new Set<McpTransport>(['stdio', 'http', 'sse']),
   buddy: new Set<McpTransport>(['stdio', 'http', 'sse']),
@@ -302,7 +307,7 @@ export function renderJsonEntry(format: Exclude<McpFormat, 'codex'>, def: McpSer
     // Omit exposure to keep Pi's native codemode default.
     return entry;
   }
-  if (format === 'claude') return renderClaude(def);
+  if (format === 'claude' || format === 'muse') return renderClaude(def);
   if (format === 'cursor') return renderCursor(def);
   if (format === 'opencode') return renderOpencode(def);
   if (format === 'copilot') return renderCopilot(def);

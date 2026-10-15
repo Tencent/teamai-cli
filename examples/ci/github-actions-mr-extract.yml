@@ -51,10 +51,20 @@ jobs:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
 
   # ── PR 合入后：将知识写入团队仓库 ─────────────────────────
+  # teamwiki 走 `teamai import --dir . --incremental` 的同一流程：在合入后的源码
+  # checkout 中运行，只重新提取改过的文件，写入
+  # team-repo/teamwiki/evidence/code/github__<owner>__<repo>/，CLI 自行 commit 并 push。
+  # 两个仓库并排 checkout：团队仓库不能放在源码 checkout 内，否则会被当成源码提取。
   write:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 2
+          path: source
+
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.TEAMAI_KNOWLEDGE_REPO }}
@@ -73,22 +83,13 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
 
       - name: Write Knowledge to Repo
+        working-directory: source
         run: |
           teamai ci extract-mr \
             --url "${{ github.event.pull_request.html_url }}" \
             --mode write \
-            --team-repo ./team-repo \
+            --team-repo ../team-repo \
             --write-mode direct
         env:
           GITHUB_TOKEN: ${{ secrets.TEAMAI_SYNC_TOKEN }}
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
-
-      - name: Commit and Push
-        run: |
-          cd team-repo
-          git config user.name "teamai-ci"
-          git config user.email "teamai-ci@users.noreply.github.com"
-          git add learnings/ docs/ .teamai/ teamwiki/
-          git diff --cached --quiet || \
-            git commit -m "[teamai] Extract knowledge from PR #${{ github.event.pull_request.number }}"
-          git push

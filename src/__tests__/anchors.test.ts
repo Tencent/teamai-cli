@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveAnchors, listWorktrees, parseWorktreeList } from '../utils/git.js';
+import { resolveAnchors, listWorktrees, parseWorktreeList, isDedicatedRepoRoot, gitCommonDir } from '../utils/git.js';
+import { gitExcludeFile } from '../git-exclude.js';
 import { defaultProjectSlug } from '../codebase-extract.js';
 
 // ─── Real-git tests for resolveAnchors (issue #374 P0) ──────────────────────
@@ -53,11 +54,33 @@ afterAll(() => {
 });
 
 describe('resolveAnchors', () => {
+  it('keeps a submodule identity separate from its main checkout', async () => {
+    const parent = path.join(base, 'submodule-parent');
+    fs.mkdirSync(parent);
+    git(parent, 'init', '-q');
+    git(parent, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', repoRoot, 'service');
+    const checkout = path.join(parent, 'service');
+    expect(await resolveAnchors(checkout)).toEqual({
+      workspaceRoot: checkout,
+      projectAnchor: path.join(parent, '.git', 'modules', 'service'),
+      mainCheckout: checkout,
+    });
+  });
+
+  it('keeps a nested clone worktree anchored at the child clone', async () => {
+    const nested = path.join(repoRoot, 'child');
+    git(repoRoot, 'clone', '-q', repoRoot, nested);
+    const linked = path.join(repoRoot, 'child-worktree');
+    git(nested, 'worktree', 'add', '-q', '--detach', linked);
+    expect(await resolveAnchors(linked)).toEqual({ workspaceRoot: linked, projectAnchor: nested, mainCheckout: nested });
+  });
+
   it('returns workspace === anchor === repo root for a plain repository', async () => {
     const a = await resolveAnchors(repoRoot);
     expect(a).not.toBeNull();
     expect(a!.workspaceRoot).toBe(repoRoot);
     expect(a!.projectAnchor).toBe(repoRoot);
+    expect(a!.mainCheckout).toBe(repoRoot);
   });
 
   it('resolves a subdirectory of the main repo up to the repo root', async () => {
@@ -67,6 +90,7 @@ describe('resolveAnchors', () => {
     expect(a).not.toBeNull();
     expect(a!.workspaceRoot).toBe(repoRoot);
     expect(a!.projectAnchor).toBe(repoRoot);
+    expect(a!.mainCheckout).toBe(repoRoot);
   });
 
   it('gives a worktree its own workspaceRoot but the shared main-checkout anchor', async () => {
@@ -76,6 +100,7 @@ describe('resolveAnchors', () => {
     expect(a!.workspaceRoot).toBe(worktreeRoot);
     // ...but the anchor points back at the MAIN checkout, shared with the repo.
     expect(a!.projectAnchor).toBe(repoRoot);
+    expect(a!.mainCheckout).toBe(repoRoot);
     expect(a!.workspaceRoot).not.toBe(a!.projectAnchor);
   });
 
@@ -85,6 +110,7 @@ describe('resolveAnchors', () => {
     const a = await resolveAnchors(sub);
     expect(a!.workspaceRoot).toBe(worktreeRoot);
     expect(a!.projectAnchor).toBe(repoRoot);
+    expect(a!.mainCheckout).toBe(repoRoot);
   });
 
   it('returns null for a directory that is not inside any git repository', async () => {
@@ -114,6 +140,11 @@ describe('resolveAnchors', () => {
     expect(b).not.toBeNull();
     expect(a!.workspaceRoot).toBe(wsA);
     expect(b!.workspaceRoot).toBe(wsB);
+    expect(a!.mainCheckout).toBe(wsA);
+    expect(b!.mainCheckout).toBe(wsB);
+    const linked = path.join(base, 'separate-linked');
+    git(wsA, 'worktree', 'add', '-q', '--detach', linked);
+    expect(await resolveAnchors(linked)).toEqual({ workspaceRoot: linked, projectAnchor: a!.projectAnchor, mainCheckout: null });
     // The two repos must NOT share an anchor (no partition collision).
     expect(a!.projectAnchor).not.toBe(b!.projectAnchor);
     // And neither anchor is the shared parent directory.
@@ -150,7 +181,7 @@ describe('resolveAnchors memo (#809)', () => {
     git(dir, 'config', 'user.email', 'test@example.com');
     git(dir, 'config', 'user.name', 'Test');
     git(dir, 'commit', '--allow-empty', '-q', '-m', 'init');
-    expect(await resolveAnchors(dir)).toEqual({ workspaceRoot: dir, projectAnchor: dir });
+    expect(await resolveAnchors(dir)).toEqual({ workspaceRoot: dir, projectAnchor: dir, mainCheckout: dir });
   });
 
   it('keeps one entry per directory', async () => {
@@ -201,7 +232,7 @@ describe('defaultProjectSlug (#809)', () => {
       const checkout = path.join(base, 'bare-layout', wt);
       git(bare, 'worktree', 'add', '-q', checkout);
       expect((await resolveAnchors(checkout))?.projectAnchor).toBe(bare);
-      expect((await resolveAnchors(checkout))?.projectAnchorIsBare).toBe(true);
+      expect((await resolveAnchors(checkout))?.mainCheckout).toBeNull();
       expect(await defaultProjectSlug(checkout)).toBe('bare-layout');
     }
     const sub = path.join(base, 'bare-layout', 'main', 'pkg');
@@ -251,6 +282,55 @@ describe('listWorktrees', () => {
     git(checkout, 'worktree', 'add', '-q', linked, 'HEAD');
 
     expect(await listWorktrees(checkout)).toEqual([linked]);
+  });
+
+  it('follows worktrees added, moved, and deleted after an earlier call', async () => {
+    const repo = path.join(base, 'changing');
+    fs.mkdirSync(repo);
+    git(repo, 'init', '-q');
+    git(repo, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '--allow-empty', '-q', '-m', 'init');
+    expect(await listWorktrees(repo)).toEqual([repo]);
+
+    const added = path.join(base, 'changing-wt');
+    git(repo, 'worktree', 'add', '-q', added, 'HEAD');
+    expect(await listWorktrees(repo)).toEqual([repo, added]);
+
+    const moved = path.join(base, 'changing-moved');
+    git(repo, 'worktree', 'move', added, moved);
+    expect(await listWorktrees(repo)).toEqual([repo, moved]);
+
+    // Deleted without `git worktree remove`: git lists it as prunable.
+    fs.rmSync(moved, { recursive: true, force: true });
+    expect(await listWorktrees(repo)).toEqual([repo]);
+  });
+});
+
+describe('what git says of a directory, asked again', () => {
+  it('follows a repository created later inside a directory git answered for before', async () => {
+    const outer = path.join(base, 'outer');
+    const inner = path.join(outer, 'inner');
+    fs.mkdirSync(inner, { recursive: true });
+    git(outer, 'init', '-q');
+    expect((await gitExcludeFile(inner))?.root).toBe(outer);
+    expect(await isDedicatedRepoRoot(inner)).toBe(false);
+
+    git(inner, 'init', '-q');
+    expect(await gitExcludeFile(inner)).toEqual({ root: inner, prefix: '', excludeFile: path.join(inner, '.git', 'info', 'exclude') });
+    expect(await isDedicatedRepoRoot(inner)).toBe(true);
+    expect(await gitCommonDir(inner)).toBe(path.join(inner, '.git'));
+  });
+
+  it('stops taking a clone root for its own repository once its .git is gone', async () => {
+    const outer = path.join(base, 'enclosing');
+    const clone = path.join(outer, 'clone');
+    fs.mkdirSync(clone, { recursive: true });
+    git(outer, 'init', '-q');
+    git(clone, 'init', '-q');
+    expect(await isDedicatedRepoRoot(clone)).toBe(true);
+
+    fs.rmSync(path.join(clone, '.git'), { recursive: true, force: true });
+    expect(await isDedicatedRepoRoot(clone)).toBe(false);
+    expect((await gitExcludeFile(clone))?.prefix).toBe('clone/');
   });
 });
 

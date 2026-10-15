@@ -819,6 +819,8 @@ export interface BuildIndexOptions {
    * entries under each stay.
    */
   unreadable?: readonly UnreadableFile[];
+  /** The fingerprint of the workspace children the sources were resolved for (#913). */
+  children?: string;
 }
 
 /**
@@ -965,6 +967,7 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
     entries,
     df,
     dfByDomain,
+    ...(opts.children ? { children: opts.children } : {}),
   };
 }
 

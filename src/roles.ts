@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ensureDir, writeFile } from './utils/fs.js';
 import {
   NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, warnUnknownResourceKeys,
-  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespacesShape, type HandDeclaredResourceType, type NamespaceEntry,
+  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespacesShape, type HandDeclaredResourceType, type NamespaceEntry, parseManifestOnce,
 } from './manifest-schema.js';
 
 const ROLE_RESOURCE_TYPES = ['knowledge', 'skills', 'agents'] as const;
@@ -134,14 +134,15 @@ export async function loadRolesManifest(repoPath: string): Promise<RolesManifest
     throw new RolesManifestNotFoundError(manifestPath);
   }
 
-  let raw: unknown;
-  try {
-    raw = YAML.parse(content);
-  } catch (error) {
-    throw new Error(`Invalid roles manifest YAML: ${(error as Error).message}`);
-  }
-
-  return validateManifestShape(raw);
+  return parseManifestOnce(manifestPath, content, (text) => {
+    let raw: unknown;
+    try {
+      raw = YAML.parse(text);
+    } catch (error) {
+      throw new Error(`Invalid roles manifest YAML: ${(error as Error).message}`);
+    }
+    return validateManifestShape(raw);
+  });
 }
 
 /**

@@ -30,6 +30,9 @@ vi.mock('../utils/git.js', () => ({
   getDefaultBranch: vi.fn(),
   hasCommits: vi.fn(),
   isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
+  // No cached answer: the common dir is asked of the fake checkouts below.
+  gitCommonDir: vi.fn().mockResolvedValue(null),
+  checkoutLocation: vi.fn().mockResolvedValue(null),
   commitSkippingHooks: (git: { commit: (...args: unknown[]) => unknown }, message: string) =>
     git.commit(message, { '--no-verify': null }),
 }));
@@ -291,7 +294,7 @@ describe('updateReports', () => {
   it('does not run the write callback when another reports write holds the lock', async () => {
     const write = vi.fn();
 
-    expect(await updateReports(config, write)).toBe(false);
+    expect(await updateReports(config, write)).toEqual({ status: 'busy' });
 
     expect(write).not.toHaveBeenCalled();
     expect(releaseLock).not.toHaveBeenCalled();

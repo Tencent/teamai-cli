@@ -112,7 +112,11 @@ function machine(name: string, extraServers: Array<{ name: string; url: string }
   };
   const servers = (f: string): Record<string, unknown> | undefined =>
     fs.existsSync(f) ? readJson(f).mcpServers : undefined;
-  const init = (): Run => teamaiOk('init', url, '--provider', 'git', '--agent', 'codebuddy', '--scope', 'user', '--force');
+  const init = (): Run => {
+    const started = teamaiOk('init', url, '--provider', 'git', '--agent', 'codebuddy', '--scope', 'user', '--force');
+    const pulled = teamaiOk('pull');
+    return { ...pulled, output: `${started.output}${pulled.output}` };
+  };
   /** What an earlier teamai recorded: no file in its CodeBuddy records. */
   const forgetRecordedFile = (): void => {
     const manifest = path.join(home, '.teamai', 'managed-mcp.json');
@@ -142,6 +146,7 @@ describe('CodeBuddy user MCP goes to the file CodeBuddy reads (#993 bug 10)', ()
     writeFile(m.file.dotMcp, JSON.stringify({ mcpServers: { 'my-user': MEMBER_SERVER } }));
     fs.mkdirSync(path.join(m.home, '.claude'), { recursive: true });
     m.teamaiOk('init', m.url, '--provider', 'git', '--agent', 'claude,codebuddy', '--scope', 'user', '--force');
+    m.teamaiOk('pull');
     expect(m.servers(m.file.dotMcp)).toEqual({ 'my-user': MEMBER_SERVER, 'tm-user': TEAM_SERVER });
     expect(m.servers(claudeFile)).toEqual({ 'tm-user': TEAM_SERVER });
 
@@ -159,6 +164,7 @@ describe('CodeBuddy user MCP goes to the file CodeBuddy reads (#993 bug 10)', ()
     writeFile(m.file.dotMcp, JSON.stringify({ mcpServers: { 'my-user': MEMBER_SERVER } }));
     fs.mkdirSync(path.join(m.home, '.claude'), { recursive: true });
     m.teamaiOk('init', m.url, '--provider', 'git', '--agent', 'claude,codebuddy', '--scope', 'user', '--force');
+    m.teamaiOk('pull');
     expect(m.servers(claudeFile)).toEqual({ 'tm-user': TEAM_SERVER });
 
     // Claude is no longer installed here; its file and its record stay.

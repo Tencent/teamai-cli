@@ -56,6 +56,8 @@ export const SECRETS_LAYOUT: EntryLayout = {
 export const secretsEntryReader: EntryReader<SecretDeclaration> = {
   type: 'env',
   layout: SECRETS_LAYOUT,
+  // Only the key: a description or url changes what a member reads, not what is delivered.
+  delivered: (declaration) => declaration.key,
   async read(absolutePath, relativePath) {
     const file = await readEntryFileText(absolutePath, relativePath);
     if (!file.ok) return file;

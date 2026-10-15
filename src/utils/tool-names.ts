@@ -19,6 +19,7 @@ const IDE_TO_CLI: Record<string, string> = {
   read_file: 'Read',
   task: 'Task',
   skill: 'Skill',
+  read_skill: 'Skill', // Muse Code
 };
 
 export function normalizeToolName(name: string): string {
@@ -70,33 +71,44 @@ export function isCodexTool(tool: string): boolean {
 }
 
 /**
- * Tools whose Stop hook cannot deliver non-blocking model context.
- * CodeBuddy/WorkBuddy ignore stdout; Codex rejects Stop additionalContext.
- * For these tools the share-learnings hint is stashed as pending state at Stop
- * and injected on the next UserPromptSubmit instead (which they DO consume).
+ * Tools whose Stop hook takes the Stop payload `formatStopHookOutput` writes.
+ *
+ * Every other tool has the share-learnings hint stashed as pending state at
+ * Stop and injected on the next UserPromptSubmit instead. CodeBuddy/WorkBuddy
+ * ignore Stop stdout, and Codex and Muse Code reject Stop additionalContext.
+ * A tool missing from this list loses nothing worse than a hint delivered one
+ * prompt late, while a tool wrongly on it loses the hint outright: Codex ids
+ * missing from the old deny-list lost it twice over (#719). So the list holds
+ * only tools whose Stop handling has been confirmed, and a new tool starts out
+ * stashing.
  *
  * Matched against the raw, lowercase tool literal passed through hook dispatch
  * (not run through normalizeAgentType), which is why every id of a family has
- * to be listed. `codex-internal` and `tcodex` run the same Codex and were
- * missing, so their users lost the hint twice over: Codex rejected the Stop
- * payload and the stash that would have recovered it never ran (#719).
- *
- * A future variant id (e.g. "codebuddy-internal") would miss this Set the same
- * way, so add such variants here explicitly.
+ * to be listed.
  */
-export const STOP_STDOUT_UNSUPPORTED_TOOLS = new Set<string>([
-  'codebuddy',
-  'workbuddy',
-  ...CODEX_TOOL_IDS,
+const STOP_STDOUT_TOOLS = new Set<string>([
+  'claude',
+  'claude-internal',
+  'tclaude',
+  'cursor',
+  'copilot',
+  'qoder',
+  'qoder-cn',
+  'zcode',
+  'omp',
+  'pi',
+  'opencode',
+  'dsh',
 ]);
 
 /**
- * Membership test for the set above.
+ * Whether `tool`'s Stop hook cannot take the Stop payload (see
+ * `STOP_STDOUT_TOOLS`). A missing tool is Claude Code, which the legacy
+ * `contribute-check` command assumes too.
  *
  * Lowercases first: `--tool` reaches the handlers exactly as the installed hook
- * command spelled it (`src/builtin-hooks.ts`), and a capitalised id would
- * otherwise miss the set and take the Stop path its host rejects.
+ * command spelled it (`src/builtin-hooks.ts`).
  */
 export function stopStdoutUnsupported(tool: string | undefined): boolean {
-  return STOP_STDOUT_UNSUPPORTED_TOOLS.has((tool ?? '').toLowerCase());
+  return !STOP_STDOUT_TOOLS.has((tool ?? 'claude').toLowerCase());
 }

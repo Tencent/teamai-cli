@@ -152,11 +152,13 @@ For GitHub/GitLab, `teamai init` installs any helper CLI it needs automatically.
 
 ## Step 4 — Decide the scope (ASK)
 
-One choice — project-only or whole machine?
+One choice — this workspace or the whole machine?
 
-- Default (project): resources land in the current project's `.claude/` etc.
-  `cd` into the project first.
+- Default (workspace): resources land in the current workspace's `.claude/` etc.
+  `cd` into the workspace first.
 - Whole machine: add `--scope user` so every project gets the team resources.
+- A folder holding several repos (a workspace): set up each repo, then run the
+  same `init` in the folder. It also receives what each repo inside selects.
 
 (The repo name was already chosen when the user created the repo in Step 2c —
 suggested form `<team-name>-teamai`.)
@@ -175,7 +177,7 @@ non-interactive run, ask first and pass `--project`: without it, init keeps
 waiting for a choice.
 
 ```bash
-# project scope (default) — run from inside the project directory
+# workspace scope (default) — run from inside the project directory
 teamai init https://<platform>/<org>/<repo-name>
 
 # or whole machine
@@ -233,23 +235,17 @@ expected to show hooks installed; others are skipped by design or not yet suppor
 which is normal. Full table in the troubleshooting reference
 (`"$(teamai skill path core)/references/troubleshooting.md"`), section "Which tools actually get hooks".
 
-## Step 7 — Grant members repo access (required before they can join)
+## Step 7 — Grant members branch access (required before they can join)
 
-TeamAI has **no permission model of its own** — it rides the Git platform's
-access control. After you initialize the repo, **each member must be granted
-read/write access to it on the platform website**, or their `teamai init` / `pull`
-/ `push` will fail with a permission error.
+TeamAI uses the Git host's access control. After the repo exists, each member
+needs permission to clone it and to push branches. Leave the default branch
+protected. They open pull requests against it.
 
-Tell the admin (in their language) to add every member on the repo's website:
+`teamai push` pushes a feature branch and opens a pull request. Reports and
+learnings use the branches `teamai-reports` and `teamai-learnings`.
 
-- **Tencent TGit:** repo → Members → add each member with at
-  least **Developer** (read/write) access.
-- **GitHub:** repo → Settings → Collaborators → add with **Write**.
-- **GitLab:** repo → Settings → Members → add with **Developer** or above.
-- **CNB:** repo → members → grant read/write.
-
-Do this **before** handing off the invite line below — otherwise the member hits a
-"permission denied / can't clone" error on their very first step.
+Do this before handing off the invite line below. Without branch access,
+`teamai init` or `teamai push` fails with a permission error.
 
 ## Step 8 — Hand off to members
 
@@ -267,12 +263,12 @@ carries counts + tool names only, on a separate branch of that same repo.)
    URL filled in. The `/teamai` prefix stays as-is; translate the rest:
    `/teamai Help me join my team's TeamAI, repo URL is <URL>`
    Tell them to send the URL + this line to each member.
-3. Remind them (in their language): a member's `teamai init` ends with a pull, so
-   the team's resources are in place when it exits (in project scope, for each
-   tool named with `--agent` or picked in init's tool picker; otherwise a tool's
-   directory fills when the
-   member first opens that tool in the project). Resources the team adds later
-   arrive at the next session start.
+3. Remind them (in their language): a member's `teamai init` does not copy team
+   resources. They arrive on the next session start, or when the member runs
+   `teamai pull`. In workspace scope, init creates a tool directory only for a tool
+   named with `--agent` or picked in init's tool picker; otherwise that directory
+   appears when the member first opens that tool in the project. Resources the
+   team adds later arrive at the next session start.
 
 ## Step 9 — What's next (guide them, don't just list commands)
 
@@ -294,7 +290,9 @@ day-to-day work — they can keep letting the AI run things for them:
   (`teamai skill get share`) takes over. (Only once recall is on — off by default;
   turn it on team-wide with `sharing.recall.enabled: true` in `teamai.yaml`, then
   `teamai push`. Never on a read-only HTTP source, or while a member's teamai
-  config cannot be loaded.)
+  config cannot be loaded. A team that works in English also sets `language: en`
+  in that file so the recall rule and the TodoWrite and merged-MR hints are
+  English only; omit it, or set `zh`, to keep the historical bilingual text.)
 
 Mention the underlying commands (`teamai push`, `teamai roles`, …) only as a note
 for users who *do* want them — the primary path is re-invoking `/teamai`.

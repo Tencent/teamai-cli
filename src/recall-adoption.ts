@@ -368,6 +368,53 @@ export async function recalledKeyOf(config: LocalConfig, sessionId: string): Pro
   return (printed) => keys.get(pathKey(printed));
 }
 
+/**
+ * The `File:` path `sessionId`'s runs printed for a recalled doc, looked up by
+ * the vote key its run recorded (`learnings/setup`, `redis-timeout`) or by the
+ * `File:` basename the transcript parser names it (`setup`, `redis-timeout`);
+ * undefined when none of the session's runs printed it, or when a basename is
+ * ambiguous (see below).
+ *
+ * The upvote judge grounds its verdict on each recalled doc's real content,
+ * read from this path. When recall ran inside a subagent (the recommended
+ * path), the main transcript carries only the `recalled-doc-ids` comment — not
+ * the `File:` lines — so the parser cannot supply the path and the judge would
+ * drop every candidate as ungrounded. The recall log always has the path the
+ * run printed, so the handler backfills from here (#723).
+ *
+ * The id the judge passes is the transcript parser's form: a `File:` basename
+ * (`setup`), via transcript-parser's extractRecalledDocIds. A basename is NOT
+ * unique — a session can recall both `learnings/setup.md` and
+ * `docs/learnings/setup.md` — so an ambiguous basename (two distinct recalled
+ * paths) resolves to undefined: the candidate stays ungrounded rather than be
+ * judged against, and credited to, the wrong doc. Only when the id is not a
+ * known basename at all does it fall back to an exact vote-key match, for a
+ * caller that already holds the full key.
+ */
+export async function recalledPathOf(config: LocalConfig, sessionId: string): Promise<(id: string) => string | undefined> {
+  const index = indexLog(await readRecallLog(config));
+  const { runs } = viewRoot(index, index.rootOf(sessionId));
+  // basename → the distinct docs the session recalled under it, keyed by the
+  // normalized path (pathKey, as recalledKeyOf keys its map) so one doc printed
+  // two equivalent ways is not counted as two; the value is the readable path.
+  // Only a basename with exactly one distinct doc resolves unambiguously.
+  const docsByBasename = new Map<string, Map<string, string>>();
+  // Exact vote key → path (keys are unique), a fallback for a full-key id.
+  const byKey = new Map<string, string>();
+  for (const r of runs) {
+    for (const d of r.docs) {
+      if (!byKey.has(d.key)) byKey.set(d.key, d.path);
+      const base = path.basename(d.path).replace(/\.md$/i, '');
+      (docsByBasename.get(base) ?? docsByBasename.set(base, new Map()).get(base)!).set(pathKey(d.path), d.path);
+    }
+  }
+  return (id) => {
+    const docs = docsByBasename.get(id);
+    if (docs) return docs.size === 1 ? [...docs.values()][0] : undefined;
+    return byKey.get(id);
+  };
+}
+
 /** One root session's recall activity, as `teamai stats` shows it. */
 export interface RecallSessionSummary {
   /** The root session: a linked child's runs and reads count under it. */

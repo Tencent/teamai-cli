@@ -105,7 +105,7 @@ import {
   type TeamaiConfig,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
-import { completeWorktreeList, gitCommonDir, isLiveCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
+import { checkoutForProjectAnchor, gitCommonDir, isLiveCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
 import {
   ensure as ensureGitExclude, gitExcludeFile, gitTracks, gitUntracked, remove as removeGitExclude, report as reportGitExclude, stateHomeRecord,
   sync as syncGitExclude, type GitExcludeOwner,
@@ -1279,7 +1279,7 @@ async function promptForProjectBinding(
  * Persist a ClawPro binding decision for the current checkout.
  *
  * Binding is a per-project decision, so it is recorded on the `projectAnchor`
- * (the main checkout, shared by a repo and all of its git worktrees — issue
+ * (the repository identity, shared by a repo and all of its git worktrees — issue
  * #374 / #387). It is ALSO stamped on the current `workspaceRoot` so this
  * checkout is reported with the project_id immediately and its resources land
  * in the current worktree (#387's workspaceRoot model — every AI tool discovers
@@ -1315,7 +1315,7 @@ async function persistWorkspaceBinding(
 }
 
 /**
- * If the current checkout is an unbound git worktree whose main checkout
+ * If the current checkout is unbound and its project identity
  * (`projectAnchor`) is already bound or skipped, copy that decision onto the
  * current `workspaceRoot` and report success — so a repo is never re-prompted
  * for binding once per new worktree (a `--skip` on the main checkout silences
@@ -1498,17 +1498,29 @@ function isEphemeralTaskDir(dir: string): boolean {
   return /^\d{4}-\d{2}-\d{2}/.test(segments[wbIdx + 1]);
 }
 
+async function isUserHomeDir(dir: string): Promise<boolean> {
+  return await canonicalizeWorkspacePath(dir) === await canonicalizeWorkspacePath(getUserHome());
+}
+
+/**
+ * HOME is never a workspace: it is the user scope's root, so a project scope
+ * there would scan and deliver into the same tool dirs as the user scope. A
+ * session opened in HOME has no workspace; under a dotfiles repo rooted at
+ * HOME, a subdirectory is its own workspace rather than HOME.
+ */
 async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
   if (!cwd) return undefined;
   const absolute = path.resolve(cwd);
   if (isEphemeralTaskDir(absolute)) return undefined;
+  if (await isUserHomeDir(absolute)) return undefined;
   try {
     const { stdout } = await execFileAsync('git', ['-C', absolute, 'rev-parse', '--show-toplevel']);
     const root = stdout.trim();
-    return await canonicalizeWorkspacePath(root || absolute);
+    if (root && !await isUserHomeDir(root)) return await canonicalizeWorkspacePath(root);
   } catch {
-    return await canonicalizeWorkspacePath(absolute);
+    // not inside a git repo
   }
+  return await canonicalizeWorkspacePath(absolute);
 }
 
 interface ReportedResource {
@@ -1755,6 +1767,8 @@ async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise
  * (full-sync snapshot) could never drop it. This prunes such stale
  * entries in place. Applies to skipped ('__skipped__', projectId 0)
  * entries too — a deleted directory should not leave a permanent sentinel.
+ * A binding on HOME, which earlier releases could record, is pruned as well:
+ * HOME is never a workspace (see resolveWorkspacePath).
  *
  * @param config - Loaded local-agent config; its workspaceBindings map is mutated in place.
  * @returns True if at least one binding was removed.
@@ -1762,6 +1776,11 @@ async function scanModelsFromDisk(tool: string, workspacePath?: string): Promise
 export async function pruneDeadWorkspaceBindings(config: LocalAgentConfig): Promise<boolean> {
   let changed = false;
   for (const workspacePath of Object.keys(config.workspaceBindings)) {
+    if (await isUserHomeDir(workspacePath)) {
+      delete config.workspaceBindings[workspacePath];
+      changed = true;
+      continue;
+    }
     try {
       await fs.promises.stat(workspacePath);
     } catch (error) {
@@ -2454,10 +2473,14 @@ function recordPromptReach(scope: ManifestScope, reached: readonly string[]): vo
  * Whether `workspacePath` is a live checkout (#915). A directory a removed
  * worktree left inside another checkout is not, though git places it there;
  * nor is a subdirectory the agent keyed by its cwd while git could not answer.
+ * A workspace with its own `.git` that git cannot open is unknown and counts as
+ * live: git failed there rather than found none (nearestGitEntry), so its
+ * lines stay.
  */
 async function isLiveWorkspace(workspacePath: string): Promise<boolean> {
   const commonDir = await gitCommonDir(workspacePath);
-  return commonDir !== null && isLiveCheckout(workspacePath, commonDir);
+  if (commonDir === null) return fse.pathExists(path.join(workspacePath, '.git'));
+  return isLiveCheckout(workspacePath, commonDir);
 }
 
 /** The copies the manifest records in one project workspace, for each tool it names (#915). */
@@ -3112,10 +3135,16 @@ export async function localAgentCheckouts(): Promise<string[]> {
   const manifest = (await readJson<ModelConfigManifest>(getModelManifestPath()).catch(() => null)) ?? {};
   const installed = Object.keys((await loadManifest().catch(() => null))?.scopes ?? {}).flatMap((key) => parseScopeKey(key).workspacePath ?? []);
   const workspaces = new Set([...Object.keys(config?.workspaceBindings ?? {}), ...Object.keys(manifest.workspaceModels ?? {}), ...installed]);
-  const roots = new Set(workspaces);
+  const roots = new Set<string>();
   for (const workspace of workspaces) {
-    const commonDir = await gitCommonDir(workspace);
-    for (const root of commonDir ? await completeWorktreeList(workspace, commonDir) ?? [] : []) roots.add(root);
+    const checkout = await pathExists(path.join(workspace, '.git')) ? workspace
+      : await checkoutForProjectAnchor(workspace);
+    if (!checkout) {
+      if (!await gitCommonDir(workspace)) roots.add(workspace);
+      continue;
+    }
+    roots.add(checkout);
+    for (const root of await listWorktrees(checkout)) roots.add(root);
   }
   return [...roots];
 }

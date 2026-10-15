@@ -101,7 +101,7 @@ describe('models commands', () => {
       '  Gateway: https://other.example.test',
       '  Models:',
       '    openai-responses: glm-5.3',
-      '  Agents: codex, opencode, pi, omp',
+      '  Agents: codex, opencode, pi, omp, muse',
       '  Active: none',
     ]);
     expect(await captureOutput(() => modelsList('mine'))).toEqual(mine);

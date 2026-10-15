@@ -14,7 +14,23 @@ import type { LocalConfig, UserVotesV2 } from '../types.js';
 
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
-  spawn: vi.fn(() => ({ on: vi.fn(), stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) }, unref: vi.fn() })),
+  // A foreground dispatch with a background handler also spawns the detached
+  // child for real (hook-dispatch-cli.ts's spawnBackground): on win32 that
+  // goes through the WMI escape first, whose promise only settles via the
+  // process's own 'close'/'error' event. A bare `on: vi.fn()` never fires it,
+  // hanging every such test until timeout -- so this fires 'close' with a
+  // success code, same as hook-dispatch-cli.test.ts's fakePowerShell helper.
+  spawn: vi.fn(() => {
+    const child = {
+      stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) },
+      on(event: string, cb: (...args: unknown[]) => void) {
+        if (event === 'close') setTimeout(() => cb(0), 0);
+        return child;
+      },
+      unref: vi.fn(),
+    };
+    return child;
+  }),
 }));
 vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined) }));
 vi.mock('../update.js', async (importOriginal) => ({
@@ -25,7 +41,9 @@ vi.mock('../update.js', async (importOriginal) => ({
 vi.mock('../votes-judge.js', () => ({ judgeAdoption: vi.fn(async (_reply: string, ids: string[]) => ids) }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
 // Each team's reports checkout sits beside its clone, where getReportsDir puts it;
-// a write lands there instead of being pushed.
+// a write lands there instead of being pushed. The mock publishes immediately:
+// the write lands, `onDelivered` hooks run, and "origin" is that same
+// directory's current content.
 vi.mock('../utils/reports-branch.js', async () => {
   const nodePath = await import('node:path');
   const nodeFs = await import('node:fs');
@@ -35,7 +53,18 @@ vi.mock('../utils/reports-branch.js', async () => {
     return dir;
   };
   return {
-    updateReports: vi.fn(async (config: LocalConfig, write: (wt: string) => Promise<unknown>) => (await write(checkout(config))) !== null),
+    updateReports: vi.fn(async (
+      config: LocalConfig,
+      write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<unknown>,
+    ) => {
+      const delivered: (() => Promise<void>)[] = [];
+      const change = await write(checkout(config), { onDelivered: (fn) => { delivered.push(fn); } });
+      if (change != null) for (const fn of delivered) await fn();
+      return { status: change != null ? 'published' : 'already-present' };
+    }),
+    readReportsOriginFile: vi.fn(async (wt: string, relPath: string) => {
+      try { return nodeFs.readFileSync(nodePath.join(wt, relPath), 'utf8'); } catch { return null; }
+    }),
     ensureReportsWorktree: vi.fn(async (config: LocalConfig) => checkout(config)),
     readableReportsWorktree: vi.fn(async (config: LocalConfig) => checkout(config)),
     // This project's own checkout, so its team votes count.

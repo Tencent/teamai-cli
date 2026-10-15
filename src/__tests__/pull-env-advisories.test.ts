@@ -305,7 +305,7 @@ describe('pull advisories for team secrets', () => {
       const exported = await envSh();
       expect(exported).toContain("export GITLAB_HOST='gitlab.dave.example'");
       expect(exported).not.toContain('API_URL');
-      expect(await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf8')).toBe('GITLAB_HOST=gitlab.dave.example\n');
+      expect(JSON.parse(await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf8'))).toEqual({ GITLAB_HOST: 'gitlab.dave.example' });
       expect(printed().some((message) => message.includes('GITLAB_HOST') || message.includes('API_URL'))).toBe(false);
     });
   });

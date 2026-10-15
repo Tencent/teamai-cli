@@ -36,3 +36,18 @@ export function sameEnvName(names: Iterable<string>, key: string): string | unde
   for (const other of names) if (envName(other) === name) return other;
   return undefined;
 }
+
+/**
+ * A shell `case` pattern that matches the names `envName` makes the same as
+ * `key`: every spelling of it on Windows (`[tT][oO]...`, the key's own letter
+ * first), the key itself elsewhere. `envNamePatternKey` reads the key back.
+ */
+export function envNamePattern(key: string): string {
+  if (process.platform !== 'win32') return key;
+  return key.replace(/[A-Za-z]/g, (letter) => `[${letter}${letter === letter.toUpperCase() ? letter.toLowerCase() : letter.toUpperCase()}]`);
+}
+
+/** The key `envNamePattern` made `pattern` from. */
+export function envNamePatternKey(pattern: string): string {
+  return pattern.replace(/\[(.)[^\]]*\]/g, '$1');
+}

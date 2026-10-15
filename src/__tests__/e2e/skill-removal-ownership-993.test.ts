@@ -113,6 +113,7 @@ function machine(base: string, files: Record<string, string>, businessFiles: Rec
     return r;
   };
   ok(['init', url, '--provider', 'git', '--agent', 'claude,codex', '--scope', 'project', '--force']);
+  ok(['pull']);
   return { dir: realDir, run: teamai, ok };
 }
 

@@ -564,7 +564,8 @@ export async function trackSlashCommand(toolArg?: string): Promise<void> {
 
   // Extract all skill names after "/" in the prompt
   // (e.g. "/plan-eng-review some args /tdd /code-review" → ["plan-eng-review", "tdd", "code-review"])
-  const matches = [...prompt.matchAll(/\/([a-zA-Z0-9_\-:.]+)/g)];
+  // Match whole whitespace-delimited tokens, never segments of paths or URLs.
+  const matches = [...prompt.matchAll(/(?:^|\s)\/([a-zA-Z0-9_\-:.]+)(?=\s|$)/g)];
   if (matches.length === 0) {
     log.debug('Could not extract skill name from slash command');
     return;

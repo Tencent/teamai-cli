@@ -285,6 +285,26 @@ describe('TeamaiConfigSchema autoUpdate', () => {
   });
 });
 
+describe('TeamaiConfigSchema language (#1014)', () => {
+  const base = {
+    team: 'test-team',
+    repo: 'https://git.woa.com/test/repo.git',
+  };
+
+  it('leaves language undefined when omitted', () => {
+    expect(TeamaiConfigSchema.parse(base).language).toBeUndefined();
+  });
+
+  it('accepts language en and zh', () => {
+    expect(TeamaiConfigSchema.parse({ ...base, language: 'en' }).language).toBe('en');
+    expect(TeamaiConfigSchema.parse({ ...base, language: 'zh' }).language).toBe('zh');
+  });
+
+  it('rejects any other language value', () => {
+    expect(() => TeamaiConfigSchema.parse({ ...base, language: 'english' })).toThrow();
+  });
+});
+
 describe('LocalConfigSchema updatePolicy', () => {
   const baseConfig = {
     repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/team/repo.git' },

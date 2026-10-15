@@ -1459,6 +1459,59 @@ describe('parseHookEvent', () => {
   });
 });
 
+// Records trimmed from a Muse Code 1.4.6 session.jsonl.
+describe('parseHookEvent: Muse Code session tokens', () => {
+  const sessionId = '01a131de-7a62-70c3-bc37-60b3e2c6575b';
+  const usageRecord = (family: string, input: number, output: number, cached: number) => JSON.stringify({
+    schema_version: 1,
+    stream: { kind: 'session', id: sessionId },
+    record_type: 'event',
+    payload_type: 'runtime.session',
+    payload: {
+      kind: 'run',
+      event: {
+        kind: 'goal_usage_attribution',
+        record: {
+          usage_family: family,
+          quantity: { unit: 'tokens', reported: family === 'provider', input_tokens: input, output_tokens: output, cached_tokens: cached, reasoning_tokens: 0 },
+          owner: { requester_kind: 'main', session_id: sessionId, owner_type: 'main_root' },
+        },
+      },
+    },
+  });
+  const sessionDir = () => path.join(tmpDir, '.local', 'share', 'muse', 'sessions', '2026', '10', '12', sessionId);
+  const stop = () => parseHookEvent(JSON.stringify({
+    hook_event_name: 'Stop', session_id: sessionId, cwd: '/work/project', transcript_path: null,
+  }), 'muse');
+
+  it('sums the main log usage into session tokens, cached input apart', async () => {
+    fs.mkdirSync(path.join(sessionDir(), 'subagent', 'child-1'), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir(), 'session.jsonl'), [
+      JSON.stringify({ schema_version: 1, stream: { kind: 'session', id: sessionId }, payload: { kind: 'user_message', text: 'hello' } }),
+      usageRecord('provider', 111, 22, 10),
+      usageRecord('tool', 0, 0, 0),
+      usageRecord('provider', 111, 22, 0),
+    ].join('\n') + '\n');
+    fs.writeFileSync(path.join(sessionDir(), 'subagent', 'child-1', 'session.jsonl'), usageRecord('provider', 5000, 500, 0) + '\n');
+
+    const event = await stop();
+
+    expect(event).toEqual(expect.objectContaining({
+      type: 'stop',
+      tool: 'muse',
+      tokens: { input: 212, output: 44, cacheRead: 10, cacheCreation: 0 },
+      tokenScope: 'session',
+    }));
+  });
+
+  it('records no tokens when the session has no log', async () => {
+    const event = await stop();
+
+    expect(event?.type).toBe('stop');
+    expect(event?.tokens).toBeUndefined();
+  });
+});
+
 describe('local request log', () => {
   it('deduplicates requests and prunes details older than 90 days', async () => {
     const old = { id: 'old', timestamp: '2026-05-01T00:00:00Z', model: 'claude-sonnet-5', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costMicros: 1, priceVersion: 'v1' };

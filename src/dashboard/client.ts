@@ -11,19 +11,20 @@ const t = text => language === 'zh-CN' ? (Object.hasOwn(messages,text) ? message
 const e = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const label = text => e(t(text));
 const escapeHtml = e;
-const pageNames = { overview: 'Overview', execution: 'Team Execution', context: 'Team Context', improvement: 'Team Improvement' };
+const pageNames = { overview: 'Overview', execution: 'Team Execution', context: 'Team Context', resources: 'Resources', improvement: 'Team Improvement' };
 const statusNames = { running:'Working', waiting_for_input:'Your turn', error:'Error', idle:'Idle', stopped:'Ended' };
 let page = Object.hasOwn(pageNames,location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
 let sessions = [], haveSessions = false, connected = false, trends = null, kb = null;
 let trendError = false, kbError = false, selectedSession = null, selectedSnapshot = null, focusBeforeDialog = null;
 let trendLoading = false, kbLoading = false, eventSource = null, reconnectTimer = null, fallbackGeneration = 0;
+let rules = null, rulesError = false, rulesLoading = false;
 let workspaceId = '', workspaceGeneration = 0, workspaces = [];
 const api = route => route + (workspaceId ? '?workspace=' + encodeURIComponent(workspaceId) : '');
-function workspaceLabel(w) { return w.scope==='user'?label('User scope'):w.scope==='unassigned'?label('Unassigned sessions'):e(w.label)+' · '+label('Project'); }
+function workspaceLabel(w) { return w.scope==='user'?label('User scope'):w.scope==='unassigned'?label('Unassigned sessions'):e(w.label)+' · '+label('Workspace'); }
 function workspaceOptions() { $('workspace').innerHTML=workspaces.map(w=>'<option value="'+e(w.id)+'">'+workspaceLabel(w)+'</option>').join('');$('workspace').value=workspaceId;const w=workspaces.find(w=>w.id===workspaceId);$('workspace-root').textContent=w?w.root:''; }
 const icons = {
  overview:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
- execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
+ execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',resources:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
 };
 const icon = key => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'+icons[key]+'</svg>';
 const link = (key, text) => '<button class="link" data-page="'+key+'">'+label(text)+' →</button>';
@@ -64,7 +65,7 @@ function trendPanel() {
 }
 function sessionTable(data) {
  if(!haveSessions) return '<div class="empty" role="status">'+label('Loading local sessions…')+'</div>';
- if(!data.length) return '<section class="panel"><div class="empty"><h2>'+label(sessions.length?'No sessions match these filters.':'No active sessions')+'</h2><p>'+label('Start a supported AI tool in a TeamAI project. Dashboard hooks report sessions automatically.')+'</p></div></section>';
+ if(!data.length) return '<section class="panel"><div class="empty"><h2>'+label(sessions.length?'No sessions match these filters.':'No active sessions')+'</h2><p>'+label('Start a supported AI tool in a TeamAI workspace. Dashboard hooks report sessions automatically.')+'</p></div></section>';
  const groups=[['Active',data.filter(s=>s.status!=='stopped')],['Recently Ended',data.filter(s=>s.status==='stopped')]];
  return groups.filter(([,rows])=>rows.length).map(([title,rows])=>'<section class="panel sessions"><div class="panelhead"><h2>'+label(title)+' <span class="count">'+number(rows.length)+'</span></h2><span class="label">'+label('Local sessions')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['FIRST USER PROMPT / DIRECTORY','AI TOOL','STATUS','PROMPTS','INTERVENTIONS','Tokens',''].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(s=>'<tr class="'+(s.status==='stopped'?'row-ended':'')+'"><td><span data-verbatim>'+e(s.promptSummary || t('No prompt captured'))+'</span><small data-verbatim>'+e(s.cwd)+'</small>'+(s.prompts?.length>1?'<span class="session-excerpt"><b>'+label('Latest user prompt')+': </b><span data-verbatim>'+e(s.prompts.at(-1))+'</span></span>':'')+(s.stoppedOutput?'<span class="session-excerpt"><b>'+label('AI output')+': </b><span data-verbatim>'+e(s.stoppedOutput)+'</span></span>':'')+'<small>'+e(duration(s))+' · '+e(ago(s.lastActivity))+' · <span data-verbatim>'+e(s.lastTool)+'</span></small></td><td data-verbatim>'+e(s.tool)+'</td><td class="'+(['error','waiting_for_input'].includes(s.status)?'amber':s.status==='running'?'good':'')+'">'+status(s)+'</td><td>'+number(s.promptCount)+'</td><td title="'+e(t('Interrupt')+': '+(s.interventions?.interrupt||0)+' · '+t('Tool reject')+': '+(s.interventions?.toolReject||0)+' · '+t('Correction')+': '+(s.interventions?.correction||0))+'">'+number(count(s))+'</td><td title="'+e(t('Input')+': '+(s.tokens?.input||0)+' · '+t('Output')+': '+(s.tokens?.output||0)+' · '+t('Cache read')+': '+(s.tokens?.cacheRead||0)+' · '+t('Cache creation')+': '+(s.tokens?.cacheCreation||0))+'">'+number(tokens(s))+'</td><td><button class="link" data-session="'+e(s.sessionId)+'">'+label('Details')+' ↗<span class="sr-only"> '+e(s.promptSummary)+'</span></button></td></tr>').join('')+'</tbody></table></div></section>').join('');
 }
@@ -73,6 +74,20 @@ function knowledge() {
  return '<div class="actions">'+source()+'<button class="link" data-retry="kb">'+label('Refresh report')+'</button>'+link('improvement','View maintenance')+'</div>'+(kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+(kb?'<div class="report" id="kb-content">'+kb.context+'</div>':kbError?'':'<div class="empty">'+label('Loading…')+'</div>');
 }
 function improvement() { return trendPanel()+'<div class="actions">'+source()+'<button class="link" data-retry="kb">'+label('Refresh report')+'</button></div>'+(kbError?errorPanel('Could not refresh KB Health. Any displayed report is the last successful result.','kb'):'')+(kb?'<div class="report" id="kb-content">'+kb.maintenance+'</div>':'<div class="empty">'+label('Loading…')+'</div>'); }
+// Rules the current workspace receives, and why the rest stay out (#1028).
+function ruleState(r) {
+ if(r.delivered)return '<span class="good">'+label('Delivered')+'</span>';
+ var reasons={namespace:'Outside the active namespaces',tags:'Omitted by tag subscriptions',replaced:'Replaced by an active namespace rule'};
+ return '<span class="amber">'+label('Not delivered')+'</span><small>'+label(reasons[r.undeliveredReason]||'')+'</small>';
+}
+function resources() {
+ if(rulesError)return errorPanel('Could not load rules.','rules');
+ if(!rules)return '<div class="empty" role="status">'+label('Loading rules…')+'</div>';
+ if(!rules.configured)return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
+ if(!rules.rules.length)return '<section class="panel"><div class="empty"><h2>'+label('No rules in the team repo')+'</h2></div></section>';
+ var delivered=rules.rules.filter(r=>r.delivered).length;
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Rules')+' <span class="count">'+number(rules.rules.length)+'</span></h2><span class="label">'+number(delivered)+' '+label('delivered to this workspace')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['RULE','NAMESPACE','DESCRIPTION','DELIVERY'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rules.rules.map(r=>'<tr><td data-verbatim>'+e(r.name)+'</td><td>'+(r.namespace?e(r.namespace):label('Root'))+'</td><td>'+e(r.description||'—')+'</td><td>'+ruleState(r)+'</td></tr>').join('')+'</tbody></table></div></section>';
+}
 // Translate static report labels only; never translate knowledge titles, authors, commands or session text.
 function localizeReport() {
  const root=$('kb-content');if(!root)return;
@@ -94,7 +109,7 @@ function render() {
  $('nav').innerHTML=Object.keys(pageNames).map(key=>'<button data-page="'+key+'" class="'+(page===key?'active':'')+'" '+(page===key?'aria-current="page"':'')+'>'+icon(key)+label(pageNames[key])+'</button>').join('');
  $('title').textContent=t(pageNames[page]);$('crumb').textContent=t(pageNames[page]);
  document.querySelector('.filters').hidden=page!=='execution';
- $('view').innerHTML=({overview,execution,context:knowledge,improvement})[page]();
+ $('view').innerHTML=({overview,execution,context:knowledge,resources,improvement})[page]();
  localizeReport();connection();
  document.querySelectorAll('#kb-content details').forEach(d=>{if(opened.includes([...d.parentElement.children].indexOf(d)))d.open=true;});
  if(focusKey) [...document.querySelectorAll('[data-session]')].find(el=>el.dataset.session===focusKey)?.focus({preventScroll:true});
@@ -206,6 +221,7 @@ function showDetails(sessionId) {
 async function json(url) { const response=await fetch(url,{signal:AbortSignal.timeout(15000)});if(!response.ok)throw Error('HTTP '+response.status);return response.json(); }
 async function loadTrends() { if(trendLoading)return;const generation=workspaceGeneration;trendLoading=true;try{const data=await json(api('/api/trends'));if(generation===workspaceGeneration){trends=data;trendError=false;}}catch{if(generation===workspaceGeneration)trendError=true;}finally{if(generation===workspaceGeneration){trendLoading=false;if(['overview','improvement'].includes(page))render();}} }
 async function loadKb() { if(kbLoading)return;const generation=workspaceGeneration;kbLoading=true;try{const data=await json(api('/api/context'));if(generation===workspaceGeneration){kb=data;kbError=false;}}catch{if(generation===workspaceGeneration)kbError=true;}finally{if(generation===workspaceGeneration){kbLoading=false;render();}} }
+async function loadRules() { if(rulesLoading)return;const generation=workspaceGeneration;rulesLoading=true;try{const data=await json(api('/api/resources/rules'));if(generation===workspaceGeneration){rules=data;rulesError=false;}}catch{if(generation===workspaceGeneration)rulesError=true;}finally{if(generation===workspaceGeneration){rulesLoading=false;if(page==='resources')render();}} }
 function receive(data) {
  if(!Array.isArray(data))return;
  if(haveSessions && JSON.stringify(sessions)===JSON.stringify(data))return;
@@ -253,7 +269,7 @@ document.addEventListener('click',event=>{
  if(nav){const key=nav.dataset.page;location.hash=key;if(key===page){render();$('title').focus();}}
  if(session)showDetails(session.dataset.session);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
- if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
 });
 $('title').tabIndex=-1;
 window.addEventListener('hashchange',()=>{page=Object.hasOwn(pageNames,location.hash.slice(1))?location.hash.slice(1):'overview';render();$('title').focus();});
@@ -262,11 +278,12 @@ function switchWorkspace(id) {
  workspaceGeneration++;fallbackGeneration++;workspaceId=id;save('teamai-dashboard-workspace',id);
  eventSource?.close();clearTimeout(reconnectTimer);$('session-dialog').close();selectedSession=null;selectedSnapshot=null;
  sessions=[];haveSessions=false;connected=false;trends=null;kb=null;trendLoading=false;kbLoading=false;trendError=false;kbError=false;
- $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadKb();
+ rules=null;rulesError=false;rulesLoading=false;
+ $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadKb();loadRules();
 }
 $('workspace').onchange=()=>switchWorkspace($('workspace').value);
 preferences();
-json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadKb();});
+json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadKb();loadRules();});
 setInterval(loadTrends,30000);
 // Reconcile idle/ended expiry even when no hook emits another SSE event.
 setInterval(()=>{

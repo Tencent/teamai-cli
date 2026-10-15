@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
+import type { WorkspaceChildren } from './workspace-children.js';
 
 const DEFAULT_COPILOT_HOME = '.copilot';
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
@@ -61,6 +62,28 @@ export const ToolPathsSchema = z.object({
 export const ScopeEnum = z.enum(['user', 'project']);
 export type Scope = z.infer<typeof ScopeEnum>;
 
+/**
+ * The install scope a member names in `--scope` and in config.yaml (#1099).
+ * `workspace` is the current name of the scope rooted at a directory; `project`
+ * is its older name and stays accepted. Both parse to the internal `project`,
+ * so code compares against one value; the serializer writes `workspace`.
+ */
+export const InstallScopeSchema = z
+  .enum(['user', 'workspace', 'project'])
+  .transform((scope): Scope => (scope === 'workspace' ? 'project' : scope));
+
+/** The value of a `--scope` option. Every command that takes one reads it here. */
+export function parseInstallScope(value: string): Scope {
+  const parsed = InstallScopeSchema.safeParse(value);
+  if (!parsed.success) throw new Error(`Invalid scope "${value}". Use "workspace" or "user".`);
+  return parsed.data;
+}
+
+/** The name a member sees and config.yaml stores for an install scope. */
+export function installScopeName(scope: Scope): 'user' | 'workspace' {
+  return scope === 'project' ? 'workspace' : scope;
+}
+
 // ─── Team config (teamai.yaml) ───────────────────────────
 
 export const SharingConfigSchema = z.object({
@@ -103,6 +126,15 @@ export const SharingConfigSchema = z.object({
      *  knowledge sharing through their own review flow can turn the nudge off
      *  without disabling the rest of the Stop hook (update check, votes sync,
      *  dashboard reporting). */
+    enabled: z.boolean().default(true),
+  }).optional(),
+  // Optional (not .default) so existing TeamaiConfig literals stay valid; use
+  // isMrHintEnabled() for the resolved view.
+  mrHint: z.object({
+    /** Team default: whether the SessionStart hook tells members about MRs the
+     *  team merged recently. Kept separate from `contributeHint` (#988): a team
+     *  that routes knowledge sharing through its own review flow can drop the
+     *  MR summary while keeping the Stop hook's nudge, or the other way round. */
     enabled: z.boolean().default(true),
   }).optional(),
   // Optional (not .default) so existing TeamaiConfig literals stay valid, AND so
@@ -255,6 +287,23 @@ export function isContributeHintEnabled(
   return teamConfig.sharing?.contributeHint?.enabled ?? true;
 }
 
+/**
+ * Resolve whether the SessionStart MR hint is enabled: env kill switch >
+ * user override > team config > default (true).
+ *
+ * Deliberately not folded into isContributeHintEnabled: #988 keeps the MR hint
+ * separate from the share workflow, so neither switch may turn the other off.
+ */
+export function isMrHintEnabled(
+  localConfig: { mrHintEnabled?: boolean },
+  teamConfig: { sharing?: { mrHint?: { enabled?: boolean } } },
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env.TEAMAI_MR_HINT_DISABLED === '1') return false;
+  if (localConfig.mrHintEnabled !== undefined) return localConfig.mrHintEnabled;
+  return teamConfig.sharing?.mrHint?.enabled ?? true;
+}
+
 /** Resolve whether pull reports usage stats: user override > team config > default (true). */
 export function isUsageReportEnabled(
   localConfig: { usageReportEnabled?: boolean },
@@ -336,6 +385,11 @@ export const TEAMAI_SOURCES_DIR = path.join(getUserHome(), '.teamai', 'sources')
 export const ProviderNameSchema = z.enum(['tgit', 'github', 'cnb', 'gitlab', 'gitcode', 'git']);
 export type ProviderName = z.infer<typeof ProviderNameSchema>;
 
+/** One team-owned Node entrypoint. `path` is relative to the team repo root. */
+const TeamScriptSchema = z.object({
+  path: z.string().min(1),
+});
+
 export const TeamaiConfigBaseSchema = z.object({
   team: z.string(),
   description: z.string().default(''),
@@ -371,20 +425,34 @@ export const TeamaiConfigBaseSchema = z.object({
   /** Run `git submodule update --init` on pull so skills distributed as git
    * submodules are populated and kept current. Off by default. */
   submodules: z.boolean().optional(),
-  /** Team-owned scripts the CLI runs at defined points of a pull — repo-committed
-   * entrypoints, distinct from `sharing.hooks.requireTeamScripts` (the
-   * `~/.teamai/team-scripts/` trust boundary for hook commands). Every entry is
-   * optional, and older CLIs strip the unknown section instead of rejecting the
-   * file — so a team repo can adopt one before its members upgrade. */
+  /**
+   * Language of the agent-facing texts teamai injects: the built-in
+   * teamai-recall rule, the todowrite-hint, and the mr-hint.
+   * `en` is English only. `zh` or omitted keeps the historical bilingual
+   * text, byte for byte (#1014).
+   */
+  language: z.enum(['en', 'zh']).optional(),
+  /** Team-owned Node scripts. Distinct from `sharing.hooks.requireTeamScripts`
+   * (the `~/.teamai/team-scripts/` trust boundary for hook commands). Every
+   * entry is optional. An older CLI that only knows `postPull` strips the
+   * other keys instead of rejecting the file, so a team can add one before
+   * every member upgrades. Each `path` is relative to the team repo root and
+   * must stay inside it, symlinks included. */
   scripts: z.object({
-    /** Run at the end of a pull, after every sync step (resources,
-     * hooks, MCP, reports) has finished. `path` is a Node entrypoint (`.mjs`,
-     * `.js`, `.cjs`) relative to the team repo root, and must resolve inside it:
-     * a symlink leaving the clone is rejected, since this script runs on every
-     * member's machine. */
-    postPull: z.object({
-      path: z.string().min(1),
-    }).optional(),
+    /** During `teamai init`, after local config is saved and before hooks. */
+    preInit: TeamScriptSchema.optional(),
+    /** During `teamai init`, after hooks are installed. Init then syncs MCP. */
+    postInit: TeamScriptSchema.optional(),
+    /** At the start of a full pull, before that scope is synced. Not on an inline pull. */
+    prePull: TeamScriptSchema.optional(),
+    /** At the end of a full pull, after resources, hooks, MCP and reports. Not on an inline pull. */
+    postPull: TeamScriptSchema.optional(),
+    /**
+     * After the inline delivery that prepares a new checkout (a linked
+     * worktree, or a submodule's first checkout that already runs teamai's
+     * git hook), before that git command returns. Init does not run there.
+     */
+    postDeploy: TeamScriptSchema.optional(),
   }).optional(),
   // MCP paths are only set for tools whose config location has been verified.
   // Tools left without `mcp` are skipped by MCP sync rather than guessed at, so a
@@ -668,6 +736,21 @@ export const TeamaiConfigBaseSchema = z.object({
       mcpProject: 'opencode.json',
       userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
     },
+    // Muse Code (Meta, binary `muse`) keeps its user config in ~/.config/muse
+    // and reads user skills from ~/.config/muse/skills, ahead of the
+    // ~/.claude/skills and ~/.agents/skills it also scans. Hooks take Codex's
+    // shape: user hooks in the `hooks` block of ~/.config/muse/settings.json,
+    // which runs in every workspace, project hooks in <root>/.muse/hooks.json,
+    // which runs only in a trusted one.
+    muse: {
+      skills: '.agents/skills',
+      settings: '.muse/hooks.json',
+      // User MCP servers sit in the same settings.json. A project's come from
+      // the <root>/.mcp.json the claude target writes, as for tclaude.
+      mcp: '.config/muse/settings.json',
+      agents: '.agents/agents',
+      userScope: { skills: '.config/muse/skills', settings: '.config/muse/settings.json', agents: '.config/muse/agents' },
+    },
   }),
 });
 
@@ -751,8 +834,8 @@ export const LocalConfigSchema = z.object({
   provider: ProviderNameSchema.optional(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
   // Read-compat default for historical configs that omit `scope` (pre-project era).
-  // NOT the write default for `teamai init` — init defaults to project (issue #250).
-  scope: ScopeEnum.default('user'),
+  // NOT the write default for `teamai init` — init defaults to workspace (issue #250).
+  scope: InstallScopeSchema.default('user'),
   primaryRole: z.string().min(1).optional(),
   additionalRoles: z.array(z.string()).default([]),
   /**
@@ -780,6 +863,8 @@ export const LocalConfigSchema = z.object({
   gitExcludeEnabled: z.boolean().optional(),
   /** User-level override for the share-learnings hint. When set, takes precedence over team config. */
   contributeHintEnabled: z.boolean().optional(),
+  /** User-level override for the SessionStart MR hint. When set, takes precedence over team config. */
+  mrHintEnabled: z.boolean().optional(),
   /** Per-machine override of the team's `usageReport`. When set, takes
    *  precedence over the team config. Undefined defers to the team. */
   usageReportEnabled: z.boolean().optional(),
@@ -804,6 +889,10 @@ export const LocalConfigSchema = z.object({
   toolRoots: z.record(z.string(), z.string()).optional(),
   /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
   disabledAgents: z.array(z.string()).optional(),
+  /** Per-machine tool selection for locally executed workflow prompt steps. */
+  workflows: z.object({
+    tools: z.record(z.string(), z.string().min(1)).default({}),
+  }).optional(),
   /**
    * Per-machine map from a gateway/proxy model alias to a known Claude model
    * name, so cost/cache estimation works when the transcript records an opaque
@@ -833,8 +922,16 @@ export const LocalConfigSchema = z.object({
  * migration could not read the roles manifest, so whether this role-less config
  * holds a role is unknown for this run; `activeRoleIds` then matches no
  * role-scoped entry instead of every one. The next load re-decides it.
+ *
+ * `children` is runtime-only too: the children a workspace read this run
+ * (`readWorkspaceChildren`, #913). It is never written, so a workspace's
+ * config keeps its own selection only.
  */
-export type LocalConfig = z.infer<typeof LocalConfigSchema> & { dataHome?: string; roleUnresolved?: true };
+export type LocalConfig = z.infer<typeof LocalConfigSchema> & {
+  dataHome?: string;
+  roleUnresolved?: true;
+  children?: WorkspaceChildren;
+};
 export type LocalConfigInput = z.input<typeof LocalConfigSchema>;
 
 // ─── Local state (~/.teamai/state.json) ────────────────────
@@ -952,6 +1049,10 @@ export const StateSchema = z.object({
    * (#915). It is kept whatever `sharing.gitExclude` says. A record without
    * it, saved by an older CLI, misses the fast path, so the next pull is a
    * full sync that writes it. A writer id this CLI does not know is kept.
+   * `rootsSeeded` marks that pull's root-seeding step completed or did not
+   * apply (#1041), so a root its member removes afterwards is not recreated.
+   * An unavailable original checkout leaves it absent for a later retry. A
+   * record without it, saved before seeding existed, reads as never seeded.
    */
   lastPullByWorkspace: z.record(z.string(), z.object({
     rev: z.string(),
@@ -961,6 +1062,14 @@ export const StateSchema = z.object({
     delivered: z.record(z.string(), z.string()).optional(),
     agentModels: z.record(z.string(), z.record(z.string(), RecordedAgentModelSchema)).optional(),
     gitExcludePaths: z.record(z.string(), z.array(z.string())).optional(),
+    rootsSeeded: z.boolean().optional(),
+    /** The children a workspace was last delivered with (`WorkspaceChildren.fingerprint`, #913). */
+    children: z.string().optional(),
+    /**
+     * The `claudeMdExcludes` entries teamai wrote into this checkout's
+     * `.claude/settings.local.json` for the workspaces above it (#913).
+     */
+    claudeMdExcludes: z.array(z.string()).optional(),
   })).optional(),
   /**
    * The exclude files holding each git exclude owner's block that this
@@ -1028,6 +1137,8 @@ export const StateSchema = z.object({
    * inputs still match skips spawning `codex app-server`. Absent = run it.
    */
   codexTrustFingerprint: z.string().optional(),
+  /** Project grants this installation actually created; pre-existing user choices are never recorded. */
+  codexProjectTrust: z.array(z.object({ home: z.string(), project: z.string() })).optional(),
   /**
    * OpenCode configs whose `instructions` entry for teamai's context file
    * teamai added, as `{ config, entry }`, so uninstall removes the entry even
@@ -1073,6 +1184,8 @@ export interface ResourceItem {
   relativePath: string;
   status?: ResourceItemStatus;
   namespace?: string;
+  /** A kept skill with a recorded origin: `--role`/`--project` never relocate it (#1020). */
+  fromInactiveNamespace?: true;
 }
 
 export interface ResourceDiff {
@@ -1332,8 +1445,17 @@ export interface GlobalOptions {
    * session reads, without network when the team clone was fetched within
    * SOURCE_PULL_TTL_MS; sources come from their cached clones. Learnings,
    * reports, usage reporting and post-pull scripts are left to a full pull.
+   * `scripts.postDeploy` still runs when `prepareCheckout` is set.
    */
   inline?: boolean;
+  /**
+   * Internal (the new-worktree git hook, `pull` only): after this inline
+   * delivery, wait for `scripts.postDeploy` before returning. A new linked
+   * worktree does not run init, so `postInit` never runs for it. A submodule's
+   * first checkout hits the same hook when that repo already has teamai's
+   * git hooks.
+   */
+  prepareCheckout?: boolean;
   /**
    * Internal (post-merge/post-rewrite git hooks, with `inline`): fetch the team repo
    * whatever its fetch stamp says, and give up after this many ms; the scope
@@ -1634,7 +1756,7 @@ export interface DashboardEvent {
    */
   dataHome?: string;
   /**
-   * Main checkout of the git repo holding `cwd` (`resolveAnchors().projectAnchor`),
+   * Stable identity of the git repo holding `cwd` (`resolveAnchors().projectAnchor`),
    * shared by all of its worktrees, so a session is attributed to its repo even
    * after its worktree is removed (#809). An event whose `cwd` no longer exists
    * carries the session's last anchor (#810). Absent outside git, on events that
@@ -1892,8 +2014,8 @@ export interface ContributeState {
   promptSummary?: string;
   /**
    * A generated share-learnings hint awaiting delivery via UserPromptSubmit
-   * (used only for tools whose Stop hook ignores stdout — see
-   * STOP_STDOUT_UNSUPPORTED_TOOLS). Cleared once injected. Absent for tools
+   * (used only for tools whose Stop hook cannot take the payload — see
+   * stopStdoutUnsupported). Cleared once injected. Absent for tools
    * that deliver the hint directly through the Stop hook.
    */
   pendingHint?: string;
@@ -2060,6 +2182,8 @@ export interface SearchIndex {
   /** Per-domain document-frequency maps, so unrelated knowledge domains do not
    *  change the IDF score of an entry. Missing on indexes that need rebuilding. */
   dfByDomain?: Partial<Record<KnowledgeDomain, Record<string, number>>>;
+  /** The workspace children this index was built for (#913), absent outside a workspace with children. */
+  children?: string;
 }
 
 /** Per-user vote file (votes/<user>.yaml). */
@@ -2154,8 +2278,7 @@ export type CultureFrontmatter = z.infer<typeof CultureFrontmatterSchema>;
  * workspace root (subdirectory/worktree aware via `resolveAnchors`).
  *
  * This is deliberately separate from the per-project machine-data home: a later
- * phase (P1) keys machine-local data by the shared `projectAnchor` (the main
- * checkout) under `~/.teamai/projects/<slug>/`, while resources continue to land
+ * phase (P1) keys machine-local data by the shared `projectAnchor` (the repository identity) under `~/.teamai/projects/<slug>/`, while resources continue to land
  * at the workspace root returned here. This function only ever governs resource
  * landing, never machine-data location.
  */
@@ -2186,6 +2309,9 @@ export const CLAUDE_TOOL_ID = 'claude';
 export const DEFAULT_CLAUDE_ROOT = '.claude';
 
 export const CODEX_TOOL_ID = 'codex';
+
+/** Muse Code (Meta), whose CLI binary is `muse`. */
+export const MUSE_TOOL_ID = 'muse';
 
 /** The `toolPaths.codex` root segment Codex uses when `CODEX_HOME` is unset. */
 export const DEFAULT_CODEX_ROOT = '.codex';
@@ -2722,8 +2848,10 @@ export function getTeamaiHome(scope: Scope, projectRoot?: string): string {
 }
 
 /**
- * Path of the machine-local KEY=value env backup file that the env channel writes
- * on pull and mcp-reconcile reads for ${VAR} resolution.
+ * Path of the machine-local record of what this CLI's pull wrote to env.sh,
+ * which mcp-reconcile reads for ${VAR} resolution. env.sh cannot replace this
+ * backup: an older version may have left a secret there that the failed pull
+ * must not apply.
  *
  * Normally this is `<teamaiHome>/env`. But in single-repo mode `<teamaiHome>` is
  * `<repo>/.teamai`, where `env/` is a committed DIRECTORY holding the shared
@@ -2736,7 +2864,7 @@ export function getEnvBackupPath(localConfig: LocalConfig): string {
   // Route through getDataHome (not getTeamaiHome directly) so the plaintext
   // env backup follows the machine-data home together with env.sh. Otherwise
   // P1-2's partition redirect would move env.sh into ~/.teamai/projects/<slug>/
-  // while leaving the KEY=value backup (which carries plaintext values) behind
+  // while leaving the env backup (which carries plaintext values) behind
   // in <projectRoot>/.teamai — breaking "zero workspace residue" and leaking
   // sensitive values into the business repo directory.
   const home = getDataHome(localConfig);

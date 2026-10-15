@@ -66,8 +66,16 @@ describe('detectHomeInstalledAgents', () => {
     await fse.ensureDir(path.join(home, '.codex'));
     await fse.ensureDir(path.join(home, '.claude'));
     const found = await detectHomeInstalledAgents();
-    // candidate order is claude, codex, cursor, copilot, pi, joycode, codebuddy, workbuddy
+    // candidate order is claude, codex, cursor, copilot, pi, joycode, codebuddy, workbuddy, muse
     expect(found).toEqual(['claude', 'codex']);
+  });
+
+  it.each([
+    ['~/.config/muse', ['.config', 'muse'], ['muse']],
+    ['only ~/.config', ['.config'], []],
+  ])('detects Muse Code from %s', async (_label, segments, expected) => {
+    await fse.ensureDir(path.join(home, ...segments));
+    expect(await detectHomeInstalledAgents()).toEqual(expected);
   });
 
   it('respects a custom candidate list', async () => {
@@ -76,7 +84,7 @@ describe('detectHomeInstalledAgents', () => {
     expect(await detectHomeInstalledAgents(['cursor'])).toEqual(['cursor']);
   });
 
-  it('SELF_MODE_AGENT_CHOICES includes Pi, Copilot and JoyCode among the common coding agents', () => {
+  it('SELF_MODE_AGENT_CHOICES includes Pi, Copilot, JoyCode and Muse Code among the common coding agents', () => {
     expect([...SELF_MODE_AGENT_CHOICES]).toEqual([
       'claude',
       'codex',
@@ -86,6 +94,7 @@ describe('detectHomeInstalledAgents', () => {
       'joycode',
       'codebuddy',
       'workbuddy',
+      'muse',
     ]);
   });
 });

@@ -1,5 +1,4 @@
 import path from 'node:path';
-import semver from 'semver';
 
 import { pathExists, readJson } from '../../utils/fs.js';
 import { formatCommand, type CommandExecutor } from '../../utils/exec.js';
@@ -26,7 +25,7 @@ interface NpmListOutput {
   dependencies?: Record<string, LockPackage>;
 }
 
-function satisfiesDeclaredVersion(declared: string, actual: string): boolean {
+function satisfiesDeclaredVersion(semver: typeof import('semver'), declared: string, actual: string): boolean {
   // npm dist-tags such as latest/next cannot be checked without a registry
   // lookup. Exact versions and ranges can be verified entirely from the lock.
   const range = semver.validRange(declared);
@@ -172,10 +171,12 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
     const installed = new Map(
       (await this.snapshot(context.cwd, declaration)).map((entry) => [entry.name, entry]),
     );
+    // Loaded here, not at startup: only a package status check compares versions.
+    const { default: semver } = await import('semver');
     return declaration.map((spec) => {
       const entry = installed.get(spec.name);
       const versionMatches = !entry?.version
-        || satisfiesDeclaredVersion(spec.version, entry.version);
+        || satisfiesDeclaredVersion(semver, spec.version, entry.version);
       return {
         name: spec.name,
         installed: !!entry && versionMatches,

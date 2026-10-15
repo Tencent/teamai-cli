@@ -161,6 +161,13 @@ function world(base: string): World {
 const init = (w: World, agents: string[], scope: 'project' | 'user' = 'project'): string[] =>
   ['init', w.teamUrl, '--provider', 'git', '--agent', agents.join(','), '--scope', scope, '--force'];
 
+/** Init no longer copies team resources. Deliver them the way a later pull does. */
+const deliver = (w: World, agents: string[], dir: string, scope: 'project' | 'user' = 'project'): Run => {
+  const started = w.ok(init(w, agents, scope), dir);
+  const pulled = w.ok(['pull'], dir);
+  return { ...pulled, output: `${started.output}${pulled.output}` };
+};
+
 /** Every file under `dir`, none when it is missing. */
 const filesUnder = (dir: string): string[] => (fs.existsSync(dir)
   ? fs.readdirSync(dir, { recursive: true, withFileTypes: true }).filter((entry) => !entry.isDirectory()).map((entry) => entry.name)
@@ -197,7 +204,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
     fs.mkdirSync(path.join(w.home, '.openclaw', 'workspace'), { recursive: true });
     const dir = w.business('biz', { '.claude/.keep': '' });
 
-    w.ok(init(w, ['claude', 'hermes', 'openclaw']), dir);
+    deliver(w, ['claude', 'hermes', 'openclaw'], dir);
     for (const skills of [
       path.join(w.home, '.hermes', 'skills'),
       path.join(w.home, '.openclaw', 'workspace', 'skills'),
@@ -232,8 +239,8 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
     const first = w.business('first', { '.claude/.keep': '' });
     const second = w.business('second', { '.claude/.keep': '' });
     const shared = path.join(w.home, '.hermes', 'skills', 'other-skill');
-    w.ok(init(w, ['claude', 'hermes']), first);
-    w.ok(init(w, ['claude', 'hermes']), second);
+    deliver(w, ['claude', 'hermes'], first);
+    deliver(w, ['claude', 'hermes'], second);
     expect(read(path.join(shared, 'SKILL.md'))).toBe(SOURCE_SKILL);
 
     const removed = w.ok(['source', 'remove', 'other'], first);
@@ -254,7 +261,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
     fs.mkdirSync(path.join(w.home, '.hermes'), { recursive: true });
     fs.mkdirSync(path.join(w.home, '.openclaw', 'workspace'), { recursive: true });
     const dir = w.business('biz', { '.claude/.keep': '' });
-    w.ok(init(w, ['claude', 'hermes', 'openclaw']), dir);
+    deliver(w, ['claude', 'hermes', 'openclaw'], dir);
 
     // An earlier release copied the source skill into the project's
     // `.hermes/skills` and `.openclaw/skills` and recorded both.
@@ -286,7 +293,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
   it('delivers to the OpenClaw workspace in user scope', () => {
     const w = world('user');
     fs.mkdirSync(path.join(w.home, '.openclaw', 'workspace'), { recursive: true });
-    w.ok(init(w, ['openclaw'], 'user'), w.home);
+    deliver(w, ['openclaw'], w.home, 'user');
     const workspace = path.join(w.home, '.openclaw', 'workspace', 'skills');
     expect(read(path.join(workspace, 'fe-skill', 'SKILL.md'))).toBe(TEAM_SKILL);
     expect(read(path.join(workspace, 'other-skill', 'SKILL.md'))).toBe(SOURCE_SKILL);
@@ -301,7 +308,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
     fs.mkdirSync(workspace, { recursive: true });
     fs.mkdirSync(path.join(w.home, '.openclaw'), { recursive: true });
     fs.writeFileSync(path.join(w.home, '.openclaw', 'openclaw.json'), JSON.stringify({ agents: { defaults: { workspace } } }));
-    w.ok(init(w, ['openclaw'], 'user'), w.home);
+    deliver(w, ['openclaw'], w.home, 'user');
     expect(read(path.join(workspace, 'skills', 'other-skill', 'SKILL.md'))).toBe(SOURCE_SKILL);
 
     fs.rmSync(workspace, { recursive: true });
@@ -323,7 +330,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
     const config = path.join(w.home, '.openclaw', 'openclaw.json');
     fs.mkdirSync(path.dirname(config), { recursive: true });
     fs.writeFileSync(config, JSON.stringify({ agents: { defaults: { workspace: first } } }));
-    w.ok(init(w, ['openclaw'], 'user'), w.home);
+    deliver(w, ['openclaw'], w.home, 'user');
     expect(read(path.join(first, 'skills', 'other-skill', 'SKILL.md'))).toBe(SOURCE_SKILL);
 
     fs.writeFileSync(config, JSON.stringify({ agents: { defaults: { workspace: second } } }));
@@ -346,7 +353,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
     const seed = path.join(path.dirname(w.home), 'source-seed');
     fs.symlinkSync('SKILL.md', path.join(seed, 'skills', 'other-skill', 'linked.md'));
     w.publishSource({});
-    w.ok(init(w, ['claude']), dir);
+    deliver(w, ['claude'], dir);
     const copy = path.join(dir, '.claude', 'skills', 'other-skill');
     expect(fs.existsSync(path.join(copy, 'linked.md'))).toBe(false);
     writeFile(path.join(copy, 'linked.md'), 'MY FILE\n');
@@ -358,7 +365,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
   it('keeps a delivered source skill when the source later adds a directory where the member has a file', () => {
     const w = world('source-new-dir');
     const dir = w.business('biz', { '.claude/.keep': '' });
-    w.ok(init(w, ['claude']), dir);
+    deliver(w, ['claude'], dir);
     const copy = path.join(dir, '.claude', 'skills', 'other-skill');
     writeFile(path.join(copy, 'notes'), 'MY NOTES\n');
     w.publishSource({ 'skills/other-skill/notes/info.md': 'SOURCE INFO\n' });
@@ -370,7 +377,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
   it('keeps a file the member added to a delivered source skill when the source later adds one at that path', () => {
     const w = world('source-new-path');
     const dir = w.business('biz', { '.claude/.keep': '' });
-    w.ok(init(w, ['claude']), dir);
+    deliver(w, ['claude'], dir);
     const copy = path.join(dir, '.claude', 'skills', 'other-skill');
     writeFile(path.join(copy, 'notes.md'), 'MY NOTES\n');
     w.publishSource({ 'skills/other-skill/notes.md': 'SOURCE NOTES\n' });
@@ -387,7 +394,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
   it('source remove keeps a delivered source skill directory holding a file the member added', () => {
     const w = world('extra-file');
     const dir = w.business('biz', { '.claude/.keep': '' });
-    w.ok(init(w, ['claude']), dir);
+    deliver(w, ['claude'], dir);
     const copy = path.join(dir, '.claude', 'skills', 'other-skill');
     expect(read(path.join(copy, 'SKILL.md'))).toBe(SOURCE_SKILL);
     writeFile(path.join(copy, 'notes.md'), 'MY NOTES\n');
@@ -400,7 +407,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
   it('source remove keeps a delivered source skill whose every file the member edited', () => {
     const w = world('all-edited');
     const dir = w.business('biz', { '.claude/.keep': '' });
-    w.ok(init(w, ['claude']), dir);
+    deliver(w, ['claude'], dir);
     const copy = path.join(dir, '.claude', 'skills', 'other-skill');
     writeFile(path.join(copy, 'SKILL.md'), `${SOURCE_SKILL}\nMy own notes.\n`);
 
@@ -412,7 +419,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
   it('source remove keeps a delivered source skill directory left holding only a file the member added', () => {
     const w = world('only-member-file');
     const dir = w.business('biz', { '.claude/.keep': '' });
-    w.ok(init(w, ['claude']), dir);
+    deliver(w, ['claude'], dir);
     const copy = path.join(dir, '.claude', 'skills', 'other-skill');
     fs.rmSync(path.join(copy, 'SKILL.md'));
     writeFile(path.join(copy, 'notes.md'), 'MY NOTES\n');
@@ -441,7 +448,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
     fs.mkdirSync(path.join(w.home, '.openclaw', 'workspace'), { recursive: true });
     fs.mkdirSync(path.join(w.home, '.copilot'), { recursive: true });
 
-    w.ok(init(w, tools), dir);
+    deliver(w, tools, dir);
     const team = landings([dir, w.home], 'fe-skill');
     const source = landings([dir, w.home], 'other-skill');
     expect(source).toEqual(team);
@@ -465,7 +472,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
     });
     const claude = path.join(dir, '.claude', 'skills', 'other-skill');
 
-    const initRun = w.ok(init(w, ['claude', 'codex', 'cursor']), dir);
+    const initRun = deliver(w, ['claude', 'codex', 'cursor'], dir);
     expect(read(path.join(claude, 'SKILL.md'))).toBe(MINE);
     // A source repo has no team version: the line names the source's.
     expect(initRun.output).toContain(`Kept ${claude}: it is not teamai's (no delivery record, and it matches no source version of other/other-skill). `
@@ -488,7 +495,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
   it('with a source cache that has no history, never reads an enclosing repository\'s history', () => {
     const w = world('enclosing');
     const dir = w.business('biz', { '.claude/.keep': '' });
-    w.ok(init(w, ['claude', 'codebuddy']), dir);
+    deliver(w, ['claude', 'codebuddy'], dir);
     fs.rmSync(path.join(w.sourceCache, '.git'), { recursive: true });
     // HOME is a dotfiles repository whose history holds the member's version at the cache's path.
     const cached = path.join(w.sourceCache, 'skills', 'other-skill', 'SKILL.md');
@@ -515,7 +522,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
   it('with a source cache that has no history, the record and today\'s source decide', () => {
     const w = world('nohistory');
     const dir = w.business('biz', { '.claude/.keep': '' });
-    w.ok(init(w, ['claude', 'cursor', 'codebuddy']), dir);
+    deliver(w, ['claude', 'cursor', 'codebuddy'], dir);
     fs.rmSync(path.join(w.sourceCache, '.git'), { recursive: true });
 
     // Recorded: still the source's, edited or not.
@@ -549,7 +556,7 @@ describe('source skills go where team skills go (#993 bug 8)', () => {
     const w = world(label);
     fs.mkdirSync(path.join(w.home, '.hermes'), { recursive: true });
     const dir = w.business('biz', { '.claude/.keep': '' });
-    w.ok(init(w, ['claude', 'hermes']), dir);
+    deliver(w, ['claude', 'hermes'], dir);
     // What an earlier release left and recorded, then the member changed.
     const copy = path.join(dir, '.hermes', 'skills', 'other-skill');
     writeFile(path.join(copy, 'SKILL.md'), CHANGED);

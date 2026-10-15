@@ -160,10 +160,23 @@ describe('pull trusts the Codex project after writing its MCP servers', () => {
     expect(reconcileMcpForConfig).toHaveBeenCalled();
     expect(readFakeCodexState(path.join(homeDir, '.codex')).projects[project]).toEqual({ trust_level: 'trusted' });
   });
+
+  it('trusts the built-in hooks when Codex lists them by their Windows command', async () => {
+    writeFakeCodexOptions(path.join(homeDir, '.codex'), { windowsCommands: true });
+
+    await pull({ force: true });
+
+    // Without team hooks the built-ins live in the user layer; Codex on Windows lists each by
+    // its commandWindows, and the trust step has to recognise them under that name.
+    const hooksFile = path.join(homeDir, '.codex', 'hooks.json');
+    const state = readFakeCodexState(path.join(homeDir, '.codex'));
+    expect(Object.keys(state.hooksState).some((key) => key.startsWith(`${hooksFile}:session_start`))).toBe(true);
+    expect(vi.mocked(log.warn).mock.calls.map(([message]) => message).filter((message) => message.includes('Could not trust'))).toEqual([]);
+  });
   it('pull from a worktree without .codex trusts the main keys before SessionStart', async () => {
     const worktree = path.join(tempDir, 'worktree');
     await fse.ensureDir(worktree);
-    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, projectAnchor: project }));
+    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, projectAnchor: project, mainCheckout: project }));
     vi.mocked(listWorktrees).mockResolvedValue([project, worktree]);
     localConfig.projectRoot = worktree;
     writeFakeCodexOptions(path.join(homeDir, '.codex'), { projectLayers: { [worktree]: project } });

@@ -17,13 +17,16 @@ import { promisify } from 'node:util';
 import crossSpawn from 'cross-spawn';
 import { resolveConfigForDir } from './config.js';
 import { reportMissingSecrets } from './env-advisories.js';
-import { resolveTeamEnv } from './env-resolution.js';
+import { appliedTeamEnv, resolvesTeamEnv, resolveTeamEnv } from './env-resolution.js';
 import { memberEnvironmentWithoutScope, type MemberEnvironment } from './member-env.js';
 import { describeEntryFailure } from './namespaced-entries.js';
-import { envTable } from './resources/env-key.js';
+import { ENV_KEY_RE, envTable } from './resources/env-key.js';
+import { envExecBashEnvPath, envLoaderPath, writeEnvExecBashEnv } from './resources/env-loader.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { getDataHome, type GlobalOptions, type LocalConfig } from './types.js';
 import { log, setStderrOnly } from './utils/logger.js';
+import { reservedTeamEnvWarning } from './env-reserved.js';
+import { readWorkspaceChildren } from './workspace-children.js';
 
 /** How the command ended. */
 export type ExecOutcome =
@@ -123,7 +126,9 @@ export function exitLike(outcome: ExecOutcome): void {
 /** The environment the command runs with, reporting on stderr whatever it leaves out. */
 async function commandEnvironment(cwd: string, dryRun: boolean | undefined): Promise<NodeJS.ProcessEnv> {
   const unreadable: { configPath: string; error: string }[] = [];
-  const localConfig = await resolveConfigForDir(cwd, (configPath, error) => { unreadable.push({ configPath, error }); }, { dryRun });
+  const found = await resolveConfigForDir(cwd, (configPath, error) => { unreadable.push({ configPath, error }); }, { dryRun });
+  // A workspace's env includes its children's, as pull delivers it (#913).
+  const localConfig = found && await readWorkspaceChildren(found);
   if (unreadable.length > 0) {
     // The project's config is unknown, so as while its declarations fail, a value a teamai env.sh exported is removed.
     const env = inheritedEnvironment();
@@ -141,7 +146,7 @@ async function commandEnvironment(cwd: string, dryRun: boolean | undefined): Pro
       + `runs with the inherited environment${exportedClause(removed)}.`);
     return env;
   }
-  if (localConfig.repo.kind === 'http') {
+  if (!resolvesTeamEnv(localConfig)) {
     const env = inheritedEnvironment();
     const removed = withoutTeamExports(env, await memberEnvironmentWithoutScope([getDataHome(localConfig)]));
     log.warn('An HTTP team repo delivers no env variables or secrets here, so the command runs with the inherited '
@@ -151,9 +156,45 @@ async function commandEnvironment(cwd: string, dryRun: boolean | undefined): Pro
   return overlayTeamEnv(localConfig);
 }
 
-/** A copy of the inherited environment that keeps `__proto__` an own key when the overlay sets it. */
+/**
+ * A copy of the inherited environment that keeps `__proto__` an own key when
+ * the overlay sets it. Without the env loader's bookkeeping and its BASH_ENV
+ * (env-loader.ts): they describe the env of the directory a shell loaded, not
+ * the one teamai gives the command, and a bash the command starts would
+ * un-apply it over this scope's values, a secret included (#1018). The
+ * member's own BASH_ENV takes its place, as does one an outer `env exec` chained.
+ */
 function inheritedEnvironment(): NodeJS.ProcessEnv {
-  return envTable(Object.entries(process.env));
+  const env = envTable(Object.entries(process.env));
+  let bashEnv = env.BASH_ENV;
+  if (bashEnv && path.normalize(bashEnv) === envLoaderPath()) bashEnv = env.__TEAMAI_ENV_BASH_ENV;
+  if (bashEnv && path.normalize(bashEnv) === envExecBashEnvPath()) bashEnv = env.__TEAMAI_ENV_EXEC_BASH_ENV;
+  for (const key of Object.keys(env)) if (key.startsWith('__TEAMAI_ENV_')) delete env[key];
+  if (bashEnv) env.BASH_ENV = bashEnv;
+  else delete env.BASH_ENV;
+  return env;
+}
+
+/**
+ * bash sources the member's BASH_ENV after the team env is set, so a key both
+ * set would take the member's value. Chain it instead (`writeEnvExecBashEnv`):
+ * every key the overlay set keeps the team value, and every one it removed
+ * stays unset, as in the env loader.
+ */
+async function teamWinsOverBashEnv(env: NodeJS.ProcessEnv, set: readonly string[], removed: readonly string[]): Promise<NodeJS.ProcessEnv> {
+  const memberBashEnv = env.BASH_ENV;
+  const keys = [...set, ...removed].filter((key) => ENV_KEY_RE.test(key));
+  if (!memberBashEnv || keys.length === 0) return env;
+  try {
+    env.BASH_ENV = await writeEnvExecBashEnv();
+  } catch (error) {
+    log.warn(`Could not write ${envExecBashEnvPath()}: ${error instanceof Error ? error.message : String(error)}. A bash the command `
+      + `starts sources your BASH_ENV (${memberBashEnv}) after the team env, so a key both set takes your value. Make ${path.dirname(envExecBashEnvPath())} writable, then run the command again.`);
+    return env;
+  }
+  env.__TEAMAI_ENV_EXEC_BASH_ENV = memberBashEnv;
+  env.__TEAMAI_ENV_EXEC_KEYS = keys.join(' ');
+  return env;
 }
 
 /**
@@ -163,47 +204,59 @@ function inheritedEnvironment(): NodeJS.ProcessEnv {
  * another team's export, or the member's own export when this team's value
  * names another variable. A key that is also an env.yaml variable resolves as
  * a secret. A variable takes the member's value for this team, else the
- * team's, as in MCP; the inherited value never overrides it (#875). While the
- * declarations fail, nothing is overlaid, and every inherited value that is
- * not the member's own (member-env.ts) is removed; so is it while env.yaml
- * fails or the values file cannot be read.
+ * team's, as in MCP; the inherited value never overrides it (#875). Every
+ * inherited value that is not the member's own (member-env.ts) is removed
+ * first. A part that can't be resolved (`appliedTeamEnv`) gets what its last
+ * pull wrote, and no secret is applied while the declarations fail.
  */
 async function overlayTeamEnv(localConfig: LocalConfig): Promise<NodeJS.ProcessEnv> {
   const env = inheritedEnvironment();
+  const set: string[] = [];
+  const removed: string[] = [];
+  const overlay = (key: string, value: string): void => {
+    setKey(env, key, value);
+    set.push(key);
+  };
   const teamEnv = await resolveTeamEnv(localConfig);
   const { variables, declarations, variableValues, secrets } = teamEnv;
-  if (declarations.kind === 'failed') {
-    // Any env.yaml key may be a secret the file declares, so no team value is applied (#879 Conflict 14),
-    // and one a teamai env.sh exported is a team value, not the member's: it is removed.
-    const failures = [variables, declarations].flatMap((entries) => entries.kind === 'failed' ? [describeEntryFailure(entries.failure)] : []);
-    const without = exportedClause(withoutTeamExports(env, teamEnv.member));
-    log.warn(`${failures.join(' ')} The command runs with the inherited environment, without team env variables or secrets${without}.`);
-    return env;
+  const warning = reservedTeamEnvWarning([
+    ...(variables.kind === 'resolved' ? variables.entries.map(({ name }) => name) : []),
+    ...(declaredSecretKeys(declarations) ?? []),
+  ]);
+  if (warning) log.warn(warning);
+  const applied = appliedTeamEnv(teamEnv);
+  // A shell started in another directory carries that scope's env.sh: what
+  // a teamai env.sh exported is not this directory's, so it goes first (#1018).
+  const without = exportedClause(withoutTeamExports(env, teamEnv.member));
+  // A part that can't be resolved gets what its last pull wrote, as its shells
+  // do: any current env.yaml value may be a secret (#879 Conflict 14). By key only.
+  const ownFailures = [
+    ...[variables, declarations].flatMap((entries) => entries.kind === 'failed' ? [describeEntryFailure(entries.failure)] : []),
+    ...variableValues.kind === 'store-unreadable' ? [variableValues.reason] : [],
+  ];
+  if (ownFailures.length > 0) {
+    const secretsClause = declarations.kind === 'failed' ? 'without team secrets, and ' : '';
+    log.warn(`${ownFailures.join(' ')} The command runs ${secretsClause}${keptClause(teamEnv.keptValues, 'the last pull', "the team's env variables")}${without}.`);
   }
-  // Without this team's variables, one a teamai env.sh exported may be another team's: it is removed.
-  if (variables.kind === 'failed') {
-    const without = exportedClause(withoutTeamExports(env, teamEnv.member));
-    log.warn(`${describeEntryFailure(variables.failure)} The command runs without the team's env variables${without}.`);
+  if (teamEnv.inheritedValues.kind === 'store-unreadable') {
+    log.warn(`${teamEnv.inheritedValues.reason} The command runs ${keptClause(teamEnv.keptInheritedValues, "the user scope's last pull", "the user scope's env variables")}.`);
   }
-  if (variableValues.kind === 'store-unreadable') {
-    const without = exportedClause(withoutTeamExports(env, teamEnv.member));
-    log.warn(`${variableValues.reason} The command runs without the team's env variables${without}.`);
-  } else {
-    for (const [key, variable] of variableValues.values) setKey(env, key, variable.value);
-  }
-  const secretKeys = declaredSecretKeys(declarations);
-  if (!secretKeys || secretKeys.size === 0) return env;
+  for (const [key, value] of applied.variables) overlay(key, value);
+  if (applied.secretKeys.length === 0) return teamWinsOverBashEnv(env, set, removed);
 
   if (secrets.kind === 'store-unreadable') {
     log.warn(`${secrets.reason} The command runs without team secrets.`);
   }
-  for (const key of secretKeys) {
+  for (const key of applied.secretKeys) {
     const secret = secrets.kind === 'resolved' ? secrets.values.get(key) : undefined;
-    if (secret) setKey(env, key, secret.value);
-    else removeKey(env, key);
+    if (secret) overlay(key, secret.value);
+    else {
+      removeKey(env, key);
+      removed.push(key);
+    }
   }
   if (secrets.kind === 'resolved') await reportMissingSecrets(localConfig, teamEnv);
-  return env;
+  return teamWinsOverBashEnv(env, set, removed);
 }
 
 /** Remove `key` from `env`, in every case on Windows, where environment names are case-insensitive. */
@@ -224,9 +277,15 @@ function setKey(env: NodeJS.ProcessEnv, key: string, value: string): void {
 
 /** Remove from `env` every value that is not the member's own (member-env.ts), and return the keys removed. */
 function withoutTeamExports(env: NodeJS.ProcessEnv, member: MemberEnvironment): string[] {
-  const removed = Object.keys(env).filter((key) => env[key] !== '' && member(key) === undefined);
+  const removed = Object.keys(env).filter((key) => member(key) === undefined);
   for (const key of removed) delete env[key];
   return removed;
+}
+
+/** How a part that can't be resolved is applied, by key only: what `pull` wrote, else none of it. */
+function keptClause(kept: ReadonlyMap<string, string> | null, pull: string, none: string): string {
+  const keys = [...kept?.keys() ?? []];
+  return keys.length > 0 ? `with the env variables ${pull} wrote (${keys.join(', ')})` : `without ${none}`;
 }
 
 /** The warning's clause naming the keys `withoutTeamExports` removed, never their values. */

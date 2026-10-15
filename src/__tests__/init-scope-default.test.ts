@@ -32,9 +32,17 @@ describe('resolveInitScope', () => {
     });
   });
 
+  it('uses the workspace scope when --scope workspace is explicit', () => {
+    const result = resolveInitScope('workspace', cwd, home);
+    expect(result).toEqual({
+      scope: 'project',
+      projectRoot: cwd,
+      explicit: true,
+    });
+  });
+
   it('throws on invalid scope values', () => {
-    expect(() => resolveInitScope('global', cwd, home)).toThrow(/Invalid scope "global"/);
-    expect(() => resolveInitScope('workspace', cwd, home)).toThrow(/Invalid scope/);
+    expect(() => resolveInitScope('global', cwd, home)).toThrow('Invalid scope "global". Use "workspace" or "user".');
   });
 
   it('falls back to user when cwd === home and scope is implicit (E1)', () => {
@@ -54,9 +62,9 @@ describe('resolveInitScope', () => {
     expect(result.fallbackReason).toMatch(/home directory/);
   });
 
-  it('throws when --scope project is explicit and cwd === home (E1)', () => {
-    expect(() => resolveInitScope('project', home, home)).toThrow(
-      /Cannot use --scope project in your home directory/,
+  it.each(['workspace', 'project'])('throws when --scope %s is explicit and cwd === home (E1)', (scope) => {
+    expect(() => resolveInitScope(scope, home, home)).toThrow(
+      'Cannot use the workspace scope in your home directory',
     );
   });
 
@@ -71,10 +79,10 @@ describe('resolveInitScope', () => {
 });
 
 describe('resolveInheritUserScope', () => {
-  it('enables inheritance only for project scope', () => {
+  it('enables inheritance only for workspace scope', () => {
     expect(resolveInheritUserScope('project', true, undefined)).toBe(true);
     expect(() => resolveInheritUserScope('user', true, undefined)).toThrow(
-      /only be used with project scope/,
+      /only be used with workspace scope/,
     );
   });
 

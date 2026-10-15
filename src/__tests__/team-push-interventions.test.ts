@@ -73,12 +73,19 @@ beforeEach(async () => {
   userKey = await dataHomeKey(path.join(tmpDir, '.teamai'));
   repoDir = path.join(tmpDir, 'repo');
   fs.mkdirSync(repoDir, { recursive: true });
+  // The 'review' skill these tests record usage for must be part of the team's
+  // shared catalog: #1055 filters published stats to catalog names, and these
+  // tests exercise reporting mechanics, not the privacy filter.
+  fs.mkdirSync(path.join(repoDir, 'skills', 'review'), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, 'skills', 'review', 'SKILL.md'), '# review\n');
   pushRepoDirectly.mockReset().mockResolvedValue(undefined);
-  reportsMocks.updateReports.mockReset().mockImplementation(async (cfg: LocalConfig, write: (wt: string) => Promise<{ files: string[]; message: string } | null>) => {
+  reportsMocks.updateReports.mockReset().mockImplementation(async (cfg: LocalConfig, write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<{ files: string[]; message: string } | null>) => {
     const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
     fs.mkdirSync(dir, { recursive: true });
-    const change = await write(dir);
-    return change != null;
+    const delivered: (() => Promise<void>)[] = [];
+    const change = await write(dir, { onDelivered: (fn) => { delivered.push(fn); } });
+    for (const fn of delivered) await fn();
+    return { status: change != null ? 'published' : 'already-present' };
   });
 });
 
@@ -114,17 +121,20 @@ describe('reportUsageToTeam — intervention reporting', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const usagePath = seedReport();
     const seeded = fs.readFileSync(usagePath, 'utf-8');
-    let finish!: (value: boolean) => void;
+    let finish!: (value: { status: 'published' }) => void;
     let started!: () => void;
     const pushStarted = new Promise<void>((resolve) => { started = resolve; });
-    const pushResult = new Promise<boolean>((resolve) => { finish = resolve; });
+    const pushResult = new Promise<{ status: 'published' }>((resolve) => { finish = resolve; });
     const delayedPush = () => { started(); return pushResult; };
     if (backend === 'reports') {
-      reportsMocks.updateReports.mockImplementationOnce(async (cfg: LocalConfig, write: (wt: string) => Promise<{ files: string[]; message: string } | null>) => {
+      reportsMocks.updateReports.mockImplementationOnce(async (cfg: LocalConfig, write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<{ files: string[]; message: string } | null>) => {
         const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
         fs.mkdirSync(dir, { recursive: true });
-        await write(dir);
-        return delayedPush();
+        const delivered: (() => Promise<void>)[] = [];
+        await write(dir, { onDelivered: (fn) => { delivered.push(fn); } });
+        const result = await delayedPush();
+        for (const fn of delivered) await fn();
+        return result;
       });
     } else {
       pushRepoDirectly.mockImplementationOnce(delayedPush);
@@ -138,7 +148,7 @@ describe('reportUsageToTeam — intervention reporting', () => {
     expect(fs.readFileSync(usagePath, 'utf-8')).toContain('review');
     expect(reportedSnapshot('prompt-tokens', backend === 'reports').slow).toBeUndefined();
 
-    finish(true);
+    finish({ status: 'published' });
     expect(await operation).toBe(true);
     // A caller without a scope config has no usage of its own to report (#748),
     // so it leaves the user-scope file for the scope that owns it.
@@ -155,7 +165,7 @@ describe('reportUsageToTeam — intervention reporting', () => {
   it.each(['false', 'rejection'])('retains events and snapshots when push returns %s', async (failure) => {
     const usagePath = seedReport();
     const before = fs.readFileSync(usagePath, 'utf-8');
-    if (failure === 'false') reportsMocks.updateReports.mockResolvedValueOnce(false);
+    if (failure === 'false') reportsMocks.updateReports.mockResolvedValueOnce({ status: 'failed', reason: 'not confirmed' });
     else reportsMocks.updateReports.mockRejectedValueOnce(new Error('offline'));
     expect(await reportUsageToTeam(repoDir, 'me', { selfConfig: gitConfig() })).toBe(false);
     expect(fs.readFileSync(usagePath, 'utf-8')).toBe(before);

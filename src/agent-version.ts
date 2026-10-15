@@ -105,12 +105,19 @@ const DETECTORS: Record<string, VersionDetector> = {
   // DeepSeek Harness: `dsh --version` prints e.g. "0.1.1" (optionally with a
   // leading "v" or trailing commit info). Extract leading semver-ish digits.
   dsh: detectDshVersion,
+  muse: detectMuseVersion,
 };
 
 async function detectDshVersion(): Promise<string> {
   const raw = await execVersion('dsh');
   const match = raw.match(/v?(\d+(?:\.\d+)*)/);
   return match?.[1] ?? '';
+}
+
+async function detectMuseVersion(): Promise<string> {
+  // "Muse Code 1.4.6 (1.4.6-R6000.1)" → "1.4.6"
+  const raw = await execVersion('muse');
+  return raw.match(/\d+\.\d+\.\d+/)?.[0] ?? '';
 }
 
 /**

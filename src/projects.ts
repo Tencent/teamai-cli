@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { ensureDir, writeFile } from './utils/fs.js';
 import {
   NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, warnUnknownResourceKeys,
-  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespacesShape, type NamespaceEntry,
+  HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespacesShape, type NamespaceEntry, parseManifestOnce,
 } from './manifest-schema.js';
 import type { ResourceNamespaces } from './roles.js';
 
@@ -138,14 +138,15 @@ export async function loadProjectsManifest(repoPath: string): Promise<ProjectsMa
     return null;
   }
 
-  let raw: unknown;
-  try {
-    raw = YAML.parse(content);
-  } catch (error) {
-    throw new Error(`Invalid projects manifest YAML: ${(error as Error).message}`);
-  }
-
-  return validateManifestShape(raw);
+  return parseManifestOnce(manifestPath, content, (text) => {
+    let raw: unknown;
+    try {
+      raw = YAML.parse(text);
+    } catch (error) {
+      throw new Error(`Invalid projects manifest YAML: ${(error as Error).message}`);
+    }
+    return validateManifestShape(raw);
+  });
 }
 
 /** Validate a manifest built in memory with the same checks a load applies; throws on the first problem. */

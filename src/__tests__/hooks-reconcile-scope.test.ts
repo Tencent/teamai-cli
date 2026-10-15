@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
+import YAML from 'yaml';
 
 vi.mock('../utils/git.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../utils/git.js')>(),
@@ -16,10 +17,12 @@ vi.mock('../utils/logger.js', () => ({
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
 import { resetBundledRuntimeCache } from '../bundled-runtime.js';
 import { findOnPath } from '../utils/lookpath.js';
-import { spawn } from 'node:child_process';
-import { claudeHookOtherHostSkip, reconcileTeamHooksForConfig } from '../hooks.js';
+import { execFileSync, spawn } from 'node:child_process';
+import { claudeHookOtherHostSkip, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig } from '../hooks.js';
 import * as gitHook from '../git-hook.js';
-import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { readWorkspaceChildren } from '../workspace-children.js';
+import { dispatchedCodexHooks } from '../codex-team-hooks.js';
+import type { HookDef, LocalConfig, TeamaiConfig } from '../types.js';
 
 let project: string;
 let repo: string;
@@ -205,6 +208,111 @@ hooks:
       await fse.remove(projectB);
       await fse.remove(repoB);
     }
+  });
+
+  it('gates a workspace\'s team hooks for other tools to the workspace without its children (#913)', async () => {
+    await writeYaml(`
+hooks:
+  - id: ws-hook
+    description: workspace hook
+    event: Stop
+    command: echo ws-hook-ran
+`);
+    const root = await fse.realpath(project);
+    const child = path.join(root, 'svc-a');
+    await fse.ensureDir(path.join(child, 'src'));
+    await fse.ensureDir(path.join(root, 'notes'));
+    await reconcileTeamHooksForConfig(teamConfig, {
+      ...localConfig(),
+      children: {
+        children: [{ path: 'svc-a', root: child, anchor: path.join(home, 'svc-a'), selection: { additionalRoles: [], projects: [] } }],
+        leftOut: [],
+        roots: [child],
+        fingerprint: 'f',
+      },
+    });
+
+    const [command] = (await cursorSettings()).hooks.stop.map((entry) => entry.command).filter((c) => c.includes('ws-hook-ran'));
+    const runIn = (cwd: string): string => execFileSync('sh', ['-c', command!], { cwd, encoding: 'utf8' });
+    expect(runIn(root)).toBe('ws-hook-ran\n');
+    expect(runIn(path.join(root, 'notes'))).toBe('ws-hook-ran\n');
+    expect(runIn(child)).toBe('');
+    expect(runIn(path.join(child, 'src'))).toBe('');
+  });
+
+  it('records a workspace\'s Cursor hook as written, and keeps one copy gated out of a child added later (#913)', async () => {
+    await writeYaml(`
+hooks:
+  - id: ws-hook
+    description: workspace hook
+    event: Stop
+    command: echo ws-hook-ran
+`);
+    const root = await fse.realpath(project);
+    const [svcA, svcB] = [path.join(root, 'svc-a'), path.join(root, 'svc-b')];
+    await Promise.all([svcA, svcB].map((dir) => fse.ensureDir(dir)));
+    const withChildren = (roots: string[]): LocalConfig => ({
+      ...localConfig(),
+      children: {
+        children: roots.map((dir) => ({ path: path.basename(dir), root: dir, anchor: path.join(home, path.basename(dir)), selection: { additionalRoles: [], projects: [] } })),
+        leftOut: [],
+        roots,
+        fingerprint: roots.join(','),
+      },
+    });
+    const written = async (): Promise<string[]> =>
+      (await cursorSettings()).hooks.stop.map((entry) => entry.command).filter((c) => c.includes('ws-hook-ran'));
+    const recorded = async (): Promise<string[]> =>
+      ((await manifest()).cursor as unknown as Array<{ command: string }>).map((r) => r.command).filter((c) => c.includes('ws-hook-ran'));
+
+    await reconcileTeamHooksForConfig(teamConfig, withChildren([svcA]));
+    expect(await recorded()).toEqual(await written());
+
+    await reconcileTeamHooksForConfig(teamConfig, withChildren([svcA, svcB]));
+
+    const commands = await written();
+    expect(commands).toHaveLength(1);
+    expect(await recorded()).toEqual(commands);
+    const runIn = (cwd: string): string => execFileSync('sh', ['-c', commands[0]!], { cwd, encoding: 'utf8', env: { ...process.env, PWD: cwd } });
+    expect(runIn(root)).toBe('ws-hook-ran\n');
+    expect(runIn(svcB)).toBe('');
+  });
+
+  it('gates a workspace\'s team hooks out of every checkout of a child and out of a child it leaves out (#913)', async () => {
+    await writeYaml(`
+hooks:
+  - id: ws-hook
+    description: workspace hook
+    event: Stop
+    command: echo ws-hook-ran
+`);
+    const root = await fse.realpath(project);
+    const gitEnv = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' };
+    const { projectDataHome } = await import('../utils/partition.js');
+    const setUp = async (dir: string, remote: string): Promise<void> => {
+      await fse.ensureDir(dir);
+      execFileSync('git', ['init', '-q'], { cwd: dir });
+      execFileSync('git', ['commit', '--allow-empty', '-qm', 'init'], { cwd: dir, env: gitEnv });
+      await fse.outputFile(path.join(projectDataHome(dir), 'config.yaml'), `scope: workspace\nusername: u\nrepo:\n  remote: ${remote}\n  localPath: ${repo}\n`);
+    };
+    const child = path.join(root, 'svc-a');
+    const worktree = path.join(root, 'svc-a-feature');
+    const other = path.join(root, 'other-team');
+    await setUp(child, 'x');
+    execFileSync('git', ['worktree', 'add', '-q', worktree], { cwd: child, env: gitEnv });
+    await setUp(other, 'https://git.example.com/other/team.git');
+    const { readWorkspaceChildren } = await import('../workspace-children.js');
+    const configured = await readWorkspaceChildren({ ...localConfig(), dataHome: path.join(project, '.teamai') });
+    expect(configured.children?.children.map((found) => found.path)).toEqual(['svc-a']);
+
+    await reconcileTeamHooksForConfig(teamConfig, configured);
+
+    const [command] = (await cursorSettings()).hooks.stop.map((entry) => entry.command).filter((c) => c.includes('ws-hook-ran'));
+    const runIn = (cwd: string): string => execFileSync('sh', ['-c', command!], { cwd, encoding: 'utf8' });
+    expect(runIn(root)).toBe('ws-hook-ran\n');
+    expect(runIn(child)).toBe('');
+    expect(runIn(worktree)).toBe('');
+    expect(runIn(other)).toBe('');
   });
 
   it('applies hooks.yaml edits on the next reconcile (add/remove), built-in untouched', async () => {
@@ -487,6 +595,97 @@ builtin:
     expect(projectClaude.hooks.SessionStart).toHaveLength(1);
     expect(await fse.pathExists(path.join(home, '.claude', 'settings.json'))).toBe(false);
   });
+
+  it('keeps the Claude hook a self-mode workspace installed when a child defines it differently (#913)', async () => {
+    await fse.ensureDir(path.join(project, '.claude'));
+    await fse.outputFile(path.join(repo, 'manifest', 'projects.yaml'),
+      YAML.stringify({ version: 1, projects: ['a', 'b'].map((id) => ({ id, resources: { hooks: [id] } })) }));
+    for (const namespace of ['a', 'b']) {
+      await fse.outputFile(path.join(repo, 'hooks', namespace, 'hooks.yaml'),
+        YAML.stringify({ hooks: [{ id: 'held', description: 'held', event: 'Stop', command: `echo ${namespace}`, tools: ['claude'] }] }));
+    }
+    const selfConfig = {
+      repo: { localPath: repo, remote: 'https://git.example.com/team.git', kind: 'self', businessRepoRoot: project },
+      username: 'u',
+      scope: 'project',
+      projectRoot: project,
+      projects: ['a'],
+      additionalRoles: [],
+      enabledAgents: ['claude'],
+    } as unknown as LocalConfig;
+    const settings = (): Promise<string> => fse.readFile(path.join(project, '.claude', 'settings.json'), 'utf8');
+    await reconcileTeamHooksForConfig(teamConfig, selfConfig);
+    expect(await settings()).toContain('echo a');
+    await fse.outputFile(path.join(project, 'child', '.teamai', 'config.yaml'),
+      YAML.stringify({ scope: 'workspace', repo: { localPath: repo, remote: 'https://git.example.com/team.git' }, username: 'u', projects: ['b'] }));
+    const withChild = await readWorkspaceChildren(selfConfig);
+    expect(withChild.children?.children).toHaveLength(1);
+
+    await reconcileTeamHooksForConfig(teamConfig, withChild);
+
+    expect(await settings()).toContain('echo a');
+    expect(await settings()).not.toContain('echo b');
+
+    // The member edits the held entry's command; its marker and its record stay.
+    const file = path.join(project, '.claude', 'settings.json');
+    const edited = await fse.readJson(file);
+    edited.hooks.Stop.find((entry: { description?: string }) => entry.description?.includes('[teamai:hook:held]')).hooks[0].command = 'echo member-held';
+    await fse.writeJson(file, edited);
+
+    await reconcileTeamHooksForConfig(teamConfig, withChild);
+
+    expect(await settings()).toContain('echo member-held');
+    expect(await settings()).not.toContain('echo b');
+    const manifests = async (dir: string): Promise<string[]> => (await fse.readdir(dir, { withFileTypes: true })).reduce<Promise<string[]>>(
+      async (found, entry) => [...await found, ...entry.isDirectory() ? await manifests(path.join(dir, entry.name))
+        : entry.name === 'managed-hooks.json' ? [path.join(dir, entry.name)] : []], Promise.resolve([]));
+    const heldRecords = async (): Promise<string[]> => (await Promise.all([...await manifests(project), ...await manifests(home)]
+      .map(async (manifest) => ((await fse.readJson(manifest)).claude ?? []) as Array<{ id: string; command: string }>)))
+      .flat().filter((record) => record.id === 'held').map((record) => record.command);
+    expect(await heldRecords()).toEqual(['echo member-held']);
+  });
+
+  it('moves a held Codex hook between its file and the dispatcher as sharing.gitExclude changes (#913)', async () => {
+    await fse.ensureDir(path.join(project, '.codex'));
+    await fse.outputFile(path.join(repo, 'manifest', 'projects.yaml'),
+      YAML.stringify({ version: 1, projects: ['a', 'b'].map((id) => ({ id, resources: { hooks: [id] } })) }));
+    for (const namespace of ['a', 'b']) {
+      await fse.outputFile(path.join(repo, 'hooks', namespace, 'hooks.yaml'),
+        YAML.stringify({ hooks: [{ id: 'held', description: 'held', event: 'Stop', command: `echo ${namespace}`, tools: ['codex'] }] }));
+    }
+    const selfConfig = {
+      repo: { localPath: repo, remote: 'https://git.example.com/team.git', kind: 'self', businessRepoRoot: project },
+      username: 'u',
+      scope: 'project',
+      projectRoot: project,
+      projects: ['a'],
+      additionalRoles: [],
+      enabledAgents: ['codex'],
+    } as unknown as LocalConfig;
+    const team = (gitExclude: boolean): TeamaiConfig => ({ ...teamConfig, sharing: { gitExclude: { enabled: gitExclude } } }) as unknown as TeamaiConfig;
+    const root = await fse.realpath(project);
+    const inFile = async (command: string): Promise<boolean> => (await fse.readFile(path.join(project, '.codex', 'hooks.json'), 'utf8')).includes(command);
+    const dispatched = async (): Promise<string[]> => ((await dispatchedCodexHooks(root, root)) ?? []).map((hook) => hook.command);
+    await reconcileTeamHooksForConfig(team(false), selfConfig);
+    expect(await inFile('echo a')).toBe(true);
+    await fse.outputFile(path.join(project, 'child', '.teamai', 'config.yaml'),
+      YAML.stringify({ scope: 'workspace', repo: { localPath: repo, remote: 'https://git.example.com/team.git' }, username: 'u', projects: ['b'] }));
+    const withChild = await readWorkspaceChildren(selfConfig);
+    expect(withChild.children?.children).toHaveLength(1);
+
+    await reconcileTeamHooksForConfig(team(true), withChild);
+
+    expect(await inFile('echo a')).toBe(false);
+    expect(await dispatched()).toEqual([expect.stringContaining('echo a')]);
+
+    await reconcileTeamHooksForConfig(team(false), withChild);
+
+    expect(await inFile('echo a')).toBe(true);
+    expect(await inFile('echo b')).toBe(false);
+    expect(await dispatched()).toEqual([]);
+    await reconcileTeamHooksForConfig(team(false), withChild);
+    expect(await inFile('echo a')).toBe(true);
+  });
 });
 
 // ── Legacy <projectRoot> sweep (#370 follow-up) ──────────────
@@ -612,7 +811,7 @@ describe('reconcileTeamHooksForConfig — team hooks in the main checkout', () =
     const main = await fse.realpath(project);
     const worktree = path.join(await fse.realpath(os.tmpdir()), `teamai-recon-wt-${path.basename(main)}`);
     await fse.ensureDir(worktree);
-    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? main, projectAnchor: main }));
+    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? main, projectAnchor: main, mainCheckout: main }));
     vi.mocked(listWorktrees).mockResolvedValue([main, worktree]);
     return { main, worktree };
   }
@@ -1234,4 +1433,153 @@ hooks:
     // than the cmd.exe the gate used to be tested with.
     60_000,
   );
+});
+
+describe('reconcileHooks — a hook a workspace holds back (#913)', () => {
+  // Every format a HOME-installed tool's gated team hook is written in.
+  it.each(['cursor', 'copilot', 'zcode', 'codebuddy', 'codex-internal'])(
+    'gates a held hook in %s\'s file out of a child set up while it is held',
+    async (tool) => {
+      const root = await fse.realpath(project);
+      const [svcA, svcB] = [path.join(root, 'svc-a'), path.join(root, 'svc-b')];
+      await Promise.all([svcA, svcB].map((dir) => fse.ensureDir(dir)));
+      const file = path.join(home, `${tool}-hooks.json`);
+      const manifestPath = path.join(home, `${tool}-managed-hooks.json`);
+      const hook: HookDef = { source: 'team', key: 'held-hook', event: 'Stop', command: 'echo held-ran', description: '[teamai:hook:held-hook] held' };
+      const reconcile = (defs: HookDef[], childRoots: string[], heldTeamHookIds: string[] = []): Promise<void> =>
+        reconcileHooks(file, tool, defs, { manifestPath, teamOnly: true, teamHookProjectRoot: root, teamHookChildRoots: childRoots, heldTeamHookIds });
+      // Every string of the file that runs the hook: Copilot keeps it as bash, powershell and command.
+      const commands = async (): Promise<string[]> => {
+        const strings = (value: unknown): string[] => typeof value === 'string' ? [value]
+          : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
+        return strings(await fse.readJson(file)).filter((value) => value.includes('echo held-ran'));
+      };
+      const runIn = (command: string, cwd: string): string => execFileSync('sh', ['-c', command], { cwd, encoding: 'utf8', env: { ...process.env, PWD: cwd } });
+
+      await reconcile([hook], [svcA]);
+      const installed = await commands();
+      await reconcile([], [svcA, svcB], ['held-hook']);
+
+      const held = await commands();
+      expect(held).toHaveLength(installed.length);
+      for (const command of held) {
+        expect(runIn(command, root)).toBe('held-ran\n');
+        expect(runIn(command, svcA)).toBe('');
+        expect(runIn(command, svcB)).toBe('');
+      }
+      // Once the hold ends, the same entry is the one teamai replaces: none is left beside it.
+      await reconcile([hook], [svcA, svcB]);
+      expect(await commands()).toEqual(held);
+    },
+  );
+
+  it.each(['cursor', 'copilot', 'zcode', 'codebuddy', 'codex-internal'])(
+    'keeps a held hook in %s\'s file whose command runs teamai',
+    async (tool) => {
+      const root = await fse.realpath(project);
+      const file = path.join(home, `${tool}-hooks.json`);
+      const manifestPath = path.join(home, `${tool}-managed-hooks.json`);
+      const hook: HookDef = { source: 'team', key: 'held-hook', event: 'Stop', command: 'echo before && teamai pull --quiet && echo held-ran', description: '[teamai:hook:held-hook] held' };
+      const reconcile = (defs: HookDef[], heldTeamHookIds: string[] = []): Promise<void> =>
+        reconcileHooks(file, tool, defs, { manifestPath, teamHookProjectRoot: root, heldTeamHookIds });
+      const commands = async (): Promise<string[]> => {
+        const strings = (value: unknown): string[] => typeof value === 'string' ? [value]
+          : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
+        return strings(await fse.readJson(file)).filter((value) => value.includes('echo held-ran'));
+      };
+
+      await reconcile([hook]);
+      const installed = await commands();
+      expect(installed.length).toBeGreaterThan(0);
+      await reconcile([], ['held-hook']);
+
+      expect(await commands()).toEqual(installed);
+      expect((await fse.readJson(manifestPath))[tool].map((r: { id: string }) => r.id)).toEqual(['held-hook']);
+    },
+  );
+
+  it.each(['cursor', 'copilot', 'zcode', 'codebuddy', 'codex-internal'].flatMap((tool) => [
+    [tool, 'echo before && teamai pull --quiet && echo held-ran', false],
+    [tool, 'echo before && teamai pull --quiet && echo held-ran', true],
+    [tool, 'echo held-ran', true],
+  ] as const))(
+    'keeps a held hook in %s\'s file whose record was lost, and records it again (command %j, child set up meanwhile: %s)',
+    async (tool, command, childAdded) => {
+      const root = await fse.realpath(project);
+      const [svcA, svcB] = [path.join(root, 'svc-a'), path.join(root, 'svc-b')];
+      await Promise.all([svcA, svcB].map((dir) => fse.ensureDir(dir)));
+      const file = path.join(home, `${tool}-hooks.json`);
+      const manifestPath = path.join(home, `${tool}-managed-hooks.json`);
+      const hook: HookDef = { source: 'team', key: 'held-hook', event: 'Stop', command, description: '[teamai:hook:held-hook] held' };
+      const commands = async (): Promise<string[]> => {
+        const strings = (value: unknown): string[] => typeof value === 'string' ? [value]
+          : value && typeof value === 'object' ? Object.values(value).flatMap(strings) : [];
+        return strings(await fse.readJson(file)).filter((value) => value.includes('echo held-ran'));
+      };
+      const runIn = (shellCommand: string, cwd: string): string => execFileSync('sh', ['-c', shellCommand], { cwd, encoding: 'utf8', env: { ...process.env, PWD: cwd } });
+      await reconcileHooks(file, tool, [hook], { manifestPath, teamHookProjectRoot: root, teamHookChildRoots: [svcA] });
+      const installed = await commands();
+      expect(installed.length).toBeGreaterThan(0);
+      await fse.writeJson(manifestPath, {});
+
+      const childRoots = childAdded ? [svcA, svcB] : [svcA];
+      await reconcileHooks(file, tool, [], { manifestPath, teamHookProjectRoot: root, teamHookChildRoots: childRoots, heldTeamHookIds: ['held-hook'], teamHookHistory: async () => [hook] });
+
+      const kept = await commands();
+      expect(kept).toHaveLength(installed.length);
+      if (!childAdded) expect(kept).toEqual(installed);
+      // The hook keeps what it runs, and a child set up meanwhile is left out of it.
+      for (const keptCommand of kept) {
+        expect(keptCommand).toContain(command);
+        for (const child of childRoots) expect(runIn(keptCommand, child)).toBe('');
+      }
+      const records = (await fse.readJson(manifestPath))[tool] as Array<{ id: string; command: string }> | undefined;
+      expect(records?.map((r) => r.id)).toEqual(['held-hook']);
+      expect(kept).toContain(records![0].command);
+    },
+  );
+
+  it('keeps one entry for a held hook whose command another hook also had', async () => {
+    const root = await fse.realpath(project);
+    const file = path.join(home, '.cursor', 'hooks.json');
+    const manifestPath = path.join(home, 'managed-hooks.json');
+    const hook = (key: string, command: string): HookDef => ({ source: 'team', key, event: 'Stop', command, description: `[teamai:hook:${key}] ${key}` });
+    await reconcileHooks(file, 'cursor', [hook('held-hook', 'echo same-command'), hook('other-hook', 'echo same-command')], { manifestPath, teamHookProjectRoot: root });
+
+    await reconcileHooks(file, 'cursor', [hook('other-hook', 'echo changed-command')], { manifestPath, teamHookProjectRoot: root, heldTeamHookIds: ['held-hook'] });
+
+    const commands = (await fse.readJson(file)).hooks.stop.map((entry: { command: string }) => entry.command);
+    expect(commands.filter((c: string) => c.includes('echo same-command'))).toHaveLength(1);
+    expect(commands.filter((c: string) => c.includes('echo changed-command'))).toHaveLength(1);
+  });
+
+  it('stops recording a held hook whose entry the member deleted', async () => {
+    const root = await fse.realpath(project);
+    const file = path.join(home, '.cursor', 'hooks.json');
+    const manifestPath = path.join(home, 'managed-hooks.json');
+    const hook: HookDef = { source: 'team', key: 'held-hook', event: 'Stop', command: 'echo held-ran', description: '[teamai:hook:held-hook] held' };
+    await reconcileHooks(file, 'cursor', [hook], { manifestPath, teamHookProjectRoot: root });
+    const hooksJson = await fse.readJson(file);
+    hooksJson.hooks.stop = hooksJson.hooks.stop.filter((entry: { command: string }) => !entry.command.includes('echo held-ran'));
+    await fse.writeJson(file, hooksJson);
+
+    await reconcileHooks(file, 'cursor', [], { manifestPath, teamHookProjectRoot: root, heldTeamHookIds: ['held-hook'] });
+
+    expect((await fse.readJson(manifestPath)).cursor).toBeUndefined();
+  });
+
+  it('keeps a held hook in DeepSeek Harness\'s bridge file', async () => {
+    await fse.ensureDir(path.join(home, '.dsh'));
+    const manifestPath = path.join(home, 'managed-hooks.json');
+    const bridge = path.join(home, '.teamai', 'dsh', 'hooks.json');
+    const hook: HookDef = { source: 'team', key: 'held-hook', event: 'Stop', command: 'echo held-ran', description: '[teamai:hook:held-hook] held' };
+    const opts = { scope: 'project' as const, teamHookProjectRoot: await fse.realpath(project) };
+    await reconcileHooksToAllTools({ dsh: {} }, home, [hook], manifestPath, opts);
+    expect(await fse.readFile(bridge, 'utf8')).toContain('echo held-ran');
+
+    await reconcileHooksToAllTools({ dsh: {} }, home, [], manifestPath, { ...opts, heldTeamHookIds: ['held-hook'] });
+
+    expect(await fse.readFile(bridge, 'utf8')).toContain('echo held-ran');
+    expect((await fse.readJson(manifestPath)).dsh.map((r: { id: string }) => r.id)).toEqual(['held-hook']);
+  });
 });

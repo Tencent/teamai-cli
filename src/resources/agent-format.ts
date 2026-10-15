@@ -6,7 +6,7 @@ import { getDispatchCommand } from '../builtin-hooks.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'qoder-cn' | 'kiro' | 'zcode' | 'omp' | 'opencode' | 'workbuddy' | 'antigravity';
+export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'qoder-cn' | 'kiro' | 'zcode' | 'omp' | 'opencode' | 'workbuddy' | 'muse' | 'antigravity';
 
 export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'claude',
@@ -26,6 +26,7 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'omp',
   'opencode',
   'workbuddy',
+  'muse',
   'antigravity',
 ];
 
@@ -106,6 +107,7 @@ export interface AgentSpec {
     omp?: Record<string, unknown>;
     opencode?: Record<string, unknown>;
     workbuddy?: Record<string, unknown>;
+    muse?: Record<string, unknown>;
     antigravity?: Record<string, unknown>;
   };
   /**
@@ -355,6 +357,73 @@ export function renderForCopilot(spec: AgentSpec): RenderResult {
     ext: agentFileExtensionForTool('copilot'),
     content: matter.stringify(spec.instructions, frontmatterData),
   };
+}
+
+/**
+ * Muse Code 1.4.6 rejects a definition whose frontmatter holds any other key
+ * (`effort` and `color` included), or whose `tools` names a tool it does not
+ * have (`tools: unknown_tool`): the agent is then never started.
+ */
+const MUSE_AGENT_KEYS = new Set(['name', 'description', 'model', 'tools']);
+
+/** Muse Code 1.4.6's tool names, and the Claude names that map onto them. */
+const MUSE_TOOLS = new Set([
+  'add_memory', 'bash', 'bash_input', 'create_goal', 'cron_create', 'cron_delete', 'cron_list', 'edit_file',
+  'edit_memory', 'get_goal', 'monitor', 'read_file', 'read_memory', 'read_skill', 'report_progress', 'search',
+  'snooze_reminder', 'subagent_cancel', 'subagent_read_result', 'subagent_send_message', 'subagent_spawn',
+  'subagent_status', 'subagent_wait', 'update_goal', 'web_fetch', 'web_search', 'work_list', 'work_status',
+  'work_stop', 'workflow', 'write_file', 'write_todos',
+]);
+const MUSE_TOOL_ALIASES = new Map<string, string>([
+  ['read', 'read_file'],
+  ['write', 'write_file'],
+  ['edit', 'edit_file'],
+  ['multiedit', 'edit_file'],
+  ['bash', 'bash'],
+  ['grep', 'search'],
+  ['glob', 'search'],
+  ['webfetch', 'web_fetch'],
+  ['websearch', 'web_search'],
+  ['todowrite', 'write_todos'],
+  ['task', 'subagent_spawn'],
+  ['skill', 'read_skill'],
+]);
+
+/** `tools` in Muse Code's names, each once, and the names it has no tool for. */
+function museTools(tools: unknown): { kept: string[]; dropped: string[] } {
+  const names = Array.isArray(tools) ? tools.map(String)
+    : typeof tools === 'string' ? tools.split(',').map((tool) => tool.trim()).filter(Boolean) : [];
+  const kept = new Set<string>();
+  const dropped: string[] = [];
+  for (const name of names) {
+    const muse = MUSE_TOOLS.has(name) ? name : MUSE_TOOL_ALIASES.get(name.toLowerCase());
+    if (muse) kept.add(muse);
+    else dropped.push(name);
+  }
+  return { kept: [...kept], dropped };
+}
+
+/** What the Muse Code render of `spec` leaves out: tools it has no tool for, and `tool_extras.muse` keys it rejects. */
+export function museAgentDrops(spec: AgentSpec): { tools: string[]; extras: string[] } {
+  const extras = spec.tool_extras?.muse ?? {};
+  return {
+    tools: museTools(extras.tools ?? spec.tools).dropped,
+    extras: Object.keys(extras).filter((key) => !MUSE_AGENT_KEYS.has(key)),
+  };
+}
+
+/** Render an AgentSpec for Muse Code: its accepted keys only, `tools` in its names (`museAgentDrops` says what is left out). */
+export function renderForMuse(spec: AgentSpec): RenderResult {
+  const extras = Object.fromEntries(Object.entries(spec.tool_extras?.muse ?? {}).filter(([key]) => MUSE_AGENT_KEYS.has(key)));
+  const frontmatterData: Record<string, unknown> = { name: spec.name, description: spec.description };
+  if (spec.model !== undefined) frontmatterData['model'] = spec.model;
+  Object.assign(frontmatterData, extras);
+  // Muse gives an agent with no `tools` every tool, so one that limits its
+  // tools keeps the limit, as `tools: []` when Muse has none of them.
+  const requested = extras.tools ?? spec.tools;
+  if (requested !== undefined && requested !== null) frontmatterData['tools'] = museTools(requested).kept;
+  else delete frontmatterData['tools'];
+  return { ext: agentFileExtensionForTool('muse'), content: matter.stringify(spec.instructions, frontmatterData) };
 }
 
 /**
@@ -625,6 +694,20 @@ export function reverseFromWorkbuddy(filePath: string, content: string): Reverse
     spec.tool_extras = { workbuddy: spec.tool_extras['claude'] };
   }
   return { ok: true, spec };
+}
+
+/**
+ * Reverse a Muse Code .md file. Its `tools` are Muse Code's names
+ * (`read_file`), which no other tool has, so like OpenCode's they stay in
+ * tool_extras.muse, which the Muse render reads ahead of the canonical `tools`.
+ */
+export function reverseFromMuse(filePath: string, content: string): ReverseResult {
+  const result = reverseFromClaude(filePath, content);
+  if (!result.ok) return result;
+
+  const { tools, tool_extras, ...spec } = result.spec;
+  const extras = { ...tool_extras?.['claude'], ...(tools !== undefined ? { tools } : {}) };
+  return { ok: true, spec: Object.keys(extras).length > 0 ? { ...spec, tool_extras: { muse: extras } } : spec };
 }
 
 /**
@@ -970,6 +1053,7 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
     case 'kiro': return renderForKiro(target);
     case 'opencode': return renderForOpencode(target, fields);
     case 'workbuddy': return renderForWorkbuddy(target);
+    case 'muse': return renderForMuse(target);
   }
 }
 

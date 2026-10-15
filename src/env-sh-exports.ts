@@ -77,12 +77,13 @@ export function markedAsExported(env: NodeJS.ProcessEnv): (key: string, value: s
   return (key, value) => marked.has(markedDigest(key, value));
 }
 
-function recordPath(envShPath: string): string {
+/** The record beside `envShPath`. */
+export function envShExportsPath(envShPath: string): string {
   return path.join(path.dirname(envShPath), RECORD_FILE);
 }
 
 async function readRecord(envShPath: string): Promise<Map<string, string[]>> {
-  const file = recordPath(envShPath);
+  const file = envShExportsPath(envShPath);
   const content = await readFileSafe(file);
   if (content === null) return new Map();
   let raw: unknown;
@@ -111,6 +112,6 @@ export async function recordEnvShExports(envShPath: string, exports: Iterable<re
     const kept = (record.get(key) ?? []).filter((entry) => entry !== digest);
     record.set(key, [...kept, digest].slice(-KEPT_PER_KEY));
   }
-  await writeJsonAtomic(recordPath(envShPath), Object.fromEntries(record), { mode: 0o600 });
+  await writeJsonAtomic(envShExportsPath(envShPath), Object.fromEntries(record), { mode: 0o600 });
   return new Map([...record].map(([key, digests]) => [key, new Set(digests)]));
 }

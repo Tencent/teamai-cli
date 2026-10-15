@@ -32,6 +32,14 @@ describe('unified dashboard', () => {
     expect(html).toContain("['repo','repoKey','repoLabel','All repositories']");
   });
 
+  it('adds a Resources page listing rule delivery state (#1028)', () => {
+    const html = getDashboardHtml(3721);
+    expect(html).toContain("resources: 'Resources'");
+    expect(html).toContain('/api/resources/rules');
+    expect(html).toContain("errorPanel('Could not load rules.','rules')");
+    expect(html).toContain('Omitted by tag subscriptions');
+  });
+
   it('counts priced sessions rather than requests; includes resumed costs in first-stop cohorts', () => {
     const result = summarizeSessionCosts(new Map([
       ['current', snapshot('2026-09-16', [['2026-09-15', 8, 600_000], ['2026-09-16', 2, 400_000]])],

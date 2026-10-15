@@ -652,6 +652,8 @@ export async function syncTeamModelProfiles(localConfig: LocalConfig, options: {
     const id = name.slice('team:'.length);
     const profile = team.profiles.find((candidate) => candidate.id === id);
     const keep = `${agents.join(', ')} keep${agents.length === 1 ? 's' : ''} ${agents.length === 1 ? 'its' : 'their'} settings`;
+    // A profile a workspace holds back (#913): the agents keep what they have.
+    if (!profile && resolution.held?.includes(id)) continue;
     if (!profile) {
       // Legacy mode reads no namespace, so there a profile only ever goes away.
       const why = resolution.active !== null && await inactiveNamespaceDefines(localConfig.repo.localPath, resolution.active, id)

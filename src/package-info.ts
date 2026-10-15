@@ -14,7 +14,7 @@ interface PackageJsonFields {
  *
  * The path `../package.json` is kept literal so it resolves both in source
  * form (src/package-info.ts → ../package.json) and when bundled by tsup
- * (dist/index.js → ../package.json). Do not move this file into a nested
+ * (dist/cli.js → ../package.json). Do not move this file into a nested
  * folder without adjusting the bundler banner/resolver.
  */
 function loadPackageJson(): PackageJsonFields {

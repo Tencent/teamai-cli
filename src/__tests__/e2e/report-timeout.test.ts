@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,14 +10,16 @@ import { dataHomeKey } from '../../dashboard-collector.js';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const cli = path.join(root, 'dist/index.js');
 const agents = { claude: '.claude', codex: '.codex', codebuddy: '.codebuddy', opencode: '.config/opencode' };
-let sandbox: string;
+// Removed after the file: the slow-push cases run concurrently.
+const sandboxes = new Set<string>();
 
 function git(args: string[], cwd: string, env: NodeJS.ProcessEnv): string {
   return execFileSync('git', args, { cwd, env, encoding: 'utf8', windowsHide: true });
 }
 
 function fixture(agent: keyof typeof agents, provider: string, team: Record<string, unknown> = {}) {
-  sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-report-timeout-'));
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-report-timeout-'));
+  sandboxes.add(sandbox);
   const home = path.join(sandbox, 'home');
   const seed = path.join(sandbox, 'seed');
   const remote = path.join(sandbox, 'remote.git');
@@ -29,6 +31,10 @@ function fixture(agent: keyof typeof agents, provider: string, team: Record<stri
     GIT_AUTHOR_NAME: 'Report Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
     GIT_COMMITTER_NAME: 'Report Test', GIT_COMMITTER_EMAIL: 'test@example.invalid', FORCE_COLOR: '0' };
   fs.writeFileSync(path.join(seed, 'teamai.yaml'), YAML.stringify({ team: 'report-test', repo: remote, provider, ...team }));
+  // The 'review' skill the fixture records usage for must be in the team's
+  // shared catalog: #1055 filters published stats to catalog names.
+  fs.mkdirSync(path.join(seed, 'skills', 'review'), { recursive: true });
+  fs.writeFileSync(path.join(seed, 'skills', 'review', 'SKILL.md'), '# review\n');
   git(['init', '-q', '-b', 'main'], seed, env);
   git(['add', '.'], seed, env);
   git(['commit', '-q', '-m', 'fixture'], seed, env);
@@ -100,16 +106,19 @@ function fixture(agent: keyof typeof agents, provider: string, team: Record<stri
   return { home, env, clone, usage, usageLine, dashboard, seedEvents, receiver, pull, stats, snapshot, run, runId };
 }
 
-afterEach(() => {
-  if (sandbox && path.dirname(sandbox) === os.tmpdir() && path.basename(sandbox).startsWith('teamai-report-timeout-')) {
-    fs.rmSync(sandbox, { recursive: true, force: true });
+afterAll(() => {
+  for (const sandbox of sandboxes) {
+    if (path.dirname(sandbox) === os.tmpdir() && path.basename(sandbox).startsWith('teamai-report-timeout-')) {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
   }
 });
 
 describe('real CLI report completion', () => {
   for (const provider of ['git', 'gitlab', 'github']) {
     for (const agent of Object.keys(agents) as Array<keyof typeof agents>) {
-      it(`acknowledges slow pushes once: ${provider}/${agent}`, async () => {
+      // Concurrent: each case mostly waits out the remote's slow push, in its own sandbox.
+      it.concurrent(`acknowledges slow pushes once: ${provider}/${agent}`, async ({ expect }) => {
         const f = fixture(agent, provider);
         await f.pull(); // Warm reports worktree without any session data.
         await f.seedEvents();

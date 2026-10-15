@@ -797,8 +797,8 @@ describe('init project scope (sandboxed)', () => {
         );
         expect(cfg).toContain('repo:');
         expect(cfg).toContain('localPath');
-        expect(cfg).toMatch(/scope:\s*project/);
-        expect(result.output).toMatch(/Scope: project/);
+        expect(cfg).toMatch(/scope:\s*workspace/);
+        expect(result.output).toMatch(/Scope: workspace/);
       } finally {
         fs.rmSync(homeSandbox, { recursive: true, force: true });
       }

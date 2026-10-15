@@ -71,6 +71,8 @@ export interface DshHookReconcileOptions {
   manifestPath?: string;
   removeAll?: boolean;
   builtinOverride?: BuiltinHookOverride;
+  /** The team hook ids a workspace holds back (#913), kept as installed. */
+  heldTeamHookIds?: readonly string[];
 }
 
 /**
@@ -90,6 +92,7 @@ export async function reconcileDshHooks(
     manifestPath: opts.manifestPath,
     removeAll: opts.removeAll,
     builtinOverride: opts.builtinOverride,
+    heldTeamHookIds: opts.heldTeamHookIds,
   });
 
   if (opts.removeAll) {

@@ -6,13 +6,14 @@ import { isToolInstalledForConfig, ResourceHandler, type PlacementRecords, type 
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { resolveToolBaseDir, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
+import { resolveToolBaseDir, installScopeName, isAgentExcluded, isSelfMode, scopedToolPaths } from '../types.js';
 import { BUILTIN_AGENT_NAMES } from '../builtin-agents.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 import { loadStateForScope } from '../config.js';
 import { placedResourcePath } from '../push-namespaces.js';
+import { recordedNamespace } from '../utils/pending-push.js';
 import { itemCandidate, resolveNamespacedItems, type NamespaceResolution } from '../namespace-resolver.js';
 import { getFileContentAtRev, getFileContentWhenAdded, isPastVersionOf } from '../utils/git.js';
 import {
@@ -32,6 +33,7 @@ import {
   reverseFromCopilot,
   reverseFromJoycode,
   reverseFromKiro,
+  reverseFromMuse,
   reverseFromOpencode,
   reverseFromWorkbuddy,
   mergeReverseResults,
@@ -41,6 +43,7 @@ import {
   ALL_SUPPORTED_TOOLS,
   AGENT_FILE_EXTENSIONS,
   agentStemFromFilename,
+  museAgentDrops,
 } from './agent-format.js';
 import type { AgentSpec, ToolName, ReverseResult, ParseResult, MergeResult, RenderResult } from './agent-format.js';
 
@@ -229,7 +232,7 @@ export class AgentsHandler extends ResourceHandler {
     // Agents this machine placed in a namespace and has awaiting review: the
     // open PR is their destination, not "no active source".
     const pendingPlacedAgents = new Set((pendingPushes ?? []).flatMap((entry) => entry.items)
-      .filter((item) => item.type === 'agents' && item.relativePath.split('/').length === 3)
+      .filter((item) => item.type === 'agents' && recordedNamespace(item) !== undefined)
       .map((item) => item.name));
 
     const directItems: AgentResourceItem[] = [];
@@ -729,6 +732,15 @@ export class AgentsHandler extends ResourceHandler {
     if (spec) {
       for (const { tool } of renders) {
         for (const warning of aliasWarningsFor(aliases, spec, tool)) warnOnce(`[agents] ${warning}`);
+        if (tool === 'muse') {
+          const drops = museAgentDrops(spec);
+          for (const name of drops.tools) {
+            warnOnce(`[agents] ${item.relativePath}: Muse Code has no tool for ${name}, so its muse copy leaves it out of tools.`);
+          }
+          for (const key of drops.extras) {
+            warnOnce(`[agents] ${item.relativePath}: Muse Code rejects an agent file setting ${key}, so its muse copy leaves tool_extras.muse.${key} out.`);
+          }
+        }
       }
     }
     for (const { tool, dest, render, origin } of renders) {
@@ -1043,12 +1055,12 @@ export class AgentsHandler extends ResourceHandler {
         const recorded = records[item.name]?.[tool];
         const recordedRender = recorded ? await this.renderedForTool(item, tool, aliases, recorded) : null;
         if (current !== expected.content && current !== recordedRender?.content) {
-          log.warn(`[${localConfig.scope}] Kept agent "${item.name}" (${tool}): it differs from the team source ${item.relativePath}. Back it up, then delete it manually.`);
+          log.warn(`[${installScopeName(localConfig.scope)}] Kept agent "${item.name}" (${tool}): it differs from the team source ${item.relativePath}. Back it up, then delete it manually.`);
           continue;
         }
         if (await keepsTrackedCopy(deployed)) continue;
         await remove(deployed);
-        log.debug(`[${localConfig.scope}] Removed inactive role-scoped agent ${item.name} from ${tool}`);
+        log.debug(`[${installScopeName(localConfig.scope)}] Removed inactive role-scoped agent ${item.name} from ${tool}`);
       }
     }
   }
@@ -1842,5 +1854,7 @@ function reverseByParser(tool: ToolName, filePath: string, content: string): Rev
       return reverseFromOpencode(filePath, content);
     case 'workbuddy':
       return reverseFromWorkbuddy(filePath, content);
+    case 'muse':
+      return reverseFromMuse(filePath, content);
   }
 }

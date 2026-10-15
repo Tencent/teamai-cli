@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
+import { parse } from 'smol-toml';
 import { execFileSync } from 'node:child_process';
 
 vi.mock('../utils/logger.js', () => ({
@@ -74,6 +75,30 @@ async function runResponse(
 }
 
 describe('local-agent: MCP install/uninstall commands', () => {
+  it.each(['', 'model = "gpt-5"', 'model = "gpt-5"\r\n'])('leaves Codex config.toml byte-identical when it installs or removes a server again, over %j', async (initial) => {
+    const file = path.join(tmpDir, '.codex', 'config.toml');
+    await fse.ensureDir(path.dirname(file));
+    await fse.writeFile(file, initial);
+    let id = 12000;
+    const run = async (slug: string, type: 'install_mcp' | 'uninstall_mcp'): Promise<string> => {
+      const command = { id: id++, type, scope: 'user', slug, version: '1', mcp_config: { transport: 'http', url: `https://${slug}.example.com/mcp` } };
+      expect((await runResponse({ cmds: [command] }, 'codex'))[0].status).toBe('success');
+      return fse.readFile(file, 'utf8');
+    };
+
+    await run('a', 'install_mcp');
+    const installed = await run('b', 'install_mcp');
+    expect(await run('b', 'install_mcp')).toBe(installed);
+    expect(await run('a', 'install_mcp')).toBe(installed);
+
+    await fse.appendFile(file, '[mcp_servers.mine]\ncommand = "mine"\n');
+    const removed = await run('a', 'uninstall_mcp');
+    expect(await run('a', 'uninstall_mcp')).toBe(removed);
+    expect(await run('b', 'install_mcp')).toBe(removed);
+    await run('b', 'uninstall_mcp');
+    expect(parse(await fse.readFile(file, 'utf8')).mcp_servers).toEqual({ mine: { command: 'mine' } });
+  });
+
 
   it('installs and removes Pi MCP with native transport and timeout units', async () => {
     const file = path.join(tmpDir, '.pi', 'agent', 'mcp.json');

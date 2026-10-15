@@ -122,7 +122,7 @@ describe('recall scope isolation (issue #73)', () => {
 
     expect(captured).toContain(PROJECT_TITLE);
     expect(captured).not.toContain(USER_TITLE);
-    expect(captured).toContain('[project]');
+    expect(captured).toContain('[workspace]');
     // User scope must never be initialized in project mode.
     expect(requireInit).not.toHaveBeenCalled();
   });
@@ -147,7 +147,7 @@ describe('recall scope isolation (issue #73)', () => {
 
     expect(captured).toContain(PROJECT_TITLE);
     expect(captured).toContain(USER_TITLE);
-    expect(captured).toContain('[project]');
+    expect(captured).toContain('[workspace]');
     expect(captured).toContain('[user]');
   });
 

@@ -222,6 +222,21 @@ export async function readManifestFile(manifestPath: string, kind: 'projects' | 
   return content;
 }
 
+const parsedManifests = new Map<string, { content: string; manifest: unknown }>();
+
+/**
+ * `parse(content)`, the manifest read from `manifestPath`, parsed once per
+ * text: resolving namespaces loads the same manifest many times in one run.
+ * Every caller gets its own copy, as some edit what they load.
+ */
+export function parseManifestOnce<T>(manifestPath: string, content: string, parse: (content: string) => T): T {
+  const known = parsedManifests.get(manifestPath);
+  if (known?.content === content) return structuredClone(known.manifest as T);
+  const manifest = parse(content);
+  parsedManifests.set(manifestPath, { content, manifest: structuredClone(manifest) });
+  return manifest;
+}
+
 /** One namespace as a manifest declares it, with the entry that declares it. */
 export interface NamespaceEntry {
   type: string;

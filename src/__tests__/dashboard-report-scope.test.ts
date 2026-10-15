@@ -4,7 +4,7 @@
  * each scope pushes. Only the reports-branch push and the handlers that reach
  * the network or spawn processes are stubbed.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it as vitestIt, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,7 +15,23 @@ import type { LocalConfig } from '../types.js';
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   // The detached background pass: run inline instead (bgOnly) so its writes are observable.
-  spawn: vi.fn(() => ({ on: vi.fn(), stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) }, unref: vi.fn() })),
+  // A foreground dispatch with a background handler still spawns the detached
+  // child for real (spawnBackground): on win32 that goes through the WMI
+  // escape first, whose promise only settles via the process's own
+  // 'close'/'error' event. A bare `on: vi.fn()` never fires it, hanging every
+  // such test until timeout -- so this fires 'close' with a success code,
+  // same as hook-dispatch-cli.test.ts's fakePowerShell helper.
+  spawn: vi.fn(() => {
+    const child = {
+      stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) },
+      on(event: string, cb: (...args: unknown[]) => void) {
+        if (event === 'close') setTimeout(() => cb(0), 0);
+        return child;
+      },
+      unref: vi.fn(),
+    };
+    return child;
+  }),
 }));
 vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined) }));
 vi.mock('../update.js', () => ({
@@ -26,12 +42,20 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
-// Each scope's reports branch is a plain directory next to its team repo.
+// Each scope's reports branch is a plain directory next to its team repo. The
+// mock publishes immediately: the write lands, `onDelivered` hooks run, and
+// "origin" is that same directory's current content.
 vi.mock('../utils/reports-branch.js', () => ({
-  updateReports: vi.fn(async (cfg: LocalConfig, write: (wt: string) => Promise<unknown>) => {
+  updateReports: vi.fn(async (cfg: LocalConfig, write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<unknown>) => {
     const dir = path.join(path.dirname(cfg.repo.localPath), 'reports-wt');
     fs.mkdirSync(dir, { recursive: true });
-    return (await write(dir)) != null;
+    const delivered: (() => Promise<void>)[] = [];
+    const change = await write(dir, { onDelivered: (fn) => { delivered.push(fn); } });
+    for (const fn of delivered) await fn();
+    return { status: change != null ? 'published' : 'already-present' };
+  }),
+  readReportsOriginFile: vi.fn(async (wt: string, relPath: string) => {
+    try { return fs.readFileSync(path.join(wt, relPath), 'utf8'); } catch { return null; }
   }),
 }));
 
@@ -44,24 +68,38 @@ const { dataHomeKey } = await import('../dashboard-collector.js');
 const dataHomeKeyOf = (config: LocalConfig) => dataHomeKey(getDataHome(config));
 
 let tmp: string;
-let originalHome: string | undefined;
-let originalCwd: string;
+const originalHome = process.env.HOME;
+const originalCwd = process.cwd();
+
+// HOME is process-wide, and Vitest does not stop a test body that times out:
+// left running, it writes into the next test's HOME and fails that test. So
+// each test's body is kept, and afterEach waits for it before that HOME goes.
+let body: Promise<void> | undefined;
+const keep = <A extends unknown[]>(fn: (...args: A) => Promise<void>) => (...args: A) => (body = fn(...args));
+const it = Object.assign((name: string, fn: () => Promise<void>) => vitestIt(name, keep(fn)), {
+  each: <T extends unknown[] | [unknown]>(cases: readonly T[]) =>
+    (name: string, fn: (...args: T) => Promise<void>) => vitestIt.each(cases)(name, keep(fn)),
+});
 
 beforeEach(async () => {
   tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dashboard-scope-')));
-  originalHome = process.env.HOME;
-  originalCwd = process.cwd();
   process.env.HOME = path.join(tmp, 'home');
   fs.mkdirSync(process.env.HOME);
   // Copilot runs the built-ins it has installed.
   await reconcileHooks(path.join(process.env.HOME, '.copilot', 'hooks', 'teamai.json'), 'copilot');
 });
 
-afterEach(() => {
-  process.chdir(originalCwd);
-  if (originalHome === undefined) delete process.env.HOME;
-  else process.env.HOME = originalHome;
-  fs.rmSync(tmp, { recursive: true, force: true });
+afterEach(async () => {
+  // A wait that outlives hookTimeout lets the next test start: this teardown
+  // then removes only its own directory and leaves that test's HOME alone.
+  const own = { tmp, home: process.env.HOME };
+  await Promise.allSettled([body]);
+  if (process.env.HOME === own.home) {
+    process.chdir(originalCwd);
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+  }
+  fs.rmSync(own.tmp, { recursive: true, force: true });
 });
 
 const teamaiHome = () => path.join(tmp, 'home', '.teamai');

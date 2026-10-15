@@ -21,6 +21,7 @@ const mockGit = {
   pull: vi.fn(),
   fetch: vi.fn(),
   raw: vi.fn(),
+  outputHandler: vi.fn().mockReturnThis(),
 };
 
 vi.mock('simple-git', () => ({
@@ -43,6 +44,15 @@ vi.mock('node:fs', () => ({
 
 vi.mock('node:fs/promises', () => ({ realpath: vi.fn(async (p: string) => p) }));
 
+// The repositories here exist only in the simple-git mock, not on disk.
+vi.mock('../utils/git-discovery.js', () => ({
+  gitFindsNoRepository: vi.fn(async () => false),
+  // A new stamp each time: no list is reused across the mock's answers.
+  linkedWorktreesStamp: vi.fn(async () => crypto.randomUUID()),
+  // No stamp: each question goes to the mock as its own git call.
+  repositoryStamp: vi.fn(async () => null),
+}));
+
 vi.mock('../utils/logger.js', () => ({
   log: {
     info: vi.fn(),
@@ -55,17 +65,17 @@ vi.mock('../utils/logger.js', () => ({
   },
 }));
 
-import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin, gitCommonDir } from '../utils/git.js';
+import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin, gitCommonDir, unusedBranchName } from '../utils/git.js';
 import fse from 'fs-extra';
 
 describe('gitCommonDir', () => {
-  it('probes a stable checkout only once during a run', async () => {
-    const cwd = path.resolve('common-dir-stable');
-    mockGit.revparse.mockClear().mockResolvedValue('.git');
+  it('asks git each time when no repository on disk vouches for the answer', async () => {
+    const cwd = path.resolve('common-dir-unstamped');
+    mockGit.revparse.mockClear().mockResolvedValueOnce('.git').mockResolvedValue('other/.git');
 
     expect(await gitCommonDir(cwd)).toBe(path.join(cwd, '.git'));
-    expect(await gitCommonDir(cwd)).toBe(path.join(cwd, '.git'));
-    expect(mockGit.revparse).toHaveBeenCalledTimes(1);
+    expect(await gitCommonDir(cwd)).toBe(path.join(cwd, 'other', '.git'));
+    expect(mockGit.revparse).toHaveBeenCalledTimes(2);
   });
 
   it('retries when a repository becomes available after a failed probe', async () => {
@@ -75,6 +85,26 @@ describe('gitCommonDir', () => {
     expect(await gitCommonDir(cwd)).toBeNull();
     expect(await gitCommonDir(cwd)).toBe(path.join(cwd, '.git'));
     expect(mockGit.revparse).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('unusedBranchName', () => {
+  it('is the generated name when no branch has it', async () => {
+    mockGit.raw.mockReset().mockResolvedValue('');
+    expect(await unusedBranchName('/repo', 'alice')).toMatch(/^teamai\/push\/alice\/\d{8}-\d{6}$/);
+  });
+
+  it('takes the first free suffix when a push in the same second has the name, locally or on origin', async () => {
+    mockGit.raw.mockReset().mockImplementation(async (args: string[]) => {
+      const name = args.at(-4)!.slice('refs/heads/'.length);
+      return [`refs/heads/${name}`, `refs/remotes/origin/${name}-2`, ''].join('\n');
+    });
+    expect(await unusedBranchName('/repo', 'alice')).toMatch(/^teamai\/push\/alice\/\d{8}-\d{6}-3$/);
+  });
+
+  it('is the generated name when git cannot list the branches', async () => {
+    mockGit.raw.mockReset().mockRejectedValue(new Error('not a repository'));
+    expect(await unusedBranchName('/repo', 'alice')).toMatch(/^teamai\/push\/alice\/\d{8}-\d{6}$/);
   });
 });
 

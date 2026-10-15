@@ -308,7 +308,8 @@ describe.skipIf(process.platform === 'win32')('removing the HTTP local agent rem
 
     expect(out.code, out.output).toBe(0);
     expect(out.output).toContain('home directory only');
-    expect(fs.existsSync(path.join(m.home, '.teamai')), out.output).toBe(false);
+    // The project is still registered: its state, the env registry and the loader stay (#1018).
+    expect(fs.readdirSync(path.join(m.home, '.teamai')).sort(), out.output).toEqual(['env-loader.sh', 'env-scopes', 'projects']);
     expect(block(app), out.output).toBeNull();
     expect(fs.existsSync(path.join(app, '.claude', 'rules', 'home-rule.md'))).toBe(false);
     // This uninstall leaves the CLI's skill in the project: its line stays, named.

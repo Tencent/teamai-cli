@@ -13,6 +13,7 @@ const mockGit = {
   push: vi.fn(),
   revparse: vi.fn().mockResolvedValue('main'),
   raw: vi.fn(),
+  outputHandler: vi.fn().mockReturnThis(),
 };
 
 vi.mock('simple-git', () => ({
@@ -770,6 +771,7 @@ describe('init', () => {
       await initWithTeamConfig();
 
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('The built-in teamai skill is ready in your IDE'));
+      expect(log.info).toHaveBeenCalledWith(expect.stringContaining('not copied during init'));
       expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('not deployed'));
     });
 
@@ -909,7 +911,7 @@ describe('init', () => {
 
       await init({ repo: 'https://git.woa.com/HyperAI/teamai-test.git' });
 
-      expect(log.info).toHaveBeenCalledWith(expect.stringMatching(/^Scope: project /));
+      expect(log.info).toHaveBeenCalledWith(expect.stringMatching(/^Scope: workspace /));
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('config    →'));
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining('--scope user'));
       expect(saveLocalConfigForScope).toHaveBeenCalledWith(

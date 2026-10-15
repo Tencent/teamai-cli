@@ -31,6 +31,7 @@ interface TodoWriteHintCache {
 interface HookInput {
   toolName: string;
   sessionId: string;
+  payload: Record<string, unknown>;
 }
 
 /**
@@ -100,19 +101,30 @@ export async function readStdin(): Promise<HookInput | null> {
   try {
     const data = JSON.parse(raw) as Record<string, unknown>;
     const toolName = typeof data.tool_name === 'string' ? data.tool_name : '';
-    return { toolName, sessionId: deriveSessionId(data) };
+    return { toolName, sessionId: deriveSessionId(data), payload: data };
   } catch {
     return null;
   }
 }
 
 /**
- * Build the bilingual reminder text emitted via additionalContext.
+ * Reminder text emitted via additionalContext.
+ * English only when language is `en`; otherwise the historical bilingual text.
  *
  * Kept as a small pure function so unit tests can assert on its content
  * without exercising STDIN handling.
  */
-export function buildHintMessage(): string {
+export function buildHintMessage(language?: 'en' | 'zh'): string {
+  if (language === 'en') {
+    return [
+      '[teamai:todowrite-hint] Task plan detected.',
+      '',
+      'If this task may benefit from the team knowledge base (not a trivial local',
+      'change, and the user has not provided the relevant context), call the',
+      '`teamai-recall` subagent once via the Agent tool before proceeding.',
+      'Skip that when the user already gave enough context or the change is trivial.',
+    ].join('\n');
+  }
   return [
     '[teamai:todowrite-hint] 任务已规划。',
     '',
@@ -135,7 +147,7 @@ export function buildHintMessage(): string {
  * - Per-session deduplication: at most one hint per session per 24h.
  * - On match, writes a hookSpecificOutput JSON line to STDOUT.
  */
-export async function todoWriteHint(): Promise<void> {
+export async function todoWriteHint(tool?: string): Promise<void> {
   if (process.env.TEAMAI_RECALL_DISABLED === '1') return;
 
   const input = await readStdin();
@@ -153,10 +165,12 @@ export async function todoWriteHint(): Promise<void> {
     return;
   }
 
+  const { loadTeamAgentLanguageForHook } = await import('./config.js');
+  const language = await loadTeamAgentLanguageForHook(input.payload, tool);
   const hookOutput = JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
-      additionalContext: buildHintMessage(),
+      additionalContext: buildHintMessage(language),
     },
   });
   process.stdout.write(hookOutput + '\n');

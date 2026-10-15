@@ -90,11 +90,13 @@ says so and why.)
    session, use the name of **this** tool — do not assume Claude Code or Cursor.
    Some hosts need extra manual steps for hooks — see the troubleshooting
    reference ("Agent-specific caveats").
-5. **Team secrets: the user types the value, you run the CLI.** When the team
-   declares secrets (the session-start context lists them; `teamai env list`
-   shows them), run the CLIs that use them through `teamai env exec -- <command>`,
-   `--` first, so they get this team's value. It is for CLIs, not for starting
-   an agent: a secret named like a model profile's (`ANTHROPIC_*`) overrides it.
+5. **Team env: run the CLI through `teamai env exec`; the user types secret values.**
+   When the team delivers env variables or secrets (the session-start context
+   lists them; `teamai env list` shows them), run the CLIs that use them through
+   `teamai env exec -- <command>`, `--` first, so they get this directory's team
+   values: the shell you run commands in may carry another project's. It is for
+   CLIs, not for starting an agent: a secret named like a model profile's
+   (`ANTHROPIC_*`) overrides it.
    When a secret is missing, ask the user to run `teamai env set KEY` in their
    own terminal. Never ask for a value in chat, pass one to `--stdin` or
    `--secret`, read the files under `~/.teamai/secrets/`, or print one
@@ -138,7 +140,7 @@ history (a skill: every file in it); any other is kept as the user's
 (`Kept <path>: it is not teamai's ...`): rename or delete it, then `teamai pull`,
 to receive the team version.
 
-In project scope, `init` and `pull` also install a git hook in the repository's
+In workspace scope, `init` and `pull` also install a git hook in the repository's
 local git config (`hook.teamai-post-checkout`, `hook.teamai-post-merge`, `hook.teamai-post-rewrite`; Git
 2.54+; older Git without `core.hooksPath` gets a marked block in `.git/hooks/`
 scripts, and with it `teamai doctor` advises), beside any `core.hooksPath` manager or `.git/hooks` script. When a
@@ -173,7 +175,7 @@ aliases:
 in that tool's own field: `effort` for the Claude family, CodeBuddy, Qoder and Qoder CN,
 `model_reasoning_effort` for the Codex family, `variant` for OpenCode. Cursor takes
 effort inside its model string (`claude-opus-5[effort=high]`); Copilot, Kiro, WorkBuddy,
-JoyCode, ZCode and OMP take none, and pull warns and drops an effort mapped for them.
+JoyCode, ZCode, OMP and Muse Code take none, and pull warns and drops an effort mapped for them.
 Qoder CN uses the `qoder` entry; only the Claude and Codex variants and Qoder CN inherit
 an entry, so never expect a `claude` model in Qoder or ZCode. A tool the alias does
 not map gets no `model` and uses its default; a concrete model such as `opus` is

@@ -30,10 +30,12 @@ export interface CodexHookTrustRequest {
   codexHome: string;
   /** Directory whose hook layers are listed. */
   cwd: string;
-  /** Exact generated entries, with Codex's file/event/position key. */
-  hooks: Array<{ file: string; command: string; key: string }>;
+  /** Exact generated entries, with Codex's file/event/position key; Codex on Windows lists an entry by its `commandWindows`. */
+  hooks: Array<{ file: string; command: string; commandWindows?: string; key: string }>;
   /** Project to trust first, so Codex reads its `.codex/` layer (realpath). */
   project?: string;
+  /** Record ownership only when this pass actually creates project trust. */
+  onProjectTrusted?: (project: string) => Promise<void>;
 }
 
 /** What Codex says about each hook teamai wrote, for `doctor`. */
@@ -186,13 +188,14 @@ async function batchWrite(server: AppServer, keyPath: string, value: Record<stri
  * after the call: `trusted`, or `untrusted` when the member marked it so in
  * Codex — that choice is theirs and is never overwritten.
  */
-async function ensureProjectTrusted(server: AppServer, project: string): Promise<'trusted' | 'untrusted'> {
+async function ensureProjectTrusted(server: AppServer, project: string, onWritten?: (project: string) => Promise<void>): Promise<'trusted' | 'untrusted'> {
   const read = await server.request('config/read', {}) as
     { config?: { projects?: Record<string, { trust_level?: string }> | null } } | null;
   const level = read?.config?.projects?.[project]?.trust_level;
   if (level === 'trusted') return 'trusted';
   if (level === 'untrusted') return 'untrusted';
   await batchWrite(server, 'projects', { [project]: { trust_level: 'trusted' } });
+  await onWritten?.(project);
   return 'trusted';
 }
 
@@ -211,8 +214,35 @@ export async function trustCodexProject(req: { codexHome: string; project: strin
   });
 }
 
+/** Remove a recorded trust grant only while it still contains exactly what teamai wrote. */
+export async function removeOwnedCodexProjectTrust(req: { codexHome: string; project: string }): Promise<
+  { kind: 'removed' | 'kept' } | AppServerFailure
+> {
+  const project = canonical(req.project);
+  return withAppServer(req.codexHome, async (server) => {
+    const read = await server.request('config/read', {}) as {
+      config?: { projects?: Record<string, Record<string, unknown>> };
+    } | null;
+    const entry = read?.config?.projects?.[project];
+    if (!entry || entry.trust_level !== 'trusted' || Object.keys(entry).length !== 1) return { kind: 'kept' as const };
+    const result = await server.request('config/batchWrite', {
+      edits: [{ keyPath: `projects.${JSON.stringify(project)}`, value: null, mergeStrategy: 'replace' }],
+      reloadUserConfig: true,
+    }) as { status?: string } | null;
+    if (result?.status !== 'ok') throw new AppServerError(`could not remove recorded project trust for ${project}`);
+    return { kind: 'removed' as const };
+  });
+}
+
 function hookId(file: string, command: string, key: string): string {
   return `${canonical(file)}\0${key}\0${command}`;
+}
+
+/** The ids Codex may list a written entry under: by its command, and on Windows by its `commandWindows`. */
+function hookIds(hook: CodexHookTrustRequest['hooks'][number]): string[] {
+  const ids = [hookId(hook.file, hook.command, hook.key)];
+  if (hook.commandWindows !== undefined) ids.push(hookId(hook.file, hook.commandWindows, hook.key));
+  return ids;
 }
 
 async function listHooks(server: AppServer, cwd: string): Promise<HookInfo[]> {
@@ -227,13 +257,13 @@ async function listHooks(server: AppServer, cwd: string): Promise<HookInfo[]> {
  * since an untrusted project's hook layer is not read.
  */
 export async function trustCodexHooks(req: CodexHookTrustRequest): Promise<CodexTrust> {
-  const wanted = new Set(req.hooks.map((h) => hookId(h.file, h.command, h.key)));
+  const wanted = new Set(req.hooks.flatMap(hookIds));
   const project = req.project ? canonical(req.project) : undefined;
   return withAppServer(req.codexHome, async (server): Promise<CodexTrust> => {
-    const level = project ? await ensureProjectTrusted(server, project) : undefined;
+    const level = project ? await ensureProjectTrusted(server, project, req.onProjectTrusted) : undefined;
     const listed = await listHooks(server, req.cwd);
     const loaded = new Set(listed.map((h) => hookId(h.sourcePath, h.command, h.key)));
-    const missing = req.hooks.filter((h) => !loaded.has(hookId(h.file, h.command, h.key)));
+    const missing = req.hooks.filter((h) => !hookIds(h).some((id) => loaded.has(id)));
     if (missing.length > 0 && level !== 'untrusted') {
       return {
         kind: 'failed',
@@ -265,7 +295,11 @@ export async function readCodexHookTrust(req: Omit<CodexHookTrustRequest, 'proje
     return {
       kind: 'listed',
       notTrusted: req.hooks
-        .map((h) => ({ file: h.file, command: h.command, status: listed.get(hookId(h.file, h.command, h.key)) ?? 'not loaded' }))
+        .map((h) => ({
+          file: h.file,
+          command: h.command,
+          status: hookIds(h).map((id) => listed.get(id)).find((status) => status !== undefined) ?? 'not loaded',
+        }))
         .filter((h) => h.status !== 'trusted'),
     };
   });

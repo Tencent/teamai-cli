@@ -4,16 +4,17 @@
  * where that comes from (`team` for the member's value, `env.yaml`), then the
  * secrets it declares, each with where its value comes from, never the value.
  * A key declared as a secret is listed only as one: its env.yaml value is not
- * delivered.
+ * delivered. A project that inherits the user scope lists its variables too.
  *
- * A value nobody can tell is not shown: while the declarations fail, any
+ * A value nobody can tell is not shown: while its declarations fail, any
  * variable may be a secret whose repo value is ignored, and while the member's
  * values can't be read, a variable's value is `unreadable`, as a secret's is.
  */
-import { secretState, type TeamEnv } from './env-resolution.js';
+import { effectiveTeamEnvVariables, secretState, type TeamEnv } from './env-resolution.js';
 import { describeEntryFailure, describeOrigin } from './namespaced-entries.js';
 import { maskEnvValue } from './resources/env.js';
 import { declaredSecretKeys } from './resources/secrets.js';
+import { isReservedTeamEnvKey } from './env-reserved.js';
 
 export interface EnvListingLine {
   readonly text: string;
@@ -39,10 +40,19 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
   if (declarations.kind === 'failed') problems.add(describeEntryFailure(declarations.failure));
   if (variableValues.kind === 'store-unreadable') problems.add(variableValues.reason);
   if (secrets.kind === 'store-unreadable') problems.add(secrets.reason);
+  if (teamEnv.inheritedValues.kind === 'store-unreadable') problems.add(teamEnv.inheritedValues.reason);
+  // A part that can't be resolved keeps what its last pull wrote everywhere (`appliedTeamEnv`): by key only.
+  for (const [kept, pull] of [[teamEnv.keptValues, 'the last pull'], [teamEnv.keptInheritedValues, "the user scope's last pull"]] as const) {
+    if (kept && kept.size > 0) problems.add(`Until it is fixed, shells, MCP servers and \`teamai env exec\` use the values ${pull} wrote for ${[...kept.keys()].join(', ')}.`);
+  }
 
-  const declared = declarations.kind === 'resolved' ? declarations.entries : [];
+  const declared = declarations.kind === 'resolved' ? declarations.entries.filter(({ name }) => !isReservedTeamEnvKey(name)) : [];
   const secretKeys = declaredSecretKeys(declarations) ?? new Set<string>();
-  const received = (variables.kind === 'resolved' ? variables.entries : []).filter((variable) => !secretKeys.has(variable.name));
+  // What shells, MCP and `env exec` receive: the project's variables and those it inherits from the user scope.
+  const inherited = new Set(teamEnv.inheritedVariables);
+  // A key a workspace holds back (#913) has the value its last pull installed, which records no file or description.
+  const held = new Set(variables.kind === 'resolved' ? variables.held ?? [] : []);
+  const received = effectiveTeamEnvVariables(teamEnv).filter((variable) => !secretKeys.has(variable.name) && !isReservedTeamEnvKey(variable.name));
   const lines: EnvListingLine[] = [];
   const line = (text: string): void => { lines.push({ text, detail: false }); };
   const detail = (text: string | undefined): void => { if (text && options.verbose) lines.push({ text: `    ${text}`, detail: true }); };
@@ -61,17 +71,23 @@ export function envListing(teamEnv: TeamEnv, options: { reveal?: boolean; verbos
     line(`Team env variables (${received.length}):`);
     line('');
     for (const variable of received) {
-      const origin = `(${describeOrigin(variable)})`;
-      if (declarations.kind === 'failed') {
+      const isInherited = inherited.has(variable);
+      const isHeld = !isInherited && held.has(variable.name);
+      const origin = `(${isInherited ? 'user scope' : isHeld ? 'held back' : describeOrigin(variable)})`;
+      // Each part by its own scope's state, as `env exec` applies it (`appliedTeamEnv`):
+      // what its last pull wrote while its own env can't be resolved, by name only.
+      const values = isInherited ? teamEnv.inheritedValues : variableValues;
+      if (isInherited ? values.kind === 'store-unreadable' : declarations.kind === 'failed') {
         line(`  ${variable.name}  ${origin}`);
-      } else if (variableValues.kind === 'store-unreadable') {
+      } else if (values.kind === 'store-unreadable') {
         line(`  ${variable.name}  unreadable  ${origin}`);
       } else {
-        const resolved = variableValues.values.get(variable.name);
+        const resolved = values.values.get(variable.name);
         const value = resolved?.value ?? variable.entry.value;
         revealed ||= options.reveal === true;
-        line(`  ${variable.name}=${options.reveal ? value : maskEnvValue(value)}  ${resolved?.source ?? 'env.yaml'}  ${origin}`);
-        stale(variable.name, 'env variable');
+        const source = resolved?.source ?? 'env.yaml';
+        line(`  ${variable.name}=${options.reveal ? value : maskEnvValue(value)}  ${isHeld && source === 'env.yaml' ? 'installed' : source}  ${origin}`);
+        if (!inherited.has(variable)) stale(variable.name, 'env variable');
       }
       detail(variable.entry.description);
     }

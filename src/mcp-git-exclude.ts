@@ -5,7 +5,7 @@ import {
   MCP_EXCLUDE_OWNER,
   ensure,
   excludeLines,
-  gitExcludeFile,
+  gitExcludeFiles,
   updateExcludeLines,
   type ExcludeUpdate,
 } from './git-exclude.js';
@@ -150,8 +150,7 @@ export async function excludeFromGit(file: string, options: { rerun?: string; ho
  */
 export async function findMcpGitExcludes(dirs: Iterable<string>): Promise<Map<string, Array<{ pattern: string; files: string[] }>>> {
   const roots = new Map<string, Set<string>>();
-  for (const dir of new Set(dirs)) {
-    const location = await gitExcludeFile(dir);
+  for (const location of (await gitExcludeFiles(dirs)).values()) {
     if (!location) continue;
     const seen = roots.get(location.excludeFile) ?? new Set<string>();
     roots.set(location.excludeFile, seen.add(location.root));

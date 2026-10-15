@@ -1,10 +1,11 @@
 // -*- coding: utf-8 -*-
-import path from 'node:path';
 import fs from 'fs-extra';
 import { loadRepoList } from './repo-list/store.js';
 import { isOrgEntry, type RepoListEntry } from './repo-list/schema.js';
 import { importFromRepo } from './import-repo.js';
+import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from './import-codebase.js';
 import { log } from './utils/logger.js';
+import { lockTeamwiki, resolveTeamwiki, type TeamwikiTarget } from './utils/teamwiki-root.js';
 
 /** importFromRepoList 入参。 */
 export interface ImportFromRepoListOptions {
@@ -16,7 +17,7 @@ export interface ImportFromRepoListOptions {
     forceSsh?: boolean;
     /** Dry-run 模式 */
     dryRun?: boolean;
-    /** 自定义产物根（同 P5.1 的 output 语义） */
+    /** 写入 <output>/teamwiki 而非团队仓库的 teamwiki/（不推送） */
     output?: string;
     /** 增量模式：缓存命中时仅 fetch+reset，未命中时 fallback 到全量 clone */
     incremental?: boolean;
@@ -74,16 +75,12 @@ export async function importFromRepoList(
     // 1. 加载白名单
     const repoListFile = await loadRepoList(listPath);
 
+    // Every entry lands in the same teamwiki: <output>/teamwiki, else the team repo's.
+    let target: TeamwikiTarget | undefined;
     let releaseBatchLock: (() => Promise<void>) | null = null;
     if (!dryRun) {
-        try {
-            const { autoDetectInit } = await import('./config.js');
-            const { localConfig: lc } = await autoDetectInit();
-            const { acquireImportLock } = await import('./utils/import-lock.js');
-            releaseBatchLock = await acquireImportLock(lc.repo.localPath);
-        } catch (e) {
-            log.debug(`[import-lock] batch lock acquire skipped: ${(e as Error).message}`);
-        }
+        target = await resolveTeamwiki({ output });
+        releaseBatchLock = await lockTeamwiki(target);
     }
 
     const succeeded: number[] = [];
@@ -153,57 +150,16 @@ export async function importFromRepoList(
     // 等待全部完成
     await Promise.all(inFlight);
 
-    // 4. 统一聚合全局 graph-index.json（避免并发竞态）
-    if (!dryRun && succeeded.length > 0) {
-        try {
-            const { autoDetectInit } = await import('./config.js');
-            const { localConfig: lc } = await autoDetectInit();
-            const teamRepoPath = lc.repo.localPath;
-            const teamwikiRoot = path.join(teamRepoPath, 'teamwiki');
-
-            const { aggregateGlobalGraph } = await import('./graph-aggregate.js');
-            await aggregateGlobalGraph(teamwikiRoot);
-        } catch (e) {
-            log.warn(`[graph] global aggregation failed (non-blocking): ${(e as Error).message}`);
-        }
+    // 4. 统一聚合全局 graph-index.json，并全量重建 router.md / index.md（避免并发竞态）
+    if (target && succeeded.length > 0 && await fs.pathExists(target.wikiRoot)) {
+        await refreshTeamwikiIndexes(target.wikiRoot);
+        log.info('teamwiki router.md / index.md rebuilt');
     }
 
-    // 4.5 全量重建全局导航文件 router.md / index.md（基于完整 evidence/code/ 目录，覆盖 append 的中间状态）
-    if (!dryRun && succeeded.length > 0) {
+    // 5. 统一推送（graph 通过 MR 提交）；--output 不碰团队仓库
+    if (target?.team && succeeded.length > 0) {
         try {
-            const { autoDetectInit } = await import('./config.js');
-            const { localConfig } = await autoDetectInit();
-            const teamwikiRoot = path.join(localConfig.repo.localPath, 'teamwiki');
-
-            if (await fs.pathExists(teamwikiRoot)) {
-                const { rebuildWikiIndex } = await import('./rebuild-wiki-index.js');
-                await rebuildWikiIndex(teamwikiRoot);
-                log.info('teamwiki router.md / index.md rebuilt');
-            }
-        } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            log.warn(`[wiki] global index rebuild failed (non-blocking): ${msg}`);
-        }
-    }
-
-    // 5. 统一推送（graph 通过 MR 提交）
-    if (!dryRun && succeeded.length > 0) {
-        try {
-            const { autoDetectInit } = await import('./config.js');
-            const { localConfig: lc, teamConfig: tc } = await autoDetectInit();
-            const { autoPushViaMR } = await import('./utils/git.js');
-            const prUrl = await autoPushViaMR(
-                lc.repo.localPath,
-                '[teamai] Batch import: graph',
-                ['.'],
-                { repo: tc.repo, provider: tc.provider, reviewers: tc.reviewers },
-                { repo: lc.repo, username: lc.username, provider: lc.provider },
-            );
-            if (prUrl) {
-                log.success(`MR created: ${prUrl}`);
-            } else {
-                log.success(`Branch pushed to team knowledge repo (${lc.repo.remote})`);
-            }
+            await publishTeamwikiViaMR(target.team, '[teamai] Batch import: graph');
         } catch (e) {
             log.warn(`[git] batch push failed (non-blocking): ${(e as Error).message}`);
         }

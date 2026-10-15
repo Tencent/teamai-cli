@@ -12,6 +12,7 @@ const mockLoadRolesManifest = vi.fn();
 const mockGetHandler = vi.fn();
 const mockPathExists = vi.fn();
 const mockListDirs = vi.fn();
+const mockResolveReal = vi.fn();
 
 vi.mock('../utils/prompt.js', () => ({
   isInteractive: vi.fn(() => true),
@@ -90,7 +91,8 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-vi.mock('../resources/skills.js', () => ({
+vi.mock('../resources/skills.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../resources/skills.js')>(),
   scanTeamRepoNamespaces: vi.fn().mockResolvedValue([]),
 }));
 
@@ -100,6 +102,15 @@ vi.mock('../utils/fs.js', async () => {
     ...actual,
     pathExists: (...args: unknown[]) => mockPathExists(...args),
     listDirs: (...args: unknown[]) => mockListDirs(...args),
+  };
+});
+
+// The tests that model the team tree with mocks use fictional paths, read as given.
+vi.mock('../utils/path-safety.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/path-safety.js')>();
+  return {
+    ...actual,
+    resolveReal: (p: string) => (mockResolveReal.getMockImplementation() ? mockResolveReal(p) : actual.resolveReal(p)),
   };
 });
 
@@ -165,6 +176,7 @@ function setupDefaultMocks() {
   // Default: pathExists returns false (most paths don't exist)
   mockPathExists.mockResolvedValue(false);
   mockListDirs.mockResolvedValue([]);
+  mockResolveReal.mockReset();
   // Default handler: no items from scan
   mockGetHandler.mockImplementation(() => ({
     scanLocalForPush: vi.fn().mockResolvedValue([]),
@@ -205,7 +217,7 @@ describe('push --skill flag', () => {
     expect(pushedItems[0].name).toBe('skill-a');
   });
 
-  it('matches skill by name (basename of path)', async () => {
+  it('does not select another tool\'s skill by basename when the requested copy is outside the scan', async () => {
     const pushedItems: Array<Record<string, unknown>> = [];
     mockAutoDetectInit.mockResolvedValue({
       localConfig: makeLocalConfig(),
@@ -225,10 +237,16 @@ describe('push --skill flag', () => {
       return { scanLocalForPush: vi.fn().mockResolvedValue([]), pushItem: vi.fn() };
     });
 
+    mockPathExists.mockImplementation(async (p: string) => [
+      '/some/other/path/my-skill',
+      '/some/other/path/my-skill/SKILL.md',
+    ].includes(String(p)));
+
     await push({ all: true, skill: '/some/other/path/my-skill' });
 
     expect(pushedItems).toHaveLength(1);
     expect(pushedItems[0].name).toBe('my-skill');
+    expect(pushedItems[0].sourcePath).toBe('/some/other/path/my-skill');
   });
 
   it('force-constructs ResourceItem when skill path exists but not in scan results', async () => {
@@ -260,11 +278,22 @@ describe('push --skill flag', () => {
       if (pathStr === '/tmp/team-repo/skills') return true;
       // Namespace dir hai_dev contains our skill
       if (pathStr === '/tmp/team-repo/skills/hai_dev/my-skill') return true;
+      if (pathStr === '/tmp/team-repo/skills/hai_dev/my-skill/SKILL.md') return true;
       // hai_dev is a namespace (no SKILL.md at top level)
       if (pathStr === '/tmp/team-repo/skills/hai_dev/SKILL.md') return false;
       return false;
     });
-    mockListDirs.mockResolvedValue(['hai_dev']);
+    mockListDirs.mockImplementation(async (dir: string) => ({
+      '/tmp/team-repo/skills': ['hai_dev'],
+      '/tmp/team-repo/skills/hai_dev': ['my-skill'],
+    } as Record<string, string[]>)[String(dir)] ?? []);
+    mockResolveReal.mockImplementation((p: string) => p);
+    // The role is given hai_dev: a copy teamai never delivered is tied by name
+    // only to a skill this directory receives.
+    mockLoadRolesManifest.mockResolvedValue({
+      version: 1,
+      roles: [{ id: 'hai', description: 'HyperAI', resources: { knowledge: ['hai'], skills: ['hai_dev'], agents: [] } }],
+    });
 
     await push({ all: true, skill: '/home/user/.claude/skills/hai/my-skill' });
 
@@ -303,7 +332,8 @@ describe('push --skill flag', () => {
       // No matching skill in any namespace
       return false;
     });
-    mockListDirs.mockResolvedValue(['hai_dev']);
+    mockListDirs.mockImplementation(async (dir: string) => (String(dir) === '/tmp/team-repo/skills' ? ['hai_dev'] : []));
+    mockResolveReal.mockImplementation((p: string) => p);
 
     await push({ all: true, skill: '/home/user/.claude/skills/brand-new-skill' });
 
@@ -344,9 +374,11 @@ describe('push --skill flag', () => {
       if (pathStr.includes('hai_dev/flat-skill')) return false;
       // But exists at flat level
       if (pathStr === '/tmp/team-repo/skills/flat-skill') return true;
+      if (pathStr === '/tmp/team-repo/skills/flat-skill/SKILL.md') return true;
       return false;
     });
-    mockListDirs.mockResolvedValue(['hai_dev']);
+    mockListDirs.mockImplementation(async (dir: string) => (String(dir) === '/tmp/team-repo/skills' ? ['hai_dev', 'flat-skill'] : []));
+    mockResolveReal.mockImplementation((p: string) => p);
 
     await push({ all: true, skill: '/home/user/.claude/skills/flat-skill' });
 

@@ -23,6 +23,8 @@ export interface HistoricalVersion {
   blob: string;
   /** git's file mode for it, `120000` for a link. */
   mode?: string;
+  /** How this version entered the first-parent history. */
+  status?: string;
 }
 
 /**
@@ -32,10 +34,15 @@ export interface HistoricalVersion {
  * never existed; null when git cannot read the history (not a repository, no
  * commits, a git error).
  */
-export async function historicalVersions(repoPath: string, pathspec: string): Promise<HistoricalVersion[] | null> {
+export async function historicalVersions(
+  repoPath: string, pathspec: string, options: { currentLifetime?: boolean } = {},
+): Promise<HistoricalVersion[] | null> {
   let out: string;
   try {
-    out = await createGit(repoPath).raw(['log', '-m', '-z', '--raw', '--no-renames', '--no-abbrev', '--format=', 'HEAD', '--', pathspec]);
+    out = await createGit(repoPath).raw([
+      'log', ...(options.currentLifetime ? ['--first-parent'] : ['-m']),
+      '-z', '--raw', '--no-renames', '--no-abbrev', '--format=', 'HEAD', '--', pathspec,
+    ]);
   } catch (e) {
     log.debug(`Could not read the history of ${pathspec} in ${repoPath}: ${e instanceof Error ? e.message : String(e)}`);
     return null;
@@ -44,13 +51,14 @@ export async function historicalVersions(repoPath: string, pathspec: string): Pr
   const seen = new Set<string>();
   const tokens = out.split('\0');
   for (let i = 0; i < tokens.length; i++) {
-    const header = /^\n*:(\d+) (\d+) ([0-9a-f]+) ([0-9a-f]+) [A-Z]\d*$/.exec(tokens[i]);
+    const header = /^\n*:(\d+) (\d+) ([0-9a-f]+) ([0-9a-f]+) ([A-Z]\d*)$/.exec(tokens[i]);
     if (!header) continue;
     const file = tokens[++i];
+    if (options.currentLifetime && header[5] === 'D') break;
     for (const [blob, mode] of [[header[4], header[2]], [header[3], header[1]]] as const) {
       if (/^0+$/.test(blob) || seen.has(`${file}\0${blob}\0${mode}`)) continue;
       seen.add(`${file}\0${blob}\0${mode}`);
-      versions.push({ path: file, blob, mode });
+      versions.push({ path: file, blob, mode, status: header[5] });
     }
   }
   return versions;

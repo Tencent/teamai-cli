@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
+import { readWorkspaceChildren } from './workspace-children.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
@@ -17,9 +18,11 @@ import {
   isAgentExcluded,
   scopedToolPaths,
   getDataHome,
+  getTeamaiHomeDir,
   isUsageReportEnabled,
   type LocalConfig,
   type TeamaiConfig,
+  installScopeName,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
 import { skillsDirForTool } from './resources/skills.js';
@@ -32,11 +35,13 @@ import {
   buildInstructionDeliveryChecks,
   buildNamespaceNotes,
   buildMcpDeliveryChecks,
+  mcpTransportNotes,
   buildMcpReadFileChecks,
   buildLocalAgentMcpLocationChecks,
   buildCodexProjectTrustCheck,
   buildMcpGitExcludeCheck,
   buildEnvDeliveryCheck,
+  envLoaderNotes,
   buildEntryResolutionChecks,
   buildSecretValuesCheck,
   buildEntryScopeKeyCheck,
@@ -59,7 +64,8 @@ import {
 export type CheckSource = 'local' | 'provider';
 import { hasPiHooks } from './pi-hooks.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
-import { resolveTeamEnv, type TeamEnv } from './env-resolution.js';
+import { resolvesTeamEnv, resolveTeamEnv, type TeamEnv } from './env-resolution.js';
+import type { GitContext } from './git-exclude.js';
 
 export interface Check {
   name: string;
@@ -109,11 +115,15 @@ export interface DoctorContext {
   baseDir: string;
   /** This scope's env, resolved once for every check that reads it (env-resolution.ts); none in HTTP mode. */
   teamEnv?: TeamEnv;
+  /** What git said of directories earlier in the same run (a pull's git exclude sync); the checks ask it first. */
+  gitContext?: GitContext;
 }
 
 export interface DoctorOptions extends GlobalOptions {
   /** Emit the report as JSON on stdout instead of the human rendering. */
   json?: boolean;
+  /** Remove the lock files left behind by dead processes (#1027). */
+  fix?: boolean;
 }
 
 /** One check after it ran. */
@@ -189,7 +199,7 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
       check: isInstalled,
       fix: `enabledAgents lists ${tool}, but it has no directory under `
         + `${resolveToolBaseDir(tool, localConfig)}, so a pull delivers nothing to it. `
-        + `Install ${tool} (in project scope, opening a session there creates its root), `
+        + `Install ${tool} (in workspace scope, opening a session there creates its root), `
         + `or run \`teamai uninstall --agent ${tool}\` to stop syncing to it.`,
     });
   }
@@ -421,10 +431,11 @@ async function codexHookTrust(ctx: DoctorContext): Promise<{ checks: Check[]; no
  * Resolve the local/team configuration the checks run against. Returns null
  * when TeamAI is not initialized here — the caller decides how to report that.
  */
-export async function resolveDoctorContext(): Promise<DoctorContext | null> {
+export async function resolveDoctorContext(options: { gitContext?: GitContext } = {}): Promise<DoctorContext | null> {
   // Read-only: the load never persists a migration (#893).
   const projectConfig = await detectProjectConfig(undefined, undefined, { dryRun: true });
-  const localConfig = projectConfig ?? (await loadLocalConfig({ dryRun: true }));
+  // A workspace is checked with what it delivers: its own selection and its children's (#913).
+  const localConfig = projectConfig ? await readWorkspaceChildren(projectConfig) : await loadLocalConfig({ dryRun: true });
   if (!localConfig) return null;
 
   const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
@@ -448,9 +459,9 @@ export async function resolveDoctorContext(): Promise<DoctorContext | null> {
     )
     : {};
   const baseDir = hookScope.baseDir;
-  const teamEnv = localConfig.repo.kind === 'http' ? undefined : await resolveTeamEnv(localConfig);
+  const teamEnv = resolvesTeamEnv(localConfig) ? await resolveTeamEnv(localConfig) : undefined;
 
-  return { localConfig, teamConfig, toolPaths, hookToolPaths, baseDir, teamEnv };
+  return { localConfig, teamConfig, toolPaths, hookToolPaths, baseDir, teamEnv, gitContext: options.gitContext };
 }
 
 /**
@@ -467,6 +478,17 @@ export async function resolveDoctorContext(): Promise<DoctorContext | null> {
  * and `reportedByPull`.
  */
 export type CheckStage = 'pull' | 'doctor';
+
+/**
+ * Directories whose lock files the zombie-lock check walks (#1027): the teamai
+ * home (the shared locks, every partition's worktree locks, votes/queue/…),
+ * plus the business repo's `.teamai` (the bootstrap lock), when there is one.
+ */
+function zombieLockRoots(localConfig: LocalConfig): string[] {
+  const roots = [getTeamaiHomeDir()];
+  if (localConfig.repo.businessRepoRoot) roots.push(path.join(localConfig.repo.businessRepoRoot, '.teamai'));
+  return roots;
+}
 
 /**
  * The check registry. Exported so callers other than `teamai doctor` can run
@@ -567,6 +589,21 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
       fix: 'Run `teamai pull` to publish them. If they stay queued, check that you '
         + 'can push to the team repo (run with --verbose to see the push error).',
     },
+    {
+      // A dead process's lock cannot block anything — the next writer of that
+      // same lock reclaims it — but a leftover file is exactly the noise #1027
+      // reports, and the only way a SIGKILLed run ever gets cleaned up.
+      name: 'No lock files are left behind by dead processes',
+      source: 'local',
+      informational: true,
+      check: async () => {
+        const { listZombieLocks } = await import('./update.js');
+        return (await listZombieLocks(zombieLockRoots(localConfig))).length === 0;
+      },
+      fix: 'Run `teamai doctor --fix` to remove them. They are reclaimed anyway the '
+        + 'next time the same lock is taken; removing them only clears the noise.',
+    },
+    ...buildWorkspaceChildrenChecks(localConfig),
     ...await buildGitHookChecks(localConfig, stage),
     ...await buildTrackedHookIndexCheck(localConfig),
     ...buildToolRootChecks(localConfig, teamConfig),
@@ -594,6 +631,24 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
   );
 
   return checks;
+}
+
+/**
+ * A workspace with children (#913): every folder set up under it is read, or
+ * the ones left out are named with what to do. None for a scope without
+ * children.
+ */
+function buildWorkspaceChildrenChecks(localConfig: LocalConfig): Check[] {
+  const found = localConfig.children;
+  if (!found) return [];
+  return [{
+    name: 'The workspace reads every child set up under it',
+    source: 'local',
+    reportedByPull: 'workspace-children',
+    check: async () => found.leftOut.length === 0,
+    fix: `${found.leftOut.map((child) => `${child.path} is left out: ${child.reason}`).join('; ')}. `
+      + 'Set each one up with this workspace\'s team repo (`teamai init <team repo>` there) to include it.',
+  }];
 }
 
 /**
@@ -726,8 +781,19 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   const { localConfig } = ctx;
   const scope = localConfig.scope ?? 'user';
   if (!jsonMode) {
-    const scopeLabel = `${scope}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
+    const scopeLabel = `${installScopeName(scope)}${scope === 'project' && localConfig.projectRoot ? ` (${localConfig.projectRoot})` : ''}`;
     console.log(`  Scope: ${scopeLabel}\n`);
+  }
+
+  // --fix runs before the checks, so the report reflects the post-cleanup state.
+  if (options.fix) {
+    const { removeZombieLocks } = await import('./update.js');
+    const removed = await removeZombieLocks(zombieLockRoots(localConfig));
+    if (removed.length > 0) {
+      log.info(`Removed ${removed.length} lock file(s) left behind by dead processes:`);
+      for (const p of removed) log.info(`  ${p}`);
+      log.info('');
+    }
   }
 
   // Doctor only: it spawns `codex app-server`, which the post-pull pass skips.
@@ -751,6 +817,9 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await aliasNamespaceNotes(ctx),
     ...await agentModelNotes(ctx),
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
+    // A team MCP server a tool cannot use over its transport.
+    ...await mcpTransportNotes(ctx),
+    ...await envLoaderNotes(ctx),
     ...await ruleChannelNotes(localConfig),
     ...codexTrust.notes,
     usageReportNote(ctx),

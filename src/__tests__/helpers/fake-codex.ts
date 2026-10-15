@@ -11,7 +11,9 @@ import path from 'node:path';
  * maps the cwd to (`projectLayers`, how Codex reads a linked worktree from its
  * main checkout). A hook's hash is its handler's JSON, so editing it reads as
  * `modified`, as in Codex. `fake.json` can also make one method fail
- * (`failMethod`) or the process exit at once (`exit`).
+ * (`failMethod`), the process exit at once (`exit`), or the listing name a hook
+ * by its `commandWindows` where it has one (`windowsCommands`), as Codex on
+ * Windows does.
  */
 const SERVER = String.raw`
 const fs = require('node:fs');
@@ -37,7 +39,8 @@ function layer(file, source, s, out) {
       const currentHash = 'sha256:' + crypto.createHash('sha256').update(JSON.stringify(h)).digest('hex');
       const trusted = s.hooksState[key] && s.hooksState[key].trusted_hash;
       const trustStatus = !trusted ? 'untrusted' : trusted === currentHash ? 'trusted' : 'modified';
-      out.push({ key, command: h.command, sourcePath: src, source, currentHash, trustStatus });
+      const command = opts.windowsCommands && h.commandWindows ? h.commandWindows : h.command;
+      out.push({ key, command, sourcePath: src, source, currentHash, trustStatus });
     }));
   }
 }
@@ -75,6 +78,7 @@ process.stdin.on('data', (chunk) => {
     else if (m.method === 'config/batchWrite') {
       for (const e of m.params.edits) {
         if (e.keyPath === 'projects') Object.assign(s.projects, e.value);
+        else if (e.keyPath.startsWith('projects.') && e.value === null) delete s.projects[JSON.parse(e.keyPath.slice('projects.'.length))];
         else if (e.keyPath === 'hooks.state') for (const [k, v] of Object.entries(e.value)) s.hooksState[k] = { ...(s.hooksState[k] || {}), ...v };
       }
       save(s);
@@ -113,7 +117,7 @@ export function readFakeCodexState(codexHome: string): FakeCodexState {
 
 export function writeFakeCodexOptions(
   codexHome: string,
-  options: { failMethod?: string; exit?: boolean; omitCommands?: string[]; projectLayers?: Record<string, string> },
+  options: { failMethod?: string; exit?: boolean; omitCommands?: string[]; projectLayers?: Record<string, string>; windowsCommands?: boolean },
 ): void {
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(path.join(codexHome, 'fake.json'), JSON.stringify(options));

@@ -168,6 +168,7 @@ function member(name: string, opts: { files?: Record<string, string>; gitExclude
       git(['commit', '-q', '-m', 'app'], dir);
       const real = fs.realpathSync.native(dir);
       teamai(['init', url, '--provider', 'git', '--agent', popts.agents ?? 'claude', '--scope', 'project', '--force'], real);
+      teamai(['pull'], real);
       return real;
     },
     worktree: async (repo, dir, branch = path.basename(dir)) => {
@@ -450,6 +451,7 @@ describe.skipIf(process.platform === 'win32')('Claude gets the team\'s project M
     m.git(['commit', '-q', '-m', 'lib'], superRepo);
     const lib = path.join(superRepo, 'lib');
     m.teamai(['init', m.url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force'], lib);
+    m.teamai(['pull'], lib);
     const wt = await m.worktree(lib, path.join(root, 'lib-wt'));
 
     expect(Object.keys(m.local(lib) ?? {}).sort()).toEqual(['plain-api', 'secret-api']);

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { acquireLock, releaseLock } from '../update.js';
+import { acquireLock, releaseLock, sweepHeldLocksOnExit, listZombieLocks, removeZombieLocks } from '../update.js';
 
 // ─── Real-filesystem tests for the atomic lock (issue #374 P0) ──────────────
 //
@@ -431,5 +431,65 @@ describe('releaseLock (real fs)', () => {
     await releaseLock(lockPath);
     expect(await acquireLock(lockPath)).toBe(true);
     await releaseLock(lockPath);
+  });
+});
+
+describe('sweepHeldLocksOnExit (#1027)', () => {
+  it('removes the locks this process still holds when it exits', async () => {
+    await acquireLock(lockPath);
+    expect(fs.existsSync(lockPath)).toBe(true);
+    sweepHeldLocksOnExit();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it('leaves a lock that now names a different owner', async () => {
+    await acquireLock(lockPath);
+    // Another process reclaimed ours while we were dying: the file on disk
+    // names its owner now, not ours.
+    const payload = JSON.parse(fs.readFileSync(lockPath, 'utf-8'));
+    fs.writeFileSync(lockPath, JSON.stringify({ ...payload, owner: 'someone-else' }));
+    sweepHeldLocksOnExit();
+    expect(fs.existsSync(lockPath)).toBe(true);
+  });
+
+  it('is a no-op when the process holds nothing', () => {
+    expect(() => sweepHeldLocksOnExit()).not.toThrow();
+  });
+});
+
+describe('listZombieLocks / removeZombieLocks (#1027)', () => {
+  it('lists only locks whose owning process is provably dead', async () => {
+    const dead = path.join(tmpDir, '.sync-lock');
+    const live = path.join(tmpDir, '.update-lock');
+    const ownerless = path.join(tmpDir, 'nested', 'events.jsonl.lock');
+    const insideGit = path.join(tmpDir, '.git', 'config.lock');
+    fs.mkdirSync(path.join(tmpDir, 'nested'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.git'), { recursive: true });
+    fs.writeFileSync(dead, JSON.stringify({ pid: 999999, owner: 'gone', startedAt: 'x' }));
+    fs.writeFileSync(live, JSON.stringify({ pid: process.pid, owner: 'me', startedAt: 'x' }));
+    // The dashboard's raw-O_EXCL locks carry no pid: never provably stale (#760).
+    fs.writeFileSync(ownerless, '');
+    fs.writeFileSync(insideGit, JSON.stringify({ pid: 999999, owner: 'gone', startedAt: 'x' }));
+
+    expect(await listZombieLocks([tmpDir])).toEqual([dead]);
+  });
+
+  it('returns nothing for a missing root', async () => {
+    expect(await listZombieLocks([path.join(tmpDir, 'nope')])).toEqual([]);
+  });
+
+  it('removes only the dead ones, through the serialized reclaim path', async () => {
+    const dead = path.join(tmpDir, 'votes', 'alice.yaml.lock');
+    const live = path.join(tmpDir, '.reports-lock');
+    fs.mkdirSync(path.join(tmpDir, 'votes'), { recursive: true });
+    fs.writeFileSync(dead, JSON.stringify({ pid: 999999, owner: 'gone', startedAt: 'x' }));
+    fs.writeFileSync(live, JSON.stringify({ pid: process.pid, owner: 'me', startedAt: 'x' }));
+
+    expect(await removeZombieLocks([tmpDir])).toEqual([dead]);
+    expect(fs.existsSync(dead)).toBe(false);
+    expect(fs.existsSync(live)).toBe(true);
+    // The reclaim's sentinel is cleaned up behind the removal.
+    expect(fs.existsSync(`${dead}.sentinel`)).toBe(false);
+    expect(fs.existsSync(`${dead}.lock`)).toBe(false);
   });
 });

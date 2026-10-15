@@ -74,7 +74,7 @@ async function inspectOnce(ctx: DoctorContext): Promise<Inspection | null> {
     configPath,
     unmigrated: unmigrated ? dataHome : null,
     union,
-    reports: await reportDeliveredGitExclude(localConfig, union.paths),
+    reports: await reportDeliveredGitExclude(localConfig, union.paths, ctx.gitContext),
     notices: await readGitExcludeNotices(localConfig),
     keptTracked: own?.gitExcludePaths ? await keptTrackedCopies(projectRoot, own.delivered ?? {}, Object.values(own.gitExcludePaths).flat()) : [],
   };

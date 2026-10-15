@@ -41,11 +41,12 @@ async function teamaiEnvShPaths(dataHomes: readonly string[]): Promise<string[]>
 }
 
 /**
- * For key K, `env[K]` is the member's unless it is empty, a marker in `env`
- * says a teamai env.sh exported it for K, it equals what a teamai env.sh
+ * For key K, `env[K]` is the member's unless a marker in `env` says a teamai
+ * env.sh exported it for K, it equals what a teamai env.sh
  * exports for K or has exported for K since it recorded its exports
  * (env-sh-exports.ts), or K is a declared secret and it equals this scope's
- * env.yaml value for K.
+ * env.yaml value for K. An empty value is the member's under the same rule;
+ * a secret does not take it.
  */
 export async function memberEnvironment(
   localConfig: LocalConfig,
@@ -80,7 +81,7 @@ async function memberEnvironmentAt(
   const marked = markedAsExported(env);
   return (key) => {
     const value = envValue(env, key);
-    if (value === undefined || value === '') return undefined;
+    if (value === undefined) return undefined;
     if (marked(key, value)) return undefined;
     // On Windows another scope's `token` is this key's `TOKEN`: compare names as the platform does.
     const name = envName(key);

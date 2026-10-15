@@ -15,7 +15,7 @@ const SHELL_KEYS = (key: string) => key.startsWith('ANTHROPIC_') || key.startsWi
   || key === 'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY';
 
 beforeEach(async () => {
-  const keys = ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'PI_CODING_AGENT_DIR', 'TEAMAI_TEST_MODEL_KEY',
+  const keys = ['HOME', 'SHELL', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'OPENCODE_CONFIG', 'PI_CODING_AGENT_DIR', 'TEAMAI_TEST_MODEL_KEY', 'ZDOTDIR',
     ...Object.keys(process.env).filter(SHELL_KEYS)];
   originalEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -62,6 +62,8 @@ const claudeFile = () => path.join(home, '.claude', 'settings.json');
 const codexFile = () => path.join(home, '.codex', 'config.toml');
 const openCodeFile = () => path.join(home, '.config', 'opencode', 'opencode.json');
 const piFile = () => path.join(home, '.pi', 'agent', 'models.json');
+const museFile = () => path.join(home, '.config', 'muse', 'settings.json');
+const museKeyFile = () => path.join(home, '.teamai', 'models', 'env.sh');
 
 describe('Claude model switching', () => {
   it('offers all Anthropic route models in modelPicker and restores prior settings', async () => {
@@ -299,6 +301,76 @@ describe('Codex model switching', () => {
     expect(result.message).toMatch(/Cannot safely update/);
     expect(await fse.readFile(codexFile(), 'utf8')).toBe(source);
     expect(await activeModelProfiles()).toEqual({});
+  });
+});
+
+// Muse Code takes its model and endpoint from settings.json but its key only
+// from META_API_KEY (or a saved Meta credential), so the key goes out through a
+// shell profile block.
+describe('Muse Code model switching', () => {
+  it('points Muse at a Responses route, exports the key for new shells, and restores both', async () => {
+    process.env.SHELL = '/bin/zsh';
+    const original = { schema_version: 1, model: 'muse-spark-1.3', hooks: { Stop: [] } };
+    await fse.outputJson(museFile(), original);
+    await fse.outputFile(path.join(home, '.zshrc'), 'export KEEP=1\n');
+
+    const chatOnly = routed({ 'openai-chat-completions': ['deepseek-v4-flash'] });
+    expect((await switchModelProfile(chatOnly, ['muse']))[0].status).toBe('unsupported');
+
+    const [result] = await switchModelProfile(routed({ 'openai-responses': ['glm-5.3', 'kimi-k3'] }), ['muse']);
+    expect(result.status).toBe('switched');
+    expect(result.warning).toContain('open a new shell before running muse');
+    expect(await fse.readJson(museFile())).toEqual({
+      schema_version: 1,
+      model: 'glm-5.3',
+      hooks: { Stop: [] },
+      endpoint_transport: { base_url: 'https://gateway.example.test/v1', auth: 'bearer' },
+    });
+    expect(await fse.readFile(museKeyFile(), 'utf8')).toBe("export META_API_KEY='local-secret'\n");
+    expect((await fse.stat(museKeyFile())).mode & 0o777).toBe(0o600);
+    // The file the team env loader goes in for zsh, which every zsh reads.
+    const zshenv = await fse.readFile(path.join(home, '.zshenv'), 'utf8');
+    expect(zshenv).toContain(`. '${museKeyFile()}'`);
+    expect(zshenv).not.toContain('[teamai:env:start]');
+    expect(await fse.readFile(path.join(home, '.zshrc'), 'utf8')).toBe('export KEEP=1\n');
+
+    const [restored] = await restoreModelProfiles(['muse']);
+    expect(restored.status).toBe('restored');
+    expect(restored.warning).toContain('open a new shell before running muse');
+    expect(await fse.readJson(museFile())).toEqual(original);
+    expect(await fse.pathExists(museKeyFile())).toBe(false);
+    expect(await fse.readFile(path.join(home, '.zshrc'), 'utf8')).toBe('export KEEP=1\n');
+    expect(await fse.readFile(path.join(home, '.zshenv'), 'utf8')).not.toContain('[teamai:models:start]');
+  });
+
+  it('takes the key block back out of the zsh startup file ZDOTDIR names', async () => {
+    process.env.SHELL = '/bin/zsh';
+    const zdotdir = path.join(home, 'zdot');
+    process.env.ZDOTDIR = zdotdir;
+    await fse.outputJson(museFile(), { schema_version: 1 });
+    await switchModelProfile(routed({ 'openai-responses': ['glm-5.3'] }), ['muse']);
+    expect(await fse.readFile(path.join(zdotdir, '.zshenv'), 'utf8')).toContain(`. '${museKeyFile()}'`);
+
+    await restoreModelProfiles(['muse']);
+    expect(await fse.readFile(path.join(zdotdir, '.zshenv'), 'utf8')).not.toContain('[teamai:models:start]');
+  });
+
+  it('exports the variable that holds the key instead of the key', async () => {
+    await fse.ensureDir(path.dirname(museFile()));
+    process.env.TEAMAI_TEST_MODEL_KEY = 'from-env';
+    await switchModelProfile(routed({ 'openai-responses': ['glm-5.3'] }, { env: 'TEAMAI_TEST_MODEL_KEY' }), ['muse']);
+    expect(await fse.readFile(museKeyFile(), 'utf8')).toBe('export META_API_KEY="${TEAMAI_TEST_MODEL_KEY}"\n');
+  });
+
+  it('creates settings.json with the schema_version Muse requires', async () => {
+    await fse.ensureDir(path.dirname(museFile()));
+    await switchModelProfile(routed({ 'openai-responses': ['glm-5.3', 'kimi-k3'] }, { model: 'kimi-k3' }), ['muse']);
+    expect(await fse.readJson(museFile())).toMatchObject({ schema_version: 1, model: 'kimi-k3' });
+  });
+
+  it('leaves Muse alone when it is not installed', async () => {
+    expect((await switchModelProfile(routed({ 'openai-responses': ['glm-5.3'] }), ['muse']))[0].status).toBe('not-installed');
+    expect(await fse.pathExists(museKeyFile())).toBe(false);
   });
 });
 

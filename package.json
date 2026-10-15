@@ -89,7 +89,7 @@
     "oxlint-tsgolint": "7.0.2003",
     "standard-version": "^9.5.0",
     "tsup": "^8.3.0",
-    "typescript": "^5.7.0",
+    "typescript": "^7.0.2",
     "vitest": "^3.2.7"
   },
   "main": "index.js",

@@ -151,6 +151,7 @@ function member(name: string, files: Record<string, string> = TEAM, sharing = ON
       git(['commit', '-q', '-m', 'app'], dir);
       const real = fs.realpathSync.native(dir);
       teamai(['init', url, '--provider', 'git', '--agent', opts.agents ?? 'claude', '--scope', 'project', '--role', 'fe', '--force'], real);
+      teamai(['pull'], real);
       return real;
     },
     worktree: async (repo, dir) => {

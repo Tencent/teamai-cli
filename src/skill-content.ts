@@ -121,7 +121,8 @@ export async function detectTeam(cwd?: string, options: { dryRun?: boolean } = {
     }
     const unreadable = await findUnreadableProjectConfig(cwd, options);
     if (unreadable) return { kind: 'unusable', detail: describeUnreadableConfig(unreadable) };
-    return { kind: 'team', init: await autoDetectInit(cwd, options) };
+    // The Stop hook asks this on every turn, and reads no selection.
+    return { kind: 'team', init: await autoDetectInit(cwd, { ...options, children: false }) };
   } catch (e) {
     if (e instanceof NotInitializedError) return { kind: 'none' };
     return { kind: 'unusable', detail: firstLine(e instanceof Error ? e.message : String(e)) };

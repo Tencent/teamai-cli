@@ -95,7 +95,7 @@ teamai env unset GITHUB_TOKEN [--global]
   A project config that exists but can't be read makes `env set`, `env unset` and `env list` fail with its path and why, rather than use the user scope, whose team may not be this project's.
 - Outside any scope (no project here and no user scope), `env set --global` accepts any valid key name and notes that no team declares it yet, so a member can set a token they reuse across teams ahead of time. `env unset` accepts any key that has a value.
 - `--from-env` warns when the variable is not set in the current shell. While it is unset, the secret is `missing`: the next source in the [order](#resolution) is not used instead, since that could be another account's token.
-- Run `teamai pull` afterwards to update the MCP servers, and `env.sh` for a variable.
+- `env set` and `env unset` reconcile MCP servers for the current scope. Run `teamai pull` afterwards only to update `env.sh`, and only when the key is an env variable. When the team config or the MCP files cannot be read, and nothing was written, the command still says to run `teamai pull`, which updates both. A tool file that does not parse is warned and left as it is. When another tool was updated, the command says so and does not also ask for a pull: pull cannot write the file that does not parse.
 
 ## Storage
 
@@ -149,8 +149,8 @@ the member's value for this team   teamai env set KEY [--from-env VAR]
 - The environment no longer overrides it, so a value exported for one team doesn't reach another team's servers. This changes existing teams: a member who exported a variable to override `env.yaml` sets it with `teamai env set KEY` instead. A machine value doesn't apply to a variable.
 - An interactive `pull` and `teamai doctor` (as a note) say so when the member's own environment (below) has another value: `` GITLAB_HOST in your environment differs from the value in env/env.yaml, which this team uses. To use yours for this team, run `teamai env set GITLAB_HOST`. `` `doctor` lists it because it runs in the member's shell and explains why an MCP server doesn't use their export. `mcp list` and `env list` don't, and the silent pull prints nothing. No line is printed once the member set a value for the key.
 - `env.sh` exports the member's literal value, so a new shell follows the same order. A value stored with `--from-env` is left out of `env.sh`, which holds no copy of it, so a new shell has no value for the key at all, neither the member's nor the team's: the shell has the variable the entry reads, not the key. MCP servers and `env exec` still resolve it. While that variable is unset, the `env.yaml` value is used: unlike a secret's next source, it is the value every other member gets.
-- A `${VAR}` the team sets nothing for still resolves from the environment.
-- When the member's value file can't be read, MCP servers keep the values the last pull wrote, `pull` leaves `env.sh` as it is, and `teamai doctor` fails the `Your team secret values can be read` check with the reason.
+- A `${VAR}` the team sets nothing for still resolves from the member's own environment (below), never from a value a teamai `env.sh` exported.
+- When the member's value file can't be read, `pull` leaves `env.sh` as it is, and shells, MCP servers and `env exec` keep the values the last pull wrote; `teamai doctor` fails the `Your team secret values can be read` check with the reason.
 
 **Same key twice.** A key declared as a secret and also set as a variable in `env.yaml` (in any case on Windows, where `token` and `TOKEN` are one variable) resolves as the secret, and the repo value is ignored everywhere: it is left out of `env.sh` and the env backup (on every pull, `Already synced` included), out of `env list` and `list env`, `--reveal` included, and out of MCP servers. An older CLI keeps using the variable while the team removes the value.
 
@@ -181,9 +181,9 @@ Project uninstall keeps and names a recorded MCP server you changed since teamai
 - A server an earlier pull wrote keeps its entry in each tool's config, as it is, and teamai still manages it: a later pull that finds a value updates it.
 - A server no pull has written yet is skipped, as before.
 - The entry is removed when its server leaves `mcp.yaml`, and by `teamai mcp remove`, `teamai uninstall`, and `teamai init` when it moves the Claude Code root.
-- A server that also misses a variable not declared as a secret is removed, as before. Variables that aren't declared as secrets keep today's behaviour.
+- A server that also misses a variable not declared as a secret is removed, as before. Variables that aren't declared as secrets keep today's behaviour. `doctor`'s MCP delivery check names that variable and still points at `env.yaml`. If the variable is a personal token, it also says to declare it with `teamai env add KEY --secret` (no value), then `teamai env set KEY`. A shared value stays in `env.yaml`: declaring it as a secret would ignore that value.
 
-A kept entry holds the value the earlier pull wrote. After a secret is rotated or revoked, the server keeps the old value until a pull finds the new one.
+A kept entry holds the value the earlier pull wrote. After a secret is rotated or revoked, the server keeps the old value until `teamai env set` or `teamai pull` finds the new one.
 
 While the declarations fail, `pull` and `teamai mcp inject` change no MCP server: nothing is added, updated or removed, and `mcp inject` exits 1. `mcp remove` and uninstall still remove every managed server.
 
@@ -213,14 +213,14 @@ teamai env exec -- glab mr list     GITLAB_HOST from env.yaml and GITLAB_TOKEN f
 ```
 
 - **Scope.** The directory's scope: the project teamai is set up for there, found through git, so every worktree of a project resolves to that project, else the user scope.
-- **Environment.** The command inherits teamai's environment, overlaid with the scope's variables in the [variable order](#variables) (a scope variable wins over an inherited one), then with its secrets in the [resolution order](#resolution). A key declared as a secret that has no value for this scope is removed from the command's environment, so the command never sees a value `teamai env list` doesn't show for this scope: another team's export, or the member's own export when this team's value names another variable with `--from-env`. 
+- **Environment.** The command inherits teamai's environment without the values a teamai `env.sh` exported (a shell started in another project carries that project's, [#1018](env-by-directory.md)), overlaid with the user scope's variables when the project sets `inheritUserScope: true` (except a key the project declares), then with the scope's variables in the [variable order](#variables), then with its secrets in the [resolution order](#resolution). A `bash` the command starts sources the member's own `BASH_ENV` first, so a team value still wins a key both set. A key declared as a secret that has no value for this scope is removed from the command's environment, so the command never sees a value `teamai env list` doesn't show for this scope: another team's export, or the member's own export when this team's value names another variable with `--from-env`.
 
   On Windows, where environment names are case-insensitive, a key in any case is the same variable: overlaying one replaces an inherited `api_url` or `API_URL` rather than adding a second name, and removing one removes every case of it.
 - **Missing secret.** The [line](#a-missing-secret-tells-the-member-what-to-run) goes to stderr, and the command runs anyway: `gh` and `glab` can still use their own login.
-- **Failures.** When the declarations fail, no variable and no secret is applied, and the command runs with the inherited environment: any `env.yaml` key may be a secret the file declares, so its repo value is not passed on, and every inherited value that is not the member's own (one a teamai `env.sh` exports or exported, by its file, its record or its marker) is removed, named on stderr by key only; when `env.yaml` fails, the secrets are applied and no variable is; when the value file can't be read, every declared key is removed and no variable is applied. 
+- **Failures.** Each part, the scope's own env and the user env a project inherits, is decided by its own scope's state. While a part can't be resolved (its `env.yaml` or declarations fail, or its value file can't be read), `pull` leaves that scope's `env.sh` as it is, and shells, MCP servers and `env exec` apply what its last pull wrote (nothing before a first pull). A secret never comes from a last pull. `env exec` and `env list` name the problem and the keys affected, never a value. When the declarations fail, no secret is applied; when the value file can't be read, every declared key is removed. Every inherited value that is not the member's own (one a teamai `env.sh` exported) is removed first.
 
   In both, every inherited value that is not the member's own is removed too, named on stderr by key only, since a shell that sourced another team's `env.sh` would otherwise pass that team's variables on. Each says so on stderr. A project config that exists but can't be read is named on stderr, and the command runs with the inherited environment, without every value that is not the member's own, as when the declarations fail (the `env.sh` beside that config included), named by key only: it is not taken for "no scope", nor for the user scope.
-- **No scope.** With no project or user config, the command runs with the inherited environment and a notice on stderr. Machine values are not applied there, since no team declares which keys the command needs. An HTTP team repo delivers no env here either. In both, every inherited value that is not the member's own is removed, as when the declarations fail, named on stderr by key only: a shell that sourced another team's `env.sh` doesn't pass that team's values on.
+- **No scope.** With no project or user config, the command runs with the inherited environment and a notice on stderr. Machine values are not applied there, since no team declares which keys the command needs. An HTTP team repo delivers no env of its own either; a project backed by one that sets `inheritUserScope: true` still gets the user scope's variables. In both, every inherited value that is not the member's own is removed, as when the declarations fail, named on stderr by key only: a shell that sourced another team's `env.sh` doesn't pass that team's values on.
 - **Output.** Everything teamai prints goes to stderr, so the command's stdout can be piped. The exit code is the command's; a command ended by a signal ends teamai with the same signal, or exits 128 + its number for one Node doesn't end on (SIGPIPE, SIGUSR1). A SIGTERM or SIGHUP sent to teamai is passed on. `Ctrl-C` and `Ctrl-\` are not: the terminal already sent them to the command, and a second SIGINT makes tools such as terraform force-quit, so while teamai runs in its terminal's foreground process group it ignores SIGINT and SIGQUIT and waits for the command. It checks once, before starting the command (`ps -o pgid=,tpgid=`). 
 
   Anywhere else (a background job, a process without a terminal) a SIGINT or SIGQUIT (`kill -INT <pid>`) was sent to teamai alone and is passed on, as it is when `ps` can't say. On Windows the console sends `Ctrl-C` to every process attached to it, so teamai ignores it. Node doesn't say who sent a signal, so while teamai runs in its terminal's foreground a SIGINT or SIGQUIT sent to teamai's PID alone (`kill -INT <pid>` from another shell) is not passed on either and the command keeps running: send teamai SIGTERM, which is passed on, or signal the command's PID. A command that can't be started exits 127.
@@ -231,20 +231,20 @@ teamai env exec -- glab mr list     GITLAB_HOST from env.yaml and GITLAB_TOKEN f
 
 ## Telling the agent
 
-An agent that runs `gh` without `env exec` silently uses whatever account its environment has. When the scope declares secrets, the session-start hook adds one line to the agent's context (`additionalContext`, beside the MR and package hints):
+An agent that runs `gh` without `env exec` silently uses whatever account its environment has, and its shell may carry another project's env. When the scope delivers env variables or declares secrets, the session-start hook adds one line to the agent's context (`additionalContext`, beside the MR and package hints):
 
 ```text
-Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the CLIs that need them through `teamai env exec -- <command>` so they get this team's values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.
+Team env variables in this scope: API_URL. Team secrets in this scope: GITHUB_TOKEN (gh and the github MCP server), SENTRY_AUTH_TOKEN. Run the commands that need them through `teamai env exec -- <command>` so they get this directory's team values. Never ask for, read or print a secret value; if one is missing, ask the member to run `teamai env set KEY` in their own terminal.
 ```
 
-- The line lists each declared key with its `description`, so the description should say which tool or server uses the key. It carries no value and no state.
-- No line when the scope declares no secrets, when its secrets files can't be used (`pull` and `doctor` report that), or in a directory without teamai.
+- The line lists each variable and each declared secret with its `description`, so the description should say which tool or server uses the key. It carries no value and no state. The sentence about secret values is there only when the scope declares secrets.
+- No line when the scope delivers neither, or in a directory without teamai. While a part can't be resolved, the line names the variables its last pull wrote and no secret.
 - Hosts that run SessionStart but discard its output (Hermes, Pi, OpenCode, OpenClaw), and JoyCode, which has no hooks, get the same rule from the teamai core skill.
 - The skills say an agent never asks for a secret value in chat, never passes one through `--stdin`, never reads the value files and never prints a secret (`teamai env exec -- env` included). On a missing secret it asks the member to run `teamai env set KEY` in their own terminal. Declaring a secret with `env add --secret` takes no value, so an agent can run it.
 
 ## Rotation
 
-A token that was ever committed to the team repo stays in its git history: rotate it, then declare it here and have each member set the new value. After `teamai env set` with a new value, `teamai pull` writes it to the MCP servers.
+A token that was ever committed to the team repo stays in its git history: rotate it, then declare it here and have each member set the new value. `teamai env set` updates MCP servers for the current scope. Run `teamai pull` afterwards only to update `env.sh`, and only when the key is an env variable.
 
 ## Declarations are absent, valid or failed
 

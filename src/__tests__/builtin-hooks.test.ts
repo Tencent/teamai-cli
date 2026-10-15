@@ -59,11 +59,16 @@ describe('builtinHookDefs — unified built-in hook model', () => {
     expect(builtinHookDefs('claude').some((d) => d.event === 'SessionEnd')).toBe(false);
   });
 
-  it('Claude defs carry no timeout; Cursor defs carry per-hook timeouts', () => {
+  it('Claude defs carry no timeout; Cursor and the Codex family carry per-hook timeouts (#1070)', () => {
     expect(builtinHookDefs('claude').every((d) => d.timeout === undefined)).toBe(true);
     const cursor = builtinHookDefs('cursor');
     expect(cursor.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(15);
     expect(cursor.find((d) => d.key === 'Hook dispatch post-tool-use TodoWrite')?.timeout).toBe(3);
+    for (const tool of ['codex', 'codex-internal', 'tcodex']) {
+      const codex = builtinHookDefs(tool);
+      expect(codex.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(15);
+      expect(codex.find((d) => d.key === 'Hook dispatch post-tool-use TodoWrite')?.timeout).toBe(3);
+    }
   });
 
   it('embeds the --tool identifier and [teamai] description marker', () => {
@@ -118,6 +123,32 @@ describe('builtinHookDefs — dsh shell syntax by platform (#1005)', () => {
       expect(def.command).toContain('2>/dev/null');
       expect(def.command).toContain('|| true');
       expect(def.command).not.toContain('2>$null');
+    }
+  });
+});
+
+describe('builtinHookDefs — codex command is the POSIX form on every platform (#1074)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // The PowerShell form Codex needs on Windows lives in the entry's commandWindows
+  // (toCodexEntry in hooks.ts), so the committed project hooks.json reads the same
+  // after a Windows pull and after a Linux pull.
+  it('renders the same bare bash dispatch on Windows and on Linux for the codex family', () => {
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    for (const tool of ['codex', 'codex-internal', 'tcodex']) {
+      platform.mockReturnValue('linux');
+      const posix = builtinHookDefs(tool);
+      platform.mockReturnValue('win32');
+      const windows = builtinHookDefs(tool);
+      expect(posix.length).toBeGreaterThan(0);
+      expect(windows.map((d) => d.command)).toEqual(posix.map((d) => d.command));
+      for (const def of windows) {
+        expect(def.command).toMatch(new RegExp(`^bash -lc "teamai hook-dispatch \\S+ --tool ${tool}(?: --matcher \\S+)? 2>/dev/null" \\|\\| true$`));
+        expect(def.command).not.toContain('bash.exe');
+        expect(def.command).not.toContain('2>$null');
+      }
     }
   });
 });

@@ -219,7 +219,7 @@ describe('env.yaml shape warning on a real pull', () => {
     const envSh = await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8');
     const backup = await fse.readFile(path.join(homeDir, '.teamai', 'env'), 'utf8');
     expect(envSh).toContain("export FOO='bar'");
-    expect(backup).toContain('FOO=bar');
+    expect(JSON.parse(backup).FOO).toBe('bar');
     expect(envSh).not.toContain('repo-token');
     expect(backup).not.toContain('repo-token');
   });

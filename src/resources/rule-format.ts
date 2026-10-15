@@ -76,9 +76,10 @@ const RULE_FORMATS: Readonly<Record<string, RuleFormat>> = {
 /**
  * The tools with no rules format whose session-start hook adds a project's
  * team rules: the Codex family (#938), ZCode, whose CLI runs only user-level
- * hooks, and DeepSeek Harness through teamai's `--patch` (#946).
+ * hooks, DeepSeek Harness through teamai's `--patch` (#946), and Muse Code,
+ * whose SessionStart hook adds stdout to the model context.
  */
-const SESSION_HOOK_RULE_TOOLS = new Set(['codex', 'codex-internal', 'tcodex', 'zcode', 'dsh']);
+const SESSION_HOOK_RULE_TOOLS = new Set(['codex', 'codex-internal', 'tcodex', 'zcode', 'dsh', 'muse']);
 
 /**
  * The tools whose teamai extension adds a project's team rules to each run's
@@ -197,7 +198,7 @@ export function usesCopilotInstructions(tool: string): boolean {
 /**
  * True when the tool has no rules format of its own, so in a project its
  * session-start hook adds the team rules (the Codex family, #938; ZCode and
- * DeepSeek Harness, #946). Pull writes no rule file for it.
+ * DeepSeek Harness, #946; Muse Code). Pull writes no rule file for it.
  */
 export function getsRulesFromSessionHook(tool: string): boolean {
   return SESSION_HOOK_RULE_TOOLS.has(tool);

@@ -4,10 +4,16 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import { pathExists, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { warnOnce } from './utils/warn-once.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
-import { resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
+import { getCopilotHome, resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
+import { getHermesHome } from './hermes-home.js';
+import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
 import { ResourceHandler } from './resources/base.js';
-import { CODEX_TOOL, resolveSkillDestination, SHARED_AGENT_SKILLS_PATH, skillsDirForTool, skillTargetForTool } from './resources/skills.js';
+import {
+  CODEX_TOOL, allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock, resolveSkillDestination,
+  SHARED_AGENT_SKILLS_PATH, skillsDirForTool, skillTargetsFor,
+} from './resources/skills.js';
 import { getUserHome } from './utils/home.js';
 import { packagedSkillRoots } from './skill-content.js';
 import { PACKAGED_SKILL_DIGESTS } from './packaged-skill-digests.js';
@@ -234,11 +240,8 @@ export async function removeOwnedFiles(
     skippedSymlink: false, foreign: 0, tracked: 0, unbackedUp: [], notRemoved: [], backedUp: 0,
   };
 
-  // A link anywhere between the base directory and this one points at files we
-  // never wrote — a shared checkout, a dotfiles repo. `readdir` follows it and
-  // every path under it matches ours by name, so the walk would delete someone
-  // else's files through the link. Ownership stops at the first link.
-  if (await crossesSymlink(baseDir, dir)) {
+  // Root links may stay within this repository; foreign and skill links are not owned.
+  if (!await allowsSkillDirectory(baseDir, dir)) {
     result.skippedSymlink = true;
     return result;
   }
@@ -247,6 +250,8 @@ export async function removeOwnedFiles(
   try {
     entries = await walkFiles(dir);
   } catch (e) {
+    // Another tool may have removed this same tree through an allowed root alias.
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return result;
     // An unreadable subdirectory. Reporting it is the point: a silent return
     // leaves the tree in place while `pull` says it succeeded.
     result.notRemoved.push({ file: dir, error: (e as Error).message });
@@ -315,33 +320,6 @@ export async function removeOwnedFiles(
 }
 
 /**
- * True when any path component between `baseDir` and `target` is a symlink, or
- * `target` is not under `baseDir` at all.
- *
- * Checking `target` alone is not enough: a member who links `~/.claude/skills`
- * — or `~/.config/opencode`, or `~/.claude` itself — at a dotfiles checkout
- * leaves every skill directory under it a real directory, so `lstat` on one
- * says nothing. Components at or above `baseDir` are not checked: a home
- * directory that itself sits under a link is ordinary, and refusing there would
- * disable deployment for those machines.
- */
-async function crossesSymlink(baseDir: string, target: string): Promise<boolean> {
-  const relative = path.relative(baseDir, target);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return true;
-
-  let walked = baseDir;
-  for (const segment of relative.split(path.sep).filter(Boolean)) {
-    walked = path.join(walked, segment);
-    try {
-      if ((await fs.promises.lstat(walked)).isSymbolicLink()) return true;
-    } catch {
-      return false; // does not exist yet: nothing to walk through
-    }
-  }
-  return false;
-}
-
-/**
  * One backup root per process run. A date alone collides: two pulls on the same
  * day would have the second overwrite the first's copies.
  */
@@ -372,7 +350,7 @@ export interface BuiltinSkillsTarget {
   skillsDir: string;
   /**
    * The scope root (home, or the project root) when the skills directory sits
-   * under it, else the parent of the configured root: `COPILOT_HOME`,
+   * under it, else the parent of the tool home holding it: `COPILOT_HOME`,
    * `HERMES_HOME` and OpenClaw's workspace can live anywhere, and the guard
    * must still check that root and every component below it.
    */
@@ -384,14 +362,20 @@ export interface BuiltinSkillsTarget {
  * project root — when `skillsDir` sits under it, since a link at or above that
  * is ordinary. Not the tool's base directory: for Copilot that is
  * `COPILOT_HOME`, and starting there would never check whether `COPILOT_HOME`
- * itself is a link. A root configured outside the scope root (`HERMES_HOME`,
- * an OpenClaw workspace) has the walk start just above it, so that root is
+ * itself is a link. A root outside the scope root has the walk start at the
+ * parent of the tool home holding it (`COPILOT_HOME`, `HERMES_HOME`, the
+ * OpenClaw workspace), however deep the skills path below it, so that home is
  * checked too.
  */
-export function skillsGuardBase(scopeRoot: string, skillsDir: string): string {
-  const relative = path.relative(scopeRoot, skillsDir);
-  const underRoot = relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
-  return underRoot ? scopeRoot : path.dirname(path.dirname(skillsDir));
+export async function skillsGuardBase(scopeRoot: string, skillsDir: string): Promise<string> {
+  const under = (root: string): boolean => {
+    const relative = path.relative(root, skillsDir);
+    return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+  };
+  if (under(scopeRoot)) return scopeRoot;
+  const homes = [getCopilotHome(), getHermesHome(), await resolveOpenclawWorkspaceDir()];
+  const home = homes.filter((dir): dir is string => dir !== null && under(dir)).sort((a, b) => a.length - b.length)[0];
+  return home ? path.dirname(home) : path.dirname(path.dirname(skillsDir));
 }
 
 /**
@@ -412,7 +396,7 @@ export async function builtinSkillsTarget(
   }
   const skillsDir = await skillsDirForTool(tool, configuredSkillsPath, localConfig);
   if (skillsDir === null) return null;
-  return { skillsDir, guardBase: skillsGuardBase(resolveBaseDir(localConfig), skillsDir) };
+  return { skillsDir, guardBase: await skillsGuardBase(resolveBaseDir(localConfig), skillsDir) };
 }
 
 /**
@@ -480,7 +464,8 @@ async function retireOtherCodexCopy(
 ): Promise<void> {
   const candidates = [path.join(skillsDir, skillName), path.join(guardBase, SHARED_AGENT_SKILLS_PATH, skillName)];
   for (const other of candidates) {
-    if (path.resolve(other) === path.resolve(deployedDir) || !await pathExists(other)) continue;
+    if (await fs.promises.realpath(other).catch(() => other) === await fs.promises.realpath(deployedDir).catch(() => deployedDir)
+      || !await pathExists(other)) continue;
     const backupDir = skillBackupDir(guardBase, tool, path.relative(guardBase, path.dirname(other)), skillName);
     const result = await removeOwnedFiles(other, await ownedSkillFiles(skillName), guardBase, backupDir);
     if (prunedWhole(result)) {
@@ -553,7 +538,9 @@ export async function deployBuiltinSkills(
 
   let deployed = 0;
 
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig ?? {}))) {
+  const toolPaths = scopedToolPaths(teamConfig, localConfig ?? {});
+  const skillTarget = localConfig && skillTargetsFor(toolPaths, localConfig);
+  for (const [tool, toolPath] of Object.entries(toolPaths)) {
     if (!toolPath.skills) continue;
 
     // Skip tools that cannot receive skills: not installed, no workspace.
@@ -577,18 +564,26 @@ export async function deployBuiltinSkills(
       // The other Codex copy is dealt with below, under the guard. A built-in
       // name is the CLI's (`isCliOwnedSkillName`), so an existing shared copy
       // takes the stub; its files are judged by what a release shipped.
-      const ownsShared = async (): Promise<boolean> => true;
-      const destDir = localConfig
-        ? await skillTargetForTool(tool, toolPath.skills, localConfig, skillName, ownsShared) ?? path.join(target.skillsDir, skillName)
+      const ownsShared = async (dir: string): Promise<boolean> => allowsSkillDirectory(baseDir, dir);
+      const destDir = skillTarget
+        ? await skillTarget({ tool, skillName, ownsShared }) ?? path.join(target.skillsDir, skillName)
         : await resolveSkillDestination(tool, toolPath.skills, baseDir, skillName, ownsShared);
 
       try {
-        // A symlinked destination points somewhere we do not own. Writing
-        // through it would put the stub outside the agent directory, which is
-        // the same reason the prune refuses to walk it. Neither step runs.
-        if (await crossesSymlink(baseDir, destDir)) {
-          log.warn(`Skipped ${skillName} (${tool}): ${destDir} is reached through a symlink, and TeamAI does not write through one. Remove the link to let the skill deploy.`);
+        // Deployment and pruning follow the same repository boundary.
+        const block = await findSkillDirectoryBlock(baseDir, destDir);
+        if (block) {
+          warnOnce(describeSkippedSkillDirectory(skillName, tool, block));
           continue;
+        }
+        const stub = path.join(destDir, 'SKILL.md');
+        if (await pathExists(stub)) {
+          const entry = await fs.promises.lstat(stub);
+          if (!entry.isFile() || await keepsTrackedCopy(stub)
+            || !await isOwnedFile(stub, 'SKILL.md', await ownedSkillFiles(skillName))) {
+            log.warn(`Kept ${stub}: it is tracked or contains member instructions. Remove it to receive the built-in skill.`);
+            continue;
+          }
         }
         // A dry run writes and prunes nothing: it reports where the skill would land (#915).
         if (options?.dryRun) {

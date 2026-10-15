@@ -64,15 +64,20 @@ and give it your team repo URL."*
 
 ## Notes
 
+- If no valid configuration is found and TeamAI reports "home directory only," uninstall removes `~/.teamai` but keeps each project still set up (or registered in `~/.teamai/env-scopes`) and the shared files it reads, as a user-scope uninstall does.
 - Project uninstall keeps the shared Claude/Codex team hooks in the main checkout
   while another checkout uses them. A targeted uninstall releases only the selected
   tool. Checkouts that exclude a tool do not retain its shared hook. Bare-repository
   worktrees remove their own hook files independently. When the main checkout has
   no install, the shared manifest and its empty `.teamai` directory are removed
   after the last team hook is removed.
-- A migrated data partition is one installation shared by its checkouts. Uninstall
-  removes the selected tools' shared hooks and registrations for that installation.
-  Full uninstall removes the partition; targeted uninstall keeps the other tools.
+- A migrated data partition is one installation shared by its checkouts. Full
+  uninstall removes every checkout's shared hooks and registrations, then the
+  partition. Targeted uninstall (`--agent`) removes only that tool's hooks and
+  registration the current checkout uses, and keeps the other tools; when it is
+  the last tool it removes the partition, so every checkout's hooks go too.
+  Inherited submodule clones keep separate checkout ownership within that partition;
+  full uninstall removes their recorded hooks too, preserving versioned parent hooks.
 - For OpenCode, uninstall also removes the rules globs teamai added to
   `instructions` in `opencode.json`, including the relative `rules/*.md` an
   earlier release wrote in user scope. In a project it removes
@@ -83,7 +88,7 @@ and give it your team repo URL."*
 - Uninstall removes the team-rules block from the file a tool with no rules
   format reads in user scope (`~/.codex/AGENTS.md`, `~/.zcode/AGENTS.md`,
   `$DSH_HOME/AGENTS.md`, the OpenClaw workspace `AGENTS.md`,
-  `~/.pi/agent/AGENTS.md`, `~/.joycode/rules.txt`), and the file when teamai
+  `~/.pi/agent/AGENTS.md`, `~/.joycode/rules.txt`, `~/.config/muse/AGENTS.md`), and the file when teamai
   created it for the block alone.
 - Uninstall cleans legacy Codex rule copies at the recorded `toolRoots`
   location, including publishers' bare local filenames, and the copies earlier

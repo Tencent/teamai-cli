@@ -119,6 +119,20 @@ describe('co-author reconcile', () => {
     expect(Object.values(managed).every((v) => v === false)).toBe(true);
   });
 
+  it('leaves Muse Code settings alone: Muse documents no co-author setting', async () => {
+    const museSettings = path.join(homeDir, '.config', 'muse', 'settings.json');
+    await fse.outputJson(museSettings, { schema_version: 1 });
+    const withMuse = {
+      ...team({ enabled: false }),
+      toolPaths: { ...TOOL_PATHS, muse: { skills: '.config/muse/skills', settings: '.config/muse/settings.json' } },
+    } as TeamaiConfig;
+
+    const { changes } = await reconcileCoAuthorForConfig(withMuse, baseLocal, freshState());
+
+    expect(await fse.readJson(museSettings)).toEqual({ schema_version: 1 });
+    expect(changes.some((c) => c.tool === 'muse')).toBe(false);
+  });
+
   it('leaves a Claude or Cursor file that does not parse as it is, and does not record it as applied', async () => {
     const broken = '{ "permissions": {\n';
     await fse.outputFile(claudeSettings(), broken);

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -17,8 +19,19 @@ vi.mock('../utils/logger.js', () => ({
   setStderrOnly: vi.fn(),
 }));
 
+// The loader shells on PATH; by default none besides $SHELL, so only $SHELL's startup files are owed the block.
+const installedShells = new Set<string>();
+vi.mock('../utils/lookpath.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/lookpath.js')>();
+  return {
+    ...actual,
+    isOnPath: (bin: string, options?: Parameters<typeof actual.isOnPath>[1]) =>
+      bin === 'zsh' || bin === 'bash' ? installedShells.has(bin) : actual.isOnPath(bin, options),
+  };
+});
+
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
-import { buildChecks, resolveDoctorContext, type Check } from '../doctor.js';
+import { buildChecks, doctor, resolveDoctorContext, type Check, type DoctorReport } from '../doctor.js';
 import { EnvHandler } from '../resources/env.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
@@ -76,18 +89,9 @@ describe('doctor — env variables reach a shell', () => {
     );
   }
 
-  /**
-   * Resolve this scope's data home to a Windows path, the only place #661
-   * happens. On a POSIX host `path.join` still appends `/env.sh`, and the
-   * path is relative, so the test runs from tempDir and env.sh is written
-   * under it.
-   */
-  async function useWindowsDataHome(dataHome: string, overrides: Partial<LocalConfig> = {}): Promise<void> {
-    process.chdir(tempDir);
-    vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, ...overrides, dataHome });
-    envShPath = path.join(dataHome, 'env.sh');
-    await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
-  }
+  /** The loader every scope's block sources (#1018), in the form the generator writes it. */
+  const loaderPath = (): string => path.join(process.env.HOME ?? '', '.teamai', 'env-loader.sh').split(path.sep).join('/');
+  const loaderLine = (): string => `[ -f '${loaderPath()}' ] && . '${loaderPath()}'`;
 
   async function envCheck(): Promise<Check> {
     const ctx = await resolveDoctorContext();
@@ -117,6 +121,8 @@ describe('doctor — env variables reach a shell', () => {
     await fse.ensureDir(homeDir);
     vi.stubEnv('HOME', homeDir);
     vi.stubEnv('SHELL', '/bin/bash');
+    // A login bash reads .bashrc through it.
+    await fse.writeFile(path.join(homeDir, '.bash_profile'), '[ -f ~/.bashrc ] && . ~/.bashrc\n');
 
     await writeEnvYaml('variables:\n  - key: JIRA_PASSWORD\n    value: "s3cret"\n');
 
@@ -147,6 +153,7 @@ describe('doctor — env variables reach a shell', () => {
 
   afterEach(async () => {
     process.chdir(originalCwd);
+    installedShells.clear();
     vi.unstubAllEnvs();
     vi.clearAllMocks();
     await fse.remove(tempDir);
@@ -154,21 +161,26 @@ describe('doctor — env variables reach a shell', () => {
 
   it('passes when the block loads an env.sh carrying every declared variable', async () => {
     await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     expect(await (await envCheck()).check()).toBe(true);
   });
 
   // Skipped on Windows, where the data home below is a real absolute path.
+  // Skipped on Windows, where the home below is a real absolute path.
   it.skipIf(process.platform === 'win32')('fails when the block points at a path a POSIX shell cannot read (#661)', async () => {
-    await useWindowsDataHome('D:\\Users\\me\\.teamai');
-    // Raw and unquoted, as a pre-#661 CLI wrote it.
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
+    teamConfig.sharing.env.shellProfilePath = profilePath;
+    process.chdir(tempDir);
+    vi.stubEnv('HOME', 'D:\\Users\\me');
+    const windowsLoader = path.join('D:\\Users\\me', '.teamai', 'env-loader.sh');
+    // Raw and unquoted, as a pre-#661 CLI wrote a path.
+    await writeProfile(`[ -f ${windowsLoader} ] && . ${windowsLoader}`);
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('does not load');
-    expect(check.fix).toContain(envShPath);
+    expect(check.fix).toContain(windowsLoader);
   });
 
   // Regression (#693 hardware review by @CarlosWonMore): which file `pull`
@@ -180,16 +192,18 @@ describe('doctor — env variables reach a shell', () => {
     // Force the resolved profile to .profile, bypassing platform-dependent
     // detectShellProfile() so this test is deterministic on any host.
     teamConfig.sharing.env.shellProfilePath = path.join(homeDir, '.profile');
-    // The generator always writes the forward-slash, quoted form; envShPath
-    // is a native OS path (backslashes on a Windows dev host), so convert it
-    // the same way generateShellBlock does — this block must actually load,
-    // since the point of this test is that delivery stays healthy.
-    const envShPosix = envShPath.split(path.sep).join('/');
+    // The loader block, as the generator writes it: delivery stays healthy.
     await fse.writeFile(
       path.join(homeDir, '.profile'),
-      `# [teamai:env:start]\n# DO NOT EDIT\n[ -f '${envShPosix}' ] && source '${envShPosix}'\n# [teamai:env:end]\n`,
+      `# [teamai:env:start]\n# DO NOT EDIT\n${loaderLine()}\n# [teamai:env:end]\n`,
     );
-    // A legacy block for the SAME env.sh, left behind in .bashrc — raw and
+    // An interactive bash reads .bashrc whatever the override names, so it
+    // is owed the loader block too.
+    await fse.writeFile(
+      path.join(homeDir, '.bashrc'),
+      `# [teamai:env:start]\n# DO NOT EDIT\n${loaderLine()}\n# [teamai:env:end]\n`,
+    );
+    // A legacy block for the SAME env.sh, left behind in .bash_login — raw and
     // unquoted (the current generator always quotes via shellQuoteValue, so
     // an unquoted block is necessarily from an older write path). Windows-
     // specific legacy spellings (backslash, MSYS drive form) are covered
@@ -197,8 +211,8 @@ describe('doctor — env variables reach a shell', () => {
     // with explicit Windows-shaped test data rather than a host-dependent
     // string transform of this test's own (POSIX-on-CI) envShPath.
     await fse.writeFile(
-      path.join(homeDir, '.bashrc'),
-      `# my bashrc\n# [teamai:env:start]\n# DO NOT EDIT\n[ -f ${envShPath} ] && source ${envShPath}\n# [teamai:env:end]\n`,
+      path.join(homeDir, '.bash_login'),
+      `# my bash_login\n# [teamai:env:start]\n# DO NOT EDIT\n[ -f ${envShPath} ] && source ${envShPath}\n# [teamai:env:end]\n`,
     );
 
     // Delivery itself is healthy — a stray leftover must not report as a
@@ -207,8 +221,95 @@ describe('doctor — env variables reach a shell', () => {
 
     const stale = await staleBlockCheck();
     expect(await stale.check()).toBe(false);
-    expect(stale.fix).toContain('.bashrc');
+    expect(stale.fix).toContain('.bash_login');
     expect(stale.fix).toContain('teamai uninstall');
+  });
+
+  // #1018: `zsh -c` reads .zshenv only, so for a zsh member the block counts
+  // there, whatever shellProfilePath names.
+  it.each([
+    { blockIn: '.zshrc', passes: false },
+    { blockIn: '.zshenv', passes: true },
+  ])('for a zsh member whose team sets shellProfilePath to ~/.zshrc, passes only with the block in ~/$blockIn', async ({ blockIn, passes }) => {
+    vi.stubEnv('SHELL', '/bin/zsh');
+    vi.stubEnv('ZDOTDIR', '');
+    await fse.remove(path.join(homeDir, '.bash_profile'));
+    await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
+    teamConfig.sharing.env.shellProfilePath = '~/.zshrc';
+    profilePath = path.join(homeDir, blockIn);
+    await writeProfile(loaderLine());
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(passes);
+    if (!passes) expect(check.fix).toContain(path.join(homeDir, '.zshenv'));
+  });
+
+  // A zsh member with a ~/.bashrc: pull puts the loader block in both, so
+  // each is owed one, and neither counts as a stray copy.
+  it.each([
+    { blockInBashrc: true, passes: true },
+    { blockInBashrc: false, passes: false },
+  ])('for a zsh member with a ~/.bashrc, passes only with the block in both (block in .bashrc: $blockInBashrc)', async ({ blockInBashrc, passes }) => {
+    vi.stubEnv('SHELL', '/bin/zsh');
+    vi.stubEnv('ZDOTDIR', '');
+    await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
+    profilePath = path.join(homeDir, '.zshenv');
+    await writeProfile(loaderLine());
+    profilePath = path.join(homeDir, '.bashrc');
+    if (blockInBashrc) await writeProfile(loaderLine());
+    else await fse.writeFile(profilePath, '# my bashrc\n');
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(passes);
+    if (!passes) expect(check.fix).toContain(path.join(homeDir, '.bashrc'));
+    expect(await (await staleBlockCheck()).check()).toBe(true);
+  });
+
+  // A login bash reads .bash_profile, not .bashrc, unless the first sources
+  // the second: pull then owes the block in .bash_profile too.
+  it.each([
+    { sourcesBashrc: false, blockInBashProfile: true, passes: true },
+    { sourcesBashrc: false, blockInBashProfile: false, passes: false },
+    { sourcesBashrc: true, blockInBashProfile: false, passes: true },
+  ])('for a zsh member with a ~/.bash_profile (sources .bashrc: $sourcesBashrc, block in it: $blockInBashProfile), passes: $passes', async ({ sourcesBashrc, blockInBashProfile, passes }) => {
+    vi.stubEnv('SHELL', '/bin/zsh');
+    vi.stubEnv('ZDOTDIR', '');
+    await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
+    for (const name of ['.zshenv', '.bashrc']) {
+      profilePath = path.join(homeDir, name);
+      await writeProfile(loaderLine());
+    }
+    profilePath = path.join(homeDir, '.bash_profile');
+    if (blockInBashProfile) await writeProfile(loaderLine());
+    else await fse.writeFile(profilePath, sourcesBashrc ? '. ~/.bashrc\n' : '# my bash_profile\n');
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(passes);
+    if (!passes) expect(check.fix).toContain(path.join(homeDir, '.bash_profile'));
+    expect(await (await staleBlockCheck()).check()).toBe(true);
+  });
+
+  // A zsh member with bash installed and none of its startup files: pull
+  // creates .bashrc and .profile, so each is owed the block, and neither
+  // counts as a stray copy.
+  it.each([
+    { blockIn: ['.zshenv', '.bashrc', '.profile'], missing: [] },
+    { blockIn: ['.zshenv'], missing: ['.bashrc', '.profile'] },
+  ])('for a zsh member with bash installed and no bash startup file, owes the block in .bashrc and .profile (block in $blockIn)', async ({ blockIn, missing }) => {
+    vi.stubEnv('SHELL', '/bin/zsh');
+    vi.stubEnv('ZDOTDIR', '');
+    installedShells.add('bash');
+    await fse.remove(path.join(homeDir, '.bash_profile'));
+    await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
+    for (const name of blockIn) {
+      profilePath = path.join(homeDir, name);
+      await writeProfile(loaderLine());
+    }
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(missing.length === 0);
+    for (const name of missing) expect(check.fix).toContain(path.join(homeDir, name));
+    expect(await (await staleBlockCheck()).check()).toBe(true);
   });
 
   // Regression (#693 review round 4): an unexpanded `~/...` override made
@@ -218,13 +319,12 @@ describe('doctor — env variables reach a shell', () => {
   it('does not report shellProfilePath\'s own file as a stray copy of itself', async () => {
     await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
     teamConfig.sharing.env.shellProfilePath = '~/.profile';
-    // The generator always writes the forward-slash form; envShPath is a
-    // native OS path (backslashes on a Windows dev host), so convert it the
-    // same way generateShellBlock does before writing this test fixture.
-    const profileShPosix = envShPath.split(path.sep).join('/');
+    // An interactive bash reads .bashrc whatever the override names.
+    profilePath = path.join(homeDir, '.bashrc');
+    await writeProfile(loaderLine());
     await fse.writeFile(
       path.join(homeDir, '.profile'),
-      `# [teamai:env:start]\n# DO NOT EDIT\n[ -f '${profileShPosix}' ] && source '${profileShPosix}'\n# [teamai:env:end]\n`,
+      `# [teamai:env:start]\n# DO NOT EDIT\n${loaderLine()}\n# [teamai:env:end]\n`,
     );
 
     expect(await (await envCheck()).check()).toBe(true);
@@ -243,10 +343,12 @@ describe('doctor — env variables reach a shell', () => {
     // the same file with forward slashes throughout, which on a POSIX host is
     // already identical and on Windows is the exact shape the review reported.
     teamConfig.sharing.env.shellProfilePath = path.join(homeDir, '.profile').split(path.sep).join('/');
-    const profileShPosix = envShPath.split(path.sep).join('/');
+    // An interactive bash reads .bashrc whatever the override names.
+    profilePath = path.join(homeDir, '.bashrc');
+    await writeProfile(loaderLine());
     await fse.writeFile(
       path.join(homeDir, '.profile'),
-      `# [teamai:env:start]\n# DO NOT EDIT\n[ -f '${profileShPosix}' ] && source '${profileShPosix}'\n# [teamai:env:end]\n`,
+      `# [teamai:env:start]\n# DO NOT EDIT\n${loaderLine()}\n# [teamai:env:end]\n`,
     );
 
     expect(await (await envCheck()).check()).toBe(true);
@@ -256,7 +358,7 @@ describe('doctor — env variables reach a shell', () => {
   it('fails and names `variables:` for the shorthand env.yaml form (#662)', async () => {
     await writeEnvYaml('JIRA_PASSWORD: "s3cret"\n');
     await writeEnvSh('');
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
@@ -270,7 +372,7 @@ describe('doctor — env variables reach a shell', () => {
     // that export, so it called a correct delivery stale.
     await writeEnvYaml('variables:\n  - key: TEAM_KEY\n    value: |\n      line one\n      line two\n');
     await writeEnvSh("export TEAM_KEY='line one\nline two\n'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     expect(await (await envCheck()).check()).toBe(true);
   });
@@ -278,7 +380,7 @@ describe('doctor — env variables reach a shell', () => {
   it('still reports a multiline value that drifted from env.yaml', async () => {
     await writeEnvYaml('variables:\n  - key: TEAM_KEY\n    value: |\n      line one\n      line two\n');
     await writeEnvSh("export TEAM_KEY='line one\nsomething else\n'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
@@ -288,7 +390,7 @@ describe('doctor — env variables reach a shell', () => {
   it('passes for a value carrying a single quote, which the generator escapes', async () => {
     await writeEnvYaml("variables:\n  - key: TEAM_KEY\n    value: \"it's here\"\n");
     await writeEnvSh("export TEAM_KEY='it'\\''s here'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     expect(await (await envCheck()).check()).toBe(true);
   });
@@ -318,7 +420,7 @@ describe('doctor — env variables reach a shell', () => {
 
   it('fails when env.sh still exports the value env.yaml replaced', async () => {
     await writeEnvSh("export JIRA_PASSWORD='rotated-away'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
@@ -329,9 +431,30 @@ describe('doctor — env variables reach a shell', () => {
     expect(check.fix).not.toContain('rotated-away');
   });
 
+  // On Windows `jira_password` is the same environment variable: a declaration
+  // whose spelling changed is still delivered, until the next pull respells it.
+  it.each([
+    { platform: 'linux', delivered: false },
+    { platform: 'win32', delivered: true },
+  ] as const)('on $platform, takes an env.sh export in another case of a declared name as delivered: $delivered', async ({ platform, delivered }) => {
+    await writeEnvSh("export jira_password='s3cret'\n");
+    await writeProfile(loaderLine());
+    const spy = vi.spyOn(process, 'platform', 'get').mockReturnValue(platform);
+    try {
+      const check = await envCheck();
+      const passed = await check.check();
+      const fix = passed ? '' : check.fix ?? '';
+      // Not missing JIRA_PASSWORD, and not still exporting jira_password, on Windows; both elsewhere.
+      expect(fix.includes('JIRA_PASSWORD'), fix).toBe(!delivered);
+      expect(fix.includes('jira_password'), fix).toBe(!delivered);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('fails when a declared variable never reached env.sh', async () => {
     await writeEnvSh("export OTHER='x'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
@@ -347,58 +470,174 @@ describe('doctor — env variables reach a shell', () => {
     expect(check.fix).toContain('carries no TeamAI env block');
   });
 
-  // #876: a member with a user scope and a project scope carries one block
-  // for each in the same profile. Each scope's doctor reads its own block,
-  // not the first one in the file.
-  describe('with a user-scope and a project-scope block in one profile', () => {
-    let userEnvSh: string;
-    let projectEnvSh: string;
+  // #1018: several projects at once, each loaded in its own directory by one
+  // loader block, so doctor in one project is not failed by another's pull.
+  describe.skipIf(spawnSync('bash', ['-c', 'true']).status !== 0)('with several project scopes', () => {
+    const project = async (name: string): Promise<LocalConfig> => {
+      const projectRoot = fs.realpathSync(await fse.mkdtemp(path.join(tempDir, `${name}-`)));
+      execFileSync('git', ['init', '-q', projectRoot]);
+      return { ...localConfig, scope: 'project', projectRoot, dataHome: path.join(homeDir, '.teamai', 'projects', name) };
+    };
+    const checksIn = async (config: LocalConfig): Promise<Check[]> => {
+      vi.mocked(loadLocalConfig).mockResolvedValue(config);
+      const ctx = await resolveDoctorContext();
+      if (!ctx) throw new Error('expected a resolved doctor context');
+      return (await buildChecks(ctx)).filter((c) => c.name.startsWith('Env variables') || c.name === 'This directory resolves its team env');
+    };
+    const pull = (config: LocalConfig) =>
+      new EnvHandler().writeResolvedEnv([{ key: 'JIRA_PASSWORD', value: 's3cret' }], teamConfig, config);
 
-    const scopeBlock = (envSh: string): string => `${new EnvHandler().generateShellBlock(path.dirname(envSh))}\n`;
+    it('passes in a project after another project pulled last', async () => {
+      const a = await project('a');
+      const b = await project('b');
+      await pull(a);
+      await pull(b);
 
-    function useProjectScope(): void {
-      const projectRoot = path.join(tempDir, 'work', 'api');
-      const dataHome = path.join(homeDir, '.teamai', 'projects', 'api');
-      vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, scope: 'project', projectRoot, dataHome });
-      envShPath = path.join(dataHome, 'env.sh');
-    }
+      const checks = await checksIn(a);
+      expect(checks.map((c) => c.name)).toEqual(['Env variables injected in shell profile', 'This directory resolves its team env']);
+      for (const c of checks) expect({ name: c.name, ok: await c.check(), fix: c.fix }).toMatchObject({ ok: true });
+    });
 
-    beforeEach(async () => {
-      userEnvSh = envShPath;
-      projectEnvSh = path.join(homeDir, '.teamai', 'projects', 'api', 'env.sh');
-      for (const envSh of [userEnvSh, projectEnvSh]) {
-        await fse.outputFile(envSh, "export JIRA_PASSWORD='s3cret'\n");
+    // An inheriting project's shells load the user scope's env.sh before its own.
+    it.each([
+      { userEnvSh: "export USER_ONLY='u'\n", projectSecret: false, keep: false, projectFails: false, fix: undefined },
+      { userEnvSh: null, projectSecret: false, keep: false, projectFails: false, fix: 'env.sh, which this project inherits, is missing' },
+      { userEnvSh: "export USER_ONLY='old'\n", projectSecret: false, keep: false, projectFails: false, fix: 'has a stale value for USER_ONLY, which this project inherits' },
+      { userEnvSh: "export USER_ONLY='u'\n", projectSecret: true, keep: true, projectFails: false, fix: undefined },
+      { userEnvSh: "export USER_ONLY='u'\n", projectSecret: true, keep: false, projectFails: false, fix: 'does not keep USER_ONLY from the user scope' },
+      // A key the user scope no longer delivers reaches this project's shells, and env exec and MCP leave it out.
+      { userEnvSh: "export USER_ONLY='u'\nexport OLD='x'\n", projectSecret: false, keep: false, projectFails: false, fix: 'still exports OLD, which the user scope no longer delivers' },
+      { userEnvSh: "export USER_ONLY='u'\nexport OLD='x'\n", projectSecret: true, keep: true, projectFails: false, fix: 'still exports OLD, which the user scope no longer delivers' },
+      // The user scope's part is diagnosed on its own while the project's declarations fail.
+      { userEnvSh: null, projectSecret: false, keep: false, projectFails: true, fix: 'env.sh, which this project inherits, is missing' },
+      { userEnvSh: "export USER_ONLY='old'\n", projectSecret: false, keep: false, projectFails: true, fix: 'has a stale value for USER_ONLY, which this project inherits' },
+      // The inherited env still needs the profile block to reach shells.
+      { userEnvSh: "export USER_ONLY='u'\n", projectSecret: false, keep: false, projectFails: true, noBlock: true, fix: 'carries no TeamAI env block' },
+      // While the user scope's declarations fail, its pull keeps the env.sh it wrote, and shells still load
+      // it; the failure is reported, as env exec and MCP report it.
+      { userEnvSh: "export USER_ONLY='u'\n", projectSecret: false, keep: false, projectFails: false, userFails: true, fix: '[user] ' },
+      { userEnvSh: null, projectSecret: false, keep: false, projectFails: false, userFails: true, fix: 'env.sh, which this project inherits, is missing' },
+    ] as { userEnvSh: string | null; projectSecret: boolean; keep: boolean; projectFails: boolean; userFails?: boolean; noBlock?: boolean; fix: string | undefined }[])('checks inherited user env (user env.sh $userEnvSh, project secret $projectSecret, kept $keep, project fails $projectFails, user fails $userFails, no profile block $noBlock)', async ({ userEnvSh, projectSecret, keep, projectFails, userFails, noBlock, fix }) => {
+      const userRepo = path.join(tempDir, 'user-repo');
+      await fse.outputFile(path.join(userRepo, 'env', 'env.yaml'), 'variables:\n  - key: USER_ONLY\n    value: u\n');
+      await fse.outputFile(path.join(homeDir, '.teamai', 'config.yaml'), `repo:\n  localPath: ${userRepo}\n  remote: owner/user\nusername: tester\nscope: user\n`);
+      await writeEnvYaml('variables: []\n');
+      if (projectSecret) await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: USER_ONLY\n');
+      const a = { ...await project('inherits'), inheritUserScope: true };
+      await new EnvHandler().writeResolvedEnv([], teamConfig, a, keep ? ['USER_ONLY'] : []);
+      if (projectSecret && !keep) await fse.outputFile(path.join(a.dataHome ?? '', 'env.sh'), '\n');
+      if (userEnvSh === null) await fse.remove(envShPath);
+      else await writeEnvSh(userEnvSh);
+      if (projectFails) await writeEnvYaml('variables:\n  - key: A\n   value: bad indent\n');
+      if (userFails) {
+        // What the user scope's last pull wrote, before its env.yaml broke.
+        await fse.outputFile(path.join(homeDir, '.teamai', 'env'), '{ "USER_ONLY": "u" }\n');
+        await fse.outputFile(path.join(userRepo, 'env', 'env.yaml'), 'variables:\n  - key: USER_ONLY\n   value: bad indent\n');
       }
-    });
+      if (noBlock) for (const name of ['.bashrc', '.bash_profile', '.profile', '.zshrc', '.zshenv']) await fse.remove(path.join(homeDir, name));
 
-    it('passes in each scope', async () => {
-      await fse.writeFile(profilePath, scopeBlock(userEnvSh) + scopeBlock(projectEnvSh));
-
-      expect(await (await envCheck()).check()).toBe(true);
-      useProjectScope();
-      expect(await (await envCheck()).check()).toBe(true);
-    });
-
-    it('reports a missing block for this env.sh, not a backslash, when only the other scope\'s block is present', async () => {
-      await fse.writeFile(profilePath, scopeBlock(userEnvSh));
-      useProjectScope();
-
-      const check = await envCheck();
-      expect(await check.check()).toBe(false);
-      expect(check.fix).toContain(`${profilePath} carries no TeamAI env block for ${projectEnvSh}`);
-      expect(check.fix).not.toContain('backslash');
-    });
-
-    it.skipIf(process.platform === 'win32')('still reports the backslash for this scope\'s own legacy block behind the other scope\'s (#661)', async () => {
-      await useWindowsDataHome('D:\\work\\api\\.teamai', { scope: 'project', projectRoot: 'D:\\work\\api' });
-      await fse.writeFile(
-        profilePath,
-        `${scopeBlock(userEnvSh)}# [teamai:env:start]\n[ -f ${envShPath} ] && source ${envShPath}\n# [teamai:env:end]\n`,
+      const check = (await checksIn(a))[0];
+      expect({ ok: await check.check(), fix: fix === undefined ? undefined : check.fix }).toEqual(
+        fix === undefined ? { ok: true, fix: undefined } : { ok: false, fix: expect.stringContaining(fix) },
       );
+      if (projectFails) expect(check.fix).toContain('env/env.yaml is not valid YAML');
+      if (userFails && fix !== undefined) expect(check.fix).toContain('[user] ');
+    });
 
-      const check = await envCheck();
+    it("passes a project that does not inherit the user scope, whatever the user scope's env.sh exports", async () => {
+      const userRepo = path.join(tempDir, 'user-repo');
+      await fse.outputFile(path.join(userRepo, 'env', 'env.yaml'), 'variables:\n  - key: USER_ONLY\n    value: u\n');
+      await fse.outputFile(path.join(userRepo, 'teamai.yaml'), 'team: user\nrepo: owner/user\nprovider: git\nsharing:\n  env:\n    injectShellProfile: true\n');
+      await fse.outputFile(path.join(homeDir, '.teamai', 'config.yaml'), `repo:\n  localPath: ${userRepo}\n  remote: owner/user\nusername: tester\nscope: user\n`);
+      await writeEnvYaml('variables:\n  - key: JIRA_PASSWORD\n    value: s3cret\n');
+      const a = await project('own');
+      await pull(a);
+      await writeEnvSh("export USER_ONLY='u'\n");
+
+      expect(await (await checksIn(a))[0].check()).toBe(true);
+    });
+
+    it("fails an inheriting project with no env.sh of its own while the user scope's env.sh exports a key it no longer delivers", async () => {
+      const userRepo = path.join(tempDir, 'user-repo');
+      await fse.outputFile(path.join(userRepo, 'env', 'env.yaml'), 'variables: []\n');
+      await fse.outputFile(path.join(homeDir, '.teamai', 'config.yaml'), `repo:\n  localPath: ${userRepo}\n  remote: owner/user\nusername: tester\nscope: user\n`);
+      await writeEnvYaml('variables: []\n');
+      const a = { ...await project('bare'), inheritUserScope: true };
+      await new EnvHandler().writeResolvedEnv([], teamConfig, a);
+      await fse.remove(path.join(a.dataHome ?? '', 'env.sh'));
+      await writeEnvSh("export OLD='x'\n");
+
+      const check = (await checksIn(a))[0];
       expect(await check.check()).toBe(false);
-      expect(check.fix).toContain(`does not load ${envShPath}`);
+      expect(check.fix).toContain('still exports OLD, which the user scope no longer delivers');
+    });
+
+    it('fails in a project whose scope a pull has not registered yet, and says to pull there', async () => {
+      const a = await project('a');
+      await pull(a);
+      await fse.remove(path.join(homeDir, '.teamai', 'env-scopes'));
+
+      const directory = (await checksIn(a))[1];
+      expect(await directory.check()).toBe(false);
+      expect(directory.fix).toContain(`instead of ${path.join(a.dataHome ?? '', 'env.sh')}`);
+      expect(directory.fix).toContain('Run `teamai pull` here');
+    });
+
+    it('passes for a shell that runs no loader, and names the gap in a note', async () => {
+      const a = await project('a');
+      await pull(a);
+      vi.stubEnv('SHELL', '/usr/local/bin/fish');
+
+      const directory = (await checksIn(a))[1];
+      expect(await directory.check()).toBe(true);
+      const printed: string[] = [];
+      const spy = vi.spyOn(console, 'log').mockImplementation((line: unknown) => { printed.push(String(line)); });
+      try {
+        await doctor({ json: true });
+      } finally {
+        spy.mockRestore();
+      }
+      const report = JSON.parse(printed.find((line) => line.trimStart().startsWith('{')) ?? '{}') as DoctorReport;
+      expect(report.notes?.join('\n')).toContain('fish');
+      expect(report.notes?.join('\n')).toContain('teamai env exec');
+    });
+
+    // The note follows what a loader shell would load here, inherited user env included.
+    it.each([
+      { delivers: 'its own env.sh', own: true, inherits: false, userEnvSh: false, noted: true },
+      { delivers: 'only the user scope\'s env.sh it inherits', own: false, inherits: true, userEnvSh: true, noted: true },
+      { delivers: 'nothing, the user scope\'s env.sh not inherited', own: false, inherits: false, userEnvSh: true, noted: false },
+      { delivers: 'nothing', own: false, inherits: true, userEnvSh: false, noted: false },
+    ])('notes a shell that runs no loader in a project that delivers $delivers: $noted', async ({ own, inherits, userEnvSh, noted }) => {
+      const { envLoaderNotes } = await import('../doctor-delivery.js');
+      const a = { ...await project('noted'), inheritUserScope: inherits };
+      await new EnvHandler().writeResolvedEnv(own ? [{ key: 'JIRA_PASSWORD', value: 's3cret' }] : [], teamConfig, a);
+      if (userEnvSh) {
+        const userRepo = path.join(tempDir, 'user-repo');
+        await fse.outputFile(path.join(userRepo, 'env', 'env.yaml'), 'variables:\n  - key: USER_ONLY\n    value: u\n');
+        await new EnvHandler().writeResolvedEnv([{ key: 'USER_ONLY', value: 'u' }], teamConfig, {
+          ...localConfig,
+          repo: { localPath: userRepo, remote: 'owner/user' },
+          scope: 'user',
+        });
+      }
+      vi.stubEnv('SHELL', '/usr/local/bin/fish');
+      vi.mocked(loadLocalConfig).mockResolvedValue(a);
+      const ctx = await resolveDoctorContext();
+      if (!ctx) throw new Error('expected a resolved doctor context');
+
+      expect((await envLoaderNotes(ctx)).length).toBe(noted ? 1 : 0);
+    });
+
+    it('reports a shell that cannot start as that, not as a project to pull', async () => {
+      const a = await project('a');
+      await pull(a);
+      vi.stubEnv('SHELL', path.join(tempDir, 'missing', 'zsh'));
+
+      const directory = (await checksIn(a))[1];
+      expect(await directory.check()).toBe(false);
+      expect(directory.fix).toContain(`Could not run ${path.join(tempDir, 'missing', 'zsh')}`);
+      expect(directory.fix).not.toContain('teamai pull');
     });
   });
 
@@ -416,7 +655,7 @@ describe('doctor — env variables reach a shell', () => {
 
   it('accepts a quoted path containing whitespace', async () => {
     await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
-    await writeProfile(`[ -f "${envShPath}" ] && source "${envShPath}"`);
+    await writeProfile(`[ -f "${loaderPath()}" ] && . "${loaderPath()}"`);
 
     expect(await (await envCheck()).check()).toBe(true);
   });
@@ -430,7 +669,7 @@ describe('doctor — env variables reach a shell', () => {
     });
     vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
     await writeEnvSh("export CHECKOUT_URL='c'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     expect(await (await envCheck()).check()).toBe(true);
   });
@@ -442,7 +681,7 @@ describe('doctor — env variables reach a shell', () => {
     });
     vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
     await writeEnvSh('');
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
@@ -454,7 +693,7 @@ describe('doctor — env variables reach a shell', () => {
     await writeProjectEnv({ billing: 'variables:\n  - key: BILLING_URL\n    value: "b"\n' });
     vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
     await writeEnvSh('');
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     expect(await (await envCheck()).check()).toBe(true);
   });
@@ -466,7 +705,7 @@ describe('doctor — env variables reach a shell', () => {
     await writeProjectEnv({ billing: 'variables:\n  - key: BILLING_URL\n    value: "b"\n' });
     vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
     await writeEnvSh("export BILLING_URL='b'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
@@ -482,7 +721,7 @@ describe('doctor — env variables reach a shell', () => {
     });
     vi.mocked(loadLocalConfig).mockResolvedValue({ ...localConfig, projects: ['checkout'] });
     await writeEnvSh("export CHECKOUT_URL='c'\nexport BILLING_URL='b'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
@@ -513,7 +752,7 @@ describe('doctor — env variables reach a shell', () => {
   it('does not owe env.sh a key the team also declares as a secret, and reports one it still exports', async () => {
     await writeEnvYaml('variables:\n  - key: JIRA_PASSWORD\n    value: "s3cret"\n  - key: API_URL\n    value: "u"\n');
     await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: JIRA_PASSWORD\n');
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     await writeEnvSh("export API_URL='u'\n");
     expect(await (await envCheck()).check()).toBe(true);
@@ -527,7 +766,7 @@ describe('doctor — env variables reach a shell', () => {
   // #875 (#879 S9): pull writes the member's value for this team, and leaves a --from-env one out.
   it("expects the member's value for a variable in env.sh, and no --from-env one", async () => {
     await writeEnvYaml('variables:\n  - key: GITLAB_HOST\n    value: "gitlab.team.example"\n  - key: API_URL\n    value: "u"\n');
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
     await writeSecretStore(getTeamSecretsPath(localConfig), { GITLAB_HOST: { value: 'gitlab.mine.example', kind: 'variable' }, API_URL: { env: 'MY_API_URL', kind: 'variable' } });
 
     await writeEnvSh("export GITLAB_HOST='gitlab.mine.example'\n");
@@ -544,10 +783,21 @@ describe('doctor — env variables reach a shell', () => {
   it('names the secrets file when the declarations cannot be read', async () => {
     await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: [\n');
     await writeEnvSh("export JIRA_PASSWORD='s3cret'\n");
-    await writeProfile(`[ -f ${envShPath} ] && source ${envShPath}`);
+    await writeProfile(loaderLine());
 
     const check = await envCheck();
     expect(await check.check()).toBe(false);
     expect(check.fix).toContain('env/secrets.yaml is not valid YAML');
+  });
+
+  // Shells keep loading the env.sh the last pull wrote, so it is still owed.
+  it('reports the env.sh the last pull wrote as missing while the declarations cannot be read', async () => {
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets: [\n');
+    await fse.outputFile(path.join(homeDir, '.teamai', 'env'), '{ "JIRA_PASSWORD": "s3cret" }\n');
+    await writeProfile(loaderLine());
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).toContain(`${envShPath} is missing`);
   });
 });

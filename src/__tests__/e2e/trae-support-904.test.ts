@@ -139,6 +139,8 @@ describe('Trae and Trae CN resource delivery (issue #904)', () => {
       home,
     );
     expect(result.code, result.output).toBe(0);
+    const pulled = await runCLI(['pull'], projectRoot, home);
+    expect(pulled.code, pulled.output).toBe(0);
 
     // Scoped rule: Trae frontmatter with unquoted, comma-joined globs.
     expect(fs.readFileSync(path.join(projectRoot, '.trae', 'rules', 'style.md'), 'utf8')).toBe(
@@ -176,6 +178,8 @@ describe('Trae and Trae CN resource delivery (issue #904)', () => {
       home,
     );
     expect(result.code, result.output).toBe(0);
+    const pulled = await runCLI(['pull'], workDir, home);
+    expect(pulled.code, pulled.output).toBe(0);
 
     // The CN build reads ~/.trae-cn for skills and — under the user_rules
     // name, not rules — for its rules.

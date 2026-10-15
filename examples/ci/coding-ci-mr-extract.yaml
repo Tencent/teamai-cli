@@ -90,10 +90,14 @@ stages:
           MR_URL="${QCI_REPO%.git}/merge_requests/${QCI_MR_IID}"
           echo "=== [TeamAI] Writing knowledge for $MR_URL ==="
           # 用 PAT 克隆团队知识仓库（PAT 的 git 用户名为 `private`）。
-          git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://private:${TGIT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" team-repo
+          # 克隆到源码 checkout 之外：放在 checkout 内会被当成源码提取，CLI 会跳过 teamwiki 更新。
+          TEAM_REPO_DIR=/tmp/teamai-team-repo
+          git clone -b "${TEAMAI_KNOWLEDGE_BRANCH}" "https://private:${TGIT_TOKEN}@git.woa.com/${TEAMAI_KNOWLEDGE_REPO}.git" "$TEAM_REPO_DIR"
+          # 在源码 checkout 中运行：teamwiki 走 `teamai import --dir . --incremental` 的同一流程，
+          # 只重新提取改过的文件，写入 teamwiki/evidence/code/tgit__<group>__<repo>/。
           # --write-mode direct 让 CLI 自行 commit 并 push：git 身份由 TGIT_TOKEN
           # 对应账号（REST /user）推导，满足工蜂 committer-check。无需手动 git config/commit/push。
-          teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments --team-repo ./team-repo --write-mode direct
+          teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments --team-repo "$TEAM_REPO_DIR" --write-mode direct
 
 worker:
   label: JOB_MATRIX_DEVCLOUD

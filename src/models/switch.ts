@@ -7,6 +7,7 @@ import { getUserHome } from '../utils/home.js';
 import { pathExists, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
+import { detectShellProfile, SHELL_PROFILE_CANDIDATE_NAMES, shellQuoteValue, toGeneratedForm } from '../utils/shell-profile.js';
 import type { LocalConfig } from '../types.js';
 import { ALL_MODEL_AGENTS, type ModelAgent, type ModelProtocol, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
 
@@ -122,8 +123,14 @@ function ompSettingsPath(): string {
   return path.join(getUserHome(), '.omp', 'agent', 'models.yml');
 }
 
+/** Muse Code reads `model` and `endpoint_transport` from its user settings.json. */
+function museSettingsPath(): string {
+  return path.join(getUserHome(), '.config', 'muse', 'settings.json');
+}
+
 function agentSettingsPath(agent: ModelAgent): string {
   if (agent === 'claude') return claudeSettingsPath();
+  if (agent === 'muse') return museSettingsPath();
   if (agent === 'codex') return codexSettingsPath();
   if (agent === 'opencode') return openCodeSettingsPath();
   if (agent === 'pi') return piSettingsPath();
@@ -314,7 +321,7 @@ async function installed(agent: ModelAgent): Promise<boolean> {
 
 function supportedRoute(agent: ModelAgent, profile: ResolvedModelProfile): boolean {
   if (agent === 'claude') return !!profile.routes.anthropic;
-  if (agent === 'codex') return !!profile.routes['openai-responses'];
+  if (agent === 'codex' || agent === 'muse') return !!profile.routes['openai-responses'];
   // OpenCode, Pi and OMP name an api per model, so any serves any protocol.
   if (agent === 'opencode' || agent === 'pi' || agent === 'omp') return Object.keys(profile.routes).length > 0;
   return !!profile.routes['openai-chat-completions'];
@@ -617,6 +624,81 @@ async function writeCodex(snapshot: CodexSnapshot): Promise<void> {
   await writeFileAtomic(await writableTarget(file), source, { mode: 0o600 });
 }
 
+// ─── Muse Code ────────────────────────────────────────────
+//
+// Muse Code has no settings key for the API key: it reads META_API_KEY, else
+// the Meta credential it saved at login. So the key goes into a file of its
+// own that a shell profile block sources, and only shells started after a
+// switch see it. The block has markers of its own: the team env block's
+// markers belong to `teamai pull`, which rewrites or removes that block.
+
+const MUSE_KEY_BLOCK_START = '# [teamai:models:start]';
+const MUSE_KEY_BLOCK_END = '# [teamai:models:end]';
+
+interface MuseSnapshot {
+  model?: unknown;
+  endpoint_transport?: unknown;
+  /** The content of `museKeyFilePath()`; null when there is none. */
+  keyExport: string | null;
+}
+
+function museKeyFilePath(): string {
+  return path.join(getUserHome(), '.teamai', 'models', 'env.sh');
+}
+
+async function museSnapshot(): Promise<MuseSnapshot> {
+  const settings = await jsonObject(museSettingsPath());
+  return {
+    model: settings.model,
+    endpoint_transport: settings.endpoint_transport,
+    keyExport: await readOptionalFile(museKeyFilePath()),
+  };
+}
+
+function withoutMuseKeyBlock(content: string): string {
+  const start = content.indexOf(MUSE_KEY_BLOCK_START);
+  if (start === -1) return content;
+  const end = content.indexOf(MUSE_KEY_BLOCK_END, start);
+  if (end === -1) return content;
+  const head = content.slice(0, start).replace(/\n$/, '');
+  const tail = content.slice(end + MUSE_KEY_BLOCK_END.length).replace(/^\n/, '');
+  return head && tail ? `${head}\n${tail}` : head ? `${head}\n` : tail;
+}
+
+async function writeMuse(snapshot: MuseSnapshot): Promise<void> {
+  const file = museSettingsPath();
+  // Muse refuses a settings.json without schema_version.
+  const settings: Record<string, unknown> = { schema_version: 1, ...await jsonObject(file) };
+  for (const key of ['model', 'endpoint_transport'] as const) {
+    if (snapshot[key] === undefined) delete settings[key];
+    else settings[key] = snapshot[key];
+  }
+  const keyFile = museKeyFilePath();
+  // The file the block goes in for zsh may be under ZDOTDIR.
+  const profiles = [...new Set([...SHELL_PROFILE_CANDIDATE_NAMES.map((name) => path.join(getUserHome(), name)), await detectShellProfile()])];
+  if (snapshot.keyExport === null) {
+    await writeAgentJson(file, settings);
+    await fs.promises.rm(keyFile, { force: true });
+    for (const profile of profiles) {
+      const content = await readOptionalFile(profile);
+      if (content !== null && content.includes(MUSE_KEY_BLOCK_START)) {
+        await writeFileAtomic(profile, withoutMuseKeyBlock(content));
+      }
+    }
+    return;
+  }
+  // The key lands before settings.json points Muse at the gateway.
+  await writeFileAtomic(keyFile, snapshot.keyExport, { mode: 0o600 });
+  await writeAgentJson(file, settings);
+  const sourced = await Promise.all(profiles.map(async (profile) => (await readOptionalFile(profile))?.includes(MUSE_KEY_BLOCK_START)));
+  if (sourced.some(Boolean)) return;
+  const profile = await detectShellProfile();
+  const content = (await readOptionalFile(profile)) ?? '';
+  const quoted = shellQuoteValue(toGeneratedForm(keyFile));
+  const block = `${MUSE_KEY_BLOCK_START}\n[ -f ${quoted} ] && . ${quoted}\n${MUSE_KEY_BLOCK_END}\n`;
+  await writeFileAtomic(profile, `${content}${content && !content.endsWith('\n') ? '\n' : ''}${block}`);
+}
+
 // ─── OpenCode ─────────────────────────────────────────────
 
 const OPENCODE_PROVIDERS = [
@@ -766,6 +848,7 @@ async function currentSnapshot(agent: ModelAgent, reference?: unknown): Promise<
   if (agent === 'claude') return claudeSnapshot(await jsonObject(claudeSettingsPath()));
   if (agent === 'codex') return codexSnapshot((await readOptionalFile(codexSettingsPath())) ?? '');
   if (agent === 'opencode') return openCodeSnapshot(await jsonObject(openCodeSettingsPath()));
+  if (agent === 'muse') return museSnapshot();
   if (agent === 'pi' || agent === 'omp') return piSnapshot(await piDoc(agent), reference);
   const written = reference as BuddySnapshot | undefined;
   const { models, availableModels } = await buddyDoc(agent);
@@ -786,6 +869,7 @@ async function writeSnapshot(
   if (agent === 'claude') return writeClaude(snapshot as ClaudeSnapshot);
   if (agent === 'codex') return writeCodex(snapshot as CodexSnapshot);
   if (agent === 'opencode') return writeOpenCode(snapshot as OpenCodeSnapshot);
+  if (agent === 'muse') return writeMuse(snapshot as MuseSnapshot);
   if (agent === 'pi' || agent === 'omp') return writePi(agent, snapshot as PiSnapshot, previousManaged);
   return replaceBuddy(agent, previousManaged as BuddySnapshot | undefined, snapshot as BuddySnapshot, keepAppMetadata, released);
 }
@@ -829,6 +913,16 @@ function desiredSnapshot(agent: ModelAgent, profile: ResolvedModelProfile): unkn
           : `experimental_bearer_token = ${JSON.stringify(profile.api_key_value ?? '')}`,
       ].join('\n'),
     } satisfies CodexSnapshot;
+  }
+  if (agent === 'muse') {
+    const route = profile.routes['openai-responses']!;
+    return {
+      model: profile.model && route.models.includes(profile.model) ? profile.model : route.models[0],
+      // Muse sends its bearer to a base_url other than Meta's only when
+      // settings.json pins auth = bearer beside it.
+      endpoint_transport: { base_url: route.base_url, auth: 'bearer' },
+      keyExport: `export META_API_KEY=${envRef ? `"\${${envRef}}"` : shellQuoteValue(profile.api_key_value ?? '')}\n`,
+    } satisfies MuseSnapshot;
   }
   if (agent === 'opencode') {
     const providers: Record<string, unknown> = Object.fromEntries(OPENCODE_PROVIDER_IDS.map((id) => [id, null]));
@@ -1042,6 +1136,10 @@ async function switchModelProfileUnlocked(
           warning = `This shell sets ${overrides.join(', ')}, which override settings.json for Claude sessions started from it`;
         }
       }
+      if (agent === 'muse') {
+        const { base_url: baseUrl } = (desired as MuseSnapshot).endpoint_transport as { base_url: string };
+        warning = `Shells started before this switch lack the profile's META_API_KEY: open a new shell before running muse, or Muse Code sends your saved Meta credential to ${baseUrl}`;
+      }
       const current = await currentSnapshot(agent, state ? state.lastWritten : desired);
       if (state && !sameManaged(agent, current, state.lastWritten)) {
         results.push({ agent, status: 'skipped', message: `${agent} model settings changed outside TeamAI; leaving them untouched` });
@@ -1194,6 +1292,9 @@ async function restoreModelProfilesUnlocked(
         agent,
         status: 'restored',
         message: options.dryRun ? `${agent} model settings would be restored` : `${agent} model settings restored`,
+        ...(agent === 'muse'
+          ? { warning: "Shells started before this restore still export the profile's META_API_KEY: open a new shell before running muse" }
+          : {}),
       });
     } catch (error) {
       results.push({ agent, status: 'failed', message: `${agent} restore failed: ${(error as Error).message}` });
@@ -1289,6 +1390,10 @@ function writtenGatewayUrls(agent: ModelAgent, snapshot: unknown): string[] {
     ));
   }
   if (agent === 'pi' || agent === 'omp') return typeof snapshot.baseUrl === 'string' ? [snapshot.baseUrl] : [];
+  if (agent === 'muse') {
+    const transport = snapshot.endpoint_transport;
+    return isRecord(transport) && typeof transport.base_url === 'string' ? [transport.base_url] : [];
+  }
   const entries = isRecord(snapshot.entries) ? Object.values(snapshot.entries) : [];
   return entries.flatMap((entry) => (isRecord(entry) && typeof entry.url === 'string' ? [entry.url] : []));
 }

@@ -886,6 +886,27 @@ describe('deployBuiltinSkills — skip uninstalled tools', () => {
     expect(await fse.pathExists(path.join(target, 'skills/teamai'))).toBe(false);
   });
 
+  it('does not prune through a linked COPILOT_HOME when its skills path is nested', async () => {
+    const { deployBuiltinSkills } = await import('../builtin-skills.js');
+
+    const target = path.join(tmpDir, 'dotfiles/copilot');
+    const copilotHome = path.join(tmpDir, 'linked-copilot-home');
+    await fse.ensureDir(path.join(target, 'nested/skills/team-wiki-codebase'));
+    const legacySkill = path.join(target, 'nested/skills/team-wiki-codebase/SKILL.md');
+    await fse.writeFile(legacySkill, WIKI_SKILL);
+    await fse.symlink(target, copilotHome, 'dir');
+    vi.stubEnv('COPILOT_HOME', copilotHome);
+
+    const deployed = await deployBuiltinSkills(
+      legacyPruneTeamConfig({ copilot: { skills: '.github/skills', userScope: { skills: 'nested/skills' } } }),
+      legacyPruneLocalConfig(tmpDir),
+    );
+
+    expect(deployed).toBe(0);
+    expect(await fse.readFile(legacySkill, 'utf8')).toBe(WIKI_SKILL);
+    expect(await fse.pathExists(path.join(target, 'nested/skills/teamai'))).toBe(false);
+  });
+
   it('keeps a skill of the member\'s that only shares a packaged name, whatever its paths', async () => {
     const { deployBuiltinSkills } = await import('../builtin-skills.js');
 

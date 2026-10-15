@@ -2,8 +2,8 @@
  * Attribute a session's working directory to a stable repo label, so usage can
  * be broken down per project.
  *
- * The dashboard event stream records a `cwd` and, inside git, the repo's main
- * checkout (`projectAnchor`) per event, but no git remote, so attribution here is
+ * The dashboard event stream records a `cwd` and, inside git, the repo's stable
+ * identity (`projectAnchor`) per event, but no git remote, so attribution here is
  * by the project folder (session-level), not the per-turn remote resolution
  * claude-cloud-sync does device-side. The
  * remote-form canonicalization below is ported from that project's repo_canon so

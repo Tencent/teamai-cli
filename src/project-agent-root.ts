@@ -5,7 +5,7 @@ import { detectProjectConfig, loadTeamConfig } from './config.js';
 import { KNOWN_AGENTS } from './known-agents.js';
 import { isAgentDisabled, resolveBaseDir, scopedToolPaths, toolInstallRoot } from './types.js';
 import { ensureDir } from './utils/fs.js';
-import { resolveAnchors } from './utils/git.js';
+import { checkoutForProjectAnchor, resolveAnchors } from './utils/git.js';
 import { log } from './utils/logger.js';
 
 /**
@@ -38,7 +38,8 @@ function resolveSkillsPath(
  * Project scope: create the install roots of a set of tools under the current
  * checkout (e.g. `<checkout>/.claude`, `<checkout>/.codex`) so a subsequent
  * `teamai pull` has somewhere to write. Bare `teamai pull` does not create
- * agent roots; only callers that know which tools the member uses do.
+ * agent roots, except the first pull of an inherited submodule clone
+ * (seedInheritedCheckoutRoots); only callers that know which tools the member uses do.
  *
  * `tools` defaults to `enabledAgents`; when that is empty too, to the tools
  * whose root the main checkout already has (a linked worktree then looks like
@@ -91,7 +92,10 @@ async function toolsInMainCheckout(
   teamConfig: Awaited<ReturnType<typeof loadTeamConfig>>,
   rootOf: (id: string) => string | undefined,
 ): Promise<string[]> {
-  const mainCheckout = (await resolveAnchors(checkout))?.projectAnchor;
+  const anchors = await resolveAnchors(checkout);
+  let mainCheckout = anchors?.mainCheckout;
+  // An inherited submodule clone is its own main checkout; it came from the original submodule (#1041).
+  if (anchors && mainCheckout === checkout) mainCheckout = await checkoutForProjectAnchor(anchors.projectAnchor);
   if (!mainCheckout || mainCheckout === checkout) return [];
   const candidates = normalizeIds([
     ...KNOWN_AGENTS.map((agent) => agent.id),
@@ -111,6 +115,22 @@ async function isDirectory(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * A submodule clone in a superproject worktree inherits its identity, but no
+ * teamai post-checkout ran for it: the superproject created it. Its first pull
+ * seeds the roots a new linked worktree gets (#1041). `source-missing` means
+ * the original checkout is gone; leave the marker unset so a later pull retries.
+ */
+export async function seedInheritedCheckoutRoots(cwd: string): Promise<'seeded' | 'not-needed' | 'source-missing'> {
+  const anchors = await resolveAnchors(cwd);
+  if (!anchors || anchors.mainCheckout !== anchors.workspaceRoot) return 'not-needed';
+  const original = await checkoutForProjectAnchor(anchors.projectAnchor);
+  if (original === anchors.workspaceRoot) return 'not-needed';
+  if (!original) return 'source-missing';
+  await createProjectToolRoots({ cwd });
+  return 'seeded';
 }
 
 /**

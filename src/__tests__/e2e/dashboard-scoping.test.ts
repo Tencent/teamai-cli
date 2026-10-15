@@ -92,3 +92,39 @@ describe('dashboard workspace scoping (offline)', () => {
     expect((await fetch(`${base}/api/sessions?workspace=does-not-exist`)).status).toBe(400);
   });
 });
+
+describe('dashboard Resources API in a workspace with children (#913)', () => {
+  it('lists the rules a child set up in the workspace delivers as delivered', async () => {
+    sandbox = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-resources-e2e-')));
+    const home = path.join(sandbox, 'home'), teamHome = path.join(home, '.teamai');
+    const write = async (file: string, content: string) => { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, content); };
+    await write(path.join(teamHome, 'config.yaml'), YAML.stringify({ username: 'fixture', scope: 'user' }));
+    const remote = 'https://git.example.com/team/team.git';
+    const repo = path.join(sandbox, 'team-repo');
+    await write(path.join(repo, 'teamai.yaml'), YAML.stringify({ team: 'test', repo: remote, provider: 'git', reviewers: [] }));
+    await write(path.join(repo, 'manifest', 'projects.yaml'), YAML.stringify({
+      version: 1, projects: [{ id: 'a', resources: { knowledge: ['a'] } }, { id: 'b', resources: { knowledge: ['b'] } }],
+    }));
+    for (const id of ['a', 'b']) await write(path.join(repo, 'rules', id, `${id}.md`), `# ${id}\n`);
+
+    // The workspace selects a; svc-b, set up inside it, selects b.
+    const ws = path.join(sandbox, 'ws');
+    const config = { repo: { localPath: repo, remote }, username: 'fixture', scope: 'workspace', projectRoot: ws, projects: ['a'] };
+    const partition = path.join(teamHome, 'projects', 'ws-partition');
+    await write(path.join(partition, 'anchor'), ws + '\n');
+    await write(path.join(partition, 'config.yaml'), YAML.stringify(config));
+    await write(path.join(ws, 'svc-b', '.teamai', 'config.yaml'), YAML.stringify({ ...config, projectRoot: path.join(ws, 'svc-b'), projects: ['b'] }));
+
+    const port = await freePort(), base = `http://127.0.0.1:${port}`;
+    child = spawn(process.execPath, [cli, 'dashboard', '--port', String(port)], { cwd: home, env: { ...process.env, HOME: home, USERPROFILE: home, NO_COLOR: '1' }, stdio: 'pipe' });
+    let output = ''; child.stdout?.on('data', b => output += b); child.stderr?.on('data', b => output += b);
+    const deadline = Date.now() + 15000;
+    while (!output.includes('Dashboard running') && Date.now() < deadline) { if (child.exitCode !== null) throw Error(output); await new Promise(r => setTimeout(r, 50)); }
+    expect(output).toContain('Dashboard running');
+
+    const workspaces: Array<{ id: string; label: string }> = await (await fetch(base + '/api/workspaces')).json();
+    const workspace = workspaces.find(w => w.label === 'ws')!;
+    const body = await (await fetch(`${base}/api/resources/rules?workspace=${workspace.id}`)).json() as { rules: Array<{ path: string; delivered: boolean }> };
+    expect(body.rules.map(rule => [rule.path, rule.delivered])).toEqual([['rules/a/a.md', true], ['rules/b/b.md', true]]);
+  });
+});

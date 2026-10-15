@@ -19,7 +19,9 @@ import {
   createBranchWorktree,
   isPublished,
   type BranchWrite,
+  type BranchWriteContext,
   type EnsureWorktreeOptions,
+  type PublishResult,
   type RefreshResult,
 } from './branch-worktree.js';
 import {
@@ -41,6 +43,8 @@ const reportsBranch = createBranchWorktree({
 
 export type EnsureReportsWorktreeOptions = EnsureWorktreeOptions;
 export type ReportsWrite = BranchWrite;
+export type ReportsWriteContext = BranchWriteContext;
+export type ReportsPublishResult = PublishResult;
 
 /** Materialize the reports worktree. See the branch-worktree module. */
 export function ensureReportsWorktree(
@@ -131,13 +135,42 @@ export async function commitAndPushReports(
   return isPublished(await reportsBranch.commitAndPush(localConfig, message, files, options));
 }
 
-/** Under the reports lock: sync with origin, run `write`, commit, push. */
+/**
+ * A file's content at the reports branch's remote-tracking ref, or null when
+ * the branch (or that file) is not on origin yet.
+ *
+ * A writer calls this inside its `updateReports` write callback: `syncWorktree`
+ * has just fetched the ref by then, so the content is the last state origin
+ * confirmed — the correct merge base for a retry-safe write (#1027), unlike
+ * the worktree copy, which may already hold this machine's own
+ * merged-but-unpushed result.
+ */
+export async function readReportsOriginFile(
+  worktree: string,
+  relPath: string,
+): Promise<string | null> {
+  try {
+    const git = createGit(worktree);
+    return await git.raw(['show', `origin/${REPORTS_BRANCH}:${relPath}`]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Under the reports lock: sync with origin, run `write`, commit, push.
+ *
+ * Returns the full publish outcome, so a caller that holds the only durable
+ * copy of what it wrote can drop it exactly on delivery (`isDelivered`) and
+ * keep it on `busy`/`failed` (#1027); callers that only need "did the write
+ * land" wrap with `isPublished`, as before.
+ */
 export async function updateReports(
   localConfig: LocalConfig,
-  write: (worktree: string) => Promise<ReportsWrite | null>,
+  write: (worktree: string, ctx: ReportsWriteContext) => Promise<ReportsWrite | null>,
   options: { pushIfUnchanged?: boolean } = {},
-): Promise<boolean> {
-  return isPublished(await reportsBranch.update(localConfig, write, options));
+): Promise<PublishResult> {
+  return reportsBranch.update(localConfig, write, options);
 }
 
 /**

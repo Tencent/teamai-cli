@@ -1133,6 +1133,8 @@ describe('self mode with a linked worktree (#808)', () => {
     // The main checkout switches the project to the team repo.
     const init = await runCLI(['init', teamUrl, '--scope', 'project', '--force'], projectRoot, home);
     expect(init.code, init.output).toBe(0);
+    const pulled = await runCLI(['pull'], projectRoot, home);
+    expect(pulled.code, pulled.output).toBe(0);
     const partition = partitionOf(project);
     // A git install: its config names the team repo and no kind.
     const partitionConfig = fs.readFileSync(path.join(partition, 'config.yaml'), 'utf8');
@@ -1228,6 +1230,8 @@ describe('self mode with a linked worktree (#808)', () => {
     fs.writeFileSync(path.join(home, '.gitconfig'), `[url "${teamRemote}"]\n\tinsteadOf = ${teamUrl}\n`);
     const init = await runCLI(['init', teamUrl, '--scope', 'project', '--force'], projectRoot, home);
     expect(init.code, init.output).toBe(0);
+    const pulled = await runCLI(['pull'], projectRoot, home);
+    expect(pulled.code, pulled.output).toBe(0);
     const partition = partitionOf(project);
     for (const dir of ['learnings-wt', 'reports-wt']) git(['worktree', 'remove', path.join(partition, dir)], projectRoot);
 
@@ -1493,6 +1497,8 @@ describe('a checkout an older git-mode install left (#808)', () => {
 
     const initA = await runCLI(['init', teamA.url, '--scope', 'project', '--force'], projectRoot, home);
     expect(initA.code, initA.output).toBe(0);
+    const pulledA = await runCLI(['pull'], projectRoot, home);
+    expect(pulledA.code, pulledA.output).toBe(0);
     // Team A rejects the push, so the learning stays queued for it.
     const queued = await withPushesRejected({ ...install, remote: teamA.bare }, () => runCLI(
       ['contribute', '--title', 'team-a-note', '--file', note(install, 'team-a', 'Note for team A')],
@@ -1512,12 +1518,16 @@ describe('a checkout an older git-mode install left (#808)', () => {
     const initSame = await runCLI(['init', teamA.url.replace(/\.git$/, '/'), '--scope', 'project', '--force'], projectRoot, home);
     expect(initSame.code, initSame.output).toBe(0);
     expect(initSame.output).not.toContain('Set aside');
+    const samePull = await runCLI(['pull'], projectRoot, home);
+    expect(samePull.code, samePull.output).toBe(0);
     expect(partitionQueue(install)).toContain(name);
     const indexed = (JSON.parse(fs.readFileSync(index, 'utf8')) as { entries: Array<{ filename: string }> }).entries;
     expect(indexed.map((entry) => entry.filename)).toContain(name);
 
     const initB = await runCLI(['init', teamB.url, '--scope', 'project', '--force'], projectRoot, home);
     expect(initB.code, initB.output).toBe(0);
+    const switched = await runCLI(['pull'], projectRoot, home);
+    expect(switched.code, switched.output).toBe(0);
     const partition = partitionOf(install);
     const aside = path.join(partition, 'pending-learnings.git-git.example.com-team-team-a');
     expect(fs.readFileSync(path.join(aside, name), 'utf8')).toContain('Note for team A');

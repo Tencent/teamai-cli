@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
@@ -23,7 +24,9 @@ vi.mock('../utils/git.js', () => ({
   getHeadRev: vi.fn().mockResolvedValue('abc1234'),
   // The project is no git checkout here.
   gitCommonDir: vi.fn().mockResolvedValue(null),
+  nearestGitEntry: vi.fn().mockResolvedValue(null),
   listWorktrees: vi.fn().mockResolvedValue([]),
+  resolveAnchors: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -34,6 +37,7 @@ vi.mock('../utils/logger.js', () => ({
     error: vi.fn(),
     debug: vi.fn(),
     dim: vi.fn(),
+    persist: vi.fn(),
   },
   spinner: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -94,6 +98,8 @@ vi.mock('../update.js', () => ({
 }));
 
 import { pull } from '../pull.js';
+import { getTeamSecretsPath } from '../secret-store.js';
+import { EnvHandler, readEnvBackup } from '../resources/env.js';
 import {
   loadLocalConfigForScope,
   loadTeamConfig,
@@ -101,7 +107,7 @@ import {
   loadStateForScope,
   saveStateForScope,
 } from '../config.js';
-import { getHeadRev } from '../utils/git.js';
+import { getHeadRev, gitCommonDir } from '../utils/git.js';
 import { pullSources } from '../source.js';
 import { log } from '../utils/logger.js';
 import { reconcileTeamHooksForConfig } from '../hooks.js';
@@ -110,9 +116,9 @@ import { reportUsageToTeam } from '../team-push.js';
 import { capUsageEvents, readUsageEvents, truncateUsageAfterReport } from '../usage-tracker.js';
 import { drainRecallLog } from '../recall-adoption.js';
 import { releaseLock } from '../update.js';
-import { SYNC_LOCK_FILENAME, type TeamaiConfig, type LocalConfig } from '../types.js';
+import { SYNC_LOCK_FILENAME, type TeamaiConfig, type LocalConfig, type State } from '../types.js';
 
-const SKIP_MSG = 'project scope detected, skipped user scope';
+const SKIP_MSG = 'workspace scope detected, skipped user scope';
 
 describe('pull scope isolation (issue #73)', () => {
   let tmpDir: string;
@@ -145,7 +151,7 @@ describe('pull scope isolation (issue #73)', () => {
     await fse.ensureDir(path.join(userRepoPath, 'env'));
     await fse.writeFile(
       path.join(userRepoPath, 'env', 'env.yaml'),
-      'variables:\n  - key: USER_SECRET\n    value: must-not-inherit\n',
+      'variables:\n  - key: USER_ONLY\n    value: old\n',
     );
     await fse.ensureDir(path.join(homeDir, '.claude', 'skills'));
     await fse.ensureDir(path.join(projectRoot, '.claude', 'skills'));
@@ -328,6 +334,155 @@ describe('pull scope isolation (issue #73)', () => {
     });
   });
 
+  it.each([
+    { file: 'env.yaml', content: 'variables: [\n' },
+    { file: 'secrets.yaml', content: 'secrets: [\n' },
+  ])('registers a first-pulled project with no team env when $file cannot resolve', async ({ file, content }) => {
+    vi.stubEnv('SHELL', '/bin/bash');
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    await new EnvHandler().writeResolvedEnv([{ key: 'USER_TOKEN', value: 'user-secret' }], teamConfig, userConfig);
+    await fse.outputFile(path.join(projectRepoPath, 'env', file), content);
+
+    await pull({ force: true, silent: true });
+
+    const registry = path.join(homeDir, '.teamai', 'env-scopes');
+    const rows = (await fse.readFile(registry, 'utf8')).split('\n');
+    expect(rows.some((line) => line.startsWith('dir\t') && line.includes('\t-\t0\t')), JSON.stringify({ rows, warns: vi.mocked(log.warn).mock.calls })).toBe(true);
+    const shell = spawnSync('bash', ['-c', 'printenv USER_TOKEN || true'], {
+      cwd: projectRoot,
+      env: { HOME: homeDir, PATH: process.env.PATH, SHELL: '/bin/bash' },
+      encoding: 'utf8',
+    });
+    expect(shell.status).toBe(0);
+    expect(shell.stdout.trim()).toBe('');
+  });
+
+  // Pull's env stage: resolve → write env.sh and its backup → loader and
+  // profile → registry row (with a new stamp). A failure at any step leaves a
+  // project that does not inherit the user scope without the user env, keeps
+  // its row unless its env could not be resolved, and is reported.
+  describe.skipIf(spawnSync('bash', ['-c', 'true']).status !== 0)('env stage failures', () => {
+    const steps = ['resolve', 'write', 'profile', 'register', 'register while the lock stays held'] as const;
+    const cases = steps.flatMap((step) => (['first pull', 'pulled before'] as const).flatMap((before) =>
+      (['full sync', 'fast path'] as const).map((route) => ({ step, before, route }))));
+
+    const projectRow = async (): Promise<string> => {
+      const registry = await fse.readFile(path.join(homeDir, '.teamai', 'env-scopes'), 'utf8').catch(() => '');
+      return registry.split('\n').find((line) => line.startsWith('dir\t')) ?? 'none';
+    };
+    /** What a `bash -c` started in `dir` sees, as a tool runs a command there. */
+    const sees = (dir: string, key: string): string => spawnSync('bash', ['-c', `printenv ${key} || true`], {
+      cwd: dir,
+      env: { HOME: homeDir, PATH: process.env.PATH, SHELL: '/bin/bash', BASH_ENV: path.join(homeDir, '.teamai', 'env-loader.sh') },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).stdout.trim();
+
+    it.each(cases)('$step fails on the $before, $route', async ({ step, before, route }) => {
+      vi.stubEnv('SHELL', '/bin/bash');
+      vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+      // A project set up in its checkout, as `detectProjectConfig` reads it there.
+      await fse.outputFile(path.join(projectRoot, '.teamai', 'config.yaml'), 'scope: project\n');
+      await new EnvHandler().writeResolvedEnv([{ key: 'USER_TOKEN', value: 'user-secret' }], teamConfig, userConfig);
+      const projectEnv = (value: string) => fse.outputFile(path.join(projectRepoPath, 'env', 'env.yaml'), `variables:\n  - key: MARKER\n    value: ${value}\n`);
+      if (before === 'pulled before') {
+        await projectEnv('old');
+        await pull({ force: true, silent: true });
+      }
+      const rowBefore = await projectRow();
+      const markerBefore = sees(projectRoot, 'MARKER');
+      await projectEnv('new');
+
+      const envSh = path.join(projectRoot, '.teamai', 'env.sh');
+      const realWriteFile = fse.writeFile;
+      const spies: { mockRestore: () => void }[] = [];
+      const failWrite = (fails: (file: string) => boolean) => spies.push(vi.spyOn(fse, 'writeFile').mockImplementation((async (file: string, ...rest: unknown[]) => {
+        if (fails(String(file))) throw Object.assign(new Error(`EACCES: permission denied, open '${String(file)}'`), { code: 'EACCES' });
+        return (realWriteFile as (...args: unknown[]) => Promise<void>)(file, ...rest);
+      }) as typeof fse.writeFile));
+      if (step === 'resolve') await fse.outputFile(path.join(projectRepoPath, 'env', 'env.yaml'), 'variables: [\n');
+      if (step === 'write') failWrite((file) => file === envSh);
+      if (step === 'profile') {
+        // An older block to move out, so the profile is written.
+        await fse.appendFile(path.join(homeDir, '.bashrc'), `\n# [teamai:env:start]\n# DO NOT EDIT: This section is auto-managed by teamai\n[ -f '${envSh}' ] && source '${envSh}'\n# [teamai:env:end]\n`);
+        const home = await fse.realpath(homeDir);
+        failWrite((file) => path.dirname(file) === home && /^\.(bash|profile)/.test(path.basename(file)));
+      }
+      if (step.startsWith('register')) {
+        const { acquireLock } = await import('../update.js');
+        // Held through one registry change's five seconds of retries, then free, or held throughout.
+        let attempts = 0;
+        const free = step === 'register' ? 100 : Infinity;
+        vi.mocked(acquireLock).mockImplementation(async (lock?: string) => path.basename(lock ?? '') !== 'env-scopes.lock' || ++attempts > free);
+        // Those retries pass at once here.
+        const realSetTimeout = globalThis.setTimeout;
+        spies.push(vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => realSetTimeout(fn, ms === 50 ? 0 : ms)) as typeof setTimeout));
+      }
+
+      const exitCode = process.exitCode;
+      const outcome = await pull({ force: route === 'full sync', silent: true }).then(() => 'completed', (error: Error) => error.message);
+      const exitedWith = process.exitCode;
+      process.exitCode = exitCode;
+      for (const spy of spies) spy.mockRestore();
+      const { acquireLock } = await import('../update.js');
+      vi.mocked(acquireLock).mockResolvedValue(true);
+      const reported = [outcome, ...vi.mocked(log.warn).mock.calls.map(([message]) => String(message))].join('\n');
+
+      // The user env stays out of the project, and still loads outside it.
+      expect(sees(projectRoot, 'USER_TOKEN')).toBe('');
+      expect(sees(tmpDir, 'USER_TOKEN')).toBe('user-secret');
+      // An env that could not be resolved keeps what the last pull delivered,
+      // in shells as in env exec and MCP; a project never delivered loads none.
+      if (step === 'resolve' && before === 'first pull') {
+        expect(await projectRow()).toMatch(/^dir\t[^\t]+\t-\t0\t/);
+        expect(sees(projectRoot, 'MARKER')).toBe('');
+        return;
+      }
+      expect(await projectRow()).toBe(rowBefore);
+      if (step === 'resolve') {
+        expect(sees(projectRoot, 'MARKER')).toBe('old');
+        expect(await readEnvBackup(projectConfig)).toEqual({ MARKER: 'old' });
+        return;
+      }
+      expect(sees(projectRoot, 'MARKER')).toBe(step === 'write' ? markerBefore : (before === 'first pull' ? '' : 'new'));
+      expect(reported).toMatch(step.startsWith('register') ? /registry lock stayed busy/ : /EACCES/);
+      expect(exitedWith).toBe(1);
+    });
+
+    it.each(['full sync', 'fast path'] as const)('keeps the user env out of a project whose data lives outside its checkout while its first pull cannot register, $0', async (route) => {
+      vi.stubEnv('SHELL', '/bin/bash');
+      // A git checkout whose config lives in ~/.teamai/projects, so nothing in it says it is a project.
+      expect(spawnSync('git', ['init', '-q', projectRoot]).status).toBe(0);
+      const common = await fse.realpath(path.join(projectRoot, '.git'));
+      vi.mocked(gitCommonDir).mockResolvedValue(common);
+      projectConfig.dataHome = path.join(homeDir, '.teamai', 'projects', 'proj-1234');
+      vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+      await new EnvHandler().writeResolvedEnv([{ key: 'USER_TOKEN', value: 'user-secret' }], teamConfig, userConfig);
+      await fse.outputFile(path.join(projectRepoPath, 'env', 'env.yaml'), 'variables:\n  - key: MARKER\n    value: new\n');
+      const { acquireLock } = await import('../update.js');
+      vi.mocked(acquireLock).mockImplementation(async (lock?: string) => path.basename(lock ?? '') !== 'env-scopes.lock');
+      const realSetTimeout = globalThis.setTimeout;
+      const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => realSetTimeout(fn, ms === 50 ? 0 : ms)) as typeof setTimeout);
+
+      const exitCode = process.exitCode;
+      await pull({ force: route === 'full sync', silent: true }).catch(() => undefined);
+      const exitedWith = process.exitCode;
+      process.exitCode = exitCode;
+      timers.mockRestore();
+      vi.mocked(acquireLock).mockResolvedValue(true);
+
+      expect(exitedWith).toBe(1);
+      expect(await fse.readFile(path.join(homeDir, '.teamai', 'env-scopes'), 'utf8').catch(() => '')).not.toContain(`git\t${common}\t`);
+      expect(sees(projectRoot, 'USER_TOKEN')).toBe('');
+      expect(sees(tmpDir, 'USER_TOKEN')).toBe('user-secret');
+
+      await pull({ force: route === 'full sync', silent: true });
+      expect(sees(projectRoot, 'MARKER')).toBe('new');
+      expect(sees(projectRoot, 'USER_TOKEN')).toBe('');
+      expect(await fse.pathExists(path.join(common, 'teamai-env-pending'))).toBe(false);
+    });
+  });
+
   it('project mode: inherits user resources only when explicitly enabled', async () => {
     projectConfig.inheritUserScope = true;
     vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
@@ -343,13 +498,14 @@ describe('pull scope isolation (issue #73)', () => {
     expect(loadStateForScope).toHaveBeenCalledWith(expect.objectContaining({ scope: 'user' }));
     expect(loadStateForScope).toHaveBeenCalledWith(expect.objectContaining({ scope: 'project', projectRoot }));
     expect(log.info).toHaveBeenCalledWith(
-      'project scope detected, inheriting user-scope resources and knowledge',
+      'workspace scope detected, inheriting user-scope resources and knowledge',
     );
     expect(log.info).not.toHaveBeenCalledWith(SKIP_MSG);
     expect(await fse.pathExists(
       path.join(homeDir, '.claude', 'skills', 'org-safe-review', 'SKILL.md'),
     )).toBe(true);
-    expect(await fse.pathExists(path.join(homeDir, '.teamai', 'env.sh'))).toBe(false);
+    // The project's shells load the user env.sh: it follows the user repo this pull refreshed.
+    expect(await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8')).toContain("export USER_ONLY='old'");
     expect(saveStateForScope).toHaveBeenCalledWith(
       expect.objectContaining({
         lastPullRev: null,
@@ -374,6 +530,70 @@ describe('pull scope isolation (issue #73)', () => {
     // External sources stay bound to the active project scope.
     expect(pullSources).toHaveBeenCalledTimes(1);
     expect(vi.mocked(pullSources).mock.calls[0][0]).toMatchObject({ scope: 'project' });
+  });
+
+  // Shells load the user env.sh in an inheriting project, while `env exec` and
+  // MCP resolve the user repo: the pull that refreshes it rewrites env.sh too.
+  it.each([
+    { path: 'a full sync', rev: 'def5678' },
+    { path: 'the already-synced fast path', rev: 'abc1234' },
+  ])('project mode: rewrites the inherited user env.sh with the refreshed value on $path', async ({ rev }) => {
+    projectConfig.inheritUserScope = true;
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(userConfig);
+    const saved = new Map<string, State>();
+    vi.mocked(saveStateForScope).mockImplementation(async (state, localConfig) => { saved.set(localConfig.scope, structuredClone(state)); });
+    const loadState = vi.mocked(loadStateForScope).getMockImplementation()!;
+    vi.mocked(loadStateForScope).mockImplementation(async (localConfig) => saved.get(localConfig.scope) ?? loadState(localConfig));
+    await pull({ silent: true });
+    expect(await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8')).toContain("export USER_ONLY='old'");
+
+    await fse.writeFile(path.join(userRepoPath, 'env', 'env.yaml'), 'variables:\n  - key: USER_ONLY\n    value: new\n');
+    vi.mocked(getHeadRev).mockResolvedValue(rev);
+    await pull({ silent: true });
+
+    expect(await fse.readFile(path.join(homeDir, '.teamai', 'env.sh'), 'utf8')).toContain("export USER_ONLY='new'");
+    expect(vi.mocked(log.success).mock.calls.some(([message]) => message === '[user] Already synced at abc1234, skipping')).toBe(rev === 'abc1234');
+    expect(reconcileTeamHooksForConfig).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'user' }), expect.anything());
+    expect(reconcileMcpForConfig).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: 'user' }));
+  });
+
+  // While an env.yaml can't resolve, shells keep the last pull's env.sh; a key
+  // now declared a secret leaves them as it leaves env exec and MCP.
+  it.skipIf(spawnSync('bash', ['-c', 'true']).status !== 0).each([
+    { declares: 'the user scope', repo: () => userRepoPath, last: 'old', breaks: 'env.yaml' },
+    { declares: 'the project, of an inherited variable', repo: () => projectRepoPath, last: 'old', breaks: 'env.yaml' },
+    { declares: 'the project, of its own variable', repo: () => projectRepoPath, last: 'proj', breaks: 'env.yaml' },
+    { declares: 'the project, of its own variable', repo: () => projectRepoPath, last: 'proj', breaks: 'values file' },
+  ])('keeps a key $declares now declares a secret out of shells while its $breaks cannot resolve', async ({ repo, last, breaks }) => {
+    vi.stubEnv('SHELL', '/bin/bash');
+    vi.mocked(gitCommonDir).mockResolvedValue(null);
+    projectConfig.inheritUserScope = true;
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(loadLocalConfigForScope).mockResolvedValue(userConfig);
+    await fse.outputFile(path.join(projectRoot, '.teamai', 'config.yaml'), 'scope: project\n');
+    await fse.writeFile(path.join(userRepoPath, 'env', 'env.yaml'), 'variables:\n  - key: TOKEN\n    value: old\n');
+    await fse.outputFile(path.join(projectRepoPath, 'env', 'env.yaml'), `variables:\n  - key: PROJ\n    value: p\n${last === 'proj' ? '  - key: TOKEN\n    value: proj\n' : ''}`);
+    const sees = (dir: string, key: string): string => spawnSync('bash', ['-c', `printenv ${key} || true`], {
+      cwd: dir,
+      env: { HOME: homeDir, PATH: process.env.PATH, SHELL: '/bin/bash', BASH_ENV: path.join(homeDir, '.teamai', 'env-loader.sh') },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).stdout.trim();
+    await pull({ force: true, silent: true });
+    expect(sees(projectRoot, 'TOKEN')).toBe(last);
+
+    await fse.outputFile(path.join(repo(), 'env', 'secrets.yaml'), 'secrets:\n  - key: TOKEN\n');
+    if (breaks === 'env.yaml') await fse.outputFile(path.join(repo(), 'env', 'env.yaml'), 'variables: [\n');
+    else await fse.outputFile(getTeamSecretsPath(projectConfig), '{');
+    await pull({ force: true, silent: true }).catch(() => undefined);
+    process.exitCode = undefined;
+
+    const { appliedTeamEnv, resolveTeamEnv } = await import('../env-resolution.js');
+    expect(appliedTeamEnv(await resolveTeamEnv(projectConfig)).variables.has('TOKEN')).toBe(false);
+    expect(sees(projectRoot, 'TOKEN')).toBe('');
+    // The rest of the last pull stays.
+    expect(sees(projectRoot, 'PROJ')).toBe('p');
   });
 
   it('project mode: warns but continues when inherited user scope is unavailable', async () => {

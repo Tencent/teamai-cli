@@ -23,7 +23,7 @@ import { getUserHome } from './utils/home.js';
  * against the user's HOME in non-interactive contexts. Order is the display order.
  * Kept small on purpose — the common coding agents, not the full KNOWN_AGENTS list.
  */
-export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'joycode', 'codebuddy', 'workbuddy'] as const;
+export const SELF_MODE_AGENT_CHOICES = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'joycode', 'codebuddy', 'workbuddy', 'muse'] as const;
 
 /**
  * Normalize the `--agent` option into a deduplicated id list.
@@ -117,6 +117,7 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   { id: 'trae-cn', displayName: 'Trae CN', category: 'coding', skillsPath: '.trae-cn/skills' },
   { id: 'windsurf', displayName: 'Windsurf', category: 'coding', skillsPath: '.windsurf/skills' },
   { id: 'zcode', displayName: 'ZCode', category: 'coding', skillsPath: '.zcode/skills' },
+  { id: 'muse', displayName: 'Muse Code', category: 'coding', skillsPath: '.config/muse/skills' },
 
   // Lobster family
   { id: 'openclaw', displayName: 'OpenClaw', category: 'lobster', skillsPath: '.openclaw/skills' },
@@ -314,8 +315,9 @@ export async function detectHomeInstalledAgents(
     }
     const skillsPath = KNOWN_AGENTS.find((a) => a.id === id)?.skillsPath;
     if (!skillsPath) continue;
-    const rootSegment = skillsPath.split('/')[0]; // e.g. ".claude"
-    if (!rootSegment) continue;
+    // The tool's own dir, e.g. ".claude" or ".config/muse" — never a shared
+    // parent like ".config" that exists on most machines.
+    const rootSegment = path.posix.dirname(skillsPath);
     // A Claude Code relocated with CLAUDE_CONFIG_DIR (or a Codex with
     // CODEX_HOME) may have no default root at all; the developer still uses
     // it. This runs before any config exists, so the variable is the only signal.

@@ -346,4 +346,17 @@ describe('parseTranscriptForVotes — third-review hardening', () => {
     expect(r.recalledDocScopes['proj-doc']).toBe('project');
     expect(r.recalledDocScopes['user-doc']).toBe('user');
   });
+
+  it('reads the [workspace] label of a newer recall as the workspace scope', async () => {
+    const filePath = path.join(tmpDir, 't.jsonl');
+    writeLine(filePath, { type: 'assistant', message: { content: [{ type: 'text',
+      text: [
+        '--- [teamai:recall:start] ---',
+        '[1/1] [learning] Workspace thing [workspace]',
+        'File: /repo/learnings/ws-doc.md',
+        '--- [teamai:recall:end] ---',
+      ].join('\n') }] } });
+    const r = await parseTranscriptForVotes(filePath);
+    expect(r.recalledDocScopes['ws-doc']).toBe('project');
+  });
 });

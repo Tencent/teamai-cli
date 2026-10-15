@@ -103,6 +103,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   // project config, so the gate asks the user config: the same mocked one.
   requireInit: mockAutoDetectInit,
   findUnreadableProjectConfig: mockFindUnreadableProjectConfig,
+  loadLocalConfigForScope: vi.fn().mockResolvedValue(null),
   resolveConfigForDir: vi.fn().mockResolvedValue({
     repo: { localPath: '/tmp/team-repo', remote: '' }, username: 'test', scope: 'user', additionalRoles: [],
   }),
@@ -140,12 +141,17 @@ const mockCreditAdoptedDocs = vi.hoisted(() => vi.fn());
 vi.mock('../recall-adoption.js', () => ({
   creditAdoptedDocs: mockCreditAdoptedDocs,
   recalledKeyOf: vi.fn(async () => () => undefined),
+  // The judge backfills a missing `File:` path from the recall log; these tests
+  // supply every path via the transcript, so the lookup is never consulted.
+  recalledPathOf: vi.fn(async () => () => undefined),
   recordToolCall: vi.fn(async () => undefined),
 }));
 
 const voteMocks = vi.hoisted(() => ({
   hasPendingVoteDeltas: vi.fn().mockResolvedValue(false),
   creditedDocIdsForSession: vi.fn().mockResolvedValue(new Set<string>()),
+  stageVotesMerge: vi.fn().mockResolvedValue(null),
+  confirmVotesSynced: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../votes.js', () => ({
   incrementUpvoted: mockIncrementUpvoted,
@@ -153,13 +159,18 @@ vi.mock('../votes.js', () => ({
   hasPendingVoteDeltas: (...args: unknown[]) => voteMocks.hasPendingVoteDeltas(...args),
   creditedDocIdsForSession: (...args: unknown[]) => voteMocks.creditedDocIdsForSession(...args),
   pruneUpvoteLedger: vi.fn().mockResolvedValue(undefined),
+  stageVotesMerge: (...args: unknown[]) => voteMocks.stageVotesMerge(...args),
+  confirmVotesSynced: (...args: unknown[]) => voteMocks.confirmVotesSynced(...args),
+  readUserVotesFromContent: vi.fn(() => ({ version: 2, votes: {}, deltas: {} })),
 }));
 
 const reportsBranchMocks = vi.hoisted(() => ({
-  updateReports: vi.fn().mockResolvedValue(true),
+  updateReports: vi.fn().mockResolvedValue({ status: 'published' }),
+  readReportsOriginFile: vi.fn().mockResolvedValue(null),
 }));
 vi.mock('../utils/reports-branch.js', () => ({
   updateReports: (...args: unknown[]) => reportsBranchMocks.updateReports(...args),
+  readReportsOriginFile: (...args: unknown[]) => reportsBranchMocks.readReportsOriginFile(...args),
 }));
 
 const mockSeedProjectAgentRoot = vi.fn().mockResolvedValue(undefined);
@@ -540,7 +551,7 @@ describe('hook-handlers registry', () => {
     expect(parsed.hookSpecificOutput.additionalContext).toBe('[teamai] hello');
   });
 
-  it.each(['codebuddy', 'codex', 'codex-internal', 'tcodex'])('contribute-check handler asks to stash (not stdout) for %s', async (tool) => {
+  it.each(['codebuddy', 'codex', 'codex-internal', 'tcodex', 'muse'])('contribute-check handler asks to stash (not stdout) for %s', async (tool) => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
       (r) => r.event === 'stop' && r.handler.name === 'contribute-check',
@@ -769,7 +780,7 @@ describe('hook-handlers registry', () => {
     expect(result).toBeNull();
   });
 
-  it.each(['codebuddy', 'codex'])('pending-hint handler injects stashed hint for %s on prompt-submit', async (tool) => {
+  it.each(['codebuddy', 'codex', 'muse'])('pending-hint handler injects stashed hint for %s on prompt-submit', async (tool) => {
     const registry = buildHandlerRegistry();
     const handler = registry.find(
       (r) => r.event === 'prompt-submit' && r.handler.name === 'pending-hint',
@@ -1341,13 +1352,27 @@ describe('hook-handlers registry', () => {
       (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
     )!.handler;
 
+    const syncedDeltas = { 'doc-a': { recalled_delta: 0, upvoted_delta: 1 } };
     voteMocks.hasPendingVoteDeltas.mockResolvedValueOnce(true);
-    mockSyncVotesToTeam.mockResolvedValueOnce(true);
+    voteMocks.stageVotesMerge.mockResolvedValueOnce({ syncedDeltas });
+    voteMocks.confirmVotesSynced.mockClear();
     reportsBranchMocks.updateReports.mockClear();
+    reportsBranchMocks.readReportsOriginFile.mockResolvedValueOnce(null);
     reportsBranchMocks.updateReports.mockImplementationOnce(
-      async (_cfg: unknown, write: (wt: string) => Promise<unknown>) => {
-        await write('/wt');
-        return true;
+      async (
+        _cfg: unknown,
+        write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<unknown>,
+      ) => {
+        const delivered: (() => Promise<void>)[] = [];
+        const change = await write('/wt', { onDelivered: (fn) => { delivered.push(fn); } });
+        // The staged write is what the branch publishes, and the deltas are
+        // cleared only after delivery (#1027): the confirm hook runs here.
+        expect(change).toEqual({
+          files: ['votes/test.yaml'],
+          message: '[teamai] Update votes for test',
+        });
+        for (const fn of delivered) await fn();
+        return { status: 'published' };
       },
     );
 
@@ -1357,7 +1382,40 @@ describe('hook-handlers registry', () => {
     );
 
     expect(reportsBranchMocks.updateReports).toHaveBeenCalledOnce();
-    expect(mockSyncVotesToTeam).toHaveBeenCalledWith('/wt', 'test', expect.any(String));
+    // The merge base is origin's snapshot, not the worktree copy (#1027).
+    expect(voteMocks.stageVotesMerge).toHaveBeenCalledWith('/wt', 'test', expect.any(String), null);
+    expect(voteMocks.confirmVotesSynced).toHaveBeenCalledWith(expect.any(String), syncedDeltas);
+  });
+
+  it('votes-sync keeps the deltas pending when the reports push is not delivered (#1027)', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'stop' && r.handler.name === 'votes-sync',
+    )!.handler;
+
+    voteMocks.hasPendingVoteDeltas.mockResolvedValueOnce(true);
+    voteMocks.stageVotesMerge.mockResolvedValueOnce({ syncedDeltas: {} });
+    voteMocks.confirmVotesSynced.mockClear();
+    reportsBranchMocks.readReportsOriginFile.mockResolvedValueOnce(null);
+    reportsBranchMocks.updateReports.mockImplementationOnce(
+      async (
+        _cfg: unknown,
+        write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<unknown>,
+      ) => {
+        await write('/wt', { onDelivered: () => {} });
+        // Push failed after its retries: delivery never confirmed.
+        return { status: 'failed', reason: 'push did not land' };
+      },
+    );
+
+    await handler.execute(
+      { session_id: 'sid-push-failed', cwd: '/x', transcript_path: '/t/transcript.jsonl' },
+      'claude', scope,
+    );
+
+    expect(voteMocks.stageVotesMerge).toHaveBeenCalledOnce();
+    // Not delivered → the deltas are NOT cleared; the next Stop retries them.
+    expect(voteMocks.confirmVotesSynced).not.toHaveBeenCalled();
   });
 
   // ── votes-sync adopted-summary is skipped for stdout-less tools ──
@@ -1460,7 +1518,7 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
   });
 });
 
-describe('session-start secrets hint (#875)', () => {
+describe('session-start team env hint (#875, #1018)', () => {
   let teamRepo: string;
 
   beforeEach(() => {
@@ -1504,7 +1562,38 @@ describe('session-start secrets hint (#875)', () => {
     expect(lines.filter((line) => line !== secretLines[0])).toEqual(['MR context', 'Package context']);
   });
 
-  it('adds nothing when the scope declares no secrets', async () => {
+  it('names the scope\'s env variables and env exec when it delivers variables but no secrets (#1018)', async () => {
+    fs.mkdirSync(path.join(teamRepo, 'env'));
+    fs.writeFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'variables:\n  - key: API_URL\n    value: https://api.example\n');
+
+    const lines = await sessionContext();
+
+    const envLines = lines.filter((line) => line.includes('API_URL'));
+    expect(envLines).toHaveLength(1);
+    expect(envLines[0]).toContain('teamai env exec --');
+    expect(envLines[0]).not.toContain('teamai env set KEY');
+  });
+
+  it('includes inherited user variables in the hint through the shared env resolution', async () => {
+    const userRepo = path.join(teamRepo, 'user-team');
+    fs.mkdirSync(path.join(userRepo, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(userRepo, 'teamai.yaml'), 'team: acme\nrepo: https://example.test/acme/team.git\n');
+    fs.writeFileSync(path.join(userRepo, 'env', 'env.yaml'), 'variables:\n  - key: USER_ONLY\n    value: inherited\n');
+    const { loadLocalConfigForScope } = await import('../config.js');
+    vi.mocked(loadLocalConfigForScope).mockResolvedValueOnce({
+      ...scope, scope: 'user', repo: { localPath: userRepo, remote: '' },
+    });
+    const projectConfig: LocalConfig = {
+      ...scope, scope: 'project', inheritUserScope: true, projectRoot: teamRepo, repo: { localPath: teamRepo, remote: '' },
+    };
+    const dispatcher = createDispatcher({ handlers: filterHandlersForConfig(buildHandlerRegistry(), projectConfig), localConfig: projectConfig });
+    const result = await dispatcher.dispatch('session-start', '*', { session_id: 'sid-inherited', cwd: teamRepo }, 'claude', 'foreground');
+
+    expect(result.errors).toEqual([]);
+    expect(result.output).toContain('Team env variables in this scope: USER_ONLY.');
+  });
+
+  it('adds nothing when the scope delivers no env', async () => {
     expect(await sessionContext()).toEqual(['MR context', 'Package context']);
   });
 
@@ -1516,10 +1605,10 @@ describe('session-start secrets hint (#875)', () => {
   });
 
   it('is a foreground team handler, so a directory without teamai never gets the line', () => {
-    const registration = buildHandlerRegistry().find((r) => r.handler.name === 'secrets-hint');
+    const registration = buildHandlerRegistry().find((r) => r.handler.name === 'team-env-hint');
     expect(registration).toMatchObject({ event: 'session-start', matcher: '*', requiresConfig: true });
     expect(registration?.background).not.toBe(true);
-    expect(filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name)).not.toContain('secrets-hint');
+    expect(filterHandlersForConfig(buildHandlerRegistry(), null).map((r) => r.handler.name)).not.toContain('team-env-hint');
   });
 });
 
@@ -1775,6 +1864,46 @@ describe('post-tool-use Skill-matcher dispatch routes Cursor SKILL.md Read to th
   });
 });
 
+// PostToolUse payloads as Muse Code 1.4.6 sends them, tool_response trimmed.
+describe('track handler: Muse Code', () => {
+  const musePayload = (toolName: string, toolInput: Record<string, unknown>) => ({
+    hook_event_name: 'PostToolUse',
+    tool_name: toolName,
+    tool_input: toolInput,
+    tool_use_id: 'call_14',
+    tool_response: '<read-skill-result name="live-skill" status="ok"></read-skill-result>',
+    session_id: '01a131d0-7b02-7e90-bd5a-74e6934af652',
+    turn_id: '2d808450-3250-42fc-93e5-27b5a7b725ea',
+    cwd: '/work/project',
+    transcript_path: null,
+    model: 'muse-spark-1.3',
+    permission_mode: 'bypassPermissions',
+    model_provider: 'meta',
+  });
+  const track = () => buildHandlerRegistry()
+    .find((r) => r.event === 'post-tool-use' && r.matcher === 'Skill' && r.handler.name === 'track')!.handler;
+
+  it('records a read_skill call as a use of that skill', async () => {
+    const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
+    vi.mocked(appendUsageEvent).mockClear();
+
+    await track().execute(musePayload('read_skill', { name: 'live-skill' }), 'muse', scope);
+
+    expect(appendUsageEvent).toHaveBeenCalledOnce();
+    expect(vi.mocked(appendUsageEvent).mock.calls[0][0]).toMatchObject({ skill: 'live-skill', tool: 'muse' });
+    expect(updateKnownSkills).toHaveBeenCalledWith('live-skill');
+  });
+
+  it('records nothing for a shell call', async () => {
+    const { appendUsageEvent } = await import('../usage-tracker.js');
+    vi.mocked(appendUsageEvent).mockClear();
+
+    await track().execute(musePayload('bash', { command: 'echo hi', workdir: '/work/project' }), 'muse', scope);
+
+    expect(appendUsageEvent).not.toHaveBeenCalled();
+  });
+});
+
 describe('track-slash handler: dotted and colon skill names', () => {
   it('tracks a skill name that contains a dot', async () => {
     const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
@@ -1817,6 +1946,28 @@ describe('track-slash handler: dotted and colon skill names', () => {
     expect(vi.mocked(appendUsageEvent).mock.calls[0][0].skill).toBe('ns:deploy');
     expect(updateKnownSkills).toHaveBeenCalledWith('ns:deploy');
   });
+
+  it.each([
+    '/Volumes/External/project/.claude/skills/tdd/SKILL.md',
+    '/Users/alice/project',
+    '/tmp/project',
+    '/tdd/notes',
+    '/tdd\\notes',
+    '//server/share',
+    '/tdd+invalid',
+  ])('does not record a path or a partial skill name: %s', async (prompt) => {
+    const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
+    const handler = buildHandlerRegistry().find(
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'track-slash',
+    )!.handler;
+    vi.mocked(appendUsageEvent).mockClear();
+    vi.mocked(updateKnownSkills).mockClear();
+
+    await handler.execute({ prompt, hook_event_name: 'UserPromptSubmit' }, 'claude', scope);
+
+    expect(appendUsageEvent).not.toHaveBeenCalled();
+    expect(updateKnownSkills).not.toHaveBeenCalled();
+  });
 });
 
 describe('buildAdoptedSummary', () => {
@@ -1828,5 +1979,51 @@ describe('buildAdoptedSummary', () => {
     expect(msg).toContain('auth-retry, k8s-oom');
     // User-facing CLI output must be English.
     expect(msg).not.toMatch(/[\u4e00-\u9fff]/);
+  });
+});
+
+describe('mr-hint agent language (#1014)', () => {
+  it('passes language en from teamai.yaml into the hint', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lang-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\nlanguage: en\n');
+      const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
+      mockMrHintOutput.mockClear();
+      await handler.execute({}, 'claude', {
+        ...scope,
+        repo: { localPath: dir, remote: 'https://example.invalid/t.git' },
+      });
+      expect(mockMrHintOutput.mock.calls.at(-1)).toEqual([
+        'en',
+        expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }),
+      ]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('passes no English override when language is omitted', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-lang-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'teamai.yaml'), 'team: t\nrepo: https://example.invalid/t.git\n');
+      const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
+      mockMrHintOutput.mockClear();
+      await handler.execute({}, 'claude', {
+        ...scope,
+        repo: { localPath: dir, remote: 'https://example.invalid/t.git' },
+      });
+      expect(mockMrHintOutput.mock.calls.at(-1)).toEqual([
+        undefined,
+        expect.objectContaining({ repo: expect.objectContaining({ localPath: dir }) }),
+      ]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -116,8 +116,11 @@ function business(name: string, files: Record<string, string> = {}): string {
   return fs.realpathSync.native(dir);
 }
 
-const init = (t: Team, dir: string, agents: string): Run =>
-  teamaiOk(['init', t.url, '--provider', 'git', '--agent', agents, '--scope', 'project', '--force'], dir);
+const init = (t: Team, dir: string, agents: string): Run => {
+  const started = teamaiOk(['init', t.url, '--provider', 'git', '--agent', agents, '--scope', 'project', '--force'], dir);
+  const pulled = teamaiOk(['pull'], dir);
+  return { ...pulled, output: `${started.output}${pulled.output}` };
+};
 
 /** What git sees under `.teamai/`, ignored files included. */
 const teamaiStatus = (dir: string): string => gitOk(['status', '--porcelain', '-uall', '--ignored', '--', '.teamai'], dir);

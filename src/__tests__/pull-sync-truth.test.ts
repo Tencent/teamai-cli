@@ -28,6 +28,8 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   listWorktrees: vi.fn().mockResolvedValue([]),
   // Git cannot name the repository: every other checkout's record is kept.
   gitCommonDir: vi.fn().mockResolvedValue(null),
+  nearestGitEntry: vi.fn().mockResolvedValue(null),
+  resolveAnchors: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../utils/logger.js', () => ({
@@ -261,7 +263,7 @@ describe('pull reports what reached the tool directory (#585)', () => {
     },
   );
 
-  it.each(['user', 'project', 'none'])('aggregates inherited scope completion when docs fail in %s', async (failure) => {
+  it.each(['user', 'workspace', 'none'])('aggregates inherited scope completion when docs fail in %s', async (failure) => {
     const projectRoot = path.join(tmpDir, 'project');
     await fse.ensureDir(projectRoot);
     vi.mocked(detectProjectConfig).mockResolvedValue({
@@ -273,7 +275,7 @@ describe('pull reports what reached the tool directory (#585)', () => {
     const outcome = { completed: false };
     await pull({ silent: true, force: true }, outcome);
     expect(outcome.completed).toBe(failure === 'none');
-    for (const scope of ['user', 'project']) {
+    for (const scope of ['user', 'workspace']) {
       const succeeded = scope !== failure;
       expect(successLines().includes(`[${scope}] Synced 1 docs`)).toBe(succeeded);
       if (!succeeded) {
@@ -293,12 +295,13 @@ describe('pull reports what reached the tool directory (#585)', () => {
 
     await pull({ silent: true, force: true });
 
-    expect(vi.mocked(log.warn).mock.calls.flat()).toContainEqual(expect.stringContaining('[project] Failed to sync docs:'));
+    expect(vi.mocked(log.warn).mock.calls.flat()).toContainEqual(expect.stringContaining('[workspace] Failed to sync docs:'));
     // The marker stays cleared for a retry, and the record keeps its rev.
     expect(state.lastPullRev).toBeNull();
     // It also records what the pull delivered, docs failure or not (#822).
     // And what it delivered there, for teamai's git exclude block (#915): nothing here.
-    expect(state.lastPullByWorkspace?.[key]).toEqual({ rev: 'old1234', root: projectRoot, targets: [], pushBaseRevs: ['abc1234'], delivered: {}, gitExcludePaths: {} });
+    // And that its tool roots were seeded, once (#1041).
+    expect(state.lastPullByWorkspace?.[key]).toEqual({ rev: 'old1234', root: projectRoot, targets: [], pushBaseRevs: ['abc1234'], delivered: {}, gitExcludePaths: {}, rootsSeeded: true });
   });
 
   it.each(['empty', 'missing'])('prunes only stale empty directories when the team bundle is %s', async (state) => {

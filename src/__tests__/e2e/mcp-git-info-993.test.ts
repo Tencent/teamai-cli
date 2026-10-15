@@ -118,9 +118,11 @@ function linkedWorktree(name: string): { worktree: string; infoDir: string } {
 }
 
 function init(url: string, dir: string): Run {
-  const r = teamai(['init', url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force'], dir);
-  if (r.code !== 0) throw new Error(`teamai init failed: ${r.output}`);
-  return r;
+  const started = teamai(['init', url, '--provider', 'git', '--agent', 'claude', '--scope', 'project', '--force'], dir);
+  if (started.code !== 0) throw new Error(`teamai init failed: ${started.output}`);
+  const pulled = teamai(['pull'], dir);
+  if (pulled.code !== 0) throw new Error(`teamai pull failed: ${pulled.output}`);
+  return { ...pulled, output: `${started.output}${pulled.output}` };
 }
 
 const mcpServer = (dir: string): unknown =>

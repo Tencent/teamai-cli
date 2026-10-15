@@ -1,7 +1,5 @@
 # Git Provider
 
-> [English](../providers.md) | [简体中文](providers.md)
-
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
 ---
@@ -11,11 +9,11 @@ TeamAI CLI 通过 provider 抽象层支持多个 Git 托管平台。当前实现
 | Provider | Host            | 认证方式                            | 建议场景              |
 |----------|-----------------|--------------------------------------|----------------------|
 | `github` | github.com      | `gh` CLI 或 `GITHUB_TOKEN` 环境变量  | 开源项目、外部用户    |
-| `tgit`   | git.woa.com     | `gf` CLI（自动下载）+ `~/.netrc`     | 腾讯内部团队          |
 | `cnb`    | cnb.cool        | `cnb login` 或 `CNB_TOKEN` 环境变量  | CNB（云原生构建）用户 |
 | `gitlab` | gitlab.com 或自托管实例 | `GITLAB_TOKEN` 环境变量              | GitLab / 企业自托管   |
 | `gitcode`| gitcode.com     | `GITCODE_TOKEN` 环境变量或 init 交互粘贴 | GitCode（CSDN）用户 |
 | `git`    | 任意 Git host   | 系统 Git Credential Helper 或 SSH Key | 自建 Gitea 等其他平台 |
+| `tgit`   | git.woa.com     | `gf` CLI（自动下载）+ `~/.netrc`     | 腾讯内部团队          |
 
 ## Provider 自动检测
 
@@ -33,25 +31,23 @@ https://gitlab.com/org/repo(.git)       → gitlab
 git@gitlab.com:org/repo.git             → gitlab
 https://gitcode.com/org/repo(.git)      → gitcode
 git@gitcode.com:org/repo.git            → gitcode
-https://git.example.com/group/repo.git  → 检查 GitLab，未确认则 git
-git@git.example.com:group/repo.git      → 检查 GitLab，未确认则 git
+https://git.example.com/group/repo.git  → git
+git@git.example.com:group/repo.git      → git
 ```
 
-已知 host 和显式配置的 GitLab 实例优先。对于未知 host，`init` 会匿名探测 GitLab 登录页；确认是未配置的 GitLab 实例时，先提示设置 `GITLAB_URL` 和 `GITLAB_TOKEN` 后重试，不会直接把探测结果写入配置。未确认则继续使用 `git`。
-
-初始化成功后，provider 选择会写入 team 仓库的 `teamai.yaml` 的 `provider` 字段，后续 `push` / `pull` 都按这个值来；成员用 `--provider` 保存在本机的选择优先于它（见下节）。探测不会自动修改已有的 provider。
+初始化成功后，provider 选择会写入 team 仓库的 `teamai.yaml` 的 `provider` 字段，后续 `push` / `pull` 都按这个值来；成员用 `--provider` 保存在本机的选择优先于它（见下节）。
 
 ### 手动指定 provider（`--provider`）
 
-`teamai init <input> --provider <name>` 跳过上面的自动检测（包括 GitLab 探测），直接使用指定的 provider，取值与 `teamai.yaml` 的 `provider` 相同：`tgit`、`github`、`cnb`、`gitlab`、`gitcode`、`git`。典型用法是团队仓库在自建 GitLab 上、但成员只需要普通 Git：`--provider git` 不做平台登录、不检查 `GITLAB_TOKEN`，clone/pull/push 走已有的 Git 凭据。
+```bash
+teamai init https://gitlab.example.com/group/repo --provider git
+```
 
-该选择写入成员本机的本地配置（`provider` 字段），只影响这台机器：创建 PR/MR（`push`、`remove` 等）和 `doctor` 的 provider 检查优先使用它，已有的 `teamai.yaml` 不变。`init` 新建 `teamai.yaml`（空仓库，或单仓库模式首次初始化）时，`--provider git` 写入的仍是不带该参数时检测到的 provider（包括 GitLab 探测）；探测到尚未配置的自建 GitLab 时 `init` 会停止并提示设置 `GITLAB_URL`，不会把 `git` 写成团队默认值。其他值按指定值写入。不带 `--provider` 重新运行 `init` 即恢复自动检测。
-
-自建 GitLab 使用 `--provider gitlab` 时仍需设置 `GITLAB_URL`（以及 `GITLAB_TOKEN`）。GitLab API 地址取自 `GITLAB_URL`，未设置时指向 gitlab.com，所以检测无法识别该 host 时 `init` 会直接报错退出，不会把 token 发往别处。
+取值：`tgit`、`github`、`cnb`、`gitlab`、`gitcode`、`git`。`git` 不需要平台 token，用已有的 Git 凭据；PR/MR 需要自己到 Git 平台上创建。该选择只影响本机。自建 GitLab 用 `--provider gitlab` 时仍需设置 `GITLAB_URL` 和 `GITLAB_TOKEN`。
 
 ## 通用 Git Provider（自建/私有仓库）
 
-完整 HTTPS 或 SSH URL 的 host 若不在已知列表、不匹配显式 GitLab 配置，且探测未确认 GitLab，就会选择 `git` provider。例如：
+完整 HTTPS 或 SSH URL 的 host 不在已知列表里，就用 `git`。例如：
 
 ```bash
 teamai init https://code.qschou.com/Enterprise/arb-workflow-kit.git --scope user
@@ -63,12 +59,6 @@ teamai init git@code.qschou.com:Enterprise/arb-workflow-kit.git --scope user
 
 - HTTPS：预先配置 Git Credential Helper；不要把用户名、密码或 Token 写进 URL。
 - SSH：预先配置 SSH Key，并确保 `ssh-agent` 能访问私钥。
-
-`teamai init .` 是一个受限例外：它只读取当前业务仓已经配置的 `origin`。若该 origin 是遗留的 HTTP Basic URL（例如 `http://user:token@host/group/repo.git`），初始化会使用其 host/path 识别仓库，但会在写入 `.teamai/teamai.yaml`、本地 TeamAI 配置和日志前移除用户名与 Token。普通 `teamai init <url>`、clone 和其他通用 Git URL 输入仍拒绝 HTTP 与 URL 内嵌凭据。HTTP 本身不会加密 Git 传输；应尽快迁移到 HTTPS + Credential Helper 或 SSH。
-
-clone、pull、push 均可正常使用。平台 API 操作（自动建仓、自动创建 MR/PR）无法跨不同服务统一实现，因此暂不支持；`teamai push` 会先推送分支，再提示用户到对应平台手动创建 MR，并以非零退出码表明自动 PR/MR 创建未完成。
-
-若已有 `provider: git` 的仓库在创建 PR 时失败，CLI 会额外检查该 host；确认是 GitLab 后，会提示设置实例地址和 token，并将团队仓库 `teamai.yaml` 的 `provider` 改为 `gitlab`。这个提示不会自动修改配置，也不会撤回已经推送的分支。
 
 ## GitHub Provider
 
@@ -108,30 +98,14 @@ teamai init your-org/your-repo
 
 token 需要 `repo` 权限。`GH_TOKEN` 作为别名也会被识别。
 
-### 支持的操作
-
-| 操作                   | 实现                                                        |
-|------------------------|-------------------------------------------------------------|
-| clone                  | `git clone https://github.com/<org>/<repo>.git`（URL 不带凭据）。认证分两段：clone 那一次调用以 `-c http.extraHeader` 注入 `Authorization: Basic x-access-token:<TOKEN>`；克隆完成后把 `credential.https://github.com.helper` 持久化到该仓库的**本地**配置，供随后的 `push` / `pull` 使用。token 不写进 URL，因此不会残留在克隆仓库的 `.git/config`（[#978](https://github.com/Tencent/teamai-cli/issues/978)） |
-
-> **为什么要先清空再写入 helper**：`credential.helper` 是多值键，git 按 system → global → local 依次调用全部 helper，**第一个交出凭据的赢**。克隆仓库里直接 `--local --add` 只是往继承列表尾部追加，用户全局配置的 Git Credential Manager 等 helper 仍会先应答，`git push` 于是以**它的**账号认证而非本次克隆用的 token，在无写权限或身份不一致时直接 401。因此持久化分两步执行——先 `git config --local --replace-all credential.https://github.com.helper ''` 清空继承项，再 `--add` 写入解析 `GITHUB_TOKEN` / `GH_TOKEN` 的 helper。两步都限定在 `https://github.com` 作用域内，其他 host 的 helper 不受影响。
-| 创建仓库               | `POST /user/repos` 或 `POST /orgs/:org/repos`               |
-| 创建 PR                | `gh pr create` 或 `POST /repos/:o/:r/pulls`                 |
-| 指定 reviewer          | `gh pr create -r` 或 `POST .../requested_reviewers`         |
-
 ### 默认分支
 
 TeamAI 通过 `getDefaultBranch()` 自动识别默认分支：先看 `origin/HEAD`，再依次探测
 `origin/main`、`origin/master`。`main` 和 `master` 都可以，无需改动仓库设置。
 
-### 默认分支受保护时的最小权限
+### 分支权限
 
-成员需要能推送 `teamai-reports` 与 `teamai-learnings`（含首次创建这两个 ref）、推送
-`teamai push` 创建的特性分支，并能向默认分支开 PR。不需要直接推送 `main` / `master`，
-也不需要绕过分支保护或管理员权限。详见[使用指南的项目级一节](admin-setup.md#项目级project-scope默认)。
-
-注意：`provider: git` 无法自动开 PR，`teamai push` 会推送分支并打印手动开 PR 的命令；
-`teamai contribute` 直接推送 `teamai-learnings`，不走 PR。
+同事有分支写权限、能开 pull request 就够了。主干保持保护。上报和学习记录走 `teamai-reports` 和 `teamai-learnings`。详见[Git 权限](distribution.md#git-权限)。
 
 ## TGit Provider（腾讯工蜂）
 
@@ -140,15 +114,6 @@ TeamAI 通过 `getDefaultBranch()` 自动识别默认分支：先看 `origin/HEA
 `teamai init` 会自动下载工蜂 CLI `gf` 到 `~/.teamai/gf/`，然后在交互式终端里运行 `gf auth login`（支持 iOA SSO / 浏览器 device code / 手动 token）。登录后 token 存在 `~/.netrc`，所有后续 git 操作自动带上。
 
 无人值守运行（stdin 不是 TTY，或设置了 `CI` / `TEAMAI_NONINTERACTIVE`）不会调起该登录，而是立即失败并提示先在交互式终端执行一次 `gf auth login`（[#711](https://github.com/Tencent/teamai-cli/issues/711)）。这里没有可替代的 token：`TGIT_TOKEN` 仅用于 REST API，git.woa.com 的 git 端点不接受它，因此无法用它 clone；登录一次之后，后续无人值守运行会复用它保存的凭据。
-
-### 多级命名空间
-
-TGit 支持 `group/subgroup/repo` 这种多级路径（GitHub 不支持），provider 里有专门的路径处理逻辑：
-
-```
-https://git.woa.com/Group/Subgroup/repo
-git@git.woa.com:Group/Subgroup/repo.git
-```
 
 ### 默认 email 域
 
@@ -180,15 +145,6 @@ teamai init https://cnb.cool/your-org/your-repo
 
 设置 `CNB_TOKEN` 后无需 `cnb login`。用户名从 `cnb users get-user-info` 解析，也可用 `CNB_USERNAME` 覆盖。
 
-### 支持的操作
-
-| 操作      | 实现                                                              |
-|-----------|-------------------------------------------------------------------|
-| clone     | `git clone https://cnb:$CNB_TOKEN@cnb.cool/...`，或 `cnb git-credential` |
-| 创建仓库  | `cnb repositories create-repo`                                    |
-| 创建 PR   | `cnb pulls post-pull`                                             |
-| 用户名    | `cnb users get-user-info`（或 `CNB_USERNAME`）                    |
-
 > **组织和仓库都需在网页创建**：`cnb login` 的 OAuth 令牌不含创建组织（`group-manage:rw`）
 > 或创建仓库（`group-resource:rw`）的权限，无法通过 CLI 创建。`teamai init` 遇到以下情况会打印
 > 网页链接引导你创建后重新运行：
@@ -196,10 +152,6 @@ teamai init https://cnb.cool/your-org/your-repo
 > - 组织存在但无权限建仓库 → `https://cnb.cool/new/repos`
 >
 > 若要让 CLI 直接创建，需改用带 `group-manage:rw` / `group-resource:rw` 权限的 access token（经 `CNB_TOKEN`）。
-
-### 多级命名空间
-
-与 TGit 类似，CNB 支持 `org/subgroup/repo` 这种嵌套路径。
 
 ### 默认 email 域
 
@@ -242,46 +194,6 @@ export GITLAB_API_PREFIX=api/gitlab
 export GITLAB_TOKEN=glpat-xxx
 ```
 
-### 自托管实例检测
-
-- **公有 gitlab.com**：URL host 直接命中，自动选择 gitlab provider。
-- **自托管实例**：设置 `GITLAB_URL` 后，URL host 与 `GITLAB_URL` 的 host 相同时自动识别为 gitlab；也可用 `TEAMAI_GITLAB_HOST` 直接指定 host，未设 `GITLAB_URL` 时 API 指向 `https://<该 host>`。两者同时设置但 host 不同时，teamai 会在发送 token 前报错停止。仓库参数需使用完整 HTTP(S) 或 SSH URL：
-  ```bash
-  export GITLAB_URL=https://git.example.com
-  teamai init https://git.example.com/yourgroup/yourrepo     # → gitlab
-  ```
-- **未配置的未知 host**：`init` 会匿名请求根路径下的 `/users/sign_in?auto_sign_in=false`，仅在响应包含明确的 GitLab 页面特征时确认。确认后，在认证、克隆和写入配置前停止，提示设置 `GITLAB_URL` 和具有 `api` 权限的 `GITLAB_TOKEN` 后重试。实例 URL 不会自动持久化。
-- **探测边界**：请求总超时为三秒，不发送 token、不跟随重定向、不关闭 TLS 校验。HTTP(S) 仓库 URL 保留其 scheme 和 Web 端口；SSH 仓库 URL 使用 HTTPS 的默认 443 端口探测，不会把 SSH 端口当作 Web 端口。超时、网络错误、代理拦截、重定向和无法确认的页面都继续回落到 `git`。子路径部署、SSO 遮蔽的登录页，以及 Web 地址与 SSH host 不同的实例，需要显式配置 `GITLAB_URL`。
-- **已有 `provider: git`**：设置实例地址和 token 后，还需在团队仓库的 `teamai.yaml` 中将 `provider` 改为 `gitlab`。仅补设环境变量不会覆盖配置中的 provider。创建 PR 失败后的 GitLab 探测只提供修复提示，不会自动切换。
-
-### 与 `git` 通用 Provider 的分工
-
-检测顺序是 **已知 host → 显式配置的自托管 GitLab → 匿名 GitLab 探测 → `git` 通用回落**。匿名探测只用于 `init` 的配置提示，以及通用 provider 创建 PR 失败后的诊断，只确认具有明确特征的 GitLab 页面，不会自动配置实例或 token。未确认的 host 使用 `git` 通用 Provider，clone/pull/push 走系统 Git 凭据，自动建仓和创建 MR 则不受支持。配置好 GitLab Provider 后，才可使用建仓、建 MR、拉 MR 数据、列 group 仓库等平台能力。
-
-### 多级命名空间
-
-GitLab 支持 `group/subgroup/repo` 多级路径，provider 的路径解析会保留完整 group 路径：
-
-```
-https://git.example.com/Group/Subgroup/repo
-git@git.example.com:Group/Subgroup/repo.git
-```
-
-也可以直接粘贴浏览器地址栏里的 URL：GitLab 的 `/-/` 路由分隔符及其后内容（`/-/tree/main`、`/-/merge_requests/42`、`/-/blob/...`）会被自动剥离，解析回项目本身。
-
-### 支持的操作
-
-| 操作                   | 实现                                                        |
-|------------------------|-------------------------------------------------------------|
-| clone                  | `git clone <base-url>/...`，token 以 `oauth2:` 基本认证经 `-c http.extraHeader` 注入（不写进 URL，因此不会残留在克隆仓库的 `.git/config`） |
-| 创建仓库               | `POST /api/v4/projects`（用户 namespace，或按路径精确解析 group；解析不到直接报错，不会退回个人 namespace） |
-| 创建 MR                | `POST /api/v4/projects/:id/merge_requests`                 |
-| 指定 reviewer          | 解析 username → user id，提交 `reviewer_ids`                |
-| 拉取 MR 数据           | `GET /api/v4/projects/:id/merge_requests/:iid` + commits + changes；MR URL 的 host 必须与已配置实例（`GITLAB_URL` / `TEAMAI_GITLAB_HOST`，默认 gitlab.com）一致，否则拒绝请求，避免把 token 发往未配置的 host |
-| 列出 group 仓库        | `GET /api/v4/groups/:path/projects`（分页，`include_subgroups=true` 含子组） |
-
-GitLab API 表中的 `/api/v4` 为默认前缀；设置 `GITLAB_API_PREFIX` 后，API 请求使用配置的前缀。
-
 ### 默认 email 域
 
 GitLab Provider 不设默认 email 域（同 GitHub），使用用户的 git 全局配置。
@@ -308,21 +220,7 @@ export GITCODE_TOKEN=xxxxxxxxxxxx
 
 ### 命名空间
 
-GitCode 命名空间为单层（用户或组织），仓库地址形如 `owner/repo`，不支持多级子组。
-
-### 支持的操作
-
-| 操作 | 实现 |
-|------|------|
-| clone | HTTPS 走 `oauth2:<token>@` 内嵌（团队仓，凭据持久化以便后续 push）或 `http.extraHeader`（浅克隆）；亦支持 SSH 公钥 |
-| createRepo | 个人 `POST /user/repos`；组织 `POST /orgs/:org/repos` |
-| createPullRequest | `POST /repos/:owner/:repo/pulls`（`head`/`base`/`title`/`body`） |
-| fetchMergeRequest | `GET /repos/:owner/:repo/pulls/:n` + commits + files；PR URL 的 host 必须为 gitcode.com，否则拒绝，避免把 token 发往未配置的 host |
-| listOrgRepos | `GET /orgs/:org/repos` 分页 |
-
-> 注：仅支持公有云 `gitcode.com`，暂不支持自托管 GitCode 企业版。
-
-**关键方言**：GitCode 的 git-over-HTTPS 端点**拒绝 `Authorization: Bearer`**，只接受 Basic `oauth2:<token>`（已实机验证）。而 REST API 用 Bearer。因此团队仓 clone 把 token 内嵌进 remote URL（`oauth2:<token>@`），使 `git push`（分支 + PR 流程）能通过认证——与 TGit 一致。（GitHub 原先也这么做，现已改为克隆时一次性 `-c http.extraHeader` + 持久化 URL 作用域的 `credential.helper`，token 不再进入 `.git/config`，见上一节。）
+GitCode 命名空间为单层（用户或组织），仓库地址形如 `owner/repo`，不支持多级子组。仅支持公有云 `gitcode.com`。
 
 ### 默认 email 域
 
@@ -344,4 +242,4 @@ reviewers:
 
 ## 新增 Provider
 
-Provider 层的内部实现和新增 provider 的步骤见 [Adding a Git provider](../../dev/adding-a-provider.md)（英文）。
+Provider 层的内部实现和新增 provider 的步骤见 [Adding a Git provider](../../dev/adding-a-provider.md)。

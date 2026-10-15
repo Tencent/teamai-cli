@@ -15,10 +15,11 @@ import { placedResourcePath } from '../push-namespaces.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import type { ResourceNamespaces } from '../roles.js';
 import type { LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
-import { listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
+import { dirContentEqual, fileContentEqual, listDirs, listFiles, pathExists, readFileSafe } from '../utils/fs.js';
 import type { BuildIndexOptions, IndexedSkills } from '../utils/search-index.js';
 import { filterByTags, loadTagsConfig } from '../utils/tags.js';
 import { warnOnce } from '../utils/warn-once.js';
+import { deliveredMembers, unionMemberItems } from '../workspace-children.js';
 import { resolveAgentsForDirectory } from './agents.js';
 import { resolveDocsForDirectory } from './docs.js';
 import { getHandler } from './index.js';
@@ -226,6 +227,18 @@ export type DesiredSkills = Extract<DesiredItems, { kind: 'resolved' }> & {
   readonly teamItems: ResourceItem[];
   /** How many skills the tag channel left out, for the sync line. */
   readonly skippedByTags: number;
+  /**
+   * Skills a workspace holds back because two of its members deliver
+   * different copies of one name (#913). Pull keeps an installed copy of them.
+   */
+  readonly held: readonly string[];
+  /**
+   * In a workspace with children (#913), the team skill directories each name
+   * comes from in any member, before the union and the workspace's
+   * exclusions. Cleanup takes a copy equal to any of them as unedited. Empty
+   * for a scope without children.
+   */
+  readonly memberSources: ReadonlyMap<string, readonly string[]>;
 };
 
 /**
@@ -244,6 +257,8 @@ export async function resolveDesiredSkills(
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
 ): Promise<DesiredSkills | DeliveryConflict> {
+  const members = await deliveredMembers(localConfig);
+  if (members) return resolveWorkspaceSkills(teamConfig, localConfig, members);
   const handler = getHandler('skills');
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
   const subscribedTags = localConfig.subscribedTags;
@@ -302,7 +317,74 @@ export async function resolveDesiredSkills(
     })
     : [];
 
-  return { kind: 'resolved', items, overrides, teamItems, skippedByTags };
+  return { kind: 'resolved', items, overrides, teamItems, skippedByTags, held: [], memberSources: new Map() };
+}
+
+/**
+ * The team skill directories a workspace with children delivers skills from
+ * (#913): each member's, before the union, absolute. Null for a scope without
+ * children. Push sends an edit of one copy several delivered to these only.
+ */
+export async function deliveredSkillSources(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ReadonlySet<string> | null> {
+  const members = await deliveredMembers(localConfig);
+  if (!members) return null;
+  const excluded = new Set(localConfig.excludedSkills ?? []);
+  const sources = new Set<string>();
+  for (const member of members) {
+    const desired = await resolveDesiredSkills(teamConfig, member, await buildRolePullContext(member));
+    if (desired.kind !== 'resolved') continue;
+    for (const item of desired.items) if (!excluded.has(item.name)) sources.add(path.resolve(item.sourcePath));
+  }
+  return sources;
+}
+
+/**
+ * A workspace's skills (#913): each member's, resolved with that member's
+ * namespaces, tags and exclusions, then unioned, with the workspace's own
+ * exclusions on top. A conflict inside one member stops skills as it would
+ * in that member's own scope.
+ */
+async function resolveWorkspaceSkills(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  members: readonly LocalConfig[],
+): Promise<DesiredSkills | DeliveryConflict> {
+  const resolved: DesiredSkills[] = [];
+  for (const member of members) {
+    const desired = await resolveDesiredSkills(teamConfig, member, await buildRolePullContext(member));
+    if (desired.kind === 'conflict') return desired;
+    resolved.push(desired);
+  }
+  const { items, held } = await unionMemberItems({
+    perMember: resolved.map((desired) => desired.items),
+    nameOf: (item) => item.name,
+    sameContent: (a, b) => a.sourcePath === b.sourcePath || dirContentEqual(a.sourcePath, b.sourcePath),
+  });
+  const excluded = new Set(localConfig.excludedSkills ?? []);
+  for (const { name, first, second } of held) {
+    // An excluded name is not held, so pull may take its copy out; saying it keeps one would be wrong.
+    if (excluded.has(name)) continue;
+    warnOnce(`Skill "${name}" differs between ${first.relativePath} and ${second.relativePath}, so this workspace holds it back; an installed copy is kept. Make the copies equal in the team repo, or rename one.`);
+  }
+  const memberSources = new Map<string, string[]>();
+  for (const item of resolved.flatMap((desired) => desired.items)) {
+    memberSources.set(item.name, [...memberSources.get(item.name) ?? [], item.sourcePath]);
+  }
+  const delivered = items.filter((item) => !excluded.has(item.name));
+  const sources = new Set(delivered.map((item) => item.relativePath));
+  const overrides = [...new Map(resolved.flatMap((desired) => desired.overrides)
+    .filter((override) => sources.has(override.source))
+    .map((override) => [override.source, override] as const)).values()];
+  return {
+    kind: 'resolved',
+    items: delivered,
+    overrides,
+    teamItems: resolved[0]?.teamItems ?? [],
+    skippedByTags: Math.max(0, ...resolved.map((desired) => desired.skippedByTags)),
+    // A held name the workspace excludes is not kept: cleanup decides its copy.
+    held: held.map((item) => item.name).filter((name) => !excluded.has(name)),
+    memberSources,
+  };
 }
 
 /**
@@ -387,6 +469,8 @@ export async function resolveDesiredRules(
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
 ): Promise<DesiredRules> {
+  const members = await deliveredMembers(localConfig);
+  if (members) return resolveWorkspaceRules(teamConfig, members);
   const handler = getHandler('rules');
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
   const allItems = await handler.scanTeamForPull(teamConfig, localConfig);
@@ -398,6 +482,26 @@ export async function resolveDesiredRules(
   );
   if (!knowledgeNs) return { items: included, overrides: [], replaced: [], skippedByTags: skipped.length };
   return { ...await overrideRootRules(included, knowledgeNs, localConfig), skippedByTags: skipped.length };
+}
+
+/**
+ * A workspace's rules (#913): each member's, with that member's namespaces
+ * and tags, unioned by path. A rule keeps its path wherever it lands, so two
+ * members never compete for one; a root rule one member replaces stays while
+ * another member receives it.
+ */
+async function resolveWorkspaceRules(teamConfig: TeamaiConfig, members: readonly LocalConfig[]): Promise<DesiredRules> {
+  const resolved: DesiredRules[] = [];
+  for (const member of members) resolved.push(await resolveDesiredRules(teamConfig, member, await buildRolePullContext(member)));
+  const items = [...new Map(resolved.flatMap((desired) => desired.items).map((item) => [item.relativePath, item] as const)).values()];
+  const delivered = new Set(items.map((item) => item.relativePath));
+  const once = <TItem>(list: TItem[], key: (item: TItem) => string): TItem[] => [...new Map(list.map((item) => [key(item), item] as const)).values()];
+  return {
+    items,
+    overrides: once(resolved.flatMap((desired) => desired.overrides), (override) => `${override.source}\0${override.replaces}`).filter((override) => !delivered.has(override.replaces)),
+    replaced: once(resolved.flatMap((desired) => desired.replaced), (item) => item.relativePath).filter((item) => !delivered.has(item.relativePath)),
+    skippedByTags: Math.max(0, ...resolved.map((desired) => desired.skippedByTags)),
+  };
 }
 
 /**
@@ -452,6 +556,8 @@ export async function resolveDesiredAgents(
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
 ): Promise<DesiredItems> {
+  const members = await deliveredMembers(localConfig);
+  if (members) return resolveWorkspaceAgents(teamConfig, members);
   const items = await getHandler('agents').scanTeamForPull(teamConfig, localConfig);
   const { placedAgents } = await loadStateForScope(localConfig);
   return filterAgentsByNamespaces(
@@ -469,13 +575,38 @@ export async function resolveDesiredAgents(
  * name (#707); two active namespaces with one file name both stay in the block,
  * in namespace order (`resolveRootOverrides`). With no role configured every
  * subdirectory is collected, beside the root.
+ *
+ * A workspace with children (#913) collects each member's files with that
+ * member's namespaces, then the union, as it does for rules: a root file one
+ * member replaces stays while another member receives it.
  */
 export async function collectClaudemdFiles(
-  repoPath: string,
+  localConfig: LocalConfig,
   roleContext: RolePullContext | null,
 ): Promise<{ contents: string[]; overrides: NamespaceOverride[] }> {
+  const repoPath = localConfig.repo.localPath;
+  const own = await claudemdCandidates(repoPath, roleContext);
+  const members = await deliveredMembers(localConfig);
+  const { delivered, overrides } = members ? await workspaceClaudemd(repoPath, members) : claudemdDelivered(own);
+  // The workspace's own context activates every namespace a member does, so
+  // its candidates hold every member's files, in the order of one scope.
+  const contents: string[] = [];
+  for (const candidate of own.candidates) {
+    if (!delivered.has(candidate.source)) continue;
+    const content = await readFileSafe(candidate.value);
+    if (content) contents.push(content);
+  }
+  return { contents, overrides };
+}
+
+interface ClaudemdCandidates {
+  candidates: NamespaceCandidate<string>[];
+  overrides: NamespaceOverride[];
+}
+
+async function claudemdCandidates(repoPath: string, roleContext: RolePullContext | null): Promise<ClaudemdCandidates> {
   const claudemdDir = path.join(repoPath, 'claudemd');
-  if (!await pathExists(claudemdDir)) return { contents: [], overrides: [] };
+  if (!await pathExists(claudemdDir)) return { candidates: [], overrides: [] };
 
   const mdFiles = async (dir: string): Promise<string[]> => (await listFiles(dir))
     .filter((f) => f.endsWith('.md'))
@@ -502,13 +633,54 @@ export async function collectClaudemdFiles(
     }
   }
 
-  const overrides = roleContext ? resolveRootOverrides(candidates, namespaceDirs) : [];
+  return { candidates, overrides: roleContext ? resolveRootOverrides(candidates, namespaceDirs) : [] };
+}
+
+function claudemdDelivered({ candidates, overrides }: ClaudemdCandidates): { delivered: Set<string>; overrides: NamespaceOverride[] } {
   const replaced = new Set(overrides.map((override) => override.replaces));
-  const contents: string[] = [];
-  for (const candidate of candidates) {
-    if (replaced.has(candidate.source)) continue;
-    const content = await readFileSafe(candidate.value);
-    if (content) contents.push(content);
+  return { delivered: new Set(candidates.map((candidate) => candidate.source).filter((source) => !replaced.has(source))), overrides };
+}
+
+async function workspaceClaudemd(
+  repoPath: string,
+  members: readonly LocalConfig[],
+): Promise<{ delivered: Set<string>; overrides: NamespaceOverride[] }> {
+  const resolved: Array<ReturnType<typeof claudemdDelivered>> = [];
+  for (const member of members) resolved.push(claudemdDelivered(await claudemdCandidates(repoPath, await buildRolePullContext(member))));
+  const delivered = new Set(resolved.flatMap((one) => [...one.delivered]));
+  const overrides = [...new Map(resolved.flatMap((one) => one.overrides)
+    .map((override) => [`${override.source}\0${override.replaces}`, override] as const)).values()]
+    .filter((override) => !delivered.has(override.replaces));
+  return { delivered, overrides };
+}
+
+/**
+ * A workspace's agents (#913): each member's, unioned by stem. A stem two
+ * members deliver with the same content is delivered once; one whose copies
+ * differ is held back and named, and pull keeps an installed copy of it. A conflict inside one member stops
+ * agents as it would in that member's own scope.
+ */
+async function resolveWorkspaceAgents(teamConfig: TeamaiConfig, members: readonly LocalConfig[]): Promise<DesiredItems> {
+  const resolved: Array<Extract<DesiredItems, { kind: 'resolved' }>> = [];
+  for (const member of members) {
+    const desired = await resolveDesiredAgents(teamConfig, member, await buildRolePullContext(member));
+    if (desired.kind === 'conflict') return desired;
+    resolved.push(desired);
   }
-  return { contents, overrides };
+  const { items, held } = await unionMemberItems({
+    perMember: resolved.map((desired) => desired.items),
+    nameOf: (item) => item.name,
+    sameContent: (a, b) => a.sourcePath === b.sourcePath || fileContentEqual(a.sourcePath, b.sourcePath),
+  });
+  for (const { name, first, second } of held) {
+    warnOnce(`Agent "${name}" differs between ${first.relativePath} and ${second.relativePath}, so this workspace holds it back; an installed copy is kept. Make the copies equal in the team repo, or rename one.`);
+  }
+  const sources = new Set(items.map((item) => item.relativePath));
+  return {
+    kind: 'resolved',
+    items,
+    overrides: [...new Map(resolved.flatMap((desired) => desired.overrides)
+      .filter((override) => sources.has(override.source))
+      .map((override) => [override.source, override] as const)).values()],
+  };
 }

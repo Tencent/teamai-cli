@@ -86,6 +86,7 @@ const TOOLS: ReadonlyArray<{ tool: string; root: string; file: string }> = [
   { tool: 'openclaw', root: '.openclaw/workspace', file: '.openclaw/workspace/AGENTS.md' },
   { tool: 'pi', root: '.pi/agent', file: '.pi/agent/AGENTS.md' },
   { tool: 'joycode', root: '.joycode', file: '.joycode/rules.txt' },
+  { tool: 'muse', root: '.config/muse', file: '.config/muse/AGENTS.md' },
 ];
 
 const teamConfig = (): TeamaiConfig => TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/x/team.git' });
@@ -449,6 +450,7 @@ describe('doctor checks the block in the file each tool reads (#946)', () => {
     openclaw: 'Team rules are inlined in OpenClaw workspace AGENTS.md',
     pi: 'Team rules are inlined in Pi AGENTS.md',
     joycode: 'Team rules are inlined in JoyCode rules.txt',
+    muse: 'Team rules are inlined in Muse Code AGENTS.md',
   };
 
   async function check(tool: string) {

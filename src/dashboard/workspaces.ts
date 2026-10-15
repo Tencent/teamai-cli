@@ -4,8 +4,9 @@ import { createHash } from 'node:crypto';
 import YAML from 'yaml';
 import { LocalConfigSchema, type LocalConfig, type DashboardEvent } from '../types.js';
 import { getUserHome } from '../utils/home.js';
-import { resolveAnchors, listWorktrees } from '../utils/git.js';
+import { checkoutForProjectAnchor, resolveAnchors } from '../utils/git.js';
 import { readConfigFrom } from '../config.js';
+import { projectCheckouts } from '../pull.js';
 
 export interface DashboardWorkspace {
   id: string;
@@ -14,6 +15,7 @@ export interface DashboardWorkspace {
   root: string;
   config: LocalConfig | null;
   roots: string[];
+  projectAnchor?: string;
 }
 async function configAt(home: string): Promise<LocalConfig | null> {
   try { return LocalConfigSchema.parse(YAML.parse(await fs.readFile(path.join(home, 'config.yaml'), 'utf8'))); }
@@ -26,7 +28,7 @@ const inside = (cwd: string, root: string) => cwd === root || cwd.startsWith(roo
  * (#809), else the one whose roots hold its cwd (longest matching root wins).
  */
 function ownerOf(event: DashboardEvent, projects: DashboardWorkspace[]): string | null {
-  const anchored = event.projectAnchor && projects.find(w => w.root === event.projectAnchor);
+  const anchored = event.projectAnchor && projects.find(w => (w.projectAnchor ?? w.root) === event.projectAnchor);
   if (anchored) return anchored.id;
   const cwd = event.cwd;
   if (!cwd) return null;
@@ -42,8 +44,12 @@ export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<Das
   const user = await configAt(home);
   const result: DashboardWorkspace[] = [{ id: 'user', label: 'User scope', scope: 'user', root: getUserHome(), config: user, roots: [] }];
   const seen = new Set<string>();
-  async function add(root: string, dataHome: string) {
-    if (seen.has(root)) return;
+  async function add(anchor: string, dataHome: string, recordedRoot?: string) {
+    if (seen.has(anchor)) return;
+    const persisted = await configAt(dataHome);
+    const root = await checkoutForProjectAnchor(anchor, recordedRoot ?? persisted?.repo.businessRepoRoot ?? persisted?.projectRoot)
+      ?? (persisted?.projectRoot === anchor ? anchor : null);
+    if (!root) return;
     if (!await fs.stat(root).then(stat => stat.isDirectory()).catch(() => false)) return;
     // readConfigFrom (no self-heal arg) parses + guards scope==='project' + re-anchors
     // projectRoot/dataHome + applies the self-mode repo rebind (config.ts). The manual
@@ -51,9 +57,9 @@ export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<Das
     // a linked worktree read the wrong knowledge base (PR #604 review #1).
     const config = await readConfigFrom(dataHome, root);
     if (!config) return;
-    seen.add(root);
-    result.push({ id: createHash('sha256').update(root).digest('hex').slice(0, 24), label: path.basename(root), scope: 'project', root,
-      config, roots: [...new Set([root, ...await listWorktrees(root).catch(() => [])])] });
+    seen.add(anchor);
+    result.push({ id: createHash('sha256').update(anchor).digest('hex').slice(0, 24), label: path.basename(root), scope: 'project', root, projectAnchor: anchor,
+      config, roots: [...new Set([root, ...await projectCheckouts(config)])] });
   }
   const partitions = path.join(home, 'projects');
   for (const entry of await fs.readdir(partitions, { withFileTypes: true }).catch(() => [])) {
@@ -72,7 +78,7 @@ export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<Das
   for (const cwd of new Set([process.cwd(), ...unnamed.map(event => event.cwd).filter(Boolean)])) {
     const anchors = await resolveAnchors(cwd).catch(() => null);
     if (anchors) {
-      await add(anchors.projectAnchor, path.join(anchors.workspaceRoot, '.teamai'));
+      await add(anchors.projectAnchor, path.join(anchors.workspaceRoot, '.teamai'), anchors.workspaceRoot);
     } else if (cwd) await add(cwd, path.join(cwd, '.teamai'));
   }
   // Sessions whose cwd matches no installed project no longer fold into User scope

@@ -5,7 +5,7 @@ import { listFilesRecursive, pathExists, copyFile, ensureDir, remove, fileConten
 import { log } from '../utils/logger.js';
 import { getUserHome } from '../utils/home.js';
 import { warnOnce } from '../utils/warn-once.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveBaseDir, resolveToolBaseDir, resolveToolRootDir, isAgentExcluded, isGitExcludeEnabled, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY, getUserConfigPath } from '../types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END, TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, resolveBaseDir, resolveToolBaseDir, resolveToolRootDir, isAgentExcluded, isGitExcludeEnabled, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY, getUserConfigPath, installScopeName } from '../types.js';
 import { EXCLUDED_RULE_NAMES, isDeployedRecallRule, TEAMAI_CONTEXT_RULE_NAME } from '../builtin-rules.js';
 import { rulePaths, teamRuleBody, teamRuleData } from './team-rule.js';
 import { joycodeQuotedGlobsWarning } from './joycode-rule.js';
@@ -13,6 +13,7 @@ import type { OpencodeRulesTarget } from './opencode-config.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 import { loadStateForScope } from '../config.js';
 import { placedResourcePath } from '../push-namespaces.js';
+import { recordedNamespace } from '../utils/pending-push.js';
 import { deliversEveryNamespace } from '../resource-namespaces.js';
 import { getFileContentAtRev, isPastVersionOf, listFilesAtRev } from '../utils/git.js';
 import { historicalVersions } from '../utils/team-history.js';
@@ -662,7 +663,7 @@ export class RulesHandler extends ResourceHandler {
     const { buildRolePullContext, resolveDesiredRules } = await import('./desired.js');
     const { items, replaced } = await resolveDesiredRules(teamConfig, localConfig, await buildRolePullContext(localConfig));
     await this.pullAllRules(teamConfig, localConfig, items, replaced, ledger);
-    reportKept(ledger, localConfig.scope);
+    reportKept(ledger, installScopeName(localConfig.scope));
 
     return removed;
   }
@@ -813,7 +814,7 @@ export class RulesHandler extends ResourceHandler {
     // is still the author's work (#649 review).
     for (const entry of pendingPushes ?? []) {
       for (const item of entry.items) {
-        if (item.type === 'rules' && !item.name.includes('/') && item.relativePath.split('/').length === 3) {
+        if (item.type === 'rules' && !item.name.includes('/') && recordedNamespace(item) !== undefined) {
           teamRuleNames.add(item.name);
         }
       }

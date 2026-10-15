@@ -15,6 +15,9 @@ import { promises as fs } from 'node:fs';
 import { aggregateTeamVotes, resolveVizRoot, buildVizData } from '../viz.js';
 import { renderReport } from '../viz-render.js';
 import type { VizData } from '../viz.js';
+import { buildIndex } from '../utils/search-index.js';
+import { readWorkspaceChildren } from '../workspace-children.js';
+import { getProjectSearchIndexPath, type LocalConfig } from '../types.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -371,5 +374,99 @@ describe('buildVizData without a prebuilt index', () => {
 
     expect(titles(data)).toContain('Queued learning');
     expect(paths.learningsDirs).not.toContain(queue);
+  });
+
+  it('rebuilds the index pull built when a workspace child has changed what it selects since (#913)', async () => {
+    await fs.writeFile(
+      path.join(teamRepo, 'manifest', 'projects.yaml'),
+      'version: 1\nprojects:\n  - id: alpha\n    resources:\n      learnings: [alpha]\n'
+        + '  - id: beta\n    resources:\n      learnings: [beta]\n',
+    );
+    await learning('alpha/x.md', 'Alpha learning');
+    await learning('beta/y.md', 'Beta learning');
+    const config = { ...configFor('project'), projects: [] } as LocalConfig;
+    const childConfig = path.join(config.projectRoot!, 'child', '.teamai', 'config.yaml');
+    await fs.mkdir(path.dirname(childConfig), { recursive: true });
+    const select = (project: string): Promise<void> => fs.writeFile(childConfig,
+      `scope: workspace\nusername: alice\nprojects: [${project}]\nrepo:\n  kind: http\n  localPath: ${teamRepo}\n  remote: https://example.invalid/team\n`);
+    await select('alpha');
+    const before = await readWorkspaceChildren(config);
+    await buildIndex({
+      learningsDirs: [path.join(teamRepo, 'learnings')], learningsNamespaces: ['alpha'],
+      indexPath: getProjectSearchIndexPath(config), children: before.children?.fingerprint,
+    });
+    await select('beta');
+
+    const data = await buildVizData(await resolveVizRoot({ config }));
+
+    expect(titles(data)).toContain('Beta learning');
+    expect(titles(data)).not.toContain('Alpha learning');
+  });
+
+  it('rebuilds that index from what the children deliver now, not every skill in the team repo (#913)', async () => {
+    await fs.writeFile(path.join(teamRepo, 'teamai.yaml'), 'team: viz\nrepo: https://example.invalid/team\nprovider: git\nreviewers: []\n');
+    await fs.writeFile(
+      path.join(teamRepo, 'manifest', 'projects.yaml'),
+      'version: 1\nprojects:\n  - id: alpha\n    resources:\n      skills: [alpha]\n'
+        + '  - id: beta\n    resources:\n      skills: [beta]\n',
+    );
+    for (const [namespace, name] of [['alpha', 'alpha-tool'], ['beta', 'beta-tool'], ['gamma', 'gamma-tool']]) {
+      await fs.mkdir(path.join(teamRepo, 'skills', namespace, name), { recursive: true });
+      await fs.writeFile(path.join(teamRepo, 'skills', namespace, name, 'SKILL.md'), `---\nname: ${name}\ndescription: fixture\n---\n\n# ${name}\n`);
+    }
+    const config = { ...configFor('project'), projects: [] } as LocalConfig;
+    const childConfig = path.join(config.projectRoot!, 'child', '.teamai', 'config.yaml');
+    await fs.mkdir(path.dirname(childConfig), { recursive: true });
+    const select = (project: string): Promise<void> => fs.writeFile(childConfig,
+      `scope: workspace\nusername: alice\nprojects: [${project}]\nrepo:\n  kind: http\n  localPath: ${teamRepo}\n  remote: https://example.invalid/team\n`);
+    await select('alpha');
+    const before = await readWorkspaceChildren(config);
+    await buildIndex({
+      learningsDirs: [], learningsNamespaces: [], indexPath: getProjectSearchIndexPath(config), children: before.children?.fingerprint,
+      skillsDir: path.join(teamRepo, 'skills'), skills: { kind: 'dirs', dirs: [path.join(teamRepo, 'skills', 'alpha', 'alpha-tool')] },
+    });
+    await select('beta');
+
+    const data = await buildVizData(await resolveVizRoot({ config }));
+
+    const docs = [...data.topRecalled, ...data.silent].map((entry) => entry.docId);
+    expect(docs.some((doc) => doc.includes('beta-tool'))).toBe(true);
+    expect(docs.some((doc) => doc.includes('gamma-tool'))).toBe(false);
+    expect(docs.some((doc) => doc.includes('alpha-tool'))).toBe(false);
+  });
+
+  describe('with skills in three namespaces and no index yet', () => {
+    beforeEach(async () => {
+      await fs.writeFile(path.join(teamRepo, 'teamai.yaml'), 'team: viz\nrepo: https://example.invalid/team\nprovider: git\nreviewers: []\n');
+      await fs.writeFile(
+        path.join(teamRepo, 'manifest', 'projects.yaml'),
+        'version: 1\nprojects:\n  - id: alpha\n    resources:\n      skills: [alpha]\n'
+          + '  - id: beta\n    resources:\n      skills: [beta]\n',
+      );
+      for (const [namespace, name] of [['alpha', 'alpha-tool'], ['beta', 'beta-tool'], ['gamma', 'gamma-tool']]) {
+        await fs.mkdir(path.join(teamRepo, 'skills', namespace, name), { recursive: true });
+        await fs.writeFile(path.join(teamRepo, 'skills', namespace, name, 'SKILL.md'), `---\nname: ${name}\ndescription: fixture\n---\n\n# ${name}\n`);
+      }
+    });
+    const skills = (data: VizData): string[] => ['alpha-tool', 'beta-tool', 'gamma-tool']
+      .filter((name) => [...data.topRecalled, ...data.silent].some((entry) => entry.docId.includes(name)));
+
+    it('builds it from what the children of a workspace deliver (#913)', async () => {
+      const config = { ...configFor('project'), projects: [] } as LocalConfig;
+      const childConfig = path.join(config.projectRoot!, 'child', '.teamai', 'config.yaml');
+      await fs.mkdir(path.dirname(childConfig), { recursive: true });
+      await fs.writeFile(childConfig,
+        `scope: workspace\nusername: alice\nprojects: [alpha]\nrepo:\n  kind: http\n  localPath: ${teamRepo}\n  remote: https://example.invalid/team\n`);
+
+      const data = await buildVizData(await resolveVizRoot({ config }));
+
+      expect(skills(data)).toEqual(['alpha-tool']);
+    });
+
+    it('builds it from every skill in the team repo for a scope without children, as before', async () => {
+      const data = await buildVizData(await resolveVizRoot({ config: configFor('project') as LocalConfig }));
+
+      expect(skills(data)).toEqual(['alpha-tool', 'beta-tool', 'gamma-tool']);
+    });
   });
 });

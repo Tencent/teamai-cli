@@ -60,6 +60,13 @@ describe('gitBinary', () => {
     expect(gitBinary({ pathEnv: onPath(unexecutable, later), platform: 'darwin' })).toBe('git');
   });
 
+  posixIt('resolves a native executable git', () => {
+    const dir = tempDir();
+    // Any native executable stands in for git's binary: node's own.
+    fs.symlinkSync(process.execPath, path.join(dir, 'git'));
+    expect(gitBinary({ pathEnv: onPath(dir), platform: 'darwin' })).toBe(path.join(dir, 'git'));
+  });
+
   it('falls back to the bare name when git is not on PATH', () => {
     expect(gitBinary({ pathEnv: onPath(tempDir()), platform: 'darwin' })).toBe('git');
   });

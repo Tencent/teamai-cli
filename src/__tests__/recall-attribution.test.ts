@@ -19,7 +19,23 @@ import type { ExtensionContext } from './helpers/pi-extensions.js';
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   // The dispatcher's detached background pass: nothing under test runs there.
-  spawn: vi.fn(() => ({ on: vi.fn(), stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) }, unref: vi.fn() })),
+  // A foreground dispatch with a background handler still spawns the detached
+  // child for real (spawnBackground): on win32 that goes through the WMI
+  // escape first, whose promise only settles via the process's own
+  // 'close'/'error' event. A bare `on: vi.fn()` never fires it, hanging every
+  // such test until timeout -- so this fires 'close' with a success code,
+  // same as hook-dispatch-cli.test.ts's fakePowerShell helper.
+  spawn: vi.fn(() => {
+    const child = {
+      stdin: { on: vi.fn(), end: vi.fn((_: string, done: () => void) => done()) },
+      on(event: string, cb: (...args: unknown[]) => void) {
+        if (event === 'close') setTimeout(() => cb(0), 0);
+        return child;
+      },
+      unref: vi.fn(),
+    };
+    return child;
+  }),
 }));
 vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined) }));
 vi.mock('../update.js', async (importOriginal) => ({
@@ -31,7 +47,9 @@ vi.mock('../code-knowledge-recall.js', () => ({ queryCodeKnowledge: vi.fn(async 
 // The opt-in judge's local-CLI verdict: every candidate it is sent was used.
 const { judgeAdoption } = vi.hoisted(() => ({ judgeAdoption: vi.fn(async (_reply: string, ids: string[]) => ids) }));
 vi.mock('../votes-judge.js', () => ({ judgeAdoption }));
-// A vote sync lands in a reports checkout beside the clone instead of being pushed.
+// A vote sync lands in a reports checkout beside the clone instead of being
+// pushed. The mock publishes immediately: the write lands, `onDelivered` hooks
+// run, and "origin" is that same directory's current content.
 vi.mock('../utils/reports-branch.js', async () => {
   const nodePath = await import('node:path');
   const nodeFs = await import('node:fs');
@@ -42,7 +60,18 @@ vi.mock('../utils/reports-branch.js', async () => {
     return dir;
   };
   return {
-    updateReports: vi.fn(async (config: LocalConfig, write: (wt: string) => Promise<unknown>) => (await write(checkout(config))) !== null),
+    updateReports: vi.fn(async (
+      config: LocalConfig,
+      write: (wt: string, ctx: { onDelivered: (fn: () => Promise<void>) => void }) => Promise<unknown>,
+    ) => {
+      const delivered: (() => Promise<void>)[] = [];
+      const change = await write(checkout(config), { onDelivered: (fn) => { delivered.push(fn); } });
+      if (change != null) for (const fn of delivered) await fn();
+      return { status: change != null ? 'published' : 'already-present' };
+    }),
+    readReportsOriginFile: vi.fn(async (wt: string, relPath: string) => {
+      try { return nodeFs.readFileSync(nodePath.join(wt, relPath), 'utf8'); } catch { return null; }
+    }),
     ensureReportsWorktree: vi.fn(async (config: LocalConfig) => checkout(config)),
     readableReportsWorktree: vi.fn(async (config: LocalConfig) => checkout(config)),
     indexableVotesDir: vi.fn(async (config: LocalConfig) => nodePath.join(checkout(config), 'votes')),
@@ -2123,6 +2152,50 @@ describe('recall attribution acceptance (#884)', () => {
     await h.judgeStop(Harness.bashEntries('toolu_recall', 'teamai recall "redis timeout"', output));
     expect(judgeAdoption).toHaveBeenCalledWith('Raised the pool size.', ['redis-timeout'], { 'redis-timeout': files[0] }, expect.any(Array));
     expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
+  });
+
+  // The recommended path: recall runs inside the teamai-recall subagent, so the
+  // main transcript carries only the `recalled-doc-ids` comment, never the
+  // `File:` lines. The judge backfills the doc's path from the recall log
+  // (recalledPathOf) so the candidate is still grounded and can be judged (#723).
+  it('12: judge on: a subagent recall (no File: line in the main transcript) is still grounded from the recall log → +1', async () => {
+    await h.setUp();
+    // The subagent ran the recall (its Bash claim settles the run + records the path).
+    await h.recall('redis timeout', { caller: 'teamai-recall' });
+    await h.stop();
+    expect(await h.upvotes(h.project)).toEqual({});
+    // The main transcript the Stop hook feeds the judge: only the doc-id comment,
+    // no recall region and no File: line — exactly what a subagent summary leaves.
+    await h.judgeStop([
+      { type: 'assistant', message: { id: 'msg-recall', content: [{ type: 'text', text: '<!-- teamai:recalled-doc-ids: [redis-timeout] -->' }] } },
+    ]);
+    // The path arg is backfilled from the recall log, not the (pathless) transcript.
+    expect(judgeAdoption).toHaveBeenCalledWith('Raised the pool size.', ['redis-timeout'], { 'redis-timeout': h.docs['redis-timeout'] }, expect.any(Array));
+    expect(await h.upvotes(h.project)).toEqual({ 'redis-timeout': 1 });
+  });
+
+  // A `File:` basename the transcript parser gives the judge (`setup`) is NOT
+  // unique: this session recalled both `learnings/setup.md` (key `setup`) and
+  // `docs/learnings/setup.md` (key `learnings/setup`). The recall-log backfill
+  // must refuse to resolve an ambiguous basename, so the judge grounds the
+  // candidate against NO file (not the wrong one) and nothing is credited —
+  // rather than grounding/crediting the wrong doc (#723).
+  it('12: judge on: a subagent recall whose parser basename is ambiguous stays ungrounded, not mis-credited', async () => {
+    await h.setUp();
+    const { files } = await h.recall('setup installer flags', { caller: 'teamai-recall' });
+    // The query returns two docs that share the `setup` basename.
+    expect(files.some((f) => f.endsWith(path.join('docs', 'learnings', 'setup.md')))).toBe(true);
+    expect(files.some((f) => f.endsWith(path.join('team-repo', 'learnings', 'setup.md')))).toBe(true);
+    await h.stop();
+    await h.judgeStop([
+      { type: 'assistant', message: { id: 'msg-recall', content: [{ type: 'text', text: '<!-- teamai:recalled-doc-ids: [setup] -->' }] } },
+    ]);
+    // The handler refuses to backfill the ambiguous basename, so the judge gets
+    // an EMPTY path map for `setup`. In production judgeAdoption then drops it as
+    // ungrounded (votes-judge drops a candidate with no readable excerpt — see
+    // votes-judge.test.ts); the mock here echoes ids regardless, so this asserts
+    // the handler's contribution (no path handed over), which is the fix.
+    expect(judgeAdoption).toHaveBeenCalledWith('Raised the pool size.', ['setup'], {}, expect.any(Array));
   });
 
   it('12: judge on: a doc the transcript shows only in a Glob listing, which the hook path does not credit, is judged → +1', async () => {

@@ -14,7 +14,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { readCodexHookTrustForScope, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from '../hooks.js';
-import { trustCodexHooks, trustCodexProject } from '../codex-trust.js';
+import { removeOwnedCodexProjectTrust, trustCodexHooks, trustCodexProject } from '../codex-trust.js';
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
 import { log } from '../utils/logger.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
@@ -100,6 +100,28 @@ afterEach(async () => {
   await fse.remove(home);
   await fse.remove(repo);
   await fse.remove(fakeBin);
+});
+
+describe('recorded Codex project trust', () => {
+  it('records only a newly created grant and removes it while unchanged', async () => {
+    const project = path.join(home, 'project');
+    await fse.ensureDir(project);
+    const recorded = vi.fn();
+    await trustCodexHooks({ codexHome: codexHome(), cwd: project, project, hooks: [], onProjectTrusted: recorded });
+    expect(recorded).toHaveBeenCalledWith(project);
+    recorded.mockClear();
+    await trustCodexHooks({ codexHome: codexHome(), cwd: project, project, hooks: [], onProjectTrusted: recorded });
+    expect(recorded).not.toHaveBeenCalled();
+    expect(await removeOwnedCodexProjectTrust({ codexHome: codexHome(), project })).toEqual({ kind: 'removed' });
+    expect(readFakeCodexState(codexHome()).projects[project]).toBeUndefined();
+  });
+
+  it('keeps a recorded grant the member changed to untrusted', async () => {
+    const project = path.join(home, 'project');
+    await fse.outputJson(path.join(codexHome(), 'fake-state.json'), { projects: { [project]: { trust_level: 'untrusted' } }, hooksState: {}, calls: [] });
+    expect(await removeOwnedCodexProjectTrust({ codexHome: codexHome(), project })).toEqual({ kind: 'kept' });
+    expect(readFakeCodexState(codexHome()).projects[project].trust_level).toBe('untrusted');
+  });
 });
 
 describe('Codex hook ownership', () => {
@@ -570,7 +592,7 @@ describe('Codex trust — project scopes', () => {
     const bare = path.join(home, 'bare.git');
     await fse.ensureDir(bare);
     vi.mocked(resolveAnchors).mockResolvedValue({
-      workspaceRoot: project, projectAnchor: bare, projectAnchorIsBare: true,
+      workspaceRoot: project, projectAnchor: bare, mainCheckout: null,
     });
     await writeYaml(LINT_HOOK);
 
@@ -615,7 +637,7 @@ describe('Codex trust — project scopes', () => {
     await fse.ensureDir(other);
     await fse.ensureDir(bare);
     vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({
-      workspaceRoot: cwd!, projectAnchor: bare, projectAnchorIsBare: true,
+      workspaceRoot: cwd!, projectAnchor: bare, mainCheckout: null,
     }));
     const dataHome = path.join(home, 'shared-data');
     const first = projectConfig({ dataHome });
@@ -661,7 +683,7 @@ describe('Codex trust — project scopes', () => {
   it('a self worktree trusts the main checkout\'s hooks, which Codex reads there', async () => {
     const worktree = `${project}-wt`;
     await fse.ensureDir(worktree);
-    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, projectAnchor: project }));
+    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, projectAnchor: project, mainCheckout: project }));
     vi.mocked(listWorktrees).mockResolvedValue([project, worktree]);
     try {
       for (const root of [project, worktree]) {
@@ -683,7 +705,7 @@ describe('Codex trust — project scopes', () => {
   it('shares the trusted fingerprint when alternating project checkouts', async () => {
     const worktree = `${project}-wt`;
     await fse.ensureDir(worktree);
-    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, projectAnchor: project }));
+    vi.mocked(resolveAnchors).mockImplementation(async (cwd) => ({ workspaceRoot: cwd ?? project, projectAnchor: project, mainCheckout: project }));
     vi.mocked(listWorktrees).mockResolvedValue([project, worktree]);
     try {
       await writeYaml(LINT_HOOK);

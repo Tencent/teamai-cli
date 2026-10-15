@@ -105,6 +105,7 @@ describe('agentSessionIdFromEnv', () => {
             'OPENCODE_SESSION_ID',
             'TEAMAI_AGENT_SESSION_ID',
             'PI_SESSION_ID',
+            'MUSE_SESSION_ID',
         ]);
     });
 
@@ -134,6 +135,13 @@ describe('agentSessionIdFromEnv', () => {
     it('reads the Pi session from PI_SESSION_ID in a Pi shell', async () => {
         vi.stubEnv('PI_SESSION_ID', 'pi-session');
         expect(await agentSessionFromEnv()).toEqual({ id: 'pi-session', agent: 'pi', unambiguous: true });
+    });
+
+    // Muse Code sets MUSE_SESSION_ID in its shell tool's environment, the
+    // session_id its hooks carry.
+    it('reads the Muse Code session from MUSE_SESSION_ID in a Muse shell', async () => {
+        vi.stubEnv('MUSE_SESSION_ID', '01a131d0-7b02-7e90-bd5a-74e6934af652');
+        expect(await agentSessionFromEnv()).toEqual({ id: '01a131d0-7b02-7e90-bd5a-74e6934af652', agent: 'muse', unambiguous: true });
     });
 
     // The OpenCode plugin sets TEAMAI_AGENT_SESSION_ID in its bash tool's

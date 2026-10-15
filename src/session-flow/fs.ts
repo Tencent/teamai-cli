@@ -1,0 +1,303 @@
+/**
+ * fs.ts — path resolution and JSONL read/write helpers.
+ *
+ * Resolves each platform's session storage path, encodes and decodes cwd
+ * (each platform encodes the working directory differently), and reads and
+ * writes JSONL as a stream.
+ */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { homedir } from 'node:os';
+
+// ---------------------------------------------------------------------------
+// Default per-platform storage paths
+// ---------------------------------------------------------------------------
+
+export function getClaudeCodeProjectsDir(): string {
+  return path.join(homedir(), '.claude', 'projects');
+}
+
+/** TeamAI variant: claude-internal */
+export function getClaudeInternalProjectsDir(): string {
+  return path.join(homedir(), '.claude-internal', 'projects');
+}
+
+/** TeamAI variant: tclaude */
+export function getTClaudeProjectsDir(): string {
+  return path.join(homedir(), '.tclaude', 'projects');
+}
+
+export function getCodexSessionsDir(): string {
+  return path.join(homedir(), '.codex', 'sessions');
+}
+
+/** TeamAI variant: codex-internal */
+export function getCodexInternalSessionsDir(): string {
+  return path.join(homedir(), '.codex-internal', 'sessions');
+}
+
+/** TeamAI variant: tcodex */
+export function getTCodexSessionsDir(): string {
+  return path.join(homedir(), '.tcodex', 'sessions');
+}
+
+export function getCodeBuddyProjectsDir(): string {
+  return path.join(homedir(), '.codebuddy', 'projects');
+}
+
+/**
+ * WorkBuddy session directory. Same layout as CodeBuddy (<encoded-cwd>/<uuid>.jsonl),
+ * but it also provides <uuid>.meta.json with the real cwd — avoiding the lossy
+ * problem of reversing the directory name.
+ */
+export function getWorkBuddyProjectsDir(): string {
+  return path.join(homedir(), '.workbuddy', 'projects');
+}
+
+export function getCursorProjectsDir(): string {
+  return path.join(homedir(), '.cursor', 'projects');
+}
+
+// ---------------------------------------------------------------------------
+// cwd encode/decode
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve cwd to its real path before encoding.
+ *
+ * On macOS `/tmp` is a symlink to `/private/tmp`, so the same directory has two spellings.
+ * AI tools persist `process.cwd()` — the **resolved** path — so writing with the unresolved
+ * spelling (for example `--target-cwd /tmp/x`) lands in a directory nobody can read back:
+ * the write succeeds, but listing is empty. This matches ide-history.hashWorkspace.
+ * If the path does not exist (create-pending case), fall back to the original path.
+ */
+export function resolveRealCwd(cwd: string): string {
+  const resolved = path.resolve(cwd);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/**
+ * Claude Code cwd encoding: every non-alphanumeric character → `-`, with a leading `-`.
+ * Example: `/home/user/project` → `-home-user-project`
+ *          `/Users/foo/my project` → `-Users-foo-my-project`
+ */
+export function encodeCwdClaude(cwd: string): string {
+  return resolveRealCwd(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+/**
+ * CodeBuddy / Cursor cwd encoding: every non-alphanumeric character → `-`, no leading `-`.
+ * Example: `/home/user/project` → `home-user-project`
+ *          `/Users/foo/my project` → `Users-foo-my-project`
+ */
+export function encodeCwdGeneric(cwd: string): string {
+  return resolveRealCwd(cwd).replace(/[^a-zA-Z0-9]/g, '-').replace(/^-+/, '');
+}
+
+/**
+ * CodeBuddy CLI cwd → directory-name encoding: replace only path separators with `-`.
+ *
+ * The generic version above cannot be used — it turns every non-alphanumeric character
+ * into `-`, while CodeBuddy itself **keeps spaces**. In practice `.../Desktop/Code/teamai cli`
+ * is stored as `Users-caiwenzhe-Desktop-Code-teamai cli`. The generic version would compute
+ * `...-teamai-cli`, so these workspaces never match: listing is empty and reads report
+ * "file not found". Project directories that contain spaces are common.
+ */
+export function encodeCwdCodeBuddy(cwd: string): string {
+  return resolveRealCwd(cwd)
+    .replace(/^([a-zA-Z]:)?[\\/]+/, '') // Drop the drive letter and root separator
+    .replace(/[\\/]/g, '-');
+}
+
+/**
+ * Claude Code cwd decoding: cannot be restored exactly (`-` may have come from `/`, a space, and so on),
+ * but the directory name itself does not need to become a usable path — it is for display only.
+ * Return the original encoded string as the display cwd.
+ */
+export function decodeCwdClaude(encoded: string): string {
+  // Cannot be reversed exactly; return encoded itself (the caller should get the real cwd from session_meta and the like)
+  return encoded;
+}
+
+/**
+ * Best-effort reverse of a Claude Code project directory name → real workspace path.
+ *
+ * Some Claude Code versions write the encoded directory name (`-Users-foo-project`) straight
+ * into the cwd field of the record, so migration cannot get the real workspace: the target cwd
+ * can only fall back to "the directory the command is running in", and the session is moved
+ * under the wrong project. Restore it by the encoding rule (leading `-` → `/`, remaining `-` → `/`)
+ * and check that it exists on disk. If the path itself contains `-` or a space, the restored
+ * result will not exist; give up (return undefined).
+ */
+export function bestEffortDecodeCwdClaude(encoded: string): string | undefined {
+  if (!encoded.startsWith('-')) return undefined;
+  const candidate = '/' + encoded.slice(1).replace(/-/g, '/');
+  try {
+    if (!fs.existsSync(candidate)) return undefined;
+    if (!fs.statSync(candidate).isDirectory()) return undefined;
+    return fs.realpathSync(candidate);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * CodeBuddy / Cursor cwd decoding: same as above, cannot be restored exactly.
+ */
+export function decodeCwdGeneric(encoded: string): string {
+  return encoded;
+}
+
+// ---------------------------------------------------------------------------
+// Streaming JSONL read/write
+// ---------------------------------------------------------------------------
+
+/**
+ * Stream-read a JSONL file, yielding one parsed object per line.
+ * Blank lines are skipped; a line that fails to parse throws SyntaxError.
+ */
+export function* readJsonl(filePath: string): Generator<Record<string, unknown>> {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    yield JSON.parse(trimmed) as Record<string, unknown>;
+  }
+}
+
+/**
+ * Read the first N lines of a JSONL file (for extracting metadata without loading a large file).
+ */
+export function* readJsonlHead(filePath: string, maxLines: number): Generator<Record<string, unknown>> {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  let count = 0;
+  for (const line of content.split('\n')) {
+    if (count >= maxLines) break;
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    count++;
+    yield JSON.parse(trimmed) as Record<string, unknown>;
+  }
+}
+
+/**
+ * Stream-write a JSONL file, one object per line.
+ * Parent directories are created automatically.
+ */
+export function writeJsonl(filePath: string, records: Iterable<Record<string, unknown>>): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const lines: string[] = [];
+  for (const record of records) {
+    lines.push(JSON.stringify(record));
+  }
+  fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf-8');
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem helpers
+// ---------------------------------------------------------------------------
+
+export function fileExists(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function dirExists(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Recursively scan a directory for matching files, sorted by modification time descending.
+ */
+export function scanFiles(rootDir: string, pattern: RegExp): string[] {
+  if (!dirExists(rootDir)) return [];
+  const results: string[] = [];
+  const walk = (dir: string) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile() && pattern.test(entry.name)) {
+        results.push(fullPath);
+      }
+    }
+  };
+  walk(rootDir);
+  results.sort((a, b) => {
+    try {
+      return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs;
+    } catch {
+      return 0;
+    }
+  });
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Safety boundary for archived content (untrusted input)
+// ---------------------------------------------------------------------------
+
+/** Only these extensions can be real images worth reading as local files. */
+const IMAGE_FILE_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+
+/**
+ * Whether the local `filePath` inside an image block may be read.
+ *
+ * A `filePath` in a team archive is untrusted input written by someone else: a forged image
+ * block pointing at `~/.ssh/id_rsa` (or any readable file) would, if the write side read it,
+ * stuff the file contents as base64 into the restored session — one `session resume` would
+ * carry a local file out. Therefore:
+ *
+ * - If the session came from an archive (`metadata.untrusted`), never read local files; use only in-block data.
+ * - Otherwise also require an absolute path plus an image extension, so arbitrary files are not read.
+ */
+export function mayReadLocalImageFile(
+  session: { metadata?: Record<string, unknown> | undefined } | undefined,
+  filePath?: string,
+): boolean {
+  if (!filePath) return false;
+  if (!path.isAbsolute(filePath)) return false;
+  if (!IMAGE_FILE_RE.test(filePath)) return false;
+  return session?.metadata?.untrusted !== true;
+}
+
+/**
+ * Collapse an arbitrary archive string into a safe file name (for on-disk names under assets/, messages/, and so on).
+ *
+ * Labels and message ids in an archive are controlled by the pusher. Values such as `../../foo`
+ * would become path segments and write through the assets directory. Force basename only, and
+ * strip separators and control characters.
+ */
+export function safeFileName(raw: string, fallback = 'image.png'): string {
+  const base = path
+    .basename(String(raw ?? '').replace(/\\/g, '/'))
+    // oxlint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f<>:"|?*]/g, '_')
+    .replace(/^\.+/, '_')
+    .trim();
+  return base || fallback;
+}
+
+/**
+ * Recursively delete a directory (used by delete_session to clean up subdirectories).
+ */
+export function removeDirRecursive(dirPath: string): void {
+  try {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+}
