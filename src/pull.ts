@@ -1380,10 +1380,6 @@ async function pullForScope(
     const outcome = `[${scopeLabel}] Team repo: ${refresh.label}`;
     pullSpin.succeed(outcome);
     log.debug(outcome);
-    // manifest/members.yaml lives in the repo the refresh just moved, so the
-    // roles read at load time are the previous pull's (#1186). Re-resolving
-    // here is what lets a reassignment take effect on the pull that fetches it.
-    localConfig = await refreshRoleAssignment(localConfig);
   } catch (e) {
     const reason = `[${scopeLabel}] Pull failed: ${(e as Error).message}`;
     pullSpin.fail(reason);
@@ -1399,6 +1395,14 @@ async function pullForScope(
     }
     return;
   }
+
+  // manifest/members.yaml lives in the repo the refresh above just moved, so the
+  // roles read when the config loaded are the previous pull's (#1186).
+  // Re-resolving here is what lets a reassignment take effect on the pull that
+  // fetches it, rather than on the one after — by which time this pull has
+  // recorded the new revision as synced and the fast path skips it.
+  // Outside the refresh's try: a failure here is not a failure to fetch.
+  localConfig = await refreshRoleAssignment(localConfig);
 
   // Settle the placement records against the tree just refreshed, before
   // delivery reads them: a placement whose PR has merged becomes a record, one
