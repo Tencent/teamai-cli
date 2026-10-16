@@ -18,7 +18,7 @@ let sessions = [], haveSessions = false, connected = false, trends = null, kb = 
 let trendError = false, kbError = false, selectedSession = null, selectedSnapshot = null, focusBeforeDialog = null;
 let trendLoading = false, kbLoading = false, eventSource = null, reconnectTimer = null, fallbackGeneration = 0;
 let rules = null, rulesError = false, rulesLoading = false;
-let dist = null, distError = false, distLoading = false, distDraft = null, preview = null, previewError = '', previewing = false, saving = false, saveError = '', savedNote = '';
+let dist = null, distError = false, distLoading = false, distDraft = null, preview = null, previewError = '', previewing = false, saving = false, saveError = '', savedNote = ''; let distVersion = 0;
 let workspaceId = '', workspaceGeneration = 0, workspaces = [];
 const api = route => route + (workspaceId ? '?workspace=' + encodeURIComponent(workspaceId) : '');
 function workspaceLabel(w) { return w.scope==='user'?label('User scope'):w.scope==='unassigned'?label('Unassigned sessions'):e(w.label)+' · '+label('Workspace'); }
@@ -136,8 +136,10 @@ function distribution() {
   +(previewError?'<span class="amber">'+e(previewError)+'</span>':'')+'</div>';
  return top+rolesPanel+projectsPanel+actions+previewPanel;
 }
-async function previewSelection() { if(!dist||!distDraft)return; const generation=workspaceGeneration; previewing=true;previewError='';saveError='';savedNote='';render(); try{ const data=await postJson('/api/distribution/preview',{primaryRole:distDraft.primary,additionalRoles:distDraft.extra,projects:distDraft.projects}); if(generation!==workspaceGeneration)return; preview=data; } catch(error){ if(generation!==workspaceGeneration)return; preview=null; previewError=error.message; } finally{ if(generation===workspaceGeneration){ previewing=false; if(page==='distribution')render(); } } }
-async function saveSelection() { if(!dist||!distDraft||!preview)return; const generation=workspaceGeneration; saving=true;saveError='';savedNote='';render(); try{ let revision=dist.revision; if(dist.roles.state==='ok'){ const fresh=await postJson('/api/distribution/roles',{primaryRole:distDraft.primary,additionalRoles:distDraft.extra,revision}); revision=fresh.revision; } if(dist.projects.state==='ok')await postJson('/api/distribution/projects',{projects:distDraft.projects,revision}); if(generation!==workspaceGeneration)return; savedNote='Saved. Takes effect on the next pull.'; } catch(error){ if(generation!==workspaceGeneration)return; saveError=error.message; } finally{ if(generation===workspaceGeneration){ saving=false; await loadDistribution(); if(page==='distribution')render(); } } }
+async function previewSelection() { if(!dist||!distDraft)return; const generation=workspaceGeneration, version=distVersion; previewing=true;previewError='';saveError='';savedNote='';render(); try{ const data=await postJson('/api/distribution/preview',{primaryRole:distDraft.primary,additionalRoles:distDraft.extra,projects:distDraft.projects}); if(generation!==workspaceGeneration||version!==distVersion)return; preview=data; } catch(error){ if(generation!==workspaceGeneration||version!==distVersion)return; preview=null; previewError=error.message; } finally{ if(generation===workspaceGeneration){ previewing=false; if(page==='distribution')render(); } } }
+async function saveSelection() { if(!dist||!distDraft||!preview)return; const generation=workspaceGeneration, version=distVersion; saving=true;saveError='';savedNote='';render(); try{ let revision=dist.revision; if(dist.roles.state==='ok'){ const fresh=await postJson('/api/distribution/roles',{primaryRole:distDraft.primary,additionalRoles:distDraft.extra,revision}); // A workspace switch or draft edit mid-save must stop the chain before
+      // the second write: the revision belongs to the old workspace/selection.
+      if(generation!==workspaceGeneration)return; if(version!==distVersion){ saveError='The selection changed while saving. Preview again to save the rest.'; return; } revision=fresh.revision; } if(dist.projects.state==='ok')await postJson('/api/distribution/projects',{projects:distDraft.projects,revision}); if(generation!==workspaceGeneration||version!==distVersion)return; savedNote='Saved. Takes effect on the next pull.'; } catch(error){ if(generation!==workspaceGeneration)return; saveError=error.message; } finally{ if(generation===workspaceGeneration){ saving=false; const note=savedNote, err=saveError; await loadDistribution(); savedNote=note; saveError=err; if(page==='distribution')render(); } } }
 // Translate static report labels only; never translate knowledge titles, authors, commands or session text.
 function localizeReport() {
  const root=$('kb-content');if(!root)return;
@@ -322,7 +324,7 @@ document.addEventListener('change',event=>{
  if(primary)distDraft.primary=primary.dataset.rolePrimary;
  if(extra){const id=extra.dataset.roleExtra;distDraft.extra=extra.checked?[...new Set([...distDraft.extra,id])]:distDraft.extra.filter(x=>x!==id);}
  if(project){const id=project.dataset.project;distDraft.projects=project.checked?[...new Set([...distDraft.projects,id])]:distDraft.projects.filter(x=>x!==id);}
- preview=null;previewError='';savedNote='';saveError='';
+ preview=null;previewError='';savedNote='';saveError='';distVersion++;
  render();
 });
 document.addEventListener('click',event=>{
