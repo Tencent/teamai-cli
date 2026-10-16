@@ -46,11 +46,29 @@ export function parseWindowsProcessTable(text: string): Map<number, ProcessEntry
     return table;
 }
 
+let windowsProcessTableRead: { table: Map<number, ProcessEntry> | undefined } | undefined;
+
+/**
+ * The process table, queried at most once per process, a failed query
+ * included. A session start resolves the monitor PID in two handlers
+ * (dashboard-report and local-agent-sync), and a walk without a table falls
+ * back to getProcessComm/getParentPid, which on Windows ask for this table
+ * again, once per step. Without the remembered result a query at its 3s bound
+ * started six times per dispatch: 18s of a blocked event loop, past every
+ * session-start handler's 4.5s budget, so the session received none of their
+ * output (the team rules among it). Only short-lived hook processes read the
+ * table; the long-running dashboard checks liveness with isProcessAlive, so a
+ * remembered table does not go stale.
+ */
+function readWindowsProcessTable(): Map<number, ProcessEntry> | undefined {
+    windowsProcessTableRead ??= { table: queryWindowsProcessTable() };
+    return windowsProcessTableRead.table;
+}
+
 /**
  * One query for the whole process table: the walk needs up to five ancestors,
  * so a per-pid PowerShell start would cost more than the whole answer. Returns
- * undefined when PowerShell cannot be reached; callers then fall back to the
- * POSIX readers, which fail the same way and leave the walk to its fallback.
+ * undefined when PowerShell cannot be reached or does not answer in time.
  *
  * The 3s bound is a compromise between the two ends this call sits between: it
  * is ~2.4x the idle measurement (1.27s; PowerShell's own startup is 0.59s of
@@ -60,7 +78,7 @@ export function parseWindowsProcessTable(text: string): Map<number, ProcessEntry
  * hung WMI provider therefore degrades the walk to its fallback instead of
  * delaying the host past its timeout.
  */
-function readWindowsProcessTable(): Map<number, ProcessEntry> | undefined {
+function queryWindowsProcessTable(): Map<number, ProcessEntry> | undefined {
     try {
         const out = execFileSync(
             windowsPowerShell(),
