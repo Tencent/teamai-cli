@@ -71,6 +71,7 @@ async function githubApiGet(path: string): Promise<unknown> {
     const req = https.request(
       { hostname: 'api.github.com', path, headers },
       (res) => {
+        res.on('error', reject);
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => {
@@ -124,6 +125,7 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
     const req = https.request(
       { hostname: 'api.github.com', path: `/repos/${owner}/${repo}/pulls/${number}`, headers },
       (res) => {
+        res.on('error', reject);
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => {

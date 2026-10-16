@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { IncomingMessage } from 'node:http';
 import https from 'node:https';
+import { setImmediate } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fetchGitHubPR } from '../providers/github/mr-fetch.js';
 
@@ -12,7 +13,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 const PR = '/repos/team/repo/pulls/42';
 const METADATA = { title: 'Fix retries', body: null, user: { login: 'dev' }, merged_at: null };
 
-function mockResponses(failedPath?: string, status = 200, body = ''): string[] {
+function mockResponses(failedPath?: string, status = 200, body = '', responseError?: Error): string[] {
   const seen: string[] = [];
   const request = (options: https.RequestOptions, callback: (res: IncomingMessage) => void) => {
     const url = String(options.path);
@@ -31,6 +32,13 @@ function mockResponses(failedPath?: string, status = 200, body = ''): string[] {
           const res = Object.assign(new EventEmitter(), { statusCode: failed ? status : 200 });
           callback(res as IncomingMessage);
           res.emit('data', Buffer.from(response));
+          if (failed && responseError) {
+            // Keep the baseline's unhandled event from crashing the test worker.
+            res.on('error', () => {});
+            res.emit('error', responseError);
+            res.emit('close');
+            return;
+          }
           res.emit('end');
         });
       },
@@ -44,6 +52,18 @@ function mockResponses(failedPath?: string, status = 200, body = ''): string[] {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('GitHub PR REST fallback', () => {
+  it.each([PR, `${PR}/commits?per_page=50`, `${PR}.diff`])(
+    'rejects when the response stream fails at %s', async (endpoint) => {
+      const error = new Error('aborted');
+      const seen = mockResponses(endpoint, 200, 'partial response', error);
+      await expect(Promise.race([
+        fetchGitHubPR('https://github.com/team/repo/pull/42'),
+        setImmediate('response error was not handled'),
+      ])).rejects.toBe(error);
+      expect(seen.at(-1)).toBe(endpoint.replace(/\.diff$/, ''));
+    },
+  );
+
   it.each([
     [404, '{"message":"Not Found"}'],
     [403, '<html>Rate limit exceeded</html>'],
