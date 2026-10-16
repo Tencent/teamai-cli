@@ -64,6 +64,9 @@ describe('builtinHookDefs — unified built-in hook model', () => {
     const cursor = builtinHookDefs('cursor');
     expect(cursor.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(15);
     expect(cursor.find((d) => d.key === 'Hook dispatch post-tool-use TodoWrite')?.timeout).toBe(3);
+    const cursorSkill = cursor.find((d) => d.key === 'Hook dispatch post-tool-use Skill');
+    expect(cursorSkill?.matcher).toBe('Read');
+    expect(cursorSkill?.command).toContain('--matcher Skill');
     for (const tool of ['codex', 'codex-internal', 'tcodex']) {
       const codex = builtinHookDefs(tool);
       expect(codex.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(15);
