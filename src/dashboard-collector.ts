@@ -806,12 +806,16 @@ const MUSE_USAGE_EVENT = 'goal_usage_attribution';
 const MUSE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Muse Code's log of `sessionId`, `~/.local/share/muse/sessions/YYYY/MM/DD/<id>/session.jsonl`,
- * found by its id alone: Muse's hooks send `transcript_path: null`.
+ * Muse Code's log of `sessionId`, `$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<id>/session.jsonl`
+ * (`~/.local/share` when unset; muse 1.4.6 honors XDG_DATA_HOME, #1138), found by its id
+ * alone: Muse's hooks send `transcript_path: null`. The variable is read live — the only
+ * reader is muse's own stop hook, which inherits muse's environment, and tokens are stamped
+ * onto the event there, so no later reader without the variable has to find the tree.
  */
 async function findMuseSessionLog(sessionId: string): Promise<string | null> {
   if (!MUSE_SESSION_ID_RE.test(sessionId)) return null;
-  const root = path.join(getUserHome(), '.local', 'share', 'muse', 'sessions');
+  const dataHome = process.env.XDG_DATA_HOME?.trim() || path.join(getUserHome(), '.local', 'share');
+  const root = path.join(dataHome, 'muse', 'sessions');
   const subdirs = async (dir: string) => (await fs.promises.readdir(dir).catch(() => [] as string[]))
     .filter((name) => /^\d+$/.test(name)).sort().reverse().map((name) => path.join(dir, name));
   for (const year of await subdirs(root)) {

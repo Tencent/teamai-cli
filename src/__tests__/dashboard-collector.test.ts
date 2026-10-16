@@ -1513,6 +1513,30 @@ describe('parseHookEvent: Muse Code session tokens', () => {
     expect(event?.type).toBe('stop');
     expect(event?.tokens).toBeUndefined();
   });
+
+  it('finds the log under $XDG_DATA_HOME when muse relocated its data (#1138)', async () => {
+    // muse 1.4.6 keeps sessions under $XDG_DATA_HOME/muse; the default
+    // ~/.local/share tree is empty and must not be consulted.
+    const xdgRoot = path.join(tmpDir, 'xdg-data');
+    vi.stubEnv('XDG_DATA_HOME', xdgRoot);
+    try {
+      const dir = path.join(xdgRoot, 'muse', 'sessions', '2026', '10', '12', sessionId);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'session.jsonl'), usageRecord('provider', 111, 22, 10) + '\n');
+
+      const event = await stop();
+
+      expect(event).toEqual(expect.objectContaining({
+        type: 'stop',
+        // Muse reports input inclusive of cached tokens; the reader moves the
+        // cached part to cacheRead, so input is 111-10.
+        tokens: { input: 101, output: 22, cacheRead: 10, cacheCreation: 0 },
+        tokenScope: 'session',
+      }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe('local request log', () => {
