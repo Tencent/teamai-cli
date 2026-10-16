@@ -87,6 +87,27 @@ describe('collectSkillsInventory', () => {
     await fse.remove(tempDir);
   });
 
+  it('skillDetail resolves a same-name copy by source path; name-only prefers the delivered one (#1143 P2)', async () => {
+    // A namespaced copy of the root review skill: same name, different source.
+    await writeSkill('backend/review', '---\nname: review\ndescription: Namespaced review copy\n---\n');
+    const roles = rolesOver(['backend']);
+
+    // Paths come from the inventory itself, so the test speaks its identity.
+    const inventory = await collectSkillsInventory(teamConfig, localConfig, roles);
+    const root = inventory.find((skill) => skill.namespace === null && skill.name === 'review');
+    const namespaced = inventory.find((skill) => skill.namespace === 'backend' && skill.name === 'review');
+    expect(root?.delivered).toBe(false);
+    expect(root?.undeliveredReason).toBe('replaced');
+    expect(namespaced?.delivered).toBe(true);
+
+    // Source-path lookup returns each copy unambiguously.
+    expect((await skillDetail(teamConfig, localConfig, roles, 'review', namespaced?.path))?.namespace).toBe('backend');
+    expect((await skillDetail(teamConfig, localConfig, roles, 'review', root?.path))?.namespace).toBeNull();
+
+    // A name-only lookup cannot land on the replaced root while a delivered copy exists.
+    expect((await skillDetail(teamConfig, localConfig, roles, 'review'))?.namespace).toBe('backend');
+  });
+
   it('without a role context, every skill is delivered with metadata only', async () => {
     const skills = await collectSkillsInventory(teamConfig, localConfig, null);
     const byName = new Map(skills.map((skill) => [skill.name, skill]));

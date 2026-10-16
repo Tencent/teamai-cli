@@ -363,6 +363,9 @@ export async function startDashboard(port?: number): Promise<void> {
       try {
         const ownConfig = workspace?.config ?? null;
         const name = url.searchParams.get('name') ?? '';
+        // The inventory's own source identity, so a same-name root and its
+        // namespaced replacement each answer their own detail (#1123).
+        const sourcePath = url.searchParams.get('path') ?? undefined;
         if (!ownConfig || name === '') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ configured: !!ownConfig, skill: null }));
@@ -374,7 +377,7 @@ export async function startDashboard(port?: number): Promise<void> {
         const config = await readWorkspaceChildren(ownConfig);
         const teamConfig = await loadTeamConfig(config.repo.localPath);
         const skill = teamConfig
-          ? await skillDetail(teamConfig, config, await buildRolePullContext(config), name)
+          ? await skillDetail(teamConfig, config, await buildRolePullContext(config), name, sourcePath)
           : null;
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ configured: true, skill }));

@@ -135,15 +135,24 @@ async function installedAgentsFor(
   return installed;
 }
 
-/** One skill's full inventory entry, or null when the name is unknown. */
+/**
+ * One skill's full inventory entry, or null when the name is unknown. Two
+ * entries can share a name — a root and the namespaced copy that replaces it
+ * — so an optional source path (the inventory's own identity) selects the
+ * copy exactly; a name-only lookup prefers the delivered one, so it cannot
+ * land on a replaced root while a delivered copy exists.
+ */
 export async function skillDetail(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
   name: string,
+  sourcePath?: string,
 ): Promise<DashboardSkill | null> {
   const skills = await collectSkillsInventory(teamConfig, localConfig, roleContext);
-  return skills.find((skill) => skill.name === name) ?? null;
+  const matches = skills.filter((skill) => skill.name === name);
+  if (sourcePath !== undefined) return matches.find((skill) => skill.path === sourcePath) ?? null;
+  return matches.find((skill) => skill.delivered) ?? matches[0] ?? null;
 }
 
 export type SkillExclusionResult =
