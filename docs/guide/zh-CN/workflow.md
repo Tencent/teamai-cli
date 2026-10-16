@@ -132,7 +132,7 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 `workspace: continue` 留在外层 `workflow` 步骤用 `new` 打开的那条分支上。没有 `workspace` 的提示词会沿用这份副本。带 `workspace: new` 的 `for_each` 给每一项自己的分支，因此各项不共用一个 worktree。`steps.<id>.branches` 列出这些分支；某一项有分支时，对应的 `results` 条目带 `branch`。带 `after` 的项从它等待的那些分支开始。顶层的 `workspace: continue` 没有外层 `new` 时，步骤以 `workspace_base` 失败。
 
-步骤看到的是运行开始时那个提交上的 agent 文件：`AGENTS.md`、`CLAUDE.md`、`.claude`、`.codex`、`.opencode`、`.cursor`、`.agents` 和 `.githooks`。前一个步骤提交的 hook 不会在后面的步骤里运行。步骤自己改过的文件会被提交。
+步骤看到的是运行开始时那个提交上的 agent 文件：`AGENTS.md`、`CLAUDE.md`、`.claude`、`.codex`、`.opencode`、`.cursor`、`.agents` 和 `.githooks`。前一个步骤提交的 hook 不会在后面的步骤里运行。团队的 skills、rules、agents 和 MCP 随后会交付到这个 worktree，和这个检出目录的其他新 worktree 一样。这些交付的文件不属于该步骤的提交。步骤自己改过的文件会被提交。
 
 检出目录有 `origin`，并且这一步产生了提交时，驱动会推送该分支。推送失败时步骤以 `push_failed` 失败，并保留 worktree。没有 `origin`，或这一步没有新提交时，运行仍然成功，并报告该分支。
 

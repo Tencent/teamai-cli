@@ -7,10 +7,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { detectProjectConfig, loadStateForScope } from '../config.js';
+import { resolveAnchors } from '../utils/git.js';
+import { resolvePartitionDir } from '../utils/partition.js';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { runLocalDriver } from '../workflow/local-driver.js';
+import type { LocalToolAdapter } from '../workflow/local-tool-adapter.js';
 import { parseWorkflow } from '../workflow/parse.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
@@ -309,5 +313,88 @@ steps:
     expect(git(['show', `${branch}:.cursor/earlier.txt`], workspace)).toBe('earlier');
     expect(git(['show', `${branch}:.cursor/later.txt`], workspace)).toBe('later');
     expect(fs.existsSync(worktreePath(workspace, branch!))).toBe(false);
+  });
+
+  it('delivers a team skill into a new workspace and leaves it out of the branch', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workspace-')));
+    dirs.push(root);
+    const workspace = path.join(root, 'workspace');
+    const knowledge = path.join(workspace, '.teamai');
+    fs.mkdirSync(path.join(knowledge, 'skills', 'fe-skill'), { recursive: true });
+    fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), [
+      'team: workspace',
+      'mode: self',
+      'repo: https://git.example.com/team/workspace.git',
+      'provider: git',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(knowledge, '.gitignore'), 'config.yaml\nstate.json\n');
+    fs.writeFileSync(path.join(knowledge, 'skills', 'fe-skill', 'SKILL.md'), '---\nname: fe-skill\ndescription: fixture\n---\n\nTeam skill.\n');
+    fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), `schemaVersion: v1alpha1
+name: build
+description: Read the delivered team skill.
+steps:
+  - id: ask
+    workspace: new
+    prompt: Read the team skill.
+`);
+    fs.writeFileSync(path.join(workspace, 'tracked.txt'), 'clean\n');
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: workspace });
+    execFileSync('git', ['add', '-A'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'base'], { cwd: workspace });
+    const anchors = await resolveAnchors(workspace);
+    if (!anchors) throw new Error('the workspace has no git anchors');
+    const partition = await resolvePartitionDir(anchors.projectAnchor);
+    fs.mkdirSync(partition, { recursive: true });
+    fs.writeFileSync(path.join(partition, 'config.yaml'), [
+      'repo:',
+      `  localPath: ${knowledge}`,
+      '  remote: https://git.example.com/team/workspace.git',
+      '  kind: self',
+      `  businessRepoRoot: ${workspace}`,
+      'username: tester',
+      'updatePolicy: auto',
+      'scope: project',
+      `projectRoot: ${workspace}`,
+      'enabledAgents: [claude]',
+      '',
+    ].join('\n'));
+    fs.mkdirSync(path.join(workspace, '.claude'));
+    const { pull } = await import('../pull.js');
+    await pull({ silent: true, cwd: workspace });
+    const config = await detectProjectConfig(workspace);
+    if (!config) throw new Error('project config was not found');
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
+    await syncWorkflowDefinitions(config);
+    const started = await startRun(config, 'build');
+    if ('error' in started) throw new Error(started.error.message);
+    const adapter: LocalToolAdapter = {
+      async run(_tool, input) {
+        const file = path.join(input.cwd, '.claude', 'skills', 'fe-skill', 'SKILL.md');
+        if (!fs.existsSync(file)) return { exitCode: 1, failure: { code: 'missing_skill', message: `missing ${file}` } };
+        return { exitCode: 0, output: { skill: fs.readFileSync(file, 'utf8') } };
+      },
+    };
+
+    const done = await runLocalDriver(config, String(started.data.run), workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, String(started.data.run));
+    const ask = typeof run === 'object' ? run.steps.find((step) => step.id === 'ask') : undefined;
+    expect(ask && 'outputs' in ask ? ask.outputs : undefined).toMatchObject({ skill: expect.stringContaining('Team skill.') });
+    const branch = ask && 'changes' in ask ? ask.changes?.branch : undefined;
+    expect(() => git(['show', `${branch}:.claude/skills/fe-skill/SKILL.md`], workspace)).toThrow(/not in /);
+    const memberRoot = fs.realpathSync(workspace);
+    const later = await detectProjectConfig(workspace);
+    const state = await loadStateForScope(later ?? config);
+    const records = Object.values(state.lastPullByWorkspace ?? {});
+    const member = records.find((record) => record.root === memberRoot);
+    const delivered = records.find((record) => record.root?.includes(`${path.sep}.teamai${path.sep}workflow-worktrees${path.sep}`));
+    expect(records.map((record) => ({ root: record.root, rev: record.rev })), `homes ${config.dataHome} / ${later?.dataHome}`).toEqual(expect.arrayContaining([
+      expect.objectContaining({ root: memberRoot, rev: expect.any(String) }),
+      expect.objectContaining({ root: expect.stringContaining('workflow-worktrees'), rev: member?.rev }),
+    ]));
+    expect(delivered?.rev).toBe(member?.rev);
   });
 });

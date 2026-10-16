@@ -23,7 +23,7 @@ import type { DriverIdentity, WorkflowEnvelope, WorkflowFailure } from './types.
 import { isWorkflowError } from './types.js';
 import type { WorkspaceContract } from './workspace.js';
 import {
-  applyBaseConfig, commitWork, ensureWorktree, headCommit, hooksPath, mergeBranch, pushIfOrigin, removeWorktree, restoreUneditedConfig, worktreePath,
+  applyBaseConfig, commitWork, ensureWorktree, headCommit, hooksPath, mergeBranch, pushIfOrigin, recordConfigOverlay, removeWorktree, restoreUneditedConfig, worktreePath,
 } from './worktree.js';
 
 export function localDriver(cwd: string): DriverIdentity {
@@ -303,8 +303,27 @@ async function stageLease(active: string, lease: Lease): Promise<WorkflowFailure
   }
   const applied = await applyBaseConfig(opened.dir, lease.workspace.configCommit, hooksPath(active));
   if (!applied.ok) return { code: 'base_config', message: applied.message };
+  await deliverTeamAssets(opened.dir);
+  await recordConfigOverlay(opened.dir, applied.saved);
   lease.overlay = applied.saved;
   return undefined;
+}
+
+/**
+ * Gives a workflow worktree the skills, rules, agents and MCP a new worktree of
+ * this checkout gets. The delivery happens after the base agent files are restored
+ * and before their overlay is recorded, so the delivered files are not the step's edits.
+ */
+async function deliverTeamAssets(dir: string): Promise<void> {
+  const exitCode = process.exitCode;
+  try {
+    const { createProjectToolRoots } = await import('../project-agent-root.js');
+    await createProjectToolRoots({ cwd: dir });
+    const { pull } = await import('../pull.js');
+    await pull({ silent: true, inline: true, gitHook: 'post-checkout', prepareCheckout: true, cwd: dir });
+  } finally {
+    process.exitCode = exitCode;
+  }
 }
 
 async function resumeSession(lease: Lease, tool: LocalWorkflowTool, cwd: string): Promise<string | undefined> {

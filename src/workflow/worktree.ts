@@ -119,9 +119,12 @@ export async function applyBaseConfig(
   const diff = await git(dir, ['diff', '--name-only', commit, '--', ...AGENT_PATHS]);
   const extra = diff.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
   if (extra.length > 0) return { ok: false, message: `agent configuration does not match the base commit: ${extra.join(', ')}` };
-  const overlay = await fileManifest(dir);
-  await fs.writeFile(path.join(saved, '_overlay.json'), JSON.stringify(overlay));
   return { ok: true, saved };
+}
+
+/** Records the agent files present after team delivery, so that delivery is not a step edit. */
+export async function recordConfigOverlay(dir: string, saved: string): Promise<void> {
+  await fs.writeFile(path.join(saved, '_overlay.json'), JSON.stringify(await fileManifest(dir)));
 }
 
 /** Puts back each branch agent file that the step left unchanged. A file the step edited stays. */

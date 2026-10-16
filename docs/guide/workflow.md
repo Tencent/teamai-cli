@@ -132,7 +132,7 @@ A command with no `workspace` is read-only, even inside a workspace a parent ope
 
 `workspace: continue` stays on the branch an enclosing `workflow` step opened with `new`. A prompt with no `workspace` continues that copy. A `for_each` with `workspace: new` gives each item its own branch, so items do not share a worktree. `steps.<id>.branches` lists those branches, and each `results` entry has `branch` when the item has one. An item with `after` starts from the branches it waits for. A top-level `workspace: continue`, with no enclosing `new`, fails the step with `workspace_base`.
 
-The step sees the agent files from the commit the run started at: `AGENTS.md`, `CLAUDE.md`, `.claude`, `.codex`, `.opencode`, `.cursor`, `.agents`, and `.githooks`. A hook an earlier step committed does not run in a later step. A file the step itself edits is committed.
+The step sees the agent files from the commit the run started at: `AGENTS.md`, `CLAUDE.md`, `.claude`, `.codex`, `.opencode`, `.cursor`, `.agents`, and `.githooks`. A hook an earlier step committed does not run in a later step. The team's skills, rules, agents and MCP are then delivered into the worktree, as they are for any new worktree of this checkout. Those delivered files are not part of the step's commit. A file the step itself edits is committed.
 
 When the checkout has an `origin` and the step made commits, the driver pushes that branch. A failed push fails the step with `push_failed` and keeps the worktree. With no `origin`, or when the step changed nothing, the run still succeeds and reports the branch.
 
