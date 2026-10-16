@@ -17,6 +17,8 @@ describe('generic Git provider detection', () => {
     expect(detectProvider('HTTPS://code.qschou.com/Enterprise/arb-workflow-kit.git')).toBe('git');
     expect(detectProvider('git@code.qschou.com:Enterprise/arb-workflow-kit.git')).toBe('git');
     expect(detectProvider('ssh://git@code.qschou.com/Enterprise/arb-workflow-kit.git')).toBe('git');
+    expect(detectProvider('https://dev.azure.com/org/project/_git/repo')).toBe('git');
+    expect(detectProvider('git@ssh.dev.azure.com:v3/org/project/repo')).toBe('git');
   });
 
   it('keeps known hosts on their dedicated providers', () => {
@@ -54,8 +56,37 @@ describe('parseGenericGitRepoInput', () => {
       'ssh://git@code.qschou.com:2222/Enterprise/arb-workflow-kit',
     );
     expect(ssh.httpsUrl).toBe(
-      'ssh://git@code.qschou.com:2222/Enterprise/arb-workflow-kit.git',
+      'ssh://git@code.qschou.com:2222/Enterprise/arb-workflow-kit',
     );
+  });
+
+  it.each([
+    'https://dev.azure.com/org/project/_git/repo',
+    'https://dev.azure.com/org/My%20Project/_git/repo',
+    'https://org.visualstudio.com/project/_git/repo',
+    'git@ssh.dev.azure.com:v3/org/project/repo',
+    'ssh://git@ssh.dev.azure.com:2222/v3/org/project/repo',
+    'https://git.example.com/group/repo',
+    'https://git.example.com/group/repo.git',
+    'https://git.example.com/group/repo.GIT',
+  ])('preserves the clone path across repeated parsing: %s', (input) => {
+    const parsed = parseGenericGitRepoInput(input);
+    expect(parsed.httpsUrl).toBe(input);
+    expect(parsed.repo).toBe('repo');
+    expect(parseGenericGitRepoInput(parsed.httpsUrl)).toEqual(parsed);
+  });
+
+  it('keeps the same repository identity with or without a clone suffix', () => {
+    const input = 'https://dev.azure.com/org/My%20Project/_git/repo';
+    const identity = {
+      owner: 'org/My%20Project/_git',
+      repo: 'repo',
+      projectId: encodeURIComponent('org/My%20Project/_git/repo'),
+    };
+    expect(parseGenericGitRepoInput(input)).toMatchObject(identity);
+    expect(parseGenericGitRepoInput(`${input}.git/`)).toMatchObject({
+      ...identity, httpsUrl: `${input}.git`,
+    });
   });
 
   it('rejects bare names and embedded HTTPS credentials', () => {
@@ -64,6 +95,9 @@ describe('parseGenericGitRepoInput', () => {
     );
     expect(() => parseGenericGitRepoInput(
       'https://oauth2:secret@code.qschou.com/Enterprise/arb-workflow-kit.git',
+    )).toThrow(/Do not embed credentials/);
+    expect(() => parseGenericGitRepoInput(
+      'https://org@dev.azure.com/org/project/_git/repo',
     )).toThrow(/Do not embed credentials/);
   });
 
@@ -106,6 +140,17 @@ describe('parseGenericGitRepoInput', () => {
       projectId: encodeURIComponent('group/repo'),
     });
   });
+
+  it('preserves a suffixless existing origin while stripping credentials', () => {
+    expect(parseGenericGitExistingRemote(
+      'http://user:secret@git.example.com/group/repo',
+    )).toEqual({
+      owner: 'group',
+      repo: 'repo',
+      httpsUrl: 'http://git.example.com/group/repo',
+      projectId: encodeURIComponent('group/repo'),
+    });
+  });
 });
 
 describe('generic Git identity', () => {
@@ -135,6 +180,20 @@ describe('GenericGitProvider transport', () => {
       'git',
       ['clone', '--', 'git@code.qschou.com:Enterprise/arb-workflow-kit.git', '/tmp/team-repo'],
       expect.objectContaining({ timeout: 180_000 }),
+    );
+  });
+
+  it.each([
+    'https://dev.azure.com/org/project/_git/repo',
+    'git@ssh.dev.azure.com:v3/org/project/repo',
+    'ssh://git@ssh.dev.azure.com:2222/v3/org/project/repo',
+  ])('passes the suffixless clone URL to Git unchanged: %s', (input) => {
+    mockedSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    new GenericGitProvider().cloneRepo(input, '/tmp/team-repo');
+    expect(mockedSpawnSync).toHaveBeenCalledWith(
+      'git',
+      ['clone', '--', input, '/tmp/team-repo'],
+      expect.objectContaining({ timeout: 180_000, windowsHide: true }),
     );
   });
 
