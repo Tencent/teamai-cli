@@ -9,8 +9,9 @@
  * or environment values.
  */
 import matter from 'gray-matter';
-import { resolveDesiredSkills } from '../resources/desired.js';
+import { describeDeliveryConflict, resolveDesiredSkills } from '../resources/desired.js';
 import { skillsDirForTool } from '../resources/skills.js';
+import { getHandler } from '../resources/index.js';
 import { loadTagsConfig } from '../utils/tags.js';
 import { readFileSafe } from '../utils/fs.js';
 import { pathExists } from '../utils/fs.js';
@@ -67,6 +68,25 @@ function pathJoin(dir: string, file: string): string {
   return `${dir.replace(/[/\\]+$/, '')}/${file}`;
 }
 
+/** Items that have a SKILL.md, the resolver's own inventory filter. */
+async function withSkillMdLocal<T extends { sourcePath: string }>(items: readonly T[]): Promise<T[]> {
+  const kept: T[] = [];
+  for (const item of items) if (await pathExists(item.sourcePath)) kept.push(item);
+  return kept;
+}
+
+/** The skills inventory plus, when delivery cannot be said this run, why. */
+export interface SkillsInventory {
+  readonly skills: DashboardSkill[];
+  /**
+   * Why pull stops the run and keeps what is installed (#707): two skills of
+   * one name would land at one path. The inventory stays usable — the list and
+   * the exclusions keyed on it keep working; every entry reads undelivered,
+   * which is what a conflicted pull delivers.
+   */
+  readonly skillConflict: string | null;
+}
+
 /**
  * Every skill in the team repo with its delivery state for this scope, sorted
  * by name. Read-only, like `doctor`'s view of the same sets.
@@ -75,19 +95,24 @@ export async function collectSkillsInventory(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   roleContext: RolePullContext | null,
-): Promise<DashboardSkill[]> {
+): Promise<SkillsInventory> {
   const resolved = await resolveDesiredSkills(teamConfig, localConfig, roleContext);
-  if (resolved.kind === 'conflict') return [];
+  // A conflict ends the delivery answer, not the inventory: enumerate the
+  // whole repo the way the resolver's own scan does, so the page (and the
+  // exclusions keyed on these names) survives it.
+  const items = resolved.kind === 'resolved'
+    ? resolved.teamItems
+    : await withSkillMdLocal(await getHandler('skills').scanTeamForPull(teamConfig, localConfig));
   // Delivery is keyed by source identity (the team-repo path), not the
   // basename: a root skill and a namespaced copy can share a name, and only
   // the copy actually delivers (#1143 review).
-  const delivered = new Set(resolved.items.map((item) => item.relativePath));
+  const delivered = new Set(resolved.kind === 'resolved' ? resolved.items.map((item) => item.relativePath) : []);
   // Delivery is name-keyed in resolveDesiredSkills: among same-name skills
   // (a root copy and a namespaced one) exactly one wins the merge — with
   // roles the namespace copy, without them the scan-order winner. The
   // loser's truthful label is `replaced`: a same-name skill stands in for
   // it. This covers both directions and the overrides the resolver reports.
-  const winnerByName = new Map(resolved.items.map((item) => [item.name, item]));
+  const winnerByName = new Map(resolved.kind === 'resolved' ? resolved.items.map((item) => [item.name, item] as const) : []);
   const excludedSkills = new Set(localConfig.excludedSkills ?? []);
   const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
 
@@ -97,11 +122,11 @@ export async function collectSkillsInventory(
   // decision, so it falls through to the namespace attribution.
   const catalogued = new Set(
     Object.keys(tagsConfig?.skills ?? {}).filter((name) =>
-      resolved.teamItems.some((item) => item.name === name)),
+      items.some((item) => item.name === name)),
   );
 
   const skills: DashboardSkill[] = [];
-  for (const item of resolved.teamItems) {
+  for (const item of items) {
     const root = item.namespace === undefined || item.namespace === null;
     let undeliveredReason: DashboardSkill['undeliveredReason'];
     const excluded = excludedSkills.has(item.name);
@@ -127,7 +152,7 @@ export async function collectSkillsInventory(
       excluded,
     });
   }
-  return skills.sort((a, b) => a.name.localeCompare(b.name));
+  return { skills: skills.sort((a, b) => a.name.localeCompare(b.name)), skillConflict: resolved.kind === 'conflict' ? describeDeliveryConflict(resolved) : null };
 }
 
 /** Which configured agents have the skill directory on disk right now. */
@@ -160,7 +185,7 @@ export async function skillDetail(
   name: string,
   sourcePath?: string,
 ): Promise<DashboardSkill | null> {
-  const skills = await collectSkillsInventory(teamConfig, localConfig, roleContext);
+  const { skills } = await collectSkillsInventory(teamConfig, localConfig, roleContext);
   const matches = skills.filter((skill) => skill.name === name);
   if (sourcePath !== undefined) return matches.find((skill) => skill.path === sourcePath) ?? null;
   return matches.find((skill) => skill.delivered) ?? matches[0] ?? null;
@@ -213,7 +238,7 @@ async function setSkillExclusionSerialized(
   // Reload from disk inside the serialized section: the endpoint's in-memory
   // copy may predate another write.
   const diskConfig = (await reloadLocalConfig(localConfig)) ?? localConfig;
-  const skills = await collectSkillsInventory(teamConfig, diskConfig, roleContext);
+  const { skills } = await collectSkillsInventory(teamConfig, diskConfig, roleContext);
   if (!skills.some((skill) => skill.name === name)) {
     return { ok: false, error: 'unknown_skill' };
   }

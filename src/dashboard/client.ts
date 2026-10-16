@@ -101,12 +101,13 @@ function skillsPanel() {
  if(skillsError)return errorPanel('Could not load skills.','skills');
  if(!skills)return '<section class="panel"><div class="empty" role="status">'+label('Loading skills…')+'</div></section>';
  if(!skills.configured)return '';
- if(!skills.skills.length)return '<section class="panel"><div class="empty"><h2>'+label('No skills in the team repo')+'</h2></div></section>';
+ var conflictBanner=skills.skillConflict?'<div class="error-panel"><p>'+e(skills.skillConflict)+'</p><p>'+label('Pull keeps what is installed until the copies are made equal or renamed.')+'</p></div>':'';
+ if(!skills.skills.length)return conflictBanner+'<section class="panel"><div class="empty"><h2>'+label('No skills in the team repo')+'</h2></div></section>';
  var namespaces=[...new Set(skills.skills.map(k=>k.namespace).filter(Boolean))].sort();
  var agents=[...new Set(skills.skills.flatMap(k=>k.installedAgents||[]))].sort();
  var shown=skills.skills.filter(k=>(!skillFilterDelivery||(skillFilterDelivery==='delivered')===k.delivered)&&(!skillFilterNamespace||k.namespace===skillFilterNamespace)&&(!skillFilterAgent||(k.installedAgents||[]).includes(skillFilterAgent)));
  var delivered=skills.skills.filter(k=>k.delivered).length;
- return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Skills')+' <span class="count">'+number(skills.skills.length)+'</span></h2><span class="label">'+number(delivered)+' '+label('delivered to this workspace')+'</span></div>'
+ return conflictBanner+'<section class="panel sessions"><div class="panelhead"><h2>'+label('Skills')+' <span class="count">'+number(skills.skills.length)+'</span></h2><span class="label">'+number(delivered)+' '+label('delivered to this workspace')+'</span></div>'
  +'<div class="filters"><select id="skill-delivery"><option value="">'+label('All delivery states')+'</option><option value="delivered"'+(skillFilterDelivery==='delivered'?' selected':'')+'>'+label('Delivered')+'</option><option value="undelivered"'+(skillFilterDelivery==='undelivered'?' selected':'')+'>'+label('Not delivered')+'</option></select>'
  +'<select id="skill-namespace"><option value="">'+label('All namespaces')+'</option>'+namespaces.map(ns=>'<option value="'+e(ns)+'"'+(skillFilterNamespace===ns?' selected':'')+'>'+e(ns)+'</option>').join('')+'</select>'
  +'<select id="skill-agent"><option value="">'+label('All agents')+'</option>'+agents.map(a=>'<option value="'+e(a)+'"'+(skillFilterAgent===a?' selected':'')+'>'+e(a)+'</option>').join('')+'</select></div>'
@@ -115,13 +116,19 @@ function skillsPanel() {
  +(shown.length?'':'<tr><td colspan="6"><div class="empty">'+label('No skills match these filters')+'</div></td></tr>')
  +'</tbody></table></div><p class="hint">'+label('Exclusions apply to this workspace only, on the next pull. They never touch the team repository.')+'</p></section>';
 }
-function resources() {
+function rulesPanel() {
  if(rulesError)return errorPanel('Could not load rules.','rules');
  if(!rules)return '<div class="empty" role="status">'+label('Loading rules…')+'</div>';
- if(!rules.configured)return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
- if(!rules.rules.length)return skillsPanel()+'<section class="panel"><div class="empty"><h2>'+label('No rules in the team repo')+'</h2></div></section>';
+ if(!rules.configured)return '';
+ if(!rules.rules.length)return '<section class="panel"><div class="empty"><h2>'+label('No rules in the team repo')+'</h2></div></section>';
  var delivered=rules.rules.filter(r=>r.delivered).length;
- return skillsPanel()+'<section class="panel sessions"><div class="panelhead"><h2>'+label('Rules')+' <span class="count">'+number(rules.rules.length)+'</span></h2><span class="label">'+number(delivered)+' '+label('delivered to this workspace')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['RULE','NAMESPACE','DESCRIPTION','DELIVERY'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rules.rules.map(r=>'<tr><td data-verbatim>'+e(r.name)+'</td><td>'+(r.namespace?e(r.namespace):label('Root'))+'</td><td>'+e(r.description||'—')+'</td><td>'+ruleState(r)+'</td></tr>').join('')+'</tbody></table></div></section>';
+ return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Rules')+' <span class="count">'+number(rules.rules.length)+'</span></h2><span class="label">'+number(delivered)+' '+label('delivered to this workspace')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['RULE','NAMESPACE','DESCRIPTION','DELIVERY'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rules.rules.map(r=>'<tr><td data-verbatim>'+e(r.name)+'</td><td>'+(r.namespace?e(r.namespace):label('Root'))+'</td><td>'+e(r.description||'—')+'</td><td>'+ruleState(r)+'</td></tr>').join('')+'</tbody></table></div></section>';
+}
+function resources() {
+ // The two panels load and fail independently: a rules outage must not hide
+ // the skills list or block its exclusions, and vice versa.
+ if((rules&&rules.configured===false)||(skills&&skills.configured===false))return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
+ return skillsPanel()+rulesPanel();
 }
 // The Distribution page: what pull delivers to the chosen workspace, and the
 // role and project picks that filter it (#1028). Reads never write; a save

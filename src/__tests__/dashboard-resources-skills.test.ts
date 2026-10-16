@@ -87,13 +87,32 @@ describe('collectSkillsInventory', () => {
     await fse.remove(tempDir);
   });
 
+  it('keeps the inventory through a delivery conflict, with the conflict exposed separately (#1143 P2)', async () => {
+    // Two members deliver a different copy of one skill name: pull stops the
+    // run and keeps what is installed (#913/#707), but the inventory must stay.
+    await writeSkill('backend/shared', '---\nname: shared\ndescription: Backend copy\n---\n');
+    await writeSkill('frontend/shared', '---\nname: shared\ndescription: Frontend copy\n---\n');
+    const roles = rolesOver(['backend', 'frontend']);
+
+    const inventory = await collectSkillsInventory(teamConfig, localConfig, roles);
+
+    expect(inventory.skillConflict).toContain('shared');
+    // The inventory lists every catalogued skill; a conflicted run delivers none.
+    expect(inventory.skills.map((skill) => skill.name)).toEqual(expect.arrayContaining(['review', 'ui', 'shared']));
+    expect(inventory.skills.every((skill) => !skill.delivered)).toBe(true);
+    // Exclusions keep working through a conflict: the name is known, so the
+    // exclusion is accepted rather than rejected as unknown_skill.
+    const result = await setSkillExclusion(teamConfig, localConfig, 'shared', true);
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+  });
+
   it('skillDetail resolves a same-name copy by source path; name-only prefers the delivered one (#1143 P2)', async () => {
     // A namespaced copy of the root review skill: same name, different source.
     await writeSkill('backend/review', '---\nname: review\ndescription: Namespaced review copy\n---\n');
     const roles = rolesOver(['backend']);
 
     // Paths come from the inventory itself, so the test speaks its identity.
-    const inventory = await collectSkillsInventory(teamConfig, localConfig, roles);
+    const { skills: inventory } = await collectSkillsInventory(teamConfig, localConfig, roles);
     const root = inventory.find((skill) => skill.namespace === null && skill.name === 'review');
     const namespaced = inventory.find((skill) => skill.namespace === 'backend' && skill.name === 'review');
     expect(root?.delivered).toBe(false);
@@ -109,7 +128,7 @@ describe('collectSkillsInventory', () => {
   });
 
   it('without a role context, every skill is delivered with metadata only', async () => {
-    const skills = await collectSkillsInventory(teamConfig, localConfig, null);
+    const skills = (await collectSkillsInventory(teamConfig, localConfig, null)).skills;
     const byName = new Map(skills.map((skill) => [skill.name, skill]));
     expect(byName.get('review')).toMatchObject({
       namespace: null,
@@ -125,7 +144,7 @@ describe('collectSkillsInventory', () => {
   it('attributes namespace, tags, and replaced states like the rules inventory', async () => {
     const roleContext = rolesOver(['backend']);
     localConfig = { ...localConfig, subscribedTags: ['client'] };
-    const skills = await collectSkillsInventory(teamConfig, localConfig, roleContext);
+    const skills = (await collectSkillsInventory(teamConfig, localConfig, roleContext)).skills;
     const byName = new Map(skills.map((skill) => [skill.name, skill]));
     // Active namespace: delivered.
     expect(byName.get('api')).toMatchObject({ namespace: 'backend', delivered: true });
@@ -143,7 +162,7 @@ describe('collectSkillsInventory', () => {
     // copy delivers. The root entry must say `replaced`, not `delivered`.
     await writeSkill('backend/review', '---\nname: review\ndescription: Namespaced copy\n---\n');
     const roleContext = rolesOver(['backend']);
-    const skills = await collectSkillsInventory(teamConfig, localConfig, roleContext);
+    const skills = (await collectSkillsInventory(teamConfig, localConfig, roleContext)).skills;
     const byPath = new Map(skills.map((skill) => [skill.path, skill]));
     expect(byPath.get('skills/backend/review')).toMatchObject({ delivered: true, undeliveredReason: undefined });
     expect(byPath.get('skills/review')).toMatchObject({ delivered: false, undeliveredReason: 'replaced' });
@@ -153,7 +172,7 @@ describe('collectSkillsInventory', () => {
     // No roles: the name-keyed merge keeps the scan-order winner (the root
     // copy here); the namespaced twin's truthful label is `replaced`.
     await writeSkill('backend/review', '---\nname: review\ndescription: Namespaced copy\n---\n');
-    const skills = await collectSkillsInventory(teamConfig, localConfig, null);
+    const skills = (await collectSkillsInventory(teamConfig, localConfig, null)).skills;
     const byPath = new Map(skills.map((skill) => [skill.path, skill]));
     expect(byPath.get('skills/review')).toMatchObject({ delivered: true, undeliveredReason: undefined });
     expect(byPath.get('skills/backend/review')).toMatchObject({ delivered: false, undeliveredReason: 'replaced' });
@@ -161,7 +180,7 @@ describe('collectSkillsInventory', () => {
 
   it('marks a personally excluded skill and lets exclusion win over delivery', async () => {
     localConfig = { ...localConfig, excludedSkills: ['review'] };
-    const skills = await collectSkillsInventory(teamConfig, localConfig, null);
+    const skills = (await collectSkillsInventory(teamConfig, localConfig, null)).skills;
     const review = skills.find((skill) => skill.name === 'review');
     expect(review).toMatchObject({ excluded: true, delivered: false, undeliveredReason: 'excluded' });
   });
@@ -171,7 +190,7 @@ describe('collectSkillsInventory', () => {
     const claudeDir = path.join(homeDir, '.claude', 'skills', 'review');
     await fse.ensureDir(claudeDir);
     await fse.writeFile(path.join(claudeDir, 'SKILL.md'), '# review\n');
-    const skills = await collectSkillsInventory(teamConfig, localConfig, null);
+    const skills = (await collectSkillsInventory(teamConfig, localConfig, null)).skills;
     const review = skills.find((skill) => skill.name === 'review');
     expect(review!.installedAgents).toEqual(['claude']);
     const deploy = skills.find((skill) => skill.name === 'deploy');

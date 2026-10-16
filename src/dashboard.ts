@@ -344,11 +344,11 @@ export async function startDashboard(port?: number): Promise<void> {
         ]);
         const config = await readWorkspaceChildren(ownConfig);
         const teamConfig = await loadTeamConfig(config.repo.localPath);
-        const skills = teamConfig
+        const inventory = teamConfig
           ? await collectSkillsInventory(teamConfig, config, await buildRolePullContext(config))
-          : [];
+          : { skills: [], skillConflict: null };
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify({ configured: true, skills }));
+        res.end(JSON.stringify({ configured: true, skills: inventory.skills, skillConflict: inventory.skillConflict }));
       } catch (e) {
         log.debug(`dashboard: /api/resources/skills failed: ${(e as Error).message}`);
         res.writeHead(500, { 'Content-Type': 'application/json' });

@@ -237,6 +237,7 @@ export const dashboardMessages: Record<string, string> = {
   "Nothing is written until you save": "保存前不会写入任何内容",
   "No change": "无变化",
   "entering": "进入",
+  "Pull keeps what is installed until the copies are made equal or renamed.": "冲突解决前，pull 保留已安装的副本；请将两份副本改为一致或重命名其中之一。",
   "leaving": "离开",
   "knowledge": "知识",
   "agents": "智能体",
