@@ -11,20 +11,21 @@ const t = text => language === 'zh-CN' ? (Object.hasOwn(messages,text) ? message
 const e = value => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const label = text => e(t(text));
 const escapeHtml = e;
-const pageNames = { overview: 'Overview', execution: 'Team Execution', context: 'Team Context', resources: 'Resources', improvement: 'Team Improvement' };
+const pageNames = { overview: 'Overview', execution: 'Team Execution', context: 'Team Context', resources: 'Resources', distribution: 'Distribution', improvement: 'Team Improvement' };
 const statusNames = { running:'Working', waiting_for_input:'Your turn', error:'Error', idle:'Idle', stopped:'Ended' };
 let page = Object.hasOwn(pageNames,location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
 let sessions = [], haveSessions = false, connected = false, trends = null, kb = null;
 let trendError = false, kbError = false, selectedSession = null, selectedSnapshot = null, focusBeforeDialog = null;
 let trendLoading = false, kbLoading = false, eventSource = null, reconnectTimer = null, fallbackGeneration = 0;
 let rules = null, rulesError = false, rulesLoading = false;
+let dist = null, distError = false, distLoading = false, distDraft = null, preview = null, previewError = '', previewing = false, saving = false, saveError = '', savedNote = '';
 let workspaceId = '', workspaceGeneration = 0, workspaces = [];
 const api = route => route + (workspaceId ? '?workspace=' + encodeURIComponent(workspaceId) : '');
 function workspaceLabel(w) { return w.scope==='user'?label('User scope'):w.scope==='unassigned'?label('Unassigned sessions'):e(w.label)+' · '+label('Workspace'); }
 function workspaceOptions() { $('workspace').innerHTML=workspaces.map(w=>'<option value="'+e(w.id)+'">'+workspaceLabel(w)+'</option>').join('');$('workspace').value=workspaceId;const w=workspaces.find(w=>w.id===workspaceId);$('workspace-root').textContent=w?w.root:''; }
 const icons = {
  overview:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
- execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',resources:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
+ execution:'<path d="M4 12h4l3-8 4 16 3-8h3"/>',context:'<path d="M4 4h6l2 2 2-2h6v15h-6l-2 2-2-2H4zM12 6v15"/>',resources:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',distribution:'<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',improvement:'<path d="M4 17l6-6 4 3 6-10M14 4h6v6"/>'
 };
 const icon = key => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'+icons[key]+'</svg>';
 const link = (key, text) => '<button class="link" data-page="'+key+'">'+label(text)+' →</button>';
@@ -88,6 +89,55 @@ function resources() {
  var delivered=rules.rules.filter(r=>r.delivered).length;
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Rules')+' <span class="count">'+number(rules.rules.length)+'</span></h2><span class="label">'+number(delivered)+' '+label('delivered to this workspace')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['RULE','NAMESPACE','DESCRIPTION','DELIVERY'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rules.rules.map(r=>'<tr><td data-verbatim>'+e(r.name)+'</td><td>'+(r.namespace?e(r.namespace):label('Root'))+'</td><td>'+e(r.description||'—')+'</td><td>'+ruleState(r)+'</td></tr>').join('')+'</tbody></table></div></section>';
 }
+// The Distribution page: what pull delivers to the chosen workspace, and the
+// role and project picks that filter it (#1028). Reads never write; a save
+// posts the previewed revision and the page never runs pull itself. A save that
+// changes both roles and projects chains the fresh revision the roles post
+// returns into the projects post, so one click lands both halves.
+const namespaceTypes = ['skills','knowledge','agents','learnings'];
+function namespaceChips(ns) { return ns ? namespaceTypes.map(type=>'<span class="tag">'+label(type)+' · '+number(ns[type].length)+'</span>').join(' ') : '<span class="tag">'+label('All namespaces (flat delivery)')+'</span>'; }
+function diffNames(diff) { const parts=[]; if(diff.entering.length)parts.push('<span class="good">+'+diff.entering.map(e).join(', ')+'</span>'); if(diff.leaving.length)parts.push('<span class="amber">−'+diff.leaving.map(e).join(', ')+'</span>'); return parts.join(' · ')||label('No change'); }
+function diffCounts(diff) { const parts=[]; if(diff.entering.length)parts.push('<span class="good">+'+number(diff.entering.length)+' '+label('entering')+'</span>'); if(diff.leaving.length)parts.push('<span class="amber">−'+number(diff.leaving.length)+' '+label('leaving')+'</span>'); return parts.join(' · ')||label('No change'); }
+function distribution() {
+ if(page==='distribution'&&!dist&&!distLoading&&!distError)loadDistribution();
+ if(distError)return errorPanel('Could not load distribution.','distribution');
+ if(!dist)return '<div class="empty" role="status">'+label('Loading distribution…')+'</div>';
+ if(!dist.configured)return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
+ if(!distDraft)distDraft={primary:dist.selection.primaryRole,extra:[...dist.selection.additionalRoles],projects:[...dist.selection.projects]};
+ const draft=distDraft, sel=dist.selection, effective=dist.effective&&!dist.effective.error?dist.effective:null;
+ const rolesLine=sel.primaryRole?e(sel.primaryRole)+(sel.additionalRoles.length?' + '+sel.additionalRoles.map(e).join(', '):''):label('None');
+ const projectsLine=sel.projects.length?sel.projects.map(e).join(', '):label('None');
+ const top='<section class="panel"><div class="panelhead"><h2>'+label('Effective for this workspace')+'</h2><span class="label">'+label('Selection changes take effect on the next pull')+'</span></div><div class="resource">'
+  +'<h3>'+label('Primary role')+': '+rolesLine+'</h3>'
+  +'<p>'+label('Active projects')+': '+projectsLine+'</p>'
+  +(effective
+    ?'<p>'+label('Effective namespaces')+': '+namespaceChips(effective.namespaces)+'</p><p>'+label('Next pull delivers')+' <b>'+number(effective.skills.length)+'</b> '+label('skills')+' · <b>'+number(effective.rules.length)+'</b> '+label('rules')+(effective.heldSkills.length?' · <span class="amber">'+number(effective.heldSkills.length)+' '+label('held back by a copy conflict')+'</span>':'')+'</p>'
+    :'<div class="error-panel"><p>'+e(dist.effective.error)+'</p></div>')
+  +(dist.children.length?'<p>'+label('Delivered with child workspaces')+':<br>'+dist.children.map(child=>e(child.path)+' · '+(child.primaryRole?e(child.primaryRole):label('None'))+(child.projects.length?' + '+child.projects.map(e).join(', '):'')).join('<br>')+'</p>':'')
+  +'</div></section>';
+ const rolesPanel=dist.roles.state==='invalid'?'<div class="error-panel"><p>'+e(dist.roles.error)+'</p></div>'
+  :dist.roles.state==='missing'?''
+  :'<section class="panel sessions"><div class="panelhead"><h2>'+label('Roles')+' <span class="count">'+number(dist.roles.items.length)+'</span></h2><span class="label">'+label('Pick one primary role and any additional roles')+'</span></div>'
+  +dist.roles.items.map(role=>'<div class="resource"><h3><label><input type="radio" name="primary-role" data-role-primary="'+e(role.id)+'"'+(draft.primary===role.id?' checked':'')+'/> '+e(role.id)+'</label> <label class="tag"><input type="checkbox" data-role-extra="'+e(role.id)+'"'+(draft.extra.includes(role.id)?' checked':'')+'/> '+label('Additional')+'</label></h3><p>'+e(role.description||'—')+'</p><small>'+namespaceChips(role.namespaces)+'</small></div>').join('')+'</section>';
+ const projectsPanel=dist.projects.state==='invalid'?'<div class="error-panel"><p>'+e(dist.projects.error)+'</p></div>'
+  :dist.projects.state==='missing'?''
+  :'<section class="panel sessions"><div class="panelhead"><h2>'+label('Projects')+' <span class="count">'+number(dist.projects.items.length)+'</span></h2><span class="label">'+label('Saving replaces the active project list')+'</span></div>'
+  +dist.projects.items.map(project=>'<div class="resource"><h3><label><input type="checkbox" data-project="'+e(project.id)+'"'+(draft.projects.includes(project.id)?' checked':'')+'/> '+e(project.name||project.id)+'</label></h3><p>'+e(project.description||'—')+'</p><small>'+namespaceChips(project.namespaces)+'</small></div>').join('')+'</section>';
+ const previewPanel=preview?'<section class="panel"><div class="panelhead"><h2>'+label('Preview for the next pull')+'</h2><span class="label">'+label('Nothing is written until you save')+'</span></div><div class="resource">'
+  +namespaceTypes.map(type=>'<p>'+label(type)+': '+diffNames(preview.namespaces[type])+'</p>').join('')
+  +'<p>'+label('skills')+': '+diffCounts(preview.skills)+'</p><p>'+label('rules')+': '+diffCounts(preview.rules)+'</p>'
+  +(preview.skills.held&&preview.skills.held.length?'<p class="amber">'+label('held back by a copy conflict')+': '+preview.skills.held.map(e).join(', ')+'</p>':'')
+  +(preview.skillConflict?'<div class="error-panel"><p>'+e(preview.skillConflict)+'</p></div>':'')
+  +'</div></section>':'';
+ const actions='<div class="actions"><button class="primary" data-preview-button'+(previewing||saving?' disabled':'')+'>'+(previewing?label('Previewing…'):label('Preview changes'))+'</button>'
+  +'<button class="primary" data-save-button'+(saving||!preview?' disabled':'')+'>'+(saving?label('Saving…'):label('Save selection'))+'</button>'
+  +(savedNote?'<span class="good">'+label('Saved. Takes effect on the next pull.')+'</span>':'')
+  +(saveError?'<span class="amber">'+e(saveError)+'</span>':'')
+  +(previewError?'<span class="amber">'+e(previewError)+'</span>':'')+'</div>';
+ return top+rolesPanel+projectsPanel+actions+previewPanel;
+}
+async function previewSelection() { if(!dist||!distDraft)return; const generation=workspaceGeneration; previewing=true;previewError='';saveError='';savedNote='';render(); try{ const data=await postJson('/api/distribution/preview',{primaryRole:distDraft.primary,additionalRoles:distDraft.extra,projects:distDraft.projects}); if(generation!==workspaceGeneration)return; preview=data; } catch(error){ if(generation!==workspaceGeneration)return; preview=null; previewError=error.message; } finally{ if(generation===workspaceGeneration){ previewing=false; if(page==='distribution')render(); } } }
+async function saveSelection() { if(!dist||!distDraft||!preview)return; const generation=workspaceGeneration; saving=true;saveError='';savedNote='';render(); try{ let revision=dist.revision; if(dist.roles.state==='ok'){ const fresh=await postJson('/api/distribution/roles',{primaryRole:distDraft.primary,additionalRoles:distDraft.extra,revision}); revision=fresh.revision; } if(dist.projects.state==='ok')await postJson('/api/distribution/projects',{projects:distDraft.projects,revision}); if(generation!==workspaceGeneration)return; savedNote='Saved. Takes effect on the next pull.'; } catch(error){ if(generation!==workspaceGeneration)return; saveError=error.message; } finally{ if(generation===workspaceGeneration){ saving=false; await loadDistribution(); if(page==='distribution')render(); } } }
 // Translate static report labels only; never translate knowledge titles, authors, commands or session text.
 function localizeReport() {
  const root=$('kb-content');if(!root)return;
@@ -109,7 +159,7 @@ function render() {
  $('nav').innerHTML=Object.keys(pageNames).map(key=>'<button data-page="'+key+'" class="'+(page===key?'active':'')+'" '+(page===key?'aria-current="page"':'')+'>'+icon(key)+label(pageNames[key])+'</button>').join('');
  $('title').textContent=t(pageNames[page]);$('crumb').textContent=t(pageNames[page]);
  document.querySelector('.filters').hidden=page!=='execution';
- $('view').innerHTML=({overview,execution,context:knowledge,resources,improvement})[page]();
+ $('view').innerHTML=({overview,execution,context:knowledge,resources,distribution,improvement})[page]();
  localizeReport();connection();
  document.querySelectorAll('#kb-content details').forEach(d=>{if(opened.includes([...d.parentElement.children].indexOf(d)))d.open=true;});
  if(focusKey) [...document.querySelectorAll('[data-session]')].find(el=>el.dataset.session===focusKey)?.focus({preventScroll:true});
@@ -222,6 +272,8 @@ async function json(url) { const response=await fetch(url,{signal:AbortSignal.ti
 async function loadTrends() { if(trendLoading)return;const generation=workspaceGeneration;trendLoading=true;try{const data=await json(api('/api/trends'));if(generation===workspaceGeneration){trends=data;trendError=false;}}catch{if(generation===workspaceGeneration)trendError=true;}finally{if(generation===workspaceGeneration){trendLoading=false;if(['overview','improvement'].includes(page))render();}} }
 async function loadKb() { if(kbLoading)return;const generation=workspaceGeneration;kbLoading=true;try{const data=await json(api('/api/context'));if(generation===workspaceGeneration){kb=data;kbError=false;}}catch{if(generation===workspaceGeneration)kbError=true;}finally{if(generation===workspaceGeneration){kbLoading=false;render();}} }
 async function loadRules() { if(rulesLoading)return;const generation=workspaceGeneration;rulesLoading=true;try{const data=await json(api('/api/resources/rules'));if(generation===workspaceGeneration){rules=data;rulesError=false;}}catch{if(generation===workspaceGeneration)rulesError=true;}finally{if(generation===workspaceGeneration){rulesLoading=false;if(page==='resources')render();}} }
+async function postJson(route, body) { const response=await fetch(api(route),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)}); const data=await response.json().catch(()=>null); if(!response.ok)throw Error(data&&data.error?data.error:'HTTP '+response.status); return data; }
+async function loadDistribution() { if(distLoading)return;const generation=workspaceGeneration;distLoading=true;try{const data=await json(api('/api/distribution'));if(generation===workspaceGeneration){dist=data;distError=false;distDraft=null;preview=null;previewError='';saveError='';savedNote='';}}catch{if(generation===workspaceGeneration)distError=true;}finally{if(generation===workspaceGeneration){distLoading=false;if(page==='distribution')render();}} }
 function receive(data) {
  if(!Array.isArray(data))return;
  if(haveSessions && JSON.stringify(sessions)===JSON.stringify(data))return;
@@ -264,12 +316,23 @@ $('theme').value=['system','light','dark'].includes(preferredTheme)?preferredThe
 function theme(){document.documentElement.dataset.theme=$('theme').value==='system'?(system.matches?'dark':'light'):$('theme').value;}
 $('theme').onchange=()=>{save('teamai-dashboard-theme',$('theme').value);theme();};system.addEventListener('change',theme);theme();
 $('repo').value='';$('agent').value='';for(const id of ['repo','agent'])$(id).onchange=render;
+document.addEventListener('change',event=>{
+ const primary=event.target.closest('[data-role-primary]'),extra=event.target.closest('[data-role-extra]'),project=event.target.closest('[data-project]');
+ if((!primary&&!extra&&!project)||!distDraft)return;
+ if(primary)distDraft.primary=primary.dataset.rolePrimary;
+ if(extra){const id=extra.dataset.roleExtra;distDraft.extra=extra.checked?[...new Set([...distDraft.extra,id])]:distDraft.extra.filter(x=>x!==id);}
+ if(project){const id=project.dataset.project;distDraft.projects=project.checked?[...new Set([...distDraft.projects,id])]:distDraft.projects.filter(x=>x!==id);}
+ preview=null;previewError='';savedNote='';saveError='';
+ render();
+});
 document.addEventListener('click',event=>{
  const nav=event.target.closest('[data-page]'),session=event.target.closest('[data-session]'),retry=event.target.closest('[data-retry]');
  if(nav){const key=nav.dataset.page;location.hash=key;if(key===page){render();$('title').focus();}}
  if(session)showDetails(session.dataset.session);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
- if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='distribution')loadDistribution();else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(event.target.closest('[data-preview-button]'))previewSelection();
+ if(event.target.closest('[data-save-button]'))saveSelection();
 });
 $('title').tabIndex=-1;
 window.addEventListener('hashchange',()=>{page=Object.hasOwn(pageNames,location.hash.slice(1))?location.hash.slice(1):'overview';render();$('title').focus();});
@@ -279,6 +342,7 @@ function switchWorkspace(id) {
  eventSource?.close();clearTimeout(reconnectTimer);$('session-dialog').close();selectedSession=null;selectedSnapshot=null;
  sessions=[];haveSessions=false;connected=false;trends=null;kb=null;trendLoading=false;kbLoading=false;trendError=false;kbError=false;
  rules=null;rulesError=false;rulesLoading=false;
+ dist=null;distError=false;distLoading=false;distDraft=null;preview=null;previewError='';previewing=false;saving=false;saveError='';savedNote='';
  $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadKb();loadRules();
 }
 $('workspace').onchange=()=>switchWorkspace($('workspace').value);

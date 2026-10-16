@@ -40,6 +40,23 @@ describe('unified dashboard', () => {
     expect(html).toContain('Omitted by tag subscriptions');
   });
 
+  it('adds a Distribution page that previews before it saves and never runs pull (#1028)', () => {
+    const html = getDashboardHtml(3721);
+    expect(html).toContain("distribution: 'Distribution'");
+    expect(html).toContain("'/api/distribution'");
+    expect(html).toContain("'/api/distribution/preview'");
+    expect(html).toContain("'/api/distribution/roles'");
+    expect(html).toContain("'/api/distribution/projects'");
+    // One primary radio plus additional-role checkboxes; projects replace the list on save.
+    expect(html).toContain('data-role-primary');
+    expect(html).toContain('data-role-extra');
+    expect(html).toContain('data-project');
+    // Save stays disabled until a preview exists; a saved selection lands on the next pull.
+    expect(html).toContain("(saving||!preview?' disabled':'')");
+    expect(html).toContain('Saved. Takes effect on the next pull.');
+    expect(html).toContain('All namespaces (flat delivery)');
+  });
+
   it('counts priced sessions rather than requests; includes resumed costs in first-stop cohorts', () => {
     const result = summarizeSessionCosts(new Map([
       ['current', snapshot('2026-09-16', [['2026-09-15', 8, 600_000], ['2026-09-16', 2, 400_000]])],
