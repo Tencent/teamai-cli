@@ -42,6 +42,21 @@ describe('workspaceEvents ownership', () => {
     expect(workspaceEvents(events, p, ws).map(e => e.sessionId)).toEqual(['s1']);
   });
 
+  it('assigns an event with no cwd or anchor by its dataHomeKey (#1121)', () => {
+    // Copilot hook events persist neither cwd nor projectAnchor (the CLI drops
+    // them by design), so anchor and root containment are both dead; the
+    // dataHomeKey written by the dispatcher is the only surviving identity.
+    const p = project('p1', ['/repo/a']);
+    p.dataHomeKey = 'a49ec4af08a07bdd';
+    const other = project('p2', ['/repo/b']);
+    other.dataHomeKey = 'deadbeefdeadbeef';
+    const ws = [user, p, other, unassigned];
+    const copilot: DashboardEvent = { type: 'session_start', timestamp: '2026-09-17T00:00:00Z', sessionId: 's1', tool: 'copilot', cwd: '', dataHomeKey: 'a49ec4af08a07bdd' };
+    expect(workspaceEvents([copilot], p, ws).map(e => e.sessionId)).toEqual(['s1']);
+    expect(workspaceEvents([copilot], other, ws)).toEqual([]);
+    expect(workspaceEvents([copilot], unassigned, ws)).toEqual([]);
+  });
+
   it('routes an event outside every project to unassigned, not user', () => {
     const ws = [user, project('p1', ['/repo/a']), unassigned];
     const events = [ev('s1', '/somewhere/else'), ev('s2', undefined)];

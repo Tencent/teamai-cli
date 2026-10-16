@@ -2,11 +2,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import YAML from 'yaml';
-import { LocalConfigSchema, type LocalConfig, type DashboardEvent } from '../types.js';
+import { LocalConfigSchema, getDataHome, type LocalConfig, type DashboardEvent } from '../types.js';
 import { getUserHome } from '../utils/home.js';
 import { checkoutForProjectAnchor, resolveAnchors } from '../utils/git.js';
 import { readConfigFrom } from '../config.js';
 import { projectCheckouts } from '../pull.js';
+import { dataHomeKey } from '../dashboard-collector.js';
 
 export interface DashboardWorkspace {
   id: string;
@@ -16,6 +17,8 @@ export interface DashboardWorkspace {
   config: LocalConfig | null;
   roots: string[];
   projectAnchor?: string;
+  /** Key of this scope's data home — the identity Copilot events are attributed by (#1121). */
+  dataHomeKey?: string;
 }
 async function configAt(home: string): Promise<LocalConfig | null> {
   try { return LocalConfigSchema.parse(YAML.parse(await fs.readFile(path.join(home, 'config.yaml'), 'utf8'))); }
@@ -31,7 +34,14 @@ function ownerOf(event: DashboardEvent, projects: DashboardWorkspace[]): string 
   const anchored = event.projectAnchor && projects.find(w => (w.projectAnchor ?? w.root) === event.projectAnchor);
   if (anchored) return anchored.id;
   const cwd = event.cwd;
-  if (!cwd) return null;
+  if (!cwd) {
+    // Copilot hook events carry neither cwd nor projectAnchor (parseHookEvent drops
+    // the cwd by design; the monitor-sourced process_exit records an empty string,
+    // #1121). The dataHomeKey the dispatcher wrote from the resolved scope is then
+    // the only surviving project identity, so attribute by it.
+    const keyed = event.dataHomeKey && projects.find(w => w.dataHomeKey === event.dataHomeKey);
+    return keyed ? keyed.id : null;
+  }
   const matches = projects.filter(w => w.roots.some(root => inside(cwd, root)));
   if (!matches.length) return null;
   return matches.sort((a, b) =>
@@ -58,8 +68,12 @@ export async function dashboardWorkspaces(events: DashboardEvent[]): Promise<Das
     const config = await readConfigFrom(dataHome, root);
     if (!config) return;
     seen.add(anchor);
+    // Key the data home the config names, not the path add() guessed by: the
+    // dispatcher writes the event's dataHomeKey from getDataHome(config) (:2470),
+    // and a migrated project's config points at the partitioned home while the
+    // guess may be the in-repo `.teamai` it was found through.
     result.push({ id: createHash('sha256').update(anchor).digest('hex').slice(0, 24), label: path.basename(root), scope: 'project', root, projectAnchor: anchor,
-      config, roots: [...new Set([root, ...await projectCheckouts(config)])] });
+      config, roots: [...new Set([root, ...await projectCheckouts(config)])], dataHomeKey: await dataHomeKey(getDataHome(config)) });
   }
   const partitions = path.join(home, 'projects');
   for (const entry of await fs.readdir(partitions, { withFileTypes: true }).catch(() => [])) {
