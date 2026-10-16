@@ -2,7 +2,7 @@
 
 > Part of the [TeamAI CLI Usage Guide](../usage-guide.md).
 
-A workflow is a YAML file at `workflows/<name>.yaml` in the team repo. It runs command and read-only prompt steps, each after the steps it needs. [Advanced workflows](workflow-advanced.md) covers parallel steps, loops, `for_each`, what an end does to steps that still run, and the full expression language.
+A workflow is a YAML file at `workflows/<name>.yaml` in the team repo. It runs command and prompt steps, each after the steps it needs. A command with no workspace is read-only; [Workspaces](#workspaces) is how a step changes code on its own branch. [Advanced workflows](workflow-advanced.md) covers parallel steps, loops, `for_each`, what an end does to steps that still run, and the full expression language.
 
 ```yaml
 schemaVersion: v1alpha1
@@ -112,7 +112,7 @@ An agent-specific entry wins over `default`. `claude`, `codex`, and `opencode` a
 teamai workflow start build --driver local
 ```
 
-`--driver local` runs steps in the current directory, one at a time unless [`workflows.max_parallel`](workflow-advanced.md#run-local-commands-in-parallel) is above 1. Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. Prompt steps are read-only: if a tool changes the repository, the step fails and leaves those files in place for inspection. This includes changes to files inside an existing untracked directory; leaving that directory unchanged does not fail the step. The driver calls the same `next` and `report` operations shown below:
+`--driver local` runs a step with no `workspace` in the current checkout. A command there is read-only: if it exits 0 and changed repository files, the step fails and leaves those files in place. This includes a change inside an existing untracked directory; leaving that directory unchanged does not fail the step. A step with `workspace: new` changes files on its own branch. See [Workspaces](#workspaces). Steps that share the current checkout run one at a time. Steps in different worktrees run together up to [`workflows.max_parallel`](workflow-advanced.md#run-local-commands-in-parallel). Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. The driver calls the same `next` and `report` operations shown below:
 
 ```text
 teamai workflow start build
@@ -123,6 +123,41 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 `outcome` is `success`, `failed`, or `released`. `released` puts the step back to pending. It does not use up a retry. A report for an attempt that was already settled returns `repeated_report`, even when the revision is old. The run keeps recent settled attempts for that check. An older attempt uses the other checks: an old revision returns `stale_revision`, and a current revision that is not the leased attempt returns `wrong_attempt`. Another driver returns `wrong_driver`. A payload field the CLI does not read, such as a misspelled `tokens` written as `tokenz` or a field from a newer protocol version, is accepted but reported back: the success envelope of `next` and `report` carries `ignored` with those names — top-level fields first, then `driver.<field>` names — names only and never values. The key is left out when nothing was ignored, and an error envelope stays as it is.
 
 The run is stored in this scope's TeamAI data directory. The command exits when it finishes. A local run that ends `failed` exits with status 1. No workflow process keeps running.
+
+## Workspaces
+
+A command with no `workspace` is read-only, even inside a workspace a parent opened. It runs in the current checkout. If it exits 0 and changed repository files, the step fails with `read_only_dirty` and leaves those files in place. A prompt with no `workspace` is read-only in the same way, unless an enclosing workflow or `for_each` opens a workspace.
+
+`workspace: new` runs the step in its own git worktree, on a branch named for this run, step, and pass. The step commits what it changed. The current checkout is not switched, reset, or cleaned. A later step that lists it in `needs` starts from the first of those branches and merges the rest, in `needs` order. A merge conflict stops there. A command fails with `merge_conflict`, and the message names the branch and the files. A prompt is told which files still conflict and which branches were not merged.
+
+`workspace: continue` stays on the branch an enclosing `workflow` step opened with `new`. A prompt with no `workspace` continues that copy. A `for_each` with `workspace: new` gives each item its own branch, so items do not share a worktree. `steps.<id>.branches` lists those branches, and each `results` entry has `branch` when the item has one. An item with `after` starts from the branches it waits for. A top-level `workspace: continue`, with no enclosing `new`, fails the step with `workspace_base`.
+
+The step sees the agent files from the commit the run started at: `AGENTS.md`, `CLAUDE.md`, `.claude`, `.codex`, `.opencode`, `.cursor`, `.agents`, and `.githooks`. A hook an earlier step committed does not run in a later step. The team's skills, rules, agents and MCP are then delivered into the worktree, as they are for any new worktree of this checkout. Those delivered files are not part of the step's commit. A file the step itself edits is committed.
+
+When the checkout has an `origin` and the step made commits, the driver pushes that branch. A failed push fails the step with `push_failed` and keeps the worktree. With no `origin`, or when the step changed nothing, the run still succeeds and reports the branch.
+
+`session: continue` resumes this step's previous pass with the same tool. `session: { from: <step> }` resumes a step this one needs. A different tool starts a fresh session. OpenCode always starts fresh.
+
+A command that starts its own sandbox, such as `docker`, stays read-only. What it writes does not become a branch a later step can merge.
+
+```yaml
+schemaVersion: v1alpha1
+name: change
+description: Change two files on their own branches, then join them.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('left.txt', 'L')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('right.txt', 'R')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    command: node -e "require('fs').writeFileSync('joined.txt', 'J')"
+```
 
 ## Run records
 

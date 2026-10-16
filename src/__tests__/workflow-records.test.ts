@@ -160,7 +160,7 @@ describe('#1083 workflow run records', () => {
 
   it('publishes the failure code of every step failure teamai writes, and only codes it can name', () => {
     // Codes a `code: '…'` literal in src/workflow writes that never become a run's failure.
-    const diagnostics = ['unknown_key', 'missing_needs', 'false_if', 'bad_template', 'dotted_name', 'undeclared_output', 'undeclared_end', 'bad_loop'] satisfies Array<WorkflowDiagnostic['code']>;
+    const diagnostics = ['unknown_key', 'missing_needs', 'false_if', 'bad_template', 'dotted_name', 'undeclared_output', 'undeclared_end', 'bad_loop', 'bad_session', 'bad_workspace'] satisfies Array<WorkflowDiagnostic['code']>;
     const answers = ['end_reached', 'repeated_report', 'wrong_attempt', 'lease_cancelled', 'interrupted', 'run_unreadable', 'driver_stuck', 'busy'];
     const source = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'workflow');
     const written = new Set(fs.readdirSync(source).filter((file) => file.endsWith('.ts'))

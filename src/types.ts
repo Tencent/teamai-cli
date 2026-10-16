@@ -1440,6 +1440,12 @@ export interface GlobalOptions {
    */
   gitHook?: 'post-checkout' | 'post-merge' | 'post-rewrite';
   /**
+   * Internal (`pull` only): detect the project from this directory instead of
+   * the process cwd. A workflow worktree is delivered without changing cwd,
+   * so parallel steps do not switch the process between checkouts.
+   */
+  cwd?: string;
+  /**
    * Internal (`init --scope user`, `pull` only): pull the user scope even when
    * the current directory is a project-scoped checkout.
    */

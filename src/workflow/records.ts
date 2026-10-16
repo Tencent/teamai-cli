@@ -30,6 +30,7 @@ import type { DriverIdentity, RunState, RunStatus, TokenUsage, WorkflowFailure }
 const RECORDED_FAILURES = [
   'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle',
   'tool_failed', 'tool_unavailable', 'agent_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
+  'merge_conflict', 'base_config', 'push_failed', 'workspace_base',
 ] as const;
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
 

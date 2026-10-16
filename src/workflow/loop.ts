@@ -3,7 +3,7 @@
  * A workflow with `loop` runs all of its steps again, round after round. These rules are shared by pull, which rejects
  * loops a run could not settle, and by the engine, which settles them.
  */
-import type { ExpressionPass, ExpressionStep } from './expression.js';
+import { branchNames, type ExpressionPass, type ExpressionStep } from './expression.js';
 import { endLoop, exhaust, nextRound, passOf, repend, type StepPass, type StepState } from './step-state.js';
 import type { RunState, StepLoop, WorkflowFailure, WorkflowLoop, WorkflowStep } from './types.js';
 
@@ -247,5 +247,6 @@ export function passesOf(state: StepState): ExpressionPass[] {
 export function previousPass(state: StepState): ExpressionStep {
   const passes = expressionPasses(state.passes ?? []);
   const { pass: _pass, ...latest } = passes.at(-1) ?? {};
-  return { ...latest, passes };
+  const branches = branchNames('results' in latest ? latest.results : undefined);
+  return { ...latest, passes, ...(branches ? { branches } : {}) };
 }

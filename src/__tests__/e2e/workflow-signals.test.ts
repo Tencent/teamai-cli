@@ -59,6 +59,7 @@ async function waitFor(check: () => boolean, ms: number): Promise<boolean> {
 
 describe.skipIf(process.platform === 'win32')('workflow local driver signals', () => {
   let repo: string;
+  let pidRoot: string;
   let configPath: string;
 
   function setMaxParallel(max: number): void {
@@ -79,16 +80,22 @@ describe.skipIf(process.platform === 'win32')('workflow local driver signals', (
     const workflows = path.join(repo, '.teamai', 'workflows');
     fs.mkdirSync(workflows, { recursive: true });
     fs.writeFileSync(path.join(repo, 'hold.js'), HOLD);
+    git(['add', 'hold.js'], repo);
+    git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '-m', 'hold'], repo);
+    pidRoot = path.join(path.dirname(repo), `${path.basename(repo)}-pids`);
+    fs.mkdirSync(pidRoot);
     fs.writeFileSync(path.join(workflows, 'hold.yaml'), `schemaVersion: v1alpha1
 name: hold
 description: Two commands that run until they are stopped.
 steps:
   - id: one
     needs: []
-    command: node hold.js one
+    workspace: new
+    command: node hold.js ${pidRoot}/one
   - id: two
     needs: []
-    command: node hold.js two
+    workspace: new
+    command: node hold.js ${pidRoot}/two
 `);
     const pulled = await runCLI(['pull'], repo);
     expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
@@ -100,7 +107,7 @@ steps:
 
   it('stops every command and its children on SIGINT, then exits with the signal', async () => {
     setMaxParallel(2);
-    const pidFiles = ['one.pids', 'two.pids'].map((file) => path.join(repo, file));
+    const pidFiles = ['one.pids', 'two.pids'].map((file) => path.join(pidRoot, file));
     for (const file of pidFiles) fs.rmSync(file, { force: true });
     const driver = spawn(process.execPath, [CLI, 'workflow', 'start', 'hold', '--driver', 'local'], {
       cwd: repo, env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -128,7 +135,7 @@ steps:
 
   it.skipIf(!hasPython).each([2, 1])("stops every command and its children on a terminal's Ctrl-C with max_parallel %i", async (max) => {
     setMaxParallel(max);
-    const pidFiles = ['one.pids', 'two.pids'].map((file) => path.join(repo, file));
+    const pidFiles = ['one.pids', 'two.pids'].map((file) => path.join(pidRoot, file));
     for (const file of pidFiles) fs.rmSync(file, { force: true });
     const terminalPid = path.join(repo, 'terminal.pid');
     fs.rmSync(terminalPid, { force: true });
