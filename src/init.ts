@@ -99,6 +99,7 @@ import {
 } from './types.js';
 import { getUserHome } from './utils/home.js';
 import { describeRoles, listRoleIds, loadRolesManifest, RolesManifestNotFoundError } from './roles.js';
+import { loadRoleAssignmentsIfPresent, resolveAssignedRoles, ROLE_ASSIGNMENTS_FILE } from './role-assignments.js';
 import { loadProjectsManifest, listProjectIds, type ProjectsManifest } from './projects.js';
 import { memberReadRoots, readMemberConfig, mergeMemberConfig } from './members.js';
 import { noDryRunPreview } from './dry-run-guard.js';
@@ -239,8 +240,26 @@ class NoRoleSelectedError extends Error {}
 
 async function promptForRoleProfile(
   repoPath: string,
+  username: string,
   roleFlag?: string,
 ): Promise<Pick<LocalConfig, 'primaryRole' | 'additionalRoles' | 'resourceProfileVersion'>> {
+  // The team assigns roles (#1186): there is nothing to pick, and nothing to
+  // write — every load reads the assignment from the team repo.
+  const assignments = await loadRoleAssignmentsIfPresent(repoPath);
+  if (assignments) {
+    if (roleFlag) {
+      throw new Error(
+        `Roles are assigned in ${ROLE_ASSIGNMENTS_FILE} in the team repo, so --role cannot set one. `
+        + 'Open a merge request against that file, or ask a code owner of manifest/ to.',
+      );
+    }
+    const { roles } = resolveAssignedRoles(assignments, username);
+    log.info(roles.length > 0
+      ? `Roles assigned to ${username} in ${ROLE_ASSIGNMENTS_FILE}: ${roles.join(', ')}`
+      : `No roles assigned to ${username} in ${ROLE_ASSIGNMENTS_FILE}; you receive shared resources only.`);
+    return { additionalRoles: [] };
+  }
+
   const manifest = await loadRolesManifest(repoPath);
   const roleLabels = describeRoles(manifest.roles);
 
@@ -703,7 +722,7 @@ export async function initHttp(
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
   try {
-    Object.assign(localConfig, await promptForRoleProfile(localPath, options.role));
+    Object.assign(localConfig, await promptForRoleProfile(localPath, localConfig.username, options.role));
   } catch (error) {
     // Two cases leave the role unset on purpose: a repo with no roles manifest,
     // and a person who skipped the prompt. Anything else — a manifest that does
@@ -1312,7 +1331,7 @@ export async function initSelfRepo(options: GlobalOptions & {
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
   try {
-    Object.assign(localConfig, await promptForRoleProfile(localPath, options.role));
+    Object.assign(localConfig, await promptForRoleProfile(localPath, localConfig.username, options.role));
   } catch (error) {
     // Two cases leave the role unset on purpose: a repo with no roles manifest,
     // and a person who skipped the prompt. Anything else — a manifest that does
@@ -2010,7 +2029,7 @@ export async function init(options: GlobalOptions & {
   if (projectsManifest?.projects.length) {
     rolePromptedEarly = true;
     try {
-      roleProfile = await promptForRoleProfile(localPath, options.role);
+      roleProfile = await promptForRoleProfile(localPath, username, options.role);
     } catch (error) {
       const msg = (error as Error).message;
       if (msg.includes('Roles manifest not found')) {
@@ -2201,7 +2220,7 @@ export async function init(options: GlobalOptions & {
 
   if (!rolePromptedEarly) {
     try {
-      roleProfile = await promptForRoleProfile(localPath, options.role);
+      roleProfile = await promptForRoleProfile(localPath, username, options.role);
     } catch (error) {
       const msg = (error as Error).message;
       if (msg.includes('Roles manifest not found')) {

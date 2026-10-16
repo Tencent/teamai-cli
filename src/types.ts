@@ -926,7 +926,22 @@ export type LocalConfig = z.infer<typeof LocalConfigSchema> & {
   dataHome?: string;
   roleUnresolved?: true;
   children?: WorkspaceChildren;
+  roleAssignment?: RoleAssignment;
 };
+
+/**
+ * Runtime-only, set when `manifest/members.yaml` governs this member's roles
+ * (#1186): `primaryRole` and `additionalRoles` then hold the team's assignment,
+ * read fresh on every load, and `local` keeps what the config file says so a
+ * save by any other command writes that back instead of freezing a copy of the
+ * assignment into the file.
+ */
+export interface RoleAssignment {
+  /** `assigned` — the file lists this member; `default` — it does not. */
+  source: 'assigned' | 'default';
+  /** The selection on disk, which `roles set` no longer changes. */
+  local: { primaryRole?: string; additionalRoles: string[] };
+}
 export type LocalConfigInput = z.input<typeof LocalConfigSchema>;
 
 // ─── Local state (~/.teamai/state.json) ────────────────────

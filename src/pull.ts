@@ -8,7 +8,7 @@ import {
   indexedSkills, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills, type RolePullContext,
 } from './resources/desired.js';
 import type { IndexedSkills, UnreadableFile } from './utils/search-index.js';
-import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope, saveLocalConfigForScope } from './config.js';
+import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, refreshRoleAssignment, saveStateForScope, saveLocalConfigForScope } from './config.js';
 import { getHeadRev, getHeadCommit, createGit, getDefaultBranch, completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
@@ -1380,6 +1380,10 @@ async function pullForScope(
     const outcome = `[${scopeLabel}] Team repo: ${refresh.label}`;
     pullSpin.succeed(outcome);
     log.debug(outcome);
+    // manifest/members.yaml lives in the repo the refresh just moved, so the
+    // roles read at load time are the previous pull's (#1186). Re-resolving
+    // here is what lets a reassignment take effect on the pull that fetches it.
+    localConfig = await refreshRoleAssignment(localConfig);
   } catch (e) {
     const reason = `[${scopeLabel}] Pull failed: ${(e as Error).message}`;
     pullSpin.fail(reason);

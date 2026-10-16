@@ -15,6 +15,17 @@ import { log } from '../utils/logger.js';
 import type { LocalConfig } from '../types.js';
 import { diffDelivery, pickNamespaces, resolveDelivery, type Delivery } from './delivery.js';
 import { HttpError } from './http.js';
+import { ROLE_ASSIGNMENTS_FILE } from '../role-assignments.js';
+
+/**
+ * The team assigns this workspace's roles (#1186), so the page shows them and
+ * edits nothing: a save would be overlaid away on the next load.
+ */
+function assertRolesEditable(ownConfig: LocalConfig): void {
+  if (!ownConfig.roleAssignment) return;
+  throw new HttpError(409, `Roles are assigned in ${ROLE_ASSIGNMENTS_FILE} in the team repo and cannot be changed here. `
+    + 'Open a merge request against that file, or ask a code owner of manifest/ to.');
+}
 
 export interface DistributionSelection {
   primaryRole: string | null;
@@ -146,6 +157,8 @@ export async function readDistribution(ownConfig: LocalConfig) {
     configured: true as const,
     revision: revisionOf(ownConfig),
     selection: selectionOf(ownConfig),
+    // Null when this workspace still picks its own roles.
+    rolesAssigned: ownConfig.roleAssignment ? { file: ROLE_ASSIGNMENTS_FILE, source: ownConfig.roleAssignment.source } : null,
     // A workspace saves only its own selection; its children's are shown, not edited.
     children: (withChildren.children?.children ?? []).map((child) => ({ path: child.path, ...selectionOf(child.selection) })),
     roles: roles.state === 'ok'
@@ -172,6 +185,7 @@ export async function previewDistribution(ownConfig: LocalConfig, body: Record<s
   const repoPath = ownConfig.repo.localPath;
   let candidate: LocalConfig = { ...ownConfig };
   if ('primaryRole' in body || 'additionalRoles' in body) {
+    assertRolesEditable(ownConfig);
     const { primaryRole, additionalRoles } = await roleChange(repoPath, body);
     candidate = { ...candidate, primaryRole, additionalRoles };
   }
@@ -192,6 +206,7 @@ export async function previewDistribution(ownConfig: LocalConfig, body: Record<s
 
 /** Save this workspace's roles, as `roles set` does. Takes effect on the next pull. */
 export async function saveRoles(ownConfig: LocalConfig, body: Record<string, unknown>): Promise<void> {
+  assertRolesEditable(ownConfig);
   assertRevision(ownConfig, body);
   const { primaryRole, additionalRoles, version } = await roleChange(ownConfig.repo.localPath, body);
   await saveScopeSelection(ownConfig, { ...ownConfig, primaryRole, additionalRoles, resourceProfileVersion: version });
