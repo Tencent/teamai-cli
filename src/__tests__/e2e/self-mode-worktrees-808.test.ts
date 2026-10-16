@@ -1494,6 +1494,9 @@ describe('a checkout an older git-mode install left (#808)', () => {
     const { home, projectRoot } = install;
     const teamA = serveTeamRepo(install, 'team-a');
     const teamB = serveTeamRepo(install, 'team-b');
+    // Both URL forms below must resolve to the same local fixture.
+    git(['config', '--file', path.join(home, '.gitconfig'), '--add',
+      `url.${teamA.bare}.insteadOf`, teamA.url.replace(/\.git$/, '')], projectRoot);
 
     const initA = await runCLI(['init', teamA.url, '--scope', 'project', '--force'], projectRoot, home);
     expect(initA.code, initA.output).toBe(0);
