@@ -246,7 +246,9 @@ describe('real CLI usage cap (#788)', () => {
     f.receiver('slow');
     await f.pull(() => fs.appendFileSync(f.usage, line('late') + '\n' + line('late') + '\n'));
     expect(lines(f.usage)).toEqual([expect.stringContaining('"late"'), expect.stringContaining('"late"')]);
-    expect(f.stats().skills.legacy.count).toBe(100);
+    // #1056: `legacy` is not in the team's shared catalog, so the privacy filter keeps it
+    // out of the published stats; the events read before the append still reported `review`.
+    expect(f.stats().skills.legacy).toBeUndefined();
     expect(f.stats().skills.review.count).toBe(cap);
   }, 60_000);
 });
