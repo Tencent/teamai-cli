@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   adaptersByPlatform: {} as Record<string, unknown>,
   /** migrate.js mock 的 preview 返回值（Error 时抛出）；agent-session.js mock 的 copy 返回值 */
   previewResult: null as unknown,
+  previewCalls: [] as Array<{ session: unknown; source: string; target: string }>,
   copyResult: null as unknown,
   /** The OS the commands' `noAdapter` checks judge by; this machine's when unset. */
   os: undefined as NodeJS.Platform | undefined,
@@ -119,14 +120,9 @@ vi.mock('../session-flow/adapters/index.js', () => ({
 }));
 
 vi.mock('../session-flow/migrate.js', () => ({
-  MigrationEngine: class {
-    constructor(
-      public readonly source: string,
-      public readonly target: string,
-    ) {}
-    preview(): unknown {
-      return mocks.previewResult;
-    }
+  previewMigration: (session: unknown, source: string, target: string): unknown => {
+    mocks.previewCalls.push({ session, source, target });
+    return mocks.previewResult;
   },
   resolveTargetCwd: (explicit: string | undefined, sourceCwd: string | undefined) => explicit ?? sourceCwd,
 }));
@@ -186,6 +182,7 @@ beforeEach(() => {
   mocks.gitCalls.length = 0;
   mocks.adaptersByPlatform = {};
   mocks.previewResult = null;
+  mocks.previewCalls.length = 0;
   mocks.copyResult = null;
   mocks.os = undefined;
   mocks.heldArchiveLock = '';
@@ -714,16 +711,13 @@ describe('session migrate interactive picker', () => {
       filePath: '/tmp/tgt.jsonl',
       fidelity: { score: 1 },
     };
-    const { MigrationEngine } = await import('../session-flow/migrate.js');
-    const previewSpy = vi.spyOn(MigrationEngine.prototype, 'preview');
-
     feedAnswers(['n', '11']);
     await runSession('migrate', '-s', 'fakeplat', '-t', 'tgtplat', '--cwd', '/run/dir');
 
     // The picker is on page 2 by the time the number is entered, and the
     // selected id is the 11th newest -- unreachable before paging existed.
     expect(out.join('\n')).toContain('page 2/2');
-    expect(previewSpy).toHaveBeenCalledWith(sessions[1]);
+    expect(mocks.previewCalls).toContainEqual({ session: sessions[1], source: 'fakeplat', target: 'tgtplat' });
   });
 
   it('cancels on an empty answer instead of paging forever', async () => {

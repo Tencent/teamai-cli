@@ -22,7 +22,7 @@ import type { Command } from 'commander';
 import readline from 'node:readline';
 import * as path from 'node:path';
 import { getAdapter, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
-import { MigrationEngine, resolveTargetCwd } from './migrate.js';
+import { previewMigration, resolveTargetCwd } from './migrate.js';
 import {
   AgentSession,
   noAdapter,
@@ -669,7 +669,6 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         }
       }
 
-      const engine = new MigrationEngine(source, target);
       const toolRootsFor = toolRootsLookup();
       let migrated = 0;
       let reused = 0;
@@ -694,7 +693,7 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
           failed++;
           continue;
         }
-        const preview = engine.preview(found.session);
+        const preview = previewMigration(found.session, source, target);
 
         console.log(`\n  Migration Preview`);
         console.log(`  ─────────────────────────────────`);
