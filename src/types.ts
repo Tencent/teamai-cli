@@ -3091,6 +3091,36 @@ export interface MRData {
   author?: string;
   /** MR 原始 URL */
   url: string;
+  /**
+   * The MR's review threads, in the order the platform returns them, without
+   * system notes or teamai's own CI comments. Absent when the fetch left them
+   * out (`--no-discussions`) or the platform has none (#1187).
+   */
+  discussions?: MRThread[];
+}
+
+/** One note of an MR review thread. */
+export interface MRThreadNote {
+  /** Username; the extraction prompt marks it as the MR author or a reviewer. */
+  author?: string;
+  body: string;
+}
+
+/** An MR review thread, with the diff position it is anchored to when it has one. */
+export interface MRThread {
+  /** Path of the file the thread is anchored to, for a diff comment. */
+  file?: string;
+  line?: number;
+  /** Whether the platform marks the thread resolved; undefined when it does not say. */
+  resolved?: boolean;
+  /** The notes in order; the first opens the thread. */
+  notes: MRThreadNote[];
+}
+
+/** What `fetchMergeRequest` reads besides the MR, its commits and its diff. */
+export interface MRFetchOptions {
+  /** Read the review threads too (default true). */
+  discussions?: boolean;
 }
 
 /**

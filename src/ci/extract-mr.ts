@@ -32,6 +32,8 @@ export interface CiExtractMrOptions {
   output?: string;
   dryRun?: boolean;
   individualComments?: boolean;
+  /** Read the MR's review threads into the extraction; `--no-discussions` sets false (#1187) */
+  discussions?: boolean;
 }
 
 // ─── Git User 配置 ───────────────────────────────────────
@@ -239,12 +241,18 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
   // AI 提炼（复用 importFromMR）
   let learning: LearningDraft | undefined;
 
+  // The team repo's `language: en` makes the learning English (#1187).
+  const language = opts.teamRepo
+    ? (await import('../config.js').then(({ loadTeamConfig }) => loadTeamConfig(opts.teamRepo!)))?.language
+    : undefined;
   const result = await importFromMR({
     url: opts.url,
     all: true,
     // learnings-root ok: CI runs against a bare checkout, with no LocalConfig
     learningsDirs: opts.teamRepo ? [path.join(opts.teamRepo, 'learnings')] : undefined,
     dryRun: true, // 不让 importFromMR 自己写文件，我们自己控制写入
+    discussions: opts.discussions,
+    language,
   });
   learning = result.learning;
 

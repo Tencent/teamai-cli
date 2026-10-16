@@ -392,6 +392,7 @@ Generated: do not edit by hand. Regenerate with
   - `--dir <path>` — Extract code knowledge from a local directory (same as --from-repo but no clone)
   - `--from-claude` (hidden) — Scan Claude/Cursor rule directories (the Claude root's rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)
   - `--from-mr <url...>` — Extract learning from one or more merged MRs/PRs and trigger incremental teamwiki update
+  - `--no-discussions` — Leave the MR's review threads out of the extraction (with --from-mr)
   - `--from-iwiki <space-id-or-url>` — Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)
   - `--resume` (hidden) — Resume an interrupted import session
   - `--all` — Accept all suggestions without interactive confirmation
@@ -453,3 +454,4 @@ Generated: do not edit by hand. Regenerate with
     - `--write-mode <mode>` — Write strategy: direct | pending-review
     - `--output <dir>` — Write artifacts to directory
     - `--individual-comments` — Post each suggestion as separate comment with reaction/resolve support
+    - `--no-discussions` — Leave the MR's review threads out of the extraction

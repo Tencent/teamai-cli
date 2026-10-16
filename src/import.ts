@@ -26,6 +26,8 @@ interface ImportOptions extends GlobalOptions {
   fromClaude?: boolean;
   /** Extract knowledge from one or more merged MR/PR URLs */
   fromMr?: string | string[];
+  /** Read the MR's review threads into the extraction; `--no-discussions` sets false (#1187) */
+  discussions?: boolean;
   /** iWiki Space ID or page URL for bulk importing iWiki documents */
   fromIwiki?: string;
   /** Whether to resume an interrupted import session */
@@ -250,6 +252,9 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
               return queued.path;
             },
             dryRun: opts.dryRun,
+            discussions: opts.discussions,
+            // `language: en` in teamai.yaml makes the learning English (#1187).
+            language: teamConfig?.language,
           });
           extractedAll.push({ url, ...extracted });
         } catch (e: unknown) {
