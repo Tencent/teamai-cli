@@ -21,7 +21,7 @@
       {
         "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor --matcher Skill 2>/dev/null\" || true",
         "timeout": 10,
-        "matcher": "Skill"
+        "matcher": "Read"
       },
       {
         "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool cursor --matcher TodoWrite 2>/dev/null\" || true",
