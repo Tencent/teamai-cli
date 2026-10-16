@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { workflowConformanceScenarios, type WorkflowClient } from '../workflow/conformance.js';
-import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
+import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, withIgnored } from '../workflow/engine.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
 
@@ -41,14 +41,14 @@ describe('workflow protocol conformance in process', () => {
         next: async (runId, body) => {
           const parsed = parseNextPayload(body);
           if (typeof parsed === 'string') return { error: { code: 'invalid_json', message: parsed } };
-          const { driver: identity, ...options } = parsed;
-          return leaseNext(config, runId, identity, options);
+          const { driver: identity, ...options } = parsed.request;
+          return withIgnored(await leaseNext(config, runId, identity, options), parsed.ignored);
         },
         report: async (runId, body) => {
           const parsed = parseReport(body);
           return typeof parsed === 'string'
             ? { error: { code: 'invalid_report', message: parsed } }
-            : reportAttempt(config, runId, parsed);
+            : withIgnored(await reportAttempt(config, runId, parsed.report), parsed.ignored);
         },
       };
       const started = await client.start(scenario.workflowName);

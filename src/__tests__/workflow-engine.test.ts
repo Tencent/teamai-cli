@@ -6,7 +6,7 @@ import type { LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { leaseNext, parseReport, reportAttempt, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
+import { leaseNext, parseNextPayload, parseReport, reportAttempt, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
 import { runLocalDriver } from '../workflow/local-driver.js';
 import { outputMismatch } from '../workflow/output.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
@@ -104,7 +104,9 @@ describe('workflow engine', () => {
       tokens: { input: 2, output: 1, cachedInput: 1 },
       failure: { code: 'tool_failed', message: 'failed' },
     });
-    expect(parsed).toMatchObject({ tool: 'claude', model: 'sonnet', session: 'session-1', tokens: { input: 2 } });
+    if (typeof parsed === 'string') throw new Error(parsed);
+    expect(parsed.report).toMatchObject({ tool: 'claude', model: 'sonnet', session: 'session-1', tokens: { input: 2 } });
+    expect(parsed.ignored).toEqual([]);
     expect(parseReport({
       attempt: 'a00000000',
       revision: 1,
@@ -112,6 +114,30 @@ describe('workflow engine', () => {
       driver: driverA,
       tokens: { input: Number.NaN },
     })).toBe('tokens.input must be a finite number');
+  });
+
+  it('reports the payload fields a driver sent that the CLI does not read', () => {
+    const report = parseReport({
+      attempt: 'a00000000',
+      revision: 1,
+      outcome: 'success',
+      driver: { ...driverA, region: 'eu' },
+      tokenz: {},
+    });
+    if (typeof report === 'string') throw new Error(report);
+    expect(report.ignored).toEqual(['tokenz', 'driver.region']);
+
+    const known = parseReport({ attempt: 'a00000000', revision: 1, outcome: 'success', driver: driverA });
+    if (typeof known === 'string') throw new Error(known);
+    expect(known.ignored).toEqual([]);
+
+    const next = parseNextPayload({ driver: { ...driverA, region: 'eu' }, extra: 1 });
+    if (typeof next === 'string') throw new Error(next);
+    expect(next.ignored).toEqual(['extra', 'driver.region']);
+
+    const nextKnown = parseNextPayload({ driver: driverA, running: ['a00000000'], canTakeLease: true });
+    if (typeof nextKnown === 'string') throw new Error(nextKnown);
+    expect(nextKnown.ignored).toEqual([]);
   });
 
   it('leases steps in order and stores the outcome', async () => {

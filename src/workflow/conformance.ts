@@ -214,6 +214,20 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
     ],
   },
   {
+    name: 'report with an unread payload field lists it in ignored',
+    workflowName: 'build',
+    yaml: TWO_STEPS,
+    operations: [
+      { kind: 'next', saveAs: 'one', expect: { data: { lease: { step: 'one' } } } },
+      {
+        kind: 'report',
+        lease: 'one',
+        body: { outcome: 'success', tokenz: {} },
+        expect: { data: { accepted: true, ignored: ['tokenz'] } },
+      },
+    ],
+  },
+  {
     name: 'output mismatch fails the step',
     workflowName: 'build',
     yaml: TWO_STEPS.replace('  - id: one\n    command: echo one\n', '').replace('    needs: [one]\n', ''),

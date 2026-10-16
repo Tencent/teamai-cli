@@ -1,6 +1,6 @@
 import { autoDetectInit } from './config.js';
 import { setStderrOnly } from './utils/logger.js';
-import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun } from './workflow/engine.js';
+import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, withIgnored } from './workflow/engine.js';
 import { runLocalDriver } from './workflow/local-driver.js';
 import { scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
@@ -114,13 +114,13 @@ export async function workflowNext(runId: string, options: { json?: string }): P
     writeEnvelope(payload.envelope);
     return;
   }
-  const request = parseNextPayload(payload.value);
-  if (typeof request === 'string') {
-    writeEnvelope({ error: { code: 'invalid_json', message: request } });
+  const parsed = parseNextPayload(payload.value);
+  if (typeof parsed === 'string') {
+    writeEnvelope({ error: { code: 'invalid_json', message: parsed } });
     return;
   }
-  const { driver, ...next } = request;
-  writeEnvelope(await leaseNext(config, runId, driver, next));
+  const { driver, ...next } = parsed.request;
+  writeEnvelope(withIgnored(await leaseNext(config, runId, driver, next), parsed.ignored));
 }
 
 export async function workflowReport(runId: string, options: { json?: string }): Promise<void> {
@@ -133,10 +133,10 @@ export async function workflowReport(runId: string, options: { json?: string }):
     writeEnvelope(payload.envelope);
     return;
   }
-  const report = parseReport(payload.value);
-  if (typeof report === 'string') {
-    writeEnvelope({ error: { code: 'invalid_report', message: report } });
+  const parsed = parseReport(payload.value);
+  if (typeof parsed === 'string') {
+    writeEnvelope({ error: { code: 'invalid_report', message: parsed } });
     return;
   }
-  writeEnvelope(await reportAttempt(config, runId, report));
+  writeEnvelope(withIgnored(await reportAttempt(config, runId, parsed.report), parsed.ignored));
 }

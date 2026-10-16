@@ -65,6 +65,15 @@ function ok(value: Record<string, unknown>): WorkflowEnvelope {
   return { data: value };
 }
 
+/**
+ * Attaches the payload fields the CLI did not read to a success envelope. Left out when the list
+ * is empty, so the envelope of today's drivers does not change (#1164).
+ */
+export function withIgnored(envelope: WorkflowEnvelope, ignored: string[]): WorkflowEnvelope {
+  if (ignored.length === 0 || 'error' in envelope) return envelope;
+  return { data: { ...envelope.data, ignored } };
+}
+
 function sameDriver(left: DriverIdentity, right: DriverIdentity): boolean {
   return left.kind === right.kind && left.machine === right.machine && left.workspace === right.workspace;
 }
@@ -793,7 +802,45 @@ function driverFrom(value: unknown): DriverIdentity | undefined {
   return { kind: driver.kind, machine: driver.machine, workspace: driver.workspace };
 }
 
-export function parseReport(value: unknown): ReportInput | string {
+/** The driver fields `driverFrom` reads. Any other driver field is reported back as `driver.<field>`. */
+const DRIVER_FIELDS = new Set(['kind', 'machine', 'workspace']);
+
+/** The top-level payload fields `parseNextPayload` reads. */
+const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease']);
+
+/** The top-level payload fields `parseReport` reads. Keep in sync with the fields it picks. */
+const REPORT_FIELDS = new Set([
+  'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'tokens', 'failure',
+]);
+
+/**
+ * The payload fields this CLI does not read: top-level names first, then `driver.<field>` names.
+ * Names only, never values, because an unknown field may hold anything (#1164).
+ */
+function unreadFields(record: Record<string, unknown>, known: ReadonlySet<string>): string[] {
+  const ignored = Object.keys(record).filter((key) => !known.has(key));
+  const driver = record.driver;
+  if (driver !== null && typeof driver === 'object' && !Array.isArray(driver)) {
+    for (const key of Object.keys(driver)) {
+      if (!DRIVER_FIELDS.has(key)) ignored.push(`driver.${key}`);
+    }
+  }
+  return ignored;
+}
+
+/** A parsed report and the payload fields the CLI did not read from it. */
+export interface ParsedReport {
+  report: ReportInput;
+  ignored: string[];
+}
+
+/** A parsed `next` payload and the fields the CLI did not read from it. */
+export interface ParsedNextPayload {
+  request: NextRequest;
+  ignored: string[];
+}
+
+export function parseReport(value: unknown): ParsedReport | string {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return 'report must be a JSON object';
   const record = value as Record<string, unknown>;
   if (typeof record.attempt !== 'string' || record.attempt === '') return 'attempt must be a string';
@@ -836,7 +883,7 @@ export function parseReport(value: unknown): ReportInput | string {
     if (typeof value.message !== 'string') return 'failure.message must be a string';
     report.failure = { code: value.code, message: value.message };
   }
-  return report;
+  return { report, ignored: unreadFields(record, REPORT_FIELDS) };
 }
 
 /** A `next` payload: who the driver is, and what else it tells `next`. */
@@ -844,7 +891,7 @@ export interface NextRequest extends NextOptions {
   driver: DriverIdentity;
 }
 
-export function parseNextPayload(value: unknown): NextRequest | string {
+export function parseNextPayload(value: unknown): ParsedNextPayload | string {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return 'next payload must be a JSON object';
   const record = value as Record<string, unknown>;
   const driver = driverFrom(record.driver);
@@ -860,7 +907,7 @@ export function parseNextPayload(value: unknown): NextRequest | string {
     if (typeof record.canTakeLease !== 'boolean') return 'canTakeLease must be a boolean';
     request.canTakeLease = record.canTakeLease;
   }
-  return request;
+  return { request, ignored: unreadFields(record, NEXT_PAYLOAD_FIELDS) };
 }
 
 function rememberSettledAttempt(run: RunState, attempt: string): void {
