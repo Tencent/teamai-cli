@@ -386,8 +386,8 @@ const SUBAGENT_STOP_TOOLS = new Set([
 const WRAPPER_TOOLS = SHELL_DEPENDENT_TOOLS;
 
 
-/** What a tool names its Skill tool, where not `Skill`; the dispatcher still routes it as Skill. */
-const SKILL_TOOL_MATCHER: Readonly<Record<string, string>> = { copilot: 'skill', [MUSE_TOOL_ID]: 'read_skill' };
+/** What a tool names its Skill tool, where not `Skill`; dispatcher still uses --matcher Skill. Cursor loads skills via Read of SKILL.md (#1156). */
+const SKILL_TOOL_MATCHER: Readonly<Record<string, string>> = { cursor: 'Read', copilot: 'skill', [MUSE_TOOL_ID]: 'read_skill' };
 
 export function builtinHookDefs(tool: string): HookDef[] {
   // ZCode renders per-event timeouts from the ZCODE_TIMEOUT_MS table in its own
