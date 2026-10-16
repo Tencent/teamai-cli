@@ -31,18 +31,6 @@ export function localDriver(cwd: string): DriverIdentity {
   return { kind: 'local', machine, workspace: path.resolve(cwd) };
 }
 
-/**
- * The local driver builds its own payloads, so the CLI never ignores a field on this path.
- * A non-empty list here would be a bug (#1164).
- */
-function warnIgnored(envelope: WorkflowEnvelope): void {
-  if (isWorkflowError(envelope)) return;
-  const ignored = envelope.data.ignored;
-  if (Array.isArray(ignored) && ignored.length > 0) {
-    log.warn(`driver payload fields the CLI did not read: ${ignored.join(', ')}`);
-  }
-}
-
 interface CommandResult {
   exitCode: number;
   stdout: string;
@@ -385,7 +373,6 @@ export async function runLocalDriver(
   if (maxParallel > 1) for (const name of STOP_SIGNALS) process.on(name, onSignal);
   const report = async (body: ReportBody): Promise<WorkflowEnvelope | undefined> => {
     const answer = await reportAttempt(config, runId, body);
-    warnIgnored(answer);
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
     reported.add(body.attempt);
@@ -397,7 +384,6 @@ export async function runLocalDriver(
       const running = [...inFlight.keys(), ...held.map((lease) => lease.attempt)];
       const canTakeLease = room();
       const next = await leaseNext(config, runId, driver, { running, canTakeLease });
-      warnIgnored(next);
       if (signalled) continue;
       if (isWorkflowError(next)) return next;
       for (const attempt of Array.isArray(next.data.cancelled) ? next.data.cancelled as string[] : []) cancel(attempt);
