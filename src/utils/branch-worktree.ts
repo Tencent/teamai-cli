@@ -230,8 +230,12 @@ async function openWorktree(
 
   // Whether origin has the branch depends on none of the local steps below, so
   // it is asked while they run. Self mode asks after removing old checkouts: a
-  // refusal there stops before origin is asked.
-  let onOriginAnswer = isSelfMode(localConfig) ? null : remoteBranchExists(spec, repoRoot);
+  // refusal there stops before origin is asked. The probe must use the guarded
+  // factory during init pushes: an unbounded `ls-remote` against a stalled
+  // remote would outlive every other timeout and block CLI exit.
+  let onOriginAnswer = isSelfMode(localConfig)
+    ? null
+    : remoteBranchExists(spec, repoRoot, options.initPush);
 
   // Prune any dangling worktree registration left from a previous removal.
   try {
@@ -241,12 +245,12 @@ async function openWorktree(
   }
   if (isSelfMode(localConfig)) {
     await removeOldCheckoutsInDotTeamai(spec, git, wt);
-    onOriginAnswer = remoteBranchExists(spec, repoRoot);
+    onOriginAnswer = remoteBranchExists(spec, repoRoot, options.initPush);
   }
 
   // Local branches only, which the fetch below does not change.
   const branches = await git.branchLocal();
-  const onOrigin = await (onOriginAnswer ?? remoteBranchExists(spec, repoRoot, options.initPush));
+  const onOrigin = await onOriginAnswer;
   if (onOrigin !== null && onOrigin) {
     // Remote branch exists: fetch and check it out into the worktree.
     let fetched = false;

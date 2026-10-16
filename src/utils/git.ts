@@ -198,8 +198,8 @@ export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
 export function createGitForInitPush(basePath?: string): SimpleGit {
   const block = initPushBlockTimeoutMs();
   return basePath
-    ? simpleGit({ baseDir: basePath, timeout: { block } })
-    : simpleGit({ timeout: { block } });
+    ? simpleGit({ baseDir: basePath, binary: gitBinary(), timeout: { block } })
+    : simpleGit({ binary: gitBinary(), timeout: { block } });
 }
 
 /**
