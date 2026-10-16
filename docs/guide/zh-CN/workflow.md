@@ -2,7 +2,7 @@
 
 > 本文是 [TeamAI CLI 使用指南](../../usage-guide.zh-CN.md) 的一部分。
 
-工作流是团队仓库里的 `workflows/<name>.yaml`。它运行命令步骤和只读提示词步骤，每个步骤在它依赖的步骤之后运行。[高级工作流](workflow-advanced.md) 介绍并行步骤、循环、`for_each`、到达结局时仍在运行的步骤会怎样，以及完整的表达式语言。
+工作流是团队仓库里的 `workflows/<name>.yaml`。它运行命令步骤和提示词步骤，每个步骤在它依赖的步骤之后运行。没有 workspace 的命令是只读的；[工作区](#工作区)说明步骤如何在自己的分支上改代码。[高级工作流](workflow-advanced.md) 介绍并行步骤、循环、`for_each`、到达结局时仍在运行的步骤会怎样，以及完整的表达式语言。
 
 ```yaml
 schemaVersion: v1alpha1
@@ -112,7 +112,7 @@ workflows:
 teamai workflow start build --driver local
 ```
 
-`--driver local` 在当前目录里运行步骤，一次运行一个，除非 [`workflows.max_parallel`](workflow-advanced.md#并行运行本地命令) 大于 1。每次 attempt 的 `result.json` 位于当前 scope 的 TeamAI 数据目录中，不在产品检出目录内。提示词步骤只读；如果工具修改了仓库，步骤会失败，同时保留文件供检查。这也包括已有未跟踪目录内的文件变化；该目录保持不变时，步骤不会因此失败。驱动调用的 `next` 和 `report` 与下面相同：
+`--driver local` 在当前检出目录里运行没有 `workspace` 的步骤。这里的命令是只读的：退出码为 0 且改了仓库文件时，步骤失败，文件留在原地。已有未跟踪目录里的文件变化也算；该目录保持不变时，步骤不会因此失败。`workspace: new` 的步骤在自己的分支上改文件。见[工作区](#工作区)。共用当前检出目录的步骤一次只运行一个。不同工作树里的步骤可以一起运行，上限是 [`workflows.max_parallel`](workflow-advanced.md#并行运行本地命令)。每次 attempt 的 `result.json` 位于当前 scope 的 TeamAI 数据目录中，不在产品检出目录内。驱动调用的 `next` 和 `report` 与下面相同：
 
 ```text
 teamai workflow start build
@@ -123,6 +123,41 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 `outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next` 和 `report` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
 
 运行状态保存在当前 scope 的 TeamAI 数据目录里。命令结束后进程就退出。本地运行以 `failed` 结束时，退出码是 1。不会留下常驻的工作流进程。
+
+## 工作区
+
+没有 `workspace` 的命令是只读的，即使它位于父步骤打开的工作区里。它在当前检出目录中运行。退出码为 0 且改了仓库文件时，步骤以 `read_only_dirty` 失败，文件留在原地。没有 `workspace` 的提示词也一样，除非外层工作流或 `for_each` 打开了工作区。
+
+`workspace: new` 在独立的 git worktree 里运行该步骤，分支名带有这次运行、步骤和 pass。步骤会提交它改过的文件。当前检出目录不会被切换、重置或清理。在 `needs` 里列出它的后续步骤，从这些分支的第一个开始，再按 `needs` 的顺序合并其余分支。合并冲突会停在第一处。命令步骤以 `merge_conflict` 失败，消息里写明分支和文件。提示词步骤会被告知哪些文件仍有冲突、哪些分支还没合并。
+
+`workspace: continue` 留在外层 `workflow` 步骤用 `new` 打开的那条分支上。没有 `workspace` 的提示词会沿用这份副本。带 `workspace: new` 的 `for_each` 给每一项自己的分支，因此各项不共用一个 worktree。`steps.<id>.branches` 列出这些分支；某一项有分支时，对应的 `results` 条目带 `branch`。带 `after` 的项从它等待的那些分支开始。顶层的 `workspace: continue` 没有外层 `new` 时，步骤以 `workspace_base` 失败。
+
+步骤看到的是运行开始时那个提交上的 agent 文件：`AGENTS.md`、`CLAUDE.md`、`.claude`、`.codex`、`.opencode`、`.cursor`、`.agents` 和 `.githooks`。前一个步骤提交的 hook 不会在后面的步骤里运行。步骤自己改过的文件会被提交。
+
+检出目录有 `origin`，并且这一步产生了提交时，驱动会推送该分支。推送失败时步骤以 `push_failed` 失败，并保留 worktree。没有 `origin`，或这一步没有新提交时，运行仍然成功，并报告该分支。
+
+`session: continue` 用同一个工具恢复这一步上一 pass 的会话。`session: { from: <步骤> }` 恢复这一步所依赖的步骤。换成别的工具会开一个新会话。OpenCode 总是新开会话。
+
+自己启动沙箱的命令（例如 `docker`）仍然是只读的。它写出去的内容不会变成后续步骤可以合并的分支。
+
+```yaml
+schemaVersion: v1alpha1
+name: change
+description: Change two files on their own branches, then join them.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('left.txt', 'L')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('right.txt', 'R')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    command: node -e "require('fs').writeFileSync('joined.txt', 'J')"
+```
 
 ## 运行记录
 

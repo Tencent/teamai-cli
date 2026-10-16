@@ -13,6 +13,14 @@ const DriverSchema: z.ZodType<DriverIdentity> = z.object({ kind: z.string(), mac
 
 const LeaseSchema: z.ZodType<StepLease> = z.object({ attempt: z.string(), revision: z.number(), driver: DriverSchema });
 
+const ChangesSchema = z.object({
+  branch: z.string(),
+  base: z.string(),
+  from: z.string(),
+  to: z.string(),
+  commits: z.array(z.string()),
+});
+
 /** What a driver reports about the attempt that settled a step. */
 const report = {
   exitCode: z.number().optional(),
@@ -21,6 +29,7 @@ const report = {
   model: z.string().optional(),
   session: z.string().optional(),
   tokens: TokenUsageSchema.optional(),
+  changes: ChangesSchema.optional(),
 };
 
 export const OutcomeSchema = z.enum(['success', 'failed', 'skipped', 'cancelled']);
@@ -31,6 +40,7 @@ const ResultsSchema = z.array(z.object({
   item: z.unknown(),
   outcome: OutcomeSchema,
   outputs: z.unknown().optional(),
+  branch: z.string().optional(),
 }));
 export type ItemResult = z.infer<typeof ResultsSchema>[number];
 

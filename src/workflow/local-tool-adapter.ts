@@ -25,6 +25,8 @@ export interface LocalToolRun {
   cwd: string;
   resultPath: string;
   agent?: { name: string; instructions: string; model?: string };
+  /** A session id from the same tool. Claude and Codex resume it; OpenCode has no resume flag here. */
+  resume?: string;
 }
 
 export interface LocalToolResult {
@@ -65,13 +67,13 @@ function invocation(tool: LocalWorkflowTool, input: LocalToolRun): { command: st
   if (family === 'claude') {
     return {
       command: tool,
-      args: ['-p', prompt, '--output-format', 'json', ...(input.agent ? ['--agent', input.agent.name] : [])],
+      args: ['-p', prompt, '--output-format', 'json', ...(input.resume ? ['--resume', input.resume] : []), ...(input.agent ? ['--agent', input.agent.name] : [])],
     };
   }
   if (family === 'codex') {
     return {
       command: tool,
-      args: ['exec', '--json', ...(input.agent?.model ? ['--model', input.agent.model] : []), prompt],
+      args: ['exec', ...(input.resume ? ['resume', input.resume] : []), '--json', ...(input.agent?.model ? ['--model', input.agent.model] : []), prompt],
     };
   }
   return {

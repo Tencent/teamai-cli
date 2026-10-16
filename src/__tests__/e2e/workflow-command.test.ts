@@ -46,9 +46,12 @@ function envelope(stdout: string): { data?: Record<string, unknown>; error?: { c
 
 describe('command workflow CLI', () => {
   let repo: string;
+  let out: string;
 
   beforeAll(() => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-e2e-'));
+    out = path.join(path.dirname(repo), `${path.basename(repo)}-out`);
+    fs.mkdirSync(out);
     fs.writeFileSync(path.join(repo, 'README.md'), '# app\n');
     git(['init', '-q', '-b', 'main'], repo);
     git(['add', 'README.md'], repo);
@@ -66,11 +69,11 @@ describe('command workflow CLI', () => {
 
     const workflows = path.join(repo, '.teamai', 'workflows');
     fs.mkdirSync(workflows, { recursive: true });
-    fs.writeFileSync(path.join(repo, 'one.js'), "require('fs').writeFileSync('step-one.txt', '1')\n");
+    fs.writeFileSync(path.join(repo, 'one.js'), `require('fs').writeFileSync(${JSON.stringify(path.join(out, 'step-one.txt'))}, '1')\n`);
     fs.writeFileSync(path.join(repo, 'two.js'), [
       "const fs = require('fs')",
-      "if (fs.readFileSync('step-one.txt', 'utf8') !== '1') process.exit(1)",
-      "fs.writeFileSync('step-two.txt', '2')",
+      `if (fs.readFileSync(${JSON.stringify(path.join(out, 'step-one.txt'))}, 'utf8') !== '1') process.exit(1)`,
+      `fs.writeFileSync(${JSON.stringify(path.join(out, 'step-two.txt'))}, '2')`,
       '',
     ].join('\n'));
     fs.writeFileSync(path.join(workflows, 'build.yaml'), `schemaVersion: v1alpha1
@@ -110,7 +113,7 @@ steps:
     const completed = await runCLI(['workflow', 'start', 'build', '--driver', 'local'], repo);
     expect(completed.code, `${completed.stdout}\n${completed.stderr}`).toBe(0);
     expect(envelope(completed.stdout)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(fs.readFileSync(path.join(repo, 'step-two.txt'), 'utf8')).toBe('2');
+    expect(fs.readFileSync(path.join(out, 'step-two.txt'), 'utf8')).toBe('2');
 
     const started = await runCLI(['workflow', 'start', 'pause'], repo);
     expect(started.code, started.stdout).toBe(0);
@@ -143,8 +146,8 @@ steps:
     const done = await runCLI(['workflow', 'next', runId, '--json', driver], repo);
     expect(envelope(done.stdout).data).toMatchObject({ done: { outcome: 'succeeded' } });
 
-    fs.rmSync(path.join(repo, 'step-one.txt'));
-    fs.rmSync(path.join(repo, 'step-two.txt'));
+    fs.rmSync(path.join(out, 'step-one.txt'));
+    fs.rmSync(path.join(out, 'step-two.txt'));
     fs.writeFileSync(path.join(workflows, 'build.yaml'), 'schemaVersion: [\n');
     const repulled = await runCLI(['pull'], repo);
     const repullOutput = `${repulled.stdout}\n${repulled.stderr}`;
@@ -155,7 +158,7 @@ steps:
     const cached = await runCLI(['workflow', 'start', 'build', '--driver', 'local'], repo);
     expect(cached.code, `${cached.stdout}\n${cached.stderr}`).toBe(0);
     expect(envelope(cached.stdout)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(fs.readFileSync(path.join(repo, 'step-two.txt'), 'utf8')).toBe('2');
+    expect(fs.readFileSync(path.join(out, 'step-two.txt'), 'utf8')).toBe('2');
 
     const missing = await runCLI(['workflow', 'start', 'broken', '--driver', 'local'], repo);
     expect(missing.code, missing.stdout).toBe(1);

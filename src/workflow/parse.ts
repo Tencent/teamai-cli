@@ -18,7 +18,7 @@ import { loopProblems } from './loop.js';
 
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'ends', 'outputs', 'loop', 'steps']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'output', 'end', 'loop', 'break', 'for_each']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'output', 'end', 'loop', 'break', 'for_each', 'workspace', 'session']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
@@ -218,6 +218,8 @@ function parseBody(
   ctx: ParseContext,
   inputs: Record<string, OutputSchema> | undefined,
   itemBound: boolean,
+  parent?: { steps: WorkflowStep[]; needs?: string[] },
+  checks?: Array<() => void>,
 ): { workflow: InlineWorkflow; outer: ReadSite[] } {
   const { file, lineCounter, diagnostics, promptFileLocations, files } = ctx;
   const endsPair = root.items.find((pair) => scalarString(pair.key) === 'ends');
@@ -243,6 +245,8 @@ function parseBody(
   if (!isSeq(stepsNode) || stepsNode.items.length === 0) {
     diagnostics.push(locate(file, lineCounter, stepsNode ?? stepsPair?.key ?? root, `${at}steps`, 'steps must be a non-empty list'));
   } else {
+    const queue = checks ?? [];
+    const sessions: Array<{ id: string; from: string; node: Node; field: string }> = [];
     const seen = new Set<string>();
     const graph: GraphNode[] = [];
     const conditions: ConditionNode[] = [];
@@ -315,7 +319,7 @@ function parseBody(
       // The step's templates and the inline workflow it runs render once per item, so they read item as a template.
       const bindsItem = itemBound || forEachPair !== undefined;
       const inline = isMap(workflowPair?.value)
-        ? parseInline(workflowPair.value, `${field}.workflow`, label, ctx, inputs, bindsItem)
+        ? parseInline(workflowPair.value, `${field}.workflow`, label, ctx, inputs, bindsItem, { steps, needs }, queue)
         : undefined;
       const actions = ACTION_KEYS.map((key) => item.items.find((pair) => scalarString(pair.key) === key)).filter(Boolean);
       const endPair = item.items.find((pair) => scalarString(pair.key) === 'end');
@@ -466,6 +470,40 @@ function parseBody(
       } else if (outputPair) {
         diagnostics.push(locate(file, lineCounter, outputPair.key ?? item, `${field}.output`, 'output must be a shorthand type'));
       }
+      const workspacePair = item.items.find((pair) => scalarString(pair.key) === 'workspace');
+      const workspaceText = scalarString(workspacePair?.value)?.trim();
+      const workspace = workspaceText === 'read-only' || workspaceText === 'new' || workspaceText === 'continue' ? workspaceText : undefined;
+      if (workspacePair && !workspace) {
+        diagnostics.push({
+          ...locate(file, lineCounter, workspacePair.value ?? workspacePair.key ?? item, `${field}.workspace`, `${label} workspace must be read-only, new, or continue`),
+          code: 'bad_workspace',
+        });
+      }
+      const sessionPair = item.items.find((pair) => scalarString(pair.key) === 'session');
+      let session: WorkflowStep['session'];
+      if (sessionPair) {
+        const sessionText = scalarString(sessionPair.value)?.trim();
+        const fromPair = isMap(sessionPair.value) ? sessionPair.value.items.find((pair) => scalarString(pair.key) === 'from') : undefined;
+        const from = scalarString(fromPair?.value)?.trim();
+        const extra = isMap(sessionPair.value) && sessionPair.value.items.some((pair) => scalarString(pair.key) !== 'from');
+        if (sessionText === 'continue') session = { continue: true };
+        else if (from && !extra && TOKEN.test(from)) {
+          session = { from };
+          if (id && TOKEN.test(id)) sessions.push({ id, from, node: (fromPair?.value ?? sessionPair.value) as Node, field: `${field}.session.from` });
+        } else {
+          diagnostics.push({
+            ...locate(file, lineCounter, sessionPair.value ?? sessionPair.key ?? item, `${field}.session`, `${label} session must be continue, or { from: <step> }`),
+            code: 'bad_session',
+          });
+        }
+        if (session && (workflowPair || endPair && actions.length === 0)) {
+          diagnostics.push({
+            ...locate(file, lineCounter, sessionPair.key ?? item, `${field}.session`, `${label} session is only allowed on a command or prompt step`),
+            code: 'bad_session',
+          });
+          session = undefined;
+        }
+      }
       if (id && TOKEN.test(id) && (actions.length === 1 || endPair) && !diagnostics.some((d) => d.field === field || d.field.startsWith(`${field}.`))) {
         steps.push({
           id,
@@ -484,9 +522,13 @@ function parseBody(
           ...(loop ? { loop } : {}),
           ...(breakSource !== undefined ? { break: breakSource } : {}),
           ...(forEach ? { forEach } : {}),
+          ...(workspace ? { workspace } : {}),
+          ...(session ? { session } : {}),
         });
       }
     });
+    queue.push(() => diagnostics.push(...sessionProblems(file, lineCounter, steps, parent, sessions)));
+    if (!checks) for (const check of queue) check();
     diagnostics.push(...graphDiagnostics(ctx, graph, seen));
     diagnostics.push(...conditionDiagnostics(ctx, conditions, reads));
     const needsById = new Map(graph.map((step) => [step.id, step.needs]));
@@ -527,6 +569,8 @@ function parseInline(
   ctx: ParseContext,
   inputs: Record<string, OutputSchema> | undefined,
   itemBound: boolean,
+  parent?: { steps: WorkflowStep[]; needs?: string[] },
+  checks?: Array<() => void>,
 ): { workflow: InlineWorkflow; outer: ReadSite[] } {
   const { file, lineCounter, diagnostics } = ctx;
   for (const pair of node.items) {
@@ -540,7 +584,51 @@ function parseInline(
       diagnostics.push(locate(file, lineCounter, pair.key, `${field}.${key}`, `${label} runs an inline workflow, which carries only steps, outputs, ends, and loop`));
     }
   }
-  return parseBody(node, `${field}.`, `${label} workflow`, ctx, inputs, itemBound);
+  return parseBody(node, `${field}.`, `${label} workflow`, ctx, inputs, itemBound, parent, checks);
+}
+
+function needsReach(start: string[] | undefined, target: string, steps: Map<string, WorkflowStep>): boolean {
+  const seen = new Set<string>();
+  const stack = [...start ?? []];
+  while (stack.length > 0) {
+    const id = stack.pop();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    if (id === target) return true;
+    stack.push(...steps.get(id)?.needs ?? []);
+  }
+  return false;
+}
+
+/** `session.from` must name a step this one waits for, in its own workflow or the enclosing one, and not a `for_each`. */
+function sessionProblems(
+  file: string,
+  lineCounter: LineCounter,
+  steps: WorkflowStep[],
+  parent: { steps: WorkflowStep[]; needs?: string[] } | undefined,
+  sites: Array<{ id: string; from: string; node: Node; field: string }>,
+): WorkflowDiagnostic[] {
+  const local = new Map(steps.map((step) => [step.id, step]));
+  const enclosing = new Map((parent?.steps ?? []).map((step) => [step.id, step]));
+  const problems: WorkflowDiagnostic[] = [];
+  for (const site of sites) {
+    const own = local.get(site.from);
+    const target = own ?? enclosing.get(site.from);
+    const reject = (message: string): void => {
+      problems.push({ ...locate(file, lineCounter, site.node, site.field, message), code: 'bad_session' });
+    };
+    if (!target) {
+      reject(`step "${site.id}" session.from names "${site.from}", which is not a step it can read`);
+      continue;
+    }
+    if (target.forEach) {
+      reject(`step "${site.id}" session.from names "${site.from}", which is a for_each step`);
+      continue;
+    }
+    const reached = own ? needsReach(local.get(site.id)?.needs, site.from, local) : needsReach(parent?.needs, site.from, enclosing);
+    if (!reached) reject(`step "${site.id}" session.from names "${site.from}", which is not a step it needs, directly or through its needs`);
+  }
+  return problems;
 }
 
 /** A step that runs a workflow file by name. */

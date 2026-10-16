@@ -17,6 +17,7 @@ import { cancel, fail, lease, release, settled, skip, start, stopped, succeed, t
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, topScope, type Scope } from './scope.js';
+import { planWorkspace, plannedBranch, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
 import { generateRunId, isRunId, readRun, runLockPath, writeRun } from './store.js';
 import type {
   CachedWorkflow,
@@ -55,6 +56,8 @@ export interface ReportInput {
   session?: string;
   tokens?: TokenUsage;
   failure?: WorkflowFailure;
+  /** The branch this attempt committed, when it ran in a workspace. */
+  changes?: { branch: string; base: string; from: string; to: string; commits: string[] };
 }
 
 function error(code: string, message: string): WorkflowEnvelope {
@@ -173,7 +176,9 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
   };
 }
 
-function leaseData(run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease): Record<string, unknown> {
+function leaseData(
+  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease, plan?: WorkspacePlan,
+): Record<string, unknown> {
   return { lease: {
     run: run.id,
     step: state.id,
@@ -185,7 +190,16 @@ function leaseData(run: RunState, state: LeasedStep, definition: WorkflowStep, r
     ...(rendered.prompt !== undefined ? { prompt: rendered.prompt } : {}),
     ...(definition.agent !== undefined ? { agent: definition.agent } : {}),
     ...(definition.output ? { output: definition.output } : {}),
+    ...(plan?.contract ? { workspace: plan.contract } : {}),
+    ...(plan?.session ? { session: plan.session } : {}),
   } };
+}
+
+/** Records who opened a workspace the first time this driver takes its branch. */
+function rememberCopy(run: RunState, plan: WorkspacePlan, driver: DriverIdentity): void {
+  const branch = plan.contract?.branch;
+  if (!branch || run.copies?.[branch]) return;
+  (run.copies ??= {})[branch] = { owner: driver };
 }
 
 /**
@@ -724,6 +738,10 @@ export interface NextOptions {
   running?: string[];
   /** False to reconcile without issuing a new lease: `next` answers `done`, an unlisted lease, or `wait`. */
   canTakeLease?: boolean;
+  /** The checkout the run's workspaces start from. The first `next` that sends it fixes the run's base. */
+  base?: { ref: string; commit: string };
+  /** Workspace modes this driver can run. Omitted means read-only, so a `new` or `continue` step waits. */
+  workspaceModes?: WorkspaceMode[];
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
@@ -775,13 +793,30 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       const leased = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !running.has(step.lease.attempt));
       if (!leased) {
         if (options.canTakeLease === false || 'inProgress' in result) return wait();
+        const located = locateStep(run, result.lease.id);
+        if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${result.lease.id}"`) };
+        const plan = planWorkspace(run, located.scope, result.lease, result.definition, {
+          driver, modes: options.workspaceModes, base: run.base ?? options.base,
+        });
+        if (plan.defer) return answer({ wait: { reason: plan.defer } });
+        if (plan.fail) {
+          failStep(result.lease, plan.fail, run.revision);
+          continue;
+        }
+        if (plan.contract && options.base && !run.base) run.base = options.base;
         const step = lease(result.lease, { attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver });
-        return answer(leaseData(run, step, result.definition, result.rendered));
+        rememberCopy(run, plan, driver);
+        return answer(leaseData(run, step, result.definition, result.rendered, plan));
       }
       const located = locateStep(run, leased.id);
       if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${leased.id}"`) };
       const rendered = renderLease(located.scope, statesIn(run, located.scope), leased, located.step);
-      if (!('code' in rendered)) return answer(leaseData(run, leased, located.step, rendered));
+      if (!('code' in rendered)) {
+        const plan = planWorkspace(run, located.scope, leased, located.step, {
+          driver, modes: options.workspaceModes, base: run.base ?? options.base,
+        }, true);
+        return answer(leaseData(run, leased, located.step, rendered, plan.fail ? undefined : plan));
+      }
       failStep(leased, rendered, leased.lease.revision);
     }
   });
@@ -803,14 +838,14 @@ function driverFrom(value: unknown): DriverIdentity | undefined {
 }
 
 /** The driver fields `driverFrom` reads. Any other driver field is reported back as `driver.<field>`. */
-const DRIVER_FIELDS = new Set(['kind', 'machine', 'workspace']);
+const DRIVER_FIELDS = new Set(['kind', 'machine', 'workspace', 'can']);
 
 /** The top-level payload fields `parseNextPayload` reads. */
-const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease']);
+const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base']);
 
 /** The top-level payload fields `parseReport` reads. Keep in sync with the fields it picks. */
 const REPORT_FIELDS = new Set([
-  'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'tokens', 'failure',
+  'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'tokens', 'failure', 'changes',
 ]);
 
 /**
@@ -883,6 +918,17 @@ export function parseReport(value: unknown): ParsedReport | string {
     if (typeof value.message !== 'string') return 'failure.message must be a string';
     report.failure = { code: value.code, message: value.message };
   }
+  if (record.changes !== undefined) {
+    if (!record.changes || typeof record.changes !== 'object' || Array.isArray(record.changes)) return 'changes must be an object';
+    const value = record.changes as Record<string, unknown>;
+    if (typeof value.branch !== 'string' || typeof value.base !== 'string' || typeof value.from !== 'string' || typeof value.to !== 'string') {
+      return 'changes must include branch, base, from, and to';
+    }
+    if (!Array.isArray(value.commits) || !value.commits.every((commit): commit is string => typeof commit === 'string')) {
+      return 'changes.commits must be an array of strings';
+    }
+    report.changes = { branch: value.branch, base: value.base, from: value.from, to: value.to, commits: value.commits };
+  }
   return { report, ignored: unreadFields(record, REPORT_FIELDS) };
 }
 
@@ -907,6 +953,27 @@ export function parseNextPayload(value: unknown): ParsedNextPayload | string {
     if (typeof record.canTakeLease !== 'boolean') return 'canTakeLease must be a boolean';
     request.canTakeLease = record.canTakeLease;
   }
+  if (record.base !== undefined) {
+    if (!record.base || typeof record.base !== 'object' || Array.isArray(record.base)) return 'base must be an object';
+    const base = record.base as Record<string, unknown>;
+    if (typeof base.ref !== 'string' || base.ref === '' || typeof base.commit !== 'string' || base.commit === '') {
+      return 'base must include ref and commit';
+    }
+    request.base = { ref: base.ref, commit: base.commit };
+  }
+  const rawDriver = record.driver;
+  if (rawDriver && typeof rawDriver === 'object' && 'can' in rawDriver) {
+    const can = (rawDriver as { can?: unknown }).can;
+    if (!can || typeof can !== 'object' || Array.isArray(can)) return 'driver.can must be an object';
+    const workspace = (can as { workspace?: unknown }).workspace;
+    if (workspace !== undefined) {
+      const modes = ['read-only', 'new', 'continue'];
+      if (!Array.isArray(workspace) || !workspace.every((mode): mode is WorkspaceMode => modes.includes(mode as WorkspaceMode))) {
+        return 'driver.can.workspace must list read-only, new, or continue';
+      }
+      request.workspaceModes = workspace;
+    }
+  }
   return { request, ignored: unreadFields(record, NEXT_PAYLOAD_FIELDS) };
 }
 
@@ -918,6 +985,17 @@ function rememberSettledAttempt(run: RunState, attempt: string): void {
   run.settledAttempts.push(attempt);
   const extra = run.settledAttempts.length - SETTLED_ATTEMPTS_LIMIT;
   if (extra > 0) run.settledAttempts.splice(0, extra);
+}
+
+/** A later leaf still runs in `branch`. Workflow and `for_each` steps are not leaves; their children are. */
+function branchStillUsed(run: RunState, branch: string, except: string): boolean {
+  for (const item of run.steps) {
+    if (item.id === except || settled(item)) continue;
+    const located = locateStep(run, item.id);
+    if (!located || located.step.workflow !== undefined || (located.step.forEach && !isItem(item))) continue;
+    if (plannedBranch(run, located.scope, item, located.step) === branch) return true;
+  }
+  return false;
 }
 
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope> {
@@ -975,16 +1053,24 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       model: report.model,
       session: report.session,
       tokens: report.tokens,
+      ...(report.changes ? { changes: report.changes } : {}),
     };
+    if (report.changes) {
+      const copy = (run.copies ??= {})[report.changes.branch] ?? { owner: report.driver };
+      copy.commit = report.changes.to;
+      run.copies[report.changes.branch] = copy;
+    }
     const settledStep = outcome === 'released' ? release(step)
       : outcome === 'success' ? succeed(step, { ...settlement, ...(report.outputs !== undefined ? { outputs: report.outputs } : {}) })
         : fail(step, { ...settlement, failure });
+    const cleanup = outcome === 'success' && report.changes !== undefined && !branchStillUsed(run, report.changes.branch, settledStep.id);
     return {
       save: true,
       envelope: ok({
         accepted: true,
         revision: run.revision,
         step: { id: settledStep.id, status: settledStep.status, outcome },
+        ...(cleanup ? { cleanup: true } : {}),
       }),
     };
   });

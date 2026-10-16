@@ -105,7 +105,12 @@ export function startedItems(items: StepState[]): number {
 export function itemsSettled(items: StepState[], settledAt: number): { outcome: 'succeeded' | 'failed'; settledAt: number; results: ItemResult[] } {
   const results = items.map((state): ItemResult => {
     const pass = passOf(state);
-    return { item: state.item, outcome: pass?.outcome ?? 'skipped', ...(pass?.outputs !== undefined ? { outputs: pass.outputs } : {}) };
+    return {
+      item: state.item,
+      outcome: pass?.outcome ?? 'skipped',
+      ...(pass?.outputs !== undefined ? { outputs: pass.outputs } : {}),
+      ...(pass?.changes ? { branch: pass.changes.branch } : {}),
+    };
   });
   return {
     outcome: items.some(stopped) ? 'failed' : 'succeeded',

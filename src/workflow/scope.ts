@@ -2,7 +2,7 @@
  * Scopes: the workflows inside a run, and the step instances directly in each. The instances of a scope are read from an
  * index kept per `run.steps` array, so settling one scope does not scan every step of the run.
  */
-import type { ExpressionStep } from './expression.js';
+import { branchNames, type ExpressionStep } from './expression.js';
 import { isItem } from './fan-out.js';
 import { passesOf, previousPass, stepLoops, type StepLoops } from './loop.js';
 import { parseStepPath } from './step-path.js';
@@ -133,6 +133,7 @@ function expressionSteps(scope: Scope, states: StepState[], reader?: StepState):
     ...('end' in step && step.end !== undefined ? { end: step.end } : {}),
     ...('outputs' in step && step.outputs !== undefined ? { outputs: step.outputs } : {}),
     ...('results' in step && step.results !== undefined ? { results: step.results } : {}),
+    ...('results' in step && branchNames(step.results) ? { branches: branchNames(step.results) } : {}),
     passes: passesOf(step),
   }])) };
 }

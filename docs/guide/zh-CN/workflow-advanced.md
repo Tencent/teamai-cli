@@ -61,11 +61,11 @@ workflows:
   max_parallel: 4
 ```
 
-提示词步骤总是单独运行。驱动等所有命令都退出后才启动它，它结束前不会启动任何命令。只读检查会比较提示词运行前后的整个工作树，所以提示词运行期间修改文件的命令会让它失败。
+当前检出目录里的提示词要等该目录空闲后才启动，结束前该目录里不会再启动别的步骤。只读检查比较的是这个检出目录在提示词前后的状态。`workspace: new` 的提示词在自己的 worktree 里运行，因此可以和其他 worktree 里的步骤重叠，上限是 `max_parallel`。没有 `workspace` 的命令共用检出目录，并且和那里的其他步骤一次只运行一个。
 
 `max_parallel` 大于 1 时：
 
-- 命令共用工作树。两个命令写同一个文件时可能互相覆盖。
+- 没有 `workspace` 的命令共用检出目录，一次只运行一个。后一个命令能看到前一个留下的文件。`workspace: new` 的命令使用各自的 worktree，可以一起运行。
 - 每个命令都在没有终端的情况下运行，因此无法读取你的输入。
 - 收到 Ctrl-C，或 SIGTERM、SIGQUIT、SIGHUP 时，teamai 停止所有命令，等它们退出，然后以该信号退出。
 
@@ -168,6 +168,8 @@ steps:
 ```json
 [{"item":{"id":"core","dir":"packages/core"},"outcome":"success"},{"item":{"id":"cli","dir":"packages/cli"},"outcome":"failed"}]
 ```
+
+某一项在工作区里运行时，对应条目还有 `branch`。`steps.<id>.branches` 按同样的顺序列出这些分支。
 
 带 `for_each` 的步骤没有自己的输出，不带 `for_each` 的步骤没有 results。读取其中任何一个，pull 都会拒绝，包括在工作流 outputs 和之前的 pass 中的读取。要读取某一项，请对 results 使用下标，例如 `steps.build.results[1].outcome`。
 
@@ -466,7 +468,7 @@ steps:
 | 输入 | `inputs.issue`、`inputs.issue.labels` |
 | 步骤的 outcome、结局或输出 | `steps.check.outcome`、`steps.check.end`、`steps.review.outputs.files` |
 | 步骤的每个 pass | `steps.review.passes`、`steps.review.passes[0].outputs.verdict`。见[读取每一个 pass](#读取每一个-pass)。 |
-| `for_each` 步骤的 results | `steps.build.results`、`steps.build.results[0].outcome` |
+| `for_each` 步骤的 results | `steps.build.results`、`steps.build.results[0].outcome`、`steps.build.branches` |
 | `for_each` 实例的项 | `item`、`item.dir` |
 | 字符串 | `'failed'`。使用单引号。字符串里的单引号写两次：`'it''s'`。 |
 | 数字 | `3`、`-1`、`1.5`。小数点前要有数字：写 `0.5`，不写 `.5`。 |
@@ -479,7 +481,7 @@ steps:
 
 `[n]` 读取数组的第 `n` 个元素，从 0 开始计数：`steps.review.outputs.files[0].path`、`inputs.tags[1]` 或 `steps.grid.outputs.rows[1][0]`。超出末尾的下标，或对非数组值使用的下标，读作 `null`。
 
-下标是从 0 开始的整数。`[-1]`、`[01]` 和 `[inputs.n]` 无法解析。下标读取 `inputs`、`outputs`、`passes`、`results` 或 `item` 里的数组。它不能跟在步骤 id、`outcome` 或 `end` 后面，所以 `steps.build[2].outcome` 无法解析。
+下标是从 0 开始的整数。`[-1]`、`[01]` 和 `[inputs.n]` 无法解析。下标读取 `inputs`、`outputs`、`passes`、`results`、`branches` 或 `item` 里的数组。它不能跟在步骤 id、`outcome` 或 `end` 后面，所以 `steps.build[2].outcome` 无法解析。
 
 ### 运算符和优先级
 
