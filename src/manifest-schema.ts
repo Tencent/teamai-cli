@@ -43,6 +43,12 @@ const TRAILING_DOT_OR_SPACE = /[ .]$/;
 // accepted, and narrowing it would break manifests that parse today.
 const WINDOWS_DEVICE_NAME = /^(con|conin\$|conout\$|prn|aux|nul|(com|lpt)[1-9\u00b9\u00b2\u00b3])(\.|$)/i;
 
+/**
+ * A manifest this CLI reads from `manifest/`. Names the file in every error a
+ * manifest read or parse produces, so one spelling serves all of them.
+ */
+export type ManifestKind = 'projects' | 'roles' | 'members';
+
 /** True if `seg` is safe to use as a single path segment (no separators, no `..`). */
 export function isSafeNamespaceSegment(seg: string): boolean {
   return seg.length > 0
@@ -158,7 +164,7 @@ export function fallbackNamespaceError(ids: string[], source: string): string | 
  * it do: one line naming the offending entry. A raw ZodError reaches the CLI as
  * an object dump, which tells an admin nothing about which line to edit.
  */
-export function parseManifest<S extends z.ZodTypeAny>(schema: S, raw: unknown, kind: 'projects' | 'roles'): z.infer<S> {
+export function parseManifest<S extends z.ZodTypeAny>(schema: S, raw: unknown, kind: ManifestKind): z.infer<S> {
   const parsed = schema.safeParse(raw);
   if (parsed.success) return parsed.data;
 
@@ -200,7 +206,7 @@ async function danglingLinkOnPath(target: string): Promise<string | null> {
  * then drop its filtering because the file is unreadable or empty — the fail-open
  * direction. Absence returns `null` here; anything else throws.
  */
-export async function readManifestFile(manifestPath: string, kind: 'projects' | 'roles'): Promise<string | null> {
+export async function readManifestFile(manifestPath: string, kind: ManifestKind): Promise<string | null> {
   // `repo.localPath` is documented as `~/.teamai/...`; the helpers this replaced
   // expanded it, and a path left unexpanded would be searched under the current
   // directory, read as absent, and relax the filtering.
@@ -217,7 +223,10 @@ export async function readManifestFile(manifestPath: string, kind: 'projects' | 
     throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${(error as Error).message}. Make it a readable file, then retry.`);
   }
   if (content.trim() === '') {
-    throw new Error(`Invalid ${kind} manifest: ${resolvedPath} is empty. Give it a version and a ${kind} list; deleting it instead turns ${kind} filtering off for the whole team.`);
+    const consequence = kind === 'members'
+      ? 'deleting it instead hands role selection back to each member'
+      : `deleting it instead turns ${kind} filtering off for the whole team`;
+    throw new Error(`Invalid ${kind} manifest: ${resolvedPath} is empty. Give it a version and a ${kind} list; ${consequence}.`);
   }
   return content;
 }
