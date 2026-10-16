@@ -124,7 +124,7 @@ describe('hooks E2E — real file I/O', () => {
       }
     });
 
-    it('PostToolUse dispatch hook uses Skill matcher in both formats', async () => {
+    it('PostToolUse dispatch hook exists in both formats (Cursor host matcher Read)', async () => {
       const cp = claudePath();
       const kp = cursorPath();
       await injectHooks(cp, 'claude');
@@ -139,7 +139,11 @@ describe('hooks E2E — real file I/O', () => {
       const claudeSkillHook = claudePostTool.find((h) => h.matcher === 'Skill');
       expect(claudeSkillHook).toBeDefined();
 
-      const cursorSkillHook = cursorPostTool.find((h) => h.matcher === 'Skill');
+      // Cursor loads skills via Read of SKILL.md; host matcher is remapped to Read
+      // while the dispatch command still uses --matcher Skill (#1156).
+      const cursorSkillHook = cursorPostTool.find(
+        (h) => h.matcher === 'Read' && h.command.includes('--matcher Skill'),
+      );
       expect(cursorSkillHook).toBeDefined();
       expect(cursorSkillHook?.command).toContain('hook-dispatch');
     });
