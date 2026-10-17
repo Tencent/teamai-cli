@@ -6,7 +6,7 @@ import {
   indexedSkills, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills, type RolePullContext,
 } from './resources/desired.js';
 import type { IndexedSkills, UnreadableFile } from './utils/search-index.js';
-import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
+import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, refreshRoleAssignment, saveStateForScope } from './config.js';
 import { pullRepo, getHeadRev, getHeadCommit, createGit, getDefaultBranch, completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
@@ -1305,6 +1305,16 @@ async function pullForScope(
     }
     return;
   }
+
+  // manifest/members.yaml lives in the repo the refresh above just moved, so the
+  // roles read when the config loaded are the previous pull's (#1186).
+  // Re-resolving here is what lets a reassignment take effect on the pull that
+  // fetches it, rather than on the one after — by which time this pull has
+  // recorded the new revision as synced and the fast path skips it.
+  // Outside the refresh's try: a failure here is not a failure to fetch.
+  // In place: the hooks, MCP and env stages after this scope reconcile the
+  // object `pull` holds, and key `teamEnvs`/`instructions` on its identity.
+  await refreshRoleAssignment(localConfig);
 
   // Settle the placement records against the tree just refreshed, before
   // delivery reads them: a placement whose PR has merged becomes a record, one
