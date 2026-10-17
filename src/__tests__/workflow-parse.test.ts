@@ -842,3 +842,152 @@ describe('expressions in templates', () => {
     ]);
   });
 });
+
+describe('step model and defaults', () => {
+  it('reports model on a command or workflow step, with the file and step', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: compile
+    command: npm run build
+    model: strong
+  - id: check
+    needs: [compile]
+    workflow:
+      steps:
+        - id: lint
+          command: npm run lint
+    model: fast
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].model": model is only allowed on a prompt or prompt_file step',
+      'workflows/build.yaml:14: field "steps[1].model": model is only allowed on a prompt or prompt_file step',
+    ]);
+    expect(result.diagnostics.every((diagnostic) => diagnostic.code === undefined)).toBe(true);
+  });
+
+  it('reports a templated model on a step and in defaults as a validation error', () => {
+    for (const template of ['${{ inputs.m }}', '{{ inputs.m }}']) {
+      const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+inputs:
+  m: string
+defaults:
+  model: "${template}"
+steps:
+  - id: plan
+    prompt: Plan it.
+    model: "${template}"
+`);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+        'workflows/build.yaml:7: field "defaults.model": model cannot contain a template; write an alias or a model name as is',
+        'workflows/build.yaml:11: field "steps[0].model": model cannot contain a template; write an alias or a model name as is',
+      ]);
+    }
+  });
+
+  it('keeps a prompt step model and defaults.model as written', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  model: fast
+steps:
+  - id: plan
+    prompt: Plan it.
+    model: strong
+  - id: review
+    needs: [plan]
+    prompt_file: prompts/review.md
+    agent: reviewer
+    model: claude-opus-4.1
+  - id: summary
+    needs: [review]
+    prompt: Summarize it.
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.defaults).toEqual({ model: 'fast' });
+    expect(result.definition.steps.map((step) => step.model)).toEqual(['strong', 'claude-opus-4.1', undefined]);
+  });
+
+  it('rejects a model that is empty, not a string, or has spaces', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  model: 3
+steps:
+  - id: plan
+    prompt: Plan it.
+    model: ''
+  - id: review
+    needs: [plan]
+    prompt: Review it.
+    model: claude opus
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:5: field "defaults.model": model must be a non-empty string without spaces',
+      'workflows/build.yaml:9: field "steps[0].model": model must be a non-empty string without spaces',
+      'workflows/build.yaml:13: field "steps[1].model": model must be a non-empty string without spaces',
+    ]);
+  });
+
+  it('reports a defaults key this version does not know as unknown_key, and defaults that are not a mapping', () => {
+    const unknown = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  model: fast
+  requires: [git]
+steps:
+  - id: plan
+    prompt: Plan it.
+`);
+    expect(unknown.ok).toBe(false);
+    if (unknown.ok) return;
+    expect(unknown.diagnostics).toEqual([expect.objectContaining({ field: 'defaults.requires', line: 6, code: 'unknown_key' })]);
+
+    const scalar = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults: fast
+steps:
+  - id: plan
+    prompt: Plan it.
+`);
+    expect(scalar.ok).toBe(false);
+    if (scalar.ok) return;
+    expect(scalar.diagnostics.map(formatDiagnostic)).toEqual(['workflows/build.yaml:4: field "defaults": defaults must be a mapping']);
+  });
+
+  it('reports defaults on an inline workflow, which carries none', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: check
+    workflow:
+      defaults:
+        model: fast
+      steps:
+        - id: plan
+          prompt: Plan it.
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].workflow.defaults": step "check" runs an inline workflow, which carries only steps, outputs, ends, and loop',
+    ]);
+    expect(result.diagnostics[0]?.code).toBeUndefined();
+  });
+});
+

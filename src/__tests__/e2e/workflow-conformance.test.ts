@@ -76,6 +76,7 @@ describe('workflow protocol conformance through the CLI', () => {
           const value = envelope(result.stdout);
           expect(value).toMatchObject(operation.expect);
           if (operation.cancelled) expect('data' in value && value.data.cancelled).toEqual(operation.cancelled.map(attemptOf));
+          for (const field of operation.absent ?? []) expect('data' in value ? value.data.lease : undefined).not.toHaveProperty(field);
           if ('data' in value && value.data.lease) {
             leases.set(operation.saveAs, value.data.lease as { attempt: string; revision: number });
           }

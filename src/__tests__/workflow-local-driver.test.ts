@@ -794,3 +794,335 @@ steps:
     });
   });
 });
+
+describe('the model a prompt step runs on', () => {
+  type FakeTool = 'claude' | 'codex' | 'opencode';
+
+  const AGENT_FILES: Record<FakeTool, { dir: string; ext: string }> = {
+    claude: { dir: '.claude/agents', ext: '.md' },
+    codex: { dir: '.codex/agents', ext: '.toml' },
+    opencode: { dir: '.opencode/agents', ext: '.md' },
+  };
+
+  /** What each tool prints in its JSON mode, so the adapter reads stdout as it would from the real tool. */
+  const STDOUT: Record<FakeTool, string> = {
+    claude: '{"type":"result","result":"done","session_id":"session-1"}',
+    codex: '{"type":"thread.started","thread_id":"thread-1"}',
+    opencode: '{"type":"step_finish","sessionID":"session-1"}',
+  };
+
+  const TEAM_ALIASES = `aliases:
+  strong:
+    claude: { model: opus, effort: high }
+    codex: { model: gpt-6-sol, effort: high }
+    opencode: { model: anthropic/claude-opus, effort: high }
+  fast:
+    claude: haiku
+    codex: gpt-6-mini
+`;
+
+  afterEach(() => {
+    fs.rmSync(path.join(os.homedir(), '.teamai', 'models'), { recursive: true, force: true });
+  });
+
+  /**
+   * Runs `yaml` on `tool` through the real adapter, with a fake executable that appends its arguments as one JSON
+   * line to a file and writes a result, and answers `--version` with `version`. Like OpenCode, it first reads stdin
+   * to its end. Returns every argument list the tool was started with, in order.
+   */
+  async function runOn(
+    tool: FakeTool,
+    yaml: string,
+    options: { agents?: Record<string, string>; aliases?: string; localAliases?: string; version?: string } = {},
+  ) {
+    const { config, workspace, runId } = await workflowFixture(yaml);
+    const root = path.dirname(workspace);
+    config.workflows = { tools: { default: tool } };
+    for (const [name, content] of Object.entries(options.agents ?? {})) {
+      fs.mkdirSync(path.join(workspace, AGENT_FILES[tool].dir), { recursive: true });
+      fs.writeFileSync(path.join(workspace, AGENT_FILES[tool].dir, `${name}${AGENT_FILES[tool].ext}`), content);
+    }
+    fs.mkdirSync(path.join(config.repo.localPath, 'models'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'models', 'aliases.yaml'), options.aliases ?? TEAM_ALIASES);
+    if (options.localAliases !== undefined) {
+      fs.mkdirSync(path.join(os.homedir(), '.teamai', 'models'), { recursive: true });
+      fs.writeFileSync(path.join(os.homedir(), '.teamai', 'models', 'aliases.yaml'), options.localAliases);
+    }
+    const argvFile = path.join(root, 'argv.jsonl');
+    const executable = path.join(root, `fake-${tool}`);
+    fs.writeFileSync(executable, `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.argv[2] === '--version') {
+  process.stdout.write(${JSON.stringify(options.version ?? '1.18.23')} + '\\n');
+  process.exit(0);
+}
+fs.readFileSync(0);
+fs.appendFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');
+fs.writeFileSync(process.env.TEAMAI_WORKFLOW_RESULT, '{"output":{"ok":true}}');
+process.stdout.write(${JSON.stringify(STDOUT[tool])} + '\\n');
+`, { mode: 0o755 });
+    const done = await runLocalDriver(config, runId, workspace, {
+      adapter: createLocalToolAdapter(undefined, () => executable),
+      toolPaths: Object.fromEntries(Object.entries(AGENT_FILES).map(([name, { dir }]) => [name, { agents: dir }])) as TeamaiConfig['toolPaths'],
+    });
+    const argv = fs.existsSync(argvFile)
+      ? fs.readFileSync(argvFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[])
+      : undefined;
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error('run was not stored');
+    return { done, argv, run, workspace };
+  }
+
+  function oneStep(fields: string, header = ''): string {
+    return `schemaVersion: v1alpha1
+name: build
+description: Review the project.
+${header}steps:
+  - id: plan
+    prompt: Review this project.
+${fields}`;
+  }
+
+  /** The prompt every tool receives for `text`, with the result instruction the adapter adds. */
+  const prompt = (text: string) => expect.stringMatching(new RegExp(`^${text.replaceAll('.', '\\.')}\\n\\nWrite the workflow result as JSON to .+result\\.json\\. Use this shape`, 's'));
+
+  it('launches claude with --model and --effort of the alias for claude', async () => {
+    const { argv, run } = await runOn('claude', oneStep('    model: strong\n'));
+
+    expect(argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'json', '--model', 'opus', '--effort', 'high']]);
+    expect(run.steps[0]).toMatchObject({ status: 'succeeded', model: 'opus' });
+  });
+
+  it('launches codex with --model of the alias for codex, and -c model_reasoning_effort only when the alias sets an effort', async () => {
+    const strong = await runOn('codex', oneStep('    model: strong\n'));
+    const fast = await runOn('codex', oneStep('    model: fast\n'));
+
+    expect(strong.argv).toEqual([['exec', '--json', '--model', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', prompt('Review this project.')]]);
+    expect(fast.argv).toEqual([['exec', '--json', '--model', 'gpt-6-mini', prompt('Review this project.')]]);
+  });
+
+  it('runs an agent with a model, an effort and allowed tools on the step model and effort, and keeps its other settings', async () => {
+    const reviewer = `---
+name: reviewer
+description: Reviews changes.
+model: haiku
+effort: low
+tools: Read, Grep
+---
+Follow the review checklist.
+`;
+    const claude = await runOn('claude', oneStep('    agent: reviewer\n    model: strong\n'), { agents: { reviewer } });
+
+    expect(claude.argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'json', '--agent', 'reviewer', '--model', 'opus', '--effort', 'high']]);
+    expect(fs.readFileSync(path.join(claude.workspace, '.claude', 'agents', 'reviewer.md'), 'utf8')).toBe(reviewer);
+    expect(claude.run.steps[0]).toMatchObject({ status: 'succeeded', model: 'opus' });
+
+    const codex = await runOn('codex', oneStep('    agent: reviewer\n    model: strong\n'), { agents: { reviewer: `name = "reviewer"
+description = "Reviews changes."
+developer_instructions = "Follow the review checklist."
+model = "gpt-5.4"
+model_reasoning_effort = "low"
+` } });
+
+    expect(codex.argv).toEqual([['exec', '--json', '--model', 'gpt-6-sol', '-c', 'model_reasoning_effort=high', prompt('Follow the review checklist.\n\nReview this project.')]]);
+    expect(codex.argv?.flat()).not.toContain('gpt-5.4');
+  });
+
+  it('passes a model that is not an alias unchanged, at the tool default effort', async () => {
+    const claude = await runOn('claude', oneStep('    model: claude-opus-4.1\n'));
+    const opencode = await runOn('opencode', oneStep('    model: anthropic/claude-sonnet\n'));
+
+    expect(claude.argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'json', '--model', 'claude-opus-4.1']]);
+    expect(opencode.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-sonnet']]);
+  });
+
+  it('fails an alias without a model for the tool with model_unavailable, and does not start the tool', async () => {
+    const step = await runOn('codex', oneStep('    model: strong\n'), { aliases: 'aliases:\n  strong:\n    claude: opus\n' });
+    const defaults = await runOn('codex', `schemaVersion: v1alpha1
+name: build
+description: Summarize the review.
+defaults:
+  model: fast
+steps:
+  - id: summary
+    prompt: Summarize the review.
+`, { aliases: 'aliases:\n  fast:\n    claude: haiku\n' });
+
+    expect(step.argv).toBeUndefined();
+    expect(step.run.steps[0]).toMatchObject({
+      status: 'failed',
+      tool: 'codex',
+      failure: {
+        code: 'model_unavailable',
+        message: 'Step "plan" asks for model alias "strong", which has no model for codex in models/aliases.yaml. Add one or remove model from the step.',
+      },
+    });
+    expect(defaults.argv).toBeUndefined();
+    expect(defaults.run.steps[0]).toMatchObject({
+      status: 'failed',
+      failure: {
+        code: 'model_unavailable',
+        message: 'Step "summary" gets model alias "fast" from defaults, which has no model for codex in models/aliases.yaml. Add one, or set model on the step.',
+      },
+    });
+  });
+
+  it('fails an alias the member turns off for the tool in their local aliases file', async () => {
+    const { argv, run } = await runOn('claude', oneStep('    model: strong\n'), { localAliases: 'aliases:\n  strong:\n    claude: ~\n' });
+
+    expect(argv).toBeUndefined();
+    const local = path.join(os.homedir(), '.teamai', 'models', 'aliases.yaml');
+    expect(run.steps[0]).toMatchObject({
+      status: 'failed',
+      failure: {
+        code: 'model_unavailable',
+        message: `Step "plan" asks for model alias "strong", which ${local} turns off for claude. Remove that entry or remove model from the step.`,
+      },
+    });
+  });
+
+  it('fails a step model while the aliases cannot be read, naming a value it cannot tell to be an alias as a model', async () => {
+    const reserved = await runOn('claude', oneStep('    model: strong\n'), { aliases: 'aliases: [\n' });
+    const other = await runOn('claude', oneStep('    model: claude-opus-4.1\n'), { aliases: 'aliases: [\n' });
+
+    expect(reserved.argv).toBeUndefined();
+    expect(reserved.run.steps[0]).toMatchObject({
+      failure: { code: 'model_unavailable', message: expect.stringMatching(/^Step "plan" asks for model alias "strong", which cannot be resolved for claude: Invalid model aliases YAML at models\/aliases\.yaml: .+\. Fix that, or remove model from the step\.$/) },
+    });
+    expect(other.argv).toBeUndefined();
+    expect(other.run.steps[0]).toMatchObject({
+      failure: { code: 'model_unavailable', message: expect.stringMatching(/^Step "plan" asks for model "claude-opus-4\.1", which cannot be resolved for claude: /) },
+    });
+  });
+
+  it('launches each tool as before when neither the step nor the workflow sets a model', async () => {
+    const claude = await runOn('claude', oneStep('    agent: reviewer\n'), { agents: { reviewer: `---
+name: reviewer
+description: Reviews changes.
+model: haiku
+---
+Follow the review checklist.
+` } });
+    const codex = await runOn('codex', oneStep('    agent: reviewer\n'), { agents: { reviewer: `name = "reviewer"
+description = "Reviews changes."
+developer_instructions = "Follow the review checklist."
+model = "gpt-5.4"
+` } });
+    const opencode = await runOn('opencode', oneStep(''));
+
+    expect(claude.argv).toEqual([['-p', prompt('Review this project.'), '--output-format', 'json', '--agent', 'reviewer']]);
+    expect(codex.argv).toEqual([['exec', '--json', '--model', 'gpt-5.4', prompt('Follow the review checklist.\n\nReview this project.')]]);
+    expect(opencode.argv).toEqual([['run', '--format', 'json', prompt('Review this project.')]]);
+  });
+
+  it('runs defaults.model where neither the step nor its definition sets a model, and leaves the others to theirs', async () => {
+    const { argv } = await runOn('claude', `schemaVersion: v1alpha1
+name: build
+description: Plan, review, and summarize.
+defaults:
+  model: fast
+steps:
+  - id: plain
+    prompt: Plan it.
+  - id: unpinned
+    needs: [plain]
+    agent: helper
+    prompt: Help with it.
+  - id: pinned
+    needs: [unpinned]
+    agent: reviewer
+    prompt: Review it.
+  - id: own
+    needs: [pinned]
+    prompt: Summarize it.
+    model: strong
+`, { agents: {
+      helper: '---\nname: helper\ndescription: Helps.\n---\nHelp out.\n',
+      reviewer: '---\nname: reviewer\ndescription: Reviews changes.\nmodel: sonnet\n---\nFollow the review checklist.\n',
+    } });
+
+    expect(argv).toEqual([
+      ['-p', prompt('Plan it.'), '--output-format', 'json', '--model', 'haiku'],
+      ['-p', prompt('Help with it.'), '--output-format', 'json', '--agent', 'helper', '--model', 'haiku'],
+      ['-p', prompt('Review it.'), '--output-format', 'json', '--agent', 'reviewer'],
+      ['-p', prompt('Summarize it.'), '--output-format', 'json', '--model', 'opus', '--effort', 'high'],
+    ]);
+  });
+
+  it('passes --variant for an OpenCode agent, and fails an OpenCode 1 step on its primary agent\'s own model with no effort when the agent sets a variant', async () => {
+    const reviewer = '---\ndescription: Reviews changes.\nmodel: anthropic/claude-sonnet\nvariant: low\n---\nFollow the review checklist.\n';
+    const strong = await runOn('opencode', oneStep('    agent: reviewer\n    model: strong\n'), { agents: { reviewer } });
+    const other = await runOn('opencode', oneStep('    agent: reviewer\n    model: anthropic/claude-haiku\n'), { agents: { reviewer } });
+    const none = await runOn('opencode', oneStep('    agent: reviewer\n'), { agents: { reviewer } });
+    const defaults = await runOn('opencode', oneStep('    agent: helper\n', 'defaults:\n  model: anthropic/claude-haiku\n'), {
+      agents: { helper: '---\ndescription: Helps.\nvariant: low\n---\nHelp out.\n' },
+    });
+    const own = await runOn('opencode', oneStep('    agent: reviewer\n    model: anthropic/claude-sonnet\n'), { agents: { reviewer } });
+    const ownOn2 = await runOn('opencode', oneStep('    agent: reviewer\n    model: anthropic/claude-sonnet\n'), {
+      agents: { reviewer }, version: 'opencode v2.0.30',
+    });
+    const subagent = await runOn('opencode', oneStep('    agent: reviewer\n    model: anthropic/claude-sonnet\n'), {
+      agents: { reviewer: reviewer.replace('variant: low', 'mode: subagent\nvariant: low') },
+    });
+
+    expect(strong.argv).toEqual([[
+      'run', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-opus', '--variant', 'high',
+    ]]);
+    expect(other.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-haiku']]);
+    expect(none.argv).toEqual([[
+      'run', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-sonnet', '--variant', 'low',
+    ]]);
+    expect(defaults.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--agent', 'helper', '--model', 'anthropic/claude-haiku']]);
+    expect(ownOn2.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-sonnet']]);
+    expect(subagent.argv).toEqual([['run', '--format', 'json', prompt('Follow the review checklist.\n\nReview this project.'), '--model', 'anthropic/claude-sonnet']]);
+    expect(own.argv).toBeUndefined();
+    expect(own.run.steps[0]).toMatchObject({
+      status: 'failed',
+      failure: {
+        code: 'model_unavailable',
+        message: 'Agent "reviewer" runs on its own model "anthropic/claude-sonnet" with no effort, and opencode 1 applies the agent\'s variant "low" '
+          + 'to that model. Remove model from the step to run at that variant, or set it to an alias with an effort for opencode.',
+      },
+    });
+  });
+
+  it('runs an OpenCode definition on its model and variant, as --agent on OpenCode 2 and from the prompt for a subagent on OpenCode 1', async () => {
+    const reviewer = '---\ndescription: Reviews changes.\nmode: subagent\nmodel: anthropic/claude-sonnet\nvariant: low\npermission:\n  edit: deny\n---\n'
+      + 'Follow the review checklist.\n';
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const on2 = await runOn('opencode', oneStep('    agent: reviewer\n'), { agents: { reviewer }, version: 'opencode v2.0.30' });
+    expect(warn).not.toHaveBeenCalled();
+    const on1 = await runOn('opencode', oneStep('    agent: reviewer\n'), { agents: { reviewer } });
+
+    expect(on2.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--agent', 'reviewer', '--model', 'anthropic/claude-sonnet#low']]);
+    expect(on1.argv).toEqual([[
+      'run', '--format', 'json', prompt('Follow the review checklist.\n\nReview this project.'), '--model', 'anthropic/claude-sonnet', '--variant', 'low',
+    ]]);
+    expect(warn).toHaveBeenCalledWith(
+      'Agent "reviewer" runs on opencode 1 from the prompt, since opencode run does not start a subagent there, so it does not apply permission '
+        + 'from the deployed agent file. The step is not blocked.',
+    );
+
+    const helper = '---\ndescription: Helps.\nmode: subagent\nvariant: low\n---\nHelp out.\n';
+    const helperOn1 = await runOn('opencode', oneStep('    agent: helper\n'), { agents: { helper } });
+    expect(helperOn1.argv).toEqual([['run', '--format', 'json', prompt('Help out.\n\nReview this project.')]]);
+    expect(warn).toHaveBeenLastCalledWith(
+      'Agent "helper" runs on opencode 1 from the prompt, since opencode run does not start a subagent there, so it does not apply variant '
+        + 'from the deployed agent file. The step is not blocked.',
+    );
+    const helperOn2 = await runOn('opencode', oneStep('    agent: helper\n'), { agents: { helper }, version: 'opencode v2.0.30' });
+    expect(helperOn2.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--agent', 'helper']]);
+    expect(warn).toHaveBeenLastCalledWith(
+      'Agent "helper" sets a variant with no model, and opencode 2 takes a variant only with a model, so it does not apply variant '
+        + 'from the deployed agent file. The step is not blocked.',
+    );
+  });
+
+  it('passes the effort to OpenCode 2, which has no --variant, as model#variant', async () => {
+    const strong = await runOn('opencode', oneStep('    model: strong\n'), { version: 'opencode v2.0.30' });
+    const literal = await runOn('opencode', oneStep('    model: anthropic/claude-sonnet\n'), { version: 'opencode v2.0.30' });
+
+    expect(strong.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-opus#high']]);
+    expect(literal.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-sonnet']]);
+  });
+});

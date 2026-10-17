@@ -4,7 +4,7 @@ import {
   findTemplate, parseTemplate, stepExpressions, templatedTexts, templateExpressions, templateWithPaths, type StepExpression, type Template,
 } from './template.js';
 import type {
-  EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
+  EndOutcome, ForEach, InlineWorkflow, OutputSchema, StepLoop, WorkflowDefaults, WorkflowDefinition, WorkflowDiagnostic, WorkflowLoop, WorkflowStep,
 } from './types.js';
 import { STEP_ACTIONS } from './types.js';
 import {
@@ -16,9 +16,9 @@ import {
 } from './reads.js';
 import { loopProblems } from './loop.js';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'ends', 'outputs', 'loop', 'steps']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'steps']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'output', 'end', 'loop', 'break', 'for_each']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
@@ -192,6 +192,9 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
     if (schema?.type === 'object') inputs = schema.fields;
   }
 
+  const defaultsPair = root.items.find((pair) => scalarString(pair.key) === 'defaults');
+  const defaults = defaultsPair ? parseDefaults(defaultsPair.value ?? defaultsPair.key, ctx) : undefined;
+
   // A malformed inputs header is already reported; checking reads against it would only add noise.
   const { workflow: { ends, outputs, loop, steps } } = parseBody(root, '', 'workflow', ctx, inputsPair && !inputs ? undefined : inputs ?? {}, false);
 
@@ -200,7 +203,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
     ok: true,
     definition: {
       schemaVersion: 'v1alpha1', name, description, ...(inputs ? { inputs } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}),
-      ...(loop ? { loop } : {}), steps,
+      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), steps,
     },
     promptFileLocations,
   };
@@ -364,6 +367,11 @@ function parseBody(
       } else if (agentPair && (commandPair || workflowPair)) {
         diagnostics.push(locate(file, lineCounter, agentPair.key ?? item, `${field}.agent`, 'agent is only allowed on a prompt or prompt_file step'));
       }
+      const modelPair = item.items.find((pair) => scalarString(pair.key) === 'model');
+      const model = modelPair ? parseModel(modelPair.value ?? modelPair.key, `${field}.model`, ctx) : undefined;
+      if (modelPair && model !== undefined && (commandPair || workflowPair)) {
+        diagnostics.push(locate(file, lineCounter, modelPair.key ?? item, `${field}.model`, 'model is only allowed on a prompt or prompt_file step'));
+      }
       const envPair = item.items.find((pair) => scalarString(pair.key) === 'env');
       const env = envPair ? parseEnv(envPair.value ?? envPair.key, `${field}.env`, label, ctx) : undefined;
       const withPair = item.items.find((pair) => scalarString(pair.key) === 'with');
@@ -479,6 +487,7 @@ function parseBody(
           ...(workflow ? { workflow } : {}),
           ...(withValues ? { with: withValues } : {}),
           ...(agent ? { agent } : {}),
+          ...(model !== undefined ? { model } : {}),
           ...(output ? { output } : {}),
           ...(end ? { end } : {}),
           ...(loop ? { loop } : {}),
@@ -663,6 +672,37 @@ function parseForEach(node: Node | null | undefined, field: string, label: strin
   }
   if (diagnostics.length > before || items === undefined) return undefined;
   return { items, ...(maxNode ? { maxParallel: max as number } : {}) };
+}
+
+/** A `model`, on a step or in `defaults`: an alias or a model name, which the lease carries as written. */
+function parseModel(node: Node | null | undefined, field: string, ctx: ParseContext): string | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+  const model = scalarString(node);
+  if (model?.includes('{{')) {
+    diagnostics.push(locate(file, lineCounter, node, field, 'model cannot contain a template; write an alias or a model name as is'));
+    return undefined;
+  }
+  if (!model || /\s/.test(model)) {
+    diagnostics.push(locate(file, lineCounter, node, field, 'model must be a non-empty string without spaces'));
+    return undefined;
+  }
+  return model;
+}
+
+function parseDefaults(node: Node | null | undefined, ctx: ParseContext): WorkflowDefaults | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+  if (!isMap(node)) {
+    diagnostics.push(locate(file, lineCounter, node, 'defaults', 'defaults must be a mapping'));
+    return undefined;
+  }
+  let model: string | undefined;
+  for (const pair of node.items) {
+    const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
+    const key = scalarString(keyNode);
+    if (key === 'model') model = parseModel(valueNode(node, 'model'), 'defaults.model', ctx);
+    else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.${key ?? 'key'}`, key ?? 'key'));
+  }
+  return model === undefined ? undefined : { model };
 }
 
 /** `env` maps variable names to text. A YAML number or boolean is read as its text. */

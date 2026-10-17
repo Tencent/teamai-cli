@@ -28,6 +28,8 @@ export interface WorkflowStep {
   /** Original team-repo-relative source path for a cached prompt. */
   promptFile?: string;
   agent?: string;
+  /** The model a prompt step runs on, as written: an alias from `models/aliases.yaml` or a model name. The driver resolves it. */
+  model?: string;
   output?: OutputSchema;
   /** Variables a command step receives, as written; `{{ inputs.… }}` and `{{ steps.… }}` render when the step is leased. */
   env?: Record<string, string>;
@@ -99,6 +101,12 @@ export interface InlineWorkflow {
   steps: WorkflowStep[];
 }
 
+/** Values a workflow file sets for its steps. */
+export interface WorkflowDefaults {
+  /** The model of a prompt step whose step and definition choose none, as written. */
+  model?: string;
+}
+
 export interface WorkflowDefinition {
   schemaVersion: 'v1alpha1';
   name: string;
@@ -111,6 +119,7 @@ export interface WorkflowDefinition {
   outputs?: Record<string, string>;
   /** Runs the workflow's steps again, round after round. */
   loop?: WorkflowLoop;
+  defaults?: WorkflowDefaults;
   steps: WorkflowStep[];
 }
 

@@ -23,10 +23,14 @@ export interface Scope {
   runner?: StepState;
   /** In the inline workflow of a `for_each` item, at any depth: that item, which its steps read as `item`. */
   item?: unknown;
+  /** The `defaults.model` in effect: the workflow file's own, else the enclosing scope's. */
+  defaultModel?: string;
 }
 
 export function topScope(run: RunState): Scope {
-  return { prefix: '', definition: run.definition, inputs: run.inputs, loops: stepLoops(run.definition.steps) };
+  return {
+    prefix: '', definition: run.definition, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
+  };
 }
 
 /**
@@ -37,11 +41,14 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
   if (typeof step.workflow === 'object') {
     return {
       prefix: `${state.id}.`, definition: step.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
-      loops: stepLoops(step.workflow.steps), runner: state, ...itemOf(scope, state),
+      loops: stepLoops(step.workflow.steps), runner: state, ...itemOf(scope, state), defaultModel: scope.defaultModel,
     };
   }
   const definition = step.workflow === undefined ? undefined : run.workflows?.[step.workflow];
-  return definition && { prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state };
+  return definition && {
+    prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
+    defaultModel: definition.defaults?.model ?? scope.defaultModel,
+  };
 }
 
 /**

@@ -3925,3 +3925,89 @@ ${pair(prompt, '      ')}`, header) }), 'each[0].s', true],
     expect(leaseIn(await leaseNext(fixture.config, String(started.data.run), driverA)).step).toBe(step);
   });
 });
+
+describe('the model a prompt step lease carries', () => {
+  type ModelFields = { model?: unknown; defaultModel?: unknown };
+
+  /** Leases every step in turn, each reported a success, and returns the model fields of each lease by step. */
+  async function leasedModels(config: LocalConfig, runId: string): Promise<Record<string, ModelFields>> {
+    const models: Record<string, ModelFields> = {};
+    for (;;) {
+      const next = await leaseNext(config, runId, driverA);
+      if ('error' in next) throw new Error(next.error.message);
+      if (next.data.done) return models;
+      const lease = next.data.lease as { step: string; attempt: string; revision: number } & ModelFields;
+      models[lease.step] = {
+        ...('model' in lease ? { model: lease.model } : {}),
+        ...('defaultModel' in lease ? { defaultModel: lease.defaultModel } : {}),
+      };
+      const reported = await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: driverA });
+      if ('error' in reported) throw new Error(reported.error.message);
+    }
+  }
+
+  it('carries the step model and defaults.model as written on prompt steps, and neither on a command step', async () => {
+    const { config, runId } = await startTree({ build: graph(`  - id: plan
+    prompt: Plan it.
+    model: strong
+  - id: compile
+    needs: [plan]
+    command: node compile.js
+  - id: summary
+    needs: [compile]
+    prompt: Summarize it.
+  - id: check
+    needs: [summary]
+    for_each: inputs.targets
+    prompt: Check {{ item }}.
+`, 'inputs: { targets: [string] }\ndefaults:\n  model: fast\n') }, 'build', { targets: ['a'] });
+
+    expect(await leasedModels(config, runId)).toEqual({
+      plan: { model: 'strong', defaultModel: 'fast' },
+      compile: {},
+      summary: { defaultModel: 'fast' },
+      'check[0]': { defaultModel: 'fast' },
+    });
+  });
+
+  it('gives the steps of an inline workflow the enclosing defaults.model, also on a lease handed back', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: check
+    workflow:
+      steps:
+        - id: classify
+          prompt: Classify it.
+`, 'defaults:\n  model: fast\n'));
+
+    const first = await leaseNext(config, runId, driverA);
+    const again = await leaseNext(config, runId, driverA);
+
+    expect(first).toMatchObject({ data: { lease: { step: 'check.classify', defaultModel: 'fast' } } });
+    expect(again).toMatchObject({ data: { lease: { step: 'check.classify', defaultModel: 'fast' } } });
+  });
+
+  it('gives the steps of a workflow file its own defaults.model, or else the one in effect for the step that runs it', async () => {
+    const { config, runId } = await startTree({
+      own: workflow('own', `  - id: classify
+    prompt: Classify it.
+`, 'defaults:\n  model: strong\n'),
+      plain: workflow('plain', `  - id: comment
+    prompt: Comment on it.
+  - id: label
+    needs: [comment]
+    command: node label.js
+`),
+      build: graph(`  - id: first
+    workflow: own
+  - id: second
+    needs: [first]
+    workflow: plain
+`, 'defaults:\n  model: fast\n'),
+    }, 'build');
+
+    expect(await leasedModels(config, runId)).toEqual({
+      'first.classify': { defaultModel: 'strong' },
+      'second.comment': { defaultModel: 'fast' },
+      'second.label': {},
+    });
+  });
+});

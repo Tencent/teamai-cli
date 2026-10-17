@@ -2021,4 +2021,46 @@ steps:
       ['workflows/build.yaml:15: field "steps[1].if": step "use" if compares steps.grp.end with \'unknown\', which is not an end the inline workflow of step "grp" declares', 'undeclared_end'],
     ]);
   });
+
+  it('reports a model on a command or workflow step with the file and step, and does not cache that version', async () => {
+    const config = testConfig();
+    writeWorkflow(config, 'build', `schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: compile
+    command: npm run build
+  - id: check
+    needs: [compile]
+    workflow:
+      steps:
+        - id: lint
+          command: npm run lint
+`);
+    expect((await syncWorkflowDefinitions(config)).cached).toEqual(['build']);
+    writeWorkflow(config, 'build', `schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: compile
+    command: npm run build
+    model: strong
+  - id: check
+    needs: [compile]
+    workflow:
+      steps:
+        - id: lint
+          command: npm run lint
+    model: fast
+`);
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached).toEqual([]);
+    expect(result.invalid.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].model": model is only allowed on a prompt or prompt_file step',
+      'workflows/build.yaml:14: field "steps[1].model": model is only allowed on a prompt or prompt_file step',
+    ]);
+    expect((await loadCachedWorkflow(config, 'build'))?.definition.steps.some((step) => step.model !== undefined)).toBe(false);
+  });
 });

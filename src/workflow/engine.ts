@@ -115,6 +115,8 @@ async function withRun<T extends WorkflowEnvelope>(
 interface RenderedLease {
   prompt?: string;
   env?: Record<string, string>;
+  /** The `defaults.model` in effect for a prompt step, as written. */
+  defaultModel?: string;
 }
 
 function workflowLabel(scope: Scope): string {
@@ -170,6 +172,7 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
   return {
     ...(rendered.has('prompt') ? { prompt: rendered.get('prompt') } : {}),
     ...(definition.env ? { env: Object.fromEntries(env) } : {}),
+    ...(definition.prompt !== undefined && scope.defaultModel !== undefined ? { defaultModel: scope.defaultModel } : {}),
   };
 }
 
@@ -184,6 +187,8 @@ function leaseData(run: RunState, state: LeasedStep, definition: WorkflowStep, r
     ...(rendered.env ? { env: rendered.env } : {}),
     ...(rendered.prompt !== undefined ? { prompt: rendered.prompt } : {}),
     ...(definition.agent !== undefined ? { agent: definition.agent } : {}),
+    ...(definition.model !== undefined ? { model: definition.model } : {}),
+    ...(rendered.defaultModel !== undefined ? { defaultModel: rendered.defaultModel } : {}),
     ...(definition.output ? { output: definition.output } : {}),
   } };
 }
