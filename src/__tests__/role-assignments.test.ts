@@ -8,6 +8,7 @@ import { activeRoleIds } from '../roles.js';
 import { loadRoleAssignments, loadRoleAssignmentsIfPresent, resolveAssignedRoles } from '../role-assignments.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { log } from '../utils/logger.js';
+import type { LocalConfig } from '../types.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 
 /**
@@ -199,9 +200,45 @@ describe('role assignments from manifest/members.yaml', () => {
 
     // What `pull` does: the config was loaded before the repo was refreshed.
     writeAssignments('version: 1\nmembers:\n  alice: [backend]\n');
-    const refreshed = await refreshRoleAssignment(config!);
+    await refreshRoleAssignment(config!);
 
-    expect(refreshed.primaryRole).toBe('backend');
+    expect(config!.primaryRole).toBe('backend');
+  });
+
+  // Pull keys `teamEnvs` and `instructions` on config identity, and reconciles
+  // hooks, MCP and env on the object its caller holds: a refreshed copy would
+  // reach none of them.
+  it('refreshes the config in place, keeping its identity', async () => {
+    writeAssignments('version: 1\nmembers:\n  alice: [frontend]\n');
+    writeConfig();
+    const config = (await loadLocalConfig())!;
+    const byIdentity = new Map([[config, 'env']]);
+
+    writeAssignments('version: 1\nmembers: {}\ndefault: []\n');
+    await refreshRoleAssignment(config);
+
+    expect(byIdentity.get(config)).toBe('env');
+    expect(config.primaryRole).toBeUndefined();
+    expect(config.roleAssignment?.source).toBe('default');
+    // Fail closed through the same object the reconcilers hold.
+    expect(activeRoleIds(config)).toEqual([]);
+  });
+
+  // What `init` does: it builds the config in memory and hands it to the hook,
+  // MCP and env reconciliation before any load can overlay it.
+  it('applies the assignment to a config built in memory, as init hands it on', async () => {
+    writeAssignments('version: 1\nmembers:\n  alice: [frontend]\n');
+    const built: LocalConfig = {
+      repo: { localPath: repoDir, remote: 'https://gitlab.com/acme/team.git' },
+      username: 'alice',
+      additionalRoles: [],
+      scope: 'user',
+    };
+
+    await refreshRoleAssignment(built);
+
+    expect(activeRoleIds(built)).toEqual(['frontend']);
+    expect(built.roleAssignment?.source).toBe('assigned');
   });
 
   it('hands the roles back to the member when the assignments file goes away', async () => {
@@ -211,10 +248,10 @@ describe('role assignments from manifest/members.yaml', () => {
     expect(config?.primaryRole).toBe('frontend');
 
     rmSync(path.join(repoDir, 'manifest', 'members.yaml'));
-    const refreshed = await refreshRoleAssignment(config!);
+    await refreshRoleAssignment(config!);
 
-    expect(refreshed.primaryRole).toBe('backend');
-    expect(refreshed.roleAssignment).toBeUndefined();
+    expect(config!.primaryRole).toBe('backend');
+    expect(config!.roleAssignment).toBeUndefined();
   });
 
   // The legacy migration writes a `hai` role into a role-less config. A member
