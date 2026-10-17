@@ -6,6 +6,7 @@ import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiCo
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
+import { isOnPath } from '../utils/lookpath.js';
 import type { DeliveryLedger } from './delivered-copies.js';
 
 const TOMBSTONE_FILE = '.removed';
@@ -32,6 +33,69 @@ const EDITION_HOME_ROOTS: Readonly<Record<string, string>> = {
   'qoder-cn': '.qoder-cn',
 };
 
+/** The Antigravity tool id, referenced from both the probe and its entry point. */
+const ANTIGRAVITY_TOOL_ID = 'antigravity';
+
+/**
+ * Paths in the tool's own base dir that are Antigravity's and nobody else's:
+ * its hooks config (the project root one older teamai wrote, and the
+ * customization-root one the CLI actually runs), its instruction file, and its
+ * own hidden directory. `.agents/` as a whole is deliberately absent — that
+ * tree is shared with the central Agent Skills entry, so its presence says
+ * nothing about Antigravity (and accepting it would add Antigravity's
+ * MCP/skills targets to every project that merely uses `.agents/`); the
+ * `.agents/hooks.json` file inside it is Antigravity's alone.
+ */
+const ANTIGRAVITY_OWN_PATHS = ['hooks.json', '.agents/hooks.json', 'GEMINI.md', '.gemini'] as const;
+
+/**
+ * The PATH half of Antigravity's install evidence, cached per PATH value.
+ *
+ * `isOnPath` walks PATH with synchronous `statSync`, and this probe runs once
+ * per MCP target inside reconciliation (mcp-reconcile.ts calls
+ * `isToolInstalledForConfig` per tool and file) — measured on WSL, where most
+ * of PATH's 58 entries sit on a 9p mount and one stat costs ~1.6ms, a single
+ * uncached call is ~185ms of blocking I/O, which made reconciliation an order
+ * of magnitude slower and pushed its tests past the 15s timeout. The answer
+ * only changes when PATH does, so it is cached per PATH/PATHEXT value and a
+ * stubbed PATH (as the tests do) still gets a fresh scan.
+ *
+ * Readers: `isAntigravityInstalledWith` only. Writer: itself.
+ */
+let antigravityPathProbe: { key: string; found: boolean } | undefined;
+
+function antigravityOnPath(): boolean {
+  const key = `${process.env.PATH ?? process.env.Path ?? ''}\0${process.env.PATHEXT ?? ''}`;
+  if (antigravityPathProbe?.key !== key) {
+    antigravityPathProbe = { key, found: isOnPath('agy') || isOnPath('antigravity') };
+  }
+  return antigravityPathProbe.found;
+}
+
+/**
+ * Antigravity's install evidence. `baseDir` is the scope's base — the project
+ * root in project scope, HOME in user scope — so both the machine-level signals
+ * and the tool's own files in that scope count.
+ *
+ * The generic `toolInstallRoot` probe is NOT used: a project's `.agents/` tree
+ * is shared with the central Agent Skills entry, so it would report Antigravity
+ * installed for anyone who has ever used `.agents/`.
+ *
+ * The cheap checks come first so the costly (cached) PATH scan is only reached
+ * when nothing else says installed; the result is the same either way — the
+ * signals are OR'd.
+ */
+async function isAntigravityInstalledWith(localConfig: LocalConfig, baseDir: string): Promise<boolean> {
+  if (localConfig.enabledAgents?.includes(ANTIGRAVITY_TOOL_ID) === true) return true;
+  const home = getUserHome();
+  if (await pathExists(path.join(home, '.gemini', 'antigravity-cli'))) return true;
+  if (await pathExists(path.join(home, '.gemini', 'config'))) return true;
+  for (const ownPath of ANTIGRAVITY_OWN_PATHS) {
+    if (await pathExists(path.join(baseDir, ownPath))) return true;
+  }
+  return antigravityOnPath();
+}
+
 /** Detect an installed tool while respecting tool-specific user roots. */
 export async function isToolInstalledForConfig(
   tool: string,
@@ -56,6 +120,17 @@ export async function isToolInstalledForConfig(
     if (localConfig.enabledAgents?.includes(tool) === true) return true;
     return pathExists(path.join(getUserHome(), editionHomeRoot));
   }
+  // Antigravity must be probed by ITS OWN roots, never by the generic one: its
+  // project skills live in the `.agents/` tree that the central Agent Skills
+  // entry also uses, so the generic probe would report it installed for any
+  // project that merely has `.agents/` — which adds Antigravity's MCP and
+  // skills targets to teams that do not run it (#882's MCP reconciliation
+  // assertions catch exactly that). `isAntigravityInstalledWith` therefore
+  // looks at the machine-level roots plus Antigravity's own files in `baseDir`,
+  // which is what the upstream #945 suite sets up before asserting delivery.
+  // `toolGateRoot` is not consulted here: it resolves a recorded `toolRoots`
+  // entry, and Antigravity is not in RELOCATABLE_TOOLS.
+  if (tool === ANTIGRAVITY_TOOL_ID) return isAntigravityInstalledWith(localConfig, baseDir);
   if (Object.hasOwn(HOME_INSTALL_ROOTS, tool)) return pathExists(path.join(getUserHome(), HOME_INSTALL_ROOTS[tool]));
   const probe = Object.hasOwn(INSTALL_ROOTS, tool) ? INSTALL_ROOTS[tool] : toolPath;
   return ResourceHandler.isToolInstalled(probe, baseDir, toolGateRoot(tool, probe, localConfig.toolRoots));

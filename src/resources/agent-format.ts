@@ -6,7 +6,7 @@ import { getDispatchCommand } from '../builtin-hooks.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'qoder-cn' | 'kiro' | 'zcode' | 'omp' | 'opencode' | 'workbuddy' | 'muse';
+export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'qoder-cn' | 'kiro' | 'zcode' | 'omp' | 'opencode' | 'workbuddy' | 'muse' | 'antigravity';
 
 export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'claude',
@@ -27,6 +27,7 @@ export const ALL_SUPPORTED_TOOLS: ToolName[] = [
   'opencode',
   'workbuddy',
   'muse',
+  'antigravity',
 ];
 
 export type AgentFileExtension = '.agent.md' | '.md' | '.toml' | '.json';
@@ -107,6 +108,7 @@ export interface AgentSpec {
     opencode?: Record<string, unknown>;
     workbuddy?: Record<string, unknown>;
     muse?: Record<string, unknown>;
+    antigravity?: Record<string, unknown>;
   };
   /**
    * Which tools this agent should be deployed to.
@@ -1040,6 +1042,10 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
     case 'qoder-cn':
     case 'zcode':
     case 'omp':
+    // Antigravity subagents are Markdown with YAML frontmatter, the same
+    // name/description/model/tools shape as the Claude family; its own private
+    // keys ride `tool_extras.antigravity`.
+    case 'antigravity':
       return { ext, content: renderMarkdownAgent(target, toolExtrasFor(spec, tool), fields) };
     case 'cursor': return renderForCursor(target);
     case 'copilot': return renderForCopilot(target);

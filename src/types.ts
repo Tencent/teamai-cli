@@ -610,6 +610,41 @@ export const TeamaiConfigBaseSchema = z.object({
         rules: '.trae-cn/user_rules',
       },
     },
+    // Antigravity CLI (`agy` / `antigravity`) — Google DeepMind's coding agent,
+    // the successor to `gemini-cli`. Its customization roots are the project's
+    // `.agents/` and, user-wide, `~/.gemini/config/` (the `agy-customizations`
+    // skill shipped with the CLI: "Global Configuration (Machine-Local): Path:
+    // ~/.gemini/config/"), and a resource sits in <root>/<dir>: skills in
+    // <root>/skills/<name>/SKILL.md, rules as plain Markdown in <root>/rules,
+    // subagents in <root>/agents, and the lifecycle hooks in <root>/hooks.json
+    // (a project keeps `GEMINI.md` at its root as the instruction file, user
+    // scope the one in the global root). The project `.agents/` root is shared
+    // with the central Agent Skills entry, which is why the install probe is
+    // explicit (see isToolInstalledForConfig). `~/.gemini/antigravity-cli/` is
+    // the CLI's own app data (logs, conversations, builtin skills) and
+    // `~/.gemini/antigravity/` belongs to Antigravity 2.0 — neither is a
+    // customization root, and using either silently loses the resource: agy
+    // 1.3.4 *loads* every hooks.json it finds but only *runs* the one under
+    // ~/.gemini/config/, and does not discover skills from
+    // ~/.gemini/antigravity/skills (both verified against the real CLI; see the
+    // #1040 verification). `gemini` and `agy` are accepted aliases for the id
+    // (normalizeToolId).
+    antigravity: {
+      skills: '.agents/skills',
+      rules: '.agents/rules',
+      settings: '.agents/hooks.json',
+      claudemd: 'GEMINI.md',
+      agents: '.agents/agents',
+      mcp: '.gemini/config/mcp_config.json',
+      mcpProject: '.agents/mcp_config.json',
+      userScope: {
+        skills: '.gemini/config/skills',
+        rules: '.gemini/config/rules',
+        settings: '.gemini/config/hooks.json',
+        claudemd: '.gemini/config/GEMINI.md',
+        agents: '.gemini/config/agents',
+      },
+    },
     // ZCode: user-level config lives at ~/.zcode/cli/config.json (a shared file
     // that also carries plugin state — reconcile must merge, never replace).
     // Hooks are Claude-shaped but nested under `hooks.events` and gated by

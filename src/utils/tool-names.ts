@@ -38,6 +38,23 @@ export function normalizeAgentType(name: string): string {
 }
 
 /**
+ * Ids a user (or a team's `teamai.yaml`) may type for a tool whose shipped id
+ * differs. Both `agy` — the Antigravity CLI binary — and `gemini`, the id
+ * Google's predecessor `gemini-cli` shipped under, name the one Antigravity
+ * target, so a `--agent agy` / `--agent gemini` resolves to `antigravity`
+ * instead of inventing a phantom tool that no path mapping can reach.
+ */
+const TOOL_ID_ALIASES: Record<string, string> = {
+  agy: 'antigravity',
+  gemini: 'antigravity',
+};
+
+/** The shipped tool id behind an id a user typed; an unknown id is returned unchanged. */
+export function normalizeToolId(id: string): string {
+  return TOOL_ID_ALIASES[id] ?? id;
+}
+
+/**
  * Every id that runs Codex. Hook delivery, hook format and the Stop-stdout gate
  * all key off this one list, so a new variant is added once (#719).
  *

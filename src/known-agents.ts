@@ -13,6 +13,7 @@ import {
   detectToolRoot,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
+import { normalizeToolId } from './utils/tool-names.js';
 import type { LocalConfig, TeamaiConfig, Scope } from './types.js';
 import { getUserHome } from './utils/home.js';
 
@@ -40,7 +41,7 @@ export function normalizeAgentList(agent?: string | string[]): string[] {
   const seen = new Set<string>();
   for (const part of raw) {
     for (const piece of String(part).split(',')) {
-      const id = piece.trim();
+      const id = normalizeToolId(piece.trim());
       if (id && !seen.has(id)) {
         seen.add(id);
         out.push(id);
@@ -90,6 +91,9 @@ export const KNOWN_AGENTS: KnownAgent[] = [
   { id: 'cursor', displayName: 'Cursor', category: 'coding', skillsPath: '.cursor/skills' },
   { id: 'joycode', displayName: 'JoyCode', category: 'coding', skillsPath: '.joycode/skills' },
   { id: 'codebuddy', displayName: 'CodeBuddy', category: 'coding', skillsPath: '.codebuddy/skills' },
+  // Antigravity CLI (agy / antigravity): user-scope customizations live in the
+  // CLI's global customization root, ~/.gemini/config/ (see toolPaths.antigravity).
+  { id: 'antigravity', displayName: 'Antigravity CLI', category: 'coding', skillsPath: '.gemini/config/skills' },
 
   // Additional coding agents from skills-manage
   { id: 'gemini', displayName: 'Gemini CLI', category: 'coding', skillsPath: '.gemini/skills' },

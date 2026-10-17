@@ -3123,6 +3123,37 @@ export async function reconcileHooksToAllTools(
       }
       continue;
     }
+    // Antigravity groups its hooks by hook NAME in a `hooks.json`, which the
+    // settings-based renderer (Claude's flat matcher array) cannot express:
+    // route it to its own adapter. The settings entry is a FILE, and the file
+    // itself is the install gate — a project (or a user) that has no hooks.json
+    // gets none written, and it is the customization root's file
+    // (<project>/.agents/hooks.json, ~/.gemini/config/hooks.json in user scope)
+    // that the CLI actually runs. The adapter merges into the user's existing
+    // file, owning one key only.
+    if (tool === 'antigravity') {
+      if (opts.settingsOnly) continue;
+      const settingsRel = paths.settings;
+      if (settingsRel === undefined) continue;
+      try {
+        const settingsPath = path.join(baseDir, settingsRel);
+        const installedRoot = opts.installedBaseDir
+          ? path.join(opts.installedBaseDir, settingsRel)
+          : settingsPath;
+        const installed = await pathExists(settingsPath) || await pathExists(installedRoot);
+        if (!installed && !opts.removeAll) continue;
+        if (installed && await skipInstalled(settingsPath, tool)) continue;
+        const { reconcileAntigravityHooks } = await import('./antigravity-hooks.js');
+        const allDefs = [
+          ...(opts.builtinsOnly ? [] : applyBuiltinOverride(builtinHookDefs(tool), opts.builtinOverride)),
+          ...defs,
+        ];
+        await reconcileAntigravityHooks(settingsPath, allDefs, { removeAll: opts.removeAll });
+      } catch (e) {
+        log.warn(`Failed to reconcile Antigravity hooks: ${(e as Error).message}`);
+      }
+      continue;
+    }
     if (!paths.settings) continue;
     // Only reconcile hooks for tools the user actually has installed. Without
     // this gate, `hooks inject`/`remove` would create root directories for

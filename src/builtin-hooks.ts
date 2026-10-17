@@ -220,6 +220,27 @@ export function getDispatchCommand(event: string, tool: string, matcher?: string
 }
 
 /**
+ * The dispatch command for Antigravity CLI hooks.
+ *
+ * Antigravity runs a hook command through the platform shell — `sh -c` on Unix,
+ * `cmd /c` on Windows (its hooks guide: "run via `sh -c` on Unix, `cmd /c` on
+ * Windows"). The POSIX wrapper {@link getDispatchCommand} writes cannot survive
+ * the Windows path: the inner quotes reach cmd backslash-escaped (Go's os/exec
+ * argument escaping, which cmd does not treat as an escape), so the first token
+ * is literally `\"C:/Program Files/Git/bin/bash.exe\"` and every hook fails with
+ * `exit status 1` — verified against agy 1.3.4, which logs
+ * `failed to call custom pre-invocation hook jsonhook__teamai-hooks_...` for
+ * every entry. On Windows emit the bare command and let cmd resolve `teamai`
+ * from PATH (verified: the hook then runs, and agy hands it a PATH that
+ * contains the CLI's install directory).
+ */
+export function getAntigravityDispatchCommand(event: string, tool: string, matcher?: string): string {
+  return process.platform === 'win32'
+    ? getRawDispatchCommand(event, tool, matcher)
+    : getDispatchCommand(event, tool, matcher);
+}
+
+/**
  * Tools whose hook runner on Windows is PowerShell itself, so the rendered
  * command must be PowerShell syntax there rather than the POSIX `bash -lc "…"`
  * form. Two such hosts so far:
@@ -395,11 +416,13 @@ export function builtinHookDefs(tool: string): HookDef[] {
   const withTimeout = tool === 'cursor' || tool === 'copilot' || tool === 'workbuddy' || tool === 'codebuddy' || isCodexTool(tool);
   const buildCommand = tool === 'zcode'
     ? getRawDispatchCommand
-    : toolUsesPwshShell(tool)
-      ? getPwshDispatchCommand
-      : WRAPPER_TOOLS.has(tool)
-        ? getWrapperDispatchCommand
-        : getDispatchCommand;
+    : tool === 'antigravity'
+      ? getAntigravityDispatchCommand
+      : toolUsesPwshShell(tool)
+        ? getPwshDispatchCommand
+        : WRAPPER_TOOLS.has(tool)
+          ? getWrapperDispatchCommand
+          : getDispatchCommand;
   const specs = [
     ...BUILTIN_HOOK_SPECS,
     ...(tool === 'copilot' ? [COPILOT_SESSION_END_SPEC] : []),
@@ -434,7 +457,7 @@ export function builtinHookDefs(tool: string): HookDef[] {
  * (`renderForKiro`), so it exists only for agents that were actually synced
  * rather than coming from the hook pipeline.
  */
-const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }> = {
+const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string; dispatch?: typeof getDispatchCommand }> = {
   // hermes-hooks.ts registers one on_session_start script whose single line is
   // the dispatch command with errors swallowed (buildReportScript).
   hermes: { keys: ['Hook dispatch session-start'], suffix: ' >/dev/null 2>&1 || true' },
@@ -471,6 +494,11 @@ const ADAPTER_BUILTIN_HOOKS: Record<string, { keys: string[]; suffix?: string }>
   // the other claw variants share its workspace resolver, so reconciliation
   // does not route them (see reconcileHooksToAllTools).
   openclaw: { keys: ['Hook dispatch session-start', 'Hook dispatch prompt-submit'] },
+  // antigravity-hooks.ts writes the whole built-in set into the `teamai-hooks`
+  // block of its hooks.json; the command is the platform-appropriate dispatch
+  // for the CLI's own hook runner (see getAntigravityDispatchCommand), not the
+  // raw argv form the in-process adapters spawn.
+  antigravity: { keys: BUILTIN_HOOK_SPECS.map((spec) => spec.key), dispatch: getAntigravityDispatchCommand },
 };
 
 /**
@@ -491,7 +519,7 @@ export function installedBuiltinHookDefs(tool: string, settingsDriven: boolean):
     key: spec.key,
     event: spec.event,
     matcher: spec.matcher,
-    command: getRawDispatchCommand(spec.dispatchEvent, tool, spec.matcher) + (adapter.suffix ?? ''),
+    command: (adapter.dispatch ?? getRawDispatchCommand)(spec.dispatchEvent, tool, spec.matcher) + (adapter.suffix ?? ''),
     description: `${TEAMAI_HOOK_DESCRIPTION_PREFIX} ${spec.key}`,
   }));
 }

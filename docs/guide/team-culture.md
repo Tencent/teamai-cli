@@ -40,6 +40,7 @@ They are not written into the project's `AGENTS.md`. Each tool gets its own file
 | DeepSeek Harness | `$DSH_HOME/AGENTS.md` (`~/.dsh/AGENTS.md` when unset) | only a `claudemd` named in `toolPaths` |
 | JoyCode | `~/.joycode/rules.txt` | only a `claudemd` named in `toolPaths` |
 | Muse Code | `~/.config/muse/AGENTS.md` | only a `claudemd` named in `toolPaths` |
+| Antigravity CLI | `~/.gemini/config/GEMINI.md` | `GEMINI.md` |
 
 ## Viewing the result
 

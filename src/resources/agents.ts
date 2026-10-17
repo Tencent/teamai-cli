@@ -1846,6 +1846,10 @@ function reverseByParser(tool: ToolName, filePath: string, content: string): Rev
       return reverseFromClaude(filePath, content);
     case 'omp':
       return reverseFromClaude(filePath, content);
+    // Antigravity agents are Markdown + YAML frontmatter, the same shape as
+    // Claude's; `reverseByTool` re-keys the collected extras to `antigravity`.
+    case 'antigravity':
+      return reverseFromClaude(filePath, content);
     case 'opencode':
       return reverseFromOpencode(filePath, content);
     case 'workbuddy':
