@@ -128,6 +128,11 @@ const pullHandler: HookHandler = {
       const { isAgentExcluded } = await import('./types.js');
       if (isAgentExcluded(config, tool)) return null;
     }
+    if (config) {
+      const { LAUNCH_PAYLOAD_KEY, launchHoldsCheckout, readLaunch } = await import('./launch-context.js');
+      const launch = readLaunch(stdin[LAUNCH_PAYLOAD_KEY]);
+      if (launch && await launchHoldsCheckout(config, launch)) return null;
+    }
     const hintCwd = cwd ?? process.cwd();
     const packageHints = await import('./pkg/pkg-hint.js');
     const packageHashBeforePull = await packageHints.packageManifestHashForCwd(hintCwd);

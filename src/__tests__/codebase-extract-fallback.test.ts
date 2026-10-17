@@ -513,3 +513,51 @@ describe('a direct extractCodebase call stamps origin on the graph it writes (#9
     expect(scoped?.edges ?? []).toHaveLength(0);
   });
 });
+
+function createManyFileFixture(count: number): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1194-'));
+  temporaryDirectories.push(root);
+  fs.mkdirSync(path.join(root, 'src'));
+  for (let index = 0; index < count; index += 1) {
+    fs.writeFileSync(
+      path.join(root, 'src', `module-${String(index).padStart(2, '0')}.ts`),
+      `export const value${index} = ${index};\n`,
+    );
+  }
+  return root;
+}
+
+function captureConsoleLog(): string[] {
+  const lines: string[] = [];
+  vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    lines.push(args.map((arg) => String(arg)).join(' '));
+  });
+  return lines;
+}
+
+describe('max-files cap on collected source files (#1194)', () => {
+  it('collects at most maxFiles files and warns with the counts when the source is larger', async () => {
+    const root = createManyFileFixture(5);
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1194-out-'));
+    temporaryDirectories.push(output);
+    const lines = captureConsoleLog();
+
+    await extractCodebase({ path: root, outputRoot: output, project: 'many', maxFiles: 2, skipEnrich: true });
+
+    expect(lines).toContain('  Files: 2');
+    expect(lines.some((line) => line.includes('5 source files matched, but only the first 2 were collected'))).toBe(true);
+    expect(lines.some((line) => line.includes('--max-files'))).toBe(true);
+  });
+
+  it('does not warn when every candidate fits under maxFiles', async () => {
+    const root = createManyFileFixture(3);
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1194-out-'));
+    temporaryDirectories.push(output);
+    const lines = captureConsoleLog();
+
+    await extractCodebase({ path: root, outputRoot: output, project: 'few', maxFiles: 3, skipEnrich: true });
+
+    expect(lines).toContain('  Files: 3');
+    expect(lines.some((line) => line.includes('were collected'))).toBe(false);
+  });
+});

@@ -274,6 +274,37 @@ describe('hookDispatchCli', () => {
     }
   });
 
+  it.each([
+    ['forwards the workflow launch its environment carries', { TEAMAI_LAUNCHED_BY: 'workflow', TEAMAI_LAUNCHED_TOOL: 'claude', TEAMAI_LAUNCHED_CHECKOUT: 'checkout-1' }],
+    ['drops a workflow launch only the host payload names', {}],
+  ])('%s to the detached pull (#1176)', async (_case, env) => {
+    const stdinFile = path.join(os.tmpdir(), `launch-hook-${process.pid}-${Date.now()}.json`);
+    const sent = { TEAMAI_LAUNCHED_BY: 'workflow', TEAMAI_LAUNCHED_TOOL: 'claude', TEAMAI_LAUNCHED_CHECKOUT: 'from-host' };
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'SessionStart', session_id: 's', cwd: process.cwd(), teamai_launch: sent }));
+    let detachedPayload = '';
+    mockSpawn.mockReturnValue({
+      on: vi.fn(),
+      stdin: { on: vi.fn(), end: vi.fn((raw: string, done: () => void) => {
+        detachedPayload = raw;
+        done();
+      }) },
+      unref: vi.fn(),
+    });
+    const saved = { ...process.env };
+    Object.assign(process.env, env);
+
+    try {
+      await hookDispatchCli('session-start', 'codex', '*', { stdinFile });
+      expect(JSON.parse(detachedPayload).teamai_launch).toEqual('TEAMAI_LAUNCHED_BY' in env ? env : undefined);
+    } finally {
+      for (const key of Object.keys(env)) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+      fs.rmSync(stdinFile, { force: true });
+    }
+  });
+
   it('passes a path-free fallback session ID to a Copilot detached handler', async () => {
     const stdinFile = path.join(os.tmpdir(), `copilot-hook-${process.pid}-${Date.now()}.json`);
     const cwd = process.cwd();

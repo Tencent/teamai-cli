@@ -7,7 +7,7 @@ import {
 } from './resources/desired.js';
 import type { IndexedSkills, UnreadableFile } from './utils/search-index.js';
 import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
-import { pullRepo, getHeadRev, createGit, getDefaultBranch, completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
+import { pullRepo, getHeadRev, getHeadCommit, createGit, getDefaultBranch, completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
@@ -890,7 +890,7 @@ export function addPushBaseRev(record: CheckoutRecord, rev: string): void {
  * checkout, or HOME for the user scope, whose state.json no other checkout
  * shares (#823). Undefined for a project scope without a root.
  */
-async function checkoutRecordKey(localConfig: LocalConfig): Promise<string | undefined> {
+export async function checkoutRecordKey(localConfig: LocalConfig): Promise<string | undefined> {
   switch (localConfig.scope) {
     case 'user':
       return checkoutKey(getUserHome());
@@ -963,6 +963,44 @@ async function deliveringCheckoutRecord(localConfig: LocalConfig, state?: State)
   const key = await checkoutRecordKey(localConfig);
   if (!key) return undefined;
   return (state ?? await loadStateForScope(localConfig)).lastPullByWorkspace?.[key];
+}
+
+/**
+ * Why a checkout record does not name one complete team delivery for a tool.
+ * `pending_full_sync`: a selection command cleared the shared lastPullRev, so
+ * the next pull delivers a new selection. `awaiting_full_sync`: a forced full
+ * sync elsewhere reset this record. `mixed_revisions`: a push base resolves to
+ * another commit than `rev`, so copies may be at either.
+ */
+export type DeliveryGap = 'no_record' | 'pending_full_sync' | 'awaiting_full_sync' | 'no_baseline'
+  | 'tool_not_delivered' | 'unresolved_revision' | 'mixed_revisions';
+
+export type TeamDelivery =
+  | { complete: true; key: string; record: CheckoutRecord; commit: string }
+  | { complete: false; key: string | undefined; record?: CheckoutRecord; gap: DeliveryGap };
+
+/**
+ * Whether the checkout `localConfig`'s pulls deliver into holds one complete
+ * team delivery for `tool`, and its full commit in the team clone. It decides
+ * both whether a workflow-launched session may skip its pull and whether a
+ * pass records the team revision it ran with, so the two cannot drift
+ * (#1176). Read-only, so never userScopeRecord.
+ */
+export async function teamDelivery(localConfig: LocalConfig, tool: string): Promise<TeamDelivery> {
+  const state = await loadStateForScope(localConfig);
+  const key = await checkoutRecordKey(localConfig);
+  const record = key ? state.lastPullByWorkspace?.[key] : undefined;
+  const gap = (reason: DeliveryGap): TeamDelivery => ({ complete: false, key, ...(record ? { record } : {}), gap: reason });
+  if (!key || !record) return gap('no_record');
+  if (state.lastPullRev === null) return gap('pending_full_sync');
+  if (record.rev === FORCED_FULL_SYNC_REV) return gap('awaiting_full_sync');
+  if (!record.delivered) return gap('no_baseline');
+  if (!record.targets.includes(tool)) return gap('tool_not_delivered');
+  const commit = await getHeadCommit(localConfig.repo.localPath, record.rev);
+  if (!commit) return gap('unresolved_revision');
+  const bases = await Promise.all((record.pushBaseRevs ?? []).map((base) => getHeadCommit(localConfig.repo.localPath, base)));
+  if (bases.some((base) => base !== commit)) return gap('mixed_revisions');
+  return { complete: true, key, record, commit };
 }
 
 /**

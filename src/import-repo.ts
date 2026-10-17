@@ -41,6 +41,8 @@ export interface ImportFromRepoOptions {
     skipAutoPush?: boolean;
     /** Skip AI enrichment (only clone + extract + graph, no LLM calls) */
     skipEnrich?: boolean;
+    /** Cap on source files collected for this repo (default 200) */
+    maxFiles?: number;
     /** Source MR/PR URL to record as ingested in source-manifest.json (P5). */
     sourceMrUrl?: string | readonly string[];
 }
@@ -243,7 +245,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     const {
         url, depth = 1, forceSsh = false, forceAnonymous = false,
         explicitDomain, dryRun = false, output,
-        incremental = false, skipAutoPush = false, skipEnrich = false, sourceMrUrl,
+        incremental = false, skipAutoPush = false, skipEnrich = false, maxFiles, sourceMrUrl,
     } = opts;
 
     // 1. Parse provider and repo info
@@ -385,7 +387,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
     let updated: boolean;
     try {
         updated = await importCodebase({
-            sourceDir: cacheDir, slug, wikiRoot: teamwikiRoot, incremental, skipEnrich,
+            sourceDir: cacheDir, slug, wikiRoot: teamwikiRoot, incremental, skipEnrich, maxFiles,
             repoUrl: url,
             branch: cloneBranch === 'HEAD' ? undefined : cloneBranch,
             sourceMrUrl,

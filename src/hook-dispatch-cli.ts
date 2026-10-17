@@ -500,6 +500,12 @@ export async function hookDispatchCli(
       if (typeof stdin.session_id !== 'string' || !stdin.session_id) {
         stdin.session_id = deriveDispatchSessionId(stdin, tool);
       }
+      // The background pass reads a workflow launch from the payload, never from its own environment, which a child
+      // started through WMI does not inherit. Only this process's environment can set it (#1176).
+      const { LAUNCH_PAYLOAD_KEY, launchEnv, readLaunch } = await import('./launch-context.js');
+      const launch = readLaunch(process.env);
+      if (launch) stdin[LAUNCH_PAYLOAD_KEY] = launchEnv(launch);
+      else delete stdin[LAUNCH_PAYLOAD_KEY];
       settling = spawnBackground(event, tool, matcher, JSON.stringify(stdin), cwd);
     }
 

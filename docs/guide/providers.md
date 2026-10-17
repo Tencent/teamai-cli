@@ -55,6 +55,12 @@ teamai init https://code.qschou.com/Enterprise/arb-workflow-kit.git --scope user
 teamai init git@code.qschou.com:Enterprise/arb-workflow-kit.git --scope user
 ```
 
+The generic provider preserves the clone path, including whether it ends in `.git`. Azure Repos uses this provider too:
+
+```bash
+teamai init https://dev.azure.com/org/project/_git/repo
+```
+
 The generic provider neither reads nor stores a platform token; the system `git` handles authentication:
 
 - HTTPS: configure a Git credential helper first. Do not put a username, password or token in the URL.

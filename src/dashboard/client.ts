@@ -19,6 +19,8 @@ let trendError = false, kbError = false, selectedSession = null, selectedSnapsho
 let trendLoading = false, kbLoading = false, eventSource = null, reconnectTimer = null, fallbackGeneration = 0;
 let rules = null, rulesError = false, rulesLoading = false;
 let dist = null, distError = false, distLoading = false, distDraft = null, preview = null, previewError = '', previewing = false, saving = false, saveError = '', savedNote = ''; let distVersion = 0;
+let skills = null, skillsError = false, skillsLoading = false, skillBusy = '';
+let skillFilterDelivery = '', skillFilterNamespace = '', skillFilterAgent = '';
 let workspaceId = '', workspaceGeneration = 0, workspaces = [];
 const api = route => route + (workspaceId ? '?workspace=' + encodeURIComponent(workspaceId) : '');
 function workspaceLabel(w) { return w.scope==='user'?label('User scope'):w.scope==='unassigned'?label('Unassigned sessions'):e(w.label)+' · '+label('Workspace'); }
@@ -81,13 +83,52 @@ function ruleState(r) {
  var reasons={namespace:'Outside the active namespaces',tags:'Omitted by tag subscriptions',replaced:'Replaced by an active namespace rule'};
  return '<span class="amber">'+label('Not delivered')+'</span><small>'+label(reasons[r.undeliveredReason]||'')+'</small>';
 }
-function resources() {
+function skillState(k) {
+ if(k.excluded)return '<span class="amber">'+label('Excluded by you')+'</span><small>'+label('Applies on the next pull')+'</small>';
+ if(k.delivered)return '<span class="good">'+label('Delivered')+'</span>';
+ var reasons={namespace:'Outside the active namespaces',tags:'Omitted by tag subscriptions',replaced:'Replaced by an active namespace skill',excluded:'Excluded by you'};
+ return '<span class="amber">'+label('Not delivered')+'</span><small>'+label(reasons[k.undeliveredReason]||'')+'</small>';
+}
+function skillAgents(k) {
+ if(!k.installedAgents||!k.installedAgents.length)return '—';
+ return k.installedAgents.map(e).join(', ');
+}
+function skillExcludeButton(k) {
+ var excluding=!k.excluded;
+ return '<button class="ghost" data-skill-exclude="'+e(k.name)+'" data-excluded="'+(excluding?'true':'false')+'"'+(skillBusy===k.name?' disabled':'')+'>'+(excluding?label('Exclude'):label('Include'))+'</button>';
+}
+function skillsPanel() {
+ if(skillsError)return errorPanel('Could not load skills.','skills');
+ if(!skills)return '<section class="panel"><div class="empty" role="status">'+label('Loading skills…')+'</div></section>';
+ if(!skills.configured)return '';
+ var conflictBanner=skills.skillConflict?'<div class="error-panel"><p>'+e(skills.skillConflict)+'</p><p>'+label('Pull keeps what is installed until the copies are made equal or renamed.')+'</p></div>':'';
+ if(!skills.skills.length)return conflictBanner+'<section class="panel"><div class="empty"><h2>'+label('No skills in the team repo')+'</h2></div></section>';
+ var namespaces=[...new Set(skills.skills.map(k=>k.namespace).filter(Boolean))].sort();
+ var agents=[...new Set(skills.skills.flatMap(k=>k.installedAgents||[]))].sort();
+ var shown=skills.skills.filter(k=>(!skillFilterDelivery||(skillFilterDelivery==='delivered')===k.delivered)&&(!skillFilterNamespace||k.namespace===skillFilterNamespace)&&(!skillFilterAgent||(k.installedAgents||[]).includes(skillFilterAgent)));
+ var delivered=skills.skills.filter(k=>k.delivered).length;
+ return conflictBanner+'<section class="panel sessions"><div class="panelhead"><h2>'+label('Skills')+' <span class="count">'+number(skills.skills.length)+'</span></h2><span class="label">'+number(delivered)+' '+label('delivered to this workspace')+'</span></div>'
+ +'<div class="filters"><select id="skill-delivery"><option value="">'+label('All delivery states')+'</option><option value="delivered"'+(skillFilterDelivery==='delivered'?' selected':'')+'>'+label('Delivered')+'</option><option value="undelivered"'+(skillFilterDelivery==='undelivered'?' selected':'')+'>'+label('Not delivered')+'</option></select>'
+ +'<select id="skill-namespace"><option value="">'+label('All namespaces')+'</option>'+namespaces.map(ns=>'<option value="'+e(ns)+'"'+(skillFilterNamespace===ns?' selected':'')+'>'+e(ns)+'</option>').join('')+'</select>'
+ +'<select id="skill-agent"><option value="">'+label('All agents')+'</option>'+agents.map(a=>'<option value="'+e(a)+'"'+(skillFilterAgent===a?' selected':'')+'>'+e(a)+'</option>').join('')+'</select></div>'
+ +'<div class="table-scroll"><table class="session-table"><thead><tr>'+['SKILL','NAMESPACE','DESCRIPTION','AGENTS','DELIVERY',''].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'
+ +shown.map(k=>'<tr><td data-verbatim>'+e(k.name)+'</td><td>'+(k.namespace?e(k.namespace):label('Root'))+'</td><td>'+e(k.description||'—')+'</td><td>'+skillAgents(k)+'</td><td>'+skillState(k)+'</td><td>'+skillExcludeButton(k)+'</td></tr>').join('')
+ +(shown.length?'':'<tr><td colspan="6"><div class="empty">'+label('No skills match these filters')+'</div></td></tr>')
+ +'</tbody></table></div><p class="hint">'+label('Exclusions apply to this workspace only, on the next pull. They never touch the team repository.')+'</p></section>';
+}
+function rulesPanel() {
  if(rulesError)return errorPanel('Could not load rules.','rules');
  if(!rules)return '<div class="empty" role="status">'+label('Loading rules…')+'</div>';
- if(!rules.configured)return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
+ if(!rules.configured)return '';
  if(!rules.rules.length)return '<section class="panel"><div class="empty"><h2>'+label('No rules in the team repo')+'</h2></div></section>';
  var delivered=rules.rules.filter(r=>r.delivered).length;
  return '<section class="panel sessions"><div class="panelhead"><h2>'+label('Rules')+' <span class="count">'+number(rules.rules.length)+'</span></h2><span class="label">'+number(delivered)+' '+label('delivered to this workspace')+'</span></div><div class="table-scroll"><table class="session-table"><thead><tr>'+['RULE','NAMESPACE','DESCRIPTION','DELIVERY'].map(x=>'<th>'+label(x)+'</th>').join('')+'</tr></thead><tbody>'+rules.rules.map(r=>'<tr><td data-verbatim>'+e(r.name)+'</td><td>'+(r.namespace?e(r.namespace):label('Root'))+'</td><td>'+e(r.description||'—')+'</td><td>'+ruleState(r)+'</td></tr>').join('')+'</tbody></table></div></section>';
+}
+function resources() {
+ // The two panels load and fail independently: a rules outage must not hide
+ // the skills list or block its exclusions, and vice versa.
+ if((rules&&rules.configured===false)||(skills&&skills.configured===false))return '<section class="panel"><div class="empty"><h2>'+label('No TeamAI scope in this workspace')+'</h2><p>'+label('Pick a project workspace above, or set one up with teamai init.')+'</p></div></section>';
+ return skillsPanel()+rulesPanel();
 }
 // The Distribution page: what pull delivers to the chosen workspace, and the
 // role and project picks that filter it (#1028). Reads never write; a save
@@ -276,6 +317,16 @@ async function loadKb() { if(kbLoading)return;const generation=workspaceGenerati
 async function loadRules() { if(rulesLoading)return;const generation=workspaceGeneration;rulesLoading=true;try{const data=await json(api('/api/resources/rules'));if(generation===workspaceGeneration){rules=data;rulesError=false;}}catch{if(generation===workspaceGeneration)rulesError=true;}finally{if(generation===workspaceGeneration){rulesLoading=false;if(page==='resources')render();}} }
 async function postJson(route, body) { const response=await fetch(api(route),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)}); const data=await response.json().catch(()=>null); if(!response.ok)throw Error(data&&data.error?data.error:'HTTP '+response.status); return data; }
 async function loadDistribution() { if(distLoading)return;const generation=workspaceGeneration;distLoading=true;try{const data=await json(api('/api/distribution'));if(generation===workspaceGeneration){dist=data;distError=false;distDraft=null;preview=null;previewError='';saveError='';savedNote='';}}catch{if(generation===workspaceGeneration)distError=true;}finally{if(generation===workspaceGeneration){distLoading=false;if(page==='distribution')render();}} }
+async function loadSkills() { if(skillsLoading)return;const generation=workspaceGeneration;skillsLoading=true;try{const data=await json(api('/api/resources/skills'));if(generation===workspaceGeneration){skills=data;skillsError=false;}}catch{if(generation===workspaceGeneration)skillsError=true;}finally{if(generation===workspaceGeneration){skillsLoading=false;if(page==='resources')render();}} }
+async function toggleSkillExclude(name, excluded) {
+ if(skillBusy)return;skillBusy=name;render();
+ const generation=workspaceGeneration;
+ try {
+  const response=await fetch(api('/api/resources/skills/exclusions'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,excluded})});
+  if(!response.ok)throw new Error('exclude failed');
+  await loadSkills();
+ } catch { if(generation===workspaceGeneration)skillsError=true; } finally { if(generation===workspaceGeneration){skillBusy='';if(page==='resources')render();} }
+}
 function receive(data) {
  if(!Array.isArray(data))return;
  if(haveSessions && JSON.stringify(sessions)===JSON.stringify(data))return;
@@ -332,7 +383,7 @@ document.addEventListener('click',event=>{
  if(nav){const key=nav.dataset.page;location.hash=key;if(key===page){render();$('title').focus();}}
  if(session)showDetails(session.dataset.session);
  if(event.target.closest('[data-close]'))$('session-dialog').close();
- if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='distribution')loadDistribution();else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
+ if(retry){if(retry.dataset.retry==='trends')loadTrends();else if(retry.dataset.retry==='kb')loadKb();else if(retry.dataset.retry==='rules')loadRules();else if(retry.dataset.retry==='skills')loadSkills();else if(retry.dataset.retry==='distribution')loadDistribution();else{eventSource?.close();clearTimeout(reconnectTimer);connect();}}
  if(event.target.closest('[data-preview-button]'))previewSelection();
  if(event.target.closest('[data-save-button]'))saveSelection();
 });
@@ -345,11 +396,14 @@ function switchWorkspace(id) {
  sessions=[];haveSessions=false;connected=false;trends=null;kb=null;trendLoading=false;kbLoading=false;trendError=false;kbError=false;
  rules=null;rulesError=false;rulesLoading=false;
  dist=null;distError=false;distLoading=false;distDraft=null;preview=null;previewError='';previewing=false;saving=false;saveError='';savedNote='';
- $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadKb();loadRules();
+ skills=null;skillsError=false;skillsLoading=false;skillBusy='';skillFilterDelivery='';skillFilterNamespace='';skillFilterAgent='';
+ $('repo').value='';$('agent').value='';workspaceOptions();filters();render();connect();loadTrends();loadKb();loadRules();loadSkills();
 }
 $('workspace').onchange=()=>switchWorkspace($('workspace').value);
+document.addEventListener('click',event=>{const button=event.target.closest('[data-skill-exclude]');if(button){toggleSkillExclude(button.dataset.skillExclude,button.dataset.excluded==='true');}});
+document.addEventListener('change',event=>{if(event.target.id==='skill-delivery'){skillFilterDelivery=event.target.value;if(page==='resources')render();}else if(event.target.id==='skill-namespace'){skillFilterNamespace=event.target.value;if(page==='resources')render();}else if(event.target.id==='skill-agent'){skillFilterAgent=event.target.value;if(page==='resources')render();}});
 preferences();
-json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadKb();loadRules();});
+json('/api/workspaces').then(data=>{workspaces=data;const saved=read('teamai-dashboard-workspace','');const fallback=(workspaces.find(w=>w.scope==='project')||workspaces[0])?.id;switchWorkspace(workspaces.some(w=>w.id===saved)?saved:(fallback??''));}).catch(()=>{workspaceOptions();connect();loadTrends();loadKb();loadRules();loadSkills();});
 setInterval(loadTrends,30000);
 // Reconcile idle/ended expiry even when no hook emits another SSE event.
 setInterval(()=>{

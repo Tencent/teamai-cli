@@ -14,6 +14,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isNameShaped, type RecordedAgent } from '../agent-observation.js';
 import { loadTeamConfig } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { getDataHome, isUsageReportEnabled } from '../types.js';
@@ -36,13 +37,6 @@ type RecordedFailure = (typeof RECORDED_FAILURES)[number];
 function isRecordedFailure(failure: WorkflowFailure | undefined): failure is WorkflowFailure & { code: RecordedFailure } {
   return failure !== undefined && (RECORDED_FAILURES as readonly string[]).includes(failure.code);
 }
-
-/**
- * A model name as a driver reports it, such as `claude-sonnet-4.6` or `anthropic/claude-sonnet-4.6@2026`. A report is
- * free text, so a record carries a model only when it is shaped like a name: no leading "/", no drive such as "C:", no
- * ":/" as in a URL, no "..", no spaces, and at most 80 characters.
- */
-const MODEL_NAME = /^(?![A-Za-z]:)(?!.*:\/)(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._:@/-]{0,79}$/;
 
 /** The record's schema tag; see #1083 for the field contract. */
 export type WorkflowRunRecord = {
@@ -76,7 +70,8 @@ export type WorkflowRunRecord = {
   steps?: Array<{
     step: string;
     pass: number;
-    agent?: string;
+    /** What the pass ran as (#1176); only the definition's name for a pass nothing observed. */
+    agent?: RecordedAgent;
     tool?: string;
     model?: string;
     outcome?: Exclude<VisibleOutcome, 'skipped'>;
@@ -96,7 +91,7 @@ export type WorkflowRunRecord = {
 type StepEntry = NonNullable<WorkflowRunRecord['steps']>[number];
 
 /** What one pass of a step reported. */
-type Reported = Pick<StepPass, 'outcome' | 'tool' | 'model' | 'tokens'>;
+type Reported = Pick<StepPass, 'outcome' | 'tool' | 'model' | 'tokens' | 'agent'>;
 
 /** A record's path on the reports branch, keyed by run id. */
 export function recordPath(runId: string): string {
@@ -166,18 +161,19 @@ export function buildEndRecord(
   const ended = Date.parse(run.updatedAt);
   const count = (status: StepState['status']): number => run.steps.filter((step) => step.status === status).length;
   const failure = failureOf(run);
-  // An entry per pass: path + agent from the definition, the rest from what
-  // that pass reported. Message, outputs, results, and session ids never cross.
+  // An entry per pass: path, and what that pass reported. Message, outputs,
+  // results, and session ids never cross.
   const definitionOf = stepDefinitions(run);
   const entry = (step: string, pass: number | undefined, reported: Reported | undefined): StepEntry => {
-    const agent = definitionOf(step)?.agent;
+    const name = definitionOf(step)?.agent;
+    const agent = reported?.agent ?? (name ? { definition: { name } } : undefined);
     const outcome = reported?.outcome === 'skipped' ? undefined : reported?.outcome;
     return {
       step,
       pass: pass ?? 1,
       ...(agent ? { agent } : {}),
       ...(reported?.tool && isLocalWorkflowTool(reported.tool) ? { tool: reported.tool } : {}),
-      ...(reported?.model && MODEL_NAME.test(reported.model) ? { model: reported.model } : {}),
+      ...(reported?.model && isNameShaped(reported.model) ? { model: reported.model } : {}),
       ...(outcome ? { outcome } : {}),
       ...(reported?.tokens ? { tokens: reported.tokens } : {}),
     };

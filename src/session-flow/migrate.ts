@@ -258,30 +258,21 @@ export function resolveTargetCwd(
   return fallback;
 }
 
-// ---------------------------------------------------------------------------
-// MigrationEngine
-// ---------------------------------------------------------------------------
-
-export class MigrationEngine {
-  constructor(
-    private sourcePlatform: string,
-    private targetPlatform: string,
-  ) {}
-
-  /** What migrating `session`, read from the source platform, would carry over. */
-  preview(session: Session): MigrationPreview {
-    const fidelity = fidelityFromSession(session, this.targetPlatform);
-
-    return {
-      sourcePlatform: this.sourcePlatform,
-      targetPlatform: this.targetPlatform,
-      sessionId: session.sessionId,
-      sessionTitle: session.title,
-      cwd: session.cwd,
-      messageCount: session.messages.length,
-      fidelity,
-    };
-  }
+/** What migrating `session`, read from `sourcePlatform`, would carry over. */
+export function previewMigration(
+  session: Session,
+  sourcePlatform: string,
+  targetPlatform: string,
+): MigrationPreview {
+  return {
+    sourcePlatform,
+    targetPlatform,
+    sessionId: session.sessionId,
+    sessionTitle: session.title,
+    cwd: session.cwd,
+    messageCount: session.messages.length,
+    fidelity: fidelityFromSession(session, targetPlatform),
+  };
 }
 
 export { getAdapter, listAvailablePlatforms, listInstalledPlatforms };

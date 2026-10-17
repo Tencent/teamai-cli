@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createLocalToolAdapter, type ToolSpawn } from '../workflow/local-tool-adapter.js';
+import { createLocalToolAdapter, definitionHandoff, type ToolSpawn } from '../workflow/local-tool-adapter.js';
 
 const files: string[] = [];
 
@@ -14,10 +14,17 @@ function child(stdout: string) {
   childProcess.stdout = stdoutEmitter;
   childProcess.stderr = stderr;
   queueMicrotask(() => {
+    childProcess.emit('spawn');
     stdoutEmitter.emit('data', Buffer.from(stdout));
     childProcess.emit('close', 0);
   });
   return childProcess;
+}
+
+/** What `claude -p --output-format stream-json --verbose` prints: an `init` event naming the session's model, then the result. */
+function claudeStream(model: string | undefined, result: Record<string, unknown>): string {
+  const init = { type: 'system', subtype: 'init', session_id: 'session-1', ...(model ? { model } : {}) };
+  return `${JSON.stringify(init)}\n${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, ...result })}\n`;
 }
 
 afterEach(async () => {
@@ -34,8 +41,7 @@ describe('local tool adapter', () => {
       session: 'invented-session',
       tokens: { input: 999, output: 999 },
     }));
-    const spawnTool = vi.fn(() => child(JSON.stringify({
-      model: 'claude-sonnet',
+    const spawnTool = vi.fn(() => child(claudeStream('claude-sonnet', {
       session_id: 'session-1',
       usage: { input_tokens: 4, output_tokens: 2, cache_read_input_tokens: 1 },
       result: JSON.stringify({ ok: false }),
@@ -52,7 +58,7 @@ describe('local tool adapter', () => {
     expect(resolveTool).toHaveBeenCalledWith('claude-internal');
     expect(spawnTool).toHaveBeenCalledWith(
       'C:\\npm\\claude.cmd',
-      expect.arrayContaining(['-p', '--output-format', 'json']),
+      expect.arrayContaining(['-p', '--output-format', 'stream-json', '--verbose']),
       expect.objectContaining({ windowsHide: true }),
     );
     expect(result).toMatchObject({
@@ -61,7 +67,7 @@ describe('local tool adapter', () => {
       session: 'session-1',
       tokens: { input: 4, output: 2, cachedInput: 1 },
     });
-    expect(result.model).not.toBe('invented');
+    expect(result.started && result.model).not.toBe('invented');
     expect(JSON.parse(await fs.readFile(resultPath, 'utf8'))).toMatchObject({
       output: { ok: true },
       tokens: { input: 999, output: 999 },
@@ -71,8 +77,7 @@ describe('local tool adapter', () => {
   it('writes the Claude stdout fallback when the tool does not write result.json', async () => {
     const resultPath = path.join(os.tmpdir(), `teamai-workflow-fallback-${Date.now()}.json`);
     files.push(resultPath);
-    const spawnTool = vi.fn(() => child(JSON.stringify({
-      model: 'claude-sonnet',
+    const spawnTool = vi.fn(() => child(claudeStream('claude-sonnet', {
       session_id: 'session-1',
       usage: { input_tokens: 4, output_tokens: 2, cache_read_input_tokens: 1 },
       result: JSON.stringify({ ok: true }),
@@ -171,6 +176,77 @@ describe('local tool adapter', () => {
     });
 
     expect(spawnTool).not.toHaveBeenCalled();
-    expect(result.failure).toMatchObject({ code: 'tool_unavailable' });
+    expect(result).toMatchObject({ started: false, failure: { code: 'tool_unavailable' } });
+  });
+
+  it('reports a tool that never spawned as not started', async () => {
+    const missing = (() => {
+      const process = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: Object.assign(new EventEmitter(), { resume: () => undefined }) });
+      queueMicrotask(() => process.emit('error', Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' })));
+      return process;
+    }) as unknown as ToolSpawn;
+    // cross-spawn on Windows starts cmd.exe, then reports the missing command as ENOENT.
+    const missingBehindShell = (() => {
+      const process = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: Object.assign(new EventEmitter(), { resume: () => undefined }) });
+      queueMicrotask(() => {
+        process.emit('spawn');
+        process.emit('error', Object.assign(new Error('spawn claude ENOENT'), { code: 'ENOENT' }));
+      });
+      return process;
+    }) as unknown as ToolSpawn;
+    const throws = vi.fn(() => { throw new Error('EACCES'); }) as unknown as ToolSpawn;
+    const run = { prompt: 'Review', cwd: os.tmpdir(), resultPath: path.join(os.tmpdir(), 'never-result.json') };
+
+    expect(await createLocalToolAdapter(missing, () => 'claude').run('claude', run))
+      .toMatchObject({ started: false, failure: { code: 'tool_unavailable' } });
+    expect(await createLocalToolAdapter(missingBehindShell, () => 'claude').run('claude', run))
+      .toMatchObject({ started: false, failure: { code: 'tool_unavailable' } });
+    expect(await createLocalToolAdapter(throws, () => 'claude').run('claude', run))
+      .toMatchObject({ started: false, failure: { code: 'tool_failed' } });
+  });
+
+  // `modelUsage` keys every model the session billed: a side call or a subagent writes beside the model that ran (#1176).
+  it.each([
+    ['its init event, beside a subagent that wrote more of the output', 'claude-sonnet-5-5', {
+      'claude-haiku-5-5': { inputTokens: 1225, outputTokens: 900 },
+      'claude-sonnet-5-5': { inputTokens: 8, outputTokens: 86 },
+    }, 'claude-sonnet-5-5'],
+    ['nothing without an init event naming one', undefined, { 'claude-opus-4-1-20250805': { inputTokens: 4, outputTokens: 2 } }, undefined],
+  ])('reads the Claude model from %s', async (_name, initModel, modelUsage, model) => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-model-usage-${Date.now()}.json`);
+    files.push(resultPath);
+    const spawnTool = vi.fn(() => child(claudeStream(initModel, {
+      result: JSON.stringify({ ok: true }),
+      session_id: 'session-1',
+      usage: { input_tokens: 4, output_tokens: 2 },
+      modelUsage,
+    }))) as unknown as ToolSpawn;
+
+    const result = await createLocalToolAdapter(spawnTool, () => 'claude').run('claude', { prompt: 'Review', cwd: os.tmpdir(), resultPath });
+
+    expect(result).toMatchObject({ started: true, output: { ok: true }, session: 'session-1' });
+    expect(result.started && result.model).toBe(model ?? undefined);
+  });
+  it('tells the tool\'s session-start hook which workflow launch started it (#1176)', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-launch-${Date.now()}.json`);
+    files.push(resultPath);
+    const spawnTool = vi.fn(() => child(claudeStream(undefined, { result: '{}' }))) as unknown as ToolSpawn;
+
+    await createLocalToolAdapter(spawnTool, () => 'claude').run('claude', {
+      prompt: 'Review', cwd: os.tmpdir(), resultPath, launch: { by: 'workflow', tool: 'claude', checkout: 'checkout-1' },
+    });
+
+    expect(spawnTool).toHaveBeenCalledWith('claude', expect.anything(), expect.objectContaining({
+      env: expect.objectContaining({ TEAMAI_LAUNCHED_BY: 'workflow', TEAMAI_LAUNCHED_TOOL: 'claude', TEAMAI_LAUNCHED_CHECKOUT: 'checkout-1' }),
+    }));
+  });
+});
+
+describe('definitionHandoff (#1176)', () => {
+  it('hands Claude its own file and Codex the instructions with the model on argv, and knows no handoff for OpenCode', () => {
+    expect(definitionHandoff('tclaude', { model: 'opus' })).toEqual({ applied: 'main' });
+    expect(definitionHandoff('opencode', { model: 'opus' })).toEqual({});
+    expect(definitionHandoff('codex-internal', { model: 'gpt-5.4' })).toEqual({ applied: 'prompt', model: 'gpt-5.4' });
+    expect(definitionHandoff('codex', {})).toEqual({ applied: 'prompt' });
   });
 });

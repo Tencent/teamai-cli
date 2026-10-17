@@ -9,9 +9,10 @@ function invalidRepoUrl(reason?: string): Error {
 }
 
 function parsePath(rawPath: string): { owner: string; repo: string; fullPath: string } {
-  const cleanPath = rawPath
+  const fullPath = rawPath
     .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
+    .replace(/\/+$/, '');
+  const cleanPath = fullPath
     .replace(/\.git$/i, '')
     .replace(/\/+$/, '');
   const segments = cleanPath.split('/').filter(Boolean);
@@ -25,7 +26,7 @@ function parsePath(rawPath: string): { owner: string; repo: string; fullPath: st
 
   const repo = segments[segments.length - 1];
   const owner = segments.slice(0, -1).join('/');
-  return { owner, repo, fullPath: `${owner}/${repo}` };
+  return { owner, repo, fullPath };
 }
 
 function buildRepoInfo(owner: string, repo: string, remoteUrl: string): RepoInfo {
@@ -74,7 +75,8 @@ function parseGenericGitRepoInputWithOptions(input: string, options: ParseOption
     // A pre-existing local origin may contain HTTP Basic credentials. They are
     // needed only by the user's Git config, never by TeamAI configuration.
     const auth = /^ssh:$/i.test(parsed.protocol) && parsed.username ? `${parsed.username}@` : '';
-    const remoteUrl = `${parsed.protocol}//${auth}${parsed.host}/${fullPath}.git`;
+    // Git hosts such as Azure Repos require the clone path without an added .git.
+    const remoteUrl = `${parsed.protocol}//${auth}${parsed.host}/${fullPath}`;
     return buildRepoInfo(owner, repo, remoteUrl);
   }
 
@@ -90,7 +92,7 @@ function parseGenericGitRepoInputWithOptions(input: string, options: ParseOption
       );
     }
     const { owner, repo, fullPath } = parsePath(rawPath);
-    return buildRepoInfo(owner, repo, `${user}@${host}:${fullPath}.git`);
+    return buildRepoInfo(owner, repo, `${user}@${host}:${fullPath}`);
   }
 
   throw invalidRepoUrl();

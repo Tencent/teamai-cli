@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { simpleGit } from 'simple-git';
 import { afterEach, describe, expect, it } from 'vitest';
 import YAML from 'yaml';
+import { readRecordedAgent } from '../agent-observation.js';
 import type { LocalConfig, UserStats } from '../types.js';
 import {
   buildEndRecord,
@@ -14,6 +15,7 @@ import {
   pendingRecords,
   publishPendingRecords,
   recordPath,
+  type WorkflowRunRecord,
 } from '../workflow/records.js';
 import { generateRunId, isRunId } from '../workflow/store.js';
 import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowDiagnostic } from '../workflow/types.js';
@@ -222,8 +224,8 @@ describe('#1083 workflow run records', () => {
     });
     const record = buildEndRecord(mixed, driver, 'tester');
     expect(record.steps).toEqual([
-      { step: 'one', pass: 1, agent: 'implementer', tool: 'codex', model: 'gpt-5.4-codex', outcome: 'success', tokens: { input: 100, output: 50 } },
-      { step: 'two', pass: 1, agent: 'reviewer', tool: 'claude', model: 'claude-sonnet-4.6', outcome: 'success' },
+      { step: 'one', pass: 1, agent: { definition: { name: 'implementer' } }, tool: 'codex', model: 'gpt-5.4-codex', outcome: 'success', tokens: { input: 100, output: 50 } },
+      { step: 'two', pass: 1, agent: { definition: { name: 'reviewer' } }, tool: 'claude', model: 'claude-sonnet-4.6', outcome: 'success' },
     ]);
   });
 
@@ -257,7 +259,7 @@ describe('#1083 workflow run records', () => {
           return Reflect.get(target, key, receiver);
         },
       }));
-      expect(buildEndRecord(run, driver, 'tester').steps?.filter((entry) => entry.agent === 'reviewer')).toHaveLength(items);
+      expect(buildEndRecord(run, driver, 'tester').steps?.filter((entry) => entry.agent?.definition?.name === 'reviewer')).toHaveLength(items);
       return read;
     };
     const small = work(100);
@@ -289,6 +291,20 @@ describe('#1083 workflow run records', () => {
     // An existing stats file keeps its shape untouched.
     const existing = { username: 'tester', skills: { review: { count: 5 } }, updatedAt: 'x' };
     expect(ensureStatsShape(existing, 'tester')).toBe(existing);
+  });
+
+  it('merges a record published with a string agent, which reads as its definition (#1176)', () => {
+    const published = JSON.parse(JSON.stringify({
+      ...buildEndRecord(runState(), driver, 'tester'),
+      steps: [{ step: 'one', pass: 1, agent: 'implementer', tool: 'codex', outcome: 'success' }],
+    })) as WorkflowRunRecord;
+    const observed = { v: 1, tool: { name: 'codex' }, teamai: '0.23.0', driver: 'local' } as const;
+    const next = buildEndRecord(runState({
+      steps: [{ id: 'one', status: 'succeeded', attempt: 'a1', settledAt: 2, outcome: 'success', tool: 'codex', agent: observed }],
+    }), driver, 'tester');
+
+    expect(readRecordedAgent(published.steps?.[0]?.agent)).toEqual({ definition: { name: 'implementer' } });
+    expect(mergeRecord(published, next).steps).toEqual([{ step: 'one', pass: 1, agent: observed, tool: 'codex', outcome: 'success' }]);
   });
 
   it('merges retry-safe: end wins, a late start retry cannot regress phase', () => {

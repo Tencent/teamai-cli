@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { parseReportedAgent, settleObservation, type ReportedAgent } from '../agent-observation.js';
 import { acquireLock, releaseLock } from '../update.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, workflowsRunBy } from './cache.js';
@@ -55,6 +56,7 @@ export interface ReportInput {
   session?: string;
   tokens?: TokenUsage;
   failure?: WorkflowFailure;
+  agent?: ReportedAgent;
 }
 
 function error(code: string, message: string): WorkflowEnvelope {
@@ -810,7 +812,7 @@ const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease']);
 
 /** The top-level payload fields `parseReport` reads. Keep in sync with the fields it picks. */
 const REPORT_FIELDS = new Set([
-  'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'tokens', 'failure',
+  'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'tokens', 'failure', 'agent',
 ]);
 
 /**
@@ -882,6 +884,11 @@ export function parseReport(value: unknown): ParsedReport | string {
     if (typeof value.code !== 'string') return 'failure.code must be a string';
     if (typeof value.message !== 'string') return 'failure.message must be a string';
     report.failure = { code: value.code, message: value.message };
+  }
+  if (record.agent !== undefined) {
+    const agent = parseReportedAgent(record.agent);
+    if (typeof agent === 'string') return agent;
+    report.agent = agent;
   }
   return { report, ignored: unreadFields(record, REPORT_FIELDS) };
 }
@@ -975,6 +982,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       model: report.model,
       session: report.session,
       tokens: report.tokens,
+      agent: settleObservation(report, defined?.agent),
     };
     const settledStep = outcome === 'released' ? release(step)
       : outcome === 'success' ? succeed(step, { ...settlement, ...(report.outputs !== undefined ? { outputs: report.outputs } : {}) })

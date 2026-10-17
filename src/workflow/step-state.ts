@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AgentObservationSchema } from '../agent-observation.js';
 import type { DriverIdentity, StepLease, TokenUsage, WorkflowFailure } from './types.js';
 
 const TokenUsageSchema: z.ZodType<TokenUsage> = z.object({
@@ -21,6 +22,11 @@ const report = {
   model: z.string().optional(),
   session: z.string().optional(),
   tokens: TokenUsageSchema.optional(),
+  /**
+   * What the pass ran as (#1176), settled by the engine before it is saved. One this CLI cannot read, such as a newer
+   * version's, reads as absent rather than making the run unreadable.
+   */
+  agent: AgentObservationSchema.optional().catch(undefined),
 };
 
 export const OutcomeSchema = z.enum(['success', 'failed', 'skipped', 'cancelled']);
