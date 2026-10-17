@@ -254,7 +254,13 @@ describe('Copilot built-in hooks in project scope', () => {
     write(teamFile, fs.readFileSync(teamFile, 'utf8') + 'provider: git\ntoolPaths:\n  copilot:\n    userScope:\n      hooks: hooks/custom.json\n');
     cli(['hooks', 'inject'], dir);
     expect(cli(['hooks', 'list'], dir)).toMatch(new RegExp(`copilot\\s+installed\\s+${path.join(copilotHome, 'hooks/custom.json')}`));
-    expect(cli(['doctor'], dir)).toMatch(/✔.*teamai hooks in copilot settings/);
+    // Mapping hooks only in user scope is this test's subject, so the entry
+    // stays partial and the completeness finding (#1115) reports the dropped
+    // default keys — doctor exits 1 on it. The hooks check must still pass.
+    const doctor = spawnSync(process.execPath, [CLI, 'doctor'], { cwd: dir, env, encoding: 'utf8', timeout: 30_000 });
+    const report = `${doctor.stdout ?? ''}${doctor.stderr ?? ''}`;
+    expect(report).toMatch(/✔.*teamai hooks in copilot settings/);
+    expect(report).toContain('copilot toolPaths entry is missing 11 default paths');
   });
 
   it('lists the global install and removes owned hooks while preserving personal hooks', () => {
@@ -573,7 +579,13 @@ describe('Copilot built-in hooks in project scope', () => {
     expect(hooks(globalFile).hooks.SessionStart).toHaveLength(1);
     expect(hooks(path.join(dir, '.github/hooks/custom.json')).hooks.Stop.map(entry => entry.bash)).toEqual(['echo team-hook']);
     expect(cli(['hooks', 'list'], dir)).toMatch(new RegExp(`copilot\\s+installed\\s+${globalFile}`));
-    expect(cli(['doctor'], dir)).toMatch(/✔.*teamai hooks in copilot settings/);
+    // The entry names a custom hooks file only, on purpose — the completeness
+    // finding (#1115) reports the dropped default keys and doctor exits 1 on
+    // it. The hooks check must still pass.
+    const doctor = spawnSync(process.execPath, [CLI, 'doctor'], { cwd: dir, env, encoding: 'utf8', timeout: 30_000 });
+    const report = `${doctor.stdout ?? ''}${doctor.stderr ?? ''}`;
+    expect(report).toMatch(/✔.*teamai hooks in copilot settings/);
+    expect(report).toContain('copilot toolPaths entry is missing 11 default paths');
     cli(['hooks', 'remove'], dir);
     expect(hooks(globalFile).hooks.SessionStart ?? []).toEqual([]);
     cli(['hooks', 'inject'], dir);

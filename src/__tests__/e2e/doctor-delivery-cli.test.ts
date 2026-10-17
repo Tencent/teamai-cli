@@ -213,10 +213,21 @@ describe('teamai doctor delivery checks (e2e)', () => {
     }
 
     const report = runDoctor();
-    const failed = report.checks.filter((c) => !c.ok).map((c) => c.name);
+    const failed = report.checks.filter((c) => !c.ok).map((c) => c.name).sort();
 
-    expect(failed).toEqual([]);
-    expect(report.ok).toBe(true);
+    // Every delivery check is green. What still fails is the completeness
+    // finding (#1115) and nothing else: these entries map only the surfaces
+    // this suite exercises, and a `toolPaths:` section replaces the default
+    // table whole, so each drops the keys it does not name. That report is
+    // the feature working — the fix text names the exact keys to add back.
+    expect(failed).toEqual([
+      'claude toolPaths entry is missing 2 default paths',
+      'codebuddy toolPaths entry is missing 5 default paths',
+      'codex toolPaths entry is missing 5 default paths',
+      'cursor toolPaths entry is missing 5 default paths',
+      'opencode toolPaths entry is missing 4 default paths',
+    ]);
+    expect(report.ok).toBe(false);
   });
 
   it('reports a server of your own holding a team name, which a pull will not overwrite', () => {

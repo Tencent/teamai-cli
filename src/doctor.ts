@@ -7,6 +7,7 @@ import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 import {
   COPILOT_TOOL_ID,
+  DEFAULT_TOOL_PATHS,
   RELOCATABLE_TOOLS,
   applyToolRoots,
   detectToolRoot,
@@ -201,6 +202,62 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
         + `${resolveToolBaseDir(tool, localConfig)}, so a pull delivers nothing to it. `
         + `Install ${tool} (in workspace scope, opening a session there creates its root), `
         + `or run \`teamai uninstall --agent ${tool}\` to stop syncing to it.`,
+    });
+  }
+
+  return checks;
+}
+
+/**
+ * Name the default keys a custom `toolPaths` entry drops.
+ *
+ * A team `toolPaths:` section replaces the default table whole — the zod
+ * `.default(...)` applies only when the section is absent — and every field of
+ * `ToolPathsSchema` is optional, so an entry that omits half of what the
+ * built-in default provided parses cleanly and pull skips those surfaces with
+ * no warning anywhere (#1115). For each enabled built-in tool whose entry is
+ * missing keys the default carries, say which. This does not revisit the
+ * semantics: omission is the documented way to opt a tool out of a surface, so
+ * the fix points at the default table rather than changing what a partial
+ * entry means.
+ */
+function buildToolPathsCompletenessChecks(ctx: DoctorContext): Check[] {
+  const { teamConfig, toolPaths } = ctx;
+  if (!teamConfig) return [];
+
+  type Entry = TeamaiConfig['toolPaths'][string];
+  const checks: Check[] = [];
+  // Same narrowing as `buildEnabledToolChecks`: entries for tools this member
+  // disabled, or that `enabledAgents` leaves out, report nothing — a table the
+  // team pared down to fewer tools is the normal shape of a partial table.
+  for (const tool of Object.keys(toolPaths)) {
+    const entry = teamConfig.toolPaths[tool];
+    const defaults = DEFAULT_TOOL_PATHS[tool];
+    // A tool the team invented has no default table to drop keys from.
+    if (!entry || !defaults) continue;
+
+    const missing = [
+      ...(Object.keys(defaults) as Array<keyof Entry>)
+        .filter((key) => key !== 'userScope' && entry[key] === undefined)
+        .map((key) => `\`${key}\``),
+      ...(Object.keys(defaults.userScope ?? {}) as Array<keyof NonNullable<Entry['userScope']>>)
+        .filter((key) => entry.userScope?.[key] === undefined)
+        .map((key) => `\`userScope.${key}\``),
+    ];
+    if (missing.length === 0) continue;
+
+    checks.push({
+      name: `${tool} toolPaths entry is missing ${missing.length} default path${missing.length === 1 ? '' : 's'}`,
+      source: 'local',
+      // Static, like the codex claudemd finding in doctor-delivery: the shape
+      // of the config is the defect, and the team config is the only place it
+      // can be fixed.
+      check: async () => false,
+      fix: `A \`toolPaths:\` section replaces the default table whole, so this entry also drops `
+        + `${missing.join(', ')}: pull silently skips those paths for ${tool}. Add them to the entry `
+        + 'in the team teamai.yaml — the values to copy are in DEFAULT_TOOL_PATHS in src/types.ts — '
+        + 'then run `teamai pull`. Leaving a path out on purpose is the documented opt-out; '
+        + 'keep the keys the tool must keep.',
     });
   }
 
@@ -615,6 +672,7 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...(stage === 'doctor' ? await buildRulesDeliveryChecks(ctx) : []),
     ...(stage === 'doctor' ? await buildAgentsDeliveryChecks(ctx) : []),
     ...(stage === 'doctor' ? await buildInstructionDeliveryChecks(ctx) : []),
+    ...(stage === 'doctor' ? buildToolPathsCompletenessChecks(ctx) : []),
     ...await buildAgentModelChecks(ctx, stage),
     ...await buildMcpDeliveryChecks(ctx),
     ...await buildMcpReadFileChecks(ctx),
