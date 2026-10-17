@@ -8,6 +8,7 @@ import {
   reverseFromClaude,
   reverseFromCodex,
   reverseFromOpencode,
+  toolExtrasFor,
   type AgentSpec,
   type ToolName,
 } from '../resources/agent-format.js';
@@ -294,7 +295,17 @@ async function promptReport(
       prompt: lease.prompt!,
       cwd: driver.workspace,
       resultPath: attemptResultPath,
-      ...(agent ? { agent: { name: lease.agent!, instructions: agent.instructions, ...(agent.model ? { model: agent.model } : {}) } } : {}),
+      // The deployed OpenCode file carries the mapped effort as `variant`
+      // (agentEffortField); `run --agent` applies it only when the file is a
+      // primary agent, so it rides the command line instead (#1193).
+      ...(agent ? { agent: {
+        name: lease.agent!,
+        instructions: agent.instructions,
+        ...(agent.model ? { model: agent.model } : {}),
+        ...(localToolFamily(selected) === 'opencode' && typeof toolExtrasFor(agent, selected as ToolName)?.variant === 'string'
+          ? { effort: toolExtrasFor(agent, selected as ToolName)?.variant as string }
+          : {}),
+      } } : {}),
     });
   } catch {
     result = {

@@ -24,7 +24,7 @@ export interface LocalToolRun {
   prompt: string;
   cwd: string;
   resultPath: string;
-  agent?: { name: string; instructions: string; model?: string };
+  agent?: { name: string; instructions: string; model?: string; effort?: string };
 }
 
 export interface LocalToolResult {
@@ -56,7 +56,32 @@ function resultInstruction(input: LocalToolRun, prompt: string): string {
     + 'Use this shape: {"output":{},"failure":{"code":"optional","message":"optional"}}.';
 }
 
-function invocation(tool: LocalWorkflowTool, input: LocalToolRun): { command: string; args: string[] } {
+const opencodeMajorCache = new Map<string, number>();
+
+/**
+ * OpenCode's major version, probed once per executable and cached. The two
+ * majors take an effort differently (`--variant` on 1, inside `--model` on 2,
+ * #1193); a failed probe reads as 1, the pinned devDependency's major.
+ */
+async function opencodeMajor(spawn: ToolSpawn, executable: string): Promise<number> {
+  const cached = opencodeMajorCache.get(executable);
+  if (cached !== undefined) return cached;
+  const major = await new Promise<number>((resolve) => {
+    let stdout = '';
+    try {
+      const probe = spawn(executable, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      probe.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      probe.on('close', () => resolve(Number.parseInt(stdout.trim(), 10) || 1));
+      probe.on('error', () => resolve(1));
+    } catch {
+      resolve(1);
+    }
+  });
+  opencodeMajorCache.set(executable, major);
+  return major;
+}
+
+function invocation(tool: LocalWorkflowTool, input: LocalToolRun, opencodeMajorVersion?: number): { command: string; args: string[] } {
   const family = localToolFamily(tool);
   const agentPrompt = input.agent?.instructions
     ? `${input.agent.instructions}\n\n${input.prompt}`
@@ -74,9 +99,25 @@ function invocation(tool: LocalWorkflowTool, input: LocalToolRun): { command: st
       args: ['exec', '--json', ...(input.agent?.model ? ['--model', input.agent.model] : []), prompt],
     };
   }
+  // An agent step names a model the deployed file already carries, but
+  // `opencode run --agent` applies the file's model only when the file is a
+  // primary agent; passing it explicitly reaches both majors (#1193). The
+  // effort rides with it: `--variant` on OpenCode 1, inside the model id
+  // (`prov#effort`) on OpenCode 2, where run has no separate variant flag.
+  const model = input.agent?.model;
+  const effort = input.agent?.effort;
+  const version = opencodeMajorVersion ?? 1;
+  const modelArg = model !== undefined
+    ? (effort !== undefined && version >= 2 ? `${model}#${effort}` : model)
+    : undefined;
   return {
     command: tool,
-    args: ['run', '--format', 'json', prompt, ...(input.agent ? ['--agent', input.agent.name] : [])],
+    args: [
+      'run', '--format', 'json', prompt,
+      ...(input.agent ? ['--agent', input.agent.name] : []),
+      ...(modelArg !== undefined ? ['--model', modelArg] : []),
+      ...(effort !== undefined && model !== undefined && version < 2 ? ['--variant', effort] : []),
+    ],
   };
 }
 
@@ -256,7 +297,12 @@ export function createLocalToolAdapter(
   return {
     async run(tool, input) {
       await fs.mkdir(path.dirname(input.resultPath), { recursive: true });
-      const call = invocation(tool, input);
+      let major: number | undefined;
+      if (localToolFamily(tool) === 'opencode' && input.agent?.effort !== undefined) {
+        const executable = resolveTool(tool);
+        if (executable) major = await opencodeMajor(spawnTool, executable);
+      }
+      const call = invocation(tool, input, major);
       const executable = resolveTool(call.command);
       if (!executable) {
         return {

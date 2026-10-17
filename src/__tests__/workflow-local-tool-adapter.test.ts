@@ -160,6 +160,52 @@ describe('local tool adapter', () => {
     });
   });
 
+  it('passes the agent model and variant to opencode 1 as --model and --variant (#1193)', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-opencode-model-1-${Date.now()}.json`);
+    files.push(resultPath);
+    await fs.writeFile(resultPath, JSON.stringify({ output: { ok: true } }));
+    const spawnTool = vi.fn((_command: string, args: string[]) =>
+      child(args.includes('--version') ? '1.18.23\n' : JSON.stringify({ type: 'session.created', properties: { info: { id: 'ses_1' } } }) + '\n'));
+    const adapter = createLocalToolAdapter(spawnTool as unknown as ToolSpawn, () => '/usr/bin/opencode');
+
+    await adapter.run('opencode', {
+      prompt: 'Review the change.',
+      cwd: os.tmpdir(),
+      resultPath,
+      agent: { name: 'reviewer', instructions: 'Read only.', model: 'anthropic/claude-sonnet-4-5', effort: 'high' },
+    });
+
+    const runArgs = spawnTool.mock.calls.find(([, args]) => (args as string[]).includes('run'))![1] as string[];
+    expect(runArgs).toContain('anthropic/claude-sonnet-4-5');
+    expect(runArgs).toContain('--model');
+    expect(runArgs).toContain('high');
+    expect(runArgs).toContain('--variant');
+    expect(runArgs.join(' ')).not.toContain('#high');
+  });
+
+  it('encodes the variant inside --model for opencode 2 (#1193)', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-opencode-model-2-${Date.now()}.json`);
+    files.push(resultPath);
+    await fs.writeFile(resultPath, JSON.stringify({ output: { ok: true } }));
+    // A different executable path: the major is probed and cached per binary,
+    // so the OpenCode 2 fixture is its own probe, not the 1.x cache entry.
+    const spawnTool = vi.fn((_command: string, args: string[]) =>
+      child(args.includes('--version') ? '2.0.30\n' : JSON.stringify({ type: 'session.created', properties: { info: { id: 'ses_1' } } }) + '\n'));
+    const adapter = createLocalToolAdapter(spawnTool as unknown as ToolSpawn, () => '/opt/opencode-2/opencode');
+
+    await adapter.run('opencode', {
+      prompt: 'Review the change.',
+      cwd: os.tmpdir(),
+      resultPath,
+      agent: { name: 'reviewer', instructions: 'Read only.', model: 'anthropic/claude-sonnet-4-5', effort: 'high' },
+    });
+
+    const runArgs = spawnTool.mock.calls.find(([, args]) => (args as string[]).includes('run'))![1] as string[];
+    expect(runArgs).toContain('--model');
+    expect(runArgs).toContain('anthropic/claude-sonnet-4-5#high');
+    expect(runArgs).not.toContain('--variant');
+  });
+
   it('reports tool_unavailable without spawning when the executable cannot be resolved', async () => {
     const spawnTool = vi.fn() as unknown as ToolSpawn;
     const adapter = createLocalToolAdapter(spawnTool, () => null);
