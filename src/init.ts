@@ -2,7 +2,7 @@ import YAML from 'yaml';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
-import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
+import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, refreshRoleAssignment, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { deliveredHookFiles, describeUnappliedTeamHooks, hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from './hooks.js';
 import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, pushRepoDirectly, autoPushViaMR, initPushBlockTimeoutMs } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
@@ -727,6 +727,11 @@ export async function initHttp(
     const lenient = error instanceof RolesManifestNotFoundError || error instanceof NoRoleSelectedError;
     if (!lenient) throw error;
   }
+  // The team's assignment, if it has one (#1186). This config is handed to the
+  // hook, MCP and env reconciliation below before any load can overlay it, and
+  // a role-less config matches every role-scoped entry. Runtime-only: the save
+  // writes the member's own selection, which an assignment leaves empty.
+  await refreshRoleAssignment(localConfig);
   Object.assign(localConfig, await resolveProjectsForInit(localPath, options.project));
 
   // Persist --agent into enabledAgents (additive across runs)
@@ -1336,6 +1341,11 @@ export async function initSelfRepo(options: GlobalOptions & {
     const lenient = error instanceof RolesManifestNotFoundError || error instanceof NoRoleSelectedError;
     if (!lenient) throw error;
   }
+  // The team's assignment, if it has one (#1186). This config is handed to the
+  // hook, MCP and env reconciliation below before any load can overlay it, and
+  // a role-less config matches every role-scoped entry. Runtime-only: the save
+  // writes the member's own selection, which an assignment leaves empty.
+  await refreshRoleAssignment(localConfig);
   Object.assign(localConfig, await resolveProjectsForInit(localPath, options.project));
   // Which AI tools to set up in this repo (create skills dir + inject hooks +
   // commit their settings.json). Resolved from --agent, else HOME detection
@@ -2154,6 +2164,9 @@ export async function init(options: GlobalOptions & {
     }
   }
   if (roleProfile) Object.assign(localConfig, roleProfile);
+  // As above: the assignment reaches hook, MCP and env reconciliation through
+  // this config, and is never written to disk.
+  await refreshRoleAssignment(localConfig);
 
   // Projects were resolved before member registration so both records agree.
   localConfig.projects = resolvedProjects;

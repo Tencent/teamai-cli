@@ -39,9 +39,14 @@ With assignments in place, nothing falls back to an unfiltered sync:
 - A `members.yaml` that exists but cannot be read or parsed leaves this run with no roles, loudly. Only absence of the file returns role selection to the member.
 - An assigned role `roles.yaml` does not declare is dropped with a warning, rather than failing every command for that member over one stale line. If that leaves no roles — including when `roles.yaml` is missing entirely — the member holds none.
 
-### Takes effect on the pull that fetches it
+### Resolved again where a load cannot reach
 
-The assignment lives in the repo `pull` itself refreshes, and the config is loaded before that refresh. Resolved only at load time, the first pull after a reassignment would deliver the previous roles and record the new revision as synced, so the fast path would skip every pull after it until `--force`. `pullForScope` therefore re-resolves the assignment (`refreshRoleAssignment`) right after the team repo moves, which also picks up an assignments file that just arrived or just went away.
+`refreshRoleAssignment` re-resolves the assignment on a config already in memory. It **mutates** that config rather than returning a copy: pull keys `teamEnvs` and `instructions` on config identity, and reconciles hooks, MCP and env on the object its caller holds, so a replacement would reach none of them.
+
+Two callers:
+
+- `pull`. The assignment lives in the repo `pull` itself refreshes, and the config is loaded before that refresh. Resolved only at load time, the first pull after a reassignment would deliver the previous roles and record the new revision as synced, so the fast path would skip every pull after it until `--force`. `pullForScope` therefore re-resolves right after the team repo moves, which also picks up an assignments file that just arrived or just went away.
+- `init`. It builds the config in memory and hands it straight to the hook, MCP and env reconciliation, before any load can overlay it. Without this the config reaches them role-less, and a role-less config matches every role-scoped entry: a member assigned `frontend` would have `backend`'s hooks installed at init. The assignment is applied after the role profile and before that reconciliation; nothing of it is written, since the save keeps the member's own selection, which an assignment leaves empty.
 
 In a workspace with children (#913) every delivered member holds the workspace's assignment: a child cannot select a role, so the selection it recorded is not one to honour.
 

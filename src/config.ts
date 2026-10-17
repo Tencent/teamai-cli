@@ -162,18 +162,32 @@ function withLocalRoles(config: LocalConfig): LocalConfig {
 }
 
 /**
- * Resolve the assignment again for a config that is already loaded (#1186).
+ * Resolve the assignment again on a config that is already in memory (#1186).
  *
- * `pull` loads the config before it updates the team repo, so the assignment it
- * read is the one the previous pull left on disk. Re-resolving after the
- * refresh is what makes a reassignment take effect on the pull that fetches it,
- * instead of delivering the old roles and recording the new revision as synced
- * — which the fast path would then skip until `pull --force`.
+ * Two callers:
+ *
+ *  - `pull` loads the config before it updates the team repo, so the assignment
+ *    it read is the one the previous pull left on disk. Re-resolving after the
+ *    refresh is what makes a reassignment take effect on the pull that fetches
+ *    it, instead of delivering the old roles and recording the new revision as
+ *    synced — which the fast path would then skip until `pull --force`.
+ *  - `init` builds the config in memory and hands it straight to the hook, MCP
+ *    and env reconciliation, before any load can overlay it. Without this the
+ *    config would reach them role-less, which matches every role-scoped entry.
+ *
+ * Mutates `config` rather than returning a new one. Pull keys `teamEnvs` and
+ * `instructions` on config identity and reconciles hooks, MCP and env on the
+ * object its caller holds, so a replacement would reach neither.
  */
-export async function refreshRoleAssignment(config: LocalConfig): Promise<LocalConfig> {
-  // Also covers an assignments file that just arrived, or just went away: the
-  // local selection is restored first, so absence hands the roles back to it.
-  return applyRoleAssignment(withLocalRoles(config));
+export async function refreshRoleAssignment(config: LocalConfig): Promise<void> {
+  // The local selection is restored first, so an assignments file that just
+  // arrived is applied over it — and one that just went away hands it back.
+  const resolved = await applyRoleAssignment(withLocalRoles(config));
+  if (resolved.primaryRole) config.primaryRole = resolved.primaryRole;
+  else delete config.primaryRole;
+  config.additionalRoles = resolved.additionalRoles;
+  if (resolved.roleAssignment) config.roleAssignment = resolved.roleAssignment;
+  else delete config.roleAssignment;
 }
 
 /** `roles` as this member's effective selection, primary first. */

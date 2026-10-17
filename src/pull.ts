@@ -1312,7 +1312,9 @@ async function pullForScope(
   // fetches it, rather than on the one after — by which time this pull has
   // recorded the new revision as synced and the fast path skips it.
   // Outside the refresh's try: a failure here is not a failure to fetch.
-  localConfig = await refreshRoleAssignment(localConfig);
+  // In place: the hooks, MCP and env stages after this scope reconcile the
+  // object `pull` holds, and key `teamEnvs`/`instructions` on its identity.
+  await refreshRoleAssignment(localConfig);
 
   // Settle the placement records against the tree just refreshed, before
   // delivery reads them: a placement whose PR has merged becomes a record, one

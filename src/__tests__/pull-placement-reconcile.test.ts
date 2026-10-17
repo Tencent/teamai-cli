@@ -18,7 +18,7 @@ vi.mock('../config.js', () => ({
   saveStateForScope: vi.fn(),
   // Pull re-resolves the role assignment once the team repo has moved (#1186);
   // this suite's configs carry none, so it hands the config straight back.
-  refreshRoleAssignment: vi.fn(async (config: unknown) => config),
+  refreshRoleAssignment: vi.fn(async () => {}),
 }));
 
 vi.mock('../utils/git.js', () => ({
