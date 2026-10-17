@@ -9,9 +9,29 @@ vi.mock('node:child_process', async (importOriginal) => ({
   ...await importOriginal<typeof import('node:child_process')>(),
   execSync: vi.fn(() => { throw new Error('gh unavailable'); }),
 }));
+vi.mock('../utils/logger.js', () => ({
+  log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
+}));
+import { log } from '../utils/logger.js';
 
 const PR = '/repos/team/repo/pulls/42';
 const METADATA = { title: 'Fix retries', body: null, user: { login: 'dev' }, merged_at: null };
+
+/** The review threads (#1187): diff comments, review summaries, conversation. */
+const REVIEW_COMMENTS = [
+  { id: 1, body: 'Three retries hide a dead bucket.', path: 'src/up.ts', line: 42, user: { login: 'bob' } },
+  { id: 2, body: 'Unrelated nit', path: 'src/x.ts', line: null, original_line: 7, user: { login: 'carol' } },
+  { id: 3, body: 'Agreed, fail fast on 403.', path: 'src/up.ts', line: 42, in_reply_to_id: 1, user: { login: 'dev' } },
+];
+const REVIEWS = [
+  { body: '', state: 'APPROVED', user: { login: 'bob' } },
+  { body: 'Please split the retry policy out.', state: 'CHANGES_REQUESTED', user: { login: 'carol' } },
+  { body: 'draft', state: 'PENDING', user: { login: 'erin' } },
+];
+const CONVERSATION = [
+  { body: '<!-- teamai:ci-extract -->\n## TeamAI 知识提炼', user: { login: 'ci-bot' } },
+  { body: 'Merging after the split.', user: { login: 'dev' } },
+];
 
 function mockResponses(failedPath?: string, status = 200, body = '', responseError?: Error): string[] {
   const seen: string[] = [];
@@ -23,6 +43,9 @@ function mockResponses(failedPath?: string, status = 200, body = '', responseErr
     const failed = key === failedPath;
     const response = failed ? body : diff ? 'diff --git a/a b/a\n+fixed\n'
       : url === PR ? JSON.stringify(METADATA)
+      : url.startsWith(`${PR}/comments`) ? JSON.stringify(REVIEW_COMMENTS)
+      : url.startsWith(`${PR}/reviews`) ? JSON.stringify(REVIEWS)
+      : url.startsWith('/repos/team/repo/issues/42/comments') ? JSON.stringify(CONVERSATION)
       : JSON.stringify([{ sha: 'abc123', commit: { message: 'Fix retries\n\nDetails' } }]);
     const req = Object.assign(new EventEmitter(), {
       setTimeout: vi.fn(),
@@ -93,5 +116,36 @@ describe('GitHub PR REST fallback', () => {
       commits: [{ hash: 'abc123', message: 'Fix retries' }],
       diff: 'diff --git a/a b/a\n+fixed\n',
     });
+  });
+});
+
+describe('GitHub PR review threads (#1187)', () => {
+  it('groups diff comments into threads and adds review verdicts and conversation, without teamai comments', async () => {
+    mockResponses();
+    const mr = await fetchGitHubPR('https://github.com/team/repo/pull/42');
+    expect(mr.discussions).toEqual([
+      { file: 'src/up.ts', line: 42, notes: [{ author: 'bob', body: 'Three retries hide a dead bucket.' }, { author: 'dev', body: 'Agreed, fail fast on 403.' }] },
+      { file: 'src/x.ts', line: 7, notes: [{ author: 'carol', body: 'Unrelated nit' }] },
+      { notes: [{ author: 'carol', body: 'changes requested: Please split the retry policy out.' }] },
+      { notes: [{ author: 'dev', body: 'Merging after the split.' }] },
+    ]);
+  });
+
+  it('requests none of the list endpoints with discussions: false', async () => {
+    const seen = mockResponses();
+    const mr = await fetchGitHubPR('https://github.com/team/repo/pull/42', { discussions: false });
+    expect(mr).not.toHaveProperty('discussions');
+    expect(seen.filter((u) => /comments|reviews/.test(u))).toEqual([]);
+  });
+
+  it('keeps the extraction going, with a warning, when a list endpoint fails', async () => {
+    vi.mocked(log.warn).mockClear();
+    mockResponses(`${PR}/reviews?per_page=100&page=1`, 403, '{"message":"Forbidden"}');
+    const mr = await fetchGitHubPR('https://github.com/team/repo/pull/42');
+    expect(mr.title).toBe('Fix retries');
+    expect(mr).not.toHaveProperty('discussions');
+    expect(vi.mocked(log.warn).mock.calls.map(([m]) => String(m))).toEqual([
+      expect.stringMatching(/Review threads not read \(GitHub API error 403/),
+    ]);
   });
 });

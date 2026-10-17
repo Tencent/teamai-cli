@@ -18,6 +18,8 @@ const DRAFT_BODY = 'gateway retry budget exhausted under burst traffic backoff j
 
 /** The team repo `teamai import` runs against, set per test. */
 let teamRepo = '';
+/** The team's teamai.yaml `language`, set per test (#1187). */
+let teamLanguage: 'en' | 'zh' | undefined;
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   autoDetectInit: vi.fn(async () => ({
@@ -28,7 +30,7 @@ vi.mock('../config.js', async (importOriginal) => ({
       additionalRoles: [],
       projects: ['alpha'],
     },
-    teamConfig: { team: 't', repo: 'r' },
+    teamConfig: { team: 't', repo: 'r', ...(teamLanguage ? { language: teamLanguage } : {}) },
   })),
 }));
 
@@ -247,6 +249,32 @@ describe('teamai import --from-mr <url...> (#1104)', () => {
     expect(callClaude).toHaveBeenCalledTimes(2);
     expect(infos()).toContainEqual(`[1/2] ${urls[0]}`);
     expect(infos()).toContainEqual(`[2/2] ${urls[1]}`);
+  });
+
+  it('reads the review threads by default and leaves them out with --no-discussions (#1187)', async () => {
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await importCmd({ fromMr: [urls[0]], dryRun: true, all: true });
+      await importCmd({ fromMr: [urls[0]], dryRun: true, all: true, discussions: false });
+    } finally {
+      write.mockRestore();
+    }
+
+    expect(vi.mocked(fetchGitHubPR).mock.calls.map(([, opts]) => opts))
+      .toEqual([{ discussions: true }, { discussions: false }]);
+  });
+
+  it('writes the learning in English when teamai.yaml sets language: en (#1187)', async () => {
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    teamLanguage = 'en';
+    try {
+      await importCmd({ fromMr: [urls[0]], dryRun: true, all: true });
+    } finally {
+      teamLanguage = undefined;
+      write.mockRestore();
+    }
+
+    expect(vi.mocked(callClaude).mock.calls[0][0]).toContain('Write in English');
   });
 
   it('keeps going when one MR fails, reports it and exits non-zero', async () => {

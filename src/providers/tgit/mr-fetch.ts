@@ -1,5 +1,6 @@
-import { type MRData } from '../../types.js';
+import { type MRData, type MRFetchOptions, type MRThread } from '../../types.js';
 import { log } from '../../utils/logger.js';
+import { pruneThreads } from '../mr-threads.js';
 import { tgitFetch } from './rest-auth.js';
 
 /** TGit MR URL 解析结果 */
@@ -44,6 +45,57 @@ interface TGitChangesResponse {
   changes?: Array<{ diff: string }>;
 }
 
+/** A note of the MR, as the notes endpoint `teamai ci` also uses returns it (the fields read). */
+interface TGitNote {
+  body: string;
+  author?: { username: string };
+  system?: boolean;
+  /** Notes of one thread share it, where the instance reports threads. */
+  discussion_id?: string | number | null;
+}
+
+/** Pages of 100 notes read at most. */
+const MAX_NOTE_PAGES = 10;
+
+/**
+ * Reads the MR's notes and groups them into threads by `discussion_id`
+ * (a note without one is a thread of its own), without system notes or
+ * teamai's own CI comments (#1187).
+ *
+ * @throws Error on an API error; the caller keeps the extraction going without threads
+ */
+async function fetchTGitThreads(enc: string, mrGlobalId: number, commentMarker?: string): Promise<MRThread[]> {
+  const notes: TGitNote[] = [];
+  for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
+    const resp = await tgitFetch(`/projects/${enc}/merge_requests/${mrGlobalId}/notes?per_page=100&page=${page}`);
+    if (!resp.ok) {
+      throw new Error(`TGit API error ${resp.status}`);
+    }
+    const raw = (await resp.json()) as TGitNote[];
+    if (!Array.isArray(raw)) {
+      throw new Error('TGit API returned no note list');
+    }
+    notes.push(...raw);
+    if (raw.length < 100) break;
+  }
+  const threads: MRThread[] = [];
+  const byDiscussion = new Map<string, MRThread>();
+  for (const n of notes) {
+    if (n.system) continue;
+    const note = { author: n.author?.username, body: n.body ?? '' };
+    const key = n.discussion_id === undefined || n.discussion_id === null ? undefined : String(n.discussion_id);
+    const thread = key === undefined ? undefined : byDiscussion.get(key);
+    if (thread) {
+      thread.notes.push(note);
+      continue;
+    }
+    const fresh: MRThread = { notes: [note] };
+    if (key !== undefined) byDiscussion.set(key, fresh);
+    threads.push(fresh);
+  }
+  return pruneThreads(threads, commentMarker);
+}
+
 /**
  * 通过 TGit REST API（git.woa.com/api/v3）获取 MR 的完整数据。
  *
@@ -51,13 +103,16 @@ interface TGitChangesResponse {
  *   1. GET /projects/{enc}/merge_requests?iid={iid} 获取元信息
  *   2. GET /projects/{enc}/merge_request/{globalId}/changes 获取 diff
  *      （读 files/changes 字段，截断至 50KB，失败非致命）
+ *   3. GET /projects/{enc}/merge_requests/{globalId}/notes 获取评审 threads
+ *      （opts.discussions !== false 时；失败非致命，#1187）
  * 鉴权与 auth scheme 由 tgitFetch 统一处理。
  *
  * @param url - TGit MR 完整 web URL，例如 https://git.woa.com/group/repo/merge_requests/456
+ * @param opts - 是否读取评审 threads（默认读取）
  * @returns 包含标题、描述、提交列表、diff 的 MRData 对象
  * @throws Error 当 URL 格式不合法、MR 不存在或元信息 API 调用失败时
  */
-export async function fetchTGitMR(url: string): Promise<MRData> {
+export async function fetchTGitMR(url: string, opts: MRFetchOptions = {}): Promise<MRData> {
   const { group, project, mrIid } = parseTGitMRUrl(url);
   log.debug(`fetchTGitMR: ${group}/${project}!${mrIid}`);
 
@@ -92,6 +147,16 @@ export async function fetchTGitMR(url: string): Promise<MRData> {
     log.debug(`TGit MR diff 获取异常，diff 将为空：${(err as Error).message}`);
   }
 
+  // ── 3. 获取评审 threads（失败非致命） ─────────────────────
+  let discussions: MRThread[] | undefined;
+  if (opts.discussions !== false) {
+    try {
+      discussions = await fetchTGitThreads(enc, mr.id, opts.commentMarker);
+    } catch (err) {
+      log.warn(`Review threads not read (${(err as Error).message}); the learning is extracted without them`);
+    }
+  }
+
   return {
     title: mr.title,
     description: mr.description ?? '',
@@ -100,5 +165,6 @@ export async function fetchTGitMR(url: string): Promise<MRData> {
     commits: [],
     diff,
     url,
+    ...(discussions ? { discussions } : {}),
   };
 }
