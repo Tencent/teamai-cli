@@ -177,6 +177,8 @@ teamai projects set checkout
 teamai pull
 ```
 
+`repo.localPath` accepts home-relative paths such as `~/.teamai/team-repo`, including the native `~\.teamai\team-repo` form on Windows.
+
 ## Restricting skills to some members
 
 Namespaces only filter for members who have set a role: a member with no `primaryRole` syncs everything, so `manifest/roles.yaml` alone restricts no one. `teamai init` makes new members pick a role; members from before the manifest need `teamai roles set <role-id>` once. Their next pull withdraws teamai-delivered copies outside the new namespaces (locally modified copies are kept).

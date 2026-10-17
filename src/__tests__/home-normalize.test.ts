@@ -5,9 +5,10 @@
  * the repo cache and the path-safety allowlist would all land somewhere the user
  * never looks. `normalizeHomePath` converts exactly that shape and nothing else.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { normalizeHomePath } from '../utils/home.js';
+import { expandHome, normalizeHomePath } from '../utils/home.js';
 
 const realPlatform = process.platform;
 
@@ -15,7 +16,45 @@ function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value, configurable: true });
 }
 
-afterEach(() => setPlatform(realPlatform));
+afterEach(() => {
+  setPlatform(realPlatform);
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
+
+describe.each(['win32', 'linux'] as const)('expandHome on %s', (platform) => {
+  it('expands home paths before and after native path joining', () => {
+    setPlatform(platform);
+    const nativePath = platform === 'win32' ? path.win32 : path.posix;
+    const join = nativePath.join;
+    vi.spyOn(path, 'join').mockImplementation(join);
+    const home = platform === 'win32' ? 'C:\\Users\\alice' : '/home/alice';
+    vi.stubEnv('HOME', home);
+
+    expect(expandHome('~')).toBe(home);
+    expect(expandHome('~/.teamai/team-repo')).toBe(nativePath.join(home, '.teamai', 'team-repo'));
+    expect(expandHome(nativePath.join('~/.teamai/team-repo', 'manifest', 'roles.yaml'))).toBe(
+      nativePath.join(home, '.teamai', 'team-repo', 'manifest', 'roles.yaml'),
+    );
+  });
+
+  it('only treats backslashes as separators on Windows', () => {
+    setPlatform(platform);
+    const nativePath = platform === 'win32' ? path.win32 : path.posix;
+    const join = nativePath.join;
+    vi.spyOn(path, 'join').mockImplementation(join);
+    const home = platform === 'win32' ? 'C:\\Users\\alice' : '/home/alice';
+    vi.stubEnv('HOME', home);
+
+    const input = '~\\.teamai\\team-repo';
+    expect(expandHome(input)).toBe(platform === 'win32'
+      ? nativePath.join(home, '.teamai', 'team-repo')
+      : input);
+    for (const unchanged of ['~alice/repo', 'relative/repo', home]) {
+      expect(expandHome(unchanged)).toBe(unchanged);
+    }
+  });
+});
 
 describe('normalizeHomePath', () => {
   it('converts a Git Bash drive path to native form', () => {
