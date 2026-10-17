@@ -153,7 +153,13 @@ async function readPages<T>(get: ApiGet, path: string): Promise<T[]> {
  *
  * @throws Error on an API error; the caller keeps the extraction going without threads
  */
-async function fetchGitHubThreads(get: ApiGet, owner: string, repo: string, number: string): Promise<MRThread[]> {
+async function fetchGitHubThreads(
+  get: ApiGet,
+  owner: string,
+  repo: string,
+  number: string,
+  commentMarker?: string,
+): Promise<MRThread[]> {
   const base = `/repos/${owner}/${repo}`;
   const comments = await readPages<GitHubReviewComment>(get, `${base}/pulls/${number}/comments`);
   const reviews = await readPages<GitHubReview>(get, `${base}/pulls/${number}/reviews`);
@@ -178,7 +184,7 @@ async function fetchGitHubThreads(get: ApiGet, owner: string, repo: string, numb
   for (const c of conversation) {
     threads.push({ notes: [{ author: c.user?.login, body: c.body ?? '' }] });
   }
-  return pruneThreads(threads);
+  return pruneThreads(threads, commentMarker);
 }
 
 /**
@@ -298,7 +304,7 @@ export async function fetchGitHubPR(url: string, opts: MRFetchOptions = {}): Pro
   // ── 评审 threads（失败非致命） ───────────────────────────
   if (opts.discussions !== false) {
     try {
-      mr.discussions = await fetchGitHubThreads(get, owner, repo, number);
+      mr.discussions = await fetchGitHubThreads(get, owner, repo, number, opts.commentMarker);
     } catch (err) {
       log.warn(`Review threads not read (${(err as Error).message}); the learning is extracted without them`);
     }

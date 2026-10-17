@@ -252,6 +252,8 @@ export async function ciExtractMr(opts: CiExtractMrOptions): Promise<void> {
     learningsDirs: opts.teamRepo ? [path.join(opts.teamRepo, 'learnings')] : undefined,
     dryRun: true, // 不让 importFromMR 自己写文件，我们自己控制写入
     discussions: opts.discussions,
+    // A custom marker's comments are teamai's own too: keep them out of the threads.
+    commentMarker: opts.commentMarker,
     language,
   });
   learning = result.learning;

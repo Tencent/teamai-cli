@@ -296,6 +296,8 @@ export async function importFromMR(opts: {
   dryRun?: boolean;
   /** Read the MR's review threads into the extraction (default true; `--no-discussions` turns it off). */
   discussions?: boolean;
+  /** The marker `ci extract-mr --comment-marker` posts with, so its own comments stay out of the threads. */
+  commentMarker?: string;
   /** The team's `language` from teamai.yaml: `en` writes the learning in English. */
   language?: 'en' | 'zh';
 }): Promise<{ learning?: LearningDraft; repoUrl: string; learningFile?: string }> {
@@ -307,7 +309,7 @@ export async function importFromMR(opts: {
 
   let mr: MRData;
   try {
-    mr = await fetchMR(opts.url, { discussions: opts.discussions ?? true });
+    mr = await fetchMR(opts.url, { discussions: opts.discussions ?? true, commentMarker: opts.commentMarker });
     fetchSpinner.succeed(mr.discussions?.length
       ? `MR data fetched (${mr.discussions.length} review thread${mr.discussions.length === 1 ? '' : 's'})`
       : 'MR data fetched');

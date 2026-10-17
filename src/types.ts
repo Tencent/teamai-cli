@@ -3121,6 +3121,12 @@ export interface MRThread {
 export interface MRFetchOptions {
   /** Read the review threads too (default true). */
   discussions?: boolean;
+  /**
+   * The marker `teamai ci extract-mr --comment-marker` posts its comments
+   * with; those are left out of the threads, as comments with the default
+   * `<!-- teamai:` prefix always are.
+   */
+  commentMarker?: string;
 }
 
 /**

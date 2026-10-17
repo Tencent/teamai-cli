@@ -40,6 +40,17 @@ describe('pruneThreads', () => {
     ]);
     expect(threads).toEqual([remark]);
   });
+
+  it('drops comments posted with a custom --comment-marker as well', () => {
+    const threads = pruneThreads([
+      { notes: [{ author: 'ci', body: '<!-- learning-bot -->\n## TeamAI 知识提炼' }] },
+      { notes: [{ author: 'ci', body: '<!-- teamai:ci-extract -->' }] },
+      remark,
+    ], '<!-- learning-bot -->');
+    expect(threads).toEqual([remark]);
+    // Without the marker the custom comment is an ordinary note.
+    expect(pruneThreads([{ notes: [{ author: 'ci', body: '<!-- learning-bot -->' }] }])).toHaveLength(1);
+  });
 });
 
 describe('formatMrThreads', () => {
