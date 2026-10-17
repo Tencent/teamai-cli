@@ -1246,6 +1246,7 @@ program
   .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)').default('3').hideHelp())
   .option('--incremental', 'Re-extract only files changed since the last import (with --dir, --from-repo or --from-repo-list; remote repos also reuse the cached clone)')
   .option('--skip-enrich', 'Skip AI enrichment (only clone + extract + graph, no LLM calls)')
+  .option('--max-files <n>', 'Max source files collected per repository (default 200)')
   .option('--from-org <org>', 'List repos under an org and generate a repo whitelist')
   .addOption(new Option('--max-repos <n>', 'Cap on repos pulled from --from-org (default 200)').default('200').hideHelp())
   .addOption(new Option('--exclude-archived', 'Exclude archived repos from --from-org (default true)').hideHelp())

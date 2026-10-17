@@ -114,6 +114,7 @@ teamai recall promote <learningId> --dry-run
 ```bash
 teamai import --dir /path/to/project
 teamai import --dir /path/to/project --incremental
+teamai import --dir /path/to/project --max-files 1000
 teamai import --from-repo https://github.com/org/repo
 teamai import --from-org myorg
 teamai import --from-repo-list repos.yaml
@@ -126,6 +127,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 `--from-mr` 可以一次传多个 MR URL：每个草稿照旧单独确认（`--all` 则都不问），接受的 learning 在最后一次性发布，每个仓库的 teamwiki 只更新一次。其中一个 MR 失败不影响其余，运行结束时给出汇总，有失败则退出码非零。
 
 `--incremental` 只重新提取上次导入后改过的文件，基线随每个代码库存在它自己的 `evidence/code/<slug>/` 里。远端仓库的 slug 是 `<provider>__<owner>__<repo>`，`--from-repo`、`--from-mr` 和 `teamai ci extract-mr` 用的都是它；`--dir` 用仓库名。
+
+`--max-files` 调整单个仓库采集源码文件的上限（默认 200）。采集按关键文件优先；文件数超出上限时会截断，并输出同时带两个计数的警告，不再静默丢弃。
 
 导入之后，用 `teamai codebase` 检查和加工同一份 `teamwiki/`：
 

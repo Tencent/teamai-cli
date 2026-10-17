@@ -65,7 +65,7 @@ export interface CollectCodeOptions {
   changedFiles?: string[];
 }
 
-export async function collectCode(options: CollectCodeOptions): Promise<{ manifest: CodeCollectionManifest; files: CodeCollectedFile[] }> {
+export async function collectCode(options: CollectCodeOptions): Promise<{ manifest: CodeCollectionManifest; files: CodeCollectedFile[]; totalCandidates: number }> {
   const root = path.resolve(options.root);
   const filePaths: string[] = [];
   await walk(root, filePaths, options.includeTests ?? false);
@@ -119,7 +119,8 @@ export async function collectCode(options: CollectCodeOptions): Promise<{ manife
       collectedAt: new Date().toISOString(),
       files: files.map(({ content: _content, ...file }) => file)
     },
-    files
+    files,
+    totalCandidates: filtered.length
   };
 }
 

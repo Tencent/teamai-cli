@@ -23,6 +23,8 @@ export interface ImportFromRepoListOptions {
     incremental?: boolean;
     /** 跳过 AI enrichment（只做 clone + extract + graph，不调用 LLM） */
     skipEnrich?: boolean;
+    /** 每个仓库采集源码文件的上限（默认 200） */
+    maxFiles?: number;
 }
 
 /** importFromRepoList 汇总结果。 */
@@ -70,6 +72,7 @@ export async function importFromRepoList(
         output,
         incremental = false,
         skipEnrich = false,
+        maxFiles,
     } = opts;
 
     // 1. 加载白名单
@@ -121,6 +124,7 @@ export async function importFromRepoList(
                 incremental,
                 skipAutoPush: true,
                 skipEnrich,
+                maxFiles,
             });
             succeeded.push(1);
         } catch (err) {

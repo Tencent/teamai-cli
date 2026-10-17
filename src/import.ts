@@ -66,6 +66,8 @@ interface ImportOptions extends GlobalOptions {
   requireReview?: boolean;
   /** --skip-enrich: skip AI enrichment, only do clone + extract + graph */
   skipEnrich?: boolean;
+  /** --max-files: cap on source files collected per repository (string, requires parseInt; default 200) */
+  maxFiles?: string;
 }
 
 /** What one `--from-mr` URL produced: its draft, where it was written, and the repo it names. */
@@ -74,6 +76,16 @@ interface MrExtraction {
   learning?: { title: string; content: string };
   repoUrl: string;
   learningFile?: string;
+}
+
+/** Parse --max-files: a positive integer, or undefined to keep the extractor's default. */
+function parseMaxFiles(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error('--max-files must be a positive integer');
+  }
+  return parsed;
 }
 
 /**
@@ -85,6 +97,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
   // Loaded here, not at startup: only this command shows a task list.
   const { Listr, PRESET_TIMER } = await import('listr2');
   try {
+    const maxFiles = parseMaxFiles(opts.maxFiles);
     if (opts.fromOrg) {
       // 分支：--from-org <org>，组织级一键初始化
       const tasks = new Listr([
@@ -129,6 +142,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
               output: opts.output,
               incremental: opts.incremental ?? false,
               skipEnrich: opts.skipEnrich ?? false,
+              maxFiles,
             });
           },
           rendererOptions: { persistentOutput: true },
@@ -154,6 +168,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
               output: opts.output,
               incremental: opts.incremental ?? false,
               skipEnrich: opts.skipEnrich ?? false,
+              maxFiles,
             });
             task.title = `Batch import complete: ${result.succeeded} succeeded, ${result.failed.length} failed, ${result.skipped.length} skipped`;
             if (result.failed.length > 0) process.exitCode = 1;
@@ -405,6 +420,7 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
           wikiRoot,
           incremental: opts.incremental ?? false,
           skipEnrich: opts.skipEnrich ?? false,
+          maxFiles,
         });
         if (!team) {
           log.info(`Output written: ${wikiRoot}`);

@@ -763,7 +763,12 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
     }
   }
 
-  const { files, manifest: collectionManifest } = await collectCode({ root, maxFiles, changedFiles });
+  const { files, manifest: collectionManifest, totalCandidates } = await collectCode({ root, maxFiles, changedFiles });
+  if (!opts.json && totalCandidates > files.length) {
+    console.log(chalk.yellow(
+      `[extract] ${project}: ${totalCandidates} source files matched, but only the first ${files.length} were collected. Raise the limit with --max-files <n>.`,
+    ));
+  }
   if (files.length === 0 && !changedFiles) {
     // 全量模式下无文件
     if (opts.json) {

@@ -403,6 +403,7 @@ Generated: do not edit by hand. Regenerate with
   - `--concurrency <n>` (hidden) — Concurrent repos for --from-repo-list (default 3)
   - `--incremental` — Re-extract only files changed since the last import (with --dir, --from-repo or --from-repo-list; remote repos also reuse the cached clone)
   - `--skip-enrich` — Skip AI enrichment (only clone + extract + graph, no LLM calls)
+  - `--max-files <n>` — Max source files collected per repository (default 200)
   - `--from-org <org>` — List repos under an org and generate a repo whitelist
   - `--max-repos <n>` (hidden) — Cap on repos pulled from --from-org (default 200)
   - `--exclude-archived` (hidden) — Exclude archived repos from --from-org (default true)
