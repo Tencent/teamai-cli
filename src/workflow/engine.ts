@@ -642,9 +642,10 @@ function inputsMismatch(name: string, declared: Record<string, OutputSchema> | u
 async function loadWorkflows(
   config: LocalConfig,
   cached: CachedWorkflow,
-): Promise<{ workflows: Record<string, WorkflowDefinition>; sourceHash: string } | { failed: WorkflowEnvelope }> {
+): Promise<{ workflows: Record<string, WorkflowDefinition>; sourceHash: string; teamRevision?: string } | { failed: WorkflowEnvelope }> {
   const workflows: Record<string, WorkflowDefinition> = {};
   const hashes: Array<[string, string]> = [];
+  const revisions: Array<string | undefined> = [cached.teamRevision];
   const visit = async (definition: WorkflowDefinition, through: string[]): Promise<WorkflowEnvelope | undefined> => {
     for (const { step, workflow } of workflowsRunBy(definition)) {
       if (through.includes(workflow)) {
@@ -658,6 +659,7 @@ async function loadWorkflows(
       }
       workflows[workflow] = child.definition;
       hashes.push([workflow, child.sourceHash]);
+      revisions.push(child.teamRevision);
       const failed = await visit(child.definition, [...through, workflow]);
       if (failed) return failed;
     }
@@ -665,12 +667,15 @@ async function loadWorkflows(
   };
   const failed = await visit(cached.definition, [cached.definition.name]);
   if (failed) return { failed };
-  if (hashes.length === 0) return { workflows, sourceHash: cached.sourceHash };
+  const teamRevision = cached.teamRevision !== undefined && revisions.every((revision) => revision === cached.teamRevision)
+    ? cached.teamRevision
+    : undefined;
+  if (hashes.length === 0) return { workflows, sourceHash: cached.sourceHash, ...(teamRevision ? { teamRevision } : {}) };
   const hash = createHash('sha256').update(cached.sourceHash);
   for (const [name, sourceHash] of hashes.sort(([left], [right]) => left.localeCompare(right))) {
     hash.update('\0').update(name).update('\0').update(sourceHash);
   }
-  return { workflows, sourceHash: hash.digest('hex') };
+  return { workflows, sourceHash: hash.digest('hex'), ...(teamRevision ? { teamRevision } : {}) };
 }
 
 /** Creates a run. `inputs` are checked against the declared inputs before the run file exists. */
@@ -697,6 +702,7 @@ export async function startRun(
     status: 'running',
     ...(cached.definition.inputs ? { inputs: inputs as Record<string, unknown> } : {}),
     sourceHash: tree.sourceHash,
+    ...(tree.teamRevision ? { teamRevision: tree.teamRevision } : {}),
     definition: cached.definition,
     ...(Object.keys(tree.workflows).length > 0 ? { workflows: tree.workflows } : {}),
     steps: cached.definition.steps.map((step) => ({ id: step.id, status: 'pending' })),

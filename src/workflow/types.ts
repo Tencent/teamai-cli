@@ -174,6 +174,8 @@ export interface RunState {
   inputs?: Record<string, unknown>;
   /** Covers `definition` and every workflow in `workflows`. */
   sourceHash: string;
+  /** Remote-reachable team commit shared by every cached workflow in this run. */
+  teamRevision?: string;
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;
@@ -200,6 +202,8 @@ export interface RunState {
 export interface CachedWorkflow {
   relativePath: string;
   sourceHash: string;
+  /** Remote-reachable team commit that stores the workflow and prompt bytes exactly. */
+  teamRevision?: string;
   /**
    * The YAML the definition was parsed from, so a kept copy can be checked again against the workflows it runs.
    * Absent in a cache written before a workflow could run another file.

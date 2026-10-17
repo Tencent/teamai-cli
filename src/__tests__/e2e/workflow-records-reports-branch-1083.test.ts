@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,6 +79,8 @@ describe('#1083 workflow run records reach the reports branch', () => {
     };
 
     const rev = git(repo, 'rev-parse', '--short', 'HEAD').trim();
+    const teamRevision = git(repo, 'rev-parse', 'HEAD').trim();
+    const sourceHash = createHash('sha256').update(TWO_STEPS).digest('hex');
     const agentFile = path.join(os.homedir(), '.claude', 'agents', 'reviewer.md');
     await fs.mkdir(path.dirname(agentFile), { recursive: true });
     await fs.writeFile(agentFile, '---\nname: reviewer\ndescription: Reviews builds.\nmodel: claude-opus-4-1\n---\nReview carefully.\n');
@@ -108,6 +111,10 @@ describe('#1083 workflow run records reach the reports branch', () => {
     expect(startRecord.phase).toBe('start');
     expect(startRecord.status).toBe('running');
     expect(startRecord.username).toBe('alice');
+    expect(startRecord.sourceHash).toBe(sourceHash);
+    expect(startRecord.teamRevision).toBe(teamRevision);
+    expect(() => git(repo, 'cat-file', '-e', teamRevision)).not.toThrow();
+    expect(git(repo, 'show', `${teamRevision}:workflows/build.yaml`)).toBe(TWO_STEPS);
 
     const done = await runLocalDriver(config, runId, work, {
       tools: { default: 'claude' },
@@ -121,6 +128,8 @@ describe('#1083 workflow run records reach the reports branch', () => {
     const endRecord = JSON.parse(endRaw) as Record<string, unknown>;
     expect(endRecord.phase).toBe('end');
     expect(endRecord.status).toBe('succeeded');
+    expect(endRecord.sourceHash).toBe(sourceHash);
+    expect(endRecord.teamRevision).toBe(teamRevision);
     expect(endRecord.stepCounts).toEqual({ total: 3, succeeded: 3, failed: 0, skipped: 0, cancelled: 0 });
     expect(endRecord.steps).toEqual([
       { step: 'one', pass: 1, outcome: 'success' },

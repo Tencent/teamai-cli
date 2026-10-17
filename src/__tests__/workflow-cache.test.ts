@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, syncWorkflowDefinitions } from '../workflow/cache.js';
@@ -57,11 +58,239 @@ steps:
     command: node compile.js
 `;
 
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+}
+
+function initializeTeamRepository(config: LocalConfig): { commit(message: string): string; push(): void } {
+  const repository = config.repo.localPath;
+  const remote = path.join(path.dirname(repository), 'remote.git');
+  git(path.dirname(repository), 'init', '--bare', '--initial-branch=main', remote);
+  git(repository, 'init', '--initial-branch=main');
+  git(repository, 'config', 'user.name', 'TeamAI Test');
+  git(repository, 'config', 'user.email', 'teamai@example.test');
+  git(repository, 'remote', 'add', 'origin', remote);
+  return {
+    commit(message: string): string {
+      git(repository, 'add', '.');
+      git(repository, 'commit', '--allow-empty', '-m', message);
+      return git(repository, 'rev-parse', 'HEAD');
+    },
+    push(): void {
+      git(repository, 'push', '--set-upstream', 'origin', 'main');
+    },
+  };
+}
+
 afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('workflow cache', () => {
+  it('stores the team revision when the knowledge path is a symlink alias', async () => {
+    const directConfig = testConfig();
+    const linkedKnowledge = path.join(path.dirname(directConfig.repo.localPath), 'knowledge-link');
+    fs.symlinkSync(directConfig.repo.localPath, linkedKnowledge, 'dir');
+    const config: LocalConfig = {
+      ...directConfig,
+      repo: { ...directConfig.repo, localPath: linkedKnowledge },
+    };
+    const repository = initializeTeamRepository(config);
+    writeWorkflow(config, 'build', VALID);
+    const revision = repository.commit('add workflow through linked path');
+    repository.push();
+
+    await syncWorkflowDefinitions(config);
+
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(revision);
+  });
+
+  it('stores only a remote-reachable commit that holds the cached workflow bytes', async () => {
+    const config = testConfig();
+    const repository = initializeTeamRepository(config);
+    writeWorkflow(config, 'build', VALID);
+    const firstRevision = repository.commit('add workflow');
+    repository.push();
+
+    await syncWorkflowDefinitions(config);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(firstRevision);
+
+    writeWorkflow(config, 'build', `${VALID}\n# local edit\n`);
+    await syncWorkflowDefinitions(config);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
+
+    const localRevision = repository.commit('edit workflow locally');
+    await syncWorkflowDefinitions(config);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
+
+    repository.push();
+    await syncWorkflowDefinitions(config);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(localRevision);
+  });
+
+  it('omits the team revision for an untracked workflow at a remote-reachable commit', async () => {
+    const config = testConfig();
+    const repository = initializeTeamRepository(config);
+    const trackedName = 'tracked';
+    fs.writeFileSync(path.join(config.repo.localPath, 'README.md'), '# Team\n');
+    writeWorkflow(config, trackedName, VALID.replace('name: build', `name: ${trackedName}`));
+    const teamRevision = repository.commit('initialize team');
+    repository.push();
+    await syncWorkflowDefinitions(config);
+    expect((await loadCachedWorkflow(config, trackedName))?.teamRevision).toBe(teamRevision);
+
+    writeWorkflow(config, 'build', VALID);
+
+    await syncWorkflowDefinitions(config);
+
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
+  });
+
+  it('omits a commit pushed only to a remote other than the team origin', async () => {
+    const config = testConfig();
+    const repository = initializeTeamRepository(config);
+    writeWorkflow(config, 'build', VALID);
+    const teamRevision = repository.commit('add workflow');
+    repository.push();
+    await syncWorkflowDefinitions(config);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(teamRevision);
+
+    writeWorkflow(config, 'build', `${VALID}\n# personal revision\n`);
+    const personalRevision = repository.commit('edit workflow on personal remote');
+    const personal = path.join(path.dirname(config.repo.localPath), 'personal.git');
+    git(path.dirname(config.repo.localPath), 'init', '--bare', '--initial-branch=main', personal);
+    git(config.repo.localPath, 'remote', 'add', 'personal', personal);
+    git(config.repo.localPath, 'push', '--set-upstream', 'personal', 'main');
+
+    await syncWorkflowDefinitions(config);
+
+    expect(git(config.repo.localPath, 'rev-parse', 'HEAD')).toBe(personalRevision);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
+  });
+
+  it('omits the team revision when a prompt file differs from the remote-reachable commit', async () => {
+    const config = testConfig();
+    const repository = initializeTeamRepository(config);
+    fs.mkdirSync(path.join(config.repo.localPath, 'prompts'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'prompts', 'review.md'), 'Review carefully.\n');
+    writeWorkflow(config, 'build', `schemaVersion: v1alpha1
+name: build
+description: Review the build.
+steps:
+  - id: review
+    prompt_file: prompts/review.md
+`);
+    const revision = repository.commit('add prompt workflow');
+    repository.push();
+
+    await syncWorkflowDefinitions(config);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(revision);
+
+    fs.writeFileSync(path.join(config.repo.localPath, 'prompts', 'review.md'), 'Review the local edit.\n');
+    await syncWorkflowDefinitions(config);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
+  });
+
+  it('publishes no run team revision when a kept parent and current child came from different commits', async () => {
+    const config = testConfig();
+    const repository = initializeTeamRepository(config);
+    writeWorkflow(config, 'build', `schemaVersion: v1alpha1
+name: build
+description: Build with a child.
+steps:
+  - id: check
+    workflow: check
+`);
+    writeWorkflow(config, 'check', `schemaVersion: v1alpha1
+name: check
+description: Check the build.
+steps:
+  - id: test
+    command: npm test
+`);
+    const firstRevision = repository.commit('add workflows');
+    repository.push();
+    await syncWorkflowDefinitions(config);
+
+    const first = await startRun(config, 'build');
+    if ('error' in first) throw new Error(first.error.message);
+    const firstRun = await readRun(config, String(first.data.run));
+    if (typeof firstRun === 'string') throw new Error(`Could not read first run: ${firstRun}`);
+    expect(firstRun.teamRevision).toBe(firstRevision);
+
+    writeWorkflow(config, 'build', `schemaVersion: v1alpha1
+name: build
+description: ''
+steps:
+  - id: check
+    workflow: check
+`);
+    writeWorkflow(config, 'check', `schemaVersion: v1alpha1
+name: check
+description: Check the build again.
+steps:
+  - id: test
+    command: npm test
+`);
+    repository.commit('change child and break parent');
+    repository.push();
+    await syncWorkflowDefinitions(config);
+
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBe(firstRevision);
+    const currentChildRevision = (await loadCachedWorkflow(config, 'check'))?.teamRevision;
+    expect(currentChildRevision).toBeDefined();
+    expect(currentChildRevision).not.toBe(firstRevision);
+
+    const mixed = await startRun(config, 'build');
+    if ('error' in mixed) throw new Error(mixed.error.message);
+    const mixedRun = await readRun(config, String(mixed.data.run));
+    if (typeof mixedRun === 'string') throw new Error(`Could not read mixed run: ${mixedRun}`);
+    expect(mixedRun.teamRevision).toBeUndefined();
+  });
+
+  it('clears a kept workflow revision that the team remote no longer reaches', async () => {
+    const config = testConfig();
+    const repository = initializeTeamRepository(config);
+    writeWorkflow(config, 'build', VALID);
+    repository.commit('add workflow');
+    repository.push();
+    await syncWorkflowDefinitions(config);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeDefined();
+
+    writeWorkflow(config, 'build', 'schemaVersion: [\n');
+    git(config.repo.localPath, 'add', '.');
+    const tree = git(config.repo.localPath, 'write-tree');
+    const rewritten = git(config.repo.localPath, 'commit-tree', tree, '-m', 'rewrite team history');
+    git(config.repo.localPath, 'checkout', '-B', 'main', rewritten);
+    git(config.repo.localPath, 'push', '--force', '--set-upstream', 'origin', 'main');
+
+    const synced = await syncWorkflowDefinitions(config);
+    const kept = await loadCachedWorkflow(config, 'build');
+
+    expect(synced.kept).toEqual(['build']);
+    expect(kept?.definition.description).toBe('Compile the project.');
+    expect(kept?.teamRevision).toBeUndefined();
+  });
+
+  it('clears an unreadable kept workflow revision', async () => {
+    const config = testConfig();
+    const repository = initializeTeamRepository(config);
+    writeWorkflow(config, 'build', VALID);
+    repository.commit('add workflow');
+    repository.push();
+    await syncWorkflowDefinitions(config);
+    const [cacheFile] = cacheFiles(config);
+    const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8')) as Record<string, unknown>;
+    cached.teamRevision = 'not-a-commit';
+    fs.writeFileSync(cacheFile, `${JSON.stringify(cached)}\n`);
+    writeWorkflow(config, 'build', 'schemaVersion: [\n');
+
+    const synced = await syncWorkflowDefinitions(config);
+
+    expect(synced.kept).toEqual(['build']);
+    expect((await loadCachedWorkflow(config, 'build'))?.teamRevision).toBeUndefined();
+  });
+
   it.each([
     ['fan-out pass outputs', "steps.build.passes[0].outputs.ok", '    output: { ok: boolean }\n'],
     ['fan-out pass outputs without an output schema', "steps.build.passes[0].outputs.ok", ''],

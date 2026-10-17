@@ -6,7 +6,7 @@ import { simpleGit } from 'simple-git';
 import { afterEach, describe, expect, it } from 'vitest';
 import YAML from 'yaml';
 import { readRecordedAgent } from '../agent-observation.js';
-import type { LocalConfig, UserStats } from '../types.js';
+import { getDataHome, type LocalConfig, type UserStats } from '../types.js';
 import {
   buildEndRecord,
   buildStartRecord,
@@ -111,11 +111,14 @@ function settledFan(items: number): RunState {
 
 describe('#1083 workflow run records', () => {
   it('builds a start record with exactly the allowlisted fields', () => {
-    const record = buildStartRecord(runState({ status: 'running' }), driver, 'tester');
+    const teamRevision = '0123456789abcdef0123456789abcdef01234567';
+    const record = buildStartRecord(runState({ status: 'running', teamRevision }), driver, 'tester');
     expect(record.schemaVersion).toBe('v1alpha1');
     expect(record.run).toBe('r1234567890abcdef');
     expect(record.workflow).toBe('build');
     expect(record.phase).toBe('start');
+    expect(record.sourceHash).toBe('abc');
+    expect(record.teamRevision).toBe(teamRevision);
     // Kind only: the hostname is machine-identifying and is not published.
     expect(record.driver).toEqual({ kind: 'local' });
     expect(record.status).toBe('running');
@@ -126,6 +129,39 @@ describe('#1083 workflow run records', () => {
     expect(record).not.toHaveProperty('prompt');
     expect(record).not.toHaveProperty('outputs');
     expect(record).not.toHaveProperty('workspace');
+  });
+
+  it('reads and merges queued records published before and after source provenance', async () => {
+    const { config } = testConfig();
+    const teamRevision = '0123456789abcdef0123456789abcdef01234567';
+    const current = buildEndRecord(runState({ teamRevision }), driver, 'tester');
+    const legacy: WorkflowRunRecord = {
+      schemaVersion: 'v1alpha1',
+      run: current.run,
+      workflow: current.workflow,
+      phase: 'start',
+      status: 'running',
+      startedAt: current.startedAt,
+      username: current.username,
+      publishedAt: current.publishedAt,
+    };
+    const queue = path.join(getDataHome(config), 'workflows', 'pending');
+    fs.mkdirSync(queue, { recursive: true });
+    fs.writeFileSync(path.join(queue, `${legacy.run}.${legacy.phase}.json`), JSON.stringify(legacy));
+
+    const [parsed] = await pendingRecords(config);
+
+    expect(parsed).toBeDefined();
+    expect(parsed?.run).toBe(legacy.run);
+    expect(parsed?.sourceHash).toBeUndefined();
+    expect(parsed?.teamRevision).toBeUndefined();
+    expect(current.sourceHash).toBe('abc');
+    expect(current.teamRevision).toBe(teamRevision);
+    expect(mergeRecord(parsed!, current)).toMatchObject({
+      sourceHash: 'abc',
+      teamRevision,
+      phase: 'end',
+    });
   });
 
   it('structurally redacts: prompts, outputs, and local paths cannot leak', () => {

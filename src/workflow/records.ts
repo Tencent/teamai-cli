@@ -44,6 +44,10 @@ export type WorkflowRunRecord = {
   /** The run's logical key; a retry publishes the same id. */
   run: string;
   workflow: string;
+  /** Exact workflow and prompt bytes that ran. Absent on records published before source provenance. */
+  sourceHash?: string;
+  /** Remote-reachable team commit that stores those bytes, when one commit stores the whole workflow tree. */
+  teamRevision?: string;
   /** Which publication wrote this record; the end phase completes the file. */
   phase: 'start' | 'end';
   /**
@@ -88,6 +92,9 @@ export type WorkflowRunRecord = {
   publishedAt: string;
 };
 
+/** A record built by this version; readers also accept legacy records without source provenance. */
+export type CurrentWorkflowRunRecord = WorkflowRunRecord & { sourceHash: string };
+
 type StepEntry = NonNullable<WorkflowRunRecord['steps']>[number];
 
 /** What one pass of a step reported. */
@@ -112,11 +119,13 @@ export function buildStartRecord(
   driver: DriverIdentity | undefined,
   username: string,
   now: Date = new Date(),
-): WorkflowRunRecord {
+): CurrentWorkflowRunRecord {
   return {
     schemaVersion: 'v1alpha1',
     run: run.id,
     workflow: run.name,
+    sourceHash: run.sourceHash,
+    ...(run.teamRevision ? { teamRevision: run.teamRevision } : {}),
     phase: 'start',
     // A start record may have no driver yet (a remote driver leases later);
     // the end record always carries the driver that completed the run.
@@ -156,7 +165,7 @@ export function buildEndRecord(
   driver: DriverIdentity | undefined,
   username: string,
   now: Date = new Date(),
-): WorkflowRunRecord {
+): CurrentWorkflowRunRecord {
   const started = Date.parse(run.createdAt);
   const ended = Date.parse(run.updatedAt);
   const count = (status: StepState['status']): number => run.steps.filter((step) => step.status === status).length;
@@ -295,7 +304,7 @@ function pendingPath(config: LocalConfig, record: WorkflowRunRecord): string {
 }
 
 /** Queue a record for (re)publication; the write is atomic per file. */
-export async function enqueueRecord(config: LocalConfig, record: WorkflowRunRecord): Promise<void> {
+export async function enqueueRecord(config: LocalConfig, record: CurrentWorkflowRunRecord): Promise<void> {
   const dir = pendingDir(config);
   await fs.mkdir(dir, { recursive: true });
   const target = pendingPath(config, record);
