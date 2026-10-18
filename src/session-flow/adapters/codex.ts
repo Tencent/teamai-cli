@@ -556,7 +556,20 @@ export class CodexAdapter extends AgentAdapter {
         }
       } else if (ptype === 'function_call_output' || ptype === 'custom_tool_call_output') {
         const callId = String(payload.call_id ?? '');
-        const output = String(payload.output ?? '');
+        const rawOutput = payload.output;
+        let output: string;
+        if (Array.isArray(rawOutput)) {
+          // Some tools (images, the JS REPL) return a list of content items instead of a string
+          const parts: string[] = [];
+          for (const item of rawOutput) {
+            if (item && typeof item === 'object' && (item as Record<string, unknown>).type === 'input_text') {
+              parts.push(String((item as Record<string, unknown>).text ?? ''));
+            }
+          }
+          output = parts.join('\n');
+        } else {
+          output = String(rawOutput ?? '');
+        }
         const block: ToolResultBlock = { type: 'tool_result', callId, content: output, isError: false };
 
         if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
