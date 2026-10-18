@@ -6,6 +6,7 @@ One document per feature design, in English. The status column says how far each
 | --- | --- | --- |
 | Implemented | [Data directory layout](data-directory-layout.md) — global home + per-project partitioning | #374 |
 | Implemented | [Unified dashboard](dashboard-unified.md) — four-module local dashboard | — |
+| In progress | [Gitea provider](gitea-provider.md) — self-hosted authentication, PRs and review discussions | — |
 | Implemented | [GitCode provider](gitcode-provider.md) | #361 |
 | Implemented | [Model profiles](model-profiles.md) — `teamai models` | — |
 | Implemented | [Team env by directory](env-by-directory.md) — each directory's shell gets the env of the scope that governs it | #1018 |

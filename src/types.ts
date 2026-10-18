@@ -383,7 +383,7 @@ export const SOURCE_PULL_TTL_MS = 24 * 60 * 60 * 1000;
 export const TEAMAI_SOURCES_DIR = path.join(getUserHome(), '.teamai', 'sources');
 
 /** Git hosting provider. `git` is the transport-only fallback for arbitrary hosts. */
-export const ProviderNameSchema = z.enum(['tgit', 'github', 'cnb', 'gitlab', 'gitcode', 'git']);
+export const ProviderNameSchema = z.enum(['tgit', 'github', 'cnb', 'gitlab', 'gitcode', 'gitea', 'git']);
 export type ProviderName = z.infer<typeof ProviderNameSchema>;
 
 /** One team-owned Node entrypoint. `path` is relative to the team repo root. */

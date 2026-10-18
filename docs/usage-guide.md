@@ -23,3 +23,5 @@ Start with [Getting Started](guide/getting-started.md): set up a team, join one,
 - [Git Providers](guide/providers.md) — GitHub, GitLab, GitCode, CNB, TGit and generic Git: detection and authentication
 - [Uninstall & FAQ](guide/faq.md) — Removing TeamAI and frequently asked questions
 - [ClawPro HTTP backend](guide/http-contract.md) — APIs used by `init --http`
+
+[Self-hosted Gitea setup](guide/providers.md#gitea-provider-self-hosted): configure `GITEA_URL` and a PAT before initializing the team repository.

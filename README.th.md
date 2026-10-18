@@ -78,7 +78,7 @@ npm install -g teamai-cli
 
 ### ผู้ดูแลทีม / ผู้ใช้คนเดียว
 
-สร้างรีโปที่ใช้ร่วมกันบน Git host (GitHub, GitLab, GitCode, CNB, TGit หรือบริการ Git ส่วนตัว) ให้สมาชิกสิทธิ์ push สาขา และปล่อยให้สาขาหลักถูกป้องกันไว้ จากนั้นรัน `teamai init https://github.com/your-org/your-repo`
+สร้างรีโปที่ใช้ร่วมกันบน Git host (GitHub, GitLab, GitCode, Gitea, CNB, TGit หรือบริการ Git ส่วนตัว) ให้สมาชิกสิทธิ์ push สาขา และปล่อยให้สาขาหลักถูกป้องกันไว้ จากนั้นรัน `teamai init https://github.com/your-org/your-repo`
 
 > **ยังไม่มีรีโปของทีม?** เริ่มจากเทมเพลตที่มี Skills, Rules และ review agents พร้อมใช้จริงอยู่แล้ว เปิดดู org [teamai-hub](https://github.com/teamai-hub) กด **Fork** แล้วรัน `teamai init` กับรีโปใหม่ของคุณ
 

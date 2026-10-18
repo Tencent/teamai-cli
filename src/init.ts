@@ -1777,7 +1777,7 @@ export async function init(options: GlobalOptions & {
     await settleReplacedInstall();
 
     const cloneSpin = spinner('Cloning team repo...').start();
-    const cloneTarget = provider.name === 'git'
+    const cloneTarget = provider.name === 'git' || provider.name === 'gitea'
       ? repoInfo.httpsUrl
       : `${repoInfo.owner}/${repoInfo.repo}`;
     try {

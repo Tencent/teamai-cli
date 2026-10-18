@@ -4,6 +4,9 @@ import { GitHubProvider } from './github/index.js';
 import { CNBProvider } from './cnb/index.js';
 import { GitLabProvider } from './gitlab/index.js';
 import { GitCodeProvider } from './gitcode/index.js';
+import { GiteaProvider } from './gitea/index.js';
+import { isConfiguredGiteaHost } from './gitea/repo-url.js';
+import { probeSelfHostedGitea } from './gitea/probe.js';
 import { GenericGitProvider } from './git/index.js';
 import { getCurrentPackageName } from '../package-info.js';
 import { probeSelfHostedGitLab } from './gitlab/probe.js';
@@ -39,7 +42,7 @@ const HOST_MAP: Record<string, string> = {
 };
 
 /** Providers we are willing to accept as a default override. */
-const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode']);
+const KNOWN_PROVIDERS = new Set(['github', 'tgit', 'cnb', 'gitlab', 'gitcode', 'gitea']);
 
 /**
  * Decide the fallback provider used when the input URL host is unknown or
@@ -125,6 +128,10 @@ export async function detectProviderForInit(input: string): Promise<string> {
       + 'and GITLAB_TOKEN (a Personal Access Token with api scope), then run teamai init again.',
     );
   }
+  const gitea = await probeSelfHostedGitea(input);
+  if (gitea) {
+    throw new Error(`Detected a Gitea-compatible instance at ${gitea.baseUrl}. Set GITEA_URL=${gitea.baseUrl} and GITEA_TOKEN, then run teamai init again.`);
+  }
   return provider;
 }
 
@@ -134,7 +141,7 @@ export async function detectProviderForInit(input: string): Promise<string> {
  * provider for arbitrary hosts.
  */
 function resolveHostProvider(host: string): string {
-  return HOST_MAP[host] ?? detectSelfHostedGitLabHost(host) ?? 'git';
+  return HOST_MAP[host] ?? detectSelfHostedGitLabHost(host) ?? (isConfiguredGiteaHost(host) ? 'gitea' : 'git');
 }
 
 /**
@@ -188,6 +195,7 @@ const PROVIDERS: Record<string, () => GitProvider> = {
   cnb: () => new CNBProvider(),
   gitlab: () => new GitLabProvider(),
   gitcode: () => new GitCodeProvider(),
+  gitea: () => new GiteaProvider(),
   git: () => new GenericGitProvider(),
 };
 

@@ -23,3 +23,5 @@
 - [Git Provider](guide/zh-CN/providers.md) — GitHub、GitLab、GitCode、CNB、工蜂与通用 Git：检测与认证
 - [卸载与常见问题](guide/zh-CN/faq.md) — 卸载 TeamAI 与常见问题
 - [ClawPro HTTP 后端](guide/zh-CN/http-contract.md) — `init --http` 使用的接口
+
+[自托管 Gitea 配置](guide/zh-CN/providers.md)：初始化前设置 `GITEA_URL` 和 PAT。

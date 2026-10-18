@@ -1430,7 +1430,7 @@ describe('init --provider', () => {
   });
 
   it('accepts every provider name the team config accepts', () => {
-    for (const name of ['tgit', 'github', 'cnb', 'gitlab', 'gitcode', 'git']) {
+    for (const name of ['tgit', 'github', 'cnb', 'gitlab', 'gitcode', 'gitea', 'git']) {
       expect(resolveInitProvider(name)).toBe(name);
     }
     expect(resolveInitProvider(undefined)).toBeUndefined();
@@ -1438,7 +1438,7 @@ describe('init --provider', () => {
 
   it('rejects an unknown provider and names the valid ones', () => {
     expect(() => resolveInitProvider('GitLab')).toThrow(
-      'Invalid --provider "GitLab". Use one of: tgit, github, cnb, gitlab, gitcode, git, '
+      'Invalid --provider "GitLab". Use one of: tgit, github, cnb, gitlab, gitcode, gitea, git, '
       + 'or omit --provider to detect it from the repo URL.',
     );
   });

@@ -84,7 +84,7 @@ npm install -g teamai-cli
 
 ### 团队管理员 / 个人使用者
 
-在 Git 托管平台（GitHub、GitLab、GitCode、CNB、TGit，或私有 Git 服务）创建共享仓库。给同事分支写权限，主干保持保护。然后运行 `teamai init https://github.com/your-org/your-repo`。
+在 Git 托管平台（GitHub、GitLab、GitCode、Gitea、CNB、TGit，或私有 Git 服务）创建共享仓库。给同事分支写权限，主干保持保护。然后运行 `teamai init https://github.com/your-org/your-repo`。
 
 > **还没有团队仓库？** 可以从内置了成套 skills、rules、review agents 的模板起步。浏览 [teamai-hub](https://github.com/teamai-hub) org，点 **Fork** 生成自己的仓库，再对它执行 `teamai init`。
 

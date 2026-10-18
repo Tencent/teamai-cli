@@ -7,6 +7,8 @@ import matter from 'gray-matter';
 import { fetchGitHubPR } from './providers/github/mr-fetch.js';
 import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
 import { fetchTGitMR } from './providers/tgit/mr-fetch.js';
+import { fetchGiteaMR } from './providers/gitea/mr-fetch.js';
+import { parseGiteaPrUrl } from './providers/gitea/repo-url.js';
 import type { MRData, MRFetchOptions, MRThread, LearningDraft } from './types.js';
 import { callClaude } from './utils/ai-client.js';
 import { extractKeywords, findOverlappingLearnings } from './utils/dedup.js';
@@ -36,7 +38,12 @@ async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
   if (/\/-\/merge_requests\/\d+/.test(url)) {
     return fetchGitLabMR(url, opts);
   }
-  throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit and GitLab are supported`);
+  let gitea = false;
+  if (process.env.GITEA_URL) {
+    try { parseGiteaPrUrl(url); gitea = true; } catch { /* Not this configured instance. */ }
+  }
+  if (gitea) return fetchGiteaMR(url, opts);
+  throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit, GitLab and configured Gitea instances are supported`);
 }
 
 /** Characters of the prompt the review threads may take (#1187). */
@@ -263,6 +270,9 @@ function extractRepoUrlFromMrUrl(mrUrl: string): string {
   // GitLab: https://<host>/group[/subgroup]/repo/-/merge_requests/123
   const gitlabMatch = mrUrl.match(/^(https?:\/\/.+?\/.+\/[^/]+)\/-\/merge_requests\//);
   if (gitlabMatch) return `${gitlabMatch[1]}.git`;
+  if (process.env.GITEA_URL) {
+    try { return parseGiteaPrUrl(mrUrl).httpsUrl; } catch { /* Not the configured Gitea instance. */ }
+  }
   // Cannot reliably extract; return empty string so caller skips incremental update
   return '';
 }

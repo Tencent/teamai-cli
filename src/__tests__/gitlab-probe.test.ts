@@ -260,7 +260,8 @@ describe('provider discovery during initialization', () => {
     fetchMock.mockResolvedValue(htmlResponse('<h1>Company Git hosting</h1>'));
 
     await expect(detectProviderForInit(repoUrl)).resolves.toBe('git');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/api/v1/version');
   });
 
   it('reports the detected instance and required setup before writing a provider choice', async () => {

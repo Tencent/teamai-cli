@@ -28,12 +28,13 @@ through these sub-steps **in order**:
 on this machine — see `{SKILL_DIR}/references/provider-tgit.md` ("Probe
 reachability") for the one-line `x-env: tgit` check. If it says `tgit: OK`, **list Tencent TGit first** and
 prefer it. Then ask: *"Have you heard of / do you have an account on any of these —
-Tencent TGit, GitHub, GitLab, or CNB (cnb.cool)?"*
+Tencent TGit, GitHub, GitLab, Gitea (self-hosted), or CNB (cnb.cool)?"*
 
 - **Tencent TGit** — https://git.woa.com (Tencent-internal only; shown
   first when the probe above says `tgit: OK`)
 - **GitHub** — https://github.com
 - **GitLab** — https://gitlab.com (or a self-hosted company GitLab)
+- **Gitea** — configure the full GITEA_URL; use a PAT via GITEA_TOKEN or the hidden init prompt. See docs/gitea-provider.md. Never guess an SSH port or treat a version probe as token authorization.
 - **CNB** — https://cnb.cool
 
 If they name one, use that platform and go to sub-step 2c.
@@ -207,7 +208,7 @@ remaining numbers become additional roles; pass `--role <id>` for a
 non-interactive run when only a primary role is needed. Without a terminal (or
 with `CI` / `TEAMAI_NONINTERACTIVE` set) `init` never waits: a provider that
 would need a browser login fails at once and names the credential to prepare —
-a token for GitHub / CNB / GitLab / GitCode, and for TGit a prior `gf auth
+a token for GitHub / CNB / GitLab / GitCode / Gitea, and for TGit a prior `gf auth
 login` run in an interactive shell (see Step 3).
 
 **Which AI tools to set up — all of them by default (global rule 9).** Do not add

@@ -5,6 +5,8 @@ import fs from 'fs-extra';
 import { getGitHubToken } from './providers/github/gh-cli.js';
 import { getGitLabToken } from './providers/gitlab/gitlab-api.js';
 import { getGitCodeToken } from './providers/gitcode/gitcode-api.js';
+import { giteaGitHeader, redactGiteaOutput } from './providers/gitea/gitea-api.js';
+import { parseGiteaRepoInput } from './providers/gitea/repo-url.js';
 import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
 import { log } from './utils/logger.js';
 import { sanitizeGitUrl } from './utils/redact.js';
@@ -65,7 +67,7 @@ export { sanitizeGitUrl };
  * 对日志/错误信息中的 token 进行脱敏。
  */
 function redactToken(msg: string): string {
-    return sanitizeGitUrl(msg);
+    return redactGiteaOutput(msg);
 }
 
 /**
@@ -103,7 +105,7 @@ function runCommand(
 
         const timer = setTimeout(() => {
             child.kill();
-            reject(new Error(`Command timed out after ${opts.timeoutMs}ms: ${cmd} ${args.join(' ')}`));
+            reject(new Error(redactToken(`Command timed out after ${opts.timeoutMs}ms: ${cmd} ${args.join(' ')}`)));
         }, opts.timeoutMs);
 
         child.on('close', (code) => {
@@ -138,17 +140,26 @@ async function gitCmd(
  * the URL as given for Git's own credential helper. Shared with
  * {@link remoteHeadSha}, so a dry run asks the remote the way the clone would.
  */
-function resolveCloneAuth(
+async function resolveCloneAuth(
     url: string,
     provider: string,
     opts: { forceSsh: boolean; forceAnonymous: boolean },
-): { cloneUrl: string; cloneMethod: CloneResult['cloneMethod']; extraAuthHeader?: string } {
+): Promise<{ cloneUrl: string; cloneMethod: CloneResult['cloneMethod']; extraAuthHeader?: string }> {
     const { forceSsh, forceAnonymous } = opts;
     let cloneUrl = url;
     let cloneMethod: CloneResult['cloneMethod'];
     let extraAuthHeader: string | undefined;
 
-    if (forceSsh || isSshUrl(url)) {
+    if (provider === 'gitea') {
+        cloneUrl = parseGiteaRepoInput(url).httpsUrl;
+        if (cloneUrl.startsWith('ssh://')) {
+            cloneMethod = 'ssh';
+        } else {
+            if (forceSsh) throw new Error('For Gitea SSH, provide an explicit ssh:// URL including the SSH port.');
+            extraAuthHeader = forceAnonymous ? undefined : await giteaGitHeader() ?? undefined;
+            cloneMethod = extraAuthHeader ? 'https-token' : 'https-anonymous';
+        }
+    } else if (forceSsh || isSshUrl(url)) {
         cloneUrl = isSshUrl(url) ? url : convertHttpToSsh(url);
         cloneMethod = 'ssh';
         log.debug(`shallowClone: 使用 SSH 克隆 ${cloneUrl}`);
@@ -253,7 +264,7 @@ export async function shallowClone(
     }
     await fs.ensureDir(localPath);
 
-    const { cloneUrl, cloneMethod, extraAuthHeader } = resolveCloneAuth(url, provider, { forceSsh, forceAnonymous });
+    const { cloneUrl, cloneMethod, extraAuthHeader } = await resolveCloneAuth(url, provider, { forceSsh, forceAnonymous });
 
     // 构建 clone 参数：若有 token 则通过 http.extraHeader 注入，避免 token 出现在 URL 中
     const cloneArgs: string[] = [];
@@ -306,7 +317,12 @@ export async function shallowClone(
  * in-URL OAuth credential from clone, and `git` / unknown hosts rely on ambient
  * Git credentials.
  */
-function fetchAuthHeader(provider?: string): string | null {
+async function fetchAuthHeader(provider?: string, remote?: string): Promise<string | null> {
+    if (provider === 'gitea') {
+        if (!remote) throw new Error('Gitea fetch requires the original repository URL.');
+        const parsed = parseGiteaRepoInput(remote);
+        return parsed.httpsUrl.startsWith('ssh://') ? null : giteaGitHeader();
+    }
     if (provider === 'github') {
         const token = getGitHubToken();
         return token ? buildAuthHeader(token) : null;
@@ -340,7 +356,8 @@ export async function shallowFetch(
     const branch = await gitCmd(['rev-parse', '--abbrev-ref', 'HEAD'], localPath, timeoutMs);
 
     // `-c http.extraHeader=` 必须置于 fetch 子命令之前（git-level 选项）。
-    const authHeader = fetchAuthHeader(opts?.provider);
+    const remote = opts?.provider === 'gitea' ? await gitCmd(['remote', 'get-url', 'origin'], localPath, timeoutMs) : undefined;
+    const authHeader = await fetchAuthHeader(opts?.provider, remote);
     const fetchArgs = authHeader
         ? ['-c', `http.extraHeader=${authHeader}`, 'fetch', '--depth=50', 'origin']
         : ['fetch', '--depth=50', 'origin'];
@@ -373,9 +390,10 @@ export async function remoteHeadSha(
                 .replace('refs/remotes/origin/', '');
         }
         ref = `refs/heads/${branch}`;
-        auth = { cloneUrl: 'origin', extraAuthHeader: fetchAuthHeader(provider) ?? undefined };
+        const remote = provider === 'gitea' ? await gitCmd(['remote', 'get-url', 'origin'], cachedRepoPath, timeoutMs) : undefined;
+        auth = { cloneUrl: 'origin', extraAuthHeader: await fetchAuthHeader(provider, remote) ?? undefined };
     } else {
-        auth = resolveCloneAuth(url, provider, {
+        auth = await resolveCloneAuth(url, provider, {
             forceSsh: opts?.forceSsh ?? false,
             forceAnonymous: opts?.forceAnonymous ?? false,
         });

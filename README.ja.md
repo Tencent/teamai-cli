@@ -78,7 +78,7 @@ npm install -g teamai-cli
 
 ### チーム管理者 / 個人利用
 
-Git ホスト（GitHub、GitLab、GitCode、CNB、TGit、またはプライベート Git サービス）に共有リポジトリを作成します。メンバーにはブランチへの push 権限を付け、デフォルトブランチは保護したままにします。その後 `teamai init https://github.com/your-org/your-repo` を実行します。
+Git ホスト（GitHub、GitLab、GitCode、Gitea、CNB、TGit、またはプライベート Git サービス）に共有リポジトリを作成します。メンバーにはブランチへの push 権限を付け、デフォルトブランチは保護したままにします。その後 `teamai init https://github.com/your-org/your-repo` を実行します。
 
 > **まだチームリポジトリがない場合は？** 本番向けの skills、rules、review agents が入ったテンプレートから始められます。[teamai-hub](https://github.com/teamai-hub) org を開き、**Fork** してから、新しいリポジトリに対して `teamai init` を実行してください。
 

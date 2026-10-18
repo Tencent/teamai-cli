@@ -80,6 +80,11 @@ describe('getDefaultProvider (fallback)', () => {
     expect(getDefaultProvider()).toBe('github');
   });
 
+  it('accepts Gitea as the explicit default provider', () => {
+    process.env.TEAMAI_DEFAULT_PROVIDER = 'gitea';
+    expect(getDefaultProvider()).toBe('gitea');
+  });
+
   it('ignores unknown TEAMAI_DEFAULT_PROVIDER values', () => {
     setPackageName('teamai-cli');
     process.env.TEAMAI_DEFAULT_PROVIDER = 'bitbucket';
