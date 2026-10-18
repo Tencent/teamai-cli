@@ -66,7 +66,7 @@ describe('formatMrThreads', () => {
   it('labels an unresolved thread and one without a resolution state', () => {
     const text = formatMrThreads([{ ...replied, resolved: false }, { ...replied, resolved: undefined, file: undefined }], 'alice');
     expect(text).toContain('src/up.ts:42 (unresolved)');
-    expect(text).toMatch(/^### Thread 2\n/m);
+    expect(text).toMatch(/^### Thread 2 \(resolution unknown\)\n/m);
   });
 
   it('shortens a long thread to its first and last notes instead of cutting the section', () => {
@@ -98,11 +98,11 @@ describe('extractMRLearningPrompt', () => {
     expect(prompt).toContain('用中文撰写');
   });
 
-  it('adds the threads with the instruction that a resolved decision outweighs the diff', () => {
+  it('adds threads while requiring evidence for resolved decisions', () => {
     const prompt = extractMRLearningPrompt({ ...mr, discussions: [remark, replied] });
     expect(prompt).toContain('Review threads');
     expect(prompt).toContain('[author alice]');
-    expect(prompt).toMatch(/resolved 的 thread 里的决定比复述 diff 更重要/);
+    expect(prompt).toContain('only when its notes explicitly establish that decision');
     // The threads do not push the diff out.
     expect(prompt).toContain('+retry(3)');
     expect(extractMRLearningPrompt({ ...mr, discussions: [replied] }, 'en'))
@@ -124,4 +124,13 @@ describe('extractMRLearningPrompt', () => {
       expect(prompt).toContain('## 背景');
     }
   });
+});
+
+
+it.each(['en', 'zh', undefined] as const)('keeps an unknown resolution explicit in the %s extraction prompt', (language) => {
+  const prompt = extractMRLearningPrompt({ ...mr, discussions: [{ notes: [{ author: 'bob', body: 'Evidence label only' }] }] }, language);
+  expect(prompt).toContain('(resolution unknown)');
+  expect(prompt).toContain('do not infer resolved from a missing label or from the MR being merged');
+  expect(prompt).toContain('Do not invent replies, agreements or resolution events');
+  expect(prompt).not.toContain('(resolved)');
 });

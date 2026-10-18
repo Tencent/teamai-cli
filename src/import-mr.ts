@@ -78,7 +78,7 @@ export function formatMrThreads(threads: MRThread[], mrAuthor: string | undefine
   let used = 0;
   for (const [index, thread] of ordered.entries()) {
     const anchor = thread.file ? ` — ${thread.file}${thread.line !== undefined ? `:${thread.line}` : ''}` : '';
-    const state = thread.resolved === undefined ? '' : thread.resolved ? ' (resolved)' : ' (unresolved)';
+    const state = thread.resolved === undefined ? ' (resolution unknown)' : thread.resolved ? ' (resolved)' : ' (unresolved)';
     const header = `### Thread ${index + 1}${anchor}${state}`;
     const line = (note: MRThread['notes'][number]): string => {
       const role = note.author !== undefined && note.author === mrAuthor ? 'author' : 'reviewer';
@@ -122,6 +122,7 @@ export function extractMRLearningPrompt(mr: MRData, language?: 'en' | 'zh'): str
   const author = mr.author ?? 'unknown';
   const date = mr.mergedAt ? mr.mergedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
   const threads = mr.discussions && mr.discussions.length > 0 ? formatMrThreads(mr.discussions, mr.author) : '';
+  const reviewGuidance = 'A decision reached in a resolved thread outweighs a restatement of the diff only when its notes explicitly establish that decision. Review threads may contain comments, questions or decisions. State a decision only when the quoted notes explicitly support it. Resolution unknown means the platform did not provide a state; do not infer resolved from a missing label or from the MR being merged. Do not invent replies, agreements or resolution events.';
   const frontmatter = (titleHint: string): string => `---
 title: "${titleHint}"
 author: ${author}
@@ -133,8 +134,8 @@ source_mr: "${mr.url}"
 
   if (language === 'en') {
     return `You are the team's knowledge base curator. Distill one valuable team learning from the MR below.
-Write in English. Output a complete Markdown document with YAML frontmatter.
-${threads ? '\nThe review threads carry the decisions: a decision reached in a resolved thread outweighs a restatement of the diff. Lead with what the review decided and why.\n' : ''}
+Write in English. Output only a complete Markdown document with YAML frontmatter, without greetings, personal addresses, postscripts or offers to save it.
+${threads ? `\n${reviewGuidance}\n` : ''}
 Frontmatter fields (exactly this format, no other fields):
 ${frontmatter('<short title naming the core problem or finding, under 60 characters>')}
 
@@ -172,7 +173,8 @@ ${diff3000}${threads ? `\n\nReview threads (${mr.discussions!.length}):\n${threa
 
   return `你是团队知识库管理员。从以下 MR 信息提炼一条有价值的团队 learning。
 【必须】用中文撰写，输出完整 Markdown 文档（含 YAML frontmatter）。
-${threads ? '\nReview threads 一节记录了评审达成的决定：已 resolved 的 thread 里的决定比复述 diff 更重要，优先写评审决定了什么、为什么。\n' : ''}
+Output only the Markdown document, without greetings, personal addresses, postscripts or offers to save it.
+${threads ? `\n${reviewGuidance}\n` : ''}
 frontmatter 字段（严格按此格式，不要加其他字段）：
 ${frontmatter('<简短标题，描述核心问题或发现，<60字符>')}
 

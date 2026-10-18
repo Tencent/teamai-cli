@@ -67,7 +67,7 @@ Init normally has already verified and cached the login before cloning.
   claiming complete evidence.
 - Required PR metadata/commits/diff failures stop import. The diff is limited
   to 50 KiB on read, with a UTF-8-safe incompleteness marker. The 0.27 backport
-  does not read discussions. Main reads review summaries, inline comments and issue comments using MRFetchOptions; each retains its source ID and timestamp. Gitea exposes no reply-parent ID or authoritative source line in that contract, so comments remain independent and diff positions are not presented as line numbers. Pending reviews and generated TeamAI comments are excluded; optional API failures warn and preserve other evidence.
+  does not read discussions. Main reads review summaries, inline comments and issue comments using MRFetchOptions; each retains its source ID and timestamp. Gitea exposes no reply-parent ID or authoritative source line in that contract, so comments remain independent and diff positions are not presented as line numbers. The extraction prompt labels missing resolution state explicitly and forbids inferring resolved status or agreements from missing metadata or a merged PR. A real-model draft exposed that risk during validation. Pending reviews and generated TeamAI comments are excluded; optional API failures warn and preserve other evidence.
 - A private repository's 404 is ambiguous, so clone failure does not trigger
   automatic repository creation. Organization/repository creation is explicit.
 
