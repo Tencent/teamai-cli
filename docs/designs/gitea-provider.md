@@ -30,6 +30,23 @@ MR dispatch, and init clone target are connected explicitly. Init must pass the
 canonical remote to Gitea rather than reducing it to owner/repo, preserving SSH
 transport and port. Both shallow-auth callers await login resolution.
 
+## Shared state review
+
+| State | Writers | Readers |
+| --- | --- | --- |
+| Instance/token environment | User shell or process launcher; the provider does not persist env changes | `repo-url.ts`, `getGiteaToken`, API/Git authentication, registry and doctor |
+| Current/legacy netrc | Interactive `authenticate` calls `writeGiteaNetrcToken` for the configured host; existing GitCode login and external `gf auth login` share this file | Gitea `getGiteaToken`, existing GitCode/TGit credential readers, and Git's HTTP transport; the legacy location is read-only for Gitea |
+| Process login map | `giteaWhoami` after a successful `/user` response | `giteaWhoami` and synchronous `giteaRepoClone`; key includes instance and token |
+| Clone origin | Git clone writes the validated transport URL; an operator replaces persisted HTTP credentials during rotation | Existing pull/push Git commands; shallow fetch and cached-head lookup validate the origin before attaching Gitea authentication |
+| Local/team provider selection | Existing init/config persistence and an explicit team-manifest migration | Provider schema/registry, init, push, clone/import and doctor; this change adds the enum and wiring, not another config store |
+| Remote PR/reviewer state | `giteaPullCreate` creates PRs and requests reviewers separately | Duplicate recovery reads exact head/base and repository identities; MR import reads metadata, commits, diff and optional reviews/comments |
+| Normalized discussions | Main `mr-fetch.ts` maps independent source comments and `pruneThreads` filters them | `formatMrThreads` and the learning prompt; the 0.27 backport does not produce discussions |
+
+The netrc hostname namespace intentionally follows the existing providers and
+cannot separate two services on the same host by port. Such services require
+separate user directories or explicit env tokens; stored Git origins still need
+an independent credential update.
+
 ## Instance and credential boundaries
 
 `GITEA_URL` is required and preserves scheme, port and subpath. Optional
