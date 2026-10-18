@@ -98,16 +98,21 @@ Live tests require an explicit opt-in and dedicated test accounts.
 
 Local verification on 2026-10-19 used Node 22 and isolated Git 2.54:
 
-- At main `22b3e42`, the full unit run passed 11,070 tests (25 skipped).
-  After the dispatch correction, `4d23906` passed 11,073 tests (25 skipped)
-  in a full unit run. The later URL-log redaction fix at `73ac81a` passed
-  102 focused tests plus typecheck, lint and build; its full run is pending.
+- Main `4a047e8` passed typecheck, lint, build and the full unit run:
+  11,077 tests passed, 25 skipped. The 0.27 backport at `30eb00f` passed the
+  same checks with 8,208 tests passed, 19 skipped. Each source tree stayed
+  unchanged during its checks. An earlier main run failed because an old
+  whole-module test mock omitted the new diagnostic helper; it now preserves
+  the real exports and only replaces network/AI extraction.
 - The Gitea directory's focused coverage at `4d23906` is 97.62% statements
   and lines, 84.41% branches and 89.36% functions (directory aggregates).
-- Gitea 1.27.3 fixtures exercised packaged CLI init, private HTTP and SSH
-  push, repeated PR reuse and reviewer assignment. Separate API fixtures
-  checked 70 commits, 140 unique review/comment bodies, exact PR recovery,
-  token revocation/rotation, anonymous public fetch and private denial.
+- Gitea 1.27.3 fixtures exercised packaged init and explicit-port SSH push
+  on both branches. The 0.27 backport also exercised HTTP PR creation,
+  repeated PR reuse and reviewer assignment. Main's complete HTTP
+  init/push/repeat record and final-head service-interaction reruns are still
+  pending; SSH and Forgejo records do not substitute for them. Separate API
+  fixtures checked 70 commits, 140 unique review/comment bodies, exact PR
+  recovery, token revocation/rotation, anonymous public fetch and private denial.
 - Forgejo 15.0.10 fixtures exercised packaged init, push, PR reuse and
   reviewer assignment. Both servers were also used for actual CLI import
   with a real Claude backend; this is a bounded compatibility sample.
@@ -119,9 +124,12 @@ Local verification on 2026-10-19 used Node 22 and isolated Git 2.54:
 
 Rejected-URL diagnostics were also exercised with synthetic URL credentials,
 query parameters and fragments. At `73ac81a`, packaged single and batch CLI
-errors retained only the safe host/path. The legacy-parser collision passed a
-unit regression; its final main CLI run is still unverified because the Docker
-daemon disconnected. The 0.27 package passed both CLI rejection paths.
+errors retained only the safe host/path. After the Docker daemon disconnected,
+the main legacy-parser collision was verified with the native built CLI at
+`5dc9ff1`, in a temporary project using dry-run/output without overriding HOME.
+Its JavaScript matched the retained package byte for byte. The 0.27 package
+passed both CLI rejection paths in Docker. Interrupted Docker container state
+and service-interaction reruns still require the daemon to be restored.
 
 Model output remains a draft requiring review: earlier runs inferred resolved
 status without evidence or confused the CLI and server versions. The prompt
