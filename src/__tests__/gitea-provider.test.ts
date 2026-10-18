@@ -369,6 +369,7 @@ describe('Gitea review discussions', () => {
       if (route.endsWith('/commits')) return json([]);
       if (route.endsWith('/issues/12/comments')) return json([
         { id: 3, body: 'general', created_at: '2026-01-03', user: { login: 'author' } },
+        { id: 3, body: 'general', created_at: '2026-01-03', user: { login: 'author' } },
         { id: 4, body: '<!-- teamai:ci-extract --> generated' },
         { id: 5, body: 'CUSTOM generated' },
       ]);
@@ -444,4 +445,12 @@ describe('Gitea total-count pagination', () => {
     expect(await giteaList('/repos/org/repo/pulls')).toEqual([{ id: 1 }, { id: 2 }]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+});
+
+
+it('honors an explicit next link before a conflicting total count', async () => {
+  fetchMock.mockResolvedValueOnce(json([{ id: 1 }], 200, { 'x-total-count': '1', link: `<${instance}/api/v1/repos/org/repo/pulls?page=2>; rel="next"` }))
+    .mockResolvedValueOnce(json([]));
+  expect(await giteaList('/repos/org/repo/pulls')).toEqual([{ id: 1 }]);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
 });

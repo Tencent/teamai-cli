@@ -93,6 +93,7 @@ async function fetchDiscussions(route: string, marker?: string): Promise<MRThrea
     }
   } catch { log.warn('Gitea reviews unavailable; imported review evidence is incomplete.'); }
   // Stable date/id ordering retains provenance and avoids inventing reply links.
-  threads.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.sourceId.localeCompare(b.sourceId));
-  return pruneThreads(threads, marker);
+  const unique = [...new Map(threads.map(thread => [thread.sourceId, thread])).values()];
+  unique.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.sourceId.localeCompare(b.sourceId));
+  return pruneThreads(unique, marker);
 }
