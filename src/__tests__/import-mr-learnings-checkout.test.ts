@@ -33,7 +33,8 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 const IMPORTED = 'mr-note-2026-01-01-aaaaaa.md';
 
-vi.mock('../import-mr.js', () => ({
+vi.mock('../import-mr.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../import-mr.js')>()),
   importFromMR: vi.fn(async (opts: { queueLearning?: (filename: string, content: string) => Promise<string> }) => {
     const content = '# Learning imported from an MR\n';
     const learningFile = opts.queueLearning ? await opts.queueLearning(IMPORTED, content) : undefined;
