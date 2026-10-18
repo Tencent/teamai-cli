@@ -676,7 +676,7 @@ steps:
     const result = await syncWorkflowDefinitions(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/build.yaml:9: field "steps[0].output": step "stop" has no action, so it carries only id, needs, if, and end',
+      'workflows/build.yaml:9: field "steps[0].output": step "stop" has no action, so it carries only id, needs, if, end, approve, choose, loop, and break',
     ]);
   });
 
@@ -1002,7 +1002,7 @@ steps:
     const result = await syncWorkflowDefinitions(config);
 
     expect(result.invalid.map(formatDiagnostic)).toEqual([
-      'workflows/review.yaml:12: field "steps[1].prompt_file": step "review" prompt_file template {{ length(steps.build.result) }}: "steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.outputs, steps.<id>.passes or steps.<id>.results',
+      'workflows/review.yaml:12: field "steps[1].prompt_file": step "review" prompt_file template {{ length(steps.build.result) }}: "steps.build.result" must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes or steps.<id>.results',
     ]);
     expect(result.invalid.map((diagnostic) => diagnostic.code)).toEqual(['bad_template']);
     expect(result.unrunnable).toEqual(['workflows/review.yaml']);

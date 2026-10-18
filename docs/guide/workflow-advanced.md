@@ -40,7 +40,7 @@ Each call to `next` does this, in order:
 
 A driver that sends no `running` gets its open lease back on every call, so it runs one step at a time.
 
-`"canTakeLease":false` stops after step 2. The answer is `done`, an open lease that `running` leaves out, or `wait`. When nothing is leased, the `wait` reason is `canTakeLease is false`. Use it to learn about an end while the driver has no room for another step. That `wait` does not mean that nothing is left to run, so call `next` again once the driver has room. Step 2 can still hand back an open lease that the driver has no room for, so keep a queue of the leases the driver has not started.
+`"canTakeLease":false` issues no new lease but still returns a waiting HITL request to a driver that declares `driver.can.hitl`. The answer is `done`, an open lease that `running` leaves out, `hitl`, or `wait`. When nothing is leased or waiting at a HITL request, the `wait` reason is `canTakeLease is false`. Use it to learn about an end while the driver has no room for another step. That `wait` does not mean that nothing is left to run, so call `next` again once the driver has room. Step 2 can still hand back an open lease that the driver has no room for, so keep a queue of the leases the driver has not started.
 
 Every `data` answer of `next` has `cancelled`. It lists the attempts in `running` that are no longer open leases of this driver. Stop those processes. An `error` answer has no `cancelled`.
 
@@ -59,9 +59,10 @@ A wrong `running` or `canTakeLease` returns `invalid_json` with `running must be
 ```yaml
 workflows:
   max_parallel: 4
+  auto_approve: false
 ```
 
-A prompt step always runs alone. The driver starts it once every command has exited, and starts no command until it finishes. The read-only check compares the whole working tree before and after the prompt, so a command that changes files while the prompt runs would fail it.
+A prompt step always runs alone. The driver starts it once every command has exited, and starts no command until it finishes. For a headless prompt, the read-only check compares the whole working tree before and after the prompt, so a command that changes files while the prompt runs would fail it.
 
 With `max_parallel` above 1:
 
@@ -71,7 +72,7 @@ With `max_parallel` above 1:
 
 With 1, the driver runs one step at a time, and a command runs in your terminal, where Ctrl-C reaches it.
 
-When an end cancels a running command, the driver sends it SIGTERM, and SIGKILL 5 seconds later if it, or with `max_parallel` above 1 a process it started, still runs. Until it exits, it no longer counts toward `max_parallel`.
+When an end cancels a running command, the driver sends SIGTERM to it and the processes it started, then SIGKILL 5 seconds later if any still run. A stopping command keeps its slot until its processes exit.
 
 ## An end cancels the steps still open
 
@@ -573,3 +574,76 @@ steps:
 ```
 
 Pass the whole list, as `explain` does in `fan-build`, when the prompt needs every entry.
+
+
+## HITL (human in the loop)
+
+HITL covers `approve`, `choose`, and `interactive` steps where a person takes part.
+
+`approve: <message>` asks before an action. `yes` runs it; `no` skips it. An action-less approve also works. `choose: { message, options, default? }` records a choice without running an action. Options are unique, non-empty strings without whitespace. A choose step cannot carry an action or `required`. Neither HITL request can carry `for_each`; put it on a step the fan-out needs. Messages use the same templates and readiness rules as prompts.
+
+```yaml
+schemaVersion: v1alpha1
+name: hitl-build
+description: Choose a path and approve the work.
+steps:
+  - id: decide
+    choose:
+      message: Build or stop?
+      options: [build, stop]
+      default: build
+  - id: build
+    needs: [decide]
+    if: steps.decide.choice == 'build'
+    approve: Build it?
+    command: npm run build
+  - id: pair
+    needs: [build]
+    if: steps.build.outcome == 'failed'
+    interactive: true
+    prompt: Fix the build with me.
+```
+
+Later steps read `steps.decide.choice` and `steps.decide.note`, also through `passes[n]`. A new pass asks again. An approve HITL request on an end-only step must receive `yes` before that end is reached.
+
+For an approval that must come directly from a person, use `approve: { message: Publish?, required: true }`. Required approvals never use automatic answers. `respond` records the answer time, channel, choice, and optional note. With `--json`, its channel is `driver`, with `agent: false`. Without `--json`, TTY stdin records `tty`, with `agent: false`; otherwise it records `cli`, with `agent: true`. A required approval rejects `cli` answers with `agent_in_path`. A TTY is a channel convention, not protection against someone who can create a PTY.
+
+```sh
+teamai workflow respond <run> decide build --note "Ready" --pass 1
+teamai workflow resume <run>
+```
+
+`--pass` rejects an answer for a HITL request replaced by a later pass. A second answer in the same pass is `repeated_response`.
+
+Drivers other than `local` use the same HITL contract. Send `driver.can.hitl` on every `next` request, including busy polls. Set it to `true` when a person can answer HITL requests and work in interactive steps. When no lease is ready, `next` returns `hitl` with `run`, `step`, `pass`, `kind`, rendered `message`, `options`, optional `default`, and `required`, plus a `respond` command template. Show `hitl.message` and `hitl.respond` to that person, who runs `teamai workflow respond` with `<option>` replaced by a choice. The template quotes fan-out step paths such as `'items[0].ask'`; keep those quotes. The `cli` channel can answer optional HITL requests only. A driver with its own UI can submit a person's answer, including a required approval, with `respond --json '{"driver":{"kind":"ide","machine":"host","workspace":"/work"}}'`; this records channel `driver`, `agent: false`, and the driver identity locally. The driver declares that a person answered in its UI and must never send an answer its agent chose; like the TTY convention, this is a declaration, not protection.
+
+A ready lease wins over a HITL request. While a tool runs, poll `next` with its attempt id in `running` and `canTakeLease: false`, show any HITL request, and stop tools whose attempt ids appear in `cancelled`. Only a driver with HITL may take `interactive` leases; a driver without HITL fails them with `hitl_required`.
+
+Without that capability, a `next` request that can take a lease applies this table. Busy polls leave waiting HITL requests unanswered and return `wait` when the driver has no HITL capability.
+
+| HITL request | `auto_approve: true` | Default (`false`) |
+|---|---|---|
+| Optional approve | `yes`, channel `auto_approve` | `no`, channel `no_hitl`; skip |
+| Required approve | Fail `hitl_required` | Fail `hitl_required` |
+| Choose with default | Take default, channel `auto_approve` | Fail `hitl_required` |
+| Choose without default | Fail `hitl_required` | Fail `hitl_required` |
+
+Every decision without HITL and `hitl_required` failure logs a warning to stderr. Set `workflows.auto_approve` beside `workflows.max_parallel` in local config, or pass `--auto-approve` to `start --driver local` or `resume` for that process only. JSON `next` cannot set this override. The local driver declares HITL only when stdin and stderr are TTYs. It asks on stderr, accepts a choice followed by an optional note, and keeps polling while the question is open. An answer from elsewhere or a cancellation closes that question. Questions wait while an interactive tool owns the terminal.
+
+`interactive: true` needs `prompt` or `prompt_file`. A driver without HITL fails it with `hitl_required`. The local driver opens the tool here in the workspace with inherited stdio and the prompt as its first message. Repository edits by the person are kept, as with a command step. Headless prompts remain read-only. Terminal Ctrl-C and Ctrl-\ go to the interactive tool; SIGTERM and SIGHUP stop it and the driver. A result file is optional when the interactive tool exits successfully without outputs. The driver polls every two seconds during prompts and stops a cancelled tool.
+
+## Retry, cancel, and resume
+
+```sh
+teamai workflow retry <run> <step>
+teamai workflow cancel <run> [step]
+teamai workflow resume <run> --tools default=claude
+```
+
+`retry` accepts a leased, failed, or cancelled step, a refused approve with an answer, or an answered choose. Retry a HITL request to change its answer; its old answer stays in pass history. It frees an old lease and starts a new pass at a new revision. The local driver stops a command it was running and starts the new pass only after that command has exited. It resets the steps that depend on or read that step, including loop waits and item `after` dependencies. A HITL request among them that waits, or was answered and has not run, is asked again at a new pass. It reopens settled enclosing workflows, items, fan-out steps, and the run. If the reopened run is still running, the result includes a `resume` command. Run it to continue locally, or let your driver poll `next`. Unanswered skips in each affected container are re-derived; manual cancellations outside it stay cancelled. An independent standing end or break prevents retry.
+
+History stays in `passes` and the archive, so `length(steps.x.passes)` counts failed attempts too. Retrying a loop owner resets its iteration count. Retrying another step in its range keeps the owner's count. Retry keeps the top-level workflow's round count, so retry in its exhausted final round can fail `loop_exhausted` again.
+
+A single-step `cancel` stops pending, waiting, leased, or running work. Its open descendants stop too. Cancelled steps count as stopped, so dependents skip unless an `if` reads their outcome for recovery. The run normally fails. A whole-run cancel ends immediately with run outcome `cancelled`, without starting another loop round. Cancel does not bump the revision. A late report returns `lease_cancelled`; `next.cancelled` tells drivers which tools to stop.
+
+`resume` drives the run locally after a retry, response, Ctrl-C, or closed terminal. It uses this machine's open local lease workspace first, then the workspace of the latest driver that called `next` when that driver was local on this machine, then the current directory. Resuming after a retry from a subdirectory therefore keeps the original local workspace. Only one local driver can drive a run at a time. A second resume returns `driver_running` with the owning process id; stop that driver or wait. Locks from dead processes are reclaimed automatically. A settled run returns `done`. Failed and cancelled local runs exit 1; successful control commands exit 0 even when their answer describes a failed or cancelled run.

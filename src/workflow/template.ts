@@ -187,8 +187,9 @@ export function stringsIn(value: unknown): string[] {
  * The texts a step templates: `with.<name>` once per string inside that value, `prompt`, and `env.<NAME>`.
  * Pull and the engine share this one list, so they agree on which fields are templates.
  */
-export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'env' | 'with'>): Array<{ what: string; text: string }> {
+export function templatedTexts(step: Pick<WorkflowStep, 'prompt' | 'env' | 'with' | 'hitl'>): Array<{ what: string; text: string }> {
   return [
+    ...(step.hitl ? [{ what: `${step.hitl.kind}.message`, text: step.hitl.message }] : []),
     ...Object.entries(step.with ?? {}).flatMap(([name, value]) => stringsIn(value).map((text) => ({ what: `with.${name}`, text }))),
     ...(step.prompt !== undefined ? [{ what: 'prompt', text: step.prompt }] : []),
     ...Object.entries(step.env ?? {}).map(([name, text]) => ({ what: `env.${name}`, text })),

@@ -15,7 +15,7 @@ export type ExpressionPath =
   | { root: 'inputs'; fields: PathField[]; column: number }
   /** The item a `for_each` step instance runs for. */
   | { root: 'item'; fields: PathField[]; column: number }
-  | { root: 'steps'; step: string; field: 'outcome' | 'end' | 'outputs' | 'passes' | 'results'; fields: PathField[]; column: number };
+  | { root: 'steps'; step: string; field: 'outcome' | 'end' | 'outputs' | 'passes' | 'results' | 'choice' | 'note'; fields: PathField[]; column: number };
 
 /** `<`, `<=`, `>` and `>=` compare two numbers; with anything else they are false. */
 const COMPARISONS = {
@@ -53,6 +53,10 @@ export interface ExpressionStep {
   outputs?: unknown;
   /** Every settled pass of the step, earliest first: those a loop ran again, then the current one once it settled. */
   passes?: ExpressionPass[];
+  /** The current pass's HITL choice, when answered. */
+  choice?: string;
+  /** The note attached to that HITL answer. */
+  note?: string;
   /** For a settled `for_each` step: how each item settled, in item order. */
   results?: Array<{ item?: unknown; outcome: VisibleOutcome; outputs?: unknown }>;
 }
@@ -64,6 +68,10 @@ export interface ExpressionPass {
   outputs?: unknown;
   end?: string;
   results?: ExpressionStep['results'];
+  /** The choice retained for this pass. */
+  choice?: string;
+  /** The note retained for this pass. */
+  note?: string;
 }
 
 export interface ExpressionContext {
@@ -200,14 +208,14 @@ function parsePath(token: { text: string; column: number }): ExpressionPath {
   }
   if (typeof step !== 'string' || !field) throw new ExpressionError(token.column, `"${token.text}" ${STEP_FIELDS}`);
   if (field === 'outputs' || field === 'passes' || field === 'results') return { root, step, field, fields, column: token.column };
-  if ((field === 'outcome' || field === 'end') && fields.length === 0) return { root, step, field, fields, column: token.column };
-  if ((field === 'outcome' || field === 'end') && typeof fields[0] === 'number') {
+  if ((field === 'outcome' || field === 'end' || field === 'choice' || field === 'note') && fields.length === 0) return { root, step, field, fields, column: token.column };
+  if ((field === 'outcome' || field === 'end' || field === 'choice' || field === 'note') && typeof fields[0] === 'number') {
     throw new ExpressionError(token.column, `"${token.text}" indexes ${field}, which is a name; compare it whole, as in steps.${step}.${field} == '<name>'`);
   }
   throw new ExpressionError(token.column, `"${token.text}" ${STEP_FIELDS}`);
 }
 
-const STEP_FIELDS = 'must read steps.<id>.outcome, steps.<id>.end, steps.<id>.outputs, steps.<id>.passes or steps.<id>.results';
+const STEP_FIELDS = 'must read steps.<id>.outcome, steps.<id>.end, steps.<id>.choice, steps.<id>.note, steps.<id>.outputs, steps.<id>.passes or steps.<id>.results';
 
 /**
  * A type pull knows for a value before the run: a declared shorthand, or `unknown`, which any value fits, such as the
@@ -226,15 +234,18 @@ const UNKNOWN: DeclaredType = { type: 'unknown' };
  * are names, each item of `passes` holds the outputs of one pass, and each item of `results` the item and outputs of one
  * `for_each` item.
  */
-export function stepFieldSchema(field: Extract<ExpressionPath, { root: 'steps' }>['field'], output: OutputSchema | undefined, forEach: boolean): DeclaredType | undefined {
+export function stepFieldSchema(field: Extract<ExpressionPath, { root: 'steps' }>['field'], output: OutputSchema | undefined, forEach: boolean, choices?: string[]): DeclaredType | undefined {
   const results: DeclaredType = { type: 'array', items: { type: 'object', fields: { item: UNKNOWN, outcome: { type: 'string' }, outputs: output ?? UNKNOWN } } };
   switch (field) {
+    case 'choice': return choices ? { type: 'enum', values: choices } : undefined;
+    case 'note': return { type: 'string' };
     case 'outcome':
     case 'end':
       return { type: 'string' };
     case 'outputs': return forEach ? undefined : output;
     case 'passes':
       return { type: 'array', items: { type: 'object', fields: { pass: { type: 'number' }, outcome: { type: 'string' }, end: { type: 'string' },
+        ...(choices ? { choice: { type: 'enum' as const, values: choices }, note: { type: 'string' as const } } : {}),
         ...(forEach ? { results } : { outputs: output ?? UNKNOWN }),
       } } };
     case 'results': return forEach ? results : undefined;
@@ -500,7 +511,7 @@ export function parseExpression(source: string): ExpressionParse {
 }
 
 /** A step field written as a path, `steps` misspelled `step` included, as in `steps.build.results`. */
-const STEP_FIELD = /^steps?\.[A-Za-z0-9_-]+\.(?:outcome|end|outputs|passes|results)(?![A-Za-z0-9_-])/;
+const STEP_FIELD = /^steps?\.[A-Za-z0-9_-]+\.(?:outcome|end|outputs|passes|results|choice|note)(?![A-Za-z0-9_-])/;
 
 /**
  * Whether `source` reads like an expression, judged by its tokens alone and past any that do not lex: its first value,

@@ -3,16 +3,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as envExec from '../env-exec.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { checkoutRecordKey, type CheckoutRecord } from '../pull.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
+import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, type LocalToolRun, type ToolSpawn } from '../workflow/local-tool-adapter.js';
 import { localDriver, runLocalDriver } from '../workflow/local-driver.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
-import { readRun } from '../workflow/store.js';
+import { driverLockPath, readRun } from '../workflow/store.js';
 import { commitFile, fakeClaude, git, recordDelivery } from './helpers/delivered-checkout.js';
 
 const dirs: string[] = [];
@@ -70,6 +72,7 @@ describe('local workflow prompt driver', () => {
     const { config, workspace, runId } = await fixture();
     let input: LocalToolRun | undefined;
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async (_tool, value) => {
         input = value;
         return {
@@ -104,7 +107,7 @@ describe('local workflow prompt driver', () => {
   it('fails without a configured tool and does not invoke the adapter', async () => {
     const { config, workspace, runId } = await fixture();
     config.workflows = undefined;
-    const adapter: LocalToolAdapter = { run: vi.fn() };
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn() };
 
     const done = await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
 
@@ -117,7 +120,7 @@ describe('local workflow prompt driver', () => {
 
   it('fails before spawn when a deployed agent is missing', async () => {
     const { config, workspace, runId } = await fixture('reviewer');
-    const adapter: LocalToolAdapter = { run: vi.fn() };
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn() };
 
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
 
@@ -141,6 +144,7 @@ Follow the review checklist.
 `);
     let input: LocalToolRun | undefined;
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async (_tool, value) => {
         input = value;
         return { started: true as const, exitCode: 0, output: { ok: true } };
@@ -149,7 +153,7 @@ Follow the review checklist.
 
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
 
-    expect(adapter.run).toHaveBeenCalledWith('claude', expect.anything());
+    expect(adapter.run).toHaveBeenCalledWith('claude', expect.anything(), expect.any(AbortSignal));
     expect(input?.agent).toMatchObject({
       name: 'reviewer',
       instructions: 'Follow the review checklist.',
@@ -189,6 +193,7 @@ Do not use this copy.
 `);
     let input: LocalToolRun | undefined;
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async (_tool, value) => {
         input = value;
         return { started: true as const, exitCode: 0, output: { ok: true } };
@@ -211,6 +216,7 @@ Do not use this copy.
   it('keeps repository changes and reports read_only_dirty', async () => {
     const { config, workspace, runId } = await fixture();
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => {
         fs.writeFileSync(path.join(workspace, 'left-behind.txt'), 'inspect me\n');
         return { started: true as const, exitCode: 0, output: { ok: true } };
@@ -230,6 +236,7 @@ Do not use this copy.
     const tracked = path.join(workspace, 'tracked.txt');
     fs.writeFileSync(tracked, 'already dirty\n');
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => {
         fs.writeFileSync(tracked, 'changed again\n');
         return { started: true as const, exitCode: 0, output: { ok: true } };
@@ -253,6 +260,7 @@ Do not use this copy.
     fs.writeFileSync(path.join(directory, 'keep.txt'), 'unchanged\n');
     const changed = change === 'add' ? path.join(directory, 'new.txt') : existing;
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => {
         if (change === 'remove') fs.rmSync(changed);
         else fs.writeFileSync(changed, 'after\n');
@@ -275,6 +283,7 @@ Do not use this copy.
     fs.mkdirSync(path.join(workspace, 'notes'));
     fs.writeFileSync(path.join(workspace, 'notes', 'draft.txt'), 'before\n');
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => ({ started: true as const, exitCode: 0, output: { ok: true } })),
     };
 
@@ -287,6 +296,7 @@ Do not use this copy.
     const dirty = path.join(workspace, 'dirty-before.txt');
     fs.writeFileSync(dirty, 'remove me\n');
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => {
         fs.rmSync(dirty);
         return { started: true as const, exitCode: 0, output: { ok: true } };
@@ -313,6 +323,7 @@ model = "gpt-5.4"
 `);
     let input: LocalToolRun | undefined;
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async (_selected, value) => {
         input = value;
         return { started: true as const, exitCode: 0, output: { ok: true } };
@@ -324,7 +335,7 @@ model = "gpt-5.4"
       toolPaths: { ...toolPaths, [tool]: { agents: agentsDir } } as TeamaiConfig['toolPaths'],
     });
 
-    expect(adapter.run).toHaveBeenCalledWith(tool, expect.anything());
+    expect(adapter.run).toHaveBeenCalledWith(tool, expect.anything(), expect.any(AbortSignal));
     expect(input?.agent).toMatchObject({
       instructions: 'Implement the change.',
       model: 'gpt-5.4',
@@ -343,6 +354,7 @@ sandbox_mode = "read-only"
 `);
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => ({ started: true as const, exitCode: 0, output: { ok: true } })),
     };
 
@@ -353,13 +365,14 @@ sandbox_mode = "read-only"
 
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('sandbox_mode'));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('not blocked'));
-    expect(adapter.run).toHaveBeenCalledWith('codex', expect.anything());
+    expect(adapter.run).toHaveBeenCalledWith('codex', expect.anything(), expect.any(AbortSignal));
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ status: 'succeeded' }] });
   });
 
   it('stores a structured child failure', async () => {
     const { config, workspace, runId } = await fixture();
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => ({
         started: true as const,
         exitCode: 1,
@@ -461,6 +474,7 @@ steps:
 ${agent ? `    agent: ${agent}\n` : ''}`;
 
   const reports = (result: Partial<Extract<LocalToolResult, { started: true }>> = {}): LocalToolAdapter => ({
+    runInteractive: vi.fn(),
     run: vi.fn(async () => ({ started: true as const, exitCode: 0, ...result })),
   });
   const codexToolPaths = { codex: { agents: '.codex/agents' } } as TeamaiConfig['toolPaths'];
@@ -493,7 +507,7 @@ ${agent ? `    agent: ${agent}\n` : ''}`;
   it('launches the tool bound to its checkout, so its session-start hook keeps the delivery', async () => {
     const { config, workspace, runId } = await observed(reviewStep('reviewer'));
     let input: LocalToolRun | undefined;
-    const adapter: LocalToolAdapter = { run: vi.fn(async (_tool, value) => {
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async (_tool, value) => {
       input = value;
       return { started: true as const, exitCode: 0 };
     }) };
@@ -632,7 +646,7 @@ steps:
     const { config, workspace, runId } = await observed(`${reviewStep('reviewer')}    loop: { back_to: review, while: "length(steps.review.passes) < 3", max_iterations: 3 }
 `);
     let pass = 0;
-    const adapter: LocalToolAdapter = { run: vi.fn(async () => ({ started: true as const, exitCode: 0, model: `claude-model-${++pass}` })) };
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async () => ({ started: true as const, exitCode: 0, model: `claude-model-${++pass}` })) };
 
     await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
 
@@ -726,6 +740,7 @@ steps:
 `, 2);
     const commandExitedFirst: boolean[] = [];
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => {
         commandExitedFirst.push(fs.existsSync(path.join(workspace, 'slow.done')));
         return { started: true as const, exitCode: 0, output: { ok: true } };
@@ -762,7 +777,7 @@ steps:
     needs: [w]
     command: node -e "process.exit(0)"
 `, 2);
-    const adapter: LocalToolAdapter = { run: vi.fn(async () => ({ started: true as const, exitCode: 0, output: { ok: true } })) };
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn(async () => ({ started: true as const, exitCode: 0, output: { ok: true } })) };
 
     const done = await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
 
@@ -890,6 +905,7 @@ setInterval(() => {}, 1000);
 `);
     const commandExitedFirst: boolean[] = [];
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => {
         commandExitedFirst.push(fs.existsSync(path.join(workspace, 'lingering.exited')));
         return { started: true as const, exitCode: 0, output: { ok: true } };
@@ -1023,6 +1039,7 @@ steps:
     }
     const logAtPrompt: string[] = [];
     const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
       run: vi.fn(async () => {
         logAtPrompt.push(fs.readFileSync(path.join(workspace, 'log.txt'), 'utf8'));
         return { started: true as const, exitCode: 0, output: { ok: true } };
@@ -1046,6 +1063,102 @@ steps:
       steps: [{ id: 'left', status: 'failed', exitCode: 1 }, { id: 'right', status: 'succeeded' }],
     });
   });
+
+  it.skipIf(process.platform === 'win32')('kills an attached descendant that ignores SIGTERM after its shell exits', async () => {
+    const { config, workspace, runId } = await parallelFixture(`schemaVersion: v1alpha1
+name: build
+description: Cancel a foreground command with a stubborn descendant.
+steps:
+  - id: parent
+    command: node parent.js; true
+`, 1);
+    fs.writeFileSync(path.join(workspace, 'parent.js'), `require('child_process').spawn(process.execPath, ['-e', \`process.on('SIGTERM', () => {});
+require('fs').writeFileSync('child.pid', String(process.pid));
+setInterval(() => {}, 1000);\`], { stdio: 'ignore' });
+setInterval(() => {}, 1000);
+`);
+    const driving = runLocalDriver(config, runId, workspace);
+    let pid: number | undefined;
+    try {
+      await vi.waitFor(() => expect(fs.existsSync(path.join(workspace, 'child.pid'))).toBe(true), { timeout: 10_000, interval: 20 });
+      pid = Number(fs.readFileSync(path.join(workspace, 'child.pid'), 'utf8'));
+      expect(await cancelRun(config, runId)).not.toHaveProperty('error');
+
+      expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
+      expect(await exitsWithin(pid, 1000)).toBe(true);
+    } finally {
+      if (pid !== undefined && alive(pid)) process.kill(pid, 'SIGKILL');
+      await cancelRun(config, runId);
+      await driving;
+    }
+  }, 30_000);
+
+  const controls = ['retry step', 'retry ancestor', 'cancel step then retry', 'cancel run then retry'] as const;
+  it.each(controls.flatMap((control) => [1, 2].flatMap((maxParallel) =>
+    ['exec node work.js', 'node work.js; true'].map((command) => ({ control, maxParallel, command })))))(
+    '$control never overlaps live attempts at max_parallel $maxParallel with $command', async ({ control, maxParallel, command }) => {
+      const { config, workspace, runId } = await parallelFixture(`schemaVersion: v1alpha1
+name: build
+description: Keep retry and cancel attempts separate.
+steps:
+  - id: plan
+    choose: { message: Which plan?, options: [small, big] }
+  - id: work
+    needs: [plan]
+    command: ${command}
+`, maxParallel);
+      fs.writeFileSync(path.join(workspace, 'work.js'), `const fs = require('fs');
+try { fs.writeFileSync('live', '', { flag: 'wx' }); }
+catch { fs.writeFileSync('overlap', ''); process.exit(1); }
+if (fs.existsSync('first.started')) {
+  fs.writeFileSync('second.saw', fs.existsSync('first.cleaned') ? 'cleaned' : 'running');
+  fs.unlinkSync('live');
+  process.exit(0);
+}
+process.once('SIGTERM', () => {
+  fs.writeFileSync('first.stopping', '');
+  setTimeout(() => {
+    fs.writeFileSync('first.cleaned', '');
+    fs.unlinkSync('live');
+    process.exit(1);
+  }, 2500);
+});
+fs.writeFileSync('first.pid', String(process.pid));
+fs.writeFileSync('first.started', '');
+setInterval(() => {}, 1000);
+`);
+      expect(await respondToHitl(config, runId, { step: 'plan', choice: 'small', channel: 'cli', agent: false }))
+        .not.toHaveProperty('error');
+      const options = { hitl: true, question: async () => 'big' };
+      const driving = runLocalDriver(config, runId, workspace, options);
+      try {
+        await vi.waitFor(() => expect(fs.existsSync(path.join(workspace, 'first.started'))).toBe(true), { timeout: 10_000, interval: 20 });
+        expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'plan', status: 'succeeded' }, { id: 'work', status: 'leased' }] });
+        if (control.startsWith('cancel')) {
+          expect(await cancelRun(config, runId, control.startsWith('cancel step') ? 'work' : undefined)).not.toHaveProperty('error');
+        }
+        expect(await retryStep(config, runId, control === 'retry ancestor' ? 'plan' : 'work'))
+          .toMatchObject({ data: { retried: { pass: 2 } } });
+        await vi.waitFor(() => expect(fs.existsSync(path.join(workspace, 'first.stopping'))).toBe(true), { timeout: 7000, interval: 20 });
+        expect(await driving).not.toHaveProperty('error');
+        const pid = Number(fs.readFileSync(path.join(workspace, 'first.pid'), 'utf8'));
+        expect(() => process.kill(pid, 0)).toThrow();
+        expect(await runLocalDriver(config, runId, workspace, options)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+        expect(fs.existsSync(path.join(workspace, 'first.stopping'))).toBe(true);
+        expect(fs.existsSync(path.join(workspace, 'first.cleaned'))).toBe(true);
+        expect(fs.existsSync(path.join(workspace, 'live'))).toBe(false);
+        expect(fs.existsSync(path.join(workspace, 'overlap'))).toBe(false);
+        expect(fs.readFileSync(path.join(workspace, 'second.saw'), 'utf8')).toBe('cleaned');
+      } finally {
+        await cancelRun(config, runId);
+        const pidFile = path.join(workspace, 'first.pid');
+        if (fs.existsSync(pidFile) && !fs.existsSync(path.join(workspace, 'first.cleaned'))) {
+          try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* Already exited. */ }
+        }
+        await driving;
+      }
+    }, 30_000,
+  );
 });
 
 describe('the model a prompt step runs on', () => {
@@ -1389,4 +1502,372 @@ steps:
     expect(strong.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-opus#high']]);
     expect(literal.argv).toEqual([['run', '--format', 'json', prompt('Review this project.'), '--model', 'anthropic/claude-sonnet']]);
   });
+});
+
+describe('local workflow HITL controls', () => {
+  it.each([false, true])('never asks without HITL while a headless prompt is held, required %s', async (required) => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Keep questions out of a driver without HITL.
+steps:
+  - id: a
+    command: sleep 0.3
+  - id: p
+    needs: []
+    prompt: Review it.
+  - id: ship
+    needs: [a]
+    approve: { message: Ship it?, required: ${required} }
+    command: "true"
+`);
+    config.workflows!.max_parallel = 2;
+    const question = vi.fn(async () => 'yes');
+    const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
+      run: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        return { started: true as const, exitCode: 0 };
+      }),
+    };
+    const result = await runLocalDriver(config, runId, workspace, { hitl: false, adapter, question });
+    expect(result).toMatchObject({ data: { done: { outcome: required ? 'failed' : 'succeeded' } } });
+    expect(question).not.toHaveBeenCalled();
+    const run = await readRun(config, runId);
+    if (typeof run === 'string' || run === null) throw new Error('Run was not saved');
+    const ship = run.steps.find((step) => step.id === 'ship');
+    if (required) {
+      expect(ship).toMatchObject({ status: 'failed', failure: { code: 'hitl_required' } });
+      expect(ship?.answer).toBeUndefined();
+    } else {
+      expect(ship).toMatchObject({ status: 'skipped', answer: { choice: 'no', channel: 'no_hitl' } });
+    }
+  });
+
+  it('asks inline, re-asks an invalid choice, and records the note', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Ask inline.
+steps:
+  - id: ask
+    approve: Build it?
+    command: echo ok
+`);
+    const question = vi.fn().mockResolvedValueOnce('bad').mockResolvedValueOnce('yes Keep the flag');
+    const result = await runLocalDriver(config, runId, workspace, { hitl: true, question });
+    expect(result).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(question).toHaveBeenCalledTimes(2);
+    const run = await readRun(config, runId);
+    expect(typeof run === 'object' && run.steps[0]?.answer).toMatchObject({ choice: 'yes', note: 'Keep the flag', channel: 'tty', agent: false });
+  });
+
+  it('aborts a question when another process answers its HITL request', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Ask elsewhere.
+steps:
+  - id: ask
+    choose: { message: Pick one, options: [one, two] }
+`);
+    let aborted = false;
+    const question = vi.fn((_hitl, signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
+      void respondToHitl(config, runId, { step: 'ask', choice: 'one', channel: 'cli', agent: true });
+    }));
+    expect(await runLocalDriver(config, runId, workspace, { hitl: true, question })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(aborted).toBe(true);
+    expect(question).toHaveBeenCalledTimes(1);
+  });
+
+  it('polls and aborts a cancelled prompt while the adapter is running', async () => {
+    const { config, workspace, runId } = await fixture();
+    let aborted = false;
+    const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
+      run: vi.fn<LocalToolAdapter['run']>((_tool, _input, signal) => new Promise<LocalToolResult>((resolve) => {
+        signal!.addEventListener('abort', () => {
+          aborted = true;
+          resolve({ started: true, exitCode: 1 });
+        });
+        void cancelRun(config, runId);
+      })),
+    };
+    expect(await runLocalDriver(config, runId, workspace, { adapter })).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
+    expect(aborted).toBe(true);
+  });
+
+  it('runs an interactive prompt through the foreground entry point', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Work together.
+steps:
+  - id: pair
+    prompt: Work together.
+    interactive: true
+`);
+    const adapter: LocalToolAdapter = {
+      run: vi.fn(),
+      runInteractive: vi.fn(async () => ({ started: true as const, exitCode: 0 })),
+    };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(adapter.runInteractive).toHaveBeenCalledWith('claude', expect.objectContaining({ prompt: 'Work together.', cwd: workspace }), expect.any(AbortSignal));
+    expect(adapter.run).not.toHaveBeenCalled();
+  });
+
+  it('auto-approves only for this driver process without HITL', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Approve in CI.
+steps:
+  - id: ask
+    approve: Continue?
+`);
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, autoApprove: true })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(config.workflows?.auto_approve).toBeUndefined();
+    const run = await readRun(config, runId);
+    expect(typeof run === 'object' && run.steps[0]?.answer).toMatchObject({ choice: 'yes', channel: 'auto_approve' });
+  });
+});
+
+
+describe('local workflow driver ownership', () => {
+  it('refuses a second driver, then releases ownership when the first finishes', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Hold a HITL request.
+steps:
+  - id: ask
+    approve: Continue?
+`);
+    let asking = (): void => {};
+    const asked = new Promise<void>((resolve) => { asking = resolve; });
+    const first = runLocalDriver(config, runId, workspace, { hitl: true, question: (_hitl, signal) => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('closed')));
+      asking();
+    }) });
+    await asked;
+    expect(await runLocalDriver(config, runId, workspace)).toEqual({ error: { code: 'driver_running', message: `Run ${runId} is already driven by process ${process.pid} on this machine. Stop that driver, or wait for it.` } });
+    await respondToHitl(config, runId, { step: 'ask', choice: 'no', channel: 'cli', agent: true });
+    expect(await first).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.existsSync(driverLockPath(config, runId))).toBe(false);
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('reclaims a dead driver lock and releases it on an engine error', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Reclaim a stopped driver.
+steps:
+  - id: work
+    command: echo work
+`);
+    const lock = driverLockPath(config, runId);
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, JSON.stringify({ pid: 2147483647, owner: 'dead' }));
+    expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const absent = 'r0123456789abcdef';
+    expect(await runLocalDriver(config, absent, workspace)).toMatchObject({ error: { code: 'run_not_found' } });
+    expect(fs.existsSync(driverLockPath(config, absent))).toBe(false);
+  });
+});
+
+
+describe('foreground workflow terminal ownership', () => {
+  it('waits for an interactive tool to exit before asking a parallel HITL request', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Own the terminal.
+steps:
+  - id: setup
+    command: echo ready
+  - id: pair
+    needs: [setup]
+    interactive: true
+    prompt: Pair with me.
+  - id: ship
+    needs: [setup]
+    approve: Ship it?
+    command: echo ready
+`);
+    let interactive = false;
+    const overlaps: boolean[] = [];
+    const adapter: LocalToolAdapter = {
+      run: vi.fn(),
+      runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+        interactive = true;
+        await new Promise((resolve) => setTimeout(resolve, 2300));
+        interactive = false;
+        return { started: true, exitCode: 0 };
+      }),
+    };
+    const question = vi.fn(async () => { overlaps.push(interactive); return 'yes'; });
+    expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter, question })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(overlaps).toEqual([false]);
+  });
+
+  it('closes an answered HITL question before its interactive lease starts', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Answer elsewhere.
+steps:
+  - id: pair
+    approve: Pair now?
+    interactive: true
+    prompt: Pair with me.
+`);
+    let aborted = false;
+    let abortedBeforeLaunch = false;
+    const question = vi.fn((_hitl, signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
+      void respondToHitl(config, runId, { step: 'pair', choice: 'yes', channel: 'cli', agent: true });
+    }));
+    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+      abortedBeforeLaunch = aborted;
+      return { started: true, exitCode: 0 };
+    }) };
+    await runLocalDriver(config, runId, workspace, { hitl: true, adapter, question });
+    expect(abortedBeforeLaunch).toBe(true);
+    expect(question).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets a person keep repository edits from an interactive step', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Fix together.
+steps:
+  - id: pair
+    prompt: Fix the build with me.
+    interactive: true
+`);
+    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+      fs.writeFileSync(path.join(workspace, 'tracked.txt'), 'fixed\n');
+      return { started: true, exitCode: 0 };
+    }) };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(path.join(workspace, 'tracked.txt'), 'utf8')).toBe('fixed\n');
+  });
+
+  it('refuses an interactive hand-back to a local driver without HITL', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Need a person.
+steps:
+  - id: pair
+    prompt: Pair with me.
+    interactive: true
+`);
+    await leaseNext(config, runId, localDriver(workspace), { hitl: true });
+    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(adapter.runInteractive).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2])('ignores terminal Ctrl-C and Ctrl-\\ in an interactive tool at max_parallel %s', async (parallel) => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Keep Ctrl-C in the tool.
+steps:
+  - id: pair
+    prompt: Pair with me.
+    interactive: true
+`);
+    config.workflows!.max_parallel = parallel;
+    vi.spyOn(envExec, 'terminalReachesCommand').mockResolvedValue(true);
+    const exit = vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
+    const before = new Set(process.listeners('SIGINT'));
+    let aborted = false;
+    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async (_tool, _input, signal) => {
+      signal!.addEventListener('abort', () => { aborted = true; });
+      for (const handler of process.listeners('SIGINT')) if (!before.has(handler)) handler('SIGINT');
+      for (const handler of process.listeners('SIGQUIT')) handler('SIGQUIT');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return { started: true, exitCode: 0 };
+    }) };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(aborted).toBe(false);
+    expect(exit).not.toHaveBeenCalled();
+  });
+});
+
+
+it.each(['SIGTERM', 'SIGHUP'] as const)('forwards %s to an interactive tool and stops the local driver', async (signalName) => {
+  const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Stop the foreground tool.
+steps:
+  - id: pair
+    prompt: Pair with me.
+    interactive: true
+`);
+  vi.spyOn(envExec, 'terminalReachesCommand').mockResolvedValue(true);
+  const exit = vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
+  const before = new Set(process.listeners(signalName));
+  let reason: unknown;
+  const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>((_tool, _input, signal) => new Promise((resolve) => {
+    signal!.addEventListener('abort', () => { reason = signal!.reason; resolve({ started: true, exitCode: 1 }); });
+    for (const handler of process.listeners(signalName)) if (!before.has(handler)) handler(signalName);
+  })) };
+  expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter })).toMatchObject({ error: { code: 'interrupted' } });
+  expect(reason).toBe(signalName);
+  expect(exit).toHaveBeenCalledWith({ kind: 'signaled', signal: signalName });
+});
+
+it('closes an unrelated HITL request before starting a held interactive tool and asks it again afterwards', async () => {
+  const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Transfer terminal ownership.
+steps:
+  - id: setup
+    command: sleep 0.2
+  - id: pair
+    needs: [setup]
+    interactive: true
+    prompt: Pair with me.
+  - id: ship
+    needs: []
+    approve: Ship it?
+`);
+  config.workflows!.max_parallel = 2;
+  let closed = false;
+  let ran = false;
+  let closedBeforeLaunch = false;
+  const question = vi.fn((_hitl, signal: AbortSignal) => {
+    if (ran) return Promise.resolve('yes');
+    return new Promise<string>((_resolve, reject) => signal.addEventListener('abort', () => { closed = true; reject(new Error('closed')); }));
+  });
+  const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+    closedBeforeLaunch = closed;
+    ran = true;
+    return { started: true, exitCode: 0 };
+  }) };
+  expect(await runLocalDriver(config, runId, workspace, { hitl: true, question, adapter })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  expect(closedBeforeLaunch).toBe(true);
+  expect(question).toHaveBeenCalledTimes(2);
+});
+
+
+it('asks HITL only after a held interactive tool has run', async () => {
+  const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Start the held tool before asking.
+steps:
+  - id: setup
+    command: sleep 0.1
+  - id: pair
+    needs: []
+    interactive: true
+    prompt: Pair with me.
+  - id: ship
+    needs: [setup]
+    approve: Ship it?
+`);
+  config.workflows!.max_parallel = 2;
+  let ran = false;
+  const askedAfterTool: boolean[] = [];
+  const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
+    ran = true;
+    return { started: true, exitCode: 0 };
+  }) };
+  const question = vi.fn(async () => { askedAfterTool.push(ran); return 'yes'; });
+  expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter, question })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  expect(askedAfterTool).toEqual([true]);
 });

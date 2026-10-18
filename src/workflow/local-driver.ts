@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import {
   agentFileExtensionForTool,
   reverseFromClaude,
@@ -13,12 +14,14 @@ import {
   type ToolName,
 } from '../resources/agent-format.js';
 import { observeLaunch } from '../agent-observation.js';
-import { exitLike } from '../env-exec.js';
+import { acquireLock, releaseLock } from '../update.js';
+import { commandSignalPolicy, exitLike, terminalReachesCommand } from '../env-exec.js';
 import { workflowLaunch } from '../launch-context.js';
 import { getDataHome, resolveToolBaseDir, type LocalConfig, type TeamaiConfig } from '../types.js';
-import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
+import { readFileSafe, readJson, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { leaseNext, reportAttempt } from './engine.js';
+import { interactiveHitlRequired, leaseNext, reportAttempt } from './engine.js';
+import { respondToHitl } from './run-controls.js';
 import { isRecord } from './expression.js';
 import {
   createLocalToolAdapter,
@@ -29,10 +32,13 @@ import {
   type LocalToolRun,
   type LocalWorkflowTool,
 } from './local-tool-adapter.js';
+import { driverLockPath, isRunId } from './store.js';
+import { stopProcess } from './process-stop.js';
 import { chooseStepModel } from './step-model.js';
-import type { DriverIdentity, WorkflowEnvelope, WorkflowFailure } from './types.js';
+import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isWorkflowError } from './types.js';
 
+/** Local lease identity, stable across restarts in the same workspace. */
 export function localDriver(cwd: string): DriverIdentity {
   let machine = 'unknown';
   try {
@@ -59,8 +65,6 @@ interface CommandProcess {
   stop(): Promise<CommandResult>;
 }
 
-const STOP_GRACE_MS = 5000;
-
 const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
 
 /**
@@ -78,39 +82,7 @@ function startCommand(command: string, cwd: string, env: Record<string, string>,
     child.on('error', (error) => resolve({ exitCode: 1, stdout, stderr: error.message }));
     child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
   });
-  /** Whether the signal reached a process: the command, or for a detached command any process left in its group. */
-  const signal = (name: NodeJS.Signals | 0): boolean => {
-    if (!detached || child.pid === undefined) return name === 0 ? false : child.kill(name);
-    try {
-      process.kill(-child.pid, name);
-      return true;
-    } catch {
-      // The whole group has already exited.
-      return false;
-    }
-  };
-  let stopping: Promise<CommandResult> | undefined;
-  const stop = async (): Promise<CommandResult> => {
-    if (process.platform === 'win32' && child.pid !== undefined) {
-      execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {});
-      return exit;
-    }
-    signal('SIGTERM');
-    let timer: NodeJS.Timeout | undefined;
-    const killed = new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
-        signal('SIGKILL');
-        resolve();
-      }, STOP_GRACE_MS);
-    });
-    const result = await exit;
-    // The shell closing its output does not mean the group is gone: a process it started with its own output can
-    // ignore SIGTERM and outlive it. Keep the SIGKILL for as long as any process in the group is left.
-    if (signal(0)) await killed;
-    else clearTimeout(timer);
-    return result;
-  };
-  return { exit, stop: () => (stopping ??= stop()) };
+  return { exit, stop: stopProcess(child, exit, detached) };
 }
 
 function jsonStdout(stdout: string): unknown | undefined {
@@ -123,7 +95,44 @@ function jsonStdout(stdout: string): unknown | undefined {
   }
 }
 
+/** A rendered HITL request and the exact pass and response command presented by the engine. */
+export interface LocalHitl extends StepHitl {
+  /** The run that owns the question. */
+  run: string;
+  /** The waiting step's full path. */
+  step: string;
+  /** The pass the answer will apply to. */
+  pass: number;
+  /** The engine's literal CLI response template. */
+  respond: string;
+}
+
+function readHitlRequest(raw: unknown): LocalHitl | undefined {
+  if (!isRecord(raw) || typeof raw.run !== 'string' || typeof raw.step !== 'string' || typeof raw.pass !== 'number'
+    || (raw.kind !== 'approve' && raw.kind !== 'choose') || typeof raw.message !== 'string' || typeof raw.required !== 'boolean'
+    || typeof raw.respond !== 'string' || !Array.isArray(raw.options) || !raw.options.every((option): option is string => typeof option === 'string')) return undefined;
+  return { run: raw.run, step: raw.step, pass: raw.pass, respond: raw.respond, kind: raw.kind, message: raw.message, required: raw.required, options: raw.options,
+    ...(typeof raw.default === 'string' ? { default: raw.default } : {}) };
+}
+
+async function askHitl(hitl: LocalHitl, signal: AbortSignal): Promise<string> {
+  process.stderr.write(`Step "${hitl.step}": ${hitl.message}\nOptions: ${hitl.options.join(', ')}\n${hitl.respond}\n`);
+  const terminal = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    return await terminal.question('Choice, followed by an optional note: ', { signal });
+  } finally {
+    terminal.close();
+  }
+}
+
+/** Local tool selection and terminal behavior for one driver invocation. */
 export interface LocalDriverOptions {
+  /** Overrides auto approval for this process without changing member config. */
+  autoApprove?: boolean;
+  /** Declares whether a person can answer HITL requests and work in foreground tools. */
+  hitl?: boolean;
+  /** The terminal question implementation, injectable for callers without readline. */
+  question?: (hitl: LocalHitl, signal: AbortSignal) => Promise<string>;
   tools?: Record<string, string>;
   toolPaths?: TeamaiConfig['toolPaths'];
   adapter?: LocalToolAdapter;
@@ -140,6 +149,8 @@ interface Lease {
   agent?: string;
   model?: string;
   defaultModel?: string;
+  /** Whether this lease gives the foreground terminal to its tool. */
+  interactive?: true;
 }
 
 function stringMap(value: unknown): Record<string, string> | undefined {
@@ -257,6 +268,7 @@ function parseLease(raw: unknown): Lease | undefined {
     ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
     ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
     ...(typeof rawLease.model === 'string' ? { model: rawLease.model } : {}),
+    ...(rawLease.interactive === true ? { interactive: true } : {}),
     ...(typeof rawLease.defaultModel === 'string' ? { defaultModel: rawLease.defaultModel } : {}),
   };
   return (lease.command === undefined) === (lease.prompt === undefined) ? undefined : lease;
@@ -288,6 +300,7 @@ async function promptReport(
   tools: Record<string, string>,
   adapter: LocalToolAdapter,
   options: LocalDriverOptions,
+  signal: AbortSignal,
 ): Promise<ReportBody> {
   const selected = lease.agent && tools[lease.agent] ? tools[lease.agent] : tools.default;
   if (!selected) {
@@ -332,17 +345,19 @@ async function promptReport(
     }),
     workflowLaunch(config, selected),
   ]);
-  const before = await snapshotWorktree(driver.workspace);
+  const before = !lease.interactive ? await snapshotWorktree(driver.workspace) : undefined;
   let result: LocalToolResult;
   try {
-    result = await adapter.run(selected, {
+    if (lease.interactive) log.info(`Step "${lease.step}" opens ${selected} here for interactive work.`);
+    const run = lease.interactive ? adapter.runInteractive.bind(adapter) : adapter.run.bind(adapter);
+    result = await run(selected, {
       prompt: lease.prompt!,
       cwd: driver.workspace,
       resultPath: attemptResultPath,
       ...(launch ? { launch } : {}),
       ...(agent ? { agent: definitionRun(selected, lease.agent!, agent) } : {}),
       ...(chosen.model ? { model: chosen.model } : {}),
-    });
+    }, signal);
   } catch {
     result = {
       started: false,
@@ -350,8 +365,7 @@ async function promptReport(
       failure: { code: 'tool_failed', message: `${selected} could not complete the workflow step` },
     };
   }
-  const after = await snapshotWorktree(driver.workspace);
-  const paths = changedPaths(before, after);
+  const paths = before ? changedPaths(before, await snapshotWorktree(driver.workspace)) : [];
   const dirtyFailure = paths.length > 0
     ? { code: 'read_only_dirty', message: `Read-only prompt step changed repository paths: ${paths.join(', ')}` }
     : undefined;
@@ -383,6 +397,23 @@ export async function runLocalDriver(
   cwd: string,
   options: LocalDriverOptions = {},
 ): Promise<WorkflowEnvelope> {
+  if (!isRunId(runId)) return { error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } };
+  const lock = driverLockPath(config, runId);
+  if (!await acquireLock(lock)) {
+    const owner = await readJson(lock);
+    return { error: { code: 'driver_running', message: isRecord(owner) && typeof owner.pid === 'number'
+      ? `Run ${runId} is already driven by process ${owner.pid} on this machine. Stop that driver, or wait for it.`
+      : `Run ${runId} has a local driver lock whose process id is unknown. Stop that driver, or inspect its driver.lock file.` } };
+  }
+  try {
+    return await driveRun(config, runId, cwd, options);
+  } finally {
+    await releaseLock(lock);
+  }
+}
+
+async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
+  const canHitl = options.hitl ?? (process.stdin.isTTY === true && process.stderr.isTTY === true);
   const driver = localDriver(cwd);
   const tools = { ...config.workflows?.tools, ...options.tools };
   const adapter = options.adapter ?? createLocalToolAdapter();
@@ -396,29 +427,37 @@ export async function runLocalDriver(
   // compares the whole worktree before and after it.
   const held: Lease[] = [];
   // Cancelled commands whose process group is not gone yet. They are not sent as running, so `next` does not cancel
-  // them again.
-  const dying = new Map<string, CommandProcess>();
-  const room = (): boolean => inFlight.size + held.length < maxParallel && !held.some((lease) => lease.prompt !== undefined);
+  // them again. They still take a slot, and a new attempt of their step waits until they are gone, so a retried step
+  // never runs beside its cancelled attempt.
+  const dying = new Map<string, { step: string; command: CommandProcess }>();
+  let prompt: { lease: Lease; controller: AbortController; exit: Promise<ReportBody> } | undefined;
+  let question: { hitl: LocalHitl; controller: AbortController; exit: Promise<{ kind: 'question'; line?: string }> } | undefined;
+  const room = (): boolean => !prompt && inFlight.size + dying.size + held.length < maxParallel && !held.some((lease) => lease.prompt !== undefined);
   const cancel = (attempt: string): void => {
+    if (prompt?.lease.attempt === attempt) prompt.controller.abort();
     const index = held.findIndex((lease) => lease.attempt === attempt);
     if (index !== -1) held.splice(index, 1);
     const running = inFlight.get(attempt);
     if (!running) return;
     inFlight.delete(attempt);
-    dying.set(attempt, running.command);
+    dying.set(attempt, { step: running.lease.step, command: running.command });
     void running.command.stop();
   };
+  let interactiveIgnores: readonly NodeJS.Signals[] = [];
   let signalled: NodeJS.Signals | undefined;
   let wake = (): void => {};
   const exitOn = (signal: NodeJS.Signals): void => {
     for (const name of STOP_SIGNALS) process.off(name, onSignal);
     exitLike({ kind: 'signaled', signal });
   };
-  // Parallel commands do not get the terminal's Ctrl-C, so the driver stops them all before it exits the way the
-  // signal would. With none running, as during a prompt, the signal ends teamai at once, as it would without a handler.
+  // Parallel commands and detached prompt tools do not get the terminal's Ctrl-C, so the driver stops them before it
+  // exits the way the signal would. An interactive tool that the terminal's signals reach handles them itself. With
+  // nothing running, the signal ends teamai at once, as it would without a handler.
   const onSignal = (signal: NodeJS.Signals): void => {
-    if (inFlight.size === 0 && dying.size === 0) return exitOn(signal);
+    if (prompt?.lease.interactive && interactiveIgnores.includes(signal)) return;
+    if (inFlight.size === 0 && dying.size === 0 && !prompt) return exitOn(signal);
     signalled ??= signal;
+    prompt?.controller.abort(signal);
     wake();
   };
   if (maxParallel > 1) for (const name of STOP_SIGNALS) process.on(name, onSignal);
@@ -432,33 +471,74 @@ export async function runLocalDriver(
   try {
     for (;;) {
       if (signalled) return { error: { code: 'interrupted', message: `Stopped by ${signalled} after every command it started exited` } };
-      const running = [...inFlight.keys(), ...held.map((lease) => lease.attempt)];
+      const running = [...inFlight.keys(), ...held.map((lease) => lease.attempt), ...(prompt ? [prompt.lease.attempt] : [])];
       const canTakeLease = room();
-      const next = await leaseNext(config, runId, driver, { running, canTakeLease });
+      const next = await leaseNext(config, runId, driver, { running, canTakeLease, hitl: canHitl, autoApprove: options.autoApprove });
       if (signalled) continue;
       if (isWorkflowError(next)) return next;
       for (const attempt of Array.isArray(next.data.cancelled) ? next.data.cancelled as string[] : []) cancel(attempt);
-      if ('done' in next.data) return next;
+      if ('done' in next.data) {
+        question?.controller.abort();
+        if (prompt) {
+          prompt.controller.abort();
+          const failed = await report(await prompt.exit);
+          prompt = undefined;
+          if (failed) return failed;
+        }
+        return next;
+      }
+      const hitl = readHitlRequest(next.data.hitl);
+      const nextLease = 'lease' in next.data ? parseLease(next.data.lease) : undefined;
+      if (question && (nextLease?.step === question.hitl.step
+        || (!nextLease && (hitl?.step !== question.hitl.step || hitl?.pass !== question.hitl.pass)))) {
+        question.controller.abort();
+        await question.exit;
+        question = undefined;
+      }
       if ('lease' in next.data) {
-        const lease = parseLease(next.data.lease);
+        const lease = nextLease;
         if (!lease) return { error: { code: 'run_unreadable', message: `Run ${runId} returned a lease the local driver cannot run` } };
         if (reported.has(lease.attempt)) {
           return { error: { code: 'driver_stuck', message: `Attempt ${lease.attempt} was leased again before it could be reported` } };
         }
         held.push(lease);
       }
-      while (held[0]?.command !== undefined && inFlight.size < maxParallel) {
-        const lease = held.shift()!;
+      for (let index = 0; held[index]?.command !== undefined && inFlight.size + dying.size < maxParallel;) {
+        const lease = held[index]!;
+        if ([...dying.values()].some((stopping) => stopping.step === lease.step)) {
+          index += 1;
+          continue;
+        }
+        held.splice(index, 1);
         inFlight.set(lease.attempt, { lease, command: startCommand(lease.command!, driver.workspace, lease.env ?? {}, detached) });
       }
-      if (held[0]?.prompt !== undefined && inFlight.size === 0 && dying.size === 0) {
+      if (!prompt && held[0]?.prompt !== undefined && inFlight.size === 0 && dying.size === 0) {
         const lease = held.shift()!;
-        const failed = await report(await promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options));
-        if (failed) return failed;
-        continue;
+        if (lease.interactive && !canHitl) {
+          const failed = await report({ attempt: lease.attempt, revision: lease.revision, driver,
+            ...failureReport(interactiveHitlRequired(runId, lease.step)) });
+          if (failed) return failed;
+          continue;
+        }
+        if (lease.interactive) {
+          if (question) {
+            question.controller.abort();
+            await question.exit;
+            question = undefined;
+          }
+          interactiveIgnores = commandSignalPolicy(await terminalReachesCommand()).ignored;
+        }
+        const controller = new AbortController();
+        if (maxParallel === 1) for (const name of STOP_SIGNALS) process.on(name, onSignal);
+        prompt = { lease, controller, exit: promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options, controller.signal) };
+      }
+      if (canHitl && hitl && !question && !prompt?.lease.interactive) {
+        const controller = new AbortController();
+        question = { hitl, controller, exit: (options.question ?? askHitl)(hitl, controller.signal)
+          .then((line) => ({ kind: 'question' as const, line }), () => ({ kind: 'question' as const })) };
       }
       if ('lease' in next.data && room()) continue;
-      if (inFlight.size === 0 && dying.size === 0) {
+      if (inFlight.size === 0 && dying.size === 0 && !prompt && !question) {
         // A wait for a call that could not take a lease says nothing about what is left; ask again with room.
         if (!canTakeLease) continue;
         const reason = typeof (next.data.wait as { reason?: unknown }).reason === 'string'
@@ -466,13 +546,39 @@ export async function runLocalDriver(
           : 'the next step is not available';
         return { error: { code: 'busy', message: reason } };
       }
+      let timer: NodeJS.Timeout | undefined;
       const exited = await Promise.race([
-        ...[...inFlight.values()].map(({ lease, command }) => command.exit.then((result) => ({ attempt: lease.attempt, lease, result }))),
-        ...[...dying].map(([attempt, command]) => command.stop().then(() => ({ attempt }))),
-        new Promise<undefined>((resolve) => { wake = () => resolve(undefined); }),
+        ...[...inFlight.values()].map(({ lease, command }) => command.exit.then((result) => ({ kind: 'command' as const, attempt: lease.attempt, lease, result }))),
+        ...[...dying].map(([attempt, { command }]) => command.stop().then(() => ({ kind: 'stopped' as const, attempt }))),
+        ...(prompt ? [prompt.exit.then((body) => ({ kind: 'prompt' as const, body }))] : []),
+        ...(question ? [question.exit] : []),
+        new Promise<undefined>((resolve) => {
+          wake = () => resolve(undefined);
+          timer = setTimeout(wake, question ? 1000 : 2000);
+        }),
       ]);
+      clearTimeout(timer);
       if (!exited) continue;
-      if (!('lease' in exited)) {
+      if (exited.kind === 'question') {
+        const hitl = question!.hitl;
+        question = undefined;
+        if (exited.line === undefined) return { error: { code: 'interrupted', message: 'The HITL question closed without an answer. Continue with teamai workflow resume.' } };
+        const [choice = '', ...words] = exited.line.trim().split(/\s+/);
+        const answer = await respondToHitl(config, runId, { step: hitl.step, pass: hitl.pass, choice, ...(words.length > 0 ? { note: words.join(' ') } : {}), channel: 'tty', agent: false });
+        if (isWorkflowError(answer)) {
+          if (!['repeated_response', 'stale_response', 'invalid_choice', 'not_waiting', 'run_settled'].includes(answer.error.code)) return answer;
+          log.warn(answer.error.message);
+        }
+        continue;
+      }
+      if (exited.kind === 'prompt') {
+        prompt = undefined;
+        if (maxParallel === 1) for (const name of STOP_SIGNALS) process.off(name, onSignal);
+        const failed = await report(exited.body);
+        if (failed) return failed;
+        continue;
+      }
+      if (exited.kind === 'stopped') {
         dying.delete(exited.attempt);
         continue;
       }
@@ -481,8 +587,11 @@ export async function runLocalDriver(
       if (failed) return failed;
     }
   } finally {
+    question?.controller.abort();
+    prompt?.controller.abort(signalled);
+    if (prompt) await prompt.exit;
     for (const attempt of inFlight.keys()) cancel(attempt);
-    await Promise.all([...dying.values()].map((command) => command.stop()));
+    await Promise.all([...dying.values()].map(({ command }) => command.stop()));
     if (signalled) exitOn(signalled);
     for (const name of STOP_SIGNALS) process.off(name, onSignal);
   }

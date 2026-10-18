@@ -10,7 +10,8 @@ const TokenUsageSchema: z.ZodType<TokenUsage> = z.object({
 
 const FailureSchema: z.ZodType<WorkflowFailure> = z.object({ code: z.string(), message: z.string() });
 
-const DriverSchema: z.ZodType<DriverIdentity> = z.object({ kind: z.string(), machine: z.string(), workspace: z.string() });
+/** Stored driver identity, with per-request capabilities omitted. */
+export const DriverSchema: z.ZodType<DriverIdentity> = z.object({ kind: z.string(), machine: z.string(), workspace: z.string() });
 
 const LeaseSchema: z.ZodType<StepLease> = z.object({ attempt: z.string(), revision: z.number(), driver: DriverSchema });
 
@@ -40,6 +41,18 @@ const ResultsSchema = z.array(z.object({
 }));
 export type ItemResult = z.infer<typeof ResultsSchema>[number];
 
+const AnswerSchema = z.object({
+  choice: z.string(),
+  note: z.string().optional(),
+  at: z.string(),
+  channel: z.enum(['tty', 'cli', 'driver', 'auto_approve', 'no_hitl']),
+  agent: z.boolean(),
+  /** Identity of the UI that carried the person's answer, kept locally. */
+  driver: DriverSchema.optional(),
+});
+/** The answer and provenance retained for one pass of a step with HITL. */
+export type HitlAnswer = z.infer<typeof AnswerSchema>;
+
 /** One earlier pass of a step instance that a loop ran again. */
 export const StepPassSchema = z.object({
   pass: z.number().int(),
@@ -50,6 +63,8 @@ export const StepPassSchema = z.object({
   results: ResultsSchema.optional(),
   failure: FailureSchema.optional(),
   ...report,
+  /** The answer retained with this archived pass. */
+  answer: AnswerSchema.optional(),
 });
 export type StepPass = z.infer<typeof StepPassSchema>;
 
@@ -65,6 +80,8 @@ const StepBaseSchema = z.object({
   id: z.string(),
   pass: z.number().int().optional(),
   passes: z.array(StepPassSchema).optional(),
+  /** The current pass's answer, cleared only when that pass is replaced. */
+  answer: AnswerSchema.optional(),
   item: z.unknown().optional(),
   /** The values `with` passed to the workflow this step runs, kept when that workflow declares inputs. */
   inputs: z.record(z.unknown()).optional(),
@@ -89,10 +106,12 @@ const settledFields = {
 /**
  * One step instance. Unknown keys are dropped when a run file is read, so a step a 0.22.0 report released
  * reads as a clean `pending` step. That version wrote no `outcome` on a step the engine settled; it reads from `status`.
+ * `waiting`: a ready HITL request with no answer, so nothing is leased yet.
  * `running`: a workflow step whose child steps are in the run and not all settled.
  */
 export const StepStateSchema = z.discriminatedUnion('status', [
   StepBaseSchema.extend({ status: z.literal('pending') }),
+  StepBaseSchema.extend({ status: z.literal('waiting') }),
   StepBaseSchema.extend({ status: z.literal('leased'), attempt: z.string(), lease: LeaseSchema }),
   StepBaseSchema.extend({ status: z.literal('running') }),
   StepBaseSchema.extend({
@@ -133,6 +152,26 @@ function become<T extends StepState>(state: StepState, next: Omit<T, keyof StepB
   return Object.assign(fields, kept, next) as T;
 }
 
+/** A ready step with HITL waits without taking a lease. */
+export function waitForAnswer(state: StepState): StepIn<'waiting'> {
+  return become<StepIn<'waiting'>>(state, { status: 'waiting' });
+}
+
+/** Stores an answer and returns the step to pending so reconciliation can apply it. */
+export function answerHitl(state: StepIn<'waiting'>, answer: HitlAnswer): PendingStep {
+  return Object.assign(become<PendingStep>(state, { status: 'pending' }), { answer });
+}
+
+/** Reconsiders an unanswered waiting or skipped step in its current pass. */
+export function resetPending(state: StepState): PendingStep {
+  return become<PendingStep>(state, { status: 'pending' });
+}
+
+/** Restarts only the explicitly retried loop owner's iteration budget. */
+export function resetIteration(state: StepState): void {
+  delete state.iteration;
+}
+
 export function skip(state: StepState, settledAt: number): SkippedStep {
   return become<SkippedStep>(state, { status: 'skipped', settledAt });
 }
@@ -161,8 +200,8 @@ export function fail(state: StepState, settlement: Settlement<FailedStep>): Fail
   return become<FailedStep>(state, { status: 'failed', outcome: 'failed', ...settlement });
 }
 
-/** A leased or running step stops before it settles. A leased one keeps its attempt, which can no longer be reported. */
-export function cancel(state: LeasedStep | RunningStep, failure: WorkflowFailure, settledAt: number): CancelledStep {
+/** An open step is cancelled before it settles. A leased one keeps its invalidated attempt. */
+export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running'>, failure: WorkflowFailure, settledAt: number): CancelledStep {
   return become<CancelledStep>(state, { status: 'cancelled', settledAt, ...(state.status === 'leased' ? { attempt: state.attempt } : {}), failure });
 }
 
@@ -184,6 +223,7 @@ export function repend(state: StepState, iteration?: number): PendingStep {
   const pending = become<PendingStep>(state, { status: 'pending' });
   delete pending.inputs;
   delete pending.round;
+  delete pending.answer;
   return Object.assign(pending, { pass, passes }, iteration !== undefined ? { iteration } : {});
 }
 
@@ -217,6 +257,7 @@ export function stopped(step: StepState): boolean {
     case 'cancelled':
       return true;
     case 'pending':
+    case 'waiting':
     case 'leased':
     case 'running':
     case 'succeeded':
@@ -239,6 +280,7 @@ export function settled(step: StepState | undefined): step is Extract<StepState,
     case 'cancelled':
       return true;
     case 'pending':
+    case 'waiting':
     case 'leased':
     case 'running':
       return false;

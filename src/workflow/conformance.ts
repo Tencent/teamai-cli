@@ -4,6 +4,12 @@ export interface WorkflowClient {
   start(name: string): Promise<WorkflowEnvelope>;
   next(runId: string, body: unknown): Promise<WorkflowEnvelope>;
   report(runId: string, body: unknown): Promise<WorkflowEnvelope>;
+  /** Records an answer through the client's channel. */
+  respond(runId: string, step: string, choice: string, options?: { note?: string; pass?: number; json?: unknown }): Promise<WorkflowEnvelope>;
+  /** Reopens the target step's dependency cone. */
+  retry(runId: string, step: string): Promise<WorkflowEnvelope>;
+  /** Stops the run or the named step. */
+  cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
 }
 
 export interface ConformanceScenario {
@@ -13,6 +19,8 @@ export interface ConformanceScenario {
   /** Other workflow files the scenario runs, by name. */
   workflows?: Record<string, string>;
   operations: ConformanceOperation[];
+  /** Expected fields in the persisted run after all operations. */
+  expectState?: Record<string, unknown>;
 }
 
 /**
@@ -20,7 +28,10 @@ export interface ConformanceScenario {
  * `absent` lists fields the lease must not carry.
  */
 export type ConformanceOperation =
-  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; cancelled?: string[]; absent?: string[]; expect: Record<string, unknown> }
+  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; hitl?: boolean; cancelled?: string[]; absent?: string[]; expect: Record<string, unknown> }
+  | { kind: 'respond'; step: string; choice: string; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
+  | { kind: 'retry'; step: string; expect: Record<string, unknown> }
+  | { kind: 'cancel'; step?: string; expect: Record<string, unknown> }
   | {
     kind: 'report';
     lease?: string;
@@ -452,3 +463,160 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
     ],
   },
 ];
+
+
+function controlsYaml(steps: string): string {
+  return `schemaVersion: v1alpha1\nname: build\ndescription: Exercise manual controls.\nsteps:\n${steps}\n`;
+}
+const APPROVE = controlsYaml('  - id: work\n    approve: Build it?\n    command: echo work\n  - id: later\n    needs: [work]\n    command: echo later');
+const CHOOSE = controlsYaml(`  - id: decide
+    choose: { message: Pick one, options: [build, revise] }
+    loop: { back_to: decide, while: "steps.decide.choice == 'revise'", max_iterations: 3 }
+  - id: work
+    needs: [decide]
+    if: steps.decide.choice == 'build'
+    command: echo work`);
+workflowConformanceScenarios.push(
+  {
+    name: 'interactive hand-back refuses a driver that no longer has HITL', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
+    operations: [
+      { kind: 'next', saveAs: 'pair', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
+      { kind: 'next', saveAs: 'done', hitl: false, expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'report', lease: 'pair', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+    ],
+    expectState: { steps: [{ id: 'pair', status: 'failed', failure: { code: 'hitl_required' } }] },
+  },
+  {
+    name: 'retry after the final failure does not provisionally finish the run', workflowName: 'build', yaml: TWO_STEPS,
+    operations: [
+      { kind: 'next', saveAs: 'one', expect: { data: { lease: { step: 'one' } } } },
+      { kind: 'report', lease: 'one', body: { outcome: 'failed' }, expect: { data: { accepted: true } } },
+      { kind: 'retry', step: 'one', expect: { data: { reopened: false, retried: { pass: 2 }, run: { status: 'running' } } } },
+      { kind: 'next', saveAs: 'again', expect: { data: { lease: { step: 'one', pass: 2 } } } },
+    ],
+  },
+  {
+    name: 'HITL approve then respond and repeated response', workflowName: 'build', yaml: APPROVE + '  - id: parallel\n    needs: []\n    command: echo parallel\n',
+    operations: [
+      { kind: 'next', saveAs: 'parallel', hitl: true, expect: { data: { lease: { step: 'parallel' } } } },
+      { kind: 'next', saveAs: 'hitl', hitl: true, canTakeLease: false, running: ['parallel'], expect: { data: { hitl: { step: 'work', kind: 'approve', pass: 1, options: ['yes', 'no'] } } } },
+      { kind: 'next', saveAs: 'busy', canTakeLease: false, running: ['parallel'], expect: { data: { wait: { reason: 'parallel is leased' } } } },
+      { kind: 'respond', step: 'work', choice: 'yes', pass: 1, expect: { data: { answered: { step: 'work', choice: 'yes', channel: 'cli' }, run: { revision: 1 } } } },
+      { kind: 'respond', step: 'work', choice: 'no', expect: { error: { code: 'repeated_response' } } },
+      { kind: 'next', saveAs: 'work', hitl: true, running: ['parallel'], expect: { data: { lease: { step: 'work' } } } },
+    ],
+  },
+  {
+    name: 'refused approve skips and can be answered again', workflowName: 'build', yaml: APPROVE,
+    operations: [
+      { kind: 'next', saveAs: 'hitl', hitl: true, expect: { data: { hitl: { step: 'work' } } } },
+      { kind: 'respond', step: 'work', choice: 'no', expect: { data: { run: { status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
+      { kind: 'retry', step: 'work', expect: { data: { retried: { pass: 2 }, reopened: true } } },
+      { kind: 'next', saveAs: 'hitl2', hitl: true, expect: { data: { hitl: { step: 'work', pass: 2 } } } },
+      { kind: 'respond', step: 'work', choice: 'yes', pass: 2, expect: { data: { answered: { choice: 'yes' } } } },
+      { kind: 'next', saveAs: 'work', hitl: true, expect: { data: { lease: { step: 'work' } } } },
+    ],
+  },
+  {
+    name: 'optional approve without HITL skips', workflowName: 'build', yaml: APPROVE,
+    operations: [{ kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } }],
+  },
+  {
+    name: 'required approve refuses drivers without HITL and agent answers', workflowName: 'build', yaml: APPROVE.replace('approve: Build it?', 'approve: { message: Build it?, required: true }'),
+    operations: [
+      { kind: 'next', saveAs: 'hitl', hitl: true, expect: { data: { hitl: { required: true } } } },
+      { kind: 'respond', step: 'work', choice: 'yes', expect: { error: { code: 'agent_in_path' } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+    ],
+    expectState: { steps: [{ id: 'work', status: 'failed', failure: { code: 'hitl_required' } }, { id: 'later', status: 'skipped' }] },
+  },
+  {
+    name: 'choose exposes choice and rejects stale pass', workflowName: 'build', yaml: CHOOSE,
+    operations: [
+      { kind: 'next', saveAs: 'hitl', hitl: true, expect: { data: { hitl: { step: 'decide', pass: 1 } } } },
+      { kind: 'respond', step: 'decide', choice: 'revise', pass: 1, note: 'Again', expect: { data: { answered: { pass: 1, choice: 'revise' } } } },
+      { kind: 'next', saveAs: 'hitl2', hitl: true, expect: { data: { hitl: { pass: 2 } } } },
+      { kind: 'respond', step: 'decide', choice: 'build', pass: 1, expect: { error: { code: 'stale_response' } } },
+      { kind: 'respond', step: 'decide', choice: 'build', pass: 2, expect: { data: { answered: { pass: 2, choice: 'build' } } } },
+      { kind: 'next', saveAs: 'work', hitl: true, expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'retry', step: 'decide', expect: { data: { retried: { pass: 3 } } } },
+      { kind: 'next', saveAs: 'hitl3', hitl: true, expect: { data: { hitl: { pass: 3 } } } },
+    ],
+  },
+  {
+    name: 'cancel leased work invalidates its report', workflowName: 'build', yaml: TWO_STEPS,
+    operations: [
+      { kind: 'next', saveAs: 'one', expect: { data: { lease: { step: 'one' } } } },
+      { kind: 'cancel', step: 'one', expect: { data: { run: { status: 'failed' } } } },
+      { kind: 'report', lease: 'one', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+      { kind: 'next', saveAs: 'done', running: ['one'], cancelled: ['one'], expect: { data: { done: { outcome: 'failed' } } } },
+    ],
+  },
+  {
+    name: 'cancel pending work skips dependents', workflowName: 'build', yaml: TWO_STEPS,
+    operations: [
+      { kind: 'cancel', step: 'two', expect: { data: { run: { status: 'running' } } } },
+      { kind: 'next', saveAs: 'one', expect: { data: { lease: { step: 'one' } } } },
+      { kind: 'report', lease: 'one', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+    ],
+  },
+  {
+    name: 'retry failed work reopens its run and skipped dependents', workflowName: 'build', yaml: TWO_STEPS,
+    operations: [
+      { kind: 'next', saveAs: 'one', expect: { data: { lease: { step: 'one' } } } },
+      { kind: 'report', lease: 'one', body: { outcome: 'failed' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'retry', step: 'one', expect: { data: { retried: { pass: 2 }, reopened: true } } },
+      { kind: 'next', saveAs: 'again', expect: { data: { lease: { step: 'one', pass: 2, revision: 3 } } } },
+      { kind: 'report', lease: 'again', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'two', expect: { data: { lease: { step: 'two', pass: 1 } } } },
+    ],
+  },
+  {
+    name: 'retry stuck lease invalidates its old report', workflowName: 'build', yaml: TWO_STEPS,
+    operations: [
+      { kind: 'next', saveAs: 'one', expect: { data: { lease: { step: 'one' } } } },
+      { kind: 'retry', step: 'one', expect: { data: { retried: { pass: 2 }, reopened: false } } },
+      { kind: 'report', lease: 'one', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+      { kind: 'next', saveAs: 'again', running: ['one'], cancelled: ['one'], expect: { data: { lease: { step: 'one', pass: 2 } } } },
+    ],
+  },
+  {
+    name: 'interactive work requires a driver with HITL', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
+    operations: [
+      { kind: 'next', saveAs: 'hitl', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
+      { kind: 'retry', step: 'pair', expect: { data: { retried: { pass: 2 } } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+    ],
+    expectState: { steps: [{ id: 'pair', status: 'failed', failure: { code: 'hitl_required' } }] },
+  },
+  {
+    name: 'whole run cancel has its own outcome', workflowName: 'build', yaml: TWO_STEPS,
+    operations: [
+      { kind: 'cancel', expect: { data: { run: { status: 'cancelled' } } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'cancelled' } } } },
+    ],
+  },
+);
+
+
+workflowConformanceScenarios.push({
+  name: 'a driver UI answers a required HITL request',
+  workflowName: 'build',
+  yaml: APPROVE.replace('approve: Build it?', 'approve: { message: Build it?, required: true }'),
+  operations: [
+    { kind: 'next', saveAs: 'hitl', hitl: true, expect: { data: { hitl: { required: true } } } },
+    { kind: 'respond', step: 'work', choice: 'yes', json: null, expect: { error: { code: 'invalid_json' } } },
+    { kind: 'respond', step: 'work', choice: 'yes', json: { driver: { kind: 'ide' } }, expect: { error: { code: 'invalid_json' } } },
+    { kind: 'respond', step: 'work', choice: 'yes', json: { driver: { kind: '', machine: 'host', workspace: '/ui' } }, expect: { error: { code: 'invalid_json' } } },
+    { kind: 'respond', step: 'work', choice: 'yes', pass: 1, note: 'Person approved in the UI',
+      json: { driver: { kind: 'ide', machine: 'host', workspace: '/ui', can: { hitl: true }, extra: 'private' }, extra: 'private' },
+      expect: { data: { answered: { choice: 'yes', channel: 'driver' }, ignored: ['extra', 'driver.extra'] } } },
+    { kind: 'respond', step: 'work', choice: 'no', json: { driver: { kind: 'ide', machine: 'host', workspace: '/ui' } }, expect: { error: { code: 'repeated_response' } } },
+    { kind: 'next', saveAs: 'work', hitl: true, expect: { data: { lease: { step: 'work' } } } },
+  ],
+  expectState: { steps: [{ id: 'work', status: 'leased', answer: { choice: 'yes', channel: 'driver', agent: false,
+    note: 'Person approved in the UI', driver: { kind: 'ide', machine: 'host', workspace: '/ui' } } }, { id: 'later', status: 'pending' }] },
+});

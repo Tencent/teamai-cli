@@ -19,8 +19,10 @@ import { loadTeamConfig } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { getDataHome, isUsageReportEnabled } from '../types.js';
 import { log } from '../utils/logger.js';
+import { acquireLock, releaseLock } from '../update.js';
 import { isLocalWorkflowTool } from './local-tool-adapter.js';
 import { stepDefinitions } from './scope.js';
+import { runLockPath } from './store.js';
 import { settled, VISIBLE_OUTCOMES, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
 import type { DriverIdentity, RunState, RunStatus, TokenUsage, WorkflowFailure } from './types.js';
 
@@ -29,6 +31,7 @@ import type { DriverIdentity, RunState, RunStatus, TokenUsage, WorkflowFailure }
  * another driver reports, can be any text, so a record carries only these.
  */
 const RECORDED_FAILURES = [
+  'cancelled', 'hitl_required',
   'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle',
   'tool_failed', 'tool_unavailable', 'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
 ] as const;
@@ -76,6 +79,8 @@ export type WorkflowRunRecord = {
     model?: string;
     outcome?: Exclude<VisibleOutcome, 'skipped'>;
     tokens?: TokenUsage;
+    /** Answer provenance only; free-text notes and answer times stay local. */
+    answer?: Pick<NonNullable<StepPass['answer']>, 'choice' | 'channel' | 'agent'>;
   }>;
   /**
    * Counts of the step instances the run ended with, by status. A step a loop
@@ -91,7 +96,7 @@ export type WorkflowRunRecord = {
 type StepEntry = NonNullable<WorkflowRunRecord['steps']>[number];
 
 /** What one pass of a step reported. */
-type Reported = Pick<StepPass, 'outcome' | 'tool' | 'model' | 'tokens' | 'agent'>;
+type Reported = Pick<StepPass, 'outcome' | 'tool' | 'model' | 'tokens' | 'agent' | 'answer'>;
 
 /** A record's path on the reports branch, keyed by run id. */
 export function recordPath(runId: string): string {
@@ -138,7 +143,7 @@ function failureOf(run: RunState): RecordedFailure | undefined {
   if (run.status !== 'failed' || run.end !== undefined) return undefined;
   if (isRecordedFailure(run.failure)) return run.failure.code;
   const failed = run.steps
-    .filter((step): step is Extract<StepState, { status: 'failed' }> => step.status === 'failed')
+    .filter((step): step is Extract<StepState, { status: 'failed' | 'cancelled' }> => step.status === 'failed' || step.status === 'cancelled')
     .sort((left, right) => left.settledAt - right.settledAt);
   const top = new Set(run.definition.steps.map((step) => step.id));
   const first = failed.find((step) => top.has(step.id));
@@ -170,6 +175,7 @@ export function buildEndRecord(
     const outcome = reported?.outcome === 'skipped' ? undefined : reported?.outcome;
     return {
       step,
+      ...(reported?.answer ? { answer: { choice: reported.answer.choice, channel: reported.answer.channel, agent: reported.answer.agent } } : {}),
       pass: pass ?? 1,
       ...(agent ? { agent } : {}),
       ...(reported?.tool && isLocalWorkflowTool(reported.tool) ? { tool: reported.tool } : {}),
@@ -223,7 +229,10 @@ export function buildEndRecord(
 export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunRecord): WorkflowRunRecord {
   if (!origin) return next;
   if (origin.phase === 'end' && next.phase === 'start') return origin;
-  return { ...origin, ...next, startedAt: origin.startedAt };
+  const merged = { ...origin, ...next, startedAt: origin.startedAt };
+  if (next.end === undefined) delete merged.end;
+  if (next.failure === undefined) delete merged.failure;
+  return merged;
 }
 
 /** Whether a run record was delivered or still waits in the local queue. */
@@ -304,6 +313,11 @@ export async function enqueueRecord(config: LocalConfig, record: WorkflowRunReco
   await fs.rename(tmp, target);
 }
 
+/** Removes the provisional end of a reopened run so a later drain cannot publish it. */
+export async function removeQueuedEndRecord(config: LocalConfig, runId: string): Promise<void> {
+  await fs.rm(path.join(pendingDir(config), `${runId}.end.json`), { force: true });
+}
+
 /** All queued records, oldest file first for stable drain order. */
 export async function pendingRecords(config: LocalConfig): Promise<WorkflowRunRecord[]> {
   const dir = pendingDir(config);
@@ -327,16 +341,29 @@ export async function pendingRecords(config: LocalConfig): Promise<WorkflowRunRe
 }
 
 async function dequeue(config: LocalConfig, record: WorkflowRunRecord): Promise<void> {
-  await fs.rm(pendingPath(config, record), { force: true });
+  const lock = runLockPath(config, record.run);
+  if (!await acquireLock(lock)) return;
+  try {
+    const target = pendingPath(config, record);
+    let current: WorkflowRunRecord;
+    try {
+      current = JSON.parse(await fs.readFile(target, 'utf-8')) as WorkflowRunRecord;
+    } catch {
+      return;
+    }
+    if (current.phase === record.phase && current.endedAt === record.endedAt) await fs.rm(target, { force: true });
+  } finally {
+    await releaseLock(lock);
+  }
 }
 
 /**
  * Publish every queued record through the reports branch, then fold their
  * totals into each record's own member stats file in the same update.
  *
- * Returns `'published'` when the queue drained (or was empty) and `'pending'`
- * when anything remains queued — the value the engine surfaces as
- * `record: pending` (#1083).
+ * Returns `'pending'` when a delivered run+phase path remains queued, otherwise
+ * `'published'` — the value the engine surfaces as `record: pending` (#1083).
+ * Records queued at other paths during delivery do not affect it.
  */
 export async function publishPendingRecords(config: LocalConfig): Promise<RecordState> {
   const queued = await pendingRecords(config);
@@ -397,7 +424,7 @@ export async function publishPendingRecords(config: LocalConfig): Promise<Record
           existingStats = {};
         }
       }
-      const mergedStats = mergeWorkflowStats(ensureStatsShape(existingStats, username), delta);
+      const mergedStats = mergeWorkflowStats(ensureStatsShape(existingStats, username), delta, originByRun);
       await fs.mkdir(path.join(worktree, 'stats'), { recursive: true });
       await fs.writeFile(path.join(worktree, statsRel), YAML.stringify(mergedStats), 'utf-8');
       files.push(statsRel);
@@ -410,7 +437,8 @@ export async function publishPendingRecords(config: LocalConfig): Promise<Record
   const { isDelivered } = await import('../utils/branch-worktree.js');
   if (isDelivered(outcome)) {
     for (const record of queued) await dequeue(config, record);
-    return 'published';
+    const remaining = new Set(await fs.readdir(pendingDir(config)).catch(() => []));
+    return queued.some((record) => remaining.has(path.basename(pendingPath(config, record)))) ? 'pending' : 'published';
   }
   return 'pending';
 }
@@ -448,12 +476,15 @@ export interface WorkflowStats {
  * preserving every unrelated stats field (the #1056 preservation discipline).
  *
  * Idempotent against a queue replay: an end record whose run total already
- * appears is not counted twice — the delivery-merge guarantees one record file
- * per run, and the stats side derives from the same per-run collapse.
+ * appears is not counted twice. An end that replaces a different end on origin
+ * (a retried run that ended again) replaces that end's outcome and duration
+ * without counting another run. A cancelled run counts toward runs and
+ * duration only.
  */
 export function mergeWorkflowStats(
   existing: Record<string, unknown>,
   records: WorkflowRunRecord[],
+  originByRun: ReadonlyMap<string, WorkflowRunRecord | null> = new Map(),
 ): Record<string, unknown> {
   const current = (existing.workflows ?? {}) as Partial<WorkflowStats>;
   const byRun = new Map<string, WorkflowRunRecord>();
@@ -466,7 +497,13 @@ export function mergeWorkflowStats(
   let { runs = 0, succeeded = 0, failed = 0, totalDurationMs = 0 } = current;
   for (const record of byRun.values()) {
     if (record.phase !== 'end') continue;
-    runs += 1;
+    const origin = originByRun.get(record.run);
+    if (origin?.phase === 'end') {
+      if (origin.endedAt === record.endedAt) continue;
+      if (origin.status === 'succeeded') succeeded -= 1;
+      if (origin.status === 'failed') failed -= 1;
+      totalDurationMs -= origin.durationMs ?? 0;
+    } else runs += 1;
     if (record.status === 'succeeded') succeeded += 1;
     if (record.status === 'failed') failed += 1;
     totalDurationMs += record.durationMs ?? 0;
@@ -476,9 +513,10 @@ export function mergeWorkflowStats(
 
 /**
  * The records whose totals still need folding into stats: an end-phase record
- * whose run already shows an end phase on origin was counted by the delivery
- * that first published it, so a queue replay must not count it again. Pure
- * function of the merge base, so the idempotency is testable without git.
+ * whose run already shows the same end on origin was counted by the delivery
+ * that first published it, so a queue replay must not count it again. An end
+ * with a different `endedAt` replaces the one on origin. Pure function of the
+ * merge base, so the idempotency is testable without git.
  */
 export function statsDeltaRecords(
   originByRun: Map<string, WorkflowRunRecord | null>,
@@ -487,6 +525,6 @@ export function statsDeltaRecords(
   return records.filter((record) => {
     if (record.phase !== 'end') return false;
     const origin = originByRun.get(record.run);
-    return !(origin && origin.phase === 'end');
+    return origin?.phase !== 'end' || origin.endedAt !== record.endedAt;
   });
 }

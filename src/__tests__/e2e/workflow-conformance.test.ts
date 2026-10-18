@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolveProjectDataHome } from '../../config.js';
-import { workflowConformanceScenarios } from '../../workflow/conformance.js';
+import { workflowConformanceScenarios, type WorkflowClient } from '../../workflow/conformance.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../../workflow/types.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -61,20 +61,37 @@ describe('workflow protocol conformance through the CLI', () => {
       }
       const pulled = await runCLI(['pull'], repo);
       expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
-      const started = envelope((await runCLI(['workflow', 'start', scenario.workflowName], repo)).stdout);
+      const call = async (args: string[]): Promise<WorkflowEnvelope> => envelope((await runCLI(['workflow', ...args], repo)).stdout);
+      const client: WorkflowClient = {
+        start: (name) => call(['start', name]),
+        next: (run, body) => call(['next', run, '--json', JSON.stringify(body)]),
+        report: (run, body) => call(['report', run, '--json', JSON.stringify(body)]),
+        respond: (run, step, choice, options) => call(['respond', run, step, choice, ...(options?.note !== undefined ? ['--note', options.note] : []), ...(options?.pass !== undefined ? ['--pass', String(options.pass)] : []), ...(options?.json !== undefined ? ['--json', JSON.stringify(options.json)] : [])]),
+        retry: (run, step) => call(['retry', run, step]),
+        cancel: (run, step) => call(['cancel', run, ...(step !== undefined ? [step] : [])]),
+      };
+      const started = await client.start(scenario.workflowName);
       if ('error' in started) throw new Error(started.error.message);
       const runId = String(started.data.run);
       const leases = new Map<string, { attempt: string; revision: number }>();
       const attemptOf = (name: string): string | undefined => leases.get(name)?.attempt;
       for (const operation of scenario.operations) {
         if (operation.kind === 'next') {
-          const result = await runCLI(['workflow', 'next', runId, '--json', JSON.stringify({
-            driver,
+          const value = await client.next(runId, {
+            driver: { ...driver, ...(operation.hitl !== undefined ? { can: { hitl: operation.hitl } } : {}) },
             ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
             ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
-          })], repo);
-          const value = envelope(result.stdout);
+          });
           expect(value).toMatchObject(operation.expect);
+          if (operation.saveAs === 'busy') {
+            const dataHome = await resolveProjectDataHome(repo);
+            const stored = JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'runs', `${runId}.json`), 'utf8')) as RunState;
+            expect(stored).toMatchObject({ steps: [{ id: 'work', status: 'waiting' }, { id: 'later', status: 'pending' }, { id: 'parallel', status: 'leased' }] });
+          }
+          if ('data' in value && value.data.hitl) {
+            const hitl = value.data.hitl as { step: string; pass: number; respond: string };
+            expect(hitl.respond).toBe(`teamai workflow respond ${runId} ${hitl.step} <option> --pass ${hitl.pass}`);
+          }
           if (operation.cancelled) expect('data' in value && value.data.cancelled).toEqual(operation.cancelled.map(attemptOf));
           for (const field of operation.absent ?? []) expect('data' in value ? value.data.lease : undefined).not.toHaveProperty(field);
           if ('data' in value && value.data.lease) {
@@ -82,18 +99,25 @@ describe('workflow protocol conformance through the CLI', () => {
           }
           continue;
         }
+        if (operation.kind === 'respond' || operation.kind === 'retry' || operation.kind === 'cancel') {
+          const value = operation.kind === 'respond' ? await client.respond(runId, operation.step, operation.choice, { note: operation.note, pass: operation.pass, json: operation.json })
+            : operation.kind === 'retry' ? await client.retry(runId, operation.step) : await client.cancel(runId, operation.step);
+          expect(value).toMatchObject(operation.expect);
+          continue;
+        }
         const lease = operation.lease ? leases.get(operation.lease) : undefined;
-        const result = await runCLI(['workflow', 'report', runId, '--json', JSON.stringify({
+        const value = await client.report(runId, {
           attempt: operation.attempt ?? lease?.attempt,
           revision: operation.revision ?? lease?.revision,
           driver,
           ...operation.body,
-        })], repo);
-        expect(envelope(result.stdout)).toMatchObject(operation.expect);
+        });
+        expect(value).toMatchObject(operation.expect);
       }
-      if (scenario.name === 'two-step command success' || scenario.name === 'output mismatch fails the step') {
+      if (scenario.expectState || scenario.name === 'two-step command success' || scenario.name === 'output mismatch fails the step') {
         const dataHome = await resolveProjectDataHome(repo);
         const stored = JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'runs', `${runId}.json`), 'utf8')) as RunState;
+        if (scenario.expectState) expect(stored).toMatchObject(scenario.expectState);
         if (scenario.name === 'two-step command success') {
           expect(stored.steps[1]).toMatchObject({
             status: 'succeeded',
@@ -103,7 +127,7 @@ describe('workflow protocol conformance through the CLI', () => {
             session: 'session-1',
             tokens: { input: 3, output: 2, cachedInput: 1 },
           });
-        } else {
+        } else if (scenario.name === 'output mismatch fails the step') {
           expect(stored.steps[0]).toMatchObject({
             status: 'failed',
             failure: { code: 'invalid_output', message: expect.stringContaining('does not match output') },

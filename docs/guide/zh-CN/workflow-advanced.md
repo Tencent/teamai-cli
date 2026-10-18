@@ -40,7 +40,7 @@ steps:
 
 不发送 `running` 的驱动每次调用都会拿回自己的未结租约，因此一次只运行一个步骤。
 
-`"canTakeLease":false` 执行到第 2 步就停止。返回的是 `done`、一个 `running` 没有列出的未结租约，或 `wait`。没有任何租约时，`wait` 的 reason 是 `canTakeLease is false`。驱动没有空位运行新步骤时，可以用它来得知是否已到达结局。这个 `wait` 并不表示没有剩余的步骤可运行，所以驱动有空位后要再次调用 `next`。第 2 步仍可能交还一个驱动没有空位运行的未结租约，所以要为驱动尚未启动的租约维护一个队列。
+`"canTakeLease":false` 不发放新租约，但对声明了 `driver.can.hitl` 的驱动仍返回 HITL 请求。返回的是 `done`、一个 `running` 没有列出的未结租约、`hitl` 或 `wait`。没有任何租约和 HITL 请求时，`wait` 的 reason 是 `canTakeLease is false`。驱动没有空位运行新步骤时，可以用它来得知是否已到达结局。这个 `wait` 并不表示没有剩余的步骤可运行，所以驱动有空位后要再次调用 `next`。第 2 步仍可能交还一个驱动没有空位运行的未结租约，所以要为驱动尚未启动的租约维护一个队列。
 
 `next` 的每个 `data` 返回都带 `cancelled`。它列出 `running` 中已经不再是本驱动未结租约的 attempt。请停止这些进程。`error` 返回不带 `cancelled`。
 
@@ -59,9 +59,10 @@ steps:
 ```yaml
 workflows:
   max_parallel: 4
+  auto_approve: false
 ```
 
-提示词步骤总是单独运行。驱动等所有命令都退出后才启动它，它结束前不会启动任何命令。只读检查会比较提示词运行前后的整个工作树，所以提示词运行期间修改文件的命令会让它失败。
+提示词步骤总是单独运行。驱动等所有命令都退出后才启动它，它结束前不会启动任何命令。对于无头提示词，只读检查会比较运行前后的整个工作树，所以提示词运行期间修改文件的命令会让它失败。
 
 `max_parallel` 大于 1 时：
 
@@ -71,7 +72,7 @@ workflows:
 
 为 1 时，驱动一次运行一个步骤，命令在你的终端里运行，Ctrl-C 会直接到达它。
 
-结局取消一个正在运行的命令时，驱动向它发送 SIGTERM，5 秒后如果它仍在运行（`max_parallel` 大于 1 时也包括它启动的进程），再发送 SIGKILL。它在退出前已不计入 `max_parallel`。
+结局取消一个正在运行的命令时，驱动向它及其启动的进程发送 SIGTERM，5 秒后如果其中任何进程仍在运行，再发送 SIGKILL。正在停止的命令仍占用并行槽位，直到它的所有进程退出。
 
 ## 到达结局时取消仍未结束的步骤
 
@@ -573,3 +574,76 @@ steps:
 ```
 
 提示词需要每一项时，像 `fan-build` 中的 `explain` 那样传入整个列表。
+
+
+## HITL（人在回路中）
+
+HITL 包括需要人参与的 `approve`、`choose` 和 `interactive` 步骤。
+
+`approve: <message>` 在动作前询问。`yes` 执行动作，`no` 跳过步骤；也可以单独作为无动作步骤。`choose: { message, options, default? }` 只记录选择，不运行动作。选项必须唯一、非空且不含空白。choose 不接受动作或 `required`。两个 HITL 请求都不能与 `for_each` 同用，应放在 fan-out 依赖的步骤上。消息使用与 prompt 相同的模板和就绪规则。
+
+```yaml
+schemaVersion: v1alpha1
+name: hitl-build
+description: Choose a path and approve the work.
+steps:
+  - id: decide
+    choose:
+      message: Build or stop?
+      options: [build, stop]
+      default: build
+  - id: build
+    needs: [decide]
+    if: steps.decide.choice == 'build'
+    approve: Build it?
+    command: npm run build
+  - id: pair
+    needs: [build]
+    if: steps.build.outcome == 'failed'
+    interactive: true
+    prompt: Fix the build with me.
+```
+
+后续步骤读取 `steps.decide.choice` 和 `steps.decide.note`，也可以通过 `passes[n]` 读取历史。每个新 pass 都重新询问。无动作结局步骤上的 approve 必须得到 `yes` 才会到达结局。
+
+必须由人直接回答的审批使用 `approve: { message: Publish?, required: true }`，永远不自动回答。`respond` 保存时间、渠道、选择和可选备注。使用 `--json` 时渠道为 `driver`，`agent: false`。不使用 `--json` 时，stdin 是 TTY 则渠道为 `tty`，`agent: false`；否则为 `cli`，`agent: true`。必需审批以 `agent_in_path` 拒绝 cli 回答。TTY 是渠道约定，不能防止有能力创建 PTY 的调用者。
+
+```sh
+teamai workflow respond <run> decide build --note "Ready" --pass 1
+teamai workflow resume <run>
+```
+
+`--pass` 拒绝已经被后续 pass 替代的 HITL 请求回答。同一个 pass 重复回答返回 `repeated_response`。
+
+非 `local` 驱动使用相同的 HITL 契约。每次 `next` 请求都发送 `driver.can.hitl`，包括忙碌时的轮询。有人可以回答 HITL 请求并参与交互步骤时，将其设为 `true`。没有可租出的工作时，`next` 返回 `hitl`，包括 `run`、`step`、`pass`、`kind`、渲染后的 `message`、`options`、可选 `default`、`required`，以及 `respond` 命令模板。向该用户展示 `hitl.message` 和 `hitl.respond`，由其将 `<option>` 替换为选择后运行 `teamai workflow respond`。模板会给 `'items[0].ask'` 这样的 fan-out 步骤路径加上引号；运行时保留这些引号。`cli` 渠道只能回答可选 HITL 请求。有自己 UI 的驱动可以用 `respond --json '{"driver":{"kind":"ide","machine":"host","workspace":"/work"}}'` 提交用户的回答，包括必需审批；这会记录渠道 `driver`、`agent: false`，并在本地保留驱动身份。驱动声明答案由用户在其 UI 中给出，绝不能提交 agent 自己选择的答案；与 TTY 约定一样，这只是声明，不是保护机制。
+
+有就绪租约时优先返回租约。工具运行期间，将其 attempt id 放入 `running`，以 `canTakeLease: false` 轮询 `next`，展示返回的 HITL 请求，并停止 attempt id 出现在 `cancelled` 中的工具。只有支持 HITL 的驱动才能获取 `interactive` 租约；没有 HITL 的驱动会以 `hitl_required` 失败。
+
+未声明此能力时，可以获取租约的 `next` 请求按下表处理。忙碌时的轮询保留等待中的 HITL 请求，不代为回答；驱动没有 HITL 能力时返回 `wait`。
+
+| HITL 请求 | `auto_approve: true` | 默认 (`false`) |
+|---|---|---|
+| 可选 approve | `yes`，渠道 `auto_approve` | `no`，渠道 `no_hitl`，跳过 |
+| 必需 approve | 失败 `hitl_required` | 失败 `hitl_required` |
+| 有 default 的 choose | 选择 default，渠道 `auto_approve` | 失败 `hitl_required` |
+| 无 default 的 choose | 失败 `hitl_required` | 失败 `hitl_required` |
+
+每次无 HITL 决策和 hitl_required 失败都会向 stderr 写警告。在本地配置中与 `workflows.max_parallel` 一起设置 `workflows.auto_approve`，或给 `start --driver local`、`resume` 传 `--auto-approve`，仅对当前进程生效。JSON next 不能设置此覆盖。本地驱动仅在 stdin 和 stderr 都是 TTY 时声明支持 HITL，通过 stderr 提问，接受选择及其后的可选备注，并在提问期间继续轮询。其他进程回答或取消 HITL 请求会关闭问题。交互工具占用终端时，HITL 请求提问会等待。
+
+`interactive: true` 要求 `prompt` 或 `prompt_file`。没有 HITL 的驱动以 `hitl_required` 失败。本地驱动在工作目录以前台方式打开工具，继承 stdio，并把 prompt 作为第一条消息。人对仓库的修改会保留，与 command 步骤一样。无头 prompt 仍然只读。终端的 Ctrl-C 和 Ctrl-\ 交给交互工具处理；SIGTERM 和 SIGHUP 会停止工具和驱动。交互工具以 0 退出且没有输出时可以不写结果文件。驱动在 prompt 运行时每两秒轮询，发现取消后停止工具。
+
+## 重试、取消和继续运行
+
+```sh
+teamai workflow retry <run> <step>
+teamai workflow cancel <run> [step]
+teamai workflow resume <run> --tools default=claude
+```
+
+`retry` 接受 leased、failed 或 cancelled 步骤，也接受已回答并拒绝的 approve 和已回答的 choose。重试 HITL 请求可以更改答案，旧答案保留在 pass 历史中。它释放旧租约，以新修订号启动新 pass（本地驱动会停止正在运行的命令，并等它退出后才启动新 pass），重置依赖或读取该步骤的后续步骤，包括循环等待和 item 的 after 依赖（其中正在等待、或已回答但尚未运行的 HITL 请求会在新 pass 中重新询问），并重新打开已结算的外层工作流、item、fan-out 步骤和运行。如果重新打开后运行仍在进行，返回结果会包含 `resume` 命令。执行该命令继续本地运行，或让驱动轮询 `next`。每个受影响容器中未回答的跳过步骤会重新计算；范围外手动取消的步骤保持取消。无关步骤已到达的有效结局或 break 会阻止重试。
+
+历史保留在 passes 和 archive 中，因此 `length(steps.x.passes)` 也统计失败尝试。重试循环所有者会重置其迭代数；重试范围内的其他步骤则保留所有者的计数。重试保留顶层工作流的 round，耗尽最后一轮后重试仍可能再次 `loop_exhausted`。
+
+指定步骤的 cancel 停止 pending、waiting、leased 或 running 工作，同时停止尚未结束的后代。cancelled 属于 stopped，因此依赖步骤会跳过，除非其 if 读取取消结果来恢复；运行通常失败。取消整个运行立即以 `cancelled` 结束，不启动下一轮。cancel 不增加修订号。迟到的报告返回 `lease_cancelled`，`next.cancelled` 告诉驱动停止哪些工具。
+
+在重试、回答、Ctrl-C 或关闭终端后，用 resume 继续本地运行。它优先使用本机未结本地租约的工作目录，其次使用最近调用 `next` 的驱动工作目录（该驱动必须是本机本地驱动），最后使用当前目录。因此重试后即使从子目录继续，也会保留原来的本地工作目录。每个运行同时只能有一个本地驱动。重复 resume 返回 driver_running 和持有者进程号，请停止该驱动或等待；死进程留下的锁会自动回收。已结算运行返回 done。本地运行以 failed 或 cancelled 结束时退出码为 1；控制命令成功时退出码为 0，即使返回的运行状态为 failed 或 cancelled。

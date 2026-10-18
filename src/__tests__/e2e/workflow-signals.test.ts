@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolveProjectDataHome } from '../../config.js';
-import { hasPython, IN_TERMINAL } from '../helpers/in-terminal.js';
+import { hasPython, IN_TERMINAL, TYPED_TERMINAL } from '../helpers/in-terminal.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLI = path.join(ROOT, 'dist', 'index.js');
@@ -23,6 +23,19 @@ const HOLD = `const { spawn } = require('child_process');
 const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
 require('fs').writeFileSync(process.argv[2] + '.pids', process.pid + ' ' + child.pid);
 setInterval(() => {}, 1000);
+`;
+
+/**
+ * A fake interactive `claude`: opened with the step's prompt, it marks that it
+ * started, records a Ctrl-C instead of exiting on it, and exits once the person
+ * types `done`. Any other invocation, such as a version check, exits at once.
+ */
+const INTERACTIVE_TOOL = `#!/usr/bin/env node
+if (!process.argv.slice(2).some((arg) => arg.startsWith('Pair with me.'))) process.exit(0);
+const fs = require('fs');
+process.on('SIGINT', () => fs.writeFileSync('tool.interrupted', ''));
+process.stdin.on('data', (chunk) => { if (String(chunk).includes('done')) process.exit(0); });
+fs.writeFileSync('tool.started', '');
 `;
 
 function runCLI(args: string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -60,6 +73,7 @@ async function waitFor(check: () => boolean, ms: number): Promise<boolean> {
 describe.skipIf(process.platform === 'win32')('workflow local driver signals', () => {
   let repo: string;
   let configPath: string;
+  let bin: string;
 
   function setMaxParallel(max: number): void {
     const config = YAML.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
@@ -90,6 +104,22 @@ steps:
     needs: []
     command: node hold.js two
 `);
+    fs.writeFileSync(path.join(workflows, 'pair.yaml'), `schemaVersion: v1alpha1
+name: pair
+description: An interactive step beside a HITL request.
+steps:
+  - id: pair
+    interactive: true
+    prompt: Pair with me.
+  - id: ship
+    needs: []
+    approve: Ship it?
+    command: node -e "require('fs').writeFileSync('shipped', '')"
+`);
+    bin = path.join(repo, 'fake-bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'claude'), INTERACTIVE_TOOL);
+    fs.chmodSync(path.join(bin, 'claude'), 0o755);
     const pulled = await runCLI(['pull'], repo);
     expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
   });
@@ -150,6 +180,41 @@ steps:
       expect(max === 1 && fs.existsSync(pidFiles[1]!), 'the second command started after Ctrl-C').toBe(false);
     } finally {
       for (const pid of pids.filter(alive)) process.kill(pid, 'SIGKILL');
+      if (wrapper.exitCode === null && wrapper.signalCode === null) wrapper.kill('SIGKILL');
+    }
+  });
+
+  it.skipIf(!hasPython)('gives Ctrl-C to an interactive tool and asks a HITL request only after the tool exits', async () => {
+    setMaxParallel(1);
+    const files = ['terminal.pid', 'terminal.out', 'terminal.in', 'tool.started', 'tool.interrupted', 'shipped'].map((file) => path.join(repo, file));
+    const [terminalPid, output, input, started, interrupted, shipped] = files as [string, string, string, string, string, string];
+    for (const file of files) fs.rmSync(file, { force: true });
+    const printed = (): string => (fs.existsSync(output) ? fs.readFileSync(output, 'utf8') : '');
+    const type = (text: string): void => fs.appendFileSync(input, text);
+    const wrapper = spawn('python3', ['-c', TYPED_TERMINAL, terminalPid, output, input,
+      process.execPath, CLI, 'workflow', 'start', 'pair', '--driver', 'local', '--tools', 'default=claude'], {
+      cwd: repo, env: { ...process.env, FORCE_COLOR: '0', PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` }, stdio: 'ignore',
+    });
+    const ended = new Promise<number | null>((resolve) => { wrapper.on('close', (code) => resolve(code)); });
+    try {
+      expect(await waitFor(() => fs.existsSync(started), 20_000), printed()).toBe(true);
+      type('\x03');
+
+      expect(await waitFor(() => fs.existsSync(interrupted), 5000), printed()).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      expect(alive(Number(fs.readFileSync(terminalPid, 'utf8'))), printed()).toBe(true);
+      expect(printed()).not.toContain('Choice, followed by an optional note');
+
+      type('done\n');
+
+      expect(await waitFor(() => printed().includes('Choice, followed by an optional note'), 10_000), printed()).toBe(true);
+      expect(printed()).toContain('Ship it?');
+
+      type('yes\n');
+
+      expect(await ended, printed()).toBe(0);
+      expect(fs.existsSync(shipped), printed()).toBe(true);
+    } finally {
       if (wrapper.exitCode === null && wrapper.signalCode === null) wrapper.kill('SIGKILL');
     }
   });

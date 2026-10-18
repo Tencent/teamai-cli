@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { workflowConformanceScenarios, type WorkflowClient } from '../workflow/conformance.js';
-import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, withIgnored } from '../workflow/engine.js';
+import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, startRun, withIgnored } from '../workflow/engine.js';
+import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
 
@@ -37,6 +38,15 @@ describe('workflow protocol conformance in process', () => {
       }
       await syncWorkflowDefinitions(config);
       const client: WorkflowClient = {
+        respond: async (runId, step, choice, options) => {
+          const parsed = options?.json !== undefined ? parseResponsePayload(options.json) : undefined;
+          if (typeof parsed === 'string') return { error: { code: 'invalid_json', message: parsed } };
+          return withIgnored(await respondToHitl(config, runId, { step, choice, note: options?.note, pass: options?.pass,
+            ...(parsed ? parsed.response : { channel: 'cli', agent: true }),
+          }), parsed?.ignored ?? []);
+        },
+        retry: (runId, step) => retryStep(config, runId, step),
+        cancel: (runId, step) => cancelRun(config, runId, step),
         start: (name) => startRun(config, name),
         next: async (runId, body) => {
           const parsed = parseNextPayload(body);
@@ -59,16 +69,29 @@ describe('workflow protocol conformance in process', () => {
       for (const operation of scenario.operations) {
         if (operation.kind === 'next') {
           const envelope = await client.next(runId, {
-            driver,
+            driver: { ...driver, ...(operation.hitl !== undefined ? { can: { hitl: operation.hitl } } : {}) },
             ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
             ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
           });
           expect(envelope).toMatchObject(operation.expect);
+          if (operation.saveAs === 'busy') {
+            expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'work', status: 'waiting' }, { id: 'later', status: 'pending' }, { id: 'parallel', status: 'leased' }] });
+          }
+          if ('data' in envelope && envelope.data.hitl) {
+            const hitl = envelope.data.hitl as { step: string; pass: number; respond: string };
+            expect(hitl.respond).toBe(`teamai workflow respond ${runId} ${hitl.step} <option> --pass ${hitl.pass}`);
+          }
           if (operation.cancelled) expect('data' in envelope && envelope.data.cancelled).toEqual(operation.cancelled.map(attemptOf));
           for (const field of operation.absent ?? []) expect('data' in envelope ? envelope.data.lease : undefined).not.toHaveProperty(field);
           if ('data' in envelope && envelope.data.lease) {
             leases.set(operation.saveAs, envelope.data.lease as { attempt: string; revision: number });
           }
+          continue;
+        }
+        if (operation.kind === 'respond' || operation.kind === 'retry' || operation.kind === 'cancel') {
+          const envelope = operation.kind === 'respond' ? await client.respond(runId, operation.step, operation.choice, { note: operation.note, pass: operation.pass, json: operation.json })
+            : operation.kind === 'retry' ? await client.retry(runId, operation.step) : await client.cancel(runId, operation.step);
+          expect(envelope).toMatchObject(operation.expect);
           continue;
         }
         const lease = operation.lease ? leases.get(operation.lease) : undefined;
@@ -82,6 +105,7 @@ describe('workflow protocol conformance in process', () => {
       }
       const stored = await readRun(config, runId);
       if (typeof stored !== 'object') throw new Error('run was not stored');
+      if (scenario.expectState) expect(stored).toMatchObject(scenario.expectState);
       if (scenario.name === 'two-step command success') {
         expect(stored.steps[1]).toMatchObject({
           status: 'succeeded',
