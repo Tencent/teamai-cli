@@ -82,8 +82,9 @@ Live tests require an explicit opt-in and dedicated test accounts.
 Local verification on 2026-10-19 used Node 22 and isolated Git 2.54:
 
 - At main `22b3e42`, the full unit run passed 11,070 tests (25 skipped).
-  After the dispatch correction, `4d23906` passed 98 focused tests plus
-  typecheck, lint and build. Its full unit run is still pending.
+  After the dispatch correction, `4d23906` passed 11,073 tests (25 skipped)
+  in a full unit run. The later URL-log redaction fix at `73ac81a` passed
+  102 focused tests plus typecheck, lint and build; its full run is pending.
 - The Gitea directory's focused coverage at `4d23906` is 97.62% statements
   and lines, 84.41% branches and 89.36% functions (directory aggregates).
 - Gitea 1.27.3 fixtures exercised packaged CLI init, private HTTP and SSH
@@ -98,6 +99,12 @@ Local verification on 2026-10-19 used Node 22 and isolated Git 2.54:
   imported a merged Gitea PR whose repository name contains `github.com`.
   CLI and model exited 0, and all three discussion sources reached the prompt.
   The preceding package selected GitHub for that same URL and failed before AI.
+
+Rejected-URL diagnostics were also exercised with synthetic URL credentials,
+query parameters and fragments. At `73ac81a`, packaged single and batch CLI
+errors retained only the safe host/path. The legacy-parser collision passed a
+unit regression; its final main CLI run is still unverified because the Docker
+daemon disconnected. The 0.27 package passed both CLI rejection paths.
 
 Model output remains a draft requiring review: earlier runs inferred resolved
 status without evidence or confused the CLI and server versions. The prompt
