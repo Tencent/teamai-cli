@@ -15,6 +15,17 @@ import { extractKeywords, findOverlappingLearnings } from './utils/dedup.js';
 import { log, spinner } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
 
+/** Keep a useful MR location without logging URL credentials or parameters. */
+export function mrUrlForLog(input: string): string {
+  try {
+    const url = new URL(input);
+    if (!['http:', 'https:'].includes(url.protocol)) return '[invalid MR URL]';
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return '[invalid MR URL]';
+  }
+}
+
 /** Default directory for storing learnings. */
 const DEFAULT_LEARNINGS_DIR = path.join(getUserHome(), '.teamai', 'learnings');
 
@@ -45,7 +56,7 @@ async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
     return fetchGitLabMR(url, opts);
   }
 
-  throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit, GitLab and configured Gitea instances are supported`);
+  throw new Error(`Unsupported MR URL: ${mrUrlForLog(url)}. Only GitHub, TGit, GitLab and configured Gitea instances are supported`);
 }
 
 /** Characters of the prompt the review threads may take (#1187). */
@@ -329,6 +340,9 @@ export async function importFromMR(opts: {
       : 'MR data fetched');
   } catch (err: unknown) {
     fetchSpinner.fail('MR data fetch failed');
+    if (opts.url && err instanceof Error && err.message.includes(opts.url)) {
+      throw new Error(err.message.split(opts.url).join(mrUrlForLog(opts.url)));
+    }
     throw err;
   }
 

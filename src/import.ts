@@ -4,7 +4,7 @@ import fs from 'fs-extra';
 import { autoDetectInit } from './config.js';
 import { scanCandidates, classifyWithAI, interactiveReview, pushAccepted } from './import-local.js';
 import { importFromIWiki } from './import-iwiki.js';
-import { importFromMR } from './import-mr.js';
+import { importFromMR, mrUrlForLog } from './import-mr.js';
 import { importFromRepo } from './import-repo.js';
 import { importFromRepoList } from './import-repo-list.js';
 import { importFromOrg } from './import-org.js';
@@ -249,7 +249,8 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
       const failedMrs: Array<{ url: string; error: string }> = [];
 
       for (const [index, url] of mrUrls.entries()) {
-        if (mrUrls.length > 1) log.info(`[${index + 1}/${mrUrls.length}] ${url}`);
+        const safeUrl = mrUrlForLog(url);
+        if (mrUrls.length > 1) log.info(`[${index + 1}/${mrUrls.length}] ${safeUrl}`);
         try {
           const extracted = await importFromMR({
             url,
@@ -275,9 +276,9 @@ export async function importCmd(opts: ImportOptions): Promise<void> {
         } catch (e: unknown) {
           // A single URL keeps reporting its failure as before.
           if (mrUrls.length === 1) throw e;
-          const message = e instanceof Error ? e.message : String(e);
-          log.warn(`import from MR failed: ${url} — ${message}`);
-          failedMrs.push({ url, error: message });
+          const message = (e instanceof Error ? e.message : String(e)).split(url).join(safeUrl);
+          log.warn(`import from MR failed: ${safeUrl} — ${message}`);
+          failedMrs.push({ url: safeUrl, error: message });
         }
       }
 
