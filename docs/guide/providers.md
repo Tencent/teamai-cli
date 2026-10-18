@@ -264,7 +264,10 @@ teamai init https://gitea.example.com/your-org/team.git --scope user
 An unknown HTTP(S) host can be probed anonymously for a compatible version
 endpoint. This only prints a configuration hint; it never authorizes sending a
 token to that host. Set `GITEA_URL` and retry. This build does not map gitea.com
-globally or claim Forgejo compatibility without a separate live verification.
+globally. Local Forgejo 15.0.10 verification covered init, push, PR creation,
+reviewer assignment and PR import using a real AI backend. Main also checked
+review discussions; the 0.27 backport does not read them. This tested subset
+does not establish compatibility with every Forgejo version or deployment.
 
 ### Authentication and URLs
 

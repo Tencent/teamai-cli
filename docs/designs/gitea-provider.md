@@ -79,10 +79,31 @@ bounded diff, SSH-origin preservation, org mapping and redaction. Tests and
 real-CLI records must name the exact build before the feature is declared ready.
 Live tests require an explicit opt-in and dedicated test accounts.
 
-At this checkpoint the initial provider suite passes, typecheck/lint/build pass,
-and the real packaged-CLI fixture is being exercised. Target deployment, Forgejo,
-and final real-CLI acceptance are not yet claimed. Replace this paragraph with
-the actual verification record before opening the upstream PR.
+Local verification on 2026-10-19 used Node 22 and isolated Git 2.54:
+
+- At main `22b3e42`, the full unit run passed 11,070 tests (25 skipped).
+  After the dispatch correction, `4d23906` passed 98 focused tests plus
+  typecheck, lint and build. Its full unit run is still pending.
+- The Gitea directory's focused coverage at `4d23906` is 97.62% statements
+  and lines, 84.41% branches and 89.36% functions (directory aggregates).
+- Gitea 1.27.3 fixtures exercised packaged CLI init, private HTTP and SSH
+  push, repeated PR reuse and reviewer assignment. Separate API fixtures
+  checked 70 commits, 140 unique review/comment bodies, exact PR recovery,
+  token revocation/rotation, anonymous public fetch and private denial.
+- Forgejo 15.0.10 fixtures exercised packaged init, push, PR reuse and
+  reviewer assignment. Both servers were also used for actual CLI import
+  with a real Claude backend; this is a bounded compatibility sample.
+- The `4d23906` package (SHA256
+  `501192853b24e0fd6041074276b11d9567fab75897f1d109e999e3d8f8aa008e`)
+  imported a merged Gitea PR whose repository name contains `github.com`.
+  CLI and model exited 0, and all three discussion sources reached the prompt.
+  The preceding package selected GitHub for that same URL and failed before AI.
+
+Model output remains a draft requiring review: earlier runs inferred resolved
+status without evidence or confused the CLI and server versions. The prompt
+now guards unknown resolution state; a successful import is not proof of content
+accuracy. Target-host deployment, upstream CI, release publication and actual
+member acceptance remain outside these local results.
 
 ## Non-goals
 

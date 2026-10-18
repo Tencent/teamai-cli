@@ -264,7 +264,7 @@ teamai init https://gitea.example.com/your-org/team.git --scope user
 ```
 
 未知 HTTP(S) host 可通过匿名版本接口探测给出配置提示；探测不代表允许向该 host 发送 token。
-设置 `GITEA_URL` 后重试。本实现不把 gitea.com 全局映射为 Gitea，也不会在单独实测前声明 Forgejo 兼容。
+设置 `GITEA_URL` 后重试。本实现不把 gitea.com 全局映射为 Gitea。本地 Forgejo 15.0.10 已验证 init、push、PR 创建、reviewer 指派及实际 AI 后端的 PR 提取；main 另验证评审讨论读取，0.27 回移版不读取讨论。此实测子集不代表所有 Forgejo 版本或部署均已兼容。
 
 ### 认证和 URL
 
