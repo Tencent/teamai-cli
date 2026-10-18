@@ -1600,6 +1600,50 @@ describe('adapters: native cwd recovery from JSONL records', () => {
   });
 });
 
+describe('codex readSession: reasoning', () => {
+  it('reads the reasoning summary and content Codex writes', async () => {
+    const SID = '019e0000-1111-7222-8333-666666666666';
+    const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '01');
+    fs.mkdirSync(dir, { recursive: true });
+    const lines = [
+      { type: 'session_meta', payload: { id: SID, timestamp: '2026-10-01T10:00:00.000Z', cwd: '/work/app' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'why' }] } },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'reasoning',
+          summary: [
+            { type: 'summary_text', text: '**Reading the config**' },
+            { type: 'summary_text', text: 'The port comes from env.' },
+          ],
+          content: null,
+          encrypted_content: 'gAAAAA',
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'reasoning',
+          summary: [{ type: 'summary_text', text: 'short' }],
+          content: [{ type: 'reasoning_text', text: 'full reasoning' }],
+          encrypted_content: null,
+        },
+      },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `rollout-2026-10-01T10-00-00-${SID}.jsonl`),
+      lines.map((l) => JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', ...l })).join('\n') + '\n',
+    );
+
+    const session = await new CodexAdapter().readSession({ sessionId: SID });
+    const thinking = session.messages.flatMap((m) => m.content).filter((b) => b.type === 'thinking');
+    expect(thinking).toEqual([
+      { type: 'thinking', text: '**Reading the config**\n\nThe port comes from env.' },
+      { type: 'thinking', text: 'full reasoning' },
+    ]);
+  });
+});
+
 describe('codex readSession: freeform tool calls', () => {
   it('keeps the apply_patch input of a custom_tool_call', async () => {
     const SID = '019e0000-1111-7222-8333-444444444444';

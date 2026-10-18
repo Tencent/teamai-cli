@@ -565,16 +565,17 @@ export class CodexAdapter extends AgentAdapter {
           messages.push({ role: 'user', content: [block], timestamp: parseCodexTimestamp(rec.timestamp) });
         }
       } else if (ptype === 'reasoning') {
-        // reasoning → ThinkingBlock
-        const rawContent = payload.rawContent as Array<Record<string, unknown>> | undefined;
-        let text = '';
-        if (Array.isArray(rawContent)) {
-          for (const part of rawContent) {
-            if (part.type === 'reasoning_text') {
-              text += String(part.text ?? '');
-            }
-          }
-        }
+        // reasoning → ThinkingBlock. Codex writes the readable part to summary and may add content;
+        // rawContent is what writeSession emits.
+        const textOf = (parts: unknown, types: string[]): string[] =>
+          Array.isArray(parts)
+            ? parts
+                .filter((p) => p && typeof p === 'object' && types.includes(String((p as Record<string, unknown>).type)))
+                .map((p) => String((p as Record<string, unknown>).text ?? ''))
+            : [];
+        let text = textOf(payload.rawContent, ['reasoning_text']).join('');
+        if (!text) text = textOf(payload.content, ['reasoning_text', 'text']).join('');
+        if (!text) text = textOf(payload.summary, ['summary_text']).join('\n\n');
         const block: ThinkingBlock = { type: 'thinking', text };
 
         if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
