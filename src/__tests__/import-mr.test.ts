@@ -37,6 +37,15 @@ vi.mock('../config.js', async (importOriginal) => ({
 vi.mock('../providers/github/mr-fetch.js', () => ({
   fetchGitHubPR: vi.fn(async (url: string) => ({ title: 'Retry budget', description: '', commits: [], diff: '', url })),
 }));
+vi.mock('../providers/gitea/mr-fetch.js', () => ({
+  fetchGiteaMR: vi.fn(async (url: string) => ({ title: 'Gitea route', description: '', commits: [], diff: '', url })),
+}));
+vi.mock('../providers/gitlab/mr-fetch.js', () => ({
+  fetchGitLabMR: vi.fn(async (url: string) => ({ title: 'GitLab route', description: '', commits: [], diff: '', url })),
+}));
+vi.mock('../providers/tgit/mr-fetch.js', () => ({
+  fetchTGitMR: vi.fn(async (url: string) => ({ title: 'TGit route', description: '', commits: [], diff: '', url })),
+}));
 vi.mock('../utils/ai-client.js', () => ({
   callClaude: vi.fn(async () => `---\ntitle: Retry budget\n---\n${DRAFT_BODY}\n`),
 }));
@@ -50,6 +59,7 @@ import { importCmd } from '../import.js';
 import { log, setSilent } from '../utils/logger.js';
 import { callClaude } from '../utils/ai-client.js';
 import { fetchGitHubPR } from '../providers/github/mr-fetch.js';
+import { fetchGiteaMR } from '../providers/gitea/mr-fetch.js';
 
 describe('parseLearningDraft', () => {
   it('parses well-formed frontmatter', () => {
@@ -332,5 +342,23 @@ describe('teamai import --from-mr <url...> (#1104)', () => {
     }
 
     expect(fs.readdirSync(out)).toEqual(['learning.md']);
+  });
+});
+
+
+describe('configured Gitea MR routing', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it.each([
+    { base: 'http://gitea.test:3000', repo: 'org/github.com' },
+    { base: 'http://git.woa.com.gitea.test:3000', repo: 'org/repo' },
+    { base: 'http://gitea.test:3000/proxy/-/merge_requests/23', repo: 'org/repo' },
+  ])('uses the validated Gitea instance before provider hints in $base/$repo', async ({ base, repo }) => {
+    vi.stubEnv('GITEA_URL', base);
+    vi.mocked(fetchGiteaMR).mockClear();
+    const url = `${base}/${repo}/pulls/12`;
+    const result = await importFromMR({ url, learningsDirs: [], all: true, dryRun: true });
+    expect(fetchGiteaMR).toHaveBeenCalled();
+    expect(vi.mocked(fetchGiteaMR).mock.calls[0][0]).toBe(url);
+    expect(result.repoUrl).toBe(`${base}/${repo}.git`);
   });
 });

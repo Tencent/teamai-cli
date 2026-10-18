@@ -27,6 +27,12 @@ const DEFAULT_LEARNINGS_DIR = path.join(getUserHome(), '.teamai', 'learnings');
  * @throws      Error when the URL does not belong to a known provider
  */
 async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
+  // A validated instance is more specific than another platform's text hints.
+  let gitea = false;
+  if (process.env.GITEA_URL) {
+    try { parseGiteaPrUrl(url); gitea = true; } catch { /* Not this configured instance. */ }
+  }
+  if (gitea) return fetchGiteaMR(url, opts);
   if (url.includes('github.com')) {
     return fetchGitHubPR(url, opts);
   }
@@ -38,11 +44,7 @@ async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
   if (/\/-\/merge_requests\/\d+/.test(url)) {
     return fetchGitLabMR(url, opts);
   }
-  let gitea = false;
-  if (process.env.GITEA_URL) {
-    try { parseGiteaPrUrl(url); gitea = true; } catch { /* Not this configured instance. */ }
-  }
-  if (gitea) return fetchGiteaMR(url, opts);
+
   throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit, GitLab and configured Gitea instances are supported`);
 }
 
@@ -263,6 +265,9 @@ async function promptConfirm(question: string): Promise<boolean> {
  * @returns      Inferred repo .git URL
  */
 function extractRepoUrlFromMrUrl(mrUrl: string): string {
+  if (process.env.GITEA_URL) {
+    try { return parseGiteaPrUrl(mrUrl).httpsUrl; } catch { /* Not the configured Gitea instance. */ }
+  }
   // GitHub: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
   const ghMatch = mrUrl.match(/^(https:\/\/github\.com\/[^/]+\/[^/]+)\/pull\//);
   if (ghMatch) return `${ghMatch[1]}.git`;
@@ -272,9 +277,6 @@ function extractRepoUrlFromMrUrl(mrUrl: string): string {
   // GitLab: https://<host>/group[/subgroup]/repo/-/merge_requests/123
   const gitlabMatch = mrUrl.match(/^(https?:\/\/.+?\/.+\/[^/]+)\/-\/merge_requests\//);
   if (gitlabMatch) return `${gitlabMatch[1]}.git`;
-  if (process.env.GITEA_URL) {
-    try { return parseGiteaPrUrl(mrUrl).httpsUrl; } catch { /* Not the configured Gitea instance. */ }
-  }
   // Cannot reliably extract; return empty string so caller skips incremental update
   return '';
 }
