@@ -66,6 +66,8 @@ describe('parseGenericGitRepoInput', () => {
     'https://org.visualstudio.com/project/_git/repo',
     'git@ssh.dev.azure.com:v3/org/project/repo',
     'ssh://git@ssh.dev.azure.com:2222/v3/org/project/repo',
+    // An absolute path on the SSH host is not the same repository as one relative to the login's home
+    'git@git.example.com:/srv/git/repo.git',
     'https://git.example.com/group/repo',
     'https://git.example.com/group/repo.git',
     'https://git.example.com/group/repo.GIT',
