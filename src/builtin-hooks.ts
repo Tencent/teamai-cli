@@ -255,6 +255,18 @@ export function getTeamHookDispatchCommand(event: string, tool: string): string 
 }
 
 /**
+ * The `commandWindows` of a team-hook dispatcher entry: the PowerShell form of
+ * its dispatch, since Codex runs hook commands in PowerShell on Windows
+ * (#1074). Deliberately not the built-in fail-open shape (`2>$null; exit 0`):
+ * a dispatcher must keep what its bash form passes through — the exit status
+ * (2 blocks the run) and stderr — so nothing is redirected and the exit code
+ * rides `$LASTEXITCODE` (#1209).
+ */
+export function getTeamHookDispatchCommandWindows(event: string, tool: string): string {
+  return `teamai hook-dispatch ${event} --tool ${tool} --team-hooks; exit $LASTEXITCODE`;
+}
+
+/**
  * Raw dispatch command without a shell wrapper. Used by ZCode, whose hook
  * entries are `process`-typed (an executable plus an argv vector): the writer
  * puts `bash -lc <raw>` into `args` itself, so the wrapper must not be baked
