@@ -67,6 +67,9 @@ Match the login to the URL's host (do NOT create a second repo):
   the token: add `--provider git` to the `init` in Step 4. Git then uses their
   existing SSH key or credential helper, and `push` leaves the MR for them to open
   on the web.
+- **Other Git hosts, including Azure Repos** → use the existing Git credential
+  helper or SSH key. Keep the clone path as provided, including whether it ends
+  in `.git`; do not embed HTTPS credentials in the URL.
 
 If they have no account on that platform, they register there, then ask the admin
 to add them to the repo.

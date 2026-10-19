@@ -2,8 +2,11 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crossSpawn from 'cross-spawn';
+import { launchEnv, type Launch } from '../launch-context.js';
+import { opencodeMajorVersion } from '../opencode-hooks.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { writeJsonAtomic } from '../utils/fs.js';
+import { log } from '../utils/logger.js';
 import type { TokenUsage, WorkflowFailure } from './types.js';
 
 const LOCAL_WORKFLOW_TOOLS = ['claude', 'claude-internal', 'tclaude', 'codex', 'codex-internal', 'tcodex', 'opencode'] as const;
@@ -24,19 +27,33 @@ export interface LocalToolRun {
   prompt: string;
   cwd: string;
   resultPath: string;
-  agent?: { name: string; instructions: string; model?: string };
+  /** The definition the step runs as. `settings` are the deployed OpenCode file's other fields, such as `mode` and `variant`. */
+  agent?: { name: string; instructions: string; model?: string; settings?: Record<string, unknown> };
+  /** The model and effort the launch passes: the step's, which replaces the definition's, or on Codex and OpenCode the definition's own. */
+  model?: { name: string; effort?: string };
+  /** The workflow launch the tool's session-start hook reads from its environment (#1176). */
+  launch?: Launch;
   /** A session id from the same tool. Claude and Codex resume it; OpenCode has no resume flag here. */
   resume?: string;
 }
 
-export interface LocalToolResult {
-  exitCode: number;
-  output?: unknown;
-  model?: string;
-  session?: string;
-  tokens?: TokenUsage;
-  failure?: WorkflowFailure;
-}
+/**
+ * What a run gave. `started` is whether the tool's process spawned, as its `spawn` event says, so a pass that
+ * launched nothing records no observation of a launch (#1176).
+ */
+export type LocalToolResult =
+  | {
+    started: true;
+    exitCode: number;
+    /** How the launch handed over the definition, when it ran one. */
+    applied?: 'main' | 'prompt';
+    output?: unknown;
+    model?: string;
+    session?: string;
+    tokens?: TokenUsage;
+    failure?: WorkflowFailure;
+  }
+  | { started: false; exitCode: number; failure: WorkflowFailure };
 
 export interface LocalToolAdapter {
   run(tool: LocalWorkflowTool, input: LocalToolRun): Promise<LocalToolResult>;
@@ -58,28 +75,34 @@ function resultInstruction(input: LocalToolRun, prompt: string): string {
     + 'Use this shape: {"output":{},"failure":{"code":"optional","message":"optional"}}.';
 }
 
-function invocation(tool: LocalWorkflowTool, input: LocalToolRun): { command: string; args: string[] } {
+/** Codex, and OpenCode 1 for a subagent, which `opencode run --agent` does not start, get the definition's instructions in the prompt. */
+function promptHandoff(tool: LocalWorkflowTool, input: LocalToolRun, opencodeMajor: number): boolean {
   const family = localToolFamily(tool);
+  return family === 'codex' || (family === 'opencode' && opencodeMajor < 2 && input.agent?.settings?.['mode'] === 'subagent');
+}
+
+function invocation(tool: LocalWorkflowTool, input: LocalToolRun, opencodeMajor: number): string[] {
+  const family = localToolFamily(tool);
+  const viaPrompt = promptHandoff(tool, input, opencodeMajor);
   const agentPrompt = input.agent?.instructions
     ? `${input.agent.instructions}\n\n${input.prompt}`
     : input.prompt;
-  const prompt = resultInstruction(input, family === 'codex' ? agentPrompt : input.prompt);
+  const prompt = resultInstruction(input, viaPrompt ? agentPrompt : input.prompt);
+  const agent = input.agent && !viaPrompt ? ['--agent', input.agent.name] : [];
+  const model = input.model ? ['--model', input.model.name] : [];
+  const effort = input.model?.effort;
+  const resume = input.resume ? ['--resume', input.resume] : [];
   if (family === 'claude') {
-    return {
-      command: tool,
-      args: ['-p', prompt, '--output-format', 'json', ...(input.resume ? ['--resume', input.resume] : []), ...(input.agent ? ['--agent', input.agent.name] : [])],
-    };
+    return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
   }
   if (family === 'codex') {
-    return {
-      command: tool,
-      args: ['exec', ...(input.resume ? ['resume', input.resume] : []), '--json', ...(input.agent?.model ? ['--model', input.agent.model] : []), prompt],
-    };
+    const codexModel = input.model?.name ?? input.agent?.model;
+    const codexResume = input.resume ? ['resume', input.resume] : [];
+    return ['exec', ...codexResume, '--json', ...(codexModel ? ['--model', codexModel] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
   }
-  return {
-    command: tool,
-    args: ['run', '--format', 'json', prompt, ...(input.agent ? ['--agent', input.agent.name] : [])],
-  };
+  // OpenCode 2 has no `--variant` and reads the effort from `--model provider/model#variant`.
+  const opencodeModel = input.model && effort && opencodeMajor >= 2 ? ['--model', `${input.model.name}#${effort}`] : [...model, ...(effort ? ['--variant', effort] : [])];
+  return ['run', '--format', 'json', prompt, ...agent, ...opencodeModel];
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -116,36 +139,36 @@ function redactFailure(result: ResultFile, input: LocalToolRun): void {
 }
 
 function claudeStdout(stdout: string): ResultFile | null {
-  try {
-    const value = JSON.parse(stdout.trim()) as unknown;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const record = value as Record<string, unknown>;
-    const usage = record.usage as Record<string, unknown> | undefined;
-    let output: unknown;
-    if (typeof record.result === 'string') {
-      try {
-        output = JSON.parse(record.result) as unknown;
-      } catch {
-        output = undefined;
-      }
-    } else if (record.result !== undefined) {
-      output = record.result;
+  const events = jsonRecords(stdout);
+  const record = events.filter((event) => event.type === 'result').at(-1);
+  if (!record) return null;
+  const usage = record.usage as Record<string, unknown> | undefined;
+  // The `init` event names the session's model. `modelUsage` keys every model the session billed, a side call's and a
+  // subagent's included, so it cannot tell which one ran the step (#1176).
+  const init = events.find((event) => event.type === 'system' && event.subtype === 'init');
+  const model = typeof init?.model === 'string' ? init.model : undefined;
+  let output: unknown;
+  if (typeof record.result === 'string') {
+    try {
+      output = JSON.parse(record.result) as unknown;
+    } catch {
+      output = undefined;
     }
-    return {
-      ...(output !== undefined ? { output } : {}),
-      ...(typeof record.model === 'string' ? { model: record.model } : {}),
-      ...(typeof record.session_id === 'string' ? { session: record.session_id } : {}),
-      ...(usage ? {
-        tokens: {
-          ...(finiteNumber(usage.input_tokens) !== undefined ? { input: finiteNumber(usage.input_tokens) } : {}),
-          ...(finiteNumber(usage.output_tokens) !== undefined ? { output: finiteNumber(usage.output_tokens) } : {}),
-          ...(finiteNumber(usage.cache_read_input_tokens) !== undefined ? { cachedInput: finiteNumber(usage.cache_read_input_tokens) } : {}),
-        },
-      } : {}),
-    };
-  } catch {
-    return null;
+  } else if (record.result !== undefined) {
+    output = record.result;
   }
+  return {
+    ...(output !== undefined ? { output } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(typeof record.session_id === 'string' ? { session: record.session_id } : {}),
+    ...(usage ? {
+      tokens: {
+        ...(finiteNumber(usage.input_tokens) !== undefined ? { input: finiteNumber(usage.input_tokens) } : {}),
+        ...(finiteNumber(usage.output_tokens) !== undefined ? { output: finiteNumber(usage.output_tokens) } : {}),
+        ...(finiteNumber(usage.cache_read_input_tokens) !== undefined ? { cachedInput: finiteNumber(usage.cache_read_input_tokens) } : {}),
+      },
+    } : {}),
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -258,20 +281,52 @@ export function createLocalToolAdapter(
   return {
     async run(tool, input) {
       await fs.mkdir(path.dirname(input.resultPath), { recursive: true });
-      const call = invocation(tool, input);
-      const executable = resolveTool(call.command);
+      const executable = resolveTool(tool);
       if (!executable) {
         return {
+          started: false,
           exitCode: 1,
           failure: { code: 'tool_unavailable', message: `The ${tool} executable is not available on PATH` },
         };
       }
+      const opencode = localToolFamily(tool) === 'opencode';
+      const opencodeMajor = opencode && (input.agent || input.model?.effort) ? await opencodeMajorVersion(executable) : 1;
+      if (opencode && input.agent) {
+        const { name, model, settings = {} } = input.agent;
+        const viaPrompt = promptHandoff(tool, input, opencodeMajor);
+        // OpenCode 1 applies an agent's variant to a launch on the agent's own model that passes none.
+        if (opencodeMajor < 2 && !viaPrompt && settings['variant'] !== undefined && input.model && input.model.name === model && input.model.effort === undefined) {
+          return {
+            started: false,
+            exitCode: 1,
+            failure: {
+              code: 'model_unavailable',
+              message: `Agent "${name}" runs on its own model "${model}" with no effort, and ${tool} 1 applies the agent's variant "${String(settings['variant'])}" `
+                + `to that model. Remove model from the step to run at that variant, or set it to an alias with an effort for ${tool}.`,
+            },
+          };
+        }
+        // The variant goes on argv with a model, the definition's or the step's.
+        const dropped = Object.keys(settings).filter((key) => key !== 'mode' && (key !== 'variant' || !input.model));
+        if (viaPrompt && dropped.length > 0) {
+          log.warn(`Agent "${name}" runs on ${tool} 1 from the prompt, since opencode run does not start a subagent there, so it does not apply `
+            + `${dropped.join(', ')} from the deployed agent file. The step is not blocked.`);
+        } else if (opencodeMajor >= 2 && settings['variant'] !== undefined && !input.model) {
+          log.warn(`Agent "${name}" sets a variant with no model, and ${tool} 2 takes a variant only with a model, so it does not apply variant `
+            + 'from the deployed agent file. The step is not blocked.');
+        }
+      }
+      const args = invocation(tool, input, opencodeMajor);
+      const applied = input.agent ? { applied: promptHandoff(tool, input, opencodeMajor) ? 'prompt' as const : 'main' as const } : {};
+      let started = false;
       const completed = await new Promise<{ exitCode: number; stdout: string; error?: NodeJS.ErrnoException }>((resolve) => {
         let child: ChildProcess;
         try {
-          child = spawnTool(executable, call.args, {
+          child = spawnTool(executable, args, {
             cwd: input.cwd,
-            env: { ...process.env, TEAMAI_WORKFLOW_RESULT: input.resultPath },
+            env: { ...process.env, ...(input.launch ? launchEnv(input.launch) : {}), TEAMAI_WORKFLOW_RESULT: input.resultPath },
+            // OpenCode waits for the end of a piped stdin before it starts.
+            stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
           });
         } catch (error) {
@@ -279,20 +334,26 @@ export function createLocalToolAdapter(
           return;
         }
         let stdout = '';
+        child.on('spawn', () => { started = true; });
         child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
         child.stderr?.resume();
         child.on('error', (error: NodeJS.ErrnoException) => resolve({ exitCode: 1, stdout, error }));
         child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout }));
       });
-      if (completed.error?.code === 'ENOENT') {
+      if (!started || completed.error?.code === 'ENOENT') {
         return {
+          started: false,
           exitCode: completed.exitCode,
-          failure: { code: 'tool_unavailable', message: `The ${tool} executable is not available on PATH` },
+          failure: completed.error?.code === 'ENOENT'
+            ? { code: 'tool_unavailable', message: `The ${tool} executable is not available on PATH` }
+            : { code: 'tool_failed', message: `${tool} could not be started` },
         };
       }
       if (completed.error) {
         return {
+          started: true,
           exitCode: completed.exitCode,
+          ...applied,
           failure: { code: 'tool_failed', message: `${tool} could not be started` },
         };
       }
@@ -301,7 +362,9 @@ export function createLocalToolAdapter(
       const result = combineResults(fileResult, reported);
       if (!result) {
         return {
+          started: true,
           exitCode: completed.exitCode,
+          ...applied,
           failure: { code: 'tool_failed', message: `${tool} did not write a valid workflow result` },
         };
       }
@@ -310,7 +373,7 @@ export function createLocalToolAdapter(
         result.failure = { code: 'tool_failed', message: `${tool} exited with status ${completed.exitCode}` };
       }
       if (!fileResult) await persistFallback(input.resultPath, result);
-      return { exitCode: completed.exitCode, ...result };
+      return { started: true, exitCode: completed.exitCode, ...applied, ...result };
     },
   };
 }

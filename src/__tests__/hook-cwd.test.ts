@@ -23,6 +23,12 @@ describe('resolveHookCwd', () => {
     })).toBe('/project');
   });
 
+  it('turns a Windows workspace root sent as a URI path (/c:/...) into a drive path', () => {
+    // The Cursor IDE sends `folders.map((f) => f.uri.path)`, which keeps the URI's leading slash.
+    expect(resolveHookCwd({ workspace_roots: ['/c:/Users/me/project'] })).toBe('c:/Users/me/project');
+    expect(resolveHookCwd({ cwd: '/D:/work' })).toBe('D:/work');
+  });
+
   it('skips blank workspace_roots entries', () => {
     expect(resolveHookCwd({
       workspace_roots: ['', '  ', '/real-root'],

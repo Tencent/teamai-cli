@@ -588,6 +588,107 @@ describe('doctor — rules delivered on disk', () => {
     expect(await namedCheck('Team rules are inlined in Hermes SOUL.md')).toBeUndefined();
   });
 
+  describe('Cursor workspaces outside the home directory (#1197)', () => {
+    const CURSOR_HOOKS = '.cursor/hooks.json';
+    const OUTSIDE_HOME = 'Team rules reach Cursor workspaces outside the home directory';
+    const WITH_ENV_HINT = 'Team rules and the team env hint fit one Cursor hook reply';
+
+    async function writeCursorHooks(sessionStart: unknown[]): Promise<void> {
+      await fse.outputFile(path.join(homeDir, CURSOR_HOOKS), JSON.stringify({ version: 1, hooks: { sessionStart } }));
+    }
+
+    beforeEach(() => {
+      teamConfig.toolPaths.cursor = { rules: CURSOR_RULES, settings: CURSOR_HOOKS };
+    });
+
+    it('passes when ~/.cursor/hooks.json registers the teamai sessionStart hook', async () => {
+      await writeCursorHooks([{ command: 'bash -lc "teamai hook-dispatch session-start --tool cursor 2>/dev/null" || true' }]);
+
+      expect(await (await namedCheck(OUTSIDE_HOME))!.check()).toBe(true);
+    });
+
+    it('fails when no teamai sessionStart hook is registered, saying why the rules file is not enough', async () => {
+      await writeCursorHooks([]);
+
+      const check = (await namedCheck(OUTSIDE_HOME))!;
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain('only in a workspace under the home directory');
+      expect(check.fix).toContain('teamai hooks inject');
+    });
+
+    it.each([
+      ['teamai hook-dispatch session-start --tool claude', false],
+      ['teamai hook-dispatch session-start --tool cursor-agent', false],
+      ['teamai hook-dispatch session-start --tool=cursor', true],
+    ])('reads the dispatch\'s --tool value: %s', async (command, passes) => {
+      await writeCursorHooks([{ command }]);
+
+      expect(await (await namedCheck(OUTSIDE_HOME))!.check()).toBe(passes);
+    });
+
+    it('passes near the limit when nothing else shares the hook reply', async () => {
+      await fse.writeFile(path.join(repoPath, 'rules', 'long.md'), `${'x'.repeat(9_500)}\n`);
+      await writeCursorHooks([{ command: 'teamai hook-dispatch session-start --tool cursor' }]);
+
+      expect(await (await namedCheck(OUTSIDE_HOME))!.check()).toBe(true);
+      expect(await (await namedCheck(WITH_ENV_HINT))!.check()).toBe(true);
+    });
+
+    it('flags the team env hint pushing the rules out of the shared hook reply', async () => {
+      await fse.writeFile(path.join(repoPath, 'rules', 'long.md'), `${'x'.repeat(9_800)}\n`);
+      await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), 'variables:\n  - key: API_URL\n    value: https://example.invalid\n');
+      await writeCursorHooks([{ command: 'teamai hook-dispatch session-start --tool cursor' }]);
+
+      expect(await (await namedCheck(OUTSIDE_HOME))!.check()).toBe(true);
+      const shared = (await namedCheck(WITH_ENV_HINT))!;
+      expect(shared.informational).toBe(true);
+      expect(await shared.check()).toBe(false);
+      expect(shared.fix).toContain('leaves the rules out');
+    });
+
+    it('names the length, not the team\'s builtin.disabled entry, while the hook is still registered', async () => {
+      await fse.outputFile(path.join(repoPath, 'hooks', 'hooks.yaml'), 'builtin:\n  disabled:\n    - Hook dispatch session-start\n');
+      await fse.writeFile(path.join(repoPath, 'rules', 'long.md'), `${'x'.repeat(10_000)}\n`);
+      await writeCursorHooks([{ command: 'teamai hook-dispatch session-start --tool cursor' }]);
+
+      const check = (await namedCheck(OUTSIDE_HOME))!;
+      expect(check.fix).not.toContain('builtin.disabled');
+      expect(check.fix).toContain('characters');
+    });
+
+    it('tells the member to repair invalid JSON by hand, which hooks inject will not rewrite', async () => {
+      await fse.outputFile(path.join(homeDir, CURSOR_HOOKS), '{ invalid JSON');
+
+      const check = (await namedCheck(OUTSIDE_HOME))!;
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain('Fix the file by hand');
+    });
+
+    it('names the team\'s builtin.disabled entry when the team turned the session-start hook off', async () => {
+      await fse.outputFile(path.join(repoPath, 'hooks', 'hooks.yaml'), 'builtin:\n  disabled:\n    - Hook dispatch session-start\n');
+      await writeCursorHooks([]);
+
+      const check = (await namedCheck(OUTSIDE_HOME))!;
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain('builtin.disabled');
+    });
+
+    it('fails when the rules are over Cursor\'s hook context limit', async () => {
+      await fse.writeFile(path.join(repoPath, 'rules', 'long.md'), `${'x'.repeat(10_000)}\n`);
+      await writeCursorHooks([{ command: 'teamai hook-dispatch session-start --tool cursor' }]);
+
+      const check = (await namedCheck(OUTSIDE_HOME))!;
+      expect(await check.check()).toBe(false);
+      expect(check.fix).toContain('10000-character limit');
+    });
+
+    it('emits no check in project scope, where the project delivers into the workspace itself', async () => {
+      Object.assign(localConfig, { scope: 'project', projectRoot: path.join(tempDir, 'project') });
+
+      expect(await namedCheck(OUTSIDE_HOME)).toBeUndefined();
+    });
+  });
+
   describe('Hermes in project scope (#946)', () => {
     beforeEach(async () => {
       const hermesHome = path.join(tempDir, 'hermes');

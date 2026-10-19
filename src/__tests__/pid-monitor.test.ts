@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   isProcessAlive,
   getProcessComm,
@@ -137,5 +137,51 @@ describe('walkToNonShell', () => {
 
     it('falls back to the hook parent when nothing can be read', () => {
         expect(walkToNonShell(4242, () => undefined, () => undefined)).toBe(4242);
+    });
+});
+
+describe('the Windows process table', () => {
+    // CI has no Windows runner: pretend to be one and replace the PowerShell
+    // query at the module boundary, so the test can count how often it starts.
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const execFileSync = vi.fn();
+
+    async function loadOnWindows() {
+        Object.defineProperty(process, 'platform', { value: 'win32' });
+        vi.resetModules();
+        vi.doMock('node:child_process', async (importOriginal) => ({
+            ...(await importOriginal<typeof import('node:child_process')>()),
+            execFileSync,
+        }));
+        return import('../pid-monitor.js');
+    }
+
+    afterEach(() => {
+        Object.defineProperty(process, 'platform', platform);
+        vi.doUnmock('node:child_process');
+        execFileSync.mockReset();
+    });
+
+    it('starts the query once when it times out, however often the PID is resolved', async () => {
+        execFileSync.mockImplementation(() => {
+            throw Object.assign(new Error('spawnSync powershell.exe ETIMEDOUT'), { code: 'ETIMEDOUT' });
+        });
+        const { resolveMonitorPid } = await loadOnWindows();
+
+        // A session start resolves the PID twice (dashboard report and local
+        // agent sync); without a remembered result each call queried three times.
+        expect(resolveMonitorPid(20)).toBe(20);
+        expect(resolveMonitorPid(20)).toBe(20);
+        expect(execFileSync).toHaveBeenCalledTimes(1);
+    });
+
+    it('answers every lookup from the one table it read', async () => {
+        execFileSync.mockReturnValue('20 10 bash.exe\r\n10 4 codex.exe\r\n');
+        const { resolveMonitorPid, getParentPid, getProcessComm } = await loadOnWindows();
+
+        expect(resolveMonitorPid(20)).toBe(10);
+        expect(getParentPid(20)).toBe(10);
+        expect(getProcessComm(10)).toBe('codex.exe');
+        expect(execFileSync).toHaveBeenCalledTimes(1);
     });
 });

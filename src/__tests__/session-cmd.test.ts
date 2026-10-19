@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   adaptersByPlatform: {} as Record<string, unknown>,
   /** migrate.js mock 的 preview 返回值（Error 时抛出）；agent-session.js mock 的 copy 返回值 */
   previewResult: null as unknown,
+  previewCalls: [] as Array<{ session: unknown; source: string; target: string }>,
   copyResult: null as unknown,
   /** The OS the commands' `noAdapter` checks judge by; this machine's when unset. */
   os: undefined as NodeJS.Platform | undefined,
@@ -119,14 +120,9 @@ vi.mock('../session-flow/adapters/index.js', () => ({
 }));
 
 vi.mock('../session-flow/migrate.js', () => ({
-  MigrationEngine: class {
-    constructor(
-      public readonly source: string,
-      public readonly target: string,
-    ) {}
-    preview(): unknown {
-      return mocks.previewResult;
-    }
+  previewMigration: (session: unknown, source: string, target: string): unknown => {
+    mocks.previewCalls.push({ session, source, target });
+    return mocks.previewResult;
   },
   resolveTargetCwd: (explicit: string | undefined, sourceCwd: string | undefined) => explicit ?? sourceCwd,
 }));
@@ -186,6 +182,7 @@ beforeEach(() => {
   mocks.gitCalls.length = 0;
   mocks.adaptersByPlatform = {};
   mocks.previewResult = null;
+  mocks.previewCalls.length = 0;
   mocks.copyResult = null;
   mocks.os = undefined;
   mocks.heldArchiveLock = '';
@@ -714,16 +711,13 @@ describe('session migrate interactive picker', () => {
       filePath: '/tmp/tgt.jsonl',
       fidelity: { score: 1 },
     };
-    const { MigrationEngine } = await import('../session-flow/migrate.js');
-    const previewSpy = vi.spyOn(MigrationEngine.prototype, 'preview');
-
     feedAnswers(['n', '11']);
     await runSession('migrate', '-s', 'fakeplat', '-t', 'tgtplat', '--cwd', '/run/dir');
 
     // The picker is on page 2 by the time the number is entered, and the
     // selected id is the 11th newest -- unreachable before paging existed.
     expect(out.join('\n')).toContain('page 2/2');
-    expect(previewSpy).toHaveBeenCalledWith(sessions[1]);
+    expect(mocks.previewCalls).toContainEqual({ session: sessions[1], source: 'fakeplat', target: 'tgtplat' });
   });
 
   it('cancels on an empty answer instead of paging forever', async () => {
@@ -1603,6 +1597,50 @@ describe('adapters: native cwd recovery from JSONL records', () => {
 
     const session = await new CursorAdapter().readSession({ sessionId: SID });
     expect(session.cwd).toBe(NATIVE);
+  });
+});
+
+describe('codex readSession: reasoning', () => {
+  it('reads the reasoning summary and content Codex writes', async () => {
+    const SID = '019e0000-1111-7222-8333-666666666666';
+    const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '01');
+    fs.mkdirSync(dir, { recursive: true });
+    const lines = [
+      { type: 'session_meta', payload: { id: SID, timestamp: '2026-10-01T10:00:00.000Z', cwd: '/work/app' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'why' }] } },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'reasoning',
+          summary: [
+            { type: 'summary_text', text: '**Reading the config**' },
+            { type: 'summary_text', text: 'The port comes from env.' },
+          ],
+          content: null,
+          encrypted_content: 'gAAAAA',
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'reasoning',
+          summary: [{ type: 'summary_text', text: 'short' }],
+          content: [{ type: 'reasoning_text', text: 'full reasoning' }],
+          encrypted_content: null,
+        },
+      },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `rollout-2026-10-01T10-00-00-${SID}.jsonl`),
+      lines.map((l) => JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', ...l })).join('\n') + '\n',
+    );
+
+    const session = await new CodexAdapter().readSession({ sessionId: SID });
+    const thinking = session.messages.flatMap((m) => m.content).filter((b) => b.type === 'thinking');
+    expect(thinking).toEqual([
+      { type: 'thinking', text: '**Reading the config**\n\nThe port comes from env.' },
+      { type: 'thinking', text: 'full reasoning' },
+    ]);
   });
 });
 

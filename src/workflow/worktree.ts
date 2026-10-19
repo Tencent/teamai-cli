@@ -33,9 +33,17 @@ export function worktreePath(main: string, branch: string): string {
   return path.join(main, '.teamai', 'workflow-worktrees', `${safe}-${hash}`);
 }
 
+/** A path git keeps for this checkout. A linked worktree's `.git` is a file, so the path is not `<checkout>/.git`. */
+async function gitPath(cwd: string, name: string): Promise<string | undefined> {
+  const result = await git(cwd, ['rev-parse', '--git-path', name]);
+  const printed = result.code === 0 ? result.stdout.trim() : '';
+  return printed === '' ? undefined : path.resolve(cwd, printed);
+}
+
 /** Keeps TeamAI worktrees out of `git status` in the active checkout. */
 async function hideTeamaiWorktrees(main: string): Promise<void> {
-  const exclude = path.join(main, '.git', 'info', 'exclude');
+  const exclude = await gitPath(main, 'info/exclude');
+  if (!exclude) return;
   const marker = '# teamai workflow worktrees';
   const current = await fs.readFile(exclude, 'utf8').catch(() => '');
   if (current.includes(marker)) return;
@@ -64,7 +72,7 @@ export async function ensureWorktree(main: string, branch: string, start: string
   const known = listed.code === 0 && listed.stdout.split('\n').some((line) => line.startsWith('worktree ') && path.resolve(line.slice('worktree '.length)) === path.resolve(dir));
   const existing = known || await git(dir, ['rev-parse', '--is-inside-work-tree']).then((result) => result.stdout.trim() === 'true').catch(() => false);
   if (existing) {
-    await git(dir, ['config', 'core.hooksPath', hooks]);
+    await worktreeHooks(main, dir, hooks);
     return { dir };
   }
   await fs.mkdir(path.dirname(dir), { recursive: true });
@@ -74,17 +82,23 @@ export async function ensureWorktree(main: string, branch: string, start: string
     ? await git(main, [...config, 'worktree', 'add', dir, branch])
     : await git(main, [...config, 'worktree', 'add', '-b', branch, dir, start]);
   if (created.code !== 0) return { error: created.stderr.trim() || created.stdout.trim() || 'git worktree add failed' };
-  await git(dir, ['config', 'core.hooksPath', hooks]);
+  await worktreeHooks(main, dir, hooks);
   return { dir };
 }
 
-/** Merges `branch` unless it is already contained. A conflict leaves the worktree as git stopped. */
-export async function mergeBranch(dir: string, branch: string): Promise<{ conflict: boolean; files: string[] }> {
-  const contained = await git(dir, ['merge-base', '--is-ancestor', branch, 'HEAD']);
+/** Points this worktree's hooks at `hooks` without changing the active checkout's hooks. */
+async function worktreeHooks(main: string, dir: string, hooks: string): Promise<void> {
+  await git(main, ['config', 'extensions.worktreeConfig', 'true']);
+  await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
+}
+
+/** Merges `commit` unless it is already contained. A conflict leaves the worktree as git stopped. */
+export async function mergeBranch(dir: string, commit: string): Promise<{ conflict: boolean; files: string[] }> {
+  const contained = await git(dir, ['merge-base', '--is-ancestor', commit, 'HEAD']);
   if (contained.code === 0) return { conflict: false, files: [] };
   const merged = await git(dir, [
     '-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost',
-    'merge', '--no-ff', '--no-edit', branch,
+    'merge', '--no-ff', '--no-edit', commit,
   ]);
   if (merged.code === 0) return { conflict: false, files: [] };
   const files = await git(dir, ['diff', '--name-only', '--diff-filter=U']);
@@ -98,7 +112,7 @@ export async function mergeBranch(dir: string, branch: string): Promise<{ confli
 export async function applyBaseConfig(
   dir: string, commit: string, hooks: string,
 ): Promise<{ ok: true; saved: string } | { ok: false; message: string }> {
-  await git(dir, ['config', 'core.hooksPath', hooks]);
+  await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
   const saved = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-agent-'));
   for (const relative of AGENT_PATHS) {
     const from = path.join(dir, relative);
@@ -148,43 +162,52 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
     }
   }
   await fs.rm(saved, { recursive: true, force: true });
+  // `checkout` of the base copies staged those paths. Put the index back with the files, or a step that
+  // edits nothing still looks dirty and the empty commit fails it.
+  await git(dir, ['add', '-A', '--', ...AGENT_PATHS]);
 }
 
 async function fileManifest(root: string): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
   const walk = async (relative: string): Promise<void> => {
     const current = path.join(root, relative);
-    let entries;
+    let stats;
     try {
-      entries = await fs.readdir(current, { withFileTypes: true });
+      stats = await fs.lstat(current);
     } catch {
-      try {
-        files[relative] = (await fs.lstat(current)).isSymbolicLink()
-          ? `link:${await fs.readlink(current)}`
-          : `file:${(await fs.readFile(current)).toString('base64')}`;
-      } catch {
-        // Missing paths have no manifest entry.
-      }
       return;
     }
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      await walk(path.join(relative, entry.name));
+    // A directory symlink is the link, not the files it points at. Following it would delete those files on restore.
+    if (stats.isSymbolicLink()) {
+      files[relative] = `link:${await fs.readlink(current)}`;
+      return;
     }
+    if (stats.isDirectory()) {
+      const entries = await fs.readdir(current);
+      for (const name of entries.sort((a, b) => a.localeCompare(b))) await walk(path.join(relative, name));
+      return;
+    }
+    if (stats.isFile()) files[relative] = `file:${(await fs.readFile(current)).toString('base64')}`;
   };
   for (const relative of AGENT_PATHS) await walk(relative);
   return files;
 }
 
-export async function commitWork(dir: string, message: string): Promise<{ from: string; to: string; commits: string[] } | { error: string }> {
-  const before = await git(dir, ['rev-parse', 'HEAD']);
+export async function commitWork(
+  dir: string, message: string, fromCommit?: string,
+): Promise<{ from: string; to: string; commits: string[] } | { error: string }> {
+  const before = fromCommit === undefined ? await git(dir, ['rev-parse', 'HEAD']) : { code: 0, stdout: fromCommit, stderr: '' };
   if (before.code !== 0) return { error: before.stderr.trim() || 'HEAD could not be read' };
   const from = before.stdout.trim();
   const status = await git(dir, ['status', '--porcelain']);
   if (status.stdout.trim() !== '') {
     const added = await git(dir, ['add', '-A']);
     if (added.code !== 0) return { error: added.stderr.trim() || 'git add failed' };
-    const committed = await git(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit', '-m', message]);
-    if (committed.code !== 0) return { error: committed.stderr.trim() || committed.stdout.trim() || 'git commit failed' };
+    const staged = await git(dir, ['diff', '--cached', '--quiet']);
+    if (staged.code !== 0) {
+      const committed = await git(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit', '-m', message]);
+      if (committed.code !== 0) return { error: committed.stderr.trim() || committed.stdout.trim() || 'git commit failed' };
+    }
   }
   const after = await git(dir, ['rev-parse', 'HEAD']);
   const to = after.stdout.trim();

@@ -55,6 +55,12 @@ teamai init https://code.qschou.com/Enterprise/arb-workflow-kit.git --scope user
 teamai init git@code.qschou.com:Enterprise/arb-workflow-kit.git --scope user
 ```
 
+通用 provider 保留克隆路径，包括原地址是否带 `.git` 后缀。Azure Repos 也使用此 provider：
+
+```bash
+teamai init https://dev.azure.com/org/project/_git/repo
+```
+
 通用 provider 不读取或保存平台 Token，而是让系统 `git` 处理认证：
 
 - HTTPS：预先配置 Git Credential Helper；不要把用户名、密码或 Token 写进 URL。

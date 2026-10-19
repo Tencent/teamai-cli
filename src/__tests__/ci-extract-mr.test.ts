@@ -89,6 +89,18 @@ describe('ciExtractMr', () => {
     );
   });
 
+  it('hands its --comment-marker to the extraction so its own comments stay out of the review threads (#1187)', async () => {
+    await ciExtractMr({
+      url: 'https://github.com/org/repo/pull/1',
+      mode: 'comment',
+      commentMarker: '<!-- learning-bot -->',
+    });
+
+    expect(mockImportFromMR).toHaveBeenCalledWith(expect.objectContaining({
+      commentMarker: '<!-- learning-bot -->',
+    }));
+  });
+
   it('write 模式需要 --team-repo 参数', async () => {
     await expect(ciExtractMr({
       url: 'https://github.com/org/repo/pull/1',

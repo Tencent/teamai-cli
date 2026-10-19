@@ -1235,6 +1235,7 @@ program
   .option('--dir <path>', 'Extract code knowledge from a local directory (same as --from-repo but no clone)')
   .addOption(new Option('--from-claude', 'Scan Claude/Cursor rule directories (the Claude root\'s rules/ — ~/.claude or the recorded toolRoots.claude — and ~/.cursor/rules)').hideHelp())
   .option('--from-mr <url...>', 'Extract learning from one or more merged MRs/PRs and trigger incremental teamwiki update')
+  .option('--no-discussions', 'Leave the MR\'s review threads out of the extraction (with --from-mr)')
   .option('--from-iwiki <space-id-or-url>', 'Import documents from iWiki Space ID or page URL (requires TAI_PAT_TOKEN)')
   .addOption(new Option('--resume', 'Resume an interrupted import session').hideHelp())
   .option('--all', 'Accept all suggestions without interactive confirmation')
@@ -1246,6 +1247,7 @@ program
   .addOption(new Option('--concurrency <n>', 'Concurrent repos for --from-repo-list (default 3)').default('3').hideHelp())
   .option('--incremental', 'Re-extract only files changed since the last import (with --dir, --from-repo or --from-repo-list; remote repos also reuse the cached clone)')
   .option('--skip-enrich', 'Skip AI enrichment (only clone + extract + graph, no LLM calls)')
+  .option('--max-files <n>', 'Max source files collected per repository (default 200)')
   .option('--from-org <org>', 'List repos under an org and generate a repo whitelist')
   .addOption(new Option('--max-repos <n>', 'Cap on repos pulled from --from-org (default 200)').default('200').hideHelp())
   .addOption(new Option('--exclude-archived', 'Exclude archived repos from --from-org (default true)').hideHelp())
@@ -1349,6 +1351,7 @@ ciCmd
   .option('--write-mode <mode>', 'Write strategy: direct | pending-review', 'direct')
   .option('--output <dir>', 'Write artifacts to directory')
   .option('--individual-comments', 'Post each suggestion as separate comment with reaction/resolve support')
+  .option('--no-discussions', 'Leave the MR\'s review threads out of the extraction')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { ciExtractMr } = await import('./ci/extract-mr.js');

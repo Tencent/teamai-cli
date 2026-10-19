@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { parseReportedAgent, settleObservation, type ReportedAgent } from '../agent-observation.js';
 import { acquireLock, releaseLock } from '../update.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, workflowsRunBy } from './cache.js';
@@ -58,6 +59,7 @@ export interface ReportInput {
   failure?: WorkflowFailure;
   /** The branch this attempt committed, when it ran in a workspace. */
   changes?: { branch: string; base: string; from: string; to: string; commits: string[] };
+  agent?: ReportedAgent;
 }
 
 function error(code: string, message: string): WorkflowEnvelope {
@@ -118,6 +120,8 @@ async function withRun<T extends WorkflowEnvelope>(
 interface RenderedLease {
   prompt?: string;
   env?: Record<string, string>;
+  /** The `defaults.model` in effect for a prompt step, as written. */
+  defaultModel?: string;
 }
 
 function workflowLabel(scope: Scope): string {
@@ -173,6 +177,7 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
   return {
     ...(rendered.has('prompt') ? { prompt: rendered.get('prompt') } : {}),
     ...(definition.env ? { env: Object.fromEntries(env) } : {}),
+    ...(definition.prompt !== undefined && scope.defaultModel !== undefined ? { defaultModel: scope.defaultModel } : {}),
   };
 }
 
@@ -189,6 +194,8 @@ function leaseData(
     ...(rendered.env ? { env: rendered.env } : {}),
     ...(rendered.prompt !== undefined ? { prompt: rendered.prompt } : {}),
     ...(definition.agent !== undefined ? { agent: definition.agent } : {}),
+    ...(definition.model !== undefined ? { model: definition.model } : {}),
+    ...(rendered.defaultModel !== undefined ? { defaultModel: rendered.defaultModel } : {}),
     ...(definition.output ? { output: definition.output } : {}),
     ...(plan?.contract ? { workspace: plan.contract } : {}),
     ...(plan?.session ? { session: plan.session } : {}),
@@ -845,7 +852,7 @@ const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base'
 
 /** The top-level payload fields `parseReport` reads. Keep in sync with the fields it picks. */
 const REPORT_FIELDS = new Set([
-  'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'tokens', 'failure', 'changes',
+  'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'tokens', 'failure', 'changes', 'agent',
 ]);
 
 /**
@@ -928,6 +935,11 @@ export function parseReport(value: unknown): ParsedReport | string {
       return 'changes.commits must be an array of strings';
     }
     report.changes = { branch: value.branch, base: value.base, from: value.from, to: value.to, commits: value.commits };
+  }
+  if (record.agent !== undefined) {
+    const agent = parseReportedAgent(record.agent);
+    if (typeof agent === 'string') return agent;
+    report.agent = agent;
   }
   return { report, ignored: unreadFields(record, REPORT_FIELDS) };
 }
@@ -1054,6 +1066,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       session: report.session,
       tokens: report.tokens,
       ...(report.changes ? { changes: report.changes } : {}),
+      agent: settleObservation(report, defined?.agent),
     };
     if (report.changes) {
       const copy = (run.copies ??= {})[report.changes.branch] ?? { owner: report.driver };

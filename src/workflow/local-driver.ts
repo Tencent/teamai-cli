@@ -8,17 +8,29 @@ import {
   reverseFromClaude,
   reverseFromCodex,
   reverseFromOpencode,
+  toolExtrasFor,
   type AgentSpec,
   type ToolName,
 } from '../resources/agent-format.js';
+import { observeLaunch } from '../agent-observation.js';
 import { exitLike } from '../env-exec.js';
+import { workflowLaunch } from '../launch-context.js';
 import { getDataHome, resolveToolBaseDir, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { leaseNext, reportAttempt } from './engine.js';
 import { isRecord } from './expression.js';
-import { createLocalToolAdapter, isLocalWorkflowTool, localToolFamily, type LocalToolAdapter, type LocalWorkflowTool } from './local-tool-adapter.js';
+import {
+  createLocalToolAdapter,
+  isLocalWorkflowTool,
+  localToolFamily,
+  type LocalToolAdapter,
+  type LocalToolResult,
+  type LocalToolRun,
+  type LocalWorkflowTool,
+} from './local-tool-adapter.js';
+import { chooseStepModel } from './step-model.js';
 import type { DriverIdentity, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isWorkflowError } from './types.js';
 import type { WorkspaceContract } from './workspace.js';
@@ -123,13 +135,16 @@ export interface LocalDriverOptions {
 }
 
 interface Lease {
-  step?: string;
+  /** The step path, such as `check.classify` inside a sub-workflow. */
+  step: string;
   attempt: string;
   revision: number;
   command?: string;
   env?: Record<string, string>;
   prompt?: string;
   agent?: string;
+  model?: string;
+  defaultModel?: string;
   workspace?: WorkspaceContract;
   session?: { tool: string; id: string };
   /** Set once the step has a directory to run in. */
@@ -137,6 +152,8 @@ interface Lease {
   before?: WorktreeSnapshot;
   /** Branch agent files saved while the base overlay is in place. */
   overlay?: string;
+  /** HEAD before this step merges or commits, so the reported range includes both. */
+  rangeFrom?: string;
 }
 
 function stringMap(value: unknown): Record<string, string> | undefined {
@@ -158,6 +175,11 @@ function ignoredCodexSettings(agent: AgentSpec): string[] {
   return agent.tools?.length ? ['tools', ...extras] : extras;
 }
 
+function definitionRun(tool: LocalWorkflowTool, name: string, agent: AgentSpec): NonNullable<LocalToolRun['agent']> {
+  const settings = localToolFamily(tool) === 'opencode' ? toolExtrasFor(agent, 'opencode') : undefined;
+  return { name, instructions: agent.instructions, ...(agent.model ? { model: agent.model } : {}), ...(settings ? { settings } : {}) };
+}
+
 function reverseAgent(tool: LocalWorkflowTool, file: string, content: string) {
   const family = localToolFamily(tool);
   if (family === 'claude') return reverseFromClaude(file, content);
@@ -165,12 +187,13 @@ function reverseAgent(tool: LocalWorkflowTool, file: string, content: string) {
   return reverseFromOpencode(file, content);
 }
 
+/** A deployed agent and the file it was read from, which is the key its pull recorded it under. */
 async function loadAgent(
   tool: LocalWorkflowTool,
   name: string,
   config: LocalConfig,
   toolPaths: TeamaiConfig['toolPaths'] | undefined,
-): Promise<AgentSpec | null> {
+): Promise<{ spec: AgentSpec; file: string } | null> {
   const agents = toolPaths?.[tool]?.agents;
   if (!agents) return null;
   // The same directory `teamai pull` writes: the tool base for this scope, not the step's cwd.
@@ -178,7 +201,7 @@ async function loadAgent(
   const content = await readFileSafe(file);
   if (content === null) return null;
   const reversed = reverseAgent(tool, file, content);
-  return reversed.ok ? reversed.spec : null;
+  return reversed.ok ? { spec: reversed.spec, file } : null;
 }
 
 interface WorktreeSnapshot {
@@ -250,18 +273,20 @@ function workspaceOf(value: unknown): WorkspaceContract | undefined {
 
 function parseLease(raw: unknown): Lease | undefined {
   const rawLease = raw as Record<string, unknown> | undefined;
-  if (!rawLease || typeof rawLease.attempt !== 'string' || typeof rawLease.revision !== 'number') return undefined;
+  if (!rawLease || typeof rawLease.step !== 'string' || typeof rawLease.attempt !== 'string' || typeof rawLease.revision !== 'number') return undefined;
   const env = stringMap(rawLease.env);
   const session = isRecord(rawLease.session) && typeof rawLease.session.tool === 'string' && typeof rawLease.session.id === 'string'
     ? { tool: rawLease.session.tool, id: rawLease.session.id } : undefined;
   const lease: Lease = {
-    ...(typeof rawLease.step === 'string' ? { step: rawLease.step } : {}),
+    step: rawLease.step,
     attempt: rawLease.attempt,
     revision: rawLease.revision,
     ...(typeof rawLease.command === 'string' ? { command: rawLease.command } : {}),
     ...(env ? { env } : {}),
     ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
     ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
+    ...(typeof rawLease.model === 'string' ? { model: rawLease.model } : {}),
+    ...(typeof rawLease.defaultModel === 'string' ? { defaultModel: rawLease.defaultModel } : {}),
     ...(workspaceOf(rawLease.workspace) ? { workspace: workspaceOf(rawLease.workspace) } : {}),
     ...(session ? { session } : {}),
   };
@@ -282,6 +307,7 @@ async function stageLease(active: string, lease: Lease): Promise<WorkflowFailure
   const opened = await ensureWorktree(active, lease.workspace.branch, lease.workspace.start.commit);
   if ('error' in opened) return { code: 'workspace_base', message: opened.error };
   lease.cwd = opened.dir;
+  lease.rangeFrom = (await headCommit(opened.dir))?.commit;
   let conflict: { branch: string; files: string[] } | undefined;
   const remaining: string[] = [];
   for (const merge of lease.workspace.merge) {
@@ -289,7 +315,7 @@ async function stageLease(active: string, lease: Lease): Promise<WorkflowFailure
       remaining.push(merge.branch);
       continue;
     }
-    const result = await mergeBranch(opened.dir, merge.branch);
+    const result = await mergeBranch(opened.dir, merge.commit);
     if (result.conflict) conflict = { branch: merge.branch, files: result.files };
   }
   if (conflict && lease.command !== undefined) {
@@ -346,7 +372,7 @@ async function resumeSession(lease: Lease, tool: LocalWorkflowTool, cwd: string)
 async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?: { branch: string; base: string; from: string; to: string; commits: string[] }; failure?: WorkflowFailure }> {
   if (!lease.workspace || !lease.cwd) return {};
   if (lease.overlay) await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
-  const committed = await commitWork(lease.cwd, `teamai: ${lease.step ?? lease.attempt}`);
+  const committed = await commitWork(lease.cwd, `teamai: ${lease.step}`, lease.rangeFrom);
   if ('error' in committed) return { failure: { code: 'push_failed', message: committed.error } };
   const pushed = push ? await pushIfOrigin(lease.cwd, lease.workspace.branch, committed.commits) : 'unchanged';
   const changes = {
@@ -406,7 +432,8 @@ async function promptReport(
     const failure = { code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` };
     return { attempt: lease.attempt, revision: lease.revision, driver, tool: selected, ...failureReport(failure) };
   }
-  const agent = lease.agent ? await loadAgent(selected, lease.agent, config, options.toolPaths) : undefined;
+  const loaded = lease.agent ? await loadAgent(selected, lease.agent, config, options.toolPaths) : undefined;
+  const agent = loaded?.spec;
   if (lease.agent && !agent) {
     const failure = {
       code: 'agent_unavailable',
@@ -414,6 +441,10 @@ async function promptReport(
     };
     return { attempt: lease.attempt, revision: lease.revision, driver, tool: selected, ...failureReport(failure) };
   }
+  const chosen = await chooseStepModel({
+    step: lease.step, tool: selected, model: lease.model, defaultModel: lease.defaultModel, agent: agent ?? undefined, config,
+  });
+  if (!chosen.ok) return { attempt: lease.attempt, revision: lease.revision, driver, tool: selected, ...failureReport(chosen.failure) };
   if (agent && localToolFamily(selected) === 'codex') {
     const ignored = ignoredCodexSettings(agent);
     if (ignored.length > 0) {
@@ -423,17 +454,35 @@ async function promptReport(
   const cwd = lease.cwd ?? driver.workspace;
   const before = lease.before ?? await snapshotWorktree(cwd);
   const resume = await resumeSession(lease, selected, cwd);
-  let result;
+  const definitionModel = chosen.model && chosen.by === 'definition'
+    ? { model: chosen.model.name, ...(chosen.model.effort ? { effort: chosen.model.effort } : {}) }
+    : {};
+  const [observed, launch] = await Promise.all([
+    observeLaunch({
+      config,
+      tool: selected,
+      cwd,
+      ...(lease.agent && loaded ? { definition: { stem: lease.agent, file: loaded.file, ...definitionModel } } : {}),
+      ...(chosen.model && chosen.by !== 'definition'
+        ? { chosen: { model: chosen.model.name, ...(chosen.model.effort ? { effort: chosen.model.effort } : {}), ...(chosen.alias ? { alias: chosen.alias } : {}) } }
+        : {}),
+    }),
+    workflowLaunch(config, selected),
+  ]);
+  let result: LocalToolResult;
   try {
     result = await adapter.run(selected, {
       prompt: lease.prompt!,
       cwd,
       resultPath: attemptResultPath,
+      ...(launch ? { launch } : {}),
       ...(resume ? { resume } : {}),
-      ...(agent ? { agent: { name: lease.agent!, instructions: agent.instructions, ...(agent.model ? { model: agent.model } : {}) } } : {}),
+      ...(agent ? { agent: definitionRun(selected, lease.agent!, agent) } : {}),
+      ...(chosen.model ? { model: chosen.model } : {}),
     });
   } catch {
     result = {
+      started: false,
       exitCode: 1,
       failure: { code: 'tool_failed', message: `${selected} could not complete the workflow step` },
     };
@@ -445,15 +494,18 @@ async function promptReport(
     : undefined;
   const finished = lease.workspace && !dirtyFailure ? await finishWorkspace(lease, result.exitCode === 0 && !result.failure) : {};
   const failure = dirtyFailure ?? finished.failure ?? result.failure;
+  const ran = result.started ? result : undefined;
   return {
     attempt: lease.attempt,
     revision: lease.revision,
     driver,
     tool: selected,
-    ...(result.model ?? agent?.model ? { model: result.model ?? agent?.model } : {}),
-    ...(result.session ? { session: result.session } : {}),
-    ...(result.tokens ? { tokens: result.tokens } : {}),
-    ...(result.output !== undefined ? { outputs: result.output } : {}),
+    ...(ran?.model ? { model: ran.model } : {}),
+    ...(ran?.session ? { session: ran.session } : {}),
+    ...(ran?.tokens ? { tokens: ran.tokens } : {}),
+    ...(ran?.output !== undefined ? { outputs: ran.output } : {}),
+    // How the definition was handed over is known only once the launch resolved its tool: OpenCode's depends on its major.
+    ...(ran ? { agent: ran.applied ? { ...observed, definition: { applied: ran.applied } } : observed } : {}),
     exitCode: result.exitCode,
     ...(finished.changes ? { changes: finished.changes } : {}),
     ...(failure ? failureReport(failure) : { outcome: result.exitCode === 0 ? 'success' : 'failed' }),

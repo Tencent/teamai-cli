@@ -122,17 +122,14 @@ export function mergeStats(
     }
   }
 
+  // Every field this report does not refresh carries over, so a partial report
+  // never drops another writer's data (#425, #1170). Callers overwrite
+  // interventions/prompts/tokens/daily when that report carries a delta.
   return {
+    ...existing,
     username,
     updatedAt: new Date().toISOString(),
     skills,
-    // Preserve session metrics across partial reports (Issue #425).
-    // mergeStats only refreshes skills/username/updatedAt; callers overwrite
-    // interventions/prompts/tokens when that report carries a non-empty delta.
-    ...(existing?.interventions !== undefined ? { interventions: existing.interventions } : {}),
-    ...(existing?.prompts !== undefined ? { prompts: existing.prompts } : {}),
-    ...(existing?.tokens !== undefined ? { tokens: existing.tokens } : {}),
-    ...(existing?.daily !== undefined ? { daily: existing.daily } : {}),
   };
 }
 
@@ -1023,7 +1020,7 @@ export async function reportUsageToTeam(
 
         // See also: stats.ts mergeLocalAndReported() — same merge logic for display.
         // mergeStats with [] preserves existing skills while refreshing username/updatedAt,
-        // and carries interventions/prompts/tokens so partial reports do not clobber them (#425).
+        // and carries every other field so partial reports do not clobber them (#425, #1170).
         const existing = await readExistingStats(statsPath);
         if (useReportsBranch) {
           const previousContent = await readFileSafe(statsPath);

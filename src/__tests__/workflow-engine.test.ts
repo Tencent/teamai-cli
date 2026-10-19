@@ -8,6 +8,7 @@ import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, parseNextPayload, parseReport, reportAttempt, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
 import { runLocalDriver } from '../workflow/local-driver.js';
+import { getCurrentVersion } from '../package-info.js';
 import { outputMismatch } from '../workflow/output.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { readRun, runFilePath, runLockPath, writeRun } from '../workflow/store.js';
@@ -1877,9 +1878,9 @@ describe('run records of graph runs', () => {
 
     expect((await endRecord(config))?.steps).toEqual([
       { step: 'check', pass: 1, outcome: 'success' },
-      { step: 'check.classify', pass: 1, agent: 'classifier', tool: 'claude', model: 'claude-sonnet', outcome: 'success', tokens: { input: 10, output: 5 } },
+      { step: 'check.classify', pass: 1, agent: { definition: { name: 'classifier' } }, tool: 'claude', model: 'claude-sonnet', outcome: 'success', tokens: { input: 10, output: 5 } },
       { step: 'check.comment', pass: 1, outcome: 'success' },
-      { step: 'fix', pass: 1, agent: 'implementer', tool: 'codex', model: 'gpt-codex', outcome: 'success', tokens: { input: 20, output: 8 } },
+      { step: 'fix', pass: 1, agent: { definition: { name: 'implementer' } }, tool: 'codex', model: 'gpt-codex', outcome: 'success', tokens: { input: 20, output: 8 } },
     ]);
   });
 
@@ -1956,7 +1957,7 @@ describe('run records of graph runs', () => {
     const record = await endRecord(config);
     expect(record?.steps).toEqual([
       { step: 'review', pass: 1, outcome: 'success' },
-      { step: 'review.read', pass: 1, agent: 'reviewer', outcome: 'success' },
+      { step: 'review.read', pass: 1, agent: { definition: { name: 'reviewer' } }, outcome: 'success' },
       { step: 'check', pass: 1, outcome: 'failed' },
       { step: 'check.classify', pass: 1, outcome: 'success' },
       { step: 'check.comment', pass: 1, outcome: 'failed' },
@@ -2101,7 +2102,7 @@ describe('run records of graph runs', () => {
 
     expect(leased).toEqual(['plan#1', 'build[0].review#1', 'check#1', 'plan#2', 'check#2']);
     expect((await endRecord(config))?.steps?.filter((entry) => entry.step === 'build[0].review')).toEqual([
-      { step: 'build[0].review', pass: 1, agent: 'reviewer', outcome: 'success' },
+      { step: 'build[0].review', pass: 1, agent: { definition: { name: 'reviewer' } }, outcome: 'success' },
     ]);
   });
 });
@@ -3923,5 +3924,170 @@ ${pair(prompt, '      ')}`, header) }), 'each[0].s', true],
     const started = await startRun(fixture.config, 'top', inputs);
     if ('error' in started) throw new Error(started.error.message);
     expect(leaseIn(await leaseNext(fixture.config, String(started.data.run), driverA)).step).toBe(step);
+  });
+});
+
+describe('the model a prompt step lease carries', () => {
+  type ModelFields = { model?: unknown; defaultModel?: unknown };
+
+  /** Leases every step in turn, each reported a success, and returns the model fields of each lease by step. */
+  async function leasedModels(config: LocalConfig, runId: string): Promise<Record<string, ModelFields>> {
+    const models: Record<string, ModelFields> = {};
+    for (;;) {
+      const next = await leaseNext(config, runId, driverA);
+      if ('error' in next) throw new Error(next.error.message);
+      if (next.data.done) return models;
+      const lease = next.data.lease as { step: string; attempt: string; revision: number } & ModelFields;
+      models[lease.step] = {
+        ...('model' in lease ? { model: lease.model } : {}),
+        ...('defaultModel' in lease ? { defaultModel: lease.defaultModel } : {}),
+      };
+      const reported = await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: driverA });
+      if ('error' in reported) throw new Error(reported.error.message);
+    }
+  }
+
+  it('carries the step model and defaults.model as written on prompt steps, and neither on a command step', async () => {
+    const { config, runId } = await startTree({ build: graph(`  - id: plan
+    prompt: Plan it.
+    model: strong
+  - id: compile
+    needs: [plan]
+    command: node compile.js
+  - id: summary
+    needs: [compile]
+    prompt: Summarize it.
+  - id: check
+    needs: [summary]
+    for_each: inputs.targets
+    prompt: Check {{ item }}.
+`, 'inputs: { targets: [string] }\ndefaults:\n  model: fast\n') }, 'build', { targets: ['a'] });
+
+    expect(await leasedModels(config, runId)).toEqual({
+      plan: { model: 'strong', defaultModel: 'fast' },
+      compile: {},
+      summary: { defaultModel: 'fast' },
+      'check[0]': { defaultModel: 'fast' },
+    });
+  });
+
+  it('gives the steps of an inline workflow the enclosing defaults.model, also on a lease handed back', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: check
+    workflow:
+      steps:
+        - id: classify
+          prompt: Classify it.
+`, 'defaults:\n  model: fast\n'));
+
+    const first = await leaseNext(config, runId, driverA);
+    const again = await leaseNext(config, runId, driverA);
+
+    expect(first).toMatchObject({ data: { lease: { step: 'check.classify', defaultModel: 'fast' } } });
+    expect(again).toMatchObject({ data: { lease: { step: 'check.classify', defaultModel: 'fast' } } });
+  });
+
+  it('gives the steps of a workflow file its own defaults.model, or else the one in effect for the step that runs it', async () => {
+    const { config, runId } = await startTree({
+      own: workflow('own', `  - id: classify
+    prompt: Classify it.
+`, 'defaults:\n  model: strong\n'),
+      plain: workflow('plain', `  - id: comment
+    prompt: Comment on it.
+  - id: label
+    needs: [comment]
+    command: node label.js
+`),
+      build: graph(`  - id: first
+    workflow: own
+  - id: second
+    needs: [first]
+    workflow: plain
+`, 'defaults:\n  model: fast\n'),
+    }, 'build');
+
+    expect(await leasedModels(config, runId)).toEqual({
+      'first.classify': { defaultModel: 'strong' },
+      'second.comment': { defaultModel: 'fast' },
+      'second.label': {},
+    });
+  });
+});
+
+describe('the agent a pass ran as (#1176)', () => {
+  const REVIEW = workflow('build', `  - id: review
+    prompt: Review the change.
+    agent: reviewer
+`);
+
+  async function leaseReview(): Promise<{ config: LocalConfig; runId: string; lease: { attempt: string; revision: number } }> {
+    const { config, runId } = await startTree({ build: REVIEW }, 'build');
+    const next = await leaseNext(config, runId, driverB);
+    if ('error' in next) throw new Error(next.error.message);
+    const { attempt, revision } = next.data.lease as { attempt: string; revision: number };
+    return { config, runId, lease: { attempt, revision } };
+  }
+
+  it('keeps the engine\'s own teamai, driver and definition and drops a version that is a path', async () => {
+    const { config, runId, lease } = await leaseReview();
+    const parsed = parseReport({
+      ...lease,
+      outcome: 'success',
+      driver: driverB,
+      tool: 'claude',
+      model: 'claude-opus-4-1-20250805',
+      agent: {
+        teamai: '0.0.1',
+        driver: 'spoofed',
+        definition: { name: 'spoofed', applied: 'main' },
+        tool: { name: 'other', version: '/usr/local/bin/claude' },
+        model: { requested: 'claude-opus-4-1' },
+      },
+    });
+    if (typeof parsed === 'string') throw new Error(parsed);
+    expect(parsed.ignored).toEqual([]);
+
+    await reportAttempt(config, runId, parsed.report);
+    await leaseNext(config, runId, driverB);
+
+    const agent = {
+      v: 1,
+      definition: { name: 'reviewer', applied: 'main' },
+      tool: { name: 'claude' },
+      model: { requested: 'claude-opus-4-1', reported: 'claude-opus-4-1-20250805' },
+      teamai: getCurrentVersion(),
+      driver: 'external',
+    };
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ agent }] });
+    expect((await endRecord(config))?.steps).toEqual([
+      { step: 'review', pass: 1, agent, tool: 'claude', model: 'claude-opus-4-1-20250805', outcome: 'success' },
+    ]);
+  });
+
+  it('rejects an agent that is not an object', () => {
+    expect(parseReport({ attempt: 'a00000000', revision: 1, outcome: 'success', driver: driverA, agent: 'reviewer' }))
+      .toBe('agent must be an object');
+  });
+
+  it('records the definition alone for a pass that reported no agent', async () => {
+    const { config, runId, lease } = await leaseReview();
+    await reportAttempt(config, runId, { ...lease, outcome: 'success', driver: driverB, tool: 'claude' });
+    await leaseNext(config, runId, driverB);
+
+    expect((await endRecord(config))?.steps).toEqual([
+      { step: 'review', pass: 1, agent: { definition: { name: 'reviewer' } }, tool: 'claude', outcome: 'success' },
+    ]);
+  });
+
+  it('reads a stored agent it cannot parse as none, not as a corrupt run', async () => {
+    const { config, runId, lease } = await leaseReview();
+    await reportAttempt(config, runId, { ...lease, outcome: 'success', driver: driverB, tool: 'claude', agent: {} });
+    const raw = JSON.parse(fs.readFileSync(runFilePath(config, runId), 'utf8')) as { steps: Array<Record<string, unknown>> };
+    raw.steps[0].agent = { v: 2, tool: { name: 'claude' } };
+    fs.writeFileSync(runFilePath(config, runId), JSON.stringify(raw));
+
+    const stored = await readRun(config, runId);
+
+    expect(stored).toMatchObject({ steps: [{ status: 'succeeded', tool: 'claude' }] });
+    expect(typeof stored === 'object' && stored.steps[0]).toEqual(expect.not.objectContaining({ agent: expect.anything() }));
   });
 });

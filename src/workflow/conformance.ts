@@ -15,9 +15,12 @@ export interface ConformanceScenario {
   operations: ConformanceOperation[];
 }
 
-/** `running` and `cancelled` name leases that earlier operations saved; `cancelled` must match exactly. */
+/**
+ * `running` and `cancelled` name leases that earlier operations saved; `cancelled` must match exactly.
+ * `absent` lists fields the lease must not carry.
+ */
 export type ConformanceOperation =
-  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; cancelled?: string[]; expect: Record<string, unknown> }
+  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; cancelled?: string[]; absent?: string[]; expect: Record<string, unknown> }
   | {
     kind: 'report';
     lease?: string;
@@ -104,6 +107,20 @@ description: The workflow build runs.
 steps:
   - id: classify
     command: echo classify
+`;
+
+const PROMPT_MODEL = `schemaVersion: v1alpha1
+name: build
+description: A prompt step lease carries its model and the default model as written.
+defaults:
+  model: fast
+steps:
+  - id: compile
+    command: echo compile
+  - id: plan
+    needs: [compile]
+    prompt: Plan it.
+    model: strong
 `;
 
 const PROMPT_WITH = `schemaVersion: v1alpha1
@@ -324,6 +341,16 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
       { kind: 'next', saveAs: 'plan', expect: { data: { lease: { step: 'plan' } } } },
       { kind: 'report', lease: 'plan', body: { outcome: 'success', outputs: { task: 'the crash' } }, expect: { data: { step: { status: 'succeeded' } } } },
       { kind: 'next', saveAs: 'fix', expect: { data: { lease: { step: 'fix', prompt: 'Fix the crash; keep ${{ inputs.version }}.' } } } },
+    ],
+  },
+  {
+    name: 'a prompt step lease carries model and defaultModel as written, and a command step lease neither',
+    workflowName: 'build',
+    yaml: PROMPT_MODEL,
+    operations: [
+      { kind: 'next', saveAs: 'compile', absent: ['model', 'defaultModel'], expect: { data: { lease: { step: 'compile' } } } },
+      { kind: 'report', lease: 'compile', body: { outcome: 'success' }, expect: { data: { step: { status: 'succeeded' } } } },
+      { kind: 'next', saveAs: 'plan', expect: { data: { lease: { step: 'plan', model: 'strong', defaultModel: 'fast' } } } },
     ],
   },
   {

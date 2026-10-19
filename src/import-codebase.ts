@@ -20,6 +20,8 @@ export interface ImportCodebaseOptions {
   /** Re-extract only what changed since this codebase's published baseline. */
   incremental?: boolean;
   skipEnrich?: boolean;
+  /** Cap on source files collected for this codebase (default 200). */
+  maxFiles?: number;
   repoUrl?: string;
   branch?: string;
   /** MR/PR recorded as ingested in source-manifest.json. */
@@ -97,6 +99,7 @@ export async function importCodebase(opts: ImportCodebaseOptions): Promise<boole
       json: false,
       incremental: seeded,
       skipEnrich: opts.skipEnrich,
+      maxFiles: opts.maxFiles,
       repoUrl: opts.repoUrl,
       branch: opts.branch,
       sourceMrUrl: opts.sourceMrUrl,

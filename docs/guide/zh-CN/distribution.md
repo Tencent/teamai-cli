@@ -177,6 +177,8 @@ teamai projects set checkout
 teamai pull
 ```
 
+`repo.localPath` 支持 `~/.teamai/team-repo` 这样的用户目录相对路径，在 Windows 上也支持原生的 `~\.teamai\team-repo` 写法。
+
 ## 把技能限定给部分成员
 
 Namespace 只对设置了角色的成员过滤：`primaryRole` 未设置的成员会同步全部技能，因此只有 `manifest/roles.yaml` 并不限定任何人。`teamai init` 会让新成员选择角色；manifest 之前入队的成员需要执行一次 `teamai roles set <role-id>`。之后的 pull 会收回新 namespace 之外、由 teamai 下发的副本（本地改过的保留）。

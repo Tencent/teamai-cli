@@ -42,6 +42,25 @@ export interface HandlerRegistration {
    * output the host injects back into the session) always run inline.
    */
   background?: boolean;
+  /**
+   * Its context is left out when the merged reply is over the host's limit
+   * and the other handlers' replies fit without it.
+   */
+  yieldsToContextLimit?: true;
+}
+
+/** The most characters Cursor takes as a hook's `additional_context`; over it, Cursor drops the whole reply. */
+export const CURSOR_HOOK_CONTEXT_LIMIT = 10_000;
+
+/** Characters of context in a merged reply, as Cursor counts them (trimmed). */
+function contextLength(output: string | null): number {
+  if (output === null) return 0;
+  try {
+    const context = asObject(asObject(JSON.parse(output))?.hookSpecificOutput)?.additionalContext;
+    return typeof context === 'string' ? context.trim().length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** Which subset of matched handlers to run in a single dispatch pass. */
@@ -214,7 +233,7 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
       }
 
       // Collect results
-      const outputs: string[] = [];
+      const outputs: Array<{ reg: HandlerRegistration; value: string }> = [];
       const errors: DispatchError[] = [];
 
       for (let i = 0; i < settled.length; i++) {
@@ -227,11 +246,23 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
             error: result.reason instanceof Error ? result.reason : new Error(String(result.reason)),
           });
         } else if (result.status === 'fulfilled' && result.value != null) {
-          outputs.push(result.value);
+          outputs.push({ reg: matched[i], value: result.value });
         }
       }
 
-      return { output: mergeHookOutputs(outputs), errors };
+      let output = mergeHookOutputs(outputs.map(({ value }) => value));
+      const length = contextLength(output);
+      if (tool === 'cursor' && length > CURSOR_HOOK_CONTEXT_LIMIT && outputs.some(({ reg }) => reg.yieldsToContextLimit)) {
+        const rest = mergeHookOutputs(outputs.filter(({ reg }) => !reg.yieldsToContextLimit).map(({ value }) => value));
+        const yielded = outputs.filter(({ reg }) => reg.yieldsToContextLimit).map(({ reg }) => reg.handler.name).join(', ');
+        if (contextLength(rest) <= CURSOR_HOOK_CONTEXT_LIMIT) {
+          log.debug(`[hook-dispatch] ${event}/${tool}: reply context is ${length} characters, over the ${CURSOR_HOOK_CONTEXT_LIMIT}-character limit; left out ${yielded}`);
+          output = rest;
+        } else {
+          log.debug(`[hook-dispatch] ${event}/${tool}: reply context is ${length} characters, over the ${CURSOR_HOOK_CONTEXT_LIMIT}-character limit even without ${yielded}; Cursor drops it`);
+        }
+      }
+      return { output, errors };
     },
   };
 }

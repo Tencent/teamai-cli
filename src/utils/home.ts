@@ -82,7 +82,8 @@ export function legacyUserHome(): string | null {
  * Expand ~ to the platform user home directory in paths.
  */
 export function expandHome(p: string): string {
-  if (p.startsWith('~/') || p === '~') {
+  // path.join converts ~/ to ~\ on Windows before manifest readers expand it.
+  if (p.startsWith('~/') || p === '~' || (process.platform === 'win32' && p.startsWith('~\\'))) {
     return path.join(getUserHome(), p.slice(1));
   }
   return p;

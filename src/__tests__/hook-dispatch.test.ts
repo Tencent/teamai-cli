@@ -185,6 +185,46 @@ describe('hook-dispatch', () => {
       expect(result.output).toBeNull();
     });
 
+    it('drops a yielding handler\'s context when the merged reply is over Cursor\'s limit, keeping the rest (#1197)', async () => {
+      const context = (text: string) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
+      const rules = createHandler('cursor-user-rules', context('R'.repeat(9_990)));
+      const env = createHandler('team-env-hint', context('Team env variables in this scope: API_URL.'));
+      const dispatcher = createDispatcher({ localConfig: null, handlers: [
+        { event: 'session-start', matcher: '*', handler: rules, yieldsToContextLimit: true },
+        { event: 'session-start', matcher: '*', handler: env },
+      ] });
+
+      const overCursor = await dispatcher.dispatch('session-start', '*', {}, 'cursor');
+      const claude = await dispatcher.dispatch('session-start', '*', {}, 'claude');
+
+      expect(JSON.parse(overCursor.output!).hookSpecificOutput.additionalContext).toBe('Team env variables in this scope: API_URL.');
+      expect(JSON.parse(claude.output!).hookSpecificOutput.additionalContext).toContain('R'.repeat(9_990));
+    });
+
+    it('keeps a yielding handler\'s context when the others alone are still over Cursor\'s limit', async () => {
+      const context = (text: string) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
+      const dispatcher = createDispatcher({ localConfig: null, handlers: [
+        { event: 'session-start', matcher: '*', handler: createHandler('cursor-user-rules', context('RULES')), yieldsToContextLimit: true },
+        { event: 'session-start', matcher: '*', handler: createHandler('mr-hint', context('M'.repeat(10_200))) },
+      ] });
+
+      const result = await dispatcher.dispatch('session-start', '*', {}, 'cursor');
+
+      expect(JSON.parse(result.output!).hookSpecificOutput.additionalContext).toContain('RULES');
+    });
+
+    it('keeps a yielding handler\'s context when the merged reply fits Cursor\'s limit', async () => {
+      const context = (text: string) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
+      const dispatcher = createDispatcher({ localConfig: null, handlers: [
+        { event: 'session-start', matcher: '*', handler: createHandler('cursor-user-rules', context('RULES')), yieldsToContextLimit: true },
+        { event: 'session-start', matcher: '*', handler: createHandler('team-env-hint', context('ENV')) },
+      ] });
+
+      const result = await dispatcher.dispatch('session-start', '*', {}, 'cursor');
+
+      expect(JSON.parse(result.output!).hookSpecificOutput.additionalContext).toBe('RULES\nENV');
+    });
+
     it('merges additionalContext from concurrent handlers', async () => {
       const first = createHandler('votes', JSON.stringify({
         hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'VOTES' },

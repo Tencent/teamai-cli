@@ -11,7 +11,7 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import os from 'node:os';
 import type { AgentAdapter, SessionMeta } from '../session-flow/adapters/base.js';
 import { ADAPTER_REGISTRY, type AdapterFactory } from '../session-flow/adapters/index.js';
-import { fidelityFromSession } from '../session-flow/migrate.js';
+import { fidelityFromSession, previewMigration } from '../session-flow/migrate.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import type { Session } from '../session-flow/ir.js';
 
@@ -214,6 +214,24 @@ describe('fidelityFromSession — 真实统计', () => {
       degradedBlocks: 1,
       degradations: [],
       warnings: ['tool_not_in_target: notebook_edit'],
+    });
+  });
+});
+
+describe('previewMigration', () => {
+  it('returns the source, target, session metadata, and computed fidelity', () => {
+    const session = makeSession();
+    const sourcePlatform = session.platform;
+    const targetPlatform = 'cursor';
+
+    expect(previewMigration(session, sourcePlatform, targetPlatform)).toEqual({
+      sourcePlatform,
+      targetPlatform,
+      sessionId: session.sessionId,
+      sessionTitle: session.title,
+      cwd: session.cwd,
+      messageCount: session.messages.length,
+      fidelity: fidelityFromSession(session, targetPlatform),
     });
   });
 });

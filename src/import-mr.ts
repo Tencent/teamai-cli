@@ -7,7 +7,7 @@ import matter from 'gray-matter';
 import { fetchGitHubPR } from './providers/github/mr-fetch.js';
 import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
 import { fetchTGitMR } from './providers/tgit/mr-fetch.js';
-import type { MRData, LearningDraft } from './types.js';
+import type { MRData, MRFetchOptions, MRThread, LearningDraft } from './types.js';
 import { callClaude } from './utils/ai-client.js';
 import { extractKeywords, findOverlappingLearnings } from './utils/dedup.js';
 import { log, spinner } from './utils/logger.js';
@@ -19,51 +19,155 @@ const DEFAULT_LEARNINGS_DIR = path.join(getUserHome(), '.teamai', 'learnings');
 /**
  * Auto-detects the provider from the URL and fetches MR data.
  *
- * @param url  Full URL of the MR / PR
- * @returns    Normalized MRData object
- * @throws     Error when the URL does not belong to a known provider
+ * @param url   Full URL of the MR / PR
+ * @param opts  What to read besides the MR, its commits and its diff
+ * @returns     Normalized MRData object
+ * @throws      Error when the URL does not belong to a known provider
  */
-async function fetchMR(url: string): Promise<MRData> {
+async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
   if (url.includes('github.com')) {
-    return fetchGitHubPR(url);
+    return fetchGitHubPR(url, opts);
   }
   if (url.includes('git.woa.com')) {
-    return fetchTGitMR(url);
+    return fetchTGitMR(url, opts);
   }
   // GitLab (incl. self-hosted): the `/-/merge_requests/` route is unique to
   // GitLab, so it identifies the platform on any host.
   if (/\/-\/merge_requests\/\d+/.test(url)) {
-    return fetchGitLabMR(url);
+    return fetchGitLabMR(url, opts);
   }
   throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit and GitLab are supported`);
+}
+
+/** Characters of the prompt the review threads may take (#1187). */
+const THREADS_BUDGET = 6000;
+/** Characters one thread may take before it is shortened to its first and last notes. */
+const THREAD_MAX = 1500;
+/** Characters one note may take. */
+const NOTE_MAX = 500;
+
+function clip(text: string, max: number): string {
+  const trimmed = text.trim();
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1)}…`;
+}
+
+/**
+ * Renders the review threads for the extraction prompt (#1187).
+ *
+ * Threads with a reply come first and single unanswered remarks last, so a
+ * budget cut drops the remarks. Each thread names the file and line it is
+ * anchored to and whether it is resolved, then its notes in order, each marked
+ * as the MR author's or a reviewer's. A thread over {@link THREAD_MAX} keeps
+ * its first and last notes; once the budget is reached the rest of the
+ * threads are counted, not cut off mid-thread.
+ *
+ * @param threads   The MR's review threads
+ * @param mrAuthor  The MR author's username, to mark their notes
+ * @param budget    Characters the section may take
+ */
+export function formatMrThreads(threads: MRThread[], mrAuthor: string | undefined, budget = THREADS_BUDGET): string {
+  const ordered = [...threads.filter((t) => t.notes.length > 1), ...threads.filter((t) => t.notes.length <= 1)];
+  const sections: string[] = [];
+  let used = 0;
+  for (const [index, thread] of ordered.entries()) {
+    const anchor = thread.file ? ` — ${thread.file}${thread.line !== undefined ? `:${thread.line}` : ''}` : '';
+    const state = thread.resolved === undefined ? '' : thread.resolved ? ' (resolved)' : ' (unresolved)';
+    const header = `### Thread ${index + 1}${anchor}${state}`;
+    const line = (note: MRThread['notes'][number]): string => {
+      const role = note.author !== undefined && note.author === mrAuthor ? 'author' : 'reviewer';
+      const who = note.author ? `${role} ${note.author}` : role;
+      return `- [${who}] ${clip(note.body, NOTE_MAX).replace(/\n+/g, '\n  ')}`;
+    };
+    let lines = thread.notes.map(line);
+    if (lines.join('\n').length > THREAD_MAX && thread.notes.length > 2) {
+      lines = [lines[0], `- (${thread.notes.length - 2} notes omitted)`, lines[lines.length - 1]];
+    }
+    const section = `${header}\n${lines.join('\n')}`;
+    if (used + section.length + 2 > budget) {
+      const left = ordered.length - index;
+      sections.push(`(${left} more thread${left === 1 ? '' : 's'} omitted)`);
+      break;
+    }
+    sections.push(section);
+    used += section.length + 2;
+  }
+  return sections.join('\n\n');
 }
 
 /**
  * Builds the learning extraction prompt.
  *
- * @param mr  MR data object
- * @returns   Full prompt string for callClaude
+ * The MR's review threads, when the fetch read any, get a section of their
+ * own after the diff, and the model is told that a decision reached in a
+ * resolved thread outweighs a restatement of the diff (#1187). `language`
+ * `en` asks for an English learning with English headings; `zh` or unset
+ * keeps the Chinese one.
+ *
+ * @param mr        MR data object
+ * @param language  The team's `language` from teamai.yaml
+ * @returns         Full prompt string for callClaude
  */
-function extractMRLearningPrompt(mr: MRData): string {
+export function extractMRLearningPrompt(mr: MRData, language?: 'en' | 'zh'): string {
   const commitsFormatted = mr.commits
     .map((c) => `- ${c.hash.slice(0, 8)}: ${c.message}`)
     .join('\n');
   const diff3000 = mr.diff.slice(0, 3000);
   const author = mr.author ?? 'unknown';
   const date = mr.mergedAt ? mr.mergedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
-
-  return `你是团队知识库管理员。从以下 MR 信息提炼一条有价值的团队 learning。
-【必须】用中文撰写，输出完整 Markdown 文档（含 YAML frontmatter）。
-
-frontmatter 字段（严格按此格式，不要加其他字段）：
----
-title: "<简短标题，描述核心问题或发现，<60字符>"
+  const threads = mr.discussions && mr.discussions.length > 0 ? formatMrThreads(mr.discussions, mr.author) : '';
+  const frontmatter = (titleHint: string): string => `---
+title: "${titleHint}"
 author: ${author}
 date: ${date}
 tags: [tag1, tag2, tag3]
 confidence: 0.85
 source_mr: "${mr.url}"
+---`;
+
+  if (language === 'en') {
+    return `You are the team's knowledge base curator. Distill one valuable team learning from the MR below.
+Write in English. Output a complete Markdown document with YAML frontmatter.
+${threads ? '\nThe review threads carry the decisions: a decision reached in a resolved thread outweighs a restatement of the diff. Lead with what the review decided and why.\n' : ''}
+Frontmatter fields (exactly this format, no other fields):
+${frontmatter('<short title naming the core problem or finding, under 60 characters>')}
+
+Body structure (every section is required):
+## Background
+What was being done? What problem came up?
+
+## Solution
+How was it solved? What were the key steps?
+
+## Lessons
+- lesson 1
+- lesson 2
+
+## Related Skills
+- skill-name (or "none")
+
+Pick 2-5 tags from these groups:
+stack: python, typescript, go, k8s, docker, sglang, cuda
+problem: troubleshooting, performance, deployment, config, api
+pattern: workflow, pattern, tool-usage, best-practice
+scene: debugging, testing, monitoring, security
+
 ---
+MR title: ${mr.title}
+MR description:
+${mr.description}
+
+Commits:
+${commitsFormatted}
+
+Key diff (first 3000 characters):
+${diff3000}${threads ? `\n\nReview threads (${mr.discussions!.length}):\n${threads}` : ''}`;
+  }
+
+  return `你是团队知识库管理员。从以下 MR 信息提炼一条有价值的团队 learning。
+【必须】用中文撰写，输出完整 Markdown 文档（含 YAML frontmatter）。
+${threads ? '\nReview threads 一节记录了评审达成的决定：已 resolved 的 thread 里的决定比复述 diff 更重要，优先写评审决定了什么、为什么。\n' : ''}
+frontmatter 字段（严格按此格式，不要加其他字段）：
+${frontmatter('<简短标题，描述核心问题或发现，<60字符>')}
 
 body 结构（以下各节必须包含）：
 ## 背景
@@ -94,7 +198,7 @@ ${mr.description}
 ${commitsFormatted}
 
 关键 diff（前 3000 字）：
-${diff3000}`;
+${diff3000}${threads ? `\n\nReview threads（${mr.discussions!.length}）：\n${threads}` : ''}`;
 }
 
 /**
@@ -190,6 +294,12 @@ export async function importFromMR(opts: {
   outputFileName?: string;
   queueLearning?: (filename: string, content: string) => Promise<string>;
   dryRun?: boolean;
+  /** Read the MR's review threads into the extraction (default true; `--no-discussions` turns it off). */
+  discussions?: boolean;
+  /** The marker `ci extract-mr --comment-marker` posts with, so its own comments stay out of the threads. */
+  commentMarker?: string;
+  /** The team's `language` from teamai.yaml: `en` writes the learning in English. */
+  language?: 'en' | 'zh';
 }): Promise<{ learning?: LearningDraft; repoUrl: string; learningFile?: string }> {
   const learningsDirs = opts.learningsDirs ?? [DEFAULT_LEARNINGS_DIR];
 
@@ -199,8 +309,10 @@ export async function importFromMR(opts: {
 
   let mr: MRData;
   try {
-    mr = await fetchMR(opts.url);
-    fetchSpinner.succeed('MR data fetched');
+    mr = await fetchMR(opts.url, { discussions: opts.discussions ?? true, commentMarker: opts.commentMarker });
+    fetchSpinner.succeed(mr.discussions?.length
+      ? `MR data fetched (${mr.discussions.length} review thread${mr.discussions.length === 1 ? '' : 's'})`
+      : 'MR data fetched');
   } catch (err: unknown) {
     fetchSpinner.fail('MR data fetch failed');
     throw err;
@@ -212,7 +324,7 @@ export async function importFromMR(opts: {
 
   let learningContent: string;
   try {
-    learningContent = await callClaude(extractMRLearningPrompt(mr));
+    learningContent = await callClaude(extractMRLearningPrompt(mr, opts.language));
     aiSpinner.succeed('AI analysis complete');
   } catch (err: unknown) {
     aiSpinner.fail('AI analysis failed');

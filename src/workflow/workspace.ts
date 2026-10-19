@@ -103,7 +103,11 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
   const push = (step: StepState | undefined): void => {
     if (!step) return;
     const changes = changesOf(step);
-    if (!changes) return;
+    // A for_each step keeps each item's branch on that item, not on itself.
+    if (!changes) {
+      for (const item of itemsOf(run, step)) push(item);
+      return;
+    }
     const settledAt = 'settledAt' in step ? step.settledAt : 0;
     const earlier = ordered.findIndex((item) => item.changes.branch === changes.branch);
     if (earlier >= 0) {

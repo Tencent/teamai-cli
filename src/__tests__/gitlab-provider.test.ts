@@ -652,12 +652,16 @@ describe('fetchGitLabMR', () => {
       if (String(url) === `${base}/changes`) {
         return new Response(JSON.stringify({ changes: [{ diff: '+fixed' }] }), { status: 200 });
       }
+      if (String(url).startsWith(`${base}/discussions`)) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
       return new Response(JSON.stringify({ title: 'T', description: null, author: { username: 'a' } }), { status: 200 });
     }) as never;
 
     const mr = await fetchGitLabMR('https://gitlab.com/gitlab/g/sub/repo/-/merge_requests/7');
 
-    expect(seen).toEqual([base, `${base}/commits?per_page=50`, `${base}/changes`]);
+    // The review threads (#1187) come from the same instance root.
+    expect(seen).toEqual([base, `${base}/commits?per_page=50`, `${base}/changes`, `${base}/discussions?per_page=100&page=1`]);
     expect(mr.commits).toEqual([{ hash: 'abc123', message: 'Fix' }]);
     expect(mr.diff).toBe('+fixed');
   });

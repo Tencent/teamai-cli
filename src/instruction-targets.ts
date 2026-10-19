@@ -124,7 +124,7 @@ const codebuddyProjectRule = (paths: ToolPaths): string | undefined =>
 // One line per tool, so a change to one tool's target edits one line.
 const USER_TARGETS: Readonly<Record<string, TargetEntry>> = {
   claude: { file: configured, retired: [] },
-  // Cursor CLI reads ~/.cursor/rules when the session starts under $HOME.
+  // Cursor reads ~/.cursor/rules only in a workspace under $HOME; elsewhere its session-start hook adds the blocks (cursor-user-rules.ts).
   cursor,
   'claude-internal': { file: configured, retired: [] },
   tclaude: { file: configured, retired: [] },

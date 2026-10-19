@@ -1,13 +1,16 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { LocalConfig } from '../../types.js';
+import { getCurrentVersion } from '../../package-info.js';
+import type { LocalConfig, TeamaiConfig } from '../../types.js';
 import { syncWorkflowDefinitions } from '../../workflow/cache.js';
 import { startRun } from '../../workflow/engine.js';
 import { localDriver, runLocalDriver } from '../../workflow/local-driver.js';
+import { createLocalToolAdapter, type ToolSpawn } from '../../workflow/local-tool-adapter.js';
 import { pendingRecords } from '../../workflow/records.js';
+import { fakeClaude, recordDelivery } from '../helpers/delivered-checkout.js';
 
 // #1083 end-to-end: a real git clone with a real bare origin, driven through
 // the engine the CLI uses. The run record and the workflow stats totals must
@@ -24,6 +27,10 @@ steps:
     command: node two.js
     output:
       ok: boolean
+  - id: review
+    needs: [two]
+    prompt: Review the build.
+    agent: reviewer
 `;
 
 let sandbox = '';
@@ -70,6 +77,24 @@ describe('#1083 workflow run records reach the reports branch', () => {
       dataHome,
     };
 
+    const rev = git(repo, 'rev-parse', '--short', 'HEAD').trim();
+    const agentFile = path.join(os.homedir(), '.claude', 'agents', 'reviewer.md');
+    await fs.mkdir(path.dirname(agentFile), { recursive: true });
+    await fs.writeFile(agentFile, '---\nname: reviewer\ndescription: Reviews builds.\nmodel: claude-opus-4-1\n---\nReview carefully.\n');
+    await recordDelivery(config, {
+      rev,
+      targets: ['claude'],
+      files: [agentFile],
+      agentModels: { reviewer: { claude: { step: 'spec', model: 'claude-opus-4-1' } } },
+    });
+    const restorePath = fakeClaude(sandbox, '2.1.301');
+    // The tool prints what `claude -p --output-format stream-json --verbose` prints: an `init` event naming the model.
+    const stream = [
+      { type: 'system', subtype: 'init', session_id: 'session-1', model: 'claude-opus-4-1-20250805' },
+      { type: 'result', result: '{}', session_id: 'session-1', modelUsage: { 'claude-opus-4-1-20250805': { inputTokens: 3, outputTokens: 1 } } },
+    ].map((event) => JSON.stringify(event)).join('\n');
+    const claude: ToolSpawn = (_command, _args, options) => spawn(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(stream)})`], options);
+
     await syncWorkflowDefinitions(config);
     const started = await startRun(config, 'build', {}, { driver: localDriver(work) });
     expect(started).toMatchObject({ data: { status: 'running', record: 'published' } });
@@ -84,7 +109,11 @@ describe('#1083 workflow run records reach the reports branch', () => {
     expect(startRecord.status).toBe('running');
     expect(startRecord.username).toBe('alice');
 
-    const done = await runLocalDriver(config, runId, work);
+    const done = await runLocalDriver(config, runId, work, {
+      tools: { default: 'claude' },
+      toolPaths: { claude: { agents: '.claude/agents' } } as TeamaiConfig['toolPaths'],
+      adapter: createLocalToolAdapter(claude, () => process.execPath),
+    }).finally(restorePath);
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded', record: 'published' } } });
 
     // The end phase completed the same logical record (no duplicate file).
@@ -92,10 +121,27 @@ describe('#1083 workflow run records reach the reports branch', () => {
     const endRecord = JSON.parse(endRaw) as Record<string, unknown>;
     expect(endRecord.phase).toBe('end');
     expect(endRecord.status).toBe('succeeded');
-    expect(endRecord.stepCounts).toEqual({ total: 2, succeeded: 2, failed: 0, skipped: 0, cancelled: 0 });
+    expect(endRecord.stepCounts).toEqual({ total: 3, succeeded: 3, failed: 0, skipped: 0, cancelled: 0 });
     expect(endRecord.steps).toEqual([
       { step: 'one', pass: 1, outcome: 'success' },
       { step: 'two', pass: 1, outcome: 'success' },
+      {
+        step: 'review',
+        pass: 1,
+        agent: {
+          v: 1,
+          definition: { name: 'reviewer', applied: 'main' },
+          tool: { name: 'claude', version: '2.1.301' },
+          model: { requested: 'claude-opus-4-1', reported: 'claude-opus-4-1-20250805' },
+          team: { revision: git(repo, 'rev-parse', rev).trim(), localChanges: false },
+          teamai: getCurrentVersion(),
+          driver: 'local',
+          fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+        },
+        tool: 'claude',
+        model: 'claude-opus-4-1-20250805',
+        outcome: 'success',
+      },
     ]);
     expect(endRecord.startedAt).toBe(startRecord.startedAt);
 

@@ -31,7 +31,7 @@ team:
 |---|---|---|
 | Claude Code | `~/.claude/CLAUDE.md` | `.claude/rules/teamai-context.md` |
 | Codex 系列 | `$CODEX_HOME/AGENTS.md` | session-start hook |
-| Cursor | `~/.cursor/rules/teamai-context.mdc` | `.cursor/rules/teamai-context.mdc` |
+| Cursor | `~/.cursor/rules/teamai-context.mdc`；工作区不在主目录下时由 session-start hook 加入 | `.cursor/rules/teamai-context.mdc` |
 | CodeBuddy、WorkBuddy | 各自的用户文件 | 共用 `.codebuddy/rules/teamai-context.md` |
 | OpenCode | `~/.config/opencode/teamai-context.md` | `.opencode/teamai-context.md` |
 | Pi、Oh My Pi | 各自的用户文件 | 扩展加进系统提示 |

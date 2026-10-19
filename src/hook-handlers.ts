@@ -30,6 +30,8 @@ export interface HandlerRegistration {
   timeoutMs: number;
   /** Fire-and-forget: run detached so it can't delay host hook completion. */
   background?: boolean;
+  /** Left out first when the merged reply is over the host's context limit (see hook-dispatch.ts). */
+  yieldsToContextLimit?: true;
   /**
    * Git-provider-only handler. When teamai is configured with an HTTP source
    * (localConfig.repo.kind === 'http'), these are filtered out at the dispatch
@@ -127,6 +129,11 @@ const pullHandler: HookHandler = {
     if (config) {
       const { isAgentExcluded } = await import('./types.js');
       if (isAgentExcluded(config, tool)) return null;
+    }
+    if (config) {
+      const { LAUNCH_PAYLOAD_KEY, launchHoldsCheckout, readLaunch } = await import('./launch-context.js');
+      const launch = readLaunch(stdin[LAUNCH_PAYLOAD_KEY]);
+      if (launch && await launchHoldsCheckout(config, launch)) return null;
     }
     const hintCwd = cwd ?? process.cwd();
     const packageHints = await import('./pkg/pkg-hint.js');
@@ -960,6 +967,20 @@ const teamRulesHandler: HookHandler = {
   },
 };
 
+/** SessionStart: Cursor's user-scope rules for a workspace its rules walk does not reach (#1197). */
+const cursorUserRulesHandler: HookHandler = {
+  name: 'cursor-user-rules',
+  async execute(stdin, tool, config) {
+    if (tool !== 'cursor' || !config) return null;
+    const cwd = resolveHookCwd(stdin);
+    if (!cwd) return null;
+    const { cursorUserRulesContext } = await import('./cursor-user-rules.js');
+    const text = await cursorUserRulesContext(cwd, config);
+    if (text === null) return null;
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
+  },
+};
+
 /**
  * `instructions`: the culture, claudemd and recall blocks for a tool whose
  * extension adds them to the prompt instead of reading a file (#945), and for
@@ -1136,6 +1157,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS, background: true },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: teamRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'session-start', matcher: '*', handler: cursorUserRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, yieldsToContextLimit: true },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: teamEnvHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },

@@ -65,6 +65,7 @@ describe('workflow protocol conformance in process', () => {
           });
           expect(envelope).toMatchObject(operation.expect);
           if (operation.cancelled) expect('data' in envelope && envelope.data.cancelled).toEqual(operation.cancelled.map(attemptOf));
+          for (const field of operation.absent ?? []) expect('data' in envelope ? envelope.data.lease : undefined).not.toHaveProperty(field);
           if ('data' in envelope && envelope.data.lease) {
             leases.set(operation.saveAs, envelope.data.lease as { attempt: string; revision: number });
           }

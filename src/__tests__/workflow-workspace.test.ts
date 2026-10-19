@@ -372,8 +372,8 @@ steps:
     const adapter: LocalToolAdapter = {
       async run(_tool, input) {
         const file = path.join(input.cwd, '.claude', 'skills', 'fe-skill', 'SKILL.md');
-        if (!fs.existsSync(file)) return { exitCode: 1, failure: { code: 'missing_skill', message: `missing ${file}` } };
-        return { exitCode: 0, output: { skill: fs.readFileSync(file, 'utf8') } };
+        if (!fs.existsSync(file)) return { started: false, exitCode: 1, failure: { code: 'missing_skill', message: `missing ${file}` } };
+        return { started: true, exitCode: 0, output: { skill: fs.readFileSync(file, 'utf8') } };
       },
     };
 
@@ -396,5 +396,183 @@ steps:
       expect.objectContaining({ root: expect.stringContaining('workflow-worktrees'), rev: member?.rev }),
     ]));
     expect(delivered?.rev).toBe(member?.rev);
+  });
+
+  it('keeps hooksPath on the workflow worktree and runs from a linked checkout', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Check that hooks stay on the workflow worktree.
+steps:
+  - id: check
+    workspace: new
+    command: node check.js
+`);
+    fs.writeFileSync(path.join(workspace, 'check.js'), `const {execFileSync} = require('child_process');
+const read = (args) => { try { return execFileSync('git', args, { encoding: 'utf8' }).trim(); } catch { return ''; } };
+if (read(['config', '--local', '--get', 'core.hooksPath']) !== '') process.exit(2);
+if (!read(['config', '--worktree', '--get', 'core.hooksPath']).endsWith('workflow-hooks')) process.exit(3);
+`);
+    execFileSync('git', ['add', 'check.js'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'check'], { cwd: workspace });
+    const linked = path.join(path.dirname(workspace), 'linked');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'linked', linked, 'HEAD'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, linked);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(() => git(['config', '--local', '--get', 'core.hooksPath'], workspace)).toThrow();
+    expect(() => git(['config', '--local', '--get', 'core.hooksPath'], linked)).toThrow();
+  });
+
+  it('merges every item branch when a step needs a for_each', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A later step reads files from each fan item.
+inputs:
+  names: [string]
+steps:
+  - id: fan
+    needs: []
+    for_each:
+      items: inputs.names
+    workspace: new
+    command: node -e "require('fs').writeFileSync('item-' + process.env.NAME + '.txt', process.env.NAME)"
+    env:
+      NAME: "{{ item }}"
+  - id: gather
+    needs: [fan]
+    workspace: new
+    command: node -e "const fs=require('fs'); if (fs.readFileSync('item-a.txt','utf8')!=='a' || fs.readFileSync('item-b.txt','utf8')!=='b') process.exit(1)"
+`, { names: ['a', 'b'] });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('reports a commit the step made itself, and a merge that added no other file', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: The reported range includes the step's own commit and a merge.
+steps:
+  - id: own
+    needs: []
+    workspace: new
+    command: node own.js
+  - id: side
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('side.txt', 'S')"
+  - id: take
+    needs: [own, side]
+    workspace: new
+    command: node -e "process.exit(0)"
+`);
+    fs.writeFileSync(path.join(workspace, 'own.js'), `const {execFileSync} = require('child_process');
+require('fs').writeFileSync('own.txt', '1');
+const git = (args) => execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', ...args], { stdio: 'ignore' });
+git(['add', 'own.txt']);
+git(['commit', '-qm', 'own']);
+`);
+    execFileSync('git', ['add', 'own.js'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'script'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error('run missing');
+    const own = run.steps.find((step) => step.id === 'own');
+    const take = run.steps.find((step) => step.id === 'take');
+    expect(own && 'changes' in own ? own.changes?.commits.length : 0).toBeGreaterThan(0);
+    expect(take && 'changes' in take ? take.changes?.commits.length : 0).toBeGreaterThan(0);
+    const branch = take && 'changes' in take ? take.changes?.branch : undefined;
+    expect(git(['show', `${branch}:own.txt`], workspace)).toBe('1');
+  });
+
+  it('leaves the index clean when a later step does not edit the agent file', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A continuation that edits nothing still succeeds.
+steps:
+  - id: edit
+    workspace: new
+    workflow:
+      steps:
+        - id: first
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('AGENTS.md', 'changed\\n')"
+        - id: next
+          needs: [first]
+          workspace: continue
+          command: node -e "process.exit(0)"
+`);
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
+    execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const next = typeof run === 'object' ? run.steps.find((step) => step.id === 'edit.next') : undefined;
+    const branch = next && 'changes' in next ? next.changes?.branch : undefined;
+    expect(git(['show', `${branch}:AGENTS.md`], workspace)).toBe('changed\n');
+  });
+
+  it('does not delete the target of a directory symlink while restoring agent files', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Restoring agent files leaves a linked directory alone.
+steps:
+  - id: idle
+    workspace: new
+    command: node -e "process.exit(0)"
+`);
+    const outside = path.join(path.dirname(workspace), 'outside');
+    fs.mkdirSync(path.join(workspace, '.claude', 'skills'), { recursive: true });
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'secret.txt'), 'keep');
+    fs.symlinkSync(outside, path.join(workspace, '.claude', 'skills', 'shared'));
+    execFileSync('git', ['add', '.claude'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'link'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8')).toBe('keep');
+  });
+
+  it('merges the commit a dependency reported, not a later commit on the same branch', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A join that needs the first commit does not take the later one.
+steps:
+  - id: edit
+    workspace: new
+    workflow:
+      steps:
+        - id: marker
+          needs: []
+          workspace: new
+          command: node -e "require('fs').writeFileSync('m.txt', 'M')"
+        - id: first
+          needs: []
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('a.txt', 'A')"
+        - id: later
+          needs: [first]
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('b.txt', 'B')"
+        - id: join
+          needs: [marker, first]
+          workspace: new
+          command: node -e "const fs=require('fs'); if (fs.existsSync('b.txt')) process.exit(1); if (fs.readFileSync('a.txt','utf8')!=='A' || fs.readFileSync('m.txt','utf8')!=='M') process.exit(1)"
+`);
+    config.workflows = { tools: {}, max_parallel: 1 };
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   });
 });

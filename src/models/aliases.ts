@@ -507,16 +507,25 @@ export function resolveAgentModel(aliases: ModelAliases, spec: AgentSpec, tool: 
     return { ok: true, step: 'extras', ...(typeof extrasModel === 'string' ? { model: extrasModel } : {}) };
   }
   if (spec.model === undefined) return { ok: true, step: 'default' };
+  return resolveModelValue(aliases, spec.model, tool, extras);
+}
+
+/**
+ * What `tool` receives for a model value, an alias or a model name. `extras`
+ * are the tool extras of the agent that names it: an effort they set wins
+ * over the alias's.
+ */
+export function resolveModelValue(aliases: ModelAliases, model: string, tool: ToolName, extras?: Record<string, unknown>): ModelResolution {
   // An unreadable team file may define any name, so no model can be told literal.
   if (!aliases.ok) return aliases;
-  if (!aliases.names.has(spec.model)) return { ok: true, step: 'literal', model: spec.model };
+  if (!aliases.names.has(model)) return { ok: true, step: 'literal', model };
   if (aliases.localFailure !== undefined) return { ok: false, reason: aliases.localFailure };
 
   const switched = aliases.switches[tool];
   if (switched?.ok === false) {
     return { ok: false, reason: `Cannot tell whether a tool is switched to a model profile: ${switched.reason}` };
   }
-  const resolution = fromEntries(aliases, spec.model, tool, extras);
+  const resolution = fromEntries(aliases, model, tool, extras);
   return switched?.switched ? throughSwitch(resolution, tool, extras) : resolution;
 }
 

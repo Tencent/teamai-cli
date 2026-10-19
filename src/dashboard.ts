@@ -328,6 +328,125 @@ export async function startDashboard(port?: number): Promise<void> {
       return;
     }
 
+    if (url.pathname === '/api/resources/skills') {
+      // Skills inventory for the Resources page (#1123): names and metadata
+      // only, never SKILL.md bodies or environment values. The user scope and
+      // the unassigned bucket pull no team repo, so they get an explicit state.
+      try {
+        const ownConfig = workspace?.config ?? null;
+        if (!ownConfig) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ configured: false, skills: [] }));
+          return;
+        }
+        const [{ loadTeamConfig }, { buildRolePullContext }, { collectSkillsInventory }, { readWorkspaceChildren }] = await Promise.all([
+          import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources-skills.js'), import('./workspace-children.js'),
+        ]);
+        const config = await readWorkspaceChildren(ownConfig);
+        const teamConfig = await loadTeamConfig(config.repo.localPath);
+        const inventory = teamConfig
+          ? await collectSkillsInventory(teamConfig, config, await buildRolePullContext(config))
+          : { skills: [], skillConflict: null };
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ configured: true, skills: inventory.skills, skillConflict: inventory.skillConflict }));
+      } catch (e) {
+        log.debug(`dashboard: /api/resources/skills failed: ${(e as Error).message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to load skills.' }));
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/resources/skills/detail') {
+      // One skill's full metadata (#1123). The name must resolve in the
+      // inventory, so an unknown name is an explicit error, not an empty row.
+      try {
+        const ownConfig = workspace?.config ?? null;
+        const name = url.searchParams.get('name') ?? '';
+        // The inventory's own source identity, so a same-name root and its
+        // namespaced replacement each answer their own detail (#1123).
+        const sourcePath = url.searchParams.get('path') ?? undefined;
+        if (!ownConfig || name === '') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ configured: !!ownConfig, skill: null }));
+          return;
+        }
+        const [{ loadTeamConfig }, { buildRolePullContext }, { skillDetail }, { readWorkspaceChildren }] = await Promise.all([
+          import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources-skills.js'), import('./workspace-children.js'),
+        ]);
+        const config = await readWorkspaceChildren(ownConfig);
+        const teamConfig = await loadTeamConfig(config.repo.localPath);
+        const skill = teamConfig
+          ? await skillDetail(teamConfig, config, await buildRolePullContext(config), name, sourcePath)
+          : null;
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ configured: true, skill }));
+      } catch (e) {
+        log.debug(`dashboard: /api/resources/skills/detail failed: ${(e as Error).message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to load the skill.' }));
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/resources/skills/exclusions' && req.method === 'POST') {
+      // Write one skill's personal exclusion for the selected workspace only
+      // (#1123): never the team repo, never a pull. The response carries the
+      // updated entry; the client explains the next-pull application.
+      try {
+        const body = await new Promise<string>((resolve) => {
+          let data = '';
+          req.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+          req.on('end', () => resolve(data));
+        });
+        let parsed: { name?: unknown; excluded?: unknown };
+        try {
+          parsed = JSON.parse(body) as { name?: unknown; excluded?: unknown };
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'invalid_json' }));
+          return;
+        }
+        const name = parsed.name;
+        const excluded = parsed.excluded;
+        const ownConfig = workspace?.config ?? null;
+        if (typeof name !== 'string' || name === '' || typeof excluded !== 'boolean' || !ownConfig) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'invalid_request' }));
+          return;
+        }
+        const [{ loadTeamConfig }, { buildRolePullContext }, { setSkillExclusion }, { readWorkspaceChildren }] = await Promise.all([
+          import('./config.js'), import('./resources/desired.js'), import('./dashboard/resources-skills.js'), import('./workspace-children.js'),
+        ]);
+        const config = await readWorkspaceChildren(ownConfig);
+        const teamConfig = await loadTeamConfig(config.repo.localPath);
+        if (!teamConfig) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'unknown_skill' }));
+          return;
+        }
+        // The same role context the GET endpoints use, so the response's
+        // delivered flag matches the inventory the client reloads next.
+        const result = await setSkillExclusion(teamConfig, config, name, excluded, await buildRolePullContext(config));
+        if (!result.ok) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+          return;
+        }
+        // The saved config changes what this workspace delivers; drop the
+        // workspace cache so the next request re-reads it from disk instead
+        // of answering from the pre-exclusion in-memory copy.
+        workspacesCache = null;
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ ...result, note: 'applies on the next pull' }));
+      } catch (e) {
+        log.debug(`dashboard: /api/resources/skills/exclusions failed: ${(e as Error).message}`);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Failed to save the exclusion.' }));
+      }
+      return;
+    }
+
     if (url.pathname === '/events') {
       // SSE stream
       res.writeHead(200, {
