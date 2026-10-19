@@ -379,7 +379,7 @@ describe('source', () => {
     it('allows a nested identity change when the old and new destinations are disjoint', async () => {
       const repo = 'https://source.test/platform/repo.git';
       teamConfig.sources = [{ name: 'platform', repo }];
-      teamConfig.toolPaths = { codex: { skills: '.codex/skills' } };
+      teamConfig.toolPaths = { claude: {}, codex: { skills: '.codex/skills' } };
       const YAML = (await import('yaml')).default;
       await fse.writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), YAML.stringify(teamConfig));
       await fse.ensureDir(path.join(homeDir, '.codex/skills'));
@@ -727,7 +727,7 @@ describe('source', () => {
     it('does not claim a public skill when no configured tool is installed', async () => {
       const repo = 'https://source.test/platform/repo.git';
       teamConfig.sources = [{ name: 'platform', repo }];
-      teamConfig.toolPaths = { codex: { skills: '.codex/skills' } };
+      teamConfig.toolPaths = { claude: {}, codex: { skills: '.codex/skills' } };
       const YAML = (await import('yaml')).default;
       await fse.writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), YAML.stringify(teamConfig));
       await fse.outputFile(path.join(fixtureSourceRepoDir(), 'skills/shared-skill/SKILL.md'), '# Source');
@@ -895,7 +895,7 @@ describe('source', () => {
       const previousUrl = 'https://source.test/original/repo.git';
       const repo = changedRepository ? 'https://source.test/replacement/repo.git' : previousUrl;
       teamConfig.sources = [{ name: 'platform', repo }];
-      teamConfig.toolPaths = { codex: { skills: '.codex/skills' } };
+      teamConfig.toolPaths = { claude: {}, codex: { skills: '.codex/skills' } };
       const YAML = (await import('yaml')).default;
       await fse.writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), YAML.stringify(teamConfig));
       await fse.ensureDir(path.join(homeDir, '.codex/skills'));
@@ -1000,7 +1000,7 @@ describe('source', () => {
 
     it('keeps the member\'s shared Codex skill that appears later, delivering to the recorded path (#993)', async () => {
       teamConfig.sources = [{ name: 'platform', repo: 'git@git.woa.com:platform/repo.git' }];
-      teamConfig.toolPaths = { codex: { skills: '.codex/skills' } };
+      teamConfig.toolPaths = { claude: {}, codex: { skills: '.codex/skills' } };
       const YAML = (await import('yaml')).default;
       await fse.writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), YAML.stringify(teamConfig));
 
