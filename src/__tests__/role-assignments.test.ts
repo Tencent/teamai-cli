@@ -254,6 +254,23 @@ describe('role assignments from manifest/members.yaml', () => {
     expect(config!.roleAssignment).toBeUndefined();
   });
 
+  // A broken roles manifest at load leaves a role-less config unresolved. The
+  // pull that fetches the fixed manifest and an assignment must apply it.
+  it('drops an unresolved role once the refreshed assignment resolves it', async () => {
+    writeRoles('version: 1\nroles: broken\n');
+    writeConfig();
+    vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const config = (await loadLocalConfig())!;
+    expect(config.roleUnresolved).toBe(true);
+
+    writeRoles('version: 1\nroles:\n  - id: frontend\n    resources: { knowledge: [], skills: [frontend] }\n');
+    writeAssignments('version: 1\nmembers:\n  alice: [frontend]\n');
+    await refreshRoleAssignment(config);
+
+    expect(config.roleUnresolved).toBeUndefined();
+    expect(activeRoleIds(config)).toEqual(['frontend']);
+  });
+
   // The legacy migration writes a `hai` role into a role-less config. A member
   // the team assigned nothing must not acquire one that way.
   it('does not let the legacy role migration write a role the team did not assign', async () => {

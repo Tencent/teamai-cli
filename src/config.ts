@@ -186,8 +186,14 @@ export async function refreshRoleAssignment(config: LocalConfig): Promise<void> 
   if (resolved.primaryRole) config.primaryRole = resolved.primaryRole;
   else delete config.primaryRole;
   config.additionalRoles = resolved.additionalRoles;
-  if (resolved.roleAssignment) config.roleAssignment = resolved.roleAssignment;
-  else delete config.roleAssignment;
+  if (resolved.roleAssignment) {
+    config.roleAssignment = resolved.roleAssignment;
+    // The assignment decides the role the legacy migration could not, as it
+    // does on a load, where the migration then never runs.
+    delete config.roleUnresolved;
+  } else {
+    delete config.roleAssignment;
+  }
 }
 
 /** `roles` as this member's effective selection, primary first. */
