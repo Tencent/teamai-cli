@@ -620,6 +620,16 @@ export class CodexAdapter extends AgentAdapter {
 
       if (itemType === 'input_text' || itemType === 'output_text') {
         blocks.push({ type: 'text', text });
+      } else if (itemType === 'input_image' && typeof it.image_url === 'string') {
+        // A pasted image is stored as a data: URL; anything else keeps just the pointer
+        const dataUrl = /^data:([^;,]+);base64,(.*)$/s.exec(it.image_url);
+        const mimeType = dataUrl?.[1] ?? 'image/png';
+        blocks.push({
+          type: 'image',
+          mimeType,
+          ...(dataUrl ? { data: dataUrl[2] } : { filePath: it.image_url }),
+          label: `image.${mimeType.split('/')[1] ?? 'png'}`,
+        });
       }
     }
     return blocks;
@@ -1015,8 +1025,11 @@ export class CodexAdapter extends AgentAdapter {
         };
       }
       case 'image': {
-        // rollout messages only support text: degrade the image to a placeholder (counted degraded)
-        const contentType = role === 'user' ? 'input_text' : 'output_text';
+        // Codex keeps user images inline as input_image data: URLs; without data, or in an
+        // assistant message, degrade to a placeholder (counted degraded)
+        const content = role === 'user' && block.data
+          ? [{ type: 'input_image', image_url: `data:${block.mimeType};base64,${block.data}` }]
+          : [{ type: role === 'user' ? 'input_text' : 'output_text', text: imagePlaceholderText(block) }];
         return {
           timestamp: ts,
           type: 'response_item',
@@ -1024,7 +1037,7 @@ export class CodexAdapter extends AgentAdapter {
             type: 'message',
             id: `msg_${generateUuidV7()}`,
             role,
-            content: [{ type: contentType, text: imagePlaceholderText(block) }],
+            content,
           },
         };
       }
