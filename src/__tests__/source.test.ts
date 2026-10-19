@@ -924,7 +924,11 @@ describe('source', () => {
       expect(await fse.readFile(newPath, 'utf8')).toBe('# Replacement content');
       if (hasOtherOwner) {
         expect(await fse.readFile(path.join(homeDir, oldPath, 'SKILL.md'), 'utf8')).toBe('# Original content');
-        const otherTeam = { ...teamConfig, sources: [{ name: 'platform', repo: previousUrl }], toolPaths: { claude: { skills: '.claude/skills' } } };
+        const otherTeam = {
+          ...teamConfig,
+          sources: [{ name: 'platform', repo: previousUrl }],
+          toolPaths: { claude: { skills: '.claude/skills' }, codex: {} },
+        };
         await fse.outputFile(path.join(otherConfig.repo.localPath, 'teamai.yaml'), YAML.stringify(otherTeam));
         const otherRepo = path.join(homeDir, '.teamai', 'source-repos', previousId, 'repo');
         await fse.outputFile(path.join(otherRepo, 'skills/shared-skill/SKILL.md'), '# Original refreshed');
@@ -936,7 +940,9 @@ describe('source', () => {
         // Released claims must no longer prevent another producer using the old destination.
         const incomingUrl = 'https://source.test/independent/repo.git';
         await fse.outputFile(path.join(otherConfig.repo.localPath, 'teamai.yaml'), YAML.stringify({
-          ...teamConfig, sources: [{ name: 'independent', repo: incomingUrl }], toolPaths: { claude: { skills: '.claude/skills' } },
+          ...teamConfig,
+          sources: [{ name: 'independent', repo: incomingUrl }],
+          toolPaths: { claude: { skills: '.claude/skills' }, codex: {} },
         }));
         const incomingRepo = path.join(homeDir, '.teamai', 'source-repos', createHash('sha256').update(incomingUrl).digest('hex'), 'repo');
         await fse.outputFile(path.join(incomingRepo, 'skills/shared-skill/SKILL.md'), '# Independent source');
