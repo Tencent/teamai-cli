@@ -26,7 +26,7 @@ import fse from 'fs-extra';
 
 import { resolveConfigForDir } from './config.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
-import { loadProjectsManifest, type ProjectResourceType, type ProjectsManifest } from './projects.js';
+import { ALL_PROJECT_RESOURCE_TYPES, loadProjectsManifest, type AllProjectResourceType, type ProjectsManifest } from './projects.js';
 import { NAMESPACE_AXIS, type PlaceableType } from './push-namespaces.js';
 import { parseAgentYaml } from './resources/agent-format.js';
 import { AgentsHandler } from './resources/agents.js';
@@ -67,7 +67,7 @@ export interface BranchReview {
   findings: Finding[];
 }
 
-const AXES: readonly ProjectResourceType[] = ['knowledge', 'skills', 'learnings', 'agents'];
+const AXES: readonly AllProjectResourceType[] = ALL_PROJECT_RESOURCE_TYPES;
 
 // ─── Resource model ──────────────────────────────────────────────────────────
 
@@ -125,21 +125,24 @@ async function scanResources(repoDir: string): Promise<ReviewResource[]> {
 /** The namespace lists a branch's roles and projects declare, per axis. */
 interface ManifestIndex {
   /** True when any role or project declares `namespace` on `axis`. */
-  declares(axis: ProjectResourceType, namespace: string): boolean;
+  declares(axis: AllProjectResourceType, namespace: string): boolean;
   /** True when any single role or project declares both namespaces on `axis`. */
-  coActive(axis: ProjectResourceType, a: string, b: string): boolean;
+  coActive(axis: AllProjectResourceType, a: string, b: string): boolean;
   /** True when any role or project declares any namespace on `axis`. */
-  anyOn(axis: ProjectResourceType): boolean;
+  anyOn(axis: AllProjectResourceType): boolean;
 }
 
 function buildManifestIndex(roles: RolesManifest | null, projects: ProjectsManifest | null): ManifestIndex {
-  const listsByAxis = new Map<ProjectResourceType, string[][]>();
+  const listsByAxis = new Map<AllProjectResourceType, string[][]>();
   for (const axis of AXES) listsByAxis.set(axis, []);
 
-  const collect = (resources: Partial<Record<ProjectResourceType, string[]>>): void => {
+  const collect = (resources: Record<string, unknown> | undefined): void => {
+    if (!resources) return;
     for (const axis of AXES) {
       const list = resources[axis];
-      if (list && list.length > 0) listsByAxis.get(axis)!.push(list);
+      if (Array.isArray(list) && list.length > 0) {
+        listsByAxis.get(axis)!.push(list as string[]);
+      }
     }
   };
   for (const role of roles?.roles ?? []) collect(role.resources);

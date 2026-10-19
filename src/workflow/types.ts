@@ -164,7 +164,7 @@ export interface WorkflowDiagnostic {
    * `bad_loop`: a `loop`, `break` or `for_each` pull rejects; the kept copy would run once the steps the author wrote
    *   to repeat or to run per item, or run on past the point the author wrote to stop at.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict';
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';

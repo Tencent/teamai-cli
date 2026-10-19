@@ -15,17 +15,46 @@
 import { isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
 import {
   findProject, unknownProjectMessage,
-  type ProjectResourceType, type ProjectsManifest,
+  type AllProjectResourceType, type ProjectsManifest,
 } from './projects.js';
 import type { ResourceItem, ResourceType } from './types.js';
 
 /** Resource types `pull` namespaces, and push therefore has to place. */
-export type PlaceableType = 'skills' | 'rules' | 'agents';
+export type PlaceableType =
+  | 'skills'
+  | 'rules'
+  | 'agents'
+  | 'docs'
+  | 'env'
+  | 'hooks'
+  | 'mcp'
+  | 'models'
+  | 'claudemd'
+  | 'learnings'
+  | 'wiki'
+  | 'workflows'
+  | 'prompts'
+  | 'scorers';
 
-export const PLACEABLE_TYPES: readonly PlaceableType[] = ['skills', 'rules', 'agents'];
+export const PLACEABLE_TYPES: readonly PlaceableType[] = [
+  'skills',
+  'rules',
+  'agents',
+  'docs',
+  'env',
+  'hooks',
+  'mcp',
+  'models',
+  'claudemd',
+  'learnings',
+  'wiki',
+  'workflows',
+  'prompts',
+  'scorers',
+];
 
-export function isPlaceableType(type: ResourceType): type is PlaceableType {
-  return (PLACEABLE_TYPES as readonly ResourceType[]).includes(type);
+export function isPlaceableType(type: ResourceType | string): type is PlaceableType {
+  return (PLACEABLE_TYPES as readonly string[]).includes(type);
 }
 
 /**
@@ -38,7 +67,18 @@ export const NAMESPACE_AXIS = {
   skills: 'skills',
   rules: 'knowledge',
   agents: 'agents',
-} as const satisfies Record<PlaceableType, ProjectResourceType>;
+  docs: 'docs',
+  env: 'env',
+  hooks: 'hooks',
+  mcp: 'mcp',
+  models: 'models',
+  claudemd: 'knowledge',
+  learnings: 'learnings',
+  wiki: 'wiki',
+  workflows: 'workflows',
+  prompts: 'prompts',
+  scorers: 'scorers',
+} as const satisfies Record<PlaceableType, AllProjectResourceType>;
 
 /**
  * True when `item` would be written to the shared root — no namespace segment
@@ -97,7 +137,7 @@ export function resolveProjectNamespace(
   }
 
   const axis = NAMESPACE_AXIS[type];
-  const namespaces = project.resources[axis];
+  const namespaces = project.resources[axis] ?? [];
   if (namespaces.length === 0) {
     return {
       ok: false,

@@ -108,7 +108,7 @@ async function namespaceCandidates(
         additionalRoles: localConfig.additionalRoles ?? [],
       });
       const axis = NAMESPACE_AXIS[type];
-      const candidates = namespaces[axis];
+      const candidates = namespaces[axis] ?? [];
       // A namespace is ONE directory under the resource root. `--role` and the
       // projects manifest are both checked for that; the roles manifest was
       // not, so `foo/bar` went through and pushed an agent to a depth `pull`
@@ -655,8 +655,12 @@ async function placeNewResources(args: {
             process.exitCode = 2;
             return false;
           }
+          const originalRelPath = item.relativePath;
           item.namespace = destination.namespace;
           item.relativePath = placedAt;
+          if (originalRelPath !== placedAt) {
+            item.supersedes = originalRelPath;
+          }
           // The silent widening in #649 was the real damage: say where it went.
           log.info(`[${type}] ${item.name} → ${item.relativePath}`);
         }
@@ -1103,10 +1107,16 @@ async function pushCore(
       const yamlPath = path.join(repoPath, 'teamai.yaml');
       const workingContent = await readFileSafe(yamlPath);
       // Nothing below writes before these reads finish, so they run together:
-      // the env scan, the clone's status, and what HEAD holds of teamai.yaml.
-      const envScan = getHandler('env').scanLocalForPush(teamConfig, localConfig);
-      // Awaited after the status: a status failure is the one reported, as before.
-      envScan.catch(() => {});
+      const repoScan = Promise.all(
+        PLACEABLE_TYPES.map(async (t) => {
+          try {
+            return await getHandler(t).scanLocalForPush(teamConfig, localConfig);
+          } catch {
+            return [];
+          }
+        }),
+      );
+      repoScan.catch(() => {});
       const [committed, status] = await Promise.all([
         workingContent === null ? null : getFileContentAtRev(repoPath, 'HEAD', 'teamai.yaml'),
         git.status(),
@@ -1118,8 +1128,7 @@ async function pushCore(
       if (pendingTeamConfig !== null && await hasGitModeChange(git, 'teamai.yaml')) {
         modeChangedPaths.add('teamai.yaml');
       }
-      // `env add` edits env files in the clone and leaves the commit to push:
-      // capture what the env scan will push, to restore it after the refresh
+      // Capture what repo scans will push, to restore after the refresh
       // below as teamai.yaml is (#881). A mode change is not captured, so it
       // stays dirty and stops the push. So does any index state: the snapshot
       // holds only the working copy, and reset --hard would drop a staged,
@@ -1131,7 +1140,8 @@ async function pushCore(
         deleted: status.deleted,
         renamed: status.renamed,
       }));
-      for (const item of await envScan) {
+      const scannedGroups = await repoScan;
+      for (const item of scannedGroups.flat()) {
         if (indexedPaths.has(item.relativePath)) continue;
         const snapshot = await readFileSnapshot(item.sourcePath);
         if (snapshot !== null && !await hasGitModeChange(git, item.relativePath)) {
@@ -1368,7 +1378,7 @@ async function pushCore(
   // Scan for pushable resources first, then resolve namespace for new skills only.
   // Skills already carry the destination scanLocalForPush decided: a modified
   // one its team skill's, a new one awaiting review its open PR's.
-  const pushableTypes: ResourceType[] = ['skills', 'rules', 'env', 'agents'];
+  const pushableTypes: ResourceType[] = [...PLACEABLE_TYPES];
   const fullScan: ResourceItem[] = [];
 
   // Agents are the one type whose SCAN needs the destination: it has to tell

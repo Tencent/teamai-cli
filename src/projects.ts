@@ -18,7 +18,9 @@ export const PROJECT_RESOURCE_TYPES = ['knowledge', 'skills', 'learnings', 'agen
 export type ProjectResourceType = typeof PROJECT_RESOURCE_TYPES[number];
 
 /** Every type a project can namespace, the hand-declared ones included. */
-const ALL_PROJECT_RESOURCE_TYPES = [...PROJECT_RESOURCE_TYPES, ...HAND_DECLARED_RESOURCE_TYPES] as const;
+export const ALL_PROJECT_RESOURCE_TYPES = [...PROJECT_RESOURCE_TYPES, ...HAND_DECLARED_RESOURCE_TYPES] as const;
+
+export type AllProjectResourceType = typeof ALL_PROJECT_RESOURCE_TYPES[number];
 
 /**
  * A project id becomes a path component (`skills/<id>/`, `learnings/<id>/`) just

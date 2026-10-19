@@ -1144,9 +1144,21 @@ export interface TagsConfig {
   rules: Record<string, string[]>;
 }
 
-// ─── Resource types ─────────────────────────────────────
-
-export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'agents' | 'hooks' | 'mcp';
+export type ResourceType =
+  | 'skills'
+  | 'rules'
+  | 'docs'
+  | 'env'
+  | 'agents'
+  | 'hooks'
+  | 'mcp'
+  | 'models'
+  | 'claudemd'
+  | 'learnings'
+  | 'wiki'
+  | 'workflows'
+  | 'prompts'
+  | 'scorers';
 
 export type ResourceItemStatus = 'new' | 'modified';
 
@@ -1159,6 +1171,8 @@ export interface ResourceItem {
   namespace?: string;
   /** A kept skill with a recorded origin: `--role`/`--project` never relocate it (#1020). */
   fromInactiveNamespace?: true;
+  /** When placed into a namespace, the original relative path superseded by this item. */
+  supersedes?: string;
 }
 
 export interface ResourceDiff {
@@ -1485,7 +1499,22 @@ export function getUpdateLockPath(): string {
   return path.join(getTeamaiHomeDir(), '.update-lock');
 }
 
-export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'agents', 'hooks', 'mcp'];
+export const RESOURCE_TYPES: ResourceType[] = [
+  'skills',
+  'rules',
+  'docs',
+  'env',
+  'agents',
+  'hooks',
+  'mcp',
+  'models',
+  'claudemd',
+  'learnings',
+  'wiki',
+  'workflows',
+  'prompts',
+  'scorers',
+];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
 export const TEAMAI_RULES_END = '<!-- [teamai:rules:end] -->';
