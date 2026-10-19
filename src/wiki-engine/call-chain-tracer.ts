@@ -92,7 +92,7 @@ export function traceCallChains(facts: CodeFact[], files: CodeCollectedFile[]): 
     const visited = new Set<string>();
     const steps: CallChainStep[] = [];
 
-    traceFromEntry(entry.file, entry.symbol, 0);
+    traceFromEntry(entry.file, entry.symbol, entry.lineStart, 0);
 
     if (steps.length > 0) {
       chains.push({
@@ -102,7 +102,7 @@ export function traceCallChains(facts: CodeFact[], files: CodeCollectedFile[]): 
       });
     }
 
-    function traceFromEntry(file: string, symbol: string, depth: number): void {
+    function traceFromEntry(file: string, symbol: string, lineStart: number, depth: number): void {
       if (depth >= MAX_DEPTH) return;
 
       const key = `${file}:${symbol}`;
@@ -127,7 +127,7 @@ export function traceCallChains(facts: CodeFact[], files: CodeCollectedFile[]): 
       steps.push({
         layer,
         file,
-        lineStart: entry.lineStart,
+        lineStart,
         symbol,
         callsTo: callsTo.slice(0, 10),
       });
@@ -139,7 +139,7 @@ export function traceCallChains(facts: CodeFact[], files: CodeCollectedFile[]): 
           const targetComponents = componentsByFile.get(targetFile) ?? [];
           const primary = targetComponents[0];
           if (primary) {
-            traceFromEntry(targetFile, primary.name, depth + 1);
+            traceFromEntry(targetFile, primary.name, primary.lineStart, depth + 1);
           }
         }
       }
