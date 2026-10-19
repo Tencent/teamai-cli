@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -292,4 +293,74 @@ process.exit(1);
 
     expect(result).toMatchObject({ started: true, applied: 'main', failure: { code: 'tool_failed' } });
   });
+});
+
+describe('interactive tool invocations', () => {
+  it.each(['claude', 'codex', 'opencode'] as const)('opens %s in the foreground with the initial prompt and optional result file', async (tool) => {
+    const resultPath = path.join(os.tmpdir(), `teamai-interactive-${tool}-${Date.now()}.json`);
+    files.push(resultPath);
+    const spawnTool = vi.fn(() => child('')) as unknown as ToolSpawn;
+    const adapter = createLocalToolAdapter(spawnTool, () => tool);
+    expect(await adapter.runInteractive(tool, { prompt: 'Work with me.', cwd: os.tmpdir(), resultPath, model: { name: 'example', effort: 'high' } })).toMatchObject({ started: true, exitCode: 0 });
+    const args = vi.mocked(spawnTool).mock.calls[0]![1];
+    expect(args).toContain('--model');
+    expect(args).toContain('example');
+    expect(args.at(-1)).toContain('Work with me.');
+    expect(args.at(-1)).toContain(resultPath);
+    expect(args).not.toContain('exec');
+    expect(args).not.toContain('-p');
+    expect(args).not.toContain('run');
+    if (tool === 'opencode') expect(args).toContain('--prompt');
+    if (tool === 'codex') expect(args).toContain('model_reasoning_effort=high');
+    expect(vi.mocked(spawnTool).mock.calls[0]![2]).toMatchObject({ cwd: os.tmpdir(), stdio: 'inherit', detached: false });
+  });
+});
+
+
+it.each([undefined, 'SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'])('stops a headless prompt with SIGTERM when aborted with %s', async (reason) => {
+  const resultPath = path.join(os.tmpdir(), `teamai-abort-tool-${reason}-${Date.now()}.json`);
+  files.push(resultPath);
+  const controller = new AbortController();
+  let stopped: NodeJS.Signals | null = null;
+  const spawnTool: ToolSpawn = (_command, _args, options) => {
+    const tool = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+    tool.on('spawn', () => controller.abort(reason));
+    tool.on('close', (_code, signal) => { stopped = signal; });
+    return tool;
+  };
+  const adapter = createLocalToolAdapter(spawnTool, () => process.execPath);
+  expect(await adapter.run('codex', { prompt: 'Wait.', cwd: os.tmpdir(), resultPath }, controller.signal)).toMatchObject({ started: true, exitCode: 1 });
+  expect(stopped).toBe('SIGTERM');
+});
+
+
+it('reports an interactive tool exit status without requiring a result file', async () => {
+  const resultPath = path.join(os.tmpdir(), `teamai-interactive-failure-${Date.now()}.json`);
+  files.push(resultPath);
+  const spawnTool = vi.fn(() => {
+    const tool = new EventEmitter();
+    queueMicrotask(() => { tool.emit('spawn'); tool.emit('close', 7); });
+    return tool;
+  }) as unknown as ToolSpawn;
+  const adapter = createLocalToolAdapter(spawnTool, () => 'claude');
+  expect(await adapter.runInteractive('claude', { prompt: 'Pair.', cwd: os.tmpdir(), resultPath })).toMatchObject({
+    started: true, exitCode: 7, failure: { code: 'tool_failed', message: 'claude exited with status 7' },
+  });
+});
+
+
+it.each(['SIGTERM', 'SIGHUP'] as const)('passes %s through to an attached interactive child', async (signalName) => {
+  const resultPath = path.join(os.tmpdir(), `teamai-interactive-signal-${signalName}-${Date.now()}.json`);
+  files.push(resultPath);
+  const controller = new AbortController();
+  let stopped: NodeJS.Signals | null = null;
+  const spawnTool: ToolSpawn = (_command, _args, options) => {
+    const tool = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+    tool.on('spawn', () => controller.abort(signalName));
+    tool.on('close', (_code, signal) => { stopped = signal; });
+    return tool;
+  };
+  const adapter = createLocalToolAdapter(spawnTool, () => process.execPath);
+  expect(await adapter.runInteractive('claude', { prompt: 'Wait.', cwd: os.tmpdir(), resultPath }, controller.signal)).toMatchObject({ started: true, exitCode: 1 });
+  expect(stopped).toBe(signalName);
 });

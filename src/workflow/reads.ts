@@ -83,6 +83,7 @@ export interface ReadScope {
   ancestors: (id: string) => Set<string>;
   previous: (id: string) => Set<string>;
   outputs: Map<string, OutputSchema | undefined>;
+  hitl: Map<string, string[]>;
   /** The steps with `for_each`, which have results in place of outputs. */
   forEach: Set<string>;
   /** Undefined when the inputs header is malformed, so `inputs.…` reads are not checked. */
@@ -101,6 +102,7 @@ export function readScope(
 ): ReadScope {
   return {
     children,
+    hitl: new Map(steps.flatMap((step) => step.hitl ? [[step.id, step.hitl.options]] : [])),
     ids: new Set([...needs.keys(), ...steps.map((step) => step.id)]),
     ancestors: (id) => ancestors(needs, id),
     previous: stepLoops(steps).previous,
@@ -152,7 +154,7 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
         continue;
       }
       // A step pull rejected has its own diagnostic already.
-      const unavailable = scope.outputs.has(path.step) && unavailableField(path, scope.forEach.has(path.step));
+      const unavailable = scope.outputs.has(path.step) && unavailableField(path, scope.forEach.has(path.step), scope.hitl.get(path.step));
       if (unavailable) {
         diagnostics.push(at(`${subject} ${site.what} ${unavailable}`));
         continue;
@@ -162,13 +164,19 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
         diagnostics.push({ ...at(`${subject} ${site.what} ${undeclared}`), code: 'undeclared_output' });
         continue;
       }
-      const field = undeclaredField(path, scope.outputs.get(path.step), scope.forEach.has(path.step));
+      const field = undeclaredField(path, scope.outputs.get(path.step), scope.forEach.has(path.step), scope.hitl.get(path.step));
       if (field) diagnostics.push(at(`${subject} ${site.what} ${field}`));
     }
     // A path this site does not list reads an enclosing workflow, which checks its type.
     const schemaOf = (path: ExpressionPath): DeclaredType | undefined => (site.paths.includes(path) ? declaredSchema(scope, readable, path) : undefined);
     for (const problem of site.expressions.flatMap((expression) => typeProblems(expression, schemaOf))) {
       diagnostics.push(at(`${subject} ${site.what} ${problem.message}`));
+    }
+    for (const expression of site.expressions) {
+      for (const { step, value } of fieldComparisons(expression, 'choice')) {
+        const options = readable.has(step) ? scope.hitl.get(step) : undefined;
+        if (options && !options.includes(value)) diagnostics.push(at(`${subject} ${site.what} compares steps.${step}.choice with '${value}', which is not one of its options: ${options.join(', ')}`));
+      }
     }
     for (const { step, end } of site.ends ?? []) {
       const child = readable.has(step) ? scope.children.get(step) : undefined;
@@ -185,7 +193,7 @@ export function readDiagnostics(file: string, sites: ReadSite[], scope: ReadScop
 function declaredSchema(scope: ReadScope, readable: Set<string>, path: ExpressionPath): DeclaredType | undefined {
   if (path.root === 'inputs') return scope.inputs && schemaAt(scope.inputs, path.fields);
   if (path.root === 'item' || !readable.has(path.step)) return undefined;
-  const schema = stepFieldSchema(path.field, scope.outputs.get(path.step), scope.forEach.has(path.step));
+  const schema = stepFieldSchema(path.field, scope.outputs.get(path.step), scope.forEach.has(path.step), scope.hitl.get(path.step));
   return schema && schemaAt(schema, path.fields);
 }
 
@@ -207,15 +215,17 @@ export function splitReads(sites: ReadSite[], ids: Set<string> | undefined): { l
 
 /** The names an expression compares a step's end with, as in `steps.check.end == 'ready'`. */
 function endComparisons(expression: Expression): Array<{ step: string; end: string }> {
-  if (expression.kind === 'not') return endComparisons(expression.operand);
-  if (expression.kind === 'call') return [...endComparisons(expression.list), ...(expression.name === 'length' ? [] : endComparisons(expression.predicate))];
+  return fieldComparisons(expression, 'end').map(({ step, value }) => ({ step, end: value }));
+}
+
+function fieldComparisons(expression: Expression, field: 'end' | 'choice'): Array<{ step: string; value: string }> {
+  if (expression.kind === 'not') return fieldComparisons(expression.operand, field);
+  if (expression.kind === 'call') return [...fieldComparisons(expression.list, field), ...(expression.name === 'length' ? [] : fieldComparisons(expression.predicate, field))];
   if (expression.kind !== 'binary') return [];
-  if (expression.operator === '&&' || expression.operator === '||') {
-    return [...endComparisons(expression.left), ...endComparisons(expression.right)];
-  }
+  if (expression.operator === '&&' || expression.operator === '||') return [...fieldComparisons(expression.left, field), ...fieldComparisons(expression.right, field)];
   const [read, value] = expression.left.kind === 'path' ? [expression.left, expression.right] : [expression.right, expression.left];
-  if (read.kind !== 'path' || read.path.root !== 'steps' || read.path.field !== 'end') return [];
-  return value.kind === 'literal' && typeof value.value === 'string' ? [{ step: read.path.step, end: value.value }] : [];
+  if (read.kind !== 'path' || read.path.root !== 'steps' || read.path.field !== field) return [];
+  return value.kind === 'literal' && typeof value.value === 'string' ? [{ step: read.path.step, value: value.value }] : [];
 }
 
 export interface Ending {

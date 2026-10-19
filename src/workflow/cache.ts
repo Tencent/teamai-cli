@@ -15,6 +15,7 @@ import { formatDiagnostic, parseWorkflow, promptFileDiagnostics, stepField } fro
 import type { WorkflowFiles } from './parse-context.js';
 import type { CachedWorkflow, WorkflowDefinition, WorkflowDiagnostic, WorkflowStep } from './types.js';
 import { assertSafePath, assertWithinRoot } from '../utils/path-safety.js';
+import { createGit } from '../utils/git.js';
 
 export interface SyncWorkflowOptions {
   dryRun?: boolean;
@@ -40,7 +41,15 @@ interface Version {
 interface Candidate extends Version {
   stem: string;
   sourceHash: string;
+  teamRevision?: string;
 }
+
+interface ReachableRevision {
+  repositoryRoot: string;
+  revision: string;
+}
+
+const TEAM_REMOTE_REFS = 'refs/remotes/origin/';
 
 /** What a file runs after this sync, and why the versions it did not pick cannot run. */
 interface Settled {
@@ -113,6 +122,60 @@ async function workflowFileNames(dir: string): Promise<string[]> {
   }
 }
 
+async function isTeamRemoteRevision(root: string, revision: string): Promise<boolean> {
+  try {
+    const refs = await createGit(root).raw([
+      'for-each-ref', `--contains=${revision}`, '--format=%(refname)', TEAM_REMOTE_REFS,
+    ]);
+    return refs.trim() !== '';
+  } catch {
+    return false;
+  }
+}
+
+/** The checked-out commit, only when the team remote can reach it. */
+async function remotelyReachableRevision(root: string): Promise<ReachableRevision | undefined> {
+  try {
+    const git = createGit(root);
+    const revision = (await git.revparse(['HEAD'])).trim();
+    if (!await isTeamRemoteRevision(root, revision)) return undefined;
+    return {
+      repositoryRoot: await fs.realpath((await git.revparse(['--show-toplevel'])).trim()),
+      revision,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function withoutStaleTeamRevision(root: string, cached: CachedWorkflow | null): Promise<CachedWorkflow | null> {
+  if (!cached?.teamRevision || await isTeamRemoteRevision(root, cached.teamRevision)) return cached;
+  const next = { ...cached };
+  delete next.teamRevision;
+  return next;
+}
+
+/** Whether `revision` stores every source byte exactly as the cache read it. */
+async function revisionHoldsSources(
+  knowledgeRoot: string,
+  reachable: ReachableRevision | undefined,
+  sources: Array<{ path: string; content: string }>,
+): Promise<boolean> {
+  if (!reachable) return false;
+  const git = createGit(knowledgeRoot);
+  try {
+    for (const source of sources) {
+      const absolute = path.resolve(knowledgeRoot, source.path);
+      const relative = path.relative(reachable.repositoryRoot, await fs.realpath(absolute)).split(path.sep).join('/');
+      if (relative === '..' || relative.startsWith('../')) return false;
+      if (await git.show([`${reachable.revision}:${relative}`]) !== source.content) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Validate each `workflows/*.yaml` on its own and cache only files that pass.
  * An invalid file keeps its last cached definition; a file that was never valid
@@ -125,6 +188,8 @@ export async function syncWorkflowDefinitions(
 ): Promise<SyncWorkflowResult> {
   const result: SyncWorkflowResult = { cached: [], kept: [], invalid: [], unrunnable: [] };
   const dir = path.join(getKnowledgeDir(config), 'workflows');
+  const knowledgeRoot = getKnowledgeDir(config);
+  const reachable = await remotelyReachableRevision(knowledgeRoot);
   const checked: Checked[] = [];
   for (const name of await workflowFileNames(dir)) {
     const relativePath = `workflows/${name}`;
@@ -157,15 +222,25 @@ export async function syncWorkflowDefinitions(
     for (const source of resolved.sources) {
       hash.update('\0').update(source.path).update('\0').update(source.content);
     }
+    const sources = [{ path: relativePath, content }, ...resolved.sources];
+    const teamRevision = await revisionHoldsSources(knowledgeRoot, reachable, sources)
+      ? reachable?.revision
+      : undefined;
     checked.push({
-      stem, relativePath, content, definition: resolved.definition, sourceHash: hash.digest('hex'), promptFileLocations: parsed.promptFileLocations,
+      stem, relativePath, content, definition: resolved.definition, sourceHash: hash.digest('hex'),
+      ...(teamRevision ? { teamRevision } : {}), promptFileLocations: parsed.promptFileLocations,
     });
   }
 
   const kept = new Map<string, CachedWorkflow | null>();
   for (const file of checked) {
     const dropped = 'diagnostics' in file && dropsKeptVersion(file.diagnostics);
-    kept.set(file.stem, dropped ? null : await readCache(config, file.stem));
+    const cached = dropped ? null : await readCache(config, file.stem);
+    const reachableCache = await withoutStaleTeamRevision(knowledgeRoot, cached);
+    kept.set(file.stem, reachableCache);
+    if (!options.dryRun && cached?.teamRevision && !reachableCache?.teamRevision) {
+      await writeJsonAtomic(cachePath(config, file.stem), reachableCache);
+    }
   }
   const settle = checkReferences(checked, kept);
 
@@ -196,10 +271,11 @@ export async function syncWorkflowDefinitions(
     }
     const previous = await readCache(config, file.definition.name);
     result.cached.push(file.definition.name);
-    if (options.dryRun || previous?.sourceHash === file.sourceHash) continue;
+    if (options.dryRun || (previous?.sourceHash === file.sourceHash && previous.teamRevision === file.teamRevision)) continue;
     await writeJsonAtomic(cachePath(config, file.definition.name), {
       relativePath: file.relativePath,
       sourceHash: file.sourceHash,
+      ...(file.teamRevision ? { teamRevision: file.teamRevision } : {}),
       content: file.content,
       definition: file.definition,
       validatedAt: new Date().toISOString(),

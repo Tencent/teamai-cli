@@ -1665,4 +1665,35 @@ describe('codex readSession: freeform tool calls', () => {
     const call = session.messages.flatMap((m) => m.content).find((b) => b.type === 'tool_call');
     expect(call).toMatchObject({ type: 'tool_call', toolName: 'edit_file', callId: 'call_1', arguments: { input: patch } });
   });
+
+  it('keeps the text of a tool output given as a list of content items', async () => {
+    const SID = '019e0000-1111-7222-8333-555555555555';
+    const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '01');
+    fs.mkdirSync(dir, { recursive: true });
+    const lines = [
+      { type: 'session_meta', payload: { id: SID, timestamp: '2026-10-01T10:00:00.000Z', cwd: '/work/app' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look' }] } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'call_1', name: 'view_image', arguments: '{"path":"a.png"}' } },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output',
+          call_id: 'call_1',
+          output: [
+            { type: 'input_text', text: 'Output:' },
+            { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' },
+            { type: 'input_text', text: 'done' },
+          ],
+        },
+      },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `rollout-2026-10-01T10-00-00-${SID}.jsonl`),
+      lines.map((l) => JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', ...l })).join('\n') + '\n',
+    );
+
+    const session = await new CodexAdapter().readSession({ sessionId: SID });
+    const result = session.messages.flatMap((m) => m.content).find((b) => b.type === 'tool_result');
+    expect(result).toMatchObject({ type: 'tool_result', callId: 'call_1', content: 'Output:\ndone' });
+  });
 });

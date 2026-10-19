@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { parseReportedAgent, settleObservation, type ReportedAgent } from '../agent-observation.js';
+import { log } from '../utils/logger.js';
 import { acquireLock, releaseLock } from '../update.js';
 import type { LocalConfig } from '../types.js';
 import { loadCachedWorkflow, workflowsRunBy } from './cache.js';
@@ -8,16 +9,17 @@ import {
   type Expression, type ExpressionPath,
 } from './expression.js';
 import { outputMismatch } from './output.js';
+import type { ResponseInput } from './run-controls.js';
 import { publishRunRecords, queueRunRecord, runRecordState } from './records.js';
 import {
   parseTemplate, renderStrings, renderText, stepExpressions, templatedTexts, templatePaths,
   type StepExpression, type TemplateError,
 } from './template.js';
 import { parseStepPath } from './step-path.js';
-import { cancel, fail, lease, release, settled, skip, start, stopped, succeed, type ItemResult, type LeasedStep, type StepState } from './step-state.js';
+import { DriverSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, waitForAnswer, type ItemResult, type LeasedStep, type StepState } from './step-state.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
-import { childScope, contextOf, insertChildren, localId, statesIn, topScope, type Scope } from './scope.js';
+import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
 import { generateRunId, isRunId, readRun, runLockPath, writeRun } from './store.js';
 import type {
@@ -62,11 +64,13 @@ export interface ReportInput {
   agent?: ReportedAgent;
 }
 
-function error(code: string, message: string): WorkflowEnvelope {
+/** A protocol rejection that retains its actionable code and message. */
+export function error(code: string, message: string): WorkflowEnvelope {
   return { error: { code, message } };
 }
 
-function ok(value: Record<string, unknown>): WorkflowEnvelope {
+/** A successful workflow operation envelope. */
+export function ok(value: Record<string, unknown>): WorkflowEnvelope {
   return { data: value };
 }
 
@@ -87,7 +91,8 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function withRun<T extends WorkflowEnvelope>(
+/** Applies one operation under the run lock and saves only when requested. */
+export async function withRun<T extends WorkflowEnvelope>(
   config: LocalConfig,
   runId: string,
   mutate: (run: RunState, now: string) => Promise<{ envelope: T; save: boolean }>,
@@ -124,12 +129,13 @@ interface RenderedLease {
   defaultModel?: string;
 }
 
-function workflowLabel(scope: Scope): string {
+/** The workflow or inline step name used in engine and control diagnostics. */
+export function workflowLabel(scope: Scope): string {
   return 'name' in scope.definition ? `workflow "${scope.definition.name}"` : `step "${scope.prefix.slice(0, -1)}" inline workflow`;
 }
 
 /** The scope and definition of the step instance at `path`, or undefined when the run file does not describe it. */
-function locateStep(run: RunState, path: string): { scope: Scope; step: WorkflowStep } | undefined {
+export function locateStep(run: RunState, path: string): { scope: Scope; step: WorkflowStep } | undefined {
   let scope = topScope(run);
   const segments = parseStepPath(path);
   for (const [index, segment] of segments.entries()) {
@@ -181,6 +187,53 @@ function renderLease(scope: Scope, states: StepState[], state: StepState, defini
   };
 }
 
+function hitlMessage(scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep): string | WorkflowFailure {
+  const context = contextOf(scope, states, state);
+  if (definition.with !== undefined) {
+    const values = renderStrings(definition.with, context);
+    if (!values.ok) return withTemplateFailure(state, values.error);
+    context.with = values.value;
+  }
+  const parsed = parseTemplate(definition.hitl!.message, Object.hasOwn(context, 'item'));
+  if (!parsed.ok) return { code: 'invalid_template', message: `Step "${state.id}" ${definition.hitl!.kind}.message template ${parsed.errors[0]?.source}: ${parsed.errors[0]?.message}` };
+  return renderText(parsed.template, context);
+}
+
+function waitingHitl(run: RunState): Record<string, unknown> | undefined {
+  const state = run.steps.find((step) => step.status === 'waiting');
+  const located = state && locateStep(run, state.id);
+  if (!state || !located?.step.hitl) return undefined;
+  const stepArgument = /^[A-Za-z0-9_.-]+$/.test(state.id) ? state.id : `'${state.id}'`;
+  return { run: run.id, step: state.id, pass: state.pass ?? 1, ...located.step.hitl,
+    respond: `teamai workflow respond ${run.id} ${stepArgument} <option> --pass ${state.pass ?? 1}`,
+    message: hitlMessage(located.scope, statesIn(run, located.scope), state, located.step) };
+}
+
+function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, autoApprove?: boolean): boolean {
+  let changed = false;
+  const definitionOf = stepDefinitions(run);
+  for (const state of run.steps) {
+    if (state.status !== 'waiting') continue;
+    const hitl = definitionOf(state.id)?.hitl;
+    if (!hitl) continue;
+    const auto = autoApprove ?? config.workflows?.auto_approve === true;
+    if (hitl.required || (hitl.kind === 'choose' && (!auto || hitl.default === undefined))) {
+      const failure = { code: 'hitl_required', message: `Step "${state.id}" needs a person's answer, and the driver declares no HITL (driver.can.hitl). Retry it from a terminal: teamai workflow retry ${run.id} ${state.id}; then teamai workflow resume ${run.id}` };
+      log.warn(failure.message);
+      failStep(state, failure, run.revision);
+    } else {
+      if (hitl.kind === 'approve') {
+        log.warn(auto ? `Step "${state.id}" was approved by auto_approve.`
+          : `Step "${state.id}" was skipped: its approve HITL request needs a person, and the driver declares no HITL (driver.can.hitl). Set workflows.auto_approve, pass --auto-approve, or run the workflow from a terminal.`);
+      } else log.warn(`Step "${state.id}" chose "${hitl.default}" by auto_approve.`);
+      answerHitl(state, { choice: hitl.kind === 'approve' ? auto ? 'yes' : 'no' : hitl.default!, at: now,
+        channel: auto ? 'auto_approve' : 'no_hitl', agent: false });
+    }
+    changed = true;
+  }
+  return changed;
+}
+
 function leaseData(
   run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease, plan?: WorkspacePlan,
 ): Record<string, unknown> {
@@ -199,6 +252,7 @@ function leaseData(
     ...(definition.output ? { output: definition.output } : {}),
     ...(plan?.contract ? { workspace: plan.contract } : {}),
     ...(plan?.session ? { session: plan.session } : {}),
+    ...(definition.interactive ? { interactive: true } : {}),
   } };
 }
 
@@ -224,7 +278,7 @@ type FinalRunStatus = Exclude<RunStatus, 'running'>;
  * How a workflow of the run settled: its outcome, the end it reached, and the outputs it returns. `settledAt` is
  * the run's current revision.
  */
-interface WorkflowResult {
+export interface WorkflowResult {
   outcome: FinalRunStatus;
   end?: string;
   outputs?: Record<string, unknown>;
@@ -248,13 +302,21 @@ function settleRun(run: RunState, now: string, { outcome, end, failure }: Workfl
   run.updatedAt = now;
 }
 
-function doneData(run: RunState): Record<string, unknown> {
-  return { done: { run: run.id, outcome: run.status, ...(run.end !== undefined ? { end: run.end } : {}), ...(run.failure ? { failure: run.failure } : {}) } };
+/** Settles a run and queues its end record in the same locked operation. */
+export async function finishRun(config: LocalConfig, run: RunState, now: string, result: WorkflowResult, driver?: DriverIdentity): Promise<boolean> {
+  settleRun(run, now, result);
+  const queued = await queueRunRecord(config, run, driver, 'end');
+  run.endRecordQueued = queued;
+  return queued;
 }
 
-/** A step with `end` and no action only ends the workflow; the engine settles it without a lease. */
-function endsOnly(step: WorkflowStep | undefined): boolean {
-  return step?.end !== undefined && !hasAction(step);
+/** The run summary returned by manual control operations. */
+export function runData(run: RunState): Record<string, unknown> {
+  return { id: run.id, status: run.status, revision: run.revision, ...(run.end !== undefined ? { end: run.end } : {}), ...(run.failure ? { failure: run.failure } : {}) };
+}
+
+function doneData(run: RunState): Record<string, unknown> {
+  return { done: { run: run.id, outcome: run.status, ...(run.end !== undefined ? { end: run.end } : {}), ...(run.failure ? { failure: run.failure } : {}) } };
 }
 
 /** The step ids these paths read. */
@@ -289,7 +351,8 @@ function readsOf(step: WorkflowStep, item: boolean): Set<string> {
   return ids;
 }
 
-interface RunReads {
+/** Parsed reads and conditions shared by reconciliation and the retry dependency walk. */
+export interface RunReads {
   /** Each step's parsed `if`. */
   conditions: Map<string, Expression>;
   /** Each loop owner's parsed `loop.while`. */
@@ -309,7 +372,7 @@ interface RunReads {
 }
 
 /** Parses every `if` and template in a workflow of the run. A run file whose `if` does not parse cannot settle; the message names the step. */
-function parseReads(run: RunState, scope: Scope): RunReads | string {
+export function parseReads(run: RunState, scope: Scope): RunReads | string {
   const conditions = new Map<string, Expression>();
   const whiles = new Map<string, Expression>();
   const breaks = new Map<string, Expression>();
@@ -419,16 +482,18 @@ function startWorkflowStep(run: RunState, scope: Scope, states: StepState[], sta
 }
 
 /**
- * An end or break reached in a workflow stops everything under it that has not settled, in its sub-workflows too: a
- * leased step is cancelled and its attempt kept in `cancelledAttempts`, a running workflow step is cancelled, and a
- * pending step is skipped. `reached` names the end or break.
+ * Stops every open step whose path `under` matches, in sub-workflows too: a leased step is cancelled and its attempt
+ * kept in `cancelledAttempts`, a running workflow step is cancelled, and a pending or waiting step is skipped. Used by
+ * an end or break, cancel and retry, each with its own failure. Returns the ids this walk changed.
  */
-function stopUnder(run: RunState, scope: Scope, reached: string, settledAt: number): void {
-  const failure = { code: 'end_reached', message: `Cancelled: ${workflowLabel(scope)} reached ${reached}` };
+export function stopWhere(run: RunState, under: (id: string) => boolean, failure: WorkflowFailure, settledAt: number): string[] {
+  const changed: string[] = [];
   for (const state of run.steps) {
-    if (!state.id.startsWith(scope.prefix)) continue;
+    if (!under(state.id)) continue;
+    if (!settled(state)) changed.push(state.id);
     switch (state.status) {
       case 'pending':
+      case 'waiting':
         skip(state, settledAt);
         break;
       case 'running':
@@ -449,6 +514,7 @@ function stopUnder(run: RunState, scope: Scope, reached: string, settledAt: numb
       }
     }
   }
+  return changed;
 }
 
 /**
@@ -587,9 +653,32 @@ function settleScope(run: RunState, scope: Scope): Settled {
       if (state.status !== 'running' && (state.status !== 'pending' || !canRun(state))) continue;
       const definition = definitionOf(state);
       if (!definition) return { unreadable: `Run ${run.id} has no definition for step "${state.id}"` };
-      if (state.status === 'pending' && endsOnly(definition)) {
+      if (state.status === 'pending' && definition.loop && exhaustedAtStart(state, definition.loop, run.revision)) {
+        changed = true;
+        break;
+      }
+      if (state.status === 'pending' && definition.hitl) {
+        if (!state.answer) {
+          const message = hitlMessage(scope, states, state, definition);
+          if (typeof message !== 'string') failStep(state, message, run.revision);
+          else waitForAnswer(state);
+          changed = true;
+          break;
+        }
+        if (definition.hitl.kind === 'approve' && state.answer.choice === 'no') {
+          skip(state, run.revision);
+          changed = true;
+          break;
+        }
+        if (definition.hitl.kind === 'choose') {
+          succeed(state, { settledAt: run.revision });
+          changed = true;
+          break;
+        }
+      }
+      if (state.status === 'pending' && !hasAction(definition)) {
         succeed(state, { settledAt: run.revision });
-      } else if (!(state.status === 'pending' && definition.loop && exhaustedAtStart(state, definition.loop, run.revision))) {
+      } else {
         const advanced = advanceInstance(run, scope, states, state, definition, reads.items.get(localId(scope, state)));
         if (advanced && 'unreadable' in advanced) return advanced;
         if (advanced && 'lease' in advanced) candidate ??= advanced;
@@ -608,7 +697,8 @@ function settleScope(run: RunState, scope: Scope): Settled {
       .sort((left, right) => settledAtOf(left) - settledAtOf(right))[0];
     if (reached) {
       const end = definitionOf(reached)?.end;
-      stopUnder(run, scope, end === undefined ? `the break of step "${reached.id}"` : `end "${end}"`, settledAtOf(reached));
+      const label = end === undefined ? `the break of step "${reached.id}"` : `end "${end}"`;
+      stopWhere(run, (id) => id.startsWith(scope.prefix), { code: 'end_reached', message: `Cancelled: ${workflowLabel(scope)} reached ${label}` }, settledAtOf(reached));
       const result = { outputs: workflowOutputs(scope, states, reads.outputs), settledAt: settledAtOf(reached) };
       return end === undefined ? { outcome: 'succeeded', ...result } : { outcome: scope.definition.ends?.[end] ?? 'failed', end, ...result };
     }
@@ -637,13 +727,13 @@ function settleScope(run: RunState, scope: Scope): Settled {
       return decided === 'ended' ? result : { ...result, outcome: 'failed', failure: decided };
     }
     if (candidate) return candidate;
-    if (states.some((item) => item.status === 'leased' || item.status === 'running')) return { inProgress: true };
+    if (states.some((item) => item.status === 'waiting' || item.status === 'leased' || item.status === 'running')) return { inProgress: true };
     return { unreadable: `Run ${run.id} has pending steps whose needs cannot be met` };
   }
 }
 
 /** Every stored report is reconciled before a later protocol operation can apply another transition. */
-function reconcileRun(run: RunState): Settled {
+export function reconcileRun(run: RunState): Settled {
   return settleScope(run, topScope(run));
 }
 
@@ -661,9 +751,10 @@ function inputsMismatch(name: string, declared: Record<string, OutputSchema> | u
 async function loadWorkflows(
   config: LocalConfig,
   cached: CachedWorkflow,
-): Promise<{ workflows: Record<string, WorkflowDefinition>; sourceHash: string } | { failed: WorkflowEnvelope }> {
+): Promise<{ workflows: Record<string, WorkflowDefinition>; sourceHash: string; teamRevision?: string } | { failed: WorkflowEnvelope }> {
   const workflows: Record<string, WorkflowDefinition> = {};
   const hashes: Array<[string, string]> = [];
+  const revisions: Array<string | undefined> = [cached.teamRevision];
   const visit = async (definition: WorkflowDefinition, through: string[]): Promise<WorkflowEnvelope | undefined> => {
     for (const { step, workflow } of workflowsRunBy(definition)) {
       if (through.includes(workflow)) {
@@ -677,6 +768,7 @@ async function loadWorkflows(
       }
       workflows[workflow] = child.definition;
       hashes.push([workflow, child.sourceHash]);
+      revisions.push(child.teamRevision);
       const failed = await visit(child.definition, [...through, workflow]);
       if (failed) return failed;
     }
@@ -684,12 +776,15 @@ async function loadWorkflows(
   };
   const failed = await visit(cached.definition, [cached.definition.name]);
   if (failed) return { failed };
-  if (hashes.length === 0) return { workflows, sourceHash: cached.sourceHash };
+  const teamRevision = cached.teamRevision !== undefined && revisions.every((revision) => revision === cached.teamRevision)
+    ? cached.teamRevision
+    : undefined;
+  if (hashes.length === 0) return { workflows, sourceHash: cached.sourceHash, ...(teamRevision ? { teamRevision } : {}) };
   const hash = createHash('sha256').update(cached.sourceHash);
   for (const [name, sourceHash] of hashes.sort(([left], [right]) => left.localeCompare(right))) {
     hash.update('\0').update(name).update('\0').update(sourceHash);
   }
-  return { workflows, sourceHash: hash.digest('hex') };
+  return { workflows, sourceHash: hash.digest('hex'), ...(teamRevision ? { teamRevision } : {}) };
 }
 
 /** Creates a run. `inputs` are checked against the declared inputs before the run file exists. */
@@ -716,6 +811,7 @@ export async function startRun(
     status: 'running',
     ...(cached.definition.inputs ? { inputs: inputs as Record<string, unknown> } : {}),
     sourceHash: tree.sourceHash,
+    ...(tree.teamRevision ? { teamRevision: tree.teamRevision } : {}),
     definition: cached.definition,
     ...(Object.keys(tree.workflows).length > 0 ? { workflows: tree.workflows } : {}),
     steps: cached.definition.steps.map((step) => ({ id: step.id, status: 'pending' })),
@@ -739,19 +835,31 @@ function missingNeeds(run: RunState): string | undefined {
   return undefined;
 }
 
+/** The refusal shared by the engine and local driver for interactive work without HITL. */
+export function interactiveHitlRequired(runId: string, step: string): WorkflowFailure {
+  const failure = { code: 'hitl_required', message: `Step "${step}" is interactive and needs a person in the tool, but the driver declares no HITL (driver.can.hitl). Retry it from a terminal: teamai workflow retry ${runId} ${step}; then teamai workflow resume ${runId}` };
+  log.warn(failure.message);
+  return failure;
+}
+
 /** What a driver tells `next` besides who it is. */
 export interface NextOptions {
   /** The attempts of its open leases the driver is still running. An open lease it does not list is handed back to it. */
   running?: string[];
-  /** False to reconcile without issuing a new lease: `next` answers `done`, an unlisted lease, or `wait`. */
+  /** False to reconcile without issuing a new lease: `next` answers `done`, an unlisted lease, `hitl`, or `wait`. */
   canTakeLease?: boolean;
   /** The checkout the run's workspaces start from. The first `next` that sends it fixes the run's base. */
   base?: { ref: string; commit: string };
   /** Workspace modes this driver can run. Omitted means read-only, so a `new` or `continue` step waits. */
   workspaceModes?: WorkspaceMode[];
+  /** Whether a person is present for HITL requests and interactive work on this next request. */
+  hitl?: boolean;
+  /** Process-only override of the member's automatic HITL approval setting. */
+  autoApprove?: boolean;
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
+  driver = { kind: driver.kind, machine: driver.machine, workspace: driver.workspace };
   const running = new Set(options.running);
   // The end record is queued under the run lock, so the run stores whether it
   // was in the same save. It publishes AFTER withRun releases the lock (#1126
@@ -772,9 +880,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       }),
     });
     const done = async (result: WorkflowResult): Promise<{ save: boolean; envelope: WorkflowEnvelope }> => {
-      settleRun(run, now, result);
-      queued = await queueRunRecord(config, run, driver, 'end');
-      run.endRecordQueued = queued;
+      queued = await finishRun(config, run, now, result, driver);
       return answer(doneData(run));
     };
     const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => (
@@ -790,16 +896,26 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     if (older) return { save: false, envelope: error('run_unreadable', older) };
     const other = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !sameDriver(step.lease.driver, driver));
     if (other) return wait(other);
+    run.driver = driver;
     for (;;) {
       // Ends reached through reports apply before an open lease is handed back, so a restarted driver does not run
       // again what an end already stopped.
       const result = reconcileRun(run);
       if ('unreadable' in result) return { save: false, envelope: error('run_unreadable', result.unreadable) };
       if ('outcome' in result) return done(result);
+      if (options.canTakeLease !== false && !options.hitl && answerWithoutHitl(config, run, now, options.autoApprove)) continue;
       // An open lease the driver does not list is handed back before another lease is issued, as a restarted driver expects.
       const leased = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !running.has(step.lease.attempt));
       if (!leased) {
-        if (options.canTakeLease === false || 'inProgress' in result) return wait();
+        if (options.canTakeLease === false || 'inProgress' in result) {
+          const hitl = options.hitl ? waitingHitl(run) : undefined;
+          return hitl ? answer({ hitl }) : wait();
+        }
+        if (result.definition.interactive && !options.hitl) {
+          const failure = interactiveHitlRequired(run.id, result.lease.id);
+          failStep(result.lease, failure, run.revision);
+          continue;
+        }
         const located = locateStep(run, result.lease.id);
         if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${result.lease.id}"`) };
         const plan = planWorkspace(run, located.scope, result.lease, result.definition, {
@@ -817,6 +933,12 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       }
       const located = locateStep(run, leased.id);
       if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${leased.id}"`) };
+      if (located.step.interactive && !options.hitl) {
+        const failure = interactiveHitlRequired(run.id, leased.id);
+        (run.cancelledAttempts ??= []).push(leased.attempt);
+        failStep(leased, failure, leased.lease.revision);
+        continue;
+      }
       const rendered = renderLease(located.scope, statesIn(run, located.scope), leased, located.step);
       if (!('code' in rendered)) {
         const plan = planWorkspace(run, located.scope, leased, located.step, {
@@ -836,15 +958,14 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
 }
 
 function driverFrom(value: unknown): DriverIdentity | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const driver = value as DriverIdentity;
-  if (typeof driver.kind !== 'string' || driver.kind === '') return undefined;
-  if (typeof driver.machine !== 'string' || driver.machine === '') return undefined;
-  if (typeof driver.workspace !== 'string' || driver.workspace === '') return undefined;
-  return { kind: driver.kind, machine: driver.machine, workspace: driver.workspace };
+  const parsed = DriverSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const driver = parsed.data;
+  if (driver.kind === '' || driver.machine === '' || driver.workspace === '') return undefined;
+  return driver;
 }
 
-/** The driver fields `driverFrom` reads. Any other driver field is reported back as `driver.<field>`. */
+/** Known driver fields shared by next, report and respond. Any other driver field is reported back as `driver.<field>`. */
 const DRIVER_FIELDS = new Set(['kind', 'machine', 'workspace', 'can']);
 
 /** The top-level payload fields `parseNextPayload` reads. */
@@ -868,6 +989,19 @@ function unreadFields(record: Record<string, unknown>, known: ReadonlySet<string
     }
   }
   return ignored;
+}
+
+/** A declared driver UI answer's provenance and unread payload fields. */
+export interface ParsedResponsePayload {
+  response: Pick<ResponseInput, 'channel' | 'agent' | 'driver'>;
+  ignored: string[];
+}
+
+export function parseResponsePayload(value: unknown): ParsedResponsePayload | string {
+  if (!isRecord(value)) return 'respond payload must be a JSON object';
+  const driver = driverFrom(value.driver);
+  if (!driver) return 'driver must include kind, machine, and workspace';
+  return { response: { channel: 'driver', agent: false, driver }, ignored: unreadFields(value, new Set(['driver'])) };
 }
 
 /** A parsed report and the payload fields the CLI did not read from it. */
@@ -973,11 +1107,13 @@ export function parseNextPayload(value: unknown): ParsedNextPayload | string {
     }
     request.base = { ref: base.ref, commit: base.commit };
   }
-  const rawDriver = record.driver;
-  if (rawDriver && typeof rawDriver === 'object' && 'can' in rawDriver) {
-    const can = (rawDriver as { can?: unknown }).can;
-    if (!can || typeof can !== 'object' || Array.isArray(can)) return 'driver.can must be an object';
-    const workspace = (can as { workspace?: unknown }).workspace;
+  const ignored = unreadFields(record, NEXT_PAYLOAD_FIELDS);
+  const can = isRecord(record.driver) ? record.driver.can : undefined;
+  if (can !== undefined) {
+    if (!isRecord(can)) return 'driver.can must be an object';
+    if (can.hitl !== undefined && typeof can.hitl !== 'boolean') return 'driver.can.hitl must be a boolean';
+    if (can.hitl !== undefined) request.hitl = can.hitl;
+    const workspace = can.workspace;
     if (workspace !== undefined) {
       const modes = ['read-only', 'new', 'continue'];
       if (!Array.isArray(workspace) || !workspace.every((mode): mode is WorkspaceMode => modes.includes(mode as WorkspaceMode))) {
@@ -985,8 +1121,9 @@ export function parseNextPayload(value: unknown): ParsedNextPayload | string {
       }
       request.workspaceModes = workspace;
     }
+    ignored.push(...Object.keys(can).filter((key) => key !== 'hitl' && key !== 'workspace').map((key) => `driver.can.${key}`));
   }
-  return { request, ignored: unreadFields(record, NEXT_PAYLOAD_FIELDS) };
+  return { request, ignored };
 }
 
 function rememberSettledAttempt(run: RunState, attempt: string): void {
@@ -1045,7 +1182,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     let outcome = report.outcome;
     let message = report.message;
     let failure = report.failure;
-    if (outcome === 'success' && defined?.output) {
+    if (outcome === 'success' && defined?.output && (!defined.interactive || report.outputs !== undefined)) {
       const mismatch = outputMismatch(defined.output, report.outputs);
       if (mismatch) {
         outcome = 'failed';

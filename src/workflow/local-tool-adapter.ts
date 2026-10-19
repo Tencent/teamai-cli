@@ -6,6 +6,7 @@ import { launchEnv, type Launch } from '../launch-context.js';
 import { opencodeMajorVersion } from '../opencode-hooks.js';
 import { resolveCliPath } from '../utils/cli-path.js';
 import { writeJsonAtomic } from '../utils/fs.js';
+import { stopProcess } from './process-stop.js';
 import { log } from '../utils/logger.js';
 import type { TokenUsage, WorkflowFailure } from './types.js';
 
@@ -56,7 +57,9 @@ export type LocalToolResult =
   | { started: false; exitCode: number; failure: WorkflowFailure };
 
 export interface LocalToolAdapter {
-  run(tool: LocalWorkflowTool, input: LocalToolRun): Promise<LocalToolResult>;
+  run(tool: LocalWorkflowTool, input: LocalToolRun, signal?: AbortSignal): Promise<LocalToolResult>;
+  /** Opens a foreground tool for a person, with an optional structured result. */
+  runInteractive(tool: LocalWorkflowTool, input: LocalToolRun, signal?: AbortSignal): Promise<LocalToolResult>;
 }
 
 export type ToolSpawn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
@@ -81,7 +84,7 @@ function promptHandoff(tool: LocalWorkflowTool, input: LocalToolRun, opencodeMaj
   return family === 'codex' || (family === 'opencode' && opencodeMajor < 2 && input.agent?.settings?.['mode'] === 'subagent');
 }
 
-function invocation(tool: LocalWorkflowTool, input: LocalToolRun, opencodeMajor: number): string[] {
+function invocation(tool: LocalWorkflowTool, input: LocalToolRun, opencodeMajor: number, interactive: boolean): string[] {
   const family = localToolFamily(tool);
   const viaPrompt = promptHandoff(tool, input, opencodeMajor);
   const agentPrompt = input.agent?.instructions
@@ -92,6 +95,11 @@ function invocation(tool: LocalWorkflowTool, input: LocalToolRun, opencodeMajor:
   const model = input.model ? ['--model', input.model.name] : [];
   const effort = input.model?.effort;
   const resume = input.resume ? ['--resume', input.resume] : [];
+  if (interactive) {
+    if (family === 'claude') return [...agent, ...model, ...(effort ? ['--effort', effort] : []), prompt];
+    if (family === 'codex') return [...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+    return [...agent, ...model, '--prompt', prompt];
+  }
   if (family === 'claude') {
     return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
   }
@@ -278,8 +286,8 @@ export function createLocalToolAdapter(
   spawnTool: ToolSpawn = crossSpawn,
   resolveTool: ToolResolve = resolveCliPath,
 ): LocalToolAdapter {
-  return {
-    async run(tool, input) {
+  const launch =
+    async (tool: LocalWorkflowTool, input: LocalToolRun, signal: AbortSignal | undefined, interactive: boolean): Promise<LocalToolResult> => {
       await fs.mkdir(path.dirname(input.resultPath), { recursive: true });
       const executable = resolveTool(tool);
       if (!executable) {
@@ -316,23 +324,26 @@ export function createLocalToolAdapter(
             + 'from the deployed agent file. The step is not blocked.');
         }
       }
-      const args = invocation(tool, input, opencodeMajor);
+      const args = invocation(tool, input, opencodeMajor, interactive);
       const applied = input.agent ? { applied: promptHandoff(tool, input, opencodeMajor) ? 'prompt' as const : 'main' as const } : {};
       let started = false;
-      const completed = await new Promise<{ exitCode: number; stdout: string; error?: NodeJS.ErrnoException }>((resolve) => {
+      let childProcess: ChildProcess | undefined;
+      const closed = new Promise<{ exitCode: number; stdout: string; error?: NodeJS.ErrnoException }>((resolve) => {
         let child: ChildProcess;
         try {
           child = spawnTool(executable, args, {
             cwd: input.cwd,
             env: { ...process.env, ...(input.launch ? launchEnv(input.launch) : {}), TEAMAI_WORKFLOW_RESULT: input.resultPath },
             // OpenCode waits for the end of a piped stdin before it starts.
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: interactive ? 'inherit' : ['ignore', 'pipe', 'pipe'],
+            detached: !interactive && process.platform !== 'win32',
             windowsHide: true,
           });
         } catch (error) {
           resolve({ exitCode: 1, stdout: '', error: error as NodeJS.ErrnoException });
           return;
         }
+        childProcess = child;
         let stdout = '';
         child.on('spawn', () => { started = true; });
         child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -340,6 +351,17 @@ export function createLocalToolAdapter(
         child.on('error', (error: NodeJS.ErrnoException) => resolve({ exitCode: 1, stdout, error }));
         child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout }));
       });
+      const stop = childProcess && stopProcess(childProcess, closed, !interactive && process.platform !== 'win32');
+      const abort = (): void => {
+        const reason: unknown = signal?.reason;
+        const forwarded = reason === 'SIGINT' || reason === 'SIGQUIT' || reason === 'SIGTERM' || reason === 'SIGHUP' ? reason : undefined;
+        void stop?.(interactive ? forwarded : undefined);
+      };
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+      const completed = await closed;
+      if (signal?.aborted) await stop?.();
+      signal?.removeEventListener('abort', abort);
       if (!started || completed.error?.code === 'ENOENT') {
         return {
           started: false,
@@ -359,7 +381,7 @@ export function createLocalToolAdapter(
       }
       const fileResult = await readResultFile(input.resultPath);
       const reported = toolStdout(tool, completed.stdout);
-      const result = combineResults(fileResult, reported);
+      const result = combineResults(fileResult, reported) ?? (interactive ? {} : null);
       if (!result) {
         return {
           started: true,
@@ -374,6 +396,13 @@ export function createLocalToolAdapter(
       }
       if (!fileResult) await persistFallback(input.resultPath, result);
       return { started: true, exitCode: completed.exitCode, ...applied, ...result };
+    };
+  return {
+    run(tool, input, signal) {
+      return launch(tool, input, signal, false);
+    },
+    runInteractive(tool, input, signal) {
+      return launch(tool, input, signal, true);
     },
   };
 }

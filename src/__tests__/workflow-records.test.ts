@@ -1,23 +1,27 @@
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { simpleGit } from 'simple-git';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import YAML from 'yaml';
+import * as reportsBranch from '../utils/reports-branch.js';
 import { readRecordedAgent } from '../agent-observation.js';
-import type { LocalConfig, UserStats } from '../types.js';
+import { getDataHome, type LocalConfig, type UserStats } from '../types.js';
 import {
   buildEndRecord,
   buildStartRecord,
   enqueueRecord,
   mergeRecord,
+  mergeWorkflowStats,
   pendingRecords,
   publishPendingRecords,
   recordPath,
   type WorkflowRunRecord,
 } from '../workflow/records.js';
-import { generateRunId, isRunId } from '../workflow/store.js';
+import { acquireLock, releaseLock } from '../update.js';
+import { generateRunId, isRunId, runLockPath } from '../workflow/store.js';
 import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowDiagnostic } from '../workflow/types.js';
 
 const dirs: string[] = [];
@@ -38,6 +42,7 @@ function testConfig(): { config: LocalConfig } {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
   dirs.length = 0;
 });
@@ -111,11 +116,14 @@ function settledFan(items: number): RunState {
 
 describe('#1083 workflow run records', () => {
   it('builds a start record with exactly the allowlisted fields', () => {
-    const record = buildStartRecord(runState({ status: 'running' }), driver, 'tester');
+    const teamRevision = '0123456789abcdef0123456789abcdef01234567';
+    const record = buildStartRecord(runState({ status: 'running', teamRevision }), driver, 'tester');
     expect(record.schemaVersion).toBe('v1alpha1');
     expect(record.run).toBe('r1234567890abcdef');
     expect(record.workflow).toBe('build');
     expect(record.phase).toBe('start');
+    expect(record.sourceHash).toBe('abc');
+    expect(record.teamRevision).toBe(teamRevision);
     // Kind only: the hostname is machine-identifying and is not published.
     expect(record.driver).toEqual({ kind: 'local' });
     expect(record.status).toBe('running');
@@ -126,6 +134,39 @@ describe('#1083 workflow run records', () => {
     expect(record).not.toHaveProperty('prompt');
     expect(record).not.toHaveProperty('outputs');
     expect(record).not.toHaveProperty('workspace');
+  });
+
+  it('reads and merges queued records published before and after source provenance', async () => {
+    const { config } = testConfig();
+    const teamRevision = '0123456789abcdef0123456789abcdef01234567';
+    const current = buildEndRecord(runState({ teamRevision }), driver, 'tester');
+    const legacy: WorkflowRunRecord = {
+      schemaVersion: 'v1alpha1',
+      run: current.run,
+      workflow: current.workflow,
+      phase: 'start',
+      status: 'running',
+      startedAt: current.startedAt,
+      username: current.username,
+      publishedAt: current.publishedAt,
+    };
+    const queue = path.join(getDataHome(config), 'workflows', 'pending');
+    fs.mkdirSync(queue, { recursive: true });
+    fs.writeFileSync(path.join(queue, `${legacy.run}.${legacy.phase}.json`), JSON.stringify(legacy));
+
+    const [parsed] = await pendingRecords(config);
+
+    expect(parsed).toBeDefined();
+    expect(parsed?.run).toBe(legacy.run);
+    expect(parsed?.sourceHash).toBeUndefined();
+    expect(parsed?.teamRevision).toBeUndefined();
+    expect(current.sourceHash).toBe('abc');
+    expect(current.teamRevision).toBe(teamRevision);
+    expect(mergeRecord(parsed!, current)).toMatchObject({
+      sourceHash: 'abc',
+      teamRevision,
+      phase: 'end',
+    });
   });
 
   it('structurally redacts: prompts, outputs, and local paths cannot leak', () => {
@@ -163,7 +204,7 @@ describe('#1083 workflow run records', () => {
   it('publishes the failure code of every step failure teamai writes, and only codes it can name', () => {
     // Codes a `code: '…'` literal in src/workflow writes that never become a run's failure.
     const diagnostics = ['unknown_key', 'missing_needs', 'false_if', 'bad_template', 'dotted_name', 'undeclared_output', 'undeclared_end', 'bad_loop', 'bad_session', 'bad_workspace'] satisfies Array<WorkflowDiagnostic['code']>;
-    const answers = ['end_reached', 'repeated_report', 'wrong_attempt', 'lease_cancelled', 'interrupted', 'run_unreadable', 'driver_stuck', 'busy'];
+    const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_response', 'agent_in_path', 'stale_response', 'retried', 'end_reached', 'repeated_report', 'wrong_attempt', 'lease_cancelled', 'interrupted', 'run_unreadable', 'driver_stuck', 'busy'];
     const source = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'workflow');
     const written = new Set(fs.readdirSync(source).filter((file) => file.endsWith('.ts'))
       .flatMap((file) => [...fs.readFileSync(path.join(source, file), 'utf8').matchAll(/code: '([^']+)'/g)].map((match) => match[1]!)));
@@ -444,4 +485,159 @@ describe('#1083 workflow stats merge', () => {
     expect(stats.workflows).toEqual({ runs: 1, succeeded: 1, failed: 0, totalDurationMs: 150000 });
     expect(await reports.raw(['ls-tree', '--name-only', 'teamai-reports', 'stats/'])).toBe('stats/alice.yaml\n');
   });
+});
+
+
+describe('manual control records', () => {
+  it.each(['tty', 'driver'] as const)('publishes only choice, channel, and agent from current and archived %s answers', (channel) => {
+    const answer = { choice: 'yes', note: 'PRIVATE NOTE', at: 'PRIVATE TIME', channel, agent: false, ...(channel === 'driver' ? { driver: { kind: 'ide', machine: 'PRIVATE HOST', workspace: 'PRIVATE WORKSPACE' } } : {}) };
+    const run = runState({ status: 'failed', steps: [{ id: 'one', status: 'cancelled', settledAt: 2, failure: { code: 'cancelled', message: 'private failure' }, answer, pass: 2,
+      passes: [{ pass: 1, outcome: 'failed', answer: { ...answer, choice: 'no' } }] }], archive: [{ step: 'one.child', pass: 1, outcome: 'success', answer }] });
+    const record = buildEndRecord(run, driver, 'tester');
+    expect(record.failure).toEqual({ code: 'cancelled' });
+    expect(record.steps?.map((step) => step.answer)).toEqual([
+      { choice: 'no', channel, agent: false }, { choice: 'yes', channel, agent: false }, { choice: 'yes', channel, agent: false },
+    ]);
+    expect(JSON.stringify(record)).not.toContain('PRIVATE');
+  });
+
+  it('counts a cancelled run without counting success or failure', () => {
+    const record = buildEndRecord(runState({ status: 'cancelled' }), driver, 'tester');
+    expect(record.status).toBe('cancelled');
+    expect(record.failure).toBeUndefined();
+    expect(mergeWorkflowStats({}, [record]).workflows).toEqual({ runs: 1, succeeded: 0, failed: 0, totalDurationMs: 150000 });
+  });
+});
+
+
+it('replaces a published failed end after retry without keeping its old end or failure', () => {
+  const failed = buildEndRecord(runState({ status: 'failed', failure: { code: 'cancelled', message: 'Cancelled' } }), driver, 'tester');
+  const succeeded = buildEndRecord(runState(), driver, 'tester');
+  expect(mergeRecord(failed, succeeded).failure).toBeUndefined();
+  expect(mergeRecord({ ...failed, end: 'aborted' }, succeeded).end).toBeUndefined();
+  expect(mergeRecord(failed, succeeded).run).toBe(failed.run);
+});
+
+
+it.each(['failed', 'cancelled'] as const)('replaces a published %s end contribution after retry succeeds', async (status) => {
+  const { statsDeltaRecords } = await import('../workflow/records.js');
+  const old = buildEndRecord(runState({ status }), driver, 'tester');
+  const replacement = buildEndRecord(runState({ updatedAt: '2026-10-14T10:05:00.000Z' }), driver, 'tester');
+  const existing = mergeWorkflowStats({}, [old]);
+  const origin = new Map([[old.run, old]]);
+  const updated = mergeWorkflowStats(existing, statsDeltaRecords(origin, [replacement]), origin);
+  expect(updated.workflows).toEqual({ runs: 1, succeeded: 1, failed: 0, totalDurationMs: 300000 });
+  expect(mergeWorkflowStats(updated, statsDeltaRecords(new Map([[old.run, replacement]]), [replacement])).workflows).toEqual(updated.workflows);
+});
+
+
+it('replaces a cancelled end without a stored outcome counter', async () => {
+  const { statsDeltaRecords } = await import('../workflow/records.js');
+  const old = buildEndRecord(runState({ status: 'cancelled' }), driver, 'tester');
+  const replacement = buildEndRecord(runState({ updatedAt: '2026-10-14T10:05:00.000Z' }), driver, 'tester');
+  const origin = new Map([[old.run, old]]);
+  const existing = { workflows: { runs: 1, succeeded: 0, failed: 0, totalDurationMs: 150000 } };
+  expect(mergeWorkflowStats(existing, statsDeltaRecords(origin, [replacement]), origin).workflows).toEqual({
+    runs: 1, succeeded: 1, failed: 0, totalDurationMs: 300000,
+  });
+});
+
+
+it('keeps a replacement end queued when an earlier end finishes publishing', async () => {
+  const { config } = testConfig();
+  const old = buildEndRecord(runState({ status: 'failed' }), driver, 'tester');
+  const replacement = buildEndRecord(runState({ updatedAt: '2026-10-14T10:05:00.000Z' }), driver, 'tester');
+  await enqueueRecord(config, old);
+  vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async () => {
+    await enqueueRecord(config, replacement);
+    return { status: 'published' };
+  });
+  const result = await publishPendingRecords(config);
+  expect(await pendingRecords(config)).toEqual([replacement]);
+  expect(result).toBe('pending');
+});
+
+
+it('keeps a replacement end queued when its producer starts after the dequeue read', async () => {
+  const { config } = testConfig();
+  const old = buildEndRecord(runState({ status: 'failed' }), driver, 'tester');
+  const replacement = buildEndRecord(runState({ updatedAt: '2026-10-14T10:05:00.000Z' }), driver, 'tester');
+  const lock = runLockPath(config, old.run);
+  await enqueueRecord(config, old);
+  let delivered = false;
+  vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async () => {
+    delivered = true;
+    return { status: 'published' };
+  });
+  const readFile = fsp.readFile.bind(fsp);
+  let producer: Promise<void> | undefined;
+  vi.spyOn(fsp, 'readFile').mockImplementation(async (...args) => {
+    const contents = await readFile(...args);
+    if (delivered && !producer && String(args[0]).endsWith(`${old.run}.end.json`)) {
+      const held = await acquireLock(lock);
+      producer = (async () => {
+        if (!held) {
+          while (!await acquireLock(lock)) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        try {
+          await enqueueRecord(config, replacement);
+        } finally {
+          await releaseLock(lock);
+        }
+      })();
+      if (held) await producer;
+    }
+    return contents;
+  });
+  await publishPendingRecords(config);
+  expect(producer).toBeDefined();
+  await producer;
+  expect(await pendingRecords(config)).toEqual([replacement]);
+});
+
+it('leaves a delivered record queued while its run lock is held, then drains it', async () => {
+  const { config } = testConfig();
+  const record = buildEndRecord(runState(), driver, 'tester');
+  await enqueueRecord(config, record);
+  vi.spyOn(reportsBranch, 'updateReports').mockResolvedValue({ status: 'published' });
+  const lock = runLockPath(config, record.run);
+  expect(await acquireLock(lock)).toBe(true);
+  try {
+    expect(await publishPendingRecords(config)).toBe('pending');
+    expect(await pendingRecords(config)).toEqual([record]);
+  } finally {
+    await releaseLock(lock);
+  }
+  expect(await publishPendingRecords(config)).toBe('published');
+  expect(await pendingRecords(config)).toEqual([]);
+});
+
+it.each(['invalid JSON', 'directory'])('leaves a delivered queue path containing %s pending', async (tampering) => {
+  const { config } = testConfig();
+  const record = buildEndRecord(runState(), driver, 'tester');
+  await enqueueRecord(config, record);
+  const target = path.join(config.dataHome!, 'workflows', 'pending', `${record.run}.end.json`);
+  vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async () => {
+    if (tampering === 'invalid JSON') fs.writeFileSync(target, '{');
+    else {
+      fs.rmSync(target);
+      fs.mkdirSync(target);
+    }
+    return { status: 'published' };
+  });
+  await expect(publishPendingRecords(config)).resolves.toBe('pending');
+  expect(fs.existsSync(target)).toBe(true);
+});
+
+it('reports published when only another run was queued during delivery', async () => {
+  const { config } = testConfig();
+  const delivered = buildEndRecord(runState(), driver, 'tester');
+  const other = buildStartRecord(runState({ id: 'rabcdef1234567890', status: 'running' }), driver, 'tester');
+  await enqueueRecord(config, delivered);
+  vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async () => {
+    await enqueueRecord(config, other);
+    return { status: 'published' };
+  });
+  expect(await publishPendingRecords(config)).toBe('published');
+  expect(await pendingRecords(config)).toEqual([other]);
 });

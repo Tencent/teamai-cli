@@ -22,7 +22,7 @@ steps:
     agent: reviewer
 ```
 
-`schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且必须且只能使用 `command`、`prompt`、`prompt_file`、`workflow` 之一。提示词步骤可选填 `agent`。`output` 沿用已有简写：`string`、`number`、`boolean`、字面量联合、对象，或只含一种元素类型的数组。TeamAI 会用它校验成功命令的 stdout 或提示词工具返回的 `output`。
+`schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且只能使用 `command`、`prompt`、`prompt_file`、`workflow` 中的一种动作。带有 `end`、`approve` 或 `choose` 的步骤可以省略动作。提示词步骤可选填 `agent`。`output` 沿用已有简写：`string`、`number`、`boolean`、字面量联合、对象，或只含一种元素类型的数组。TeamAI 会用它校验成功命令的 stdout 或提示词工具返回的 `output`。
 
 提示词步骤可以设置 `model`：`models/aliases.yaml` 中的别名或模型名，不能含空格或模板。文件顶层的 `defaults: { model: fast }` 为其中的提示词步骤设置模型。提示词步骤使用以下第一个已设置的模型：
 
@@ -129,9 +129,11 @@ teamai workflow next <run> --json '{"driver":{"kind":"local","machine":"host","w
 teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcome":"success","driver":{"kind":"local","machine":"host","workspace":"/work"}}'
 ```
 
-`outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next` 和 `report` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
+`outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next`、`report` 和 `respond --json` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
 
-运行状态保存在当前 scope 的 TeamAI 数据目录里。命令结束后进程就退出。本地运行以 `failed` 结束时，退出码是 1。不会留下常驻的工作流进程。
+运行状态保存在当前 scope 的 TeamAI 数据目录里。命令结束后进程就退出。本地运行以 `failed` 或 `cancelled` 结束时，退出码是 1。不会留下常驻的工作流进程。
+
+等待 HITL 请求用 `workflow respond <run> <step> <choice>` 回答，失败或卡住的步骤用 `workflow retry <run> <step>` 重试，`workflow cancel <run> [step]` 停止工作，`workflow resume <run>` 继续本地执行。next 返回 lease、hitl、wait 或 done。参见[HITL](workflow-advanced.md#hitl人在回路中)和[重试、取消和继续运行](workflow-advanced.md#重试取消和继续运行)。本地运行以 failed 或 cancelled 结束时退出码为 1。结束运行的操作在锁内排队写入结束记录，在释放锁后发布；重试后仍更新同一路径。回答记录只发布 choice、channel 和 agent，备注、回答时间和回答驱动身份只保存在本地。
 
 ## 工作区
 
@@ -172,11 +174,11 @@ steps:
 
 开启[使用统计上报](reporting.md)时，每次运行都会向团队的 `teamai-reports` 分支发布一条保护隐私的记录：开始时一次，结束时一次。关闭后不发布任何记录，返回中也不带 `record`。记录存放在 `workflows/runs/<run id>.json`，以 run id 为键，重试的发布会更新同一条记录而不是产生副本。
 
-记录只包含：run id、工作流名、阶段（`start` 或 `end`）、驱动的 kind、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数，以及发布者用户名。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
+记录只包含：run id、工作流名、`sourceHash`、可选的 `teamRevision`、阶段（`start` 或 `end`）、驱动的 kind、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数，以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
 
 条目的 `agent` 是该 pass 实际运行时观察到的组合：步骤的 `agent:` 定义及工具如何拿到它（工具自己读取 agent 文件时为 `main`，指令拼接到提示词前时为 `prompt`）、工具及其版本、启动时请求的模型和 effort、工具报告的模型、检出最近一次 pull 的团队提交以及之后是否改过已下发的文件、项目提交、TeamAI 版本和驱动的 kind。没有观察到的值不写。`fingerprint` 对定义、工具、模型、effort 和团队提交做哈希，fingerprint 相同的两个 pass 记录下来的这些部分相同。模型或团队提交未知，或改过已下发的文件时，不写 `fingerprint`。没有任何观察的 pass，以及旧版 TeamAI 写的记录，只带定义的名称。步骤运行期间，如果该检出最近一次 pull 已完整下发到步骤启动的工具，该工具以及它在同一检出中启动的会话都会跳过会话开始时的 pull，步骤因此保持它记录的团队提交。
 
-结束记录由结算该运行的那次 `next` 发布。发布失败时——没有远端、reports 锁被占用、push 被拒——记录会进入当前 scope 数据目录的本地队列，在下一次 `teamai pull` 时重试。此时 `start`、`next` 的返回会带 `record: pending` 而不是 `record: published`。运行本身不受影响：一台机器在运行开始后崩溃，该运行会以"已开始未结束"的状态保持可见。
+结束运行的操作在锁内排队保存结束记录，在释放锁后发布。发布失败时——没有远端、reports 锁被占用、push 被拒——记录会进入当前 scope 数据目录的本地队列，在下一次 `teamai pull` 时重试。此时 `start`、`next` 的返回会带 `record: pending` 而不是 `record: published`。运行本身不受影响：一台机器在运行开始后崩溃，该运行会以"已开始未结束"的状态保持可见。
 
 Run id 是 `r` 加 16 位十六进制。此方案之前创建的运行用 8 位十六进制，仍然可以解析。
 

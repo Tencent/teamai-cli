@@ -2,6 +2,7 @@
 
 import type { ArchivedPass, StepState } from './step-state.js';
 
+/** The driver's lease ownership, independent of its per-request capabilities. */
 export interface DriverIdentity {
   kind: string;
   machine: string;
@@ -16,6 +17,20 @@ export type OutputSchema =
   | { type: 'object'; fields: Record<string, OutputSchema> }
   | { type: 'array'; items: OutputSchema };
 
+/** A HITL request that must settle before its step can act or reach an end. */
+export interface StepHitl {
+  /** The YAML declaration, with approve as the yes-or-no case. */
+  kind: 'approve' | 'choose';
+  /** Template text rendered from the step's ready context. */
+  message: string;
+  /** The choices an answer must name exactly. */
+  options: string[];
+  /** The default for an optional choose when a driver without HITL uses auto approval. */
+  default?: string;
+  /** Whether the answer must come from a person at a terminal or through a driver UI's declared answer. */
+  required: boolean;
+}
+
 export interface WorkflowStep {
   id: string;
   /** Step ids this step waits for. Absent only on the first step, which is a root. */
@@ -27,6 +42,10 @@ export interface WorkflowStep {
   prompt?: string;
   /** Original team-repo-relative source path for a cached prompt. */
   promptFile?: string;
+  /** A person works in the prompt tool; only a driver with HITL can take the lease. */
+  interactive?: true;
+  /** The question answered before this step's action or end. */
+  hitl?: StepHitl;
   agent?: string;
   /** The model a prompt step runs on, as written: an alias from `models/aliases.yaml` or a model name. The driver resolves it. */
   model?: string;
@@ -90,7 +109,7 @@ export interface StepLoop {
 /** The keys that give a step its action, as YAML writes them, each with the definition field it fills. */
 export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
 
-/** A step with no action only ends its workflow. */
+/** Whether a step runs work rather than only a HITL request or end. */
 export function hasAction(step: WorkflowStep): boolean {
   return Object.values(STEP_ACTIONS).some((field) => step[field] !== undefined);
 }
@@ -158,7 +177,7 @@ export interface WorkflowDiagnostic {
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
-export type RunStatus = 'running' | 'succeeded' | 'failed';
+export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface StepLease {
   attempt: string;
@@ -184,6 +203,8 @@ export interface RunState {
   name: string;
   revision: number;
   status: RunStatus;
+  /** Identity of the latest driver that called next, retained so resume can recover its workspace. */
+  driver?: DriverIdentity;
   /** The end this run reached, set when it settles. */
   end?: string;
   /** Why the run failed when no end says it, such as `loop_exhausted` on a looping top-level workflow. */
@@ -192,6 +213,8 @@ export interface RunState {
   inputs?: Record<string, unknown>;
   /** Covers `definition` and every workflow in `workflows`. */
   sourceHash: string;
+  /** Remote-reachable team commit shared by every cached workflow in this run. */
+  teamRevision?: string;
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;
@@ -222,6 +245,8 @@ export interface RunState {
 export interface CachedWorkflow {
   relativePath: string;
   sourceHash: string;
+  /** Remote-reachable team commit that stores the workflow and prompt bytes exactly. */
+  teamRevision?: string;
   /**
    * The YAML the definition was parsed from, so a kept copy can be checked again against the workflows it runs.
    * Absent in a cache written before a workflow could run another file.

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { getDataHome, type LocalConfig } from '../types.js';
-import { ArchivedPassSchema, StepStateSchema } from './step-state.js';
+import { ArchivedPassSchema, DriverSchema, StepStateSchema } from './step-state.js';
 import type { RunState, WorkflowDefinition } from './types.js';
 
 /**
@@ -31,6 +31,10 @@ export function runLockPath(config: LocalConfig, runId: string): string {
   return path.join(getDataHome(config), 'workflows', 'runs', `${runId}.lock`);
 }
 
+export function driverLockPath(config: LocalConfig, runId: string): string {
+  return path.join(getDataHome(config), 'workflows', 'runs', runId, 'driver.lock');
+}
+
 function isDefinition(value: unknown): value is WorkflowDefinition {
   if (!value || typeof value !== 'object') return false;
   const definition = value as WorkflowDefinition;
@@ -47,7 +51,7 @@ export function isRunState(value: unknown): value is RunState {
     && isRunId(run.id)
     && typeof run.name === 'string'
     && typeof run.revision === 'number'
-    && (run.status === 'running' || run.status === 'succeeded' || run.status === 'failed')
+    && (run.status === 'running' || run.status === 'succeeded' || run.status === 'failed' || run.status === 'cancelled')
     && isDefinition(run.definition)
     && Array.isArray(run.steps)
     && Array.isArray(run.settledAttempts);
@@ -59,6 +63,8 @@ const RunProgressSchema = z.object({
   cancelledAttempts: z.array(z.string()).default([]),
   archive: z.array(ArchivedPassSchema).default([]),
   round: z.number().int().optional(),
+  /** Latest driver that called next, absent in older run files. */
+  driver: DriverSchema.optional(),
 });
 
 export async function readRun(config: LocalConfig, runId: string): Promise<RunState | 'missing' | 'corrupt'> {

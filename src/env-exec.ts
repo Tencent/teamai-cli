@@ -44,6 +44,14 @@ const FORWARDED_SIGNALS: readonly NodeJS.Signals[] = ['SIGTERM', 'SIGHUP'];
  */
 const TERMINAL_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT'];
 
+/** Signal policy for an attached command, shared with foreground workflow tools. */
+export function commandSignalPolicy(terminalReachesCommand: boolean): { forwarded: readonly NodeJS.Signals[]; ignored: readonly NodeJS.Signals[] } {
+  return {
+    forwarded: terminalReachesCommand ? FORWARDED_SIGNALS : [...FORWARDED_SIGNALS, ...TERMINAL_SIGNALS],
+    ignored: terminalReachesCommand ? TERMINAL_SIGNALS : [],
+  };
+}
+
 /**
  * Whether `ps -o pgid=,tpgid=` says the process is in its terminal's
  * foreground process group. No controlling terminal prints a tpgid of 0
@@ -61,7 +69,7 @@ export function inTerminalForeground(ps: string): boolean {
  * command already had is a second Ctrl-C, keeping it leaves the command
  * running.
  */
-async function terminalReachesCommand(): Promise<boolean> {
+export async function terminalReachesCommand(): Promise<boolean> {
   if (process.platform === 'win32') return true;
   try {
     const { stdout } = await promisify(execFile)('ps', ['-o', 'pgid=,tpgid=', '-p', String(process.pid)]);
@@ -305,8 +313,7 @@ function run(
   cwd: string,
   terminalReachesCommand: boolean,
 ): Promise<ExecOutcome> {
-  const forwarded = terminalReachesCommand ? FORWARDED_SIGNALS : [...FORWARDED_SIGNALS, ...TERMINAL_SIGNALS];
-  const ignored = terminalReachesCommand ? TERMINAL_SIGNALS : [];
+  const { forwarded, ignored } = commandSignalPolicy(terminalReachesCommand);
   return new Promise((resolve) => {
     // cross-spawn: on Windows, npm installs CLIs as .cmd shims spawn can't start.
     const child = crossSpawn(file, [...args], { cwd, env, stdio: 'inherit' });

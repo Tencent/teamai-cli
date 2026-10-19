@@ -141,6 +141,7 @@ function expressionSteps(scope: Scope, states: StepState[], reader?: StepState):
     ...('outputs' in step && step.outputs !== undefined ? { outputs: step.outputs } : {}),
     ...('results' in step && step.results !== undefined ? { results: step.results } : {}),
     ...('results' in step && branchNames(step.results) ? { branches: branchNames(step.results) } : {}),
+    ...(step.answer ? { choice: step.answer.choice, note: step.answer.note } : {}),
     passes: passesOf(step),
   }])) };
 }

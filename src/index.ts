@@ -763,16 +763,17 @@ workflowCmd
   .description('Create a run. With --driver local, execute command and prompt steps in this process.')
   .option('--driver <kind>', 'Run the workflow in this process. Only local is available.')
   .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs')
+  .option('--auto-approve', 'With --driver local, automatically answer optional approve HITL requests and choose defaults in this process')
   .option('--inputs <json>', 'Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.')
-  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string }) => {
+  .action(async (name: string, cmdOpts: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean }) => {
     const { workflowStart } = await import('./workflow-commands.js');
     await workflowStart(name, cmdOpts);
   });
 
 workflowCmd
   .command('next <run>')
-  .description('Lease the next pending step of a run. Prints a JSON envelope.')
-  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), and canTakeLease, false to settle without taking a new lease. Every answer lists in cancelled the running attempts to stop.')
+  .description('Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.')
+  .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can.hitl, true when a person can answer HITL requests and work interactively. Send driver.can.hitl on every next request, including busy polls. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
   .action(async (run: string, cmdOpts: { json?: string }) => {
     const { workflowNext } = await import('./workflow-commands.js');
     await workflowNext(run, cmdOpts);
@@ -785,6 +786,43 @@ workflowCmd
   .action(async (run: string, cmdOpts: { json?: string }) => {
     const { workflowReport } = await import('./workflow-commands.js');
     await workflowReport(run, cmdOpts);
+  });
+
+workflowCmd
+  .command('respond <run> <step> <choice>')
+  .description('Answer a waiting approve (yes/no) or choose HITL request. Required HITL requests accept terminal answers or declared person answers from a driver UI. Prints one JSON envelope.')
+  .option('--json <payload>', 'Driver identity {"driver":{"kind":"ide","machine":"host","workspace":"/work"}} declares an answer a person gave in the driver UI, never one its agent chose. Records channel driver with agent false; accepts required HITL requests.')
+  .option('--note <text>', 'Keep a note with the answer, readable as steps.<id>.note')
+  .option('--pass <n>', 'Answer only this positive pass number; rejects an answered or replaced HITL request')
+  .action(async (run: string, step: string, choice: string, options: { note?: string; pass?: string; json?: string }) => {
+    const { workflowRespond } = await import('./workflow-commands.js');
+    await workflowRespond(run, step, choice, options);
+  });
+
+workflowCmd
+  .command('retry <run> <step>')
+  .description('Retry a leased or stopped step, or a HITL request to answer it again, with a new pass and revision. Reopen its dependent steps and a settled run; keep earlier passes. After reopening, run resume or let your driver poll next. Prints one JSON envelope.')
+  .action(async (run: string, step: string) => {
+    const { workflowRetry } = await import('./workflow-commands.js');
+    await workflowRetry(run, step);
+  });
+
+workflowCmd
+  .command('resume <run>')
+  .description("Continue a run with the local driver after retry, respond, or a stopped driver (Ctrl-C or closed terminal). Uses this machine's open local lease workspace, then the latest local driver's workspace on this machine, then cwd. Another live local driver returns driver_running. A settled run returns done.")
+  .option('--tools <list>', 'Override local prompt tools for this run, as comma-separated name=tool pairs')
+  .option('--auto-approve', 'Automatically answer optional approve HITL requests and choose defaults in this process')
+  .action(async (run: string, options: { tools?: string; autoApprove?: boolean }) => {
+    const { workflowResume } = await import('./workflow-commands.js');
+    await workflowResume(run, options);
+  });
+
+workflowCmd
+  .command('cancel <run> [step]')
+  .description('Cancel a whole run, or a pending, waiting, leased, or running step and its open descendants. Invalidates leases; drivers stop tools listed in next.cancelled. Prints one JSON envelope.')
+  .action(async (run: string, step?: string) => {
+    const { workflowCancel } = await import('./workflow-commands.js');
+    await workflowCancel(run, step);
   });
 
 // ─── Hooks commands ─────────────────────────────────────

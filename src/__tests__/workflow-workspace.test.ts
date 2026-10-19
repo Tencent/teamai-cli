@@ -370,6 +370,9 @@ steps:
     const started = await startRun(config, 'build');
     if ('error' in started) throw new Error(started.error.message);
     const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
       async run(_tool, input) {
         const file = path.join(input.cwd, '.claude', 'skills', 'fe-skill', 'SKILL.md');
         if (!fs.existsSync(file)) return { started: false, exitCode: 1, failure: { code: 'missing_skill', message: `missing ${file}` } };
