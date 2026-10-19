@@ -56,8 +56,16 @@ async function detectLocalPackageManager(cwd: string): Promise<LocalPackageManag
       return { manager: 'pnpm', isWorkspaceRoot: false };
     }
     const packageJson = await readJson<PackageJson>(path.join(at, 'package.json'));
-    if (packageJson?.packageManager?.split('@', 1)[0] === 'pnpm') {
+    const declaredManager = packageJson?.packageManager?.split('@', 1)[0];
+    if (declaredManager === 'pnpm') {
       return { manager: 'pnpm', isWorkspaceRoot: false };
+    }
+    // An explicit npm declaration wins over any pnpm marker further up the
+    // tree — otherwise a standalone npm project nested under an unrelated
+    // pnpm workspace would get routed through pnpm, recreating the exact
+    // mixed-package-manager bug this function exists to avoid.
+    if (declaredManager === 'npm') {
+      return { manager: 'npm', isWorkspaceRoot: false };
     }
     if (path.dirname(at) === at) return { manager: 'npm', isWorkspaceRoot: false };
   }

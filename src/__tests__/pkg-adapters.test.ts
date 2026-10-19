@@ -99,6 +99,29 @@ describe('NpmAdapter', () => {
     );
   });
 
+  it('respects an explicit npm packageManager over an ancestor pnpm workspace', async () => {
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n');
+    const nested = path.join(dir, 'apps', 'standalone-npm-app');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, 'package.json'), JSON.stringify({ packageManager: 'npm@10.8.2' }));
+    fs.writeFileSync(path.join(nested, 'package-lock.json'), JSON.stringify({
+      lockfileVersion: 3,
+      packages: { 'node_modules/typescript': { version: '5.9.2' } },
+    }));
+    const execute = vi.fn<CommandExecutor>().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'is-odd', version: '*' }],
+      { cwd: nested, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'npm',
+      ['install', 'is-odd'],
+      expect.objectContaining({ cwd: nested }),
+    );
+  });
+
   it('passes --workspace-root when installing at the pnpm workspace root itself', async () => {
     fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
     fs.writeFileSync(path.join(dir, 'package.json'), '{}');
