@@ -207,6 +207,153 @@ describe('NpmAdapter', () => {
   });
 });
 
+describe('NpmAdapter (pnpm)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-pnpm-adapter-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("routes a pnpm workspace member's install through pnpm add, detected from the root", async () => {
+    // The member carries its own package.json; the pnpm markers live at the root.
+    const member = path.join(dir, 'packages', 'member');
+    fs.mkdirSync(member, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - "packages/*"\n');
+    fs.writeFileSync(path.join(member, 'package.json'), '{}');
+    const execute = vi.fn<CommandExecutor>().mockImplementation(async (_command, args) => ({
+      code: 0,
+      stdout: args[0] === 'list'
+        ? JSON.stringify([{ path: member, dependencies: { 'is-odd': { version: '3.0.1' } } }])
+        : '',
+      stderr: '',
+    }));
+
+    const lock = await new NpmAdapter(execute).install(
+      [{ name: 'is-odd', version: '3.0.1' }],
+      { cwd: member, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', 'is-odd@3.0.1'],
+      expect.objectContaining({ cwd: member }),
+    );
+    expect(execute).not.toHaveBeenCalledWith('npm', expect.anything(), expect.anything());
+    expect(lock).toEqual([{ name: 'is-odd', version: '3.0.1', source: 'npm' }]);
+  });
+
+  it('names the workspace root explicitly when cwd is a pnpm workspace root', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - "packages/*"\n');
+    const execute = vi.fn<CommandExecutor>().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'is-odd', version: '3.0.1' }],
+      { cwd: dir, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', '--workspace-root', 'is-odd@3.0.1'],
+      expect.objectContaining({ cwd: dir }),
+    );
+  });
+
+  it('installs a pnpm global package with pnpm add --global and snapshots pnpm list', async () => {
+    fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: "9.0"\n');
+    const execute = vi.fn<CommandExecutor>().mockImplementation(async (_command, args) => {
+      if (args[0] === 'list') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ dependencies: { '@tencent/tokenlint': { version: '1.3.3' } } }),
+          stderr: '',
+        };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+
+    const lock = await new NpmAdapter(execute).install(
+      [{
+        name: '@tencent/tokenlint',
+        version: 'latest',
+        global: true,
+        registry: 'https://mirrors.tencent.com/npm/',
+      }],
+      { cwd: dir, scope: 'user' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', '--global', '@tencent/tokenlint@latest', '--registry', 'https://mirrors.tencent.com/npm/'],
+      expect.objectContaining({ cwd: dir }),
+    );
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['list', '--global', '--json', '--depth=0'],
+      expect.any(Object),
+    );
+    expect(lock).toEqual([{
+      name: '@tencent/tokenlint',
+      version: '1.3.3',
+      source: 'npm',
+      global: true,
+      registry: 'https://mirrors.tencent.com/npm/',
+    }]);
+  });
+
+  it('snapshots pnpm dev and optional dependencies, selecting the cwd project', async () => {
+    const member = path.join(dir, 'packages', 'member');
+    fs.mkdirSync(member, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - "packages/*"\n');
+    fs.writeFileSync(path.join(member, 'package.json'), '{}');
+    const execute = vi.fn<CommandExecutor>().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify([
+        { path: dir, dependencies: { 'is-odd': { version: '3.0.1' } } },
+        {
+          path: member,
+          dependencies: { lodash: { version: '4.17.21' } },
+          devDependencies: { typescript: { version: '5.9.2' } },
+          optionalDependencies: { fsevents: { version: '2.3.3' } },
+        },
+      ]),
+      stderr: '',
+    });
+
+    const lock = await new NpmAdapter(execute).snapshot(
+      member,
+      [
+        { name: 'lodash', version: '^4.0.0' },
+        { name: 'typescript', version: '^5.0.0' },
+        { name: 'fsevents', version: '^2.0.0' },
+      ],
+    );
+
+    expect(lock).toEqual([
+      { name: 'lodash', version: '4.17.21', source: 'npm' },
+      { name: 'typescript', version: '5.9.2', source: 'npm' },
+      { name: 'fsevents', version: '2.3.3', source: 'npm' },
+    ]);
+  });
+
+  it('does not spawn pnpm in dry-run mode', async () => {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: "9.0"\n');
+    const execute = vi.fn<CommandExecutor>();
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'is-odd', version: '*' }],
+      { cwd: dir, scope: 'project', dryRun: true },
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+  });
+});
+
 describe('ClaudePluginAdapter', () => {
   const declaration = {
     marketplaces: [{

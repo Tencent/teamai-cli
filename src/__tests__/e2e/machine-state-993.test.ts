@@ -38,6 +38,7 @@ let sandbox: string;
 let home: string;
 let fakeCodexDir: string;
 let stubBin: string;
+let pnpmLog: string;
 let detached: ReturnType<typeof trackDetachedProcesses>;
 
 function env(): NodeJS.ProcessEnv {
@@ -150,6 +151,11 @@ describe('no machine state in the working tree (#993 bug 4)', () => {
     stubBin = path.join(sandbox, 'stub-bin');
     writeFile(path.join(stubBin, 'npm'), '#!/bin/sh\nexit 0\n');
     fs.chmodSync(path.join(stubBin, 'npm'), 0o755);
+    // A `pnpm` that records the args it is called with, so a test can prove the
+    // pnpm project routed its install through pnpm (#1102) without the network.
+    pnpmLog = path.join(sandbox, 'pnpm.log');
+    writeFile(path.join(stubBin, 'pnpm'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${pnpmLog}'\nexit 0\n`);
+    fs.chmodSync(path.join(stubBin, 'pnpm'), 0o755);
     detached = trackDetachedProcesses(sandbox);
   });
 
@@ -310,6 +316,24 @@ describe('no machine state in the working tree (#993 bug 4)', () => {
 
     const doctor = teamai(['doctor'], dir);
     expect(doctor.output).toContain('git rm --cached .teamai/teamai.lock');
+  });
+
+  it('routes a pnpm project\'s `packages install` through pnpm, not npm (#1102)', () => {
+    const t = team('pnpm-packages', {}, ['packages:', '  npm:', '    - name: left-pad', '      version: "1.3.0"']);
+    const dir = business('pnpm-packages-biz', {
+      'package.json': '{"name":"app","version":"1.0.0"}\n',
+      // The workspace marker makes this a pnpm project; npm's Arborist would
+      // walk the symlinked store and crash.
+      'pnpm-workspace.yaml': 'packages: []\n',
+    });
+    init(t, dir, 'claude');
+    fs.rmSync(pnpmLog, { force: true });
+
+    const installed = teamaiOk(['packages', 'install'], dir);
+    expect(installed.output).toContain('wrote teamai.lock');
+
+    // The install reached pnpm, and the npm installer it used to run did not.
+    expect(fs.readFileSync(pnpmLog, 'utf8')).toContain('add --workspace-root left-pad@1.3.0');
   });
 
   it('leaves a tracked older hook index in place and doctor names it with the untrack command', () => {
