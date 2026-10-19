@@ -340,6 +340,32 @@ describe('NpmAdapter (pnpm)', () => {
     ]);
   });
 
+  it('honors an explicit npm pin instead of a pnpm ancestor', async () => {
+    // An npm project nested beneath a pnpm repository keeps its own manager.
+    const nested = path.join(dir, 'tools', 'npm-app');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - "packages/*"\n');
+    fs.writeFileSync(path.join(nested, 'package.json'), '{"packageManager":"npm@10.0.0"}');
+    fs.writeFileSync(path.join(nested, 'package-lock.json'), JSON.stringify({
+      lockfileVersion: 3,
+      packages: { 'node_modules/typescript': { version: '5.9.2' } },
+    }));
+    const execute = vi.fn<CommandExecutor>().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+    const lock = await new NpmAdapter(execute).install(
+      [{ name: 'typescript', version: '^5.9.0' }],
+      { cwd: nested, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'npm',
+      ['install', 'typescript@^5.9.0'],
+      expect.objectContaining({ cwd: nested }),
+    );
+    expect(execute).not.toHaveBeenCalledWith('pnpm', expect.anything(), expect.anything());
+    expect(lock).toEqual([{ name: 'typescript', version: '5.9.2', source: 'npm' }]);
+  });
+
   it('does not spawn pnpm in dry-run mode', async () => {
     fs.writeFileSync(path.join(dir, 'package.json'), '{}');
     fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: "9.0"\n');

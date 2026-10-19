@@ -78,7 +78,13 @@ async function pnpmProjectDir(cwd: string): Promise<string | null> {
     if (await pathExists(path.join(dir, 'pnpm-lock.yaml'))) return dir;
     if (await pathExists(path.join(dir, 'node_modules', '.pnpm'))) return dir;
     const pkg = await readJson<{ packageManager?: unknown }>(path.join(dir, 'package.json'));
-    if (typeof pkg?.packageManager === 'string' && pkg.packageManager.startsWith('pnpm')) return dir;
+    if (typeof pkg?.packageManager === 'string') {
+      // An explicit pin decides: pnpm keeps this directory, and any other
+      // manager (a nested `npm@…` project inside a pnpm repo) must win over the
+      // pnpm markers that may sit further up, so stop here rather than walking
+      // on and misclassifying it as pnpm.
+      return pkg.packageManager.startsWith('pnpm') ? dir : null;
+    }
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
