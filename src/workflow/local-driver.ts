@@ -40,7 +40,7 @@ import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from
 import { isWorkflowError } from './types.js';
 import type { WorkspaceContract } from './workspace.js';
 import {
-  applyBaseConfig, commitWork, ensureWorktree, git, headCommit, hooksPath, mergeBranch, pushIfOrigin, recordConfigOverlay, removeWorktree, restoreUneditedConfig, worktreePath,
+  applyBaseConfig, commitWork, ensureWorktree, git, headCommit, hooksPath, mergeBranch, pushIfOrigin, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, worktreePath,
 } from './worktree.js';
 
 /** Local lease identity, stable across restarts in the same workspace. */
@@ -346,7 +346,8 @@ async function stageLease(active: string, lease: Lease): Promise<WorkflowFailure
   await deliverTeamAssets(opened.dir);
   await recordConfigOverlay(opened.dir, applied.saved);
   lease.overlay = applied.saved;
-  lease.conflicts = await conflictContents(opened.dir);
+  await reopenConfigConflicts(opened.dir, applied.saved);
+  lease.conflicts = await rememberedConflicts(opened.dir);
   return undefined;
 }
 
@@ -382,6 +383,37 @@ async function resumeSession(lease: Lease, tool: LocalWorkflowTool, cwd: string)
   const copied = await AgentSession.copy({ from: { platform: from, sessionId: session.id }, to: { platform: to, cwd } });
   if (copied.status !== 'done' || localToolFamily(tool) === 'opencode') return undefined;
   return copied.sessionId;
+}
+
+async function conflictsPath(dir: string): Promise<string> {
+  const printed = (await git(dir, ['rev-parse', '--git-path', 'teamai-conflicts.json'])).stdout.trim();
+  return path.resolve(dir, printed);
+}
+
+/** Keeps the paths that were conflicted when the merge started, including across a retry that has already staged them. */
+async function rememberedConflicts(dir: string): Promise<Map<string, string>> {
+  const current = await conflictContents(dir);
+  const file = await conflictsPath(dir);
+  const merging = (await git(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
+  let saved = new Map<string, string>();
+  if (merging) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as Record<string, string>;
+      if (parsed && typeof parsed === 'object') saved = new Map(Object.entries(parsed).filter((entry) => typeof entry[1] === 'string'));
+    } catch {
+      saved = new Map();
+    }
+  } else {
+    await fs.rm(file, { force: true });
+  }
+  const merged = new Map(saved);
+  for (const [relative, text] of current) merged.set(relative, text);
+  if (merged.size > 0) await fs.writeFile(file, JSON.stringify(Object.fromEntries(merged)));
+  return merged;
+}
+
+async function clearRememberedConflicts(dir: string): Promise<void> {
+  await fs.rm(await conflictsPath(dir), { force: true });
 }
 
 async function conflictContents(dir: string): Promise<Map<string, string>> {
@@ -433,6 +465,7 @@ async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?:
   if (open.length > 0) return { failure: { code: 'merge_conflict', message: `Unresolved merge conflict: ${open.join(', ')}` } };
   const committed = await commitWork(lease.cwd, `teamai: ${lease.step}`, lease.rangeFrom);
   if ('error' in committed) return { failure: { code: 'push_failed', message: committed.error } };
+  await clearRememberedConflicts(lease.cwd);
   const pushed = push ? await pushIfOrigin(lease.cwd, lease.workspace.branch, committed.commits) : 'unchanged';
   const changes = {
     branch: lease.workspace.branch,

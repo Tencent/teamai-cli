@@ -167,6 +167,13 @@ export async function applyBaseConfig(
   return { ok: true, saved };
 }
 
+/** Puts saved conflict stages back after the base checkout cleared them, before the step runs. */
+export async function reopenConfigConflicts(dir: string, saved: string): Promise<void> {
+  const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
+  const paths = conflictPaths(conflicts);
+  if (paths.length > 0) await restoreConflictStages(dir, conflicts, paths);
+}
+
 /** Records the agent files present after team delivery, so that delivery is not a step edit. */
 export async function recordConfigOverlay(dir: string, saved: string): Promise<void> {
   await fs.writeFile(path.join(saved, '_overlay.json'), JSON.stringify(await fileManifest(dir)));
@@ -233,8 +240,10 @@ async function restoreConflictStages(dir: string, conflicts: string, paths: stri
     const tab = line.lastIndexOf('\t');
     return tab >= 0 && wanted.has(line.slice(tab + 1));
   });
-  for (const relative of paths) await git(dir, ['rm', '--cached', '--quiet', '--', relative]);
-  if (lines.length > 0) await git(dir, ['update-index', '--index-info'], `${lines.join('\n')}\n`);
+  // `git rm --cached` leaves stage 0 in place beside the restored stages, and then `git add` cannot clear them.
+  const removal = paths.map((relative) => `0 ${'0'.repeat(40)}\t${relative}`);
+  const payload = [...removal, ...lines];
+  if (payload.length > 0) await git(dir, ['update-index', '--index-info'], `${payload.join('\n')}\n`);
 }
 
 async function fileManifest(root: string): Promise<Record<string, string>> {

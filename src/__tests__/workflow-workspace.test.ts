@@ -17,7 +17,7 @@ import { runLocalDriver } from '../workflow/local-driver.js';
 import { retryStep } from '../workflow/run-controls.js';
 import type { LocalToolAdapter } from '../workflow/local-tool-adapter.js';
 import { parseWorkflow } from '../workflow/parse.js';
-import { readRun } from '../workflow/store.js';
+import { readRun, writeRun } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { branchName } from '../workflow/workspace.js';
 import { pushIfOrigin, worktreePath } from '../workflow/worktree.js';
@@ -1404,5 +1404,101 @@ steps:
     const branch = join && 'changes' in join ? join.changes?.branch : undefined;
     expect(git(['show', `${branch}:AGENTS.md`], workspace)).toBe('left\n');
     expect(git(['rev-list', '--parents', '-n', '1', String(branch)], workspace).trim().split(' ')).toHaveLength(3);
+  });
+
+  it('does not publish an untouched modify/delete conflict in an agent file', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Leaving a modify/delete agent conflict alone is not a resolution.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('AGENTS.md', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').rmSync('AGENTS.md')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the agent file.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
+    execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run() {
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+    expect(git(['rev-list', '--parents', '-n', '1', branchName(runId, 'join', 1)], workspace).trim().split(' ')).toHaveLength(2);
+  });
+
+  it('does not publish conflict markers a later retry left staged', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A retry must not publish conflict markers an earlier attempt staged.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('note.txt', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('note.txt', 'right\\n')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the note.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'note.txt'), 'base\n');
+    execFileSync('git', ['add', 'note.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
+    let calls = 0;
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run(_tool, input) {
+        calls += 1;
+        if (calls === 1) {
+          fs.writeFileSync(path.join(input.cwd, 'note.txt'), '<<<<<<< left\nkept\n');
+          execFileSync('git', ['add', '-A'], { cwd: input.cwd });
+        }
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const first = await runLocalDriver(config, runId, workspace, { adapter });
+    expect(first, JSON.stringify(first)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const stored = await readRun(config, runId);
+    if (typeof stored !== 'object') throw new Error('run missing');
+    stored.status = 'running';
+    delete stored.failure;
+    delete stored.end;
+    stored.steps = stored.steps.map((step) => step.id === 'join' ? { id: step.id, status: 'pending' as const, pass: step.pass } : step);
+    await writeRun(config, stored);
+
+    const second = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(second, JSON.stringify(second)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join' && step.status === 'failed') : undefined;
+    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+    expect(git(['show', `${branchName(runId, 'join', 1)}:note.txt`], workspace)).not.toContain('<<<<<<<');
   });
 });
