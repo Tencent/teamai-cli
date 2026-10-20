@@ -7,6 +7,7 @@ import matter from 'gray-matter';
 import { autoDetectInit } from './config.js';
 import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from './import-codebase.js';
 import { importFromRepo } from './import-repo.js';
+import { DetachedTeamRepoError } from './utils/git.js';
 import { log } from './utils/logger.js';
 import { pathExists } from './utils/fs.js';
 
@@ -76,6 +77,7 @@ export async function upgradeCodebaseWiki(opts: UpgradeCodebaseWikiOptions): Pro
       await importFromRepo({ url: String(source), incremental: true, skipAutoPush: true });
       result.migrated.push(slug);
     } catch (err) {
+      DetachedTeamRepoError.rethrow(err);
       result.errors.push(`${slug}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }

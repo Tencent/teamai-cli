@@ -2,7 +2,7 @@ import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.j
 import { reconcilePlacementRecords } from './utils/pending-push.js';
 import { deliversEveryNamespace } from './resource-namespaces.js';
 import { assertNotReadOnly } from './read-only.js';
-import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
+import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
 import { createPrWithFallback, filterExistingTopLevelPaths } from './push.js';
 import { log, spinner } from './utils/logger.js';
 import { getHandler } from './resources/index.js';
@@ -52,7 +52,7 @@ export async function remove(
         await withKnowledgeWorktree(localConfig, body);
       }
     } catch (e) {
-      if (e instanceof DirtyPreviewError) {
+      if (e instanceof DirtyPreviewError || e instanceof DetachedTeamRepoError) {
         log.error(e.message);
         process.exitCode = 1;
       } else if (e instanceof PreviewFetchError) {
@@ -254,7 +254,7 @@ async function removeCore(
     }
   }
 
-  const spin = spinner(`Removing ${found.length} ${type}...`).start();
+  const spin = (await spinner(`Removing ${found.length} ${type}...`)).start();
 
   // Remove all resources
   let totalRemoved = 0;

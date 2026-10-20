@@ -118,7 +118,7 @@ interface RemovalPlan {
   ompHookFile: string | null;
   /** Pi extension files owned by this scope (global for user, legacy project copy for project). */
   piHookFiles: string[];
-  /** TeamAI-managed DeepSeek Harness patch (~/.teamai/dsh/cordis.patch.yml), if present. */
+  /** DeepSeek Harness home mount, generated hook config, or legacy overlay, if present. */
   dshHookFile: string | null;
   /** Manifest used by the primary hook injection scope. */
   hookManifestPath: string;
@@ -480,9 +480,12 @@ async function discoverToolResources(
       });
     }
   } else if (tool === 'dsh') {
-    const { resolveDshPatchPath } = await import('./dsh-hooks.js');
+    const { isDshHooksMounted, resolveDshHomePatchPath, resolveDshHookConfigPath, resolveDshPatchPath } = await import('./dsh-hooks.js');
+    const configPath = resolveDshHookConfigPath();
     const patchPath = resolveDshPatchPath();
-    if (await pathExists(patchPath)) res.dshHookFile = patchPath;
+    if (await isDshHooksMounted(configPath)) res.dshHookFile = resolveDshHomePatchPath();
+    else if (await pathExists(configPath)) res.dshHookFile = configPath;
+    else if (await pathExists(patchPath)) res.dshHookFile = patchPath;
   } else if (tool === 'opencode') {
     // OpenCode has no settings file; its teamai hooks are plugin .ts files under
     // <base>/.config/opencode/plugin (where teamai writes them) or

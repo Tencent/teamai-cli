@@ -608,7 +608,7 @@ steps:
 
 Later steps read `steps.decide.choice` and `steps.decide.note`, also through `passes[n]`. A new pass asks again. An approve HITL request on an end-only step must receive `yes` before that end is reached.
 
-For an approval that must come directly from a person, use `approve: { message: Publish?, required: true }`. Required approvals never use automatic answers. `respond` records the answer time, channel, choice, and optional note. With `--json`, its channel is `driver`, with `agent: false`. Without `--json`, TTY stdin records `tty`, with `agent: false`; otherwise it records `cli`, with `agent: true`. A required approval rejects `cli` answers with `agent_in_path`. A TTY is a channel convention, not protection against someone who can create a PTY.
+For an approval that must come directly from a person, use `approve: { message: Publish?, required: true }`. Required approvals never use automatic answers. `respond` records the answer time, channel, choice, and optional note. With `--json`, its channel is `driver`, with `agent: false`. Without `--json`, TTY stdin records `tty`, with `agent: false`; otherwise it records `cli`, with `agent: true`. A required approval rejects `cli` answers with `agent_in_path`. A TTY is a channel convention, not protection against someone who can create a PTY. An answer from the [dashboard](dashboard.md#workflow-runs) records channel `dashboard`, with `agent: false`.
 
 ```sh
 teamai workflow respond <run> decide build --note "Ready" --pass 1

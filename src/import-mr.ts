@@ -304,7 +304,7 @@ export async function importFromMR(opts: {
   const learningsDirs = opts.learningsDirs ?? [DEFAULT_LEARNINGS_DIR];
 
   // ── 步骤 1：获取 MR 数据 ────────────────────────────────
-  const fetchSpinner = spinner('Fetching MR data...');
+  const fetchSpinner = await spinner('Fetching MR data...');
   fetchSpinner.start();
 
   let mr: MRData;
@@ -319,7 +319,7 @@ export async function importFromMR(opts: {
   }
 
   // ── 步骤 2：AI 分析 ────────────────────────────────────
-  const aiSpinner = spinner('AI analysis in progress...');
+  const aiSpinner = await spinner('AI analysis in progress...');
   aiSpinner.start();
 
   let learningContent: string;

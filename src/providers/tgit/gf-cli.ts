@@ -189,7 +189,7 @@ export async function ensureGfInstalled(): Promise<void> {
   const tmpId = `${process.pid}-${randomBytes(6).toString('hex')}`;
   const tarballPath = path.join(dir, `gf-download.${tmpId}.tar.gz`);
   const headerPath = path.join(dir, `gf-download.${tmpId}.headers`);
-  const spin = spinner('Installing gf CLI (工蜂命令行工具)...').start();
+  const spin = (await spinner('Installing gf CLI (工蜂命令行工具)...')).start();
 
   try {
     await ensureDir(dir);

@@ -608,7 +608,7 @@ steps:
 
 后续步骤读取 `steps.decide.choice` 和 `steps.decide.note`，也可以通过 `passes[n]` 读取历史。每个新 pass 都重新询问。无动作结局步骤上的 approve 必须得到 `yes` 才会到达结局。
 
-必须由人直接回答的审批使用 `approve: { message: Publish?, required: true }`，永远不自动回答。`respond` 保存时间、渠道、选择和可选备注。使用 `--json` 时渠道为 `driver`，`agent: false`。不使用 `--json` 时，stdin 是 TTY 则渠道为 `tty`，`agent: false`；否则为 `cli`，`agent: true`。必需审批以 `agent_in_path` 拒绝 cli 回答。TTY 是渠道约定，不能防止有能力创建 PTY 的调用者。
+必须由人直接回答的审批使用 `approve: { message: Publish?, required: true }`，永远不自动回答。`respond` 保存时间、渠道、选择和可选备注。使用 `--json` 时渠道为 `driver`，`agent: false`。不使用 `--json` 时，stdin 是 TTY 则渠道为 `tty`，`agent: false`；否则为 `cli`，`agent: true`。必需审批以 `agent_in_path` 拒绝 cli 回答。TTY 是渠道约定，不能防止有能力创建 PTY 的调用者。从[仪表盘](dashboard.md#工作流运行workflow-runs)回答时渠道为 `dashboard`，`agent: false`。
 
 ```sh
 teamai workflow respond <run> decide build --note "Ready" --pass 1

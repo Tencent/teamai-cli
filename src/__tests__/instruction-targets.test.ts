@@ -365,6 +365,34 @@ describe('instruction targets shared by several tools (#945)', () => {
     }
   });
 
+  it('gives Cursor the direct recall block in user scope, where the Cursor CLI has no user agents (#1218)', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1218-')));
+    vi.stubEnv('HOME', path.join(root, 'home'));
+    try {
+      const projectRoot = path.join(root, 'project');
+      fs.mkdirSync(path.join(root, 'home', '.cursor'), { recursive: true });
+      fs.mkdirSync(path.join(projectRoot, '.cursor'), { recursive: true });
+      const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
+      const config = (scope: 'user' | 'project') => ({
+        repo: { localPath: path.join(root, 'repo'), remote: 'https://example.invalid/t.git' },
+        username: 'u', additionalRoles: [], scope, enabledAgents: ['cursor'], recallEnabled: true,
+        ...(scope === 'project' ? { projectRoot } : {}),
+      } as unknown as LocalConfig);
+
+      const { targets: [user] } = await resolveInstructionTargets(teamConfig, config('user'));
+      expect(user).toMatchObject({ tools: ['cursor'], recall: false });
+      const hookText = await instructionHookTextFor(teamConfig, config('user'), 'cursor');
+      expect(hookText).toContain('teamai recall "<3-6 high-signal keywords from the task>"');
+      expect(hookText).not.toContain('invoke the `teamai-recall`');
+
+      const { targets: [project] } = await resolveInstructionTargets(teamConfig, config('project'));
+      expect(project).toMatchObject({ tools: ['cursor'], recall: true });
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('gives a shared file the subagent recall block only when every tool reading it has the subagent', async () => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-945-shared-')));
     try {

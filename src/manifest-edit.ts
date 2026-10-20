@@ -1,4 +1,4 @@
-import { pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
+import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName } from './utils/git.js';
 import { log, spinner } from './utils/logger.js';
 import { createPrWithFallback } from './push.js';
 import type { TeamaiConfig, LocalConfig } from './types.js';
@@ -7,11 +7,12 @@ import type { TeamaiConfig, LocalConfig } from './types.js';
 // (`roles add/update/remove`, `projects add/update/remove`).
 
 export async function pullLatest(repoPath: string): Promise<void> {
-    const pullSpin = spinner('Pulling latest changes...').start();
+    const pullSpin = (await spinner('Pulling latest changes...')).start();
     try {
         await pullRepo(repoPath);
         pullSpin.succeed('Up to date');
     } catch (e) {
+        DetachedTeamRepoError.rethrow(e);
         pullSpin.warn(`Pull failed: ${(e as Error).message}`);
     }
 }
@@ -46,7 +47,7 @@ export async function runManifestEdit(
             await withKnowledgeWorktree(localConfig, body);
         }
     } catch (e) {
-        if (e instanceof DirtyPreviewError) {
+        if (e instanceof DirtyPreviewError || e instanceof DetachedTeamRepoError) {
             log.error(e.message);
             process.exitCode = 1;
         } else if (e instanceof EmptyRepoError) {

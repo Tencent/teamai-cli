@@ -10,12 +10,14 @@ import {
   DASHBOARD_DEFAULT_PORT,
   DASHBOARD_PID_CHECK_INTERVAL_MS,
   type DashboardEvent,
+  type LocalConfig,
 } from './types.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getUserHome } from './utils/home.js';
 import type { VizSummary } from './viz.js';
 import { aggregateDailySessions, computeDailyStatsDelta, summarizeTrendWindow, summarizeSessionCosts } from './session-trends.js';
 import { HttpError, isLocalWrite, readJsonBody } from './dashboard/http.js';
+import type { ReportedHistory } from './dashboard/workflow-runs.js';
 
 // ─── Dashboard server architecture ──────────────────────
 //
@@ -221,6 +223,76 @@ export async function startDashboard(port?: number): Promise<void> {
     }
   };
 
+  // Workflow Runs (#1088). The team history refreshes the reports checkout
+  // from origin, so it is cached like the KB report; local runs are read fresh.
+  const loadReportedHistory = async (config: LocalConfig): Promise<ReportedHistory> => {
+    try {
+      const { listReportedRuns } = await import('./dashboard/workflow-runs.js');
+      return { state: 'ok', runs: await listReportedRuns(config) };
+    } catch (e) {
+      log.debug(`dashboard: reported workflow runs failed: ${e instanceof Error ? e.message : String(e)}`);
+      return { state: 'unavailable' };
+    }
+  };
+  const reportedCaches = new Map<string, { ts: number; last: Promise<ReportedHistory>; refreshing: boolean }>();
+  // The last history answers while a refresh fetches, so a slow or unreachable origin holds the live local runs only
+  // on the first load.
+  const reportedHistory = (key: string, config: LocalConfig): Promise<ReportedHistory> => {
+    const cached = reportedCaches.get(key);
+    if (cached && (cached.refreshing || Date.now() - cached.ts <= KB_SUMMARY_TTL_MS)) return cached.last;
+    const refresh = loadReportedHistory(config);
+    const entry = { ts: Date.now(), last: cached?.last ?? refresh, refreshing: true };
+    reportedCaches.set(key, entry);
+    void refresh.then((data) => Object.assign(entry, { ts: Date.now(), last: Promise.resolve(data), refreshing: false }));
+    return entry.last;
+  };
+  const handleWorkflows = async (req: http.IncomingMessage, res: http.ServerResponse, url: URL, workspace: DashboardWorkspace | undefined) => {
+    const config = workspace?.config ?? null;
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(body));
+    };
+    const route = url.pathname.slice('/api/workflows'.length);
+    const method = route === '/respond' ? 'POST' : 'GET';
+    if (!['', '/run', '/respond'].includes(route)) {
+      json(404, { error: 'Not supported.' });
+      return;
+    }
+    if (req.method !== method) {
+      json(405, { error: 'Not supported.' });
+      return;
+    }
+    const runs = await import('./dashboard/workflow-runs.js');
+    try {
+      if (route === '') {
+        json(200, workspace?.config
+          ? { configured: true, local: await runs.listLocalRuns(workspace.config), reported: await reportedHistory(workspace.id, workspace.config) }
+          : { configured: false });
+        return;
+      }
+      if (!config) throw new HttpError(400, 'Select a workspace with a teamai config.');
+      if (route === '/run') {
+        const source = url.searchParams.get('source') === 'reported' ? 'reported' : 'local';
+        const detail = await runs.workflowRunDetail(config, source, url.searchParams.get('id') ?? '');
+        if (detail) json(200, detail);
+        else json(404, { error: 'This run is not in the selected workspace.' });
+        return;
+      }
+      // A browser sends Origin with every fetch POST, so a request without one
+      // did not come from the dashboard page. Like the TTY channel, this is a
+      // convention, not protection against a local process that sets it.
+      if (req.headers.origin === undefined) throw new HttpError(403, 'Answer HITL requests from the dashboard page.');
+      json(200, await runs.answerFromDashboard(config, await readJsonBody(req)));
+    } catch (e) {
+      if (e instanceof HttpError) {
+        json(e.status, { error: e.message });
+        return;
+      }
+      log.debug(`dashboard: ${url.pathname} failed: ${(e as Error).message}`);
+      json(500, { error: 'Failed to load workflow runs.' });
+    }
+  };
+
   const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://localhost:${serverPort}`);
 
@@ -325,6 +397,11 @@ export async function startDashboard(port?: number): Promise<void> {
 
     if (url.pathname === '/api/distribution' || url.pathname.startsWith('/api/distribution/')) {
       await handleDistribution(req, res, url.pathname, scopeId);
+      return;
+    }
+
+    if (url.pathname === '/api/workflows' || url.pathname.startsWith('/api/workflows/')) {
+      await handleWorkflows(req, res, url, workspace);
       return;
     }
 

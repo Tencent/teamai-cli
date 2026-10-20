@@ -63,6 +63,8 @@ interface TargetEntry {
   readonly header?: string;
   /** teamai owns the whole file: one it did not write is left alone, and it is deleted once its blocks are gone. */
   readonly owned?: boolean;
+  /** A surface of the tool reads no agents from the scope's `agents` directory, so the `teamai-recall` subagent is not there to call. */
+  readonly noRecallAgent?: boolean;
   /**
    * Files an earlier release wrote this tool's blocks to by default, relative
    * to the same base dir. A pull strips teamai blocks from them once no
@@ -109,6 +111,8 @@ const contextRule = (extension: string) => (paths: ToolPaths): string | undefine
  */
 const ALWAYS_APPLY = '---\nalwaysApply: true\n---\n';
 const cursor: TargetEntry = { file: contextRule('.mdc'), header: ALWAYS_APPLY, owned: true, retired: [] };
+// The Cursor CLI reads agents only from the workspace, never ~/.cursor/agents (#1218).
+const cursorUser: TargetEntry = { ...cursor, noRecallAgent: true };
 
 // A team override or an earlier build could have pointed Codex at the project AGENTS.md.
 const codexHook: TargetEntry = { file: () => undefined, hook: true, retired: ['AGENTS.md'] };
@@ -125,7 +129,7 @@ const codebuddyProjectRule = (paths: ToolPaths): string | undefined =>
 const USER_TARGETS: Readonly<Record<string, TargetEntry>> = {
   claude: { file: configured, retired: [] },
   // Cursor reads ~/.cursor/rules only in a workspace under $HOME; elsewhere its session-start hook adds the blocks (cursor-user-rules.ts).
-  cursor,
+  cursor: cursorUser,
   'claude-internal': { file: configured, retired: [] },
   tclaude: { file: configured, retired: [] },
   // Hermes loads SOUL.md in every session; teamai's rules block is already there.
@@ -229,6 +233,11 @@ const STALE_BLOCKS: readonly MarkerPair[] = [CULTURE, CLAUDEMD, RECALL, LEGACY_R
 function entryFor(tool: string, scope: Scope, gitExclude = false): TargetEntry | undefined {
   if (scope === 'user') return USER_TARGETS[tool];
   return (gitExclude ? GIT_EXCLUDED_PROJECT_TARGETS : PROJECT_TARGETS)[tool];
+}
+
+/** Whether `tool` has the `teamai-recall` subagent in `scope`, which decides the recall block it gets. */
+function hasRecallAgent(tool: string, paths: ToolPaths | undefined, scope: Scope): boolean {
+  return Boolean(paths?.agents) && !entryFor(tool, scope)?.noRecallAgent;
 }
 
 /** One instruction file and the tools that read it. */
@@ -344,7 +353,7 @@ export async function instructionHookTextFor(teamConfig: TeamaiConfig, localConf
     if (native.includes(CLAUDEMD[0]) || native.includes(CLAUDEMD[1])) blocks.claudemd = null;
     if (native.includes(RECALL[0]) || native.includes(RECALL[1])) blocks.recall = blocks.directRecall = null;
   }
-  return instructionHookText(blocks, Boolean(scopedToolPaths(teamConfig, localConfig)[tool]?.agents));
+  return instructionHookText(blocks, hasRecallAgent(tool, scopedToolPaths(teamConfig, localConfig)[tool], localConfig.scope));
 }
 
 /** The message for hook text over its channel's limit, or null when it fits. */
@@ -630,7 +639,7 @@ export async function resolveInstructionTargets(
         probePaths = scopedToolPaths(teamConfig, probeConfig)[tool] ?? paths;
       }
       if (await isInstructionToolInstalled(tool, probePaths, probeConfig)) {
-        hooks.push({ tool, recall: Boolean(paths.agents), limit: entry.hookLimit });
+        hooks.push({ tool, recall: hasRecallAgent(tool, paths, localConfig.scope), limit: entry.hookLimit });
       }
       continue;
     }
@@ -638,7 +647,7 @@ export async function resolveInstructionTargets(
     inUse.add(file);
     const target = targets.get(file) ?? await instructionTargetAt(tool, file, localConfig.scope, paths, gitExclude);
     // The subagent block only where every tool reading the file has the subagent.
-    target.recall = Boolean(paths.agents) && (target.tools.length === 0 || target.recall);
+    target.recall = hasRecallAgent(tool, paths, localConfig.scope) && (target.tools.length === 0 || target.recall);
     target.tools.push(tool);
     targets.set(file, target);
   }

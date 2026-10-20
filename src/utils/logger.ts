@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import chalk from 'chalk';
-import ora, { type Ora } from 'ora';
+import type { Ora } from 'ora';
 import { getUserHome } from './home.js';
 
 let verboseEnabled = false;
@@ -188,7 +188,12 @@ export const log = {
   },
 };
 
-export function spinner(text: string): Ora {
+/**
+ * Loads ora on first use: imported up front, it ran string-width's setup (an
+ * Intl.Segmenter and a Unicode-property regex) in every command, hooks included.
+ */
+export async function spinner(text: string): Promise<Ora> {
+  const { default: ora } = await import('ora');
   if (silentMode) {
     // return a no-op spinner in silent mode
     return ora({ text, isSilent: true });

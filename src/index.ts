@@ -52,6 +52,18 @@ function triggersMigration(command: Command): boolean {
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 
+/** A command that needs a team says so in one line instead of a stack trace, as `env list` does. */
+async function reportNotInitialized(run: () => Promise<void>): Promise<void> {
+  const { NotInitializedError } = await import('./config.js');
+  try {
+    await run();
+  } catch (e) {
+    if (!(e instanceof NotInitializedError)) throw e;
+    log.error(e.message);
+    process.exitCode = 1;
+  }
+}
+
 /**
  * Fire a command-lifecycle webhook (`push` / `pull`) best-effort. These are
  * default subscription events with no other production call site into
@@ -169,7 +181,7 @@ program
     // Only notify when a real push actually happened — not on dry-run, cancel,
     // no-change, or a handled failure (#702 follow-up).
     const outcome = { completed: false };
-    await push({ ...globalOpts, ...cmdOpts }, outcome);
+    await reportNotInitialized(() => push({ ...globalOpts, ...cmdOpts }, outcome));
     if (outcome.completed) await notifyWebhook('push');
   });
 
@@ -178,6 +190,7 @@ program
   .description('Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a workspace by default, a hidden directory, so search that path directly')
   .option('--silent', 'Silent mode (for hooks)')
   .option('--force', 'Force full sync even if repo is unchanged')
+  .option('--team-ref <ref>', 'Pin this workspace to a branch, tag or commit of the team repo; the default branch unpins it')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     if (cmdOpts.silent) setSilent(true);
@@ -197,7 +210,7 @@ program
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { status } = await import('./status.js');
-    await status({ ...globalOpts, ...cmdOpts });
+    await reportNotInitialized(() => status({ ...globalOpts, ...cmdOpts }));
   });
 
 program
@@ -209,7 +222,7 @@ program
   .action(async (type, cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
     const { list } = await import('./status.js');
-    await list(type, { ...globalOpts, ...cmdOpts });
+    await reportNotInitialized(() => list(type, { ...globalOpts, ...cmdOpts }));
   });
 
 const skillCmd = program
@@ -1404,11 +1417,19 @@ program
   .option('--max-modules <n>', 'Max modules to process (cost control)', parseInt)
   .action(async (cmdOpts: { project: string; wikiRoot?: string; maxModules?: number }) => {
     const { runHiddenDeepEnrich } = await import('./deep-enrich.js');
-    await runHiddenDeepEnrich({
-      project: cmdOpts.project,
-      wikiRoot: cmdOpts.wikiRoot,
-      maxModules: cmdOpts.maxModules,
-    });
+    const { DetachedTeamRepoError } = await import('./utils/git.js');
+    try {
+      await runHiddenDeepEnrich({
+        project: cmdOpts.project,
+        wikiRoot: cmdOpts.wikiRoot,
+        maxModules: cmdOpts.maxModules,
+      });
+    } catch (error) {
+      if (!(error instanceof DetachedTeamRepoError)) throw error;
+      const { log } = await import('./utils/logger.js');
+      log.error(error.message);
+      process.exitCode = 1;
+    }
   });
 
 recallCmd

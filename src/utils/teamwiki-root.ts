@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+import { assertAttachedTeamRepo, createGit } from './git.js';
+
 import type { TeamaiInit } from '../config.js';
 
 /**
@@ -31,6 +33,16 @@ export async function resolveTeamwiki(opts: { output?: string; dryRun?: boolean 
 }
 
 /**
+ * Refuse a write into a team clone checked out at a fixed commit, before
+ * anything is written. An `--output` teamwiki is always writable.
+ */
+export async function assertTeamwikiWritable(target: TeamwikiTarget | undefined): Promise<void> {
+  if (!target?.team) return;
+  const localPath = target.team.localConfig.repo.localPath;
+  await assertAttachedTeamRepo(createGit(localPath), localPath);
+}
+
+/**
  * Hold the import lock while writing into the team repo, so the usage
  * reporter does not reset it mid-import. An `--output` teamwiki needs none.
  *
@@ -38,6 +50,7 @@ export async function resolveTeamwiki(opts: { output?: string; dryRun?: boolean 
  */
 export async function lockTeamwiki(target: TeamwikiTarget): Promise<() => Promise<void>> {
   if (!target.team) return async () => {};
+  await assertTeamwikiWritable(target);
   const { acquireImportLock } = await import('./import-lock.js');
   return acquireImportLock(target.team.localConfig.repo.localPath);
 }

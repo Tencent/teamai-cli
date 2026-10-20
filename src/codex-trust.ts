@@ -284,6 +284,62 @@ export async function trustCodexHooks(req: CodexHookTrustRequest): Promise<Codex
   });
 }
 
+function hooksByKey(hooks: HookInfo[], file: string): Map<string, HookInfo> {
+  return new Map(hooks.filter((h) => canonical(h.sourcePath) === file).map((h) => [h.key, h]));
+}
+
+/**
+ * Keep approvals for the exact handlers retained by `write`, which returns
+ * their new keys mapped to their original keys. Equal hashes alone do not
+ * establish identity. `write` runs even when Codex cannot be asked.
+ */
+export async function keepCodexHookTrust(
+  req: { codexHome: string; cwd: string; file: string },
+  write: () => Promise<ReadonlyMap<string, string> | void>,
+): Promise<CodexTrust> {
+  const file = canonical(req.file);
+  const before = await withAppServer(req.codexHome, async (server) => hooksByKey(await listHooks(server, req.cwd), file));
+  const retained = await write();
+  if (!(before instanceof Map)) return before;
+  if (!retained || ![...before.values()].some((h) => h.trustStatus === 'trusted')) return { kind: 'trusted', hooks: 0 };
+  return withAppServer(req.codexHome, async (server): Promise<CodexTrust> => {
+    const toTrust: HookInfo[] = [];
+    const edits: Array<{ keyPath: string; value: unknown; mergeStrategy: 'upsert' | 'replace' }> = [];
+    for (const hook of hooksByKey(await listHooks(server, req.cwd), file).values()) {
+      const originalKey = retained.get(hook.key);
+      const original = originalKey === undefined ? undefined : before.get(originalKey);
+      if (original?.trustStatus === 'trusted' && original.currentHash === hook.currentHash) {
+        if (hook.trustStatus !== 'trusted') {
+          toTrust.push(hook);
+        }
+      } else if (hook.trustStatus === 'trusted') {
+        edits.push({
+          keyPath: `hooks.state.${JSON.stringify(hook.key)}`,
+          value: null,
+          mergeStrategy: 'replace',
+        });
+      }
+    }
+    if (toTrust.length > 0) {
+      edits.push({
+        keyPath: 'hooks.state',
+        value: Object.fromEntries(toTrust.map((h) => [h.key, { trusted_hash: h.currentHash }])),
+        mergeStrategy: 'upsert',
+      });
+    }
+    if (edits.length > 0) {
+      const result = await server.request('config/batchWrite', {
+        edits,
+        reloadUserConfig: true,
+      }) as { status?: string } | null;
+      if (result?.status !== 'ok') {
+        throw new AppServerError(`config/batchWrite hooks.state: status ${result?.status ?? 'missing'}`);
+      }
+    }
+    return { kind: 'trusted', hooks: toTrust.length };
+  });
+}
+
 /**
  * Read-only: which of the hooks teamai wrote Codex will not run for `cwd` —
  * listed as untrusted or modified, or not loaded at all (an untrusted project,

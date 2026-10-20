@@ -145,7 +145,7 @@ export async function importFromIWiki(opts: {
     // 单页模式：用占位符，后续直接下载该页
     pages = [{ docid: id, title: id }];
   } else {
-    const fetchSpinner = spinner(`Fetching iWiki Space (${id}) page tree...`);
+    const fetchSpinner = await spinner(`Fetching iWiki Space (${id}) page tree...`);
     try {
       pages = await client.fetchAllPages(id, { maxPages: opts.maxPages ?? 200 });
       fetchSpinner.succeed(`Page tree fetched: ${pages.length} pages`);
@@ -161,7 +161,7 @@ export async function importFromIWiki(opts: {
   }
 
   // 5. 并发下载文档内容
-  const downloadSpin = spinner(`Downloading iWiki documents (${pages.length} pages)...`);
+  const downloadSpin = await spinner(`Downloading iWiki documents (${pages.length} pages)...`);
   let documents: IWikiDocument[];
   try {
     documents = await downloadDocuments(client, pages);

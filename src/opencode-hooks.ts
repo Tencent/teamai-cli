@@ -548,8 +548,8 @@ ${buildDualPluginDefinition(`teamai.agent.${slug}`, factory)}
 }
 
 /**
- * Install a server-pushed agent hook as an OpenCode plugin file.
- * Events with no OpenCode equivalent are logged and skipped.
+ * Install a server-pushed agent hook as an OpenCode plugin file. Throws for
+ * an event with no OpenCode equivalent, so the install is reported failed.
  */
 export async function applyOpencodeAgentHook(def: {
   slug: string;
@@ -561,10 +561,7 @@ export async function applyOpencodeAgentHook(def: {
 }): Promise<void> {
   assertSafeSlug(def.slug);
   const ocEvent = CLAUDE_TO_OPENCODE_EVENTS[def.event];
-  if (!ocEvent) {
-    log.warn(`OpenCode does not support event "${def.event}" — skipping hook [${def.slug}]`);
-    return;
-  }
+  if (!ocEvent) throw new Error(`OpenCode has no hook event for ${def.event}`);
   const dir = resolveOpencodePluginDir(def.baseDir, def.scope);
   await ensureDir(dir);
   const file = path.join(dir, `teamai-agent-${def.slug}.ts`);

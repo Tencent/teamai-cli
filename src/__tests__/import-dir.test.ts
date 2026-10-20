@@ -15,7 +15,8 @@ vi.mock('../graph-aggregate.js', () => ({
   aggregateGlobalGraph: vi.fn(),
 }));
 
-vi.mock('../utils/git.js', () => ({
+vi.mock('../utils/git.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/git.js')>()),
   autoPushTeamRepo: vi.fn(),
 }));
 

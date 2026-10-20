@@ -39,6 +39,23 @@ cd /path/to/java-service
 teamai init https://github.com/your-org/java-service-teamai --inherit-user-scope
 ```
 
+### Pin a workspace to a team revision
+
+In a workspace with a separate git team repo, use `pull --team-ref` to try a remote branch, tag, or commit that contains `teamai.yaml`:
+
+```bash
+teamai pull --team-ref feature/review-skill
+teamai pull --team-ref v2.3.0
+teamai pull --team-ref 3f2c9a7d
+teamai pull --team-ref main  # use your team's default branch to unpin
+```
+
+The pin stays in this workspace's local config and applies to all its checkouts and hook pulls. Branch pins follow new commits; tags and commits stay fixed. A commit must be reachable from a remote branch. `pull` and `status` show the pin.
+
+A revision switch removes unchanged skill, rule, and agent copies the new revision lacks. Edited copies stay, and unpinning names edits that `push` would send to the default branch. While pinned, `push` sends nothing, and `source add`, `source remove` and `import` into the team wiki refuse; pull still reports usage and learnings. A failed or incomplete pinned pull exits 1. `--team-ref` with `--dry-run` is refused.
+
+This requires a workspace install without user-scope inheritance or the same team installed at user scope. It does not apply to HTTP or single-repo mode. Other workspaces keep their own revision.
+
 ### Inside the project repo
 
 This repo is the team repo. Assets go in `.teamai/`.

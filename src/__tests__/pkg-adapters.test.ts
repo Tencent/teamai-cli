@@ -76,6 +76,104 @@ describe('NpmAdapter', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it('uses pnpm at a workspace member that has no pnpm markers of its own', async () => {
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+    const member = path.join(dir, 'packages', 'app');
+    fs.mkdirSync(member, { recursive: true });
+    fs.writeFileSync(path.join(member, 'package.json'), '{}');
+    const execute = vi.fn<CommandExecutor>().mockImplementation(async (command, args) => ({
+      code: 0,
+      stdout: command === 'pnpm' && args[0] === 'list' ? '[{"dependencies":{}}]' : '',
+      stderr: '',
+    }));
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'is-odd', version: '*' }],
+      { cwd: member, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', 'is-odd'],
+      expect.objectContaining({ cwd: member }),
+    );
+  });
+
+  it('respects an explicit npm packageManager over an ancestor pnpm workspace', async () => {
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n');
+    const nested = path.join(dir, 'apps', 'standalone-npm-app');
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, 'package.json'), JSON.stringify({ packageManager: 'npm@10.8.2' }));
+    fs.writeFileSync(path.join(nested, 'package-lock.json'), JSON.stringify({
+      lockfileVersion: 3,
+      packages: { 'node_modules/typescript': { version: '5.9.2' } },
+    }));
+    const execute = vi.fn<CommandExecutor>().mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'is-odd', version: '*' }],
+      { cwd: nested, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'npm',
+      ['install', 'is-odd'],
+      expect.objectContaining({ cwd: nested }),
+    );
+  });
+
+  it('passes --workspace-root when installing at the pnpm workspace root itself', async () => {
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    const execute = vi.fn<CommandExecutor>().mockImplementation(async (command, args) => ({
+      code: 0,
+      stdout: command === 'pnpm' && args[0] === 'list' ? '[{"dependencies":{}}]' : '',
+      stderr: '',
+    }));
+
+    await new NpmAdapter(execute).install(
+      [{ name: 'is-odd', version: '*' }],
+      { cwd: dir, scope: 'project' },
+    );
+
+    expect(execute).toHaveBeenCalledWith(
+      'pnpm',
+      ['add', '--workspace-root', 'is-odd'],
+      expect.objectContaining({ cwd: dir }),
+    );
+  });
+
+  it('includes dev and optional dependencies when snapshotting a pnpm install', async () => {
+    fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: 9');
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    const execute = vi.fn<CommandExecutor>().mockImplementation(async (command, args) => ({
+      code: 0,
+      stdout: command === 'pnpm' && args[0] === 'add'
+        ? ''
+        : JSON.stringify([{
+          dependencies: { 'is-odd': { version: '3.0.1' } },
+          devDependencies: { vitest: { version: '3.2.7' } },
+          optionalDependencies: { fsevents: { version: '2.3.3' } },
+        }]),
+      stderr: '',
+    }));
+
+    const lock = await new NpmAdapter(execute).install(
+      [
+        { name: 'is-odd', version: '*' },
+        { name: 'vitest', version: '*' },
+        { name: 'fsevents', version: '*' },
+      ],
+      { cwd: dir, scope: 'project' },
+    );
+
+    expect(lock).toEqual(expect.arrayContaining([
+      { name: 'is-odd', version: '3.0.1', source: 'npm' },
+      { name: 'vitest', version: '3.2.7', source: 'npm' },
+      { name: 'fsevents', version: '2.3.3', source: 'npm' },
+    ]));
+  });
+
   it('installs CLI tools globally with their declared registry and snapshots npm list', async () => {
     const execute = vi.fn<CommandExecutor>().mockImplementation(async (_command, args) => {
       if (args[0] === 'list') {

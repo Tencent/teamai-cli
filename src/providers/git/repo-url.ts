@@ -92,7 +92,9 @@ function parseGenericGitRepoInputWithOptions(input: string, options: ParseOption
       );
     }
     const { owner, repo, fullPath } = parsePath(rawPath);
-    return buildRepoInfo(owner, repo, `${user}@${host}:${fullPath}`);
+    // A leading slash makes the path absolute on the host instead of relative to the login's home.
+    const remotePath = rawPath.startsWith('/') ? `/${fullPath}` : fullPath;
+    return buildRepoInfo(owner, repo, `${user}@${host}:${remotePath}`);
   }
 
   throw invalidRepoUrl();

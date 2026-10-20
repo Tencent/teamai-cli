@@ -45,6 +45,7 @@ Generated: do not edit by hand. Regenerate with
 - `teamai pull` — Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a workspace by default, a hidden directory, so search that path directly
   - `--silent` — Silent mode (for hooks)
   - `--force` — Force full sync even if repo is unchanged
+  - `--team-ref <ref>` — Pin this workspace to a branch, tag or commit of the team repo; the default branch unpins it
 
 ## status
 

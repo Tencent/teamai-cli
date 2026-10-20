@@ -8,7 +8,10 @@ const reportsMocks = vi.hoisted(() => {
 vi.mock('../utils/reports-branch.js', () => reportsMocks);
 
 const gitMocks = vi.hoisted(() => ({ pullRepo: vi.fn().mockResolvedValue('already up to date') }));
-vi.mock('../utils/git.js', () => gitMocks);
+vi.mock('../utils/git.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/git.js')>()),
+  ...gitMocks,
+}));
 
 const logMocks = vi.hoisted(() => ({ info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
 const spin = vi.hoisted(() => ({ succeed: vi.fn(), warn: vi.fn() }));

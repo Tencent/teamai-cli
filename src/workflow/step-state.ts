@@ -55,7 +55,7 @@ const AnswerSchema = z.object({
   choice: z.string(),
   note: z.string().optional(),
   at: z.string(),
-  channel: z.enum(['tty', 'cli', 'driver', 'auto_approve', 'no_hitl']),
+  channel: z.enum(['tty', 'cli', 'driver', 'dashboard', 'auto_approve', 'no_hitl']),
   agent: z.boolean(),
   /** Identity of the UI that carried the person's answer, kept locally. */
   driver: DriverSchema.optional(),

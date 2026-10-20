@@ -769,6 +769,8 @@ export const LocalConfigSchema = z.object({
     // and every resource path, none of which understand `~`.
     localPath: z.string().transform(expandHome),
     remote: z.string(),
+    /** Ref this workspace follows, exactly as passed to pull --team-ref. */
+    ref: z.string().optional(),
     /**
      * Team repo backend. Defaults to 'git' for backward compatibility.
      * - 'git':  a standalone team repo cloned to <home>/team-repo.
@@ -996,6 +998,9 @@ export const StateSchema = z.object({
    * agents and docs into the checkout it runs in: a worktree added after the
    * last pull has not received that revision, and two checkouts with different
    * tool directories must not compare against each other's targets (#807).
+   * `teamRef` is the ref this checkout's delivery followed, absent for the
+   * default branch. It keeps revision removals pending after another checkout
+   * unpins the workspace. An older CLI that saves state drops it.
    * `pushBaseRevs` are the team revisions push synced this checkout's
    * unedited rules and skills to since its last pull, newest first, the bases
    * its next push compares with; a pull's record drops them, since the pull
@@ -1029,6 +1034,7 @@ export const StateSchema = z.object({
    */
   lastPullByWorkspace: z.record(z.string(), z.object({
     rev: z.string(),
+    teamRef: z.string().optional(),
     root: z.string().optional(),
     targets: z.array(z.string()),
     pushBaseRevs: z.array(z.string()).optional(),
@@ -1395,6 +1401,8 @@ export function legacyManagedMcpManifestPath(dataHome: string): string {
 // ─── Global options ─────────────────────────────────────
 
 export interface GlobalOptions {
+  /** Pin this workspace to a team ref; the default branch unpins it. */
+  teamRef?: string;
   dryRun?: boolean;
   global?: boolean;
   registry?: string;

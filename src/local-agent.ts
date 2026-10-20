@@ -23,7 +23,7 @@ import {
   writeJsonAtomic,
 } from './utils/fs.js';
 import { RulesHandler, SkillsHandler } from './resources/index.js';
-import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, OPENCLAW_TOOLS } from './hooks.js';
+import { injectHooksToAllTools, applyAgentHook, removeAgentHook, isAgentHookSupportedTool, isAgentHookEvent, isCodexTrustGatedTool, trustCodexAgentHook, OPENCLAW_TOOLS } from './hooks.js';
 import { parseHookEvent } from './dashboard-collector.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { isInteractive } from './utils/prompt.js';
@@ -553,15 +553,52 @@ async function claudeUserRoot(): Promise<string> {
   return resolveToolRootDir(CLAUDE_TOOL_ID, DEFAULT_CLAUDE_ROOT, await memberToolRoots());
 }
 
-/** Resolve the current tool's settings file absolute path (user scope, $HOME base). */
-async function resolveToolSettingsPath(config: LocalAgentConfig | null, tool: string): Promise<string> {
+/**
+ * The settings files an agent hook for `tool` can sit in, absolute: first the
+ * user-scope file `teamai pull` writes and the tool reads, then the
+ * project-scope path that versions before #1220 wrote under $HOME, when it
+ * differs. Installs write the first; removals clear them all.
+ */
+async function agentHookSettingsPaths(config: LocalAgentConfig | null, tool: string): Promise<string[]> {
   // Hook cleanup also runs after the source configuration has been cleared.
   const teamConfig = createLocalAgentTeamConfig(config?.endpoint ?? 'local-agent');
-  const toolPath = applyToolRoots(teamConfig.toolPaths, await memberToolRoots())[tool];
-  if (!toolPath?.settings) {
+  const toolRoots = await memberToolRoots();
+  const settings = scopedToolPaths(teamConfig, { scope: 'user', toolRoots })[tool]?.settings;
+  if (!settings) {
     throw new Error(`unsupported tool: ${tool} (no settings path)`);
   }
-  return path.join(getUserHome(), toolPath.settings);
+  const legacy = applyToolRoots(teamConfig.toolPaths, toolRoots)[tool]?.settings;
+  return [...new Set([settings, legacy ?? settings])].map((rel) => path.join(getUserHome(), rel));
+}
+
+/** The member turned off teamai's Codex trust writes (`codexTrustEnabled: false`). */
+async function codexTrustDisabled(): Promise<boolean> {
+  const { loadLocalConfig } = await import('./config.js');
+  return (await loadLocalConfig())?.codexTrustEnabled === false;
+}
+
+/**
+ * Remove a settings-file agent hook from every file it can sit in. In Codex,
+ * the hooks after it move up, so the ones Codex trusted are trusted again.
+ */
+async function removeSettingsAgentHook(
+  config: LocalAgentConfig | null,
+  tool: string,
+  opts: { slug: string; command?: string },
+): Promise<void> {
+  const keepTrust = isCodexTrustGatedTool(tool) && !(await codexTrustDisabled());
+  for (const settingsPath of await agentHookSettingsPaths(config, tool)) {
+    const remove = () => removeAgentHook(settingsPath, tool, opts);
+    if (!keepTrust || !(await pathExists(settingsPath))) {
+      await remove();
+      continue;
+    }
+    const { keepCodexHookTrust } = await import('./codex-trust.js');
+    const trust = await keepCodexHookTrust({ codexHome: path.dirname(settingsPath), cwd: getUserHome(), file: settingsPath }, remove);
+    if (trust.kind === 'failed') {
+      log.warn(`Codex may skip the hooks after agent hook [${opts.slug}] in ${settingsPath} until you approve them in /hooks: ${trust.reason}`);
+    }
+  }
 }
 
 function getPluginStatePath(): string {
@@ -3706,8 +3743,7 @@ async function runHookRuleCommand(
         const { removePiAgentHook } = await import('./pi-hooks.js');
         await removePiAgentHook(slug);
       } else {
-        const settingsPath = await resolveToolSettingsPath(config, rec.tool);
-        await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+        await removeSettingsAgentHook(config, rec.tool, { slug, command: rec.command });
       }
       delete manifest[slug];
       await saveAgentHookManifest(manifest);
@@ -3749,14 +3785,14 @@ async function runHookRuleCommand(
         const { removePiAgentHook } = await import('./pi-hooks.js');
         await removePiAgentHook(slug);
       } else {
-        const priorPath = await resolveToolSettingsPath(config, prior.tool);
-        await removeAgentHook(priorPath, prior.tool, { slug, command: prior.command });
+        await removeSettingsAgentHook(config, prior.tool, { slug, command: prior.command });
       }
     } catch (e) {
       log.debug(`agent hook [${slug}] prior cleanup failed: ${(e as Error).message}`);
     }
   }
 
+  let codexTrustPath: string | undefined;
   if (tool === 'hermes') {
     const { applyHermesAgentHook } = await import('./hermes-hooks.js');
     await applyHermesAgentHook({ slug, event, command: cmd, matcher, timeout });
@@ -3771,11 +3807,22 @@ async function runHookRuleCommand(
     const { applyPiAgentHook } = await import('./pi-hooks.js');
     await applyPiAgentHook({ slug, event, command: cmd, matcher, timeout });
   } else {
-    const settingsPath = await resolveToolSettingsPath(config, tool);
+    const [settingsPath] = await agentHookSettingsPaths(config, tool);
     await applyAgentHook(settingsPath, tool, { slug, event, command: cmd, matcher, timeout });
+    if (isCodexTrustGatedTool(tool)) codexTrustPath = settingsPath;
   }
   manifest[slug] = { tool, event, command: cmd, matcher, timeout };
   await saveAgentHookManifest(manifest);
+  if (codexTrustPath) {
+    // Recorded first, so an uninstall still finds the hook Codex will not run.
+    const trust = await codexTrustDisabled()
+      ? { kind: 'disabled' as const }
+      : await trustCodexAgentHook(codexTrustPath, event, cmd);
+    if (trust.kind !== 'trusted') {
+      const why = trust.kind === 'disabled' ? 'codexTrustEnabled is false, so approve it in Codex /hooks' : 'reason' in trust ? trust.reason : trust.kind;
+      throw new Error(`Codex will not run agent hook [${slug}] until it is trusted: ${why}`);
+    }
+  }
   return undefined;
 }
 
@@ -4785,8 +4832,7 @@ export async function removeAllAgentHooks(): Promise<Array<{ slug: string; tool:
         const { removePiAgentHook } = await import('./pi-hooks.js');
         await removePiAgentHook(slug);
       } else {
-        const settingsPath = await resolveToolSettingsPath(config, rec.tool);
-        await removeAgentHook(settingsPath, rec.tool, { slug, command: rec.command });
+        await removeSettingsAgentHook(config, rec.tool, { slug, command: rec.command });
       }
     } catch (e) {
       log.warn(`Could not remove agent hook ${slug} for ${rec.tool}: ${(e as Error).message}`);

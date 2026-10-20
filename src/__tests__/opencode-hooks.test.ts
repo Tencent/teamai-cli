@@ -275,8 +275,9 @@ describe('agent-hook plugins', () => {
     expect(content).toContain('"chat.message": async');
   });
 
-  it('skips events with no OpenCode equivalent', async () => {
-    await applyOpencodeAgentHook({ slug: 'bad', event: 'PreToolUse', command: 'x', baseDir: tmp, scope: 'user' });
+  it('rejects events with no OpenCode equivalent and writes nothing', async () => {
+    await expect(applyOpencodeAgentHook({ slug: 'bad', event: 'PreToolUse', command: 'x', baseDir: tmp, scope: 'user' }))
+      .rejects.toThrow('OpenCode has no hook event for PreToolUse');
     expect(await fse.pathExists(path.join(tmp, '.config', 'opencode', 'plugin', 'teamai-agent-bad.ts'))).toBe(false);
   });
 
