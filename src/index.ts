@@ -1629,7 +1629,7 @@ if (!process.env.TEAMAI_COMMAND_TABLE_ONLY) {
 
   // Commands that need an initialized teamai reject with NotInitializedError.
   // Report it as a plain error, not an unhandled rejection with a stack trace.
-  program.parseAsync().catch(async (e: unknown) => {
+  await program.parseAsync().catch(async (e: unknown) => {
     const { NotInitializedError } = await import('./config.js');
     if (!(e instanceof NotInitializedError)) throw e;
     const { log } = await import('./utils/logger.js');
