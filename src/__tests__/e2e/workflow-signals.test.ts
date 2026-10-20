@@ -88,6 +88,7 @@ describe.skipIf(process.platform === 'win32')('workflow local driver signals', (
     git(['add', 'README.md'], repo);
     git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '-m', 'app'], repo);
     git(['remote', 'add', 'origin', 'http://127.0.0.1:9/team/workflow.git'], repo);
+    fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), 'shipped\ntool.started\ntool.interrupted\n');
     const init = await runCLI(['init', '--self', '--agent', 'claude', '--force'], repo);
     expect(init.code, `${init.stdout}\n${init.stderr}`).toBe(0);
     configPath = path.join(await resolveProjectDataHome(repo), 'config.yaml');

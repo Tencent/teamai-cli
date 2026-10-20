@@ -46,6 +46,8 @@ describe('workflow manual controls through the CLI', () => {
     repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-run-controls-')));
     fs.writeFileSync(path.join(repo, 'README.md'), '# fixture\n');
     for (const args of [['init', '-q', '-b', 'main'], ['add', 'README.md'], ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'initial'], ['remote', 'add', 'origin', 'http://127.0.0.1:9/team/workflow.git']]) execFileSync('git', args, { cwd: repo });
+    // These names are how a command shows which checkout it ran in. A command with no workspace is read-only, so they stay out of git status.
+    fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), 'started\nfixed\ndependent\nin-workspace\napproved\n');
     const init = await runCLI(['init', '--self', '--agent', 'claude', '--force'], repo);
     expect(init.code, `${init.stdout}\n${init.stderr}`).toBe(0);
     dataHome = await resolveProjectDataHome(repo);
