@@ -124,10 +124,32 @@ describe('reconcileCodexDispatchers — the dispatcher command is the portable a
     // Entries written before #1215: bash-wrapped, or with a Git Bash path.
     expect(isCodexTeamHookDispatcher('bash -lc "teamai hook-dispatch Stop --tool codex --team-hooks"')).toBe(true);
     expect(isCodexTeamHookDispatcher('"C:\\Program Files\\Git\\bin\\bash.exe" -lc "teamai hook-dispatch Stop --tool codex --team-hooks"')).toBe(true);
-    // And the new absolute-wrapper form.
+    // And the new absolute-wrapper forms, POSIX and Windows alike.
     expect(isCodexTeamHookDispatcher(`"${path.join(process.env.HOME!, '.teamai', 'bin', 'teamai')}" hook-dispatch Stop --tool codex --team-hooks`)).toBe(true);
+    expect(isCodexTeamHookDispatcher('& "C:\\Users\\u\\teamai.cmd" hook-dispatch Stop --tool codex --team-hooks')).toBe(true);
     // Built-in dispatches (no --team-hooks) are not dispatchers.
     expect(isCodexTeamHookDispatcher('teamai hook-dispatch session-start --tool codex')).toBe(false);
+  });
+
+  it('emits the PowerShell call-operator form on Windows (#1215 review)', async () => {
+    // PowerShell parses a quoted path in command position as a string
+    // expression (ParserError on the following arguments); it needs the call
+    // operator. POSIX sh needs no operator and would background on `&`. The
+    // writer knows the platform, so it emits the platform-appropriate form.
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    try {
+      const hooksFile = path.join(process.env.HOME!, '.codex', 'hooks.json');
+      seedIndex(hooksFile);
+      await reconcileCodexDispatchers(hooksFile);
+      const doc = JSON.parse(fs.readFileSync(hooksFile, 'utf-8'));
+      const command = doc.hooks.Stop[0].hooks[0].command as string;
+      // Separators stay whatever path.join produces on the host running the
+      // test; the invariant is the call operator, the quoted wrapper path
+      // with the .cmd suffix, and the shell-free dispatch tail.
+      expect(command).toMatch(/^& "[^"]*teamai\.cmd" hook-dispatch Stop --tool codex --team-hooks$/);
+    } finally {
+      platform.mockRestore();
+    }
   });
 
   it('replaces a legacy dispatcher entry in place', async () => {

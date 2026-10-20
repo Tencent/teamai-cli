@@ -261,17 +261,26 @@ export function toolUsesPwshShell(tool: string): boolean {
  * #1215: the Codex dispatcher lives only in the per-machine user-level
  * `~/.codex/hooks.json`, and Codex runs `command` through the host shell on
  * every platform while never reading `commandWindows`. So the command is the
- * shell-free absolute wrapper path (double-quoted for spaces — a form
- * PowerShell and POSIX sh parse identically), which resolves teamai without
- * any PATH assumption. binDir comes from ensureTeamaiWrapper(); null falls
- * back to the bare name, which still parses everywhere but needs teamai on
- * PATH.
+ * shell-free absolute wrapper path, which resolves teamai without any PATH
+ * assumption. The quoting is platform-specific, because the two host shells
+ * disagree on how a quoted path is invoked (measured on Windows 11 /
+ * PowerShell 5.1 in the #1215 thread): PowerShell parses a quoted path in
+ * command position as a string expression — ParserError on the arguments
+ * that follow — and needs the call operator `&`; POSIX sh needs no operator
+ * and would treat `&` as backgrounding. The writer knows the platform, so it
+ * emits the form that platform's host shell runs. binDir comes from
+ * ensureTeamaiWrapper(); null falls back to the bare name, which both shells
+ * resolve from PATH.
  */
 export function getTeamHookDispatchCommand(event: string, tool: string, binDir?: string | null): string {
   const bin = binDir === null || binDir === undefined
     ? 'teamai'
     : path.join(binDir, process.platform === 'win32' ? `${WRAPPER_NAME}.cmd` : WRAPPER_NAME);
-  return `"${bin}" hook-dispatch ${event} --tool ${tool} --team-hooks`;
+  if (bin === 'teamai') {
+    return `${bin} hook-dispatch ${event} --tool ${tool} --team-hooks`;
+  }
+  const invoke = process.platform === 'win32' ? `& "${bin}"` : `"${bin}"`;
+  return `${invoke} hook-dispatch ${event} --tool ${tool} --team-hooks`;
 }
 
 /**
