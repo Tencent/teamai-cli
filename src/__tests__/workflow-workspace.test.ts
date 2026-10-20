@@ -1321,4 +1321,88 @@ steps:
     expect(() => git(['show', `${branch}:.claude/extra.md`], workspace)).toThrow(/does not exist|not in /);
     expect(() => git(['show', `${branch}:.claude/settings.json`], workspace)).toThrow(/does not exist|not in /);
   });
+
+  it('does not publish conflict markers a prompt staged', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Staging a file does not resolve it while conflict markers remain.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('note.txt', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('note.txt', 'right\\n')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the note.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'note.txt'), 'base\n');
+    execFileSync('git', ['add', 'note.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run(_tool, input) {
+        fs.writeFileSync(path.join(input.cwd, 'note.txt'), '<<<<<<< left\nkept\n');
+        execFileSync('git', ['add', '-A'], { cwd: input.cwd });
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+    expect(git(['show', `${branchName(runId, 'join', 1)}:note.txt`], workspace)).not.toContain('<<<<<<<');
+  });
+
+  it('keeps a modify/delete resolution a prompt staged without editing the file', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Staging the surviving agent file resolves a modify/delete conflict.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('AGENTS.md', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').rmSync('AGENTS.md')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Keep the agent file.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
+    execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run(_tool, input) {
+        execFileSync('git', ['add', 'AGENTS.md'], { cwd: input.cwd });
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+    const branch = join && 'changes' in join ? join.changes?.branch : undefined;
+    expect(git(['show', `${branch}:AGENTS.md`], workspace)).toBe('left\n');
+    expect(git(['rev-list', '--parents', '-n', '1', String(branch)], workspace).trim().split(' ')).toHaveLength(3);
+  });
 });

@@ -399,21 +399,30 @@ async function conflictContents(dir: string): Promise<Map<string, string>> {
 }
 
 async function unresolvedConflicts(dir: string, before: Map<string, string> | undefined): Promise<string[]> {
+  const textOf = async (file: string): Promise<string> => {
+    try {
+      return await fs.readFile(path.join(dir, file), 'utf8');
+    } catch {
+      return '';
+    }
+  };
   const listed = async (): Promise<string[]> => {
     const unmerged = await git(dir, ['diff', '--name-only', '--diff-filter=U']);
     return unmerged.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
   };
   for (const file of await listed()) {
-    let text = '';
-    try {
-      text = await fs.readFile(path.join(dir, file), 'utf8');
-    } catch {
-      text = '';
-    }
+    const text = await textOf(file);
     if (text.includes('<<<<<<<') || before?.get(file) === text) continue;
     await git(dir, ['add', '--', file]);
   }
-  return listed();
+  const open = new Set(await listed());
+  // `git add` removes a path from the unmerged list even when conflict markers are still in the file.
+  if (before) {
+    for (const file of before.keys()) {
+      if ((await textOf(file)).includes('<<<<<<<')) open.add(file);
+    }
+  }
+  return [...open];
 }
 
 async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?: { branch: string; base: string; from: string; to: string; commits: string[] }; failure?: WorkflowFailure }> {

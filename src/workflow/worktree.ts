@@ -181,8 +181,12 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
   const dirs = JSON.parse(await fs.readFile(path.join(saved, '_dirs.json'), 'utf8').catch(() => '[]')) as string[];
   const marked = await markedConflicts(dir, conflictPaths(conflicts));
+  // Staging a conflict without leaving markers is a resolution, even when the text matches the overlay.
+  // An unstaged file that still matches the overlay is not.
+  const unmerged = new Set((await git(dir, ['diff', '--name-only', '--diff-filter=U'])).stdout
+    .split('\n').map((file) => file.trim()).filter((file) => file !== ''));
   const unresolved = [...new Set([
-    ...conflictPaths(conflicts).filter((relative) => current[relative] === overlay[relative]),
+    ...conflictPaths(conflicts).filter((relative) => current[relative] === overlay[relative] && unmerged.has(relative)),
     ...marked,
   ])];
   const files = new Set([...Object.keys(overlay), ...Object.keys(current), ...Object.keys(branch)]);
