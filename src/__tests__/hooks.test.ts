@@ -121,16 +121,20 @@ describe('hooks', () => {
       expect(result.hooks.Stop[0].hooks[0]).not.toHaveProperty('additionalContextLimit');
     });
 
-    it('Codex format: gives every built-in entry its PowerShell form in commandWindows (#1074)', async () => {
+    it('Codex format: built-in commands are the shell-free argv form and carry no commandWindows (#1215)', async () => {
       await injectHooks('/test/codex-hooks.json', 'codex');
 
       const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>> };
-      expect(result.hooks.SessionStart[0].hooks[0].command).toBe('bash -lc "teamai hook-dispatch session-start --tool codex 2>/dev/null" || true');
-      expect(result.hooks.SessionStart[0].hooks[0].commandWindows).toBe('teamai hook-dispatch session-start --tool codex 2>$null; exit 0');
+      // Codex runs `command` through the host shell on every platform and never
+      // reads commandWindows (#1215), so the single command must parse under
+      // PowerShell and POSIX sh alike: bare argv, no redirect, no fail-open
+      // tail (the dispatcher's finally-exit-0 is the fail-open).
+      expect(result.hooks.SessionStart[0].hooks[0].command).toBe('teamai hook-dispatch session-start --tool codex');
       const todoWrite = result.hooks.PostToolUse.flatMap((group) => group.hooks).find((hook) => hook.command.includes('--matcher TodoWrite'));
-      expect(todoWrite?.commandWindows).toBe('teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>$null; exit 0');
+      expect(todoWrite?.command).toBe('teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite');
       for (const hook of Object.values(result.hooks).flat().flatMap((group) => group.hooks)) {
-        expect(hook.commandWindows).toBeDefined();
+        expect(hook.commandWindows).toBeUndefined();
+        expect(hook.command).toMatch(/^teamai hook-dispatch [a-z-]+ --tool codex(?: --matcher \S+)?$/);
       }
     });
 
