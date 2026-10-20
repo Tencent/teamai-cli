@@ -496,6 +496,17 @@ class Harness {
     }) as never);
     try {
       await hookDispatchCli(event, tool, '*', { stdinFile, bgOnly: options.background });
+      // The real dispatcher runs background handlers in a detached child
+      // process; the mocked spawn above does nothing, so simulate that pass
+      // here. post-tool-use needs it since recall-attribution and
+      // dashboard-report moved to the background (#1216) — without this the
+      // attribution these tests assert never runs.
+      if (!options.background && event === 'post-tool-use') {
+        // readStdinFile removes the file; the real parent hands the child a
+        // fresh serialization of the same payload, so rewrite it here.
+        fs.writeFileSync(stdinFile, JSON.stringify({ session_id: SESSION, ...(cwd ? { cwd } : {}), ...payload }));
+        await hookDispatchCli(event, tool, '*', { stdinFile, bgOnly: true });
+      }
     } finally {
       write.mockRestore();
     }

@@ -212,6 +212,26 @@ describe('hook-handlers registry', () => {
     expect(events).toContain('session-end');
   });
 
+  it('post-tool-use runs every non-output handler detached, leaving the inline pass empty (#1216)', () => {
+    // dashboard-report and recall-attribution always return null — pure side
+    // effects, the exact criterion `background` documents — and the same
+    // dashboard handler already runs detached for stop and session-end. On
+    // Windows each foreground handler second is host-visible: a dispatch pays
+    // one node start-up per pass, and under disk contention dashboard-report
+    // alone measured 3.8 s inside the host's 10 s budget (#1216). Detached,
+    // the inline pass for a plain tool call has no handlers at all, and the
+    // host-visible cost collapses to bundle load + spawn.
+    const handlers = buildHandlerRegistry().filter((r) => r.event === 'post-tool-use' && r.matcher === '*');
+    for (const name of ['dashboard-report', 'recall-attribution', 'local-agent-sync']) {
+      const reg = handlers.find((r) => (r.handler as { name: string }).name === name);
+      expect(reg, name).toBeDefined();
+      expect(reg!.background, `${name} must run detached`).toBe(true);
+    }
+    // What remains inline for a plain tool call: nothing.
+    const inline = handlers.filter((r) => !r.background);
+    expect(inline).toEqual([]);
+  });
+
   it('session-end records the final dashboard snapshot and dispatches the webhook in the background, and syncs votes in the foreground', () => {
     const handlers = buildHandlerRegistry().filter((r) => r.event === 'session-end');
     // Copilot fires SessionEnd (not Stop), so the webhook handler must run here
@@ -862,16 +882,20 @@ describe('hook-handlers registry', () => {
     expect(localAgent!.background).toBe(true);
   });
 
-  // post-tool-use dashboard-report stays foreground: it is a fast local file
-  // append with no network I/O, so detaching it would add spawn overhead for
-  // no benefit.
-  it('post-tool-use wildcard dashboard-report stays foreground', () => {
+  // post-tool-use dashboard-report runs detached (#1216): the old "fast local
+  // append, detaching adds spawn overhead" premise is platform-dependent — on
+  // Windows (Defender, disk contention) the same append measured 3.8 s inside
+  // the host's 10 s hook budget, and hooks were killed outright. The spawn
+  // already exists (local-agent-sync below is background), so moving this into
+  // the detached child adds no process and removes its runtime from the
+  // host-visible path.
+  it('post-tool-use wildcard dashboard-report runs detached (#1216)', () => {
     const registry = buildHandlerRegistry();
     const dashboard = registry.find(
       (r) => r.event === 'post-tool-use' && r.matcher === '*' && r.handler.name === 'dashboard-report',
     );
     expect(dashboard).toBeDefined();
-    expect(dashboard!.background).not.toBe(true);
+    expect(dashboard!.background).toBe(true);
   });
 
   // prompt-submit local-agent-sync must NOT be backgrounded: when the org
@@ -1511,10 +1535,14 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
     expect(mockReportAndSyncFromHook).toHaveBeenCalledOnce();
   });
 
-  it('foreground pass still runs the fast local dashboard-report handler', async () => {
+  it('the background pass runs dashboard-report; a plain tool call leaves the foreground pass empty (#1216)', async () => {
     const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'foreground');
-    // dashboard-report parses the event and appends locally — it must stay inline.
+    // dashboard-report and recall-attribution moved to the detached pass: the
+    // inline pass for a plain tool call runs no handlers at all, so the host
+    // waits only for bundle load + spawn.
+    expect(mockParseHookEvent).not.toHaveBeenCalled();
+    await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'background');
     expect(mockParseHookEvent).toHaveBeenCalled();
   });
 });
