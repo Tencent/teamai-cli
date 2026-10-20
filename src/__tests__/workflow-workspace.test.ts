@@ -1501,4 +1501,60 @@ steps:
     expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
     expect(git(['show', `${branchName(runId, 'join', 1)}:note.txt`], workspace)).not.toContain('<<<<<<<');
   });
+
+  it('does not publish conflict markers a prompt committed before validation', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A prompt commit does not clear the conflict, and a later attempt must not publish it.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('note.txt', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('note.txt', 'right\\n')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the note.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'note.txt'), 'base\n');
+    execFileSync('git', ['add', 'note.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
+    let calls = 0;
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run(_tool, input) {
+        calls += 1;
+        if (calls === 1) {
+          fs.writeFileSync(path.join(input.cwd, 'note.txt'), '<<<<<<< left\nkept\n');
+          execFileSync('git', ['add', '-A'], { cwd: input.cwd });
+          execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'markers'], { cwd: input.cwd });
+        }
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const first = await runLocalDriver(config, runId, workspace, { adapter });
+    expect(first, JSON.stringify(first)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const stored = await readRun(config, runId);
+    if (typeof stored !== 'object') throw new Error('run missing');
+    stored.status = 'running';
+    delete stored.failure;
+    delete stored.end;
+    stored.steps = stored.steps.map((step) => step.id === 'join' ? { id: step.id, status: 'pending' as const, pass: step.pass } : step);
+    await writeRun(config, stored);
+
+    const second = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(second, JSON.stringify(second)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join' && step.status === 'failed') : undefined;
+    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+  });
 });

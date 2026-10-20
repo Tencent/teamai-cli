@@ -390,21 +390,16 @@ async function conflictsPath(dir: string): Promise<string> {
   return path.resolve(dir, printed);
 }
 
-/** Keeps the paths that were conflicted when the merge started, including across a retry that has already staged them. */
+/** Keeps the paths that were conflicted when the merge started until a resolution is validated. A prompt commit can clear MERGE_HEAD before that. */
 async function rememberedConflicts(dir: string): Promise<Map<string, string>> {
   const current = await conflictContents(dir);
   const file = await conflictsPath(dir);
-  const merging = (await git(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
   let saved = new Map<string, string>();
-  if (merging) {
-    try {
-      const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as Record<string, string>;
-      if (parsed && typeof parsed === 'object') saved = new Map(Object.entries(parsed).filter((entry) => typeof entry[1] === 'string'));
-    } catch {
-      saved = new Map();
-    }
-  } else {
-    await fs.rm(file, { force: true });
+  try {
+    const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as Record<string, string>;
+    if (parsed && typeof parsed === 'object') saved = new Map(Object.entries(parsed).filter((entry) => typeof entry[1] === 'string'));
+  } catch {
+    saved = new Map();
   }
   const merged = new Map(saved);
   for (const [relative, text] of current) merged.set(relative, text);
