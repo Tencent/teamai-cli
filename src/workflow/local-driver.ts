@@ -257,6 +257,14 @@ async function stagedEntry(workspace: string, relative: string): Promise<string>
   return entries.join(',') || 'none';
 }
 
+async function worktreeMode(workspace: string, relative: string): Promise<string> {
+  try {
+    return String((await fs.lstat(path.resolve(workspace, relative))).mode);
+  } catch {
+    return 'missing';
+  }
+}
+
 async function snapshotWorktree(workspace: string): Promise<WorktreeSnapshot> {
   const status = await gitStatus(workspace);
   const head = (await git(workspace, ['rev-parse', 'HEAD'])).stdout.trim();
@@ -266,7 +274,9 @@ async function snapshotWorktree(workspace: string): Promise<WorktreeSnapshot> {
     if (!line.trim()) continue;
     const relative = porcelainPath(line.replace(/\r$/, ''));
     if (!relative || files.has(relative)) continue;
-    files.set(relative, `${line.slice(0, 2)}:${await stagedEntry(workspace, relative)}:${await hashPath(workspace, relative)}`);
+    const staged = await stagedEntry(workspace, relative);
+    const mode = await worktreeMode(workspace, relative);
+    files.set(relative, `${line.slice(0, 2)}:${staged}:${mode}:${await hashPath(workspace, relative)}`);
   }
   return { ok: true, files, ...(head ? { head } : {}) };
 }

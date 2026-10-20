@@ -185,6 +185,27 @@ steps:
     expect(fs.readFileSync(path.join(workspace, 'tracked.txt'), 'utf8')).toBe('base\nstaged\nunstaged\n');
   });
 
+  it('fails a command with no workspace when it changes the mode of a dirty file', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A permission change on an already dirty file still changes the checkout.
+steps:
+  - id: mode
+    command: chmod +x tracked.txt
+`);
+    const file = path.join(workspace, 'tracked.txt');
+    fs.writeFileSync(file, 'edited\n');
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('tracked.txt') } }],
+    });
+    expect(fs.readFileSync(file, 'utf8')).toBe('edited\n');
+    expect(fs.statSync(file).mode & 0o111).not.toBe(0);
+  });
+
   it('fails an interactive read-only prompt that edits the checkout, and leaves the edit', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
