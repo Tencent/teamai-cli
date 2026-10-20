@@ -314,6 +314,19 @@ describe('interactive tool invocations', () => {
     if (tool === 'codex') expect(args).toContain('model_reasoning_effort=high');
     expect(vi.mocked(spawnTool).mock.calls[0]![2]).toMatchObject({ cwd: os.tmpdir(), stdio: 'inherit', detached: false });
   });
+
+  it.each(['claude', 'codex'] as const)('resumes an interactive %s session', async (tool) => {
+    const resultPath = path.join(os.tmpdir(), `teamai-interactive-resume-${tool}-${Date.now()}.json`);
+    files.push(resultPath);
+    const spawnTool = vi.fn(() => child('')) as unknown as ToolSpawn;
+    const adapter = createLocalToolAdapter(spawnTool, () => tool);
+    expect(await adapter.runInteractive(tool, { prompt: 'Again.', cwd: os.tmpdir(), resultPath, resume: 'sess-1' })).toMatchObject({ started: true, exitCode: 0 });
+    const args = vi.mocked(spawnTool).mock.calls[0]![1] as string[];
+    expect(args).toContain('sess-1');
+    expect(args).toContain(tool === 'claude' ? '--resume' : 'resume');
+    expect(args).not.toContain('exec');
+    expect(args).not.toContain('-p');
+  });
 });
 
 

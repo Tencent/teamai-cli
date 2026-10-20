@@ -117,7 +117,7 @@ export async function applyBaseConfig(
   for (const relative of AGENT_PATHS) {
     const from = path.join(dir, relative);
     try {
-      await fs.cp(from, path.join(saved, relative), { recursive: true });
+      await fs.cp(from, path.join(saved, relative), { recursive: true, verbatimSymlinks: true });
     } catch {
       // The branch does not have this path.
     }
@@ -215,13 +215,26 @@ export async function commitWork(
   return { from, to, commits: listed.stdout.split('\n').map((commit) => commit.trim()).filter((commit) => commit !== '') };
 }
 
-/** Pushes when `origin` exists and this step made a commit. No origin is not a failure. */
+/**
+ * Pushes when `origin` exists and the branch is ahead of the copy `origin` has.
+ * A retry that adds no commit still pushes when an earlier attempt left commits unpublished.
+ * No origin is not a failure.
+ */
 export async function pushIfOrigin(dir: string, branch: string, commits: string[]): Promise<'pushed' | 'no-origin' | 'unchanged' | { error: string }> {
-  if (commits.length === 0) return 'unchanged';
   const origin = await git(dir, ['remote', 'get-url', 'origin']);
-  if (origin.code !== 0) return 'no-origin';
+  if (origin.code !== 0) return commits.length === 0 ? 'unchanged' : 'no-origin';
+  if (commits.length === 0 && !await branchNeedsPush(dir, branch)) return 'unchanged';
   const pushed = await git(dir, ['push', '-u', 'origin', `${branch}:${branch}`]);
   return pushed.code === 0 ? 'pushed' : { error: (pushed.stderr || pushed.stdout).trim() || 'git push failed' };
+}
+
+/** Whether `origin` already has this branch and does not contain HEAD. A branch origin has never seen stays unpublished only when this attempt made no commit. */
+async function branchNeedsPush(dir: string, branch: string): Promise<boolean> {
+  const remote = `refs/remotes/origin/${branch}`;
+  const known = await git(dir, ['rev-parse', '--verify', '--quiet', remote]);
+  if (known.code !== 0) return false;
+  const contained = await git(dir, ['merge-base', '--is-ancestor', 'HEAD', remote]);
+  return contained.code !== 0;
 }
 
 export async function removeWorktree(main: string, dir: string): Promise<void> {

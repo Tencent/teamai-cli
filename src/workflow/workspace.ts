@@ -97,15 +97,26 @@ function changesOf(state: StepState | undefined): StepChanges | undefined {
   return state.changes;
 }
 
+/** Direct steps of a workflow step, such as `work.write`, not its fan-out items. */
+function workflowChildren(run: RunState, step: StepState): StepState[] {
+  const prefix = `${step.id}.`;
+  return run.steps.filter((item) => {
+    if (!item.id.startsWith(prefix)) return false;
+    const rest = item.id.slice(prefix.length);
+    return !rest.includes('.') && !rest.includes('[');
+  });
+}
+
 /** Branches a step merges, `after` items first, then its other needs. An omitted `needs` uses the parent step's needs. */
 function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): StepChanges[] {
   const ordered: Array<{ changes: StepChanges; settledAt: number }> = [];
   const push = (step: StepState | undefined): void => {
     if (!step) return;
     const changes = changesOf(step);
-    // A for_each step keeps each item's branch on that item, not on itself.
+    // A for_each step keeps each item's branch on that item, and a workflow step keeps each child's on that child.
     if (!changes) {
       for (const item of itemsOf(run, step)) push(item);
+      for (const child of workflowChildren(run, step)) push(child);
       return;
     }
     const settledAt = 'settledAt' in step ? step.settledAt : 0;

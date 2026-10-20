@@ -96,8 +96,8 @@ function invocation(tool: LocalWorkflowTool, input: LocalToolRun, opencodeMajor:
   const effort = input.model?.effort;
   const resume = input.resume ? ['--resume', input.resume] : [];
   if (interactive) {
-    if (family === 'claude') return [...agent, ...model, ...(effort ? ['--effort', effort] : []), prompt];
-    if (family === 'codex') return [...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+    if (family === 'claude') return [...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume, prompt];
+    if (family === 'codex') return [...(input.resume ? ['resume', input.resume] : []), ...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
     return [...agent, ...model, '--prompt', prompt];
   }
   if (family === 'claude') {

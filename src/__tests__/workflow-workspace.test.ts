@@ -19,7 +19,7 @@ import { parseWorkflow } from '../workflow/parse.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { branchName } from '../workflow/workspace.js';
-import { worktreePath } from '../workflow/worktree.js';
+import { pushIfOrigin, worktreePath } from '../workflow/worktree.js';
 
 const dirs: string[] = [];
 
@@ -577,5 +577,81 @@ steps:
     const done = await runLocalDriver(config, runId, workspace);
 
     expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('merges a workflow child branch when a step needs the workflow', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A later step reads the file a workflow's child wrote.
+steps:
+  - id: work
+    needs: []
+    workspace: new
+    workflow:
+      steps:
+        - id: write
+          needs: []
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('output.txt', 'written')"
+  - id: read
+    needs: [work]
+    workspace: new
+    command: node -e "if (require('fs').readFileSync('output.txt','utf8')!=='written') process.exit(1)"
+`);
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('keeps a relative agent symlink relative after a step that does not edit it', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Restoring agent files keeps a relative symlink target.
+steps:
+  - id: idle
+    workspace: new
+    command: node -e "process.exit(0)"
+`);
+    fs.mkdirSync(path.join(workspace, 'docs'));
+    fs.writeFileSync(path.join(workspace, 'docs', 'agent-rules.md'), 'rules\n');
+    fs.symlinkSync('docs/agent-rules.md', path.join(workspace, 'AGENTS.md'));
+    execFileSync('git', ['add', 'AGENTS.md', 'docs'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'link'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const idle = typeof run === 'object' ? run.steps.find((step) => step.id === 'idle') : undefined;
+    const branch = idle && 'changes' in idle ? idle.changes?.branch : undefined;
+    expect(git(['show', `${branch}:AGENTS.md`], workspace)).toBe('docs/agent-rules.md');
+  });
+
+  it('pushes commits an earlier attempt left unpublished when this attempt adds none', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workspace-push-'));
+    dirs.push(root);
+    const bare = path.join(root, 'origin.git');
+    const repo = path.join(root, 'repo');
+    execFileSync('git', ['init', '-q', '--bare', bare]);
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'one'], { cwd: repo });
+    execFileSync('git', ['remote', 'add', 'origin', bare], { cwd: repo });
+    execFileSync('git', ['push', '-q', '-u', 'origin', 'HEAD:main'], { cwd: repo });
+    execFileSync('git', ['checkout', '-q', '-b', 'teamai/demo'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'two\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'two'], { cwd: repo });
+    execFileSync('git', ['push', '-q', '-u', 'origin', 'teamai/demo'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'three\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'three'], { cwd: repo });
+
+    expect(await pushIfOrigin(repo, 'teamai/demo', [])).toBe('pushed');
+    expect(git(['rev-parse', 'teamai/demo'], bare)).toBe(git(['rev-parse', 'HEAD'], repo));
+    expect(await pushIfOrigin(repo, 'teamai/demo', [])).toBe('unchanged');
+    expect(await pushIfOrigin(repo, 'teamai/never-pushed', [])).toBe('unchanged');
   });
 });

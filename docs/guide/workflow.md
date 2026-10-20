@@ -145,7 +145,7 @@ A command with no `workspace` is read-only, even inside a workspace a parent ope
 
 The step sees the agent files from the commit the run started at: `AGENTS.md`, `CLAUDE.md`, `.claude`, `.codex`, `.opencode`, `.cursor`, `.agents`, and `.githooks`. A hook an earlier step committed does not run in a later step. The team's skills, rules, agents and MCP are then delivered into the worktree, as they are for any new worktree of this checkout. Those delivered files are not part of the step's commit. A file the step itself edits is committed.
 
-When the checkout has an `origin` and the step made commits, the driver pushes that branch. A failed push fails the step with `push_failed` and keeps the worktree. With no `origin`, or when the step changed nothing, the run still succeeds and reports the branch.
+When the checkout has an `origin` and the step made commits, the driver pushes that branch. A later attempt that adds no commit still pushes when `origin` already has the branch but not its latest commit. A failed push fails the step with `push_failed` and keeps the worktree. With no `origin`, or when the step changed nothing and `origin` has no copy of the branch to update, the run still succeeds and reports the branch.
 
 `session: continue` resumes this step's previous pass with the same tool. `session: { from: <step> }` resumes a step this one needs. A different tool starts a fresh session. OpenCode always starts fresh.
 

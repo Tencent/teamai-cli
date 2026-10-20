@@ -145,7 +145,7 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 步骤看到的是运行开始时那个提交上的 agent 文件：`AGENTS.md`、`CLAUDE.md`、`.claude`、`.codex`、`.opencode`、`.cursor`、`.agents` 和 `.githooks`。前一个步骤提交的 hook 不会在后面的步骤里运行。团队的 skills、rules、agents 和 MCP 随后会交付到这个 worktree，和这个检出目录的其他新 worktree 一样。这些交付的文件不属于该步骤的提交。步骤自己改过的文件会被提交。
 
-检出目录有 `origin`，并且这一步产生了提交时，驱动会推送该分支。推送失败时步骤以 `push_failed` 失败，并保留 worktree。没有 `origin`，或这一步没有新提交时，运行仍然成功，并报告该分支。
+检出目录有 `origin`，并且这一步产生了提交时，驱动会推送该分支。后一次尝试即使没有新提交，只要 `origin` 上已有该分支、却没有它的最新提交，仍会再推一次。推送失败时步骤以 `push_failed` 失败，并保留 worktree。没有 `origin`，或这一步没有新提交且 `origin` 上还没有这个分支时，运行仍然成功，并报告该分支。
 
 `session: continue` 用同一个工具恢复这一步上一 pass 的会话。`session: { from: <步骤> }` 恢复这一步所依赖的步骤。换成别的工具会开一个新会话。OpenCode 总是新开会话。
 
