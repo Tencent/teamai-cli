@@ -206,6 +206,54 @@ steps:
     expect(fs.statSync(file).mode & 0o111).not.toBe(0);
   });
 
+  it('fails a command with no workspace when it edits a quoted path', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A quoted non-ASCII path is still a checkout change.
+steps:
+  - id: edit
+    command: node -e "require('fs').writeFileSync('résumé.txt','edited\\n')"
+`);
+    const file = path.join(workspace, 'résumé.txt');
+    fs.writeFileSync(file, 'clean\n');
+    execFileSync('git', ['add', 'résumé.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
+    fs.writeFileSync(file, 'dirty\n');
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('résumé.txt') } }],
+    });
+    expect(fs.readFileSync(file, 'utf8')).toBe('edited\n');
+  });
+
+  it('fails a command with no workspace when it retargets a dirty symlink', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A symlink target change is a checkout change even when the file it names is unchanged.
+steps:
+  - id: link
+    command: node -e "const fs=require('fs'); fs.unlinkSync('link.txt'); fs.symlinkSync('./target.txt','link.txt')"
+`);
+    fs.writeFileSync(path.join(workspace, 'target.txt'), 'body\n');
+    fs.writeFileSync(path.join(workspace, 'other.txt'), 'other\n');
+    fs.symlinkSync('other.txt', path.join(workspace, 'link.txt'));
+    execFileSync('git', ['add', 'target.txt', 'other.txt', 'link.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'link'], { cwd: workspace });
+    fs.unlinkSync(path.join(workspace, 'link.txt'));
+    fs.symlinkSync('target.txt', path.join(workspace, 'link.txt'));
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('link.txt') } }],
+    });
+    expect(fs.readlinkSync(path.join(workspace, 'link.txt'))).toBe('./target.txt');
+  });
+
   it('fails an interactive read-only prompt that edits the checkout, and leaves the edit', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build

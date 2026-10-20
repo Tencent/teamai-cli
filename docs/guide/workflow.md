@@ -121,7 +121,7 @@ An agent-specific entry wins over `default`. `claude`, `codex`, and `opencode` a
 teamai workflow start build --driver local
 ```
 
-`--driver local` runs a step with no `workspace` in the current checkout. A command there is read-only: if it exits 0 and changed repository files, their permissions, the index, or HEAD, the step fails and leaves that change in place. This includes a change inside an existing untracked directory; leaving that directory unchanged does not fail the step. A step with `workspace: new` changes files on its own branch. See [Workspaces](#workspaces). Steps that share the current checkout run one at a time. Steps in different worktrees run together up to [`workflows.max_parallel`](workflow-advanced.md#run-local-commands-in-parallel). Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. The driver calls the same `next` and `report` operations shown below:
+`--driver local` runs a step with no `workspace` in the current checkout. A command there is read-only: if it exits 0 and changed repository files, their permissions, a symlink target, the index, or HEAD, the step fails and leaves that change in place. This includes a change inside an existing untracked directory; leaving that directory unchanged does not fail the step. A step with `workspace: new` changes files on its own branch. See [Workspaces](#workspaces). Steps that share the current checkout run one at a time. Steps in different worktrees run together up to [`workflows.max_parallel`](workflow-advanced.md#run-local-commands-in-parallel). Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. The driver calls the same `next` and `report` operations shown below:
 
 ```text
 teamai workflow start build
@@ -137,7 +137,7 @@ Use `workflow respond <run> <step> <choice>` for a waiting HITL request, `workfl
 
 ## Workspaces
 
-A command with no `workspace` is read-only, even inside a workspace a parent opened. It runs in the current checkout. If it exits 0 and changed repository files, their permissions, the index, or HEAD, the step fails with `read_only_dirty` and leaves that change in place. A headless prompt with no `workspace` is read-only in the same way, unless an enclosing workflow or `for_each` opens a workspace. An interactive prompt keeps the person's edits, unless that prompt sets `workspace: read-only`.
+A command with no `workspace` is read-only, even inside a workspace a parent opened. It runs in the current checkout. If it exits 0 and changed repository files, their permissions, a symlink target, the index, or HEAD, the step fails with `read_only_dirty` and leaves that change in place. A headless prompt with no `workspace` is read-only in the same way, unless an enclosing workflow or `for_each` opens a workspace. An interactive prompt keeps the person's edits, unless that prompt sets `workspace: read-only`.
 
 `workspace: new` runs the step in its own git worktree, on a branch named for this run, step, and pass. The step commits what it changed. The current checkout is not switched, reset, or cleaned. A later step that lists it in `needs` starts from the first of those branches and merges the rest, in `needs` order. A merge conflict stops there. A command fails with `merge_conflict`, and the message names the branch and the files. A prompt is told which files still conflict and which branches were not merged.
 

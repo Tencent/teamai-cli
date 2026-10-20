@@ -227,22 +227,32 @@ interface WorktreeSnapshot {
 
 function gitStatus(workspace: string): Promise<{ ok: boolean; text: string }> {
   return new Promise((resolve) => {
-    execFile('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: workspace, env: process.env }, (error, stdout, stderr) => {
+    execFile('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: workspace, env: process.env }, (error, stdout, stderr) => {
       resolve(error ? { ok: false, text: stderr.trim() } : { ok: true, text: stdout });
     });
   });
 }
 
-function porcelainPath(line: string): string {
-  const body = line.length > 3 ? line.slice(3) : line;
-  const renamed = body.split(' -> ').at(-1) ?? body;
-  return renamed.trim().replaceAll(/^"|"$/g, '');
+/** Porcelain records from `git status -z`. A rename's second field is the path in the worktree. */
+function statusEntries(text: string): { mark: string; relative: string }[] {
+  const parts = text.split('\0');
+  const entries: { mark: string; relative: string }[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const item = parts[index] ?? '';
+    if (item.length < 4) continue;
+    const mark = item.slice(0, 2);
+    const relative = mark.includes('R') || mark.includes('C') ? parts[++index] ?? '' : item.slice(3);
+    if (relative) entries.push({ mark, relative });
+  }
+  return entries;
 }
 
 async function hashPath(workspace: string, relative: string): Promise<string> {
+  const full = path.resolve(workspace, relative);
   try {
-    const content = await fs.readFile(path.resolve(workspace, relative));
-    return createHash('sha256').update(content).digest('hex');
+    const stats = await fs.lstat(full);
+    const bytes = stats.isSymbolicLink() ? await fs.readlink(full) : await fs.readFile(full);
+    return createHash('sha256').update(bytes).digest('hex');
   } catch {
     return 'missing';
   }
@@ -270,13 +280,11 @@ async function snapshotWorktree(workspace: string): Promise<WorktreeSnapshot> {
   const head = (await git(workspace, ['rev-parse', 'HEAD'])).stdout.trim();
   if (!status.ok) return { ok: false, files: new Map(), ...(head ? { head } : {}) };
   const files = new Map<string, string>();
-  for (const line of status.text.split('\n')) {
-    if (!line.trim()) continue;
-    const relative = porcelainPath(line.replace(/\r$/, ''));
-    if (!relative || files.has(relative)) continue;
+  for (const { mark, relative } of statusEntries(status.text)) {
+    if (files.has(relative)) continue;
     const staged = await stagedEntry(workspace, relative);
     const mode = await worktreeMode(workspace, relative);
-    files.set(relative, `${line.slice(0, 2)}:${staged}:${mode}:${await hashPath(workspace, relative)}`);
+    files.set(relative, `${mark}:${staged}:${mode}:${await hashPath(workspace, relative)}`);
   }
   return { ok: true, files, ...(head ? { head } : {}) };
 }
