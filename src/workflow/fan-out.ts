@@ -102,14 +102,17 @@ export function startedItems(items: StepState[]): number {
  * How a `for_each` step settles at `settledAt` once every item has: failed when an item stopped, with each item's
  * outcome and outputs. With no items, it succeeds.
  */
-export function itemsSettled(items: StepState[], settledAt: number): { outcome: 'succeeded' | 'failed'; settledAt: number; results: ItemResult[] } {
+export function itemsSettled(
+  items: StepState[], settledAt: number, run?: RunState,
+): { outcome: 'succeeded' | 'failed'; settledAt: number; results: ItemResult[] } {
   const results = items.map((state): ItemResult => {
     const pass = passOf(state);
+    const branch = pass?.changes?.branch ?? (run ? descendantBranch(run, state) : undefined);
     return {
       item: state.item,
       outcome: pass?.outcome ?? 'skipped',
       ...(pass?.outputs !== undefined ? { outputs: pass.outputs } : {}),
-      ...(pass?.changes ? { branch: pass.changes.branch } : {}),
+      ...(branch ? { branch } : {}),
     };
   });
   return {
@@ -117,4 +120,15 @@ export function itemsSettled(items: StepState[], settledAt: number): { outcome: 
     settledAt,
     results,
   };
+}
+
+/** The branch a workflow item kept on a child, when the item itself has no changes. Prefer the item's own continue branch. */
+function descendantBranch(run: RunState, item: StepState): string | undefined {
+  const prefix = `${item.id}.`;
+  const branches: string[] = [];
+  for (const step of run.steps) {
+    if (!step.id.startsWith(prefix) || !('changes' in step) || !step.changes?.branch) continue;
+    branches.push(step.changes.branch);
+  }
+  return branches.sort((left, right) => left.length - right.length)[0];
 }

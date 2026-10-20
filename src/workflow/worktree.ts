@@ -4,7 +4,7 @@
  * so a hook committed on a branch does not run.
  */
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,13 +17,33 @@ export interface GitResult {
   stderr: string;
 }
 
-export function git(cwd: string, args: string[]): Promise<GitResult> {
-  return new Promise((resolve) => {
-    execFile('git', args, { cwd, env: process.env, windowsHide: true }, (error, stdout, stderr) => {
-      const failed = error as NodeJS.ErrnoException & { code?: number | string; status?: number } | null;
-      const code = typeof failed?.status === 'number' ? failed.status : failed ? 1 : 0;
-      resolve({ code, stdout: String(stdout), stderr: String(stderr) });
+export function git(cwd: string, args: string[], input?: string): Promise<GitResult> {
+  if (input === undefined) {
+    return new Promise((resolve) => {
+      execFile('git', args, { cwd, env: process.env, windowsHide: true }, (error, stdout, stderr) => {
+        const failed = error as NodeJS.ErrnoException & { status?: number } | null;
+        const code = typeof failed?.status === 'number' ? failed.status : failed ? 1 : 0;
+        resolve({ code, stdout: String(stdout), stderr: String(stderr) });
+      });
     });
+  }
+  return new Promise((resolve) => {
+    const child = spawn('git', args, { cwd, env: process.env, windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ code, stdout, stderr });
+    };
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', () => finish(1));
+    child.on('close', (code) => finish(code ?? 1));
+    child.stdin.end(input);
   });
 }
 
@@ -114,6 +134,8 @@ export async function applyBaseConfig(
 ): Promise<{ ok: true; saved: string } | { ok: false; message: string }> {
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
   const saved = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-agent-'));
+  const conflicts = (await git(dir, ['ls-files', '-u', '--', ...AGENT_PATHS])).stdout;
+  await fs.writeFile(path.join(saved, '_conflicts'), conflicts);
   for (const relative of AGENT_PATHS) {
     try {
       await copyEntry(path.join(dir, relative), path.join(saved, relative));
@@ -132,6 +154,16 @@ export async function applyBaseConfig(
   const diff = await git(dir, ['diff', '--name-only', commit, '--', ...AGENT_PATHS]);
   const extra = diff.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
   if (extra.length > 0) return { ok: false, message: `agent configuration does not match the base commit: ${extra.join(', ')}` };
+  // The base checkout cleared unmerged agent files. Put the conflict back so the step can see it,
+  // and keep the stages in `_conflicts` so an untouched file is not committed as resolved.
+  for (const relative of conflictPaths(conflicts)) {
+    await fs.rm(path.join(dir, relative), { recursive: true, force: true });
+    try {
+      await copyEntry(path.join(saved, relative), path.join(dir, relative));
+    } catch {
+      // One side of the conflict deleted the file.
+    }
+  }
   return { ok: true, saved };
 }
 
@@ -145,8 +177,11 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   const overlay = JSON.parse(await fs.readFile(path.join(saved, '_overlay.json'), 'utf8')) as Record<string, string>;
   const current = await fileManifest(dir);
   const branch = await fileManifest(saved);
+  const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
+  const unresolved = conflictPaths(conflicts).filter((relative) => current[relative] === overlay[relative]);
   const files = new Set([...Object.keys(overlay), ...Object.keys(current), ...Object.keys(branch)]);
   for (const relative of files) {
+    if (unresolved.includes(relative)) continue;
     if (relative === '_overlay.json' || current[relative] !== overlay[relative]) continue;
     // The step wrote under a directory the branch stores as a symlink. Keep that edit.
     if (descendantEdited(current, overlay, relative)) continue;
@@ -166,6 +201,27 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   // `checkout` of the base copies staged those paths. Put the index back with the files, or a step that
   // edits nothing still looks dirty and the empty commit fails it.
   await git(dir, ['add', '-A', '--', ...AGENT_PATHS]);
+  if (unresolved.length > 0) await restoreConflictStages(dir, conflicts, unresolved);
+}
+
+function conflictPaths(conflicts: string): string[] {
+  const paths = new Set<string>();
+  for (const line of conflicts.split('\n')) {
+    const tab = line.lastIndexOf('\t');
+    if (tab >= 0 && line.slice(tab + 1) !== '') paths.add(line.slice(tab + 1));
+  }
+  return [...paths];
+}
+
+/** Puts unmerged stages back so `git add` does not publish conflict markers as a resolution. */
+async function restoreConflictStages(dir: string, conflicts: string, paths: string[]): Promise<void> {
+  const wanted = new Set(paths);
+  const lines = conflicts.split('\n').filter((line) => {
+    const tab = line.lastIndexOf('\t');
+    return tab >= 0 && wanted.has(line.slice(tab + 1));
+  });
+  for (const relative of paths) await git(dir, ['rm', '--cached', '--quiet', '--', relative]);
+  if (lines.length > 0) await git(dir, ['update-index', '--index-info'], `${lines.join('\n')}\n`);
 }
 
 async function fileManifest(root: string): Promise<Record<string, string>> {

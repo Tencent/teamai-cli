@@ -2,7 +2,7 @@
  * Workspace planning. The engine names the branch and lists the commits to merge.
  * A driver creates the worktree. This module does not run git.
  */
-import { isItem, itemsAfter, itemsOf } from './fan-out.js';
+import { itemsAfter, itemsOf } from './fan-out.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
 import { passOf, type StepState } from './step-state.js';
@@ -127,27 +127,55 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
     }
     ordered.push({ changes, settledAt });
   };
-  if (isItem(state)) {
-    const ownerId = state.id.replace(/\[\d+\]$/, '');
-    const owner = run.steps.find((item) => item.id === ownerId);
-    if (owner) {
-      const items = itemsOf(run, owner);
-      const after = itemsAfter(owner.id, items.map((item) => item.item));
-      const index = items.indexOf(state);
-      if (Array.isArray(after) && index >= 0) {
-        for (const other of after[index] ?? []) push(items[other]);
-      }
-    }
-  }
-  if (definition.needs === undefined && scope.runner) {
-    const parent = stepDefinitions(run)(scope.runner.id);
-    const prefix = scope.runner.id.includes('.') ? scope.runner.id.slice(0, scope.runner.id.lastIndexOf('.') + 1) : '';
-    for (const id of parent?.needs ?? []) push(run.steps.find((item) => item.id === `${prefix}${id}`));
+  for (const itemId of itemIdsIn(state.id)) pushItemAfter(run, itemId, push);
+  const inherited = inheritedNeeds(run, scope, definition);
+  if (inherited) {
+    for (const id of inherited) push(run.steps.find((item) => item.id === id));
   } else {
     const states = statesIn(run, scope);
     for (const id of definition.needs ?? []) push(states.find((item) => localId(scope, item) === id));
   }
   return ordered.map((item) => item.changes);
+}
+
+/** Item ids on a step path, such as `fan[1]` inside `fan[1].check`. */
+function itemIdsIn(id: string): string[] {
+  const ids: string[] = [];
+  let acc = '';
+  for (const segment of parseStepPath(id)) {
+    const part = segment.index === undefined ? segment.id : `${segment.id}[${segment.index}]`;
+    acc = acc === '' ? part : `${acc}.${part}`;
+    if (segment.index !== undefined) ids.push(acc);
+  }
+  return ids;
+}
+
+function pushItemAfter(run: RunState, itemId: string, push: (step: StepState | undefined) => void): void {
+  const ownerId = itemId.replace(/\[\d+\]$/, '');
+  const owner = run.steps.find((item) => item.id === ownerId);
+  if (!owner) return;
+  const items = itemsOf(run, owner);
+  const item = items.find((entry) => entry.id === itemId);
+  const after = itemsAfter(owner.id, items.map((entry) => entry.item));
+  const index = item ? items.indexOf(item) : -1;
+  if (!Array.isArray(after) || index < 0) return;
+  for (const other of after[index] ?? []) push(items[other]);
+}
+
+/**
+ * Needs a step inherits when it omits `needs`. A nested workflow that also omits them
+ * inherits from the first enclosing step that declares them.
+ */
+function inheritedNeeds(run: RunState, scope: Scope, definition: WorkflowStep): string[] | undefined {
+  if (definition.needs !== undefined || !scope.runner) return undefined;
+  let runnerId: string | undefined = scope.runner.id;
+  while (runnerId) {
+    const parent = stepDefinitions(run)(runnerId);
+    const prefix: string = runnerId.includes('.') ? runnerId.slice(0, runnerId.lastIndexOf('.') + 1) : '';
+    if (parent?.needs !== undefined) return parent.needs.map((id) => `${prefix}${id}`);
+    runnerId = prefix === '' ? undefined : prefix.slice(0, -1);
+  }
+  return [];
 }
 
 function sessionFromPasses(passes: Array<{ tool?: string; session?: string }>): SessionRef | undefined {

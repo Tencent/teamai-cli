@@ -811,4 +811,177 @@ steps:
     expect(git(['show', `${branch}:.claude/skills/shared/new.md`], workspace)).toBe('fresh\n');
     expect(git(['show', `${branch}:.claude/skills/elsewhere/kept.md`], workspace)).toBe('kept\n');
   });
+
+  it('does not publish an agent conflict a prompt left untouched', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A prompt must resolve an agent-file conflict before it is published.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('AGENTS.md', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('AGENTS.md', 'right\\n')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the agent file.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
+    execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run() {
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+  });
+
+  it('keeps a prompt resolution of an agent conflict', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A prompt that rewrites a conflicted agent file publishes that resolution.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('AGENTS.md', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('AGENTS.md', 'right\\n')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the agent file.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
+    execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run(_tool, input) {
+        fs.writeFileSync(path.join(input.cwd, 'AGENTS.md'), 'resolved\n');
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+    const branch = join && 'changes' in join ? join.changes?.branch : undefined;
+    expect(git(['show', `${branch}:AGENTS.md`], workspace)).toBe('resolved\n');
+  });
+
+  it('merges a dependency through a nested workflow that omits needs', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A nested child receives the branch its outer workflow needs.
+steps:
+  - id: prepare
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('prepared.txt','yes')"
+  - id: work
+    needs: [prepare]
+    workspace: new
+    workflow:
+      steps:
+        - id: inner
+          workflow:
+            steps:
+              - id: check
+                workspace: continue
+                command: node -e "const fs=require('fs'); if(fs.readFileSync('prepared.txt','utf8')!=='yes') process.exit(1)"
+`);
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('merges an earlier fan item into a workflow child that continues the next item', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A continued child sees the item its own item waits for.
+inputs:
+  items: [{ id: string, after: [string] }]
+steps:
+  - id: fan
+    needs: []
+    workspace: new
+    for_each:
+      items: inputs.items
+    workflow:
+      steps:
+        - id: write
+          workspace: continue
+          command: node -e "const fs=require('fs'); const id=process.env.ITEM; if(id==='b' && fs.readFileSync('a.txt','utf8')!=='a') process.exit(1); fs.writeFileSync(id+'.txt', id)"
+          env:
+            ITEM: "{{ item.id }}"
+`, { items: [{ id: 'a', after: [] }, { id: 'b', after: ['a'] }] });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('reports the branch of a workflow fan item on steps.fan.branches', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A later fan reads the branches a workflow fan published.
+inputs:
+  names: [string]
+steps:
+  - id: fan
+    needs: []
+    workspace: new
+    for_each:
+      items: inputs.names
+    workflow:
+      steps:
+        - id: write
+          needs: []
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('item.txt', process.env.NAME)"
+          env:
+            NAME: "{{ item }}"
+  - id: list
+    needs: [fan]
+    for_each: steps.fan.branches
+    command: node -e "if (!process.env.BRANCH) process.exit(1)"
+    env:
+      BRANCH: "{{ item }}"
+`, { names: ['a', 'b'] });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const fan = typeof run === 'object' ? run.steps.find((step) => step.id === 'fan') : undefined;
+    const branches = fan && 'results' in fan ? fan.results?.map((item) => item.branch) : undefined;
+    expect(branches).toEqual([
+      expect.stringMatching(/\/fan-0\/p1$/),
+      expect.stringMatching(/\/fan-1\/p1$/),
+    ]);
+  });
 });

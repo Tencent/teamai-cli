@@ -40,7 +40,7 @@ import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from
 import { isWorkflowError } from './types.js';
 import type { WorkspaceContract } from './workspace.js';
 import {
-  applyBaseConfig, commitWork, ensureWorktree, headCommit, hooksPath, mergeBranch, pushIfOrigin, recordConfigOverlay, removeWorktree, restoreUneditedConfig, worktreePath,
+  applyBaseConfig, commitWork, ensureWorktree, git, headCommit, hooksPath, mergeBranch, pushIfOrigin, recordConfigOverlay, removeWorktree, restoreUneditedConfig, worktreePath,
 } from './worktree.js';
 
 /** Local lease identity, stable across restarts in the same workspace. */
@@ -384,6 +384,11 @@ async function resumeSession(lease: Lease, tool: LocalWorkflowTool, cwd: string)
 async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?: { branch: string; base: string; from: string; to: string; commits: string[] }; failure?: WorkflowFailure }> {
   if (!lease.workspace || !lease.cwd) return {};
   if (lease.overlay) await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
+  if (push) {
+    const unmerged = await git(lease.cwd, ['diff', '--name-only', '--diff-filter=U']);
+    const files = unmerged.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
+    if (files.length > 0) return { failure: { code: 'merge_conflict', message: `Unresolved merge conflict: ${files.join(', ')}` } };
+  }
   const committed = await commitWork(lease.cwd, `teamai: ${lease.step}`, lease.rangeFrom);
   if ('error' in committed) return { failure: { code: 'push_failed', message: committed.error } };
   const pushed = push ? await pushIfOrigin(lease.cwd, lease.workspace.branch, committed.commits) : 'unchanged';

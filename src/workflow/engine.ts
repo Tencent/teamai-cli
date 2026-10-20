@@ -623,7 +623,7 @@ function settleItems(
       started += 1;
     }
     if (changed) continue;
-    if (items.every(settled)) return itemsSettled(items, run.revision);
+    if (items.every(settled)) return itemsSettled(items, run.revision, run);
     return candidate ?? { inProgress: true };
   }
 }
