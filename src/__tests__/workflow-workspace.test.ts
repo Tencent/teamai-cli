@@ -727,4 +727,88 @@ steps:
     expect(git(['show', `${branch}:.claude/skills/shared`], workspace)).toBe('elsewhere');
     expect(git(['show', `${branch}:.claude/skills/elsewhere/kept.md`], workspace)).toBe('kept\n');
   });
+
+  it('pushes a branch whose first push never created a remote-tracking ref', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workspace-push-'));
+    dirs.push(root);
+    const bare = path.join(root, 'origin.git');
+    const repo = path.join(root, 'repo');
+    execFileSync('git', ['init', '-q', '--bare', bare]);
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'one'], { cwd: repo });
+    execFileSync('git', ['remote', 'add', 'origin', bare], { cwd: repo });
+    execFileSync('git', ['checkout', '-q', '-b', 'teamai/solo'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'two\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'two'], { cwd: repo });
+
+    expect(await pushIfOrigin(repo, 'teamai/solo', [])).toBe('pushed');
+    expect(git(['rev-parse', 'teamai/solo'], bare)).toBe(git(['rev-parse', 'HEAD'], repo));
+    execFileSync('git', ['checkout', '-q', '-b', 'teamai/same', 'main'], { cwd: repo });
+    expect(await pushIfOrigin(repo, 'teamai/same', [])).toBe('unchanged');
+  });
+
+  it('commits a hook a step made executable without editing its text', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A step can turn a hook on without rewriting it.
+steps:
+  - id: enable
+    workspace: new
+    command: node -e "require('fs').chmodSync('.githooks/pre-commit', 0o755)"
+`);
+    const hook = path.join(workspace, '.githooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(hook));
+    fs.writeFileSync(hook, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(hook, 0o644);
+    execFileSync('git', ['add', '.githooks'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'hook'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const enable = typeof run === 'object' ? run.steps.find((step) => step.id === 'enable') : undefined;
+    const branch = enable && 'changes' in enable ? enable.changes?.branch : undefined;
+    expect(git(['ls-tree', String(branch), '.githooks/pre-commit'], workspace)).toContain('100755');
+    expect(enable && 'changes' in enable ? enable.changes?.commits : []).not.toEqual([]);
+  });
+
+  it('keeps a file a step wrote under a directory the branch had replaced with a symlink', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: An edit under a restored directory survives the saved symlink.
+steps:
+  - id: work
+    needs: []
+    workspace: new
+    workflow:
+      steps:
+        - id: link
+          needs: []
+          workspace: continue
+          command: node -e "const fs=require('fs'); fs.rmSync('.claude/skills/shared',{recursive:true}); fs.symlinkSync('elsewhere', '.claude/skills/shared')"
+        - id: write
+          needs: [link]
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('.claude/skills/shared/new.md', 'fresh\\n')"
+`);
+    fs.mkdirSync(path.join(workspace, '.claude', 'skills', 'shared'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.claude', 'skills', 'shared', 'tool.md'), 'tool\n');
+    fs.mkdirSync(path.join(workspace, '.claude', 'skills', 'elsewhere'));
+    fs.writeFileSync(path.join(workspace, '.claude', 'skills', 'elsewhere', 'kept.md'), 'kept\n');
+    execFileSync('git', ['add', '.claude'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'skills'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const write = typeof run === 'object' ? run.steps.find((step) => step.id === 'work.write') : undefined;
+    const branch = write && 'changes' in write ? write.changes?.branch : undefined;
+    expect(git(['show', `${branch}:.claude/skills/shared/new.md`], workspace)).toBe('fresh\n');
+    expect(git(['show', `${branch}:.claude/skills/elsewhere/kept.md`], workspace)).toBe('kept\n');
+  });
 });

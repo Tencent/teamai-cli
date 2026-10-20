@@ -148,6 +148,8 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   const files = new Set([...Object.keys(overlay), ...Object.keys(current), ...Object.keys(branch)]);
   for (const relative of files) {
     if (relative === '_overlay.json' || current[relative] !== overlay[relative]) continue;
+    // The step wrote under a directory the branch stores as a symlink. Keep that edit.
+    if (descendantEdited(current, overlay, relative)) continue;
     // A branch symlink replaces the directory the base checkout put back. Leave its children alone.
     if (underBranchSymlink(branch, relative)) continue;
     const target = path.join(dir, relative);
@@ -186,7 +188,7 @@ async function fileManifest(root: string): Promise<Record<string, string>> {
       for (const name of entries.sort((a, b) => a.localeCompare(b))) await walk(path.join(relative, name));
       return;
     }
-    if (stats.isFile()) files[relative] = `file:${(await fs.readFile(current)).toString('base64')}`;
+    if (stats.isFile()) files[relative] = `file:${(stats.mode & 0o777).toString(8)}:${(await fs.readFile(current)).toString('base64')}`;
   };
   for (const relative of AGENT_PATHS) await walk(relative);
   return files;
@@ -231,7 +233,8 @@ export async function pushIfOrigin(dir: string, branch: string, commits: string[
 /**
  * Whether this branch's tip is missing from `origin`.
  * A remote-tracking ref that does not contain the tip needs another push.
- * When that ref was never created, push only if some other `origin` ref exists and none of them contain the tip.
+ * With no tracking refs at all, push when the tip is not already on another local branch:
+ * a first push that never landed leaves commits only on this branch.
  */
 async function branchNeedsPush(dir: string, branch: string): Promise<boolean> {
   const local = await git(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
@@ -244,9 +247,25 @@ async function branchNeedsPush(dir: string, branch: string): Promise<boolean> {
     return contained.code !== 0;
   }
   const listed = await git(dir, ['for-each-ref', '--format=%(refname)', 'refs/remotes/origin']);
-  if (listed.stdout.trim() === '') return false;
+  if (listed.stdout.trim() === '') return tipIsOnlyOn(dir, branch, tip);
   const published = await git(dir, ['branch', '-r', '--contains', tip]);
   return published.code === 0 && published.stdout.trim() === '';
+}
+
+/** True when no other local branch already contains this tip. */
+async function tipIsOnlyOn(dir: string, branch: string, tip: string): Promise<boolean> {
+  const holders = await git(dir, ['branch', '--contains', tip]);
+  if (holders.code !== 0) return true;
+  const names = holders.stdout.split('\n').map((line) => line.trim().replace(/^[*+] /, '')).filter((name) => name !== '');
+  return names.every((name) => name === branch);
+}
+
+function descendantEdited(current: Record<string, string>, overlay: Record<string, string>, relative: string): boolean {
+  const prefix = `${relative}${path.sep}`;
+  for (const key of new Set([...Object.keys(current), ...Object.keys(overlay)])) {
+    if (key.startsWith(prefix) && current[key] !== overlay[key]) return true;
+  }
+  return false;
 }
 
 /** Copies a file, directory, or symlink without rewriting the link or dropping its mode. */
