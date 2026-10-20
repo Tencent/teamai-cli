@@ -105,9 +105,10 @@ export function startedItems(items: StepState[]): number {
 export function itemsSettled(
   items: StepState[], settledAt: number, run?: RunState,
 ): { outcome: 'succeeded' | 'failed'; settledAt: number; results: ItemResult[] } {
+  const fromChildren = run ? branchesFromChildren(run) : undefined;
   const results = items.map((state): ItemResult => {
     const pass = passOf(state);
-    const branch = pass?.changes?.branch ?? (run ? descendantBranch(run, state) : undefined);
+    const branch = pass?.changes?.branch ?? fromChildren?.get(state.id);
     return {
       item: state.item,
       outcome: pass?.outcome ?? 'skipped',
@@ -122,13 +123,20 @@ export function itemsSettled(
   };
 }
 
-/** The branch a workflow item kept on a child, when the item itself has no changes. Prefer the item's own continue branch. */
-function descendantBranch(run: RunState, item: StepState): string | undefined {
-  const prefix = `${item.id}.`;
-  const branches: string[] = [];
+/** One pass over the run: the shortest change branch each item's children kept. */
+function branchesFromChildren(run: RunState): Map<string, string> {
+  const best = new Map<string, string>();
   for (const step of run.steps) {
-    if (!step.id.startsWith(prefix) || !('changes' in step) || !step.changes?.branch) continue;
-    branches.push(step.changes.branch);
+    const branch = 'changes' in step ? step.changes?.branch : undefined;
+    if (!branch) continue;
+    let acc = '';
+    for (const segment of parseStepPath(step.id)) {
+      const part = segment.index === undefined ? segment.id : `${segment.id}[${segment.index}]`;
+      acc = acc === '' ? part : `${acc}.${part}`;
+      if (segment.index === undefined || acc === step.id) continue;
+      const current = best.get(acc);
+      if (current === undefined || branch.length < current.length) best.set(acc, branch);
+    }
   }
-  return branches.sort((left, right) => left.length - right.length)[0];
+  return best;
 }
