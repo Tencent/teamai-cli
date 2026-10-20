@@ -1627,5 +1627,13 @@ if (!process.env.TEAMAI_COMMAND_TABLE_ONLY) {
   // (see bundled-runtime.ts) and pull shells out to git.
   ensureBundledRuntimeOnPath();
 
-  program.parse();
+  // Commands that need an initialized teamai reject with NotInitializedError.
+  // Report it as a plain error, not an unhandled rejection with a stack trace.
+  program.parseAsync().catch(async (e: unknown) => {
+    const { NotInitializedError } = await import('./config.js');
+    if (!(e instanceof NotInitializedError)) throw e;
+    const { log } = await import('./utils/logger.js');
+    log.error(e.message);
+    process.exitCode = 1;
+  });
 }
