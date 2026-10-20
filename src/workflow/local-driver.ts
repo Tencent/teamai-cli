@@ -220,6 +220,7 @@ async function loadAgent(
 interface WorktreeSnapshot {
   ok: boolean;
   files: Map<string, string>;
+  head?: string;
 }
 
 function gitStatus(workspace: string): Promise<{ ok: boolean; text: string }> {
@@ -247,7 +248,8 @@ async function hashPath(workspace: string, relative: string): Promise<string> {
 
 async function snapshotWorktree(workspace: string): Promise<WorktreeSnapshot> {
   const status = await gitStatus(workspace);
-  if (!status.ok) return { ok: false, files: new Map() };
+  const head = (await git(workspace, ['rev-parse', 'HEAD'])).stdout.trim();
+  if (!status.ok) return { ok: false, files: new Map(), ...(head ? { head } : {}) };
   const files = new Map<string, string>();
   for (const line of status.text.split('\n')) {
     if (!line.trim()) continue;
@@ -255,14 +257,17 @@ async function snapshotWorktree(workspace: string): Promise<WorktreeSnapshot> {
     if (!relative || files.has(relative)) continue;
     files.set(relative, await hashPath(workspace, relative));
   }
-  return { ok: true, files };
+  return { ok: true, files, ...(head ? { head } : {}) };
 }
 
 function changedPaths(before: WorktreeSnapshot, after: WorktreeSnapshot): string[] {
-  if (!after.ok) return [];
-  if (!before.ok) return after.files.size === 0 ? [] : [...after.files.keys()];
-  const names = new Set([...before.files.keys(), ...after.files.keys()]);
-  return [...names].filter((name) => before.files.get(name) !== after.files.get(name));
+  const files = !after.ok
+    ? []
+    : !before.ok
+      ? (after.files.size === 0 ? [] : [...after.files.keys()])
+      : [...new Set([...before.files.keys(), ...after.files.keys()])].filter((name) => before.files.get(name) !== after.files.get(name));
+  if (before.head && after.head && before.head !== after.head) files.push('HEAD');
+  return files;
 }
 
 function failureReport(failure: WorkflowFailure): { outcome: 'failed'; message: string; failure: WorkflowFailure } {

@@ -124,6 +124,26 @@ steps:
     expect(fs.readFileSync(path.join(workspace, 'dirty.txt'), 'utf8')).toBe('x');
   });
 
+  it('fails a command with no workspace when it commits, and leaves the commit', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A read-only command that commits still changes the checkout.
+steps:
+  - id: write
+    command: node -e "const cp=require('child_process'); require('fs').writeFileSync('tracked.txt','edited\\n'); cp.execFileSync('git',['add','tracked.txt']); cp.execFileSync('git',['-c','user.name=Test','-c','user.email=test@example.com','commit','-qm','edit'])"
+`);
+    const before = git(['rev-parse', 'HEAD'], workspace).trim();
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('HEAD') } }],
+    });
+    expect(git(['rev-parse', 'HEAD'], workspace).trim()).not.toBe(before);
+    expect(fs.readFileSync(path.join(workspace, 'tracked.txt'), 'utf8')).toBe('edited\n');
+  });
+
   it('gives parallel new steps distinct branches and merges them into the step that needs both', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
