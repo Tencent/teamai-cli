@@ -1170,6 +1170,8 @@ describe('local-agent: MCP install/uninstall commands', () => {
     const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
     const config = await loadLocalAgentConfig();
     const payload = await buildReportPayload(config!, { cwd: tmpDir, tool: 'codebuddy', status: 'running' });
+    // machine identity is part of every report payload (machine_id must never be dropped).
+    expect(payload).toHaveProperty('machine_id');
     const userLevel = payload.user_level as Record<string, unknown>;
     const mcps = userLevel.mcps as Array<{ slug: string; source: string }>;
 

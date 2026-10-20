@@ -1881,6 +1881,21 @@ function selectToolWorkspaces(
   });
 }
 
+/**
+ * Identity fields shared by the local-agent report/sync payloads.
+ * Centralised so a new identity field only changes one place.
+ */
+export function buildAgentIdentityPayload(
+  context: LocalAgentContext,
+  tool?: string,
+): Record<string, unknown> {
+  return {
+    agent_type: normalizeAgentType(tool ?? context.tool ?? 'workbuddy'),
+    local_agent_id: resolveLocalAgentId(context),
+    machine_id: getMachineId(),
+  };
+}
+
 export async function buildReportPayload(
   config: LocalAgentConfig,
   context: LocalAgentContext,
@@ -1929,9 +1944,8 @@ export async function buildReportPayload(
   if (userModels.length > 0) userLevel.models = userModels;
 
   const payload: Record<string, unknown> = {
-    agent_type: normalizeAgentType(tool),
+    ...buildAgentIdentityPayload(context, tool),
     agent_version: await getAgentVersion(tool),
-    local_agent_id: resolveLocalAgentId(context),
     host_name: os.hostname(),
     os: os.platform(),
     started_at: config.createdAt,
@@ -1977,8 +1991,7 @@ export async function buildSyncPayload(
   context: LocalAgentContext,
 ): Promise<Record<string, unknown>> {
   const payload: Record<string, unknown> = {
-    agent_type: normalizeAgentType(context.tool ?? 'workbuddy'),
-    local_agent_id: resolveLocalAgentId(context),
+    ...buildAgentIdentityPayload(context),
     status: context.status ?? 'running',
   };
   const currentPath = await resolveWorkspacePath(context.cwd);
