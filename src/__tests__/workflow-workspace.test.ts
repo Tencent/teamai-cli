@@ -254,6 +254,29 @@ steps:
     expect(fs.readlinkSync(path.join(workspace, 'link.txt'))).toBe('./target.txt');
   });
 
+  it('fails a command with no workspace when it edits the destination of a staged rename', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: The new path of a staged rename is the file in the checkout.
+steps:
+  - id: edit
+    command: node -e "require('fs').writeFileSync('new.txt','edited\\n')"
+`);
+    fs.writeFileSync(path.join(workspace, 'old.txt'), 'clean\n');
+    execFileSync('git', ['add', 'old.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'old'], { cwd: workspace });
+    execFileSync('git', ['mv', 'old.txt', 'new.txt'], { cwd: workspace });
+    fs.writeFileSync(path.join(workspace, 'new.txt'), 'dirty\n');
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('new.txt') } }],
+    });
+    expect(fs.readFileSync(path.join(workspace, 'new.txt'), 'utf8')).toBe('edited\n');
+  });
+
   it('fails an interactive read-only prompt that edits the checkout, and leaves the edit', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
@@ -1522,6 +1545,49 @@ steps:
     const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
     expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
     expect(git(['show', `${branchName(runId, 'join', 1)}:note.txt`], workspace)).not.toContain('<<<<<<<');
+  });
+
+  it('does not publish conflict markers a prompt staged in a quoted path', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A quoted conflict path is still unresolved when markers remain.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('résumé.txt', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('résumé.txt', 'right\\n')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the note.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'résumé.txt'), 'base\n');
+    execFileSync('git', ['add', 'résumé.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
+    execFileSync('git', ['config', 'core.quotepath', 'true'], { cwd: workspace });
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run(_tool, input) {
+        fs.writeFileSync(path.join(input.cwd, 'résumé.txt'), '<<<<<<< left\nkept\n');
+        execFileSync('git', ['add', '-A'], { cwd: input.cwd });
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+    expect(git(['show', `${branchName(runId, 'join', 1)}:résumé.txt`], workspace)).not.toContain('<<<<<<<');
   });
 
   it('keeps a modify/delete resolution a prompt staged without editing the file', async () => {

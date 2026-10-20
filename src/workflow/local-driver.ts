@@ -233,7 +233,7 @@ function gitStatus(workspace: string): Promise<{ ok: boolean; text: string }> {
   });
 }
 
-/** Porcelain records from `git status -z`. A rename's second field is the path in the worktree. */
+/** Porcelain records from `git status -z`. A rename's first path is the one in the worktree; the next field is the old path. */
 function statusEntries(text: string): { mark: string; relative: string }[] {
   const parts = text.split('\0');
   const entries: { mark: string; relative: string }[] = [];
@@ -241,8 +241,8 @@ function statusEntries(text: string): { mark: string; relative: string }[] {
     const item = parts[index] ?? '';
     if (item.length < 4) continue;
     const mark = item.slice(0, 2);
-    const relative = mark.includes('R') || mark.includes('C') ? parts[++index] ?? '' : item.slice(3);
-    if (relative) entries.push({ mark, relative });
+    if (mark.includes('R') || mark.includes('C')) index += 1;
+    entries.push({ mark, relative: item.slice(3) });
   }
   return entries;
 }
@@ -446,11 +446,14 @@ async function clearRememberedConflicts(dir: string): Promise<void> {
   await fs.rm(await conflictsPath(dir), { force: true });
 }
 
+async function unmergedPaths(dir: string): Promise<string[]> {
+  const unmerged = await git(dir, ['diff', '-z', '--name-only', '--diff-filter=U']);
+  return unmerged.stdout.split('\0').filter((file) => file !== '');
+}
+
 async function conflictContents(dir: string): Promise<Map<string, string>> {
-  const unmerged = await git(dir, ['diff', '--name-only', '--diff-filter=U']);
-  const files = unmerged.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
   const contents = new Map<string, string>();
-  for (const file of files) {
+  for (const file of await unmergedPaths(dir)) {
     try {
       contents.set(file, await fs.readFile(path.join(dir, file), 'utf8'));
     } catch {
@@ -468,10 +471,7 @@ async function unresolvedConflicts(dir: string, before: Map<string, string> | un
       return '';
     }
   };
-  const listed = async (): Promise<string[]> => {
-    const unmerged = await git(dir, ['diff', '--name-only', '--diff-filter=U']);
-    return unmerged.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
-  };
+  const listed = async (): Promise<string[]> => unmergedPaths(dir);
   for (const file of await listed()) {
     const text = await textOf(file);
     if (text.includes('<<<<<<<') || before?.get(file) === text) continue;
