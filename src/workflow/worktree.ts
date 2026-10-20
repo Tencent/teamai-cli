@@ -115,9 +115,8 @@ export async function applyBaseConfig(
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
   const saved = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-agent-'));
   for (const relative of AGENT_PATHS) {
-    const from = path.join(dir, relative);
     try {
-      await fs.cp(from, path.join(saved, relative), { recursive: true, verbatimSymlinks: true });
+      await copyEntry(path.join(dir, relative), path.join(saved, relative));
     } catch {
       // The branch does not have this path.
     }
@@ -149,14 +148,14 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   const files = new Set([...Object.keys(overlay), ...Object.keys(current), ...Object.keys(branch)]);
   for (const relative of files) {
     if (relative === '_overlay.json' || current[relative] !== overlay[relative]) continue;
-    await fs.rm(path.join(dir, relative), { force: true });
+    // A branch symlink replaces the directory the base checkout put back. Leave its children alone.
+    if (underBranchSymlink(branch, relative)) continue;
+    const target = path.join(dir, relative);
     try {
-      await fs.mkdir(path.dirname(path.join(dir, relative)), { recursive: true });
-      const source = path.join(saved, relative);
-      const target = path.join(dir, relative);
-      const stats = await fs.lstat(source);
-      if (stats.isSymbolicLink()) await fs.symlink(await fs.readlink(source), target);
-      else await fs.copyFile(source, target);
+      await fs.rm(target, { recursive: true, force: true });
+      await removeBlockingSymlink(dir, relative);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await copyEntry(path.join(saved, relative), target);
     } catch {
       // The branch had no file at this path, and the step did not add one.
     }
@@ -217,7 +216,8 @@ export async function commitWork(
 
 /**
  * Pushes when `origin` exists and the branch is ahead of the copy `origin` has.
- * A retry that adds no commit still pushes when an earlier attempt left commits unpublished.
+ * A retry that adds no commit still pushes when an earlier attempt left commits unpublished,
+ * including a first push that never created the remote branch.
  * No origin is not a failure.
  */
 export async function pushIfOrigin(dir: string, branch: string, commits: string[]): Promise<'pushed' | 'no-origin' | 'unchanged' | { error: string }> {
@@ -228,13 +228,67 @@ export async function pushIfOrigin(dir: string, branch: string, commits: string[
   return pushed.code === 0 ? 'pushed' : { error: (pushed.stderr || pushed.stdout).trim() || 'git push failed' };
 }
 
-/** Whether `origin` already has this branch and does not contain HEAD. A branch origin has never seen stays unpublished only when this attempt made no commit. */
+/**
+ * Whether this branch's tip is missing from `origin`.
+ * A remote-tracking ref that does not contain the tip needs another push.
+ * When that ref was never created, push only if some other `origin` ref exists and none of them contain the tip.
+ */
 async function branchNeedsPush(dir: string, branch: string): Promise<boolean> {
+  const local = await git(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  if (local.code !== 0) return false;
+  const tip = local.stdout.trim();
   const remote = `refs/remotes/origin/${branch}`;
   const known = await git(dir, ['rev-parse', '--verify', '--quiet', remote]);
-  if (known.code !== 0) return false;
-  const contained = await git(dir, ['merge-base', '--is-ancestor', 'HEAD', remote]);
-  return contained.code !== 0;
+  if (known.code === 0) {
+    const contained = await git(dir, ['merge-base', '--is-ancestor', tip, remote]);
+    return contained.code !== 0;
+  }
+  const listed = await git(dir, ['for-each-ref', '--format=%(refname)', 'refs/remotes/origin']);
+  if (listed.stdout.trim() === '') return false;
+  const published = await git(dir, ['branch', '-r', '--contains', tip]);
+  return published.code === 0 && published.stdout.trim() === '';
+}
+
+/** Copies a file, directory, or symlink without rewriting the link or dropping its mode. */
+async function copyEntry(from: string, to: string): Promise<void> {
+  const stats = await fs.lstat(from);
+  if (stats.isSymbolicLink()) {
+    await fs.symlink(await fs.readlink(from), to);
+    return;
+  }
+  if (stats.isDirectory()) {
+    await fs.mkdir(to, { recursive: true });
+    for (const name of await fs.readdir(from)) await copyEntry(path.join(from, name), path.join(to, name));
+    await fs.chmod(to, stats.mode);
+    return;
+  }
+  await fs.copyFile(from, to);
+  await fs.chmod(to, stats.mode);
+}
+
+function underBranchSymlink(branch: Record<string, string>, relative: string): boolean {
+  const parts = relative.split(path.sep);
+  let parent = '';
+  for (const part of parts.slice(0, -1)) {
+    parent = parent === '' ? part : path.join(parent, part);
+    if (branch[parent]?.startsWith('link:')) return true;
+  }
+  return false;
+}
+
+/** Removes a symlink that sits where a restored file needs a real directory, without following it. */
+async function removeBlockingSymlink(dir: string, relative: string): Promise<void> {
+  const parts = relative.split(path.sep);
+  let parent = '';
+  for (const part of parts.slice(0, -1)) {
+    parent = parent === '' ? part : path.join(parent, part);
+    const at = path.join(dir, parent);
+    try {
+      if ((await fs.lstat(at)).isSymbolicLink()) await fs.rm(at, { force: true });
+    } catch {
+      // The parent is absent.
+    }
+  }
 }
 
 export async function removeWorktree(main: string, dir: string): Promise<void> {

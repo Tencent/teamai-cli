@@ -653,5 +653,78 @@ steps:
     expect(git(['rev-parse', 'teamai/demo'], bare)).toBe(git(['rev-parse', 'HEAD'], repo));
     expect(await pushIfOrigin(repo, 'teamai/demo', [])).toBe('unchanged');
     expect(await pushIfOrigin(repo, 'teamai/never-pushed', [])).toBe('unchanged');
+
+    execFileSync('git', ['checkout', '-q', '-b', 'teamai/first'], { cwd: repo });
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'four\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: repo });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'four'], { cwd: repo });
+    expect(await pushIfOrigin(repo, 'teamai/first', [])).toBe('pushed');
+    expect(git(['rev-parse', 'teamai/first'], bare)).toBe(git(['rev-parse', 'HEAD'], repo));
+    expect(await pushIfOrigin(repo, 'teamai/first', [])).toBe('unchanged');
+
+    execFileSync('git', ['checkout', '-q', '-b', 'teamai/already', 'main'], { cwd: repo });
+    expect(await pushIfOrigin(repo, 'teamai/already', [])).toBe('unchanged');
+  });
+
+  it('keeps an executable hook executable after a step that does not edit it', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Restoring agent files keeps a hook executable.
+steps:
+  - id: idle
+    workspace: new
+    command: node -e "process.exit(0)"
+`);
+    const hook = path.join(workspace, '.githooks', 'pre-commit');
+    fs.mkdirSync(path.dirname(hook));
+    fs.writeFileSync(hook, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(hook, 0o755);
+    execFileSync('git', ['add', '.githooks'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'hook'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const idle = typeof run === 'object' ? run.steps.find((step) => step.id === 'idle') : undefined;
+    const branch = idle && 'changes' in idle ? idle.changes?.branch : undefined;
+    expect(git(['ls-tree', String(branch), '.githooks/pre-commit'], workspace)).toContain('100755');
+    expect(idle && 'changes' in idle ? idle.changes?.commits : undefined).toEqual([]);
+  });
+
+  it('restores a directory the branch replaced with a symlink', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A later step puts back a symlink that replaced a directory.
+steps:
+  - id: work
+    needs: []
+    workspace: new
+    workflow:
+      steps:
+        - id: link
+          needs: []
+          workspace: continue
+          command: node -e "const fs=require('fs'); fs.rmSync('.claude/skills/shared',{recursive:true}); fs.symlinkSync('elsewhere', '.claude/skills/shared')"
+        - id: idle
+          needs: [link]
+          workspace: continue
+          command: node -e "process.exit(0)"
+`);
+    fs.mkdirSync(path.join(workspace, '.claude', 'skills', 'shared'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, '.claude', 'skills', 'shared', 'tool.md'), 'tool\n');
+    fs.mkdirSync(path.join(workspace, '.claude', 'skills', 'elsewhere'));
+    fs.writeFileSync(path.join(workspace, '.claude', 'skills', 'elsewhere', 'kept.md'), 'kept\n');
+    execFileSync('git', ['add', '.claude'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'skills'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const idle = typeof run === 'object' ? run.steps.find((step) => step.id === 'work.idle') : undefined;
+    const branch = idle && 'changes' in idle ? idle.changes?.branch : undefined;
+    expect(git(['show', `${branch}:.claude/skills/shared`], workspace)).toBe('elsewhere');
+    expect(git(['show', `${branch}:.claude/skills/elsewhere/kept.md`], workspace)).toBe('kept\n');
   });
 });
