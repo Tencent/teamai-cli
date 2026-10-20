@@ -165,6 +165,8 @@ interface Lease {
   rangeFrom?: string;
   /** Whether this lease gives the foreground terminal to its tool. */
   interactive?: true;
+  /** Unmerged file contents before the step ran. A file left unchanged is not a resolution. */
+  conflicts?: Map<string, string>;
 }
 
 function stringMap(value: unknown): Record<string, string> | undefined {
@@ -344,6 +346,7 @@ async function stageLease(active: string, lease: Lease): Promise<WorkflowFailure
   await deliverTeamAssets(opened.dir);
   await recordConfigOverlay(opened.dir, applied.saved);
   lease.overlay = applied.saved;
+  lease.conflicts = await conflictContents(opened.dir);
   return undefined;
 }
 
@@ -381,7 +384,21 @@ async function resumeSession(lease: Lease, tool: LocalWorkflowTool, cwd: string)
   return copied.sessionId;
 }
 
-async function unresolvedConflicts(dir: string): Promise<string[]> {
+async function conflictContents(dir: string): Promise<Map<string, string>> {
+  const unmerged = await git(dir, ['diff', '--name-only', '--diff-filter=U']);
+  const files = unmerged.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
+  const contents = new Map<string, string>();
+  for (const file of files) {
+    try {
+      contents.set(file, await fs.readFile(path.join(dir, file), 'utf8'));
+    } catch {
+      contents.set(file, '');
+    }
+  }
+  return contents;
+}
+
+async function unresolvedConflicts(dir: string, before: Map<string, string> | undefined): Promise<string[]> {
   const listed = async (): Promise<string[]> => {
     const unmerged = await git(dir, ['diff', '--name-only', '--diff-filter=U']);
     return unmerged.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
@@ -393,7 +410,7 @@ async function unresolvedConflicts(dir: string): Promise<string[]> {
     } catch {
       text = '';
     }
-    if (text.includes('<<<<<<<')) continue;
+    if (text.includes('<<<<<<<') || before?.get(file) === text) continue;
     await git(dir, ['add', '--', file]);
   }
   return listed();
@@ -403,7 +420,7 @@ async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?:
   if (!lease.workspace || !lease.cwd) return {};
   if (lease.overlay) await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
   lease.overlay = undefined;
-  const open = await unresolvedConflicts(lease.cwd);
+  const open = await unresolvedConflicts(lease.cwd, lease.conflicts);
   if (open.length > 0) return { failure: { code: 'merge_conflict', message: `Unresolved merge conflict: ${open.join(', ')}` } };
   const committed = await commitWork(lease.cwd, `teamai: ${lease.step}`, lease.rangeFrom);
   if ('error' in committed) return { failure: { code: 'push_failed', message: committed.error } };

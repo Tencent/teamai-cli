@@ -1148,4 +1148,102 @@ steps:
     expect(git(['show', `${branch}:b.txt`], workspace)).toBe('b');
     expect(git(['show', `${branch}:a.txt`], workspace)).toBe('a');
   });
+
+  it('does not delete through a symlink a step put in place of a directory', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-outside-'));
+    dirs.push(outside);
+    fs.writeFileSync(path.join(outside, 'kept.md'), 'kept\n');
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Replacing a directory with a symlink must not delete the link target.
+steps:
+  - id: work
+    needs: []
+    workspace: new
+    workflow:
+      steps:
+        - id: add
+          needs: []
+          workspace: continue
+          command: node -e "require('fs').mkdirSync('.claude',{recursive:true}); require('fs').writeFileSync('.claude/extra.md','extra\\n')"
+        - id: link
+          needs: [add]
+          workspace: continue
+          command: node -e "const fs=require('fs'); fs.rmSync('.claude',{recursive:true,force:true}); fs.symlinkSync(process.env.OUT, '.claude')"
+          env:
+            OUT: ${JSON.stringify(outside)}
+`);
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(path.join(outside, 'kept.md'), 'utf8')).toBe('kept\n');
+    const run = await readRun(config, runId);
+    const link = typeof run === 'object' ? run.steps.find((step) => step.id === 'work.link') : undefined;
+    const branch = link && 'changes' in link ? link.changes?.branch : undefined;
+    expect(git(['show', `${branch}:.claude`], workspace)).toBe(outside);
+  });
+
+  it('does not treat an untouched modify/delete conflict as resolved', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A prompt must choose a side when one branch deletes a file the other edits.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('note.txt', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').rmSync('note.txt')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the deletion.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'note.txt'), 'base\n');
+    execFileSync('git', ['add', 'note.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'note'], { cwd: workspace });
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run() {
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+  });
+
+  it('gives an empty fan-out an empty branch list', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: No items means no branches, and the next fan runs nothing.
+inputs:
+  names: [string]
+steps:
+  - id: fan
+    needs: []
+    workspace: new
+    for_each:
+      items: inputs.names
+    command: node -e "process.exit(1)"
+  - id: next
+    needs: [fan]
+    for_each: steps.fan.branches
+    command: node -e "process.exit(1)"
+`, { names: [] });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
 });

@@ -183,6 +183,8 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   for (const relative of files) {
     if (unresolved.includes(relative)) continue;
     if (relative === '_overlay.json' || current[relative] !== overlay[relative]) continue;
+    // The step replaced a parent, for example a directory with a symlink. Do not restore through that edit.
+    if (ancestorEdited(current, overlay, relative)) continue;
     // The step wrote under a directory the branch stores as a symlink. Keep that edit.
     if (descendantEdited(current, overlay, relative)) continue;
     // A branch symlink replaces the directory the base checkout put back. Leave its children alone.
@@ -342,6 +344,16 @@ async function copyEntry(from: string, to: string): Promise<void> {
   }
   await fs.copyFile(from, to);
   await fs.chmod(to, stats.mode);
+}
+
+function ancestorEdited(current: Record<string, string>, overlay: Record<string, string>, relative: string): boolean {
+  const parts = relative.split(path.sep);
+  let parent = '';
+  for (const part of parts.slice(0, -1)) {
+    parent = parent === '' ? part : path.join(parent, part);
+    if (current[parent] !== overlay[parent]) return true;
+  }
+  return false;
 }
 
 function underBranchSymlink(branch: Record<string, string>, relative: string): boolean {

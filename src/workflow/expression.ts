@@ -46,10 +46,12 @@ export type Expression =
   /** `.`, `.a.b` or `.a[0]`: the current element of a predicate, or a value inside it. */
   | { kind: 'element'; fields: PathField[]; column: number };
 
-/** Change branches named on `for_each` results, in item order. */
+/** Change branches named on `for_each` results, in item order. An empty fan-out is an empty list. */
 export function branchNames(results: Array<{ branch?: string }> | undefined): string[] | undefined {
-  const names = results?.flatMap((item) => item.branch ? [item.branch] : []);
-  return names && names.length > 0 ? names : undefined;
+  if (!results) return undefined;
+  if (results.length === 0) return [];
+  const names = results.flatMap((item) => item.branch ? [item.branch] : []);
+  return names.length > 0 ? names : undefined;
 }
 
 /** A step as an expression sees it. `outcome` is set once the step settled. */
