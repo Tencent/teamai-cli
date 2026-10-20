@@ -213,7 +213,7 @@ describe('injectHooksToAllTools — codebuddy runs hooks through Git Bash (win32
     expect(claudeCommand.startsWith(`"${fakeGitBash(tmp).split(path.sep).join('/')}" -lc `)).toBe(true);
     // Codex runs `command` through the host shell on every platform and never
     // reads commandWindows, so its built-ins are the bare argv form.
-    expect(codexCommand).toBe('teamai hook-dispatch session-start --tool codex');
+    expect(codexCommand).toBe('teamai hook-dispatch session-start --tool codex ; exit 0');
   });
 
   it('injects codebuddy hooks in POSIX syntax, without /bin/sh', async () => {

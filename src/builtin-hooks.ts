@@ -221,7 +221,13 @@ export function getDispatchCommand(event: string, tool: string, matcher?: string
   const bin = binPath ?? 'teamai';
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
   if (isCodexTool(tool)) {
-    return `${bin} hook-dispatch ${event} --tool ${tool}${matcherArg}`;
+    // The `; exit 0` tail is the not-found fail-open: when `teamai` is not on
+    // the hook PATH, PowerShell's CommandNotFoundException is non-terminating
+    // and POSIX sh continues after a not-found, so the entry still exits 0 —
+    // the dispatcher's own finally-exit-0 only covers failures after the
+    // command resolves (#1215 review). It parses in both shells, keeping the
+    // string byte-identical across platforms (#1074).
+    return `${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} ; exit 0`;
   }
   const shell = getHookShellCommand();
   return `${shell} -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;

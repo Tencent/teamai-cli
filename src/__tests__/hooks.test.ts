@@ -129,12 +129,12 @@ describe('hooks', () => {
       // reads commandWindows (#1215), so the single command must parse under
       // PowerShell and POSIX sh alike: bare argv, no redirect, no fail-open
       // tail (the dispatcher's finally-exit-0 is the fail-open).
-      expect(result.hooks.SessionStart[0].hooks[0].command).toBe('teamai hook-dispatch session-start --tool codex');
+      expect(result.hooks.SessionStart[0].hooks[0].command).toBe('teamai hook-dispatch session-start --tool codex ; exit 0');
       const todoWrite = result.hooks.PostToolUse.flatMap((group) => group.hooks).find((hook) => hook.command.includes('--matcher TodoWrite'));
-      expect(todoWrite?.command).toBe('teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite');
+      expect(todoWrite?.command).toBe('teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite ; exit 0');
       for (const hook of Object.values(result.hooks).flat().flatMap((group) => group.hooks)) {
         expect(hook.commandWindows).toBeUndefined();
-        expect(hook.command).toMatch(/^teamai hook-dispatch [a-z-]+ --tool codex(?: --matcher \S+)?$/);
+        expect(hook.command).toMatch(/^teamai hook-dispatch [a-z-]+ --tool codex(?: --matcher \S+)? ; exit 0$/);
       }
     });
 

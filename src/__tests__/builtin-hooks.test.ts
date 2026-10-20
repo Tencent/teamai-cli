@@ -152,8 +152,14 @@ describe('builtinHookDefs — codex command is the portable shell-free form on e
       expect(posix.length).toBeGreaterThan(0);
       expect(windows.map((d) => d.command)).toEqual(posix.map((d) => d.command));
       for (const def of windows) {
-        expect(def.command).toMatch(new RegExp(`^teamai hook-dispatch [a-z-]+ --tool ${tool}(?: --matcher \\S+)?$`));
-        for (const shellSyntax of ['bash', '-lc', '2>', '||', ';', 'exit', '$null', '/dev/null']) {
+        // The `; exit 0` tail is the not-found fail-open: PowerShell's
+        // CommandNotFoundException is non-terminating and POSIX sh continues
+        // after a not-found, so a machine where `teamai` is not on the hook
+        // PATH still exits 0 instead of erroring with an empty $LASTEXITCODE
+        // (#1215 review). It parses in both shells, so the string stays
+        // byte-identical across platforms.
+        expect(def.command).toMatch(new RegExp(`^teamai hook-dispatch [a-z-]+ --tool ${tool}(?: --matcher \\S+)? ; exit 0$`));
+        for (const shellSyntax of ['bash', '-lc', '2>', '||', '$null', '/dev/null']) {
           expect(def.command).not.toContain(shellSyntax);
         }
       }
