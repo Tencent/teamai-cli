@@ -255,7 +255,7 @@ async function snapshotWorktree(workspace: string): Promise<WorktreeSnapshot> {
     if (!line.trim()) continue;
     const relative = porcelainPath(line.replace(/\r$/, ''));
     if (!relative || files.has(relative)) continue;
-    files.set(relative, await hashPath(workspace, relative));
+    files.set(relative, `${line.slice(0, 2)}:${await hashPath(workspace, relative)}`);
   }
   return { ok: true, files, ...(head ? { head } : {}) };
 }
@@ -455,6 +455,12 @@ async function unresolvedConflicts(dir: string, before: Map<string, string> | un
     }
   }
   return [...open];
+}
+
+async function restoreLeaseOverlay(lease: Lease): Promise<void> {
+  if (!lease.overlay || !lease.cwd || !lease.workspace) return;
+  await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
+  lease.overlay = undefined;
 }
 
 async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?: { branch: string; base: string; from: string; to: string; commits: string[] }; failure?: WorkflowFailure }> {
@@ -836,7 +842,9 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         continue;
       }
       if (exited.kind === 'stopped') {
+        const stopping = dying.get(exited.attempt);
         dying.delete(exited.attempt);
+        if (stopping) await restoreLeaseOverlay(stopping.lease);
         continue;
       }
       inFlight.delete(exited.attempt);
@@ -848,7 +856,10 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     prompt?.controller.abort(signalled);
     if (prompt) await prompt.exit;
     for (const attempt of inFlight.keys()) cancel(attempt);
-    await Promise.all([...dying.values()].map(({ command }) => command.stop()));
+    await Promise.all([...dying.values()].map(async ({ lease, command }) => {
+      await command.stop();
+      await restoreLeaseOverlay(lease);
+    }));
     if (signalled) exitOn(signalled);
     for (const name of STOP_SIGNALS) process.off(name, onSignal);
   }

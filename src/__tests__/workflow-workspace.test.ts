@@ -14,7 +14,7 @@ import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { runLocalDriver } from '../workflow/local-driver.js';
-import { retryStep } from '../workflow/run-controls.js';
+import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import type { LocalToolAdapter } from '../workflow/local-tool-adapter.js';
 import { parseWorkflow } from '../workflow/parse.js';
 import { readRun, writeRun } from '../workflow/store.js';
@@ -142,6 +142,25 @@ steps:
     });
     expect(git(['rev-parse', 'HEAD'], workspace).trim()).not.toBe(before);
     expect(fs.readFileSync(path.join(workspace, 'tracked.txt'), 'utf8')).toBe('edited\n');
+  });
+
+  it('fails a command with no workspace when it stages an existing edit', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Staging an existing edit changes the checkout.
+steps:
+  - id: stage
+    command: git add tracked.txt
+`);
+    fs.writeFileSync(path.join(workspace, 'tracked.txt'), 'edited\n');
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('tracked.txt') } }],
+    });
+    expect(git(['diff', '--cached', '--name-only'], workspace)).toContain('tracked.txt');
   });
 
   it('gives parallel new steps distinct branches and merges them into the step that needs both', async () => {
@@ -1576,5 +1595,65 @@ steps:
     const run = await readRun(config, runId);
     const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join' && step.status === 'failed') : undefined;
     expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+  });
+
+  it('keeps an earlier agent edit when a cancelled command is run again', async () => {
+    const started = path.join(os.tmpdir(), `teamai-started-${Date.now()}`);
+    const again = path.join(os.tmpdir(), `teamai-again-${Date.now()}`);
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Cancelling a command must not make the next attempt commit the base agent file.
+steps:
+  - id: work
+    needs: []
+    workspace: new
+    workflow:
+      steps:
+        - id: edit
+          needs: []
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('AGENTS.md', 'edited\\n')"
+        - id: slow
+          needs: [edit]
+          workspace: continue
+          command: node slow.js
+          env:
+            STARTED: ${JSON.stringify(started)}
+            AGAIN: ${JSON.stringify(again)}
+`);
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
+    fs.writeFileSync(path.join(workspace, 'slow.js'), `const fs = require('fs');
+if (fs.existsSync(process.env.AGAIN)) process.exit(0);
+fs.writeFileSync(process.env.STARTED, '');
+setInterval(() => {}, 1000);
+`);
+    execFileSync('git', ['add', 'AGENTS.md', 'slow.js'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'start'], { cwd: workspace });
+
+    const driving = runLocalDriver(config, runId, workspace);
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(started)) {
+      if (Date.now() > deadline) throw new Error('the command did not start');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(await cancelRun(config, runId, 'work.slow')).not.toHaveProperty('error');
+    await driving;
+    fs.writeFileSync(again, '');
+    const stored = await readRun(config, runId);
+    if (typeof stored !== 'object') throw new Error('run missing');
+    stored.status = 'running';
+    delete stored.failure;
+    delete stored.end;
+    stored.steps = stored.steps.map((step) => {
+      if (step.id === 'work') return { id: step.id, status: 'running' as const, pass: step.pass };
+      if (step.id === 'work.slow') return { id: step.id, status: 'pending' as const, pass: step.pass };
+      return step;
+    });
+    await writeRun(config, stored);
+
+    const second = await runLocalDriver(config, runId, workspace);
+
+    expect(second, JSON.stringify(second)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(git(['show', `${branchName(runId, 'work', 1)}:AGENTS.md`], workspace)).toBe('edited\n');
   });
 });
