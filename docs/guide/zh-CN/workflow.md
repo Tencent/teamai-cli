@@ -137,7 +137,7 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 ## 工作区
 
-没有 `workspace` 的命令是只读的，即使它位于父步骤打开的工作区里。它在当前检出目录中运行。退出码为 0，且改了仓库文件、暂存区或 HEAD 时，步骤以 `read_only_dirty` 失败，改动留在原地。没有 `workspace` 的提示词也一样，除非外层工作流或 `for_each` 打开了工作区。
+没有 `workspace` 的命令是只读的，即使它位于父步骤打开的工作区里。它在当前检出目录中运行。退出码为 0，且改了仓库文件、暂存区或 HEAD 时，步骤以 `read_only_dirty` 失败，改动留在原地。没有 `workspace` 的无头提示词也一样，除非外层工作流或 `for_each` 打开了工作区。交互提示词会保留人的修改，除非该提示词设置了 `workspace: read-only`。
 
 `workspace: new` 在独立的 git worktree 里运行该步骤，分支名带有这次运行、步骤和 pass。步骤会提交它改过的文件。当前检出目录不会被切换、重置或清理。在 `needs` 里列出它的后续步骤，从这些分支的第一个开始，再按 `needs` 的顺序合并其余分支。合并冲突会停在第一处。命令步骤以 `merge_conflict` 失败，消息里写明分支和文件。提示词步骤会被告知哪些文件仍有冲突、哪些分支还没合并。
 

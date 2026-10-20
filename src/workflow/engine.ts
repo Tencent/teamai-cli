@@ -253,6 +253,7 @@ function leaseData(
     ...(plan?.contract ? { workspace: plan.contract } : {}),
     ...(plan?.session ? { session: plan.session } : {}),
     ...(definition.interactive ? { interactive: true } : {}),
+    ...(definition.workspace === 'read-only' ? { readOnly: true } : {}),
   } };
 }
 

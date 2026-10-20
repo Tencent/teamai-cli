@@ -165,6 +165,8 @@ interface Lease {
   rangeFrom?: string;
   /** Whether this lease gives the foreground terminal to its tool. */
   interactive?: true;
+  /** The step set `workspace: read-only`. An interactive prompt is checked only then. */
+  readOnly?: true;
   /** Unmerged file contents before the step ran. A file left unchanged is not a resolution. */
   conflicts?: Map<string, string>;
 }
@@ -246,6 +248,15 @@ async function hashPath(workspace: string, relative: string): Promise<string> {
   }
 }
 
+async function stagedEntry(workspace: string, relative: string): Promise<string> {
+  const listed = await git(workspace, ['ls-files', '-s', '--', relative]);
+  const entries = listed.stdout.split('\n').filter((line) => line.trim() !== '').map((line) => {
+    const [mode, blob, stage] = line.split(/\s+/);
+    return `${mode}:${blob}:${stage}`;
+  });
+  return entries.join(',') || 'none';
+}
+
 async function snapshotWorktree(workspace: string): Promise<WorktreeSnapshot> {
   const status = await gitStatus(workspace);
   const head = (await git(workspace, ['rev-parse', 'HEAD'])).stdout.trim();
@@ -255,7 +266,7 @@ async function snapshotWorktree(workspace: string): Promise<WorktreeSnapshot> {
     if (!line.trim()) continue;
     const relative = porcelainPath(line.replace(/\r$/, ''));
     if (!relative || files.has(relative)) continue;
-    files.set(relative, `${line.slice(0, 2)}:${await hashPath(workspace, relative)}`);
+    files.set(relative, `${line.slice(0, 2)}:${await stagedEntry(workspace, relative)}:${await hashPath(workspace, relative)}`);
   }
   return { ok: true, files, ...(head ? { head } : {}) };
 }
@@ -305,6 +316,7 @@ function parseLease(raw: unknown): Lease | undefined {
     ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
     ...(typeof rawLease.model === 'string' ? { model: rawLease.model } : {}),
     ...(rawLease.interactive === true ? { interactive: true } : {}),
+    ...(rawLease.readOnly === true ? { readOnly: true } : {}),
     ...(typeof rawLease.defaultModel === 'string' ? { defaultModel: rawLease.defaultModel } : {}),
     ...(workspaceOf(rawLease.workspace) ? { workspace: workspaceOf(rawLease.workspace) } : {}),
     ...(session ? { session } : {}),
@@ -553,7 +565,7 @@ async function promptReport(
     }
   }
   const cwd = lease.cwd ?? driver.workspace;
-  const before = lease.interactive ? undefined : (lease.before ?? await snapshotWorktree(cwd));
+  const before = lease.interactive && !lease.readOnly ? undefined : (lease.before ?? await snapshotWorktree(cwd));
   const resume = await resumeSession(lease, selected, cwd);
   const definitionModel = chosen.model && chosen.by === 'definition'
     ? { model: chosen.model.name, ...(chosen.model.effort ? { effort: chosen.model.effort } : {}) }

@@ -163,6 +163,58 @@ steps:
     expect(git(['diff', '--cached', '--name-only'], workspace)).toContain('tracked.txt');
   });
 
+  it('fails a command with no workspace when it stages another hunk and leaves one unstaged', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Staging more of a file changes the index even when the status stays mixed.
+steps:
+  - id: stage
+    command: node -e "const cp=require('child_process'); const blob=cp.execFileSync('git',['hash-object','-w','--stdin'],{input:'base\\nstaged\\nmore\\n'}).toString().trim(); cp.execFileSync('git',['update-index','--cacheinfo', '100644,'+blob+',tracked.txt'])"
+`);
+    fs.writeFileSync(path.join(workspace, 'tracked.txt'), 'base\nstaged\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: workspace });
+    fs.writeFileSync(path.join(workspace, 'tracked.txt'), 'base\nstaged\nunstaged\n');
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('tracked.txt') } }],
+    });
+    expect(git(['show', ':tracked.txt'], workspace)).toBe('base\nstaged\nmore\n');
+    expect(fs.readFileSync(path.join(workspace, 'tracked.txt'), 'utf8')).toBe('base\nstaged\nunstaged\n');
+  });
+
+  it('fails an interactive read-only prompt that edits the checkout, and leaves the edit', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: An interactive prompt in a read-only workspace still must not change the checkout.
+steps:
+  - id: pair
+    prompt: Edit the note.
+    interactive: true
+    workspace: read-only
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
+    const adapter: LocalToolAdapter = {
+      async run() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'headless is not used' } };
+      },
+      async runInteractive(_tool, input) {
+        fs.writeFileSync(path.join(input.cwd, 'tracked.txt'), 'edited\n');
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter, hitl: true });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('tracked.txt') } }],
+    });
+    expect(fs.readFileSync(path.join(workspace, 'tracked.txt'), 'utf8')).toBe('edited\n');
+  });
+
   it('gives parallel new steps distinct branches and merges them into the step that needs both', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
