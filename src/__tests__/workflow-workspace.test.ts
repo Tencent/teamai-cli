@@ -277,6 +277,34 @@ steps:
     expect(fs.readFileSync(path.join(workspace, 'new.txt'), 'utf8')).toBe('edited\n');
   });
 
+  it('fails a command with no workspace when it edits a file in a dirty submodule', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A file inside an already dirty submodule is still a checkout change.
+steps:
+  - id: edit
+    command: node -e "require('fs').writeFileSync('vendor/inside.txt','edited\\n')"
+`);
+    const source = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-sub-'));
+    dirs.push(source);
+    execFileSync('git', ['init', '-q'], { cwd: source });
+    fs.writeFileSync(path.join(source, 'inside.txt'), 'one\n');
+    execFileSync('git', ['add', 'inside.txt'], { cwd: source });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'one'], { cwd: source });
+    execFileSync('git', ['clone', '-q', source, 'vendor'], { cwd: workspace });
+    execFileSync('git', ['-c', 'advice.addEmbeddedRepo=false', 'add', 'vendor'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'vendor'], { cwd: workspace });
+    fs.writeFileSync(path.join(workspace, 'vendor', 'inside.txt'), 'dirty\n');
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      steps: [{ status: 'failed', failure: { code: 'read_only_dirty', message: expect.stringContaining('vendor') } }],
+    });
+    expect(fs.readFileSync(path.join(workspace, 'vendor', 'inside.txt'), 'utf8')).toBe('edited\n');
+  });
+
   it('fails an interactive read-only prompt that edits the checkout, and leaves the edit', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
@@ -1588,6 +1616,49 @@ steps:
     const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
     expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
     expect(git(['show', `${branchName(runId, 'join', 1)}:résumé.txt`], workspace)).not.toContain('<<<<<<<');
+  });
+
+  it('does not publish a no-op resolution of a quoted agent conflict', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A quoted agent conflict stays unresolved when the prompt does not touch it.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').mkdirSync('.claude',{recursive:true}); require('fs').writeFileSync('.claude/résumé.md','left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').mkdirSync('.claude',{recursive:true}); require('fs').writeFileSync('.claude/résumé.md','right\\n')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the agent file.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.mkdirSync(path.join(workspace, '.claude'));
+    fs.writeFileSync(path.join(workspace, '.claude', 'résumé.md'), 'base\n');
+    execFileSync('git', ['add', '.claude'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
+    execFileSync('git', ['config', 'core.quotepath', 'true'], { cwd: workspace });
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run() {
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+    const dir = worktreePath(workspace, branchName(runId, 'join', 1));
+    expect(fs.readFileSync(path.join(dir, '.claude', 'résumé.md'), 'utf8')).toContain('<<<<<<<');
   });
 
   it('keeps a modify/delete resolution a prompt staged without editing the file', async () => {

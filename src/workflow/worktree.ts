@@ -121,8 +121,8 @@ export async function mergeBranch(dir: string, commit: string): Promise<{ confli
     'merge', '--no-ff', '--no-edit', commit,
   ]);
   if (merged.code === 0) return { conflict: false, files: [] };
-  const files = await git(dir, ['diff', '--name-only', '--diff-filter=U']);
-  return { conflict: true, files: files.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '') };
+  const files = await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U']);
+  return { conflict: true, files };
 }
 
 /**
@@ -134,7 +134,7 @@ export async function applyBaseConfig(
 ): Promise<{ ok: true; saved: string } | { ok: false; message: string }> {
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
   const saved = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-agent-'));
-  const conflicts = (await git(dir, ['ls-files', '-u', '--', ...AGENT_PATHS])).stdout;
+  const conflicts = (await git(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout;
   await fs.writeFile(path.join(saved, '_conflicts'), conflicts);
   for (const relative of AGENT_PATHS) {
     try {
@@ -144,15 +144,12 @@ export async function applyBaseConfig(
     }
   }
   for (const relative of AGENT_PATHS) await fs.rm(path.join(dir, relative), { recursive: true, force: true });
-  const listed = await git(dir, ['ls-tree', '--name-only', commit, ...AGENT_PATHS]);
-  if (listed.code !== 0) return { ok: false, message: listed.stderr.trim() || 'the base commit could not be read' };
-  const present = listed.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
+  const present = await gitPaths(dir, ['ls-tree', '--name-only', commit, '--', ...AGENT_PATHS]);
   if (present.length > 0) {
     const restored = await git(dir, ['checkout', commit, '--', ...present]);
     if (restored.code !== 0) return { ok: false, message: restored.stderr.trim() || 'agent configuration could not be restored' };
   }
-  const diff = await git(dir, ['diff', '--name-only', commit, '--', ...AGENT_PATHS]);
-  const extra = diff.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
+  const extra = await gitPaths(dir, ['diff', '--name-only', commit, '--', ...AGENT_PATHS]);
   if (extra.length > 0) return { ok: false, message: `agent configuration does not match the base commit: ${extra.join(', ')}` };
   // The base checkout cleared unmerged agent files. Put the conflict back so the step can see it,
   // and keep the stages in `_conflicts` so an untouched file is not committed as resolved.
@@ -190,8 +187,7 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   const marked = await markedConflicts(dir, conflictPaths(conflicts));
   // Staging a conflict without leaving markers is a resolution, even when the text matches the overlay.
   // An unstaged file that still matches the overlay is not.
-  const unmerged = new Set((await git(dir, ['diff', '--name-only', '--diff-filter=U'])).stdout
-    .split('\n').map((file) => file.trim()).filter((file) => file !== ''));
+  const unmerged = new Set(await gitPaths(dir, ['diff', '--name-only', '--diff-filter=U']));
   const unresolved = [...new Set([
     ...conflictPaths(conflicts).filter((relative) => current[relative] === overlay[relative] && unmerged.has(relative)),
     ...marked,
@@ -224,22 +220,28 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   if (unresolved.length > 0) await restoreConflictStages(dir, conflicts, unresolved);
 }
 
-function conflictPaths(conflicts: string): string[] {
-  const paths = new Set<string>();
-  for (const line of conflicts.split('\n')) {
+async function gitPaths(dir: string, args: string[]): Promise<string[]> {
+  const listed = await git(dir, [...args.slice(0, 1), '-z', ...args.slice(1)]);
+  return listed.stdout.split('\0').filter((file) => file !== '');
+}
+
+function conflictRecords(conflicts: string): { line: string; path: string }[] {
+  return conflicts.split('\0').flatMap((record) => {
+    const line = record.endsWith('\n') ? record.slice(0, -1) : record;
     const tab = line.lastIndexOf('\t');
-    if (tab >= 0 && line.slice(tab + 1) !== '') paths.add(line.slice(tab + 1));
-  }
-  return [...paths];
+    if (tab < 0 || line.slice(tab + 1) === '') return [];
+    return [{ line, path: line.slice(tab + 1) }];
+  });
+}
+
+function conflictPaths(conflicts: string): string[] {
+  return [...new Set(conflictRecords(conflicts).map((record) => record.path))];
 }
 
 /** Puts unmerged stages back so `git add` does not publish conflict markers as a resolution. */
 async function restoreConflictStages(dir: string, conflicts: string, paths: string[]): Promise<void> {
   const wanted = new Set(paths);
-  const lines = conflicts.split('\n').filter((line) => {
-    const tab = line.lastIndexOf('\t');
-    return tab >= 0 && wanted.has(line.slice(tab + 1));
-  });
+  const lines = conflictRecords(conflicts).filter((record) => wanted.has(record.path)).map((record) => record.line);
   // `git rm --cached` leaves stage 0 in place beside the restored stages, and then `git add` cannot clear them.
   const removal = paths.map((relative) => `0 ${'0'.repeat(40)}\t${relative}`);
   const payload = [...removal, ...lines];
