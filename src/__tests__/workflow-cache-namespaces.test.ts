@@ -70,6 +70,39 @@ steps:
 `;
 
 describe('workflow and prompt namespaces in cache', () => {
+  it('lets a namespaced workflow override the shared root in legacy unfiltered mode', async () => {
+    const config = testConfig();
+    const repo = config.repo.localPath;
+    const commit = initializeGit(repo);
+
+    fs.writeFileSync(path.join(repo, 'workflows', 'deploy.yaml'), SHARED_WORKFLOW);
+    fs.mkdirSync(path.join(repo, 'workflows', 'ops'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'workflows', 'ops', 'deploy.yaml'), WORKFLOW_A);
+    commit('add legacy shared and namespaced workflows');
+
+    const result = await syncWorkflowDefinitions(config);
+    expect(result.invalid).toEqual([]);
+    expect((await loadCachedWorkflow(config, 'deploy'))?.definition.description)
+      .toBe('Deploy from namespace A.');
+  });
+
+  it('drops conflicting namespaced workflows in legacy unfiltered mode', async () => {
+    const config = testConfig();
+    const repo = config.repo.localPath;
+    const commit = initializeGit(repo);
+
+    fs.mkdirSync(path.join(repo, 'workflows', 'ops'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'workflows', 'ops', 'deploy.yaml'), WORKFLOW_A);
+    fs.mkdirSync(path.join(repo, 'workflows', 'devops'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'workflows', 'devops', 'deploy.yaml'), WORKFLOW_B);
+    commit('add conflicting legacy namespaced workflows');
+
+    const result = await syncWorkflowDefinitions(config);
+    expect(result.invalid.some((diagnostic) => diagnostic.code === 'workflow_namespace_conflict'))
+      .toBe(true);
+    expect(await loadCachedWorkflow(config, 'deploy')).toBeNull();
+  });
+
   it('discovers and loads namespaced workflows from workflows/<ns>/<name>.yaml', async () => {
     const config = testConfig();
     const repo = config.repo.localPath;

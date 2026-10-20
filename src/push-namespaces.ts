@@ -88,7 +88,21 @@ export const NAMESPACE_AXIS = {
  * behind.
  */
 export function isAtSharedRoot(item: ResourceItem): boolean {
+  if (item.namespace) return false;
+  // A first directory under docs/ or wiki/ is only a namespace when a manifest
+  // declares it. Undeclared directories are ordinary shared content (#1101).
+  if (item.type === 'docs' || item.type === 'wiki') return true;
   return item.relativePath.split('/').length === 2;
+}
+
+/** Return the declared namespace carried by a docs/wiki path, if any. */
+export function declaredNamespaceFor(
+  item: ResourceItem,
+  declaredNamespaces: readonly string[],
+): string | undefined {
+  if (item.type !== 'docs' && item.type !== 'wiki') return undefined;
+  const candidate = item.relativePath.split('/')[1];
+  return candidate && declaredNamespaces.includes(candidate) ? candidate : undefined;
 }
 
 /**

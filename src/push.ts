@@ -18,7 +18,7 @@ import { getUserHome } from './utils/home.js';
 import { getHandler } from './resources/index.js';
 import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.js';
 import { AgentsHandler } from './resources/agents.js';
-import { deliversEveryNamespace } from './resource-namespaces.js';
+import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-namespaces.js';
 import type {
   GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
@@ -29,7 +29,7 @@ import { loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFound
 import { loadProjectsManifest, resolveProjectResourceNamespaces, type ProjectsManifest } from './projects.js';
 import { isSafeNamespaceSegment, NAMESPACE_RULE, fallbackNamespaceError } from './manifest-schema.js';
 import {
-  isAtSharedRoot, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
+  declaredNamespaceFor, isAtSharedRoot, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
   resolveProjectNamespace, skillNamespacePath, withNamespace, type PlaceableType,
 } from './push-namespaces.js';
 import { askQuestion, askSelection, isInteractive } from './utils/prompt.js';
@@ -1444,6 +1444,27 @@ async function pushCore(
       );
       process.exitCode = 2;
       return;
+    }
+  }
+
+  // docs/ and wiki/ allow ordinary nested shared content. Only a first path
+  // segment declared by a role or project is a namespace, so annotate those
+  // items before the placement filter decides whether they are already scoped.
+  const resolvedNamespaces = await resolveResourceNamespaces(localConfig);
+  if (resolvedNamespaces) {
+    const declaredByType = {
+      docs: [
+        ...(resolvedNamespaces.activeNamespaces.docs ?? []),
+        ...resolvedNamespaces.inactiveDocsNamespaces,
+      ],
+      wiki: [
+        ...(resolvedNamespaces.activeNamespaces.wiki ?? []),
+        ...resolvedNamespaces.inactiveWikiNamespaces,
+      ],
+    };
+    for (const item of fullScan) {
+      if (item.type !== 'docs' && item.type !== 'wiki') continue;
+      item.namespace ??= declaredNamespaceFor(item, declaredByType[item.type]);
     }
   }
 

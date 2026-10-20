@@ -27,11 +27,10 @@ import fse from 'fs-extra';
 import { resolveConfigForDir } from './config.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
 import { ALL_PROJECT_RESOURCE_TYPES, loadProjectsManifest, type AllProjectResourceType, type ProjectsManifest } from './projects.js';
-import { NAMESPACE_AXIS, type PlaceableType } from './push-namespaces.js';
+import { NAMESPACE_AXIS, PLACEABLE_TYPES, type PlaceableType } from './push-namespaces.js';
 import { parseAgentYaml } from './resources/agent-format.js';
-import { AgentsHandler } from './resources/agents.js';
-import { RulesHandler } from './resources/rules.js';
-import { SkillsHandler } from './resources/skills.js';
+import { getHandler } from './resources/index.js';
+import { listRepoFilesRecursive } from './resources/repo-resource.js';
 import { loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
 import type { GlobalOptions, LocalConfig, ResourceItem, TeamaiConfig } from './types.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
@@ -92,30 +91,53 @@ function stripExtension(segment: string): string {
  * them (`<root>/<ns>/<name>` is namespaced, `<root>/<name>` is shared). The
  * handlers' own `name` is not used: for rules it carries the namespace segment.
  */
-function parseRelativePath(relativePath: string): { name: string; namespace?: string } {
+function parseRelativePath(
+  type: PlaceableType,
+  relativePath: string,
+  index: ManifestIndex,
+): { name: string; namespace?: string } {
   const rest = relativePath.split('/').slice(1);
   if (rest.length <= 1) {
     return { name: stripExtension(rest[0] ?? '') };
   }
+  const namespace = rest[0];
+  if ((type === 'docs' || type === 'wiki') && !index.declares(NAMESPACE_AXIS[type], namespace!)) {
+    return { name: stripExtension(rest[rest.length - 1] ?? '') };
+  }
   return {
     name: stripExtension(rest[rest.length - 1] ?? ''),
-    namespace: rest[0],
+    namespace,
   };
 }
 
 /** Enumerate the resources on the branch through the same scanners pull uses. */
-async function scanResources(repoDir: string): Promise<ReviewResource[]> {
-  // `scanTeamForPull` reads only `repo.localPath` for skills, rules and agents;
-  // the rest of the configs are placeholders, as in the handlers' own tests.
+async function scanResources(repoDir: string, index: ManifestIndex): Promise<ReviewResource[]> {
   const localConfig = { repo: { localPath: repoDir } } as LocalConfig;
   const teamConfig = {} as TeamaiConfig;
-  const items: Array<{ type: PlaceableType; item: ResourceItem }> = [
-    ...(await new SkillsHandler().scanTeamForPull(teamConfig, localConfig)).map((item) => ({ type: 'skills' as const, item })),
-    ...(await new RulesHandler().scanTeamForPull(teamConfig, localConfig)).map((item) => ({ type: 'rules' as const, item })),
-    ...(await new AgentsHandler().scanTeamForPull(teamConfig, localConfig)).map((item) => ({ type: 'agents' as const, item })),
-  ];
+  const handlerTypes = ['skills', 'rules', 'agents', 'mcp'] as const;
+  const items: Array<{ type: PlaceableType; item: ResourceItem }> = [];
+  for (const type of handlerTypes) {
+    items.push(...(await getHandler(type).scanTeamForPull(teamConfig, localConfig))
+      .map((item) => ({ type, item })));
+  }
+  for (const type of PLACEABLE_TYPES) {
+    if ((handlerTypes as readonly PlaceableType[]).includes(type)) continue;
+    const root = path.join(repoDir, type);
+    for (const file of await listRepoFilesRecursive(root)) {
+      if (type === 'workflows' && !file.endsWith('.yaml')) continue;
+      items.push({
+        type,
+        item: {
+          type,
+          name: file,
+          sourcePath: path.join(root, ...file.split('/')),
+          relativePath: `${type}/${file}`,
+        },
+      });
+    }
+  }
   return items.map(({ type, item }) => {
-    const { name, namespace } = parseRelativePath(item.relativePath);
+    const { name, namespace } = parseRelativePath(type, item.relativePath, index);
     return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath };
   });
 }
@@ -426,7 +448,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
     loadProjectsManifest(repoDir),
   ]);
   const index = buildManifestIndex(roles, projects);
-  const resources = await scanResources(repoDir);
+  const resources = await scanResources(repoDir, index);
   const readText = makeTextReader();
 
   const findings: Finding[] = [
@@ -446,7 +468,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
 // ─── Read-only branch reader ─────────────────────────────────────────────────
 
 /** The repo roots read out of the branch; everything else is irrelevant here. */
-const READ_ROOTS = ['skills', 'rules', 'agents', 'manifest'];
+const READ_ROOTS = [...PLACEABLE_TYPES, 'manifest'];
 
 /**
  * The ref to read `branch` from: the name itself when it resolves locally, else

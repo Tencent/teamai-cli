@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  declaredNamespaceFor,
   isAtSharedRoot,
   isPlaceableType,
   NAMESPACE_AXIS,
@@ -76,7 +77,7 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
   it('detects shared root for items without namespace segments', () => {
     const sampleItems: Array<{ type: (typeof PLACEABLE_TYPES)[number]; path: string; shared: boolean }> = [
       { type: 'docs', path: 'docs/guide.md', shared: true },
-      { type: 'docs', path: 'docs/team-a/guide.md', shared: false },
+      { type: 'docs', path: 'docs/team-a/guide.md', shared: true },
       { type: 'workflows', path: 'workflows/ci.yaml', shared: true },
       { type: 'workflows', path: 'workflows/team-a/ci.yaml', shared: false },
       { type: 'prompts', path: 'prompts/review.md', shared: true },
@@ -86,7 +87,7 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
       { type: 'models', path: 'models/config.json', shared: true },
       { type: 'models', path: 'models/team-a/config.json', shared: false },
       { type: 'wiki', path: 'wiki/home.md', shared: true },
-      { type: 'wiki', path: 'wiki/team-a/home.md', shared: false },
+      { type: 'wiki', path: 'wiki/team-a/home.md', shared: true },
       { type: 'hooks', path: 'hooks/pre-commit.json', shared: true },
       { type: 'hooks', path: 'hooks/team-a/pre-commit.json', shared: false },
       { type: 'mcp', path: 'mcp/servers.json', shared: true },
@@ -104,6 +105,23 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
       };
       expect(isAtSharedRoot(item)).toBe(shared);
     }
+
+    expect(isAtSharedRoot({
+      name: 'guide.md',
+      type: 'docs',
+      sourcePath: '/local/docs/team-a/guide.md',
+      relativePath: 'docs/team-a/guide.md',
+      namespace: 'team-a',
+    })).toBe(false);
+
+    const nestedDoc: ResourceItem = {
+      name: 'guide.md',
+      type: 'docs',
+      sourcePath: '/local/docs/team-a/guides/guide.md',
+      relativePath: 'docs/team-a/guides/guide.md',
+    };
+    expect(declaredNamespaceFor(nestedDoc, ['team-a'])).toBe('team-a');
+    expect(declaredNamespaceFor(nestedDoc, ['other-team'])).toBeUndefined();
   });
 
   it('correctly inserts namespace segments for various resource formats', () => {

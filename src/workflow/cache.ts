@@ -227,6 +227,11 @@ export async function syncWorkflowDefinitions(
   const resourceNamespaces = await resolveResourceNamespaces(config);
   const activeWorkflows = resourceNamespaces?.activeNamespaces.workflows ?? (resourceNamespaces ? [] : null);
   const activePrompts = resourceNamespaces?.activeNamespaces.prompts ?? (resourceNamespaces ? [] : null);
+  const effectiveActiveWorkflows = activeWorkflows ?? [
+    ...new Set(rawCandidates.flatMap((candidate) => (
+      candidate.namespace === null ? [] : [candidate.namespace]
+    ))),
+  ];
 
   const byStem = new Map<string, Array<{ stem: string; relativePath: string; full: string; namespace: string | null }>>();
   for (const cand of rawCandidates) {
@@ -238,11 +243,6 @@ export async function syncWorkflowDefinitions(
   const toCheck: Array<{ stem: string; relativePath: string; full: string }> = [];
 
   for (const [stem, group] of byStem) {
-    if (activeWorkflows === null) {
-      if (group[0]) toCheck.push(group[0]);
-      continue;
-    }
-
     const namespaceCandidatesList: NamespaceCandidate<{ stem: string; relativePath: string; full: string }>[] = group.map((c) => ({
       name: c.stem,
       source: c.relativePath,
@@ -250,7 +250,7 @@ export async function syncWorkflowDefinitions(
       value: c,
     }));
 
-    const resolution = resolveNamespacedItems(namespaceCandidatesList, activeWorkflows);
+    const resolution = resolveNamespacedItems(namespaceCandidatesList, effectiveActiveWorkflows);
     if (resolution.kind === 'conflict') {
       checked.push({
         stem,

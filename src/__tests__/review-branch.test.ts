@@ -104,6 +104,33 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     expect(findings(review).some((f) => f.check === 'structure' && /namespace "backend"/.test(f.message))).toBe(true);
   });
 
+  it('reviews newly placeable resource types for undeclared namespaces', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), [
+      'version: 1',
+      'roles:',
+      '  - id: dev',
+      '    description: dev',
+      '    resources:',
+      '      knowledge: []',
+      '      skills: []',
+      '      agents: []',
+      '      prompts: [frontend]',
+      '',
+    ].join('\n'));
+    await fse.ensureDir(path.join(repoDir, 'prompts', 'backend'));
+    await fse.writeFile(path.join(repoDir, 'prompts', 'backend', 'review.md'), 'Review this change.\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(false);
+    expect(findings(review).some((f) => (
+      f.check === 'structure'
+      && f.path === 'prompts/backend/review.md'
+      && /namespace "backend"/.test(f.message)
+    ))).toBe(true);
+  });
+
   it('fails the same resource name in two namespaces that can be active together', async () => {
     await fse.ensureDir(path.join(repoDir, 'manifest'));
     await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), rolesYaml(['frontend', 'backend']));
