@@ -8,7 +8,7 @@ import { createLocalToolAdapter, type ToolSpawn } from '../workflow/local-tool-a
 
 const files: string[] = [];
 
-function child(stdout: string) {
+function child(stdout: string | Buffer[]) {
   const stdoutEmitter = new EventEmitter();
   const stderr = Object.assign(new EventEmitter(), { resume: () => undefined });
   const childProcess = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
@@ -16,7 +16,7 @@ function child(stdout: string) {
   childProcess.stderr = stderr;
   queueMicrotask(() => {
     childProcess.emit('spawn');
-    stdoutEmitter.emit('data', Buffer.from(stdout));
+    for (const chunk of typeof stdout === 'string' ? [Buffer.from(stdout)] : stdout) stdoutEmitter.emit('data', chunk);
     childProcess.emit('close', 0);
   });
   return childProcess;
@@ -33,6 +33,20 @@ afterEach(async () => {
 });
 
 describe('local tool adapter', () => {
+  it('preserves UTF-8 split across stdout chunks in the result and persisted fallback', async () => {
+    const resultPath = path.join(os.tmpdir(), `teamai-workflow-utf8-${Date.now()}.json`);
+    files.push(resultPath);
+    const output = { summary: '检查完成 café 😀' };
+    const bytes = Buffer.from(claudeStream('claude-sonnet', { result: JSON.stringify(output) }));
+    const chunks = Array.from(bytes, (_byte, index) => bytes.subarray(index, index + 1));
+    const adapter = createLocalToolAdapter(() => child(chunks) as ReturnType<ToolSpawn>, () => 'claude');
+
+    const result = await adapter.run('claude', { prompt: 'Review.', cwd: os.tmpdir(), resultPath });
+
+    expect(result).toMatchObject({ started: true, exitCode: 0, output });
+    expect(JSON.parse(await fs.readFile(resultPath, 'utf8'))).toEqual({ output });
+  });
+
   it('starts the resolved executable and ignores token counts written into result.json', async () => {
     const resultPath = path.join(os.tmpdir(), `teamai-workflow-result-${Date.now()}.json`);
     files.push(resultPath);

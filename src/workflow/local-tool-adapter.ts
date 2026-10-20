@@ -1,4 +1,5 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crossSpawn from 'cross-spawn';
@@ -341,11 +342,12 @@ export function createLocalToolAdapter(
         }
         childProcess = child;
         let stdout = '';
+        const decoder = new StringDecoder('utf8');
         child.on('spawn', () => { started = true; });
-        child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+        child.stdout?.on('data', (chunk: Buffer) => { stdout += decoder.write(chunk); });
         child.stderr?.resume();
         child.on('error', (error: NodeJS.ErrnoException) => resolve({ exitCode: 1, stdout, error }));
-        child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout }));
+        child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout: stdout + decoder.end() }));
       });
       const stop = childProcess && stopProcess(childProcess, closed, !interactive && process.platform !== 'win32');
       const abort = (): void => {
