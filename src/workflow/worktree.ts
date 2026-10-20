@@ -257,11 +257,14 @@ export async function commitWork(
   if (before.code !== 0) return { error: before.stderr.trim() || 'HEAD could not be read' };
   const from = before.stdout.trim();
   const status = await git(dir, ['status', '--porcelain']);
-  if (status.stdout.trim() !== '') {
-    const added = await git(dir, ['add', '-A']);
-    if (added.code !== 0) return { error: added.stderr.trim() || 'git add failed' };
+  const merging = (await git(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
+  if (status.stdout.trim() !== '' || merging) {
+    if (status.stdout.trim() !== '') {
+      const added = await git(dir, ['add', '-A']);
+      if (added.code !== 0) return { error: added.stderr.trim() || 'git add failed' };
+    }
     const staged = await git(dir, ['diff', '--cached', '--quiet']);
-    if (staged.code !== 0) {
+    if (staged.code !== 0 || merging) {
       const committed = await git(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit', '-m', message]);
       if (committed.code !== 0) return { error: committed.stderr.trim() || committed.stdout.trim() || 'git commit failed' };
     }

@@ -123,20 +123,21 @@ export function itemsSettled(
   };
 }
 
-/** One pass over the run: the shortest change branch each item's children kept. */
+/** One pass over the run: the change branch each item's latest child kept. */
 function branchesFromChildren(run: RunState): Map<string, string> {
-  const best = new Map<string, string>();
+  const best = new Map<string, { branch: string; settledAt: number }>();
   for (const step of run.steps) {
     const branch = 'changes' in step ? step.changes?.branch : undefined;
     if (!branch) continue;
+    const settledAt = 'settledAt' in step ? step.settledAt : 0;
     let acc = '';
     for (const segment of parseStepPath(step.id)) {
       const part = segment.index === undefined ? segment.id : `${segment.id}[${segment.index}]`;
       acc = acc === '' ? part : `${acc}.${part}`;
       if (segment.index === undefined || acc === step.id) continue;
       const current = best.get(acc);
-      if (current === undefined || branch.length < current.length) best.set(acc, branch);
+      if (!current || settledAt >= current.settledAt) best.set(acc, { branch, settledAt });
     }
   }
-  return best;
+  return new Map([...best].map(([id, item]) => [id, item.branch]));
 }

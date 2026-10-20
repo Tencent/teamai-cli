@@ -381,14 +381,30 @@ async function resumeSession(lease: Lease, tool: LocalWorkflowTool, cwd: string)
   return copied.sessionId;
 }
 
+async function unresolvedConflicts(dir: string): Promise<string[]> {
+  const listed = async (): Promise<string[]> => {
+    const unmerged = await git(dir, ['diff', '--name-only', '--diff-filter=U']);
+    return unmerged.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
+  };
+  for (const file of await listed()) {
+    let text = '';
+    try {
+      text = await fs.readFile(path.join(dir, file), 'utf8');
+    } catch {
+      text = '';
+    }
+    if (text.includes('<<<<<<<')) continue;
+    await git(dir, ['add', '--', file]);
+  }
+  return listed();
+}
+
 async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?: { branch: string; base: string; from: string; to: string; commits: string[] }; failure?: WorkflowFailure }> {
   if (!lease.workspace || !lease.cwd) return {};
   if (lease.overlay) await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
-  if (push) {
-    const unmerged = await git(lease.cwd, ['diff', '--name-only', '--diff-filter=U']);
-    const files = unmerged.stdout.split('\n').map((file) => file.trim()).filter((file) => file !== '');
-    if (files.length > 0) return { failure: { code: 'merge_conflict', message: `Unresolved merge conflict: ${files.join(', ')}` } };
-  }
+  lease.overlay = undefined;
+  const open = await unresolvedConflicts(lease.cwd);
+  if (open.length > 0) return { failure: { code: 'merge_conflict', message: `Unresolved merge conflict: ${open.join(', ')}` } };
   const committed = await commitWork(lease.cwd, `teamai: ${lease.step}`, lease.rangeFrom);
   if ('error' in committed) return { failure: { code: 'push_failed', message: committed.error } };
   const pushed = push ? await pushIfOrigin(lease.cwd, lease.workspace.branch, committed.commits) : 'unchanged';
@@ -442,27 +458,29 @@ async function promptReport(
   signal: AbortSignal,
 ): Promise<ReportBody> {
   const selected = lease.agent && tools[lease.agent] ? tools[lease.agent] : tools.default;
-  if (!selected) {
-    const failure = { code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' };
-    return { attempt: lease.attempt, revision: lease.revision, driver, ...failureReport(failure) };
-  }
+  const giveUp = async (failure: WorkflowFailure, tool?: string): Promise<ReportBody> => {
+    if (lease.overlay && lease.cwd && lease.workspace) {
+      await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
+      lease.overlay = undefined;
+    }
+    return { attempt: lease.attempt, revision: lease.revision, driver, ...(tool ? { tool } : {}), ...failureReport(failure) };
+  };
+  if (!selected) return giveUp({ code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' });
   if (!supportedTool(selected)) {
-    const failure = { code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` };
-    return { attempt: lease.attempt, revision: lease.revision, driver, tool: selected, ...failureReport(failure) };
+    return giveUp({ code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` }, selected);
   }
   const loaded = lease.agent ? await loadAgent(selected, lease.agent, config, options.toolPaths) : undefined;
   const agent = loaded?.spec;
   if (lease.agent && !agent) {
-    const failure = {
+    return giveUp({
       code: 'agent_unavailable',
       message: `Agent "${lease.agent}" is not available for ${selected}. Run teamai pull and try again.`,
-    };
-    return { attempt: lease.attempt, revision: lease.revision, driver, tool: selected, ...failureReport(failure) };
+    }, selected);
   }
   const chosen = await chooseStepModel({
     step: lease.step, tool: selected, model: lease.model, defaultModel: lease.defaultModel, agent: agent ?? undefined, config,
   });
-  if (!chosen.ok) return { attempt: lease.attempt, revision: lease.revision, driver, tool: selected, ...failureReport(chosen.failure) };
+  if (!chosen.ok) return giveUp(chosen.failure, selected);
   if (agent && localToolFamily(selected) === 'codex') {
     const ignored = ignoredCodexSettings(agent);
     if (ignored.length > 0) {
