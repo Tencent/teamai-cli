@@ -170,6 +170,7 @@ export async function applyBaseConfig(
 /** Records the agent files present after team delivery, so that delivery is not a step edit. */
 export async function recordConfigOverlay(dir: string, saved: string): Promise<void> {
   await fs.writeFile(path.join(saved, '_overlay.json'), JSON.stringify(await fileManifest(dir)));
+  await fs.writeFile(path.join(saved, '_dirs.json'), JSON.stringify(await agentDirs(dir)));
 }
 
 /** Puts back each branch agent file that the step left unchanged. A file the step edited stays. */
@@ -178,13 +179,19 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   const current = await fileManifest(dir);
   const branch = await fileManifest(saved);
   const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
-  const unresolved = conflictPaths(conflicts).filter((relative) => current[relative] === overlay[relative]);
+  const dirs = JSON.parse(await fs.readFile(path.join(saved, '_dirs.json'), 'utf8').catch(() => '[]')) as string[];
+  const marked = await markedConflicts(dir, conflictPaths(conflicts));
+  const unresolved = [...new Set([
+    ...conflictPaths(conflicts).filter((relative) => current[relative] === overlay[relative]),
+    ...marked,
+  ])];
   const files = new Set([...Object.keys(overlay), ...Object.keys(current), ...Object.keys(branch)]);
   for (const relative of files) {
     if (unresolved.includes(relative)) continue;
     if (relative === '_overlay.json' || current[relative] !== overlay[relative]) continue;
     // The step replaced a parent, for example a directory with a symlink. Do not restore through that edit.
     if (ancestorEdited(current, overlay, relative)) continue;
+    if (await parentRemoved(dir, dirs, relative)) continue;
     // The step wrote under a directory the branch stores as a symlink. Keep that edit.
     if (descendantEdited(current, overlay, relative)) continue;
     // A branch symlink replaces the directory the base checkout put back. Leave its children alone.
@@ -344,6 +351,50 @@ async function copyEntry(from: string, to: string): Promise<void> {
   }
   await fs.copyFile(from, to);
   await fs.chmod(to, stats.mode);
+}
+
+async function parentRemoved(dir: string, dirs: string[], relative: string): Promise<boolean> {
+  const parts = relative.split(path.sep);
+  let parent = '';
+  for (const part of parts.slice(0, -1)) {
+    parent = parent === '' ? part : path.join(parent, part);
+    if (!dirs.includes(parent)) continue;
+    try {
+      if ((await fs.lstat(path.join(dir, parent))).isSymbolicLink()) continue;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function markedConflicts(dir: string, paths: string[]): Promise<string[]> {
+  const marked: string[] = [];
+  for (const relative of paths) {
+    try {
+      if ((await fs.readFile(path.join(dir, relative), 'utf8')).includes('<<<<<<<')) marked.push(relative);
+    } catch {
+      // The step removed the conflicted file.
+    }
+  }
+  return marked;
+}
+
+async function agentDirs(root: string): Promise<string[]> {
+  const dirs: string[] = [];
+  const walk = async (relative: string): Promise<void> => {
+    let stats;
+    try {
+      stats = await fs.lstat(path.join(root, relative));
+    } catch {
+      return;
+    }
+    if (!stats.isDirectory()) return;
+    dirs.push(relative);
+    for (const name of await fs.readdir(path.join(root, relative))) await walk(path.join(relative, name));
+  };
+  for (const relative of AGENT_PATHS) await walk(relative);
+  return dirs;
 }
 
 function ancestorEdited(current: Record<string, string>, overlay: Record<string, string>, relative: string): boolean {

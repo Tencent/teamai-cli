@@ -1246,4 +1246,79 @@ steps:
 
     expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   });
+
+  it('does not publish conflict markers a prompt left in an agent file', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Editing a conflict is not a resolution while conflict markers remain.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('AGENTS.md', 'left\\n')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('AGENTS.md', 'right\\n')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    prompt: Resolve the agent file.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 2 };
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base\n');
+    execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run(_tool, input) {
+        fs.writeFileSync(path.join(input.cwd, 'AGENTS.md'), '<<<<<<< left\nkept\n');
+        return { started: true, exitCode: 0 };
+      },
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter });
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    const join = typeof run === 'object' ? run.steps.find((step) => step.id === 'join') : undefined;
+    expect(join && 'failure' in join ? join.failure : undefined).toMatchObject({ code: 'merge_conflict' });
+    expect(git(['show', `${branchName(runId, 'join', 1)}:AGENTS.md`], workspace)).not.toContain('<<<<<<<');
+  });
+
+  it('keeps a directory deleted when the branch had added a file inside it', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: Deleting a directory stays deleted, including a file an earlier step added.
+steps:
+  - id: work
+    needs: []
+    workspace: new
+    workflow:
+      steps:
+        - id: add
+          needs: []
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('.claude/extra.md', 'extra\\n')"
+        - id: drop
+          needs: [add]
+          workspace: continue
+          command: node -e "require('fs').rmSync('.claude', {recursive:true, force:true})"
+`);
+    fs.mkdirSync(path.join(workspace, '.claude'));
+    fs.writeFileSync(path.join(workspace, '.claude', 'settings.json'), '{}\n');
+    execFileSync('git', ['add', '.claude'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'claude'], { cwd: workspace });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const drop = typeof run === 'object' ? run.steps.find((step) => step.id === 'work.drop') : undefined;
+    const branch = drop && 'changes' in drop ? drop.changes?.branch : undefined;
+    expect(() => git(['show', `${branch}:.claude/extra.md`], workspace)).toThrow(/does not exist|not in /);
+    expect(() => git(['show', `${branch}:.claude/settings.json`], workspace)).toThrow(/does not exist|not in /);
+  });
 });
