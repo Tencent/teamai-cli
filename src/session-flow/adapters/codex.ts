@@ -502,6 +502,14 @@ export class CodexAdapter extends AgentAdapter {
 
   private buildMessages(records: Record<string, unknown>[]): Message[] {
     const messages: Message[] = [];
+    // Images returned by tools go in a user message of their own after the round's tool results
+    let toolImages: ContentBlock[] = [];
+    let toolImagesTimestamp: string | undefined;
+    const flushToolImages = () => {
+      if (toolImages.length === 0) return;
+      messages.push({ role: 'user', content: toolImages, timestamp: toolImagesTimestamp });
+      toolImages = [];
+    };
 
     for (const rec of records) {
       const rtype = rec.type as string;
@@ -522,6 +530,7 @@ export class CodexAdapter extends AgentAdapter {
 
       const payload = (rec.payload as Record<string, unknown>) ?? {};
       const ptype = payload.type as string;
+      if (ptype !== 'function_call_output' && ptype !== 'custom_tool_call_output') flushToolImages();
 
       if (ptype === 'message') {
         const role = payload.role as string;
@@ -560,13 +569,13 @@ export class CodexAdapter extends AgentAdapter {
         let output: string;
         if (Array.isArray(rawOutput)) {
           // Some tools (images, the JS REPL) return a list of content items instead of a string
-          const parts: string[] = [];
-          for (const item of rawOutput) {
-            if (item && typeof item === 'object' && (item as Record<string, unknown>).type === 'input_text') {
-              parts.push(String((item as Record<string, unknown>).text ?? ''));
-            }
+          const items = this.parseMessageContent({ content: rawOutput });
+          output = items.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n');
+          const images = items.filter((b) => b.type === 'image');
+          if (images.length > 0) {
+            toolImages.push(...images);
+            toolImagesTimestamp = parseCodexTimestamp(rec.timestamp);
           }
-          output = parts.join('\n');
         } else {
           output = String(rawOutput ?? '');
         }
@@ -598,6 +607,7 @@ export class CodexAdapter extends AgentAdapter {
         }
       }
     }
+    flushToolImages();
     return messages;
   }
 

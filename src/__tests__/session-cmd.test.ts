@@ -1753,4 +1753,36 @@ describe('codex readSession: freeform tool calls', () => {
     const result = session.messages.flatMap((m) => m.content).find((b) => b.type === 'tool_result');
     expect(result).toMatchObject({ type: 'tool_result', callId: 'call_1', content: 'Output:\ndone' });
   });
+
+  it('keeps the image of a tool output given as a list of content items', async () => {
+    const SID = '019e0000-1111-7222-8333-666666666666';
+    const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '01');
+    fs.mkdirSync(dir, { recursive: true });
+    const output = (text: string) => [
+      { type: 'input_text', text },
+      { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' },
+    ];
+    const lines = [
+      { type: 'session_meta', payload: { id: SID, timestamp: '2026-10-01T10:00:00.000Z', cwd: '/work/app' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look' }] } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'call_1', name: 'view_image', arguments: '{"path":"a.png"}' } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'call_2', name: 'view_image', arguments: '{"path":"b.png"}' } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_1', output: output('a') } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_2', output: output('b') } },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `rollout-2026-10-01T10-00-00-${SID}.jsonl`),
+      lines.map((l) => JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', ...l })).join('\n') + '\n',
+    );
+
+    const session = await new CodexAdapter().readSession({ sessionId: SID });
+    // Both tool results come first, then a user message with the images they returned
+    expect(session.messages.map((m) => [m.role, m.content.map((b) => b.type)])).toEqual([
+      ['user', ['text']],
+      ['assistant', ['tool_call', 'tool_call']],
+      ['user', ['tool_result', 'tool_result']],
+      ['user', ['image', 'image']],
+    ]);
+    expect(session.messages[3].content[0]).toMatchObject({ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' });
+  });
 });
