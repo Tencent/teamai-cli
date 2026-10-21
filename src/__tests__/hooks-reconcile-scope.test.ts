@@ -1377,6 +1377,7 @@ hooks:
 `);
     await fse.ensureDir(path.join(home, '.codebuddy'));
     await reconcileTeamHooksForConfig(codebuddyOnly, { ...localConfig(), projectRoot: root } as LocalConfig);
+    expect(await gitHook.gitHookStatus(root)).toEqual({ installed: true });
     expect(spawnSync('git', ['config', '--local', '--get-regexp', '^hook\\.teamai-'], {
       cwd: process.cwd(),
       encoding: 'utf8',

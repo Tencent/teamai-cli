@@ -225,7 +225,7 @@ type ScriptPlan = { blocked: 'hooks-path' | 'other-hook'; stale: [] } | { blocke
 async function scriptsToWrite(git: Git, repoDir: string): Promise<ScriptPlan> {
   if ((await git(['config', '--get', 'core.hooksPath'])).stdout.trim()) return { blocked: 'hooks-path', stale: [] };
   // The common hooks directory, from a linked worktree too.
-  const dir = path.resolve(await fs.realpath(repoDir), (await git(['rev-parse', '--git-path', 'hooks'])).stdout.trim());
+  const dir = path.resolve(repoDir, (await git(['rev-parse', '--git-path', 'hooks'])).stdout.trim());
   const stale: { file: string; text: string }[] = [];
   for (const event of GIT_HOOK_EVENTS) {
     const file = path.join(dir, event);
@@ -266,8 +266,7 @@ async function hookScriptDirs(git: Git, repoDir: string): Promise<string[] | nul
   const { code, stdout } = await git(['rev-parse', '--git-common-dir', '--git-path', 'hooks']);
   if (code !== 0) return null;
   const [commonDir = '', hooksPath = ''] = stdout.split(/\r?\n/);
-  const physicalRepoDir = await fs.realpath(repoDir);
-  return [...new Set([path.join(path.resolve(physicalRepoDir, commonDir.trim()), 'hooks'), path.resolve(physicalRepoDir, hooksPath.trim())])];
+  return [...new Set([path.join(path.resolve(repoDir, commonDir.trim()), 'hooks'), path.resolve(repoDir, hooksPath.trim())])];
 }
 
 /**
