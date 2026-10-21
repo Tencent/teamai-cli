@@ -93,9 +93,17 @@ describe('real CLI Codex compound skill read attribution (e2e)', () => {
     expect(invalidOption.status, `${invalidOption.stdout}${invalidOption.stderr}`).toBe(0);
     expect(usageEvents(home)).toEqual([]);
 
+    const maskedFailure = dispatchTool(home, cwd, 'masked-failure', `true; cat --invalid-option "${skillFile}"; true`);
+    expect(maskedFailure.status, `${maskedFailure.stdout}${maskedFailure.stderr}`).toBe(0);
+    expect(usageEvents(home)).toEqual([]);
+
     // Codex does not include an exit code in its Bash tool response.
     const emptyCommand = dispatchTool(home, cwd, 'empty-command', `echo before\ntrue;; cat "${skillFile}"`);
     expect(emptyCommand.status, `${emptyCommand.stdout}${emptyCommand.stderr}`).toBe(0);
+    expect(usageEvents(home)).toEqual([]);
+
+    const escapedNewline = dispatchTool(home, cwd, 'escaped-newline', `echo before\ntrue; \\\n; cat "${skillFile}"`);
+    expect(escapedNewline.status, `${escapedNewline.stdout}${escapedNewline.stderr}`).toBe(0);
     expect(usageEvents(home)).toEqual([]);
 
     const successfulRead = dispatchTool(home, cwd, 'success', `true; cat "${skillFile}"`, 'success');

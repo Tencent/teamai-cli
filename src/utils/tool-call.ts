@@ -217,28 +217,40 @@ function shownFiles(output: string, roots: string[], base: string | undefined, t
 /** A POSIX shell's own diagnostic: `bash: line 1: cat: command not found`, `sh: 1: head: not found`, `/bin/bash: …`. */
 const SHELL_DIAGNOSTIC = /^(?:\S*\/)?(?:ba|z)?sh: /;
 
+function shellDiagnosticCommand(line: string): string | undefined {
+  const command = /^(?:\S*\/)?(?:ba|z)?sh: (?:(?:-c: )?line \d+: |\d+: )(.+?): /.exec(line)?.[1];
+  return command?.split(/[\\/]/).pop()?.replace(/\.exe$/i, '').toLowerCase();
+}
+
 /**
  * A shell call's output without the lines its command printed as errors:
  * those that start with its command word, as written or by name, and `: `
  * (`cat: x.md: No such file or directory`, `/bin/cat: …`, `grep: …`), and the
  * shell's own diagnostics. `content` is null when those lines were all it
  * printed, as when the call failed. `named` holds the file each such
- * `<verb>: <file>: …` line names, unquoted.
+ * `<verb>: <file>: …` line names, unquoted. `hadCommandError` records whether
+ * an error line attributable to this command was removed.
  */
-function withoutErrors(output: string, verb: string): { content: string | null; named: string[] } {
+function withoutErrors(output: string, verb: string): { content: string | null; named: string[]; hadCommandError: boolean } {
   const prefixes = [...new Set([verb, verb.split(/[\\/]/).pop()!])].map((name) => `${name}: `);
+  const commandName = verb.split(/[\\/]/).pop()!.replace(/\.exe$/i, '').toLowerCase();
   const lines = output.split('\n');
   const named: string[] = [];
+  let hadCommandError = false;
   const kept = lines.filter((line) => {
-    if (SHELL_DIAGNOSTIC.test(line)) return false;
+    if (SHELL_DIAGNOSTIC.test(line)) {
+      if (shellDiagnosticCommand(line) === commandName) hadCommandError = true;
+      return false;
+    }
     const prefix = prefixes.find((p) => line.startsWith(p));
     if (prefix === undefined) return true;
+    hadCommandError = true;
     const file = /^(.+?): /.exec(line.slice(prefix.length))?.[1];
     if (file !== undefined) named.push(file.replace(/^'(.*)'$/, '$1'));
     return false;
   });
-  if (kept.length === lines.length) return { content: output, named };
-  return { content: kept.some((line) => line.trim() !== '') ? kept.join('\n') : null, named };
+  if (kept.length === lines.length) return { content: output, named, hadCommandError };
+  return { content: kept.some((line) => line.trim() !== '') ? kept.join('\n') : null, named, hadCommandError };
 }
 
 type ShellExitCode = 0 | 1;
@@ -313,6 +325,10 @@ function hasUnsupportedCompoundSyntax(command: string): boolean {
       continue;
     }
     if (c === '\\') {
+      if (next === '\n') {
+        i++;
+        continue;
+      }
       segmentHasToken = true;
       waitingForAndOrCommand = false;
       wordStarted = true;
@@ -420,14 +436,14 @@ export function codexCompoundReadPaths(stdin: Record<string, unknown>): string[]
   const finalStatus = statusOf(stdin, response);
   const verbCounts = new Map<string, number>();
   for (const read of reads) verbCounts.set(read.verb, (verbCounts.get(read.verb) ?? 0) + 1);
-  const diagnostics = new Map<string, { content: string | null; named: string[] }>();
+  const diagnostics = new Map<string, { content: string | null; named: string[]; hadCommandError: boolean }>();
   if (output !== undefined) {
     for (const read of reads) {
       if (!diagnostics.has(read.verb)) diagnostics.set(read.verb, withoutErrors(output, read.verb));
     }
   }
   const hasReaderDiagnostic = [...diagnostics.values()].some((diagnostic) =>
-    diagnostic.named.length > 0 || diagnostic.content === null);
+    diagnostic.hadCommandError || diagnostic.named.length > 0 || diagnostic.content === null);
   if (reads.length > 1 && hasReaderDiagnostic) return [];
 
   const outcomes: ShellExitCode[][] = segments.map((segment, index): ShellExitCode[] => {
@@ -436,7 +452,7 @@ export function codexCompoundReadPaths(stdin: Record<string, unknown>): string[]
     const read = reads.find((candidate) => candidate.index === index);
     if (read && (verbCounts.get(read.verb) ?? 0) === 1) {
       const diagnostic = diagnostics.get(read.verb);
-      if (diagnostic && (diagnostic.named.length > 0 || diagnostic.content === null)) return [1];
+      if (diagnostic && (diagnostic.hadCommandError || diagnostic.named.length > 0 || diagnostic.content === null)) return [1];
     }
     return [0, 1];
   });
@@ -451,6 +467,10 @@ export function codexCompoundReadPaths(stdin: Record<string, unknown>): string[]
     if (diagnostic?.named.length && !onlySilentNeighbors) continue;
     const failed = diagnostic?.named.map((file) => resolvePath(file, cwd)) ?? [];
     const hasFailedOperand = failed.some((file) => read.paths.some((candidate) => samePath(file, candidate)));
+
+    // A filtered error without an exact operand may be an option/usage failure,
+    // even when a later command makes the whole compound list succeed.
+    if (diagnostic?.hadCommandError && !hasFailedOperand) continue;
 
     if (finalStatus === 'failure') {
       const outputBelongsToReader = onlySilentNeighbors && diagnostic !== undefined

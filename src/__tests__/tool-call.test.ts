@@ -366,6 +366,24 @@ describe('Codex compound shell reads for skill-use', () => {
     expect(compoundReadPaths(payload(`true; cat --invalid-option ${skill}`, output, 'failure'))).toEqual([]);
   });
 
+  it('does not credit an unattributed reader failure masked by a later command', () => {
+    const output = `cat: invalid option -- 'x'\nTry 'cat --help' for more information.`;
+
+    expect(compoundReadPaths(payload(`true; cat --invalid-option ${skill}; true`, output))).toEqual([]);
+  });
+
+  it('rejects a missing reader executable even when an earlier command printed output', () => {
+    const output = `before\n/bin/bash: line 1: /missing/cat: No such file or directory`;
+
+    expect(compoundReadPaths(payload(`echo before; /missing/cat ${skill}; true`, output))).toEqual([]);
+  });
+
+  it('keeps a read when an unrelated earlier command prints its own shell diagnostic', () => {
+    const output = `bash: line 1: missing-command: command not found\n# skill`;
+
+    expect(compoundReadPaths(payload(`missing-command; cat ${skill}`, output))).toEqual([skill]);
+  });
+
   it.each([
     `if true; then cat ${skill}; fi`,
     `(cat ${skill})`,
@@ -379,6 +397,7 @@ describe('Codex compound shell reads for skill-use', () => {
     `true && || cat ${skill}`,
     `true || ; cat ${skill}`,
     `echo before\ntrue;; cat ${skill}`,
+    `echo before\ntrue; \\\n; cat ${skill}`,
   ])('skips unsupported or state-changing command lists: %s', (command) => {
     expect(compoundReadPaths(payload(command))).toEqual([]);
   });
