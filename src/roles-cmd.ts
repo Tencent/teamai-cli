@@ -182,8 +182,9 @@ export function assignedRolesNotice(effective: ReturnType<typeof effectiveRoles>
 }
 
 export async function rolesList(options: { json?: boolean } = {}): Promise<void> {
-    // Read-only: the load never persists a migration (#893).
-    const { localConfig } = await autoDetectInit(undefined, { dryRun: true });
+    // Read-only: the load never persists a migration (#893). Its preview notice
+    // would precede the JSON, so --json, read by hooks, omits it.
+    const { localConfig } = await autoDetectInit(undefined, { dryRun: true, suppressMigrationNotice: options.json });
     const repoPath = localConfig.repo.localPath;
     const effective = effectiveRoles(localConfig);
 

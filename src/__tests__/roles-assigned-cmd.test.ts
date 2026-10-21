@@ -101,6 +101,18 @@ describe('roles commands with assigned roles', () => {
     });
   });
 
+  it('loads without the migration notice for --json, which a hook parses', async () => {
+    given(assigned(['frontend']));
+
+    await rolesList({ json: true });
+    await rolesList();
+
+    expect(vi.mocked(autoDetectInit).mock.calls.map(([, options]) => options)).toEqual([
+      { dryRun: true, suppressMigrationNotice: true },
+      { dryRun: true, suppressMigrationNotice: undefined },
+    ]);
+  });
+
   it('reports a local selection as local, with no assignment file', async () => {
     given(configWith({ primaryRole: 'backend' }));
 
