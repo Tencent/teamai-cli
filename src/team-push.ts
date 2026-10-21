@@ -933,7 +933,7 @@ export function adoptBareKeys<T>(
 export async function reportUsageToTeam(
   repoPath: string,
   username: string,
-  options?: { skipTruncate?: boolean; selfConfig?: LocalConfig },
+  options?: { skipTruncate?: boolean; selfConfig: LocalConfig },
 ): Promise<boolean> {
   // Non-HTTP repos: stats + votes are report data → the teamai-reports orphan
   // branch (isolated worktree). We must NOT resetToCleanMaster / pullRepo /
