@@ -231,13 +231,13 @@ describe('a .codex/hooks.json the business repo tracks', () => {
     expect(dispatcherEntries(home, 'Stop')).toHaveLength(1);
     expect(dispatcherEntries(home, 'Stop')[0].hooks[0].timeout).toBe(45);
     expect(JSON.stringify(home)).not.toContain('team-stop');
-    // Every dispatcher entry carries its PowerShell form in commandWindows —
-    // the block contract (exit 2, stderr) passes through, unlike the built-in
-    // fail-open form (#1209).
+    // Every dispatcher entry carries the bare dispatch in commandWindows —
+    // cmd /C propagates the block contract (exit 2, stderr) natively, unlike
+    // the built-in fail-open form (#1209, #1215).
     for (const event of dispatcherEvents(home)) {
       const entry = dispatcherEntries(home, event)[0].hooks[0];
       expect(entry.commandWindows).toBe(
-        `teamai hook-dispatch ${event} --tool codex --team-hooks; exit $LASTEXITCODE`);
+        `teamai hook-dispatch ${event} --tool codex --team-hooks`);
     }
 
     const stop = m.dispatch('Stop', {});

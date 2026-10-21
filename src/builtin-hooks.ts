@@ -255,15 +255,16 @@ export function getTeamHookDispatchCommand(event: string, tool: string): string 
 }
 
 /**
- * The `commandWindows` of a team-hook dispatcher entry: the PowerShell form of
- * its dispatch, since Codex runs hook commands in PowerShell on Windows
- * (#1074). Deliberately not the built-in fail-open shape (`2>$null; exit 0`):
- * a dispatcher must keep what its bash form passes through — the exit status
- * (2 blocks the run) and stderr — so nothing is redirected and the exit code
- * rides `$LASTEXITCODE` (#1209).
+ * The `commandWindows` of a team-hook dispatcher entry: the bare dispatch,
+ * without the POSIX form's bash wrapper. Codex runs hook commands through
+ * `%COMSPEC% /C` on Windows — cmd.exe, not PowerShell (#1215) — which cannot
+ * resolve `bash`, so the wrapper has to go. Nothing else is added: cmd /C
+ * propagates the child's exit code and stderr natively, so the dispatcher's
+ * block contract (exit 2 blocks the run, stderr reaches the user) passes
+ * through the same way the bash form passes it on POSIX (#1209).
  */
 export function getTeamHookDispatchCommandWindows(event: string, tool: string): string {
-  return `teamai hook-dispatch ${event} --tool ${tool} --team-hooks; exit $LASTEXITCODE`;
+  return `teamai hook-dispatch ${event} --tool ${tool} --team-hooks`;
 }
 
 /**

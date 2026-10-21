@@ -99,10 +99,10 @@ describe('reconcileCodexDispatchers — the Windows override keeps the block con
     // The command stays the POSIX form on every platform (#1074's contract),
     // and the entry stays recognizable for removal.
     expect(entry.command).toBe('bash -lc "teamai hook-dispatch Stop --tool codex --team-hooks"');
-    // The Windows form is not the built-in fail-open shape: a dispatcher must
-    // pass exit 2 (block) and its stderr through, so nothing is redirected and
-    // the exit code rides $LASTEXITCODE.
-    expect(entry.commandWindows).toBe('teamai hook-dispatch Stop --tool codex --team-hooks; exit $LASTEXITCODE');
+    // The Windows form is the bare dispatch: cmd /C propagates the exit code
+    // and stderr natively, so exit 2 (block) passes through with nothing
+    // redirected — no tail needed, no junk arguments (#1215).
+    expect(entry.commandWindows).toBe('teamai hook-dispatch Stop --tool codex --team-hooks');
   });
 
   it('reconciles idempotently: a second run writes the same bytes', async () => {

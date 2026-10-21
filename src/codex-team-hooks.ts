@@ -206,9 +206,10 @@ export async function reconcileCodexDispatchers(hooksFile: string): Promise<void
         hooks: [{
           type: 'command',
           command: getTeamHookDispatchCommand(event, CODEX_TOOL_ID),
-          // The PowerShell form carries the dispatcher's block contract on
-          // Windows (#1209); on `command` the entry keeps the POSIX form on
-          // every platform, like the built-in entries (#1074).
+          // The Windows form drops the bash wrapper cmd.exe cannot resolve
+          // (#1215); the block contract passes through natively (#1209). On
+          // `command` the entry keeps the POSIX form on every platform, like
+          // the built-in entries (#1074).
           commandWindows: getTeamHookDispatchCommandWindows(event, CODEX_TOOL_ID),
           timeout,
         }],
