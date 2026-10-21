@@ -356,6 +356,11 @@ Pending votes reach the team repo's `teamai-reports` branch on the next Stop or
 keeps the deltas pending; the next session re-sends them, and each delta is
 added to the team totals exactly once.
 
+Manual `teamai recall feedback --positive <docId>` adds an upvote without adding
+a recall. Confidence caps the upvote-to-recall ratio at 1: more feedback cannot
+exceed that factor's 30% weight or replace recency. This is an activity score,
+not proof of knowledge correctness or task success.
+
 ## OpenCode V2 rejects the hooks plugin
 
 If OpenCode reports “Plugin must export a default definition”, upgrade TeamAI,
