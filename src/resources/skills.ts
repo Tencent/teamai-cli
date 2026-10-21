@@ -6,7 +6,7 @@ import type { CopyOrigin, PendingPush, ResourceItem, ResourceItemStatus, Deliver
 import { getPushignorePath, isAgentExcluded, resolveBaseDir, resolveToolBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
 import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { warnOnce } from '../utils/warn-once.js';
+import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { getFileContentWhenAdded, isPastVersionOf, resolveAnchors } from '../utils/git.js';
 import { isCliOwnedSkillName, ownedSkillFiles, prunedWhole, removeOwnedFiles, skillsGuardBase } from '../builtin-skills.js';
 import { resolveOpenclawWorkspaceDir } from '../openclaw-hooks.js';
@@ -215,7 +215,7 @@ export async function skillsDirForTool(
   if (tool === 'openclaw') {
     const wsDir = await resolveOpenclawWorkspaceDir();
     if (!wsDir) {
-      log.debug('Skipping skill sync for openclaw: workspace dir not found');
+      debugOnce('Skipping skill sync for openclaw: workspace dir not found');
       return null;
     }
     return path.join(wsDir, 'skills');
@@ -226,14 +226,14 @@ export async function skillsDirForTool(
     // resolves (HERMES_HOME or ~/.hermes), so without this check every pull
     // creates a hermes home the user never asked for.
     if (!await pathExists(getHermesHome())) {
-      log.debug(`Skipping skill sync for ${tool}: tool not installed`);
+      debugOnce(`Skipping skill sync for ${tool}: tool not installed`);
       return null;
     }
     return path.join(getHermesHome(), 'skills');
   }
 
   if (!await isToolInstalledForConfig(tool, configuredSkillsPath, localConfig)) {
-    log.debug(`Skipping skill sync for ${tool}: tool not installed`);
+    debugOnce(`Skipping skill sync for ${tool} in ${localConfig.scope} scope: tool not installed`);
     return null;
   }
 

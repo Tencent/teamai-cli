@@ -665,18 +665,23 @@ async function endRecord(config: LocalConfig): Promise<WorkflowRunRecord | undef
 }
 
 const BARRIER = `const fs = require('fs');
+const path = require('path');
 const [me, other] = process.argv.slice(2);
-fs.writeFileSync(me + '.ready', '');
+const dir = path.join(__dirname, '..', 'markers');
+fs.mkdirSync(dir, { recursive: true });
+fs.writeFileSync(path.join(dir, me + '.ready'), '');
 const deadline = Date.now() + 2000;
 setInterval(() => {
-  if (fs.existsSync(other + '.ready')) process.exit(0);
+  if (fs.existsSync(path.join(dir, other + '.ready'))) process.exit(0);
   if (Date.now() > deadline) process.exit(1);
 }, 20);
 `;
 
 const LOG = `const fs = require('fs');
-fs.appendFileSync('log.txt', 'start ' + process.argv[2] + '\\n');
-setTimeout(() => fs.appendFileSync('log.txt', 'end ' + process.argv[2] + '\\n'), 100);
+const path = require('path');
+const file = path.join(__dirname, '..', 'log.txt');
+fs.appendFileSync(file, 'start ' + process.argv[2] + '\\n');
+setTimeout(() => fs.appendFileSync(file, 'end ' + process.argv[2] + '\\n'), 100);
 `;
 
 const TWO_BARRIERS = `schemaVersion: v1alpha1
@@ -685,9 +690,11 @@ description: Two roots that each wait for the other.
 steps:
   - id: left
     needs: []
+    workspace: new
     command: node barrier.js left right
   - id: right
     needs: []
+    workspace: new
     command: node barrier.js right left
 `;
 
@@ -695,6 +702,8 @@ async function parallelFixture(yaml: string, maxParallel: number): Promise<{ con
   const built = await workflowFixture(yaml);
   built.config.workflows = { tools: { default: 'claude' }, max_parallel: maxParallel };
   fs.writeFileSync(path.join(built.workspace, 'barrier.js'), BARRIER);
+  execFileSync('git', ['add', 'barrier.js'], { cwd: built.workspace });
+  execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'scripts'], { cwd: built.workspace });
   return built;
 }
 
@@ -731,7 +740,7 @@ description: A command and a prompt with no needs.
 steps:
   - id: slow
     needs: []
-    command: node -e "setTimeout(() => require('fs').writeFileSync('slow.done', ''), 300)"
+    command: node -e "setTimeout(() => require('fs').writeFileSync(require('path').join(process.cwd(), '..', 'slow.done'), ''), 300)"
   - id: ask
     needs: []
     prompt: Review this project.
@@ -742,7 +751,7 @@ steps:
     const adapter: LocalToolAdapter = {
       runInteractive: vi.fn(),
       run: vi.fn(async () => {
-        commandExitedFirst.push(fs.existsSync(path.join(workspace, 'slow.done')));
+        commandExitedFirst.push(fs.existsSync(path.join(workspace, '..', 'slow.done')));
         return { started: true as const, exitCode: 0, output: { ok: true } };
       }),
     };
@@ -800,24 +809,31 @@ ends:
 steps:
   - id: stubborn
     needs: []
+    workspace: new
     command: node stubborn.js
   - id: finish
     needs: []
+    workspace: new
     command: node finish.js
     end: done
 `, 2);
+    const pidFile = path.join(workspace, '..', 'markers', 'stubborn.pid');
+    fs.mkdirSync(path.dirname(pidFile), { recursive: true });
     fs.writeFileSync(path.join(workspace, 'stubborn.js'), `process.on('SIGTERM', () => {});
-require('fs').writeFileSync('stubborn.pid', String(process.pid));
+require('fs').mkdirSync(${JSON.stringify(path.dirname(pidFile))}, { recursive: true });
+require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 setInterval(() => {}, 1000);
 `);
     fs.writeFileSync(path.join(workspace, 'finish.js'), `const timer = setInterval(() => {
-  if (require('fs').existsSync('stubborn.pid')) clearInterval(timer);
+  if (require('fs').existsSync(${JSON.stringify(pidFile)})) clearInterval(timer);
 }, 20);
 `);
+    execFileSync('git', ['add', 'stubborn.js', 'finish.js'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'scripts'], { cwd: workspace });
     let pid: number | undefined;
     try {
       const done = await runLocalDriver(config, runId, workspace);
-      pid = Number(fs.readFileSync(path.join(workspace, 'stubborn.pid'), 'utf8'));
+      pid = Number(fs.readFileSync(path.join(workspace, '..', 'markers', 'stubborn.pid'), 'utf8'));
 
       expect(done).toMatchObject({ data: { done: { outcome: 'succeeded', end: 'done' } } });
       expect(await exitsWithin(pid, 1000)).toBe(true);
@@ -838,25 +854,32 @@ ends:
 steps:
   - id: parent
     needs: []
+    workspace: new
     command: node parent.js
   - id: finish
     needs: []
+    workspace: new
     command: node finish.js
     end: done
 `, 2);
+    const pidFile = path.join(workspace, '..', 'markers', 'child.pid');
+    fs.mkdirSync(path.dirname(pidFile), { recursive: true });
     fs.writeFileSync(path.join(workspace, 'parent.js'), `require('child_process').spawn(process.execPath, ['-e', \`process.on('SIGTERM', () => {});
-require('fs').writeFileSync('child.pid', String(process.pid));
+require('fs').mkdirSync(${JSON.stringify(path.dirname(pidFile))}, { recursive: true });
+require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
 setInterval(() => {}, 1000);\`], { stdio: 'ignore' });
 setInterval(() => {}, 1000);
 `);
     fs.writeFileSync(path.join(workspace, 'finish.js'), `const timer = setInterval(() => {
-  if (require('fs').existsSync('child.pid')) clearInterval(timer);
+  if (require('fs').existsSync(${JSON.stringify(pidFile)})) clearInterval(timer);
 }, 20);
 `);
+    execFileSync('git', ['add', 'parent.js', 'finish.js'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'scripts'], { cwd: workspace });
     let pid: number | undefined;
     try {
       const done = await runLocalDriver(config, runId, workspace);
-      pid = Number(fs.readFileSync(path.join(workspace, 'child.pid'), 'utf8'));
+      pid = Number(fs.readFileSync(path.join(workspace, '..', 'markers', 'child.pid'), 'utf8'));
 
       expect(done).toMatchObject({ data: { done: { outcome: 'succeeded', end: 'done' } } });
       expect(await exitsWithin(pid, 1000)).toBe(true);
@@ -885,6 +908,7 @@ steps:
       steps:
         - id: finish
           needs: []
+          workspace: new
           command: node finish.js
           end: stopped
         - id: lingering
@@ -894,20 +918,26 @@ ${ask}    prompt: Review this project.
     output:
       ok: boolean
 `, maxParallel);
+    const startedFile = path.join(workspace, '..', 'markers', 'lingering.started');
+    const exitedFile = path.join(workspace, '..', 'markers', 'lingering.exited');
+    fs.mkdirSync(path.dirname(startedFile), { recursive: true });
     fs.writeFileSync(path.join(workspace, 'lingering.js'), `const fs = require('fs');
-process.on('SIGTERM', () => setTimeout(() => { fs.writeFileSync('lingering.exited', ''); process.exit(0); }, 300));
-fs.writeFileSync('lingering.started', '');
+process.on('SIGTERM', () => setTimeout(() => { fs.writeFileSync(${JSON.stringify(exitedFile)}, ''); process.exit(0); }, 300));
+fs.mkdirSync(${JSON.stringify(path.dirname(startedFile))}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(startedFile)}, '');
 setInterval(() => {}, 1000);
 `);
     fs.writeFileSync(path.join(workspace, 'finish.js'), `const timer = setInterval(() => {
-  if (require('fs').existsSync('lingering.started')) clearInterval(timer);
+  if (require('fs').existsSync(${JSON.stringify(startedFile)})) clearInterval(timer);
 }, 20);
 `);
+    execFileSync('git', ['add', 'lingering.js', 'finish.js'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'scripts'], { cwd: workspace });
     const commandExitedFirst: boolean[] = [];
     const adapter: LocalToolAdapter = {
       runInteractive: vi.fn(),
       run: vi.fn(async () => {
-        commandExitedFirst.push(fs.existsSync(path.join(workspace, 'lingering.exited')));
+        commandExitedFirst.push(fs.existsSync(path.join(workspace, '..', 'markers', 'lingering.exited')));
         return { started: true as const, exitCode: 0, output: { ok: true } };
       }),
     };
@@ -1009,7 +1039,7 @@ steps:
     const done = await runLocalDriver(config, runId, workspace);
 
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(fs.readFileSync(path.join(workspace, 'log.txt'), 'utf8')).toBe('start a\nend a\nstart b\nend b\n');
+    expect(fs.readFileSync(path.join(workspace, '..', 'log.txt'), 'utf8')).toBe('start a\nend a\nstart b\nend b\n');
   });
 
   it('runs a prompt an earlier driver leased alone, between the commands leased before and after it', async () => {
@@ -1041,7 +1071,7 @@ steps:
     const adapter: LocalToolAdapter = {
       runInteractive: vi.fn(),
       run: vi.fn(async () => {
-        logAtPrompt.push(fs.readFileSync(path.join(workspace, 'log.txt'), 'utf8'));
+        logAtPrompt.push(fs.readFileSync(path.join(workspace, '..', 'log.txt'), 'utf8'));
         return { started: true as const, exitCode: 0, output: { ok: true } };
       }),
     };
@@ -1050,7 +1080,7 @@ steps:
 
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(logAtPrompt).toEqual(['start c1\nend c1\n']);
-    expect(fs.readFileSync(path.join(workspace, 'log.txt'), 'utf8')).toBe('start c1\nend c1\nstart c2\nend c2\n');
+    expect(fs.readFileSync(path.join(workspace, '..', 'log.txt'), 'utf8')).toBe('start c1\nend c1\nstart c2\nend c2\n');
   });
 
   it('runs one command at a time with max_parallel 1, so the barrier fails', async () => {
@@ -1107,24 +1137,29 @@ steps:
     needs: [plan]
     command: ${command}
 `, maxParallel);
+      const markers = path.join(workspace, '..', 'markers');
+      fs.mkdirSync(markers);
       fs.writeFileSync(path.join(workspace, 'work.js'), `const fs = require('fs');
-try { fs.writeFileSync('live', '', { flag: 'wx' }); }
-catch { fs.writeFileSync('overlap', ''); process.exit(1); }
-if (fs.existsSync('first.started')) {
-  fs.writeFileSync('second.saw', fs.existsSync('first.cleaned') ? 'cleaned' : 'running');
-  fs.unlinkSync('live');
+const path = require('path');
+const dir = path.join(__dirname, '..', 'markers');
+const file = (name) => path.join(dir, name);
+try { fs.writeFileSync(file('live'), '', { flag: 'wx' }); }
+catch { fs.writeFileSync(file('overlap'), ''); process.exit(1); }
+if (fs.existsSync(file('first.started'))) {
+  fs.writeFileSync(file('second.saw'), fs.existsSync(file('first.cleaned')) ? 'cleaned' : 'running');
+  fs.unlinkSync(file('live'));
   process.exit(0);
 }
 process.once('SIGTERM', () => {
-  fs.writeFileSync('first.stopping', '');
+  fs.writeFileSync(file('first.stopping'), '');
   setTimeout(() => {
-    fs.writeFileSync('first.cleaned', '');
-    fs.unlinkSync('live');
+    fs.writeFileSync(file('first.cleaned'), '');
+    fs.unlinkSync(file('live'));
     process.exit(1);
   }, 2500);
 });
-fs.writeFileSync('first.pid', String(process.pid));
-fs.writeFileSync('first.started', '');
+fs.writeFileSync(file('first.pid'), String(process.pid));
+fs.writeFileSync(file('first.started'), '');
 setInterval(() => {}, 1000);
 `);
       expect(await respondToHitl(config, runId, { step: 'plan', choice: 'small', channel: 'cli', agent: false }))
@@ -1132,27 +1167,27 @@ setInterval(() => {}, 1000);
       const options = { hitl: true, question: async () => 'big' };
       const driving = runLocalDriver(config, runId, workspace, options);
       try {
-        await vi.waitFor(() => expect(fs.existsSync(path.join(workspace, 'first.started'))).toBe(true), { timeout: 10_000, interval: 20 });
+        await vi.waitFor(() => expect(fs.existsSync(path.join(markers, 'first.started'))).toBe(true), { timeout: 10_000, interval: 20 });
         expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'plan', status: 'succeeded' }, { id: 'work', status: 'leased' }] });
         if (control.startsWith('cancel')) {
           expect(await cancelRun(config, runId, control.startsWith('cancel step') ? 'work' : undefined)).not.toHaveProperty('error');
         }
         expect(await retryStep(config, runId, control === 'retry ancestor' ? 'plan' : 'work'))
           .toMatchObject({ data: { retried: { pass: 2 } } });
-        await vi.waitFor(() => expect(fs.existsSync(path.join(workspace, 'first.stopping'))).toBe(true), { timeout: 7000, interval: 20 });
+        await vi.waitFor(() => expect(fs.existsSync(path.join(markers, 'first.stopping'))).toBe(true), { timeout: 7000, interval: 20 });
         expect(await driving).not.toHaveProperty('error');
-        const pid = Number(fs.readFileSync(path.join(workspace, 'first.pid'), 'utf8'));
+        const pid = Number(fs.readFileSync(path.join(markers, 'first.pid'), 'utf8'));
         expect(() => process.kill(pid, 0)).toThrow();
         expect(await runLocalDriver(config, runId, workspace, options)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-        expect(fs.existsSync(path.join(workspace, 'first.stopping'))).toBe(true);
-        expect(fs.existsSync(path.join(workspace, 'first.cleaned'))).toBe(true);
-        expect(fs.existsSync(path.join(workspace, 'live'))).toBe(false);
-        expect(fs.existsSync(path.join(workspace, 'overlap'))).toBe(false);
-        expect(fs.readFileSync(path.join(workspace, 'second.saw'), 'utf8')).toBe('cleaned');
+        expect(fs.existsSync(path.join(markers, 'first.stopping'))).toBe(true);
+        expect(fs.existsSync(path.join(markers, 'first.cleaned'))).toBe(true);
+        expect(fs.existsSync(path.join(markers, 'live'))).toBe(false);
+        expect(fs.existsSync(path.join(markers, 'overlap'))).toBe(false);
+        expect(fs.readFileSync(path.join(markers, 'second.saw'), 'utf8')).toBe('cleaned');
       } finally {
         await cancelRun(config, runId);
-        const pidFile = path.join(workspace, 'first.pid');
-        if (fs.existsSync(pidFile) && !fs.existsSync(path.join(workspace, 'first.cleaned'))) {
+        const pidFile = path.join(markers, 'first.pid');
+        if (fs.existsSync(pidFile) && !fs.existsSync(path.join(markers, 'first.cleaned'))) {
           try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* Already exited. */ }
         }
         await driving;

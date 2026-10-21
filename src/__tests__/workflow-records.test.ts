@@ -206,6 +206,7 @@ describe('#1083 workflow run records', () => {
     const diagnostics = [
       'unknown_key', 'missing_needs', 'false_if', 'bad_template', 'dotted_name',
       'undeclared_output', 'undeclared_end', 'bad_loop',
+      'bad_session', 'bad_workspace',
       'workflow_namespace_conflict', 'prompt_namespace_conflict',
     ] satisfies Array<WorkflowDiagnostic['code']>;
     const answers = ['invalid_json', 'driver_running', 'invalid_run', 'repeated_response', 'agent_in_path', 'stale_response', 'retried', 'end_reached', 'repeated_report', 'wrong_attempt', 'lease_cancelled', 'interrupted', 'run_unreadable', 'driver_stuck', 'busy'];

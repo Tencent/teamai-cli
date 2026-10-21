@@ -20,7 +20,7 @@ export interface ConfidenceFactors {
  * Formula:
  *   base = min(1.0, recalled * 0.1 + upvoted * 0.3)
  *   recency = max(0, 1.0 - daysSinceLastRecall / 180)
- *   ratio = upvoted / max(1, recalled)
+ *   ratio = min(1.0, upvoted / max(1, recalled))
  *   confidence = base * 0.4 + recency * 0.3 + ratio * 0.3
  */
 export function computeConfidence(factors: ConfidenceFactors): number {
@@ -35,7 +35,7 @@ export function computeConfidence(factors: ConfidenceFactors): number {
   }
   const recency = Math.max(0, 1.0 - daysSinceRecall / 180);
 
-  const ratio = upvotedCount / Math.max(1, recalledCount);
+  const ratio = Math.min(1.0, upvotedCount / Math.max(1, recalledCount));
 
   const score = base * 0.4 + recency * 0.3 + ratio * 0.3;
   return Math.round(score * 100) / 100;

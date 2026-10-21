@@ -66,7 +66,7 @@ describe('hooks', () => {
   });
 
   describe('inject — empty file', () => {
-    it('Claude format: injects 5 events with 7 dispatch hooks into empty settings.json', async () => {
+    it('Claude format: injects 5 events with 6 dispatch hooks into empty settings.json', async () => {
       await injectHooks('/test/settings.json', 'claude');
 
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
@@ -77,15 +77,15 @@ describe('hooks', () => {
 
       // Merged dispatch format: one dispatch entry per event+matcher.
       // SessionStart(*:1), Stop(*:1),
-      // PostToolUse(*:1, Skill:1, TodoWrite:1), UserPromptSubmit(*:1), SubagentStop(*:1)
+      // PostToolUse(*:1, TodoWrite:1), UserPromptSubmit(*:1), SubagentStop(*:1)
       expect(result.hooks['SessionStart']).toHaveLength(1);
       expect(result.hooks['Stop']).toHaveLength(1);
-      expect(result.hooks['PostToolUse']).toHaveLength(3);
+      expect(result.hooks['PostToolUse']).toHaveLength(2);
       expect(result.hooks['UserPromptSubmit']).toHaveLength(1);
       expect(result.hooks['SubagentStop']).toHaveLength(1);
     });
 
-    it('Cursor format: injects 4 events with 6 dispatch hooks into empty hooks.json', async () => {
+    it('Cursor format: injects 4 events with 5 dispatch hooks into empty hooks.json', async () => {
       await injectHooks('/test/hooks.json', 'cursor');
 
       const result = mockFiles['/test/hooks.json'] as { version: number; hooks: Record<string, unknown[]> };
@@ -98,7 +98,7 @@ describe('hooks', () => {
       // Same merged structure (with TodoWrite dispatch entry)
       expect(result.hooks['sessionStart']).toHaveLength(1);
       expect(result.hooks['stop']).toHaveLength(1);
-      expect(result.hooks['postToolUse']).toHaveLength(3);
+      expect(result.hooks['postToolUse']).toHaveLength(2);
       expect(result.hooks['beforeSubmitPrompt']).toHaveLength(1);
     });
 
@@ -108,7 +108,7 @@ describe('hooks', () => {
       const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ matcher?: string; description?: string; hooks: Array<{ command: string }> }>> };
       expect(result.hooks).toBeDefined();
       expect(Object.keys(result.hooks)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit', 'SubagentStop', 'SubagentStart']);
-      expect(result.hooks.PostToolUse).toHaveLength(3);
+      expect(result.hooks.PostToolUse).toHaveLength(2);
       expect(result.hooks.SessionStart[0].hooks[0].command).toContain('--tool codex');
       expect(result.hooks.SessionStart[0].description).toBeUndefined();
     });
@@ -159,7 +159,7 @@ describe('hooks', () => {
       const result = mockFiles['/test/settings.json'] as { hooks: Record<string, unknown[]> };
       expect(result.hooks['SessionStart']).toHaveLength(1);
       expect(result.hooks['Stop']).toHaveLength(1);
-      expect(result.hooks['PostToolUse']).toHaveLength(3);
+      expect(result.hooks['PostToolUse']).toHaveLength(2);
       expect(result.hooks['UserPromptSubmit']).toHaveLength(1);
     });
 
@@ -170,7 +170,7 @@ describe('hooks', () => {
       const result = mockFiles['/test/hooks.json'] as { hooks: Record<string, unknown[]> };
       expect(result.hooks['sessionStart']).toHaveLength(1);
       expect(result.hooks['stop']).toHaveLength(1);
-      expect(result.hooks['postToolUse']).toHaveLength(3);
+      expect(result.hooks['postToolUse']).toHaveLength(2);
       expect(result.hooks['beforeSubmitPrompt']).toHaveLength(1);
     });
 
@@ -546,23 +546,15 @@ describe('hooks', () => {
       }
     });
 
-    it('PostToolUse/postToolUse Skill dispatch hook exists in both formats (Cursor host matcher Read)', async () => {
+    it('PostToolUse/postToolUse carry no Skill dispatch hook in either format: the wildcard pass tracks skill use (#1221)', async () => {
       await injectHooks('/test/claude.json', 'claude');
       await injectHooks('/test/cursor.json', 'cursor');
 
       const claudeResult = mockFiles['/test/claude.json'] as { hooks: Record<string, Array<{ matcher: string }>> };
       const cursorResult = mockFiles['/test/cursor.json'] as { hooks: Record<string, Array<{ matcher?: string; command: string }>> };
 
-      const claudeSkill = claudeResult.hooks.PostToolUse.find((h) => h.matcher === 'Skill');
-      expect(claudeSkill).toBeDefined();
-
-      // Cursor loads skills via Read of SKILL.md; host matcher is remapped to Read
-      // while the dispatch command still uses --matcher Skill (#1156).
-      const cursorSkill = cursorResult.hooks.postToolUse.find(
-        (h) => h.matcher === 'Read' && h.command.includes('--matcher Skill'),
-      );
-      expect(cursorSkill).toBeDefined();
-      expect(cursorSkill!.command).toContain('hook-dispatch');
+      expect(claudeResult.hooks.PostToolUse.map((h) => h.matcher)).toEqual(['*', 'TodoWrite']);
+      expect(cursorResult.hooks.postToolUse.some((h) => h.matcher === 'Read' || h.command.includes('--matcher Skill'))).toBe(false);
     });
 
     it('Cursor hooks have timeout values', async () => {

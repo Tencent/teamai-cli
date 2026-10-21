@@ -18,6 +18,7 @@ import { listMembers } from '../members.js';
 import { resolveProjectDataHome, saveLocalConfigForScope } from '../config.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
 import YAML from 'yaml';
+import { getUserHome } from '../utils/home.js';
 
 let tmp: string;
 let originalHome: string;
@@ -671,8 +672,12 @@ describe('skill usage stays in the scope that recorded it (#748)', () => {
   }
 
   async function useSkill(cwd: string, skill: string): Promise<void> {
-    const track = buildHandlerRegistry().find((r) => r.handler.name === 'track');
-    if (!track) throw new Error('track handler is not registered');
+    const track = buildHandlerRegistry().find((r) => r.handler.name === 'skill-use');
+    if (!track) throw new Error('skill-use handler is not registered');
+    // Only an installed skill counts (#1221).
+    const skillDir = path.join(getUserHome(), '.claude', 'skills', skill);
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `# ${skill}\n`);
     // The handler records under the scope the dispatcher resolved for the hook (#810).
     const payload = { session_id: `s-${skill}`, cwd, tool_name: 'Skill', tool_input: { skill } };
     await track.handler.execute(payload, 'claude', await resolveHookConfig(payload, 'claude'));

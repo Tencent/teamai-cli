@@ -26,6 +26,9 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 import { importFromRepoList } from '../import-repo-list.js';
 import { importFromRepo } from '../import-repo.js';
+import { DetachedTeamRepoError } from '../utils/git.js';
+import { autoDetectInit } from '../config.js';
+import { LocalConfigSchema, TeamaiConfigSchema } from '../types.js';
 import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from '../import-codebase.js';
 
 // ─── Tests ──────────────────────────────────────────────
@@ -40,6 +43,7 @@ describe('importFromRepoList', () => {
         process.chdir(tmpDir);
         await fs.ensureDir(path.join(tmpDir, '.teamai'));
         vi.clearAllMocks();
+        vi.mocked(autoDetectInit).mockRejectedValue(new Error('no config in test'));
     });
 
     afterEach(async () => {
@@ -142,6 +146,20 @@ describe('importFromRepoList', () => {
         expect(importFromRepo).toHaveBeenCalledWith(expect.objectContaining({ output, skipAutoPush: true }));
         expect(refreshTeamwikiIndexes).toHaveBeenCalledWith(path.join(output, 'teamwiki'));
         expect(publishTeamwikiViaMR).not.toHaveBeenCalled();
+    });
+
+
+    it('propagates a detached-clone refusal from batch publishing', async () => {
+        const localPath = path.join(tmpDir, 'team-repo');
+        await fs.ensureDir(path.join(localPath, 'teamwiki'));
+        vi.mocked(autoDetectInit).mockResolvedValueOnce({
+            localConfig: LocalConfigSchema.parse({ repo: { localPath, remote: 'https://example.com/team.git' }, username: 'test', scope: 'project' }),
+            teamConfig: TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.com/team.git' }),
+        });
+        const refusal = new DetachedTeamRepoError('main');
+        vi.mocked(publishTeamwikiViaMR).mockRejectedValueOnce(refusal);
+        const listPath = await writeYaml('repos.yaml', { version: 1, repos: [{ url: 'https://github.com/org/repo' }] });
+        await expect(importFromRepoList({ listPath })).rejects.toBe(refusal);
     });
 
     it('fails before importing anything when there is neither a team repo nor --output', async () => {

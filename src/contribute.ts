@@ -222,7 +222,7 @@ export async function contribute(
     return;
   }
 
-  const spin = spinner('Contributing session knowledge...').start();
+  const spin = (await spinner('Contributing session knowledge...')).start();
 
   // Publishing creates a worktree under `.teamai/`. A single-repo install whose
   // `.gitignore` predates it would show that worktree in the user's own

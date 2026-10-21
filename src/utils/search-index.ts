@@ -540,6 +540,33 @@ async function entryFromMdFile(
   };
 }
 
+/** Files a build reads at once: enough to keep the fs thread pool queued while the main thread tokenizes, few enough to stay clear of the descriptor limit. */
+const READ_CONCURRENCY = 32;
+
+/**
+ * {@link entryFromMdFile} for each file, {@link READ_CONCURRENCY} at a time.
+ * The entries, and the files recorded as unreadable, are in the order of
+ * `files`, as a sequential read would leave them: that order breaks score ties.
+ */
+async function entriesFromMdFiles(
+  files: readonly { absPath: string; id: string }[],
+  type: KnowledgeType,
+  reads: BuildReads,
+): Promise<SearchIndexEntry[]> {
+  const out: (SearchIndexEntry | null)[] = [];
+  const unreadable: UnreadableFile[][] = [];
+  const next = files.entries();
+  const worker = async (): Promise<void> => {
+    for (const [i, file] of next) {
+      const own: BuildReads = { ...reads, unreadable: unreadable[i] = [] };
+      out[i] = await entryFromMdFile(file.absPath, file.id, type, own);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, files.length) }, worker));
+  reads.unreadable.push(...unreadable.flat());
+  return out.filter((entry) => entry !== null);
+}
+
 /** Why an fs call failed: its error code, such as `EACCES`, or the message when there is none. */
 function failureReason(e: unknown): string {
   return e instanceof Error ? (e as NodeJS.ErrnoException).code ?? e.message : String(e);
@@ -599,14 +626,9 @@ async function collectFlatMdEntries(
   const entries = await listDir(dir, reads);
   // Only the files directly in `dir`, as a listing would select.
   if (!entries) return keptUnder(dir, type, reads, (rel) => !rel.includes(path.sep) && rel.endsWith('.md'));
-  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
-  const out: SearchIndexEntry[] = [];
-  for (const filename of files) {
-    if (!filename.endsWith('.md')) continue;
-    const e = await entryFromMdFile(path.join(dir, filename), filename, type, reads);
-    if (e) out.push(e);
-  }
-  return out;
+  const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+    .map((entry) => ({ absPath: path.join(dir, entry.name), id: entry.name }));
+  return entriesFromMdFiles(files, type, reads);
 }
 
 /**
@@ -659,12 +681,10 @@ async function collectLearningsEntriesFromDir(
     const nsDir = path.join(dir, ns);
     const { files, kept } = await listMdFilesUnder(nsDir, 'learnings', reads);
     out.push(...kept);
-    for (const rel of files) {
-      // Prefix the id with the namespace so it stays unique against the root and
-      // other namespaces (e.g. `hai-inference/deploy-note.md`).
-      const e = await entryFromMdFile(path.join(nsDir, rel), path.join(ns, rel), 'learnings', reads);
-      if (e) out.push(e);
-    }
+    // Prefix the id with the namespace so it stays unique against the root and
+    // other namespaces (e.g. `hai-inference/deploy-note.md`).
+    out.push(...await entriesFromMdFiles(
+      files.map((rel) => ({ absPath: path.join(nsDir, rel), id: path.join(ns, rel) })), 'learnings', reads));
   }
   return out;
 }
@@ -679,14 +699,9 @@ async function collectRecursiveMdEntries(
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
   const { files, kept } = await listMdFilesUnder(dir, type, reads);
-  const out: SearchIndexEntry[] = [...kept];
-  for (const rel of files) {
-    // Use the relative path as the filename so the entry id is unique
-    // across subdirectories, e.g. `common/coding-style.md`.
-    const e = await entryFromMdFile(path.join(dir, rel), rel, type, reads);
-    if (e) out.push(e);
-  }
-  return out;
+  // Use the relative path as the filename so the entry id is unique
+  // across subdirectories, e.g. `common/coding-style.md`.
+  return [...kept, ...await entriesFromMdFiles(files.map((rel) => ({ absPath: path.join(dir, rel), id: rel })), type, reads)];
 }
 
 /** `collectRecursiveMdEntries` over an explicit list of paths relative to `dir`. */
@@ -696,13 +711,8 @@ async function collectListedMdEntries(
   type: KnowledgeType,
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
-  const out: SearchIndexEntry[] = [];
-  for (const rel of files) {
-    if (!rel.endsWith('.md')) continue;
-    const e = await entryFromMdFile(path.join(dir, rel), rel, type, reads);
-    if (e) out.push(e);
-  }
-  return out;
+  return entriesFromMdFiles(
+    files.filter((rel) => rel.endsWith('.md')).map((rel) => ({ absPath: path.join(dir, rel), id: rel })), type, reads);
 }
 
 /**
@@ -762,13 +772,8 @@ async function collectSkillDirEntries(
   dirs: readonly string[],
   reads: BuildReads,
 ): Promise<SearchIndexEntry[]> {
-  const out: SearchIndexEntry[] = [];
-  for (const dir of dirs) {
-    const skillMd = path.join(dir, 'SKILL.md');
-    const e = await entryFromMdFile(skillMd, `${path.basename(dir)}.md`, 'skills', reads);
-    if (e) out.push(e);
-  }
-  return out;
+  return entriesFromMdFiles(
+    dirs.map((dir) => ({ absPath: path.join(dir, 'SKILL.md'), id: `${path.basename(dir)}.md` })), 'skills', reads);
 }
 
 /** Options for the multi-category build. */
@@ -850,7 +855,7 @@ export async function buildIndex(
   // wipes recall until the next rebuild — same shape as the votes file (#854).
   const target = opts.indexPath ?? getSearchIndexPath();
   try {
-    await writeJsonAtomic(target, index);
+    await writeJsonAtomic(target, index, { compact: true });
   } catch (e) {
     // The previous index would keep serving what the member no longer receives (#1006).
     if (await rm(target, { force: true }).then(() => true, () => false)) {
@@ -894,10 +899,11 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
       log.warn(`Search index could not read the votes in ${opts.votesDir} (${failureReason(e)}); it ranks without them until the next rebuild.`);
     }
   }
-  let previous: SearchIndex | null | undefined;
+  // One load shared by concurrent reads, so `reads.kept` sees each previous entry as one object.
+  let previous: Promise<SearchIndex | null> | undefined;
   const previousEntries = async (): Promise<SearchIndexEntry[]> => {
-    if (previous === undefined) previous = await loadIndex(opts.indexPath ?? getSearchIndexPath());
-    return previous?.entries ?? [];
+    previous ??= loadIndex(opts.indexPath ?? getSearchIndexPath());
+    return (await previous)?.entries ?? [];
   };
   const reads: BuildReads = {
     voteCounts: voteAgg.scores,

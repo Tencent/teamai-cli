@@ -23,16 +23,21 @@ export function generateRunId(): string {
   return `r${randomBytes(8).toString('hex')}`;
 }
 
+/** The directory that holds this scope's run files, `<run id>.json` each. */
+export function runsDir(config: LocalConfig): string {
+  return path.join(getDataHome(config), 'workflows', 'runs');
+}
+
 export function runFilePath(config: LocalConfig, runId: string): string {
-  return path.join(getDataHome(config), 'workflows', 'runs', `${runId}.json`);
+  return path.join(runsDir(config), `${runId}.json`);
 }
 
 export function runLockPath(config: LocalConfig, runId: string): string {
-  return path.join(getDataHome(config), 'workflows', 'runs', `${runId}.lock`);
+  return path.join(runsDir(config), `${runId}.lock`);
 }
 
 export function driverLockPath(config: LocalConfig, runId: string): string {
-  return path.join(getDataHome(config), 'workflows', 'runs', runId, 'driver.lock');
+  return path.join(runsDir(config), runId, 'driver.lock');
 }
 
 function isDefinition(value: unknown): value is WorkflowDefinition {

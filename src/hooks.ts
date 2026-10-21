@@ -2042,6 +2042,13 @@ async function reconcileCopilotFormat(
 
 // ─── Codex (hooks.json) reconcile ───────────────────────────
 
+/** A Codex-format hooks document as `tool` loads it: Muse Code refuses a settings.json without `schema_version: 1`. */
+function codexFormatDocument(tool: string, hooksJson: CodexHooksJson): CodexHooksJson {
+  return tool === MUSE_TOOL_ID && hooksJson.schema_version === undefined
+    ? { schema_version: 1, ...hooksJson }
+    : hooksJson;
+}
+
 async function reconcileCodexFormat(
   hooksPath: string,
   tool: string,
@@ -2098,11 +2105,7 @@ async function reconcileCodexFormat(
   }
 
   if (changed) {
-    // Muse Code refuses a settings.json without `schema_version: 1`.
-    const document = tool === MUSE_TOOL_ID && hooksJson.schema_version === undefined
-      ? { schema_version: 1, ...hooksJson }
-      : hooksJson;
-    await writeJson(expanded, document);
+    await writeJson(expanded, codexFormatDocument(tool, hooksJson));
     log.success(`${opts.removeAll ? 'Removed' : 'Updated'} teamai hooks in ${hooksPath}`);
   } else {
     log.debug(`teamai hooks already up-to-date in ${hooksPath}`);
@@ -2338,6 +2341,10 @@ export async function applyAgentHook(
   def: AgentHookDef,
 ): Promise<void> {
   const format = detectFormat(tool);
+  // ZCode's strict schema rejects its whole config over a Claude-shaped `hooks` key (#1220).
+  if (format === 'zcode') {
+    throw new Error(`unsupported tool: ${tool} (agent hooks are not written in ZCode's hooks.events format)`);
+  }
   const expanded = expandHome(settingsPath);
   await ensureDir(path.dirname(expanded));
 
@@ -2363,7 +2370,7 @@ export async function applyAgentHook(
     const newArr = [...untouched, toCodexEntry(hookDef)];
     if (JSON.stringify(existing) !== JSON.stringify(newArr)) {
       hooksJson.hooks[def.event] = newArr;
-      await writeJson(expanded, hooksJson);
+      await writeJson(expanded, codexFormatDocument(tool, hooksJson));
       log.success(`Installed agent hook [${def.slug}] in ${settingsPath}`);
     } else {
       log.debug(`agent hook [${def.slug}] already up-to-date in ${settingsPath}`);
@@ -2387,13 +2394,14 @@ export async function applyAgentHook(
 /**
  * Remove a single agent hook from a tool's settings file by slug (claude) or
  * command (codex). Silent if the file does not exist or there is no matching entry.
- * Only writes when content has actually changed.
+ * Only writes when content has actually changed. Codex returns each retained
+ * handler's new key mapped to its original key for preserving approval.
  */
 export async function removeAgentHook(
   settingsPath: string,
   tool: string,
   opts: { slug: string; command?: string },
-): Promise<void> {
+): Promise<ReadonlyMap<string, string> | void> {
   const expanded = expandHome(settingsPath);
   if (!(await pathExists(expanded))) return;
   const format = detectFormat(tool);
@@ -2405,10 +2413,19 @@ export async function removeAgentHook(
     if (!opts.command) return;
     const hooksJson: CodexHooksJson = await readHookFile<CodexHooksJson>(expanded, {});
     if (!hooksJson.hooks) return;
+    const retained = new Map<string, string>();
     let changed = false;
     for (const event of Object.keys(hooksJson.hooks)) {
       const before = hooksJson.hooks[event];
-      const after = before.filter((e) => (e.hooks?.[0]?.command ?? '') !== opts.command);
+      const after: CodexHookMatcher[] = [];
+      for (const [index, group] of before.entries()) {
+        if ((group.hooks?.[0]?.command ?? '') === opts.command) continue;
+        group.hooks?.forEach((_, handler) => retained.set(
+          codexHookKey(expanded, event, after.length, handler),
+          codexHookKey(expanded, event, index, handler),
+        ));
+        after.push(group);
+      }
       if (after.length !== before.length) {
         changed = true;
         if (after.length === 0) {
@@ -2422,6 +2439,7 @@ export async function removeAgentHook(
       await writeJson(expanded, hooksJson);
       log.success(`Removed agent hook [${opts.slug}] from ${settingsPath}`);
     }
+    return retained;
   } else {
     const settings: ClaudeSettingsJson = await readHookFile<ClaudeSettingsJson>(expanded, {});
     if (!settings.hooks) return;
@@ -2985,6 +3003,8 @@ export async function reconcileHooksToAllTools(
     selfLocalTeamHooks?: { relocate: boolean };
     /** Project scope: Codex team hooks may run from the dispatcher instead of the project's file (#915). */
     codexTeamHooks?: CodexTeamHookPlacement;
+    /** Collects the tools whose hook files a write failure left as they were. */
+    unwritten?: string[];
   } = {},
 ): Promise<Set<string>> {
   // Without the manifest, reconcileHooks manages the built-in entries only.
@@ -3040,6 +3060,7 @@ export async function reconcileHooksToAllTools(
         }
       } catch (e) {
         log.warn(`Failed to reconcile Hermes hooks: ${(e as Error).message}`);
+        opts.unwritten?.push(tool);
       }
       continue;
     }
@@ -3064,6 +3085,7 @@ export async function reconcileHooksToAllTools(
         }
       } catch (e) {
         log.warn(`Failed to reconcile OpenClaw hooks for ${tool}: ${(e as Error).message}`);
+        opts.unwritten?.push(tool);
       }
       continue;
     }
@@ -3076,6 +3098,7 @@ export async function reconcileHooksToAllTools(
         await reconcileOpencodePlugin(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
         log.warn(`Failed to reconcile OpenCode hooks: ${(e as Error).message}`);
+        opts.unwritten?.push(tool);
       }
       continue;
     }
@@ -3087,6 +3110,7 @@ export async function reconcileHooksToAllTools(
         await reconcileOmpExtension(opts.removeAll);
       } catch (e) {
         log.warn(`Failed to reconcile OMP hooks: ${(e as Error).message}`);
+        opts.unwritten?.push(tool);
       }
       continue;
     }
@@ -3099,6 +3123,7 @@ export async function reconcileHooksToAllTools(
         await reconcilePiExtension(baseDir, opts.removeAll, opts.installedBaseDir);
       } catch (e) {
         log.warn(`Failed to reconcile Pi hooks: ${(e as Error).message}`);
+        opts.unwritten?.push(tool);
       }
       continue;
     }
@@ -3120,6 +3145,7 @@ export async function reconcileHooksToAllTools(
         }
       } catch (e) {
         log.warn(`Failed to reconcile DeepSeek Harness hooks: ${(e as Error).message}`);
+        opts.unwritten?.push(tool);
       }
       continue;
     }
@@ -3207,6 +3233,7 @@ export async function reconcileHooksToAllTools(
       }
     } catch (e) {
       log.warn(`Failed to reconcile hooks for ${tool}: ${(e as Error).message}`);
+      opts.unwritten?.push(tool);
     }
   }
   return reconciledMainTools;
@@ -3392,15 +3419,42 @@ async function teamaiCodexHooks(file: string, manifestPath: string): Promise<Cod
     const builtin = group.hooks?.length === 1 && (isCodexTeamHookDispatcher(command ?? '') || builtins.some((def) =>
       def.event === event && def.command === command && toCodexEntry(def).matcher === group.matcher));
     if (typeof command !== 'string' || !(builtin || records.some((r) => ownsCodexEntry(r, event, index, groups)))) return [];
-    const snake = event.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
-    const commandWindows = group.hooks?.[0]?.commandWindows;
-    return [{
-      file,
-      command,
-      ...(commandWindows !== undefined ? { commandWindows } : {}),
-      key: `${canonicalProjectRoot(file)}:${snake}:${index}:0`,
-    }];
+    return [codexTrustHook(file, event, index, group)];
   }));
+}
+
+function codexHookKey(file: string, event: string, group: number, handler: number): string {
+  const snake = event.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase();
+  return `${canonicalProjectRoot(file)}:${snake}:${group}:${handler}`;
+}
+
+/** One Codex hooks.json entry as a trust pass names it, with Codex's file/event/position key. */
+function codexTrustHook(file: string, event: string, index: number, group: CodexHookMatcher): CodexTrustTargets['hooks'][number] {
+  const commandWindows = group.hooks?.[0]?.commandWindows;
+  return {
+    file,
+    command: group.hooks?.[0]?.command ?? '',
+    ...(commandWindows !== undefined ? { commandWindows } : {}),
+    key: codexHookKey(file, event, index, 0),
+  };
+}
+
+/**
+ * Trust in Codex the user-scope agent hook `applyAgentHook` wrote to
+ * `settingsPath` (#1220). A pull's trust pass covers only the hooks a pull
+ * records, so without this Codex skips every server-pushed hook.
+ */
+export async function trustCodexAgentHook(settingsPath: string, event: string, command: string): Promise<CodexTrust> {
+  const file = expandHome(settingsPath);
+  const groups = (await readJson<CodexHooksJson>(file))?.hooks?.[event] ?? [];
+  const index = groups.findIndex((group) => group.hooks?.[0]?.command === command);
+  if (index === -1) return { kind: 'failed', reason: `${command} is not in ${file}` };
+  const { trustCodexHooks } = await import('./codex-trust.js');
+  return trustCodexHooks({
+    codexHome: path.dirname(file),
+    cwd: getUserHome(),
+    hooks: [codexTrustHook(file, event, index, groups[index])],
+  });
 }
 
 /**
@@ -3609,9 +3663,13 @@ export async function sweepLegacyProjectHooks(
  * overrides when hooks/hooks.yaml parses, and otherwise with their defaults,
  * only in a tool that has no teamai hook yet (a first install).
  */
-export type TeamHooksReconcile =
+export type TeamHooksReconcile = {
+  /** The tools whose hook files a write failure left as they were; absent when none. */
+  unwritten?: string[];
+} & (
   | { ok: true; defs: HookDef[] }
-  | { ok: false; builtins: BuiltinsOnly };
+  | { ok: false; builtins: BuiltinsOnly }
+);
 
 /**
  * The tools a hook pass reaches: the explicit selection (or the config's
@@ -3732,6 +3790,7 @@ export async function reconcileTeamHooksForConfig(
   const codexProject = await codexTeamHookProject(localConfig);
   const codexHome = codexHomeHooksFile(teamConfig, localConfig);
   const mainCheckout = await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths);
+  const unwritten: string[] = [];
   const reconciledMainTools = await reconcileHooksToAllTools(hookToolPaths, baseDir, teamDefs, manifestPath, {
     removeAll: opts.removeAll,
     builtinOverride: builtin,
@@ -3747,6 +3806,7 @@ export async function reconcileTeamHooksForConfig(
     builtinsOnly,
     mainCheckout,
     teamHookHistory: history,
+    unwritten,
     ...(isSelfMode(localConfig) && localConfig.scope === 'project' && localConfig.projectRoot
       ? { selfLocalTeamHooks: { relocate: isGitExcludeEnabled(localConfig, teamConfig) } }
       : {}),
@@ -3760,6 +3820,7 @@ export async function reconcileTeamHooksForConfig(
       await reconcileCodexDispatchers(codexHome);
     } catch (e) {
       log.warn(`Failed to reconcile the Codex team-hook dispatchers in ${codexHome}: ${(e as Error).message}`);
+      unwritten.push(CODEX_TOOL_ID);
     }
   }
 
@@ -3813,8 +3874,9 @@ export async function reconcileTeamHooksForConfig(
   // Last, so a repository whose hooks cannot be written still gets the agent
   // hooks above; the error then reaches the caller.
   if (!opts.removeAll) await installProjectGitHook(localConfig);
-  if (builtinsOnly) return { ok: false, builtins: builtinsOnly };
-  return { ok: true, defs: teamDefs };
+  const failed = unwritten.length > 0 ? { unwritten } : {};
+  if (builtinsOnly) return { ok: false, builtins: builtinsOnly, ...failed };
+  return { ok: true, defs: teamDefs, ...failed };
 }
 
 /**

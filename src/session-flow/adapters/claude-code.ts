@@ -22,7 +22,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { AgentAdapter, type SessionMeta, type SessionReadRef } from './base.js';
-import type { Session, Message, ContentBlock } from '../ir.js';
+import type { Session, Message, ContentBlock, ImageBlock } from '../ir.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import { imagePlaceholderText } from '../ir.js';
 import {
@@ -152,7 +152,11 @@ function toCcTimestamp(isoStr: string | undefined): string {
 // Content-block parsing (CC → IR)
 // ---------------------------------------------------------------------------
 
-function parseCcContentBlocks(content: unknown): ContentBlock[] {
+/**
+ * Images returned inside a tool_result (e.g. Read on a screenshot) have no slot in the IR tool_result;
+ * they go to `toolResultImages` so the caller can place them after the tool-result message.
+ */
+function parseCcContentBlocks(content: unknown, toolResultImages: ImageBlock[] = []): ContentBlock[] {
   const blocks: ContentBlock[] = [];
 
   if (typeof content === 'string') {
@@ -189,6 +193,9 @@ function parseCcContentBlocks(content: unknown): ContentBlock[] {
         for (const part of rawContent) {
           if (part && typeof part === 'object' && (part as Record<string, unknown>).type === 'text') {
             parts.push(String((part as Record<string, unknown>).text ?? ''));
+          } else if (part && typeof part === 'object' && (part as Record<string, unknown>).type === 'image') {
+            const image = parseCcImage(part as Record<string, unknown>);
+            if (image) toolResultImages.push(image);
           } else if (typeof part === 'string') {
             parts.push(part);
           }
@@ -204,24 +211,31 @@ function parseCcContentBlocks(content: unknown): ContentBlock[] {
         isError: Boolean(b.is_error ?? false),
       });
     } else if (btype === 'image') {
-      // Screenshot pasted into the input box: Anthropic format is
-      // {type:'image', source:{type:'base64', media_type, data}} (also {type:'url', url}).
+      // Screenshot pasted into the input box.
       // If it is not parsed, the image never enters the IR or the target, yet fidelity still reports 100% (silent undercount).
-      const src = b.source as Record<string, unknown> | undefined;
-      const data = typeof src?.data === 'string' ? src.data : undefined;
-      const url = typeof b.url === 'string' ? b.url : (typeof src?.url === 'string' ? src.url : undefined);
-      if (!data && !url) continue;
-      blocks.push({
-        type: 'image',
-        mimeType: String(src?.media_type ?? 'image/png'),
-        // Carry base64 as-is; a URL-only form keeps just the pointer (the write side degrades by target capability)
-        ...(data ? { data } : {}),
-        ...(url ? { filePath: url } : {}),
-        label: guessImageLabel(String(src?.media_type ?? 'image/png')),
-      });
+      const image = parseCcImage(b);
+      if (image) blocks.push(image);
     }
   }
   return blocks;
+}
+
+/**
+ * Anthropic image format: {type:'image', source:{type:'base64', media_type, data}} (also {type:'url', url}).
+ */
+function parseCcImage(b: Record<string, unknown>): ImageBlock | undefined {
+  const src = b.source as Record<string, unknown> | undefined;
+  const data = typeof src?.data === 'string' ? src.data : undefined;
+  const url = typeof b.url === 'string' ? b.url : (typeof src?.url === 'string' ? src.url : undefined);
+  if (!data && !url) return undefined;
+  return {
+    type: 'image',
+    mimeType: String(src?.media_type ?? 'image/png'),
+    // Carry base64 as-is; a URL-only form keeps just the pointer (the write side degrades by target capability)
+    ...(data ? { data } : {}),
+    ...(url ? { filePath: url } : {}),
+    label: guessImageLabel(String(src?.media_type ?? 'image/png')),
+  };
 }
 
 /** Inline images have no filename; derive a readable placeholder from the mime type (used when writing back or degrading to a placeholder). */
@@ -587,14 +601,28 @@ export class ClaudeCodeAdapter extends AgentAdapter {
 
     // Convert to IR Message
     const messages: Message[] = [];
+    // Images returned by tools go in a user message of their own after the round's tool results
+    // (Claude Code writes each parallel tool_result as its own record)
+    let toolImages: ImageBlock[] = [];
+    const flushToolImages = (timestamp?: string) => {
+      if (toolImages.length === 0) return;
+      messages.push({ role: 'user', content: toolImages, timestamp });
+      toolImages = [];
+    };
     for (const record of ordered) {
-      const msg = this.recordToMessage(record);
-      if (msg) messages.push(msg);
+      const images: ImageBlock[] = [];
+      const msg = this.recordToMessage(record, images);
+      if (!msg) continue;
+      const toolResultsOnly = msg.role === 'user' && msg.content.length > 0 && msg.content.every((b) => b.type === 'tool_result');
+      if (!toolResultsOnly) flushToolImages(messages[messages.length - 1]?.timestamp);
+      messages.push(msg);
+      toolImages.push(...images);
     }
+    flushToolImages(messages[messages.length - 1]?.timestamp);
     return messages;
   }
 
-  private recordToMessage(record: Record<string, unknown>): Message | null {
+  private recordToMessage(record: Record<string, unknown>, toolResultImages?: ImageBlock[]): Message | null {
     const rtype = record.type as string;
     if (rtype !== 'user' && rtype !== 'assistant') return null;
 
@@ -602,7 +630,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     if (!msgObj || typeof msgObj !== 'object') return null;
 
     const content = msgObj.content;
-    const blocks = parseCcContentBlocks(content);
+    const blocks = parseCcContentBlocks(content, toolResultImages);
 
     const timestamp = parseCcTimestamp(record.timestamp as string);
     const messageId = record.uuid as string | undefined;

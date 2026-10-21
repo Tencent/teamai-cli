@@ -802,17 +802,23 @@ export async function runHiddenDeepEnrich(opts: {
   wikiRoot?: string;
   maxModules?: number;
 }): Promise<DeepEnrichResult> {
-  const { resolveTeamwiki } = await import('./utils/teamwiki-root.js');
-  const wikiRoot = opts.wikiRoot ?? (await resolveTeamwiki()).wikiRoot;
-  const evidenceDir = path.join(wikiRoot, 'evidence', 'code', opts.project);
-  const result = await deepEnrich({
-    project: opts.project,
-    evidenceDir,
-    wikiRoot,
-    maxModules: opts.maxModules,
-  });
-  if (!result.complete) process.exitCode = 1;
-  return result;
+  const { lockTeamwiki, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+  const target = opts.wikiRoot ? { wikiRoot: opts.wikiRoot } : await resolveTeamwiki();
+  const { wikiRoot } = target;
+  const releaseImportLock = await lockTeamwiki(target);
+  try {
+    const evidenceDir = path.join(wikiRoot, 'evidence', 'code', opts.project);
+    const result = await deepEnrich({
+      project: opts.project,
+      evidenceDir,
+      wikiRoot,
+      maxModules: opts.maxModules,
+    });
+    if (!result.complete) process.exitCode = 1;
+    return result;
+  } finally {
+    await releaseImportLock();
+  }
 }
 
 /**

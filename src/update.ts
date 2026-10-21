@@ -472,6 +472,29 @@ export async function releaseLock(lockPath?: string): Promise<void> {
 }
 
 /**
+ * Run `body` holding `lockPath`, trying up to `wait.attempts` times with
+ * `wait.delayMs` between tries. `held: false` means the lock stayed busy and
+ * `body` did not run.
+ */
+export async function withFileLock<T>(
+  lockPath: string,
+  wait: { attempts: number; delayMs: number },
+  body: () => Promise<T>,
+): Promise<{ held: true; value: T } | { held: false }> {
+  for (let attempt = 0; attempt < wait.attempts; attempt++) {
+    if (await acquireLock(lockPath)) {
+      try {
+        return { held: true, value: await body() };
+      } finally {
+        await releaseLock(lockPath);
+      }
+    }
+    await new Promise((r) => setTimeout(r, wait.delayMs));
+  }
+  return { held: false };
+}
+
+/**
  * Synchronously remove the locks this process still holds when it exits —
  * the same owner-verified removal `releaseLock` does, but with sync fs calls,
  * because `process.on('exit')` handlers cannot await (#1027).

@@ -498,9 +498,10 @@ describe('resetToCleanMaster', () => {
     });
     mockRevparse('origin/master', 'master');
 
-    await resetToCleanMaster(mockGit as any);
+    await resetToCleanMaster(mockGit as any, '/mock/master');
 
     expect(mockGit.reset).not.toHaveBeenCalled();
+    expect(mockGit.clean).not.toHaveBeenCalled();
     expect(mockGit.checkout).not.toHaveBeenCalled();
   });
 
@@ -513,9 +514,10 @@ describe('resetToCleanMaster', () => {
     });
     mockRevparse('origin/master', 'master');
 
-    await resetToCleanMaster(mockGit as any);
+    await resetToCleanMaster(mockGit as any, '/mock/master');
 
     expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
     expect(mockGit.checkout).not.toHaveBeenCalled();
   });
 
@@ -528,9 +530,25 @@ describe('resetToCleanMaster', () => {
     });
     mockRevparse('origin/master', 'master');
 
-    await resetToCleanMaster(mockGit as any);
+    await resetToCleanMaster(mockGit as any, '/mock/master');
 
     expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
+  });
+
+  it('should clean untracked files that reset --hard leaves in place', async () => {
+    mockGit.status.mockResolvedValue({
+      modified: [],
+      not_added: ['skills/stray/SKILL.md'],
+      created: [],
+      conflicted: [],
+    });
+    mockRevparse('origin/master', 'master');
+
+    await resetToCleanMaster(mockGit as any, '/mock/master');
+
+    expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
   });
 
   it('should checkout master when stuck on a stale push branch', async () => {
@@ -542,7 +560,7 @@ describe('resetToCleanMaster', () => {
     });
     mockRevparse('origin/master', 'teamai/push/jeffyxu/20260411-225746');
 
-    await resetToCleanMaster(mockGit as any);
+    await resetToCleanMaster(mockGit as any, '/mock/master');
 
     expect(mockGit.checkout).toHaveBeenCalledWith('master');
   });
@@ -556,9 +574,10 @@ describe('resetToCleanMaster', () => {
     });
     mockRevparse('origin/master', 'teamai/push/user/20260411-123456');
 
-    await resetToCleanMaster(mockGit as any);
+    await resetToCleanMaster(mockGit as any, '/mock/master');
 
     expect(mockGit.reset).toHaveBeenCalledWith(['--hard', 'HEAD']);
+    expect(mockGit.clean).toHaveBeenCalledWith('f', ['-d']);
     expect(mockGit.checkout).toHaveBeenCalledWith('master');
   });
 
@@ -571,7 +590,7 @@ describe('resetToCleanMaster', () => {
     });
     mockRevparse('origin/main', 'feature/foo');
 
-    await resetToCleanMaster(mockGit as any);
+    await resetToCleanMaster(mockGit as any, '/mock/main');
 
     expect(mockGit.checkout).toHaveBeenCalledWith('main');
   });

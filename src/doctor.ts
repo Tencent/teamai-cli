@@ -809,6 +809,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   // (#707), a model alias an agent uses from a namespace not active here, and
   // how each alias agent's model resolved in each tool (#830).
   const { ruleChannelNotes } = await import('./resources/rules.js');
+  const { dshSandboxNote } = await import('./dsh-hooks.js');
   const notes = [
     ...await buildNamespaceNotes(ctx),
     ...await entryNamespaceNotes(ctx),
@@ -821,6 +822,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await mcpTransportNotes(ctx),
     ...await envLoaderNotes(ctx),
     ...await ruleChannelNotes(localConfig),
+    ...[await dshSandboxNote(localConfig)].filter((note): note is string => note !== null),
     ...codexTrust.notes,
     usageReportNote(ctx),
     // What git sees of the delivered team resources, and what no pull changes (#915).

@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 
 import { classifyShellCommand } from '../utils/shell-command.js';
+import { getUserHome } from '../utils/home.js';
 import { classifyToolCall } from '../utils/tool-call.js';
 
 const CWD = path.resolve('/w');
@@ -68,7 +69,6 @@ describe('classifyToolCall', () => {
     'cat -',
     'cat *.md',
     'cat $(ls)',
-    'cat "$HOME/doc.md"',
     'cat doc.md > copy.md',
     'cat notes.txt > doc.md',
     'cat < doc.md',
@@ -105,6 +105,29 @@ describe('classifyToolCall', () => {
     expect(ps('type doc.md')).toMatchObject({ category: 'read', paths: [at('doc.md')] });
     expect(classifyToolCall({ tool_name: 'powershell', tool_input: { command: 'gc doc.md' }, tool_response: {}, cwd: CWD }).category).toBe('read');
     expect(shell('Get-Content doc.md')).toMatchObject({ category: 'read', paths: [at('doc.md')] });
+  });
+
+  it('an unquoted leading ~/, $HOME/ or ${HOME}/ is the home directory; a quoted ~ is a literal one', () => {
+    const home = getUserHome();
+    for (const operand of ['~/doc.md', '$HOME/doc.md', '${HOME}/doc.md']) {
+      expect(shell(`cat ${operand}`)).toMatchObject({ category: 'read', paths: [path.join(home, 'doc.md')] });
+    }
+    expect(shell("cat '~/doc.md' \"~/b.md\" a~/c.md")).toMatchObject({ category: 'read', paths: [at('~/doc.md'), at('~/b.md'), at('a~/c.md')] });
+    expect(shell("cat '$HOME/doc.md'")).toMatchObject({ category: 'shell', paths: [] });
+  });
+
+  it.each(['"$HOME/doc.md"', '"${HOME}/doc.md"'])('expands double-quoted HOME in %s', (operand) => {
+    expect(shell(`cat ${operand}`)).toMatchObject({ category: 'read', paths: [path.join(getUserHome(), 'doc.md')] });
+  });
+
+  it.each(["'$HOME/doc.md'", "'${HOME}/doc.md'", '"\\$HOME/doc.md"'])('keeps literal HOME in %s', (operand) => {
+    expect(shell(`cat ${operand}`)).toMatchObject({ category: 'shell', paths: [] });
+  });
+
+  it('a leading ~\\, $HOME\\ or ${HOME}\\ is the home directory too', () => {
+    for (const ref of ['~', '$HOME', '${HOME}']) {
+      expect(shell(`cat ${ref}\\.codex\\skills\\x\\SKILL.md`)).toMatchObject({ category: 'read', paths: [`${getUserHome()}\\.codex\\skills\\x\\SKILL.md`] });
+    }
   });
 
   it('a pipeline that starts with the reader is a read, but not a simple one', () => {

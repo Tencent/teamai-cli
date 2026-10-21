@@ -113,8 +113,10 @@ describe('#1083 workflow run records reach the reports branch', () => {
     expect(startRecord.username).toBe('alice');
     expect(startRecord.sourceHash).toBe(sourceHash);
     expect(startRecord.teamRevision).toBe(teamRevision);
-    expect(() => git(repo, 'cat-file', '-e', teamRevision)).not.toThrow();
-    expect(git(repo, 'show', `${teamRevision}:workflows/build.yaml`)).toBe(TWO_STEPS);
+    git(sandbox, 'clone', 'origin.git', 'fresh');
+    const fresh = path.join(sandbox, 'fresh');
+    expect(() => git(fresh, 'cat-file', '-e', teamRevision)).not.toThrow();
+    expect(git(fresh, 'show', `${teamRevision}:workflows/build.yaml`)).toBe(TWO_STEPS);
 
     const done = await runLocalDriver(config, runId, work, {
       tools: { default: 'claude' },

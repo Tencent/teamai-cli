@@ -1,0 +1,9 @@
+{
+  "session_id": "codex-run-c",
+  "turn_id": "codex-run-c-turn",
+  "cwd": "${CWD}",
+  "hook_event_name": "UserPromptSubmit",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "bypassPermissions",
+  "prompt": "$hello-skill say hi, and read the skill file first to double check it."
+}

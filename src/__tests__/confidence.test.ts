@@ -70,4 +70,34 @@ describe('computeConfidence', () => {
       expect(score).toBeLessThanOrEqual(1);
     }
   });
+
+  it('caps the ratio when manual feedback exceeds recall count', () => {
+    const score = computeConfidence({
+      recalledCount: 1,
+      upvotedCount: 5,
+      lastRecalledAt: new Date().toISOString(),
+    });
+
+    expect(score).toBe(1);
+  });
+
+  it('keeps feedback without any recalls within the base and ratio weights', () => {
+    const score = computeConfidence({
+      recalledCount: 0,
+      upvotedCount: 5,
+      lastRecalledAt: '',
+    });
+
+    expect(score).toBe(0.7);
+  });
+
+  it('does not let excess feedback replace the expired recency weight', () => {
+    const score = computeConfidence({
+      recalledCount: 1,
+      upvotedCount: 5,
+      lastRecalledAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+
+    expect(score).toBe(0.7);
+  });
 });

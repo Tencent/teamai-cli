@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. See [standa
 
 ## [Unreleased]
 
+### ✨ Features
+
+- `teamai pull --team-ref <ref>` pins a workspace and its checkouts to a team branch, tag, or commit. Later pulls and hooks follow the pin; passing the default branch unpins. Revision switches remove unchanged copies the new tree lacks, keep edits, and block all pushes while pinned. `--team-ref` with `--dry-run` is refused. `status` shows the pin. An older CLI saving the workspace's local config drops `repo.ref`, which unpins it (for [#1183](https://github.com/Tencent/teamai-cli/issues/1183)).
+
 ### Changed
 
 - `teamai init` no longer pulls team skills, rules, agents or MCP before it exits. It still saves config and installs hooks. In project scope it creates a tool directory only for a tool named with `--agent` or picked in a terminal; otherwise that directory appears when the tool starts a session, and that session start pulls. `teamai pull` still does not create a missing tool directory. A tool that reads rules and MCP once, before its SessionStart hook, sees them from the following session (for [#1065](https://github.com/Tencent/teamai-cli/issues/1065)).

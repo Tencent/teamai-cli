@@ -39,6 +39,23 @@ cd /path/to/java-service
 teamai init https://github.com/your-org/java-service-teamai --inherit-user-scope
 ```
 
+### 将 workspace 固定到团队版本
+
+在使用独立 git 团队仓库的 workspace 中，用 `pull --team-ref` 试用包含 `teamai.yaml` 的远程分支、标签或提交：
+
+```bash
+teamai pull --team-ref feature/review-skill
+teamai pull --team-ref v2.3.0
+teamai pull --team-ref 3f2c9a7d
+teamai pull --team-ref main  # 用团队的默认分支名解除固定
+```
+
+固定信息保存在该 workspace 的本地配置中，对其所有 checkout 和 hook pull 生效。分支会跟随新提交；标签和提交保持固定。提交必须能从远程分支到达。`pull` 和 `status` 会显示固定状态。
+
+切换版本时，新版本没有的 skill、rule 和 agent 的未修改副本会被移除。修改过的副本会保留，解除固定时会指出哪些修改会被 `push` 发到默认分支。固定期间 `push` 不发送任何内容，`source add`、`source remove` 和写入团队 wiki 的 `import` 会拒绝执行；pull 仍上报用量和 learnings。固定版本的 pull 失败或交付不完整时退出码为 1。`--team-ref` 不能与 `--dry-run` 同用。
+
+此功能要求 workspace 安装，不继承 user scope，且同一团队未在 user scope 安装。不支持 HTTP 或单仓库模式。其他 workspace 保持各自的版本。
+
 ### 不独立
 
 业务仓库自己就是团队仓库。资产写在这个仓库的 `.teamai/` 里。

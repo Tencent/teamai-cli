@@ -17,6 +17,7 @@
  * responseOf. A name not listed here is `unknown` and never counts.
  */
 import { isAbsolutePath, isWithin, resolvePath, samePath, withoutReadSelector } from './agent-path.js';
+import { getUserHome } from './home.js';
 import { resolveHookCwd } from './hook-cwd.js';
 import { classifyShellCommand } from './shell-command.js';
 import { normalizeToolName } from './tool-names.js';
@@ -276,7 +277,7 @@ export function classifyToolCall(stdin: Record<string, unknown>, agent?: string)
 
   const command = input.command;
   if (typeof command !== 'string') return unknown;
-  const shell = classifyShellCommand(command, { powershell: name.toLowerCase() === 'powershell' });
+  const shell = classifyShellCommand(command, { powershell: name.toLowerCase() === 'powershell', home: getUserHome() });
   const output = outputOf(response);
   const optional = output !== undefined ? { output } : {};
   // With no status, only the command's own error lines tell a failure apart.

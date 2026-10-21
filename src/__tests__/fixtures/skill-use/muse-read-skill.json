@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "read_skill",
+  "tool_input": {
+    "name": "hello-skill"
+  },
+  "session_id": "muse-run",
+  "turn_id": "muse-run-turn",
+  "cwd": "${CWD}",
+  "model": "mock-model",
+  "permission_mode": "default",
+  "model_provider": "meta"
+}

@@ -39,17 +39,6 @@
         "description": "[teamai] Hook dispatch post-tool-use wildcard"
       },
       {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool workbuddy --matcher Skill 2>/dev/null || true",
-            "timeout": 10
-          }
-        ],
-        "description": "[teamai] Hook dispatch post-tool-use Skill"
-      },
-      {
         "matcher": "TodoWrite",
         "hooks": [
           {

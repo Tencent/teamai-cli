@@ -237,6 +237,35 @@ describe('uninstall', () => {
     await fse.remove(tmpDir);
   });
 
+  it.each(['mount', 'config', 'mount and config'])('removes dsh hooks without the legacy overlay when only %s remains (#1219)', async (remaining) => {
+    const homeDir = path.join(tmpDir, 'home');
+    const repoPath = path.join(tmpDir, 'team-repo');
+    const dshHome = path.join(homeDir, '.dsh');
+    const hooksPath = path.join(homeDir, '.teamai', 'dsh', 'hooks.json');
+    const patchPath = path.join(dshHome, 'cordis.patch.yml');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('DSH_HOME', dshHome);
+    await fse.ensureDir(dshHome);
+    const memberPatch = '# my tweaks\n- id: telemetry\n  disabled: true\n';
+    await fse.writeFile(patchPath, memberPatch + (remaining.includes('mount') ? YAML.stringify([{
+      insert: [{ id: 'teamai-hooks-claude-code', name: '@deepseek-ai/dsh-hooks-claude-code', config: { configPath: hooksPath } }],
+    }]) : ''));
+    if (remaining.includes('config')) await fse.outputJson(hooksPath, { hooks: {} });
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: ['dsh', 'claude'] }),
+      teamConfig: makeTeamConfig({ toolPaths: { dsh: { skills: '.dsh/skills' }, claude: { skills: '.claude/skills' } } }),
+    });
+
+    await uninstall({ force: true, agent: 'dsh' });
+
+    expect(mockReconcileHooks).toHaveBeenCalledWith(
+      hooksPath, 'dsh', [], expect.objectContaining({ removeAll: true }),
+    );
+    const patch = await fse.readFile(patchPath, 'utf8');
+    expect(patch).toContain('# my tweaks');
+    expect(YAML.parse(patch)).toEqual([{ id: 'telemetry', disabled: true }]);
+  });
+
   it('完整卸载移除所有资源', async () => {
     const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

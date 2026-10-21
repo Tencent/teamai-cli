@@ -75,7 +75,7 @@ import { getUserHome } from './utils/home.js';
  * is collision-resistant in practice because the input shape is constrained
  * (hex IDs or PID+cwd which is itself unique on a given machine).
  */
-function sanitizeSessionId(sessionId: string): string {
+export function sanitizeSessionId(sessionId: string): string {
   return sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 

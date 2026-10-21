@@ -97,6 +97,8 @@ teamai recall maintenance --update-quality
 
 `--archive` puts aside learnings whose confidence is below 0.15. `--update-quality` writes a `.draft.md`. Rename it to `.md` when the draft is right.
 
+Confidence is an activity score from 0 to 1, not a probability that the knowledge is correct or a task succeeded. Its upvote-to-recall ratio is capped at 1, so repeated positive feedback cannot exceed that factor's 30% weight or replace the recency factor.
+
 ### Promoting Learnings
 
 A learning can become a skill, rule, or doc when its confidence is at least 0.90, it has at least 5 upvotes, at least 2 contributors, and it has existed for at least 14 days.
@@ -125,6 +127,8 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 ```
 
 `--from-mr` takes several MR URLs. Each draft is still confirmed on its own (or none with `--all`), the accepted learnings are published once at the end, and each repository's teamwiki is updated once. An MR that fails does not stop the rest; the run ends with a summary and exits non-zero if any failed.
+
+Each GitLab MR API request has a 30-second deadline, including reading its response body. A metadata timeout fails that MR; a commits, diff or review-threads timeout leaves out that optional data and continues. Each page of review threads gets its own deadline.
 
 The extraction reads the MR's review threads along with its description, commits and diff: GitLab discussions, GitHub review comments, reviews and conversation comments, TGit notes. Each thread goes into the prompt with the file and line it is anchored to, whether it is resolved, and its notes marked as the MR author's or a reviewer's; a decision in a resolved thread outweighs the diff. teamai's own CI comments are skipped. `--no-discussions` leaves the threads out, for `teamai ci extract-mr` too. With `language: en` in `teamai.yaml` the learning is written in English; otherwise in Chinese.
 

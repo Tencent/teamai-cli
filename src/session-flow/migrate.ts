@@ -80,9 +80,9 @@ export const IMAGE_SUPPORT: Record<string, boolean> = {
   'claude-internal': true,
   tclaude: true,
   'codebuddy-ide': true, // Write back assets/ + codebuddy-asset:// refs, fully restored
-  codex: false, // rollout UserMessage supports text only
-  'codex-internal': false,
-  tcodex: false,
+  codex: true, // a user message carries input_image items (data: URLs)
+  'codex-internal': true,
+  tcodex: true,
   codebuddy: false,
   workbuddy: false,
   cursor: false,

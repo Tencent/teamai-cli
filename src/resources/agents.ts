@@ -20,7 +20,7 @@ import {
   describeMembersDirLeft, forgetDelivered, isLink, isTeamaiCopy, judgeRemoval, keepsEditedCopy, keepsTrackedCopy, recordDelivered, recordedUnchanged,
   type DeliveredHashes, type DeliveryLedger,
 } from './delivered-copies.js';
-import { warnOnce } from '../utils/warn-once.js';
+import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { TEAM_ALIASES_FILE, aliasWarningsFor, isModelAlias, loadModelAliases, localAliasesPath, resolveAgentModel, type ModelAliases, type ResolutionStep } from '../models/aliases.js';
 import {
   parseAgentYaml,
@@ -1114,7 +1114,7 @@ export class AgentsHandler extends ResourceHandler {
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
       if (!toolPath.agents || !isKnownTool(tool) || isAgentExcluded(localConfig, tool)) continue;
       if (!await isToolInstalledForConfig(tool, toolPath.agents, localConfig)) {
-        log.debug(`Skipping agent sync for ${tool}: tool not installed`);
+        debugOnce(`Skipping agent sync for ${tool} in ${localConfig.scope} scope: tool not installed`);
         continue;
       }
       dirs.push({ tool, dir: path.join(resolveToolBaseDir(tool, localConfig), toolPath.agents) });

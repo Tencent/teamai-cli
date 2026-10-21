@@ -19,7 +19,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getTeamHookDispatchCommand } from './builtin-hooks.js';
+import { getTeamHookDispatchCommand, getTeamHookDispatchCommandWindows } from './builtin-hooks.js';
 import { CODEX_TOOL_ID, getTeamaiHomeDir } from './types.js';
 import { checkoutForProjectAnchor } from './utils/git.js';
 import { ensureDir, readJson, readJsonObject, writeJson, writeJsonAtomic } from './utils/fs.js';
@@ -166,7 +166,7 @@ export async function setCodexDispatcherHooks(project: string, hooks: CodexTeamH
   }
 }
 
-interface CodexHookGroup { matcher?: string; hooks?: Array<{ type?: string; command?: string; timeout?: number }> }
+interface CodexHookGroup { matcher?: string; hooks?: Array<{ type?: string; command?: string; commandWindows?: string; timeout?: number }> }
 
 /**
  * Make the Codex hook file `hooksFile` (`~/.codex/hooks.json`) hold exactly one
@@ -202,7 +202,18 @@ export async function reconcileCodexDispatchers(hooksFile: string): Promise<void
     const rest = existing.filter((group) => !isDispatcher(group));
     const timeout = timeouts.get(event);
     const wanted: CodexHookGroup[] = timeout === undefined ? []
-      : [{ hooks: [{ type: 'command', command: getTeamHookDispatchCommand(event, CODEX_TOOL_ID), timeout }] }];
+      : [{
+        hooks: [{
+          type: 'command',
+          command: getTeamHookDispatchCommand(event, CODEX_TOOL_ID),
+          // The Windows form drops the bash wrapper cmd.exe cannot resolve
+          // (#1215); the block contract passes through natively (#1209). On
+          // `command` the entry keeps the POSIX form on every platform, like
+          // the built-in entries (#1074).
+          commandWindows: getTeamHookDispatchCommandWindows(event, CODEX_TOOL_ID),
+          timeout,
+        }],
+      }];
     const builtin = rest.findIndex((group) => (group?.hooks?.[0]?.command ?? '').includes('teamai hook-dispatch'));
     const at = builtin < 0 ? rest.length : builtin;
     const next = [...rest.slice(0, at), ...wanted, ...rest.slice(at)];

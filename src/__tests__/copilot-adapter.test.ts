@@ -234,14 +234,8 @@ describe('GitHub Copilot adapter', () => {
       command: expect.stringContaining('teamai hook-dispatch session-start --tool copilot'),
       timeoutSec: expect.any(Number),
     }));
-    expect(parsed.hooks.PostToolUse).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        matcher: 'skill',
-        command: expect.stringContaining('--matcher Skill'),
-      }),
-      expect.objectContaining({ matcher: 'TodoWrite' }),
-    ]));
-    expect(parsed.hooks.PostToolUse.some((entry) => entry.matcher === undefined)).toBe(true);
+    expect(parsed.hooks.PostToolUse.map((entry) => entry.matcher)).toEqual([undefined, 'TodoWrite']);
+    expect(JSON.stringify(parsed.hooks.PostToolUse)).not.toContain('--matcher Skill');
     expect(await fse.readFile(settingsPath, 'utf8')).toBe(settings);
   });
 
@@ -307,11 +301,11 @@ describe('GitHub Copilot adapter', () => {
     expect(await getHookStatus(hookPath, 'copilot')).toBe('installed');
     expect(await hasTeamaiHooks(hookPath, 'copilot')).toBe(true);
 
-    const skillHook = reconciled.hooks.PostToolUse.find((entry) => entry.command.includes('--matcher Skill')) as {
+    const todoHook = reconciled.hooks.PostToolUse.find((entry) => entry.command.includes('--matcher TodoWrite')) as {
       command: string;
       matcher?: string;
     };
-    delete skillHook.matcher;
+    delete todoHook.matcher;
     await fse.writeJson(hookPath, reconciled);
     expect(await getHookStatus(hookPath, 'copilot')).toBe('missing');
 

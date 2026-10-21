@@ -23,6 +23,52 @@ interface NpmPackageLock {
 
 interface NpmListOutput {
   dependencies?: Record<string, LockPackage>;
+  devDependencies?: Record<string, LockPackage>;
+  optionalDependencies?: Record<string, LockPackage>;
+}
+
+interface PackageJson {
+  packageManager?: string;
+}
+
+type LocalPackageManager = 'npm' | 'pnpm';
+
+interface LocalPackageManagerContext {
+  manager: LocalPackageManager;
+  /** Set when `cwd` is itself a pnpm workspace root: `pnpm add` there needs `--workspace-root`. */
+  isWorkspaceRoot: boolean;
+}
+
+/**
+ * Walks from `cwd` up to the filesystem root. A pnpm workspace member
+ * typically carries none of pnpm's own markers — they live at the workspace
+ * root — so checking only `cwd` would silently fall back to npm there.
+ */
+async function detectLocalPackageManager(cwd: string): Promise<LocalPackageManagerContext> {
+  for (let at = path.resolve(cwd); ; at = path.dirname(at)) {
+    if (await pathExists(path.join(at, 'pnpm-workspace.yaml'))) {
+      return { manager: 'pnpm', isWorkspaceRoot: at === path.resolve(cwd) };
+    }
+    if (
+      await pathExists(path.join(at, 'pnpm-lock.yaml'))
+      || await pathExists(path.join(at, 'node_modules', '.pnpm'))
+    ) {
+      return { manager: 'pnpm', isWorkspaceRoot: false };
+    }
+    const packageJson = await readJson<PackageJson>(path.join(at, 'package.json'));
+    const declaredManager = packageJson?.packageManager?.split('@', 1)[0];
+    if (declaredManager === 'pnpm') {
+      return { manager: 'pnpm', isWorkspaceRoot: false };
+    }
+    // An explicit npm declaration wins over any pnpm marker further up the
+    // tree — otherwise a standalone npm project nested under an unrelated
+    // pnpm workspace would get routed through pnpm, recreating the exact
+    // mixed-package-manager bug this function exists to avoid.
+    if (declaredManager === 'npm') {
+      return { manager: 'npm', isWorkspaceRoot: false };
+    }
+    if (path.dirname(at) === at) return { manager: 'npm', isWorkspaceRoot: false };
+  }
 }
 
 function satisfiesDeclaredVersion(semver: typeof import('semver'), declared: string, actual: string): boolean {
@@ -71,6 +117,25 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
   private async snapshotLocal(cwd: string, declaration: NpmSpec[]): Promise<NpmLockEntry[]> {
     const local = declaration.filter((spec) => !spec.global);
     if (local.length === 0) return [];
+    if ((await detectLocalPackageManager(cwd)).manager === 'pnpm') {
+      try {
+        const result = await this.execute(
+          'pnpm',
+          ['list', '--depth=0', '--json'],
+          { cwd, timeoutMs: 30_000 },
+        );
+        if (result.code !== 0 || !result.stdout.trim()) return [];
+        const [listed] = JSON.parse(result.stdout) as NpmListOutput[];
+        const dependencies = {
+          ...listed?.dependencies,
+          ...listed?.devDependencies,
+          ...listed?.optionalDependencies,
+        };
+        return extractNpmLockEntries({ dependencies }, local);
+      } catch {
+        return [];
+      }
+    }
     const lock = await readJson<NpmPackageLock>(path.join(cwd, 'package-lock.json'));
     return lock ? extractNpmLockEntries(lock, local) : [];
   }
@@ -130,35 +195,39 @@ export class NpmAdapter extends PackageAdapter<NpmSpec[], NpmLockEntry[]> {
       groups.set(key, group);
     }
 
+    const localManager = local.length > 0
+      ? await detectLocalPackageManager(context.cwd)
+      : { manager: 'npm' as const, isWorkspaceRoot: false };
+
+    const commandFor = (first: NpmSpec): string => (first.global ? 'npm' : localManager.manager);
+    const argsFor = (command: string, first: NpmSpec, group: NpmSpec[]): string[] => [
+      command === 'pnpm' ? 'add' : 'install',
+      ...(first.global ? ['--global'] : []),
+      ...(!first.global && command === 'pnpm' && localManager.isWorkspaceRoot ? ['--workspace-root'] : []),
+      ...group.map(packageArgument),
+      ...(first.registry ? ['--registry', first.registry] : []),
+    ];
+
     if (context.dryRun) {
       for (const group of groups.values()) {
         const first = group[0];
-        const args = [
-          'install',
-          ...(first.global ? ['--global'] : []),
-          ...group.map(packageArgument),
-          ...(first.registry ? ['--registry', first.registry] : []),
-        ];
-        log.info(`[dry-run] Would run: ${formatCommand('npm', args)}`);
+        const command = commandFor(first);
+        log.info(`[dry-run] Would run: ${formatCommand(command, argsFor(command, first, group))}`);
       }
       return this.snapshotLocal(context.cwd, declaration);
     }
 
     for (const group of groups.values()) {
       const first = group[0];
-      const args = [
-        'install',
-        ...(first.global ? ['--global'] : []),
-        ...group.map(packageArgument),
-        ...(first.registry ? ['--registry', first.registry] : []),
-      ];
-      const result = await this.execute('npm', args, {
+      const command = commandFor(first);
+      const args = argsFor(command, first, group);
+      const result = await this.execute(command, args, {
         cwd: context.cwd,
         timeoutMs: 10 * 60_000,
         stream: true,
       });
       if (result.code !== 0) {
-        throw new Error(`npm install failed (exit ${result.code}): ${result.stderr.trim()}`);
+        throw new Error(`${command} ${args[0]} failed (exit ${result.code}): ${result.stderr.trim()}`);
       }
     }
     return this.snapshot(context.cwd, declaration);

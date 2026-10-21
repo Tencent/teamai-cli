@@ -42,6 +42,8 @@ interface RecordedEvent {
 }
 
 const SESSION = 's-b';
+/** The turns that use `team-skill`: p1's call, p2's `/team-skill` (its call and `track` repeat it), p3's `track-slash`. */
+const SKILL_USES = 3;
 
 function cliEnv(home: string): NodeJS.ProcessEnv {
   // The host's session id would override the payloads' own.
@@ -150,7 +152,7 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
       'enabledAgents: [claude]',
       // A relocated Claude Code that only the project records.
       'toolRoots:',
-      '  claude: .claude-alt',
+      '  claude: ~/.claude-alt',
       ...(projectHintOff ? ['contributeHintEnabled: false'] : []),
       '',
     ].join('\n'));
@@ -169,14 +171,20 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
         '',
       ].join('\n'));
     }
-    // A skill on disk under the project's Claude root, so `track-slash` counts
-    // `/team-skill` only when it looks there.
+    // A skill on disk under the project's Claude root, so a use of `team-skill`
+    // counts only when the hook looks there.
     fs.mkdirSync(path.join(home, '.claude-alt', 'skills', 'team-skill'), { recursive: true });
     fs.writeFileSync(path.join(home, '.claude-alt', 'skills', 'team-skill', 'SKILL.md'), '---\nname: team-skill\ndescription: fixture\n---\n');
 
     // While the worktree exists: a prompt and a skill use.
-    await hook('prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'work in b' });
-    await hook('post-tool-use', skillUse, 'Skill');
+    // Each turn carries Claude Code's `prompt_id`; a skill counts once per turn (#1221).
+    await hook('prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: 'work in b', prompt_id: 'p1' });
+    await hook('post-tool-use', { ...skillUse, prompt_id: 'p1' });
+    // Its credit is written by the detached pass; the turn ends before the worktree goes.
+    const credited = Date.now() + 20_000;
+    while (!fs.existsSync(path.join(partition, 'usage.jsonl')) && Date.now() < credited) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
     if (movedOn) {
       // Another repo, in the user scope: it records a scope and an anchor of its own.
       const elsewhere = path.join(sandbox, 'elsewhere');
@@ -193,15 +201,15 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
       friction: { interrupt: 1, toolReject: 0, correction: 0, toolError: 0 }, promptSummary: 'work in b' });
 
     // After it is gone, through the dispatcher...
-    await hook('prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: '/team-skill again' });
-    await hook('post-tool-use', { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: {}, tool_response: {} });
-    await hook('post-tool-use', skillUse, 'Skill');
+    await hook('prompt-submit', { hook_event_name: 'UserPromptSubmit', prompt: '/team-skill again', prompt_id: 'p2' });
+    await hook('post-tool-use', { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: {}, tool_response: {}, prompt_id: 'p2' });
+    await hook('post-tool-use', { ...skillUse, prompt_id: 'p2' });
     await hook('session-end', { hook_event_name: 'SessionEnd' });
     state.stopOutput = await hook('stop', { hook_event_name: 'Stop' });
     // ...and through the entry points hooks from an earlier install still call.
     await legacy(['dashboard-report'], { hook_event_name: 'UserPromptSubmit', prompt: 'legacy prompt' });
-    await legacy(['track'], skillUse);
-    await legacy(['track-slash'], { hook_event_name: 'UserPromptSubmit', prompt: '/team-skill go' });
+    await legacy(['track'], { ...skillUse, prompt_id: 'p2' });
+    await legacy(['track-slash'], { hook_event_name: 'UserPromptSubmit', prompt: '/team-skill go', prompt_id: 'p3' });
 
     // SessionEnd and Stop are recorded by a detached child: wait for them. Where
     // nothing may be recorded, wait instead for a later session's detached Stop,
@@ -209,7 +217,8 @@ function scenario({ userScope, breakProjectConfig = false, bare = false, project
     if (breakProjectConfig) await hook('stop', { hook_event_name: 'Stop', session_id: 'control', cwd: home });
     const settled = breakProjectConfig
       ? () => readJsonl<RecordedEvent>(eventsFile).some((e) => e.sessionId === 'control' && e.type === 'stop')
-      : () => ['session_end', 'stop'].every((type) => afterRemoval().some((e) => e.type === type));
+      : () => ['session_end', 'stop'].every((type) => afterRemoval().some((e) => e.type === type))
+        && readJsonl(path.join(partition, 'usage.jsonl')).length >= SKILL_USES;
     const deadline = Date.now() + 20_000;
     while (!settled() && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 200));
@@ -245,7 +254,7 @@ describe('hook events after their worktree is deleted (#810)', () => {
 
     it('records them under the project, with the session\'s repo', async () => {
       const events = s.afterRemoval();
-      expect(events.map((e) => e.type).sort()).toEqual(['prompt_submit', 'prompt_submit', 'session_end', 'stop', 'tool_use']);
+      expect(events.map((e) => e.type).sort()).toEqual(['prompt_submit', 'prompt_submit', 'session_end', 'stop', 'tool_use', 'tool_use']);
       const key = await dataHomeKey(s.state.partition);
       expect(events.map((e) => [e.type, e.dataHomeKey, e.projectAnchor])).toEqual(
         events.map((e) => [e.type, key, s.state.anchor]));
@@ -260,7 +269,7 @@ describe('hook events after their worktree is deleted (#810)', () => {
     });
 
     it('records the skill uses in the project\'s usage, not the user scope\'s', () => {
-      expect(readJsonl(path.join(s.state.partition, 'usage.jsonl'))).toHaveLength(5);
+      expect(readJsonl(path.join(s.state.partition, 'usage.jsonl'))).toHaveLength(SKILL_USES);
       expect(readJsonl(path.join(s.state.home, '.teamai', 'user-usage.jsonl'))).toHaveLength(0);
     });
   });
@@ -275,13 +284,13 @@ describe('hook events after their worktree is deleted (#810)', () => {
 
     it('records them under the project instead of dropping them', async () => {
       const events = s.afterRemoval();
-      expect(events.map((e) => e.type).sort()).toEqual(['prompt_submit', 'prompt_submit', 'session_end', 'stop', 'tool_use']);
+      expect(events.map((e) => e.type).sort()).toEqual(['prompt_submit', 'prompt_submit', 'session_end', 'stop', 'tool_use', 'tool_use']);
       const key = await dataHomeKey(s.state.partition);
       expect(events.every((e) => e.dataHomeKey === key && e.projectAnchor === s.state.anchor)).toBe(true);
     });
 
     it('records the skill uses in the project\'s usage', () => {
-      expect(readJsonl(path.join(s.state.partition, 'usage.jsonl'))).toHaveLength(5);
+      expect(readJsonl(path.join(s.state.partition, 'usage.jsonl'))).toHaveLength(SKILL_USES);
     });
   });
 
@@ -310,14 +319,14 @@ describe('hook events after their worktree is deleted (#810)', () => {
 
     it('records them under the project, with the session\'s repo', async () => {
       const events = s.afterRemoval();
-      expect(events.map((e) => e.type).sort()).toEqual(['prompt_submit', 'prompt_submit', 'session_end', 'stop', 'tool_use']);
+      expect(events.map((e) => e.type).sort()).toEqual(['prompt_submit', 'prompt_submit', 'session_end', 'stop', 'tool_use', 'tool_use']);
       const key = await dataHomeKey(s.state.partition);
       expect(events.map((e) => [e.type, e.dataHomeKey, e.projectAnchor])).toEqual(
         events.map((e) => [e.type, key, s.state.anchor]));
     });
 
     it('records the skill uses in the project\'s usage, not the user scope\'s', () => {
-      expect(readJsonl(path.join(s.state.partition, 'usage.jsonl'))).toHaveLength(5);
+      expect(readJsonl(path.join(s.state.partition, 'usage.jsonl'))).toHaveLength(SKILL_USES);
       expect(readJsonl(path.join(s.state.home, '.teamai', 'user-usage.jsonl'))).toHaveLength(0);
     });
   });
@@ -332,11 +341,11 @@ describe('hook events after their worktree is deleted (#810)', () => {
 
     it('records them under the worktree\'s project, not where the session went next', async () => {
       const events = s.afterRemoval();
-      expect(events.map((e) => e.type).sort()).toEqual(['prompt_submit', 'prompt_submit', 'session_end', 'stop', 'tool_use']);
+      expect(events.map((e) => e.type).sort()).toEqual(['prompt_submit', 'prompt_submit', 'session_end', 'stop', 'tool_use', 'tool_use']);
       const key = await dataHomeKey(s.state.partition);
       expect(events.map((e) => [e.type, e.dataHomeKey, e.projectAnchor])).toEqual(
         events.map((e) => [e.type, key, s.state.anchor]));
-      expect(readJsonl(path.join(s.state.partition, 'usage.jsonl'))).toHaveLength(5);
+      expect(readJsonl(path.join(s.state.partition, 'usage.jsonl'))).toHaveLength(SKILL_USES);
     });
   });
 

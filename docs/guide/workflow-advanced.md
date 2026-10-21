@@ -62,11 +62,11 @@ workflows:
   auto_approve: false
 ```
 
-A prompt step always runs alone. The driver starts it once every command has exited, and starts no command until it finishes. For a headless prompt, the read-only check compares the whole working tree before and after the prompt, so a command that changes files while the prompt runs would fail it.
+A prompt in the current checkout waits until that checkout is free, and nothing else in that checkout starts until the prompt finishes. The read-only check compares that checkout before and after the prompt. A prompt with `workspace: new` runs in its own worktree, so it can overlap steps in other worktrees, up to `max_parallel`. Commands with no `workspace` share the checkout and run one at a time with anything else there.
 
 With `max_parallel` above 1:
 
-- Commands share the working tree. Two commands that write the same file can overwrite each other.
+- Commands with no `workspace` share the checkout and run one at a time. A later one sees files an earlier one left there. Commands with `workspace: new` use separate worktrees and can run together.
 - Each command runs without a terminal, so it cannot read input from you.
 - On Ctrl-C, or on a SIGTERM, SIGQUIT, or SIGHUP, teamai stops every command, waits for them to exit, and exits with that signal.
 
@@ -169,6 +169,8 @@ A failed item does not stop the other items. The step settles when every item ha
 ```json
 [{"item":{"id":"core","dir":"packages/core"},"outcome":"success"},{"item":{"id":"cli","dir":"packages/cli"},"outcome":"failed"}]
 ```
+
+When an item ran in a workspace, its entry also has `branch`. `steps.<id>.branches` lists those branches in the same order.
 
 A step with `for_each` has no outputs of its own, and a step without `for_each` has no results. Pull rejects a read of either, including in workflow outputs and earlier passes. To read one item, index the results, as in `steps.build.results[1].outcome`.
 
@@ -467,7 +469,7 @@ steps:
 | An input | `inputs.issue`, `inputs.issue.labels` |
 | A step's outcome, end, or output | `steps.check.outcome`, `steps.check.end`, `steps.review.outputs.files` |
 | Every pass of a step | `steps.review.passes`, `steps.review.passes[0].outputs.verdict`. See [Read every pass](#read-every-pass). |
-| The results of a `for_each` step | `steps.build.results`, `steps.build.results[0].outcome` |
+| The results of a `for_each` step | `steps.build.results`, `steps.build.results[0].outcome`, `steps.build.branches` |
 | The item of a `for_each` instance | `item`, `item.dir` |
 | A string | `'failed'`. Use single quotes. Write a quote inside a string twice: `'it''s'`. |
 | A number | `3`, `-1`, `1.5`. Write a digit before the decimal point: `0.5`, not `.5`. |
@@ -480,7 +482,7 @@ A missing value reads as `null`. A step that has not settled reads as `null` too
 
 `[n]` reads element `n` of an array, counting from 0: `steps.review.outputs.files[0].path`, `inputs.tags[1]`, or `steps.grid.outputs.rows[1][0]`. An index past the end, or an index into a value that is not an array, reads `null`.
 
-An index is a whole number from 0. `[-1]`, `[01]`, and `[inputs.n]` do not parse. An index reads an array inside `inputs`, `outputs`, `passes`, `results`, or `item`. It cannot follow a step id, `outcome`, or `end`, so `steps.build[2].outcome` does not parse.
+An index is a whole number from 0. `[-1]`, `[01]`, and `[inputs.n]` do not parse. An index reads an array inside `inputs`, `outputs`, `passes`, `results`, `branches`, or `item`. It cannot follow a step id, `outcome`, or `end`, so `steps.build[2].outcome` does not parse.
 
 ### Operators and precedence
 
@@ -606,7 +608,7 @@ steps:
 
 Later steps read `steps.decide.choice` and `steps.decide.note`, also through `passes[n]`. A new pass asks again. An approve HITL request on an end-only step must receive `yes` before that end is reached.
 
-For an approval that must come directly from a person, use `approve: { message: Publish?, required: true }`. Required approvals never use automatic answers. `respond` records the answer time, channel, choice, and optional note. With `--json`, its channel is `driver`, with `agent: false`. Without `--json`, TTY stdin records `tty`, with `agent: false`; otherwise it records `cli`, with `agent: true`. A required approval rejects `cli` answers with `agent_in_path`. A TTY is a channel convention, not protection against someone who can create a PTY.
+For an approval that must come directly from a person, use `approve: { message: Publish?, required: true }`. Required approvals never use automatic answers. `respond` records the answer time, channel, choice, and optional note. With `--json`, its channel is `driver`, with `agent: false`. Without `--json`, TTY stdin records `tty`, with `agent: false`; otherwise it records `cli`, with `agent: true`. A required approval rejects `cli` answers with `agent_in_path`. A TTY is a channel convention, not protection against someone who can create a PTY. An answer from the [dashboard](dashboard.md#workflow-runs) records channel `dashboard`, with `agent: false`.
 
 ```sh
 teamai workflow respond <run> decide build --note "Ready" --pass 1
@@ -630,7 +632,7 @@ Without that capability, a `next` request that can take a lease applies this tab
 
 Every decision without HITL and `hitl_required` failure logs a warning to stderr. Set `workflows.auto_approve` beside `workflows.max_parallel` in local config, or pass `--auto-approve` to `start --driver local` or `resume` for that process only. JSON `next` cannot set this override. The local driver declares HITL only when stdin and stderr are TTYs. It asks on stderr, accepts a choice followed by an optional note, and keeps polling while the question is open. An answer from elsewhere or a cancellation closes that question. Questions wait while an interactive tool owns the terminal.
 
-`interactive: true` needs `prompt` or `prompt_file`. A driver without HITL fails it with `hitl_required`. The local driver opens the tool here in the workspace with inherited stdio and the prompt as its first message. Repository edits by the person are kept, as with a command step. Headless prompts remain read-only. Terminal Ctrl-C and Ctrl-\ go to the interactive tool; SIGTERM and SIGHUP stop it and the driver. A result file is optional when the interactive tool exits successfully without outputs. The driver polls every two seconds during prompts and stops a cancelled tool.
+`interactive: true` needs `prompt` or `prompt_file`. A driver without HITL fails it with `hitl_required`. The local driver opens the tool here in the workspace with inherited stdio and the prompt as its first message. Repository edits by the person are kept, and the step succeeds. An interactive step that sets `workspace: read-only` is checked like a command: a checkout change fails `read_only_dirty` and the edits stay. An interactive step in its own workspace can still change that workspace. Headless prompts remain read-only. Terminal Ctrl-C and Ctrl-\ go to the interactive tool; SIGTERM and SIGHUP stop it and the driver. A result file is optional when the interactive tool exits successfully without outputs. The driver polls every two seconds during prompts and stops a cancelled tool.
 
 ## Retry, cancel, and resume
 

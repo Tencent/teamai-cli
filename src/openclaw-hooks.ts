@@ -26,6 +26,7 @@
 import path from 'node:path';
 import { writeFile, writeIfChanged, ensureDir, pathExists, readJsonObject, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
 import { log } from './utils/logger.js';
+import { debugOnce } from './utils/warn-once.js';
 import { expandHome, getUserHome } from './utils/home.js';
 
 /**
@@ -487,8 +488,7 @@ export async function resolveOpenclawWorkspaceDir(workspacePath?: string): Promi
   }
   // A missing workspace dir is the normal case when OpenClaw is not installed;
   // callers treat null as "skip openclaw" and log their own debug line, so keep
-  // this at debug level to avoid warning noise (one line per skill/file) on
-  // machines without OpenClaw.
-  log.debug(`openclaw: no workspace dir found (tried: ${workspace.tried})`);
+  // this at debug level, and once per run: callers ask per skill and file.
+  debugOnce(`openclaw: no workspace dir found (tried: ${workspace.tried})`);
   return null;
 }

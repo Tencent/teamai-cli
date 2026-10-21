@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "post_tool_call",
+  "tool_name": "skill_view",
+  "tool_input": {
+    "name": "hello-skill"
+  },
+  "session_id": "hermes-run",
+  "cwd": "${CWD}",
+  "profile": "default"
+}

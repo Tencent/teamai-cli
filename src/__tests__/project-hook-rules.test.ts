@@ -13,7 +13,7 @@ import { RulesHandler, ruleChannelNotes } from '../resources/rules.js';
 import { buildChecks, resolveDoctorContext } from '../doctor.js';
 import { detectProjectConfig } from '../config.js';
 import { reconcileHooks } from '../hooks.js';
-import { reconcileDshHooks, resolveDshHookConfigPath, resolveDshPatchPath } from '../dsh-hooks.js';
+import { reconcileDshHooks, resolveDshHomePatchPath, resolveDshHookConfigPath } from '../dsh-hooks.js';
 import { injectPiHooks } from '../pi-hooks.js';
 import { TeamaiConfigSchema } from '../types.js';
 import type { LocalConfig } from '../types.js';
@@ -306,7 +306,7 @@ describe('doctor checks the hook or extension that adds the project rules (#946)
     expect(await find(['zcode'], DELIVERS)).toBeUndefined();
   });
 
-  it('dsh: passes once the hook config and the patch are written', async () => {
+  it('dsh: passes once the hook config is written and mounted', async () => {
     await fse.ensureDir(path.join(homeDir, '.dsh'));
     await reconcileDshHooks([], {});
 
@@ -321,27 +321,27 @@ describe('doctor checks the hook or extension that adds the project rules (#946)
 
     const failing = (await find(['dsh'], DSH))!;
     expect(await failing.check()).toBe(false);
-    expect(failing.fix).toContain(resolveDshPatchPath());
+    expect(failing.fix).toContain(path.join(dshHome, 'cordis.patch.yml'));
   });
 
   it('dsh: names both files when both are missing', async () => {
     await fse.ensureDir(path.join(homeDir, '.dsh'));
 
     const failing = (await find(['dsh'], DSH))!;
-    expect(failing.fix).toContain(resolveDshPatchPath());
+    expect(failing.fix).toContain(resolveDshHomePatchPath());
     expect(failing.fix).toContain(resolveDshHookConfigPath());
   });
 
-  it('dsh: fails when the patch is gone, naming it and the --patch flag', async () => {
+  it('dsh: fails when teamai\'s row is gone from the patch dsh applies on boot, naming that file (#1219)', async () => {
     await fse.ensureDir(path.join(homeDir, '.dsh'));
     await reconcileDshHooks([], {});
-    await fse.remove(resolveDshPatchPath());
+    await fse.writeFile(resolveDshHomePatchPath(), '- id: telemetry\n  disabled: true\n');
 
     const failing = (await find(['dsh'], DSH))!;
     expect(await failing.check()).toBe(false);
-    expect(failing.fix).toContain(resolveDshPatchPath());
-    expect(failing.fix).toContain('--patch');
+    expect(failing.fix).toContain(resolveDshHomePatchPath());
     expect(failing.fix).toContain('teamai hooks inject');
+    expect(failing.fix).not.toContain('--patch');
   });
 
   it('pi: fails while teamai\'s extension is missing, naming the rules, and passes once it is installed', async () => {
@@ -388,14 +388,14 @@ describe('init and doctor name the limits of the project hooks (#946)', () => {
     expect(notes.some((note) => note.startsWith('ZCode') && note.includes('compact'))).toBe(true);
   });
 
-  it('notes that DeepSeek Harness needs the patch, can miss the first request, and drops the text at compaction', async () => {
+  it('notes that DeepSeek Harness drops the text at compaction, with no --patch step (#1219)', async () => {
     await fse.ensureDir(path.join(homeDir, '.dsh'));
 
     const note = (await ruleChannelNotes(config('project', ['dsh']))).find((n) => n.startsWith('DeepSeek Harness'));
 
-    expect(note).toContain(`--patch "${resolveDshPatchPath()}"`);
-    expect(note).toContain('first request');
     expect(note).toContain('compact');
+    expect(note).not.toContain('--patch');
+    expect(note).not.toContain('first request');
   });
 
   it('notes DeepSeek Harness where $DSH_HOME says it lives', async () => {

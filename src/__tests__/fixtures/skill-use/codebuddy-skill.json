@@ -1,0 +1,15 @@
+{
+  "session_id": "codebuddy-run",
+  "cwd": "${CWD}",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Skill",
+  "tool_input": {
+    "skill": "hello-skill"
+  },
+  "agent_type": "cli",
+  "permission_mode": "bypassPermissions",
+  "client": "CLI",
+  "version": "2.169.0",
+  "generation_id": "codebuddy-run-turn",
+  "model": "custom-local:mock-model"
+}

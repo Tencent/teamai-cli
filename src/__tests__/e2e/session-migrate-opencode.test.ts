@@ -105,6 +105,9 @@ describe.skipIf(!OPENCODE_DIR)('session migrate into OpenCode (needs OpenCode 2 
     // The Claude adapter reads ~/.claude/projects only.
     delete env.CLAUDE_CONFIG_DIR;
     for (const key of Object.keys(env)) if (key.startsWith('OPENCODE_')) delete env[key];
+    // Each OpenCode run watches every directory above its workspace; in a
+    // crowded temp directory that took 10-20 s a run and most of the test.
+    env.OPENCODE_DISABLE_FILEWATCHER = '1';
     // An installed OpenCode has its data directory; TeamAI looks for it before writing.
     fs.mkdirSync(path.join(sandbox, 'data', 'opencode'), { recursive: true });
     plantClaudeSession(home);

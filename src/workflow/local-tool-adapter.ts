@@ -1,4 +1,5 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crossSpawn from 'cross-spawn';
@@ -34,6 +35,8 @@ export interface LocalToolRun {
   model?: { name: string; effort?: string };
   /** The workflow launch the tool's session-start hook reads from its environment (#1176). */
   launch?: Launch;
+  /** A session id from the same tool. Claude and Codex resume it; OpenCode has no resume flag here. */
+  resume?: string;
 }
 
 /**
@@ -92,17 +95,19 @@ function invocation(tool: LocalWorkflowTool, input: LocalToolRun, opencodeMajor:
   const agent = input.agent && !viaPrompt ? ['--agent', input.agent.name] : [];
   const model = input.model ? ['--model', input.model.name] : [];
   const effort = input.model?.effort;
+  const resume = input.resume ? ['--resume', input.resume] : [];
   if (interactive) {
-    if (family === 'claude') return [...agent, ...model, ...(effort ? ['--effort', effort] : []), prompt];
-    if (family === 'codex') return [...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+    if (family === 'claude') return [...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume, prompt];
+    if (family === 'codex') return [...(input.resume ? ['resume', input.resume] : []), ...model, ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
     return [...agent, ...model, '--prompt', prompt];
   }
   if (family === 'claude') {
-    return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...agent, ...model, ...(effort ? ['--effort', effort] : [])];
+    return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
   }
   if (family === 'codex') {
     const codexModel = input.model?.name ?? input.agent?.model;
-    return ['exec', '--json', ...(codexModel ? ['--model', codexModel] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
+    const codexResume = input.resume ? ['resume', input.resume] : [];
+    return ['exec', ...codexResume, '--json', ...(codexModel ? ['--model', codexModel] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort}`] : []), prompt];
   }
   // OpenCode 2 has no `--variant` and reads the effort from `--model provider/model#variant`.
   const opencodeModel = input.model && effort && opencodeMajor >= 2 ? ['--model', `${input.model.name}#${effort}`] : [...model, ...(effort ? ['--variant', effort] : [])];
@@ -341,11 +346,12 @@ export function createLocalToolAdapter(
         }
         childProcess = child;
         let stdout = '';
+        const decoder = new StringDecoder('utf8');
         child.on('spawn', () => { started = true; });
-        child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+        child.stdout?.on('data', (chunk: Buffer) => { stdout += decoder.write(chunk); });
         child.stderr?.resume();
         child.on('error', (error: NodeJS.ErrnoException) => resolve({ exitCode: 1, stdout, error }));
-        child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout }));
+        child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout: stdout + decoder.end() }));
       });
       const stop = childProcess && stopProcess(childProcess, closed, !interactive && process.platform !== 'win32');
       const abort = (): void => {

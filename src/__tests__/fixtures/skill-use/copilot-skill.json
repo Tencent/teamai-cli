@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "copilot-run",
+  "timestamp": "2026-10-20T11:48:48.824Z",
+  "cwd": "${CWD}",
+  "tool_name": "skill",
+  "tool_input": {
+    "skill": "hello-skill"
+  }
+}

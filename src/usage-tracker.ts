@@ -1,22 +1,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { log } from './utils/logger.js';
-import { normalizeToolName } from './utils/tool-names.js';
 import {
-  getCopilotHome,
+  DEFAULT_TOOL_PATHS,
   getDataHome,
   getTeamaiHomeDir,
   SKILL_NAME_REGEX,
   type LocalConfig,
   type UsageEvent,
-  resolveToolRootDir,
-  RELOCATABLE_TOOLS,
+  resolveToolBaseDir,
+  scopedToolPaths,
 } from './types.js';
 import { readJson, writeJson, writeFileAtomic, pathExists } from './utils/fs.js';
 import { appendJsonl, readJsonl, rewriteJsonl, type JsonlStoreOptions } from './utils/jsonl-store.js';
 import { getUserHome } from './utils/home.js';
-import { resolveHookCwd } from './utils/hook-cwd.js';
-import { resolveConfigForDir, resolveMemberToolRoots } from './config.js';
+import { withFileLock } from './update.js';
+import { loadTeamConfig, resolveConfigForDir } from './config.js';
+import { samePath } from './utils/agent-path.js';
 
 /**
  * The usage JSONL of one scope: `<dataHome>/usage.jsonl`, so each scope reports
@@ -42,49 +42,17 @@ function getKnownSkillsPath(): string {
 
 // ─── Data flow ─────────────────────────────────────────
 //
-//  Claude Code / Claude Internal / CodeBuddy       Cursor
-//  ─────────────────────────────────────────       ──────
-//  PostToolUse hook (matcher: "Skill")             PostToolUse hook (matcher: "Read")
-//      │                                               │
-//      ▼                                               ▼
-//  { tool_name: "Skill",                          { tool_name: "Read",
-//    tool_input: { skill: "tdd" } }                 tool_input: { path: "…/SKILL.md" } }
-//      │                                               │
-//      └────────────────┬──────────────────────────────┘
-//                       ▼
-//         teamai track --stdin --tool <name>
-//                       │
-//                       ▼
-//               [extract & validate skill name]
-//               [toolArg → toolSource; Read+SKILL.md → 'cursor']
-//                       │
-//                       ▼
-//               [resolveHookConfig(payload)] ─null─▶ skip (#748)
-//                       │
-//                       ▼
-//               appendFile(<scope usage file>, JSON line)
-//                       │
-//                       ▼
-//               updateKnownSkills(skill) → known-skills.json
-//
-//  ─── Slash command tracking (Claude Code only) ────────
-//
-//  UserPromptSubmit hook (matcher: "*")
-//      │
-//      ▼
-//  { prompt: "/plan-eng-review args..." }
-//      │
-//      ▼
-//  teamai track-slash --stdin --tool <name>
-//      │
-//      ▼
-//  [starts with "/"?] ──No──▶ exit(0)
-//      │Yes
-//      ▼
-//  [extract & validate skill name after "/"]
-//      │
-//      ▼
-//  appendFile(<scope usage file>) + updateKnownSkills()
+//  post-tool-use '*' (skill-use)          prompt-submit '*' (skill-mention)
+//  a skill tool call or a SKILL.md read   /name, Codex $name, Pi /skill:name
+//                  │                                 │
+//                  └──────────── skill-use.ts ───────┘
+//                                     │
+//                     [skill installed under a skill root?]
+//                     [first credit this session turn?]
+//                                     │
+//                                     ▼
+//               appendUsageEvent → <scope usage file>
+//               updateKnownSkills → known-skills.json
 //
 
 /**
@@ -93,6 +61,7 @@ function getKnownSkillsPath(): string {
  *
  * Handles multiple field names that different AI tool providers may use:
  *   - skill, name (original)
+ *   - id (OpenCode 2.x)
  *   - skill_name (Claude Code variant)
  *   - command (some providers wrap skill invocation)
  *
@@ -102,7 +71,7 @@ function getKnownSkillsPath(): string {
 export function extractSkillName(toolInput: string | Record<string, unknown>): string | null {
   try {
     const parsed = typeof toolInput === 'string' ? JSON.parse(toolInput) : toolInput;
-    const raw: unknown = parsed?.skill ?? parsed?.name ?? parsed?.skill_name ?? parsed?.command ?? null;
+    const raw: unknown = parsed?.skill ?? parsed?.name ?? parsed?.id ?? parsed?.skill_name ?? parsed?.command ?? null;
     if (typeof raw !== 'string') return null;
     const trimmed = raw.trim();
     if (!trimmed) return null;
@@ -131,97 +100,69 @@ export function isValidSkillName(name: string): boolean {
   return SKILL_NAME_REGEX.test(name);
 }
 
-/** A resolved, validated skill invocation from a PostToolUse payload. */
-export interface ResolvedSkillUse {
-  /** The validated skill name (passes {@link isValidSkillName}). */
-  skillName: string;
-  /** 'cursor' for a Read of a SKILL.md path, otherwise the caller's tool. */
-  source: 'cursor' | null;
-}
+/** What decides where skills are installed for one hook event. */
+export type SkillRootsInput = {
+  readonly config: LocalConfig;
+  /** The member's relocated tool roots (resolveMemberToolRoots). */
+  readonly toolRoots?: Record<string, string>;
+  /** The directory the hook ran in, the project when the scope names none. */
+  readonly hookCwd?: string;
+  /** Restrict name-based loads to this tool; file reads may use every root. */
+  readonly tool?: string;
+};
 
 /**
- * Resolve a skill invocation from a PostToolUse hook payload — the single source
- * of truth shared by the usage tracker and the webhook handler so they can never
- * drift. Handles both shapes: Claude/CodeBuddy's `Skill` tool, and Cursor's
- * `Read` of a `.../SKILL.md` path. Returns null for anything else — including a
- * normal (non-SKILL.md) `Read`, so a plain file read never counts as skill use.
- * The returned name is already validated with {@link isValidSkillName}.
+ * Every directory a skill can be installed in, resolved as skill delivery
+ * resolves a tool's skills directory (`skillsDirForTool`): each tool of the
+ * team's `toolPaths`, custom tools included, in user scope (under HOME with the
+ * member's `toolRoots`, Copilot under its home) and in project scope, plus the
+ * shared `.agents/skills` of both. With `tool`, keep only its configured roots
+ * and native shared roots. The project is the scope's `projectRoot`,
+ * else the hook's directory; the home `.github` belongs to no project.
  */
-export function resolveSkillUse(
-  toolName: string,
-  toolInput: Record<string, unknown>,
-): ResolvedSkillUse | null {
-  let skillName: string | null = null;
-  let source: 'cursor' | null = null;
-
-  if (toolName === 'Skill') {
-    skillName = extractSkillName(toolInput);
-  } else if (toolName === 'Read') {
-    const filePath =
-      (typeof toolInput.file_path === 'string' ? toolInput.file_path : null) ??
-      (typeof toolInput.filePath === 'string' ? toolInput.filePath : null) ??
-      (typeof toolInput.path === 'string' ? toolInput.path : null);
-    // Only a Read of a SKILL.md file is skill use — a normal file read is not.
-    if (filePath && /\/SKILL\.md$/i.test(filePath)) {
-      skillName = extractSkillName({ skill: filePath });
-      source = 'cursor';
-    }
-  } else {
-    return null;
-  }
-
-  if (!skillName || !isValidSkillName(skillName)) return null;
-  return { skillName, source };
-}
-
-/**
- * Well-known local skill directories to check for skill existence.
- * Ordered by likelihood of being present.
- */
-const SKILL_DIRS = [
-  '.claude/skills',
-  '.claude-internal/skills',
-  '.tclaude/skills',
-  '.cursor/skills',
-  '.codebuddy/skills',
-  '.codex/skills',
-  '.codex-internal/skills',
-  '.tcodex/skills',
-  '.openclaw/skills',
-  '.hermes/skills',
-];
-const PROJECT_SKILL_DIRS = [...SKILL_DIRS, '.github/skills'];
-
-/**
- * Check whether a skill actually exists on disk (has a SKILL.md in any tool's skills directory).
- * This prevents tracking phantom skills from typos or path inputs like "/data".
- *
- * Performance: Checks a bounded list of user and project directories with one stat() each.
- */
-export async function skillExistsOnDisk(skillName: string, toolRoots?: Record<string, string>): Promise<boolean> {
+export async function skillRoots({ config, toolRoots, hookCwd, tool: callingTool }: SkillRootsInput): Promise<string[]> {
+  const { SHARED_AGENT_SKILLS_PATH } = await import('./resources/skills.js');
+  const team = { toolPaths: (await loadTeamConfig(config.repo.localPath))?.toolPaths ?? DEFAULT_TOOL_PATHS };
   const home = getUserHome();
-  // A relocated tool (Claude Code with CLAUDE_CONFIG_DIR, Codex with
-  // CODEX_HOME) keeps its skills under the recorded root, which the static list
-  // cannot know; the caller resolves it from the hook's directory
-  // (resolveMemberToolRoots).
-  const userSkillDirs = [
-    ...Object.entries(RELOCATABLE_TOOLS).map(([tool, { defaultRoot }]) =>
-      path.join(resolveToolRootDir(tool, defaultRoot, toolRoots), 'skills')),
-    ...SKILL_DIRS.map((dir) => path.join(home, dir)),
-    path.join(getCopilotHome(), 'skills'),
-  ];
-  // Check user-level directories
-  for (const dir of userSkillDirs) {
-    const skillMd = path.join(dir, skillName, 'SKILL.md');
-    if (await pathExists(skillMd)) return true;
+  const userConfig: LocalConfig = { ...config, scope: 'user' };
+  const roots = new Set([path.join(home, SHARED_AGENT_SKILLS_PATH)]);
+  for (const [tool, { skills }] of Object.entries(scopedToolPaths(team, { scope: 'user', toolRoots }))) {
+    if (skills && (callingTool === undefined || callingTool === tool)) roots.add(path.join(resolveToolBaseDir(tool, userConfig), skills));
   }
-  // Check project-level directories (cwd)
-  const cwd = process.cwd();
-  if (path.resolve(cwd) !== path.resolve(home)) {
-    for (const dir of PROJECT_SKILL_DIRS) {
-      const skillMd = path.join(cwd, dir, skillName, 'SKILL.md');
-      if (await pathExists(skillMd)) return true;
+  const project = config.scope === 'project' && config.projectRoot ? config.projectRoot : hookCwd;
+  if (project !== undefined && path.resolve(project) !== path.resolve(home)) {
+    roots.add(path.join(project, SHARED_AGENT_SKILLS_PATH));
+    for (const [tool, { skills }] of Object.entries(team.toolPaths)) {
+      if (skills && (callingTool === undefined || callingTool === tool)) roots.add(path.join(project, skills));
     }
+  }
+  if (callingTool === 'opencode' || callingTool === 'muse') {
+    roots.add(path.join(home, '.claude/skills'));
+    if (callingTool === 'opencode' && project !== undefined && path.resolve(project) !== path.resolve(home)) {
+      roots.add(path.join(project, '.claude/skills'));
+    }
+  }
+  return [...roots];
+}
+
+/**
+ * Whether a skill exists on disk: a SKILL.md under one of `roots` (skillRoots).
+ * This prevents tracking phantom skills from typos or inputs like "/data" or "$HOME".
+ */
+export async function skillExistsOnDisk(skillName: string, roots: readonly string[]): Promise<boolean> {
+  for (const root of roots) {
+    if (await pathExists(path.join(root, skillName, 'SKILL.md'))) return true;
+  }
+  return false;
+}
+
+/** Whether `file` is the SKILL.md of `skillName` under one of `roots`, however either path is spelled. */
+export async function isInstalledSkillFile(skillName: string, file: string, roots: readonly string[]): Promise<boolean> {
+  const real = await fs.promises.realpath(file).catch(() => null);
+  if (real === null) return false;
+  for (const root of roots) {
+    const installed = await fs.promises.realpath(path.join(root, skillName, 'SKILL.md')).catch(() => null);
+    if (installed !== null && samePath(installed, real)) return true;
   }
   return false;
 }
@@ -350,19 +291,28 @@ async function ignoreUsageSideFiles(config: LocalConfig, usagePath: string): Pro
   }
 }
 
+/** A hook waits at most ~1 s for the known-skills lock; detached hooks of one session update it at once. */
+const KNOWN_SKILLS_LOCK_WAIT = { attempts: 20, delayMs: 50 };
+
 /**
- * Add a skill to the known-skills set (persisted across truncations).
+ * Add a skill to the known-skills set (persisted across truncations), under
+ * the file's lock so concurrent hooks do not drop each other's skill.
  * Silently fails on I/O errors to avoid disrupting the AI coding session.
  */
 export async function updateKnownSkills(skillName: string): Promise<void> {
+  const knownPath = getKnownSkillsPath();
+  const lockPath = `${knownPath}.lock`;
   try {
-    const knownPath = getKnownSkillsPath();
-    const existing = await readJson<string[]>(knownPath);
-    const skills = new Set(Array.isArray(existing) ? existing : []);
-    if (skills.has(skillName)) return; // already known
-    skills.add(skillName);
-    await writeJson(knownPath, Array.from(skills).sort());
-    log.debug(`Added ${skillName} to known-skills.json`);
+    const updated = await withFileLock(lockPath, KNOWN_SKILLS_LOCK_WAIT, async () => {
+      const existing = await readJson<string[]>(knownPath);
+      const skills = new Set(Array.isArray(existing) ? existing : []);
+      if (skills.has(skillName)) return;
+      skills.add(skillName);
+      await writeJson(knownPath, Array.from(skills).sort());
+      log.debug(`Added ${skillName} to known-skills.json`);
+    });
+    if (updated.held) return;
+    log.debug(`${lockPath} is still held, so ${skillName} was not added to known-skills.json; its usage event is recorded`);
   } catch (e) {
     log.error(`Failed to update known-skills: ${(e as Error).message}`);
   }
@@ -414,195 +364,61 @@ async function readStdin(): Promise<string> {
 }
 
 /**
- * Handle the `teamai track` CLI command.
- * Called by PostToolUse hook with CLI args (legacy) or STDIN JSON (current).
+ * Handle the hidden `teamai track <toolName> <toolInput>` command, which hooks
+ * written before hook-dispatch call until a pull replaces them.
  */
 export async function track(rawToolName: string, toolInput: string, tool?: string): Promise<void> {
-  const toolName = normalizeToolName(rawToolName);
-  // Only track Skill tool calls
-  if (toolName !== 'Skill') {
+  let input: unknown;
+  try {
+    input = JSON.parse(toolInput);
+  } catch {
+    log.debug('Could not parse the tool input of a track call');
     return;
   }
-
-  const skillName = extractSkillName(toolInput);
-  if (!skillName) {
-    log.debug('Could not extract skill name from tool input');
-    return;
-  }
-
-  if (!isValidSkillName(skillName)) {
-    log.debug(`Invalid skill name rejected: ${skillName.slice(0, 50)}`);
-    return;
-  }
-
   const config = await resolveConfigForDir();
   if (!config) return;
-
-  const event: UsageEvent = {
-    skill: skillName,
-    timestamp: new Date().toISOString(),
-    tool: tool ?? 'claude',
-  };
-
-  await appendUsageEvent(event, config);
-  await updateKnownSkills(skillName);
+  const { creditToolCall } = await import('./skill-use.js');
+  await creditToolCall({ tool_name: rawToolName, tool_input: input }, tool ?? 'claude', config);
 }
 
-/**
- * Handle the `teamai track --stdin` mode.
- * Reads PostToolUse hook JSON from STDIN and extracts tool usage info.
- *
- * Supports two tool formats:
- *   - Claude Code "Skill" tool:  { tool_name: "Skill", tool_input: { skill: "tdd" } }
- *   - Cursor "Read" tool:        { tool_name: "Read",  tool_input: { path: "…/SKILL.md" } }
- *
- * @param toolArg - Optional tool identifier from --tool CLI flag.
- *                  When provided, used as the toolSource (e.g. 'claude-internal').
- *                  When absent, defaults to 'claude' for backward compatibility.
- *                  Exception: Read + SKILL.md always overrides to 'cursor'.
- */
-export async function trackFromStdin(toolArg?: string): Promise<void> {
+/** A hook payload from STDIN, or null when there is none or it is not a JSON object. */
+async function readHookStdin(): Promise<Record<string, unknown> | null> {
   const raw = await readStdin();
   if (!raw.trim()) {
     log.debug('No STDIN data received');
-    return;
+    return null;
   }
-
-  let hookData: { tool_name?: string; tool_input?: Record<string, unknown>; cwd?: unknown };
+  let parsed: unknown;
   try {
-    hookData = JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
-    log.error('Failed to parse STDIN JSON');
-    return;
+    parsed = null;
   }
-
-  const rawName = hookData.tool_name;
-  if (typeof rawName !== 'string') return;
-  const toolName = normalizeToolName(rawName);
-
-  const toolInput = hookData.tool_input;
-  if (!toolInput || typeof toolInput !== 'object') {
-    if (toolName === 'Skill' || toolName === 'Read') {
-      log.debug('Missing or invalid tool_input in STDIN JSON');
-    }
-    return;
-  }
-
-  let skillName: string | null = null;
-  let toolSource = toolArg ?? 'claude';
-
-  if (toolName === 'Skill') {
-    skillName = extractSkillName(toolInput);
-  } else if (toolName === 'Read') {
-    const filePath =
-      (typeof toolInput.file_path === 'string' ? toolInput.file_path : null) ??
-      (typeof toolInput.filePath === 'string' ? toolInput.filePath : null) ??
-      (typeof toolInput.path === 'string' ? toolInput.path : null);
-    if (filePath && /\/SKILL\.md$/i.test(filePath)) {
-      skillName = extractSkillName({ skill: filePath });
-      toolSource = 'cursor';
-    }
-  } else {
-    return;
-  }
-
-  if (!skillName) {
-    log.debug('Could not extract skill name from STDIN tool_input');
-    return;
-  }
-
-  if (!isValidSkillName(skillName)) {
-    log.debug(`Invalid skill name rejected: ${skillName.slice(0, 50)}`);
-    return;
-  }
-
-  const { resolveHookConfig } = await import('./dashboard-collector.js');
-  const config = await resolveHookConfig(hookData, toolArg ?? 'claude');
-  if (!config) return;
-
-  const event: UsageEvent = {
-    skill: skillName,
-    timestamp: new Date().toISOString(),
-    tool: toolSource,
-  };
-
-  await appendUsageEvent(event, config);
-  await updateKnownSkills(skillName);
+  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return { ...parsed };
+  log.error('Failed to parse STDIN JSON');
+  return null;
 }
 
-/**
- * Handle the `teamai track-slash --stdin` mode.
- * Reads UserPromptSubmit hook JSON from STDIN and tracks slash commands.
- *
- * STDIN JSON format (Claude Code UserPromptSubmit):
- *   { prompt: "/plan-eng-review args...", session_id: "...", hook_event_name: "UserPromptSubmit" }
- *
- * Extracts the first word after "/" as the skill name.
- *
- * @param toolArg - Optional tool identifier from --tool CLI flag.
- *                  Defaults to 'claude' for backward compatibility.
- */
-export async function trackSlashCommand(toolArg?: string): Promise<void> {
-  const raw = await readStdin();
-  if (!raw.trim()) {
-    log.debug('No STDIN data for slash tracking');
-    return;
-  }
-
-  let hookData: { prompt?: string; cwd?: unknown };
-  try {
-    hookData = JSON.parse(raw);
-  } catch {
-    log.error('Failed to parse slash command STDIN JSON');
-    return;
-  }
-
-  const prompt = hookData.prompt;
-  if (typeof prompt !== 'string' || !prompt.startsWith('/')) {
-    return;
-  }
-
-  // Extract all skill names after "/" in the prompt
-  // (e.g. "/plan-eng-review some args /tdd /code-review" → ["plan-eng-review", "tdd", "code-review"])
-  // Match whole whitespace-delimited tokens, never segments of paths or URLs.
-  const matches = [...prompt.matchAll(/(?:^|\s)\/([a-zA-Z0-9_\-:.]+)(?=\s|$)/g)];
-  if (matches.length === 0) {
-    log.debug('Could not extract skill name from slash command');
-    return;
-  }
-
-  const hookCwd = resolveHookCwd(hookData);
+/** Handle the hidden `teamai track --stdin` command (a pre-hook-dispatch PostToolUse hook). */
+export async function trackFromStdin(toolArg?: string): Promise<void> {
+  const hookData = await readHookStdin();
+  if (!hookData) return;
+  const tool = toolArg ?? 'claude';
   const { resolveHookConfig } = await import('./dashboard-collector.js');
-  const config = await resolveHookConfig(hookData, toolArg ?? 'claude');
+  const config = await resolveHookConfig(hookData, tool);
   if (!config) return;
-  // The same root resolution import and the local agent use, from the hook's
-  // directory: a project set up before a user-scope relocation has no record
-  // of its own and follows user scope.
-  // The scope's own record first: a removed worktree's cwd leads nowhere (#810).
-  const toolRoots = config.toolRoots ?? await resolveMemberToolRoots(hookCwd);
+  const { creditToolCall } = await import('./skill-use.js');
+  await creditToolCall(hookData, tool, config);
+}
 
-  for (const match of matches) {
-    const skillName = match[1];
-
-    if (!isValidSkillName(skillName)) {
-      log.debug(`Invalid slash skill name rejected: ${skillName.slice(0, 50)}`);
-      continue;
-    }
-
-    // Verify the skill actually exists on disk to avoid tracking phantom skills
-    // (e.g. user typing "/data" which is not a real skill)
-    if (!await skillExistsOnDisk(skillName, toolRoots)) {
-      log.debug(`Slash command "/${skillName}" is not a known skill — skipping tracking`);
-      continue;
-    }
-
-    const event: UsageEvent = {
-      skill: skillName,
-      timestamp: new Date().toISOString(),
-      tool: toolArg ?? 'claude',
-    };
-
-    await appendUsageEvent(event, config);
-    await updateKnownSkills(skillName);
-  }
+/** Handle the hidden `teamai track-slash --stdin` command (a pre-hook-dispatch UserPromptSubmit hook). */
+export async function trackSlashCommand(toolArg?: string): Promise<void> {
+  const hookData = await readHookStdin();
+  if (!hookData) return;
+  const tool = toolArg ?? 'claude';
+  const { resolveHookConfig } = await import('./dashboard-collector.js');
+  const config = await resolveHookConfig(hookData, tool);
+  if (!config) return;
+  const { creditPromptMentions } = await import('./skill-use.js');
+  await creditPromptMentions(hookData, tool, config);
 }
