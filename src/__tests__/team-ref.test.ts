@@ -270,6 +270,38 @@ it('pullRepo refuses a detached HEAD without resetting it or discarding changes'
   expect(await fs.readFile(path.join(clone, 'teamai.yaml'), 'utf8')).toBe('member edit\n');
 });
 
+it('resetToCleanMaster sweeps an untracked leftover that blocks the switch back to the default branch', async () => {
+  const remote = path.join(root, 'untracked-block.git');
+  const seed = path.join(root, 'untracked-seed');
+  const localPath = path.join(root, 'untracked-block');
+  await fs.mkdir(path.join(seed, 'votes'), { recursive: true });
+  await createGit(root).raw(['init', '--bare', '-b', 'main', remote]);
+  const seedGit = createGit(seed);
+  await seedGit.init(['-b', 'main']);
+  await seedGit.addConfig('user.name', 'Test');
+  await seedGit.addConfig('user.email', 'test@example.com');
+  await fs.writeFile(path.join(seed, 'teamai.yaml'), 'team: test\n');
+  await fs.writeFile(path.join(seed, 'votes', 'stray.yaml'), 'upstream\n');
+  await seedGit.add('.');
+  await seedGit.commit('team');
+  await seedGit.push([remote, 'main']);
+  await createGit(root).clone(remote, localPath);
+  const local = createGit(localPath);
+  await local.addConfig('user.name', 'Test');
+  await local.addConfig('user.email', 'test@example.com');
+  // A crashed push left the clone on a stale push branch whose tree lacks
+  // votes/stray.yaml; a later crashed run left that path behind untracked.
+  await local.checkoutLocalBranch('teamai/push/member/20260411-225746');
+  await local.raw(['rm', '-rf', '.']);
+  await local.commit('empty push branch');
+  await fs.mkdir(path.join(localPath, 'votes'), { recursive: true });
+  await fs.writeFile(path.join(localPath, 'votes', 'stray.yaml'), 'stray\n');
+
+  await expect(resetToCleanMaster(local, localPath)).resolves.toBeUndefined();
+  expect((await local.revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe('main');
+  expect(await fs.readFile(path.join(localPath, 'votes', 'stray.yaml'), 'utf8')).toBe('upstream\n');
+});
+
 it('matches removal names to handler names for flat and namespaced resources', async () => {
   const repo = path.join(root, 'resource-names');
   await fs.mkdir(repo);

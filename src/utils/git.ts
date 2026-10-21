@@ -1318,7 +1318,11 @@ export async function completeWorktreeList(cwd: string, commonDir: string): Prom
  *  2. Active merge with MERGE_HEAD — `merge --abort` works, but
  *     `reset --hard` handles this too.
  *  3. Stuck on a stale push branch — switch back to the default branch.
- *  4. Uncommitted modifications — reset discards them.
+ *  4. Uncommitted modifications — reset discards them; untracked files
+ *     (which reset --hard leaves in place) are swept by `clean -fd`, matching
+ *     pushRepoBranch. Without the clean, a leftover untracked file blocks the
+ *     pull/checkout that follows with "untracked working tree files would be
+ *     overwritten".
  */
 export async function resetToCleanMaster(git: SimpleGit, localPath: string): Promise<void> {
   await assertAttachedTeamRepo(git, localPath);
@@ -1335,6 +1339,8 @@ export async function resetToCleanMaster(git: SimpleGit, localPath: string): Pro
       + `${status.modified.length} modified, ${status.not_added.length} untracked)`,
     );
     await git.reset(['--hard', 'HEAD']);
+    // reset --hard leaves untracked files (counted above) in place.
+    await git.clean('f', ['-d']);
   }
 
   // Ensure we're on the default branch (previous push may have left us on a feature branch)
