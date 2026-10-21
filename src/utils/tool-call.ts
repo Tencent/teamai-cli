@@ -300,7 +300,7 @@ function hasUnsupportedCompoundSyntax(command: string): boolean {
       continue;
     }
     if (c === ';' || c === '|' || c === '&') {
-      if (waitingForAndOrCommand) return true;
+      if (waitingForAndOrCommand || !segmentHasToken) return true;
       segmentHasToken = false;
       wordStarted = false;
       continue;
@@ -455,7 +455,7 @@ export function codexCompoundReadPaths(stdin: Record<string, unknown>): string[]
     if (finalStatus === 'failure') {
       const outputBelongsToReader = onlySilentNeighbors && diagnostic !== undefined
         && diagnostic.content !== null && diagnostic.content.trim() !== ''
-        && (hasFailedOperand || read.paths.length === 1);
+        && hasFailedOperand;
       if (!outputBelongsToReader) continue;
     }
 

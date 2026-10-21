@@ -360,6 +360,12 @@ describe('Codex compound shell reads for skill-use', () => {
     expect(compoundReadPaths(payload(`true; cat ${skill}`, {}, 'failure'))).toEqual([]);
   });
 
+  it('does not infer a failed reader from leftover option help text', () => {
+    const output = `cat: invalid option -- 'x'\nTry 'cat --help' for more information.`;
+
+    expect(compoundReadPaths(payload(`true; cat --invalid-option ${skill}`, output, 'failure'))).toEqual([]);
+  });
+
   it.each([
     `if true; then cat ${skill}; fi`,
     `(cat ${skill})`,
@@ -372,6 +378,7 @@ describe('Codex compound shell reads for skill-use', () => {
     `true && && cat ${skill}`,
     `true && || cat ${skill}`,
     `true || ; cat ${skill}`,
+    `echo before\ntrue;; cat ${skill}`,
   ])('skips unsupported or state-changing command lists: %s', (command) => {
     expect(compoundReadPaths(payload(command))).toEqual([]);
   });
