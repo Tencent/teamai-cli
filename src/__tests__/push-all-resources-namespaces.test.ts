@@ -299,7 +299,7 @@ describe('repo resource handler push and scan', () => {
     expect(scanned[0].status).toBe('new');
 
     // Now push it
-    await pushRepoResourceItem(scanned[0], {} as any, localConfig);
+    await pushRepoResourceItem(scanned[0], localConfig);
     const destFile = path.join(repoLocal, 'workflows', 'ops', 'test.yaml');
     expect(fs.existsSync(destFile)).toBe(true);
     expect(fs.readFileSync(destFile, 'utf8')).toBe('name: test\n');

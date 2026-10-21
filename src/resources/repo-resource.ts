@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { ResourceHandler } from './base.js';
 import { isSelfMode, type LocalConfig, type ResourceItem, type ResourceType, type TeamaiConfig } from '../types.js';
-import { ensureDir, fileContentEqual, pathExists, readFileSafe, writeFile } from '../utils/fs.js';
+import { ensureDir, fileContentEqual, pathExists } from '../utils/fs.js';
 
 export async function listRepoFilesRecursive(dir: string, baseDir = dir): Promise<string[]> {
   try {
@@ -98,18 +98,16 @@ export async function scanRepoResourceForPush(
 
 export async function pushRepoResourceItem(
   item: ResourceItem,
-  localConfigOrTeamConfig: TeamaiConfig | LocalConfig,
-  maybeLocalConfig?: LocalConfig,
+  localConfig: LocalConfig,
 ): Promise<void> {
-  const localConfig = maybeLocalConfig ?? (localConfigOrTeamConfig as LocalConfig);
   const dest = path.resolve(localConfig.repo.localPath, ...item.relativePath.split('/'));
   const originalSource = path.resolve(item.sourcePath);
   if (originalSource !== dest) {
     await ensureDir(path.dirname(dest));
-    const content = await readFileSafe(originalSource);
-    if (content !== null) {
-      await writeFile(dest, content);
-    }
+    // Byte-level copy: a PNG or other binary under docs/ must survive intact.
+    // readFileSafe/writeFile are UTF-8 text I/O and corrupt non-text bytes
+    // (e.g. 0x89 → U+FFFD → 0xEF 0xBF 0xBD on round-trip).
+    await fs.copyFile(originalSource, dest);
     const repoRoot = path.resolve(localConfig.repo.localPath);
     if (originalSource.startsWith(repoRoot + path.sep)) {
       await fs.rm(originalSource, { force: true });

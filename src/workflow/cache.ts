@@ -224,12 +224,28 @@ export async function syncWorkflowDefinitions(
     // dir missing or unreadable
   }
 
-  // Resolve namespaces only when namespaced candidates exist. A root-only
-  // tree needs no manifest read, and an unconditional read here would fire
-  // before the push's pull refreshes the clone — the stale mapping the #649
-  // review forbids. A manifest that cannot be read leaves the resolution
-  // null, which falls back to the set of namespaces found on disk.
-  const hasNamespaced = rawCandidates.some((c) => c.namespace !== null);
+  // Resolve namespaces when namespaced candidates exist on disk — workflows
+  // OR prompts. A root-only tree needs no manifest read, and an unconditional
+  // read here would fire before the push's pull refreshes the clone — the
+  // stale mapping the #649 review forbids. A manifest that cannot be read
+  // leaves the resolution null, which falls back to the set of namespaces
+  // found on disk.
+  let hasNamespaced = rawCandidates.some((c) => c.namespace !== null);
+  if (!hasNamespaced) {
+    // Prompt namespaces are independent of workflow layout: a root-only
+    // workflows/ tree with prompts/<ns>/ still needs resolution.
+    try {
+      const promptsDir = path.join(knowledgeRoot, 'prompts');
+      for (const entry of await fs.readdir(promptsDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && !entry.isSymbolicLink() && isSafeNamespaceSegment(entry.name)) {
+          hasNamespaced = true;
+          break;
+        }
+      }
+    } catch {
+      // prompts dir missing or unreadable
+    }
+  }
   let resourceNamespaces: Awaited<ReturnType<typeof resolveResourceNamespaces>> = null;
   if (hasNamespaced) {
     try {
@@ -539,27 +555,28 @@ async function resolvePromptFiles(
       const promptRelative = promptPath.replace(/^[\\/]/, '');
       if (promptRelative.startsWith('prompts/') && activePromptsNamespaces && activePromptsNamespaces.length > 0) {
         const leaf = promptRelative.slice('prompts/'.length);
-        if (!leaf.includes('/')) {
-          const found = (await Promise.all(
-            activePromptsNamespaces.map(async (ns) => {
-              const candidate = path.join(root, 'prompts', ns, leaf);
-              return (await pathExists(candidate)) ? `prompts/${ns}/${leaf}` : null;
-            }),
-          )).filter((p): p is string => p !== null);
+        // Namespace lookup works for any leaf depth — a nested path like
+        // prompts/topic/note.md resolves to prompts/<ns>/topic/note.md
+        // just as a flat prompts/note.md resolves to prompts/<ns>/note.md.
+        const found = (await Promise.all(
+          activePromptsNamespaces.map(async (ns) => {
+            const candidate = path.join(root, 'prompts', ns, ...leaf.split('/'));
+            return (await pathExists(candidate)) ? `prompts/${ns}/${leaf}` : null;
+          }),
+        )).filter((p): p is string => p !== null);
 
-          if (found.length === 1) {
-            promptPath = found[0];
-          } else if (found.length > 1) {
-            diagnostics.push({
-              file: workflowFile,
-              line: location.line,
-              column: location.column,
-              field: `${field}.prompt_file`,
-              code: 'prompt_namespace_conflict',
-              message: `prompt_file "${step.promptFile}" is ambiguous between active namespaces (${found.join(', ')}); fix the conflict or specify the prompt path explicitly`,
-            });
-            continue;
-          }
+        if (found.length === 1) {
+          promptPath = found[0];
+        } else if (found.length > 1) {
+          diagnostics.push({
+            file: workflowFile,
+            line: location.line,
+            column: location.column,
+            field: `${field}.prompt_file`,
+            code: 'prompt_namespace_conflict',
+            message: `prompt_file "${step.promptFile}" is ambiguous between active namespaces (${found.join(', ')}); fix the conflict or specify the prompt path explicitly`,
+          });
+          continue;
         }
       }
 

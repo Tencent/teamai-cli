@@ -27,7 +27,7 @@ import fse from 'fs-extra';
 import { resolveConfigForDir } from './config.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
 import { ALL_PROJECT_RESOURCE_TYPES, loadProjectsManifest, type AllProjectResourceType, type ProjectsManifest } from './projects.js';
-import { NAMESPACE_AXIS, PLACEABLE_TYPES, type PlaceableType } from './push-namespaces.js';
+import { NAMESPACE_AXIS, PLACEABLE_TYPES, rootSegmentsFor, type PlaceableType } from './push-namespaces.js';
 import { parseAgentYaml } from './resources/agent-format.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
@@ -96,18 +96,20 @@ function parseRelativePath(
   relativePath: string,
   index: ManifestIndex,
 ): { name: string; namespace?: string } {
-  const rest = relativePath.split('/').slice(1);
+  const rootSegs = rootSegmentsFor(type);
+  const all = relativePath.split('/');
+  const rest = all.slice(rootSegs);
   if (rest.length <= 1) {
     return { name: stripExtension(rest[0] ?? '') };
   }
   const namespace = rest[0];
+  // Keep the full sub-path as the name so nested docs/wiki files in different
+  // directories don't collide on their basename alone.
+  const name = stripExtension(rest.slice(1).join('/'));
   if ((type === 'docs' || type === 'wiki') && !index.declares(NAMESPACE_AXIS[type], namespace!)) {
-    return { name: stripExtension(rest[rest.length - 1] ?? '') };
+    return { name: stripExtension(rest.join('/')) };
   }
-  return {
-    name: stripExtension(rest[rest.length - 1] ?? ''),
-    namespace,
-  };
+  return { name, namespace };
 }
 
 /** Enumerate the resources on the branch through the same scanners pull uses. */
@@ -137,6 +139,18 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     }
   }
   return items.map(({ type, item }) => {
+    // Handler-provided names (MCP server names, skill names) are authoritative;
+    // parseRelativePath would overwrite them with the filename stem (e.g. 'mcp'
+    // from mcp/<ns>/mcp.yaml), collapsing distinct servers into one identity.
+    if ((handlerTypes as readonly PlaceableType[]).includes(type)) {
+      return {
+        type,
+        name: item.name,
+        namespace: item.namespace,
+        relativePath: item.relativePath,
+        absolutePath: item.sourcePath,
+      };
+    }
     const { name, namespace } = parseRelativePath(type, item.relativePath, index);
     return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath };
   });
@@ -152,6 +166,8 @@ interface ManifestIndex {
   coActive(axis: AllProjectResourceType, a: string, b: string): boolean;
   /** True when any role or project declares any namespace on `axis`. */
   anyOn(axis: AllProjectResourceType): boolean;
+  /** True when no manifest exists at all — every on-disk namespace is valid. */
+  manifestFree: boolean;
 }
 
 function buildManifestIndex(roles: RolesManifest | null, projects: ProjectsManifest | null): ManifestIndex {
@@ -185,6 +201,7 @@ function buildManifestIndex(roles: RolesManifest | null, projects: ProjectsManif
       });
     },
     anyOn: (axis) => listsByAxis.get(axis)!.length > 0,
+    manifestFree: !roles && !projects,
   };
 }
 
@@ -231,7 +248,9 @@ async function structureFindings(resources: ReviewResource[], index: ManifestInd
     }
     if (resource.namespace) {
       const axis = NAMESPACE_AXIS[resource.type];
-      if (!index.declares(axis, resource.namespace)) {
+      // A manifest-free team has no declarations to check against — every
+      // on-disk namespace is a valid pull source.
+      if (!index.manifestFree && !index.declares(axis, resource.namespace)) {
         findings.push({
           level: 'fail',
           check: 'structure',

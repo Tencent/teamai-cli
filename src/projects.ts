@@ -201,11 +201,11 @@ function getProjectOrThrow(manifest: ProjectsManifest, projectId: string): TeamP
  * Resolve the resource namespaces contributed by the given active projects, as a
  * deduped union across all three resource types (knowledge/skills/learnings).
  *
- * This is the ONLY source of learnings namespaces. Roles never contribute them.
- * The caller unions the result with `resolveRoleResourceNamespaces(...)` on the
- * knowledge/skills axes; there is no priority override between the two dimensions
- * (same-named resources across a role and a project namespace are an admin-side
- * duplicate error, not a runtime precedence decision).
+ * Both projects and roles contribute learnings namespaces (#1101). The caller
+ * unions the result with `resolveRoleResourceNamespaces(...)` on every axis;
+ * there is no priority override between the two dimensions (same-named resources
+ * across a role and a project namespace are an admin-side duplicate error, not a
+ * runtime precedence decision).
  */
 export function resolveProjectResourceNamespaces(input: {
   manifest: ProjectsManifest;

@@ -101,7 +101,8 @@ export function declaredNamespaceFor(
   declaredNamespaces: readonly string[],
 ): string | undefined {
   if (item.type !== 'docs' && item.type !== 'wiki') return undefined;
-  const candidate = item.relativePath.split('/')[1];
+  const segments = item.relativePath.split('/');
+  const candidate = segments[rootSegmentsFor(item.type)];
   return candidate && declaredNamespaces.includes(candidate) ? candidate : undefined;
 }
 
@@ -109,10 +110,19 @@ export function declaredNamespaceFor(
  * Insert `namespace` after the resource root. Only the directory changes, so
  * the basename — `.yaml` or a legacy `.md` for agents, a bare directory name
  * for skills — survives without the caller knowing which it has.
+ *
+ * `rootSegments` is how many leading path segments form the root before the
+ * namespace insertion point: 1 for `docs/`, `skills/` etc., 3 for wiki's
+ * `teamwiki/evidence/code/`.
  */
-export function withNamespace(relativePath: string, namespace: string): string {
-  const [root, ...rest] = relativePath.split('/');
-  return [root, namespace, ...rest].join('/');
+export function withNamespace(relativePath: string, namespace: string, rootSegments = 1): string {
+  const parts = relativePath.split('/');
+  return [...parts.slice(0, rootSegments), namespace, ...parts.slice(rootSegments)].join('/');
+}
+
+/** Leading path segments before the namespace slot, per resource type. */
+export function rootSegmentsFor(type: PlaceableType): number {
+  return type === 'wiki' ? 3 : 1;
 }
 
 /**

@@ -30,11 +30,19 @@ import { loadProjectsManifest, resolveProjectResourceNamespaces, type ProjectsMa
 import { isSafeNamespaceSegment, NAMESPACE_RULE, fallbackNamespaceError } from './manifest-schema.js';
 import {
   declaredNamespaceFor, isAtSharedRoot, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
-  resolveProjectNamespace, skillNamespacePath, withNamespace, type PlaceableType,
+  resolveProjectNamespace, rootSegmentsFor, skillNamespacePath, withNamespace, type PlaceableType,
 } from './push-namespaces.js';
 import { askQuestion, askSelection, isInteractive } from './utils/prompt.js';
 import { pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
 import { brokenTeamProfileFiles } from './models/profile.js';
+
+/**
+ * Types whose `scanLocalForPush` source is the tool's own file (outside the
+ * clone), not a clone-backed path. The pre-refresh snapshot must exclude them:
+ * scanning them fires spurious warnings (e.g. "Skipped b-skill") and their
+ * source is untouched by `resetToCleanMaster` anyway.
+ */
+const LOCAL_TOOL_TYPES: ReadonlySet<PlaceableType> = new Set(['skills', 'rules', 'agents']);
 
 /**
  * Filter a list of repo-root-relative paths (e.g. "rules/", ".codebuddy-plugin/") down to
@@ -552,7 +560,7 @@ function reuseRecordedDestinations(groups: PushGroup[]): Set<ResourceItem> {
         // A rule or agent carries its own path from the scanner, and that path
         // is authoritative when it already names a namespace (#654).
         item.namespace = ns;
-        item.relativePath = withNamespace(item.relativePath, ns);
+        item.relativePath = withNamespace(item.relativePath, ns, rootSegmentsFor(item.type));
       }
     }
   }
@@ -633,7 +641,7 @@ async function placeNewResources(args: {
         continue;
       case 'namespace':
         for (const item of newAtRoot) {
-          const placedAt = withNamespace(item.relativePath, destination.namespace);
+          const placedAt = withNamespace(item.relativePath, destination.namespace, rootSegmentsFor(type));
           // This resource is NEW here, so nothing of ours is at that path yet.
           // Anything already there is somebody else's, and `pushItem` writes
           // rather than merges: placing on top of it would replace their work
@@ -1114,7 +1122,7 @@ async function pushCore(
       const workingContent = await readFileSafe(yamlPath);
       // Nothing below writes before these reads finish, so they run together:
       const repoScan = Promise.all(
-        PLACEABLE_TYPES.map(async (t) => {
+        PLACEABLE_TYPES.filter((t) => !LOCAL_TOOL_TYPES.has(t)).map(async (t) => {
           try {
             return await getHandler(t).scanLocalForPush(teamConfig, localConfig);
           } catch {
@@ -1150,12 +1158,12 @@ async function pushCore(
       const cloneRoot = path.resolve(localConfig.repo.localPath);
       for (const item of scannedGroups.flat()) {
         if (indexedPaths.has(item.relativePath)) continue;
-        // Only capture items whose source lives inside the team repo clone —
-        // those are the ones `resetToCleanMaster` can destroy. A project-local
-        // source (a tool-format agent, rule or skill) is untouched by the
-        // refresh, and restoring its bytes under `relativePath` would write
-        // tool-format content over the clone's canonical file.
-        if (!path.resolve(item.sourcePath).startsWith(cloneRoot + path.sep)) continue;
+        // Only capture items whose source is the clone file at its relativePath
+        // — the ones `resetToCleanMaster` can destroy. A project-local source
+        // (a tool-format agent, rule or skill) is untouched by the refresh, and
+        // restoring its bytes under `relativePath` would write tool-format
+        // content over the clone's canonical file.
+        if (path.resolve(item.sourcePath) !== path.resolve(cloneRoot, ...item.relativePath.split('/'))) continue;
         const snapshot = await readFileSnapshot(item.sourcePath);
         if (snapshot !== null && !await hasGitModeChange(git, item.relativePath)) {
           pendingEnvFiles.set(item.relativePath, snapshot);
@@ -1700,6 +1708,26 @@ async function pushCore(
       log.error(`Invalid --role value "${options.role}": ${(e as Error).message}`);
       process.exitCode = 2;
       return;
+    }
+    // Warn when the role names no namespace any manifest declares: pull would
+    // ignore the pushed paths. A manifest-free team is exempt — every on-disk
+    // namespace is valid there.
+    try {
+      const manifest = await loadRolesManifest(localConfig.repo.localPath);
+      const declared = new Set<string>();
+      for (const role of manifest.roles) {
+        for (const list of Object.values(role.resources) as (string[] | undefined)[]) {
+          for (const ns of list ?? []) declared.add(ns);
+        }
+      }
+      if (declared.size > 0 && !declared.has(options.role)) {
+        log.warn(
+          `--role ${options.role} is not declared in manifest/roles.yaml for any resource axis; `
+          + 'pull will not deliver resources placed there. Declare it or pick a known namespace.',
+        );
+      }
+    } catch {
+      // Manifest missing or unreadable: the push path reports that separately.
     }
     skillsDestination = options.role;
   } else if (options.project && projectsManifest && allItems.some(isRelocatedByFlag)) {

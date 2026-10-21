@@ -3,7 +3,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import { z } from 'zod';
 import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
-import type { ResourceItem, TeamaiConfig, LocalConfig } from '../types.js';
+import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, getTeamaiHome, isSelfMode } from '../types.js';
 import { pathExists, readFileIfExists, readFileSafe, writeFile, ensureDir, fileContentEqual, remove, symlinkTarget } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
@@ -285,8 +285,8 @@ function parseEnvYamlDocument(raw: unknown, label: string): EnvYamlRead {
   return { ok: true, variables: parsed.data.variables };
 }
 
-function envPushItem(relativePath: string, sourcePath: string): ResourceItem {
-  return { name: relativePath.slice('env/'.length), type: 'env', sourcePath, relativePath };
+function envPushItem(relativePath: string, sourcePath: string, status: ResourceItemStatus = 'modified'): ResourceItem {
+  return { name: relativePath.slice('env/'.length), type: 'env', sourcePath, relativePath, status };
 }
 
 /** A `source` or `.` command naming a file called env.sh. */
@@ -342,8 +342,9 @@ export class EnvHandler extends ResourceHandler {
       for (const { relativePath, absolutePath: activeEnv } of await listEnvFiles(activeRoot)) {
         const baseEnv = path.join(localConfig.repo.localPath, ...relativePath.split('/'));
         // Not in the baseline → new; present but different → modified; equal → skip.
-        if (await pathExists(baseEnv) && await fileContentEqual(activeEnv, baseEnv)) continue;
-        items.push(envPushItem(relativePath, activeEnv));
+        const baseExists = await pathExists(baseEnv);
+        if (baseExists && await fileContentEqual(activeEnv, baseEnv)) continue;
+        items.push(envPushItem(relativePath, activeEnv, baseExists ? 'modified' : 'new'));
       }
       return items;
     }
@@ -353,17 +354,26 @@ export class EnvHandler extends ResourceHandler {
     const { promisify } = await import('node:util');
     const execFileAsync = promisify(execFile);
 
-    // Modified and untracked files under env/, in one call. A file git cannot
-    // report on (no repository) is treated as changed, as before. `-z` keeps a
+    // Modified and untracked files under env/. A file git cannot report on
+    // (no repository) is treated as changed, as before. `-z` keeps a
     // non-ASCII path unquoted, so it matches the name on disk.
     let changed: Set<string> | null = null;
+    let untracked: Set<string> = new Set();
     try {
-      const { stdout } = await execFileAsync(
-        'git',
-        ['ls-files', '-z', '--modified', '--others', '--exclude-standard', '--', 'env'],
-        { cwd: repoPath },
-      );
-      changed = new Set(stdout.split('\0').filter(Boolean));
+      const [changedRes, untrackedRes] = await Promise.all([
+        execFileAsync(
+          'git',
+          ['ls-files', '-z', '--modified', '--others', '--exclude-standard', '--', 'env'],
+          { cwd: repoPath },
+        ),
+        execFileAsync(
+          'git',
+          ['ls-files', '-z', '--others', '--exclude-standard', '--', 'env'],
+          { cwd: repoPath },
+        ),
+      ]);
+      changed = new Set(changedRes.stdout.split('\0').filter(Boolean));
+      untracked = new Set(untrackedRes.stdout.split('\0').filter(Boolean));
     } catch {
       changed = null;
     }
@@ -371,7 +381,8 @@ export class EnvHandler extends ResourceHandler {
     const items: ResourceItem[] = [];
     for (const { relativePath, absolutePath } of await listEnvFiles(repoPath)) {
       if (changed && !changed.has(relativePath)) continue;
-      items.push(envPushItem(relativePath, absolutePath));
+      const status = untracked.has(relativePath) || !changed ? 'new' : 'modified';
+      items.push(envPushItem(relativePath, absolutePath, status));
     }
     return items;
   }

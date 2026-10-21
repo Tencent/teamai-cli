@@ -6,7 +6,7 @@ import { teamRefNotice } from './team-ref.js';
 import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
-import { getAllHandlers } from './resources/index.js';
+import { getAllHandlers, getHandler } from './resources/index.js';
 import { listDirs, listFilesRecursive, pathExists, readFileSafe } from './utils/fs.js';
 import { SkillsHandler } from './resources/skills.js';
 import { DocsHandler } from './resources/docs.js';
@@ -130,6 +130,15 @@ export async function status(options: GlobalOptions): Promise<void> {
 
   count('hooks', (await resolveTeamHookEntries(localConfig)).resolution);
   count('mcp', await resolveEntriesFor(mcpEntryReader, localConfig));
+
+  // Repo-backed types: count what's in the team repo tree.
+  for (const type of ['models', 'claudemd', 'learnings', 'wiki', 'workflows', 'prompts', 'scorers'] as const) {
+    try {
+      counts[type] = (await getHandler(type).scanTeamForPull(teamConfig, localConfig)).length;
+    } catch {
+      counts[type] = 0;
+    }
+  }
 
   for (const type of RESOURCE_TYPES) {
     console.log(`  ${type}: ${counts[type] ?? 0}${origins[type] ?? ''}`);
