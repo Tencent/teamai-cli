@@ -211,9 +211,9 @@ describe('injectHooksToAllTools — codebuddy runs hooks through Git Bash (win32
     const codexCommand = getDispatchCommand('session-start', 'codex');
 
     expect(claudeCommand.startsWith(`"${fakeGitBash(tmp).split(path.sep).join('/')}" -lc `)).toBe(true);
-    // Codex runs `command` through the host shell on every platform and never
-    // reads commandWindows, so its built-ins are the bare argv form.
-    expect(codexCommand).toBe('teamai hook-dispatch session-start --tool codex');
+    // Codex reads `command` under sh on POSIX and the cmd.exe `commandWindows`
+    // on Windows (#1215), so the built-in command keeps the sh fail-open form.
+    expect(codexCommand).toBe('teamai hook-dispatch session-start --tool codex 2>/dev/null || true');
   });
 
   it('injects codebuddy hooks in POSIX syntax, without /bin/sh', async () => {

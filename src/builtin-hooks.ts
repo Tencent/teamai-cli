@@ -207,20 +207,26 @@ function getHookShellCommand(): string {
 
 /**
  * Generate the hook-dispatch command for a given event, tool, and optional matcher.
- * A Codex tool gets the bare argv form on every platform (#1215): Codex runs
- * `command` through sh on POSIX and, on Windows, reads `commandWindows` (the
- * cmd.exe form toCodexEntry in hooks.ts writes) — so `command` itself must be
- * plain POSIX and free of syntax cmd.exe would misread (a `;` is an argument
- * delimiter there, not a separator). The bare form stays byte-identical across
- * platforms (the #1074 project-file contract) and resolves `teamai` from PATH
- * like any CLI; the not-found fail-open on Windows rides the cmd-syntax
- * commandWindows. Other tools keep the shell-wrapped form their hosts expect.
+ * A Codex tool gets the sh fail-open form (#1215): Codex runs `command`
+ * through sh on POSIX and, on Windows, reads `commandWindows` (the cmd.exe
+ * form toCodexEntry in hooks.ts writes), so `command` can be plain POSIX —
+ * `2>/dev/null || true` restores the pre-#1215 not-found behavior (exit 0,
+ * message suppressed) that the bare form lost to sh's exit 127. The string
+ * stays byte-identical across platforms (the #1074 project-file contract):
+ * it is a constant that never depends on the writing machine. Other tools
+ * keep the shell-wrapped form their hosts expect.
  */
 export function getDispatchCommand(event: string, tool: string, matcher?: string, binPath?: string): string {
   const bin = binPath ?? 'teamai';
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
   if (isCodexTool(tool)) {
-    return `${bin} hook-dispatch ${event} --tool ${tool}${matcherArg}`;
+    // The POSIX fail-open tail: `command` runs under sh on POSIX only (Windows
+    // reads the cmd.exe `commandWindows`, see toCodexEntry in hooks.ts), so
+    // when `teamai` is not on the hook PATH the `2>/dev/null || true` restores
+    // the pre-#1215 behavior — exit 0, not-found message suppressed — instead
+    // of sh's exit 127. The string stays byte-identical across platforms
+    // (#1074): it is a constant that never depends on the writing machine.
+    return `${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null || true`;
   }
   const shell = getHookShellCommand();
   return `${shell} -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;

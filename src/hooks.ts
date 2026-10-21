@@ -1542,8 +1542,8 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
 /** The pre-#1215 bash-wrapped built-in dispatch (still what non-Codex tools carry). */
 const BASH_DISPATCH_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
 
-/** The #1215 bare built-in dispatch the Codex family carries on every platform. */
-const BUILTIN_DISPATCH_COMMAND_RE = /^(teamai hook-dispatch [a-z-]+ --tool \S+(?: --matcher \S+)?)$/;
+/** The #1215 sh-form built-in dispatch the Codex family carries on every platform. */
+const BUILTIN_DISPATCH_COMMAND_RE = /^(teamai hook-dispatch [a-z-]+ --tool \S+(?: --matcher \S+)?) 2>\/dev\/null \|\| true$/;
 
 /**
  * The `commandWindows` of a built-in Codex entry: the cmd.exe form of its

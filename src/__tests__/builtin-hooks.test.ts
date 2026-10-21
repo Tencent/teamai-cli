@@ -152,8 +152,11 @@ describe('builtinHookDefs — codex command is the portable shell-free form on e
       expect(posix.length).toBeGreaterThan(0);
       expect(windows.map((d) => d.command)).toEqual(posix.map((d) => d.command));
       for (const def of windows) {
-        expect(def.command).toMatch(new RegExp(`^teamai hook-dispatch [a-z-]+ --tool ${tool}(?: --matcher \\S+)?$`));
-        for (const shellSyntax of ['bash', '-lc', '2>', '||', ';', 'exit', '$null', '/dev/null']) {
+        // The command is the sh fail-open form (POSIX-only: Windows reads
+        // the cmd.exe commandWindows, see hooks.ts), byte-identical across
+        // platforms because it is a constant string (#1074).
+        expect(def.command).toMatch(new RegExp(`^teamai hook-dispatch [a-z-]+ --tool ${tool}(?: --matcher \\S+)? 2>/dev/null \\|\\| true$`));
+        for (const shellSyntax of ['bash', '-lc', '$null', '2>nul']) {
           expect(def.command).not.toContain(shellSyntax);
         }
       }
