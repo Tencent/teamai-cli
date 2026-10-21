@@ -19,7 +19,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ensureTeamaiWrapper, getTeamHookDispatchCommand } from './builtin-hooks.js';
+import { getTeamHookDispatchCommand } from './builtin-hooks.js';
 import { CODEX_TOOL_ID, getTeamaiHomeDir } from './types.js';
 import { checkoutForProjectAnchor } from './utils/git.js';
 import { ensureDir, readJson, readJsonObject, writeJson, writeJsonAtomic } from './utils/fs.js';
@@ -74,12 +74,7 @@ function defaultTimeout(event: string): number {
 /** Events a dispatcher entry can name in its command: Codex's event names are plain words. */
 const DISPATCHABLE_EVENT = /^[A-Za-z]+$/;
 
-// Matches both the pre-#1215 shell-wrapped forms (`bash -lc "teamai hook-dispatch
-// <E> --tool codex --team-hooks"`, with or without a Git Bash launcher path) and
-// the shell-free absolute-wrapper form (`"<bin>/teamai[.cmd]" hook-dispatch <E>
-// --tool codex --team-hooks`), so entries written by earlier teamai versions are
-// recognized and replaced on the next reconcile.
-const DISPATCHER_COMMAND = /\bhook-dispatch [A-Za-z]+ --tool codex --team-hooks\b/;
+const DISPATCHER_COMMAND = /\bteamai hook-dispatch [A-Za-z]+ --tool codex --team-hooks\b/;
 
 /** Whether a Codex hook command is a team-hook dispatcher entry's. */
 export function isCodexTeamHookDispatcher(command: string): boolean {
@@ -196,10 +191,6 @@ export async function reconcileCodexDispatchers(hooksFile: string): Promise<void
     }
   }
   if (timeouts.size === 0 && (await readJsonObject(hooksFile)).kind === 'missing') return;
-  // The dispatcher command names the wrapper by absolute path (#1215): make
-  // sure it exists before the entry is written. A null (wrapper unavailable)
-  // falls back to the bare teamai name inside getTeamHookDispatchCommand.
-  const wrapperBinDir = timeouts.size === 0 ? null : ensureTeamaiWrapper();
   // One that does not parse is left byte-identical, as every hook writer leaves it (#993).
   const { readHookFile } = await import('./hooks.js');
   const doc = await readHookFile<{ hooks?: Record<string, CodexHookGroup[]> }>(hooksFile, {});
@@ -211,7 +202,7 @@ export async function reconcileCodexDispatchers(hooksFile: string): Promise<void
     const rest = existing.filter((group) => !isDispatcher(group));
     const timeout = timeouts.get(event);
     const wanted: CodexHookGroup[] = timeout === undefined ? []
-      : [{ hooks: [{ type: 'command', command: getTeamHookDispatchCommand(event, CODEX_TOOL_ID, wrapperBinDir), timeout }] }];
+      : [{ hooks: [{ type: 'command', command: getTeamHookDispatchCommand(event, CODEX_TOOL_ID), timeout }] }];
     const builtin = rest.findIndex((group) => (group?.hooks?.[0]?.command ?? '').includes('teamai hook-dispatch'));
     const at = builtin < 0 ? rest.length : builtin;
     const next = [...rest.slice(0, at), ...wanted, ...rest.slice(at)];

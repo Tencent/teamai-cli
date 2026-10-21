@@ -208,14 +208,13 @@ function getHookShellCommand(): string {
 /**
  * Generate the hook-dispatch command for a given event, tool, and optional matcher.
  * A Codex tool gets the bare argv form on every platform (#1215): Codex runs
- * `command` through the host shell — PowerShell on Windows, sh on POSIX — and
- * never reads `commandWindows`, so any shell syntax is a ParserError for half
- * its platforms. The bare form parses identically everywhere, stays
- * byte-identical across platforms (the #1074 project-file contract, now kept
- * without the dead commandWindows field), and resolves `teamai` from PATH like
- * any CLI. Fail-open is not a shell tail here: hook-dispatch's own
- * `finally { process.exit(0) }` (index.ts) is unconditional for built-in
- * events. Other tools keep the shell-wrapped form their hosts expect.
+ * `command` through sh on POSIX and, on Windows, reads `commandWindows` (the
+ * cmd.exe form toCodexEntry in hooks.ts writes) — so `command` itself must be
+ * plain POSIX and free of syntax cmd.exe would misread (a `;` is an argument
+ * delimiter there, not a separator). The bare form stays byte-identical across
+ * platforms (the #1074 project-file contract) and resolves `teamai` from PATH
+ * like any CLI; the not-found fail-open on Windows rides the cmd-syntax
+ * commandWindows. Other tools keep the shell-wrapped form their hosts expect.
  */
 export function getDispatchCommand(event: string, tool: string, matcher?: string, binPath?: string): string {
   const bin = binPath ?? 'teamai';
@@ -258,20 +257,9 @@ export function toolUsesPwshShell(tool: string): boolean {
  * the project the hook's cwd belongs to. Unlike the built-ins it keeps stderr
  * and the exit status, which carry a team hook's blocking decision (exit 2).
  *
- * #1215: the Codex dispatcher lives only in the per-machine user-level
- * `~/.codex/hooks.json`, and Codex runs `command` through the host shell on
- * every platform while never reading `commandWindows`. So the command is the
- * shell-free absolute wrapper path (double-quoted for spaces — a form
- * PowerShell and POSIX sh parse identically), which resolves teamai without
- * any PATH assumption. binDir comes from ensureTeamaiWrapper(); null falls
- * back to the bare name, which still parses everywhere but needs teamai on
- * PATH.
  */
-export function getTeamHookDispatchCommand(event: string, tool: string, binDir?: string | null): string {
-  const bin = binDir === null || binDir === undefined
-    ? 'teamai'
-    : path.join(binDir, process.platform === 'win32' ? `${WRAPPER_NAME}.cmd` : WRAPPER_NAME);
-  return `"${bin}" hook-dispatch ${event} --tool ${tool} --team-hooks`;
+export function getTeamHookDispatchCommand(event: string, tool: string): string {
+  return `${getHookShellCommand()} -lc "teamai hook-dispatch ${event} --tool ${tool} --team-hooks"`;
 }
 
 /**
