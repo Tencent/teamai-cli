@@ -37,6 +37,7 @@ With assignments in place, nothing falls back to an unfiltered sync:
 - `activeRoleIds` returns `[]`, not `null`: a member assigned no roles matches no role-scoped entry, where `null` means "no role filter".
 - `resolveOwnResourceNamespaces` keeps its three unfiltered fallbacks closed, so such a member receives the shared root only.
 - A `members.yaml` that exists but cannot be read or parsed leaves this run with no roles, loudly. Only absence of the file returns role selection to the member.
+- The file is read from the team repo's fetched default branch (`origin/<default>`), not from the clone's working tree. A local edit, a deletion or an unpushed commit in the clone changes nothing, and a copy only the working tree has is absent: only what the forge merged counts. Where no fetched default branch exists — an HTTP source, a repo without a remote — the working tree is all there is.
 - An assigned role `roles.yaml` does not declare is dropped with a warning, rather than failing every command for that member over one stale line. If that leaves no roles — including when `roles.yaml` is missing entirely — the member holds none.
 
 ### Resolved again where a load cannot reach

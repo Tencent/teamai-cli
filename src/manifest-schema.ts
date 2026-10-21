@@ -235,13 +235,16 @@ export async function readManifestFile(manifestPath: string, kind: ManifestKind)
     }
     throw new Error(`The ${kind} manifest ${resolvedPath} could not be read: ${(error as Error).message}. Make it a readable file, then retry.`);
   }
-  if (content.trim() === '') {
-    const consequence = kind === 'members'
-      ? 'deleting it instead hands role selection back to each member'
-      : `deleting it instead turns ${kind} filtering off for the whole team`;
-    throw new Error(`Invalid ${kind} manifest: ${resolvedPath} is empty. Give it a version and a ${kind} list; ${consequence}.`);
-  }
+  if (content.trim() === '') throw emptyManifestError(kind, resolvedPath);
   return content;
+}
+
+/** An empty manifest is invalid, not absent: absence is the only thing that relaxes anything. */
+export function emptyManifestError(kind: ManifestKind, where: string): Error {
+  const consequence = kind === 'members'
+    ? 'deleting it instead hands role selection back to each member'
+    : `deleting it instead turns ${kind} filtering off for the whole team`;
+  return new Error(`Invalid ${kind} manifest: ${where} is empty. Give it a version and a ${kind} list; ${consequence}.`);
 }
 
 const parsedManifests = new Map<string, { content: string; manifest: unknown }>();

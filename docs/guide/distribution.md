@@ -215,7 +215,7 @@ The first role listed is the member's primary role, the rest are additional. Whi
 - A member the file does not list holds `default` — no roles unless you say otherwise — and receives shared resources only, rather than the unfiltered sync a role-less member gets without this file.
 - Who may assign roles is your forge's decision, as it already is for `roles.yaml`: a protected branch, a merge request, code owners for `manifest/`. teamai keeps no access list of its own.
 
-The member key is the username in the member's own teamai config, which `teamai init` records from the git provider. Deleting the file hands role selection back to each member.
+The member key is the username in the member's own teamai config, which `teamai init` records from the git provider. Deleting the file hands role selection back to each member. teamai reads it from the team repo's fetched default branch, not from the clone on the member's machine, so editing or deleting that copy changes nothing: only what your forge merged counts.
 
 A reassignment takes effect on the next pull.
 

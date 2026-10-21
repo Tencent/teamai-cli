@@ -114,7 +114,7 @@ async function applyRoleAssignment(config: LocalConfig): Promise<LocalConfig> {
 
   let assignments;
   try {
-    assignments = await loadRoleAssignmentsIfPresent(config.repo.localPath);
+    assignments = await loadRoleAssignmentsIfPresent(config.repo.localPath, config.repo);
   } catch (error) {
     warnOnce(`${ROLE_ASSIGNMENTS_FILE} could not be read: ${(error as Error).message}`);
     warnOnce(`Roles are assigned in ${ROLE_ASSIGNMENTS_FILE} while that file exists, so this run holds none. `

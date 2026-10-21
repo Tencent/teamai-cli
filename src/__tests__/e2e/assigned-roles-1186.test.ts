@@ -215,6 +215,23 @@ describe('assigned roles (#1186)', () => {
     // namespace — both of these skills. `default: []` closes that.
     expect(deliveredSkills(projectRoot)).toEqual(['teamai']);
   });
+
+  // The file is read from origin/<default>, so the clone's copy is not a way
+  // around the assignment: only what the forge merged counts.
+  it('ignores an edit to, or deletion of, the clone\'s members.yaml', async () => {
+    const projectRoot = project('alice-clone-edit', 'alice');
+    const cloneCopy = path.join(projectRoot, '.teamai', 'team-repo', 'manifest', 'members.yaml');
+
+    fs.writeFileSync(cloneCopy, 'version: 1\nmembers:\n  alice: [backend]\ndefault: []\n');
+    const edited = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
+    expect(JSON.parse(edited.output)).toMatchObject({ roles: ['frontend'], source: 'assigned' });
+
+    fs.rmSync(cloneCopy);
+    const deleted = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
+    expect(JSON.parse(deleted.output)).toMatchObject({ roles: ['frontend'], source: 'assigned' });
+    const set = await runCLI(['roles', 'set', 'backend'], homeDir, projectRoot);
+    expect(set.code, set.output).toBe(1);
+  });
 });
 
 /**

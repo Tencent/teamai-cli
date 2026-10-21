@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -282,5 +283,116 @@ describe('role assignments from manifest/members.yaml', () => {
 
     expect(config?.primaryRole).toBeUndefined();
     expect(YAML.parse(readFileSync(configPath, 'utf-8')).primaryRole).toBeUndefined();
+  });
+});
+
+/**
+ * Only what the forge merged counts: the file is read from `origin/<default>`
+ * as last fetched, not from the clone's working tree, so an agent cannot lift
+ * the assignment by editing, deleting or committing to the clone's copy.
+ */
+describe('role assignments read from the fetched default branch (#1186)', () => {
+  let sandbox: string;
+  let upstream: string;
+  let clone: string;
+
+  const ROLES = 'version: 1\nroles:\n  - id: frontend\n    resources: { knowledge: [], skills: [frontend] }\n  - id: backend\n    resources: { knowledge: [], skills: [backend] }\n';
+  const ALICE_FRONTEND = 'version: 1\nmembers:\n  alice: [frontend]\ndefault: []\n';
+  const ALICE_BACKEND = 'version: 1\nmembers:\n  alice: [backend]\ndefault: []\n';
+
+  function git(cwd: string, ...args: string[]): void {
+    execFileSync('git', args, {
+      cwd,
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'TeamAI Test', GIT_AUTHOR_EMAIL: 'test@teamai.test',
+        GIT_COMMITTER_NAME: 'TeamAI Test', GIT_COMMITTER_EMAIL: 'test@teamai.test',
+      },
+    });
+  }
+
+  function membersFile(repo: string): string {
+    return path.join(repo, 'manifest', 'members.yaml');
+  }
+
+  beforeEach(() => {
+    resetWarnOnce();
+    sandbox = mkdtempSync(path.join(os.tmpdir(), 'teamai-assigned-roles-ref-'));
+    upstream = path.join(sandbox, 'upstream');
+    clone = path.join(sandbox, 'clone');
+    mkdirSync(path.join(upstream, 'manifest'), { recursive: true });
+    writeFileSync(path.join(upstream, 'manifest', 'roles.yaml'), ROLES, 'utf-8');
+    writeFileSync(membersFile(upstream), ALICE_FRONTEND, 'utf-8');
+    git(upstream, 'init', '-q', '-b', 'main');
+    git(upstream, 'add', '-A');
+    git(upstream, 'commit', '-q', '-m', 'fixture');
+    git(sandbox, 'clone', '-q', upstream, clone);
+  });
+
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  async function rolesOf(repo: string, username: string): Promise<string[]> {
+    return resolveAssignedRoles(await loadRoleAssignments(repo), username).roles;
+  }
+
+  it('ignores an edit to the clone\'s working tree', async () => {
+    writeFileSync(membersFile(clone), ALICE_BACKEND, 'utf-8');
+    expect(await rolesOf(clone, 'alice')).toEqual(['frontend']);
+  });
+
+  it('ignores a deletion from the clone\'s working tree', async () => {
+    rmSync(membersFile(clone));
+    expect(await rolesOf(clone, 'alice')).toEqual(['frontend']);
+  });
+
+  it('ignores a commit the clone has not pushed', async () => {
+    writeFileSync(membersFile(clone), ALICE_BACKEND, 'utf-8');
+    git(clone, 'commit', '-qam', 'self-assign');
+    expect(await rolesOf(clone, 'alice')).toEqual(['frontend']);
+  });
+
+  it('treats a file only the working tree has as absent', async () => {
+    git(upstream, 'rm', '-q', 'manifest/members.yaml');
+    git(upstream, 'commit', '-qm', 'no assignments');
+    git(clone, 'pull', '-q');
+    writeFileSync(membersFile(clone), ALICE_BACKEND, 'utf-8');
+    expect(await loadRoleAssignmentsIfPresent(clone)).toBeNull();
+  });
+
+  it('reads what the last fetch brought, whatever the clone has checked out', async () => {
+    writeFileSync(membersFile(upstream), ALICE_BACKEND, 'utf-8');
+    git(upstream, 'commit', '-qam', 'reassign alice');
+    git(clone, 'fetch', '-q');
+    expect(await rolesOf(clone, 'alice')).toEqual(['backend']);
+  });
+
+  it('refuses an empty file on the default branch as invalid, not absent', async () => {
+    writeFileSync(membersFile(upstream), '', 'utf-8');
+    git(upstream, 'commit', '-qam', 'empty');
+    git(clone, 'fetch', '-q');
+    await expect(loadRoleAssignments(clone)).rejects.toThrow(/is empty/);
+  });
+
+  // An HTTP source is materialized files inside whatever directory holds the
+  // config — a project checkout, say. Git would answer for that repository.
+  it('reads the working tree of an HTTP source, whatever repository it sits in', async () => {
+    const http = path.join(clone, 'http-team-repo');
+    mkdirSync(path.join(http, 'manifest'), { recursive: true });
+    writeFileSync(membersFile(http), ALICE_BACKEND, 'utf-8');
+    expect(resolveAssignedRoles(await loadRoleAssignments(http, { kind: 'http' }), 'alice').roles).toEqual(['backend']);
+    // The same directory probed as git-backed reads the enclosing clone's branch, where it is absent.
+    expect(await loadRoleAssignmentsIfPresent(http)).toBeNull();
+  });
+
+  // A repo with no remote has nothing the forge merged to prefer.
+  it('reads the working tree where no fetched default branch exists', async () => {
+    const local = path.join(sandbox, 'local');
+    mkdirSync(path.join(local, 'manifest'), { recursive: true });
+    git(local, 'init', '-q', '-b', 'main');
+    writeFileSync(membersFile(local), ALICE_BACKEND, 'utf-8');
+    expect(await rolesOf(local, 'alice')).toEqual(['backend']);
   });
 });

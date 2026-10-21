@@ -239,13 +239,14 @@ function parseRoleSelection(answer: string, max: number): number[] {
 class NoRoleSelectedError extends Error {}
 
 async function promptForRoleProfile(
-  repoPath: string,
+  repo: { localPath: string; kind?: string },
   username: string,
   roleFlag?: string,
 ): Promise<Pick<LocalConfig, 'primaryRole' | 'additionalRoles' | 'resourceProfileVersion'>> {
+  const repoPath = repo.localPath;
   // The team assigns roles (#1186): there is nothing to pick, and nothing to
   // write — every load reads the assignment from the team repo.
-  const assignments = await loadRoleAssignmentsIfPresent(repoPath);
+  const assignments = await loadRoleAssignmentsIfPresent(repoPath, repo);
   if (assignments) {
     if (roleFlag) {
       throw new Error(
@@ -722,7 +723,7 @@ export async function initHttp(
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
   try {
-    Object.assign(localConfig, await promptForRoleProfile(localPath, localConfig.username, options.role));
+    Object.assign(localConfig, await promptForRoleProfile(localConfig.repo, localConfig.username, options.role));
   } catch (error) {
     // Two cases leave the role unset on purpose: a repo with no roles manifest,
     // and a person who skipped the prompt. Anything else — a manifest that does
@@ -1336,7 +1337,7 @@ export async function initSelfRepo(options: GlobalOptions & {
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   };
   try {
-    Object.assign(localConfig, await promptForRoleProfile(localPath, localConfig.username, options.role));
+    Object.assign(localConfig, await promptForRoleProfile(localConfig.repo, localConfig.username, options.role));
   } catch (error) {
     // Two cases leave the role unset on purpose: a repo with no roles manifest,
     // and a person who skipped the prompt. Anything else — a manifest that does
@@ -2039,7 +2040,7 @@ export async function init(options: GlobalOptions & {
   if (projectsManifest?.projects.length) {
     rolePromptedEarly = true;
     try {
-      roleProfile = await promptForRoleProfile(localPath, username, options.role);
+      roleProfile = await promptForRoleProfile({ localPath }, username, options.role);
     } catch (error) {
       const msg = (error as Error).message;
       if (msg.includes('Roles manifest not found')) {
@@ -2230,7 +2231,7 @@ export async function init(options: GlobalOptions & {
 
   if (!rolePromptedEarly) {
     try {
-      roleProfile = await promptForRoleProfile(localPath, username, options.role);
+      roleProfile = await promptForRoleProfile({ localPath }, username, options.role);
     } catch (error) {
       const msg = (error as Error).message;
       if (msg.includes('Roles manifest not found')) {

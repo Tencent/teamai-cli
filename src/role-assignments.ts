@@ -1,7 +1,8 @@
 import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { caseFoldKey, parseManifest, parseManifestOnce, readManifestFile } from './manifest-schema.js';
+import { caseFoldKey, emptyManifestError, parseManifest, parseManifestOnce, readManifestFile } from './manifest-schema.js';
+import { getDefaultBranch, getFileContentAtRev, getHeadCommit } from './utils/git.js';
 
 /** Where a team declares who holds which role. Relative to the team repo root. */
 export const ROLE_ASSIGNMENTS_FILE = 'manifest/members.yaml';
@@ -78,10 +79,45 @@ function validateAssignments(raw: unknown): RoleAssignments {
   return manifest;
 }
 
-export async function loadRoleAssignments(repoPath: string): Promise<RoleAssignments> {
+/**
+ * The fetched default branch of a git-backed team repo, as a ref, or `null`
+ * where there is none to read: an HTTP source, a repo with no remote, a clone
+ * of an empty remote, a path git cannot open.
+ */
+async function fetchedDefaultBranch(repoPath: string): Promise<string | null> {
+  try {
+    const tip = `origin/${await getDefaultBranch(repoPath)}`;
+    return (await getHeadCommit(repoPath, tip)) ? tip : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The assignments are read from what the forge merged — `origin/<default>` as
+ * last fetched — not from the clone's working tree. A local edit, a deletion
+ * or an unpushed commit in the clone changes nothing, and a `members.yaml`
+ * that only the working tree has is absent. Where no fetched default branch
+ * exists, the working tree is all there is.
+ */
+export async function loadRoleAssignments(repoPath: string, repo: { kind?: string } = {}): Promise<RoleAssignments> {
   const manifestPath = path.join(repoPath, ...ROLE_ASSIGNMENTS_FILE.split('/'));
-  const content = await readManifestFile(manifestPath, 'members');
-  if (content === null) throw new RoleAssignmentsNotFoundError(manifestPath);
+  // An HTTP source is materialized files with no git of its own; a probe there
+  // would find whatever repository the directory sits in, such as the project's.
+  const tip = repo.kind === 'http' ? null : await fetchedDefaultBranch(repoPath);
+  let content: string | null;
+  let where: string;
+  if (tip) {
+    where = `${ROLE_ASSIGNMENTS_FILE} at ${tip}`;
+    // `./`: relative to the directory git runs in, which in single-repo mode
+    // is `.teamai/` inside the business repo rather than its root.
+    content = (await getFileContentAtRev(repoPath, tip, `./${ROLE_ASSIGNMENTS_FILE}`))?.toString('utf-8') ?? null;
+    if (content !== null && content.trim() === '') throw emptyManifestError('members', where);
+  } else {
+    where = manifestPath;
+    content = await readManifestFile(manifestPath, 'members');
+  }
+  if (content === null) throw new RoleAssignmentsNotFoundError(where);
 
   return parseManifestOnce(manifestPath, content, (text) => {
     let raw: unknown;
@@ -98,9 +134,9 @@ export async function loadRoleAssignments(repoPath: string): Promise<RoleAssignm
  * The role assignments, or `null` when the team has none. Absent is a value,
  * invalid is an error — the same contract `loadRolesManifestIfPresent` keeps.
  */
-export async function loadRoleAssignmentsIfPresent(repoPath: string): Promise<RoleAssignments | null> {
+export async function loadRoleAssignmentsIfPresent(repoPath: string, repo: { kind?: string } = {}): Promise<RoleAssignments | null> {
   try {
-    return await loadRoleAssignments(repoPath);
+    return await loadRoleAssignments(repoPath, repo);
   } catch (error) {
     if (error instanceof RoleAssignmentsNotFoundError) return null;
     throw error;
