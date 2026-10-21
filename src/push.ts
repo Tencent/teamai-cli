@@ -1141,8 +1141,15 @@ async function pushCore(
         renamed: status.renamed,
       }));
       const scannedGroups = await repoScan;
+      const cloneRoot = path.resolve(localConfig.repo.localPath);
       for (const item of scannedGroups.flat()) {
         if (indexedPaths.has(item.relativePath)) continue;
+        // Only capture items whose source lives inside the team repo clone —
+        // those are the ones `resetToCleanMaster` can destroy. A project-local
+        // source (a tool-format agent, rule or skill) is untouched by the
+        // refresh, and restoring its bytes under `relativePath` would write
+        // tool-format content over the clone's canonical file.
+        if (!path.resolve(item.sourcePath).startsWith(cloneRoot + path.sep)) continue;
         const snapshot = await readFileSnapshot(item.sourcePath);
         if (snapshot !== null && !await hasGitModeChange(git, item.relativePath)) {
           pendingEnvFiles.set(item.relativePath, snapshot);
@@ -1450,7 +1457,17 @@ async function pushCore(
   // docs/ and wiki/ allow ordinary nested shared content. Only a first path
   // segment declared by a role or project is a namespace, so annotate those
   // items before the placement filter decides whether they are already scoped.
-  const resolvedNamespaces = await resolveResourceNamespaces(localConfig);
+  // A manifest that exists but cannot be read must stop the push: every
+  // placement below would fall through to the shared root, the widening #649
+  // is about — and nobody asked for it.
+  let resolvedNamespaces: Awaited<ReturnType<typeof resolveResourceNamespaces>> = null;
+  try {
+    resolvedNamespaces = await resolveResourceNamespaces(localConfig);
+  } catch (e) {
+    log.error(`${(e as Error).message}`);
+    process.exitCode = 2;
+    return;
+  }
   if (resolvedNamespaces) {
     const declaredByType = {
       docs: [

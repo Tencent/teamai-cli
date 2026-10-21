@@ -224,7 +224,21 @@ export async function syncWorkflowDefinitions(
     // dir missing or unreadable
   }
 
-  const resourceNamespaces = await resolveResourceNamespaces(config);
+  // Resolve namespaces only when namespaced candidates exist. A root-only
+  // tree needs no manifest read, and an unconditional read here would fire
+  // before the push's pull refreshes the clone — the stale mapping the #649
+  // review forbids. A manifest that cannot be read leaves the resolution
+  // null, which falls back to the set of namespaces found on disk.
+  const hasNamespaced = rawCandidates.some((c) => c.namespace !== null);
+  let resourceNamespaces: Awaited<ReturnType<typeof resolveResourceNamespaces>> = null;
+  if (hasNamespaced) {
+    try {
+      resourceNamespaces = await resolveResourceNamespaces(config);
+    } catch {
+      // The push path reports unreadable manifests properly; here a null
+      // resolution just means every on-disk namespace is treated as active.
+    }
+  }
   const activeWorkflows = resourceNamespaces?.activeNamespaces.workflows ?? (resourceNamespaces ? [] : null);
   const activePrompts = resourceNamespaces?.activeNamespaces.prompts ?? (resourceNamespaces ? [] : null);
   const effectiveActiveWorkflows = activeWorkflows ?? [
