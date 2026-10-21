@@ -530,7 +530,8 @@ export class CodexAdapter extends AgentAdapter {
 
       const payload = (rec.payload as Record<string, unknown>) ?? {};
       const ptype = payload.type as string;
-      if (ptype !== 'function_call_output' && ptype !== 'custom_tool_call_output') flushToolImages();
+      // Only items that start a new message end the round; ignored types (web_search_call...) don't
+      if (ptype === 'message' || ptype === 'function_call' || ptype === 'custom_tool_call' || ptype === 'reasoning') flushToolImages();
 
       if (ptype === 'message') {
         const role = payload.role as string;

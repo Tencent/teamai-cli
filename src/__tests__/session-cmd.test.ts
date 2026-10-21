@@ -1785,4 +1785,32 @@ describe('codex readSession: freeform tool calls', () => {
     ]);
     expect(session.messages[3].content[0]).toMatchObject({ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' });
   });
+
+  it('keeps tool results together when an ignored item falls between two outputs', async () => {
+    const SID = '019e0000-1111-7222-8333-666666666667';
+    const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '01');
+    fs.mkdirSync(dir, { recursive: true });
+    const image = [{ type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' }];
+    const lines = [
+      { type: 'session_meta', payload: { id: SID, timestamp: '2026-10-01T10:00:00.000Z', cwd: '/work/app' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look' }] } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'c1', name: 'view_image', arguments: '{}' } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'c2', name: 'view_image', arguments: '{}' } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: image } },
+      { type: 'response_item', payload: { type: 'web_search_call', status: 'completed' } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'c2', output: 'done' } },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `rollout-2026-10-01T10-00-00-${SID}.jsonl`),
+      lines.map((l) => JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', ...l })).join('\n') + '\n',
+    );
+
+    const session = await new CodexAdapter().readSession({ sessionId: SID });
+    expect(session.messages.map((m) => [m.role, m.content.map((b) => b.type)])).toEqual([
+      ['user', ['text']],
+      ['assistant', ['tool_call', 'tool_call']],
+      ['user', ['tool_result', 'tool_result']],
+      ['user', ['image']],
+    ]);
+  });
 });
