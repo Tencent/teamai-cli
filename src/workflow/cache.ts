@@ -251,8 +251,11 @@ export async function syncWorkflowDefinitions(
     try {
       resourceNamespaces = await resolveResourceNamespaces(config);
     } catch {
-      // The push path reports unreadable manifests properly; here a null
-      // resolution just means every on-disk namespace is treated as active.
+      // A manifest exists but cannot be read: be conservative. Treating
+      // every on-disk namespace as active (the null fallback) would cache
+      // an inactive namespace's workflow as runnable for this member.
+      // An empty resolution means "no namespace is active".
+      resourceNamespaces = { activeNamespaces: {} } as Awaited<ReturnType<typeof resolveResourceNamespaces>>;
     }
   }
   const activeWorkflows = resourceNamespaces?.activeNamespaces.workflows ?? (resourceNamespaces ? [] : null);

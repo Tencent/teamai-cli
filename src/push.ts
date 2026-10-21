@@ -664,6 +664,9 @@ async function placeNewResources(args: {
             return false;
           }
           item.namespace = destination.namespace;
+          // Save the pre-placement path so the snapshot delete (pushGroup
+          // cleanup) can find the entry keyed by the root path.
+          (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath = item.relativePath;
           item.relativePath = placedAt;
           // Do NOT mark the pre-placement path as `supersedes`: the original
           // root file was never in the clone, so staging its path would fail
@@ -2033,7 +2036,13 @@ async function pushCore(
     // retrying its PR also takes before it reports pushed), so the rest go back
     // whatever the outcome; rewriting a file still in place changes nothing.
     if (outcome === 'pushed' || outcome === 'pr-failed') {
-      for (const item of group.items) pendingEnvFiles.delete(item.relativePath);
+      for (const item of group.items) {
+        // The snapshot was keyed by the pre-placement path; placement rewrote
+        // item.relativePath to the namespaced destination, so look up both.
+        pendingEnvFiles.delete(item.relativePath);
+        const prePath = (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath;
+        if (prePath) pendingEnvFiles.delete(prePath);
+      }
     }
     const lost = await restorePendingEnvFiles();
     if (outcome === 'failed' || lost.length > 0) {
