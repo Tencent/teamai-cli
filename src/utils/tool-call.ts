@@ -19,7 +19,8 @@
 import { isAbsolutePath, isWithin, resolvePath, samePath, withoutReadSelector } from './agent-path.js';
 import { getUserHome } from './home.js';
 import { resolveHookCwd } from './hook-cwd.js';
-import { classifyShellCommand } from './shell-command.js';
+import { classifyShellCommand, classifySimpleShellCommand, commandWords, simpleCommands } from './shell-command.js';
+import type { SimpleCommand, ShellFlavor } from './shell-command.js';
 import { normalizeToolName } from './tool-names.js';
 
 /** What a call did: `read`/`search`/`list` whether a tool or a shell command did it; `shell` for any other shell call. */
@@ -238,6 +239,235 @@ function withoutErrors(output: string, verb: string): { content: string | null; 
   });
   if (kept.length === lines.length) return { content: output, named };
   return { content: kept.some((line) => line.trim() !== '') ? kept.join('\n') : null, named };
+}
+
+type ShellExitCode = 0 | 1;
+
+interface ExecutionState {
+  status: ShellExitCode;
+  reached: boolean;
+}
+
+const UNSUPPORTED_COMPOUND_COMMANDS = new Set([
+  '.', 'alias', 'break', 'cd', 'continue', 'declare', 'eval', 'exec', 'exit', 'export', 'function', 'local',
+  'popd', 'pushd', 'read', 'readonly', 'return', 'set', 'shopt', 'source', 'trap', 'typeset', 'unalias', 'unset',
+  'until', 'while', 'for', 'in', 'do', 'done', 'if', 'then', 'elif', 'else', 'fi', 'case', 'esac', 'select',
+  'coproc', 'time', 'builtin', 'command',
+]);
+
+const UNSAFE_COMPOUND_WORD = /[$`*?[\]{}()]/;
+
+/** Reject shell grammar the flat tokenizer cannot safely model. */
+function hasUnsupportedCompoundSyntax(command: string): boolean {
+  let quote: string | null = null;
+  let wordStarted = false;
+  let segmentHasToken = false;
+  let waitingForAndOrCommand = false;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    const next = command[i + 1];
+    if (quote === "'") {
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      if (c === '"') quote = null;
+      else if (c === '`' || (c === '$' && next === '(')) return true;
+      else if (c === '$') {
+        const homeRef = /^\$(?:HOME|\{HOME\})(?=[\\/])/.exec(command.slice(i))?.[0];
+        if (homeRef) i += homeRef.length - 1;
+      } else if (c === '\\' && (next === '"' || next === '\\' || next === '$')) i++;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      wordStarted = false;
+      if (c === '\n') {
+        if (waitingForAndOrCommand) return true;
+        segmentHasToken = false;
+      }
+      continue;
+    }
+    if (c === '#' && !wordStarted) {
+      while (i + 1 < command.length && command[i + 1] !== '\n') i++;
+      continue;
+    }
+    if ((c === '&' && next === '&') || (c === '|' && next === '|')) {
+      if (!segmentHasToken || waitingForAndOrCommand) return true;
+      waitingForAndOrCommand = true;
+      segmentHasToken = false;
+      wordStarted = false;
+      i++;
+      continue;
+    }
+    if (c === ';' || c === '|' || c === '&') {
+      if (waitingForAndOrCommand) return true;
+      segmentHasToken = false;
+      wordStarted = false;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      segmentHasToken = true;
+      waitingForAndOrCommand = false;
+      wordStarted = true;
+      quote = c;
+      continue;
+    }
+    if (c === '\\') {
+      segmentHasToken = true;
+      waitingForAndOrCommand = false;
+      wordStarted = true;
+      if (next !== undefined) i++;
+      continue;
+    }
+    if (c === '`' || (c === '$' && next === '(')) return true;
+    if (c === '$') {
+      const homeRef = /^\$(?:HOME|\{HOME\})(?=[\\/])/.exec(command.slice(i))?.[0];
+      if (homeRef) i += homeRef.length - 1;
+    } else if (c === '(' || c === ')' || c === '{' || c === '}') return true;
+    segmentHasToken = true;
+    waitingForAndOrCommand = false;
+    wordStarted = true;
+  }
+  return quote !== null || waitingForAndOrCommand;
+}
+
+function statusBuiltin(command: SimpleCommand): ShellExitCode | undefined {
+  if (command.redirects.length > 0 || command.words.length !== 1) return undefined;
+  switch (command.words[0]) {
+    case 'true':
+    case ':':
+      return 0;
+    case 'false':
+      return 1;
+    default:
+      return undefined;
+  }
+}
+
+function commandVerb(command: SimpleCommand): string | undefined {
+  const [word] = commandWords(command.words);
+  return word?.split(/[\\/]/).pop()?.replace(/\.exe$/i, '').toLowerCase();
+}
+
+function supportedCompoundCommands(command: string, commands: SimpleCommand[]): boolean {
+  if (commands.length === 0 || hasUnsupportedCompoundSyntax(command)) return false;
+  if (commands.length === 1 && commands[0].op !== ';') return false;
+  if (commands.at(-1)?.op === '&&' || commands.at(-1)?.op === '||') return false;
+  return commands.every((segment) => {
+    if (segment.op !== null && segment.op !== ';' && segment.op !== '&&' && segment.op !== '||') return false;
+    if (segment.redirects.length > 0 || segment.words.length === 0) return false;
+    // Leading NAME=value assignments can replace PATH or change a later expansion.
+    if (commandWords(segment.words).length !== segment.words.length) return false;
+    if (segment.words.some((word) => UNSAFE_COMPOUND_WORD.test(word))) return false;
+    const verb = commandVerb(segment);
+    return verb !== undefined && !UNSUPPORTED_COMPOUND_COMMANDS.has(verb);
+  });
+}
+
+/** Whether every possible status trace consistent with the event reaches a reader command. */
+function mustReachCommand(
+  commands: SimpleCommand[],
+  outcomes: ShellExitCode[][],
+  target: number,
+  finalStatus: ToolStatus,
+): boolean {
+  let states: ExecutionState[] = [{ status: 1, reached: false }];
+  for (let i = 0; i < commands.length; i++) {
+    const next: ExecutionState[] = [];
+    for (const state of states) {
+      const operator = i === 0 ? null : commands[i - 1].op;
+      const runs = operator === null || operator === ';'
+        || (operator === '&&' && state.status === 0)
+        || (operator === '||' && state.status === 1);
+      if (!runs) {
+        next.push(state);
+      } else {
+        for (const status of outcomes[i]) next.push({ status, reached: state.reached || i === target });
+      }
+    }
+    states = [...new Map(next.map((state) => [`${state.status}:${state.reached}`, state])).values()];
+  }
+  const expected = finalStatus === 'success' ? 0 : finalStatus === 'failure' ? 1 : undefined;
+  const feasible = expected === undefined ? states : states.filter((state) => state.status === expected);
+  return feasible.length > 0 && feasible.every((state) => state.reached);
+}
+
+/**
+ * The files in a Codex Bash command list that an installed-skill hook may
+ * consider. This is intentionally separate from `classifyToolCall`: recall
+ * adoption must keep seeing its existing category and path contract.
+ */
+export function codexCompoundReadPaths(stdin: Record<string, unknown>): string[] {
+  if (typeof stdin.tool_name !== 'string' || normalizeToolName(stdin.tool_name) !== 'Bash') return [];
+  const input = asObject(stdin.tool_input);
+  const command = input?.command;
+  if (typeof command !== 'string') return [];
+  const cwd = resolveHookCwd(stdin);
+  const flavor: ShellFlavor = { home: getUserHome() };
+  const segments = simpleCommands(command, flavor.home);
+  if (!supportedCompoundCommands(command, segments)) return [];
+
+  const reads = segments.map((segment, index) => {
+    const classified = classifySimpleShellCommand(segment, flavor);
+    return classified.category === 'read'
+      ? { index, verb: classified.verb!, paths: classified.paths.map((file) => resolvePath(file, cwd)) }
+      : undefined;
+  }).filter((read): read is { index: number; verb: string; paths: string[] } => read !== undefined);
+  if (reads.length === 0) return [];
+
+  const response = responseOf(stdin);
+  const output = outputOf(response);
+  const finalStatus = statusOf(stdin, response);
+  const verbCounts = new Map<string, number>();
+  for (const read of reads) verbCounts.set(read.verb, (verbCounts.get(read.verb) ?? 0) + 1);
+  const diagnostics = new Map<string, { content: string | null; named: string[] }>();
+  if (output !== undefined) {
+    for (const read of reads) {
+      if (!diagnostics.has(read.verb)) diagnostics.set(read.verb, withoutErrors(output, read.verb));
+    }
+  }
+  const hasReaderDiagnostic = [...diagnostics.values()].some((diagnostic) =>
+    diagnostic.named.length > 0 || diagnostic.content === null);
+  if (reads.length > 1 && hasReaderDiagnostic) return [];
+
+  const outcomes: ShellExitCode[][] = segments.map((segment, index): ShellExitCode[] => {
+    const known = statusBuiltin(segment);
+    if (known !== undefined) return [known];
+    const read = reads.find((candidate) => candidate.index === index);
+    if (read && (verbCounts.get(read.verb) ?? 0) === 1) {
+      const diagnostic = diagnostics.get(read.verb);
+      if (diagnostic && (diagnostic.named.length > 0 || diagnostic.content === null)) return [1];
+    }
+    return [0, 1];
+  });
+
+  const result: string[] = [];
+  for (const read of reads) {
+    if (!mustReachCommand(segments, outcomes, read.index, finalStatus)) continue;
+    const diagnostic = diagnostics.get(read.verb);
+    if (diagnostic?.content === null) continue;
+    const onlySilentNeighbors = reads.length === 1 && segments.every((segment, index) =>
+      index === read.index || statusBuiltin(segment) !== undefined);
+    if (diagnostic?.named.length && !onlySilentNeighbors) continue;
+    const failed = diagnostic?.named.map((file) => resolvePath(file, cwd)) ?? [];
+    const hasFailedOperand = failed.some((file) => read.paths.some((candidate) => samePath(file, candidate)));
+
+    if (finalStatus === 'failure') {
+      const outputBelongsToReader = onlySilentNeighbors && diagnostic !== undefined
+        && diagnostic.content !== null && diagnostic.content.trim() !== ''
+        && (hasFailedOperand || read.paths.length === 1);
+      if (!outputBelongsToReader) continue;
+    }
+
+    for (const file of read.paths) {
+      const repeated = reads.flatMap((candidate) => candidate.paths).filter((candidate) => samePath(candidate, file)).length > 1;
+      const failedHere = failed.some((candidate) => samePath(candidate, file));
+      if (failedHere) continue;
+      if (repeated && hasFailedOperand) continue;
+      result.push(file);
+    }
+  }
+  return [...new Set(result)];
 }
 
 /** Classify one PostToolUse payload from `agent` (the dispatch tool id). */

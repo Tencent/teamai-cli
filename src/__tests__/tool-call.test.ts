@@ -9,6 +9,7 @@ import path from 'node:path';
 
 import { classifyShellCommand } from '../utils/shell-command.js';
 import { getUserHome } from '../utils/home.js';
+import * as toolCallModule from '../utils/tool-call.js';
 import { classifyToolCall } from '../utils/tool-call.js';
 
 const CWD = path.resolve('/w');
@@ -16,6 +17,13 @@ const at = (file: string): string => path.resolve(CWD, file);
 
 function shell(command: string, response: unknown = { stdout: '', stderr: '' }): ReturnType<typeof classifyToolCall> {
   return classifyToolCall({ tool_name: 'Bash', tool_input: { command }, tool_response: response, cwd: CWD });
+}
+
+function compoundReadPaths(stdin: Record<string, unknown>): string[] {
+  const helper = (toolCallModule as unknown as { codexCompoundReadPaths?: unknown }).codexCompoundReadPaths;
+  return typeof helper === 'function'
+    ? (helper as (payload: Record<string, unknown>) => string[])(stdin)
+    : [];
 }
 
 describe('classifyToolCall', () => {
@@ -284,5 +292,87 @@ describe('classifyToolCall', () => {
   it('an unknown tool name is unknown, whatever its input names', () => {
     expect(classifyToolCall({ tool_name: 'OpenDocument', tool_input: { file_path: '/w/doc.md', command: 'cat doc.md' }, tool_response: {} }))
       .toEqual({ category: 'unknown', paths: [], status: 'success', simple: false });
+  });
+});
+
+describe('Codex compound shell reads for skill-use', () => {
+  const skill = '/w/.codex/skills/hello/SKILL.md';
+  const failed = '/w/.codex/skills/hello/missing.md';
+  const payload = (command: string, response: unknown = '# skill', toolStatus?: string): Record<string, unknown> => ({
+    tool_name: 'Bash',
+    tool_input: { command },
+    tool_response: response,
+    ...(toolStatus === undefined ? {} : { tool_status: toolStatus }),
+    cwd: CWD,
+  });
+
+  it('returns a proven read without changing the shared shell-call classification', () => {
+    const call = payload(`pwd; cat ${skill}`);
+
+    expect(classifyToolCall(call, 'codex')).toMatchObject({ category: 'shell', paths: [] });
+    expect(compoundReadPaths(call)).toEqual([skill]);
+  });
+
+  it('follows only branches whose execution is provable', () => {
+    expect(compoundReadPaths(payload(`true && cat ${skill}`))).toEqual([skill]);
+    expect(compoundReadPaths(payload(`: && cat ${skill}`))).toEqual([skill]);
+    expect(compoundReadPaths(payload(`false && cat ${skill}`))).toEqual([]);
+    expect(compoundReadPaths(payload(`false && echo skipped || cat ${skill}`))).toEqual([skill]);
+    expect(compoundReadPaths(payload(`pwd && cat ${skill}`))).toEqual([]);
+    expect(compoundReadPaths(payload(`pwd && cat ${skill}`, '# skill', 'success'))).toEqual([skill]);
+    expect(compoundReadPaths(payload(`pwd && cat ${skill}; true`, '# skill', 'success'))).toEqual([]);
+  });
+
+  it('recognizes an unconditional read after a newline', () => {
+    expect(compoundReadPaths(payload(`echo before\ncat ${skill}`))).toEqual([skill]);
+    expect(compoundReadPaths(payload(`echo '&&' ; cat ${skill} # || skipped`))).toEqual([skill]);
+  });
+
+  it('drops only the exact operand named by a reader diagnostic', () => {
+    const command = `true; cat .codex/skills/hello/SKILL.md ./.codex/skills/hello/missing.md`;
+    const output = `# hello\ncat: ${failed}: No such file or directory`;
+
+    expect(compoundReadPaths(payload(command, output, 'failure'))).toEqual([skill]);
+  });
+
+  it('does not attribute one reader diagnostic across multiple commands using the same reader', () => {
+    const command = `true; cat /w/.codex/skills/other/SKILL.md; cat ${skill}`;
+    const output = `cat: /w/.codex/skills/other/SKILL.md: No such file or directory`;
+
+    expect(compoundReadPaths(payload(command, output))).toEqual([]);
+  });
+
+  it('does not attribute merged output when different reader commands share the call result', () => {
+    const command = `true; cat /w/.codex/skills/other/SKILL.md; head -n 1 ${skill}`;
+    const output = `cat: /w/.codex/skills/other/SKILL.md: No such file or directory\n# skill`;
+
+    expect(compoundReadPaths(payload(command, output))).toEqual([]);
+  });
+
+  it('does not credit a failed or ambiguously attributed skill read', () => {
+    expect(compoundReadPaths(payload(`echo before; cat ${skill}`, `cat: ${skill}: Permission denied`))).toEqual([]);
+    expect(compoundReadPaths(payload(`echo '# skill'; cat ${skill} ${failed}`, `# skill\ncat: ${failed}: No such file or directory`))).toEqual([]);
+    expect(compoundReadPaths(payload(`echo before; cat ${skill}; cat ${skill}`, `cat: ${skill}: Permission denied`))).toEqual([]);
+    expect(compoundReadPaths(payload(`echo before; cat ${skill}`, '', 'failure'))).toEqual([]);
+  });
+
+  it('does not infer a successful reader from a failed call with no output', () => {
+    expect(compoundReadPaths(payload(`true; cat ${skill}`, {}, 'failure'))).toEqual([]);
+  });
+
+  it.each([
+    `if true; then cat ${skill}; fi`,
+    `(cat ${skill})`,
+    `echo $(false; cat ${skill}); true`,
+    `cat ${skill} &`,
+    `cd /w && cat .codex/skills/hello/SKILL.md`,
+    `cat $SKILL_PATH; true`,
+    `cat ${skill} > copied.md; true`,
+    `echo before | cat ${skill}; true`,
+    `true && && cat ${skill}`,
+    `true && || cat ${skill}`,
+    `true || ; cat ${skill}`,
+  ])('skips unsupported or state-changing command lists: %s', (command) => {
+    expect(compoundReadPaths(payload(command))).toEqual([]);
   });
 });

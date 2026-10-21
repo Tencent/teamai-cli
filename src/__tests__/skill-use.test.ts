@@ -183,6 +183,66 @@ describe('skill use from a tool call (#1221)', () => {
     expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
   });
 
+  it('credits an installed Codex skill read in an unconditional compound Bash command', async () => {
+    install('.codex/skills');
+    const payload = fixture('codex-real-a-cat');
+    await toolCall({
+      ...payload,
+      tool_input: { command: `pwd; cat "$HOME/.codex/skills/${SKILL}/SKILL.md"` },
+      tool_response: '# hello-skill',
+    }, 'codex');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
+  });
+
+  it('credits only the successful installed skill operand when a compound reader reports another missing file', async () => {
+    install('.codex/skills');
+    const payload = fixture('codex-real-a-cat');
+    const missing = path.join(home, '.codex', 'skills', SKILL, 'missing.md');
+    await toolCall({
+      ...payload,
+      tool_input: { command: `true; cat "$HOME/.codex/skills/${SKILL}/SKILL.md" "$HOME/.codex/skills/${SKILL}/missing.md"` },
+      tool_response: `# hello-skill\ncat: ${missing}: No such file or directory`,
+      tool_status: 'failure',
+    }, 'codex');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
+  });
+
+  it('does not use Codex compound-read handling for another tool', async () => {
+    const file = install('.codex/skills');
+    const payload = fixture('codex-real-a-cat');
+    await toolCall({
+      ...payload,
+      tool_input: { command: `pwd; cat "${file}"` },
+      tool_response: '# hello-skill',
+    }, 'claude');
+    expect(await credits()).toEqual([]);
+  });
+
+  it('does not credit a Codex compound read outside installed skill roots', async () => {
+    const payload = fixture('codex-real-a-cat');
+    const outside = path.join(tmp, 'docs', SKILL, 'SKILL.md');
+    fs.mkdirSync(path.dirname(outside), { recursive: true });
+    fs.writeFileSync(outside, '# copy\n');
+    await toolCall({
+      ...payload,
+      tool_input: { command: `pwd; cat "${outside}"` },
+      tool_response: '# copy',
+    }, 'codex');
+    expect(await credits()).toEqual([]);
+  });
+
+  it('deduplicates a compound Codex read with a `$skill` prompt mention in the same turn', async () => {
+    install('.codex/skills');
+    const payload = fixture('codex-real-a-cat');
+    await prompt({ ...payload, prompt: `$${SKILL}` }, 'codex');
+    await toolCall({
+      ...payload,
+      tool_input: { command: `pwd; cat "$HOME/.codex/skills/${SKILL}/SKILL.md"` },
+      tool_response: '# hello-skill',
+    }, 'codex');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
+  });
+
   it('credits a double-quoted HOME skill read', async () => {
     install('.codex/skills');
     await toolCall({ ...fixture('codex-real-a-cat'), tool_input: { command: `cat "$HOME/.codex/skills/${SKILL}/SKILL.md"` } }, 'codex');

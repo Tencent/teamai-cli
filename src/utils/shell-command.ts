@@ -438,6 +438,11 @@ function classifySimple(command: SimpleCommand, simple: boolean, flavor: ShellFl
   return { category: 'search', paths: roots.length > 0 ? roots.map(searchRoot) : ['.'], ...(target ? { target } : {}), simple, verb };
 }
 
+/** Classify one already-tokenized command segment, for consumers that prove its execution separately. */
+export function classifySimpleShellCommand(command: SimpleCommand, flavor: ShellFlavor = {}): ShellClassification {
+  return classifySimple(command, false, flavor);
+}
+
 /**
  * What a shell command line did with files: a read, a search or a listing
  * when it is one such command, or a pipeline that starts with one; otherwise

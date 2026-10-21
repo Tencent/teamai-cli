@@ -34,7 +34,7 @@ import { getUserHome } from './utils/home.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { log } from './utils/logger.js';
 import { deriveSessionId } from './utils/session-id.js';
-import { classifyToolCall } from './utils/tool-call.js';
+import { classifyToolCall, codexCompoundReadPaths } from './utils/tool-call.js';
 import { normalizeToolName } from './utils/tool-names.js';
 
 type Candidate = { readonly skill: string; readonly file?: string };
@@ -81,10 +81,17 @@ function toolCallCandidates(stdin: Record<string, unknown>, tool: string): Candi
   const load = skillLoadOf(tool);
   if (load === undefined || load === 'unknown') return [];
   const call = classifyToolCall(stdin, tool);
-  if (call.category !== 'read' || call.status === 'failure') return [];
-  const uri = typeof input.path === 'string' ? SKILL_URI.exec(input.path.trim()) : null;
-  if (uri) return [{ skill: uri[1] }];
-  return call.paths.flatMap((file) => {
+  if (call.category === 'read') {
+    if (call.status === 'failure') return [];
+    const uri = typeof input.path === 'string' ? SKILL_URI.exec(input.path.trim()) : null;
+    if (uri) return [{ skill: uri[1] }];
+    return call.paths.flatMap((file) => {
+      const match = SKILL_MD.exec(file);
+      return match ? [{ skill: match[1], file }] : [];
+    });
+  }
+  if (tool !== 'codex' || normalizeToolName(hostName) !== 'Bash') return [];
+  return codexCompoundReadPaths(stdin).flatMap((file) => {
     const match = SKILL_MD.exec(file);
     return match ? [{ skill: match[1], file }] : [];
   });
