@@ -1786,7 +1786,10 @@ describe('codex readSession: freeform tool calls', () => {
     expect(session.messages[3].content[0]).toMatchObject({ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' });
   });
 
-  it('keeps tool results together when an ignored item falls between two outputs', async () => {
+  it.each([
+    ['web_search_call', { type: 'web_search_call', status: 'completed' }],
+    ['developer message', { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'rules' }] }],
+  ])('keeps tool results together when a %s falls between two outputs', async (_name, ignored) => {
     const SID = '019e0000-1111-7222-8333-666666666667';
     const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '01');
     fs.mkdirSync(dir, { recursive: true });
@@ -1797,7 +1800,7 @@ describe('codex readSession: freeform tool calls', () => {
       { type: 'response_item', payload: { type: 'function_call', call_id: 'c1', name: 'view_image', arguments: '{}' } },
       { type: 'response_item', payload: { type: 'function_call', call_id: 'c2', name: 'view_image', arguments: '{}' } },
       { type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: image } },
-      { type: 'response_item', payload: { type: 'web_search_call', status: 'completed' } },
+      { type: 'response_item', payload: ignored },
       { type: 'response_item', payload: { type: 'function_call_output', call_id: 'c2', output: 'done' } },
     ];
     fs.writeFileSync(
