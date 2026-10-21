@@ -655,12 +655,12 @@ async function placeNewResources(args: {
             process.exitCode = 2;
             return false;
           }
-          const originalRelPath = item.relativePath;
           item.namespace = destination.namespace;
           item.relativePath = placedAt;
-          if (originalRelPath !== placedAt) {
-            item.supersedes = originalRelPath;
-          }
+          // Do NOT mark the pre-placement path as `supersedes`: the original
+          // root file was never in the clone, so staging its path would fail
+          // with "pathspec did not match". `supersedes` is for `pushItem`
+          // retiring a tracked file during a format rename (agent .md ↔ .yaml).
           // The silent widening in #649 was the real damage: say where it went.
           log.info(`[${type}] ${item.name} → ${item.relativePath}`);
         }
