@@ -18,6 +18,17 @@ const TOMBSTONE_FILE = '.removed';
 const INSTALL_ROOTS: Readonly<Record<string, string>> = { workbuddy: '.workbuddy' };
 
 /**
+ * Roots of newer app generations, which count as install proof beside the
+ * primary root: WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops
+ * reading `.workbuddy/`, so a member on 5.7+ has only the new root (#1273).
+ * The probe accepts either; which paths teamai writes stays the toolPaths
+ * entry's choice, per generation.
+ */
+const NEW_GENERATION_INSTALL_ROOTS: Readonly<Record<string, readonly string[]>> = {
+  workbuddy: ['.workbuddy-ai'],
+};
+
+/**
  * The HOME root that says a tool is installed, in every scope, for a tool with
  * no project path of its own: Muse Code's `.agents` and `.mcp.json` are read
  * by Codex and Claude Code too.
@@ -58,7 +69,11 @@ export async function isToolInstalledForConfig(
   }
   if (Object.hasOwn(HOME_INSTALL_ROOTS, tool)) return pathExists(path.join(getUserHome(), HOME_INSTALL_ROOTS[tool]));
   const probe = Object.hasOwn(INSTALL_ROOTS, tool) ? INSTALL_ROOTS[tool] : toolPath;
-  return ResourceHandler.isToolInstalled(probe, baseDir, toolGateRoot(tool, probe, localConfig.toolRoots));
+  if (await ResourceHandler.isToolInstalled(probe, baseDir, toolGateRoot(tool, probe, localConfig.toolRoots))) return true;
+  for (const root of NEW_GENERATION_INSTALL_ROOTS[tool] ?? []) {
+    if (await ResourceHandler.isToolInstalled(root, baseDir, toolGateRoot(tool, root, localConfig.toolRoots))) return true;
+  }
+  return false;
 }
 
 /**
