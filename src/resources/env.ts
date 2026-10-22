@@ -3,12 +3,12 @@ import { readFile, realpath } from 'node:fs/promises';
 import { z } from 'zod';
 import YAML from 'yaml';
 import { ResourceHandler } from './base.js';
+import { placedCopy } from './repo-resource.js';
+import { loadStateForScope } from '../config.js';
 import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from '../types.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, getTeamaiHome, isSelfMode } from '../types.js';
 import { pathExists, readFileIfExists, readFileSafe, writeFile, ensureDir, fileContentEqual, remove, symlinkTarget } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { loadStateForScope } from '../config.js';
-import { namespaceOfPlacedPath } from '../push-namespaces.js';
 import { envShExportsPath, envShMarker, isEnvShMarker, recordEnvShExports } from '../env-sh-exports.js';
 import { ENV_KEY_RE, envNamePattern, envNamePatternKey, envTable, sameEnvName } from './env-key.js';
 import { SECRETS_LAYOUT } from './secrets.js';
@@ -352,16 +352,11 @@ export class EnvHandler extends ResourceHandler {
         const baseExists = await pathExists(baseEnv);
         if (baseExists && await fileContentEqual(activeEnv, baseEnv)) continue;
         if (!baseExists) {
-          const placedPath = placements[`env:${relativePath}`];
-          const placedFile = placedPath ? path.join(localConfig.repo.localPath, ...placedPath.split('/')) : null;
-          if (placedPath && placedFile && await pathExists(placedFile)) {
-            // Unchanged: already delivered. Edited: the edit belongs on the
-            // file that landed in its place, not on a second copy at the root.
-            if (await fileContentEqual(activeEnv, placedFile)) continue;
-            items.push({
-              ...envPushItem(placedPath, activeEnv, 'modified'),
-              namespace: namespaceOfPlacedPath('env', placedPath),
-            });
+          // An earlier push may have placed this file under a namespace.
+          const placed = await placedCopy('env', relativePath.slice('env/'.length), relativePath, activeEnv, localConfig, placements);
+          if (placed === 'delivered') continue;
+          if (placed) {
+            items.push(placed);
             continue;
           }
         }

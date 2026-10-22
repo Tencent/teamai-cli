@@ -346,7 +346,7 @@ describe('a placed copy the author still edits, against what its push delivered'
     env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' },
   }).trim();
 
-  async function placedCopy(type: 'docs', authorPath: string, placedPath: string) {
+  async function placedCopy(type: 'docs' | 'env', authorPath: string, placedPath: string) {
     const root = makeTmpDir();
     const projectRoot = path.join(root, 'project');
     const repoLocal = path.join(root, 'team-repo');
@@ -440,6 +440,17 @@ describe('a placed copy the author still edits, against what its push delivered'
     fs.writeFileSync(activeFile, 'v1 plus my edit\n');
 
     await expect(scan()).rejects.toThrow(/docs\/ops\/guide\.md/);
+  });
+
+  it('treats a placed env file the same way', async () => {
+    const { activeFile, placedFile, commit, scan } = await placedCopy('env', 'env/env.yaml', 'env/ops/env.yaml');
+    expect(await scan()).toEqual([]);
+
+    commit(placedFile, 'v2 (teammate fix)\n', 'teammate fixes the placed env file');
+    expect(await scan()).toEqual([]);
+
+    fs.writeFileSync(activeFile, 'v1 plus my edit\n');
+    await expect(scan()).rejects.toThrow(/env\/ops\/env\.yaml/);
   });
 
   it('reads a record that holds only the path, as earlier builds wrote, as no record', async () => {
