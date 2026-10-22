@@ -23,7 +23,7 @@ teamai push
 teamai push --role pm
 ```
 
-没有 frontmatter 时，`push` 会补上 `name` 和 `description`。新 skill 写到你的角色或当前项目给出的 `skills/<ns>/<name>/`。有多个时会问。`--role` 指定一个。
+没有 frontmatter 时，`push` 会补上 `name` 和 `description`。新 skill 写到你的角色或当前项目给出的 `skills/<ns>/<name>/`。有多个时会问。`--role` 指定一个。团队有 `manifest/roles.yaml` 或 `manifest/projects.yaml` 时，它必须由其中某个角色或项目声明。
 
 ## Rules
 

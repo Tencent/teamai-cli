@@ -25,12 +25,12 @@ import type {
 import { getDataHome, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, resolveReal } from './utils/path-safety.js';
-import { loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
-import { loadProjectsManifest, resolveProjectResourceNamespaces, type ProjectsManifest } from './projects.js';
-import { isSafeNamespaceSegment, NAMESPACE_RULE, fallbackNamespaceError } from './manifest-schema.js';
+import { loadRolesManifest, resolveRoleResourceNamespaces, roleNamespaceEntries, RolesManifestNotFoundError, type ResourceNamespaces } from './roles.js';
+import { loadProjectsManifest, projectNamespaceEntries, resolveProjectResourceNamespaces, type ProjectsManifest } from './projects.js';
+import { isSafeNamespaceSegment, NAMESPACE_RULE, fallbackNamespaceError, type NamespaceEntry } from './manifest-schema.js';
 import {
   declaredNamespaceFor, isAtSharedRoot, isNestedPlaceableType, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
-  resolveProjectNamespace, rootSegmentsFor, skillNamespacePath, withNamespace, type PlaceableType,
+  resolveProjectNamespace, resolveRoleNamespace, rootSegmentsFor, skillNamespacePath, withNamespace, type PlaceableType,
 } from './push-namespaces.js';
 import { askQuestion, askSelection, isInteractive } from './utils/prompt.js';
 import { pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
@@ -238,17 +238,16 @@ async function resolveNamespaceForNew(
   options: { role?: string; project?: string; silent?: boolean },
   localConfig: LocalConfig,
   projectsManifest: ProjectsManifest | null,
+  roleNamespaces: readonly NamespaceEntry[] | null,
 ): Promise<NewResourceDestination> {
-  if (options.project && projectsManifest) {
-    const resolved = resolveProjectNamespace(projectsManifest, options.project, type);
-    return resolved.ok
-      ? { kind: 'namespace', namespace: resolved.namespace }
-      : { kind: 'unresolvable', message: resolved.message };
+  const flagged = options.project && projectsManifest
+    ? resolveProjectNamespace(projectsManifest, options.project, type)
+    : options.role ? resolveRoleNamespace(roleNamespaces, options.role, type) : null;
+  if (flagged) {
+    return flagged.ok
+      ? { kind: 'namespace', namespace: flagged.namespace }
+      : { kind: 'unresolvable', message: flagged.message };
   }
-
-  // An explicit --role is a literal namespace on every axis (already checked
-  // for path traversal before selection).
-  if (options.role) return { kind: 'namespace', namespace: options.role };
 
   const resolution = await namespaceCandidates(type, localConfig);
   if (!resolution.ok) return { kind: 'unresolvable', message: resolution.message };
@@ -586,13 +585,15 @@ async function placeNewResources(args: {
   options: { role?: string; project?: string; silent?: boolean };
   localConfig: LocalConfig;
   projectsManifest: ProjectsManifest | null;
+  /** What `--role` may name: every namespace the manifests declare, null with neither manifest. */
+  roleNamespaces: readonly NamespaceEntry[] | null;
   skillsDestinationError?: string;
   /** The clone could not be refreshed this run; its manifests may be stale. */
   teamRepoStale?: boolean;
   /** Resources whose open PR already decided where they go. */
   settled: ReadonlySet<ResourceItem>;
 }): Promise<boolean> {
-  const { items, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale, settled } = args;
+  const { items, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled } = args;
 
   // A project that declares no skills namespace only blocks the push once a
   // skill the flag relocates is actually selected, so a rule can still go out
@@ -625,7 +626,7 @@ async function placeNewResources(args: {
       return false;
     }
 
-    const destination = await resolveNamespaceForNew(type, options, localConfig, projectsManifest);
+    const destination = await resolveNamespaceForNew(type, options, localConfig, projectsManifest, roleNamespaces);
     switch (destination.kind) {
       case 'unresolvable':
         log.error(destination.message);
@@ -1267,6 +1268,27 @@ async function pushCore(
     }
   }
 
+  // --role names a namespace directly, so check it against what the manifests
+  // declare, as --project is: a namespace no role or project declares for a
+  // type is one pull delivers to nobody.
+  let roleNamespaces: NamespaceEntry[] | null = null;
+  if (options.role) {
+    try {
+      const roles = await loadRolesManifest(localConfig.repo.localPath).catch((e: unknown) => {
+        if (e instanceof RolesManifestNotFoundError) return null;
+        throw e;
+      });
+      const projects = await loadProjectsManifest(localConfig.repo.localPath);
+      roleNamespaces = roles || projects
+        ? [...roles ? roleNamespaceEntries(roles) : [], ...projects ? projectNamespaceEntries(projects) : []]
+        : null;
+    } catch (e) {
+      log.error(`Cannot check where --role ${options.role} may place resources: ${(e as Error).message}`);
+      process.exitCode = 2;
+      return;
+    }
+  }
+
   // Every path below reads the active projects' namespaces: the skills scan to
   // tell this directory's team skills from another project's of the same name,
   // `--skill`, and the placement of a new rule, skill or agent. Without them
@@ -1414,15 +1436,13 @@ async function pushCore(
   // no candidate here and is rejected with exit 2 before anything is pushed.
   let requestedAgentsNamespace: string | undefined;
   let agentsDestinationError: string | undefined;
-  if (options.role) {
-    requestedAgentsNamespace = options.role;
-  } else if (options.project && projectsManifest) {
-    const resolved = resolveProjectNamespace(projectsManifest, options.project, 'agents');
-    if (resolved.ok) {
-      requestedAgentsNamespace = resolved.namespace;
-    } else {
-      agentsDestinationError = resolved.message;
-    }
+  const flaggedAgents = options.project && projectsManifest
+    ? resolveProjectNamespace(projectsManifest, options.project, 'agents')
+    : options.role ? resolveRoleNamespace(roleNamespaces, options.role, 'agents') : null;
+  if (flaggedAgents?.ok) {
+    requestedAgentsNamespace = flaggedAgents.namespace;
+  } else if (flaggedAgents) {
+    agentsDestinationError = flaggedAgents.message;
   }
   // The skills namespace the flags name: it picks among a name's several open PRs.
   let requestedSkillsNamespace: string | undefined;
@@ -1718,27 +1738,12 @@ async function pushCore(
       process.exitCode = 2;
       return;
     }
-    // Warn when the role names no namespace any manifest declares: pull would
-    // ignore the pushed paths. A manifest-free team is exempt — every on-disk
-    // namespace is valid there.
-    try {
-      const manifest = await loadRolesManifest(localConfig.repo.localPath);
-      const declared = new Set<string>();
-      for (const role of manifest.roles) {
-        for (const list of Object.values(role.resources) as (string[] | undefined)[]) {
-          for (const ns of list ?? []) declared.add(ns);
-        }
-      }
-      if (declared.size > 0 && !declared.has(options.role)) {
-        log.warn(
-          `--role ${options.role} is not declared in manifest/roles.yaml for any resource axis; `
-          + 'pull will not deliver resources placed there. Declare it or pick a known namespace.',
-        );
-      }
-    } catch {
-      // Manifest missing or unreadable: the push path reports that separately.
+    const resolved = resolveRoleNamespace(roleNamespaces, options.role, 'skills');
+    if (resolved.ok) {
+      skillsDestination = resolved.namespace;
+    } else {
+      skillsDestinationError = resolved.message;
     }
-    skillsDestination = options.role;
   } else if (options.project && projectsManifest && allItems.some(isRelocatedByFlag)) {
     const resolved = resolveProjectNamespace(projectsManifest, options.project, 'skills');
     if (resolved.ok) {
@@ -1950,7 +1955,7 @@ async function pushCore(
     // destination first, then placement for whatever is still at the root.
     const settled = reuseRecordedDestinations(planPushGroups(allItems, reusablePending));
     const placed = await placeNewResources({
-      items: allItems, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale, settled,
+      items: allItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
     });
     if (!placed) return;
     log.info('Dry run — no changes made');
@@ -1992,7 +1997,7 @@ async function pushCore(
 
   // ── Step 4: Place NEW root-level resources in a namespace (after selection) ─
   if (!await placeNewResources({
-    items: selectedItems, options, localConfig, projectsManifest, skillsDestinationError, teamRepoStale, settled,
+    items: selectedItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
   })) return;
 
   // ── Step 5: Push each group — one branch/PR per group ──────────────

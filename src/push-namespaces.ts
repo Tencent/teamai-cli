@@ -12,7 +12,7 @@
  * reached the whole team (issue #649). It lives here so every type answers the
  * same question the same way, and so the answer can be tested without a repo.
  */
-import { isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
+import { isSafeNamespaceSegment, NAMESPACE_RULE, type NamespaceEntry } from './manifest-schema.js';
 import {
   findProject, unknownProjectMessage,
   type AllProjectResourceType, type ProjectsManifest,
@@ -168,6 +168,30 @@ export function skillNamespacePath(namespace: string, name: string): string {
 export type NamespaceResolution =
   | { ok: true; namespace: string }
   | { ok: false; message: string };
+
+/**
+ * The namespace `--role <ns>` places `type` in. A team with a roles or projects
+ * manifest delivers a namespace only to the members of a role or project that
+ * declares it for the type's axis, so any other namespace would reach nobody;
+ * `declared` is every namespace those manifests declare. A team with neither
+ * manifest (`declared` null) delivers every namespace, so any one goes.
+ */
+export function resolveRoleNamespace(
+  declared: readonly NamespaceEntry[] | null,
+  namespace: string,
+  type: PlaceableType,
+): NamespaceResolution {
+  if (declared === null) return { ok: true, namespace };
+  const axis = NAMESPACE_AXIS[type];
+  const onAxis = [...new Set(declared.filter((entry) => entry.type === axis).map((entry) => entry.namespace))];
+  if (onAxis.includes(namespace)) return { ok: true, namespace };
+  return {
+    ok: false,
+    message: `--role ${namespace} cannot take new ${type}: no role or project declares "${namespace}" as a ${axis} `
+      + 'namespace in manifest/roles.yaml or manifest/projects.yaml, so pull would deliver it to nobody. '
+      + (onAxis.length > 0 ? `Pass one that is declared (${onAxis.join(', ')}), or declare it.` : `Declare it for ${axis} first.`),
+  };
+}
 
 /**
  * The namespace `--project <id>` places `type` in, read from that type's own

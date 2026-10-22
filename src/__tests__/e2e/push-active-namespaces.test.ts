@@ -1095,6 +1095,40 @@ describe('push places a new resource by the active projects (#1021)', () => {
   });
 });
 
+describe('push --role places only where a role or project declares the namespace for that type (#1101)', () => {
+  it('pushes nothing for a namespace no role or project declares', () => {
+    writeFile(path.join(project, '.claude', 'rules', 'new-rule.md'), '# new rule\n');
+
+    const pushed = run(['push', '--all', '--role', 'rogue']);
+
+    expect(pushed.code, pushed.output).toBe(2);
+    expect(pushed.output).toContain('--role rogue');
+    expect(pushedFiles()).toEqual([]);
+  });
+
+  it('pushes nothing for a new skill under a namespace no role or project declares', () => {
+    writeFile(path.join(project, '.claude', 'skills', 'new-skill', 'SKILL.md'), skillMd('new-skill'));
+
+    const pushed = run(['push', '--all', '--role', 'rogue']);
+
+    expect(pushed.code, pushed.output).toBe(2);
+    expect(pushed.output).toContain('--role rogue');
+    expect(pushedFiles()).toEqual([]);
+  });
+
+  it('pushes nothing for a namespace declared for other types only', () => {
+    // platform declares skills, knowledge and learnings, not docs.
+    writeFile(path.join(project, '.teamai', 'team-repo', 'docs', 'guide.md'), '# guide\n');
+
+    const pushed = run(['push', '--all', '--role', 'platform']);
+
+    expect(pushed.code, pushed.output).toBe(2);
+    expect(pushed.output).toContain('--role platform');
+    expect(pushed.output).toContain('docs');
+    expect(pushedFiles()).toEqual([]);
+  });
+});
+
 describe('push stops when the active projects cannot be resolved', () => {
   const unresolved: [string, () => void, string][] = [
     ['the projects manifest is gone', () => commitOnTeam('manifest/projects.yaml', null), 'no manifest/projects.yaml'],

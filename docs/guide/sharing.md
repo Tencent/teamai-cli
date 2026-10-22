@@ -23,7 +23,7 @@ teamai push
 teamai push --role pm
 ```
 
-`push` fills in `name` and `description` when the frontmatter is missing. A new skill goes to `skills/<ns>/<name>/`, where `<ns>` comes from your role or the active projects. Several choices ask which one. `--role` picks one.
+`push` fills in `name` and `description` when the frontmatter is missing. A new skill goes to `skills/<ns>/<name>/`, where `<ns>` comes from your role or the active projects. Several choices ask which one. `--role` picks one. When the team has `manifest/roles.yaml` or `manifest/projects.yaml`, a role or project there must declare it.
 
 ## Rules
 

@@ -235,12 +235,14 @@ describe('push namespace routing', () => {
       availableUpdate: null,
     });
     mockSaveStateForScope.mockResolvedValue(undefined);
-    // Default manifest: role "hai" has namespaces [common, hai]
+    // Default manifest: role "hai" has namespaces [common, hai]. Every
+    // namespace a test names with --role is one a role declares (#1101).
     mockLoadRolesManifest.mockResolvedValue({
       version: 1,
       roles: [
         { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], agents: [] } },
         { id: 'pm', description: 'Product Manager', resources: { knowledge: ['common', 'pm'], skills: ['common', 'pm'], agents: [] } },
+        { id: 'backend', description: 'Backend', resources: { knowledge: [], skills: ['backend'], agents: [] } },
       ],
     });
     readlineAnswer = '1';
@@ -526,8 +528,7 @@ describe('push namespace routing', () => {
       pushItem: vi.fn(),
     });
 
-    // --role "unknown" → used directly as namespace, no manifest validation
-    // (validation happens downstream in pushItem)
+    // --role "unknown" names no declared namespace, but nothing here needs placing.
     await push({ all: true, role: 'unknown' });
 
     // No items to push, so pushRepoBranch should not be called
@@ -1046,6 +1047,8 @@ describe('push namespace routing for rules and agents', () => {
       version: 1,
       roles: [
         { id: 'hai', description: 'HyperAI', resources: { knowledge: ['common', 'hai'], skills: ['common', 'hai'], agents: [] } },
+        // The namespaces the tests below name with --role (#1101).
+        { id: 'pm', description: 'Product Manager', resources: { knowledge: ['pm', 'fe-know'], skills: ['pm'], agents: ['pm', 'be-agents'] } },
       ],
     });
     readlineAnswer = '1';
