@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file. See [standa
 ### Changed
 
 - `teamai init` no longer pulls team skills, rules, agents or MCP before it exits. It still saves config and installs hooks. In project scope it creates a tool directory only for a tool named with `--agent` or picked in a terminal; otherwise that directory appears when the tool starts a session, and that session start pulls. `teamai pull` still does not create a missing tool directory. A tool that reads rules and MCP once, before its SessionStart hook, sees them from the following session (for [#1065](https://github.com/Tencent/teamai-cli/issues/1065)).
+- `teamai push --role <ns>` fails with exit 2 when no role or project declares `<ns>` for that type, as `--project` already does. It used to write the files under `<ns>` anyway, where pull delivers them to nobody. A team with neither manifest still accepts any namespace (for [#1101](https://github.com/Tencent/teamai-cli/issues/1101)).
 
 ### 💥 Breaking Changes
 
