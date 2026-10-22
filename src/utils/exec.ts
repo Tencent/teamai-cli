@@ -1,6 +1,7 @@
 import spawn from 'cross-spawn';
 import type { ChildProcess } from 'node:child_process';
 import type { Readable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 
 export interface ExecOptions {
   cwd?: string;
@@ -45,13 +46,17 @@ export const execCommand: CommandExecutor = (
     callback();
   };
 
+  // Pipe reads split at byte offsets, so a multi-byte character can straddle
+  // two chunks; one decoder per stream carries the partial bytes across.
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
   child.stdout?.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
+    const text = stdoutDecoder.write(chunk);
     stdout += text;
     if (options.stream) process.stdout.write(text);
   });
   child.stderr?.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
+    const text = stderrDecoder.write(chunk);
     stderr += text;
     if (options.stream) process.stderr.write(text);
   });
@@ -64,11 +69,19 @@ export const execCommand: CommandExecutor = (
   }, timeoutMs);
 
   child.on('error', (error) => finish(() => reject(error)));
-  child.on('close', (code) => finish(() => resolve({
-    stdout,
-    stderr,
-    code: code ?? 1,
-  })));
+  child.on('close', (code) => finish(() => {
+    const stdoutRest = stdoutDecoder.end();
+    const stderrRest = stderrDecoder.end();
+    if (options.stream) {
+      process.stdout.write(stdoutRest);
+      process.stderr.write(stderrRest);
+    }
+    resolve({
+      stdout: stdout + stdoutRest,
+      stderr: stderr + stderrRest,
+      code: code ?? 1,
+    });
+  }));
 });
 
 export async function probeBinary(

@@ -66,3 +66,49 @@ describe('shallowClone — windowsHide', () => {
     expect(result.cloneMethod).toBe('https-anonymous');
   });
 });
+
+describe('shallowClone — split UTF-8 output', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-clone-'));
+    vi.spyOn(log, 'debug').mockImplementation(() => {});
+    vi.mocked(spawn).mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  /** A `git` that writes `output` to stdout in two chunks split at `splitAt`. */
+  function makeChunkedProcess(output: Buffer, splitAt: number): ChildProcess {
+    let onData: ((chunk: Buffer) => void) | undefined;
+    return {
+      stdout: { on: vi.fn((_event: string, cb: (chunk: Buffer) => void) => { onData = cb; }) },
+      stderr: { on: vi.fn() },
+      on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+        if (event !== 'close') return;
+        void Promise.resolve().then(() => {
+          onData?.(output.subarray(0, splitAt));
+          onData?.(output.subarray(splitAt));
+          cb(0);
+        });
+      }),
+      kill: vi.fn(),
+    } as unknown as ChildProcess;
+  }
+
+  it('keeps a branch name whose character straddles two chunks intact', async () => {
+    const branch = 'feature/会话';
+    vi.mocked(spawn).mockImplementation(((_cmd: string, args: string[]) => {
+      const output = args.includes('--abbrev-ref') ? `${branch}\n` : '0123456789abcdef\n';
+      const bytes = Buffer.from(output);
+      return makeChunkedProcess(bytes, bytes.indexOf(Buffer.from('会')) + 1);
+    }) as unknown as typeof spawn);
+
+    const result = await shallowClone('https://example.com/org/repo.git', path.join(tmp, 'repo'), 'git');
+
+    expect(result.branch).toBe(branch);
+  });
+});
