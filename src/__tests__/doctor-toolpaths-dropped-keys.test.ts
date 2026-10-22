@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { toolPathsDroppedKeyNotes } from '../doctor-delivery.js';
 import type { DoctorContext } from '../doctor.js';
-import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { TeamaiConfigSchema, scopedToolPaths, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 /**
  * #1115's dropped-key half: a team `toolPaths` entry replaces that tool's
@@ -63,6 +63,16 @@ describe('doctor notes — toolPaths entries that drop a default-provided key (#
         mcp: '.agents/mcp.json',
       },
     }))).toHaveLength(0);
+  });
+
+  it('reports nothing for a user-scope member whose team never names toolPaths', () => {
+    // resolveDoctorContext hands the checks scopedToolPaths output: joycode's
+    // user scope drops `rules` on purpose (#946), and the team named no tool.
+    const teamConfig = TeamaiConfigSchema.parse({ team: 't', repo: 'owner/repo' }) as TeamaiConfig;
+    const toolPaths = scopedToolPaths(teamConfig, { scope: 'user' });
+    expect(toolPaths.joycode?.rules).toBeUndefined();
+    const ctx = { localConfig: {} as LocalConfig, teamConfig, toolPaths, hookToolPaths: toolPaths, baseDir: '/tmp' } as DoctorContext;
+    expect(toolPathsDroppedKeyNotes(ctx)).toEqual([]);
   });
 
   it('returns nothing without a team config', () => {

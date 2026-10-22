@@ -263,7 +263,8 @@ function unresolvableCheck(type: 'skills' | 'agents' | 'docs', reason: string): 
  * this is a note, not a finding: surfaced, never failing.
  */
 export function toolPathsDroppedKeyNotes(ctx: DoctorContext): string[] {
-  const { toolPaths } = ctx;
+  const { teamConfig, toolPaths } = ctx;
+  if (!teamConfig) return [];
   // What each key's absence does, for the note text. Keys the default entry
   // does not provide cannot be dropped, so the loop below never looks them up.
   const CONSEQUENCES: Record<string, string> = {
@@ -277,7 +278,12 @@ export function toolPathsDroppedKeyNotes(ctx: DoctorContext): string[] {
   };
   const defaults = DEFAULT_TOOL_PATHS as unknown as Record<string, Record<string, string>>;
   const notes: string[] = [];
-  for (const [tool, entryRaw] of Object.entries(toolPaths)) {
+  // The team's own entries, not `toolPaths`: that one is scoped, and user scope
+  // drops keys on purpose (joycode's `rules: null`). `teamConfig.toolPaths` is
+  // already merged over the defaults, so a tool the team did not name holds its
+  // default and drops nothing. The enabled filter still comes from `toolPaths`.
+  for (const [tool, entryRaw] of Object.entries(teamConfig.toolPaths)) {
+    if (toolPaths[tool] === undefined) continue; // not enabled or excluded here.
     const def = defaults[tool];
     if (!def) continue; // a custom tool: no default entry to drop keys from.
     const entry = entryRaw as unknown as Record<string, string | undefined>;
