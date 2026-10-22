@@ -82,8 +82,10 @@ function startCommand(command: string, cwd: string, env: Record<string, string>,
   const exit = new Promise<CommandResult>((resolve) => {
     let stdout = '';
     let stderr = '';
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr?.on('data', (chunk: string) => { stderr += chunk; });
     child.on('error', (error) => resolve({ exitCode: 1, stdout, stderr: error.message }));
     child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
   });
