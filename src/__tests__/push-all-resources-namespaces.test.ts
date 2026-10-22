@@ -439,7 +439,9 @@ describe('a placed copy the author still edits, against what its push delivered'
     commit(placedFile, 'v2 (teammate fix)\n', 'teammate fixes the placed file');
     fs.writeFileSync(activeFile, 'v1 plus my edit\n');
 
-    await expect(scan()).rejects.toThrow(/docs\/ops\/guide\.md/);
+    await expect(scan()).rejects.toThrow(
+      /docs\/ops\/guide\.md changed on the team repo.*Merge your edit into docs\/ops\/guide\.md, keeping the team's change there, then delete docs\/guide\.md/,
+    );
   });
 
   it('treats a placed env file the same way', async () => {

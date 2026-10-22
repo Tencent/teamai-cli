@@ -55,7 +55,7 @@ export async function placedCopy(
   if (theirs !== record.blob) {
     throw new Error(
       `${record.path} changed on the team repo after your ${authorPath} was placed there, and ${authorPath} `
-      + `changed too, so pushing it would overwrite that change. Move your edit into ${record.path} and delete ${authorPath}`,
+      + `changed too, so pushing it would overwrite that change. Merge your edit into ${record.path}, keeping the team's change there, then delete ${authorPath}`,
     );
   }
   const item: ResourceItem & { prePlacementPath: string } = {
