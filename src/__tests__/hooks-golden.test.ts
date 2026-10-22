@@ -8,42 +8,40 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { injectHooks } from '../hooks.js';
+import { _resetShellCache } from '../builtin-hooks.js';
 
 // Byte-equality anchor for the built-in (A) hooks (issue #19 §8 "兼容锚点").
 // fixtures/hooks/<tool>.json were captured from the pre-refactor injector.
 // Any refactor of the injection engine MUST keep these byte-identical so that
 // already-installed machines see a zero-diff reconcile after a CLI upgrade.
 //
-// Windows: the dispatch shell resolves a bare `bash` to the WSL launcher, so
-// the injector names Git Bash by absolute path instead — machine-specific, and
-// the Linux-captured fixtures cannot match it. Only the dispatch-command
-// renderers (claude, claude-internal, cursor) skip for that reason; workbuddy
-// and codebuddy both stay machine-independent and keep coverage, because both
-// render the wrapper form (`PATH="$HOME/.teamai/bin:$PATH" teamai …`), which
-// never embeds a host path.
+// These fixtures pin the POSIX command shape. Windows launcher rendering is
+// covered separately in hooks-windows-bash.test.ts.
 const fixturesDir = path.resolve(__dirname, 'fixtures', 'hooks');
 
-// true = the command carries the dispatch shell prefix (`getDispatchCommand`).
-const cases: Array<[string, string, boolean]> = [
-  ['claude', 'settings.json', true],
-  ['claude-internal', 'settings.json', true],
-  ['codebuddy', 'settings.json', false],
-  ['cursor', 'hooks.json', true],
-  ['workbuddy', 'settings.json', false],
+const cases = [
+  ['claude', 'settings.json'],
+  ['claude-internal', 'settings.json'],
+  ['codebuddy', 'settings.json'],
+  ['cursor', 'hooks.json'],
+  ['workbuddy', 'settings.json'],
 ];
 
 describe('hooks golden — built-in output is byte-identical to the captured baseline', () => {
   let tmp: string;
   beforeEach(async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    _resetShellCache();
     tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'hooks-golden-'));
   });
   afterEach(async () => {
+    _resetShellCache();
+    vi.restoreAllMocks();
     await fse.remove(tmp);
   });
 
-  for (const [tool, file, usesDispatchCommand] of cases) {
-    const skip = process.platform === 'win32' && usesDispatchCommand;
-    it.skipIf(skip)(`${tool} output matches golden fixture`, async () => {
+  for (const [tool, file] of cases) {
+    it(`${tool} output matches golden fixture`, async () => {
       const p = path.join(tmp, tool, file);
       await injectHooks(p, tool);
       const got = await fse.readFile(p, 'utf-8');

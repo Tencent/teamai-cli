@@ -19,21 +19,28 @@ export interface ConfidenceFactors {
  *
  * Formula:
  *   base = min(1.0, recalled * 0.1 + upvoted * 0.3)
- *   recency = max(0, 1.0 - daysSinceLastRecall / 180)
+ *   recency = max(0, 1.0 - daysSinceLastActivity / 180)
+ *     where last activity is the later of lastRecalledAt and lastUpvotedAt (#1278)
  *   ratio = min(1.0, upvoted / max(1, recalled))
  *   confidence = base * 0.4 + recency * 0.3 + ratio * 0.3
  */
 export function computeConfidence(factors: ConfidenceFactors): number {
-  const { recalledCount, upvotedCount, lastRecalledAt } = factors;
+  const { recalledCount, upvotedCount, lastRecalledAt, lastUpvotedAt } = factors;
 
   const base = Math.min(1.0, recalledCount * 0.1 + upvotedCount * 0.3);
 
-  let daysSinceRecall = 180;
-  if (lastRecalledAt) {
-    const elapsed = Date.now() - new Date(lastRecalledAt).getTime();
-    daysSinceRecall = Math.max(0, elapsed / (1000 * 60 * 60 * 24));
+  // A vote with no recall still signals recent interest; use the later timestamp.
+  const lastActivityAt =
+    lastRecalledAt && lastUpvotedAt
+      ? (lastRecalledAt > lastUpvotedAt ? lastRecalledAt : lastUpvotedAt)
+      : (lastRecalledAt || lastUpvotedAt || '');
+
+  let daysSinceActivity = 180;
+  if (lastActivityAt) {
+    const elapsed = Date.now() - new Date(lastActivityAt).getTime();
+    daysSinceActivity = Math.max(0, elapsed / (1000 * 60 * 60 * 24));
   }
-  const recency = Math.max(0, 1.0 - daysSinceRecall / 180);
+  const recency = Math.max(0, 1.0 - daysSinceActivity / 180);
 
   const ratio = Math.min(1.0, upvotedCount / Math.max(1, recalledCount));
 

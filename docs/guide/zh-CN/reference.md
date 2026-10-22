@@ -97,6 +97,14 @@ CURSOR_CONFIG_DIR=~/.cursor-config teamai init
 
 Cursor CLI 会搬两个目录：`CURSOR_DATA_DIR` 放会话记录，`CURSOR_CONFIG_DIR` 放写协同署名设置的 `cli-config.json`。用户级 `mcp.json`、`rules/`、`commands/` 不管这两个变量怎么设都留在 `~/.cursor`，所以它们仍然用默认路径。没设 `CURSOR_CONFIG_DIR` 时，配置根目录取 `$XDG_CONFIG_HOME/cursor`（设了该变量的话），否则取 `~/.cursor`。
 
+#### 记录的工具主目录（`~/.teamai/tool-homes.json`）
+
+有些工具会按变量搬家：`XDG_CONFIG_HOME`（OpenCode、Muse）、`OPENCODE_CONFIG_DIR`、`HERMES_HOME`、`PI_CODING_AGENT_DIR`、`COPILOT_HOME`、`DSH_HOME`、`OPENCLAW_STATE_DIR` 和 `OPENCLAW_PROFILE`。在 Windows 上，Hermes 在 `%LOCALAPPDATA%\hermes`。工具自己的变量是相对路径时，和工具一样按运行 teamai 的目录解析；`XDG_CONFIG_HOME` 或 `%LOCALAPPDATA%` 是相对路径时会被忽略。teamai 会同步到搬过去的主目录。OpenCode、Muse 和 Pi 目前只有一部分跟着走。设了 `XDG_CONFIG_HOME=/x` 时，OpenCode 的技能和 `teamai models switch` 写的 `opencode.json` 放到 `/x/opencode`，Muse 的技能放到 `/x/muse/skills`，它们的其他文件仍留在 `~/.config/opencode` 和 `~/.config/muse`。设了 `PI_CODING_AGENT_DIR=/x` 时，Pi 的技能和 `models.json` 放到 `/x`，它的扩展、MCP 和 `AGENTS.md` 仍留在 `~/.pi/agent`。`teamai doctor` 会提示。
+
+第一次看到该变量的 `pull` 会在该目录存在时把主目录记到 `~/.teamai/tool-homes.json`，整台机器共用这一份记录；pull 不会替换已有的记录。`teamai init` 也会记录，并且会替换已有的记录：工具自己的变量（`HERMES_HOME`、`OPENCLAW_PROFILE` 等）在目录还不存在时也记，`XDG_CONFIG_HOME` 要等目录存在才记。Hermes 在 Windows 上的默认目录只会补上缺的记录。所以请在你的工具运行的 shell 里运行 `init`。之后即使在没设该变量的 shell 里 pull，各个 scope 也仍然同步到那里。要换主目录，带着新值运行 `teamai init`。要清掉记录，把变量设为空再运行一次。记录的目录不存在时，`teamai doctor` 会报 `<tool> home exists`；shell 里的变量指向别的目录时，会报 `<tool> home matches <variable>`。
+
+工具的技能目录变了之后，旧目录里 teamai 放的副本会留下。别的 shell、别的项目或别的工具可能还在读那个目录，teamai 无法判断。第一次把技能送到新目录的 pull 会点名旧目录，之后 teamai 不再更新那里的副本。确认没有工具再读那个目录后，自己删掉即可。
+
 ### Webhook 通知（`sharing.webhooks`）
 
 | 事件 | 何时发送 |

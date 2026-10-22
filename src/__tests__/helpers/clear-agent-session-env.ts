@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll } from 'vitest';
+import { afterAll, vi } from 'vitest';
 import { GIT_REPOSITORY_ENV } from '../../utils/git-env.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 
@@ -16,10 +16,13 @@ for (const name of AGENT_SESSION_ENV) {
 }
 
 // The same shell may relocate an agent's root (CLAUDE_CONFIG_DIR, COPILOT_HOME,
-// OPENCLAW_STATE_DIR), which teamai honors, so a test that stubs only HOME
-// would still read, write or remove the developer's real Claude Code, Copilot
-// or OpenClaw files. A test that needs one sets it.
-for (const name of ['CLAUDE_CONFIG_DIR', 'COPILOT_HOME', 'OPENCLAW_STATE_DIR']) {
+// OPENCLAW_STATE_DIR, and every home `TOOLS[tool].home.moves` names), which
+// teamai honors, so a test that stubs only HOME would still read, write or
+// remove the developer's real tool files. A test that needs one sets it.
+for (const name of [
+  'CLAUDE_CONFIG_DIR', 'COPILOT_HOME', 'OPENCLAW_STATE_DIR', 'OPENCLAW_PROFILE', 'HERMES_HOME', 'DSH_HOME',
+  'PI_CODING_AGENT_DIR', 'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME',
+]) {
   delete process.env[name];
 }
 
@@ -44,3 +47,10 @@ process.env.PATH = `${shadow}${path.delimiter}${process.env.PATH ?? ''}`;
 afterAll(() => {
   fs.rmSync(shadow, { recursive: true, force: true });
 });
+
+// The lists above load product modules (session-id.js reaches types.ts and,
+// through it, utils/fs.js and utils/logger.js), and a module a setup file
+// loaded is cached before a test file's vi.mock applies: the test would mock
+// utils/fs.js and still reach the real one through them. Drop them, so each
+// test file loads its own, mocked as it asks.
+vi.resetModules();

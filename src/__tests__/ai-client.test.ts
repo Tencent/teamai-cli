@@ -22,7 +22,8 @@ vi.mock('node:child_process', () => ({
 }));
 
 // mock existsSync，使探测到的伪路径被视为存在
-vi.mock('node:fs', () => ({
+vi.mock('node:fs', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:fs')>(),
   existsSync: vi.fn(() => true),
 }));
 

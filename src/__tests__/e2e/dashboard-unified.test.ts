@@ -46,6 +46,16 @@ describe('built dashboard CLI (offline provider fixtures)', () => {
       ]);
       const eventsPath=path.join(teamHome,'dashboard','events.jsonl');
       await fs.writeFile(eventsPath,events.map(e=>JSON.stringify(e)).join('\n')+'\n');
+      // A real hook report must extract answers before its 200-character cap.
+      const answer = 'Use the web interface.';
+      execFileSync(process.execPath, [cli, 'dashboard-report', '--stdin', '--tool', 'codex'], {
+        cwd: home, env: { ...process.env, HOME: home, USERPROFILE: home, NO_COLOR: '1' },
+        input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'codex', cwd: home,
+          prompt: '<send_user_message_question_reply>' + JSON.stringify([
+            { questionItemId: 'long-id'.repeat(50), question: 'Choose a UI.', answer },
+          ]) + '</send_user_message_question_reply>',
+        }),
+      });
       const port=await freePort(),base=`http://127.0.0.1:${port}`;
       child=spawn(process.execPath,[cli,'dashboard','--port',String(port)],{cwd:home,env:{...process.env,HOME:home,USERPROFILE:home,NO_COLOR:'1'},stdio:'pipe'});
       let output='';child.stdout?.on('data',b=>output+=b);child.stderr?.on('data',b=>output+=b);
@@ -55,7 +65,8 @@ describe('built dashboard CLI (offline provider fixtures)', () => {
       const html=await (await fetch(base)).text();expect(html).toContain('Team Execution');expect(html).not.toContain('SAMPLE DATA');
       const sessions=await (await fetch(base+'/api/sessions')).json();
       expect(sessions.map((s:{tool:string})=>s.tool).sort()).toEqual(['claude','codebuddy','codex','opencode']);
-      for(const session of sessions){expect(session.prompts).toHaveLength(1);expect(session.tokens.input).toBe(100);expect(session.stoppedOutput).toContain('**Ready**');}
+      for(const session of sessions){expect(session.prompts).toHaveLength(session.tool === 'codex' ? 2 : 1);expect(session.tokens.input).toBe(100);expect(session.stoppedOutput).toContain('**Ready**');}
+      expect(sessions.find((s: { tool: string }) => s.tool === 'codex').prompts.at(-1)).toBe(answer);
       const trends=await (await fetch(base+'/api/trends')).json();
       expect(trends.current.avgSessionCostMicros).toBe(800_000);
       expect(trends.current.avgRequestCostMicros).toBe(200_000);

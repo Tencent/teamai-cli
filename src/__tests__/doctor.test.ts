@@ -98,6 +98,7 @@ const mockLocalConfig = {
     repo: { localPath: '/tmp/repo', remote: 'https://git.woa.com/team/repo.git' },
     username: 'testuser',
     updatePolicy: 'auto',
+    scope: 'user',
 };
 
 const mockTeamConfig = {

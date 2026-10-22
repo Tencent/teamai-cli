@@ -8,8 +8,6 @@ import {
   SKILL_NAME_REGEX,
   type LocalConfig,
   type UsageEvent,
-  resolveToolBaseDir,
-  scopedToolPaths,
 } from './types.js';
 import { readJson, writeJson, writeFileAtomic, pathExists } from './utils/fs.js';
 import { appendJsonl, readJsonl, rewriteJsonl, type JsonlStoreOptions } from './utils/jsonl-store.js';
@@ -112,34 +110,30 @@ export type SkillRootsInput = {
 };
 
 /**
- * Every directory a skill can be installed in, resolved as skill delivery
- * resolves a tool's skills directory (`skillsDirForTool`): each tool of the
- * team's `toolPaths`, custom tools included, in user scope (under HOME with the
- * member's `toolRoots`, Copilot under its home) and in project scope, plus the
- * shared `.agents/skills` of both. With `tool`, keep only its configured roots
- * and native shared roots. The project is the scope's `projectRoot`,
- * else the hook's directory; the home `.github` belongs to no project.
+ * Every directory a skill can be installed in: where each tool of the team's
+ * `toolPaths`, custom tools included, takes skills (`locate`: its writes and
+ * the directories it reads) in user scope and in the project, whether or not
+ * it is selected or installed, plus the shared `.agents/skills` of both. With
+ * `tool`, keep only its roots and the shared ones. The project is the scope's
+ * `projectRoot`, else the hook's directory; the home `.github` belongs to no project.
  */
 export async function skillRoots({ config, toolRoots, hookCwd, tool: callingTool }: SkillRootsInput): Promise<string[]> {
-  const { SHARED_AGENT_SKILLS_PATH } = await import('./resources/skills.js');
+  const { installOf, locate, SHARED_AGENT_SKILLS_PATH, writesOf } = await import('./locate.js');
   const team = { toolPaths: (await loadTeamConfig(config.repo.localPath))?.toolPaths ?? DEFAULT_TOOL_PATHS };
   const home = getUserHome();
-  const userConfig: LocalConfig = { ...config, scope: 'user' };
   const roots = new Set([path.join(home, SHARED_AGENT_SKILLS_PATH)]);
-  for (const [tool, { skills }] of Object.entries(scopedToolPaths(team, { scope: 'user', toolRoots }))) {
-    if (skills && (callingTool === undefined || callingTool === tool)) roots.add(path.join(resolveToolBaseDir(tool, userConfig), skills));
-  }
+  const installs = [installOf(team, { ...config, scope: 'user', toolRoots })];
   const project = config.scope === 'project' && config.projectRoot ? config.projectRoot : hookCwd;
   if (project !== undefined && path.resolve(project) !== path.resolve(home)) {
     roots.add(path.join(project, SHARED_AGENT_SKILLS_PATH));
-    for (const [tool, { skills }] of Object.entries(team.toolPaths)) {
-      if (skills && (callingTool === undefined || callingTool === tool)) roots.add(path.join(project, skills));
-    }
+    installs.push(installOf(team, { ...config, scope: 'project', projectRoot: project, toolRoots }));
   }
-  if (callingTool === 'opencode' || callingTool === 'muse') {
-    roots.add(path.join(home, '.claude/skills'));
-    if (callingTool === 'opencode' && project !== undefined && path.resolve(project) !== path.resolve(home)) {
-      roots.add(path.join(project, '.claude/skills'));
+  for (const install of installs) {
+    for (const tool of Object.keys(team.toolPaths)) {
+      if (callingTool !== undefined && callingTool !== tool) continue;
+      const where = await locate(tool, 'skills', install);
+      for (const dir of writesOf(where)) roots.add(dir);
+      if (where.reads !== 'unknown') for (const read of where.reads) roots.add(read.path);
     }
   }
   return [...roots];

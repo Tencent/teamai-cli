@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +21,7 @@ vi.mock('../config.js', async (importOriginal) => {
 import { setStderrOnly } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { startRun } from '../workflow/engine.js';
+import { readRun } from '../workflow/store.js';
 import { workflowNext, workflowReport, workflowStart } from '../workflow-commands.js';
 
 const dirs: string[] = [];
@@ -72,6 +74,7 @@ async function capture(run: () => Promise<void>): Promise<{ data?: Record<string
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   state.config = undefined;
   setStderrOnly(false);
   process.exitCode = undefined;
@@ -127,6 +130,8 @@ describe('workflow json payloads', () => {
     ['running that is not an array', { running: 'a00000000' }, 'running must be an array of attempt ids'],
     ['running that holds a number', { running: [1] }, 'running must be an array of attempt ids'],
     ['canTakeLease that is not a boolean', { canTakeLease: 'false' }, 'canTakeLease must be a boolean'],
+    ['a base without a commit', { base: { ref: 'main' } }, 'base must include commit, and ref when it is set must not be empty'],
+    ['a base with an empty ref', { base: { ref: '', commit: 'c0ffee' } }, 'base must include commit, and ref when it is set must not be empty'],
   ])('rejects a next payload with %s', async (_case, fields, message) => {
     const { config, runId } = await startBuild();
     state.config = config;
@@ -181,5 +186,56 @@ steps:
     expect(await capture(() => workflowStart('fix', { inputs: '{issue: 42}' }))).toEqual({
       error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON' },
     });
+  });
+});
+
+describe('workflow start base', () => {
+  function checkout(): { repo: string; commit: string } {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-start-'));
+    dirs.push(repo);
+    const git = (...args: string[]): string => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
+    git('init', '-q', '--initial-branch=feature/start');
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'clean\n');
+    git('add', 'tracked.txt');
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'initial');
+    return { repo, commit: git('rev-parse', 'HEAD') };
+  }
+
+  async function startIn(repo: string): Promise<{ config: LocalConfig; runId: string }> {
+    const config = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'change.yaml'), `schemaVersion: v1alpha1
+name: change
+description: One workspace step.
+steps:
+  - id: edit
+    workspace: new
+    command: node edit.js
+`);
+    await syncWorkflowDefinitions(config);
+    state.config = config;
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+    const started = await capture(() => workflowStart('change', {}));
+    return { config, runId: String(started.data?.run) };
+  }
+
+  it('records the branch and commit the checkout was on, and a later base from another driver does not change them', async () => {
+    const { repo, commit } = checkout();
+    const { config, runId } = await startIn(repo);
+
+    const other = { kind: 'ide', machine: 'b', workspace: '/elsewhere', can: { workspace: ['read-only', 'new', 'continue'] } };
+    const leased = await capture(() => workflowNext(runId, { json: JSON.stringify({ driver: other, base: { commit: 'f'.repeat(40) } }) }));
+
+    expect(leased).toMatchObject({ data: { lease: { step: 'edit', workspace: { base: { ref: 'feature/start', commit } } } } });
+    const run = await readRun(config, runId);
+    expect(typeof run === 'object' ? run.base : run).toEqual({ ref: 'feature/start', commit });
+  });
+
+  it('records no ref when the checkout has a detached HEAD', async () => {
+    const { repo, commit } = checkout();
+    execFileSync('git', ['checkout', '-q', '--detach'], { cwd: repo });
+    const { config, runId } = await startIn(repo);
+
+    const run = await readRun(config, runId);
+    expect(typeof run === 'object' ? run.base : run).toEqual({ commit });
   });
 });

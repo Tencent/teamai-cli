@@ -1,16 +1,15 @@
 import path from 'node:path';
 import { lstat, realpath } from 'node:fs/promises';
 import YAML from 'yaml';
-import { isToolInstalledForConfig, ResourceHandler, type ScanForPushOptions } from './base.js';
+import { ResourceHandler, type ScanForPushOptions } from './base.js';
 import type { CopyOrigin, PendingPush, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
-import { getPushignorePath, isAgentExcluded, resolveBaseDir, resolveToolBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
+import { getPushignorePath, resolveBaseDir, resolveToolBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
 import { listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, dirTeamSubsetEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { debugOnce, warnOnce } from '../utils/warn-once.js';
 import { getFileContentWhenAdded, isPastVersionOf, resolveAnchors } from '../utils/git.js';
 import { isCliOwnedSkillName, ownedSkillFiles, prunedWhole, removeOwnedFiles, skillsGuardBase } from '../builtin-skills.js';
-import { resolveOpenclawWorkspaceDir } from '../openclaw-hooks.js';
-import { getHermesHome } from '../hermes-home.js';
+import { installOf, locate, SHARED_AGENT_SKILLS_PATH, writableDir, writesOf, type Install } from '../locate.js';
 import {
   loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError, type RolesManifest,
 } from '../roles.js';
@@ -31,7 +30,6 @@ import {
 const CONTRIBUTORS_FILE = 'CONTRIBUTORS';
 const SKILL_MD = 'SKILL.md';
 export const CODEX_TOOL = 'codex';
-export const SHARED_AGENT_SKILLS_PATH = '.agents/skills';
 
 /** Why delivery may not write a skill directory: the path itself, or a link on the way to it. */
 export type SkillDirectoryBlock =
@@ -135,15 +133,11 @@ export function codexSkillConflictLine(skillName: string, configuredSkillsPath: 
  * Codex reads: Muse Code in a project. Codex's copy then goes there too, so
  * the two share one copy instead of Codex seeing a second in `.codex/skills`.
  */
-async function sharedSkillsDelivered(
-  toolPaths: ReturnType<typeof scopedToolPaths>,
-  localConfig: LocalConfig,
-): Promise<boolean> {
-  const shared = path.resolve(resolveToolBaseDir(CODEX_TOOL, localConfig), SHARED_AGENT_SKILLS_PATH);
-  for (const [tool, toolPath] of Object.entries(toolPaths)) {
-    if (tool === CODEX_TOOL || isAgentExcluded(localConfig, tool)) continue;
-    const dir = await skillsDirForTool(tool, toolPath.skills, localConfig);
-    if (dir !== null && path.resolve(dir) === shared) return true;
+async function sharedSkillsDelivered(install: Install, sharedDir: string): Promise<boolean> {
+  for (const tool of Object.keys(install.toolPaths)) {
+    if (tool === CODEX_TOOL) continue;
+    const dir = writableDir(await locate(tool, 'skills', install));
+    if (dir !== null && path.resolve(dir) === path.resolve(sharedDir)) return true;
   }
   return false;
 }
@@ -195,51 +189,6 @@ export async function resolveSkillDestination(
   return configuredDestination;
 }
 
-/**
- * The directory `tool` receives skills into on this machine, or null when it
- * cannot receive them: no skills path configured, or the tool is not installed.
- *
- * This is the gate on its own, asked without inventing a skill name. OpenClaw
- * resolves through its workspace directory, Hermes through its home, Copilot
- * counts itself installed once `enabledAgents` names it, and everything else
- * falls back to the tool root. A second spelling of these gates is exactly how
- * "Synced N skills" ends up true while a tool receives nothing (#598).
- */
-export async function skillsDirForTool(
-  tool: string,
-  configuredSkillsPath: string | undefined,
-  localConfig: LocalConfig,
-): Promise<string | null> {
-  if (!configuredSkillsPath) return null;
-
-  if (tool === 'openclaw') {
-    const wsDir = await resolveOpenclawWorkspaceDir();
-    if (!wsDir) {
-      debugOnce('Skipping skill sync for openclaw: workspace dir not found');
-      return null;
-    }
-    return path.join(wsDir, 'skills');
-  }
-
-  if (tool === 'hermes') {
-    // Like every other tool, skip when not installed: getHermesHome() always
-    // resolves (HERMES_HOME or ~/.hermes), so without this check every pull
-    // creates a hermes home the user never asked for.
-    if (!await pathExists(getHermesHome())) {
-      debugOnce(`Skipping skill sync for ${tool}: tool not installed`);
-      return null;
-    }
-    return path.join(getHermesHome(), 'skills');
-  }
-
-  if (!await isToolInstalledForConfig(tool, configuredSkillsPath, localConfig)) {
-    debugOnce(`Skipping skill sync for ${tool} in ${localConfig.scope} scope: tool not installed`);
-    return null;
-  }
-
-  return path.join(resolveToolBaseDir(tool, localConfig), configuredSkillsPath);
-}
-
 /** One skill to place: see `skillTargetsFor`. */
 export interface SkillTargetRequest {
   tool: string;
@@ -255,36 +204,40 @@ export interface SkillTargetRequest {
 }
 
 /**
- * Where a skill lands for a tool of `toolPaths` on this machine, or null when
- * the tool cannot receive it, for one run over those tools.
+ * Where a skill lands for a tool of the team's `toolPaths` on this machine, or
+ * null when the tool cannot receive it (`locate`'s gates), for one run over
+ * those tools.
  *
  * One place answers that question, so `pull` writes and `doctor` checks the very
  * same paths (#598). A second copy of these gates is how "Synced 12 skills"
  * ends up true for one tool and silently false for another.
  */
 export function skillTargetsFor(
-  toolPaths: ReturnType<typeof scopedToolPaths>,
+  teamConfig: Pick<TeamaiConfig, 'toolPaths'>,
   localConfig: LocalConfig,
 ): (request: SkillTargetRequest) => Promise<string | null> {
+  const install = installOf(teamConfig, localConfig);
+  const toolPaths = scopedToolPaths(teamConfig, localConfig);
   // Asked once per run, and only once a Codex skill needs it.
   let sharedDelivered: Promise<boolean> | undefined;
   return async ({ tool, skillName, ownsShared, sourcePath }) => {
+    const where = await locate(tool, 'skills', install);
+    const skillsDir = writableDir(where);
     const configuredSkillsPath = toolPaths[tool]?.skills;
-    const skillsDir = await skillsDirForTool(tool, configuredSkillsPath, localConfig);
     if (skillsDir === null || configuredSkillsPath === undefined) return null;
-    if (tool !== CODEX_TOOL) return path.join(skillsDir, skillName);
+    const sharedDir = where.shared;
+    if (tool !== CODEX_TOOL || sharedDir === null) return path.join(skillsDir, skillName);
 
     // Codex alone can redirect a skill to the shared `.agents/skills`
     // directory: for a skill whose copy there is teamai's, or for any skill
     // while another tool delivers there — so the destination is per-skill and
     // the gate above cannot answer it.
-    const baseDir = resolveToolBaseDir(tool, localConfig);
-    const sharedDestination = path.join(baseDir, SHARED_AGENT_SKILLS_PATH, skillName);
-    sharedDelivered ??= sharedSkillsDelivered(toolPaths, localConfig);
+    const sharedDestination = path.join(sharedDir, skillName);
+    sharedDelivered ??= sharedSkillsDelivered(install, sharedDir);
     if (await sharedDelivered && !await pathExists(sharedDestination) && await ownsShared(sharedDestination)) {
       // Codex's earlier copy in its own directory goes once the team history
       // proves it teamai's, so the move does not leave Codex a second version.
-      const configuredDestination = path.join(baseDir, configuredSkillsPath, skillName);
+      const configuredDestination = path.join(skillsDir, skillName);
       if (sourcePath && await pathExists(configuredDestination)) {
         if (await judgeRemoval(undefined, configuredDestination, skillOrigin(localConfig.repo.localPath, skillName)) !== 'remove') {
           log.warn(`Codex skill conflict for ${skillName}: keeping different copies in ${SHARED_AGENT_SKILLS_PATH} and ${configuredSkillsPath}`);
@@ -295,7 +248,8 @@ export function skillTargetsFor(
       }
       return sharedDestination;
     }
-    return resolveSkillDestination(tool, configuredSkillsPath, baseDir, skillName, ownsShared, sourcePath);
+    // Codex's directories are `locate`'s writes: it has no home moves, so they hang off the scope's base.
+    return resolveSkillDestination(tool, configuredSkillsPath, resolveBaseDir(localConfig), skillName, ownsShared, sourcePath);
   };
 }
 
@@ -1016,10 +970,10 @@ export class SkillsHandler extends ResourceHandler {
       deliveryRecorded?: true; originProven?: true; originCandidates?: readonly { dir: string }[];
     }>();
     // Scan each tool's skills directory
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (!toolPath.skills) continue;
-      const skillsDir = path.join(resolveToolBaseDir(tool, localConfig), toolPath.skills);
-      if (!await pathExists(skillsDir)) continue;
+    const install = installOf(teamConfig, localConfig);
+    for (const tool of Object.keys(install.toolPaths)) {
+      const skillsDir = (await locate(tool, 'skills', install)).own;
+      if (skillsDir === null || !await pathExists(skillsDir)) continue;
 
       // Use recursive scanning to find all skills at any depth
       const localSkills = await scanSkillsRecursively(skillsDir);
@@ -1282,25 +1236,28 @@ export class SkillsHandler extends ResourceHandler {
     localConfig: LocalConfig,
     item: ResourceItem,
     sourcePath?: string,
-    previous?: DeliveredHashes,
+    ledger?: DeliveryLedger,
   ): Promise<DeliveryTarget[]> {
     const origin = skillOrigin(localConfig.repo.localPath, item.name);
     const targets: DeliveryTarget[] = [];
-    const toolPaths = scopedToolPaths(teamConfig, localConfig);
-    const skillTarget = skillTargetsFor(toolPaths, localConfig);
-    for (const tool of Object.keys(toolPaths)) {
-      if (isAgentExcluded(localConfig, tool)) continue;
-
-      const skillsDir = await skillsDirForTool(tool, toolPaths[tool].skills, localConfig);
-      if (!skillsDir) continue;
+    const install = installOf(teamConfig, localConfig);
+    const skillTarget = skillTargetsFor(teamConfig, localConfig);
+    for (const tool of Object.keys(install.toolPaths)) {
+      const where = await locate(tool, 'skills', install);
+      const skillsDir = writableDir(where);
+      if (skillsDir === null) {
+        if (where.own !== null) debugOnce(`Skipping skill sync for ${tool} in ${localConfig.scope} scope: excluded or not installed`);
+        continue;
+      }
       const guard = await skillsGuardBase(resolveBaseDir(localConfig), skillsDir);
       const block = await findSkillDirectoryBlock(guard, path.join(skillsDir, item.name), { keepSkillLink: true });
       if (block) {
         warnOnce(describeSkippedSkillDirectory(item.name, tool, block));
+        ledger?.toolsMissingSkills.add(tool);
         continue;
       }
       const ownsShared = async (dest: string): Promise<boolean> =>
-        await allowsSkillDirectory(guard, dest) && (await judgeCopy(previous, item, { tool, dest, origin })).kind !== 'member';
+        await allowsSkillDirectory(guard, dest) && (await judgeCopy(ledger?.previous, item, { tool, dest, origin })).kind !== 'member';
       const dest = await skillTarget({ tool, skillName: item.name, ownsShared, sourcePath });
       if (dest) targets.push({ tool, dest, origin });
     }
@@ -1320,10 +1277,13 @@ export class SkillsHandler extends ResourceHandler {
    */
   async pullItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig, ledger?: DeliveryLedger): Promise<void> {
     const otherVersions = await otherVersionFiles(localConfig.repo.localPath, item);
-    for (const target of await this.resolveTargets(teamConfig, localConfig, item, item.sourcePath, ledger?.previous)) {
+    for (const target of await this.resolveTargets(teamConfig, localConfig, item, item.sourcePath, ledger)) {
       const { tool, dest } = target;
       try {
-        if (ledger && await keepsEditedCopy(ledger, item, target)) continue;
+        if (ledger && await keepsEditedCopy(ledger, item, target)) {
+          ledger.toolsMissingSkills.add(tool);
+          continue;
+        }
         // With no ledger (the local agent's install), nothing else judges a link of the member's there (#993).
         const membersLink = ledger ? null : await membersLinkAt(dest);
         if (membersLink !== null) {
@@ -1332,6 +1292,7 @@ export class SkillsHandler extends ResourceHandler {
         }
         // An entry of the member's of the other type blocks only the files under it (#993): the rest is delivered.
         const blocked = await blockingEntries(dest, item.sourcePath);
+        if (blocked.length > 0) ledger?.toolsMissingSkills.add(tool);
         for (const rel of blocked) {
           const entry = path.join(dest, ...rel.split('/'));
           if (ledger) ledger.members.push({ dest: entry, teamRelPath: `${item.relativePath}/${rel}` });
@@ -1348,6 +1309,7 @@ export class SkillsHandler extends ResourceHandler {
         ledger?.recorder?.failed('skills');
         log.warn(`Failed to sync skill ${item.name} to ${tool}: ${(e as Error).message}`);
         ledger?.failed.push({ name: item.name, tool });
+        ledger?.toolsMissingSkills.add(tool);
       }
     }
   }
@@ -1374,26 +1336,14 @@ export class SkillsHandler extends ResourceHandler {
     const previous = await (await import('../pull.js')).deliveredHashes(localConfig);
     const origin = skillOrigin(localConfig.repo.localPath, name);
     const owned: { tool: string; skillDir: string; files?: string[]; packagedBase?: string }[] = [];
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (!toolPath.skills) continue;
-      // Not ours to write to, so not ours to delete from. Above the OpenClaw
-      // branch, so the workspace copy is covered by the same gate.
-      if (isAgentExcluded(localConfig, tool)) continue;
-      const skillDirs: string[] = [];
-      let toolBase: string;
-      if (tool === 'openclaw') {
-        const wsDir = await resolveOpenclawWorkspaceDir();
-        if (!wsDir) continue;
-        toolBase = wsDir;
-        skillDirs.push(path.join(wsDir, 'skills', name));
-      } else {
-        const baseDir = resolveToolBaseDir(tool, localConfig);
-        toolBase = baseDir;
-        skillDirs.push(path.join(baseDir, toolPath.skills, name));
-        // Codex also reads, and pull may deliver into, the shared directory.
-        if (tool === CODEX_TOOL) skillDirs.push(path.join(baseDir, SHARED_AGENT_SKILLS_PATH, name));
-      }
-      for (const skillDir of skillDirs) {
+    const install = installOf(teamConfig, localConfig);
+    for (const tool of Object.keys(install.toolPaths)) {
+      const where = await locate(tool, 'skills', install);
+      // Not ours to write to, so not ours to delete from.
+      if (where.gates.some((gate) => gate.kind === 'selected' && !gate.met)) continue;
+      for (const skillsDir of writesOf(where)) {
+        const skillDir = path.join(skillsDir, name);
+        const toolBase = await skillsGuardBase(resolveBaseDir(localConfig), skillsDir);
         if (!await pathExists(skillDir)) continue;
         if (!await mayDeleteSkillCopy(localConfig, skillDir)) continue;
         // A link is the member's even at a built-in's name, so it is judged before the name.

@@ -1108,6 +1108,15 @@ const ROWS: Row[] = [
     project: {},
   },
   {
+    name: '05: Claude recall; pwd; cat <doc> (a read that ends a command list, status success) → +1',
+    trace: async (h) => {
+      const { files } = await h.recall('redis timeout');
+      await h.shell(`pwd; cat '${files[0]}'`, '/w\n---');
+      await h.stop();
+    },
+    project: { 'redis-timeout': 1 },
+  },
+  {
     name: '05: Claude recall; sed -i \'s/pool/POOL/\' <doc> → 0',
     trace: async (h) => {
       const { files } = await h.recall('redis timeout');

@@ -12,7 +12,8 @@ import YAML from 'yaml';
 import { reconcileHooks } from './hooks.js';
 import type { BuiltinHookOverride } from './builtin-hooks.js';
 import { isAgentExcluded, type HookDef, type LocalConfig } from './types.js';
-import { expandHome, getUserHome } from './utils/home.js';
+import { getUserHome } from './utils/home.js';
+import { toolHome } from './tool-home.js';
 import { pathExists, readFileSafe, remove, writeIfChanged } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -22,12 +23,11 @@ export const DSH_HOOK_PLUGIN_ID = 'teamai-hooks-claude-code';
 export const DSH_HOOK_PLUGIN_PACKAGE = '@deepseek-ai/dsh-hooks-claude-code';
 
 /**
- * DeepSeek Harness's own home, where it reads the user `AGENTS.md`:
- * `DSH_HOME`, else `~/.dsh` (dsh `config.ts` `dshHome`).
+ * DeepSeek Harness's own home, where it reads the user `AGENTS.md`: the
+ * recorded one (`toolHome`), else `DSH_HOME`, else `~/.dsh` (dsh `config.ts` `dshHome`).
  */
 export function resolveDshHome(): string {
-  const configured = process.env.DSH_HOME?.trim();
-  return configured ? path.resolve(expandHome(configured)) : path.join(getUserHome(), '.dsh');
+  return toolHome('dsh');
 }
 
 /**

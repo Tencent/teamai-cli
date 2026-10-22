@@ -24,6 +24,8 @@ steps:
 
 `schemaVersion` 必须是 `v1alpha1`。`name` 必须和文件名一致。`description` 必填。每个步骤有唯一的 `id`，并且只能使用 `command`、`prompt`、`prompt_file`、`workflow` 中的一种动作。带有 `end`、`approve` 或 `choose` 的步骤可以省略动作。提示词步骤可选填 `agent`。`output` 沿用已有简写：`string`、`number`、`boolean`、字面量联合、对象，或只含一种元素类型的数组。TeamAI 会用它校验成功命令的 stdout 或提示词工具返回的 `output`。
 
+本地命令步骤以 UTF-8 读取 stdout 和 stderr。JSON 字符串中的非 ASCII 文本会原样保存到输出中，后续步骤读取时也保持原文。
+
 提示词步骤可以设置 `model`：`models/aliases.yaml` 中的别名或模型名，不能含空格或模板。文件顶层的 `defaults: { model: fast }` 为其中的提示词步骤设置模型。提示词步骤使用以下第一个已设置的模型：
 
 1. 步骤的 `model`；
@@ -49,6 +51,30 @@ steps:
 除非到达某个结局，运行结果仍是 `failed`。`if` 无法解析、读取了未依赖的步骤，或读取了该步骤 `output` 中没有的字段，都会让该文件无效。`if` 恒为假也会让文件无效，此时即使之前有有效版本，该工作流也没有可运行版本。
 
 `teamai pull` 和 `teamai push` 会检查每个文件，并按被运行工作流的可运行版本检查运行它的步骤。`prompt_file` 必须是团队仓库 `prompts/` 下的普通文件，不能是符号链接。校验时会把文件内容和工作流一起缓存，因此已经开始的运行会继续使用对应修订版，即使源文件后来被修改或删除。新修订版无效时，仍保留上一份有效缓存，前提是这份缓存仍与它运行的工作流相符。这一版 teamai 不认识的字段除外：该工作流没有可运行版本，需要先更新 teamai。
+
+`teamai review --branch <name>` 用同样的规则检查该分支。任一工作流文件无效时退出码为 1，不写入任何文件，也不运行工作流。下面这个文件过不了检查：
+
+```yaml
+schemaVersion: v1alpha1
+name: deploy
+description: Ship the release candidate.
+steps:
+  - id: release
+    needs: [biuld]
+    command: echo release
+```
+
+```text
+teamai review --branch feature/deploy
+[review] branch feature/deploy: 1 fail, 0 warn, 0 info
+  ✖ [workflows] workflows/deploy.yaml:6: field "steps[0].needs": step "release" needs "biuld", which is not a step in this workflow
+```
+
+CI 里用一步拦住这个分支：
+
+```yaml
+- run: teamai review --branch feature/deploy
+```
 
 工作流可以声明具名的 `ends`，每个结局是 `succeeded` 或 `failed`，例如 `ends: { dropped: succeeded, stuck: failed }`。带 `end: <name>` 的步骤成功后，工作流以该结局结束。只有 `id`、`needs`、`if` 和 `end` 的步骤不运行任何内容：它的依赖完成时就结束工作流。到达结局后，所有尚未运行的步骤都会被跳过，运行结果取该结局声明的结果，即使有其他步骤失败。此时 `done` 会带上结局：`{"done":{"run":"<run>","outcome":"succeeded","end":"dropped"}}`。`end` 不在 `ends` 中、有 `end` 但没有 `ends`、声明的结局没有步骤使用，或某个步骤依赖只用于结束工作流的步骤，都会让该文件无效。
 
@@ -121,7 +147,7 @@ workflows:
 teamai workflow start build --driver local
 ```
 
-`--driver local` 在当前检出目录里运行没有 `workspace` 的步骤。这里的命令是只读的：退出码为 0，且改了仓库文件、文件权限、符号链接目标、已暂存重命名的新路径、已脏子模块里的文件、暂存区或 HEAD 时，步骤失败，改动留在原地。已有未跟踪目录里的文件变化也算；该目录保持不变时，步骤不会因此失败。`workspace: new` 的步骤在自己的分支上改文件。见[工作区](#工作区)。共用当前检出目录的步骤一次只运行一个。不同工作树里的步骤可以一起运行，上限是 [`workflows.max_parallel`](workflow-advanced.md#并行运行本地命令)。每次 attempt 的 `result.json` 位于当前 scope 的 TeamAI 数据目录中，不在产品检出目录内。驱动调用的 `next` 和 `report` 与下面相同：
+`--driver local` 在当前检出目录里运行没有 `workspace` 的步骤，除非外层步骤打开了工作区。这里的命令是只读的：退出码为 0，且改了仓库文件、文件权限、符号链接目标、已暂存重命名的新路径、已脏子模块里的文件、暂存区或 HEAD 时，步骤失败，改动留在原地。已有未跟踪目录里的文件变化也算；该目录保持不变时，步骤不会因此失败。`workspace: new` 的步骤在自己的分支上改文件。见[工作区](#工作区)。共用当前检出目录的步骤一次只运行一个。不同工作树里的步骤可以一起运行，上限是 [`workflows.max_parallel`](workflow-advanced.md#并行运行本地命令)。每次 attempt 的 `result.json` 位于当前 scope 的 TeamAI 数据目录中，不在产品检出目录内。驱动调用的 `next` 和 `report` 与下面相同：
 
 ```text
 teamai workflow start build
@@ -129,7 +155,7 @@ teamai workflow next <run> --json '{"driver":{"kind":"local","machine":"host","w
 teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcome":"success","driver":{"kind":"local","machine":"host","workspace":"/work"}}'
 ```
 
-`outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next`、`report` 和 `respond --json` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
+`outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。`changes` 的 `branch` 或 `base` 与租约不符时返回 `invalid_report`，步骤仍处于租约中。工作区里的只读步骤上报 `read`（`branch`、`base` 和它读取的 `commit`），而不是 `changes`。它上报 `changes`、成功时没有 `read`、其他步骤上报 `read`，或 `read` 与租约不符时，同样返回 `invalid_report`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next`、`report` 和 `respond --json` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
 
 运行状态保存在当前 scope 的 TeamAI 数据目录里。命令结束后进程就退出。本地运行以 `failed` 或 `cancelled` 结束时，退出码是 1。不会留下常驻的工作流进程。
 
@@ -137,13 +163,15 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 ## 工作区
 
-没有 `workspace` 的命令是只读的，即使它位于父步骤打开的工作区里。它在当前检出目录中运行。退出码为 0，且改了仓库文件、文件权限、符号链接目标、已暂存重命名的新路径、已脏子模块里的文件、暂存区或 HEAD 时，步骤以 `read_only_dirty` 失败，改动留在原地。没有 `workspace` 的无头提示词也一样，除非外层工作流或 `for_each` 打开了工作区。交互提示词会保留人的修改，除非该提示词设置了 `workspace: read-only`。
+没有 `workspace` 的命令是只读的。在工作区之外，它在当前检出目录中运行。退出码为 0，且改了仓库文件、文件权限、符号链接目标、已暂存重命名的新路径、已脏子模块里的文件、暂存区或 HEAD 时，步骤以 `read_only_dirty` 失败，改动留在原地。没有 `workspace` 的无头提示词也一样，除非外层工作流或 `for_each` 打开了工作区。交互提示词会保留人的修改，除非该提示词设置了 `workspace: read-only`。即使 `submodule.<name>.ignore` 或 `diff.ignoreSubmodules` 让 `git status` 不显示子模块的改动，这些改动也算数：只读步骤做了这类改动会失败，写入的步骤会提交子模块的新提交。
 
-`workspace: new` 在独立的 git worktree 里运行该步骤，分支名带有这次运行、步骤和 pass。步骤会提交它改过的文件。当前检出目录不会被切换、重置或清理。在 `needs` 里列出它的后续步骤，从这些分支的第一个开始，再按 `needs` 的顺序合并其余分支。合并冲突会停在第一处。命令步骤以 `merge_conflict` 失败，消息里写明分支和文件。提示词步骤会被告知哪些文件仍有冲突、哪些分支还没合并。
+在外层步骤打开的工作区里，只读步骤在该工作区中运行，因此测试能看到它所跟随的改动。它读取 `needs` 改动过的分支；`needs` 没有改动任何分支时，读取外层分支。`needs` 改动了不止一个分支时，它以 `workspace_base` 失败：添加一个合并这些分支的步骤，并依赖该步骤。它与该工作区的其他步骤一次只运行一个，使用同样的基准 agent 文件，只有声明了 `continue` 且拥有该工作区的驱动才会领取它。它不提交任何内容。结束后，驱动把工作区恢复成步骤开始时的样子：步骤改动了工作区或离开了它的分支时，改动先保存在 `refs/teamai/kept/<attempt>`，它在子模块里做的提交保存在 `refs/teamai/kept-modules/<attempt>/` 下。然后 worktree 和步骤改动过的子模块重置到它读取的提交，并删除未跟踪文件；退出码为 0 时仍以 `read_only_dirty` 失败。被忽略的文件留在原地。步骤改动过的子模块里有未提交或未跟踪的文件时无法保存，这时什么都不重置。工作区没有恢复时，步骤以 `workspace_base` 失败。步骤开始时工作区就会被标记，所以即使驱动在步骤运行时被杀掉，之后在该工作区的步骤也都会失败，直到你把它放回它的分支、停在那个提交、恢复成步骤开始时的样子，再运行 `teamai workflow retry <run> <step>`。如果步骤开始时工作区已有改动，还要删除失败信息中给出的标记文件。该 pass 记录 `read`：分支、基准和它读取的提交。工作区是新的 worktree，没有 `node_modules` 这类被忽略的文件，所以测试要自己安装依赖，例如 `npm ci && npm test`，除非团队的 [`postDeploy`](distribution.md#团队脚本) 已经安装。
+
+`workspace: new` 在独立的 git worktree 里运行该步骤，分支名带有这次运行、步骤和 pass。步骤会提交它改过的文件。步骤离开了该分支（例如用 `git switch`）时，以 `workspace_base` 失败：不提交也不推送任何内容，worktree 保持步骤离开时的样子。当前检出目录不会被切换、重置或清理。在 `needs` 里列出它的后续步骤，从这些分支的第一个开始，再按 `needs` 的顺序合并其余分支。合并冲突会停在第一处。命令步骤以 `merge_conflict` 失败，消息里写明分支和文件。提示词步骤会被告知哪些文件仍有冲突、哪些分支还没合并。
 
 `workspace: continue` 留在外层 `workflow` 步骤用 `new` 打开的那条分支上。没有 `workspace` 的提示词会沿用这份副本。带 `workspace: new` 的 `for_each` 给每一项自己的分支，因此各项不共用一个 worktree。`steps.<id>.branches` 列出这些分支；某一项有分支时，对应的 `results` 条目带 `branch`。带 `after` 的项从它等待的那些分支开始。顶层的 `workspace: continue` 没有外层 `new` 时，步骤以 `workspace_base` 失败。
 
-步骤看到的是运行开始时那个提交上的 agent 文件：`AGENTS.md`、`CLAUDE.md`、`.claude`、`.codex`、`.opencode`、`.cursor`、`.agents` 和 `.githooks`。前一个步骤提交的 hook 不会在后面的步骤里运行。团队的 skills、rules、agents 和 MCP 随后会交付到这个 worktree，和这个检出目录的其他新 worktree 一样。这些交付的文件不属于该步骤的提交。步骤自己改过的文件会被提交。
+步骤看到的是运行开始时那个提交上的 agent 文件：`AGENTS.md`、`CLAUDE.md`、`.agents`、`.githooks`，每个工具的项目目录（如 `.claude` 或 `.tclaude`），项目级 MCP 文件 `.mcp.json` 和 `opencode.json`，以及 Copilot 在 `.github` 下的 agent 路径。前一个步骤提交的 hook 不会在后面的步骤里运行。团队的 skills、rules、agents 和 MCP 随后会交付到这个 worktree，和这个检出目录的其他新 worktree 一样。这些交付的文件不属于该步骤的提交。步骤自己改过的文件会被提交。
 
 检出目录有 `origin`，并且这一步产生了提交时，驱动会推送该分支。后一次尝试即使没有新提交，只要这个分支上有 `origin` 还没有的提交，仍会再推一次。这包括第一次推送根本没成功，以及 `origin` 上还没有任何分支。推送失败时步骤以 `push_failed` 失败，并保留 worktree。没有 `origin`，或 `origin` 已经有这个提交时，运行仍然成功，并报告该分支。
 

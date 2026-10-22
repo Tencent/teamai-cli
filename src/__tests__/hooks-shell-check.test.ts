@@ -97,6 +97,7 @@ describe('injectHooksToAllTools — no-shell skip (posix)', () => {
   });
 
   afterEach(async () => {
+    _resetShellCache();
     platformSpy.mockRestore();
     await fse.remove(tmp);
   });
@@ -142,6 +143,7 @@ describe('injectHooksToAllTools — workbuddy bundled PortableGit sh (win32)', (
   });
 
   afterEach(async () => {
+    _resetShellCache();
     platformSpy.mockRestore();
     await fse.remove(tmp);
   });
@@ -196,6 +198,7 @@ describe('injectHooksToAllTools — codebuddy runs hooks through Git Bash (win32
   });
 
   afterEach(async () => {
+    _resetShellCache();
     platformSpy.mockRestore();
     for (const key of winEnvKeys) {
       if (savedEnv[key] === undefined) delete process.env[key];
@@ -210,7 +213,7 @@ describe('injectHooksToAllTools — codebuddy runs hooks through Git Bash (win32
     const claudeCommand = getDispatchCommand('session-start', 'claude');
     const codexCommand = getDispatchCommand('session-start', 'codex');
 
-    expect(claudeCommand.startsWith(`"${fakeGitBash(tmp).split(path.sep).join('/')}" -lc `)).toBe(true);
+    expect(claudeCommand).toBe(`"${fakeGitBash(tmp).split(path.sep).join('/')}" -lc "teamai hook-dispatch session-start --tool claude 2>/dev/null" || true`);
     expect(codexCommand).toBe('bash -lc "teamai hook-dispatch session-start --tool codex 2>/dev/null" || true');
   });
 

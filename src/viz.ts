@@ -341,7 +341,8 @@ async function loadEntries(paths: VizPaths): Promise<SearchIndexEntry[]> {
         rulesDir: path.join(paths.knowledgeRoot, 'rules'),
         skillsDir: path.join(paths.knowledgeRoot, 'skills'),
         ...delivered,
-        votesDir: paths.votesDir,
+        votesDir: paths.scope ? undefined : paths.votesDir,
+        voteScope: paths.scope,
         indexPath: tmpIndexPath,
       });
       index = await loadIndex(tmpIndexPath);

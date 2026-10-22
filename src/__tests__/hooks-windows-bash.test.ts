@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -73,6 +73,8 @@ describe('findGitBashWindows', () => {
 });
 
 describe('getDispatchCommand shell resolution', () => {
+  beforeEach(() => _resetShellCache());
+
   afterEach(() => {
     _resetShellCache();
     vi.unstubAllEnvs();

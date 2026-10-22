@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import YAML from 'yaml';
 
-import type { UserVotes, UserVotesV2, VoteEntryV2 } from './types.js';
+import type { LocalConfig, UserVotes, UserVotesV2, VoteEntryV2 } from './types.js';
 import { readFileSafe, writeFileAtomic, ensureDir, expandHome } from './utils/fs.js';
 import { log } from './utils/logger.js';
 
@@ -204,7 +204,9 @@ function parseUserVotesContent(content: string): { data: UserVotesV2; migrated: 
 
   if (obj['version'] === 2) {
     const v2 = obj as unknown as UserVotesV2;
-    if (!v2.deltas) v2.deltas = {};
+    // Older stages serialized deltas and pendingSync.deltas as YAML aliases.
+    // Detach live counters before a writer increments them, preserving the receipt.
+    v2.deltas = structuredClone(v2.deltas ?? {});
     return { data: v2, migrated: false };
   }
 
@@ -535,6 +537,68 @@ function deliveredSyncIdsOf(remote: UserVotesV2): string[] {
   return raw.filter((id): id is string => typeof id === 'string');
 }
 
+/** Confirmed team votes plus this scope's undelivered deltas, for index builds.
+ * Never reads staged worktree counts or changes delivery/cleanup state. */
+export async function readIndexVoteFiles(config: LocalConfig): Promise<Array<{ path: string; content: string }>> {
+  const { getVotesDir, REPORTS_BRANCH } = await import('./types.js');
+  const localPath = path.join(getVotesDir(config), `${config.username}.yaml`);
+  const { acquireLock, releaseLock } = await import('./update.js');
+  const { pathExists } = await import('./utils/fs.js');
+  const { createGit } = await import('./utils/git.js');
+  const votesDir = config.repo.kind === 'http' ? undefined
+    : await (await import('./utils/reports-branch.js')).indexableVotesDir(config);
+  const git = votesDir && await pathExists(path.dirname(votesDir)) ? createGit(path.dirname(votesDir)) : undefined;
+  let local: UserVotesV2 | undefined;
+  let ref: string | undefined;
+  // Capture local deltas and the confirmed ref together. Blob reads below use
+  // this immutable commit, without holding the writer's lock for every member.
+  const held = await pathExists(localPath) && await acquireLock(`${localPath}.lock`);
+  try {
+    ref = await git?.revparse(['--verify', `refs/remotes/origin/${REPORTS_BRANCH}^{commit}`]).then(r => r.trim()).catch(() => undefined);
+    if (held) local = await readUserVotes(localPath);
+  } finally {
+    if (held) await releaseLock(`${localPath}.lock`);
+  }
+  const files = new Map<string, { path: string; content: string }>();
+  if (git && ref && votesDir) {
+    const names = await git.raw(['ls-tree', '-r', '--name-only', '-z', ref, '--', 'votes/']);
+    for (const name of names.split('\0')) {
+      if (/^votes\/[^/]+\.ya?ml$/.test(name)) {
+        files.set(path.basename(name), { path: path.join(path.dirname(votesDir), name), content: await git.raw(['show', `${ref}:${name}`]) });
+      }
+    }
+  }
+  if (local) {
+    const filename = `${config.username}.yaml`;
+    const source = files.get(filename);
+    const base = readUserVotesFromContent(source?.content ?? '');
+    const pending = readPendingSync(local);
+    const deltas = pending && deliveredSyncIdsOf(base).includes(pending.syncId)
+      ? remainingDeltasAfter(local.deltas, pending.deltas) : local.deltas;
+    if (Object.keys(deltas).length > 0) {
+      const merged = mergeDeltas({ ...local, deltas }, base);
+      // Indexing must not migrate unrelated v1 entries from their legacy score
+      // of 1 to the v2 recall weight of 0.3. Delivery migration stays unchanged.
+      const parsed = parseUserVotesContent(source?.content ?? '');
+      if (parsed?.migrated && source) {
+        const legacy = YAML.parse(source.content) as UserVotes;
+        for (const id of Object.keys(deltas)) delete legacy.votes[id];
+        for (const id of Object.keys(merged.votes)) {
+          if (!(id in deltas)) delete merged.votes[id];
+        }
+        files.set(filename, { ...source, content: YAML.stringify(legacy) });
+        files.set(`${filename}:local`, { path: localPath, content: YAML.stringify(merged) });
+      } else if (source && !parsed) {
+        // Keep the corrupt source so aggregation reports its filename.
+        files.set(`${filename}:local`, { path: localPath, content: YAML.stringify(merged) });
+      } else {
+        files.set(filename, { path: source?.path ?? localPath, content: YAML.stringify(merged) });
+      }
+    }
+  }
+  return [...files.values()];
+}
+
 /**
  * Merge local vote deltas into the reports worktree WITHOUT clearing them
  * locally. The push follows after the write callback returns, and the deltas
@@ -610,10 +674,12 @@ export async function stageVotesMerge(
       deliveredSyncIds: [...deliveredSyncIdsOf(base), syncId].slice(-MAX_DELIVERED_SYNC_IDS),
     };
     await saveUserVotes(remoteVotePath, merged);
+    // Keep the historical snapshot independent: YAML aliases would otherwise
+    // let a later increment mutate both live deltas and pendingSync.deltas.
     // Persist the delivery record in the same locked write-path, before the
     // push runs: whatever happens to the process afterwards, the next stage can
     // tell a landed push from a failed one.
-    await saveUserVotes(localVotePath, withPendingSync(local, { syncId, deltas: syncedDeltas }));
+    await saveUserVotes(localVotePath, withPendingSync(local, { syncId, deltas: structuredClone(syncedDeltas) }));
     return { syncedDeltas } satisfies StagedVotes;
   });
 

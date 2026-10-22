@@ -83,6 +83,7 @@ vi.mock('../roles.js', async () => ({
 vi.mock('../update.js', () => ({
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
+  withFileLock: async <T>(_lock: string, _wait: unknown, body: () => Promise<T>) => ({ held: true, value: await body() }),
 }));
 
 // The real deploy by default; a test makes it fail once to see what pull reports.
@@ -91,7 +92,7 @@ vi.mock('../builtin-skills.js', async (importOriginal) => {
   return { ...actual, deployBuiltinSkills: vi.fn(actual.deployBuiltinSkills) };
 });
 
-import { pull, compileRecallRulesBlock, cleanupInactiveNamespaceSkills } from '../pull.js';
+import { pull, checkoutKey, compileRecallRulesBlock, cleanupInactiveNamespaceSkills } from '../pull.js';
 import { loadLocalConfigForScope, loadTeamConfig, detectProjectConfig, loadStateForScope, saveStateForScope } from '../config.js';
 import { getHeadRev, createGit, pullRepo } from '../utils/git.js';
 import { log } from '../utils/logger.js';
@@ -172,6 +173,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
       lastPull: '2026-04-01',
       lastPullRev: 'abc1234',
       lastPullTargets: ['claude'],
+      ...await homeRecord(homeDir, ['claude'], { claude: [path.join(homeDir, '.claude', 'skills')] }),
       lastPush: null,
       pushedRules: [],
       pushedSkills: [],
@@ -214,6 +216,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
       lastPullRev: 'abc1234',
       lastPullTargets: ['claude'],
+      ...await homeRecord(homeDir, ['claude'], { claude: [path.join(homeDir, '.claude', 'skills')] }),
     }));
 
     await pull({});
@@ -247,6 +250,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
       lastPullRev: 'abc1234',
       lastPullTargets: ['claude'],
+      ...await homeRecord(homeDir, ['claude'], { claude: [path.join(homeDir, '.claude', 'skills')] }),
     }));
 
     await pull({});
@@ -336,7 +340,11 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
     const { deployBuiltinSkills } = await import('../builtin-skills.js');
     vi.mocked(deployBuiltinSkills).mockRejectedValueOnce(new Error('EACCES: permission denied'));
     vi.mocked(getHeadRev).mockResolvedValue('abc1234');
-    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({ lastPullRev: 'abc1234', lastPullTargets: ['claude'] }));
+    vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
+      lastPullRev: 'abc1234',
+      lastPullTargets: ['claude'],
+      ...await homeRecord(homeDir, ['claude'], { claude: [path.join(homeDir, '.claude', 'skills')] }),
+    }));
 
     await pull({});
 
@@ -583,6 +591,7 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
       lastPull: '2026-04-01',
       lastPullRev: 'abc1234',
       lastPullTargets: ['claude'],
+      ...await homeRecord(homeDir, ['claude'], { claude: [path.join(homeDir, '.claude', 'skills')] }),
       lastPush: null,
       pushedRules: [],
       pushedSkills: [],
@@ -679,6 +688,7 @@ describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => 
       lastPull: '2026-04-01',
       lastPullRev: 'abc1234', // matches HEAD → triggers "Already synced" fast-path
       lastPullTargets: ['claude'],
+      ...await homeRecord(homeDir, ['claude'], { claude: [path.join(homeDir, '.claude', 'skills')] }),
       lastPush: null,
       pushedRules: [],
       pushedSkills: [],
@@ -769,6 +779,11 @@ describe('pull skip-sync refreshes CLAUDE.md recall block (CLI upgrade)', () => 
     expect(updated).toContain(compileRecallRulesBlock());
   });
 });
+
+/** The record a pull of this CLI leaves for HOME after delivering skills to `skillDirs` at abc1234. */
+async function homeRecord(home: string, targets: string[], skillDirs: Record<string, string[]>): Promise<Pick<State, 'lastPullByWorkspace'>> {
+  return { lastPullByWorkspace: { [await checkoutKey(home)]: { rev: 'abc1234', targets, skillDirs } } };
+}
 
 function emptyState(overrides: Partial<State> = {}): State {
   return {
@@ -1016,6 +1031,7 @@ describe('enabledAgents whitelist on pull inject, skip-sync, and cleanup (#510)'
       lastPull: '2026-04-01',
       lastPullRev: 'abc1234',
       lastPullTargets: ['copilot'],
+      ...await homeRecord(homeDir, ['copilot'], { copilot: [path.join(copilotHome, 'skills')] }),
     }));
 
     await pull({ silent: true });
@@ -1082,6 +1098,7 @@ describe('enabledAgents whitelist on pull inject, skip-sync, and cleanup (#510)'
     vi.mocked(loadStateForScope).mockResolvedValue(emptyState({
       lastPullRev: 'abc1234',
       lastPullTargets: ['copilot'],
+      ...await homeRecord(homeDir, ['copilot'], { copilot: [path.join(homeDir, '.copilot', 'skills')] }),
     }));
 
     await pull({ silent: true });
@@ -1231,6 +1248,7 @@ describe('enabledAgents whitelist on pull inject, skip-sync, and cleanup (#510)'
       lastPull: '2026-04-01',
       lastPullRev: 'abc1234',
       lastPullTargets: ['workbuddy'],
+      ...await homeRecord(homeDir, ['workbuddy'], { workbuddy: [path.join(homeDir, '.workbuddy', 'skills')] }),
     }));
 
     await pull({});

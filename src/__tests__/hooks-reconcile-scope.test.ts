@@ -17,7 +17,7 @@ vi.mock('../utils/logger.js', () => ({
 import { resolveAnchors, listWorktrees } from '../utils/git.js';
 import { resetBundledRuntimeCache } from '../bundled-runtime.js';
 import { findOnPath } from '../utils/lookpath.js';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { claudeHookOtherHostSkip, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig } from '../hooks.js';
 import * as gitHook from '../git-hook.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
@@ -1357,6 +1357,15 @@ hooks:
     // A fresh file per call: entries for another root are kept by design, and
     // this reads back exactly the gate just rendered.
     await fse.remove(path.join(home, '.codebuddy', 'settings.json'));
+    // The root is deliberately under node_modules so Git Bash sees its native
+    // drive spelling. Make it a repository before reconcile so Git never walks
+    // up into the contributor checkout and installs hooks there.
+    await fse.ensureDir(root);
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    const hookEntriesBefore = spawnSync('git', ['config', '--local', '--get-regexp', '^hook\\.teamai-'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    }).stdout;
     await writeYaml(`
 hooks:
   - id: gate
@@ -1368,6 +1377,11 @@ hooks:
 `);
     await fse.ensureDir(path.join(home, '.codebuddy'));
     await reconcileTeamHooksForConfig(codebuddyOnly, { ...localConfig(), projectRoot: root } as LocalConfig);
+    expect(await gitHook.gitHookStatus(root)).toEqual({ installed: true });
+    expect(spawnSync('git', ['config', '--local', '--get-regexp', '^hook\\.teamai-'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    }).stdout).toBe(hookEntriesBefore);
     const [command] = await teamStopCommands('.codebuddy/settings.json');
     expect(command).toBeDefined();
     return command;

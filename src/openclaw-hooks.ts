@@ -27,27 +27,8 @@ import path from 'node:path';
 import { writeFile, writeIfChanged, ensureDir, pathExists, readJsonObject, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { debugOnce } from './utils/warn-once.js';
-import { expandHome, getUserHome } from './utils/home.js';
-
-/**
- * The OpenClaw state dir: `OPENCLAW_STATE_DIR`, else `~/.openclaw-<profile>`
- * for a non-default `OPENCLAW_PROFILE`, else `~/.openclaw`. It holds
- * `openclaw.json`, managed hooks and, by default, the workspace.
- */
-export function resolveOpenclawStateDir(): string {
-  const override = process.env.OPENCLAW_STATE_DIR?.trim();
-  if (override) return path.resolve(expandHome(override));
-  const profile = process.env.OPENCLAW_PROFILE?.trim();
-  const suffix = profile && profile.toLowerCase() !== 'default' ? `-${profile}` : '';
-  return path.join(getUserHome(), `.openclaw${suffix}`);
-}
-
-/** The `openclaw.json` OpenClaw reads: `OPENCLAW_CONFIG_PATH`, else the state dir's. */
-export function resolveOpenclawConfigPath(): string {
-  const override = process.env.OPENCLAW_CONFIG_PATH?.trim();
-  if (override) return path.resolve(expandHome(override));
-  return path.join(resolveOpenclawStateDir(), 'openclaw.json');
-}
+import { getUserHome } from './utils/home.js';
+import { resolveOpenclawConfigPath, resolveOpenclawStateDir, resolveOpenclawWorkspace } from './openclaw-home.js';
 
 /**
  * Resolve the managed hooks directory for an OpenClaw-family tool:
@@ -426,48 +407,6 @@ export async function removeOpenClawAgentHook(opts: {
     log.success(`Removed OpenClaw agent hook [${opts.slug}] from ${dir}`);
   }
   if (tool === 'openclaw') await removeOpenClawHookEntry(agentHookKey(opts.slug));
-}
-
-/** Where OpenClaw's default agent reads its workspace from, as far as teamai can tell (`resolveOpenclawWorkspace`). */
-export type OpenclawWorkspace =
-  | { readonly kind: 'found'; readonly dir: string }
-  /** `candidate` is the directory OpenClaw would read, although it does not exist. */
-  | { readonly kind: 'none'; readonly tried: string; readonly candidate: string }
-  /** openclaw.json is there but not plain JSON, so a workspace it sets is unknown. */
-  | { readonly kind: 'unreadable-config'; readonly file: string; readonly error: string; readonly fallback: string | null };
-
-/**
- * Resolve the OpenClaw workspace directory the way OpenClaw resolves its
- * default agent's workspace (agents/agent-scope-config.ts,
- * agents/workspace-default-path.ts):
- * 1. Explicit workspacePath (server-sent), when it exists
- * 2. `agents.defaults.workspace` in the resolved openclaw.json
- * 3. `OPENCLAW_WORKSPACE_DIR`
- * 4. `<state dir>/workspace` (`OPENCLAW_STATE_DIR`, profile, `~/.openclaw`)
- *
- * Found only when the directory from that order exists: another workspace
- * that happens to exist is not the one OpenClaw reads. An openclaw.json
- * teamai cannot parse (OpenClaw reads JSON5) hides step 2, so the result says
- * so, with the directory steps 3-4 give as `fallback`.
- * Per-agent workspaces in `agents.list` are not followed.
- */
-export async function resolveOpenclawWorkspace(workspacePath?: string): Promise<OpenclawWorkspace> {
-  if (workspacePath && await pathExists(workspacePath)) return { kind: 'found', dir: workspacePath };
-  const cfgPath = resolveOpenclawConfigPath();
-  const read = await readJsonObject(cfgPath);
-  const agents = read.kind === 'ok' ? read.value.agents as { defaults?: { workspace?: unknown } } | undefined : undefined;
-  const configured = agents?.defaults?.workspace;
-  const envDir = process.env.OPENCLAW_WORKSPACE_DIR?.trim();
-  const candidate = typeof configured === 'string' && configured.trim()
-    ? path.resolve(expandHome(configured.trim()))
-    : envDir
-      ? path.resolve(expandHome(envDir))
-      : path.join(resolveOpenclawStateDir(), 'workspace');
-  const exists = await pathExists(candidate);
-  if (read.kind === 'invalid') {
-    return { kind: 'unreadable-config', file: cfgPath, error: read.error, fallback: exists ? candidate : null };
-  }
-  return exists ? { kind: 'found', dir: candidate } : { kind: 'none', tried: [workspacePath, candidate].filter(Boolean).join(', '), candidate };
 }
 
 /**

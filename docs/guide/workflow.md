@@ -24,6 +24,8 @@ steps:
 
 `schemaVersion` must be `v1alpha1`. `name` must match the file name. `description` is required. Each step has a unique `id` and exactly one action: `command`, `prompt`, `prompt_file`, or `workflow`. A step can omit the action when it has `end`, `approve`, or `choose`. `agent` is optional on prompt steps. `output` uses the existing shorthand: `string`, `number`, `boolean`, a literal union, an object, or an array with one item type. TeamAI validates successful command stdout or a prompt tool's `output` against it.
 
+Local command steps read stdout and stderr as UTF-8. Non-ASCII JSON string values are preserved in stored outputs and when later steps read them.
+
 A prompt step can set `model`: an alias from `models/aliases.yaml` or a model name, without spaces or templates. `defaults: { model: fast }` at the top of a file sets one for its prompt steps. A prompt step runs on the first of these that is set:
 
 1. the step's `model`;
@@ -49,6 +51,30 @@ A step whose dependency failed still runs when its `if` reads every failed depen
 The run still ends `failed` unless it reaches an end. An `if` that does not parse, reads a step it does not need, or reads a field missing from that step's `output` makes the file invalid. So does an `if` that is always false, and then the workflow has nothing to run, even when an older version was valid.
 
 `teamai pull` and `teamai push` check each file, and check a step that runs another workflow against that workflow's runnable version. A `prompt_file` must be a regular, non-symlink file under `prompts/` in the team repo. Its text is cached with the validated workflow, so an existing run keeps that revision even if the source is later changed or deleted. A file that was valid before keeps that version in the local cache when a new revision is invalid, as long as that version still fits the workflows it runs. A field this version of teamai does not know is different: that workflow has nothing to run until teamai is updated.
+
+`teamai review --branch <name>` checks that branch with the same rules. It exits 1 when any workflow file is invalid, writes nothing, and does not run the workflow. This file fails the check:
+
+```yaml
+schemaVersion: v1alpha1
+name: deploy
+description: Ship the release candidate.
+steps:
+  - id: release
+    needs: [biuld]
+    command: echo release
+```
+
+```text
+teamai review --branch feature/deploy
+[review] branch feature/deploy: 1 fail, 0 warn, 0 info
+  ✖ [workflows] workflows/deploy.yaml:6: field "steps[0].needs": step "release" needs "biuld", which is not a step in this workflow
+```
+
+Gate that branch from CI with one step:
+
+```yaml
+- run: teamai review --branch feature/deploy
+```
 
 A workflow can declare named `ends`, each `succeeded` or `failed`, such as `ends: { dropped: succeeded, stuck: failed }`. A step with `end: <name>` finishes the workflow when it succeeds. A step with only `id`, `needs`, `if`, and `end` runs nothing: it ends the workflow as soon as its needs are done. When an end is reached, every step that has not run is skipped, and the run takes that end's outcome, even if another step failed. `done` then carries the end: `{"done":{"run":"<run>","outcome":"succeeded","end":"dropped"}}`. An `end` that is not in `ends`, an `end` without `ends`, a declared end that no step uses, or a step that needs a step that only ends the workflow makes the file invalid.
 
@@ -121,7 +147,7 @@ An agent-specific entry wins over `default`. `claude`, `codex`, and `opencode` a
 teamai workflow start build --driver local
 ```
 
-`--driver local` runs a step with no `workspace` in the current checkout. A command there is read-only: if it exits 0 and changed repository files, their permissions, a symlink target, the destination of a staged rename, a file inside a dirty submodule, the index, or HEAD, the step fails and leaves that change in place. This includes a change inside an existing untracked directory; leaving that directory unchanged does not fail the step. A step with `workspace: new` changes files on its own branch. See [Workspaces](#workspaces). Steps that share the current checkout run one at a time. Steps in different worktrees run together up to [`workflows.max_parallel`](workflow-advanced.md#run-local-commands-in-parallel). Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. The driver calls the same `next` and `report` operations shown below:
+`--driver local` runs a step with no `workspace` in the current checkout, unless an enclosing step opened a workspace. A command there is read-only: if it exits 0 and changed repository files, their permissions, a symlink target, the destination of a staged rename, a file inside a dirty submodule, the index, or HEAD, the step fails and leaves that change in place. This includes a change inside an existing untracked directory; leaving that directory unchanged does not fail the step. A step with `workspace: new` changes files on its own branch. See [Workspaces](#workspaces). Steps that share the current checkout run one at a time. Steps in different worktrees run together up to [`workflows.max_parallel`](workflow-advanced.md#run-local-commands-in-parallel). Each attempt uses `result.json` under the scope's TeamAI data directory, outside the checkout. The driver calls the same `next` and `report` operations shown below:
 
 ```text
 teamai workflow start build
@@ -129,7 +155,7 @@ teamai workflow next <run> --json '{"driver":{"kind":"local","machine":"host","w
 teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcome":"success","driver":{"kind":"local","machine":"host","workspace":"/work"}}'
 ```
 
-`outcome` is `success`, `failed`, or `released`. `released` puts the step back to pending. It does not use up a retry. A report for an attempt that was already settled returns `repeated_report`, even when the revision is old. The run keeps recent settled attempts for that check. An older attempt uses the other checks: an old revision returns `stale_revision`, and a current revision that is not the leased attempt returns `wrong_attempt`. Another driver returns `wrong_driver`. A payload field the CLI does not read, such as a misspelled `tokens` written as `tokenz` or a field from a newer protocol version, is accepted but reported back: the success envelope of `next`, `report`, and `respond --json` carries `ignored` with those names — top-level fields first, then `driver.<field>` names — names only and never values. The key is left out when nothing was ignored, and an error envelope stays as it is.
+`outcome` is `success`, `failed`, or `released`. `released` puts the step back to pending. It does not use up a retry. A report for an attempt that was already settled returns `repeated_report`, even when the revision is old. The run keeps recent settled attempts for that check. An older attempt uses the other checks: an old revision returns `stale_revision`, and a current revision that is not the leased attempt returns `wrong_attempt`. Another driver returns `wrong_driver`. `changes` whose `branch` or `base` differs from the lease returns `invalid_report`, and the step stays leased. A read-only step in a workspace reports `read` (`branch`, `base`, and the `commit` it read) in place of `changes`. `changes` from it, a success without `read`, `read` from any other step, or `read` that differs from the lease returns `invalid_report` too. A payload field the CLI does not read, such as a misspelled `tokens` written as `tokenz` or a field from a newer protocol version, is accepted but reported back: the success envelope of `next`, `report`, and `respond --json` carries `ignored` with those names — top-level fields first, then `driver.<field>` names — names only and never values. The key is left out when nothing was ignored, and an error envelope stays as it is.
 
 The run is stored in this scope's TeamAI data directory. The command exits when it finishes. A local run that ends `failed` or `cancelled` exits with status 1. No workflow process keeps running.
 
@@ -137,13 +163,15 @@ Use `workflow respond <run> <step> <choice>` for a waiting HITL request, `workfl
 
 ## Workspaces
 
-A command with no `workspace` is read-only, even inside a workspace a parent opened. It runs in the current checkout. If it exits 0 and changed repository files, their permissions, a symlink target, the destination of a staged rename, a file inside a dirty submodule, the index, or HEAD, the step fails with `read_only_dirty` and leaves that change in place. A headless prompt with no `workspace` is read-only in the same way, unless an enclosing workflow or `for_each` opens a workspace. An interactive prompt keeps the person's edits, unless that prompt sets `workspace: read-only`.
+A command with no `workspace` is read-only. Outside a workspace it runs in the current checkout. If it exits 0 and changed repository files, their permissions, a symlink target, the destination of a staged rename, a file inside a dirty submodule, the index, or HEAD, the step fails with `read_only_dirty` and leaves that change in place. A headless prompt with no `workspace` is read-only in the same way, unless an enclosing workflow or `for_each` opens a workspace. An interactive prompt keeps the person's edits, unless that prompt sets `workspace: read-only`. Submodule changes count even when `submodule.<name>.ignore` or `diff.ignoreSubmodules` hides them from `git status`: a read-only step that makes one fails, and a step that writes commits the submodule's new commit.
 
-`workspace: new` runs the step in its own git worktree, on a branch named for this run, step, and pass. The step commits what it changed. The current checkout is not switched, reset, or cleaned. A later step that lists it in `needs` starts from the first of those branches and merges the rest, in `needs` order. A merge conflict stops there. A command fails with `merge_conflict`, and the message names the branch and the files. A prompt is told which files still conflict and which branches were not merged.
+Inside a workspace an enclosing step opened, a read-only step runs in that workspace, so a test sees the change it follows. It reads the branch its `needs` changed, or the enclosing branch when they changed none. When they changed more than one branch, it fails with `workspace_base`: add a step that merges them, and need that step. It runs one at a time with the workspace's other steps, on the same base agent files, and only a driver that declares `continue` and owns that workspace takes it. It commits nothing. Afterwards the driver puts the workspace back as the step found it: if the step changed it or left its branch, what it changed is kept on `refs/teamai/kept/<attempt>`, and the submodule commits it made under `refs/teamai/kept-modules/<attempt>/`. The worktree and the submodules the step changed are then reset to the commit it read and its untracked files are removed, and an exit 0 still fails with `read_only_dirty`. Ignored files stay in place. A submodule the step changed that has uncommitted or untracked files cannot be kept, so then nothing is reset. When the workspace is not put back, the step fails with `workspace_base`. The workspace is marked when the step starts, so later steps there fail, even after the driver was killed during the step, until you put it back on its branch at that commit as the step found it and run `teamai workflow retry <run> <step>`. If the workspace already had changes when the step started, also delete the marker file the failure names. The pass records `read`: the branch, the base, and the commit it read. The workspace is a fresh worktree without ignored files such as `node_modules`, so a test installs what it needs, for example `npm ci && npm test`, unless the team's [`postDeploy`](distribution.md#team-scripts) does.
+
+`workspace: new` runs the step in its own git worktree, on a branch named for this run, step, and pass. The step commits what it changed. A step that leaves that branch, for example with `git switch`, fails with `workspace_base`: nothing is committed or pushed, and the worktree stays as the step left it. The current checkout is not switched, reset, or cleaned. A later step that lists it in `needs` starts from the first of those branches and merges the rest, in `needs` order. A merge conflict stops there. A command fails with `merge_conflict`, and the message names the branch and the files. A prompt is told which files still conflict and which branches were not merged.
 
 `workspace: continue` stays on the branch an enclosing `workflow` step opened with `new`. A prompt with no `workspace` continues that copy. A `for_each` with `workspace: new` gives each item its own branch, so items do not share a worktree. `steps.<id>.branches` lists those branches, and each `results` entry has `branch` when the item has one. An item with `after` starts from the branches it waits for. A top-level `workspace: continue`, with no enclosing `new`, fails the step with `workspace_base`.
 
-The step sees the agent files from the commit the run started at: `AGENTS.md`, `CLAUDE.md`, `.claude`, `.codex`, `.opencode`, `.cursor`, `.agents`, and `.githooks`. A hook an earlier step committed does not run in a later step. The team's skills, rules, agents and MCP are then delivered into the worktree, as they are for any new worktree of this checkout. Those delivered files are not part of the step's commit. A file the step itself edits is committed.
+The step sees the agent files from the commit the run started at: `AGENTS.md`, `CLAUDE.md`, `.agents`, `.githooks`, every tool's project directory such as `.claude` or `.tclaude`, the project MCP files `.mcp.json` and `opencode.json`, and Copilot's agent paths under `.github`. A hook an earlier step committed does not run in a later step. The team's skills, rules, agents and MCP are then delivered into the worktree, as they are for any new worktree of this checkout. Those delivered files are not part of the step's commit. A file the step itself edits is committed.
 
 When the checkout has an `origin` and the step made commits, the driver pushes that branch. A later attempt that adds no commit still pushes when this branch has commits `origin` does not have. That includes a first push that never landed, and an origin that has no branches yet. A failed push fails the step with `push_failed` and keeps the worktree. With no `origin`, or when `origin` already has that commit, the run still succeeds and reports the branch.
 

@@ -68,9 +68,9 @@ import {
   removeOwnedFiles,
   skillsGuardBase,
 } from './builtin-skills.js';
-import { getHermesHome } from './hermes-home.js';
+import { installOf, locate, SHARED_AGENT_SKILLS_PATH, writesOf } from './locate.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
-import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, SHARED_AGENT_SKILLS_PATH, skillOrigin } from './resources/skills.js';
+import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
 import { clearInstructionFile, instructionTargetFile, readsTeamRulesFromFile, retiredInstructionFiles, resolveInstructionTargets, userRulesFile } from './instruction-targets.js';
 import {
@@ -432,6 +432,8 @@ async function discoverToolResources(
   baseDir: string,
   /** Home, or the project root: where the skills link guard starts (`skillsGuardBase`). */
   scopeRoot: string,
+  /** Where pull writes `tool`'s skills (`locate`), whether or not it is selected or installed now. */
+  skillWrites: readonly string[],
   teamSkillNames: Set<string>,
   /** Whether `tool`'s skill directory `dir`, at a name in `teamSkillNames`, is teamai's (#993). */
   ownsSkill: (dir: string, name: string, tool: string) => Promise<boolean>,
@@ -642,27 +644,7 @@ async function discoverToolResources(
     // Skills root → the base the link guard starts from.
     const configuredSkills = path.join(baseDir, toolPath.skills);
     const skillRoots = new Map([[configuredSkills, await skillsGuardBase(scopeRoot, configuredSkills)]]);
-    // OpenClaw and Hermes receive skills where team sync and the stub put them
-    // (`skillsDirForTool`): the workspace, and HERMES_HOME.
-    if (tool === 'openclaw') {
-      const workspaceDir = await resolveOpenclawWorkspaceDir();
-      if (workspaceDir) {
-        const workspaceSkills = path.join(workspaceDir, 'skills');
-        skillRoots.set(workspaceSkills, await skillsGuardBase(scopeRoot, workspaceSkills));
-      }
-    }
-    if (tool === 'hermes') {
-      const hermesSkills = path.join(getHermesHome(), 'skills');
-      skillRoots.set(hermesSkills, await skillsGuardBase(scopeRoot, hermesSkills));
-    }
-    // `resolveSkillDestination` writes Codex's copy into the shared
-    // .agents/skills root when teamai's copy already lives there, so uninstall
-    // must look where deployment could have put it — the legacy prune already
-    // does. Codex only: another tool's pass must not reach into it.
-    if (tool === CODEX_TOOL) {
-      const sharedSkills = path.join(baseDir, SHARED_AGENT_SKILLS_PATH);
-      skillRoots.set(sharedSkills, await skillsGuardBase(scopeRoot, sharedSkills));
-    }
+    for (const skillsDir of skillWrites) skillRoots.set(skillsDir, await skillsGuardBase(scopeRoot, skillsDir));
     // A team skill's name is no proof: only teamai's copies go (#993).
     for (const [skillsDir, rootBase] of skillRoots) {
       if (await pathExists(skillsDir)) {
@@ -1008,6 +990,7 @@ async function buildRemovalPlan(
   // project resources.
   const hookToolPaths = scopedToolPaths(teamConfig, { ...localConfig, scope: primaryHookScope.scope });
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
+  const install = installOf(teamConfig, localConfig);
   const perTool = new Map<string, ToolResources>();
   const globalAdapters = localConfig.scope === 'user';
   for (const [tool, toolPath] of Object.entries(toolPaths)) {
@@ -1018,6 +1001,7 @@ async function buildRemovalPlan(
         toolPath,
         resolveToolBaseDir(tool, localConfig),
         baseDir,
+        writesOf(await locate(tool, 'skills', install)),
         teamSkillNames,
         ownsSkill,
         skillFiles,

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ModelProfileSchema, resolveProfile } from '../models/profile.js';
 import { activeModelProfiles, refusedLegacyValueKeys, refuseLegacyValue, restoreModelProfiles, switchModelProfile } from '../models/switch.js';
 import { entryHash } from '../resources/mcp-format.js';
+import { saveToolHomes } from '../tool-home.js';
 
 let home: string;
 let originalEnv: Record<string, string | undefined>;
@@ -408,6 +409,18 @@ describe('OpenCode model switching', () => {
     expect(active.provider['teamai-responses'].options.apiKey).toBe('{env:TEAMAI_TEST_MODEL_KEY}');
   });
 
+  it('writes into the OpenCode home recorded on this machine, from a shell without XDG_CONFIG_HOME', async () => {
+    const recorded = path.join(home, 'recorded-opencode');
+    await fse.ensureDir(recorded);
+    await saveToolHomes({ opencode: recorded });
+    delete process.env.XDG_CONFIG_HOME;
+
+    expect((await switchModelProfile(routed({ 'openai-chat-completions': ['team-model'] }), ['opencode']))[0].status).toBe('switched');
+
+    expect((await fse.readJson(path.join(recorded, 'opencode.json'))).provider['teamai-chat']).toBeDefined();
+    expect(await fse.pathExists(openCodeFile())).toBe(false);
+  });
+
   it('does not overwrite a user-owned OpenCode route provider', async () => {
     await fse.outputJson(openCodeFile(), { provider: { 'teamai-chat': { npm: 'mine' } } });
     expect((await switchModelProfile(routed({ 'openai-chat-completions': ['deepseek-v4-flash'] }), ['opencode']))[0].status).toBe('skipped');
@@ -572,6 +585,17 @@ describe('Pi model switching', () => {
     process.env.PI_CODING_AGENT_DIR = first;
     expect((await restoreModelProfiles(['pi']))[0].status).toBe('restored');
     expect(Object.keys((await fse.readJson(path.join(first, 'models.json'))).providers)).toEqual(['Mine']);
+  });
+
+  it('writes into the Pi home recorded on this machine, from a shell without PI_CODING_AGENT_DIR', async () => {
+    const recorded = path.join(home, 'recorded-pi');
+    await fse.ensureDir(recorded);
+    await saveToolHomes({ pi: recorded });
+
+    expect((await switchModelProfile(routed({ 'openai-chat-completions': ['team-model'] }), ['pi']))[0].status).toBe('switched');
+
+    expect((await fse.readJson(path.join(recorded, 'models.json'))).providers['team:tokenhub']).toBeDefined();
+    expect(await fse.pathExists(path.join(home, '.pi', 'agent', 'models.json'))).toBe(false);
   });
 });
 

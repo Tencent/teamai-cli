@@ -107,4 +107,45 @@ describe('execCommand', () => {
     ];
     expect(options.windowsHide).toBe(true);
   });
+
+  // Pipe reads split at byte offsets, so one character can arrive in two chunks.
+  const text = '会话标题 café 😀';
+  const splitInside = (s: string, char: string): [Buffer, Buffer] => {
+    const bytes = Buffer.from(s);
+    const at = bytes.indexOf(Buffer.from(char)) + 1;
+    return [bytes.subarray(0, at), bytes.subarray(at)];
+  };
+
+  it('keeps a multi-byte character that straddles two chunks intact', async () => {
+    const { proc, emit } = makeMockProcess();
+    vi.mocked(spawn).mockReturnValue(proc as unknown as ChildProcess);
+
+    const promise = execCommand('opencode', ['session', 'list']);
+    for (const chunk of splitInside(text, '标')) emit.stdout(chunk);
+    for (const chunk of splitInside(text, '😀')) emit.stderr(chunk);
+    emit.close(0);
+
+    await expect(promise).resolves.toEqual({ stdout: text, stderr: text, code: 0 });
+  });
+
+  it('streams the split character intact when stream is set', async () => {
+    const { proc, emit } = makeMockProcess();
+    vi.mocked(spawn).mockReturnValue(proc as unknown as ChildProcess);
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    try {
+      const promise = execCommand('opencode', ['session', 'list'], { stream: true });
+      for (const chunk of splitInside(text, 'é')) emit.stdout(chunk);
+      for (const chunk of splitInside(text, '会')) emit.stderr(chunk);
+      emit.close(0);
+      await promise;
+
+      expect(out.mock.calls.map(([chunk]) => chunk).join('')).toBe(text);
+      expect(err.mock.calls.map(([chunk]) => chunk).join('')).toBe(text);
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+    }
+  });
 });

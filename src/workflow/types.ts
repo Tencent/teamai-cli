@@ -234,8 +234,13 @@ export interface RunState {
   archive?: ArchivedPass[];
   /** The round of a looping top-level workflow. */
   round?: number;
-  /** The commit the run's workspaces and agent configuration start from. Set by the first `next` that sends `base`. */
-  base?: { ref: string; commit: string };
+  /**
+   * The commit the run's workspaces and agent configuration start from, and the branch it was on. Set by `workflow start`
+   * in a git checkout, else by the first `next` that sends `base`. A later `base` does not change it.
+   */
+  base?: { ref?: string; commit: string };
+  /** The checkout `workflow start` ran in. Local run state only: never on a lease or a record. */
+  checkout?: string;
   /** Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. */
   copies?: Record<string, { owner: DriverIdentity; commit?: string }>;
   createdAt: string;

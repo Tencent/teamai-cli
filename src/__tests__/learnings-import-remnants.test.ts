@@ -8,6 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { simpleGit } from 'simple-git';
@@ -281,6 +282,34 @@ describe('a learning an older import --from-mr left untracked in the learnings c
     expect(fs.existsSync(file)).toBe(false);
     expect(await listPendingLearnings(config)).toEqual([]);
   });
+
+  it('is kept, and the sync lock released, when origin accepts the connection and never answers', async () => {
+    const server = http.createServer((_req, res) => {
+      res.write('HTTP/1.1 200 OK\r\n');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') throw new Error('failed to bind test server');
+      const { config, checkout } = await setUp();
+      const file = plant(checkout, '2026-09-20-Quokka-cache-warmup-before-deploy.md', remnant());
+      await simpleGit(config.repo.localPath).remote(['set-url', 'origin', `http://127.0.0.1:${addr.port}/team.git`]);
+      vi.stubEnv('TEAMAI_INIT_PUSH_TIMEOUT_MS', '1000');
+
+      const start = Date.now();
+      await publishQueuedLearnings(config, 'alice');
+
+      // One stalled fetch and one stalled ls-remote.
+      expect(Date.now() - start).toBeLessThan(6_000);
+      expect(fs.existsSync(file)).toBe(true);
+      expect(await listPendingLearnings(config)).toEqual([]);
+      expect(fs.existsSync(path.join(getDataHome(config), SYNC_LOCK_FILENAME))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 30_000);
 
   it('is queued and published when origin has no learnings branch, as after an offline first publish', async () => {
     const { config, origin, checkout } = await setUp();

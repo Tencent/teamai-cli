@@ -97,6 +97,14 @@ The directory has to sit in your home or under `~/.config/`. Copilot uses its ow
 
 Cursor CLI moves two directories: `CURSOR_DATA_DIR` holds the transcripts, `CURSOR_CONFIG_DIR` the `cli-config.json` the co-author setting goes into. Its user `mcp.json`, `rules/` and `commands/` stay in `~/.cursor` whatever the two variables say, so those keep their default paths. With `CURSOR_CONFIG_DIR` unset the config root is `$XDG_CONFIG_HOME/cursor` when that variable is set, `~/.cursor` otherwise.
 
+#### Recorded tool homes (`~/.teamai/tool-homes.json`)
+
+Some tools move their home with a variable: `XDG_CONFIG_HOME` (OpenCode, Muse), `OPENCODE_CONFIG_DIR`, `HERMES_HOME`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`, `DSH_HOME`, `OPENCLAW_STATE_DIR` and `OPENCLAW_PROFILE`. On Windows, Hermes lives in `%LOCALAPPDATA%\hermes`. A relative value of a tool's own variable resolves against the directory you run teamai from, as the tool resolves it; a relative `XDG_CONFIG_HOME` or `%LOCALAPPDATA%` is ignored. teamai syncs to the moved home. For OpenCode, Muse and Pi only part of it follows so far. With `XDG_CONFIG_HOME=/x`, OpenCode's skills and the `opencode.json` that `teamai models switch` writes go to `/x/opencode`, and Muse's skills to `/x/muse/skills`, while their other files stay under `~/.config/opencode` and `~/.config/muse`. With `PI_CODING_AGENT_DIR=/x`, Pi's skills and `models.json` go to `/x`, while its extension, MCP and `AGENTS.md` stay under `~/.pi/agent`. `teamai doctor` notes it.
+
+The first `pull` that sees the variable records the home for the whole machine in `~/.teamai/tool-homes.json` when the directory exists, and never replaces a record. `teamai init` records it too and replaces an earlier record: for a tool's own variable (`HERMES_HOME`, `OPENCLAW_PROFILE`, ...) even before the directory exists, for `XDG_CONFIG_HOME` only once it does. Hermes' Windows default only fills a missing record. So run `init` from a shell your tools run in. After that, a pull from a shell without the variable still syncs there, in every scope. To move the home, run `teamai init` with the new value. To clear the record, run it with the variable set but blank. `teamai doctor` reports `<tool> home exists` when the recorded directory is gone, and `<tool> home matches <variable>` when the shell names another directory.
+
+When a tool's skills directory moves, teamai's copies in the old one stay. Another shell, another project or another tool may still read that directory, and teamai cannot tell. The first pull that delivers the skills to the new directory names the old one, and teamai no longer updates the copies there. Delete them once no tool reads that directory.
+
 ### Webhook notifications (`sharing.webhooks`)
 
 | Event | Fires when |

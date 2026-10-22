@@ -55,6 +55,8 @@ teamai recall feedback --positive <docId>
 teamai recall feedback --negative <docId>
 ```
 
+本地反馈在下次重建索引（例如 `teamai pull`）时影响排序，即使上报被禁用或失败也生效。重建时合并已确认的团队票数和本地未送达的票；若投票文件正被占用，本次重建只使用已确认票数。
+
 `teamai stats` 在有记录时，会列出最近 10 个跑过 recall 的会话。
 
 ### 开启 / 关闭 Recall
@@ -97,7 +99,7 @@ teamai recall maintenance --update-quality
 
 `--archive` 收走置信度低于 0.15 的 learning。`--update-quality` 写出 `.draft.md`，改好后把文件名改成 `.md`。
 
-置信度是 0 到 1 的活动评分，不是知识正确或任务成功的概率。正反馈计数与召回计数的比值最高按 1 计算，因此重复正反馈不会超出这一项 30% 的权重，也不能代替近期召回这一项。
+置信度是 0 到 1 的活动评分，不是知识正确或任务成功的概率。正反馈计数与召回计数的比值最高按 1 计算，因此重复正反馈不会超出这一项 30% 的权重。近期度取最近一次召回与最近一次正反馈中较晚的时间，因此新的正反馈也会刷新近期度。
 
 ### 晋升 Learnings
 

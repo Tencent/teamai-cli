@@ -36,6 +36,12 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 ## 常见问题 FAQ
 
+**Q: `init` 提示成员注册失败或 reports 分支被占用？**
+
+本地初始化仍会完成。注册失败时会显示具体原因；修复后，重新执行相同的
+`teamai init` 命令来重试。如果另一个写入正在占用 `teamai-reports` 分支，
+请等它结束后再重新执行该命令。
+
 **Q: 命令提示 `Cannot acquire lock <path>: <reason>`？**
 
 锁无法检查、创建或回收，dry-run 预览也可能报告此错误。
@@ -77,6 +83,10 @@ teamai init --repo https://github.com/your-org/your-repo --force
 对于内置工具，如果 `init` 没带 `--agent`，且在非交互终端中运行（不会显示选择器），它不会创建工具根目录，因为你还没有选择 Agent。`teamai init` 不会复制团队的 skills、rules 或 MCP。执行 `teamai init <repo> --agent claude`（或其他 Agent ID）会创建该工具的根目录并装上 hook。团队资源要等该工具开始一次会话，或执行 `teamai pull` 后才到达。你也可以在项目中打开该工具。它的 SessionStart hook 会创建根目录并拉取资源。
 
 `teamai pull` 不会创建缺失的 Agent 根目录。例外是在继承配置的子模块克隆中首次 pull，它会根据原始子模块配置创建根目录（见[项目 checkout](./distribution.md#项目-checkout)）。对于只在 `teamai.yaml` 的 `toolPaths` 中定义的自定义 Agent，git 模式的 init 会通过 `init --agent <id>` 创建其根目录。HTTP init 无法读取本地 `teamai.yaml` 路径，因此只会为已安装的内置 Agent 创建根目录。
+
+**Q: `teamai.yaml` 里的 `toolPaths` 条目——没有写到的键会怎样？**
+
+该条目会整体替换此工具的默认值：没写的键*消失*，不会被继承。只自定义 `skills` 而省略 `settings` 的条目会让该工具没有 settings 文件，hook 对账会静默跳过它；省略 `skills` 或 `rules` 则是有意停用对应投递。`teamai doctor` 会点名自定义条目丢掉的、默认表提供的每一个键，以及补回用的值。
 
 **Q: Hooks 没有自动触发？**
 

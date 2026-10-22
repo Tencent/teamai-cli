@@ -135,7 +135,7 @@ describe('credential-prompt guard (init-hang regression)', () => {
   // The spawn-level block timeout is what actually ends a hang. To verify it,
   // push at a remote that accepts the request and then never responds: git
   // blocks on the read and `withTimeout` (a Promise.race) cannot interrupt a
-  // blocking subprocess. Only `createGitForInitPush`'s `timeout.block` killing
+  // blocking subprocess. Only `createGitWithBlockTimeout`'s `timeout.block` killing
   // that process ends the await — so removing the guard would time the test
   // out instead of failing fast.
   let server: http.Server;
@@ -207,7 +207,7 @@ describe('credential-prompt guard (init-hang regression)', () => {
     process.env.GIT_TERMINAL_PROMPT = '0';
     // Shrink the init-push block timeout so a hung push is killed in a couple
     // seconds instead of the default 30 (keeps the test fast). initPush:true
-    // routes through createGitForInitPush, whose timeout.block actually
+    // routes through createGitWithBlockTimeout, whose timeout.block actually
     // terminates the spawned git process — the real fix for a push that hangs
     // on a credential prompt or helper.
     const prevInitTimeout = process.env.TEAMAI_INIT_PUSH_TIMEOUT_MS;
@@ -215,7 +215,7 @@ describe('credential-prompt guard (init-hang regression)', () => {
 
     const start = Date.now();
     try {
-      // initPush:true uses createGitForInitPush (spawn-level block timeout),
+      // initPush:true uses createGitWithBlockTimeout (spawn-level block timeout),
       // mirroring how init actually calls this. The push must reject within
       // the timeout budget — a regression to no spawn timeout would hang on a blocking read.
       await expect(

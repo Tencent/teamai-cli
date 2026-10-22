@@ -1,7 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import * as bundledRuntime from '../bundled-runtime.js';
+import { _resetShellCache } from '../builtin-hooks.js';
 import { codexTeamHookIndexPath, dispatchedCodexHooks, reconcileCodexDispatchers, setCodexDispatcherHooks, type CodexTeamHook } from '../codex-team-hooks.js';
 
 const hook = (command: string): CodexTeamHook[] => [{ id: 'team', event: 'Stop', command }];
@@ -79,6 +81,8 @@ describe('reconcileCodexDispatchers — the Windows override keeps the block con
     fs.mkdirSync(project, { recursive: true });
   });
   afterEach(() => {
+    vi.restoreAllMocks();
+    _resetShellCache();
     process.env.HOME = originalHome;
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -88,7 +92,10 @@ describe('reconcileCodexDispatchers — the Windows override keeps the block con
     fs.writeFileSync(codexTeamHookIndexPath(), JSON.stringify({ projects: { [project]: record } }));
   };
 
-  it('gives the dispatcher entry a commandWindows that passes the exit code and stderr through', async () => {
+  it.each(['linux', 'win32'] as const)('keeps the dispatcher exit contract on %s', async (platform) => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue(platform);
+    vi.spyOn(bundledRuntime, 'findGitBashWindows').mockReturnValue('C:/Program Files/Git/bin/bash.exe');
+    _resetShellCache();
     seed({ hooks: [{ id: 'team', event: 'Stop', command: 'echo blocked >&2; exit 2' }] });
     const hooksFile = path.join(root, 'hooks.json');
     fs.writeFileSync(hooksFile, JSON.stringify({ hooks: {} }));
@@ -96,8 +103,7 @@ describe('reconcileCodexDispatchers — the Windows override keeps the block con
     await reconcileCodexDispatchers(hooksFile);
 
     const entry = JSON.parse(fs.readFileSync(hooksFile, 'utf-8')).hooks.Stop[0].hooks[0];
-    // The command stays the POSIX form on every platform (#1074's contract),
-    // and the entry stays recognizable for removal.
+    // Codex uses commandWindows on Windows. Keep the shared command portable.
     expect(entry.command).toBe('bash -lc "teamai hook-dispatch Stop --tool codex --team-hooks"');
     // The Windows form is the bare dispatch: cmd /C propagates the exit code
     // and stderr natively, so exit 2 (block) passes through with nothing

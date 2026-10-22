@@ -65,6 +65,26 @@ async function reportNotInitialized(run: () => Promise<void>): Promise<void> {
 }
 
 /**
+ * Report an error a command action threw as one line on stderr, and make the
+ * process exit 1 (#1270). Without this, a rejection from an async action
+ * reaches the user as an unhandled one: Node prints the error with its stack
+ * and a `cli.js:NNNN` header, which says nothing a person can act on.
+ *
+ * A command that wraps itself in `reportNotInitialized` is unchanged; this is
+ * the boundary that also covers the commands that never did, such as
+ * `session list`.
+ *
+ * The trace is not lost: `log.debug` always appends it to ~/.teamai/debug.log,
+ * and prints it on the console only under `--verbose`.
+ */
+export async function reportCommandError(e: unknown): Promise<void> {
+  const error = e instanceof Error ? e : undefined;
+  log.error(error?.message || error?.name || String(e));
+  if (error?.stack) log.debug(error.stack);
+  process.exitCode = 1;
+}
+
+/**
  * Fire a command-lifecycle webhook (`push` / `pull`) best-effort. These are
  * default subscription events with no other production call site into
  * sendWebhook (#702). Never let a webhook failure affect the command's result.
@@ -1648,13 +1668,7 @@ if (!process.env.TEAMAI_COMMAND_TABLE_ONLY) {
   // (see bundled-runtime.ts) and pull shells out to git.
   ensureBundledRuntimeOnPath();
 
-  // Commands that need an initialized teamai reject with NotInitializedError.
-  // Report it as a plain error, not an unhandled rejection with a stack trace.
-  await program.parseAsync().catch(async (e: unknown) => {
-    const { NotInitializedError } = await import('./config.js');
-    if (!(e instanceof NotInitializedError)) throw e;
-    const { log } = await import('./utils/logger.js');
-    log.error(e.message);
-    process.exitCode = 1;
-  });
+  // Every error a command action throws leaves as one line on stderr with exit
+  // 1, never as an unhandled rejection with a Node stack trace (#1270).
+  await program.parseAsync().catch(reportCommandError);
 }

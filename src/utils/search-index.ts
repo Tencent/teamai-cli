@@ -348,14 +348,16 @@ interface VoteAggregation {
   confidenceMap: Map<string, number>;
 }
 
-async function aggregateVotes(votesDir: string): Promise<VoteAggregation> {
+async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promise<VoteAggregation> {
   const scores = new Map<string, number>();
-  const agg = new Map<string, { recalled: number; upvoted: number; lastRecalled: string }>();
-  const files = await listFiles(votesDir);
+  const agg = new Map<string, { recalled: number; upvoted: number; lastRecalled: string; lastUpvoted: string }>();
+  const contents = voteScope
+    ? await (await import('../votes.js')).readIndexVoteFiles(voteScope)
+    : await Promise.all((votesDir ? await listFiles(votesDir) : [])
+      .filter((file) => /\.ya?ml$/.test(file))
+      .map(async (file) => ({ path: path.join(votesDir!, file), content: await readFileSafe(path.join(votesDir!, file)) })));
 
-  for (const file of files) {
-    if (!file.endsWith('.yaml') && !file.endsWith('.yml')) continue;
-    const content = await readFileSafe(path.join(votesDir, file));
+  for (const { path: votePath, content } of contents) {
     if (!content) continue;
 
     try {
@@ -370,11 +372,14 @@ async function aggregateVotes(votesDir: string): Promise<VoteAggregation> {
           const upvoted = entry.upvoted_count ?? 0;
           scores.set(docId, (scores.get(docId) ?? 0) + recalled * 0.3 + upvoted * 1.0);
 
-          const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '' };
+          const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '', lastUpvoted: '' };
           existing.recalled += recalled;
           existing.upvoted += upvoted;
           if (entry.last_recalled_at > existing.lastRecalled) {
             existing.lastRecalled = entry.last_recalled_at;
+          }
+          if (entry.last_upvoted_at && entry.last_upvoted_at > existing.lastUpvoted) {
+            existing.lastUpvoted = entry.last_upvoted_at;
           }
           agg.set(docId, existing);
         }
@@ -383,14 +388,14 @@ async function aggregateVotes(votesDir: string): Promise<VoteAggregation> {
         for (const [docId, entry] of Object.entries(votes)) {
           scores.set(docId, (scores.get(docId) ?? 0) + 1);
 
-          const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '' };
+          const existing = agg.get(docId) ?? { recalled: 0, upvoted: 0, lastRecalled: '', lastUpvoted: '' };
           existing.recalled += 1;
           if (entry.at > existing.lastRecalled) existing.lastRecalled = entry.at;
           agg.set(docId, existing);
         }
       }
     } catch {
-      log.error(`Failed to parse votes file: ${file}`);
+      log.error(`Failed to parse index votes: ${votePath}`);
     }
   }
 
@@ -401,6 +406,7 @@ async function aggregateVotes(votesDir: string): Promise<VoteAggregation> {
       recalledCount: data.recalled,
       upvotedCount: data.upvoted,
       lastRecalledAt: data.lastRecalled,
+      lastUpvotedAt: data.lastUpvoted || undefined,
     }));
   }
 
@@ -817,6 +823,8 @@ export interface BuildIndexOptions {
   skills?: IndexedSkills;
   codebaseDir?: string;
   votesDir?: string;
+  /** Scope whose confirmed team votes and pending local deltas rank this build. */
+  voteScope?: LocalConfig;
   indexPath?: string;
   /**
    * What the caller was given and could not resolve, such as a docs set whose
@@ -892,11 +900,11 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
 
   // Aggregate votes once and reuse across all collectors.
   let voteAgg: VoteAggregation = { scores: new Map<string, number>(), confidenceMap: new Map<string, number>() };
-  if (opts.votesDir) {
+  if (opts.votesDir || opts.voteScope) {
     try {
-      voteAgg = await aggregateVotes(opts.votesDir);
+      voteAgg = await aggregateVotes(opts.votesDir, opts.voteScope);
     } catch (e) {
-      log.warn(`Search index could not read the votes in ${opts.votesDir} (${failureReason(e)}); it ranks without them until the next rebuild.`);
+      log.warn(`Search index could not read the votes in ${opts.votesDir ?? opts.voteScope?.repo.localPath} (${failureReason(e)}); it ranks without them until the next rebuild.`);
     }
   }
   // One load shared by concurrent reads, so `reads.kept` sees each previous entry as one object.

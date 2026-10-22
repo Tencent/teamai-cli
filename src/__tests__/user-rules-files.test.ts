@@ -28,6 +28,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
 vi.mock('../update.js', () => ({
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
+  withFileLock: async <T>(_lock: string, _wait: unknown, body: () => Promise<T>) => ({ held: true, value: await body() }),
 }));
 
 vi.mock('../utils/logger.js', () => ({

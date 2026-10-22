@@ -14,6 +14,7 @@ import {
   type ToolName,
 } from '../resources/agent-format.js';
 import { observeLaunch } from '../agent-observation.js';
+import { detectProjectConfig } from '../config.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { commandSignalPolicy, exitLike, terminalReachesCommand } from '../env-exec.js';
 import { workflowLaunch } from '../launch-context.js';
@@ -36,11 +37,12 @@ import {
 import { driverLockPath, isRunId } from './store.js';
 import { stopProcess } from './process-stop.js';
 import { chooseStepModel } from './step-model.js';
+import type { StepRead } from './step-state.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isWorkflowError } from './types.js';
 import type { WorkspaceContract } from './workspace.js';
 import {
-  applyBaseConfig, commitWork, ensureWorktree, git, headCommit, hooksPath, mergeBranch, pushIfOrigin, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, worktreePath,
+  applyBaseConfig, commitWork, ensureWorktree, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, mergeBranch, offBranch, pushIfOrigin, putBackCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, unrestoredCopy, worktreePath,
 } from './worktree.js';
 
 /** Local lease identity, stable across restarts in the same workspace. */
@@ -82,8 +84,10 @@ function startCommand(command: string, cwd: string, env: Record<string, string>,
   const exit = new Promise<CommandResult>((resolve) => {
     let stdout = '';
     let stderr = '';
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr?.on('data', (chunk: string) => { stderr += chunk; });
     child.on('error', (error) => resolve({ exitCode: 1, stdout, stderr: error.message }));
     child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
   });
@@ -155,10 +159,13 @@ interface Lease {
   model?: string;
   defaultModel?: string;
   workspace?: WorkspaceContract;
+  /** The lease named a workspace this driver cannot read. The step fails instead of running in the active checkout. */
+  unreadableWorkspace?: true;
   session?: { tool: string; id: string };
   /** Set once the step has a directory to run in. */
   cwd?: string;
   before?: WorktreeSnapshot;
+  found?: string[];
   /** Branch agent files saved while the base overlay is in place. */
   overlay?: string;
   /** HEAD before this step merges or commits, so the reported range includes both. */
@@ -223,11 +230,13 @@ interface WorktreeSnapshot {
   ok: boolean;
   files: Map<string, string>;
   head?: string;
+  /** The ref HEAD points to, empty when it is detached, so a switch at the same commit is a change too. */
+  branch: string;
 }
 
 function gitStatus(workspace: string): Promise<{ ok: boolean; text: string }> {
   return new Promise((resolve) => {
-    execFile('git', ['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: workspace, env: process.env }, (error, stdout, stderr) => {
+    execFile('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none'], { cwd: workspace, env: process.env }, (error, stdout, stderr) => {
       resolve(error ? { ok: false, text: stderr.trim() } : { ok: true, text: stdout });
     });
   });
@@ -278,7 +287,8 @@ async function worktreeMode(workspace: string, relative: string): Promise<string
 async function snapshotWorktree(workspace: string, depth = 0): Promise<WorktreeSnapshot> {
   const status = await gitStatus(workspace);
   const head = (await git(workspace, ['rev-parse', 'HEAD'])).stdout.trim();
-  if (!status.ok) return { ok: false, files: new Map(), ...(head ? { head } : {}) };
+  const branch = (await git(workspace, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim();
+  if (!status.ok) return { ok: false, files: new Map(), ...(head ? { head } : {}), branch };
   const files = new Map<string, string>();
   for (const { mark, relative } of statusEntries(status.text)) {
     if (files.has(relative)) continue;
@@ -290,7 +300,7 @@ async function snapshotWorktree(workspace: string, depth = 0): Promise<WorktreeS
       : await hashPath(workspace, relative);
     files.set(relative, `${mark}:${staged}:${mode}:${body}`);
   }
-  return { ok: true, files, ...(head ? { head } : {}) };
+  return { ok: true, files, ...(head ? { head } : {}), branch };
 }
 
 async function submoduleSnapshot(dir: string, depth: number): Promise<string> {
@@ -306,7 +316,7 @@ function changedPaths(before: WorktreeSnapshot, after: WorktreeSnapshot): string
     : !before.ok
       ? (after.files.size === 0 ? [] : [...after.files.keys()])
       : [...new Set([...before.files.keys(), ...after.files.keys()])].filter((name) => before.files.get(name) !== after.files.get(name));
-  if (before.head && after.head && before.head !== after.head) files.push('HEAD');
+  if ((before.head && after.head && before.head !== after.head) || before.branch !== after.branch) files.push('HEAD');
   return files;
 }
 
@@ -317,12 +327,15 @@ function failureReport(failure: WorkflowFailure): { outcome: 'failed'; message: 
 type ReportBody = Parameters<typeof reportAttempt>[2];
 
 function workspaceOf(value: unknown): WorkspaceContract | undefined {
-  if (!isRecord(value) || (value.mode !== 'new' && value.mode !== 'continue') || typeof value.branch !== 'string') return undefined;
-  const base = isRecord(value.base) && typeof value.base.commit === 'string' && typeof value.base.ref === 'string'
-    ? { ref: value.base.ref, commit: value.base.commit } : undefined;
+  if (!isRecord(value) || (value.mode !== 'new' && value.mode !== 'continue' && value.mode !== 'read-only') || typeof value.branch !== 'string') return undefined;
+  const base = isRecord(value.base) && typeof value.base.commit === 'string' && (value.base.ref === undefined || typeof value.base.ref === 'string')
+    ? { ...(typeof value.base.ref === 'string' ? { ref: value.base.ref } : {}), commit: value.base.commit } : undefined;
   const start = isRecord(value.start) && typeof value.start.commit === 'string'
     ? { commit: value.start.commit, ...(typeof value.start.branch === 'string' ? { branch: value.start.branch } : {}) } : undefined;
   if (!base || !start || typeof value.configCommit !== 'string' || !Array.isArray(value.merge)) return undefined;
+  if (value.mode === 'read-only') {
+    return value.merge.length === 0 ? { mode: value.mode, base, configCommit: value.configCommit, branch: value.branch, start, merge: [] } : undefined;
+  }
   const merge = value.merge.flatMap((item) => (
     isRecord(item) && typeof item.branch === 'string' && typeof item.commit === 'string' ? [{ branch: item.branch, commit: item.commit }] : []
   ));
@@ -333,6 +346,7 @@ function parseLease(raw: unknown): Lease | undefined {
   const rawLease = raw as Record<string, unknown> | undefined;
   if (!rawLease || typeof rawLease.step !== 'string' || typeof rawLease.attempt !== 'string' || typeof rawLease.revision !== 'number') return undefined;
   const env = stringMap(rawLease.env);
+  const workspace = workspaceOf(rawLease.workspace);
   const session = isRecord(rawLease.session) && typeof rawLease.session.tool === 'string' && typeof rawLease.session.id === 'string'
     ? { tool: rawLease.session.tool, id: rawLease.session.id } : undefined;
   const lease: Lease = {
@@ -347,26 +361,42 @@ function parseLease(raw: unknown): Lease | undefined {
     ...(rawLease.interactive === true ? { interactive: true } : {}),
     ...(rawLease.readOnly === true ? { readOnly: true } : {}),
     ...(typeof rawLease.defaultModel === 'string' ? { defaultModel: rawLease.defaultModel } : {}),
-    ...(workspaceOf(rawLease.workspace) ? { workspace: workspaceOf(rawLease.workspace) } : {}),
+    ...(workspace ? { workspace } : rawLease.workspace !== undefined ? { unreadableWorkspace: true } : {}),
     ...(session ? { session } : {}),
   };
   return (lease.command === undefined) === (lease.prompt === undefined) ? undefined : lease;
 }
 
-/** The checkout this lease uses. Read-only steps share the active checkout; a workspace has its own worktree. */
+/** The checkout this lease uses. A step without a workspace shares the active checkout; a workspace has its own worktree. */
 function placeOf(lease: Lease, active: string): string {
   return lease.cwd ?? (lease.workspace ? worktreePath(active, lease.workspace.branch) : active);
 }
 
-async function stageLease(active: string, lease: Lease): Promise<WorkflowFailure | undefined> {
+async function stageLease(lease: Lease, { active, runId }: { active: string; runId: string }): Promise<WorkflowFailure | undefined> {
+  if (lease.unreadableWorkspace) {
+    return { code: 'workspace_base', message: `Step "${lease.step}" was leased a workspace this teamai cannot read. Update teamai.` };
+  }
   if (!lease.workspace) {
     lease.cwd = active;
     lease.before = await snapshotWorktree(active);
     return undefined;
   }
+  const blocked = await unrestoredCopy(worktreePath(active, lease.workspace.branch));
+  if (blocked?.state === 'unreadable') {
+    return { code: 'workspace_base', message: `Workspace ${blocked.dir} has a marker teamai cannot read: ${blocked.marker}. Put ${blocked.dir} back on ${lease.workspace.branch} as the step found it, delete ${blocked.marker}, then retry this step with teamai workflow retry ${runId} ${lease.step}.` };
+  }
+  if (blocked) {
+    const { branch, commit, step, reason } = blocked.marker;
+    return { code: 'workspace_base', message: `Step "${step}" read workspace ${blocked.dir} and it was not put back (${reason}). It is still not back: ${blocked.left}. Put ${blocked.dir} back on ${branch} at ${commit} as the step found it, then retry this step with teamai workflow retry ${runId} ${lease.step}.` };
+  }
   const opened = await ensureWorktree(active, lease.workspace.branch, lease.workspace.start.commit);
   if ('error' in opened) return { code: 'workspace_base', message: opened.error };
   lease.cwd = opened.dir;
+  if (lease.workspace.mode === 'read-only') {
+    const marked = await markReadCopy(opened.dir, { branch: lease.workspace.branch, step: lease.step });
+    if ('error' in marked) return { code: 'workspace_base', message: `Step "${lease.step}" cannot mark workspace ${opened.dir} as in use by a reader: ${marked.error}` };
+    lease.found = marked.found;
+  }
   lease.rangeFrom = (await headCommit(opened.dir))?.commit;
   let conflict: { branch: string; files: string[] } | undefined;
   const remaining: string[] = [];
@@ -392,6 +422,13 @@ async function stageLease(active: string, lease: Lease): Promise<WorkflowFailure
   await deliverTeamAssets(opened.dir);
   await recordConfigOverlay(opened.dir, applied.saved);
   lease.overlay = applied.saved;
+  if (lease.workspace.mode === 'read-only') {
+    // Taken over the base overlay, so only what the step itself changes differs from it.
+    lease.before = await snapshotWorktree(opened.dir);
+    if (lease.before.ok && lease.before.head) return undefined;
+    await restoreLeaseOverlay(lease);
+    return { code: 'workspace_base', message: `Step "${lease.step}" could not read workspace ${lease.workspace.branch}` };
+  }
   await reopenConfigConflicts(opened.dir, applied.saved);
   lease.conflicts = await rememberedConflicts(opened.dir);
   return undefined;
@@ -504,10 +541,59 @@ async function restoreLeaseOverlay(lease: Lease): Promise<void> {
   lease.overlay = undefined;
 }
 
+/** How a reader left its copy. `kept` holds what the step changed; an unrestored copy lacks it when keeping failed. */
+type ReadCopy = { read: StepRead } & (
+  | { state: 'untouched' }
+  | { state: 'restored'; changed: string[]; kept: KeptChanges }
+  | { state: 'unrestored'; changed: string[]; reason: string; dir: string; kept?: KeptChanges }
+);
+
+/**
+ * Leaves a read-only copy as the step found it: the base agent files go back, and a copy the step changed is reset to
+ * the commit it read, so a later step there does not commit the change. What the step changed is kept on a ref first.
+ * Undefined for any other lease.
+ */
+async function leaveReadCopy(lease: Lease): Promise<ReadCopy | undefined> {
+  const { cwd, before, found, workspace } = lease;
+  if (!cwd || !before?.head || !found || workspace?.mode !== 'read-only') return undefined;
+  const changed = changedPaths(before, await snapshotWorktree(cwd));
+  // A detach or a switch to another branch at the same commit changes no file, but a later step would commit off the branch.
+  // The full ref: --short prints heads/<branch> when a tag has the same name.
+  const onBranch = (await git(cwd, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim() === `refs/heads/${workspace.branch}`;
+  if (!onBranch && !changed.includes('HEAD')) changed.push('HEAD');
+  await restoreLeaseOverlay(lease);
+  const read = { branch: workspace.branch, base: workspace.base.commit, commit: before.head };
+  const put = await putBackCopy({ dir: cwd, branch: read.branch, commit: read.commit, found, changed, attempt: lease.attempt, step: lease.step });
+  return put.state === 'unrestored' ? { read, changed, dir: cwd, ...put } : put.state === 'restored' ? { read, changed, ...put } : { read, ...put };
+}
+
+/** A reader that changed its copy fails. `changed` is the step's own sentence naming the paths. */
+function readCopyFailure(left: Exclude<ReadCopy, { state: 'untouched' }>, changed: string): WorkflowFailure {
+  const { branch, commit } = left.read;
+  switch (left.state) {
+    case 'restored':
+      return { code: 'read_only_dirty', message: `${changed} Workspace ${branch} was put back at ${commit}. ${keptSentence(left.kept)}` };
+    case 'unrestored':
+      return {
+        code: 'workspace_base',
+        message: left.kept
+          ? `${changed} Workspace ${branch} could NOT be put back at ${commit}: ${left.reason}. ${keptSentence(left.kept)} Later steps there fail until ${left.dir} is back on ${branch} at ${commit} as the step found it.`
+          : `${changed} Workspace ${branch} could NOT be put back at ${commit}: ${left.reason}. Its changes were NOT saved and are still in ${left.dir}. Copy them out before you put ${left.dir} back on ${branch} at ${commit} as the step found it. Later steps there fail until it is.`,
+      };
+    default: {
+      const unhandled: never = left;
+      return unhandled;
+    }
+  }
+}
+
 async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?: { branch: string; base: string; from: string; to: string; commits: string[] }; failure?: WorkflowFailure }> {
-  if (!lease.workspace || !lease.cwd) return {};
+  if (!lease.workspace || lease.workspace.mode === 'read-only' || !lease.cwd) return {};
   if (lease.overlay) await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
   lease.overlay = undefined;
+  // A commit on whatever HEAD the step left would be reported and pushed as the leased branch, which would lack it.
+  const on = await offBranch(lease.cwd, lease.workspace.branch);
+  if (on) return { failure: { code: 'workspace_base', message: `Step "${lease.step}" left workspace ${lease.cwd} ${on}, not on branch ${lease.workspace.branch}, so nothing was committed or pushed. Check out ${lease.workspace.branch} in ${lease.cwd} with the changes to keep, then retry the step.` } };
   const open = await unresolvedConflicts(lease.cwd, lease.conflicts);
   if (open.length > 0) return { failure: { code: 'merge_conflict', message: `Unresolved merge conflict: ${open.join(', ')}` } };
   const committed = await commitWork(lease.cwd, `teamai: ${lease.step}`, lease.rangeFrom);
@@ -521,7 +607,8 @@ async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?:
     to: committed.to,
     commits: committed.commits,
   };
-  return typeof pushed === 'object' ? { changes, failure: { code: 'push_failed', message: pushed.error } } : { changes };
+  if (typeof pushed !== 'object') return { changes };
+  return { changes, failure: { code: 'push_failed', message: `Step "${lease.step}" committed on ${lease.workspace.branch} in ${lease.cwd}, but pushing it to origin failed. The commits stay on ${lease.workspace.branch}. Fix what blocked the push, then push ${lease.workspace.branch} from ${lease.cwd} or retry the step. Git said: ${pushed.error}` } };
 }
 
 async function commandReport(attemptResultPath: string, driver: DriverIdentity, lease: Lease, result: CommandResult): Promise<ReportBody> {
@@ -536,10 +623,18 @@ async function commandReport(attemptResultPath: string, driver: DriverIdentity, 
       return { attempt: lease.attempt, revision: lease.revision, driver, exitCode: 0, ...failureReport(failure) };
     }
   }
-  const finished = lease.workspace ? await finishWorkspace(lease, result.exitCode === 0) : {};
-  const failed = result.exitCode !== 0 || finished.failure;
-  const message = finished.failure?.message
-    ?? (result.exitCode !== 0 ? (snippet === '' ? `command exited with status ${result.exitCode}` : `command exited with status ${result.exitCode}: ${snippet}`) : undefined);
+  const left = await leaveReadCopy(lease);
+  const touched = left?.state === 'untouched' ? undefined : left;
+  const exited = result.exitCode === 0
+    ? undefined
+    : snippet === '' ? `command exited with status ${result.exitCode}` : `command exited with status ${result.exitCode}: ${snippet}`;
+  // A failing command keeps its own failure, and still says where the changes it made went.
+  const copy = touched && readCopyFailure(touched, `${exited ? `${exited}. ` : ''}Read-only command step changed repository paths: ${touched.changed.join(', ')}.`);
+  const dirty = copy && (!exited || copy.code === 'workspace_base') ? copy : undefined;
+  const finished = lease.workspace && !left ? await finishWorkspace(lease, result.exitCode === 0) : {};
+  const failure = dirty ?? finished.failure;
+  const failed = result.exitCode !== 0 || failure;
+  const message = failure?.message ?? copy?.message ?? exited;
   return {
     attempt: lease.attempt,
     revision: lease.revision,
@@ -548,8 +643,9 @@ async function commandReport(attemptResultPath: string, driver: DriverIdentity, 
     ...(output !== undefined ? { outputs: output } : {}),
     exitCode: result.exitCode,
     ...(message ? { message } : {}),
-    ...(finished.failure ? { failure: finished.failure } : {}),
+    ...(failure ? { failure } : {}),
     ...(finished.changes ? { changes: finished.changes } : {}),
+    ...(left ? { read: left.read } : {}),
   };
 }
 
@@ -575,7 +671,9 @@ async function promptReport(
   if (!supportedTool(selected)) {
     return giveUp({ code: 'tool_unsupported', message: `The local workflow tool "${selected}" is not supported` }, selected);
   }
-  const loaded = lease.agent ? await loadAgent(selected, lease.agent, config, options.toolPaths) : undefined;
+  // A worktree has its own pull record, so the tool launched there is observed and bound as that checkout.
+  const stepConfig = lease.workspace && lease.cwd ? await detectProjectConfig(lease.cwd) ?? config : config;
+  const loaded = lease.agent ? await loadAgent(selected, lease.agent, stepConfig, options.toolPaths) : undefined;
   const agent = loaded?.spec;
   if (lease.agent && !agent) {
     return giveUp({
@@ -584,7 +682,7 @@ async function promptReport(
     }, selected);
   }
   const chosen = await chooseStepModel({
-    step: lease.step, tool: selected, model: lease.model, defaultModel: lease.defaultModel, agent: agent ?? undefined, config,
+    step: lease.step, tool: selected, model: lease.model, defaultModel: lease.defaultModel, agent: agent ?? undefined, config: stepConfig,
   });
   if (!chosen.ok) return giveUp(chosen.failure, selected);
   if (agent && localToolFamily(selected) === 'codex') {
@@ -601,7 +699,7 @@ async function promptReport(
     : {};
   const [observed, launch] = await Promise.all([
     observeLaunch({
-      config,
+      config: stepConfig,
       tool: selected,
       cwd,
       ...(lease.agent && loaded ? { definition: { stem: lease.agent, file: loaded.file, ...definitionModel } } : {}),
@@ -609,7 +707,7 @@ async function promptReport(
         ? { chosen: { model: chosen.model.name, ...(chosen.model.effort ? { effort: chosen.model.effort } : {}), ...(chosen.alias ? { alias: chosen.alias } : {}) } }
         : {}),
     }),
-    workflowLaunch(config, selected),
+    workflowLaunch(stepConfig, selected),
   ]);
   let result: LocalToolResult;
   try {
@@ -631,11 +729,13 @@ async function promptReport(
       failure: { code: 'tool_failed', message: `${selected} could not complete the workflow step` },
     };
   }
-  const paths = before && !lease.workspace ? changedPaths(before, await snapshotWorktree(cwd)) : [];
-  const dirtyFailure = paths.length > 0
-    ? { code: 'read_only_dirty', message: `Read-only prompt step changed repository paths: ${paths.join(', ')}` }
-    : undefined;
-  const finished = lease.workspace && !dirtyFailure ? await finishWorkspace(lease, result.exitCode === 0 && !result.failure) : {};
+  const left = await leaveReadCopy(lease);
+  const touched = left?.state === 'untouched' ? undefined : left;
+  const paths = !left && before && !lease.workspace ? changedPaths(before, await snapshotWorktree(cwd)) : [];
+  const dirtyFailure = touched
+    ? readCopyFailure(touched, `Read-only prompt step changed repository paths: ${touched.changed.join(', ')}.`)
+    : paths.length === 0 ? undefined : { code: 'read_only_dirty', message: `Read-only prompt step changed repository paths: ${paths.join(', ')}` };
+  const finished = lease.workspace && !left && !dirtyFailure ? await finishWorkspace(lease, result.exitCode === 0 && !result.failure) : {};
   const failure = dirtyFailure ?? finished.failure ?? result.failure;
   const ran = result.started ? result : undefined;
   return {
@@ -651,6 +751,7 @@ async function promptReport(
     ...(ran ? { agent: ran.applied ? { ...observed, definition: { applied: ran.applied } } : observed } : {}),
     exitCode: result.exitCode,
     ...(finished.changes ? { changes: finished.changes } : {}),
+    ...(left ? { read: left.read } : {}),
     ...(failure ? failureReport(failure) : { outcome: result.exitCode === 0 ? 'success' : 'failed' }),
   };
 }
@@ -700,7 +801,9 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
   const base = await headCommit(cwd);
   let prompt: { lease: Lease; controller: AbortController; exit: Promise<ReportBody> } | undefined;
   let question: { hitl: LocalHitl; controller: AbortController; exit: Promise<{ kind: 'question'; line?: string }> } | undefined;
-  const room = (): boolean => !prompt && inFlight.size + dying.size + held.length < maxParallel && !held.some((lease) => lease.prompt !== undefined);
+  // A headless prompt takes a slot as a command does, so a step in another checkout starts beside it. An interactive one has the terminal.
+  const busy = (): number => inFlight.size + dying.size + (prompt ? 1 : 0);
+  const room = (): boolean => !prompt?.lease.interactive && busy() + held.length < maxParallel && !held.some((lease) => lease.prompt !== undefined);
   const cancel = (attempt: string): void => {
     if (prompt?.lease.attempt === attempt) prompt.controller.abort();
     const index = held.findIndex((lease) => lease.attempt === attempt);
@@ -786,7 +889,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         ...[...dying.values()].map(({ lease }) => placeOf(lease, cwd)),
         ...(prompt ? [placeOf(prompt.lease, cwd)] : []),
       ]);
-      for (let index = 0; !prompt?.lease.interactive && held[index]?.command !== undefined && inFlight.size + dying.size < maxParallel;) {
+      for (let index = 0; !prompt?.lease.interactive && held[index]?.command !== undefined && busy() < maxParallel;) {
         const lease = held[index]!;
         if ([...dying.values()].some((stopping) => stopping.step === lease.step)
           || placesBusy().has(placeOf(lease, cwd))
@@ -795,7 +898,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           continue;
         }
         held.splice(index, 1);
-        const failure = await stageLease(cwd, lease);
+        const failure = await stageLease(lease, { active: cwd, runId });
         if (failure) {
           const failed = await failStaged(lease, failure);
           if (failed) return failed;
@@ -803,7 +906,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         }
         inFlight.set(lease.attempt, { lease, command: startCommand(lease.command!, lease.cwd ?? cwd, lease.env ?? {}, detached) });
       }
-      if (!prompt && inFlight.size + dying.size < maxParallel) {
+      if (!prompt && busy() < maxParallel) {
         const promptAt = held.findIndex((lease) => lease.prompt !== undefined
           && !placesBusy().has(placeOf(lease, cwd))
           && ![...dying.values()].some((stopping) => stopping.step === lease.step)
@@ -816,7 +919,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
             if (failed) return failed;
             continue;
           }
-          const failure = await stageLease(cwd, lease);
+          const failure = await stageLease(lease, { active: cwd, runId });
           if (failure) {
             const failed = await failStaged(lease, failure);
             if (failed) return failed;
@@ -885,7 +988,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       if (exited.kind === 'stopped') {
         const stopping = dying.get(exited.attempt);
         dying.delete(exited.attempt);
-        if (stopping) await restoreLeaseOverlay(stopping.lease);
+        if (stopping) await (stopping.lease.workspace?.mode === 'read-only' ? leaveReadCopy(stopping.lease) : restoreLeaseOverlay(stopping.lease));
         continue;
       }
       inFlight.delete(exited.attempt);
@@ -899,7 +1002,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     for (const attempt of inFlight.keys()) cancel(attempt);
     await Promise.all([...dying.values()].map(async ({ lease, command }) => {
       await command.stop();
-      await restoreLeaseOverlay(lease);
+      await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
     }));
     if (signalled) exitOn(signalled);
     for (const name of STOP_SIGNALS) process.off(name, onSignal);

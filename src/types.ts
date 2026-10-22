@@ -3,10 +3,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
+import { realHost, toolHome } from './tool-home.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
 
-const DEFAULT_COPILOT_HOME = '.copilot';
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
 const COPILOT_PROJECT_MCP_CONFIG = '.github/mcp.json';
 
@@ -1058,6 +1058,16 @@ export const StateSchema = z.object({
     delivered: z.record(z.string(), z.string()).optional(),
     agentModels: z.record(z.string(), z.record(z.string(), RecordedAgentModelSchema)).optional(),
     gitExcludePaths: z.record(z.string(), z.array(z.string())).optional(),
+    /**
+     * Each tool's skills directories (`writesOf(locate(...))`) the last full pull
+     * of this checkout delivered into, write gates met only, and for a tool
+     * that missed a skill there, the directories it took skills from before
+     * (`settleSkillDirs`). A tool whose skills follow the session is left out.
+     * A record without it, from an older CLI, misses the fast path once.
+     */
+    skillDirs: z.record(z.string(), z.array(z.string())).optional(),
+    /** The home (`toolHome`) of each tool whose skills follow the session, at the last full pull that delivered it every skill. */
+    sessionToolHomes: z.record(z.string(), z.string()).optional(),
     rootsSeeded: z.boolean().optional(),
     /** The children a workspace was last delivered with (`WorkspaceChildren.fingerprint`, #913). */
     children: z.string().optional(),
@@ -2333,7 +2343,7 @@ export type CultureFrontmatter = z.infer<typeof CultureFrontmatterSchema>;
  * at the workspace root returned here. This function only ever governs resource
  * landing, never machine-data location.
  */
-export function resolveBaseDir(localConfig: LocalConfig): string {
+export function resolveBaseDir(localConfig: Pick<LocalConfig, 'scope' | 'projectRoot'>): string {
   if (localConfig.scope === 'project') {
     if (!localConfig.projectRoot) {
       throw new Error(
@@ -2348,10 +2358,9 @@ export function resolveBaseDir(localConfig: LocalConfig): string {
 
 export const COPILOT_TOOL_ID = 'copilot';
 
-/** GitHub Copilot CLI's user configuration root, honoring COPILOT_HOME. */
+/** GitHub Copilot CLI's user configuration root: the recorded one (`toolHome`), else COPILOT_HOME, else `~/.copilot`. */
 export function getCopilotHome(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.COPILOT_HOME?.trim();
-  return configured ? path.resolve(configured) : path.join(getUserHome(), DEFAULT_COPILOT_HOME);
+  return toolHome(COPILOT_TOOL_ID, realHost({ env }));
 }
 
 export const CLAUDE_TOOL_ID = 'claude';
@@ -2391,10 +2400,28 @@ export interface RelocatableTool {
   defaultRoot: string;
 }
 
+/**
+ * The home and path flavor a tool root resolves against: this process's by
+ * default, or a member's machine described by `locate`'s host, so a Linux test
+ * can resolve a Windows member's recorded roots.
+ */
+export type HomePaths = { readonly home: string; readonly path: path.PlatformPath };
+
+function processHomePaths(): HomePaths {
+  return { home: getUserHome(), path };
+}
+
+function expandHomeAt(p: string, at: HomePaths): string {
+  if (p.startsWith('~/') || p === '~' || (at.path === path.win32 && p.startsWith('~\\'))) {
+    return at.path.join(at.home, p.slice(1));
+  }
+  return p;
+}
+
 /** True when `dir` resolves to something inside the user's home directory. */
-function isUnderUserHome(dir: string): boolean {
-  const rel = path.relative(getUserHome(), path.resolve(dir));
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+function isUnderUserHome(dir: string, at: HomePaths): boolean {
+  const rel = at.path.relative(at.home, at.path.resolve(dir));
+  return rel !== '' && !rel.startsWith('..') && !at.path.isAbsolute(rel);
 }
 
 /**
@@ -2462,12 +2489,12 @@ export const RELOCATABLE_TOOLS: Readonly<Record<string, RelocatableTool>> = {
  * or null when it can. One place decides, so `teamai init` refuses to record
  * exactly the roots `applyToolRoots` would refuse to apply.
  */
-export function toolRootRejection(dir: string): string | null {
-  const resolved = path.resolve(expandHome(dir));
-  if (!isUnderUserHome(resolved)) {
-    return `it is outside the home directory ${getUserHome()}, and every tool path is resolved relative to it`;
+export function toolRootRejection(dir: string, at: HomePaths = processHomePaths()): string | null {
+  const resolved = at.path.resolve(expandHomeAt(dir, at));
+  if (!isUnderUserHome(resolved, at)) {
+    return `it is outside the home directory ${at.home}, and every tool path is resolved relative to it`;
   }
-  const segment = path.relative(getUserHome(), resolved).split(path.sep).join('/');
+  const segment = at.path.relative(at.home, resolved).split(at.path.sep).join('/');
   if (!isAddressableRootSegment(segment)) {
     return 'a tool root has to be a directory in the home directory other than '
       + '~/.config itself (~/.claude-work), or a directory under a ~/.config/<name> one, '
@@ -2592,11 +2619,12 @@ export function toolInstallRoot(toolPath: string): string {
 export function toolGateRoot(
   tool: string,
   toolPath: string,
-  toolRoots?: Record<string, string>,
+  toolRoots?: Readonly<Record<string, string>>,
+  at?: HomePaths,
 ): string {
   const recorded = toolRoots?.[tool];
   if (recorded) {
-    const segment = toolRootSegment(tool, recorded);
+    const segment = toolRootSegment(tool, recorded, at);
     if (segment && (toolPath === segment || toolPath.startsWith(`${segment}/`))) return segment;
   }
   return toolInstallRoot(toolPath);
@@ -2618,7 +2646,7 @@ const warnedToolRoots = new Set<string>();
  * of the sync is still correct, and failing a whole pull over one member's typo
  * would be worse than telling them about it.
  */
-function toolRootSegment(tool: string, configured: string): string | null {
+function toolRootSegment(tool: string, configured: string, at: HomePaths = processHomePaths()): string | null {
   if (!(tool in RELOCATABLE_TOOLS)) {
     if (!warnedToolRoots.has(tool)) {
       warnedToolRoots.add(tool);
@@ -2630,8 +2658,8 @@ function toolRootSegment(tool: string, configured: string): string | null {
     }
     return null;
   }
-  const resolved = path.resolve(expandHome(configured));
-  const rejection = toolRootRejection(resolved);
+  const resolved = at.path.resolve(expandHomeAt(configured, at));
+  const rejection = toolRootRejection(resolved, at);
   if (rejection) {
     const key = `${tool}:${resolved}`;
     if (!warnedToolRoots.has(key)) {
@@ -2640,7 +2668,7 @@ function toolRootSegment(tool: string, configured: string): string | null {
     }
     return null;
   }
-  return path.relative(getUserHome(), resolved).split(path.sep).join('/');
+  return at.path.relative(at.home, resolved).split(at.path.sep).join('/');
 }
 
 /**
@@ -2702,14 +2730,15 @@ function relocateToolPaths(
  */
 export function applyToolRoots(
   toolPaths: Record<string, z.infer<typeof ToolPathsSchema>>,
-  toolRoots?: Record<string, string>,
+  toolRoots?: Readonly<Record<string, string>>,
+  at?: HomePaths,
 ): Record<string, z.infer<typeof ToolPathsSchema>> {
   if (!toolRoots || Object.keys(toolRoots).length === 0) return toolPaths;
   let out: Record<string, z.infer<typeof ToolPathsSchema>> | undefined;
   for (const [tool, configured] of Object.entries(toolRoots)) {
     const paths = toolPaths[tool];
     if (!paths) continue;
-    const newRoot = toolRootSegment(tool, configured);
+    const newRoot = toolRootSegment(tool, configured, at);
     if (!newRoot) continue;
     // Every root the tool's paths hang off, not just the first one: a team that
     // customized `toolPaths.claude` field by field may have spread them over
@@ -2753,10 +2782,11 @@ export function applyToolRoots(
  */
 export function scopedToolPaths(
   teamConfig: Pick<TeamaiConfig, 'toolPaths'>,
-  localConfig: { scope?: Scope; toolRoots?: Record<string, string> },
+  localConfig: { scope?: Scope; toolRoots?: Readonly<Record<string, string>> },
+  at?: HomePaths,
 ): Record<string, z.infer<typeof ToolPathsSchema>> {
   if (localConfig.scope !== 'user') return teamConfig.toolPaths;
-  const rooted = applyToolRoots(teamConfig.toolPaths, localConfig.toolRoots);
+  const rooted = applyToolRoots(teamConfig.toolPaths, localConfig.toolRoots, at);
   const out: Record<string, z.infer<typeof ToolPathsSchema>> = {};
   for (const [tool, paths] of Object.entries(rooted)) {
     const us = paths.userScope;

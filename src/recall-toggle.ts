@@ -43,7 +43,7 @@ async function removeRecallArtifacts(teamConfig: TeamaiConfig, localConfig: Loca
     // the shared .agents/skills root pruned on its behalf, and OpenClaw and
     // Hermes are pruned where their skills actually live.
     if (toolPath.skills && !isAgentExcluded(localConfig, tool)) {
-      const target = await builtinSkillsTarget(tool, toolPath.skills, localConfig);
+      const target = await builtinSkillsTarget(tool, teamConfig, localConfig);
       if (target) await pruneLegacyBuiltinSkills(tool, target, LEGACY_RECALL_SKILL_NAMES);
     }
 

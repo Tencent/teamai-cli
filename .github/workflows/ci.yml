@@ -217,3 +217,36 @@ jobs:
       # fixture repo into it themselves (prepareRemoteTeamHome in e2e.test.ts).
       - name: Run E2E (full surface)
         run: npx vitest run --config vitest.e2e.config.ts --reporter=verbose
+
+  # Not required: not in `build.needs` nor in branch protection, and no
+  # `continue-on-error`, which would paint a failure green. Add it to
+  # `build.needs` once it stays green.
+  windows:
+    name: Windows (paths, hook rendering, hook shells)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build
+        run: npm run build
+
+      # The list lives in src/__tests__/helpers/windows-tests.ts;
+      # windows-test-list.test.ts, in the suite on every OS, keeps it honest.
+      - name: Windows-safe unit tests
+        run: npx vitest run --config vitest.windows.config.ts
+
+      # One real `teamai hook-dispatch session-start` per hook shell: Git Bash,
+      # Windows PowerShell, node. The e2e setup puts the built CLI on PATH as
+      # teamai.cmd. The file skips itself off Windows.
+      - name: Hook shells
+        run: npx vitest run --config vitest.e2e.config.ts src/__tests__/e2e/hook-shells-windows.test.ts

@@ -73,7 +73,6 @@ describe('classifyToolCall', () => {
     'cat notes.txt > doc.md',
     'cat < doc.md',
     'cat doc.md >&2',
-    'cat doc.md && echo ok',
     'cat doc.md || true',
     'cat doc.md; echo ok',
     'cat doc.md &',
@@ -134,6 +133,104 @@ describe('classifyToolCall', () => {
     expect(shell('cat doc.md 2>&1 | head -n 20')).toMatchObject({ category: 'read', paths: [at('doc.md')], simple: false });
   });
 
+  // A command list is a read only as reads and guards joined by `;`, `&&` or newlines, of what its last `&&` chain read.
+  it.each<[string, string[]]>([
+    ['pwd; cat /abs/SKILL.md', ['/abs/SKILL.md']],
+    ['pwd\ncat doc.md', ['doc.md']],
+    ['test -f doc.md && cat doc.md', ['doc.md']],
+    ['[ -s doc.md ] && cat doc.md', ['doc.md']],
+    ['cd docs && cat a.md', ['docs/a.md']],
+    ['cd docs && cd sub && sed -n 1,5p a.md', ['docs/sub/a.md']],
+    ['cd /abs && cat a.md /b.md', ['/abs/a.md', '/b.md']],
+    ['cd docs; cat /abs/doc.md', ['/abs/doc.md']],
+    ['pwd; cat ~/doc.md', [path.join(getUserHome(), 'doc.md')]],
+    ['cat doc.md;', ['doc.md']],
+    ['test -f /abs/SKILL.md && cat /abs/SKILL.md;', ['/abs/SKILL.md']],
+    ['cat doc.md && echo ok', ['doc.md']],
+    ['cat a.md && head -n 5 b.md', ['a.md', 'b.md']],
+    ['sed -n 1,5p doc.md && sed -n 6,9p doc.md', ['doc.md']],
+    ['cat a.md; cat b.md', ['b.md']],
+    ['ls docs 2>/dev/null; true && : && echo "a; b" && cat doc.md 2>&1', ['doc.md']],
+  ])('the command list %j reads %j', (command, files) => {
+    expect(shell(command)).toMatchObject({ category: 'read', paths: files.map(at), simple: false, status: 'success' });
+  });
+
+  it.each<[string, string]>([
+    ['a heredoc', "cat <<'EOF'\ncat /abs/SKILL.md\nEOF"],
+    ['a read after false &&', 'false && cat /abs/SKILL.md; echo ok'],
+    ['exit', 'exit 0; cat /abs/SKILL.md'],
+    ['a substitution in quotes', 'echo "$(echo "x; cat /abs/SKILL.md; echo x")"'],
+    ['exit in a compound', 'if true; then exit 0; fi; cat /abs/SKILL.md'],
+    ['a read followed by ;', "printf '%' && cat /abs/SKILL.md; echo ok"],
+    ['exit after a pipe', 'echo ok | exit 0; cat /abs/SKILL.md'],
+    ['||', 'true || false && cat /abs/SKILL.md'],
+    ['a redirect that can fail', 'true 2>/nonexistent/err && cat /abs/SKILL.md; echo ok'],
+    ['an assignment', 'X=$(false) && cat /abs/SKILL.md; echo ok'],
+    ['a compound', 'if true; then true; fi && cat /abs/SKILL.md'],
+    ['a compound before ;', 'if true; then echo exit; fi; cat /abs/SKILL.md'],
+    ['a function', 'f() { exit 0; }; cat /abs/SKILL.md'],
+    ['exec', 'exec 2>/tmp/teamai-review.log; cat /abs/SKILL.md'],
+    ['a fallback', 'test -f /missing || true && cat /abs/SKILL.md; echo ok'],
+    ['a guard with an argument', 'pwd --invalid && cat /abs/SKILL.md; echo ok'],
+    ['a guard by path', '/nonexistent/true && cat /abs/SKILL.md; echo ok'],
+    ['eval', "eval 'exit 0'; cat /abs/SKILL.md"],
+    ['a function named like a reader', 'cat() { echo placeholder; }; cat /abs/SKILL.md'],
+    ['a case in a substitution', 'echo "$(case x in x) echo "a; cat /abs/SKILL.md; echo b";; esac)"'],
+    ['a relative read after cd ;', 'cat a.md; cd subdir; cat a.md; echo ok'],
+    ['a subshell function', 'f() (true); cat /abs/SKILL.md'],
+    ['a case', 'case x in x) echo esac;; esac; cat /abs/SKILL.md'],
+    ['a pipeline', 'pwd; cat /abs/SKILL.md | head -n 5'],
+    ['a background command', 'pwd; cat /abs/SKILL.md &'],
+    ['a stdout redirect', 'pwd; cat /abs/SKILL.md > copy.md'],
+    ['a stderr redirect to a file', 'pwd; cat /abs/SKILL.md 2>err.log'],
+    ['a relative read after cd ; alone', 'cd docs; cat a.md'],
+    ['cd home', 'cd ~ && cat a.md'],
+    ['cd back', 'cd - && cat a.md'],
+    ['cd to the dir stack', 'cd +1 && cat a.md'],
+    ['cd by another name', 'CD docs && cat a.md'],
+    ['builtin cd', 'builtin cd docs && cat a.md'],
+    ['a group', '{ cd docs; cat a.md; }'],
+    ['a subshell', '(cat /abs/SKILL.md)'],
+    ['source', 'source env.sh; cat /abs/SKILL.md'],
+    ['.', '. ./env.sh; cat /abs/SKILL.md'],
+    ['alias', 'alias cat=true; cat /abs/SKILL.md'],
+    ['set', 'set -e; cat /abs/SKILL.md'],
+    ['trap', "trap 'exit 0' EXIT; cat /abs/SKILL.md"],
+    ['! before a guard', '! true; cat /abs/SKILL.md'],
+    ['a loop', 'while true; do cat /abs/SKILL.md; done'],
+    ['an assignment alone', 'X=1; cat /abs/SKILL.md'],
+    ['an assignment before a read', 'pwd; LC_ALL=C cat /abs/SKILL.md'],
+    ['a reader by path', 'pwd; /bin/cat /abs/SKILL.md'],
+    ['a reader by .exe', 'pwd; cat.exe /abs/SKILL.md'],
+    ['a parameter', 'echo $HOME; cat /abs/SKILL.md'],
+    ['a comment', 'pwd; cat /abs/SKILL.md # note'],
+    ['an empty command', 'pwd;; cat /abs/SKILL.md'],
+    ['an empty command after &&', 'pwd && ; cat /abs/SKILL.md'],
+    ['a final &&', 'pwd; cat /abs/SKILL.md &&'],
+    ['an unclosed quote', "pwd; cat '/abs/SKILL.md"],
+    ['a line continuation', 'pwd; cat \\\n/abs/SKILL.md'],
+    ['a carriage return', 'pwd\r\ncat /abs/SKILL.md'],
+    ['[[', '[[ -f a.md ]] && cat a.md'],
+    ['a test of two files', 'test -f a.md -a -f b.md && cat a.md'],
+    ['true with an argument', 'true x && cat a.md'],
+    ['a search', 'grep -q x a.md && cat /abs/SKILL.md'],
+    ['PowerShell cd', 'Set-Location docs; Get-Content /abs/doc.md'],
+  ])('a command list with %s (%j) reads nothing', (_kind, command) => {
+    expect(shell(command)).toMatchObject({ category: 'shell', paths: [] });
+  });
+
+  it.each<[string, string, string[]]>([
+    ['pwd; cat /abs/SKILL.md', '/w\n---', ['/abs/SKILL.md']],
+    ['echo x && cat doc.md', 'x\n---', ['doc.md']],
+    ['pwd; cat a.md doc.md', '/w\n# a\ncat: doc.md: No such file or directory', ['a.md']],
+    ['cat a.md && cat b.md', '---', ['a.md']],
+    ['test -f doc.md && cat doc.md', '---', []],
+    ['cd docs && cat a.md', '---', []],
+    ['ls docs && cat doc.md', '---', []],
+  ])('status unknown: the command list %j with output %j reads %j, after nothing that can fail', (command, output, files) => {
+    expect(shell(command, output)).toMatchObject({ status: 'unknown', paths: files.map(at) });
+  });
+
   it('a Read tool reads its file_path, resolved against the cwd when there is one', () => {
     expect(classifyToolCall({ tool_name: 'Read', tool_input: { file_path: 'doc.md' }, tool_response: {}, cwd: CWD }))
       .toEqual({ category: 'read', paths: [at('doc.md')], status: 'success', simple: true });
@@ -175,6 +272,7 @@ describe('classifyToolCall', () => {
     ['cat a.md ./doc.md', '# a\ncat: doc.md: Permission denied', ['a.md']],
     ['cat a.md doc.md', `# a\ncat: ${at('doc.md')}: Permission denied`, ['a.md']],
     ['/bin/cat a.md "my doc.md"', "# a\n/bin/cat: 'my doc.md': No such file or directory", ['a.md']],
+    ['cat.exe a.md doc.md', '# a\ncat.exe: doc.md: Permission denied', ['a.md']],
     ['head -n 5 a.md doc.md', '==> a.md <==\n# a\nhead: doc.md: x\n', ['a.md']],
     ['cat a.md doc.md', '# a\ncat: b.md: No such file or directory', ['a.md', 'doc.md']],
     ['cat a.md doc.md', '# a\ngrep: doc.md: No such file or directory', ['a.md', 'doc.md']],

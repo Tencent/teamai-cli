@@ -31,7 +31,8 @@ import {
 import { getHermesHome } from './hermes-home.js';
 import { warnOnce } from './utils/warn-once.js';
 import { blobIdOf, historicalVersions } from './utils/team-history.js';
-import { resolveOpenclawStateDir, resolveOpenclawWorkspace, resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
+import { installOf, locate } from './locate.js';
+import { resolveOpenclawStateDir, resolveOpenclawWorkspace } from './openclaw-home.js';
 import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { getUserHome } from './utils/home.js';
 import { acquireLock, releaseLock } from './update.js';
@@ -909,7 +910,7 @@ async function pullSingleSource(
     let conflictingPath: string | undefined;
     let conflictingRecord: string | undefined;
     const toolPaths = scopedToolPaths(teamConfig, localConfig);
-    const skillTarget = skillTargetsFor(toolPaths, localConfig);
+    const skillTarget = skillTargetsFor(teamConfig, localConfig);
     for (const [tool, toolPath] of Object.entries(toolPaths)) {
       if (isAgentExcluded(localConfig, tool)) continue;
       let membersShared = false;
@@ -1515,14 +1516,13 @@ async function legacyCopyKeeper(
   sourceName: string, repoDir: string, teamConfig: TeamaiConfig, localConfig: LocalConfig, baseDir: string,
 ): Promise<(skillName: string, sourcePath?: string) => KeepRecordedCopy> {
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
+  const install = installOf(teamConfig, localConfig);
   const legacyRoots: string[] = [];
   for (const tool of ['hermes', 'openclaw']) {
     const configured = toolPaths[tool]?.skills;
     if (!configured) continue;
-    const workspace = tool === 'openclaw' ? await resolveOpenclawWorkspaceDir() : null;
-    const delivered = tool === 'hermes' ? path.join(getHermesHome(), 'skills') : workspace && path.join(workspace, 'skills');
     const legacy = path.join(baseDir, configured);
-    if (legacy !== delivered) legacyRoots.push(legacy);
+    if (legacy !== (await locate(tool, 'skills', install)).own) legacyRoots.push(legacy);
   }
   const history = await pathExists(path.join(repoDir, '.git'));
   return (skillName, sourcePath) => async (skillDir) => {

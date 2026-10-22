@@ -2501,6 +2501,70 @@ describe('parallel leases', () => {
   });
 });
 
+describe('held-back steps', () => {
+  const base = { commit: 'b'.repeat(40) };
+  const allModes = ['read-only', 'new', 'continue'] as const;
+
+  it('leases a ready step this driver can run past one it holds back, and keeps that one pending', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: a
+    workspace: new
+    command: node a.js
+  - id: b
+    needs: []
+    command: node b.js
+`));
+
+    const next = await leaseNext(config, runId, driverA, { workspaceModes: ['read-only'] });
+
+    expect(next).toMatchObject({ data: { lease: { step: 'b' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'a', status: 'pending' }, { id: 'b', status: 'leased' }] });
+    await reportAttempt(config, runId, { ...leaseIn(next), outcome: 'success', driver: driverA });
+    expect(await leaseNext(config, runId, driverA, { workspaceModes: ['read-only'] })).toEqual({ data: {
+      wait: { reason: 'step "a" needs workspace new, which this driver does not provide' }, cancelled: [],
+    } });
+  });
+
+  it('waits when every ready step is held back, and names each one in order', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: a
+    workspace: new
+    command: node a.js
+  - id: c
+    needs: []
+    workspace: new
+    command: node c.js
+`));
+
+    const next = await leaseNext(config, runId, driverA, { workspaceModes: ['read-only'] });
+
+    expect(next).toEqual({ data: { wait: {
+      reason: 'step "a" needs workspace new, which this driver does not provide; step "c" needs workspace new, which this driver does not provide',
+    }, cancelled: [] } });
+  });
+
+  it('leases the next item when the first one is held back, and still starts at most max_parallel items', async () => {
+    const { config, runId } = await startTree({ build: workflow('build', `  - id: build
+    for_each: { items: inputs.targets, max_parallel: 1 }
+    workspace: new
+    command: node build.js
+`, 'inputs:\n  targets: [string]\n') }, 'build', { targets: ['web', 'api', 'cli'] });
+    const web = leaseIn(await leaseNext(config, runId, driverB, { workspaceModes: [...allModes], base }));
+    await reportAttempt(config, runId, { ...web, outcome: 'released', driver: driverB });
+
+    const api = await leaseNext(config, runId, driverA, { workspaceModes: [...allModes], base });
+    const full = await leaseNext(config, runId, driverA, { workspaceModes: [...allModes], base, running: [leaseIn(api).attempt] });
+
+    expect(web.step).toBe('build[0]');
+    expect(api).toMatchObject({ data: { lease: { step: 'build[1]' } } });
+    expect(full).toEqual({ data: { wait: { reason: 'build[1] is leased' }, cancelled: [] } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [
+      { id: 'build', status: 'running' },
+      { id: 'build[0]', status: 'pending' },
+      { id: 'build[1]', status: 'leased' },
+      { id: 'build[2]', status: 'pending' },
+    ] });
+  });
+});
+
 describe('causal settlement order', () => {
   it.each(['workflow', 'for_each'])('checks an end-only condition after a %s step settles', async (action) => {
     const build = action === 'workflow'

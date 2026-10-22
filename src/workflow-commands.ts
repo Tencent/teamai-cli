@@ -5,6 +5,7 @@ import { cancelRun, respondToHitl, retryStep } from './workflow/run-controls.js'
 import { localDriver, runLocalDriver } from './workflow/local-driver.js';
 import { scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
 import { isRunId, readRun } from './workflow/store.js';
+import { headCommit } from './workflow/worktree.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 
 function writeEnvelope(envelope: WorkflowEnvelope): void {
@@ -93,7 +94,8 @@ export async function workflowStart(name: string, options: { driver?: string; to
       return;
     }
   }
-  const started = await startRun(config, name, inputs);
+  const base = await headCommit(process.cwd());
+  const started = await startRun(config, name, inputs, base ? { base, checkout: process.cwd() } : {});
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started);
     return;

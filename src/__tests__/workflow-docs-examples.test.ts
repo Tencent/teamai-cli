@@ -177,16 +177,21 @@ describe('workflow guide examples', () => {
     expect(ADVANCED).toEqual(['docs/guide/workflow-advanced.md', 'docs/guide/zh-CN/workflow-advanced.md']);
   });
 
-  it.each(PAGES)('%s: each yaml block parses, and its complete workflows pass pull together', async (page) => {
+  it.each(PAGES)('%s: each yaml block parses, and its complete workflows pass pull unless the page shows their failure', async (page) => {
     const config = teamRepo();
     const { byFile, failures } = writeExamples(page, config);
     expect(byFile.size, `${page} has no complete workflow example`).toBeGreaterThan(0);
 
+    // An example may be invalid only to show a failure: the page prints its exact diagnostic as review output.
+    const shown = new Set([...fs.readFileSync(path.join(ROOT, page), 'utf8').matchAll(/^\s*✖ \[workflows\] (.+)$/gm)].map((match) => match[1] ?? ''));
     const result = await syncWorkflowDefinitions(config, { dryRun: true });
-    for (const diagnostic of result.invalid) {
+    const reported = new Set(result.invalid.map(formatDiagnostic));
+    const shownInvalid = new Set(result.invalid.filter((diagnostic) => shown.has(formatDiagnostic(diagnostic))).map((diagnostic) => diagnostic.file));
+    for (const diagnostic of result.invalid.filter((diagnostic) => !shown.has(formatDiagnostic(diagnostic)))) {
       failures.push(`${byFile.get(diagnostic.file) ?? page}: ${formatDiagnostic(diagnostic)}`);
     }
-    for (const file of result.unrunnable) failures.push(`${byFile.get(file) ?? page}: ${file} has no runnable version`);
+    for (const line of [...shown].filter((line) => !reported.has(line))) failures.push(`${page}: shows "${line}", which no example produces`);
+    for (const file of result.unrunnable.filter((file) => !shownInvalid.has(file))) failures.push(`${byFile.get(file) ?? page}: ${file} has no runnable version`);
     expect(failures).toEqual([]);
   });
 

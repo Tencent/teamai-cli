@@ -8,8 +8,32 @@ import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { z } from 'zod';
+import { TeamaiConfigBaseSchema } from '../types.js';
+import { writeJsonAtomic } from '../utils/fs.js';
 
-const AGENT_PATHS = ['AGENTS.md', 'CLAUDE.md', '.claude', '.codex', '.opencode', '.cursor', '.agents', '.githooks'];
+/** Agent configuration a workspace step reads from the run's base rather than from its branch. */
+export const AGENT_PATHS: readonly string[] = agentConfigPaths();
+
+function agentConfigPaths(): string[] {
+  const paths = new Set(['AGENTS.md', 'CLAUDE.md', '.agents', '.githooks']);
+  for (const tool of Object.values(TeamaiConfigBaseSchema.shape.toolPaths.parse(undefined))) {
+    for (const field of ['skills', 'rules', 'settings', 'hooks', 'claudemd', 'agents', 'mcpProject'] as const) {
+      const relative = tool[field];
+      if (!relative) continue;
+      const root = field === 'hooks' ? path.posix.dirname(relative) : relative;
+      // A hooks file at the repository root has dirname `.`, which would reset the whole worktree.
+      paths.add(configRoot(root === '.' ? relative : root));
+    }
+  }
+  return [...paths];
+}
+
+/** A tool's own directory is reset whole. `.github` also holds workflows and code owners, so only its agent paths are. */
+function configRoot(relative: string): string {
+  const first = relative.split('/')[0] ?? relative;
+  return first !== relative && first.startsWith('.') && first !== '.github' ? first : relative;
+}
 
 export interface GitResult {
   code: number;
@@ -54,7 +78,7 @@ export function worktreePath(main: string, branch: string): string {
 }
 
 /** A path git keeps for this checkout. A linked worktree's `.git` is a file, so the path is not `<checkout>/.git`. */
-async function gitPath(cwd: string, name: string): Promise<string | undefined> {
+export async function gitPath(cwd: string, name: string): Promise<string | undefined> {
   const result = await git(cwd, ['rev-parse', '--git-path', name]);
   const printed = result.code === 0 ? result.stdout.trim() : '';
   return printed === '' ? undefined : path.resolve(cwd, printed);
@@ -75,23 +99,35 @@ export function hooksPath(main: string): string {
   return path.join(main, '.teamai', 'workflow-hooks');
 }
 
-export async function headCommit(cwd: string): Promise<{ ref: string; commit: string } | undefined> {
+/** The commit HEAD points to, and the branch when HEAD is not detached. */
+export async function headCommit(cwd: string): Promise<{ ref?: string; commit: string } | undefined> {
   const result = await git(cwd, ['rev-parse', 'HEAD']);
   if (result.code !== 0) return undefined;
   const commit = result.stdout.trim();
-  return commit ? { ref: 'HEAD', commit } : undefined;
+  if (!commit) return undefined;
+  const ref = (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])).stdout.trim();
+  return ref ? { ref, commit } : { commit };
 }
 
-/** Creates the worktree when it is missing. A branch that already exists is checked out as it is. */
+/**
+ * Creates the worktree when it is missing. A branch that already exists is checked out as it is. An existing worktree
+ * off its branch is refused, so a step never commits on whatever HEAD was left.
+ */
 export async function ensureWorktree(main: string, branch: string, start: string): Promise<{ dir: string } | { error: string }> {
   const dir = worktreePath(main, branch);
   const hooks = hooksPath(main);
   await fs.mkdir(hooks, { recursive: true });
   await hideTeamaiWorktrees(main);
-  const listed = await git(main, ['worktree', 'list', '--porcelain']);
-  const known = listed.code === 0 && listed.stdout.split('\n').some((line) => line.startsWith('worktree ') && path.resolve(line.slice('worktree '.length)) === path.resolve(dir));
-  const existing = known || await git(dir, ['rev-parse', '--is-inside-work-tree']).then((result) => result.stdout.trim() === 'true').catch(() => false);
-  if (existing) {
+  const present = await fs.stat(dir).then((stats) => stats.isDirectory(), () => false);
+  // A deleted worktree stays registered, and `worktree add` refuses its path until it is pruned.
+  if (!present) await git(main, ['worktree', 'prune']);
+  if (present) {
+    const prefix = await git(dir, ['rev-parse', '--show-prefix']);
+    if (prefix.code !== 0 || prefix.stdout.trim() !== '') {
+      return { error: `${dir} is not a workflow worktree, so no step runs there. Move it out of the way, then retry the step.` };
+    }
+    const on = await offBranch(dir, branch);
+    if (on) return { error: `Workspace ${dir} is ${on}, not on branch ${branch}. Check out ${branch} in ${dir}, then retry the step.` };
     await worktreeHooks(main, dir, hooks);
     return { dir };
   }
@@ -104,6 +140,13 @@ export async function ensureWorktree(main: string, branch: string, start: string
   if (created.code !== 0) return { error: created.stderr.trim() || created.stdout.trim() || 'git worktree add failed' };
   await worktreeHooks(main, dir, hooks);
   return { dir };
+}
+
+/** Where HEAD is, such as `on refs/heads/other` or `detached at <commit>`, when it is not on `branch`. Undefined when it is. */
+export async function offBranch(dir: string, branch: string): Promise<string | undefined> {
+  const head = (await git(dir, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim();
+  if (head === `refs/heads/${branch}`) return undefined;
+  return head ? `on ${head}` : `detached at ${(await git(dir, ['rev-parse', 'HEAD'])).stdout.trim()}`;
 }
 
 /** Points this worktree's hooks at `hooks` without changing the active checkout's hooks. */
@@ -133,6 +176,16 @@ export async function applyBaseConfig(
   dir: string, commit: string, hooks: string,
 ): Promise<{ ok: true; saved: string } | { ok: false; message: string }> {
   await git(dir, ['config', '--worktree', 'core.hooksPath', hooks]);
+  const linked = await symlinkedParent(dir);
+  if (linked) {
+    // Every run branch starts from the base, so no step can fix a symlink the base has.
+    const inBase = (await git(dir, ['ls-tree', commit, '--', linked.parent])).stdout.startsWith('120000 ');
+    if (inBase) {
+      return { ok: false, message: `Agent configuration ${linked.relative} is under the symlink ${linked.parent} in the run's base commit ${commit}, so it was not reset. Commit ${linked.parent} as a directory on the base branch, then start a new run.` };
+    }
+    const branch = (await git(dir, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim().replace(/^refs\/heads\//, '');
+    return { ok: false, message: `Agent configuration ${linked.relative} is under the symlink ${linked.parent} on branch ${branch}, so it was not reset. Commit ${linked.parent} as a directory on branch ${branch} in ${dir}, then retry the step.` };
+  }
   const saved = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-agent-'));
   const conflicts = (await git(dir, ['ls-files', '-u', '-z', '--', ...AGENT_PATHS])).stdout;
   await fs.writeFile(path.join(saved, '_conflicts'), conflicts);
@@ -164,6 +217,24 @@ export async function applyBaseConfig(
   return { ok: true, saved };
 }
 
+/** An agent path whose parent is a symlink. Copying or removing it would reach outside the worktree. */
+async function symlinkedParent(dir: string): Promise<{ relative: string; parent: string } | undefined> {
+  for (const relative of AGENT_PATHS) {
+    const parent = await linkedParent(dir, relative);
+    if (parent) return { relative, parent };
+  }
+  return undefined;
+}
+
+async function linkedParent(dir: string, relative: string): Promise<string | undefined> {
+  const parts = relative.split('/');
+  for (let end = 1; end < parts.length; end += 1) {
+    const parent = parts.slice(0, end).join('/');
+    if (await fs.lstat(path.join(dir, parent)).then((stats) => stats.isSymbolicLink(), () => false)) return parent;
+  }
+  return undefined;
+}
+
 /** Puts saved conflict stages back after the base checkout cleared them, before the step runs. */
 export async function reopenConfigConflicts(dir: string, saved: string): Promise<void> {
   const conflicts = await fs.readFile(path.join(saved, '_conflicts'), 'utf8').catch(() => '');
@@ -192,8 +263,13 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
     ...conflictPaths(conflicts).filter((relative) => current[relative] === overlay[relative] && unmerged.has(relative)),
     ...marked,
   ])];
+  // The step replaced a parent of these agent paths with a symlink. That is its edit, and restoring under it would
+  // delete or write files outside the worktree.
+  const linked: string[] = [];
+  for (const root of AGENT_PATHS) if (await linkedParent(dir, root)) linked.push(path.join(root));
   const files = new Set([...Object.keys(overlay), ...Object.keys(current), ...Object.keys(branch)]);
   for (const relative of files) {
+    if (linked.some((root) => relative === root || relative.startsWith(`${root}${path.sep}`))) continue;
     if (unresolved.includes(relative)) continue;
     if (relative === '_overlay.json' || current[relative] !== overlay[relative]) continue;
     // The step replaced a parent, for example a directory with a symlink. Do not restore through that edit.
@@ -216,8 +292,20 @@ export async function restoreUneditedConfig(dir: string, _commit: string, saved:
   await fs.rm(saved, { recursive: true, force: true });
   // `checkout` of the base copies staged those paths. Put the index back with the files, or a step that
   // edits nothing still looks dirty and the empty commit fails it.
-  await git(dir, ['add', '-A', '--', ...AGENT_PATHS]);
+  const present = await presentAgentPaths(dir);
+  if (present.length > 0) await git(dir, ['add', '-A', '--', ...present]);
   if (unresolved.length > 0) await restoreConflictStages(dir, conflicts, unresolved);
+}
+
+/** Agent paths in the worktree or the index. `git add` stages nothing when one of its paths matches neither. */
+async function presentAgentPaths(dir: string): Promise<string[]> {
+  const indexed = await gitPaths(dir, ['ls-files', '--', ...AGENT_PATHS]);
+  const present: string[] = [];
+  for (const relative of AGENT_PATHS) {
+    const tracked = indexed.some((file) => file === relative || file.startsWith(`${relative}/`));
+    if (tracked || await fs.lstat(path.join(dir, relative)).then(() => true, () => false)) present.push(relative);
+  }
+  return present;
 }
 
 async function gitPaths(dir: string, args: string[]): Promise<string[]> {
@@ -274,24 +362,29 @@ async function fileManifest(root: string): Promise<Record<string, string>> {
   return files;
 }
 
+/** Stages every change. `git add -A` skips a submodule whose `ignore` is `all`, so each submodule is also staged by name. */
+async function stageAll(dir: string): Promise<GitResult> {
+  const added = await git(dir, ['add', '-A']);
+  if (added.code !== 0) return added;
+  const listed = await git(dir, ['ls-files', '-s', '-z']);
+  if (listed.code !== 0) return listed;
+  const modules = gitlinkLines(listed.stdout).map((line) => line.slice(line.indexOf('\t') + 1));
+  return modules.length > 0 ? git(dir, ['add', '-f', '--', ...modules]) : added;
+}
+
 export async function commitWork(
   dir: string, message: string, fromCommit?: string,
 ): Promise<{ from: string; to: string; commits: string[] } | { error: string }> {
   const before = fromCommit === undefined ? await git(dir, ['rev-parse', 'HEAD']) : { code: 0, stdout: fromCommit, stderr: '' };
   if (before.code !== 0) return { error: before.stderr.trim() || 'HEAD could not be read' };
   const from = before.stdout.trim();
-  const status = await git(dir, ['status', '--porcelain']);
   const merging = (await git(dir, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD'])).code === 0;
-  if (status.stdout.trim() !== '' || merging) {
-    if (status.stdout.trim() !== '') {
-      const added = await git(dir, ['add', '-A']);
-      if (added.code !== 0) return { error: added.stderr.trim() || 'git add failed' };
-    }
-    const staged = await git(dir, ['diff', '--cached', '--quiet']);
-    if (staged.code !== 0 || merging) {
-      const committed = await git(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit', '-m', message]);
-      if (committed.code !== 0) return { error: committed.stderr.trim() || committed.stdout.trim() || 'git commit failed' };
-    }
+  const added = await stageAll(dir);
+  if (added.code !== 0) return { error: added.stderr.trim() || 'git add failed' };
+  const staged = await git(dir, ['diff', '--cached', '--quiet', '--ignore-submodules=none', '--no-ext-diff']);
+  if (staged.code !== 0 || merging) {
+    const committed = await git(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit', '-m', message]);
+    if (committed.code !== 0) return { error: committed.stderr.trim() || committed.stdout.trim() || 'git commit failed' };
   }
   const after = await git(dir, ['rev-parse', 'HEAD']);
   const to = after.stdout.trim();
@@ -337,7 +430,7 @@ async function branchNeedsPush(dir: string, branch: string): Promise<boolean> {
 
 /** True when no other local branch already contains this tip. */
 async function tipIsOnlyOn(dir: string, branch: string, tip: string): Promise<boolean> {
-  const holders = await git(dir, ['branch', '--contains', tip]);
+  const holders = await git(dir, ['branch', '--no-color', '--contains', tip]);
   if (holders.code !== 0) return true;
   const names = holders.stdout.split('\n').map((line) => line.trim().replace(/^[*+] /, '')).filter((name) => name !== '');
   return names.every((name) => name === branch);
@@ -450,4 +543,238 @@ async function removeBlockingSymlink(dir: string, relative: string): Promise<voi
 export async function removeWorktree(main: string, dir: string): Promise<void> {
   await git(main, ['worktree', 'remove', '--force', dir]);
   await git(main, ['worktree', 'prune']);
+}
+
+const UnrestoredMarker = z.object({ branch: z.string(), commit: z.string(), step: z.string(), reason: z.string(), found: z.array(z.string()) });
+export type UnrestoredMarker = z.infer<typeof UnrestoredMarker>;
+
+/** In the worktree's own git dir, so the marker never shows in its status. */
+const UNRESTORED_MARKER = 'teamai-unrestored';
+
+/** A copy's status, with every untracked file and submodule change whatever the user's status config hides. */
+async function copyStatus(dir: string): Promise<{ lines: string[] } | { error: string }> {
+  const status = await git(dir, ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']);
+  if (status.code !== 0) return { error: status.stderr.trim() || 'git status failed' };
+  return { lines: status.stdout.split('\n').filter((line) => line.trim() !== '') };
+}
+
+/** Why `dir` is not on `branch` at `commit` with the status `found`, submodules included. Undefined when it is. */
+async function copyLeftOver(dir: string, { branch, commit, found }: { branch: string; commit: string; found: string[] }): Promise<string | undefined> {
+  const head = (await git(dir, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim();
+  if (head !== `refs/heads/${branch}`) return head ? `HEAD is on ${head}` : 'HEAD is detached';
+  const at = (await git(dir, ['rev-parse', 'HEAD'])).stdout.trim();
+  if (at !== commit) return `HEAD is at ${at}`;
+  const status = await copyStatus(dir);
+  if ('error' in status) return status.error;
+  const was = new Set(found);
+  const now = new Set(status.lines);
+  const lines = [...status.lines.filter((line) => !was.has(line)), ...found.filter((line) => !now.has(line))];
+  if (lines.length === 0) return undefined;
+  return `it has changes: ${lines.slice(0, 5).map((line) => line.trim()).join(', ')}${lines.length > 5 ? `, and ${lines.length - 5} more` : ''}`;
+}
+
+/**
+ * Marks `dir` as left by a reader before the reader changes anything, with the status it has now. Putting the copy back
+ * removes the mark, so a driver killed before that leaves the copy refused to later steps until it is back.
+ */
+export async function markReadCopy(dir: string, { branch, step }: { branch: string; step: string }): Promise<{ found: string[] } | { error: string }> {
+  const status = await copyStatus(dir);
+  if ('error' in status) return status;
+  const head = await git(dir, ['rev-parse', 'HEAD']);
+  const marker = await gitPath(dir, UNRESTORED_MARKER);
+  if (head.code !== 0 || !marker) return { error: head.stderr.trim() || 'its git directory could not be found' };
+  const record: UnrestoredMarker = { branch, commit: head.stdout.trim(), step, reason: 'the reader did not finish', found: status.lines };
+  try {
+    await writeJsonAtomic(marker, record);
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+  return { found: status.lines };
+}
+
+async function clearReadCopyMark(dir: string): Promise<void> {
+  const marker = await gitPath(dir, UNRESTORED_MARKER);
+  if (marker) await fs.rm(marker, { force: true });
+}
+
+/**
+ * A copy a reader could not put back, while it is still not back. Once a copy that was clean is back, the marker is
+ * removed, so the person who put it back only retries the step.
+ */
+export async function unrestoredCopy(dir: string): Promise<
+  { state: 'unrestored'; dir: string; marker: UnrestoredMarker; left: string } | { state: 'unreadable'; dir: string; marker: string } | undefined
+> {
+  const file = await gitPath(dir, UNRESTORED_MARKER);
+  if (!file) return undefined;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
+    return { state: 'unreadable', dir, marker: file };
+  }
+  const parsed = UnrestoredMarker.safeParse(raw);
+  if (!parsed.success) return { state: 'unreadable', dir, marker: file };
+  // A status line names a path, not its content, so only a copy that was clean can be seen to be back.
+  if (parsed.data.found.length > 0) {
+    return { state: 'unrestored', dir, marker: parsed.data, left: `it had changes when the step started, so teamai cannot tell when it is back; delete ${file} once it is` };
+  }
+  const left = await copyLeftOver(dir, parsed.data);
+  if (left) return { state: 'unrestored', dir, marker: parsed.data, left };
+  await fs.rm(file, { force: true });
+  return undefined;
+}
+
+function gitlinkLines(listed: string): string[] {
+  return listed.split('\0').filter((line) => line.startsWith('160000 '));
+}
+
+/** Each submodule path `commit` records, with the commit it records there. */
+async function treeGitlinks(dir: string, commit: string): Promise<Map<string, string> | { error: string }> {
+  const listed = await git(dir, ['ls-tree', '-r', '-z', commit]);
+  if (listed.code !== 0) return { error: listed.stderr.trim() || `git ls-tree ${commit} failed` };
+  return new Map(gitlinkLines(listed.stdout).map((line) => {
+    const tab = line.indexOf('\t');
+    return [line.slice(tab + 1), line.slice(0, tab).split(' ')[2] ?? ''];
+  }));
+}
+
+/** Submodule paths whose commit `to` records and `from` does not, at any depth below `prefix`. */
+async function movedModules(dir: string, from: string | undefined, to: string, prefix: string): Promise<{ path: string; dir: string; commit: string }[] | { error: string }> {
+  const before = from ? await treeGitlinks(dir, from) : new Map<string, string>();
+  const after = await treeGitlinks(dir, to);
+  if ('error' in before) return before;
+  if ('error' in after) return after;
+  const moved: { path: string; dir: string; commit: string }[] = [];
+  for (const [relative, commit] of after) {
+    const was = before.get(relative);
+    if (was === commit) continue;
+    const sub = path.join(dir, relative);
+    moved.push({ path: `${prefix}${relative}`, dir: sub, commit });
+    const nested = await movedModules(sub, was, commit, `${prefix}${relative}/`);
+    if ('error' in nested) return nested;
+    moved.push(...nested);
+  }
+  return moved;
+}
+
+/**
+ * Copies each submodule commit `to` records and `from` does not, at any depth, into this repository's own store. A gitlink
+ * does not keep its commit reachable, and removing the copy deletes the submodule's store with it.
+ */
+async function keepModuleCommits(dir: string, { from, to, attempt }: { from: string; to: string; attempt: string }): Promise<{ modules?: string } | { error: string }> {
+  const moved = await movedModules(dir, from, to, '');
+  if ('error' in moved) return moved;
+  if (moved.length === 0) return {};
+  const common = await git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (common.code !== 0) return { error: common.stderr.trim() || 'the git directory could not be found' };
+  const modules = `refs/teamai/kept-modules/${attempt}/`;
+  for (const module of moved) {
+    // Named by commit: a path need not be a valid ref name, and vendor would clash with vendor/inner. This copy stays
+    // local, so the user's push policy and hooks do not apply.
+    const pushed = await git(module.dir, ['push', '-q', '--no-verify', '--no-recurse-submodules', common.stdout.trim(), `${module.commit}:${modules}${module.commit}`]);
+    if (pushed.code !== 0) return { error: pushed.stderr.trim() || `the commit in ${module.path} could not be kept` };
+  }
+  return { modules };
+}
+
+/**
+ * Repositories among `paths`, submodules and ones the step created, whose changes the kept commit cannot hold: uncommitted
+ * or untracked files, or a nested submodule's commit its parent has not recorded. A submodule with no checkout left counts
+ * too, since its files may have gone with it.
+ */
+async function unkeptRepositories(dir: string, { paths, commit }: { paths: string[]; commit: string }): Promise<{ paths: string[] } | { error: string }> {
+  const recorded = await treeGitlinks(dir, commit);
+  const staged = await git(dir, ['ls-files', '-s', '-z']);
+  if ('error' in recorded || staged.code !== 0) return { error: 'error' in recorded ? recorded.error : staged.stderr.trim() || 'git ls-files failed' };
+  const gitlinks = new Set([...recorded.keys(), ...gitlinkLines(staged.stdout).map((line) => line.slice(line.indexOf('\t') + 1))]);
+  // Dirty, not all: a nested submodule's new commit shows only as a change in its parent.
+  const status = ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=dirty'];
+  const unkept: string[] = [];
+  for (const relative of paths) {
+    // Status lists a repository the step created as its directory with a trailing slash.
+    const name = relative.replace(/\/$/, '');
+    if (!gitlinks.has(name) && name === relative) continue;
+    const repo = path.join(dir, name);
+    const top = await git(repo, ['rev-parse', '--show-prefix']);
+    if (top.code !== 0 || top.stdout.trim() !== '') {
+      if (gitlinks.has(name)) unkept.push(name);
+      continue;
+    }
+    for (const args of [status, ['submodule', '--quiet', 'foreach', '--recursive', `test -z "$(git ${status.join(' ')})" || echo "$displaypath"`]]) {
+      const listed = await git(repo, args);
+      if (listed.code !== 0) return { error: listed.stderr.trim() || `git ${args[0]} failed in ${name}` };
+      if (listed.stdout.trim() === '') continue;
+      unkept.push(name);
+      break;
+    }
+  }
+  return { paths: unkept };
+}
+
+/** Where a reader's changes were kept: the whole tree on `ref`, and each submodule commit it made under `modules`. */
+export type KeptChanges = { ref: string; modules?: string };
+
+export function keptSentence(kept: KeptChanges): string {
+  return kept.modules
+    ? `Its changes are kept on ${kept.ref}, and the submodule commits it made under ${kept.modules}.`
+    : `Its changes are kept on ${kept.ref}.`;
+}
+
+/**
+ * Puts a copy a reader read back on `branch` at `commit` with the status `found` it had when the reader started, after
+ * keeping what it changed on `refs/teamai/kept/<attempt>`. A copy it cannot put back keeps its mark with the reason, so
+ * later steps there are refused until it is.
+ */
+export async function putBackCopy({ dir, branch, commit, found, changed, attempt, step }: {
+  dir: string; branch: string; commit: string; found: string[]; changed: string[]; attempt: string; step: string;
+}): Promise<
+  { state: 'untouched' } | { state: 'restored'; kept: KeptChanges } | { state: 'unrestored'; reason: string; kept?: KeptChanges }
+> {
+  if (changed.length === 0) {
+    await clearReadCopyMark(dir);
+    return { state: 'untouched' };
+  }
+  const unrestored = async (reason: string, kept?: KeptChanges): Promise<{ state: 'unrestored'; reason: string; kept?: KeptChanges }> => {
+    const marker = await gitPath(dir, UNRESTORED_MARKER);
+    const record: UnrestoredMarker = { branch, commit, step, reason, found };
+    if (marker) await writeJsonAtomic(marker, record);
+    return { state: 'unrestored', reason, ...(kept ? { kept } : {}) };
+  };
+  // The keep below records a submodule only as its commit, so a submodule update would destroy its files.
+  const dirty = await unkeptRepositories(dir, { paths: changed, commit });
+  if ('error' in dirty) return unrestored(dirty.error);
+  if (dirty.paths.length > 0) return unrestored(`submodules have uncommitted or untracked files: ${dirty.paths.join(', ')}`);
+  // A commit of the whole tree, not `git stash`: the stash list is shared by every worktree, and a stash leaves out a submodule's commit.
+  const ref = `refs/teamai/kept/${attempt}`;
+  const added = await stageAll(dir);
+  const tree = added.code === 0 ? await git(dir, ['write-tree']) : added;
+  const committed = tree.code === 0
+    ? await git(dir, ['-c', 'user.name=TeamAI', '-c', 'user.email=teamai@localhost', 'commit-tree', tree.stdout.trim(), '-p', 'HEAD', '-m', `teamai: kept ${step}`])
+    : tree;
+  if (committed.code !== 0) return unrestored(committed.stderr.trim() || 'its changes could not be kept');
+  const modules = await keepModuleCommits(dir, { from: commit, to: committed.stdout.trim(), attempt });
+  if ('error' in modules) return unrestored(modules.error);
+  const recorded = await git(dir, ['update-ref', ref, committed.stdout.trim()]);
+  // Without the ref, a reset would lose the changes.
+  if (recorded.code !== 0) return unrestored(recorded.stderr.trim() || 'its changes could not be kept');
+  const kept: KeptChanges = { ref, ...modules };
+  // Back on the copy's branch first: a reset on a branch the step switched to would leave the copy elsewhere.
+  // A superproject reset leaves initialized submodules where the step moved them. It must not recurse into a submodule an
+  // earlier step left dirty.
+  const noRecurse = ['-c', 'submodule.recurse=false'];
+  const gitlinks = await treeGitlinks(dir, commit);
+  if ('error' in gitlinks) return unrestored(gitlinks.error, kept);
+  // Only the submodules the step changed: an update of any other would undo what an earlier step left there.
+  const touched = changed.map((relative) => relative.replace(/\/$/, '')).filter((relative) => gitlinks.has(relative));
+  const update = touched.length > 0 ? [['submodule', '--quiet', 'update', '--checkout', '--recursive', '--', ...touched]] : [];
+  for (const args of [[...noRecurse, 'checkout', '-q', '-f', branch], [...noRecurse, 'reset', '-q', '--hard', commit], ['clean', '-q', '-fd'], ...update]) {
+    const restored = await git(dir, args);
+    if (restored.code !== 0) return unrestored(restored.stderr.trim() || `git ${args.join(' ')} failed`, kept);
+  }
+  // Exit codes are not enough: git clean skips a repository the step created, and a later git add -A commits it.
+  const left = await copyLeftOver(dir, { branch, commit, found });
+  if (left) return unrestored(left, kept);
+  await clearReadCopyMark(dir);
+  return { state: 'restored', kept };
 }

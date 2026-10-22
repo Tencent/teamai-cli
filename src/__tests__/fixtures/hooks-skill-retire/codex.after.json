@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "bash -lc \"teamai hook-dispatch session-start --tool codex 2>/dev/null\" || true",
-            "commandWindows": "teamai hook-dispatch session-start --tool codex 2>$null; exit 0",
+            "commandWindows": "teamai hook-dispatch session-start --tool codex 2>nul & exit 0",
             "timeout": 15,
             "additionalContextLimit": 0
           }
@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "bash -lc \"teamai hook-dispatch stop --tool codex 2>/dev/null\" || true",
-            "commandWindows": "teamai hook-dispatch stop --tool codex 2>$null; exit 0",
+            "commandWindows": "teamai hook-dispatch stop --tool codex 2>nul & exit 0",
             "timeout": 15
           }
         ]
@@ -31,7 +31,7 @@
           {
             "type": "command",
             "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool codex 2>/dev/null\" || true",
-            "commandWindows": "teamai hook-dispatch post-tool-use --tool codex 2>$null; exit 0",
+            "commandWindows": "teamai hook-dispatch post-tool-use --tool codex 2>nul & exit 0",
             "timeout": 10
           }
         ]
@@ -41,7 +41,7 @@
           {
             "type": "command",
             "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>/dev/null\" || true",
-            "commandWindows": "teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>$null; exit 0",
+            "commandWindows": "teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>nul & exit 0",
             "timeout": 3
           }
         ],
@@ -54,7 +54,7 @@
           {
             "type": "command",
             "command": "bash -lc \"teamai hook-dispatch prompt-submit --tool codex 2>/dev/null\" || true",
-            "commandWindows": "teamai hook-dispatch prompt-submit --tool codex 2>$null; exit 0",
+            "commandWindows": "teamai hook-dispatch prompt-submit --tool codex 2>nul & exit 0",
             "timeout": 10
           }
         ]
@@ -66,7 +66,7 @@
           {
             "type": "command",
             "command": "bash -lc \"teamai hook-dispatch subagent-stop --tool codex 2>/dev/null\" || true",
-            "commandWindows": "teamai hook-dispatch subagent-stop --tool codex 2>$null; exit 0",
+            "commandWindows": "teamai hook-dispatch subagent-stop --tool codex 2>nul & exit 0",
             "timeout": 15
           }
         ]
@@ -78,7 +78,7 @@
           {
             "type": "command",
             "command": "bash -lc \"teamai hook-dispatch subagent-start --tool codex 2>/dev/null\" || true",
-            "commandWindows": "teamai hook-dispatch subagent-start --tool codex 2>$null; exit 0",
+            "commandWindows": "teamai hook-dispatch subagent-start --tool codex 2>nul & exit 0",
             "timeout": 15,
             "additionalContextLimit": 0
           }
