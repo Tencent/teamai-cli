@@ -70,6 +70,20 @@ describe('execCommand', () => {
     await expect(promise).resolves.toEqual({ stdout: '0.24.0\n', stderr: '', code: 0 });
   });
 
+  it('preserves UTF-8 characters split across stdout and stderr chunks', async () => {
+    const { proc, emit } = makeMockProcess();
+    vi.mocked(spawn).mockReturnValue(proc as unknown as ChildProcess);
+
+    const promise = execCommand('teamai', ['--version']);
+    emit.stdout(Buffer.from([0x68, 0xc3]));
+    emit.stdout(Buffer.from([0xa9, 0x6c, 0x6c, 0x6f]));
+    emit.stderr(Buffer.from([0xe4, 0xbd]));
+    emit.stderr(Buffer.from([0xa0, 0xe5, 0xa5, 0xbd]));
+    emit.close(0);
+
+    await expect(promise).resolves.toEqual({ stdout: 'héllo', stderr: '你好', code: 0 });
+  });
+
   it('runs the child with stdio piped and no shell', async () => {
     const { proc, emit } = makeMockProcess();
     vi.mocked(spawn).mockReturnValue(proc as unknown as ChildProcess);

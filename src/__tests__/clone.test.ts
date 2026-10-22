@@ -16,17 +16,24 @@ import { spawn } from 'node:child_process';
 import { log } from '../utils/logger.js';
 import { shallowClone } from '../clone.js';
 
-/** A `git` that always succeeds with no output: these tests are about how the
- * child is started, not about what it prints. */
-function makeSilentProcess(): ChildProcess {
-  const listeners: Record<string, (...args: unknown[]) => void> = {};
+/** A `git` process that reports configured pipe chunks before its exit event. */
+function makeProcess(
+  code = 0,
+  stdoutChunks: Buffer[] = [],
+  stderrChunks: Buffer[] = [],
+): ChildProcess {
+  const stdoutListeners: Record<string, (chunk: Buffer) => void> = {};
+  const stderrListeners: Record<string, (chunk: Buffer) => void> = {};
   return {
-    stdout: { on: vi.fn() },
-    stderr: { on: vi.fn() },
+    stdout: { on: vi.fn((event: string, cb: (chunk: Buffer) => void) => { stdoutListeners[event] = cb; }) },
+    stderr: { on: vi.fn((event: string, cb: (chunk: Buffer) => void) => { stderrListeners[event] = cb; }) },
     on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-      listeners[event] = cb;
       // runCommand only settles on 'close' / 'error', so emit it eagerly.
-      if (event === 'close') void Promise.resolve().then(() => cb(0));
+      if (event === 'close') void Promise.resolve().then(() => {
+        stdoutChunks.forEach((chunk) => stdoutListeners.data?.(chunk));
+        stderrChunks.forEach((chunk) => stderrListeners.data?.(chunk));
+        cb(code);
+      });
     }),
     kill: vi.fn(),
   } as unknown as ChildProcess;
@@ -40,12 +47,25 @@ describe('shallowClone — windowsHide', () => {
     // keep the shared debug.log free of test noise
     vi.spyOn(log, 'debug').mockImplementation(() => {});
     vi.mocked(spawn).mockReset();
-    vi.mocked(spawn).mockImplementation(() => makeSilentProcess());
+    vi.mocked(spawn).mockImplementation(() => makeProcess());
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('keeps split UTF-8 clone errors intact', async () => {
+    vi.mocked(spawn).mockImplementationOnce(() => makeProcess(1, [], [
+      Buffer.from([0xe4, 0xbd]),
+      Buffer.from([0xa0, 0xe5, 0xa5, 0xbd]),
+    ]));
+
+    await expect(shallowClone(
+      'https://example.com/org/repo.git',
+      path.join(tmp, 'repo'),
+      'git',
+    )).rejects.toThrow('你好');
   });
 
   it('starts every git child so it cannot open a console window on Windows', async () => {

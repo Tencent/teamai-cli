@@ -1,5 +1,6 @@
 import spawn from 'cross-spawn';
 import type { ChildProcess } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import type { Readable } from 'node:stream';
 
 export interface ExecOptions {
@@ -36,6 +37,8 @@ export const execCommand: CommandExecutor = (
 
   let stdout = '';
   let stderr = '';
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
   let settled = false;
   const timeoutMs = options.timeoutMs ?? 120_000;
   const finish = (callback: () => void): void => {
@@ -46,12 +49,12 @@ export const execCommand: CommandExecutor = (
   };
 
   child.stdout?.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
+    const text = stdoutDecoder.write(chunk);
     stdout += text;
     if (options.stream) process.stdout.write(text);
   });
   child.stderr?.on('data', (chunk: Buffer) => {
-    const text = chunk.toString();
+    const text = stderrDecoder.write(chunk);
     stderr += text;
     if (options.stream) process.stderr.write(text);
   });
@@ -64,11 +67,17 @@ export const execCommand: CommandExecutor = (
   }, timeoutMs);
 
   child.on('error', (error) => finish(() => reject(error)));
-  child.on('close', (code) => finish(() => resolve({
-    stdout,
-    stderr,
-    code: code ?? 1,
-  })));
+  child.on('close', (code) => finish(() => {
+    const stdoutTail = stdoutDecoder.end();
+    const stderrTail = stderrDecoder.end();
+    stdout += stdoutTail;
+    stderr += stderrTail;
+    if (options.stream) {
+      process.stdout.write(stdoutTail);
+      process.stderr.write(stderrTail);
+    }
+    resolve({ stdout, stderr, code: code ?? 1 });
+  }));
 });
 
 export async function probeBinary(

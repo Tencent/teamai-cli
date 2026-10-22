@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 
 import fs from 'fs-extra';
 
@@ -97,9 +98,11 @@ function runCommand(
 
         let stdout = '';
         let stderr = '';
+        const stdoutDecoder = new StringDecoder('utf8');
+        const stderrDecoder = new StringDecoder('utf8');
 
-        child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-        child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+        child.stdout.on('data', (chunk: Buffer) => { stdout += stdoutDecoder.write(chunk); });
+        child.stderr.on('data', (chunk: Buffer) => { stderr += stderrDecoder.write(chunk); });
 
         const timer = setTimeout(() => {
             child.kill();
@@ -108,6 +111,8 @@ function runCommand(
 
         child.on('close', (code) => {
             clearTimeout(timer);
+            stdout += stdoutDecoder.end();
+            stderr += stderrDecoder.end();
             resolve({ stdout, stderr, code: code ?? 1 });
         });
 
