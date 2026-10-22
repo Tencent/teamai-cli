@@ -1128,13 +1128,7 @@ async function pushCore(
       const workingContent = await readFileSafe(yamlPath);
       // Nothing below writes before these reads finish, so they run together:
       const repoScan = Promise.all(
-        PLACEABLE_TYPES.filter((t) => !LOCAL_TOOL_TYPES.has(t)).map(async (t) => {
-          try {
-            return await getHandler(t).scanLocalForPush(teamConfig, localConfig);
-          } catch {
-            return [];
-          }
-        }),
+        PLACEABLE_TYPES.filter((t) => !LOCAL_TOOL_TYPES.has(t)).map((t) => getHandler(t).scanLocalForPush(teamConfig, localConfig)),
       );
       repoScan.catch(() => {});
       const [committed, status] = await Promise.all([
