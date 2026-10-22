@@ -422,12 +422,6 @@ async function loadOrBuildScopeIndex(
   const needsRebuild = !index || isLegacyIndex(index) || index.children !== localConfig.children?.fingerprint;
   // A legacy index is rebuilt even when no source can be seen, or it would serve what it holds whole (#1006).
   if (needsRebuild && (index || effectiveLearningsDir || await pathExists(path.join(localConfig.repo.localPath, 'docs')) || await pathExists(path.join(localConfig.repo.localPath, 'rules')) || await pathExists(path.join(localConfig.repo.localPath, 'skills')))) {
-    // Legacy votesDir callers use the reports checkout; voteScope also supplies
-    // local feedback when no reports votes directory exists yet.
-    // Not another repository's reports checkout (#808).
-    const { indexableVotesDir } = await import('./utils/reports-branch.js');
-    const votesDir = await indexableVotesDir(localConfig);
-    const votesExist = votesDir !== undefined && await pathExists(votesDir);
     const docsDir = path.join(localConfig.repo.localPath, 'docs');
     const rulesDir = path.join(localConfig.repo.localPath, 'rules');
     const repoCodebaseDir = path.join(localConfig.repo.localPath, 'docs', 'team-codebase');
@@ -491,7 +485,6 @@ async function loadOrBuildScopeIndex(
         // The docs and skills pull delivers here, not the whole trees (#707).
         ...delivered,
         codebaseDir: undefined, // codebase now served by teamwiki/ graph engine
-        votesDir: votesExist ? votesDir : undefined,
         voteScope: localConfig,
         indexPath,
         unreadable,

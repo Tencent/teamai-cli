@@ -355,9 +355,9 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
     ? await (await import('../votes.js')).readIndexVoteFiles(voteScope)
     : await Promise.all((votesDir ? await listFiles(votesDir) : [])
       .filter((file) => /\.ya?ml$/.test(file))
-      .map((file) => readFileSafe(path.join(votesDir!, file))));
+      .map(async (file) => ({ path: path.join(votesDir!, file), content: await readFileSafe(path.join(votesDir!, file)) })));
 
-  for (const content of contents) {
+  for (const { path: votePath, content } of contents) {
     if (!content) continue;
 
     try {
@@ -395,7 +395,7 @@ async function aggregateVotes(votesDir?: string, voteScope?: LocalConfig): Promi
         }
       }
     } catch {
-      log.error('Failed to parse index votes');
+      log.error(`Failed to parse index votes: ${votePath}`);
     }
   }
 

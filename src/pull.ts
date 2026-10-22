@@ -1510,8 +1510,7 @@ async function pullForScope(
       const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
       const rulesRepoDir = path.join(localConfig.repo.localPath, 'rules');
       const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
-      const reportsRoot = await reportsRootReady;
-      const votesDir = reportsRoot ? path.join(reportsRoot, 'votes') : undefined;
+      await reportsRootReady;
 
       // user scope: sync learnings to ~/.teamai/learnings/ (legacy behavior)
       // project scope: use learnings directly from repo
@@ -1590,7 +1589,6 @@ async function pullForScope(
       // An index already on disk follows the last source away (#1006): left
       // alone, it would keep serving what the member no longer receives.
       if (hasAnySource || effectiveCodebaseDir || await pathExists(indexPath)) {
-        const votesExist = votesDir ? await pathExists(votesDir) : false;
         const { buildIndex, dropOtherCheckoutIndexes } = await import('./utils/search-index.js');
         // Other checkouts' indexes: this checkout's rebuild goes ahead without them.
         await dropOtherCheckoutIndexes(localConfig)
@@ -1630,7 +1628,6 @@ async function pullForScope(
           unreadable: unresolved,
           children: localConfig.children?.fingerprint,
           codebaseDir: undefined, // codebase now served by teamwiki/ graph engine
-          votesDir: votesExist ? votesDir : undefined,
           voteScope: localConfig,
           indexPath,
         });

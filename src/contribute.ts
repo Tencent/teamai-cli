@@ -56,9 +56,6 @@ export async function rebuildIndexAfterContribute(localConfig: LocalConfig): Pro
   const repoPath = localConfig.repo.localPath;
   const docsRepoDir = path.join(repoPath, 'docs');
   const rulesRepoDir = path.join(repoPath, 'rules');
-  // Not another repository's reports checkout (#808).
-  const { indexableVotesDir } = await import('./utils/reports-branch.js');
-  const votesDir = await indexableVotesDir(localConfig);
 
   // A workspace's children's too (#913).
   const activeLearningsNamespaces = await deliveredLearningsNamespaces(localConfig);
@@ -81,7 +78,6 @@ export async function rebuildIndexAfterContribute(localConfig: LocalConfig): Pro
     rulesDir: (await pathExists(rulesRepoDir)) ? rulesRepoDir : undefined,
     // The docs and skills pull delivers here, not the whole trees (#707).
     ...await deliveredIndexSources(localConfig),
-    votesDir: votesDir && (await pathExists(votesDir)) ? votesDir : undefined,
     voteScope: localConfig,
     indexPath,
     children: localConfig.children?.fingerprint,

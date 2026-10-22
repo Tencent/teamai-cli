@@ -11,6 +11,7 @@ import { indexInMemory } from '../utils/search-index.js';
 import * as searchIndex from '../utils/search-index.js';
 import { buildVizData } from '../viz.js';
 import { acquireLock, releaseLock } from '../update.js';
+import * as gitUtils from '../utils/git.js';
 import { indexableVotesDir } from '../utils/reports-branch.js';
 
 vi.mock('../utils/reports-branch.js', () => ({
@@ -174,9 +175,64 @@ describe('index local votes (#1233)', () => {
   it('clamps a negative pending delta at zero and clears its timestamp in memory', async () => {
     await confirmed(snapshot(0, 1)); await pending(-2);
     const files = await readIndexVoteFiles(config);
-    const data = YAML.parse(files[0]);
+    const data = YAML.parse(files[0].content);
     expect(data.votes[docId].upvoted_count).toBe(0);
     expect(data.votes[docId].last_upvoted_at).toBeUndefined();
+  });
+  it('keeps unrelated same-member v1 scores while applying local feedback', async () => {
+    await confirmed({ votes: { retry: { at: date }, other: { at: date } } });
+    const before = await fs.readFile(path.join(config.repo.localPath, 'votes', 'alice.yaml'), 'utf8');
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, YAML.stringify({ version: 2, votes: { other: entry(0, 1) }, deltas: { other: { recalled_delta: 0, upvoted_delta: 1 } } }));
+    await fs.writeFile(path.join(dir, 'learnings', 'other.md'), '# Other\nOther knowledge.\n');
+    const index = await indexInMemory({ learningsDir: path.join(dir, 'learnings'), voteScope: config });
+    expect(index.entries.find(e => e.filename === 'retry.md')?.votes).toBe(1);
+    expect(index.entries.find(e => e.filename === 'other.md')?.votes).toBe(1.3);
+    expect(await fs.readFile(path.join(config.repo.localPath, 'votes', 'alice.yaml'), 'utf8')).toBe(before);
+  });
+  it.each([false, true])('names a corrupt votes file, including with local deltas: %s', async (withLocal) => {
+    const { log } = await import('../utils/logger.js');
+    const error = vi.spyOn(log, 'error').mockImplementation(() => {});
+    try {
+      await confirmed(snapshot());
+      const file = path.join(config.repo.localPath, 'votes', 'alice.yaml');
+      await fs.writeFile(file, 'votes: [');
+      git('add', '.'); git('commit', '-qm', 'corrupt'); git('update-ref', 'refs/remotes/origin/teamai-reports', 'HEAD');
+      if (withLocal) await pending();
+      expect((await indexed()).votes).toBe(withLocal ? 1.3 : 0);
+      expect(error).toHaveBeenCalledWith(`Failed to parse index votes: ${file}`);
+    } finally { error.mockRestore(); }
+  });
+
+  it('releases the votes lock before reading member blobs and keeps a coherent snapshot', async () => {
+    await confirmed(snapshot()); await pending();
+    const createGit = gitUtils.createGit;
+    let checked = false;
+    const spy = vi.spyOn(gitUtils, 'createGit').mockImplementation((...args) => {
+      const client = createGit(...args);
+      return new Proxy(client, {
+        get(target, key, receiver) {
+          if (key !== 'raw') return Reflect.get(target, key, receiver);
+          return async (...rawArgs: unknown[]) => {
+            if (!checked) {
+              const held = await acquireLock(`${localPath}.lock`);
+              expect(held).toBe(true);
+              if (held) await releaseLock(`${localPath}.lock`);
+              // A writer can proceed during the slow read; this index must still
+              // use the local snapshot captured with its pinned remote ref.
+              await incrementUpvoted(localPath, [docId]);
+              checked = true;
+            }
+            return Reflect.apply(target.raw, target, rawArgs);
+          };
+        },
+      });
+    });
+    try {
+      expect((await indexed()).votes).toBe(2.6);
+      expect(checked).toBe(true);
+    } finally { spy.mockRestore(); }
+    expect((await indexed()).votes).toBe(3.6);
   });
 
   // #1278: upvoting a never-recalled doc must not apply the cold penalty.
