@@ -3,6 +3,7 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 import { isToolInstalledForConfig } from '../resources/base.js';
+import { scopedToolPaths } from '../types.js';
 import type { LocalConfig } from '../types.js';
 
 /**
@@ -54,5 +55,60 @@ describe('WorkBuddy install probe across generations (#1273)', () => {
   it('does not take a bare .codebuddy directory for WorkBuddy', async () => {
     await fse.ensureDir(path.join(projectRoot, '.codebuddy'));
     expect(await isToolInstalledForConfig('workbuddy', '.codebuddy/rules', projectConfig())).toBe(false);
+  });
+});
+
+/**
+ * The skills write side (#1273): on an install that left only the 5.7+
+ * `.workbuddy-ai/` root, skills must land where the app actually scans —
+ * live-verified in the issue (13 team skills showed in the `/` menu). Only
+ * the default `.workbuddy/skills` swaps: a team that redirected skills on
+ * purpose keeps its own path.
+ */
+describe('scopedToolPaths swaps WorkBuddy skills to the 5.7+ root (#1273)', () => {
+  let root: string;
+  let home: string;
+
+  beforeEach(async () => {
+    root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-wb-paths-'));
+    home = path.join(root, 'home');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+  });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(root);
+  });
+
+  const defaultTeam = { toolPaths: { workbuddy: { skills: '.workbuddy/skills' } } };
+  const paths = (team: unknown, scope: 'user' | 'project' = 'user', projectRoot?: string) =>
+    scopedToolPaths(team as never, { scope, ...(projectRoot ? { projectRoot } : {}) });
+
+  it('delivers to .workbuddy-ai/skills when only the 5.7+ root exists', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy-ai/skills');
+  });
+
+  it('keeps the old path when the old root is still there', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy'));
+    expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy/skills');
+  });
+
+  it('keeps the old path when neither root exists (nothing detected)', () => {
+    expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy/skills');
+  });
+
+  it('never stomps a team that redirected skills on purpose', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    const redirected = { toolPaths: { workbuddy: { skills: '.workbuddy-ai/skills' } } };
+    expect(paths(redirected).workbuddy.skills).toBe('.workbuddy-ai/skills');
+    const elsewhere = { toolPaths: { workbuddy: { skills: 'custom/skills' } } };
+    expect(paths(elsewhere).workbuddy.skills).toBe('custom/skills');
+  });
+
+  it('swaps against the project root in project scope', async () => {
+    const projectRoot = path.join(root, 'project');
+    await fse.ensureDir(path.join(projectRoot, '.workbuddy-ai'));
+    expect(paths(defaultTeam, 'project', projectRoot).workbuddy.skills).toBe('.workbuddy-ai/skills');
   });
 });
