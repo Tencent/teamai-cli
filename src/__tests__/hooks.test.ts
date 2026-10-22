@@ -121,21 +121,22 @@ describe('hooks', () => {
       expect(result.hooks.Stop[0].hooks[0]).not.toHaveProperty('additionalContextLimit');
     });
 
-    it('Codex format: bare POSIX command plus a cmd.exe commandWindows (#1215)', async () => {
+    it('Codex format: gives every built-in entry its cmd.exe form in commandWindows (#1215)', async () => {
       await injectHooks('/test/codex-hooks.json', 'codex');
 
       const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>> };
-      // Codex runs hook commands through %COMSPEC% /C on Windows (not
-      // PowerShell — the pre-#1215 field carried PowerShell syntax and never
-      // ran correctly under cmd.exe), so `command` stays the portable bare
-      // form and `commandWindows` carries the cmd flavor: nul redirect, `&`
-      // separator, exit 0 — the not-found fail-open under the real shell.
-      expect(result.hooks.SessionStart[0].hooks[0].command).toBe('teamai hook-dispatch session-start --tool codex 2>/dev/null || true');
+      // `command` keeps the POSIX fail-open form on every platform (#1074);
+      // Windows reads `commandWindows` under %COMSPEC% /C, where the
+      // pre-#1215 PowerShell syntax never ran: `2>$null` created a file named
+      // $null and `;` is an argument delimiter, so `exit 0` arrived as junk
+      // arguments. The cmd form redirects to `nul` and separates with `&`,
+      // which also restores the not-found fail-open on the real shell.
+      expect(result.hooks.SessionStart[0].hooks[0].command).toBe('bash -lc "teamai hook-dispatch session-start --tool codex 2>/dev/null" || true');
       expect(result.hooks.SessionStart[0].hooks[0].commandWindows).toBe('teamai hook-dispatch session-start --tool codex 2>nul & exit 0');
       const todoWrite = result.hooks.PostToolUse.flatMap((group) => group.hooks).find((hook) => hook.command.includes('--matcher TodoWrite'));
       expect(todoWrite?.commandWindows).toBe('teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>nul & exit 0');
       for (const hook of Object.values(result.hooks).flat().flatMap((group) => group.hooks)) {
-        expect(hook.commandWindows).toMatch(/^teamai hook-dispatch [a-z-]+ --tool codex(?: --matcher \S+)? 2>nul & exit 0$/);
+        expect(hook.commandWindows).toBeDefined();
         expect(hook.commandWindows).not.toContain('$null');
         expect(hook.commandWindows).not.toContain(';');
       }

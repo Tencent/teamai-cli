@@ -204,16 +204,14 @@ describe('injectHooksToAllTools — codebuddy runs hooks through Git Bash (win32
     await fse.remove(tmp);
   });
 
-  it('keeps the codex dispatch command shell-free while claude gets the Git Bash path (#1215)', async () => {
+  it('keeps bare bash in the codex dispatch command while claude gets the Git Bash path', async () => {
     await fse.ensureFile(fakeGitBash(tmp));
 
     const claudeCommand = getDispatchCommand('session-start', 'claude');
     const codexCommand = getDispatchCommand('session-start', 'codex');
 
     expect(claudeCommand.startsWith(`"${fakeGitBash(tmp).split(path.sep).join('/')}" -lc `)).toBe(true);
-    // Codex reads `command` under sh on POSIX and the cmd.exe `commandWindows`
-    // on Windows (#1215), so the built-in command keeps the sh fail-open form.
-    expect(codexCommand).toBe('teamai hook-dispatch session-start --tool codex 2>/dev/null || true');
+    expect(codexCommand).toBe('bash -lc "teamai hook-dispatch session-start --tool codex 2>/dev/null" || true');
   });
 
   it('injects codebuddy hooks in POSIX syntax, without /bin/sh', async () => {

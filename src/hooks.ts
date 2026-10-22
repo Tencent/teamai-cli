@@ -1539,36 +1539,32 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
 // Bash path on Windows and keeps bare `bash` everywhere else (and on Windows
 // machines where Git Bash cannot be found, and for the Codex tools, which get
 // their Windows form through `commandWindows`).
-/** The pre-#1215 bash-wrapped built-in dispatch (still what non-Codex tools carry). */
-const BASH_DISPATCH_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
-
-/** The #1215 sh-form built-in dispatch the Codex family carries on every platform. */
-const BUILTIN_DISPATCH_COMMAND_RE = /^(teamai hook-dispatch [a-z-]+ --tool \S+(?: --matcher \S+)?) 2>\/dev\/null \|\| true$/;
+const BUILTIN_DISPATCH_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
 
 /**
  * The `commandWindows` of a built-in Codex entry: the cmd.exe form of its
  * dispatch. Codex runs hook commands through `%COMSPEC% /C` on Windows
- * (codex-rs/hooks/src/engine/command_runner.rs, `default_shell_command`), not
- * PowerShell — the pre-#1215 field carried PowerShell syntax, so `2>$null`
- * created a file named `$null` and `; exit 0` arrived as junk arguments, and
- * Windows hooks never ran correctly. The cmd form redirects to `nul` and
- * separates with `&`, which also restores the not-found fail-open (`&` runs
- * the second command whatever the first did). Carrying it in Codex's
- * Windows-only override instead of in `command` keeps `command` the POSIX
- * form on every platform, so a project `.codex/hooks.json` a repository
- * commits reads the same after a Windows pull and after a Linux pull; builds
- * without `commandWindows` support fall back to the portable bare `command`.
- * A team hook keeps the single command its author wrote.
+ * (codex-rs/hooks/src/engine/command_runner.rs, `default_shell_command`) —
+ * not PowerShell, so the pre-#1215 PowerShell syntax never ran correctly:
+ * `2>$null` created a file named `$null` and `;` is an argument delimiter in
+ * cmd, not a separator, so `exit 0` arrived as junk arguments. The cmd form
+ * redirects to `nul` and separates with `&`, which also restores the
+ * not-found fail-open (`&` runs the second command whatever the first did),
+ * mirroring `|| true` on the POSIX side. Carrying it in Codex's Windows-only
+ * override keeps `command` the POSIX form on every platform, so a project
+ * `.codex/hooks.json` a repository commits reads the same after a Windows
+ * pull and after a Linux pull. A team hook keeps the single command its
+ * author wrote.
  */
 function codexWindowsCommand(command: string): string | undefined {
   const match = command.match(BUILTIN_DISPATCH_COMMAND_RE);
   if (!match) return undefined;
-  return `${match[1]} 2>nul & exit 0`;
+  return `${match[2]} 2>nul & exit 0`;
 }
 
 /** Render a valid PowerShell equivalent for TeamAI's generated bash wrapper. */
 function copilotPowershellCommand(command: string): string {
-  const match = command.match(BASH_DISPATCH_COMMAND_RE);
+  const match = command.match(BUILTIN_DISPATCH_COMMAND_RE);
   if (!match) return command;
   // PowerShell needs the call operator before a quoted executable path, and
   // `|| true` maps to `; exit 0`. The dispatch command inside is

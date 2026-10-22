@@ -207,28 +207,15 @@ function getHookShellCommand(): string {
 
 /**
  * Generate the hook-dispatch command for a given event, tool, and optional matcher.
- * A Codex tool gets the sh fail-open form (#1215): Codex runs `command`
- * through sh on POSIX and, on Windows, reads `commandWindows` (the cmd.exe
- * form toCodexEntry in hooks.ts writes), so `command` can be plain POSIX —
- * `2>/dev/null || true` restores the pre-#1215 not-found behavior (exit 0,
- * message suppressed) that the bare form lost to sh's exit 127. The string
- * stays byte-identical across platforms (the #1074 project-file contract):
- * it is a constant that never depends on the writing machine. Other tools
- * keep the shell-wrapped form their hosts expect.
+ * A Codex tool keeps bare `bash` on Windows too: Codex runs its Windows form from
+ * the entry's `commandWindows` (toCodexEntry in hooks.ts), and a machine-specific
+ * Git Bash path here would change the project `hooks.json` a repository commits on
+ * every Windows pull.
  */
 export function getDispatchCommand(event: string, tool: string, matcher?: string, binPath?: string): string {
   const bin = binPath ?? 'teamai';
   const matcherArg = matcher && matcher !== '*' ? ` --matcher ${matcher}` : '';
-  if (isCodexTool(tool)) {
-    // The POSIX fail-open tail: `command` runs under sh on POSIX only (Windows
-    // reads the cmd.exe `commandWindows`, see toCodexEntry in hooks.ts), so
-    // when `teamai` is not on the hook PATH the `2>/dev/null || true` restores
-    // the pre-#1215 behavior — exit 0, not-found message suppressed — instead
-    // of sh's exit 127. The string stays byte-identical across platforms
-    // (#1074): it is a constant that never depends on the writing machine.
-    return `${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null || true`;
-  }
-  const shell = getHookShellCommand();
+  const shell = isCodexTool(tool) ? 'bash' : getHookShellCommand();
   return `${shell} -lc "${bin} hook-dispatch ${event} --tool ${tool}${matcherArg} 2>/dev/null" || true`;
 }
 
@@ -262,7 +249,6 @@ export function toolUsesPwshShell(tool: string): boolean {
  * The command of a team-hook dispatcher entry (#915): it runs the team hooks of
  * the project the hook's cwd belongs to. Unlike the built-ins it keeps stderr
  * and the exit status, which carry a team hook's blocking decision (exit 2).
- *
  */
 export function getTeamHookDispatchCommand(event: string, tool: string): string {
   return `${getHookShellCommand()} -lc "teamai hook-dispatch ${event} --tool ${tool} --team-hooks"`;

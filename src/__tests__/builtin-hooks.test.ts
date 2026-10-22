@@ -135,19 +135,15 @@ describe('builtinHookDefs — dsh shell syntax by platform (#1005)', () => {
   });
 });
 
-describe('builtinHookDefs — codex command is the portable shell-free form on every platform (#1215)', () => {
+describe('builtinHookDefs — codex command is the POSIX form on every platform (#1074)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  // Codex never reads commandWindows (#1215: HookHandlerConfig::Command carries
-  // command/timeout/async/statusMessage only, and serde drops unknown keys), so
-  // the single `command` field must run under both PowerShell and POSIX shells.
-  // A bare argv form does: no shell syntax to parse, byte-identical on every
-  // platform, PATH-resolved like any CLI. Fail-open no longer needs `|| true`
-  // or `; exit 0` tails — the dispatcher's own `finally { process.exit(0) }`
-  // (index.ts) is unconditional for built-in events.
-  it('renders the same bare dispatch on Windows and on Linux for the codex family', () => {
+  // The PowerShell form Codex needs on Windows lives in the entry's commandWindows
+  // (toCodexEntry in hooks.ts), so the committed project hooks.json reads the same
+  // after a Windows pull and after a Linux pull.
+  it('renders the same bare bash dispatch on Windows and on Linux for the codex family', () => {
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     for (const tool of ['codex', 'codex-internal', 'tcodex']) {
       platform.mockReturnValue('linux');
@@ -157,13 +153,9 @@ describe('builtinHookDefs — codex command is the portable shell-free form on e
       expect(posix.length).toBeGreaterThan(0);
       expect(windows.map((d) => d.command)).toEqual(posix.map((d) => d.command));
       for (const def of windows) {
-        // The command is the sh fail-open form (POSIX-only: Windows reads
-        // the cmd.exe commandWindows, see hooks.ts), byte-identical across
-        // platforms because it is a constant string (#1074).
-        expect(def.command).toMatch(new RegExp(`^teamai hook-dispatch [a-z-]+ --tool ${tool}(?: --matcher \\S+)? 2>/dev/null \\|\\| true$`));
-        for (const shellSyntax of ['bash', '-lc', '$null', '2>nul']) {
-          expect(def.command).not.toContain(shellSyntax);
-        }
+        expect(def.command).toMatch(new RegExp(`^bash -lc "teamai hook-dispatch \\S+ --tool ${tool}(?: --matcher \\S+)? 2>/dev/null" \\|\\| true$`));
+        expect(def.command).not.toContain('bash.exe');
+        expect(def.command).not.toContain('2>$null');
       }
     }
   });
