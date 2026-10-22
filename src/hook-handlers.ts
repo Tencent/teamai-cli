@@ -590,7 +590,12 @@ const votesSyncHandler: HookHandler = {
                 votesDir,
                 origin === null ? null : readUserVotesFromContent(origin),
               );
-              if (!staged) return null;
+              if (!staged) {
+                return {
+                  files: [],
+                  message: `[teamai] Update votes for ${localConfig.username}`,
+                };
+              }
               // Deltas are dropped only once origin holds them, and under the
               // reports lock, so a concurrent sync cannot stage the same deltas
               // between this publish and this clear. A busy lock, a failed
@@ -800,7 +805,12 @@ const votesJudgeHandler: HookHandler = {
               votesDir,
               origin === null ? null : readUserVotesFromContent(origin),
             );
-            if (!staged) return null;
+            if (!staged) {
+              return {
+                files: [],
+                message: `[teamai] Update votes for ${localConfig.username}`,
+              };
+            }
             onDelivered(() => confirmVotesSynced(votePath, staged.syncedDeltas));
             return {
               files: [`votes/${localConfig.username}.yaml`],

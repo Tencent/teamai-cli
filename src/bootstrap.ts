@@ -299,7 +299,9 @@ export async function bootstrapSelfRepo(
         const memberDir = path.join(wt, 'members');
         await ensureDir(memberDir);
         const memberPath = path.join(memberDir, `${username}.yaml`);
-        if (await pathExists(memberPath)) return null;
+        if (await pathExists(memberPath)) {
+          return { files: [], message: `[teamai] Register member: ${username}` };
+        }
         // Absorb the member's pre-switch file from the clone (inherited root):
         // its displayName/registeredAt/projects survive the re-registration.
         const inherited = await getMemberConfig(localConfig.repo.localPath, username);

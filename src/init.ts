@@ -1454,7 +1454,12 @@ export async function initSelfRepo(options: GlobalOptions & {
             projects: localConfig.projects,
           });
           selfMemberChanged = merged.changed;
-          if (!merged.changed) return null;
+          if (!merged.changed) {
+            return {
+              files: [],
+              message: `[teamai] Update member roster: ${username}`,
+            };
+          }
           await writeFile(memberPath, YAML.stringify(merged.config));
           return {
             files: ['members/'],
@@ -2015,7 +2020,12 @@ export async function init(options: GlobalOptions & {
           });
           memberChanged = merged.changed;
           memberProjects = merged.config.projects;
-          if (!merged.changed) return null;
+          if (!merged.changed) {
+            return {
+              files: [],
+              message: `[teamai] Update member roster: ${username}`,
+            };
+          }
           await writeFile(memberPath, YAML.stringify(merged.config));
           return {
             files: ['members/'],

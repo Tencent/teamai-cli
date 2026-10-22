@@ -139,6 +139,42 @@ describe('git-kind reports branch', () => {
     expect(fs.existsSync(path.join(clone, 'stats', 'alice.yaml'))).toBe(false);
   });
 
+  it('pushes an earlier unpushed report commit when the retry has no new files', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const cfg = gitConfig(clone, origin);
+    const wt = await ensureReportsWorktree(cfg);
+    const memberPath = path.join(wt, 'members', 'alice.yaml');
+    fs.mkdirSync(path.dirname(memberPath), { recursive: true });
+    fs.writeFileSync(memberPath, 'username: alice\n');
+
+    const rejectFlag = path.join(origin, 'reject-reports');
+    const hook = path.join(origin, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, `#!/bin/sh
+if [ -f "$(dirname "$0")/../reject-reports" ]; then
+  echo "reports push rejected" >&2
+  exit 1
+fi
+exit 0
+`);
+    fs.writeFileSync(rejectFlag, '');
+    fs.chmodSync(hook, 0o755);
+
+    expect(await updateReports(cfg, async () => ({
+      files: ['members/alice.yaml'],
+      message: '[teamai] Register member: alice',
+    }))).toMatchObject({ status: 'failed' });
+    const originGit = simpleGit(origin);
+    const reportsTreeBeforeRetry = await originGit.raw(['ls-tree', '-r', '--name-only', 'teamai-reports']);
+    expect(reportsTreeBeforeRetry).not.toContain('members/alice.yaml');
+
+    fs.rmSync(rejectFlag);
+    expect(await updateReports(cfg, async () => ({
+      files: [],
+      message: '[teamai] Register member: alice',
+    }))).toEqual({ status: 'published' });
+    expect(await originGit.raw(['show', 'teamai-reports:members/alice.yaml'])).toBe('username: alice\n');
+  }, 30_000);
+
   it('does not copy or delete leftover default-branch members when writing reports', async () => {
     const { origin, clone } = await seedBareOrigin();
     const leftover = path.join(clone, 'members', 'stale.yaml');

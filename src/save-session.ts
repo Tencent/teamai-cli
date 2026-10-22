@@ -152,7 +152,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
           ran = true;
           const teamDir = path.join(wt, 'sessions', username);
           const written = await appendMonthlyLog(teamDir, summary, { includePrompt: options.includePrompt });
-          if (!written) return null;
+          if (!written) return { files: [], message: commitMsg };
           rel = path.relative(wt, written);
           return { files: [rel], message: commitMsg };
         }),
@@ -160,7 +160,8 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
         'Push timeout (10s)',
       ));
       if (ran && !rel) {
-        spin.info('Session already present in the team log — nothing to push.');
+        if (pushed) spin.succeed('Pushed a previously unpushed session summary.');
+        else spin.info('Session already present in the team log — nothing to push.');
         return;
       }
       if (pushed) spin.succeed(`Pushed: ${rel}`);

@@ -73,8 +73,23 @@ function seedSession(home: string, sessionId: string, timestamp: string): void {
   );
 }
 
+function rejectReportsPush(origin: string): () => void {
+  const flag = path.join(origin, 'reject-reports');
+  const hook = path.join(origin, 'hooks', 'pre-receive');
+  fs.writeFileSync(hook, `#!/bin/sh
+if [ -f "$(dirname "$0")/../reject-reports" ]; then
+  echo "reports push rejected" >&2
+  exit 1
+fi
+exit 0
+`);
+  fs.writeFileSync(flag, '');
+  fs.chmodSync(hook, 0o755);
+  return () => fs.rmSync(flag);
+}
+
 afterEach(() => {
-  if (sandbox && path.dirname(sandbox) === os.tmpdir() && path.basename(sandbox).startsWith('teamai-561-')) {
+  if (sandbox && path.dirname(sandbox) === os.tmpdir() && /^teamai-(561|1277)-/.test(path.basename(sandbox))) {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
 });
@@ -159,5 +174,69 @@ describe('real CLI reports writer sync (#561)', () => {
     expect(monthLog).toContain('<!-- teamai:session alice-b0 -->');
     expect(monthLog).toContain('<!-- teamai:session alice-a1 -->');
     expect(monthLog).toContain('<!-- teamai:session alice-b1 -->');
+  }, 60_000);
+
+  it('pushes an earlier rejected session summary when retrying an existing session', async () => {
+    if (!fs.existsSync(cli)) {
+      throw new Error(`CLI binary not found at ${cli}. Run "npm run build" first.`);
+    }
+
+    sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-1277-'));
+    const origin = path.join(sandbox, 'origin.git');
+    const seed = path.join(sandbox, 'seed');
+    const home = path.join(sandbox, 'home');
+    const env = machineEnv(home);
+
+    fs.mkdirSync(seed, { recursive: true });
+    fs.writeFileSync(path.join(seed, 'teamai.yaml'), YAML.stringify({
+      team: 'acme',
+      repo: origin,
+      provider: 'git',
+    }));
+    git(['init', '-q', '-b', 'main'], seed, env);
+    git(['add', '.'], seed, env);
+    git(['commit', '-q', '-m', 'fixture'], seed, env);
+    git(['clone', '-q', '--bare', seed, origin], sandbox, env);
+
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, '.gitconfig'),
+      [
+        '[user]',
+        '\tname = alice',
+        '\temail = alice@example.invalid',
+        '[protocol "file"]',
+        '\tallow = always',
+        '',
+      ].join('\n'),
+    );
+    const clone = path.join(home, '.teamai', 'team-repo');
+    git(['clone', '-q', origin, clone], sandbox, env);
+    git(['config', 'user.name', 'alice'], clone, env);
+    git(['config', 'user.email', 'alice@example.invalid'], clone, env);
+    git(['config', 'protocol.file.allow', 'always'], clone, env);
+    fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), YAML.stringify({
+      repo: { localPath: clone, remote: origin, kind: 'git' },
+      username: 'alice',
+      scope: 'user',
+      updatePolicy: 'skip',
+      enabledAgents: ['claude'],
+      additionalRoles: [],
+    }));
+
+    const timestamp = '2026-09-16T12:00:00.000Z';
+    seedSession(home, 'alice-1277', timestamp);
+    const allowReportsPush = rejectReportsPush(origin);
+    const first = await runCli(home, ['session', 'save', '--session-id', 'alice-1277', '--push', '--force', '--scope', 'user'], sandbox);
+    expect(first.code, first.output).toBe(0);
+    expect(first.output).toContain('Nothing new to push.');
+
+    allowReportsPush();
+    const retry = await runCli(home, ['session', 'save', '--session-id', 'alice-1277', '--push', '--force', '--scope', 'user'], sandbox);
+    expect(retry.code, retry.output).toBe(0);
+    expect(retry.output).toContain('Pushed a previously unpushed session summary.');
+
+    const monthLog = git(['show', 'teamai-reports:sessions/alice/2026-09.md'], origin, env);
+    expect(monthLog).toContain('<!-- teamai:session alice-1277 -->');
   }, 60_000);
 });

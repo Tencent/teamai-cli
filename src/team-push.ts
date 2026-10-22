@@ -1110,7 +1110,7 @@ export async function reportUsageToTeam(
           onDelivered(() => import('./votes.js').then(({ confirmVotesSynced }) =>
             confirmVotesSynced(path.join(votesDir!, `${username}.yaml`), votesStaged.syncedDeltas!)));
         }
-        return filesToPush.length > 0 ? { files: [...filesToPush], message: commitMsg } : null;
+        return { files: [...filesToPush], message: commitMsg };
       }, { pushIfUnchanged: true });
       const pushed = isPublished(result);
       if (!pushed) {

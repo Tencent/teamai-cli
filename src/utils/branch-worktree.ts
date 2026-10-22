@@ -775,12 +775,9 @@ async function updateImpl(
         if (!delivered) delivered = fn;
       },
     });
-    let result: PublishResult;
-    if (!change || change.files.length === 0) {
-      result = { status: 'already-present' };
-    } else {
-      result = await commitAndPushAt(spec, wt, change.message, change.files, options);
-    }
+    const result = !change
+      ? { status: 'already-present' } satisfies PublishResult
+      : await commitAndPushAt(spec, wt, change.message, change.files, options);
     if (delivered && isDelivered(result)) {
       try {
         await delivered();
