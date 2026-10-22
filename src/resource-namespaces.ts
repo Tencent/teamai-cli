@@ -41,6 +41,7 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig): Promi
     inactiveDocsNamespaces: inAll(resolved.map((one) => one.inactiveDocsNamespaces)),
     inactiveWikiNamespaces: inAll(resolved.map((one) => one.inactiveWikiNamespaces)),
     inactivePromptsNamespaces: inAll(resolved.map((one) => one.inactivePromptsNamespaces)),
+    inactiveScorersNamespaces: inAll(resolved.map((one) => one.inactiveScorersNamespaces)),
   };
 }
 
@@ -178,7 +179,23 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   const activePrompts = new Set(activeNamespaces.prompts ?? []);
   const inactivePromptsNamespaces = [...declaredPromptsNamespaces].filter((namespace) => !activePrompts.has(namespace));
 
-  return { activeNamespaces, allSkillNamespaces, inactiveDocsNamespaces, inactiveWikiNamespaces, inactivePromptsNamespaces };
+  // Scorers follow the prompts rule. Nothing reads scorers/<ns>/ on pull yet
+  // (#1085); this is the set that reader will withhold.
+  const declaredScorersNamespaces = new Set<string>([
+    ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.scorers ?? []),
+    ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.scorers ?? []),
+  ]);
+  const activeScorers = new Set(activeNamespaces.scorers ?? []);
+  const inactiveScorersNamespaces = [...declaredScorersNamespaces].filter((namespace) => !activeScorers.has(namespace));
+
+  return {
+    activeNamespaces,
+    allSkillNamespaces,
+    inactiveDocsNamespaces,
+    inactiveWikiNamespaces,
+    inactivePromptsNamespaces,
+    inactiveScorersNamespaces,
+  };
 }
 
 /**
