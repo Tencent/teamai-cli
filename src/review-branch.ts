@@ -92,6 +92,20 @@ function stripExtension(segment: string): string {
 }
 
 /**
+ * Types whose subtree nests freely below the root. For these a first directory
+ * is a namespace only when a manifest declares it, and the whole sub-path —
+ * extension included — is the resource identity.
+ *
+ * - docs and wiki are bundles of pages: `docs/api/guide.md` is a shared page
+ *   under an undeclared `api` directory, not a page in namespace `api`.
+ * - prompts resolve the same way at runtime: a workflow's `prompt_file:
+ *   prompts/topic/note.md` looks for `prompts/<ns>/topic/note.md` in each
+ *   active namespace and falls back to the shared `prompts/topic/note.md`, so
+ *   a nested shared prompt is valid.
+ */
+const NESTED_TYPES: ReadonlySet<PlaceableType> = new Set<PlaceableType>(['docs', 'wiki', 'prompts']);
+
+/**
  * Name and namespace from a repo-relative resource path, the same way pull reads
  * them (`<root>/<ns>/<name>` is namespaced, `<root>/<name>` is shared). The
  * handlers' own `name` is not used: for rules it carries the namespace segment.
@@ -105,19 +119,20 @@ function parseRelativePath(
   const all = relativePath.split('/');
   const rest = all.slice(rootSegs);
   if (rest.length <= 1) {
-    return { name: stripExtension(rest[0] ?? '') };
+    const only = rest[0] ?? '';
+    return { name: NESTED_TYPES.has(type) ? only : stripExtension(only) };
   }
   const namespace = rest[0];
-  // docs and wiki nest freely below their root and their namespaces, so their
-  // identity is the whole bundle-relative sub-path, never the bare basename:
-  // co-active docs/a/api/guide.md and docs/b/ui/guide.md are two resources, not
-  // a duplicate "guide". The name may contain '/', which namingFindings
-  // validates one segment at a time.
-  if (type === 'docs' || type === 'wiki') {
+  // Nested types keep the whole bundle-relative sub-path as the identity, never
+  // the bare basename: co-active docs/a/api/guide.md and docs/b/ui/guide.md are
+  // two resources, not a duplicate "guide", and the extension stays because
+  // docs/a/api/guide.md and docs/b/api/guide.png are distinct files. The name
+  // may contain '/', which namingFindings validates one segment at a time.
+  if (NESTED_TYPES.has(type)) {
     if (index.declares(NAMESPACE_AXIS[type], namespace!)) {
-      return { name: stripExtension(rest.slice(1).join('/')), namespace };
+      return { name: rest.slice(1).join('/'), namespace };
     }
-    return { name: stripExtension(rest.join('/')) };
+    return { name: rest.join('/') };
   }
   // A first segment under the other roots is a namespace by construction
   // (`skills/<ns>/<name>`), so the name is the basename below it.

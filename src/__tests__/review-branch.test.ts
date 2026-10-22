@@ -190,27 +190,16 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
 
   it('reviews newly placeable resource types for undeclared namespaces', async () => {
     await fse.ensureDir(path.join(repoDir, 'manifest'));
-    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), [
-      'version: 1',
-      'roles:',
-      '  - id: dev',
-      '    description: dev',
-      '    resources:',
-      '      knowledge: []',
-      '      skills: []',
-      '      agents: []',
-      '      prompts: [frontend]',
-      '',
-    ].join('\n'));
-    await fse.ensureDir(path.join(repoDir, 'prompts', 'backend'));
-    await fse.writeFile(path.join(repoDir, 'prompts', 'backend', 'review.md'), 'Review this change.\n');
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('workflows', ['frontend']));
+    await fse.ensureDir(path.join(repoDir, 'workflows', 'backend'));
+    await fse.writeFile(path.join(repoDir, 'workflows', 'backend', 'deploy.yaml'), 'name: deploy\n');
 
     const review = await reviewBranchDir(BRANCH, repoDir);
 
     expect(review.ok).toBe(false);
     expect(findings(review).some((f) => (
       f.check === 'structure'
-      && f.path === 'prompts/backend/review.md'
+      && f.path === 'workflows/backend/deploy.yaml'
       && /namespace "backend"/.test(f.message)
     ))).toBe(true);
   });
@@ -294,8 +283,36 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
 
     expect(review.ok).toBe(false);
     expect(findings(review).some((f) => (
-      f.check === 'duplicates' && /"api\/guide" is defined in both/.test(f.message)
+      f.check === 'duplicates' && /"api\/guide\.md" is defined in both/.test(f.message)
     ))).toBe(true);
+  });
+
+  it('passes a nested prompt whose first directory is not a declared namespace', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('prompts', ['ops']));
+    await fse.ensureDir(path.join(repoDir, 'prompts', 'topic'));
+    await fse.writeFile(path.join(repoDir, 'prompts', 'topic', 'note.md'), 'Review the change.\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    // Delivered to everyone as a shared nested prompt, so it is context, not a failure.
+    expect(review.ok).toBe(true);
+    expect(review.counts.fail).toBe(0);
+    expect(findings(review).some((f) => f.check === 'naming' && /"topic\/note\.md"/.test(f.message))).toBe(false);
+  });
+
+  it('does not flag nested docs that differ only by extension', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('docs', ['a', 'b']));
+    await fse.ensureDir(path.join(repoDir, 'docs', 'a', 'api'));
+    await fse.writeFile(path.join(repoDir, 'docs', 'a', 'api', 'guide.md'), '# API guide\n');
+    await fse.ensureDir(path.join(repoDir, 'docs', 'b', 'api'));
+    await fse.writeFile(path.join(repoDir, 'docs', 'b', 'api', 'guide.png'), 'PNG placeholder\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(true);
+    expect(findings(review).some((f) => f.check === 'duplicates')).toBe(false);
   });
 
   it('reviews hooks by their entry ids, not their file names', async () => {
@@ -362,7 +379,7 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
 
     expect(review.ok).toBe(false);
     expect(findings(review).some((f) => (
-      f.check === 'duplicates' && /"page" is defined in both/.test(f.message)
+      f.check === 'duplicates' && /"page\.md" is defined in both/.test(f.message)
     ))).toBe(true);
     expect(findings(review).some((f) => f.path?.startsWith('wiki/'))).toBe(false);
   });
