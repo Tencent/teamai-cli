@@ -261,12 +261,13 @@ export function isPlacement(item: ResourceItem): boolean {
 /**
  * Whether pushing `item` PLACED a repo-backed resource (docs, wiki, prompts,
  * workflows, ...): a new file the scan found at its shared-root path, which
- * `pushItem` then wrote under `<root>/<ns>/`. Unlike a rule or agent, the author
- * keeps editing the shared-root file, so the record has to name that path too
- * (`sourcePath`) for a self-mode scan to compare against the destination.
+ * `pushItem` then wrote under `<root>/<ns>/`, or an edit of that file the scan
+ * reached through its record. Unlike a rule or agent, the author keeps editing
+ * the shared-root file, so the record has to name that path too (`sourcePath`)
+ * and what was delivered (`blob`) for a self-mode scan to compare against.
  */
 function isRepoPlacement(item: ResourceItem): boolean {
-  if (item.status !== 'new' || !item.namespace) return false;
+  if (!item.namespace) return false;
   // Skills, rules and agents keep their own records (placedRules/placedAgents,
   // or a path derived from the skill name), so they are not keyed this way.
   if (item.type === 'skills' || item.type === 'rules' || item.type === 'agents') return false;
@@ -407,7 +408,7 @@ export async function reconcilePlacementRecords(
         state[field] = { ...state[field], [item.name]: item.relativePath };
         recordedNow.add(`${field}:${item.name}`);
       } else if (placementKey) {
-        state.placements = { ...state.placements, [placementKey]: item.relativePath };
+        state.placements = { ...state.placements, [placementKey]: { path: item.relativePath, blob: item.blob } };
         recordedNow.add(placementKey);
       }
       // Consumed: a placement is recorded once. Left marked, it would record
@@ -469,11 +470,11 @@ export async function reconcilePlacementRecords(
   // resource again. Kept, it would compare the copy against a path nobody has
   // and hide a genuine edit.
   if (state.placements) {
-    const kept: Record<string, string> = {};
+    const kept: NonNullable<State['placements']> = {};
     let dropped = false;
     for (const [key, recorded] of Object.entries(state.placements)) {
-      if (!await exists(recorded)) {
-        log.debug(`Dropping placement record ${key} → ${recorded}: gone from the default branch`);
+      if (!await exists(recorded.path)) {
+        log.debug(`Dropping placement record ${key} → ${recorded.path}: gone from the default branch`);
         dropped = true;
         changed = true;
         continue;
@@ -484,8 +485,8 @@ export async function reconcilePlacementRecords(
       // placedRules/placedAgents records below, and the same reason
       // `placementsCheckedAt` is kept.
       if (checkedAt && !recordedNow.has(key)
-        && await pathDeletedSince(repoPath, checkedAt, recorded, history) === true) {
-        log.debug(`Dropping placement record ${key} → ${recorded}: deleted from the default branch since the last check`);
+        && await pathDeletedSince(repoPath, checkedAt, recorded.path, history) === true) {
+        log.debug(`Dropping placement record ${key} → ${recorded.path}: deleted from the default branch since the last check`);
         dropped = true;
         changed = true;
         continue;

@@ -2,9 +2,10 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { ResourceHandler } from './base.js';
 import { loadStateForScope } from '../config.js';
-import { isSelfMode, type LocalConfig, type ResourceItem, type ResourceType, type TeamaiConfig } from '../types.js';
+import { isSelfMode, type LocalConfig, type ResourceItem, type ResourceType, type State, type TeamaiConfig } from '../types.js';
 import { namespaceOfPlacedPath, type PlaceableType } from '../push-namespaces.js';
 import { ensureDir, fileContentEqual, pathExists } from '../utils/fs.js';
+import { hashObject } from '../utils/git.js';
 
 export async function listRepoFilesRecursive(dir: string, baseDir = dir): Promise<string[]> {
   try {
@@ -24,6 +25,49 @@ export async function listRepoFilesRecursive(dir: string, baseDir = dir): Promis
   } catch {
     return [];
   }
+}
+
+/**
+ * The author's shared-root copy of a resource an earlier push placed elsewhere,
+ * judged against what that push delivered (`state.placements`). Unchanged is
+ * `'delivered'`, whatever the team did to the placed file since. An edit goes
+ * to the placed file, unless that file changed too: pushing would then
+ * overwrite the other change, so the scan stops. Null when no record applies.
+ */
+export async function placedCopy(
+  type: ResourceType,
+  name: string,
+  authorPath: string,
+  activeFile: string,
+  localConfig: LocalConfig,
+  placements: NonNullable<State['placements']>,
+): Promise<ResourceItem | 'delivered' | null> {
+  const record = placements[`${type}:${authorPath}`];
+  if (!record) return null;
+  const repoPath = localConfig.repo.localPath;
+  const placedFile = path.join(repoPath, ...record.path.split('/'));
+  if (!await pathExists(placedFile)) return null;
+  const [mine, theirs] = await Promise.all([hashObject(repoPath, activeFile), hashObject(repoPath, placedFile)]);
+  if (!mine || !theirs) {
+    throw new Error(`git could not read ${authorPath} or ${record.path} to compare them with what your push delivered`);
+  }
+  if (mine === record.blob) return 'delivered';
+  if (theirs !== record.blob) {
+    throw new Error(
+      `${record.path} changed on the team repo after your ${authorPath} was placed there, and ${authorPath} `
+      + `changed too, so pushing it would overwrite that change. Move your edit into ${record.path} and delete ${authorPath}`,
+    );
+  }
+  const item: ResourceItem & { prePlacementPath: string } = {
+    name,
+    type,
+    sourcePath: activeFile,
+    relativePath: record.path,
+    namespace: namespaceOfPlacedPath(type as PlaceableType, record.path),
+    status: 'modified',
+    prePlacementPath: authorPath,
+  };
+  return item;
 }
 
 export async function scanRepoResourceForPush(
@@ -53,21 +97,10 @@ export async function scanRepoResourceForPush(
       const atBaseline = await pathExists(baseFile);
       if (atBaseline && await fileContentEqual(activeFile, baseFile)) continue;
       if (!atBaseline) {
-        const placedPath = placements[`${type}:${relativePath}`];
-        const placedFile = placedPath ? path.join(localConfig.repo.localPath, ...placedPath.split('/')) : null;
-        if (placedPath && placedFile && await pathExists(placedFile)) {
-          // Compare the copy the author edits against the file that landed in
-          // its place: unchanged means already delivered, and an edit belongs
-          // on that file rather than on a second copy at the shared root.
-          if (await fileContentEqual(activeFile, placedFile)) continue;
-          items.push({
-            name: rel,
-            type,
-            sourcePath: activeFile,
-            relativePath: placedPath,
-            namespace: namespaceOfPlacedPath(type as PlaceableType, placedPath),
-            status: 'modified',
-          });
+        const placed = await placedCopy(type, rel, relativePath, activeFile, localConfig, placements);
+        if (placed === 'delivered') continue;
+        if (placed) {
+          items.push(placed);
           continue;
         }
       }

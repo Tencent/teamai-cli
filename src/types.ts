@@ -1008,6 +1008,10 @@ export type RecordedAgentModel = z.infer<typeof RecordedAgentModelSchema>;
 /** `RecordedAgentModel` by agent stem, then tool. */
 export type AgentModelRecords = Record<string, Record<string, RecordedAgentModel>>;
 
+/** A repo-backed placement that landed: the placed path and the blob push delivered there. */
+const PlacementRecordSchema = z.object({ path: z.string(), blob: z.string() });
+export type PlacementRecord = z.infer<typeof PlacementRecordSchema>;
+
 export const StateSchema = z.object({
   lastPush: z.string().nullable().default(null),
   lastPull: z.string().nullable().default(null),
@@ -1118,18 +1122,24 @@ export const StateSchema = z.object({
   placedAgents: z.record(z.string(), z.string()).optional(),
   /**
    * Where push placed a repo-backed resource (docs, wiki, prompts, workflows,
-   * scorers, models, env, hooks, claudemd, learnings) that the author still
-   * edits at its shared-root path, keyed `<type>:<path the author edits>`, e.g.
-   * `{ "docs:docs/guide.md": "docs/ops/guide.md" }`. Placement writes the team
-   * copy under `<root>/<ns>/` and leaves the author's own file at the root, so
-   * without this record the next self-mode scan reads that file as brand new,
-   * sends it to the same destination, and fails on the copy that is already
-   * there — once the PR has merged, the destination is exactly the file the
-   * scan never looks at. Recorded only after the placement landed, in
+   * scorers, models, env, hooks, claudemd, learnings) that the author still edits at
+   * its shared-root path, keyed `<type>:<path the author edits>`, e.g.
+   * `{ "docs:docs/guide.md": { "path": "docs/ops/guide.md", "blob": "<git blob id>" } }`.
+   * `blob` is what that push delivered. A self-mode scan compares the author's
+   * copy with it, not with the placed file: equal means already delivered,
+   * whatever the team did to the placed file since, and different is the
+   * author's edit. Recorded only after the placement landed, in
    * `reconcilePlacementRecords`, on the same blob-in-history proof as
-   * `placedRules`, so a PR closed unmerged leaves no record behind.
+   * `placedRules`, so a PR closed unmerged leaves no record behind. An entry
+   * holding only the path, as earlier builds wrote, is dropped: without the
+   * blob nothing tells an unchanged copy from an edit.
    */
-  placements: z.record(z.string(), z.string()).optional(),
+  placements: z.record(z.string(), z.unknown())
+    .transform((records) => Object.fromEntries(Object.entries(records).flatMap(([key, record]) => {
+      const parsed = PlacementRecordSchema.safeParse(record);
+      return parsed.success ? [[key, parsed.data] as const] : [];
+    })))
+    .optional(),
   /**
    * Default-branch commit the placement records were last checked against. A
    * record whose file was deleted after it is dropped even if something is at

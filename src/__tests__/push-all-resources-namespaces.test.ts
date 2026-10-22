@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,10 +14,11 @@ import {
   withNamespace,
 } from '../push-namespaces.js';
 import type { ProjectsManifest } from '../projects.js';
-import type { LocalConfig, ResourceItem } from '../types.js';
+import { getStatePath, type LocalConfig, type ResourceItem } from '../types.js';
 import { scanRepoResourceForPush, pushRepoResourceItem } from '../resources/repo-resource.js';
 import { getHandler } from '../resources/index.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
+import { reconcilePlacementRecords, toPendingItems } from '../utils/pending-push.js';
 
 const dirs: string[] = [];
 
@@ -329,47 +331,127 @@ describe('repo resource handler push and scan', () => {
     expect(fs.existsSync(destFile)).toBe(true);
     expect(fs.readFileSync(destFile, 'utf8')).toBe('name: test\n');
   });
+});
 
-  it('compares a root-authored file against the destination an earlier push placed it at', async () => {
+/**
+ * Self mode: the author keeps editing the shared-root copy (`.teamai/docs/guide.md`)
+ * after push placed it at `docs/ops/guide.md` and the PR merged. The record of
+ * that landing says what was delivered, so the scan can tell the author's edit
+ * from a teammate's later change to the placed file.
+ */
+describe('a placed copy the author still edits, against what its push delivered', () => {
+  const run = (cwd: string, args: string[]): string => execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' },
+  }).trim();
+
+  async function placedCopy(type: 'docs', authorPath: string, placedPath: string) {
     const root = makeTmpDir();
     const projectRoot = path.join(root, 'project');
     const repoLocal = path.join(root, 'team-repo');
-    const dataHome = path.join(root, 'data');
     const localConfig: LocalConfig = {
       repo: { localPath: repoLocal, remote: 'local', kind: 'self' },
       username: 'alice',
       scope: 'project',
       projectRoot,
-      dataHome,
+      dataHome: path.join(root, 'data'),
       additionalRoles: [],
     };
+    const activeFile = path.join(projectRoot, '.teamai', ...authorPath.split('/'));
+    const placedFile = path.join(repoLocal, ...placedPath.split('/'));
+    const commit = (file: string, content: string | null, message: string): void => {
+      if (content === null) fs.rmSync(file);
+      else {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, content);
+      }
+      run(repoLocal, ['add', '-A']);
+      run(repoLocal, ['commit', '-q', '-m', message]);
+    };
+    const scan = () => getHandler(type).scanLocalForPush({} as never, localConfig);
+    /** Merge `items` as a push branch built on the current default branch, then reconcile as pull does. */
+    const land = async (items: ResourceItem[]): Promise<void> => {
+      const base = run(repoLocal, ['rev-parse', 'HEAD']);
+      for (const item of items) await getHandler(type).pushItem(item, {} as never, localConfig);
+      const pendingItems = await toPendingItems(items, repoLocal);
+      run(repoLocal, ['add', '-A']);
+      run(repoLocal, ['commit', '-q', '-m', 'merge the push']);
+      const state = await loadStateForScope(localConfig);
+      state.pendingPushes = [{ branch: 'teamai/push/alice/1', prUrl: null, createdAt: '2026-01-01T00:00:00.000Z', base, items: pendingItems }];
+      await reconcilePlacementRecords(repoLocal, state);
+      await saveStateForScope(state, localConfig);
+    };
 
-    // The author still edits .teamai/docs/guide.md; the team file it became is
-    // docs/ops/guide.md, and state.placements remembers the two are one file.
-    const activeFile = path.join(projectRoot, '.teamai', 'docs', 'guide.md');
+    fs.mkdirSync(repoLocal, { recursive: true });
+    run(repoLocal, ['init', '-q', '-b', 'main']);
+    commit(path.join(repoLocal, 'README.md'), 'team\n', 'seed');
     fs.mkdirSync(path.dirname(activeFile), { recursive: true });
     fs.writeFileSync(activeFile, 'v1\n');
-    const destFile = path.join(repoLocal, 'docs', 'ops', 'guide.md');
-    fs.mkdirSync(path.dirname(destFile), { recursive: true });
-    fs.writeFileSync(destFile, 'v1\n');
-    const state = await loadStateForScope(localConfig);
-    state.placements = { 'docs:docs/guide.md': 'docs/ops/guide.md' };
-    await saveStateForScope(state, localConfig);
+    const [placed] = await scan();
+    expect(placed).toMatchObject({ relativePath: authorPath, status: 'new' });
+    // What placeNewResources does for --role ops.
+    Object.assign(placed, { namespace: 'ops', prePlacementPath: authorPath, relativePath: placedPath });
+    await land([placed]);
+    expect(fs.readFileSync(placedFile, 'utf8')).toBe('v1\n');
+    return { activeFile, placedFile, commit, scan, land, localConfig };
+  }
 
-    // Unchanged: already delivered, so it is not a new resource again.
-    expect(await scanRepoResourceForPush('docs', 'docs', {} as never, localConfig)).toEqual([]);
+  it('has nothing to push for an unchanged copy', async () => {
+    const { scan } = await placedCopy('docs', 'docs/guide.md', 'docs/ops/guide.md');
+    expect(await scan()).toEqual([]);
+  });
 
-    // Edited: the edit belongs on the placed file, not on a second copy that
-    // would collide with it, so the scan reports it as that path's modification.
+  it('does not push an unchanged copy over a teammate\'s later fix of the placed file', async () => {
+    const { placedFile, commit, scan } = await placedCopy('docs', 'docs/guide.md', 'docs/ops/guide.md');
+    commit(placedFile, 'v2 (teammate fix)\n', 'teammate fixes the placed file');
+
+    expect(await scan()).toEqual([]);
+  });
+
+  it('does not push an unchanged copy over a file someone re-created at the placed path', async () => {
+    const { placedFile, commit, scan } = await placedCopy('docs', 'docs/guide.md', 'docs/ops/guide.md');
+    commit(placedFile, null, 'team deletes the placed file');
+    commit(placedFile, 'somebody else\'s guide\n', 'another member creates the path');
+
+    expect(await scan()).toEqual([]);
+  });
+
+  it('sends an edit to the placed file', async () => {
+    const { activeFile, scan } = await placedCopy('docs', 'docs/guide.md', 'docs/ops/guide.md');
     fs.writeFileSync(activeFile, 'v2\n');
-    const edited = await scanRepoResourceForPush('docs', 'docs', {} as never, localConfig);
+
+    const edited = await scan();
     expect(edited).toHaveLength(1);
-    expect(edited[0]).toMatchObject({
-      name: 'guide.md',
-      relativePath: 'docs/ops/guide.md',
-      namespace: 'ops',
-      status: 'modified',
-    });
+    expect(edited[0]).toMatchObject({ relativePath: 'docs/ops/guide.md', namespace: 'ops', status: 'modified' });
+  });
+
+  it('has nothing to push once the edit it sent has landed', async () => {
+    const { activeFile, scan, land } = await placedCopy('docs', 'docs/guide.md', 'docs/ops/guide.md');
+    fs.writeFileSync(activeFile, 'v2\n');
+    await land(await scan());
+
+    expect(await scan()).toEqual([]);
+  });
+
+  it('stops on an edit when the placed file also changed since, naming the file to edit instead', async () => {
+    const { activeFile, placedFile, commit, scan } = await placedCopy('docs', 'docs/guide.md', 'docs/ops/guide.md');
+    commit(placedFile, 'v2 (teammate fix)\n', 'teammate fixes the placed file');
+    fs.writeFileSync(activeFile, 'v1 plus my edit\n');
+
+    await expect(scan()).rejects.toThrow(/docs\/ops\/guide\.md/);
+  });
+
+  it('reads a record that holds only the path, as earlier builds wrote, as no record', async () => {
+    const { scan, localConfig } = await placedCopy('docs', 'docs/guide.md', 'docs/ops/guide.md');
+    const statePath = getStatePath(localConfig);
+    const raw = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    raw.placements = { 'docs:docs/guide.md': 'docs/ops/guide.md' };
+    fs.writeFileSync(statePath, JSON.stringify(raw));
+
+    // Without the delivered blob an unchanged copy cannot be told from an
+    // edit, so it is new again and placement refuses the occupied path.
+    expect(await scan()).toMatchObject([{ relativePath: 'docs/guide.md', status: 'new' }]);
   });
 
   it('compares a root-authored env file against the destination an earlier push placed it at', async () => {
@@ -392,7 +474,8 @@ describe('repo resource handler push and scan', () => {
     fs.mkdirSync(path.dirname(destFile), { recursive: true });
     fs.writeFileSync(destFile, 'TEAM_TOKEN: one\n');
     const state = await loadStateForScope(localConfig);
-    state.placements = { 'env:env/env.yaml': 'env/ops/env.yaml' };
+    const blob = execFileSync('git', ['hash-object', '--', destFile], { encoding: 'utf8' }).trim();
+    state.placements = { 'env:env/env.yaml': { path: 'env/ops/env.yaml', blob } };
     await saveStateForScope(state, localConfig);
 
     expect(await getHandler('env').scanLocalForPush({} as never, localConfig)).toEqual([]);

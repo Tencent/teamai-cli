@@ -15,7 +15,7 @@ vi.mock('../utils/git.js', async () => ({
 import { execFileSync } from 'node:child_process';
 
 import { reconcilePlacementRecords, isPlacement } from '../utils/pending-push.js';
-import type { PendingPush, ResourceItem } from '../types.js';
+import type { PendingPush, ResourceItem, State } from '../types.js';
 
 /**
  * A placement record says "the author's root copy of <name> IS the team file
@@ -66,7 +66,7 @@ describe('reconcilePlacementRecords', () => {
     // keeps editing, so a self-mode scan can compare it with the destination.
     const blob = await land('docs/ops/guide.md', 'x');
     const state = {
-      placedRules: {}, placedAgents: {}, placements: {} as Record<string, string>,
+      placedRules: {}, placedAgents: {}, placements: {} as NonNullable<State['placements']>,
       pendingPushes: [pending([{
         type: 'docs',
         name: 'guide.md',
@@ -79,7 +79,7 @@ describe('reconcilePlacementRecords', () => {
     };
 
     expect(await reconcilePlacementRecords(repoPath, state)).toBe(true);
-    expect(state.placements).toEqual({ 'docs:docs/guide.md': 'docs/ops/guide.md' });
+    expect(state.placements).toEqual({ 'docs:docs/guide.md': { path: 'docs/ops/guide.md', blob } });
     expect(state.pendingPushes[0]?.items[0]?.placed).toBe(false);
   });
 
@@ -96,6 +96,7 @@ describe('reconcilePlacementRecords', () => {
     };
     run(['init', '-q', '-b', 'main']);
     await fse.outputFile(path.join(repoPath, 'docs/ops/guide.md'), 'ours');
+    const blob = run(['hash-object', 'docs/ops/guide.md']);
     const checkedAt = commit('landed');
     await fse.remove(path.join(repoPath, 'docs/ops/guide.md'));
     commit('removed');
@@ -104,7 +105,7 @@ describe('reconcilePlacementRecords', () => {
 
     const state = {
       placedRules: {}, placedAgents: {},
-      placements: { 'docs:docs/guide.md': 'docs/ops/guide.md' },
+      placements: { 'docs:docs/guide.md': { path: 'docs/ops/guide.md', blob } },
       placementsCheckedAt: checkedAt,
       pendingPushes: [],
     };
