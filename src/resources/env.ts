@@ -7,6 +7,8 @@ import type { ResourceItem, ResourceItemStatus, TeamaiConfig, LocalConfig } from
 import { TEAMAI_ENV_START, TEAMAI_ENV_END, getDataHome, getEnvBackupPath, getTeamaiHome, isSelfMode } from '../types.js';
 import { pathExists, readFileIfExists, readFileSafe, writeFile, ensureDir, fileContentEqual, remove, symlinkTarget } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { loadStateForScope } from '../config.js';
+import { namespaceOfPlacedPath } from '../push-namespaces.js';
 import { envShExportsPath, envShMarker, isEnvShMarker, recordEnvShExports } from '../env-sh-exports.js';
 import { ENV_KEY_RE, envNamePattern, envNamePatternKey, envTable, sameEnvName } from './env-key.js';
 import { SECRETS_LAYOUT } from './secrets.js';
@@ -339,11 +341,30 @@ export class EnvHandler extends ResourceHandler {
     if (isSelfMode(localConfig) && localConfig.projectRoot) {
       const activeRoot = path.join(localConfig.projectRoot, '.teamai');
       const items: ResourceItem[] = [];
+      // Where an earlier push placed a file this machine still edits at
+      // .teamai/env/, recorded once that placement landed (`state.placements`).
+      // Without it the unchanged original reads as new on every run and the
+      // placement collides with the copy it already wrote.
+      const placements = (await loadStateForScope(localConfig)).placements ?? {};
       for (const { relativePath, absolutePath: activeEnv } of await listEnvFiles(activeRoot)) {
         const baseEnv = path.join(localConfig.repo.localPath, ...relativePath.split('/'));
         // Not in the baseline → new; present but different → modified; equal → skip.
         const baseExists = await pathExists(baseEnv);
         if (baseExists && await fileContentEqual(activeEnv, baseEnv)) continue;
+        if (!baseExists) {
+          const placedPath = placements[`env:${relativePath}`];
+          const placedFile = placedPath ? path.join(localConfig.repo.localPath, ...placedPath.split('/')) : null;
+          if (placedPath && placedFile && await pathExists(placedFile)) {
+            // Unchanged: already delivered. Edited: the edit belongs on the
+            // file that landed in its place, not on a second copy at the root.
+            if (await fileContentEqual(activeEnv, placedFile)) continue;
+            items.push({
+              ...envPushItem(placedPath, activeEnv, 'modified'),
+              namespace: namespaceOfPlacedPath('env', placedPath),
+            });
+            continue;
+          }
+        }
         items.push(envPushItem(relativePath, activeEnv, baseExists ? 'modified' : 'new'));
       }
       return items;

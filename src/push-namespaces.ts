@@ -145,6 +145,15 @@ export function rootSegmentsFor(type: PlaceableType): number {
 }
 
 /**
+ * The namespace a placed path carries, read from the slot `withNamespace`
+ * inserted: `docs/ops/guide.md` → `ops`, `teamwiki/evidence/code/ops/page.md` →
+ * `ops`. Undefined when that segment is missing (a malformed record).
+ */
+export function namespaceOfPlacedPath(type: PlaceableType, placedPath: string): string | undefined {
+  return placedPath.split('/')[rootSegmentsFor(type)];
+}
+
+/**
  * Where a skill lands in `namespace`. Built from the root rather than through
  * `withNamespace`, because a skill's team path is derived from its name alone
  * (`src/resources/skills.ts` keeps the leaf as the name): this REPLACES any

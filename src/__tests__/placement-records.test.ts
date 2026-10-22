@@ -83,6 +83,36 @@ describe('reconcilePlacementRecords', () => {
     expect(state.pendingPushes[0]?.items[0]?.placed).toBe(false);
   });
 
+  it('drops a repo-backed record whose destination was deleted since the last check', async () => {
+    // A removal that merged, then another member's file at the same path: the
+    // record must not route this author's edits onto that file.
+    const run = (args: string[]) => execFileSync('git', args, { cwd: repoPath, encoding: 'utf8', env: {
+      ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t',
+    } }).trim();
+    const commit = (message: string): string => {
+      run(['add', '-A']);
+      run(['commit', '-q', '-m', message]);
+      return run(['rev-parse', 'HEAD']);
+    };
+    run(['init', '-q', '-b', 'main']);
+    await fse.outputFile(path.join(repoPath, 'docs/ops/guide.md'), 'ours');
+    const checkedAt = commit('landed');
+    await fse.remove(path.join(repoPath, 'docs/ops/guide.md'));
+    commit('removed');
+    await fse.outputFile(path.join(repoPath, 'docs/ops/guide.md'), 'somebody else\'s');
+    commit('recreated');
+
+    const state = {
+      placedRules: {}, placedAgents: {},
+      placements: { 'docs:docs/guide.md': 'docs/ops/guide.md' },
+      placementsCheckedAt: checkedAt,
+      pendingPushes: [],
+    };
+
+    expect(await reconcilePlacementRecords(repoPath, state)).toBe(true);
+    expect(state.placements).toEqual({});
+  });
+
   it('spends a placement with no blob instead of recording it because the path exists', async () => {
     // Nothing tells its landing from another member creating the path after
     // this PR closed unmerged (#649 review).

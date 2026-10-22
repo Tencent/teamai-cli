@@ -408,6 +408,7 @@ export async function reconcilePlacementRecords(
         recordedNow.add(`${field}:${item.name}`);
       } else if (placementKey) {
         state.placements = { ...state.placements, [placementKey]: item.relativePath };
+        recordedNow.add(placementKey);
       }
       // Consumed: a placement is recorded once. Left marked, it would record
       // again after the team deleted the file and another member recreated
@@ -471,13 +472,25 @@ export async function reconcilePlacementRecords(
     const kept: Record<string, string> = {};
     let dropped = false;
     for (const [key, recorded] of Object.entries(state.placements)) {
-      if (await exists(recorded)) {
-        kept[key] = recorded;
-      } else {
+      if (!await exists(recorded)) {
         log.debug(`Dropping placement record ${key} → ${recorded}: gone from the default branch`);
         dropped = true;
         changed = true;
+        continue;
       }
+      // Deleted and recreated between two checks — a removal that merged, then
+      // another member's file at the same path — is not this author's: following
+      // the record would route their edits onto that file. Same rule as the
+      // placedRules/placedAgents records below, and the same reason
+      // `placementsCheckedAt` is kept.
+      if (checkedAt && !recordedNow.has(key)
+        && await pathDeletedSince(repoPath, checkedAt, recorded, history) === true) {
+        log.debug(`Dropping placement record ${key} → ${recorded}: deleted from the default branch since the last check`);
+        dropped = true;
+        changed = true;
+        continue;
+      }
+      kept[key] = recorded;
     }
     if (dropped) state.placements = kept;
   }
@@ -486,7 +499,8 @@ export async function reconcilePlacementRecords(
   // sees a deletion that happened in between even if the path is back by then.
   // With no record left there is nothing it could vouch for, and kept it would
   // later read a deletion from before a new record existed as that record's.
-  if (Object.keys(state.placedRules ?? {}).length + Object.keys(state.placedAgents ?? {}).length > 0) {
+  if (Object.keys(state.placedRules ?? {}).length + Object.keys(state.placedAgents ?? {}).length
+    + Object.keys(state.placements ?? {}).length > 0) {
     const head = await getHeadCommit(repoPath, history);
     if (head && head !== state.placementsCheckedAt) {
       state.placementsCheckedAt = head;

@@ -3,13 +3,8 @@ import fs from 'node:fs/promises';
 import { ResourceHandler } from './base.js';
 import { loadStateForScope } from '../config.js';
 import { isSelfMode, type LocalConfig, type ResourceItem, type ResourceType, type TeamaiConfig } from '../types.js';
-import { rootSegmentsFor, type PlaceableType } from '../push-namespaces.js';
+import { namespaceOfPlacedPath, type PlaceableType } from '../push-namespaces.js';
 import { ensureDir, fileContentEqual, pathExists } from '../utils/fs.js';
-
-/** The namespace a placed path carries, from its position below the root. */
-function namespaceOfPlacedPath(type: PlaceableType, placedPath: string): string | undefined {
-  return placedPath.split('/')[rootSegmentsFor(type)];
-}
 
 export async function listRepoFilesRecursive(dir: string, baseDir = dir): Promise<string[]> {
   try {

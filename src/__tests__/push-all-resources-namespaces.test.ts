@@ -369,4 +369,39 @@ describe('repo resource handler push and scan', () => {
       status: 'modified',
     });
   });
+
+  it('compares a root-authored env file against the destination an earlier push placed it at', async () => {
+    const root = makeTmpDir();
+    const projectRoot = path.join(root, 'project');
+    const repoLocal = path.join(root, 'team-repo');
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoLocal, remote: 'local', kind: 'self' },
+      username: 'alice',
+      scope: 'project',
+      projectRoot,
+      dataHome: path.join(root, 'data'),
+      additionalRoles: [],
+    };
+
+    const activeFile = path.join(projectRoot, '.teamai', 'env', 'env.yaml');
+    fs.mkdirSync(path.dirname(activeFile), { recursive: true });
+    fs.writeFileSync(activeFile, 'TEAM_TOKEN: one\n');
+    const destFile = path.join(repoLocal, 'env', 'ops', 'env.yaml');
+    fs.mkdirSync(path.dirname(destFile), { recursive: true });
+    fs.writeFileSync(destFile, 'TEAM_TOKEN: one\n');
+    const state = await loadStateForScope(localConfig);
+    state.placements = { 'env:env/env.yaml': 'env/ops/env.yaml' };
+    await saveStateForScope(state, localConfig);
+
+    expect(await getHandler('env').scanLocalForPush({} as never, localConfig)).toEqual([]);
+
+    fs.writeFileSync(activeFile, 'TEAM_TOKEN: two\n');
+    const edited = await getHandler('env').scanLocalForPush({} as never, localConfig);
+    expect(edited).toHaveLength(1);
+    expect(edited[0]).toMatchObject({
+      relativePath: 'env/ops/env.yaml',
+      namespace: 'ops',
+      status: 'modified',
+    });
+  });
 });
