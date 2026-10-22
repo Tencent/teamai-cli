@@ -162,7 +162,7 @@ for the real reset fallback. Removal refuses when that refresh also fails.
 
 Every namespace that names a directory — `knowledge`, `skills`, `agents`, `env`,
 `hooks`, `mcp`, `models`, `docs` and `wiki` in either manifest, and `learnings` in `projects.yaml` (a role's `learnings:` is
-ignored and unchecked) — must be a single path segment: no `/`, `\`, `:` or control character, no trailing
+not checked) — must be a single path segment: no `/`, `\`, `:` or control character, no trailing
 `.` or space, and not a Windows device name (`CON`, `NUL`, `COM1`, …). `team-codebase`
 cannot be a `docs` namespace (`docs/team-codebase/` is the legacy codebase output). Two
 namespaces of one resource type may not differ only by case, across both

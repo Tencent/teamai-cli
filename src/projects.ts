@@ -6,7 +6,8 @@ import {
   NamespaceSegmentSchema, parseManifest, readManifestFile, assertNoCaseAliasedNamespaces, warnUnknownResourceKeys,
   HAND_DECLARED_RESOURCE_TYPES, HandDeclaredNamespacesShape, type NamespaceEntry, parseManifestOnce,
 } from './manifest-schema.js';
-import type { ResourceNamespaces } from './roles.js';
+import { loadRolesManifest, resolveRoleResourceNamespaces, type ResourceNamespaces } from './roles.js';
+import type { LocalConfig } from './types.js';
 
 /**
  * Project resource types. Unlike roles, `learnings` is an ACTIVE dimension here:
@@ -233,30 +234,47 @@ export function resolveProjectResourceNamespaces(input: {
 }
 
 /**
- * Resolve the active **learnings** namespaces for a directory, from the manifest
- * — the SAME source `pull` uses. This is the canonical mapping from active
- * project ids to learnings subdirectories: a project's learnings namespace is
- * `resources.learnings`, which the schema allows to differ from the project id
- * (e.g. project `alpha` → `learnings: [alpha-notes]`). `contribute` must route
- * and index through this, not through the raw project id, or its landing point
- * and post-contribute index diverge from what `pull` syncs.
+ * Resolve the active **learnings** namespaces for a directory, from the
+ * manifests — the SAME sources `pull` uses: the member's roles first, then the
+ * active projects, as `mergeNamespaces` orders them. This is the canonical
+ * mapping to learnings subdirectories: a learnings namespace is
+ * `resources.learnings`, which the schema allows to differ from the role or
+ * project id (e.g. project `alpha` → `learnings: [alpha-notes]`). `contribute`
+ * must route and index through this, not through the raw id, or its landing
+ * point and post-contribute index diverge from what `pull` syncs.
  *
- * Returns `[]` when there is no manifest, no active project, or the active
- * projects declare no learnings namespace (→ contribution lands at the shared root).
+ * Returns `[]` when there is no manifest, no role or active project, or none of
+ * them declares a learnings namespace (→ contribution lands at the shared root).
  */
 export async function resolveActiveLearningsNamespaces(
-  repoPath: string,
-  activeProjects: string[],
+  config: { repo: Pick<LocalConfig['repo'], 'localPath'> } & Partial<Pick<LocalConfig, 'projects' | 'primaryRole' | 'additionalRoles'>>,
 ): Promise<string[]> {
-  if (activeProjects.length === 0) return [];
-  const manifest = await loadProjectsManifest(repoPath);
-  if (!manifest) return [];
-  try {
-    return resolveProjectResourceNamespaces({ manifest, activeProjects }).learnings;
-  } catch {
-    // Unknown active project id, etc. — degrade to shared root rather than throw.
-    return [];
-  }
+  const repoPath = config.repo.localPath;
+  const activeProjects = config.projects ?? [];
+  // An unknown role or project id, or a manifest that does not parse, degrades
+  // to the shared root rather than throw.
+  const fromRoles = async (): Promise<string[]> => {
+    if (!config.primaryRole) return [];
+    try {
+      const manifest = await loadRolesManifest(repoPath);
+      return resolveRoleResourceNamespaces({
+        manifest, primaryRole: config.primaryRole, additionalRoles: config.additionalRoles ?? [],
+      }).learnings;
+    } catch {
+      return [];
+    }
+  };
+  const fromProjects = async (): Promise<string[]> => {
+    if (activeProjects.length === 0) return [];
+    const manifest = await loadProjectsManifest(repoPath);
+    if (!manifest) return [];
+    try {
+      return resolveProjectResourceNamespaces({ manifest, activeProjects }).learnings;
+    } catch {
+      return [];
+    }
+  };
+  return [...new Set([...await fromRoles(), ...await fromProjects()])];
 }
 
 /**
@@ -282,7 +300,6 @@ export function mergeNamespaces(
   const merged: ResourceNamespaces = {
     knowledge: dedupe(roleNamespaces.knowledge, projectNamespaces.knowledge),
     skills: dedupe(roleNamespaces.skills, projectNamespaces.skills),
-    // Roles never contribute learnings; this is effectively the project set.
     learnings: dedupe(roleNamespaces.learnings, projectNamespaces.learnings),
     agents: dedupe(roleNamespaces.agents, projectNamespaces.agents),
   };

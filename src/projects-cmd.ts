@@ -47,7 +47,7 @@ export async function projectsList(_options: GlobalOptions): Promise<void> {
   const manifest = await loadProjectsManifest(repoPath);
   // As contribute: the own selection picks the default, and a workspace accepts
   // its children's namespaces too (#913).
-  const ownNamespaces = await resolveActiveLearningsNamespaces(repoPath, localConfig.projects ?? []);
+  const ownNamespaces = await resolveActiveLearningsNamespaces(localConfig);
   const namespaces = await deliveredLearningsNamespaces(localConfig);
   const destination = ownNamespaces.length === 1 ? `learnings/${ownNamespaces[0]}/` : 'learnings/ (shared root)';
   const contributionTarget = `Contributes to: ${destination}   --namespace accepts: ${namespaces.join(', ') || '(none)'}`;

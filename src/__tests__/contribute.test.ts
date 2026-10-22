@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import type { LocalConfig } from '../types.js';
 
 // ─── contribute.ts tests ────────────────────────────────────
 // These test the contribute() function in isolation,
@@ -109,5 +110,39 @@ describe('contribute', () => {
 
     expect(fs.readdirSync(tmpDir, { recursive: true })).toEqual(before);
     vi.doUnmock('../config.js');
+  });
+});
+
+describe('the learnings namespace of a member whose role declares one (#1101)', () => {
+  it('is where a contribution lands and one --namespace accepts, as pull delivers it to that role', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-contribute-role-'));
+    fs.mkdirSync(path.join(repo, 'manifest'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'manifest', 'roles.yaml'), [
+      'version: 1',
+      'roles:',
+      '  - id: ops',
+      '    description: ops',
+      '    resources: { knowledge: [], skills: [], agents: [], learnings: [ops-notes] }',
+      '',
+    ].join('\n'));
+    const localConfig: LocalConfig = {
+      repo: { localPath: repo, remote: 'local' },
+      username: 'alice',
+      scope: 'project',
+      primaryRole: 'ops',
+      additionalRoles: [],
+      projects: [],
+    };
+    try {
+      const { resolveLearningsSubdir } = await import('../contribute.js');
+      const { deliveredLearningsNamespaces } = await import('../workspace-children.js');
+      const { resolveResourceNamespaces } = await import('../resource-namespaces.js');
+
+      expect((await resolveResourceNamespaces(localConfig))?.activeNamespaces.learnings).toEqual(['ops-notes']);
+      expect(await resolveLearningsSubdir(localConfig)).toBe('ops-notes');
+      expect(await deliveredLearningsNamespaces(localConfig)).toEqual(['ops-notes']);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

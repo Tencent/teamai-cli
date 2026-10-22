@@ -517,7 +517,7 @@ projects:
       learnings: [alpha-notes]
 `);
     try {
-      expect(await resolveActiveLearningsNamespaces(repoDir, ['alpha'])).toEqual(['alpha-notes']);
+      expect(await resolveActiveLearningsNamespaces({ repo: { localPath: repoDir }, projects: ['alpha'] })).toEqual(['alpha-notes']);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -533,9 +533,9 @@ projects:
       skills: [beta]
 `);
     try {
-      expect(await resolveActiveLearningsNamespaces(noManifest, ['x'])).toEqual([]);
-      expect(await resolveActiveLearningsNamespaces(noLearnings, [])).toEqual([]);
-      expect(await resolveActiveLearningsNamespaces(noLearnings, ['beta'])).toEqual([]);
+      expect(await resolveActiveLearningsNamespaces({ repo: { localPath: noManifest }, projects: ['x'] })).toEqual([]);
+      expect(await resolveActiveLearningsNamespaces({ repo: { localPath: noLearnings }, projects: [] })).toEqual([]);
+      expect(await resolveActiveLearningsNamespaces({ repo: { localPath: noLearnings }, projects: ['beta'] })).toEqual([]);
     } finally {
       rmSync(noManifest, { recursive: true, force: true });
       rmSync(noLearnings, { recursive: true, force: true });

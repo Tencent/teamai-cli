@@ -25,7 +25,7 @@ teamai contribute --file /tmp/session.md
 teamai contribute --file /tmp/session.md --namespace payments
 ```
 
-`--namespace` must be a learnings namespace this scope declares in `manifest/projects.yaml`.
+`--namespace` must be a learnings namespace this scope's projects declare in `manifest/projects.yaml`, or its roles in `manifest/roles.yaml`.
 
 To stop the prompt, set this in `teamai.yaml`:
 
