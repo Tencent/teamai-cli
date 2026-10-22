@@ -251,6 +251,7 @@ import { RepoNotFoundError, RepoCreatePermissionError } from '../providers/types
 import { CnbRepoNotFoundError } from '../providers/cnb/cnb-cli.js';
 import { saveLocalConfig, loadLocalConfigForScope } from '../config.js';
 import fse from 'fs-extra';
+import type { PublishResult } from '../utils/branch-worktree.js';
 
 describe('init', () => {
   const HOME = process.env.HOME ?? '';
@@ -1044,6 +1045,66 @@ describe('init', () => {
         'project',
         process.cwd(),
       );
+    });
+  });
+
+  describe.each(['git', 'self'] as const)('member registration result (%s, #1267)', (mode) => {
+    async function register(result: PublishResult, runWrite = false): Promise<void> {
+      const reports = await import('../utils/reports-branch.js');
+      const update = vi.spyOn(reports, 'updateReports').mockImplementation(async (_config, write) => {
+        if (runWrite) await write('/reports', { onDelivered: vi.fn() });
+        return result;
+      });
+      try {
+        if (mode === 'git') {
+          await initWithTeamConfig();
+        } else {
+          pathExistsFn = (p: string) => p.endsWith(`${path.sep}.git`) || p.endsWith('/.git');
+          mockGit.raw.mockResolvedValue('https://git.example.com/group/repo.git\n');
+          vi.mocked(await import('../config.js')).loadTeamConfig.mockResolvedValue({
+            team: 'repo', repo: 'https://git.example.com/group/repo.git', provider: 'git',
+            reviewers: [], sharing: { rules: { enforced: [] }, docs: {}, env: {} }, toolPaths: {},
+          } as never);
+          await init({ repo: '.', role: 'hai', agent: 'claude', force: true });
+        }
+        expect(update).toHaveBeenCalledOnce();
+        expect(mockExit).not.toHaveBeenCalled();
+        const { log } = await import('../utils/logger.js');
+        expect(log.success).toHaveBeenCalledWith(expect.stringContaining('initialized'));
+      } finally {
+        update.mockRestore();
+      }
+    }
+
+    it.each([false, true])('shows the failure reason and retry hint (callback ran=%s)', async (runWrite) => {
+      await register({ status: 'failed', reason: 'reports commit failed: disk full' }, runWrite);
+      const { log } = await import('../utils/logger.js');
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('reports commit failed: disk full'));
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('teamai init'));
+      expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('no write access?'));
+      expect(log.success).not.toHaveBeenCalledWith(expect.stringContaining('Member registered on'));
+      expect(log.success).not.toHaveBeenCalledWith(expect.stringContaining('Registered as team member'));
+    });
+
+    it('reports a busy reports branch and leaves local setup successful', async () => {
+      await register({ status: 'busy' });
+      const { log } = await import('../utils/logger.js');
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('another write'));
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('teamai init'));
+      expect(log.info).not.toHaveBeenCalledWith(expect.stringContaining('already registered'));
+    });
+
+    it('still reports a published registration as successful', async () => {
+      await register({ status: 'published' }, true);
+      const { log } = await import('../utils/logger.js');
+      expect(log.success).toHaveBeenCalledWith('Member registered on the teamai-reports branch');
+      expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('Member registration'));
+    });
+
+    it.each([false, true])('does not warn when the member is already present (callback ran=%s)', async (runWrite) => {
+      await register({ status: 'already-present' }, runWrite);
+      const { log } = await import('../utils/logger.js');
+      expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('Member registration'));
     });
   });
 

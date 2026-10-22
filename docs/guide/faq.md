@@ -36,6 +36,12 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 ## FAQ
 
+**Q: `init` warns that member registration failed or the reports branch is busy?**
+
+Local setup still completes. A failed registration names the cause; fix it and
+re-run the same `teamai init` command to retry. If another write holds the
+`teamai-reports` branch, wait for it to finish, then re-run that command.
+
 **Q: A command says `Cannot acquire lock <path>: <reason>`?**
 
 The lock could not be inspected, created or reclaimed, including during a

@@ -1437,10 +1437,9 @@ export async function initSelfRepo(options: GlobalOptions & {
   if (!options.dryRun) {
     try {
       const { updateReports } = await import('./utils/reports-branch.js');
-      const { isPublished } = await import('./utils/branch-worktree.js');
       let isNewSelfMember = false;
       let selfMemberChanged = false;
-      const pushed = isPublished(await withTimeout(
+      const result = await withTimeout(
         updateReports(localConfig, async (wt) => {
           const memberDir = path.join(wt, 'members');
           await ensureDir(memberDir);
@@ -1463,15 +1462,15 @@ export async function initSelfRepo(options: GlobalOptions & {
         }, { initPush: true }),
         initPushBlockTimeoutMs(),
         'Member registration push',
-      ));
-      if (selfMemberChanged) {
-        if (pushed) {
-          log.success(isNewSelfMember
-            ? 'Member registered on the teamai-reports branch'
-            : 'Member roster updated on the teamai-reports branch');
-        } else {
-          log.warn('Member registration could not be pushed (no write access?). You are still set up locally.');
-        }
+      );
+      if (result.status === 'failed') {
+        log.warn(`Member registration could not be pushed: ${result.reason}. You are still set up locally. Fix the cause, then re-run the same \`teamai init\` command to retry.`);
+      } else if (result.status === 'busy') {
+        log.warn('Member registration skipped: another write holds the teamai-reports branch. You are still set up locally. Re-run the same `teamai init` command after it finishes.');
+      } else if (selfMemberChanged) {
+        log.success(isNewSelfMember
+          ? 'Member registered on the teamai-reports branch'
+          : 'Member roster updated on the teamai-reports branch');
       }
     } catch (e) {
       log.warn(`Member registration skipped (non-blocking): ${(e as Error).message}`);
@@ -1998,10 +1997,9 @@ export async function init(options: GlobalOptions & {
   if (!options.dryRun) {
     try {
       const { updateReports } = await import('./utils/reports-branch.js');
-      const { isPublished } = await import('./utils/branch-worktree.js');
       let memberChanged = false;
       let memberProjects: string[] | undefined;
-      const pushed = isPublished(await withTimeout(
+      const result = await withTimeout(
         updateReports(reportsConfig, async (wt) => {
           const memberDir = path.join(wt, 'members');
           await ensureDir(memberDir);
@@ -2025,18 +2023,18 @@ export async function init(options: GlobalOptions & {
         }, { initPush: true }),
         initPushBlockTimeoutMs(),
         'Member registration push',
-      ));
-      if (memberChanged) {
+      );
+      if (result.status === 'failed') {
+        log.warn(`Member registration could not be pushed: ${result.reason}. You are still set up locally. Fix the cause, then re-run the same \`teamai init\` command to retry.`);
+      } else if (result.status === 'busy') {
+        log.warn('Member registration skipped: another write holds the teamai-reports branch. You are still set up locally. Re-run the same `teamai init` command after it finishes.');
+      } else if (memberChanged) {
         log.success(isNewMember
           ? `Registered as team member: ${username}`
           : `Updated member roster: ${username}${memberProjects ? ` (projects: ${memberProjects.join(', ')})` : ''}`);
-        if (pushed) {
-          log.success(isNewMember
-            ? 'Member registered on the teamai-reports branch'
-            : 'Member roster updated on the teamai-reports branch');
-        } else {
-          log.warn('Member registration could not be pushed (no write access?). You are still set up locally.');
-        }
+        log.success(isNewMember
+          ? 'Member registered on the teamai-reports branch'
+          : 'Member roster updated on the teamai-reports branch');
       } else if (!isNewMember) {
         log.info(`Member ${username} already registered`);
       }

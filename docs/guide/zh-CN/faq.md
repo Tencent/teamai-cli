@@ -36,6 +36,12 @@ teamai init --repo https://github.com/your-org/your-repo --scope user --role <ro
 
 ## 常见问题 FAQ
 
+**Q: `init` 提示成员注册失败或 reports 分支被占用？**
+
+本地初始化仍会完成。注册失败时会显示具体原因；修复后，重新执行相同的
+`teamai init` 命令来重试。如果另一个写入正在占用 `teamai-reports` 分支，
+请等它结束后再重新执行该命令。
+
 **Q: 命令提示 `Cannot acquire lock <path>: <reason>`？**
 
 锁无法检查、创建或回收，dry-run 预览也可能报告此错误。
