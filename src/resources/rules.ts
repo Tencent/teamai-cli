@@ -234,20 +234,12 @@ export class RulesHandler extends ResourceHandler {
       // teamai-context is the file pull writes the team instructions to; a team
       // rule of that name would land on it (#945). pullAllRules names it.
       .filter((f) => f.endsWith('.md') && f !== `${TEAMAI_CONTEXT_RULE_NAME}.md`)
-      .map((f) => {
-        // `rules/<ns>/<file>.md` is namespaced; `rules/<file>.md` is shared.
-        // Extract name and namespace so review sees clean identities.
-        const segments = f.replace(/\.md$/, '').split('/');
-        const namespace = segments.length > 1 ? segments[0] : undefined;
-        const name = segments.length > 1 ? segments.slice(1).join('/') : segments[0];
-        return {
-          name,
-          type: 'rules' as const,
-          sourcePath: path.join(rulesDir, f),
-          relativePath: `rules/${f}`,
-          ...(namespace ? { namespace } : {}),
-        };
-      });
+      .map((f) => ({
+        name: f.replace(/\.md$/, ''),
+        type: 'rules' as const,
+        sourcePath: path.join(rulesDir, f),
+        relativePath: `rules/${f}`,
+      }));
   }
 
   async pushItem(item: ResourceItem, teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {

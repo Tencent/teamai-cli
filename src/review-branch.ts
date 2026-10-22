@@ -142,7 +142,10 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     // Handler-provided names (MCP server names, skill names) are authoritative;
     // parseRelativePath would overwrite them with the filename stem (e.g. 'mcp'
     // from mcp/<ns>/mcp.yaml), collapsing distinct servers into one identity.
-    if ((handlerTypes as readonly PlaceableType[]).includes(type)) {
+    // Rules are an exception: the handler's name carries the namespace prefix
+    // (e.g. 'ops/foo' for rules/ops/foo.md), so we parse name/namespace from
+    // the path instead.
+    if ((handlerTypes as readonly PlaceableType[]).includes(type) && type !== 'rules') {
       return {
         type,
         name: item.name,
