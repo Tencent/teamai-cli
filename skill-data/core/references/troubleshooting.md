@@ -372,7 +372,8 @@ makes that rebuild use confirmed counts only; it does not wait for the lock.
 
 Manual `teamai recall feedback --positive <docId>` adds an upvote without adding
 a recall. Confidence caps the upvote-to-recall ratio at 1: more feedback cannot
-exceed that factor's 30% weight or replace recency. This is an activity score,
+exceed that factor's 30% weight. Recency uses the later of the last recall and
+the last upvote, so a fresh upvote also refreshes recency. This is an activity score,
 not proof of knowledge correctness or task success.
 
 ## OpenCode V2 rejects the hooks plugin
