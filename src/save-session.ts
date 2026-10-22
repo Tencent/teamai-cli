@@ -147,7 +147,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
       const { isPublished } = await import('./utils/branch-worktree.js');
       let rel: string | undefined;
       let ran = false;
-      const pushed = isPublished(await withTimeout(
+      const result = await withTimeout(
         updateReports(localConfig, async (wt) => {
           ran = true;
           const teamDir = path.join(wt, 'sessions', username);
@@ -158,9 +158,12 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
         }),
         10_000,
         'Push timeout (10s)',
-      ));
+      );
+      const pushed = isPublished(result);
       if (ran && !rel) {
         if (pushed) spin.succeed('Pushed a previously unpushed session summary.');
+        else if (result.status === 'failed') spin.warn('Push failed. The summary is saved locally; retry with: teamai session save --push');
+        else if (result.status === 'busy') spin.warn('Team reports branch is busy. The summary is saved locally; retry with: teamai session save --push');
         else spin.info('Session already present in the team log — nothing to push.');
         return;
       }

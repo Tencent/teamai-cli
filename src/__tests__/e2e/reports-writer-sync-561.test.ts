@@ -88,6 +88,8 @@ exit 0
   return () => fs.rmSync(flag);
 }
 
+
+
 afterEach(() => {
   if (sandbox && path.dirname(sandbox) === os.tmpdir() && /^teamai-(561|1277)-/.test(path.basename(sandbox))) {
     fs.rmSync(sandbox, { recursive: true, force: true });
@@ -230,6 +232,10 @@ describe('real CLI reports writer sync (#561)', () => {
     const first = await runCli(home, ['session', 'save', '--session-id', 'alice-1277', '--push', '--force', '--scope', 'user'], sandbox);
     expect(first.code, first.output).toBe(0);
     expect(first.output).toContain('Nothing new to push.');
+
+    const rejectedRetry = await runCli(home, ['session', 'save', '--session-id', 'alice-1277', '--push', '--force', '--scope', 'user'], sandbox);
+    expect(rejectedRetry.code, rejectedRetry.output).toBe(0);
+    expect(rejectedRetry.output).toContain('Push failed. The summary is saved locally; retry with: teamai session save --push');
 
     allowReportsPush();
     const retry = await runCli(home, ['session', 'save', '--session-id', 'alice-1277', '--push', '--force', '--scope', 'user'], sandbox);
