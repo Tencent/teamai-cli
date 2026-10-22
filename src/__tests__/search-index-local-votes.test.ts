@@ -178,4 +178,23 @@ describe('index local votes (#1233)', () => {
     expect(data.votes[docId].upvoted_count).toBe(0);
     expect(data.votes[docId].last_upvoted_at).toBeUndefined();
   });
+
+  // #1278: upvoting a never-recalled doc must not apply the cold penalty.
+  it('keeps an upvote-only document hot when last_upvoted_at is recent (#1278)', async () => {
+    await confirmed({
+      version: 2,
+      votes: {
+        [docId]: {
+          recalled_count: 0,
+          upvoted_count: 1,
+          last_recalled_at: '',
+          last_upvoted_at: date,
+        },
+      },
+      deltas: {},
+    });
+    const result = await indexed();
+    expect(result.confidence).toBe(0.72);
+    expect(result.hotness).toBe(1);
+  });
 });
