@@ -81,6 +81,10 @@ For a built-in tool, `init` without `--agent` and a non-interactive terminal doe
 
 `teamai pull` does not create missing agent roots. The exception is the first pull in an inherited submodule clone, which seeds roots from the original submodule's configuration ([project checkouts](./distribution.md#project-checkouts)). For a custom agent defined only in `teamai.yaml`'s `toolPaths`, `init --agent <id>` creates its root during git-backed init. HTTP init cannot read local `teamai.yaml` paths, so it creates roots only for installed built-in agents.
 
+**Q: A `toolPaths` entry in `teamai.yaml` — what happens to the keys it does not name?**
+
+The entry replaces that tool's default whole: keys you omit are *gone*, not inherited. An entry that customizes `skills` but omits `settings` leaves the tool with no settings file, so hook reconciliation silently skips it; omitting `skills` or `rules` disables that delivery on purpose. `teamai doctor` names every key a custom entry dropped that the default table provides, with the value to add back.
+
 **Q: Hooks aren't firing automatically?**
 
 ```bash

@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
-  CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
+  CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
   resolveToolBaseDir, resolveToolRootDir, scopedToolPaths,
 } from './types.js';
 import type { DeliveryTarget, LocalConfig, ManagedMcpManifest, McpServerDef, ResourceItem, TeamaiConfig } from './types.js';
@@ -247,6 +247,43 @@ function unresolvableCheck(type: 'skills' | 'agents' | 'docs', reason: string): 
     check: async () => false,
     fix: `${reason}. Until the team repo is fixed, pull cannot sync ${type} for this role.`,
   }];
+}
+
+/**
+ * #1115's dropped-key half: a team `toolPaths` entry replaces that tool's
+ * default whole, so naming a tool while omitting a key the default provides
+ * silently disables the surface behind the key — hooks skip the tool, no
+ * skills arrive — with no warning at pull time. One note per tool whose entry
+ * drops keys the default table provides. Omission stays a valid opt-out, so
+ * this is a note, not a finding: surfaced, never failing.
+ */
+export function toolPathsDroppedKeyNotes(ctx: DoctorContext): string[] {
+  const { toolPaths } = ctx;
+  // What each key's absence does, for the note text. Keys the default entry
+  // does not provide cannot be dropped, so the loop below never looks them up.
+  const CONSEQUENCES: Record<string, string> = {
+    settings: 'hook reconciliation silently skips the tool',
+    skills: 'no skills are delivered to it',
+    rules: 'no rules are delivered to it',
+    claudemd: 'the team rules have no instructions file to inline into',
+    agents: 'no agents are delivered to it',
+    mcp: 'team MCP servers are not written to its user config',
+    mcpProject: 'team MCP servers are not written to its project config',
+  };
+  const defaults = DEFAULT_TOOL_PATHS as unknown as Record<string, Record<string, string>>;
+  const notes: string[] = [];
+  for (const [tool, entryRaw] of Object.entries(toolPaths)) {
+    const def = defaults[tool];
+    if (!def) continue; // a custom tool: no default entry to drop keys from.
+    const entry = entryRaw as unknown as Record<string, string | undefined>;
+    const dropped = Object.keys(def)
+      .filter((key) => key !== 'userScope' && entry[key] === undefined && CONSEQUENCES[key] !== undefined)
+      .map((key) => `\`${key}\` (${def[key]} — ${CONSEQUENCES[key]})`);
+    if (dropped.length === 0) continue;
+    notes.push(`toolPaths.${tool} replaces the tool's default entry whole and drops keys the default provides: `
+      + `${dropped.join(', ')}. Add a key back to restore its surface, or leave it out on purpose.`);
+  }
+  return notes;
 }
 
 export async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> {

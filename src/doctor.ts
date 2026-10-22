@@ -30,6 +30,7 @@ import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope } from './hooks.js';
 import {
   buildDeliveryChecks,
+  toolPathsDroppedKeyNotes,
   buildRulesDeliveryChecks,
   buildAgentsDeliveryChecks,
   buildInstructionDeliveryChecks,
@@ -824,6 +825,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await ruleChannelNotes(localConfig),
     ...[await dshSandboxNote(localConfig)].filter((note): note is string => note !== null),
     ...codexTrust.notes,
+    ...toolPathsDroppedKeyNotes(ctx),
     usageReportNote(ctx),
     // What git sees of the delivered team resources, and what no pull changes (#915).
     ...await deliveredGitExcludeNotes(ctx),
