@@ -13,7 +13,15 @@ import { afterAll } from 'vitest';
 const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-test-home-')));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
+// The temporary directory too: teamai keeps git answers there between runs
+// (src/utils/git-answers.ts), and tests must neither share them nor fill the
+// file the real CLI reads. Spelled as os.tmpdir() was, not resolved like home.
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-test-tmp-'));
+process.env.TMPDIR = tmp;
+process.env.TMP = tmp;
+process.env.TEMP = tmp;
 
 afterAll(() => {
   fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(tmp, { recursive: true, force: true });
 });

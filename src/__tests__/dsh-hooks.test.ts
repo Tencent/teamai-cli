@@ -11,8 +11,11 @@ vi.mock('../utils/logger.js', () => ({
 import {
   DSH_HOOK_CONFIG_FILE,
   DSH_PATCH_FILE,
+  dshSandboxNote,
+  reconcileDshHooks,
   resolveDshHooksDir,
 } from '../dsh-hooks.js';
+import { log } from '../utils/logger.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
 import type { HookDef } from '../types.js';
 
@@ -40,6 +43,10 @@ describe('DeepSeek Harness hook bridge', () => {
   const bridgeDir = () => resolveDshHooksDir();
   const hooksFile = () => path.join(bridgeDir(), DSH_HOOK_CONFIG_FILE);
   const patchFile = () => path.join(bridgeDir(), DSH_PATCH_FILE);
+  const homePatchFile = () => path.join(home, '.dsh', DSH_PATCH_FILE);
+  const teamaiRow = () => ({
+    insert: [{ id: 'teamai-hooks-claude-code', name: '@deepseek-ai/dsh-hooks-claude-code', config: { configPath: hooksFile() } }],
+  });
 
   it('does not create the bridge when dsh is not installed', async () => {
     await reconcileHooksToAllTools(toolPaths, home, [], manifest());
@@ -69,7 +76,7 @@ describe('DeepSeek Harness hook bridge', () => {
     }
   });
 
-  it('writes Claude-compatible hooks and a parseable dsh patch when dsh is installed', async () => {
+  it('writes Claude-compatible hooks and mounts them in the patch dsh applies on every boot (#1219)', async () => {
     await fse.ensureDir(path.join(home, '.dsh'));
     await reconcileHooksToAllTools(toolPaths, home, [], manifest());
 
@@ -77,16 +84,88 @@ describe('DeepSeek Harness hook bridge', () => {
     expect(hooks.hooks.SessionStart).toBeDefined();
     expect(JSON.stringify(hooks)).toContain('--tool dsh');
 
-    const patch = YAML.parse(await fse.readFile(patchFile(), 'utf8')) as Array<{ insert: Array<{ id: string; name: string; config: { configPath: string } }> }>;
-    expect(patch).toEqual([
-      {
-        insert: [{
-          id: 'teamai-hooks-claude-code',
-          name: '@deepseek-ai/dsh-hooks-claude-code',
-          config: { configPath: hooksFile() },
-        }],
-      },
-    ]);
+    expect(YAML.parse(await fse.readFile(homePatchFile(), 'utf8'))).toEqual([teamaiRow()]);
+    // A launcher that still passes --patch keeps booting, and loads the hooks once.
+    expect(YAML.parse(await fse.readFile(patchFile(), 'utf8'))).toEqual([]);
+  });
+
+  it('keeps the member\'s own rows in $DSH_HOME/cordis.patch.yml through pull and uninstall (#1219)', async () => {
+    await fse.ensureDir(path.join(home, '.dsh'));
+    const mine = '# my tweaks\n- id: telemetry\n  disabled: true\n';
+    await fse.writeFile(homePatchFile(), mine);
+
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    const mounted = await fse.readFile(homePatchFile(), 'utf8');
+    expect(mounted).toContain('# my tweaks');
+    expect(YAML.parse(mounted)).toEqual([{ id: 'telemetry', disabled: true }, teamaiRow()]);
+
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    expect(await fse.readFile(homePatchFile(), 'utf8')).toBe(mounted);
+
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest(), { removeAll: true });
+    expect(YAML.parse(await fse.readFile(homePatchFile(), 'utf8'))).toEqual([{ id: 'telemetry', disabled: true }]);
+  });
+
+  it('preserves empty member-owned patches during removal when no teamai row is present (#1219)', async () => {
+    await fse.ensureDir(path.join(home, '.dsh'));
+    const mine = '# my tweaks\n[]\n';
+    await fse.writeFile(homePatchFile(), mine);
+
+    await reconcileDshHooks([], { manifestPath: manifest(), removeAll: true });
+
+    expect(await fse.pathExists(homePatchFile())).toBe(true);
+    expect(await fse.readFile(homePatchFile(), 'utf8')).toBe(mine);
+  });
+
+  it('preserves member comments after removing the last owned mount (#1219)', async () => {
+    await fse.ensureDir(path.join(home, '.dsh'));
+    const mine = '# my tweaks\n[]\n';
+    await fse.writeFile(homePatchFile(), mine);
+
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    expect(await fse.readFile(homePatchFile(), 'utf8')).toContain('# my tweaks');
+
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest(), { removeAll: true });
+    expect(await fse.pathExists(homePatchFile())).toBe(true);
+    const after = await fse.readFile(homePatchFile(), 'utf8');
+    expect(after).toContain('# my tweaks');
+    expect(YAML.parse(after)).toEqual([]);
+  });
+
+  it('preserves inline comments on empty member patches during removal (#1219)', async () => {
+    await fse.ensureDir(path.join(home, '.dsh'));
+    const mine = '[] # my tweaks\n';
+    await fse.writeFile(homePatchFile(), mine);
+
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest(), { removeAll: true });
+    expect(await fse.pathExists(homePatchFile())).toBe(true);
+    const after = await fse.readFile(homePatchFile(), 'utf8');
+    expect(after).toContain('# my tweaks');
+    expect(YAML.parse(after)).toEqual([]);
+  });
+
+  it('leaves a $DSH_HOME/cordis.patch.yml it cannot parse alone (#1219)', async () => {
+    await fse.ensureDir(path.join(home, '.dsh'));
+    await fse.writeFile(homePatchFile(), 'id: [unclosed\n');
+    await reconcileHooksToAllTools(toolPaths, home, [], manifest());
+    expect(await fse.readFile(homePatchFile(), 'utf8')).toBe('id: [unclosed\n');
+  });
+
+  it('warns and preserves an invalid home patch during removal (#1219)', async () => {
+    await fse.ensureDir(path.join(home, '.dsh'));
+    const invalid = 'id: [unclosed\n';
+    await fse.writeFile(homePatchFile(), invalid);
+    vi.mocked(log.warn).mockClear();
+
+    await reconcileDshHooks([], { manifestPath: manifest(), removeAll: true });
+
+    expect(await fse.readFile(homePatchFile(), 'utf8')).toBe(invalid);
+    expect(log.warn).toHaveBeenCalledWith(
+      `${homePatchFile()} is not a YAML patch list, so teamai left it as it is and could not remove `
+      + "teamai's DeepSeek Harness hooks. Fix the file, then run `teamai hooks remove`.",
+    );
   });
 
   it('preserves team hook definitions in the bridge config', async () => {
@@ -118,7 +197,25 @@ describe('DeepSeek Harness hook bridge', () => {
 
     await reconcileHooksToAllTools(toolPaths, home, [], manifest(), { removeAll: true });
     expect(await fse.pathExists(patchFile())).toBe(false);
+    expect(await fse.pathExists(homePatchFile())).toBe(false);
     expect(JSON.stringify(JSON.parse(await fse.readFile(hooksFile(), 'utf8')))).not.toContain('--tool dsh');
+  });
+
+  it('says when dsh\'s sandbox keeps the hooks that write from writing teamai\'s state (#1219)', async () => {
+    const member = { enabledAgents: ['dsh'] } as Parameters<typeof dshSandboxNote>[0];
+    expect(await dshSandboxNote(member)).toBeNull();
+
+    await fse.ensureDir(path.join(home, '.dsh'));
+    const note = await dshSandboxNote(member);
+    expect(note).toContain('DSH_PERMISSION_MODE');
+    expect(note).toContain('teamai pull');
+
+    vi.stubEnv('DSH_PERMISSION_MODE', 'danger-full-access');
+    try {
+      expect(await dshSandboxNote(member)).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('does not touch dsh during a settings-only cleanup', async () => {

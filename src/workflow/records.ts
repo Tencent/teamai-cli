@@ -34,6 +34,7 @@ const RECORDED_FAILURES = [
   'cancelled', 'hitl_required',
   'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle',
   'tool_failed', 'tool_unavailable', 'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
+  'merge_conflict', 'base_config', 'push_failed', 'workspace_base',
 ] as const;
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
 
@@ -105,9 +106,12 @@ type StepEntry = NonNullable<WorkflowRunRecord['steps']>[number];
 /** What one pass of a step reported. */
 type Reported = Pick<StepPass, 'outcome' | 'tool' | 'model' | 'tokens' | 'agent' | 'answer'>;
 
+/** The directory on the reports branch that holds every run record. */
+export const RECORDS_DIR = 'workflows/runs';
+
 /** A record's path on the reports branch, keyed by run id. */
 export function recordPath(runId: string): string {
-  return `workflows/runs/${runId}.json`;
+  return `${RECORDS_DIR}/${runId}.json`;
 }
 
 function iso(date: Date): string {
@@ -245,7 +249,7 @@ export function mergeRecord(origin: WorkflowRunRecord | null, next: WorkflowRunR
 }
 
 /** Whether a run record was delivered or still waits in the local queue. */
-type RecordState = 'published' | 'pending';
+export type RecordState = 'published' | 'pending';
 
 /** The opt-out `pull` applies to stat commits covers run records too: the member's `usageReportEnabled`, else teamai.yaml `usageReport`. */
 async function isRecordingEnabled(config: LocalConfig): Promise<boolean> {
@@ -294,8 +298,15 @@ export async function publishRunRecords(config: LocalConfig): Promise<RecordStat
 
 /** The record state of a run that settled earlier: none when it queued no end record, pending while any of its records waits in the queue. */
 export async function runRecordState(config: LocalConfig, run: RunState): Promise<RecordState | undefined> {
-  if (!run.endRecordQueued || !await isRecordingEnabled(config)) return undefined;
-  return (await pendingRecords(config)).some((record) => record.run === run.id) ? 'pending' : 'published';
+  return (await runRecordStates(config, [run])).get(run.id);
+}
+
+/** `runRecordState` of several runs, reading the team config and the queue once for all of them. */
+export async function runRecordStates(config: LocalConfig, runs: RunState[]): Promise<Map<string, RecordState>> {
+  const queued = runs.filter((run) => run.endRecordQueued);
+  if (queued.length === 0 || !await isRecordingEnabled(config)) return new Map();
+  const pending = new Set((await pendingRecords(config)).map((record) => record.run));
+  return new Map(queued.map((run): [string, RecordState] => [run.id, pending.has(run.id) ? 'pending' : 'published']));
 }
 
 // ─── Local pending queue ────────────────────────────────

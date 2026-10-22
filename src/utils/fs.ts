@@ -178,15 +178,16 @@ export async function writeJson(filePath: string, data: unknown): Promise<void> 
  * @param filePath - Destination path (may use ~).
  * @param data - JSON-serializable value.
  * @param options.mode - Force permission bits instead of preserving the target.
+ * @param options.compact - Write without indentation, for a large file no one reads by hand.
  */
 export async function writeJsonAtomic(
   filePath: string,
   data: unknown,
-  options?: { mode?: number },
+  options?: { mode?: number; compact?: boolean },
 ): Promise<void> {
   const expanded = expandHome(filePath);
   await fse.ensureDir(path.dirname(expanded));
-  const content = JSON.stringify(data, null, 2) + '\n';
+  const content = JSON.stringify(data, null, options?.compact ? undefined : 2) + '\n';
   let mode = options?.mode ?? 0o600;
   if (options?.mode === undefined) {
     try {

@@ -49,6 +49,13 @@ const REDIRECT = /^(?:&>>?|<<<|<<-?|<>|<&|>>|>&|>\||<|>)/;
 /** The characters an unquoted backslash escapes: whitespace and those the shell gives a meaning. */
 const ESCAPABLE = /[\s'"\\$`()&;|<>*?#!]/;
 
+const HOME_REF = /(?:~|\$HOME|\$\{HOME\})(?=[\\/])/y;
+
+function homeRefLength(line: string, at: number): number {
+  HOME_REF.lastIndex = at;
+  return HOME_REF.exec(line)?.[0].length ?? 0;
+}
+
 /**
  * The simple commands of a shell command line, split on `;`, `&&`, `||`, `|`,
  * `&` and newlines outside quotes, each with the operator after it. A
@@ -57,10 +64,11 @@ const ESCAPABLE = /[\s'"\\$`()&;|<>*?#!]/;
  * of the line. Outside quotes a backslash escapes whitespace or a character
  * the shell gives a meaning (`my\ doc.md`), and joins a line to the next;
  * before any other character it is kept, so an unquoted Windows path
- * (`C:\kb\x.md`) stays whole. Inside double quotes it escapes only `"` or
- * `\`, and inside single quotes nothing.
+ * (`C:\kb\x.md`) stays whole. Inside double quotes it escapes only `"`,
+ * `\` or `$`, and inside single quotes nothing. Given `home`, `$HOME/` and
+ * `${HOME}/` expand outside single quotes; `~/` expands only unquoted.
  */
-export function simpleCommands(command: string): SimpleCommand[] {
+export function simpleCommands(command: string, home?: string): SimpleCommand[] {
   const commands: SimpleCommand[] = [];
   let current: SimpleCommand = { words: [], redirects: [], op: null };
   let word: string | null = null;
@@ -89,8 +97,11 @@ export function simpleCommands(command: string): SimpleCommand[] {
     const next = line[i + 1];
     if (quote) {
       if (c === quote) quote = null;
-      else if (c === '\\' && quote === '"' && (next === '"' || next === '\\')) word += line[++i];
-      else word += c;
+      else if (c === '\\' && quote === '"' && (next === '"' || next === '\\' || next === '$')) word += line[++i];
+      else if (quote === '"' && c === '$' && home !== undefined && homeRefLength(line, i) > 0) {
+        i += homeRefLength(line, i) - 1;
+        word += home;
+      } else word += c;
     } else if (c === '"' || c === "'") {
       quote = c;
       word ??= '';
@@ -120,6 +131,9 @@ export function simpleCommands(command: string): SimpleCommand[] {
       endCommand(';');
     } else if (/\s/.test(c)) {
       endWord();
+    } else if (word === null && home !== undefined && homeRefLength(line, i) > 0) {
+      i += homeRefLength(line, i) - 1;
+      word = home;
     } else {
       word = (word ?? '') + c;
     }
@@ -267,6 +281,8 @@ const WINDOWS_PATH = /^[A-Za-z]:[\\/]|\\/;
 export interface ShellFlavor {
   /** The agent's PowerShell tool ran it. */
   powershell?: boolean;
+  /** The home directory the shell expands a leading `~`, `$HOME` or `${HOME}` before `/` or `\` to (`simpleCommands`). */
+  home?: string;
 }
 
 /**
@@ -428,7 +444,7 @@ function classifySimple(command: SimpleCommand, simple: boolean, flavor: ShellFl
  * just a shell call.
  */
 export function classifyShellCommand(command: string, flavor: ShellFlavor = {}): ShellClassification {
-  const commands = simpleCommands(command);
+  const commands = simpleCommands(command, flavor.home);
   const pipeline = commands.every((c, i) => c.op === (i === commands.length - 1 ? null : '|'));
   return pipeline && commands.length > 0 ? classifySimple(commands[0], commands.length === 1, flavor) : SHELL;
 }

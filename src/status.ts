@@ -2,7 +2,8 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { autoDetectInit, loadStateForScope } from './config.js';
 import { summarizeWorkspaceChildren } from './workspace-children.js';
-import { getRepoStatus } from './utils/git.js';
+import { teamRefNotice } from './team-ref.js';
+import { getDefaultBranch, getHeadRev, getRepoStatus } from './utils/git.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { log } from './utils/logger.js';
 import { getAllHandlers } from './resources/index.js';
@@ -61,6 +62,10 @@ export async function status(options: GlobalOptions): Promise<void> {
   log.info(`  data: ${getDataHome(localConfig)}`);
   const children = summarizeWorkspaceChildren(localConfig);
   if (children) log.info(`  ${children}`);
+
+  if (localConfig.repo.ref !== undefined) {
+    log.info(teamRefNotice(localConfig.repo.ref, await getHeadRev(localConfig.repo.localPath), await getDefaultBranch(localConfig.repo.localPath)));
+  }
 
   // Git status
   console.log('');

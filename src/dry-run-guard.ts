@@ -4,6 +4,8 @@ import type { Command } from 'commander';
  * `--dry-run` promises that nothing changes. A command that does not keep that
  * promise refuses the flag instead of running for real (#900). The guard reads
  * only this allowlist, so a new command is refused until it is listed here.
+ * Caches in the temporary directory (Node's compile cache, the git answers of
+ * src/utils/git-answers.ts) are not something a dry run changes.
  *
  * Keyed by full command path: leaf names collide (`add`, `remove`, `init`).
  * A path belongs here when its action honors `--dry-run` (forwards it and

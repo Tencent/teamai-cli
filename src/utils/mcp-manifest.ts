@@ -71,6 +71,7 @@ export async function loadProjectMcpManifest(
     sources.push({ path: workspaceShared, workspaceLocal: true });
   }
 
+  const cleanup: Array<{ path: string; shared: ManagedMcpManifest; keys: string[] }> = [];
   for (const src of sources) {
     const shared = (await readJson<ManagedMcpManifest>(src.path)) ?? null;
     if (!shared) continue;
@@ -85,13 +86,15 @@ export async function loadProjectMcpManifest(
         migratedFrom.push(key);
       }
     }
-    if (migratedFrom.length > 0 && !options.dryRun) {
-      // Durable order: write the destination FIRST, then drop the claimed keys
-      // from this source. A crash in between leaves the records readable in both
-      // files (the per-worktree file wins), never in neither.
-      await writeJsonAtomic(expandHome(manifestPath), manifest);
-      for (const key of migratedFrom) delete shared[key];
-      await writeJsonAtomic(src.path, shared).catch(() => {});
+    if (migratedFrom.length > 0) cleanup.push({ path: src.path, shared, keys: migratedFrom });
+  }
+  if (cleanup.length > 0 && !options.dryRun) {
+    // An existing destination ends migration on the next load. Publish all
+    // sources together so a failed write cannot leave a partial migration.
+    await writeJsonAtomic(expandHome(manifestPath), manifest);
+    for (const src of cleanup) {
+      for (const key of src.keys) delete src.shared[key];
+      await writeJsonAtomic(src.path, src.shared).catch(() => {});
     }
   }
   return { manifestPath, manifest };

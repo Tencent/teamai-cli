@@ -4,6 +4,8 @@ import { pruneThreads } from '../mr-threads.js';
 import { getGitLabToken, gitlabBaseUrl } from './gitlab-api.js';
 import { GITLAB_HOST } from './repo-url.js';
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 /** GitLab MR URL 解析结果 */
 interface ParsedGitLabMR {
   /** API base derived from the MR URL's own origin, e.g. https://host/api/v4 */
@@ -153,7 +155,7 @@ async function fetchGitLabDiscussions(
   for (let page = 1; page <= MAX_DISCUSSION_PAGES; page++) {
     const resp = await fetch(
       `${apiBase}/projects/${enc}/merge_requests/${mrIid}/discussions?per_page=100&page=${page}`,
-      { headers, redirect: 'manual' },
+      { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
     );
     if (!resp.ok) {
       throw new Error(`GitLab API error ${resp.status}`);
@@ -196,6 +198,7 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
   const resp = await fetch(`${apiBase}/projects/${enc}/merge_requests/${mrIid}`, {
     headers,
     redirect: 'manual',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!resp.ok) {
     throw new Error(`GitLab API error ${resp.status}: ${await resp.text()}`);
@@ -207,7 +210,7 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
   try {
     const commitsResp = await fetch(
       `${apiBase}/projects/${enc}/merge_requests/${mrIid}/commits?per_page=50`,
-      { headers, redirect: 'manual' },
+      { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
     );
     if (commitsResp.ok) {
       const raw = (await commitsResp.json()) as GitLabCommit[];
@@ -222,7 +225,7 @@ export async function fetchGitLabMR(url: string, opts: MRFetchOptions = {}): Pro
   try {
     const diffResp = await fetch(
       `${apiBase}/projects/${enc}/merge_requests/${mrIid}/changes`,
-      { headers, redirect: 'manual' },
+      { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) },
     );
     if (diffResp.ok) {
       const diffData = (await diffResp.json()) as GitLabChangesResponse;

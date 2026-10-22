@@ -188,6 +188,17 @@ describe('toolRoots — re-rooting a relocated tool', () => {
     expect(Object.keys(paths.claude).sort()).toEqual(['mcpProject', 'skills']);
   });
 
+  it('keeps other tools at default paths when a single tool declares sparse paths (#1185)', () => {
+    const sparse = TeamaiConfigSchema.parse({
+      team: 't',
+      repo: 'r',
+      toolPaths: { claude: { skills: '.claude/skills', mcpProject: '.mcp.json' } },
+    });
+    const paths = scopedToolPaths(sparse, localConfig({}));
+    expect(paths.codebuddy.mcpProject).toBe('.mcp.json');
+    expect(paths.cursor.skills).toBe('.cursor/skills');
+  });
+
   it('moves fields the team spread over several roots, every one of them', () => {
     // A customized `toolPaths.claude` need not keep every field under one
     // directory. The feature promises that every user-scope Claude path moves,

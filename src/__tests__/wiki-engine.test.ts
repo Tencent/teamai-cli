@@ -159,6 +159,30 @@ describe('traceCallChains', () => {
     }
   });
 
+  it('cites each step with its own line, not the entry point line', () => {
+    const facts: CodeFact[] = [
+      makeFact('handleRequest', 'component', 'src/controller.ts', 10),
+      makeFact('./service', 'relation', 'src/controller.ts'),
+      makeFact('doWork', 'component', 'src/service.ts', 42),
+      makeFact('./repo', 'relation', 'src/service.ts'),
+      makeFact('findAll', 'component', 'src/repo.ts', 100),
+    ];
+    const files: CodeCollectedFile[] = [
+      makeFile('src/controller.ts', '', 'typescript'),
+      makeFile('src/service.ts', '', 'typescript'),
+      makeFile('src/repo.ts', '', 'typescript'),
+    ];
+    const chains = traceCallChains(facts, files);
+    const chain = chains.find(c => c.steps.some(s => s.symbol === 'doWork'));
+    expect(chain).toBeDefined();
+    const entryStep = chain!.steps.find(s => s.symbol === 'handleRequest')!;
+    const doWork = chain!.steps.find(s => s.symbol === 'doWork')!;
+    const findAll = chain!.steps.find(s => s.symbol === 'findAll')!;
+    expect(entryStep.lineStart).toBe(10);
+    expect(doWork.lineStart).toBe(42);
+    expect(findAll.lineStart).toBe(100);
+  });
+
   it('picks up key file with handler-like path as entry', () => {
     const facts: CodeFact[] = [];
     const files: CodeCollectedFile[] = [

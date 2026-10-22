@@ -1600,6 +1600,63 @@ describe('adapters: native cwd recovery from JSONL records', () => {
   });
 });
 
+describe('codex sessions: images', () => {
+  const PNG = 'iVBORw0KGgo=';
+
+  it('reads an input_image of a user message as an image block', async () => {
+    const SID = '019e0000-1111-7222-8333-777777777777';
+    const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '02');
+    fs.mkdirSync(dir, { recursive: true });
+    const lines = [
+      { type: 'session_meta', payload: { id: SID, timestamp: '2026-10-02T10:00:00.000Z', cwd: '/work/app' } },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'what is this error?' },
+            { type: 'input_image', image_url: `data:image/png;base64,${PNG}` },
+          ],
+        },
+      },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `rollout-2026-10-02T10-00-00-${SID}.jsonl`),
+      lines.map((l) => JSON.stringify({ timestamp: '2026-10-02T10:00:00.000Z', ...l })).join('\n') + '\n',
+    );
+
+    const session = await new CodexAdapter().readSession({ sessionId: SID });
+    const images = session.messages.flatMap((m) => m.content).filter((b) => b.type === 'image');
+    expect(images).toEqual([{ type: 'image', mimeType: 'image/png', data: PNG, label: 'image.png' }]);
+  });
+
+  it('writes a user image as an input_image and reads it back', async () => {
+    const adapter = new CodexAdapter();
+    const sid = await adapter.writeSession(
+      {
+        sessionId: 'src-image-1',
+        title: 'image',
+        cwd: '/work/app',
+        platform: 'claude-code',
+        createdAt: '2026-10-03T10:00:00.000Z',
+        updatedAt: '2026-10-03T10:00:00.000Z',
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'image', mimeType: 'image/png', data: PNG, label: 'shot.png' }],
+            timestamp: '2026-10-03T10:00:00.000Z',
+          },
+        ],
+      },
+      '/work/app',
+    );
+    const back = await adapter.readSession({ sessionId: sid });
+    const images = back.messages.flatMap((m) => m.content).filter((b) => b.type === 'image');
+    expect(images).toEqual([{ type: 'image', mimeType: 'image/png', data: PNG, label: 'image.png' }]);
+  });
+});
+
 describe('codex readSession: reasoning', () => {
   it('reads the reasoning summary and content Codex writes', async () => {
     const SID = '019e0000-1111-7222-8333-666666666666';
@@ -1695,5 +1752,68 @@ describe('codex readSession: freeform tool calls', () => {
     const session = await new CodexAdapter().readSession({ sessionId: SID });
     const result = session.messages.flatMap((m) => m.content).find((b) => b.type === 'tool_result');
     expect(result).toMatchObject({ type: 'tool_result', callId: 'call_1', content: 'Output:\ndone' });
+  });
+
+  it('keeps the image of a tool output given as a list of content items', async () => {
+    const SID = '019e0000-1111-7222-8333-666666666666';
+    const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '01');
+    fs.mkdirSync(dir, { recursive: true });
+    const output = (text: string) => [
+      { type: 'input_text', text },
+      { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' },
+    ];
+    const lines = [
+      { type: 'session_meta', payload: { id: SID, timestamp: '2026-10-01T10:00:00.000Z', cwd: '/work/app' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look' }] } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'call_1', name: 'view_image', arguments: '{"path":"a.png"}' } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'call_2', name: 'view_image', arguments: '{"path":"b.png"}' } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_1', output: output('a') } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_2', output: output('b') } },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `rollout-2026-10-01T10-00-00-${SID}.jsonl`),
+      lines.map((l) => JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', ...l })).join('\n') + '\n',
+    );
+
+    const session = await new CodexAdapter().readSession({ sessionId: SID });
+    // Both tool results come first, then a user message with the images they returned
+    expect(session.messages.map((m) => [m.role, m.content.map((b) => b.type)])).toEqual([
+      ['user', ['text']],
+      ['assistant', ['tool_call', 'tool_call']],
+      ['user', ['tool_result', 'tool_result']],
+      ['user', ['image', 'image']],
+    ]);
+    expect(session.messages[3].content[0]).toMatchObject({ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' });
+  });
+
+  it.each([
+    ['web_search_call', { type: 'web_search_call', status: 'completed' }],
+    ['developer message', { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'rules' }] }],
+  ])('keeps tool results together when a %s falls between two outputs', async (_name, ignored) => {
+    const SID = '019e0000-1111-7222-8333-666666666667';
+    const dir = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '01');
+    fs.mkdirSync(dir, { recursive: true });
+    const image = [{ type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=' }];
+    const lines = [
+      { type: 'session_meta', payload: { id: SID, timestamp: '2026-10-01T10:00:00.000Z', cwd: '/work/app' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look' }] } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'c1', name: 'view_image', arguments: '{}' } },
+      { type: 'response_item', payload: { type: 'function_call', call_id: 'c2', name: 'view_image', arguments: '{}' } },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: image } },
+      { type: 'response_item', payload: ignored },
+      { type: 'response_item', payload: { type: 'function_call_output', call_id: 'c2', output: 'done' } },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `rollout-2026-10-01T10-00-00-${SID}.jsonl`),
+      lines.map((l) => JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', ...l })).join('\n') + '\n',
+    );
+
+    const session = await new CodexAdapter().readSession({ sessionId: SID });
+    expect(session.messages.map((m) => [m.role, m.content.map((b) => b.type)])).toEqual([
+      ['user', ['text']],
+      ['assistant', ['tool_call', 'tool_call']],
+      ['user', ['tool_result', 'tool_result']],
+      ['user', ['image']],
+    ]);
   });
 });

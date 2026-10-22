@@ -44,9 +44,12 @@ function envelope(stdout: string): { data?: Record<string, unknown>; error?: { c
 
 describe('workflow inputs CLI', () => {
   let repo: string;
+  let out: string;
 
   beforeAll(() => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-inputs-e2e-'));
+    out = path.join(path.dirname(repo), `${path.basename(repo)}-out`);
+    fs.mkdirSync(out);
     fs.writeFileSync(path.join(repo, 'README.md'), '# app\n');
     git(['init', '-q', '-b', 'main'], repo);
     git(['add', 'README.md'], repo);
@@ -72,7 +75,7 @@ inputs:
   title: string
 steps:
   - id: write
-    command: node -e "require('fs').writeFileSync('title.txt', process.env.TITLE)"
+    command: node -e "require('fs').writeFileSync('${path.join(out, 'title.txt')}', process.env.TITLE)"
     env:
       TITLE: "{{ inputs.title }}"
 `);
@@ -82,12 +85,12 @@ steps:
     const missing = await runCLI(['workflow', 'start', 'label', '--driver', 'local', '--inputs', '{"issue":42}'], repo);
     expect(missing.code, missing.stdout).toBe(1);
     expect(envelope(missing.stdout)).toEqual({ error: { code: 'invalid_inputs', message: 'inputs.title is missing' } });
-    expect(fs.existsSync(path.join(repo, 'title.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(out, 'title.txt'))).toBe(false);
 
     const started = await runCLI(['workflow', 'start', 'label', '--driver', 'local', '--inputs', '{"issue":42,"title":"$(touch pwned)"}'], repo);
     expect(started.code, `${started.stdout}\n${started.stderr}`).toBe(0);
     expect(envelope(started.stdout)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(fs.readFileSync(path.join(repo, 'title.txt'), 'utf8')).toBe('$(touch pwned)');
+    expect(fs.readFileSync(path.join(out, 'title.txt'), 'utf8')).toBe('$(touch pwned)');
     expect(fs.existsSync(path.join(repo, 'pwned'))).toBe(false);
   });
 
@@ -105,13 +108,13 @@ inputs:
 steps:
   - id: label
     if: inputs.issues[0].size < 10 && any(inputs.issues, .size >= 100)
-    command: node -e "require('fs').writeFileSync('label.txt', process.env.TITLE)"
+    command: node -e "require('fs').writeFileSync('${path.join(out, 'label.txt')}', process.env.TITLE)"
     env:
       TITLE: "{{ inputs.issues[0].title }}"
   - id: many
     needs: []
     if: length(inputs.issues) > 2
-    command: node -e "require('fs').writeFileSync('many.txt', 'ran')"
+    command: node -e "require('fs').writeFileSync('${path.join(out, 'many.txt')}', 'ran')"
 `);
     const pulled = await runCLI(['pull'], repo);
     expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
@@ -119,7 +122,7 @@ steps:
     const started = await runCLI(['workflow', 'start', 'triage', '--driver', 'local', '--inputs', '{"issues":[{"title":"typo","size":3},{"title":"rewrite","size":400}]}'], repo);
     expect(started.code, `${started.stdout}\n${started.stderr}`).toBe(0);
     expect(envelope(started.stdout)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(fs.readFileSync(path.join(repo, 'label.txt'), 'utf8')).toBe('typo');
-    expect(fs.existsSync(path.join(repo, 'many.txt'))).toBe(false);
+    expect(fs.readFileSync(path.join(out, 'label.txt'), 'utf8')).toBe('typo');
+    expect(fs.existsSync(path.join(out, 'many.txt'))).toBe(false);
   });
 });

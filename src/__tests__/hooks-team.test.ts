@@ -58,7 +58,7 @@ describe('reconcileHooks — team (B) hooks', () => {
       await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
 
       const postToolUse = claudeHooks().PostToolUse;
-      expect(postToolUse).toHaveLength(4); // 3 built-in + 1 team
+      expect(postToolUse).toHaveLength(3); // 2 built-in + 1 team
       const team = postToolUse[postToolUse.length - 1];
       expect(team.description).toBe('[teamai:hook:block-secret] scan secrets before bash');
       expect(team.matcher).toBe('Bash');
@@ -76,7 +76,7 @@ describe('reconcileHooks — team (B) hooks', () => {
       await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
       await reconcileHooks(SETTINGS, 'claude', [], { manifestPath: MANIFEST });
 
-      expect(claudeHooks().PostToolUse).toHaveLength(3); // built-in only
+      expect(claudeHooks().PostToolUse).toHaveLength(2); // built-in only
       const descs = claudeHooks().PostToolUse.map((h) => h.description);
       expect(descs.every((d) => d?.startsWith('[teamai] '))).toBe(true);
       expect(manifest().claude).toBeUndefined();
@@ -88,7 +88,7 @@ describe('reconcileHooks — team (B) hooks', () => {
 
       const team = claudeHooks().PostToolUse.find((h) => h.description?.startsWith('[teamai:hook:block-secret]'));
       expect(team?.hooks[0].command).toBe(`${claudeHookOtherHostSkip('PostToolUse', 'Bash', 'echo changed')}echo changed`);
-      expect(claudeHooks().PostToolUse).toHaveLength(4);
+      expect(claudeHooks().PostToolUse).toHaveLength(3);
     });
 
     it('does not touch user-authored hooks', async () => {
@@ -102,7 +102,7 @@ describe('reconcileHooks — team (B) hooks', () => {
       expect(claudeHooks().PostToolUse[0]).toEqual({
         matcher: '*', hooks: [{ type: 'command', command: 'echo user' }], description: 'mine',
       });
-      expect(claudeHooks().PostToolUse).toHaveLength(5); // user + 3 built-in + 1 team
+      expect(claudeHooks().PostToolUse).toHaveLength(4); // user + 2 built-in + 1 team
     });
 
     it('is idempotent with team hooks present', async () => {
@@ -117,7 +117,7 @@ describe('reconcileHooks — team (B) hooks', () => {
     it('injects a team hook and records it in the manifest', async () => {
       await reconcileHooks(CURSOR, 'cursor', [teamDef()], { manifestPath: MANIFEST });
 
-      expect(cursorHooks().postToolUse).toHaveLength(4);
+      expect(cursorHooks().postToolUse).toHaveLength(3);
       const team = cursorHooks().postToolUse.find((h) => h.command.includes('scan.sh'));
       expect(team?.command).toBe(teamDef().command);
       expect(team).toMatchObject({ matcher: 'Bash', timeout: 15 });
@@ -128,7 +128,7 @@ describe('reconcileHooks — team (B) hooks', () => {
       await reconcileHooks(CURSOR, 'cursor', [teamDef()], { manifestPath: MANIFEST });
       await reconcileHooks(CURSOR, 'cursor', [], { manifestPath: MANIFEST });
 
-      expect(cursorHooks().postToolUse).toHaveLength(3); // built-in only
+      expect(cursorHooks().postToolUse).toHaveLength(2); // built-in only
       expect(cursorHooks().postToolUse.some((h) => h.command.includes('scan.sh'))).toBe(false);
       expect(manifest().cursor).toBeUndefined();
     });
@@ -138,11 +138,11 @@ describe('reconcileHooks — team (B) hooks', () => {
     it('skips a team hook whose tools list excludes the tool', async () => {
       const claudeOnly = teamDef({ tools: ['claude'] });
       await reconcileHooks(CURSOR, 'cursor', [claudeOnly], { manifestPath: MANIFEST });
-      expect(cursorHooks().postToolUse).toHaveLength(3);
+      expect(cursorHooks().postToolUse).toHaveLength(2);
       expect(manifest().cursor).toBeUndefined();
 
       await reconcileHooks(SETTINGS, 'claude', [claudeOnly], { manifestPath: MANIFEST });
-      expect(claudeHooks().PostToolUse).toHaveLength(4);
+      expect(claudeHooks().PostToolUse).toHaveLength(3);
     });
 
     it('skips a team hook for an event Cursor does not support, but injects it for Claude', async () => {
@@ -160,23 +160,23 @@ describe('reconcileHooks — team (B) hooks', () => {
     it('a built-in-only refresh (no manifest) preserves existing team hooks', async () => {
       // Team pass injects A + B.
       await reconcileHooks(SETTINGS, 'claude', [teamDef()], { manifestPath: MANIFEST });
-      expect(claudeHooks().PostToolUse).toHaveLength(4);
+      expect(claudeHooks().PostToolUse).toHaveLength(3);
 
       // An old/builtin-only injector runs (no team context): must NOT drop the team hook.
       await reconcileHooks(SETTINGS, 'claude', []);
 
       const team = claudeHooks().PostToolUse.find((h) => h.description?.startsWith('[teamai:hook:block-secret]'));
       expect(team).toBeDefined();
-      expect(claudeHooks().PostToolUse).toHaveLength(4);
+      expect(claudeHooks().PostToolUse).toHaveLength(3);
     });
 
     it('Cursor: a built-in-only refresh preserves team hooks (manifest-tracked)', async () => {
       await reconcileHooks(CURSOR, 'cursor', [teamDef()], { manifestPath: MANIFEST });
-      expect(cursorHooks().postToolUse).toHaveLength(4);
+      expect(cursorHooks().postToolUse).toHaveLength(3);
 
       await reconcileHooks(CURSOR, 'cursor', []);
       expect(cursorHooks().postToolUse.some((h) => h.command.includes('scan.sh'))).toBe(true);
-      expect(cursorHooks().postToolUse).toHaveLength(4);
+      expect(cursorHooks().postToolUse).toHaveLength(3);
     });
   });
 

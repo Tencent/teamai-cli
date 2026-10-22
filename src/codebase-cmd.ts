@@ -5,6 +5,8 @@ import chalk from 'chalk';
 
 import type { GlobalOptions } from './types.js';
 import type { WikiLintSeverity } from './codebase-wiki-lint.js';
+import { DetachedTeamRepoError } from './utils/git.js';
+import { log } from './utils/logger.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -28,11 +30,14 @@ export interface CodebaseCmdOptions extends GlobalOptions {
  * else the team repo's. Undefined when there is neither.
  */
 async function teamwikiDirFor(opts: CodebaseCmdOptions, readOnly: boolean): Promise<string | undefined> {
-    const { resolveTeamwiki } = await import('./utils/teamwiki-root.js');
+    const { assertTeamwikiWritable, resolveTeamwiki } = await import('./utils/teamwiki-root.js');
     try {
         // A read never persists a config migration (#893).
-        return (await resolveTeamwiki({ output: opts.output, dryRun: opts.dryRun || readOnly })).wikiRoot;
-    } catch {
+        const target = await resolveTeamwiki({ output: opts.output, dryRun: opts.dryRun || readOnly });
+        if (!readOnly && !opts.dryRun) await assertTeamwikiWritable(target);
+        return target.wikiRoot;
+    } catch (error) {
+        DetachedTeamRepoError.rethrow(error);
         return undefined;
     }
 }
@@ -45,7 +50,13 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
 
     if (opts.upgradeWiki) {
         const { upgradeCodebaseWiki } = await import('./codebase-upgrade-wiki.js');
-        await upgradeCodebaseWiki({ cwd, dryRun: opts.dryRun, json: opts.json });
+        try {
+            await upgradeCodebaseWiki({ cwd, dryRun: opts.dryRun, json: opts.json });
+        } catch (error) {
+            if (!(error instanceof DetachedTeamRepoError)) throw error;
+            log.error(error.message);
+            process.exitCode = 1;
+        }
         return;
     }
 
@@ -71,7 +82,15 @@ export async function codebaseCmd(opts: CodebaseCmdOptions): Promise<void> {
 
     // `--lint` alone only reads.
     const { pathExists } = await import('./utils/fs.js');
-    const teamwikiDir = await teamwikiDirFor(opts, !opts.reconcile && !opts.deepEnrich);
+    let teamwikiDir: string | undefined;
+    try {
+        teamwikiDir = await teamwikiDirFor(opts, !opts.reconcile && !opts.deepEnrich);
+    } catch (error) {
+        if (!(error instanceof DetachedTeamRepoError)) throw error;
+        log.error(error.message);
+        process.exitCode = 1;
+        return;
+    }
 
     if (!teamwikiDir || !(await pathExists(teamwikiDir))) {
         console.log('No teamwiki found. Run `teamai import` first.');

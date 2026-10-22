@@ -179,11 +179,14 @@ describe('fidelityFromSession — 真实统计', () => {
     expect(toCC.score).toBe(1);
 
     const toCodex = fidelityFromSession(session, 'codex');
-    expect(toCodex.degradedBlocks).toBe(1);
-    expect(toCodex.degradations.some((d) => d.startsWith('image_blocks_degraded_to_placeholder'))).toBe(
+    expect(toCodex.preservedBlocks).toBe(1);
+
+    const toCursor = fidelityFromSession(session, 'cursor');
+    expect(toCursor.degradedBlocks).toBe(1);
+    expect(toCursor.degradations.some((d) => d.startsWith('image_blocks_degraded_to_placeholder'))).toBe(
       true,
     );
-    expect(toCodex.score).toBeLessThan(1);
+    expect(toCursor.score).toBeLessThan(1);
   });
 
   // OpenCode keeps reasoning parts and inline image files (what `opencode session export` carries).

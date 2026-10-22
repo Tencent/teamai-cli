@@ -502,6 +502,14 @@ export class CodexAdapter extends AgentAdapter {
 
   private buildMessages(records: Record<string, unknown>[]): Message[] {
     const messages: Message[] = [];
+    // Images returned by tools go in a user message of their own after the round's tool results
+    let toolImages: ContentBlock[] = [];
+    let toolImagesTimestamp: string | undefined;
+    const flushToolImages = () => {
+      if (toolImages.length === 0) return;
+      messages.push({ role: 'user', content: toolImages, timestamp: toolImagesTimestamp });
+      toolImages = [];
+    };
 
     for (const rec of records) {
       const rtype = rec.type as string;
@@ -522,6 +530,9 @@ export class CodexAdapter extends AgentAdapter {
 
       const payload = (rec.payload as Record<string, unknown>) ?? {};
       const ptype = payload.type as string;
+      // Only items that start a new message end the round; ignored ones (web_search_call, developer messages) don't
+      const startsMessage = (ptype === 'message' && payload.role !== 'developer') || ptype === 'function_call' || ptype === 'custom_tool_call' || ptype === 'reasoning';
+      if (startsMessage) flushToolImages();
 
       if (ptype === 'message') {
         const role = payload.role as string;
@@ -560,13 +571,13 @@ export class CodexAdapter extends AgentAdapter {
         let output: string;
         if (Array.isArray(rawOutput)) {
           // Some tools (images, the JS REPL) return a list of content items instead of a string
-          const parts: string[] = [];
-          for (const item of rawOutput) {
-            if (item && typeof item === 'object' && (item as Record<string, unknown>).type === 'input_text') {
-              parts.push(String((item as Record<string, unknown>).text ?? ''));
-            }
+          const items = this.parseMessageContent({ content: rawOutput });
+          output = items.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n');
+          const images = items.filter((b) => b.type === 'image');
+          if (images.length > 0) {
+            toolImages.push(...images);
+            toolImagesTimestamp = parseCodexTimestamp(rec.timestamp);
           }
-          output = parts.join('\n');
         } else {
           output = String(rawOutput ?? '');
         }
@@ -598,6 +609,7 @@ export class CodexAdapter extends AgentAdapter {
         }
       }
     }
+    flushToolImages();
     return messages;
   }
 
@@ -620,6 +632,16 @@ export class CodexAdapter extends AgentAdapter {
 
       if (itemType === 'input_text' || itemType === 'output_text') {
         blocks.push({ type: 'text', text });
+      } else if (itemType === 'input_image' && typeof it.image_url === 'string') {
+        // A pasted image is stored as a data: URL; anything else keeps just the pointer
+        const dataUrl = /^data:([^;,]+);base64,(.*)$/s.exec(it.image_url);
+        const mimeType = dataUrl?.[1] ?? 'image/png';
+        blocks.push({
+          type: 'image',
+          mimeType,
+          ...(dataUrl ? { data: dataUrl[2] } : { filePath: it.image_url }),
+          label: `image.${mimeType.split('/')[1] ?? 'png'}`,
+        });
       }
     }
     return blocks;
@@ -1015,8 +1037,11 @@ export class CodexAdapter extends AgentAdapter {
         };
       }
       case 'image': {
-        // rollout messages only support text: degrade the image to a placeholder (counted degraded)
-        const contentType = role === 'user' ? 'input_text' : 'output_text';
+        // Codex keeps user images inline as input_image data: URLs; without data, or in an
+        // assistant message, degrade to a placeholder (counted degraded)
+        const content = role === 'user' && block.data
+          ? [{ type: 'input_image', image_url: `data:${block.mimeType};base64,${block.data}` }]
+          : [{ type: role === 'user' ? 'input_text' : 'output_text', text: imagePlaceholderText(block) }];
         return {
           timestamp: ts,
           type: 'response_item',
@@ -1024,7 +1049,7 @@ export class CodexAdapter extends AgentAdapter {
             type: 'message',
             id: `msg_${generateUuidV7()}`,
             role,
-            content: [{ type: contentType, text: imagePlaceholderText(block) }],
+            content,
           },
         };
       }

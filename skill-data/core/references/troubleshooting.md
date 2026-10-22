@@ -111,7 +111,7 @@ This is the #1 onboarding issue. In order:
 
 ## Path names appear in skill usage statistics
 
-Slash-command tracking accepts complete `/skill-name` tokens followed by whitespace or the end of the prompt. Absolute paths such as `/Volumes/External/project` and URL components are not skill invocations. Updating prevents new false counts; already recorded usage remains.
+Slash-command tracking accepts a complete `/skill-name` token at the start of the prompt, followed by whitespace or the end of the prompt, and only for a skill installed for the tool. Absolute paths such as `/Volumes/External/project` and URL components are not skill invocations. Updating prevents new false counts; already recorded usage remains.
 
 ## Submodule checkouts and linked skill directories
 
@@ -355,6 +355,11 @@ Pending votes reach the team repo's `teamai-reports` branch on the next Stop or
 `teamai pull`. A push that fails — offline, no write access, a crashed run —
 keeps the deltas pending; the next session re-sends them, and each delta is
 added to the team totals exactly once.
+
+Manual `teamai recall feedback --positive <docId>` adds an upvote without adding
+a recall. Confidence caps the upvote-to-recall ratio at 1: more feedback cannot
+exceed that factor's 30% weight or replace recency. This is an activity score,
+not proof of knowledge correctness or task success.
 
 ## OpenCode V2 rejects the hooks plugin
 

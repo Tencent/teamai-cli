@@ -1,0 +1,12 @@
+{
+  "session_id": "claude-run",
+  "cwd": "${CWD}",
+  "prompt_id": "claude-run-turn",
+  "permission_mode": "bypassPermissions",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Skill",
+  "tool_input": {
+    "skill": "hello-skill"
+  },
+  "duration_ms": 3
+}

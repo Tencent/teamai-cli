@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { codexTeamHookIndexPath, dispatchedCodexHooks, setCodexDispatcherHooks, type CodexTeamHook } from '../codex-team-hooks.js';
+import { codexTeamHookIndexPath, dispatchedCodexHooks, reconcileCodexDispatchers, setCodexDispatcherHooks, type CodexTeamHook } from '../codex-team-hooks.js';
 
 const hook = (command: string): CodexTeamHook[] => [{ id: 'team', event: 'Stop', command }];
 
@@ -63,5 +63,55 @@ describe('Codex team-hook index keeps each checkout\'s own hooks', () => {
     // A checkout keyed by itself (self mode) is its own original checkout.
     expect((await dispatchedCodexHooks(project, project))?.[0]?.command).toBe('echo old');
     expect((await dispatchedCodexHooks(project, b))?.[0]?.command).toBe('echo b');
+  });
+});
+
+
+describe('reconcileCodexDispatchers — the Windows override keeps the block contract (#1209)', () => {
+  const originalHome = process.env.HOME;
+  let root: string;
+  let project: string;
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-codex-dispatch-')));
+    process.env.HOME = path.join(root, 'home');
+    project = path.join(root, 'project');
+    fs.mkdirSync(project, { recursive: true });
+  });
+  afterEach(() => {
+    process.env.HOME = originalHome;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const seed = (record: unknown) => {
+    fs.mkdirSync(path.dirname(codexTeamHookIndexPath()), { recursive: true });
+    fs.writeFileSync(codexTeamHookIndexPath(), JSON.stringify({ projects: { [project]: record } }));
+  };
+
+  it('gives the dispatcher entry a commandWindows that passes the exit code and stderr through', async () => {
+    seed({ hooks: [{ id: 'team', event: 'Stop', command: 'echo blocked >&2; exit 2' }] });
+    const hooksFile = path.join(root, 'hooks.json');
+    fs.writeFileSync(hooksFile, JSON.stringify({ hooks: {} }));
+
+    await reconcileCodexDispatchers(hooksFile);
+
+    const entry = JSON.parse(fs.readFileSync(hooksFile, 'utf-8')).hooks.Stop[0].hooks[0];
+    // The command stays the POSIX form on every platform (#1074's contract),
+    // and the entry stays recognizable for removal.
+    expect(entry.command).toBe('bash -lc "teamai hook-dispatch Stop --tool codex --team-hooks"');
+    // The Windows form is the bare dispatch: cmd /C propagates the exit code
+    // and stderr natively, so exit 2 (block) passes through with nothing
+    // redirected — no tail needed, no junk arguments (#1215).
+    expect(entry.commandWindows).toBe('teamai hook-dispatch Stop --tool codex --team-hooks');
+  });
+
+  it('reconciles idempotently: a second run writes the same bytes', async () => {
+    seed({ hooks: [{ id: 'team', event: 'Stop', command: 'echo a' }] });
+    const hooksFile = path.join(root, 'hooks.json');
+    fs.writeFileSync(hooksFile, JSON.stringify({ hooks: {} }));
+    await reconcileCodexDispatchers(hooksFile);
+    const first = fs.readFileSync(hooksFile, 'utf-8');
+    await reconcileCodexDispatchers(hooksFile);
+    expect(fs.readFileSync(hooksFile, 'utf-8')).toBe(first);
   });
 });

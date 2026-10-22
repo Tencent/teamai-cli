@@ -1,0 +1,14 @@
+{
+  "generation_id": "cursor-run-turn",
+  "model": "default",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "${CWD}/.cursor/skills/hello-skill/SKILL.md"
+  },
+  "duration": 692.337,
+  "session_id": "cursor-run",
+  "hook_event_name": "postToolUse",
+  "workspace_roots": [
+    "${CWD}"
+  ]
+}

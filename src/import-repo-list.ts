@@ -5,6 +5,7 @@ import { isOrgEntry, type RepoListEntry } from './repo-list/schema.js';
 import { importFromRepo } from './import-repo.js';
 import { publishTeamwikiViaMR, refreshTeamwikiIndexes } from './import-codebase.js';
 import { log } from './utils/logger.js';
+import { DetachedTeamRepoError } from './utils/git.js';
 import { lockTeamwiki, resolveTeamwiki, type TeamwikiTarget } from './utils/teamwiki-root.js';
 
 /** importFromRepoList 入参。 */
@@ -165,6 +166,7 @@ export async function importFromRepoList(
         try {
             await publishTeamwikiViaMR(target.team, '[teamai] Batch import: graph');
         } catch (e) {
+            DetachedTeamRepoError.rethrow(e);
             log.warn(`[git] batch push failed (non-blocking): ${(e as Error).message}`);
         }
     }

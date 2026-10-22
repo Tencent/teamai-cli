@@ -72,14 +72,11 @@ describe('buildPluginSource', () => {
     expect(src).toContain('child.stdin.write(stdin)');
     expect(src).not.toContain('new Response(stdin)');
   });
-  it('maps lowercase OpenCode tool ids back to PascalCase matchers', () => {
-    // OpenCode passes `skill` / `todowrite`; the handler registry keys matchers
-    // on `Skill` / `TodoWrite`.
-    expect(src).toContain("skill: 'Skill'");
-    expect(src).toContain("todowrite: 'TodoWrite'");
-    expect(src).toContain('TOOL_MATCHER[tool]');
-    // The dead PascalCase id comparison must be gone.
-    expect(src).not.toContain("tool === 'Skill'");
+  it('sends OpenCode\'s own tool ids on one wildcard pass, with no matcher-scoped pass (#1221)', () => {
+    expect(src).toContain('tool_name: tool,');
+    expect(src).not.toContain('TOOL_MATCHER');
+    expect(src).not.toContain("'--matcher'");
+    expect(src).not.toContain("skill: 'Skill'");
   });
   it('forwards tool_name / tool_input on post-tool-use and prompt on chat.message', () => {
     expect(src).toContain('tool_name');
@@ -275,8 +272,9 @@ describe('agent-hook plugins', () => {
     expect(content).toContain('"chat.message": async');
   });
 
-  it('skips events with no OpenCode equivalent', async () => {
-    await applyOpencodeAgentHook({ slug: 'bad', event: 'PreToolUse', command: 'x', baseDir: tmp, scope: 'user' });
+  it('rejects events with no OpenCode equivalent and writes nothing', async () => {
+    await expect(applyOpencodeAgentHook({ slug: 'bad', event: 'PreToolUse', command: 'x', baseDir: tmp, scope: 'user' }))
+      .rejects.toThrow('OpenCode has no hook event for PreToolUse');
     expect(await fse.pathExists(path.join(tmp, '.config', 'opencode', 'plugin', 'teamai-agent-bad.ts'))).toBe(false);
   });
 
@@ -412,7 +410,7 @@ describe('OpenCode V2 built-in plugin', () => {
     expect(Object.keys(host.callbacks)).toEqual([]);
   });
 
-  it('forwards prompt and tool results through shared dispatch, with aliases and exactly one matcher pass', async () => {
+  it('forwards prompt and tool results through shared dispatch, with aliases and no matcher pass', async () => {
     const host = await loadV2Plugin();
     await host.callbacks['session.prompt']({ sessionID: 'ses_v2', prompt: { text: '/retry now' } });
     await host.callbacks['tool.execute.after']({ tool: 'skill', sessionID: 'ses_v2', input: { name: 'review' }, status: 'completed', result: { content: [{ type: 'text', text: 'loaded' }, { type: 'file', filename: 'skip' }, { type: 'text', text: 'next' }] } });
@@ -422,16 +420,15 @@ describe('OpenCode V2 built-in plugin', () => {
     expect(host.dispatches.map((d) => d.args)).toEqual([
       ['hook-dispatch', 'prompt-submit', '--tool', 'opencode'],
       ['hook-dispatch', 'post-tool-use', '--tool', 'opencode'],
-      ['hook-dispatch', 'post-tool-use', '--tool', 'opencode', '--matcher', 'Skill'],
       ['hook-dispatch', 'post-tool-use', '--tool', 'opencode'],
       ['hook-dispatch', 'post-tool-use', '--tool', 'opencode'],
       ['hook-dispatch', 'post-tool-use', '--tool', 'opencode'],
     ]);
     expect(host.dispatches[0].payload).toEqual({ cwd: '/work/proj', session_id: 'ses_v2', prompt: '/retry now' });
-    expect(host.dispatches[1].payload).toMatchObject({ tool_name: 'Skill', tool_input: { name: 'review' }, tool_response: 'loaded\nnext', tool_status: 'success' });
-    expect(host.dispatches[3].payload).toMatchObject({ tool_name: 'bash', tool_response: 'failed', tool_status: 'failure' });
-    expect(host.dispatches[4].payload).toMatchObject({ tool_response: 'denied', tool_status: 'failure' });
-    expect(host.dispatches[5].payload).toMatchObject({ tool_name: 'task', session_link: { child: 'ses_child', parent: 'ses_v2' } });
+    expect(host.dispatches[1].payload).toMatchObject({ tool_name: 'skill', tool_input: { name: 'review' }, tool_response: 'loaded\nnext', tool_status: 'success' });
+    expect(host.dispatches[2].payload).toMatchObject({ tool_name: 'bash', tool_response: 'failed', tool_status: 'failure' });
+    expect(host.dispatches[3].payload).toMatchObject({ tool_response: 'denied', tool_status: 'failure' });
+    expect(host.dispatches[4].payload).toMatchObject({ tool_name: 'task', session_link: { child: 'ses_child', parent: 'ses_v2' } });
     await host.cleanup?.();
     expect(host.disposed.sort()).toEqual(['session.compaction', 'session.context', 'session.prompt', 'tool.execute.after']);
   });

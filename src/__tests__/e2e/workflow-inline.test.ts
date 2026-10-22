@@ -63,7 +63,7 @@ steps:
         verdict: steps.classify.outputs.verdict
       steps:
         - id: write
-          command: node -e "require('fs').writeFileSync('title.txt', process.env.TITLE)"
+          command: node -e "require('fs').writeFileSync('__OUT__/title.txt', process.env.TITLE)"
           env:
             TITLE: "{{ inputs.title }}"
         - id: classify
@@ -78,11 +78,11 @@ steps:
           end: ready
         - id: never
           needs: [classify]
-          command: node -e "require('fs').writeFileSync('never.txt', 'ran')"
+          command: node -e "require('fs').writeFileSync('__OUT__/never.txt', 'ran')"
   - id: fix
     needs: [check]
     if: steps.check.end == 'ready'
-    command: node -e "require('fs').writeFileSync('fix.txt', process.env.END + ' ' + process.env.VERDICT)"
+    command: node -e "require('fs').writeFileSync('__OUT__/fix.txt', process.env.END + ' ' + process.env.VERDICT)"
     env:
       END: "{{ steps.check.end }}"
       VERDICT: "{{ steps.check.outputs.verdict }}"
@@ -90,9 +90,12 @@ steps:
 
 describe('workflow inline CLI', () => {
   let repo: string;
+  let out: string;
 
   beforeAll(() => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-inline-e2e-'));
+    out = path.join(path.dirname(repo), `${path.basename(repo)}-out`);
+    fs.mkdirSync(out);
     fs.writeFileSync(path.join(repo, 'README.md'), '# app\n');
     git(['init', '-q', '-b', 'main'], repo);
     git(['add', 'README.md'], repo);
@@ -109,7 +112,7 @@ describe('workflow inline CLI', () => {
     expect(init.code, `${init.stdout}\n${init.stderr}`).toBe(0);
     const workflows = path.join(repo, '.teamai', 'workflows');
     fs.mkdirSync(workflows, { recursive: true });
-    fs.writeFileSync(path.join(workflows, 'ship-inline.yaml'), SHIP_INLINE);
+    fs.writeFileSync(path.join(workflows, 'ship-inline.yaml'), SHIP_INLINE.replaceAll('__OUT__', out));
     const pulled = await runCLI(['pull'], repo);
     expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
 
@@ -118,10 +121,10 @@ describe('workflow inline CLI', () => {
     expect(started.code, `${started.stdout}\n${started.stderr}`).toBe(0);
     const done = envelope(started.stdout).data?.done as { run: string; outcome: string };
     expect(done).toEqual({ run: expect.any(String), outcome: 'succeeded', record: 'pending' });
-    expect(fs.readFileSync(path.join(repo, 'title.txt'), 'utf8')).toBe('$(touch pwned)');
+    expect(fs.readFileSync(path.join(out, 'title.txt'), 'utf8')).toBe('$(touch pwned)');
     expect(fs.existsSync(path.join(repo, 'pwned'))).toBe(false);
-    expect(fs.existsSync(path.join(repo, 'never.txt'))).toBe(false);
-    expect(fs.readFileSync(path.join(repo, 'fix.txt'), 'utf8')).toBe('ready fix');
+    expect(fs.existsSync(path.join(out, 'never.txt'))).toBe(false);
+    expect(fs.readFileSync(path.join(out, 'fix.txt'), 'utf8')).toBe('ready fix');
     const dataHome = await resolveProjectDataHome(repo);
     const run = JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'runs', `${done.run}.json`), 'utf8')) as RunState;
     expect(run.steps.map((step) => `${step.id}:${step.status}`)).toEqual([

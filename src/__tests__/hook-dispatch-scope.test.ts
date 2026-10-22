@@ -37,6 +37,7 @@ vi.mock('../update.js', () => ({
   doUpdate: vi.fn(async () => undefined),
   acquireLock: vi.fn(async () => true),
   releaseLock: vi.fn(async () => undefined),
+  withFileLock: vi.fn(async (_lockPath: string, _wait: unknown, body: () => Promise<unknown>) => ({ held: true, value: await body() })),
 }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
 vi.mock('../utils/reports-branch.js', () => ({ updateReports: vi.fn(async () => undefined) }));
@@ -55,6 +56,11 @@ beforeEach(() => {
   originalCwd = process.cwd();
   process.env.HOME = path.join(tmp, 'home');
   fs.mkdirSync(process.env.HOME);
+  // Only an installed skill counts as used (#1221).
+  for (const skill of ['skill-a', 'skill-b', 'skill-g']) {
+    fs.mkdirSync(path.join(process.env.HOME, '.claude', 'skills', skill), { recursive: true });
+    fs.writeFileSync(path.join(process.env.HOME, '.claude', 'skills', skill, 'SKILL.md'), `# ${skill}\n`);
+  }
 });
 
 afterEach(() => {
@@ -69,11 +75,11 @@ afterEach(() => {
 const teamaiHome = () => path.join(tmp, 'home', '.teamai');
 
 /** Run one hook event the way a host does: foreground pass, then the background pass. */
-async function hook(event: string, matcher: string, payload: Record<string, unknown>): Promise<void> {
+async function hook(event: string, matcher: string, payload: Record<string, unknown>, tool = 'claude'): Promise<void> {
   for (const bgOnly of [false, true]) {
     const stdinFile = path.join(tmp, `stdin-${Date.now()}-${Math.random()}.json`);
     fs.writeFileSync(stdinFile, JSON.stringify(payload));
-    await hookDispatchCli(event, 'claude', matcher, { bgOnly, stdinFile });
+    await hookDispatchCli(event, tool, matcher, { bgOnly, stdinFile });
   }
 }
 
@@ -97,7 +103,7 @@ describe('hook runs and the scope they belong to (#748)', () => {
     const base = { session_id: 'sid-b', cwd };
     await hook('session-start', '*', { ...base, hook_event_name: 'SessionStart' });
     await hook('prompt-submit', '*', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'hello' });
-    await hook('post-tool-use', 'Skill', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-b' } });
+    await hook('post-tool-use', '*', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-b' } });
     await hook('post-tool-use', '*', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: {} });
     await hook('stop', '*', { ...base, hook_event_name: 'Stop' });
 
@@ -116,7 +122,7 @@ describe('hook runs and the scope they belong to (#748)', () => {
     // OpenClaw's plugin spawns hook-dispatch in the workspace without a cwd field.
     process.chdir(root);
 
-    await hook('post-tool-use', 'Skill', { session_id: 'sid-a', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-a' } });
+    await hook('post-tool-use', '*', { session_id: 'sid-a', hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-a' } });
 
     expect(fs.readFileSync(path.join(dataHome, 'usage.jsonl'), 'utf-8')).toContain('skill-a');
   });
@@ -125,7 +131,7 @@ describe('hook runs and the scope they belong to (#748)', () => {
     userScope();
     const gone = path.join(tmp, 'deleted-worktree');
 
-    await hook('post-tool-use', 'Skill', { session_id: 'sid-g', cwd: gone, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-g' } });
+    await hook('post-tool-use', '*', { session_id: 'sid-g', cwd: gone, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-g' } });
 
     expect(fs.readFileSync(path.join(teamaiHome(), 'user-usage.jsonl'), 'utf-8')).toContain('skill-g');
   });
@@ -193,7 +199,7 @@ describe('hook runs and the scope they belong to (#748)', () => {
     fs.mkdirSync(dataHome, { recursive: true });
     fs.writeFileSync(path.join(dataHome, 'config.yaml'), 'repo: [not: a, valid config\n');
 
-    await hook('post-tool-use', 'Skill', { session_id: 'sid-a', cwd: root, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-a' } });
+    await hook('post-tool-use', '*', { session_id: 'sid-a', cwd: root, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-a' } });
 
     expect(fs.existsSync(path.join(teamaiHome(), 'user-usage.jsonl'))).toBe(false);
   });
@@ -209,7 +215,7 @@ describe('hook runs and the scope they belong to (#748)', () => {
     fs.writeFileSync(path.join(legacy, 'config.yaml'),
       `repo:\n  localPath: ${path.join(legacy, 'team-repo')}\n  remote: https://example.test/acme/other-team.git\nusername: tester\nscope: project\n`);
 
-    await hook('post-tool-use', 'Skill', { session_id: 'sid-a', cwd: root, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-a' } });
+    await hook('post-tool-use', '*', { session_id: 'sid-a', cwd: root, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill: 'skill-a' } });
 
     expect(fs.existsSync(path.join(legacy, 'usage.jsonl'))).toBe(false);
   });
@@ -238,5 +244,29 @@ describe('hook runs and the scope they belong to (#748)', () => {
     expect(pull).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(root, '.claude'))).toBe(false);
     expect(fs.existsSync(path.join(teamaiHome(), 'package-hints'))).toBe(false);
+  });
+});
+
+describe('skill use through the CLI (#1221)', () => {
+  it('counts a Codex `$name` mention and the `cat` of its SKILL.md in one turn once', async () => {
+    userScope();
+    const home = path.join(tmp, 'home');
+    const project = gitRepo('codex-proj');
+    process.chdir(project);
+    const skillMd = path.join(home, '.codex', 'skills', 'hello-skill', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skillMd), { recursive: true });
+    fs.writeFileSync(skillMd, '# hello-skill\n');
+    const captured = (name: string): Record<string, unknown> => {
+      const text = fs.readFileSync(path.join(__dirname, 'fixtures', 'skill-use', `${name}.json`), 'utf-8')
+        .replaceAll('${HOME}', home).replaceAll('${CWD}', project);
+      const payload: unknown = JSON.parse(text);
+      if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) throw new Error(`${name} is not an object`);
+      return { ...payload };
+    };
+    await hook('prompt-submit', '*', captured('codex-real-c-mention'), 'codex');
+    await hook('post-tool-use', '*', captured('codex-real-c-cat'), 'codex');
+    const events: unknown[] = fs.readFileSync(path.join(teamaiHome(), 'user-usage.jsonl'), 'utf-8')
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    expect(events).toMatchObject([{ skill: 'hello-skill', tool: 'codex' }]);
   });
 });

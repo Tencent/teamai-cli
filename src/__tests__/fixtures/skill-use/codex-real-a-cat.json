@@ -1,0 +1,12 @@
+{
+  "session_id": "codex-run-a",
+  "turn_id": "codex-run-a-turn",
+  "cwd": "${CWD}",
+  "hook_event_name": "PostToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "bypassPermissions",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cat ${HOME}/.codex/skills/hello-skill/SKILL.md"
+  }
+}

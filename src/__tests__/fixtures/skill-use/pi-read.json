@@ -1,0 +1,10 @@
+{
+  "cwd": "${CWD}",
+  "session_id": "pi-run",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "read",
+  "tool_input": {
+    "path": "${HOME}/.pi/agent/skills/hello-skill/SKILL.md"
+  },
+  "tool_status": "success"
+}

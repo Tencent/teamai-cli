@@ -9,7 +9,8 @@ vi.mock('../utils/logger.js', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn(), fail: vi.fn() })),
 }));
-vi.mock('../utils/git.js', () => ({
+vi.mock('../utils/git.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../utils/git.js')>(),
   createGit: vi.fn(() => ({ clone: vi.fn() })),
   pullRepo: vi.fn().mockResolvedValue('already up to date'),
 }));

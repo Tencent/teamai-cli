@@ -67,6 +67,13 @@ export interface WorkflowStep {
   break?: string;
   /** Runs the step's action once per item of a list, each as an instance such as `build[2]`. */
   forEach?: ForEach;
+  /**
+   * Where the step runs. A command that omits it uses the active checkout and is read-only.
+   * A prompt that omits it continues an enclosing `new` or `continue` copy, or stays read-only.
+   */
+  workspace?: 'read-only' | 'new' | 'continue';
+  /** A session this step resumes. `continue` uses this step's previous pass. `from` names another step. */
+  session?: { continue: true } | { from: string };
 }
 
 /** A `for_each`: the list of items, and how many of them may run at once. */
@@ -163,8 +170,10 @@ export interface WorkflowDiagnostic {
    *   for the same reason, the kept copy would take a branch that can never match.
    * `bad_loop`: a `loop`, `break` or `for_each` pull rejects; the kept copy would run once the steps the author wrote
    *   to repeat or to run per item, or run on past the point the author wrote to stop at.
+   * `bad_session`: a `session.from` pull rejects; the kept copy would resume a step the author did not name.
+   * `bad_workspace`: `workspace` is not read-only, new, or continue; the kept copy would run the step in the wrong place.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace';
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
@@ -225,6 +234,10 @@ export interface RunState {
   archive?: ArchivedPass[];
   /** The round of a looping top-level workflow. */
   round?: number;
+  /** The commit the run's workspaces and agent configuration start from. Set by the first `next` that sends `base`. */
+  base?: { ref: string; commit: string };
+  /** Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. */
+  copies?: Record<string, { owner: DriverIdentity; commit?: string }>;
   createdAt: string;
   updatedAt: string;
 }

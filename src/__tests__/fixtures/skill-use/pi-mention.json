@@ -1,0 +1,5 @@
+{
+  "cwd": "${CWD}",
+  "session_id": "pi-run",
+  "prompt": "<skill name=\"hello-skill\" location=\"${HOME}/.pi/agent/skills/hello-skill/SKILL.md\">\nReferences are relative to ${HOME}/.pi/agent/skills/hello-skill.\n\n# hello-skill\n</skill>\n\nsay hi"
+}

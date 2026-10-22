@@ -1,0 +1,95 @@
+{
+  "hooks": {
+    "enabled": true,
+    "events": {
+      "SessionStart": [
+        {
+          "hooks": [
+            {
+              "type": "process",
+              "command": "bash",
+              "args": [
+                "-lc",
+                "teamai hook-dispatch session-start --tool zcode"
+              ],
+              "timeoutMs": 180000
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "hooks": [
+            {
+              "type": "process",
+              "command": "bash",
+              "args": [
+                "-lc",
+                "teamai hook-dispatch stop --tool zcode"
+              ],
+              "timeoutMs": 60000
+            }
+          ]
+        }
+      ],
+      "PostToolUse": [
+        {
+          "hooks": [
+            {
+              "type": "process",
+              "command": "bash",
+              "args": [
+                "-lc",
+                "teamai hook-dispatch post-tool-use --tool zcode"
+              ],
+              "timeoutMs": 30000
+            }
+          ]
+        },
+        {
+          "hooks": [
+            {
+              "type": "process",
+              "command": "bash",
+              "args": [
+                "-lc",
+                "teamai hook-dispatch post-tool-use --tool zcode --matcher Skill"
+              ],
+              "timeoutMs": 30000
+            }
+          ],
+          "matcher": "Skill"
+        },
+        {
+          "hooks": [
+            {
+              "type": "process",
+              "command": "bash",
+              "args": [
+                "-lc",
+                "teamai hook-dispatch post-tool-use --tool zcode --matcher TodoWrite"
+              ],
+              "timeoutMs": 30000
+            }
+          ],
+          "matcher": "TodoWrite"
+        }
+      ],
+      "UserPromptSubmit": [
+        {
+          "hooks": [
+            {
+              "type": "process",
+              "command": "bash",
+              "args": [
+                "-lc",
+                "teamai hook-dispatch prompt-submit --tool zcode"
+              ],
+              "timeoutMs": 60000
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

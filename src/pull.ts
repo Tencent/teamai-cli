@@ -6,12 +6,13 @@ import {
   indexedSkills, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills, type RolePullContext,
 } from './resources/desired.js';
 import type { IndexedSkills, UnreadableFile } from './utils/search-index.js';
-import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope } from './config.js';
-import { pullRepo, getHeadRev, getHeadCommit, createGit, getDefaultBranch, completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
+import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope, saveLocalConfigForScope } from './config.js';
+import { getHeadRev, getHeadCommit, createGit, getDefaultBranch, completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
 import { indexableLearningsRoots } from './utils/learnings-roots.js';
 import { log, spinner } from './utils/logger.js';
+import { DetachedRecoveryError, transitionTeamRepo, teamRefBlocker, teamRefNotice, removedTeamResources, type RemovedTeamResources } from './team-ref.js';
 import { pathExists, readJson, writeJson, remove, listFiles, listDirs, listFilesRecursive, readFileSafe, dirContentEqual, hasVcsMetadataRecursive } from './utils/fs.js';
 import { reconcilePlacementRecords } from './utils/pending-push.js';
 import {
@@ -30,7 +31,7 @@ import { CODEX_TOOL, mayDeleteSkillCopy, SHARED_AGENT_SKILLS_PATH, skillOrigin, 
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
 import {
-  blockingEntries, deliveredSkillFiles, describeMembersDirLeft, forgetDelivered, holdsNonRegular, judgeCopy, judgeRemoval, keepsTrackedCopy, notTeamaisReason, openLedger, reportKept,
+  blockingEntries, deliveredSkillFiles, describeMembersDirLeft, forgetDelivered, holdsNonRegular, judgeCopy, judgeRemoval, keepsTrackedCopy, notTeamaisReason, openLedger, recordedUnder, reportKept,
   type DeliveredHashes, type DeliveryLedger,
 } from './resources/delivered-copies.js';
 import { BUILTIN_SKILL_NAMES } from './builtin-skills.js';
@@ -138,7 +139,7 @@ async function teamFetchedWithinTtl(localConfig: LocalConfig): Promise<boolean> 
  */
 async function refreshTeamRepo(
   localConfig: LocalConfig,
-  options: Pick<GlobalOptions, 'inline' | 'fetchTimeoutMs' | 'dryRun'> = {},
+  options: Pick<GlobalOptions, 'inline' | 'fetchTimeoutMs' | 'dryRun' | 'teamRef' | 'silent'> = {},
 ): Promise<{ label: string; version: string | null; submodulesFailed: boolean; submodulesChanged: boolean }> {
   if (localConfig.repo.kind === 'http') {
     const { resolveApiKey } = await import('./api-key.js');
@@ -188,20 +189,33 @@ async function refreshTeamRepo(
   // another writer could reset/checkout the tree. We must NOT lock here: the lock
   // is non-reentrant, so re-acquiring it in the same process would fail.
   // The new-worktree hook reads a recently fetched clone as it is.
-  if (options.inline && options.fetchTimeoutMs === undefined && await teamFetchedWithinTtl(localConfig)) {
+  if (options.teamRef === undefined && options.inline && options.fetchTimeoutMs === undefined && await teamFetchedWithinTtl(localConfig)) {
     const version = await getHeadRev(localConfig.repo.localPath).catch(() => null);
     return { label: 'fetched within the TTL, not refetched', version, submodulesFailed: false, submodulesChanged: false };
   }
   // The git-pull hook caps the fetch: git pull is waiting on it.
   const cap = options.fetchTimeoutMs === undefined ? undefined : AbortSignal.timeout(options.fetchTimeoutMs);
-  const result = await pullRepo(localConfig.repo.localPath, cap).catch((e: unknown) => {
+  const transition = await transitionTeamRepo(localConfig, options, cap).catch((e: unknown) => {
     if (cap?.aborted) {
-      const timeout = new Error(`team repo fetch exceeded ${options.fetchTimeoutMs} ms, left to the detached pull`);
+      const cause = new Error(`team repo fetch exceeded ${options.fetchTimeoutMs} ms, left to the detached pull`);
+      const timeout = e instanceof DetachedRecoveryError ? new DetachedRecoveryError(cause) : cause;
       timeout.name = TEAM_FETCH_TIMEOUT;
       throw timeout;
     }
     throw e;
   });
+  if (transition.transition === 'pinned' && localConfig.repo.ref !== transition.ref) {
+    localConfig.repo.ref = transition.ref;
+    await saveLocalConfigForScope(localConfig);
+  } else if (transition.transition === 'unpinned' && localConfig.repo.ref !== undefined) {
+    delete localConfig.repo.ref;
+    await saveLocalConfigForScope(localConfig);
+  }
+  if (transition.transition === 'recovered') {
+    const message = `The team repo was checked out at a fixed commit with no pin in this workspace's config, so it follows the default branch "${await getDefaultBranch(localConfig.repo.localPath)}" again.`;
+    if (!options.silent) log.warn(message);
+    log.persist(message);
+  }
   await writeJson(teamFetchStamp(localConfig), { lastFetch: new Date().toISOString() })
     .catch((e) => log.debug(`Could not record the team repo fetch: ${(e as Error).message}`));
 
@@ -268,7 +282,7 @@ async function refreshTeamRepo(
     log.warn(`Submodule update failed for ${localConfig.repo.localPath}: ${(e as Error).message}`);
   }
 
-  return { label: result, version, submodulesFailed, submodulesChanged };
+  return { label: transition.label, version, submodulesFailed, submodulesChanged };
 }
 
 /** Opt-out of stat commits: the member's `usageReportEnabled`, else teamai.yaml `usageReport`. */
@@ -577,10 +591,15 @@ async function cleanupTombstonedResources(
   localConfig: LocalConfig,
   scopeLabel: string,
   ledger: DeliveryLedger,
+  extraNames?: RemovedTeamResources,
+  unpinnedRef?: string,
 ): Promise<void> {
+  const sayUnpinnedCopy = (localPath: string) => {
+    if (unpinnedRef) log.warn(`[${scopeLabel}] Kept ${localPath}: it holds "${unpinnedRef}"'s content, which teamai push would send to the default branch.`);
+  };
   // Each entry maps a resource type to the field on toolPath that names the
   // tool-side directory; `tombstoneExtensions` supplies the filename suffixes.
-  const tombstoneTypes: { type: ResourceType; toolPathField: 'rules' | 'skills' | 'agents' }[] = [
+  const tombstoneTypes: { type: keyof RemovedTeamResources; toolPathField: 'rules' | 'skills' | 'agents' }[] = [
     { type: 'rules', toolPathField: 'rules' },
     { type: 'skills', toolPathField: 'skills' },
     { type: 'agents', toolPathField: 'agents' },
@@ -594,6 +613,7 @@ async function cleanupTombstonedResources(
     const tombstones = type === 'agents'
       ? await (handler as AgentsHandler).removedStems(freshConfig, localConfig)
       : await handler.readTombstones(localConfig);
+    for (const name of extraNames?.[type] ?? []) tombstones.add(name);
     if (tombstones.size === 0) continue;
 
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
@@ -616,6 +636,7 @@ async function cleanupTombstonedResources(
         if (ledger.previous?.[localPath] === undefined || !await pathExists(localPath)) continue;
         if (await judgeRemoval(ledger.previous, localPath) !== 'remove') {
           log.warn(`[${scopeLabel}] Kept ${localPath}: the team removed the rule it is a copy of, but you changed this copy. Delete it when you no longer need it.`);
+          sayUnpinnedCopy(localPath);
           continue;
         }
         if (await keepsTrackedCopy(localPath)) continue;
@@ -628,6 +649,7 @@ async function cleanupTombstonedResources(
         for (const extension of tombstoneExtensions(type, tool)) {
           const localPath = path.join(baseDir, dir, `${name}${extension}`);
           if (!await pathExists(localPath)) continue;
+          if (extraNames?.[type].has(name) && recordedUnder(ledger.previous ?? {}, localPath).length === 0) continue;
           // teamai-context in a rules directory is teamai's instruction file
           // now (#945): a tombstone of a team rule by that name, from before,
           // does not reach it. A copy without the blocks is reclaimed by rules sync.
@@ -648,6 +670,7 @@ async function cleanupTombstonedResources(
           const removal = await judgeRemoval(ledger.previous, localPath, origin, ledger.otherRecords);
           if (removal === 'edited') {
             log.warn(`[${scopeLabel}] Kept ${localPath}: the team removed ${name}, but you changed this copy. Delete it when you no longer need it.`);
+            sayUnpinnedCopy(localPath);
             continue;
           }
           if (removal === 'notTeamais') {
@@ -1227,6 +1250,7 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
     const pushBaseRevs = checkoutBaseRevs(record).slice(0, MAX_PUSH_BASE_REVS);
     const reset: CheckoutRecord = {
       rev: FORCED_FULL_SYNC_REV,
+      ...(record.teamRef !== undefined ? { teamRef: record.teamRef } : {}),
       ...(record.root !== undefined ? { root: record.root } : {}),
       targets: record.targets,
       ...(record.delivered ? { delivered: record.delivered } : {}),
@@ -1238,6 +1262,15 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
     return [key, pushBaseRevs.length === 0 ? reset : { ...reset, pushBaseRevs }];
   }));
 }
+
+type PullSyncResult = {
+  completed: boolean;
+  docsSyncFailed: boolean;
+  agentModelsHeld: boolean;
+  teamRepoFailed: boolean;
+  resourceSyncFailed: boolean;
+  delivery: 'pending' | 'complete' | 'failed';
+};
 
 async function pullForScope(
   localConfig: LocalConfig,
@@ -1256,7 +1289,7 @@ async function pullForScope(
     recorder?: DeliveryRecorder;
   } = {},
   /** Set to `{ completed: true }` on a real (non-dry-run) sync. See pull(). */
-  result?: { completed: boolean; docsSyncFailed: boolean; agentModelsHeld: boolean; teamRepoFailed?: boolean; resourceSyncFailed?: boolean },
+  result?: PullSyncResult,
   /** Collects this scope's env resolution for the stages after it (see resolvePullEnv). */
   teamEnvs?: Map<LocalConfig, TeamEnv>,
   instructions?: Map<LocalConfig, InstructionDelivery>,
@@ -1274,7 +1307,7 @@ async function pullForScope(
   const workspaceKey = revisionField === 'lastPullRev' && localConfig.scope === 'project' ? recordKey : undefined;
 
   // Step 1: refresh team repo (git pull, or HTTP /repo materialization)
-  const pullSpin = spinner(`[${scopeLabel}] Pulling team repo...`).start();
+  const pullSpin = (await spinner(`[${scopeLabel}] Pulling team repo...`)).start();
   let currentRev: string | null = null;
   // A failed submodule update holds the rev back below so the next pull
   // retries (see refreshTeamRepo).
@@ -1286,7 +1319,7 @@ async function pullForScope(
     const refresh = await refreshTeamRepo(localConfig, options);
     currentRev = refresh.version;
     submodulesFailed = refresh.submodulesFailed;
-    if (result && submodulesFailed) result.resourceSyncFailed = true;
+    if (result && submodulesFailed) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
     submodulesChanged = refresh.submodulesChanged;
     const outcome = `[${scopeLabel}] Team repo: ${refresh.label}`;
     pullSpin.succeed(outcome);
@@ -1295,7 +1328,8 @@ async function pullForScope(
     const reason = `[${scopeLabel}] Pull failed: ${(e as Error).message}`;
     pullSpin.fail(reason);
     log.persist(reason);
-    if (result) result.teamRepoFailed = true;
+    if (result) { result.teamRepoFailed = true; result.delivery = 'failed'; }
+    if (localConfig.repo.ref !== undefined || options.teamRef !== undefined || e instanceof DetachedRecoveryError) process.exitCode = 1;
     if (options.gitHook && localConfig.scope === 'project') {
       const { recordGitHookFailure } = await import('./git-hook.js');
       const at = new Date().toISOString();
@@ -1311,13 +1345,12 @@ async function pullForScope(
   // whose file the team deleted stops being one, and in legacy mode one
   // shadowed by a new shared-root file of the same name is withdrawn (#649
   // review, #707).
-  // In single-repo mode the refresh leaves the member's own checkout as it is —
-  // a feature branch, or a main not pulled yet — so the records are settled
-  // against origin/<default> as a ref instead: a record dropped against that
-  // checkout would never come back (#649 review).
+  // A single-repo checkout or pinned clone may lack files still on the default
+  // branch. Settle against origin/<default>, since a dropped record never comes
+  // back when that checkout returns to the default branch (#649 review).
   if (!options.dryRun) {
     try {
-      const tip = localConfig.repo.kind === 'self'
+      const tip = localConfig.repo.kind === 'self' || localConfig.repo.ref !== undefined
         ? `origin/${await getDefaultBranch(localConfig.repo.localPath)}`
         : undefined;
       const recordsState = await loadStateForScope(localConfig);
@@ -1360,7 +1393,7 @@ async function pullForScope(
   // be able to fetch it from the remote instead of skipping forever.
   const freshConfig = await loadTeamConfig(localConfig.repo.localPath);
   if (!freshConfig) {
-    if (result) result.resourceSyncFailed = true;
+    if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
     log.warn(`[${scopeLabel}] Team config (teamai.yaml) not found. Skipping.`);
     return;
   }
@@ -1372,7 +1405,7 @@ async function pullForScope(
     roleContext = await buildRolePullContext(localConfig);
   } catch (e) {
     log.error(`[${scopeLabel}] ${(e as Error).message}`);
-    if (result) result.resourceSyncFailed = true;
+    if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
     return;
   }
 
@@ -1633,7 +1666,7 @@ async function pullForScope(
       // how exclude, tags, roles, projects, init and bootstrap force a full sync.
       const recorded = workspaceKey
         ? state.lastPullByWorkspace?.[workspaceKey]
-        : { rev: state[revisionField], targets: state[targetsField] };
+        : { rev: state[revisionField], targets: state[targetsField], teamRef: undefined };
       // A checkout record without `gitExcludePaths`, from an older CLI, has no
       // list of what pull delivered into it yet: only a full sync writes one (#915).
       const listed = !workspaceKey || !policy.recorder
@@ -1643,7 +1676,7 @@ async function pullForScope(
       // commit: the record names the children it delivered (#913).
       const sameChildren = !workspaceKey || state.lastPullByWorkspace?.[workspaceKey]?.children === localConfig.children?.fingerprint;
       if (!sameChildren) log.debug(`[${scopeLabel}] The workspace's children changed, syncing`);
-      if (currentRev && state[revisionField] === currentRev && recorded?.rev === currentRev && listed && sameChildren) {
+      if (currentRev && state[revisionField] === currentRev && recorded?.rev === currentRev && recorded.teamRef === localConfig.repo.ref && listed && sameChildren) {
         currentTargets = await getInstalledResourceTargets(freshConfig, localConfig);
         const previousTargets = recorded.targets;
         const syncedTargets = new Set(previousTargets ?? []);
@@ -1721,6 +1754,7 @@ async function pullForScope(
           if (resourceTypes.includes('agents')) {
             if (await redeployAgentsWithChangedModels(freshConfig, localConfig, roleContext, scopeLabel, revisionField, reported, recorder) && result) {
               result.agentModelsHeld = true;
+              result.delivery = 'failed';
             }
           }
           // A repo that has not moved can still carry a malformed env.yaml, or
@@ -1736,6 +1770,7 @@ async function pullForScope(
           // learning until `pull --force` (#704).
           await syncLearningsAndRebuildIndex();
           await syncWorkflows(localConfig, !!options.dryRun, scopeLabel);
+          if (result && result.delivery !== 'failed') result.delivery = 'complete';
           return;
         }
 
@@ -1757,6 +1792,29 @@ async function pullForScope(
   // and this pull's writes are recorded when the state is saved (#822).
   // A dry run's writers report what they would write, for its preview of the block.
   const ledger = await openCheckoutLedger(localConfig, undefined, policy.recorder);
+  const previousRecord = recordKey ? (await loadStateForScope(localConfig)).lastPullByWorkspace?.[recordKey] : undefined;
+  const unpinnedRef = localConfig.repo.ref === undefined ? previousRecord?.teamRef : undefined;
+  const reportKeptCopies = (): number => {
+    if (unpinnedRef) {
+      for (const { dest } of ledger.kept) log.warn(`[${scopeLabel}] Kept ${dest}: it holds "${unpinnedRef}"'s content, which teamai push would send to the default branch.`);
+    }
+    return reportKept(ledger, scopeLabel);
+  };
+  let revisionRemovals: RemovedTeamResources | undefined;
+  if ((localConfig.repo.ref !== undefined || previousRecord?.teamRef !== undefined) && currentRev) {
+    for (const previous of checkoutBaseRevs(previousRecord)) {
+      if (previous === currentRev) continue;
+      if (!await getHeadCommit(localConfig.repo.localPath, previous)) {
+        log.debug(`[${scopeLabel}] Skipped team ref removals at ${previous}: the revision is unavailable in the team clone`);
+        continue;
+      }
+      const removed = await removedTeamResources(localConfig.repo.localPath, previous, currentRev);
+      revisionRemovals ??= { skills: new Set(), rules: new Set(), agents: new Set() };
+      for (const type of ['skills', 'rules', 'agents'] as const) {
+        for (const name of removed[type]) revisionRemovals[type].add(name);
+      }
+    }
+  }
   // Not the fast path: each writer's report replaces its delivered paths (#915).
   policy.recorder?.fullSync();
 
@@ -1804,10 +1862,14 @@ async function pullForScope(
         await rulesHandler.pullAllRules(freshConfig, localConfig, items, replaced, ledger);
         // A rule it failed to write has said so already (see DeliveryRecorder).
         ledger.recorder?.succeeded('rules');
+        if (ledger.failed.splice(0).length > 0) {
+          membersFilesKept = true;
+          if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
+        }
         if (items.length > 0) {
           log.success(`[${scopeLabel}] Synced ${items.length} rule(s)${skippedByTags > 0 ? ` (skipped ${skippedByTags} by tags)` : ''}`);
         }
-        if (reportKept(ledger, scopeLabel) > 0) membersFilesKept = true;
+        if (reportKeptCopies() > 0) membersFilesKept = true;
       }
       totalSynced += items.length;
       continue;
@@ -1825,11 +1887,11 @@ async function pullForScope(
           try {
             await new EnvHandler().registerUnresolvedScope(freshConfig, localConfig, [...declaredSecretKeys(teamEnv.declarations) ?? []]);
           } catch (error) {
-            if (result) result.resourceSyncFailed = true;
+            if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
             throw error;
           }
         }
-        if (result) result.resourceSyncFailed = true;
+        if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
         continue;
       }
       const countLabel = `${variables.length} env variable(s)`;
@@ -1844,7 +1906,7 @@ async function pullForScope(
             log.success(`[${scopeLabel}] Synced ${countLabel} to ${getDataHome(localConfig)}/env.sh`);
           }
         } catch (error) {
-          if (result) result.resourceSyncFailed = true;
+          if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
           process.exitCode = 1;
           throw error;
         }
@@ -1893,7 +1955,7 @@ async function pullForScope(
       } catch (e) {
         ledger.recorder?.failed('docs');
         docsSyncFailed = true;
-        if (result) result.docsSyncFailed = true;
+        if (result) { result.docsSyncFailed = true; result.delivery = 'failed'; }
         log.warn(`[${scopeLabel}] Failed to sync docs: ${e instanceof Error ? e.message : String(e)}`);
         if (!options.dryRun) {
           const state = await loadStateForScope(localConfig);
@@ -1914,7 +1976,7 @@ async function pullForScope(
         log.warn(`[${scopeLabel}] ${describeDeliveryConflict(desired)}. Skills were not updated this run; the installed ones are kept.`);
         skillsHeld = true;
         ledger.recorder?.failed('skills');
-        if (result) result.resourceSyncFailed = true;
+        if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
         continue;
       }
       items = desired.items;
@@ -1936,7 +1998,7 @@ async function pullForScope(
         log.warn(`[${scopeLabel}] ${describeDeliveryConflict(desired)}. Agents were not updated this run; the installed ones are kept.`);
         agentsHeld = true;
         ledger.recorder?.failed('agents');
-        if (result) result.resourceSyncFailed = true;
+        if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
         continue;
       }
       items = desired.items;
@@ -2003,7 +2065,7 @@ async function pullForScope(
       // member's does: the revision stays, and the next pull is a full one that retries it.
       if (ledger.failed.splice(0).length > 0) {
         membersFilesKept = true;
-        if (result) result.resourceSyncFailed = true;
+        if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
       }
       // Agents whose model cannot be resolved reach no tool: said once per reason, and not counted as synced.
       if (ledger.held.length > 0) agentModelsHeld = true;
@@ -2019,7 +2081,7 @@ async function pullForScope(
           log.success(`[${scopeLabel}] Synced ${items.length} ${type}`);
         }
       }
-      if (reportKept(ledger, scopeLabel) > 0) membersFilesKept = true;
+      if (reportKeptCopies() > 0) membersFilesKept = true;
     }
 
     totalSynced += items.length;
@@ -2032,7 +2094,7 @@ async function pullForScope(
 
   // Step 3: Clean up tombstoned resources
   if (!options.dryRun) {
-    await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, ledger);
+    await cleanupTombstonedResources(freshConfig, localConfig, scopeLabel, ledger, revisionRemovals, unpinnedRef);
 
     if (roleContext) {
       if (!skillsHeld) {
@@ -2250,6 +2312,8 @@ async function pullForScope(
       setChildren(record, localConfig);
       addPushBaseRev(record, deliveredRev);
       record.delivered = ledger.hashes;
+      if (localConfig.repo.ref !== undefined) record.teamRef = localConfig.repo.ref;
+      else delete record.teamRef;
       setAgentModels(record, ledger.agentModels);
       // Not advancing the revision is not enough when this checkout was at it
       // already (`pull --force`, or after an older CLI's pull): miss the fast
@@ -2278,6 +2342,7 @@ async function pullForScope(
       const claudeMdExcludes = state.lastPullByWorkspace?.[recordKey]?.claudeMdExcludes;
       const record: CheckoutRecord = {
         rev: deliveredRev,
+        ...(localConfig.repo.ref !== undefined ? { teamRef: localConfig.repo.ref } : {}),
         ...(localConfig.scope === 'project' && localConfig.projectRoot ? { root: localConfig.projectRoot } : {}),
         targets: syncedTargets,
         delivered: ledger.hashes,
@@ -2349,8 +2414,12 @@ async function pullForScope(
   // and every error/skip path return before here, and dry-run is excluded so a
   // preview never reports completion (#702 follow-up).
   // A held agent is not delivered either (#830).
-  if (result && agentModelsHeld) result.agentModelsHeld = true;
-  if (result && !options.dryRun && !docsSyncFailed && !agentModelsHeld) result.completed = true;
+  if (result && agentModelsHeld) { result.agentModelsHeld = true; result.delivery = 'failed'; }
+  if (result && !options.dryRun && !docsSyncFailed && !agentModelsHeld) {
+    result.completed = true;
+    if (membersFilesKept) result.delivery = 'failed';
+    else if (result.delivery !== 'failed') result.delivery = 'complete';
+  }
 }
 
 /**
@@ -2778,6 +2847,12 @@ export async function pull(
    */
   result?: { completed: boolean },
 ): Promise<void> {
+  if (options.teamRef !== undefined && options.dryRun) {
+    const message = `--team-ref cannot be previewed: a dry run would show the workspace's current team revision, not "${options.teamRef}". Run teamai pull --team-ref ${options.teamRef} without --dry-run.`;
+    if (!options.silent) console.error(message);
+    process.exitCode = 1;
+    return;
+  }
   // Warnings about the team repo are said once per pull, not once per scope or
   // per resolution, and every pull says them again.
   resetWarnOnce();
@@ -2792,8 +2867,12 @@ export async function pull(
   // into another call.
   const reported = new Set<string>();
   // A later successful scope must not hide an earlier docs failure (or vice versa).
-  const syncResult = { completed: false, docsSyncFailed: false, agentModelsHeld: false, teamRepoFailed: false, resourceSyncFailed: false };
+  const syncResult: PullSyncResult = { completed: false, docsSyncFailed: false, agentModelsHeld: false, teamRepoFailed: false, resourceSyncFailed: false, delivery: 'pending' };
   const startupErrors: string[] = [];
+  // The project scope's hook and co-author writes that failed. Kept out of
+  // startupErrors, which also decides a git hook's failure record, so only
+  // the pinned outcome reads them.
+  const unwritten: string[] = [];
   // Each scope's env, resolved once by its env stage (resolvePullEnv).
   const teamEnvs = new Map<LocalConfig, TeamEnv>();
   const instructions = new Map<LocalConfig, InstructionDelivery>();
@@ -2820,6 +2899,8 @@ export async function pull(
   // Team repo whose pull completed, for `scripts.postPull` — run at the very
   // end of pull(). The config is kept so postPull and postDeploy receive the
   // checkout identity, not only the repo path.
+  let pinRequired = options.teamRef !== undefined;
+  let projectConfig: LocalConfig | null = null;
   let postPullRepo: string | null = null;
   let scriptOwner: LocalConfig | null = null;
   const lockScope = async (config: LocalConfig): Promise<boolean> => {
@@ -2873,12 +2954,11 @@ export async function pull(
 
   // 1. Detect project scope first. Its presence decides whether user scope is
   //    processed at all (issue #73: project install isolates from user).
-  let projectConfig: LocalConfig | null = null;
   const unreadable: string[] = [];
   if (!options.userScopeOnly) {
     try {
       projectConfig = await detectProjectConfig(
-        undefined,
+        options.cwd,
         (configPath, error) => { unreadable.push(`${configPath}: ${error}`); },
         { dryRun: options.dryRun },
       );
@@ -2899,6 +2979,19 @@ export async function pull(
     else log.error(message);
     process.exitCode = 1;
     return;
+  }
+  pinRequired ||= projectConfig?.repo.ref !== undefined;
+  if (pinRequired) {
+    const userConfig = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+    const blocker = teamRefBlocker(projectConfig, userConfig);
+    if (blocker) {
+      if (!projectConfig) {
+        if (!options.silent) console.error(blocker.message);
+      } else if (options.silent) log.persist(blocker.message);
+      else log.error(blocker.message);
+      process.exitCode = 1;
+      return;
+    }
   }
   // A workspace also delivers what the repos set up inside it select (#913):
   // read them once, here, so every stage below resolves the same selection.
@@ -2964,6 +3057,7 @@ export async function pull(
       if (await lockScope(projectConfig)) {
         if (!options.dryRun && !options.inline) await runTeamScript(projectConfig, 'prePull');
         await pullForScope(projectConfig, options, reported, { recorder: deliveryRecorder }, syncResult, teamEnvs, instructions);
+        if (pinRequired && syncResult.teamRepoFailed) return;
         await excludeWorkspaceInstructions(projectConfig, options);
       }
     } catch (e) {
@@ -3011,7 +3105,9 @@ export async function pull(
   // what self-heals new built-in hooks and applies hooks.yaml changes on every
   // session start. In project mode user is null, even when safe resources are
   // inherited, so executable hook configuration is never composed implicitly.
-  startupErrors.push(...await reconcileHooksAllScopes(reconcileUser, reconcileProject, options, instructions, deliveryRecorder));
+  const hooks = await reconcileHooksAllScopes(reconcileUser, reconcileProject, options, instructions, deliveryRecorder);
+  startupErrors.push(...hooks.errors);
+  unwritten.push(...hooks.unwritten);
 
   // 3.6. Reconcile team MCP servers. Outside pullForScope for the same reason as
   // hooks. User-scope MCP remains isolated in project mode.
@@ -3032,7 +3128,7 @@ export async function pull(
   // Co-Authored-By / attribution trailer on its commits?). Outside pullForScope
   // for the same reason as hooks/MCP; write-only, so it self-heals but never
   // strips a trailer once the team drops the policy.
-  await reconcileCoAuthorAllScopes(reconcileUser, reconcileProject, options, deliveryRecorder);
+  unwritten.push(...await reconcileCoAuthorAllScopes(reconcileUser, reconcileProject, options, deliveryRecorder));
 
   // 4. Auto-report usage data to all active scopes. Skill usage lives in each
   //    scope's own file (`<dataHome>/usage.jsonl`, the user scope's
@@ -3208,6 +3304,16 @@ export async function pull(
   //    transient branch is how a diagnostic invents a failure.
   await reportPostPullChecks(options, reported, contended.size > 0, gitContext);
   } finally {
+    if (startupErrors.length > 0 || unwritten.length > 0 || contended.size > 0) syncResult.delivery = 'failed';
+    if (pinRequired && !options.dryRun && syncResult.delivery !== 'complete') process.exitCode = 1;
+    if (!options.silent && projectConfig?.repo.ref) {
+      try {
+        const commit = await getHeadRev(projectConfig.repo.localPath);
+        log.info(teamRefNotice(projectConfig.repo.ref, commit, await getDefaultBranch(projectConfig.repo.localPath)));
+      } catch (error) {
+        log.debug(`Could not read the pinned team revision: ${(error as Error).message}`);
+      }
+    }
     if (result) result.completed = syncResult.completed && !syncResult.docsSyncFailed && !syncResult.agentModelsHeld;
     const releaseSyncLocks = async () => {
       for (const lock of heldLocks.values()) await releaseLock(lock);
@@ -3520,8 +3626,9 @@ async function reconcileHooksAllScopes(
   instructions: Map<LocalConfig, InstructionDelivery>,
   /** The project scope's (#915). */
   recorder?: DeliveryRecorder,
-): Promise<string[]> {
+): Promise<{ errors: string[]; unwritten: string[] }> {
   const errors: string[] = [];
+  const unwritten: string[] = [];
   // A dry run still resolves the entries, so the warnings a maintainer runs
   // `--dry-run` to see — an unknown id, a deprecated per-entry `roles:`, a
   // hooks.yaml that does not parse — are reported; only the writes are skipped,
@@ -3556,6 +3663,7 @@ async function reconcileHooksAllScopes(
       // A dry run wrote nothing: its preview keeps the files that held entries before, too.
       if (!options.dryRun) scopeRecorder?.succeeded('hooks');
       if (!reconciled.ok) errors.push(`[${installScopeName(localConfig.scope)}] Team hooks could not be resolved`);
+      if (localConfig === projectConfig) unwritten.push(...(reconciled.unwritten ?? []).map((tool) => `hooks for ${tool}`));
       if (reconciled.ok && reconciled.defs.length > 0) {
         // Same preview rule as the user-facing line: a dry run resolved and
         // reported the entries but wrote nothing, so the debug trail must not
@@ -3607,7 +3715,7 @@ async function reconcileHooksAllScopes(
       errors.push(`[${installScopeName(localConfig.scope)}] Hooks: ${(e as Error).message}`);
     }
   }
-  return errors;
+  return { errors, unwritten };
 }
 
 /** Trust Codex hooks and projects after both hooks and MCP reconciliation. */
@@ -3741,7 +3849,7 @@ async function reconcileCoAuthorAllScopes(
   options: GlobalOptions,
   /** The project scope's (#915). */
   recorder?: DeliveryRecorder,
-): Promise<void> {
+): Promise<string[]> {
   if (options.dryRun) {
     // Nothing is written: the file that holds teamai's co-author entry now
     // stands in the preview of the delivered git exclude block (#915).
@@ -3757,8 +3865,9 @@ async function reconcileCoAuthorAllScopes(
         log.debug(`[dry-run] co-author preview skipped: ${(e as Error).message}`);
       }
     }
-    return;
+    return [];
   }
+  const unwritten: string[] = [];
   const scopes = [userConfig, projectConfig].filter((c): c is LocalConfig => !!c);
   for (const localConfig of scopes) {
     const scopeRecorder = localConfig === projectConfig ? recorder : undefined;
@@ -3784,12 +3893,18 @@ async function reconcileCoAuthorAllScopes(
       for (const c of changes) {
         if (c.action === 'skipped') log.debug(`[coauthor] ${c.tool}: skipped — ${c.reason}`);
       }
+      const failed = changes.filter((c) => c.failed);
+      if (localConfig === projectConfig) unwritten.push(...failed.map((c) => `co-author setting for ${c.tool}`));
       // Also persists a dropped record of a pre-#993 shared file (#993).
       if (JSON.stringify(managed) !== JSON.stringify(state.coAuthorManaged ?? {})) {
         state.coAuthorManaged = managed;
         await saveStateForScope(state, localConfig);
       }
       if (options.silent) continue;
+      // The pinned outcome fails on these, so a pinned pull, or the unpin, says why.
+      if (localConfig === projectConfig && (localConfig.repo.ref !== undefined || options.teamRef !== undefined)) {
+        for (const c of failed) log.warn(`[${installScopeName(localConfig.scope)}] The co-author setting was not written to ${c.file}: ${c.reason}`);
+      }
       for (const c of changes.filter((change) => change.action === 'removed')) {
         log.info(`Removed the co-author setting an earlier teamai wrote to ${c.file}, a shared project file (teamai now writes it only to .claude/settings.local.json). Commit the change if the file is tracked.`);
       }
@@ -3804,6 +3919,8 @@ async function reconcileCoAuthorAllScopes(
     } catch (e) {
       scopeRecorder?.failed('coauthor');
       log.debug(`[${installScopeName(localConfig.scope)}] co-author reconcile skipped: ${(e as Error).message}`);
+      if (localConfig === projectConfig) unwritten.push(`co-author: ${(e as Error).message}`);
     }
   }
+  return unwritten;
 }

@@ -16,7 +16,7 @@ import {
 import { touchCacheEntry } from './utils/cache-index.js';
 import { log } from './utils/logger.js';
 import { hasFrontmatter, stripFrontmatter } from './utils/frontmatter.js';
-import { lockTeamwiki, resolveTeamwiki } from './utils/teamwiki-root.js';
+import { assertTeamwikiWritable, lockTeamwiki, resolveTeamwiki } from './utils/teamwiki-root.js';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -275,6 +275,7 @@ export async function importFromRepo(opts: ImportFromRepoOptions): Promise<void>
         if (!dryRun) throw error;
         return undefined;
     });
+    if (!dryRun) await assertTeamwikiWritable(target);
     const evidenceDest = target ? path.join(target.wikiRoot, 'evidence', 'code', slug) : undefined;
     // LAST_SYNC belongs to the shared clone cache: an unchanged cache is skipped
     // only when this teamwiki already holds that commit, not when another

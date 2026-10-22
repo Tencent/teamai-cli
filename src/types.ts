@@ -391,6 +391,276 @@ const TeamScriptSchema = z.object({
   path: z.string().min(1),
 });
 
+/**
+ * Default tool paths for built-in tools.
+ * MCP paths are only set for tools whose config location has been verified.
+ * Tools left without `mcp` are skipped by MCP sync rather than guessed at, so a
+ * wrong guess can never create a junk config file on a user's machine.
+ */
+export const DEFAULT_TOOL_PATHS = {
+  claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', agents: '.claude/agents', mcp: '.claude.json', mcpProject: '.mcp.json' },
+  // Codex reads no rules directory: `.codex/rules` holds its exec-policy
+  // `*.rules` files. In user scope teamai's blocks go to ~/.codex/AGENTS.md,
+  // which only Codex reads. In project scope they come from the session-start
+  // hook, since the project AGENTS.md is the owners' file and other tools
+  // read it too (#938, #945); so the entry has no project `claudemd`.
+  // Codex reads the project MCP config only in a trusted project (#954).
+  codex: {
+    skills: '.codex/skills',
+    settings: '.codex/hooks.json',
+    agents: '.codex/agents',
+    mcp: '.codex/config.toml',
+    mcpProject: '.codex/config.toml',
+    userScope: { claudemd: '.codex/AGENTS.md' },
+  },
+  // codex-internal and tcodex run the same Codex from their own home root, so
+  // they take the codex shape. Their user-scope AGENTS.md locations
+  // (~/.codex-internal/AGENTS.md, ~/.tcodex/AGENTS.md) are assumed from that,
+  // not verified against either build.
+  'codex-internal': {
+    skills: '.codex-internal/skills',
+    settings: '.codex-internal/hooks.json',
+    agents: '.codex-internal/agents',
+    userScope: { claudemd: '.codex-internal/AGENTS.md' },
+  },
+  'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', agents: '.claude-internal/agents' },
+  // tclaude ships Claude Code with `customUserDataDir: .tclaude`, which
+  // relocates the whole user data dir — so its MCP file is
+  // ~/.tclaude/.claude.json, not ~/.tclaude.json. No mcpProject: project scope
+  // for the Claude family is <root>/.mcp.json, which the `claude` target
+  // already writes and tclaude reads from the same location.
+  tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', agents: '.tclaude/agents', mcp: '.tclaude/.claude.json' },
+  // Same shape as codex; see codex-internal above.
+  tcodex: {
+    skills: '.tcodex/skills',
+    settings: '.tcodex/hooks.json',
+    agents: '.tcodex/agents',
+    userScope: { claudemd: '.tcodex/AGENTS.md' },
+  },
+  cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
+  // GitHub Copilot CLI keeps project customizations under .github and moves
+  // the complete user customization root when COPILOT_HOME is set. Agents use
+  // the official .agent.md format. Hooks and MCP use standalone files;
+  // settings.json is deliberately never managed.
+  copilot: {
+    skills: '.github/skills',
+    rules: '.github/instructions',
+    agents: '.github/agents',
+    hooks: '.github/hooks/teamai.json',
+    claudemd: '.github/copilot-instructions.md',
+    mcp: COPILOT_USER_MCP_CONFIG,
+    mcpProject: COPILOT_PROJECT_MCP_CONFIG,
+    userScope: {
+      skills: 'skills',
+      rules: 'instructions',
+      agents: 'agents',
+      hooks: 'hooks/teamai.json',
+      claudemd: 'copilot-instructions.md',
+    },
+  },
+  // JoyCode: skills, rules (.mdc), and subagents are synced to .joycode/.
+  // JoyCode currently does not provide a lifecycle hooks system or startup
+  // adapter, so it intentionally has no `settings` path. Hook reconciliation
+  // skips JoyCode cleanly without generating ghost files; users must sync
+  // manually via `teamai pull`. In user scope it reads no rules directory:
+  // its team rules are a block in ~/.joycode/rules.txt (#946).
+  joycode: { skills: '.joycode/skills', rules: '.joycode/rules', agents: '.joycode/agents', userScope: { rules: null } },
+  qoder: {
+    skills: '.qoder/skills',
+    rules: '.qoder/rules',
+    settings: '.qoder/settings.json',
+    agents: '.qoder/agents',
+    mcp: '.qoder/settings.json',
+    mcpProject: '.qoder/settings.json',
+  },
+  // Qoder CN is a separate distribution whose *user*-scope directory is
+  // ~/.qoder-cn instead of ~/.qoder, so it needs its own entry rather than
+  // sharing `qoder`. It reads the same Claude-compatible resource formats.
+  //
+  // Only the user scope differs. Top-level fields are PROJECT-scope paths and
+  // the `userScope` block below carries the user-scope overrides, so the
+  // top-level entries stay identical to `qoder`:
+  //   ASSUMPTION: Qoder CN's project-scope layout is assumed shared with Qoder
+  //   (`<root>/.qoder/`), i.e. the CN build differs from the international
+  //   build only in its user directory, not in its per-repo directory. This
+  //   could not be verified from this repository — it is a third-party product
+  //   layout. If a CN project actually keeps its resources in `<root>/.qoder-cn/`,
+  //   the top-level fields below are wrong and must move to `.qoder-cn/`.
+  // MCP stays two distinct fields: `mcp` is the user-scope file, `mcpProject`
+  // the project-scope one.
+  'qoder-cn': {
+    skills: '.qoder/skills',
+    rules: '.qoder/rules',
+    settings: '.qoder/settings.json',
+    agents: '.qoder/agents',
+    mcp: '.qoder-cn/settings.json',
+    mcpProject: '.qoder/settings.json',
+    userScope: {
+      skills: '.qoder-cn/skills',
+      rules: '.qoder-cn/rules',
+      settings: '.qoder-cn/settings.json',
+      agents: '.qoder-cn/agents',
+    },
+  },
+  // Kiro: skills, steering (rules), and custom agents sync to .kiro/. Kiro CLI
+  // 2.x stores lifecycle hooks inside each .kiro/agents/*.json config. The
+  // Kiro agent renderer therefore embeds TeamAI's session-start dispatch as
+  // `hooks.agentSpawn`; there is no standalone `settings` hook surface.
+  // MCP uses the dedicated, mcpServers-only .kiro/settings/mcp.json:
+  // https://kiro.dev/docs/mcp/configuration/
+  kiro: {
+    skills: '.kiro/skills',
+    rules: '.kiro/steering',
+    agents: '.kiro/agents',
+    mcp: '.kiro/settings/mcp.json',
+    mcpProject: '.kiro/settings/mcp.json',
+  },
+  // Trae (trae.ai) is a VS Code-family IDE. Per its docs and its bundled
+  // code (verified against the installed app): project skills live in
+  // <root>/.trae/skills/<name>/SKILL.md, project rules in .trae/rules/*.md
+  // (frontmatter `alwaysApply` / `globs`, globs comma-separated, parsed by
+  // lines — see trae-rule.ts), and project MCP in .trae/mcp.json holding a
+  // Claude-shaped `mcpServers` object map. User rules are NOT ~/.trae/rules
+  // but ~/.trae/user_rules (the default file is user_rules.md), so
+  // userScope.rules carries that name. User-level MCP has no
+  // teamai-writable cross-platform file: the IDE keeps it next to its
+  // user settings (~/Library/Application Support/Trae/User/mcp.json on
+  // macOS, %APPDATA%/… on Windows), so only `mcpProject` is set. Trae has
+  // no settings-based hook surface and no subagents directory, so those
+  // keys stay absent (like JoyCode, users sync via `teamai pull`).
+  trae: {
+    skills: '.trae/skills',
+    rules: '.trae/rules',
+    mcpProject: '.trae/mcp.json',
+    userScope: { rules: '.trae/user_rules' },
+  },
+  // Trae CN (domestic.trae.cn) shares every project path with the
+  // international build (verified on installed apps: only the user
+  // directory differs, ~/.trae-cn). Both map the same .trae/mcp.json, and
+  // one shared ownership record covers the pair
+  // (MCP_MANIFEST_KEY_ALIAS), so whichever build a member runs, its
+  // target writes, updates and cleans the file.
+  'trae-cn': {
+    skills: '.trae/skills',
+    rules: '.trae/rules',
+    mcpProject: '.trae/mcp.json',
+    userScope: {
+      skills: '.trae-cn/skills',
+      rules: '.trae-cn/user_rules',
+    },
+  },
+  // ZCode: user-level config lives at ~/.zcode/cli/config.json (a shared file
+  // that also carries plugin state — reconcile must merge, never replace).
+  // Hooks are Claude-shaped but nested under `hooks.events` and gated by
+  // `hooks.enabled` (config-file hooks are disabled by default; the writer
+  // must force it on). Subagents deploy to ~/.zcode/agents/ as Claude-style
+  // Markdown (the CLI also reads <project>/.zcode/agents/ per workspace).
+  // User-scope MCP mirrors Claude's shape (`mcpServers` key) in
+  // ~/.agents/mcp.json; project scope writes `mcp.servers` inside
+  // .zcode/config.json (a different key), which the Claude writer cannot
+  // emit — so no mcpProject. ZCode has no user-level rules dir convention.
+  zcode: { skills: '.zcode/skills', agents: '.zcode/agents', settings: '.zcode/cli/config.json', mcp: '.agents/mcp.json' },
+  // Oh My Pi (OMP): the config root is ~/.omp on every platform (no %APPDATA%
+  // on Windows); user-scope resources live in the agent dir ~/.omp/agent/, a
+  // different prefix from the project <root>/.omp/, hence userScope. Rules are
+  // plain .md, instructions land in AGENTS.md, and MCP uses the Claude-shaped
+  // {"mcpServers": …} mcp.json. OMP runs lifecycle hooks as in-process TS
+  // extensions rather than a settings hook list, so there is no `settings`
+  // path — the adapter in omp-hooks.ts writes the single user-root extension
+  // (~/.omp/agent/extensions/teamai-hooks.ts). Profiles (OMP_PROFILE /
+  // PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move the agent dir and are not
+  // supported for hooks.
+  omp: {
+    skills: '.omp/skills',
+    rules: '.omp/rules',
+    claudemd: '.omp/AGENTS.md',
+    agents: '.omp/agents',
+    mcp: '.omp/agent/mcp.json',
+    mcpProject: '.omp/mcp.json',
+    userScope: {
+      skills: '.omp/agent/skills',
+      rules: '.omp/agent/rules',
+      claudemd: '.omp/agent/AGENTS.md',
+      agents: '.omp/agent/agents',
+    },
+  },
+  // Pi Coding Agent: skills/rules/extensions live under the agent root. Pi
+  // discovers global context from ~/.pi/agent/AGENTS.md and project context
+  // from AGENTS.md/CLAUDE.md walking up the workspace tree. Hooks are
+  // TypeScript extensions rather than a settings hook list, so the adapter
+  // keeps one user extension and forwards the active cwd to hook-dispatch.
+  // Profile overrides (PI_CODING_AGENT_DIR / PI_CONFIG_DIR) that relocate
+  // the agent dir are not supported for hooks or MCP, same as the OMP adapter;
+  // model profiles do read PI_CODING_AGENT_DIR. Pi reads no rules
+  // directory: its user team rules are a block in ~/.pi/agent/AGENTS.md, and
+  // in a project teamai's extension adds them to the system prompt (#946).
+  pi: {
+    mcp: '.pi/agent/mcp.json',
+    mcpProject: '.pi/mcp.json',
+    skills: '.pi/skills',
+    claudemd: 'AGENTS.md',
+    userScope: {
+      skills: '.pi/agent/skills',
+      claudemd: '.pi/agent/AGENTS.md',
+    },
+  },
+  codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' },
+  // OpenClaw reads no rules directory: in user scope its team rules are a
+  // block in the workspace AGENTS.md, and a project gets none (#946).
+  openclaw: { skills: '.openclaw/skills', claudemd: '.openclaw/workspace/AGENTS.md' },
+  hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
+  // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
+  // provider scans as user-dsh root (rank 400). dsh discovers both directory
+  // bundles (<name>/SKILL.md) and flat Markdown files there natively.
+  dsh: { skills: '.dsh/skills' },
+  // WorkBuddy runs CodeBuddy's engine: in a project it reads CodeBuddy's
+  // .codebuddy/rules, which the two share (one copy), and in user scope its
+  // own ~/.workbuddy/rules (#946). Its install probe stays .workbuddy
+  // (`isToolInstalledForConfig`), whatever directory its rules land in.
+  workbuddy: {
+    skills: '.workbuddy/skills',
+    rules: '.codebuddy/rules',
+    settings: '.workbuddy/settings.json',
+    claudemd: 'AGENTS.md',
+    agents: '.workbuddy/agents',
+    mcp: '.workbuddy/mcp.json',
+    mcpProject: '.workbuddy/mcp.json',
+    userScope: { rules: '.workbuddy/rules' },
+  },
+  // OpenCode reads project config from <root>/.opencode/ but user config from
+  // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
+  // read natively from .claude/skills, but we write .opencode/skills so an
+  // OpenCode-only user (no Claude) still gets them. Rules land in .opencode/rules
+  // but must be activated via the `instructions` glob in opencode.json (OpenCode
+  // does not auto-scan a rules dir). MCP shares opencode.json under the `mcp` key.
+  opencode: {
+    skills: '.opencode/skills',
+    rules: '.opencode/rules',
+    agents: '.opencode/agents',
+    mcp: '.config/opencode/opencode.json',
+    mcpProject: 'opencode.json',
+    userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
+  },
+  // Muse Code (Meta, binary `muse`) keeps its user config in ~/.config/muse
+  // and reads user skills from ~/.config/muse/skills, ahead of the
+  // ~/.claude/skills and ~/.agents/skills it also scans. Hooks take Codex's
+  // shape: user hooks in the `hooks` block of ~/.config/muse/settings.json,
+  // which runs in every workspace, project hooks in <root>/.muse/hooks.json,
+  // which runs only in a trusted one.
+  muse: {
+    skills: '.agents/skills',
+    settings: '.muse/hooks.json',
+    // User MCP servers sit in the same settings.json. A project's come from
+    // the <root>/.mcp.json the claude target writes, as for tclaude.
+    mcp: '.config/muse/settings.json',
+    agents: '.agents/agents',
+    userScope: { skills: '.config/muse/skills', settings: '.config/muse/settings.json', agents: '.config/muse/agents' },
+  },
+} satisfies Record<string, z.infer<typeof ToolPathsSchema>>;
+
+/** A built-in tool. Custom tools in a team's `toolPaths` stay plain strings. */
+export type ToolId = keyof typeof DEFAULT_TOOL_PATHS;
+
 export const TeamaiConfigBaseSchema = z.object({
   team: z.string(),
   description: z.string().default(''),
@@ -456,268 +726,15 @@ export const TeamaiConfigBaseSchema = z.object({
     postDeploy: TeamScriptSchema.optional(),
   }).optional(),
   // MCP paths are only set for tools whose config location has been verified.
-  // Tools left without `mcp` are skipped by MCP sync rather than guessed at, so a
-  // wrong guess can never create a junk config file on a user's machine.
-  toolPaths: z.record(z.string(), ToolPathsSchema).default({
-    claude: { skills: '.claude/skills', rules: '.claude/rules', settings: '.claude/settings.json', claudemd: '.claude/CLAUDE.md', agents: '.claude/agents', mcp: '.claude.json', mcpProject: '.mcp.json' },
-    // Codex reads no rules directory: `.codex/rules` holds its exec-policy
-    // `*.rules` files. In user scope teamai's blocks go to ~/.codex/AGENTS.md,
-    // which only Codex reads. In project scope they come from the session-start
-    // hook, since the project AGENTS.md is the owners' file and other tools
-    // read it too (#938, #945); so the entry has no project `claudemd`.
-    // Codex reads the project MCP config only in a trusted project (#954).
-    codex: {
-      skills: '.codex/skills',
-      settings: '.codex/hooks.json',
-      agents: '.codex/agents',
-      mcp: '.codex/config.toml',
-      mcpProject: '.codex/config.toml',
-      userScope: { claudemd: '.codex/AGENTS.md' },
-    },
-    // codex-internal and tcodex run the same Codex from their own home root, so
-    // they take the codex shape. Their user-scope AGENTS.md locations
-    // (~/.codex-internal/AGENTS.md, ~/.tcodex/AGENTS.md) are assumed from that,
-    // not verified against either build.
-    'codex-internal': {
-      skills: '.codex-internal/skills',
-      settings: '.codex-internal/hooks.json',
-      agents: '.codex-internal/agents',
-      userScope: { claudemd: '.codex-internal/AGENTS.md' },
-    },
-    'claude-internal': { skills: '.claude-internal/skills', rules: '.claude-internal/rules', settings: '.claude-internal/settings.json', claudemd: '.claude-internal/CLAUDE.md', agents: '.claude-internal/agents' },
-    // tclaude ships Claude Code with `customUserDataDir: .tclaude`, which
-    // relocates the whole user data dir — so its MCP file is
-    // ~/.tclaude/.claude.json, not ~/.tclaude.json. No mcpProject: project scope
-    // for the Claude family is <root>/.mcp.json, which the `claude` target
-    // already writes and tclaude reads from the same location.
-    tclaude: { skills: '.tclaude/skills', rules: '.tclaude/rules', settings: '.tclaude/settings.json', claudemd: '.tclaude/CLAUDE.md', agents: '.tclaude/agents', mcp: '.tclaude/.claude.json' },
-    // Same shape as codex; see codex-internal above.
-    tcodex: {
-      skills: '.tcodex/skills',
-      settings: '.tcodex/hooks.json',
-      agents: '.tcodex/agents',
-      userScope: { claudemd: '.tcodex/AGENTS.md' },
-    },
-    cursor: { skills: '.cursor/skills', rules: '.cursor/rules', settings: '.cursor/hooks.json', agents: '.cursor/agents', mcp: '.cursor/mcp.json', mcpProject: '.cursor/mcp.json' },
-    // GitHub Copilot CLI keeps project customizations under .github and moves
-    // the complete user customization root when COPILOT_HOME is set. Agents use
-    // the official .agent.md format. Hooks and MCP use standalone files;
-    // settings.json is deliberately never managed.
-    copilot: {
-      skills: '.github/skills',
-      rules: '.github/instructions',
-      agents: '.github/agents',
-      hooks: '.github/hooks/teamai.json',
-      claudemd: '.github/copilot-instructions.md',
-      mcp: COPILOT_USER_MCP_CONFIG,
-      mcpProject: COPILOT_PROJECT_MCP_CONFIG,
-      userScope: {
-        skills: 'skills',
-        rules: 'instructions',
-        agents: 'agents',
-        hooks: 'hooks/teamai.json',
-        claudemd: 'copilot-instructions.md',
-      },
-    },
-    // JoyCode: skills, rules (.mdc), and subagents are synced to .joycode/.
-    // JoyCode currently does not provide a lifecycle hooks system or startup
-    // adapter, so it intentionally has no `settings` path. Hook reconciliation
-    // skips JoyCode cleanly without generating ghost files; users must sync
-    // manually via `teamai pull`. In user scope it reads no rules directory:
-    // its team rules are a block in ~/.joycode/rules.txt (#946).
-    joycode: { skills: '.joycode/skills', rules: '.joycode/rules', agents: '.joycode/agents', userScope: { rules: null } },
-    qoder: {
-      skills: '.qoder/skills',
-      rules: '.qoder/rules',
-      settings: '.qoder/settings.json',
-      agents: '.qoder/agents',
-      mcp: '.qoder/settings.json',
-      mcpProject: '.qoder/settings.json',
-    },
-    // Qoder CN is a separate distribution whose *user*-scope directory is
-    // ~/.qoder-cn instead of ~/.qoder, so it needs its own entry rather than
-    // sharing `qoder`. It reads the same Claude-compatible resource formats.
-    //
-    // Only the user scope differs. Top-level fields are PROJECT-scope paths and
-    // the `userScope` block below carries the user-scope overrides, so the
-    // top-level entries stay identical to `qoder`:
-    //   ASSUMPTION: Qoder CN's project-scope layout is assumed shared with Qoder
-    //   (`<root>/.qoder/`), i.e. the CN build differs from the international
-    //   build only in its user directory, not in its per-repo directory. This
-    //   could not be verified from this repository — it is a third-party product
-    //   layout. If a CN project actually keeps its resources in `<root>/.qoder-cn/`,
-    //   the top-level fields below are wrong and must move to `.qoder-cn/`.
-    // MCP stays two distinct fields: `mcp` is the user-scope file, `mcpProject`
-    // the project-scope one.
-    'qoder-cn': {
-      skills: '.qoder/skills',
-      rules: '.qoder/rules',
-      settings: '.qoder/settings.json',
-      agents: '.qoder/agents',
-      mcp: '.qoder-cn/settings.json',
-      mcpProject: '.qoder/settings.json',
-      userScope: {
-        skills: '.qoder-cn/skills',
-        rules: '.qoder-cn/rules',
-        settings: '.qoder-cn/settings.json',
-        agents: '.qoder-cn/agents',
-      },
-    },
-    // Kiro: skills, steering (rules), and custom agents sync to .kiro/. Kiro CLI
-    // 2.x stores lifecycle hooks inside each .kiro/agents/*.json config. The
-    // Kiro agent renderer therefore embeds TeamAI's session-start dispatch as
-    // `hooks.agentSpawn`; there is no standalone `settings` hook surface.
-    // MCP uses the dedicated, mcpServers-only .kiro/settings/mcp.json:
-    // https://kiro.dev/docs/mcp/configuration/
-    kiro: {
-      skills: '.kiro/skills',
-      rules: '.kiro/steering',
-      agents: '.kiro/agents',
-      mcp: '.kiro/settings/mcp.json',
-      mcpProject: '.kiro/settings/mcp.json',
-    },
-    // Trae (trae.ai) is a VS Code-family IDE. Per its docs and its bundled
-    // code (verified against the installed app): project skills live in
-    // <root>/.trae/skills/<name>/SKILL.md, project rules in .trae/rules/*.md
-    // (frontmatter `alwaysApply` / `globs`, globs comma-separated, parsed by
-    // lines — see trae-rule.ts), and project MCP in .trae/mcp.json holding a
-    // Claude-shaped `mcpServers` object map. User rules are NOT ~/.trae/rules
-    // but ~/.trae/user_rules (the default file is user_rules.md), so
-    // userScope.rules carries that name. User-level MCP has no
-    // teamai-writable cross-platform file: the IDE keeps it next to its
-    // user settings (~/Library/Application Support/Trae/User/mcp.json on
-    // macOS, %APPDATA%/… on Windows), so only `mcpProject` is set. Trae has
-    // no settings-based hook surface and no subagents directory, so those
-    // keys stay absent (like JoyCode, users sync via `teamai pull`).
-    trae: {
-      skills: '.trae/skills',
-      rules: '.trae/rules',
-      mcpProject: '.trae/mcp.json',
-      userScope: { rules: '.trae/user_rules' },
-    },
-    // Trae CN (domestic.trae.cn) shares every project path with the
-    // international build (verified on installed apps: only the user
-    // directory differs, ~/.trae-cn). Both map the same .trae/mcp.json, and
-    // one shared ownership record covers the pair
-    // (MCP_MANIFEST_KEY_ALIAS), so whichever build a member runs, its
-    // target writes, updates and cleans the file.
-    'trae-cn': {
-      skills: '.trae/skills',
-      rules: '.trae/rules',
-      mcpProject: '.trae/mcp.json',
-      userScope: {
-        skills: '.trae-cn/skills',
-        rules: '.trae-cn/user_rules',
-      },
-    },
-    // ZCode: user-level config lives at ~/.zcode/cli/config.json (a shared file
-    // that also carries plugin state — reconcile must merge, never replace).
-    // Hooks are Claude-shaped but nested under `hooks.events` and gated by
-    // `hooks.enabled` (config-file hooks are disabled by default; the writer
-    // must force it on). Subagents deploy to ~/.zcode/agents/ as Claude-style
-    // Markdown (the CLI also reads <project>/.zcode/agents/ per workspace).
-    // User-scope MCP mirrors Claude's shape (`mcpServers` key) in
-    // ~/.agents/mcp.json; project scope writes `mcp.servers` inside
-    // .zcode/config.json (a different key), which the Claude writer cannot
-    // emit — so no mcpProject. ZCode has no user-level rules dir convention.
-    zcode: { skills: '.zcode/skills', agents: '.zcode/agents', settings: '.zcode/cli/config.json', mcp: '.agents/mcp.json' },
-    // Oh My Pi (OMP): the config root is ~/.omp on every platform (no %APPDATA%
-    // on Windows); user-scope resources live in the agent dir ~/.omp/agent/, a
-    // different prefix from the project <root>/.omp/, hence userScope. Rules are
-    // plain .md, instructions land in AGENTS.md, and MCP uses the Claude-shaped
-    // {"mcpServers": …} mcp.json. OMP runs lifecycle hooks as in-process TS
-    // extensions rather than a settings hook list, so there is no `settings`
-    // path — the adapter in omp-hooks.ts writes the single user-root extension
-    // (~/.omp/agent/extensions/teamai-hooks.ts). Profiles (OMP_PROFILE /
-    // PI_CODING_AGENT_DIR / PI_CONFIG_DIR) move the agent dir and are not
-    // supported for hooks.
-    omp: {
-      skills: '.omp/skills',
-      rules: '.omp/rules',
-      claudemd: '.omp/AGENTS.md',
-      agents: '.omp/agents',
-      mcp: '.omp/agent/mcp.json',
-      mcpProject: '.omp/mcp.json',
-      userScope: {
-        skills: '.omp/agent/skills',
-        rules: '.omp/agent/rules',
-        claudemd: '.omp/agent/AGENTS.md',
-        agents: '.omp/agent/agents',
-      },
-    },
-    // Pi Coding Agent: skills/rules/extensions live under the agent root. Pi
-    // discovers global context from ~/.pi/agent/AGENTS.md and project context
-    // from AGENTS.md/CLAUDE.md walking up the workspace tree. Hooks are
-    // TypeScript extensions rather than a settings hook list, so the adapter
-    // keeps one user extension and forwards the active cwd to hook-dispatch.
-    // Profile overrides (PI_CODING_AGENT_DIR / PI_CONFIG_DIR) that relocate
-    // the agent dir are not supported for hooks or MCP, same as the OMP adapter;
-    // model profiles do read PI_CODING_AGENT_DIR. Pi reads no rules
-    // directory: its user team rules are a block in ~/.pi/agent/AGENTS.md, and
-    // in a project teamai's extension adds them to the system prompt (#946).
-    pi: {
-      mcp: '.pi/agent/mcp.json',
-      mcpProject: '.pi/mcp.json',
-      skills: '.pi/skills',
-      claudemd: 'AGENTS.md',
-      userScope: {
-        skills: '.pi/agent/skills',
-        claudemd: '.pi/agent/AGENTS.md',
-      },
-    },
-    codebuddy: { skills: '.codebuddy/skills', rules: '.codebuddy/rules', settings: '.codebuddy/settings.json', claudemd: '.codebuddy/CODEBUDDY.md', agents: '.codebuddy/agents', mcp: '.codebuddy/mcp.json', mcpProject: '.mcp.json' },
-    // OpenClaw reads no rules directory: in user scope its team rules are a
-    // block in the workspace AGENTS.md, and a project gets none (#946).
-    openclaw: { skills: '.openclaw/skills', claudemd: '.openclaw/workspace/AGENTS.md' },
-    hermes: { skills: '.hermes/skills', claudemd: 'AGENTS.md' },
-    // DeepSeek Harness: skills synced to ~/.dsh/skills, which its skill-filesystem
-    // provider scans as user-dsh root (rank 400). dsh discovers both directory
-    // bundles (<name>/SKILL.md) and flat Markdown files there natively.
-    dsh: { skills: '.dsh/skills' },
-    // WorkBuddy runs CodeBuddy's engine: in a project it reads CodeBuddy's
-    // .codebuddy/rules, which the two share (one copy), and in user scope its
-    // own ~/.workbuddy/rules (#946). Its install probe stays .workbuddy
-    // (`isToolInstalledForConfig`), whatever directory its rules land in.
-    workbuddy: {
-      skills: '.workbuddy/skills',
-      rules: '.codebuddy/rules',
-      settings: '.workbuddy/settings.json',
-      claudemd: 'AGENTS.md',
-      agents: '.workbuddy/agents',
-      mcp: '.workbuddy/mcp.json',
-      mcpProject: '.workbuddy/mcp.json',
-      userScope: { rules: '.workbuddy/rules' },
-    },
-    // OpenCode reads project config from <root>/.opencode/ but user config from
-    // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
-    // read natively from .claude/skills, but we write .opencode/skills so an
-    // OpenCode-only user (no Claude) still gets them. Rules land in .opencode/rules
-    // but must be activated via the `instructions` glob in opencode.json (OpenCode
-    // does not auto-scan a rules dir). MCP shares opencode.json under the `mcp` key.
-    opencode: {
-      skills: '.opencode/skills',
-      rules: '.opencode/rules',
-      agents: '.opencode/agents',
-      mcp: '.config/opencode/opencode.json',
-      mcpProject: 'opencode.json',
-      userScope: { skills: '.config/opencode/skills', rules: '.config/opencode/rules', agents: '.config/opencode/agents' },
-    },
-    // Muse Code (Meta, binary `muse`) keeps its user config in ~/.config/muse
-    // and reads user skills from ~/.config/muse/skills, ahead of the
-    // ~/.claude/skills and ~/.agents/skills it also scans. Hooks take Codex's
-    // shape: user hooks in the `hooks` block of ~/.config/muse/settings.json,
-    // which runs in every workspace, project hooks in <root>/.muse/hooks.json,
-    // which runs only in a trusted one.
-    muse: {
-      skills: '.agents/skills',
-      settings: '.muse/hooks.json',
-      // User MCP servers sit in the same settings.json. A project's come from
-      // the <root>/.mcp.json the claude target writes, as for tclaude.
-      mcp: '.config/muse/settings.json',
-      agents: '.agents/agents',
-      userScope: { skills: '.config/muse/skills', settings: '.config/muse/settings.json', agents: '.config/muse/agents' },
-    },
-  }),
+  // A team's `toolPaths` section merges over the built-in defaults tool by tool (#1185):
+  // each tool named in the team config overrides that tool's default entry whole,
+  // while built-in tools not named by the team retain their defaults.
+  toolPaths: z.record(z.string(), ToolPathsSchema)
+    .default({})
+    .transform((custom): Record<string, z.infer<typeof ToolPathsSchema>> => ({
+      ...DEFAULT_TOOL_PATHS,
+      ...custom,
+    })),
 });
 
 export const TeamaiConfigSchema = TeamaiConfigBaseSchema.superRefine((config, ctx) => {
@@ -769,6 +786,8 @@ export const LocalConfigSchema = z.object({
     // and every resource path, none of which understand `~`.
     localPath: z.string().transform(expandHome),
     remote: z.string(),
+    /** Ref this workspace follows, exactly as passed to pull --team-ref. */
+    ref: z.string().optional(),
     /**
      * Team repo backend. Defaults to 'git' for backward compatibility.
      * - 'git':  a standalone team repo cloned to <home>/team-repo.
@@ -996,6 +1015,9 @@ export const StateSchema = z.object({
    * agents and docs into the checkout it runs in: a worktree added after the
    * last pull has not received that revision, and two checkouts with different
    * tool directories must not compare against each other's targets (#807).
+   * `teamRef` is the ref this checkout's delivery followed, absent for the
+   * default branch. It keeps revision removals pending after another checkout
+   * unpins the workspace. An older CLI that saves state drops it.
    * `pushBaseRevs` are the team revisions push synced this checkout's
    * unedited rules and skills to since its last pull, newest first, the bases
    * its next push compares with; a pull's record drops them, since the pull
@@ -1029,6 +1051,7 @@ export const StateSchema = z.object({
    */
   lastPullByWorkspace: z.record(z.string(), z.object({
     rev: z.string(),
+    teamRef: z.string().optional(),
     root: z.string().optional(),
     targets: z.array(z.string()),
     pushBaseRevs: z.array(z.string()).optional(),
@@ -1395,6 +1418,8 @@ export function legacyManagedMcpManifestPath(dataHome: string): string {
 // ─── Global options ─────────────────────────────────────
 
 export interface GlobalOptions {
+  /** Pin this workspace to a team ref; the default branch unpins it. */
+  teamRef?: string;
   dryRun?: boolean;
   global?: boolean;
   registry?: string;
@@ -1441,6 +1466,12 @@ export interface GlobalOptions {
    * recorded for `doctor` and the next interactive pull; its success clears them.
    */
   gitHook?: 'post-checkout' | 'post-merge' | 'post-rewrite';
+  /**
+   * Internal (`pull` only): detect the project from this directory instead of
+   * the process cwd. A workflow worktree is delivered without changing cwd,
+   * so parallel steps do not switch the process between checkouts.
+   */
+  cwd?: string;
   /**
    * Internal (`init --scope user`, `pull` only): pull the user scope even when
    * the current directory is a project-scoped checkout.
@@ -1532,8 +1563,11 @@ export const TEAMAI_RECALL_RULES_END = '<!-- [teamai:recall-rules:end] -->';
 
 // ─── Usage tracking ────────────────────────────────────
 
-/** Regex for valid skill names: alphanumeric, hyphens, underscores, colons, dots. Max 200 chars. */
-export const SKILL_NAME_REGEX = /^[a-zA-Z0-9_\-:.]{1,200}$/;
+/** The characters a skill name may hold: alphanumeric, hyphens, underscores, colons, dots. */
+export const SKILL_NAME_CHARS = '[a-zA-Z0-9_\\-:.]';
+
+/** Regex for valid skill names: {@link SKILL_NAME_CHARS}, at most 200 of them. */
+export const SKILL_NAME_REGEX = new RegExp(`^${SKILL_NAME_CHARS}{1,200}$`);
 
 // TEAMAI_USAGE_PATH / TEAMAI_KNOWN_SKILLS_PATH / TEAMAI_PUSHIGNORE_PATH were
 // module-load consts with no live consumers — the code uses runtime getters
@@ -2689,7 +2723,7 @@ export function applyToolRoots(
  * HOME-relative member root has nothing to say about.
  */
 export function scopedToolPaths(
-  teamConfig: TeamaiConfig,
+  teamConfig: Pick<TeamaiConfig, 'toolPaths'>,
   localConfig: { scope?: Scope; toolRoots?: Record<string, string> },
 ): Record<string, z.infer<typeof ToolPathsSchema>> {
   if (localConfig.scope !== 'user') return teamConfig.toolPaths;

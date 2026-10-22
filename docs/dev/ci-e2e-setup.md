@@ -14,7 +14,7 @@ The `e2e` job runs on:
 
 Several PRs or pushes operating on the same fixture repo at once would corrupt its state, so the job runs under `concurrency: e2e-fixture-repo`: runs queue up and a run in progress is not cancelled, so it finishes and leaves a clean state behind.
 
-PRs from forks run `fork-e2e` (no token; the remote cases skip). A test must never rebuild `dist/` or reinstall the OpenCode binary: workers share both. Both jobs also install a pinned OpenCode 2 from npm (`@opencode/cli`) and point `TEAMAI_OPENCODE_V2_BIN` at it; to bump it, change `OPENCODE2_VERSION` and `OPENCODE2_LINUX_X64_SHA256` together in the `env` block at the top of `.github/workflows/ci.yml`.
+PRs from forks run `fork-e2e-shard` (no token; the remote cases skip), the suite split in three shards on parallel runners; `fork-e2e` passes when all do, under the check name branch protection requires. A test must never rebuild `dist/` or reinstall the OpenCode binary: workers share both. Both jobs also install a pinned OpenCode 2 from npm (`@opencode/cli`) and point `TEAMAI_OPENCODE_V2_BIN` at it; to bump it, change `OPENCODE2_VERSION` and `OPENCODE2_LINUX_X64_SHA256` together in the `env` block at the top of `.github/workflows/ci.yml`.
 
 ---
 

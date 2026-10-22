@@ -671,7 +671,7 @@ describe('hooksList', () => {
         const text = out.join('\n');
         const builtin = text.slice(text.indexOf('Built-in hooks (A)'), text.indexOf('Team hooks (B)'));
         const claude = builtinBlock(builtin, 'claude') ?? [];
-        expect(claude).toHaveLength(6);
+        expect(claude).toHaveLength(5);
         expect(claude.some((line) => line.startsWith('Stop  →'))).toBe(false);
     });
 
@@ -749,7 +749,7 @@ describe('hooksList', () => {
         const builtin = text.slice(text.indexOf('Built-in hooks (A)'), text.indexOf('Team hooks (B)'));
 
         // Claude is reconciled through its settings file: the whole set.
-        expect(builtinBlock(builtin, 'claude')).toHaveLength(7);
+        expect(builtinBlock(builtin, 'claude')).toHaveLength(6);
         // Hermes installs a single on_session_start script running the raw
         // dispatch command (hermes-hooks.ts).
         expect(builtinBlock(builtin, 'hermes')).toEqual([

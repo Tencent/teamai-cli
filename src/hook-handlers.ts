@@ -359,31 +359,21 @@ const dashboardReportHandler: HookHandler = {
   },
 };
 
-const trackHandler: HookHandler = {
-  name: 'track',
+/**
+ * PostToolUse: record the skill a tool call loaded, through the tool's skill
+ * tool or a read of its SKILL.md, once per session turn (#1221), and send the
+ * `skill-use` webhook for it. Detached: it reads the disk and may send.
+ */
+const skillUseHandler: HookHandler = {
+  name: 'skill-use',
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: the dispatcher's scope, which knows the
     // project of a removed worktree (#810).
     if (!config) return null;
-    const { resolveSkillUse, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
-
-    const rawToolName = stdin.tool_name;
-    if (typeof rawToolName !== 'string') return null;
-    const toolName = normalizeToolName(rawToolName);
-
-    const toolInput = stdin.tool_input;
-    if (!toolInput || typeof toolInput !== 'object') return null;
-
-    // Shared resolver: Skill (Claude/CodeBuddy) or Read+SKILL.md (Cursor).
-    const resolved = resolveSkillUse(toolName, toolInput as Record<string, unknown>);
-    if (!resolved) return null;
-
-    await appendUsageEvent({
-      skill: resolved.skillName,
-      timestamp: new Date().toISOString(),
-      tool: resolved.source ?? tool,
-    }, config);
-    await updateKnownSkills(resolved.skillName);
+    const { creditToolCall } = await import('./skill-use.js');
+    for (const skillName of await creditToolCall(stdin, tool, config)) {
+      await sendWebhookEvent('skill-use', stdin, tool, config, { skillName });
+    }
     return null;
   },
 };
@@ -405,29 +395,14 @@ const recallAttributionHandler: HookHandler = {
   },
 };
 
-const trackSlashHandler: HookHandler = {
-  name: 'track-slash',
+/** UserPromptSubmit: open the session turn and record the skills the prompt mentions (`/name`, `$name`, `/skill:name`). */
+const skillMentionHandler: HookHandler = {
+  name: 'skill-mention',
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: the dispatcher's scope (#810).
     if (!config) return null;
-    const { isValidSkillName, appendUsageEvent, updateKnownSkills } = await import('./usage-tracker.js');
-
-    const prompt = stdin.prompt;
-    if (typeof prompt !== 'string' || !prompt.startsWith('/')) return null;
-
-    // Extract skill name: first word after "/". Character class must match
-    // SKILL_NAME_REGEX (types.ts) — the CLI path (trackSlashCommand) already
-    // uses the full set; this handler was narrower, silently truncating names
-    // that contain dots or colons (both valid per the schema). Require a whole
-    // token so a prompt beginning with an absolute path is not a skill use.
-    const match = prompt.match(/^\/([a-zA-Z0-9_\-:.]+)(?=\s|$)/);
-    if (!match) return null;
-
-    const skillName = match[1];
-    if (!isValidSkillName(skillName)) return null;
-
-    await appendUsageEvent({ skill: skillName, timestamp: new Date().toISOString(), tool }, config);
-    await updateKnownSkills(skillName);
+    const { creditPromptMentions } = await import('./skill-use.js');
+    await creditPromptMentions(stdin, tool, config);
     return null;
   },
 };
@@ -1069,7 +1044,6 @@ const WEBHOOK_EVENT_BY_HOOK: Record<string, string> = {
   sessionstart: 'session-start',
   stop: 'session-stop',
   sessionend: 'session-stop',
-  posttooluse: 'skill-use',
 };
 
 /**
@@ -1080,26 +1054,10 @@ const WEBHOOK_EVENT_BY_HOOK: Record<string, string> = {
  * (which can carry private tool output) are never included (#701). The result is
  * additionally deep-redacted at the send boundary (see sendWebhook).
  */
-async function buildWebhookData(
+function buildWebhookData(
   event: string,
   stdin: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  if (event === 'skill-use') {
-    const rawToolName = stdin.tool_name;
-    const toolInput = stdin.tool_input;
-    if (typeof rawToolName !== 'string' || !toolInput || typeof toolInput !== 'object') return {};
-    const { resolveSkillUse } = await import('./usage-tracker.js');
-    // Same resolver trackHandler uses, so the webhook reaches parity: it fires
-    // for Claude/CodeBuddy `Skill` AND Cursor's `Read` of a SKILL.md path, and
-    // never for a normal file Read (#702 follow-up). The resolver already
-    // validates the name with isValidSkillName, so a tool-arg string cannot
-    // escape as skillName (#701).
-    const resolved = resolveSkillUse(
-      normalizeToolName(rawToolName),
-      toolInput as Record<string, unknown>,
-    );
-    return resolved ? { skillName: resolved.skillName } : {};
-  }
+): Record<string, unknown> {
   if (event === 'session-start' || event === 'session-stop') {
     const sessionId = deriveSessionId(stdin);
     return sessionId ? { sessionId } : {};
@@ -1107,37 +1065,43 @@ async function buildWebhookData(
   return {};
 }
 
-/** Webhook notification handler — sends events to configured endpoints. */
+/** Send one webhook event to the team's configured endpoints; a failure is logged, never thrown. */
+async function sendWebhookEvent(
+  event: string,
+  stdin: Record<string, unknown>,
+  tool: string,
+  localConfig: LocalConfig,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const { sendWebhook, loadWebhookConfig } = await import('./webhook.js');
+  try {
+    const config = await loadWebhookConfig(localConfig);
+    if (!config.enabled || config.endpoints.length === 0) return;
+    const payload = {
+      tool,
+      sessionId: deriveSessionId(stdin),
+      cwd: resolveHookCwd(stdin),
+      username: typeof stdin.username === 'string' ? stdin.username : undefined,
+      data,
+    };
+    await sendWebhook(event, payload, config);
+  } catch (error) {
+    log.debug(`Webhook dispatch failed: ${(error as Error).message}`);
+  }
+}
+
+/** Webhook notification handler — sends session events to configured endpoints. */
 const webhookHandler: HookHandler = {
   name: 'webhook-dispatch',
   async execute(stdin, tool, localConfig) {
     if (!localConfig) return null;
-    const { sendWebhook, loadWebhookConfig } = await import('./webhook.js');
-
-    try {
-      const config = await loadWebhookConfig(localConfig);
-      if (!config.enabled || config.endpoints.length === 0) return null;
-
-      const hookEventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name : '';
-      // Case-insensitive so both PascalCase (Claude) and camelCase (Cursor/
-      // CodeBuddy) hook names resolve (#702).
-      const event = WEBHOOK_EVENT_BY_HOOK[hookEventName.toLowerCase()];
-      // Only forward events we can map to a canonical name — never emit `unknown` (#702).
-      if (!event) return null;
-
-      const payload = {
-        tool,
-        sessionId: deriveSessionId(stdin),
-        cwd: resolveHookCwd(stdin),
-        username: typeof stdin.username === 'string' ? stdin.username : undefined,
-        data: await buildWebhookData(event, stdin),
-      };
-
-      await sendWebhook(event, payload, config);
-    } catch (error) {
-      log.debug(`Webhook dispatch failed: ${(error as Error).message}`);
-    }
-
+    const hookEventName = typeof stdin.hook_event_name === 'string' ? stdin.hook_event_name : '';
+    // Case-insensitive so both PascalCase (Claude) and camelCase (Cursor/
+    // CodeBuddy) hook names resolve (#702).
+    const event = WEBHOOK_EVENT_BY_HOOK[hookEventName.toLowerCase()];
+    // Only forward events we can map to a canonical name — never emit `unknown` (#702).
+    if (!event) return null;
+    await sendWebhookEvent(event, stdin, tool, localConfig, buildWebhookData(event, stdin));
     return null;
   },
 };
@@ -1207,17 +1171,22 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'subagent-stop', matcher: '*', handler: votesSyncHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
 
     // ─── PostToolUse ──────────────────────────────────
-    { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'post-tool-use', matcher: 'Skill', handler: trackHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
-    { event: 'post-tool-use', matcher: '*', handler: recallAttributionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    // Both return null on every path (pure side effects) and already run
+    // detached for stop/session-end — foreground here, they were the whole
+    // inline pass for a plain tool call, and under Windows disk contention
+    // dashboard-report alone measured 3.8 s inside the host's 10 s budget
+    // (#1216). Detached, the inline pass for a plain call is empty and the
+    // host-visible cost is bundle load + spawn.
+    { event: 'post-tool-use', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
+    { event: 'post-tool-use', matcher: '*', handler: recallAttributionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'post-tool-use', matcher: 'TodoWrite', handler: todowriteHintHandler, timeoutMs: TODOWRITE_HINT_TIMEOUT_MS, requiresConfig: true },
     { event: 'post-tool-use', matcher: '*', handler: localAgentHandler, timeoutMs: LOCAL_AGENT_TIMEOUT_MS, background: true },
-    { event: 'post-tool-use', matcher: 'Skill', handler: webhookHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
+    { event: 'post-tool-use', matcher: '*', handler: skillUseHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
 
     // ─── UserPromptSubmit ─────────────────────────────
     { event: 'prompt-submit', matcher: '*', handler: pendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: packagePendingHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
-    { event: 'prompt-submit', matcher: '*', handler: trackSlashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
+    { event: 'prompt-submit', matcher: '*', handler: skillMentionHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'prompt-submit', matcher: '*', handler: localAgentHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS },
 

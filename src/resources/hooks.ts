@@ -152,6 +152,30 @@ export async function readBuiltinOverride(localConfig: LocalConfig): Promise<Bui
   return root.ok ? { known: true, override: root.yaml.builtin } : { known: false };
 }
 
+const RawBuiltinDisabledSchema = z.object({ builtin: z.object({ disabled: z.array(z.unknown()) }) });
+
+/**
+ * Whether the root hooks file's `builtin.disabled` array lists `key`, read from
+ * the raw YAML so an invalid hook or field elsewhere in the file does not hide
+ * it. `unreadable` only when the file cannot be read or its YAML does not parse.
+ */
+export async function readBuiltinDisabledListing(
+  localConfig: LocalConfig,
+  key: string,
+): Promise<'listed' | 'not-listed' | 'unreadable'> {
+  const file = await readEntryFileText(teamHooksYamlPath(localConfig.repo.localPath), entryFilePath('hooks', null));
+  if (!file.ok) return 'unreadable';
+  if (file.text === null) return 'not-listed';
+  let raw: unknown;
+  try {
+    raw = YAML.parse(file.text);
+  } catch {
+    return 'unreadable';
+  }
+  const parsed = RawBuiltinDisabledSchema.safeParse(raw);
+  return parsed.success && parsed.data.builtin.disabled.includes(key) ? 'listed' : 'not-listed';
+}
+
 // ─── Security gate (§6) ─────────────────────────────────────
 //
 //  Team hooks are arbitrary shell run on session events — a supply-chain

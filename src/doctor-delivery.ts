@@ -677,7 +677,7 @@ function zcodeEntryCarriesItsReply(entry: { command: string; args: string[] }): 
  * teamai's session-start hook (#946), so doctor checks the hook the tool
  * runs: ZCode reads only the user-level ~/.zcode/cli/config.json, and only
  * with `hooks.enabled`; DeepSeek Harness loads teamai's hook config only
- * through the patch, which the member passes to dsh (`ruleChannelNotes`).
+ * through the row teamai keeps in `$DSH_HOME/cordis.patch.yml` (#1219).
  * Pi's extension is checked with the team instructions it also carries
  * (`buildInstructionDeliveryChecks`).
  *
@@ -737,20 +737,20 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
 
   const { isDshInstalled } = await import('./dsh-hooks.js');
   if (!isAgentExcluded(localConfig, 'dsh') && await isDshInstalled()) {
-    const { buildDshPatch, resolveDshHookConfigPath, resolveDshPatchPath } = await import('./dsh-hooks.js');
+    const { isDshHooksMounted, resolveDshHomePatchPath, resolveDshHookConfigPath } = await import('./dsh-hooks.js');
     const configPath = resolveDshHookConfigPath();
-    const patchPath = resolveDshPatchPath();
-    const patched = await readFileSafe(patchPath) === buildDshPatch(configPath);
+    const homePatchPath = resolveDshHomePatchPath();
+    const mounted = await isDshHooksMounted(configPath);
     const read = await readJsonObject(configPath);
     const registered = read.kind === 'ok' && sessionStartDispatches(read.value.hooks).length > 0;
-    const broken = [...(patched ? [] : [patchPath]), ...(registered ? [] : [configPath])];
+    const broken = [...(mounted ? [] : [homePatchPath]), ...(registered ? [] : [configPath])];
     checks.push({
       name: 'Project rules reach dsh through its session-start hook',
       source: 'local',
       check: async () => broken.length === 0,
       fix: `${broken.join(' and ')} ${broken.length === 1 ? 'is' : 'are'} missing or out of date, so DeepSeek Harness `
         + 'sessions in this project get none of the team rules. Run `teamai hooks inject` to rewrite '
-        + `${broken.length === 1 ? 'it' : 'them'}. dsh loads that hook only when it runs with \`--patch "${patchPath}"\`.`,
+        + `${broken.length === 1 ? 'it' : 'them'}.`,
     });
   }
   return checks;
@@ -905,7 +905,9 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
     const restoredByForce = [...delivery.problems.keys()]
       .some((label) => label !== MODEL_CHANGED && label !== CHANGED_BY_YOU && label !== MEMBERS_OWN);
     return {
-      name: `Agents delivered to ${tool}`,
+      name: tool === 'cursor' && localConfig.scope === 'user'
+        ? 'Agents delivered to cursor (the Cursor IDE reads them; the Cursor CLI reads agents only from the workspace)'
+        : `Agents delivered to ${tool}`,
       source: 'local',
       check: async () => !hasDeliveryProblem(delivery),
       fix: [

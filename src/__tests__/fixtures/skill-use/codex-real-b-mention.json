@@ -1,0 +1,9 @@
+{
+  "session_id": "codex-run-b",
+  "turn_id": "codex-run-b-turn",
+  "cwd": "${CWD}",
+  "hook_event_name": "UserPromptSubmit",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "bypassPermissions",
+  "prompt": "$hello-skill say hi"
+}

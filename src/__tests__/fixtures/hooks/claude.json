@@ -36,16 +36,6 @@
         "description": "[teamai] Hook dispatch post-tool-use wildcard"
       },
       {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -lc \"teamai hook-dispatch post-tool-use --tool claude --matcher Skill 2>/dev/null\" || true"
-          }
-        ],
-        "description": "[teamai] Hook dispatch post-tool-use Skill"
-      },
-      {
         "matcher": "TodoWrite",
         "hooks": [
           {

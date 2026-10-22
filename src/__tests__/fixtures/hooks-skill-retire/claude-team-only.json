@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -n \"$CURSOR_VERSION\" ] && { home=\"${HOME:-$USERPROFILE}\"; [ -n \"$home\" ] && { grep -q -- '--tool cursor' \"$home/.cursor/hooks.json\" 2>/dev/null || { [ -n \"$CURSOR_PROJECT_DIR\" ] && grep -q -- '--tool cursor' \"$CURSOR_PROJECT_DIR/.cursor/hooks.json\" 2>/dev/null; }; }; }; then exit 0; fi; if [ -n \"$COPILOT_PROJECT_DIR\" ] && node -e 'const fs = require(\"node:fs\"), path = require(\"node:path\"), crypto = require(\"node:crypto\"); const runs = function copilotRunsEntries(data) {\n  const file = data;\n  if (file?.version !== 1 || file.disableAllHooks || !file.hooks || typeof file.hooks !== \"object\") return [];\n  return Object.entries(file.hooks).flatMap(([event, entries]) => !Array.isArray(entries) ? [] : entries.filter((entry) => entry?.type === \"command\").flatMap((entry) => [entry.bash, entry.powershell, entry.command].filter((command) => typeof command === \"string\").map((command) => [event, entry.matcher, command])));\n}; const key = (event, matcher, command) => crypto.createHash(\"sha256\") .update(JSON.stringify([event, matcher && matcher !== \"*\" ? matcher : \"\", command])).digest(\"hex\"); try { process.exit(fs.readdirSync(process.argv[1]).some(name => { if (!name.endsWith(\".json\")) return false; try { return runs(JSON.parse(fs.readFileSync(path.join(process.argv[1], name), \"utf8\"))) .some(([event, matcher, command]) => key(event, matcher, command) === process.argv[2]); } catch { return false; } }) ? 0 : 1); } catch { process.exit(1); }' \"$COPILOT_PROJECT_DIR/.github/hooks\" 377246543ea22ca6721b8216ed45827013ec0df33d9b8cf1c61b70ec33f6da3c 2>/dev/null; then exit 0; fi; bash .teamai/team-scripts/lint.sh"
+          }
+        ],
+        "description": "[teamai:team:lint] Lint after edits"
+      }
+    ]
+  }
+}

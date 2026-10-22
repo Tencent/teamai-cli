@@ -11,7 +11,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
-import { createGit, getDefaultBranch, getHeadCommit, hasCommits } from './git.js';
+import { assertAttachedTeamRepo, createGit, getDefaultBranch, getHeadCommit, hasCommits } from './git.js';
 import { pathExists } from './fs.js';
 import { log } from './logger.js';
 import {
@@ -305,6 +305,7 @@ export async function withDefaultBranchPreview<T>(
   const selfMode = localConfig.repo.kind === 'self';
   const repoRoot = selfMode ? getBusinessRoot(localConfig) : localConfig.repo.localPath;
   const git = createGit(repoRoot);
+  if (!selfMode) await assertAttachedTeamRepo(git, repoRoot);
   // A successful clone pull may preserve dirty manifests/resources. Do not
   // silently replace that view with origin; self mode really reads a worktree.
   if (!selfMode && (await git.raw(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'])).trim()) {

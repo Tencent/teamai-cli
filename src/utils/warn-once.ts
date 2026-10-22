@@ -15,7 +15,22 @@ export function warnOnce(message: string): boolean {
   return true;
 }
 
-/** Start a run: `pull` calls this so each pull warns again, once. */
+/** Debug lines already written in this run: see debugOnce. */
+const written = new Set<string>();
+
+/**
+ * Write a debug line once per run. For a line a loop over items repeats with
+ * the same text, such as a tool being skipped for each skill: a pull wrote
+ * one per skill for every tool not installed, each a synchronous append.
+ */
+export function debugOnce(message: string): void {
+  if (written.has(message)) return;
+  written.add(message);
+  log.debug(message);
+}
+
+/** Start a run: `pull` calls this so each pull warns (and writes debugOnce lines) again, once. */
 export function resetWarnOnce(): void {
   shown.clear();
+  written.clear();
 }

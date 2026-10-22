@@ -47,17 +47,19 @@ vi.mock('../dashboard-collector.js', () => ({
     (await vi.importActual<typeof import('../utils/hook-cwd.js')>('../utils/hook-cwd.js')).resolveHookCwd(stdin),
 }));
 
-// Use the REAL resolveSkillUse (pure Skill/Read+SKILL.md logic, no I/O) so the
-// webhook + track tests exercise the actual skill-name resolution shared by both
-// callers, rather than a stub that could drift from production behavior.
+// The REAL skill-name extraction and validation, so the webhook and skill-use
+// tests exercise the resolution production runs; every named skill counts as
+// installed, since these payloads name paths that do not exist here.
 vi.mock('../usage-tracker.js', async () => {
   const actual = await vi.importActual<typeof import('../usage-tracker.js')>('../usage-tracker.js');
   return {
     trackFromStdin: mockTrackFromParsed,
     trackSlashCommand: mockTrackSlashFromParsed,
-    resolveSkillUse: actual.resolveSkillUse,
     extractSkillName: actual.extractSkillName,
     isValidSkillName: actual.isValidSkillName,
+    skillRoots: vi.fn().mockResolvedValue([]),
+    skillExistsOnDisk: vi.fn().mockResolvedValue(true),
+    isInstalledSkillFile: vi.fn().mockResolvedValue(true),
     appendUsageEvent: vi.fn().mockResolvedValue(undefined),
     updateKnownSkills: vi.fn().mockResolvedValue(undefined),
   };
@@ -73,10 +75,11 @@ vi.mock('../webhook.js', () => ({
   loadWebhookConfig: mockLoadWebhookConfig,
 }));
 
-vi.mock('../contribute-check.js', () => ({
+vi.mock('../contribute-check.js', async () => ({
   contributeCheck: vi.fn().mockResolvedValue(undefined),
   contributeCheckForSession: mockContributeCheckForSession,
   takePendingHint: mockTakePendingHint,
+  sanitizeSessionId: (await vi.importActual<typeof import('../contribute-check.js')>('../contribute-check.js')).sanitizeSessionId,
 }));
 
 vi.mock('../votes-judge.js', () => ({
@@ -86,6 +89,9 @@ vi.mock('../votes-judge.js', () => ({
 vi.mock('../update.js', () => ({
   doUpdate: mockDoUpdate,
   checkForUpdate: vi.fn().mockResolvedValue({ available: false, current: '1.0.0' }),
+  acquireLock: vi.fn().mockResolvedValue(true),
+  releaseLock: vi.fn().mockResolvedValue(undefined),
+  withFileLock: vi.fn(async (_lockPath: string, _wait: unknown, body: () => Promise<unknown>) => ({ held: true, value: await body() })),
 }));
 
 const mockAutoDetectInit = vi.fn().mockResolvedValue({
@@ -210,6 +216,26 @@ describe('hook-handlers registry', () => {
     expect(events).toContain('post-tool-use');
     expect(events).toContain('prompt-submit');
     expect(events).toContain('session-end');
+  });
+
+  it('post-tool-use runs every non-output handler detached, leaving the inline pass empty (#1216)', () => {
+    // dashboard-report and recall-attribution always return null — pure side
+    // effects, the exact criterion `background` documents — and the same
+    // dashboard handler already runs detached for stop and session-end. On
+    // Windows each foreground handler second is host-visible: a dispatch pays
+    // one node start-up per pass, and under disk contention dashboard-report
+    // alone measured 3.8 s inside the host's 10 s budget (#1216). Detached,
+    // the inline pass for a plain tool call has no handlers at all, and the
+    // host-visible cost collapses to bundle load + spawn.
+    const handlers = buildHandlerRegistry().filter((r) => r.event === 'post-tool-use' && r.matcher === '*');
+    for (const name of ['dashboard-report', 'recall-attribution', 'local-agent-sync']) {
+      const reg = handlers.find((r) => (r.handler as { name: string }).name === name);
+      expect(reg, name).toBeDefined();
+      expect(reg!.background, `${name} must run detached`).toBe(true);
+    }
+    // What remains inline for a plain tool call: nothing.
+    const inline = handlers.filter((r) => !r.background);
+    expect(inline).toEqual([]);
   });
 
   it('session-end records the final dashboard snapshot and dispatches the webhook in the background, and syncs votes in the foreground', () => {
@@ -840,12 +866,11 @@ describe('hook-handlers registry', () => {
     expect(wildcardHandlers).toContain('dashboard-report');
   });
 
-  it('post-tool-use Skill matcher has track', () => {
+  it('post-tool-use tracks skill use on the wildcard pass, detached, with no Skill matcher (#1221)', () => {
     const registry = buildHandlerRegistry();
-    const skillHandlers = registry
-      .filter((r) => r.event === 'post-tool-use' && r.matcher === 'Skill')
-      .map((r) => r.handler.name);
-    expect(skillHandlers).toContain('track');
+    expect(registry.filter((r) => r.event === 'post-tool-use' && r.matcher === 'Skill')).toEqual([]);
+    const skillUse = registry.find((r) => r.event === 'post-tool-use' && r.handler.name === 'skill-use');
+    expect(skillUse).toMatchObject({ matcher: '*', background: true, requiresConfig: true });
   });
 
   // Perf regression: post-tool-use fires on every tool call, so its local-agent
@@ -862,16 +887,20 @@ describe('hook-handlers registry', () => {
     expect(localAgent!.background).toBe(true);
   });
 
-  // post-tool-use dashboard-report stays foreground: it is a fast local file
-  // append with no network I/O, so detaching it would add spawn overhead for
-  // no benefit.
-  it('post-tool-use wildcard dashboard-report stays foreground', () => {
+  // post-tool-use dashboard-report runs detached (#1216): the old "fast local
+  // append, detaching adds spawn overhead" premise is platform-dependent — on
+  // Windows (Defender, disk contention) the same append measured 3.8 s inside
+  // the host's 10 s hook budget, and hooks were killed outright. The spawn
+  // already exists (local-agent-sync below is background), so moving this into
+  // the detached child adds no process and removes its runtime from the
+  // host-visible path.
+  it('post-tool-use wildcard dashboard-report runs detached (#1216)', () => {
     const registry = buildHandlerRegistry();
     const dashboard = registry.find(
       (r) => r.event === 'post-tool-use' && r.matcher === '*' && r.handler.name === 'dashboard-report',
     );
     expect(dashboard).toBeDefined();
-    expect(dashboard!.background).not.toBe(true);
+    expect(dashboard!.background).toBe(true);
   });
 
   // prompt-submit local-agent-sync must NOT be backgrounded: when the org
@@ -917,12 +946,12 @@ describe('hook-handlers registry', () => {
     }
   });
 
-  it('prompt-submit has track-slash and dashboard-report', () => {
+  it('prompt-submit has skill-mention and dashboard-report', () => {
     const registry = buildHandlerRegistry();
     const handlers = registry
       .filter((r) => r.event === 'prompt-submit' && r.matcher === '*')
       .map((r) => r.handler.name);
-    expect(handlers).toContain('track-slash');
+    expect(handlers).toContain('skill-mention');
     expect(handlers).toContain('dashboard-report');
   });
 
@@ -1511,10 +1540,14 @@ describe('post-tool-use dispatch — local-agent runs detached, never blocks hos
     expect(mockReportAndSyncFromHook).toHaveBeenCalledOnce();
   });
 
-  it('foreground pass still runs the fast local dashboard-report handler', async () => {
+  it('the background pass runs dashboard-report; a plain tool call leaves the foreground pass empty (#1216)', async () => {
     const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'foreground');
-    // dashboard-report parses the event and appends locally — it must stay inline.
+    // dashboard-report and recall-attribution moved to the detached pass: the
+    // inline pass for a plain tool call runs no handlers at all, so the host
+    // waits only for bundle load + spawn.
+    expect(mockParseHookEvent).not.toHaveBeenCalled();
+    await dispatcher.dispatch('post-tool-use', '*', stdin, 'claude', 'background');
     expect(mockParseHookEvent).toHaveBeenCalled();
   });
 });
@@ -1657,6 +1690,9 @@ describe('webhook-dispatch handler (#701, #702)', () => {
   const handler = () => buildHandlerRegistry().find(
     (r) => r.handler.name === 'webhook-dispatch',
   )!.handler;
+  const skillUse = () => buildHandlerRegistry().find(
+    (r) => r.handler.name === 'skill-use',
+  )!.handler;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1666,14 +1702,13 @@ describe('webhook-dispatch handler (#701, #702)', () => {
     });
   });
 
-  it('maps PostToolUse/Skill to skill-use and forwards only the skill name (#701, #702)', async () => {
-    await handler().execute(
+  it('sends skill-use for a Skill call and forwards only the skill name (#701, #702)', async () => {
+    await skillUse().execute(
       {
         hook_event_name: 'PostToolUse',
         tool_name: 'Skill',
         tool_input: { skill: 'demo', args: 'api_key=SYNTHETIC_SECRET_NOT_REAL' },
         tool_response: 'SYNTHETIC_PRIVATE_OUTPUT',
-        session_id: 'sid',
       },
       'claude', scope,
     );
@@ -1715,16 +1750,15 @@ describe('webhook-dispatch handler (#701, #702)', () => {
 
   // Codex review finding 9: Cursor represents skill use as a `Read` of a
   // SKILL.md file (tool_name: 'Read'), NOT a `Skill` tool — and it dispatches
-  // via the camelCase `postToolUse` event. The webhook must reach the same
-  // parity trackHandler has (shared resolveSkillUse), forwarding {skillName}.
-  it('maps a Cursor camelCase postToolUse Read of SKILL.md to skill-use (#702, #9)', async () => {
-    await handler().execute(
+  // via the camelCase `postToolUse` event. The webhook comes from the handler
+  // that records the use, so the two cannot disagree.
+  it('sends skill-use for a Cursor camelCase postToolUse Read of SKILL.md (#702, #9)', async () => {
+    await skillUse().execute(
       {
         hook_event_name: 'postToolUse',
         tool_name: 'Read',
         tool_input: { path: '/root/.cursor/skills/tdd/SKILL.md' },
         tool_response: 'SYNTHETIC_PRIVATE_OUTPUT',
-        session_id: 'sid',
       },
       'cursor', scope,
     );
@@ -1735,25 +1769,16 @@ describe('webhook-dispatch handler (#701, #702)', () => {
     expect(JSON.stringify(payload)).not.toContain('SYNTHETIC_PRIVATE_OUTPUT');
   });
 
-  // Finding 9 guard: a NORMAL (non-SKILL.md) Read must NOT produce a skill-use
-  // webhook — data must be empty so a plain file read never leaks or fires.
-  it('does NOT emit skill-use data for a normal (non-SKILL.md) Read (#9 guard)', async () => {
-    await handler().execute(
-      {
-        hook_event_name: 'PostToolUse',
-        tool_name: 'Read',
-        tool_input: { path: '/root/project/src/secrets.ts' },
-        tool_response: 'const API_KEY = "SYNTHETIC_SECRET_NOT_REAL";',
-        session_id: 'sid',
-      },
-      'cursor', scope,
-    );
-    expect(mockSendWebhook).toHaveBeenCalledOnce();
-    const [event, payload] = mockSendWebhook.mock.calls[0];
-    expect(event).toBe('skill-use');
-    expect(payload.data).toEqual({});
-    expect(JSON.stringify(payload)).not.toContain('SYNTHETIC_SECRET_NOT_REAL');
-    expect(JSON.stringify(payload)).not.toContain('secrets.ts');
+  it('sends no webhook for a normal (non-SKILL.md) Read (#9 guard)', async () => {
+    const payload = {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Read',
+      tool_input: { path: '/root/project/src/secrets.ts' },
+      tool_response: 'const API_KEY = "SYNTHETIC_SECRET_NOT_REAL";',
+    };
+    await skillUse().execute(payload, 'cursor', scope);
+    await handler().execute(payload, 'cursor', scope);
+    expect(mockSendWebhook).not.toHaveBeenCalled();
   });
 
   // Codex review finding 2: Copilot fires SessionEnd (not Stop); the handler
@@ -1773,35 +1798,29 @@ describe('webhook-dispatch handler (#701, #702)', () => {
   });
 
   // Codex review finding 3: an extracted skillName that fails isValidSkillName
-  // (e.g. a path-like `command` arg) must be dropped, not forwarded. Uses the
-  // real resolveSkillUse, which validates with isValidSkillName.
-  it('drops an invalid skillName instead of forwarding it (#701)', async () => {
-    await handler().execute(
+  // (e.g. a path-like `command` arg) is no skill use, so nothing is sent.
+  it('sends nothing for an invalid skillName (#701)', async () => {
+    await skillUse().execute(
       {
         hook_event_name: 'PostToolUse',
         tool_name: 'Skill',
         tool_input: { command: '/etc/passwd; rm -rf /' },
-        session_id: 'sid',
       },
       'claude', scope,
     );
 
-    expect(mockSendWebhook).toHaveBeenCalledOnce();
-    const [, payload] = mockSendWebhook.mock.calls[0];
-    expect(payload.data).toEqual({});
-    expect(JSON.stringify(payload)).not.toContain('passwd');
+    expect(mockSendWebhook).not.toHaveBeenCalled();
   });
 });
 
 // Codex review finding 12: the tests above call handler.execute() directly,
-// bypassing dispatcher routing. These drive the REAL dispatcher for the
-// post-tool-use `Skill` matcher — the matcher Cursor's SKILL.md Read is wired to
-// (git f0ab4eb switched Cursor tracking from Read to the Skill matcher;
-// BUILTIN_HOOK_SPECS has no Read matcher) — to prove a Read payload routes
-// through it to webhookHandler. webhookHandler is background: true, so it runs in
-// the 'background' dispatch pass. (Cursor's own runtime is external and not
-// testable in this repo; this covers the CLI-side routing that is.)
-describe('post-tool-use Skill-matcher dispatch routes Cursor SKILL.md Read to the webhook (#702, #9, #12)', () => {
+// bypassing dispatcher routing. These drive the REAL dispatcher on the
+// wildcard post-tool-use pass, the one every tool installs (#1221), to prove a
+// Read payload routes through it to the skill-use webhook. skill-use is
+// background: true, so it runs in the 'background' dispatch pass. (Cursor's own
+// runtime is external and not testable in this repo; this covers the CLI-side
+// routing that is.)
+describe('post-tool-use wildcard dispatch routes Cursor SKILL.md Read to the webhook (#702, #9, #12)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLoadWebhookConfig.mockResolvedValue({
@@ -1810,25 +1829,22 @@ describe('post-tool-use Skill-matcher dispatch routes Cursor SKILL.md Read to th
     });
   });
 
-  it('registers webhook-dispatch under the post-tool-use Skill matcher', () => {
-    const reg = buildHandlerRegistry().find(
-      (r) => r.event === 'post-tool-use' && r.matcher === 'Skill' && r.handler.name === 'webhook-dispatch',
-    );
-    expect(reg).toBeDefined();
-    expect(reg!.background).toBe(true);
+  it('registers no webhook-dispatch on post-tool-use: skill-use sends it', () => {
+    expect(buildHandlerRegistry().filter(
+      (r) => r.event === 'post-tool-use' && r.handler.name === 'webhook-dispatch',
+    )).toEqual([]);
   });
 
-  it('a Cursor Read of SKILL.md dispatched via the Skill matcher produces a skill-use webhook with {skillName}', async () => {
+  it('a Cursor Read of SKILL.md on the wildcard pass produces a skill-use webhook with {skillName}', async () => {
     const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     await dispatcher.dispatch(
       'post-tool-use',
-      'Skill',
+      '*',
       {
         hook_event_name: 'PostToolUse',
         tool_name: 'Read',
         tool_input: { path: '/root/.cursor/skills/tdd/SKILL.md' },
         tool_response: 'SYNTHETIC_PRIVATE_OUTPUT',
-        session_id: 'sid',
       },
       'cursor',
       'background',
@@ -1841,32 +1857,27 @@ describe('post-tool-use Skill-matcher dispatch routes Cursor SKILL.md Read to th
     expect(JSON.stringify(payload)).not.toContain('SYNTHETIC_PRIVATE_OUTPUT');
   });
 
-  it('a normal Read (non-SKILL.md) dispatched via the Skill matcher produces empty skill-use data', async () => {
+  it('a normal Read (non-SKILL.md) on the wildcard pass sends no webhook', async () => {
     const dispatcher = createDispatcher({ handlers: buildHandlerRegistry(), localConfig: scope });
     await dispatcher.dispatch(
       'post-tool-use',
-      'Skill',
+      '*',
       {
         hook_event_name: 'PostToolUse',
         tool_name: 'Read',
         tool_input: { path: '/root/project/src/secrets.ts' },
         tool_response: 'const API_KEY = "SYNTHETIC_SECRET_NOT_REAL";',
-        session_id: 'sid',
       },
       'cursor',
       'background',
     );
 
-    expect(mockSendWebhook).toHaveBeenCalledOnce();
-    const [, payload] = mockSendWebhook.mock.calls[0];
-    expect(payload.data).toEqual({});
-    expect(JSON.stringify(payload)).not.toContain('SYNTHETIC_SECRET_NOT_REAL');
-    expect(JSON.stringify(payload)).not.toContain('secrets.ts');
+    expect(mockSendWebhook).not.toHaveBeenCalled();
   });
 });
 
 // PostToolUse payloads as Muse Code 1.4.6 sends them, tool_response trimmed.
-describe('track handler: Muse Code', () => {
+describe('skill-use handler: Muse Code', () => {
   const musePayload = (toolName: string, toolInput: Record<string, unknown>) => ({
     hook_event_name: 'PostToolUse',
     tool_name: toolName,
@@ -1882,7 +1893,7 @@ describe('track handler: Muse Code', () => {
     model_provider: 'meta',
   });
   const track = () => buildHandlerRegistry()
-    .find((r) => r.event === 'post-tool-use' && r.matcher === 'Skill' && r.handler.name === 'track')!.handler;
+    .find((r) => r.event === 'post-tool-use' && r.matcher === '*' && r.handler.name === 'skill-use')!.handler;
 
   it('records a read_skill call as a use of that skill', async () => {
     const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
@@ -1905,12 +1916,12 @@ describe('track handler: Muse Code', () => {
   });
 });
 
-describe('track-slash handler: dotted and colon skill names', () => {
+describe('skill-mention handler: dotted and colon skill names', () => {
   it('tracks a skill name that contains a dot', async () => {
     const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
     const registry = buildHandlerRegistry();
     const handler = registry.find(
-      (r) => r.event === 'prompt-submit' && r.handler.name === 'track-slash',
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'skill-mention',
     )!.handler;
 
     vi.mocked(appendUsageEvent).mockClear();
@@ -1931,7 +1942,7 @@ describe('track-slash handler: dotted and colon skill names', () => {
     const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
     const registry = buildHandlerRegistry();
     const handler = registry.find(
-      (r) => r.event === 'prompt-submit' && r.handler.name === 'track-slash',
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'skill-mention',
     )!.handler;
 
     vi.mocked(appendUsageEvent).mockClear();
@@ -1959,7 +1970,7 @@ describe('track-slash handler: dotted and colon skill names', () => {
   ])('does not record a path or a partial skill name: %s', async (prompt) => {
     const { appendUsageEvent, updateKnownSkills } = await import('../usage-tracker.js');
     const handler = buildHandlerRegistry().find(
-      (r) => r.event === 'prompt-submit' && r.handler.name === 'track-slash',
+      (r) => r.event === 'prompt-submit' && r.handler.name === 'skill-mention',
     )!.handler;
     vi.mocked(appendUsageEvent).mockClear();
     vi.mocked(updateKnownSkills).mockClear();

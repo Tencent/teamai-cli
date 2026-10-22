@@ -2,15 +2,23 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { builtinHookDefs, applyBuiltinOverride } from '../builtin-hooks.js';
 
 describe('builtinHookDefs — unified built-in hook model', () => {
-  it('returns 7 built-in defs for Claude in canonical order, all tagged source=builtin', () => {
+  it('returns 6 built-in defs for Claude in canonical order, all tagged source=builtin', () => {
     const defs = builtinHookDefs('claude');
-    expect(defs).toHaveLength(7);
+    expect(defs).toHaveLength(6);
     expect(defs.every((d) => d.source === 'builtin')).toBe(true);
     expect(defs.map((d) => d.event)).toEqual([
       'SessionStart', 'Stop',
-      'PostToolUse', 'PostToolUse', 'PostToolUse',
+      'PostToolUse', 'PostToolUse',
       'UserPromptSubmit', 'SubagentStop',
     ]);
+  });
+
+  it('installs no matcher-scoped Skill pass: the wildcard post-tool-use pass tracks skill use (#1221)', () => {
+    for (const tool of ['claude', 'cursor', 'copilot', 'codex', 'muse', 'zcode']) {
+      const defs = builtinHookDefs(tool);
+      expect(defs.some((d) => d.key === 'Hook dispatch post-tool-use Skill' || d.command.includes('--matcher Skill'))).toBe(false);
+      expect(defs.filter((d) => d.event === 'PostToolUse').map((d) => d.matcher)).toEqual(['*', 'TodoWrite']);
+    }
   });
 
   it('adds SubagentStop only for the agents that fire it (#884)', () => {
@@ -49,7 +57,7 @@ describe('builtinHookDefs — unified built-in hook model', () => {
 
   it('adds a lifecycle-complete SessionEnd hook only for Copilot', () => {
     const defs = builtinHookDefs('copilot');
-    expect(defs).toHaveLength(7);
+    expect(defs).toHaveLength(6);
     expect(defs.at(-1)).toEqual(expect.objectContaining({
       event: 'SessionEnd',
       matcher: '*',
@@ -64,9 +72,6 @@ describe('builtinHookDefs — unified built-in hook model', () => {
     const cursor = builtinHookDefs('cursor');
     expect(cursor.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(15);
     expect(cursor.find((d) => d.key === 'Hook dispatch post-tool-use TodoWrite')?.timeout).toBe(3);
-    const cursorSkill = cursor.find((d) => d.key === 'Hook dispatch post-tool-use Skill');
-    expect(cursorSkill?.matcher).toBe('Read');
-    expect(cursorSkill?.command).toContain('--matcher Skill');
     for (const tool of ['codex', 'codex-internal', 'tcodex']) {
       const codex = builtinHookDefs(tool);
       expect(codex.find((d) => d.key === 'Hook dispatch session-start')?.timeout).toBe(15);

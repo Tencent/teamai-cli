@@ -39,7 +39,7 @@ async function readResult(filePath: string): Promise<Record<string, unknown>> {
 
 describe('hooks E2E — real file I/O', () => {
   describe('inject — full injection to temp directories', () => {
-    it('creates Claude settings.json with all 5 events and 7 dispatch hooks', async () => {
+    it('creates Claude settings.json with all 5 events and 6 dispatch hooks', async () => {
       const p = claudePath();
       await injectHooks(p, 'claude');
 
@@ -49,12 +49,12 @@ describe('hooks E2E — real file I/O', () => {
       expect(Object.keys(hooks)).toEqual(['SessionStart', 'Stop', 'PostToolUse', 'UserPromptSubmit', 'SubagentStop']);
       expect(hooks.SessionStart).toHaveLength(1);
       expect(hooks.Stop).toHaveLength(1);
-      expect(hooks.PostToolUse).toHaveLength(3);
+      expect(hooks.PostToolUse).toHaveLength(2);
       expect(hooks.UserPromptSubmit).toHaveLength(1);
       expect(hooks.SubagentStop).toHaveLength(1);
     });
 
-    it('creates Cursor hooks.json with all 4 events and 6 dispatch hooks', async () => {
+    it('creates Cursor hooks.json with all 4 events and 5 dispatch hooks', async () => {
       const p = cursorPath();
       await injectHooks(p, 'cursor');
 
@@ -65,7 +65,7 @@ describe('hooks E2E — real file I/O', () => {
       expect(Object.keys(hooks)).toEqual(['sessionStart', 'stop', 'postToolUse', 'beforeSubmitPrompt']);
       expect(hooks.sessionStart).toHaveLength(1);
       expect(hooks.stop).toHaveLength(1);
-      expect(hooks.postToolUse).toHaveLength(3);
+      expect(hooks.postToolUse).toHaveLength(2);
       expect(hooks.beforeSubmitPrompt).toHaveLength(1);
     });
 
@@ -124,7 +124,7 @@ describe('hooks E2E — real file I/O', () => {
       }
     });
 
-    it('PostToolUse dispatch hook exists in both formats (Cursor host matcher Read)', async () => {
+    it('both formats get the wildcard PostToolUse dispatch, with no Skill pass (#1221)', async () => {
       const cp = claudePath();
       const kp = cursorPath();
       await injectHooks(cp, 'claude');
@@ -136,16 +136,12 @@ describe('hooks E2E — real file I/O', () => {
       const claudePostTool = (claudeResult.hooks as Record<string, Array<{ matcher: string }>>).PostToolUse;
       const cursorPostTool = (cursorResult.hooks as Record<string, Array<{ matcher?: string; command: string }>>).postToolUse;
 
-      const claudeSkillHook = claudePostTool.find((h) => h.matcher === 'Skill');
-      expect(claudeSkillHook).toBeDefined();
-
-      // Cursor loads skills via Read of SKILL.md; host matcher is remapped to Read
-      // while the dispatch command still uses --matcher Skill (#1156).
-      const cursorSkillHook = cursorPostTool.find(
-        (h) => h.matcher === 'Read' && h.command.includes('--matcher Skill'),
-      );
-      expect(cursorSkillHook).toBeDefined();
-      expect(cursorSkillHook?.command).toContain('hook-dispatch');
+      expect(claudePostTool.map((h) => h.matcher)).toEqual(['*', 'TodoWrite']);
+      // Cursor's wildcard entry has no host matcher; its Read of a SKILL.md is
+      // credited by the wildcard pass.
+      const cursorWildcard = cursorPostTool.find((h) => h.matcher === undefined);
+      expect(cursorWildcard?.command).toContain('hook-dispatch post-tool-use --tool cursor');
+      expect(JSON.stringify([claudePostTool, cursorPostTool])).not.toContain('--matcher Skill');
     });
 
     it('tool-specific commands use the correct --tool parameter', async () => {

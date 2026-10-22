@@ -17,22 +17,27 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const CLI = path.join(ROOT, 'dist', 'index.js');
 
 const TICK = `const fs = require('fs');
-const count = (fs.existsSync('ticks.txt') ? Number(fs.readFileSync('ticks.txt', 'utf8')) : 0) + 1;
-fs.writeFileSync('ticks.txt', String(count));
+const path = require('path');
+const file = path.join(process.env.OUT, 'ticks.txt');
+const count = (fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : 0) + 1;
+fs.writeFileSync(file, String(count));
 console.log(JSON.stringify({ count }));
 `;
 
 const BARRIER = `const fs = require('fs');
-const { ME: me, OTHER: other } = process.env;
-fs.writeFileSync(me + '.ready', '');
+const path = require('path');
+const { ME: me, OTHER: other, OUT: out } = process.env;
+fs.mkdirSync(out, { recursive: true });
+fs.writeFileSync(path.join(out, me + '.ready'), '');
 const deadline = Date.now() + 3000;
 setInterval(() => {
-  if (fs.existsSync(other + '.ready')) process.exit(0);
+  if (fs.existsSync(path.join(out, other + '.ready'))) process.exit(0);
   if (Date.now() > deadline) { console.error(me + ' never saw ' + other); process.exit(1); }
 }, 20);
 `;
 
-const RECORD = `require('fs').writeFileSync('record.json', JSON.stringify({
+const RECORD = `const path = require('path');
+require('fs').writeFileSync(path.join(process.env.OUT, 'record.json'), JSON.stringify({
   passes: JSON.parse(process.env.PASSES),
   results: JSON.parse(process.env.RESULTS),
 }));
@@ -46,16 +51,20 @@ inputs:
 steps:
   - id: tick
     command: node tick.js
+    env:
+      OUT: ${JSON.stringify('')}
     output:
       count: number
     loop: { back_to: tick, while: "steps.tick.outputs.count < 3", max_iterations: 5 }
   - id: meet
     needs: [tick]
+    workspace: new
     for_each: inputs.pairs
     command: node barrier.js
     env:
       ME: "{{ item.me }}"
       OTHER: "{{ item.other }}"
+      OUT: ${JSON.stringify('')}
   - id: record
     needs: [tick, meet]
     if: length(steps.tick.passes) == 3 && length(steps.meet.results) == 2
@@ -63,6 +72,7 @@ steps:
     env:
       PASSES: "{{ steps.tick.passes }}"
       RESULTS: "{{ steps.meet.results }}"
+      OUT: ${JSON.stringify('')}
 `;
 
 const PAIRS = [{ me: 'left', other: 'right' }, { me: 'right', other: 'left' }];
@@ -90,6 +100,7 @@ function envelope(stdout: string): { data?: Record<string, unknown> } {
 
 describe.skipIf(process.platform === 'win32')('workflow step loop and for_each', () => {
   let repo: string;
+  let out: string;
   let configPath: string;
 
   function setMaxParallel(max: number): void {
@@ -98,18 +109,20 @@ describe.skipIf(process.platform === 'win32')('workflow step loop and for_each',
   }
 
   async function start(): Promise<{ code: number | null; stdout: string; stderr: string }> {
-    for (const file of ['ticks.txt', 'left.ready', 'right.ready', 'record.json']) fs.rmSync(path.join(repo, file), { force: true });
+    for (const file of ['ticks.txt', 'left.ready', 'right.ready', 'record.json']) fs.rmSync(path.join(out, file), { force: true });
     return runCLI(['workflow', 'start', 'loop-and-fan', '--driver', 'local', '--inputs', JSON.stringify({ pairs: PAIRS })], repo);
   }
 
   function record(): { passes: unknown; results: unknown } {
-    return JSON.parse(fs.readFileSync(path.join(repo, 'record.json'), 'utf8')) as { passes: unknown; results: unknown };
+    return JSON.parse(fs.readFileSync(path.join(out, 'record.json'), 'utf8')) as { passes: unknown; results: unknown };
   }
 
   const passes = [1, 2, 3].map((count) => ({ pass: count, outcome: 'success', outputs: { count } }));
 
   beforeAll(async () => {
     repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-loop-fan-out-e2e-')));
+    out = path.join(path.dirname(repo), `${path.basename(repo)}-out`);
+    fs.mkdirSync(out);
     fs.writeFileSync(path.join(repo, 'README.md'), '# app\n');
     git(['init', '-q', '-b', 'main'], repo);
     git(['add', 'README.md'], repo);
@@ -121,9 +134,11 @@ describe.skipIf(process.platform === 'win32')('workflow step loop and for_each',
     fs.writeFileSync(path.join(repo, 'tick.js'), TICK);
     fs.writeFileSync(path.join(repo, 'barrier.js'), BARRIER);
     fs.writeFileSync(path.join(repo, 'record.js'), RECORD);
+    git(['add', 'tick.js', 'barrier.js', 'record.js'], repo);
+    git(['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '-m', 'scripts'], repo);
     const workflows = path.join(repo, '.teamai', 'workflows');
     fs.mkdirSync(workflows, { recursive: true });
-    fs.writeFileSync(path.join(workflows, 'loop-and-fan.yaml'), WORKFLOW);
+    fs.writeFileSync(path.join(workflows, 'loop-and-fan.yaml'), WORKFLOW.replaceAll('OUT: ""', `OUT: ${JSON.stringify(out)}`));
     const pulled = await runCLI(['pull'], repo);
     expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
   });
@@ -139,8 +154,8 @@ describe.skipIf(process.platform === 'win32')('workflow step loop and for_each',
 
     expect(run.code, `${run.stdout}\n${run.stderr}`).toBe(0);
     expect(envelope(run.stdout)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
-    expect(fs.readFileSync(path.join(repo, 'ticks.txt'), 'utf8')).toBe('3');
-    expect(record()).toEqual({
+    expect(fs.readFileSync(path.join(out, 'ticks.txt'), 'utf8')).toBe('3');
+    expect(record()).toMatchObject({
       passes,
       results: PAIRS.map((item) => ({ item, outcome: 'success' })),
     });
@@ -153,7 +168,7 @@ describe.skipIf(process.platform === 'win32')('workflow step loop and for_each',
 
     expect(run.code, `${run.stdout}\n${run.stderr}`).toBe(1);
     expect(envelope(run.stdout)).toMatchObject({ data: { done: { outcome: 'failed' } } });
-    expect(record()).toEqual({
+    expect(record()).toMatchObject({
       passes,
       results: [{ item: PAIRS[0], outcome: 'failed' }, { item: PAIRS[1], outcome: 'success' }],
     });

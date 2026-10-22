@@ -1,0 +1,10 @@
+{
+  "cwd": "${CWD}",
+  "session_id": "opencode-run",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "skill",
+  "tool_input": {
+    "id": "hello-skill"
+  },
+  "tool_status": "success"
+}
