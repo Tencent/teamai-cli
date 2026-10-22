@@ -554,11 +554,13 @@ function reuseRecordedDestinations(groups: PushGroup[]): Set<ResourceItem> {
       if (item.type === 'skills') {
         // A skill's path is derived from its name, so the recorded namespace
         // replaces whatever a --role/--project override wrote above.
+        (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath = item.relativePath;
         item.namespace = ns;
         item.relativePath = ns ? skillNamespacePath(ns, item.name) : `skills/${item.name}`;
       } else if (ns && isAtSharedRoot(item)) {
         // A rule or agent carries its own path from the scanner, and that path
         // is authoritative when it already names a namespace (#654).
+        (item as ResourceItem & { prePlacementPath?: string }).prePlacementPath = item.relativePath;
         item.namespace = ns;
         item.relativePath = withNamespace(item.relativePath, ns, rootSegmentsFor(item.type));
       }

@@ -228,8 +228,8 @@ export async function syncWorkflowDefinitions(
   // OR prompts. A root-only tree needs no manifest read, and an unconditional
   // read here would fire before the push's pull refreshes the clone — the
   // stale mapping the #649 review forbids. A manifest that cannot be read
-  // leaves the resolution null, which falls back to the set of namespaces
-  // found on disk.
+  // resolves to an empty namespace set (conservative), while a manifest-free
+  // team discovers prompt namespaces from disk below.
   let hasNamespaced = rawCandidates.some((c) => c.namespace !== null);
   if (!hasNamespaced) {
     // Prompt namespaces are independent of workflow layout: a root-only
@@ -260,6 +260,21 @@ export async function syncWorkflowDefinitions(
   }
   const activeWorkflows = resourceNamespaces?.activeNamespaces.workflows ?? (resourceNamespaces ? [] : null);
   const activePrompts = resourceNamespaces?.activeNamespaces.prompts ?? (resourceNamespaces ? [] : null);
+  // Manifest-free: discover prompt namespaces from disk so a namespaced
+  // prompt directory is still found even without a roles/projects manifest.
+  let effectiveActivePrompts: readonly string[] | null = activePrompts;
+  if (effectiveActivePrompts === null) {
+    const discovered = new Set<string>();
+    try {
+      const promptsDir = path.join(knowledgeRoot, 'prompts');
+      for (const entry of await fs.readdir(promptsDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && !entry.isSymbolicLink() && isSafeNamespaceSegment(entry.name)) {
+          discovered.add(entry.name);
+        }
+      }
+    } catch { /* prompts dir missing */ }
+    effectiveActivePrompts = discovered.size > 0 ? [...discovered] : null;
+  }
   const effectiveActiveWorkflows = activeWorkflows ?? [
     ...new Set(rawCandidates.flatMap((candidate) => (
       candidate.namespace === null ? [] : [candidate.namespace]
@@ -324,7 +339,7 @@ export async function syncWorkflowDefinitions(
       checked.push({ stem, relativePath, diagnostics: parsed.diagnostics });
       continue;
     }
-    const resolved = await resolvePromptFiles(config, parsed.definition, parsed.promptFileLocations, relativePath, activePrompts);
+    const resolved = await resolvePromptFiles(config, parsed.definition, parsed.promptFileLocations, relativePath, effectiveActivePrompts);
     if (!resolved.ok) {
       checked.push({ stem, relativePath, diagnostics: resolved.diagnostics });
       continue;

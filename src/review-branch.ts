@@ -103,9 +103,9 @@ function parseRelativePath(
     return { name: stripExtension(rest[0] ?? '') };
   }
   const namespace = rest[0];
-  // Keep the full sub-path as the name so nested docs/wiki files in different
-  // directories don't collide on their basename alone.
-  const name = stripExtension(rest.slice(1).join('/'));
+  // Use the basename as the name: a name must be a single safe path segment.
+  // Full sub-paths (e.g. 'api/guide') fail isSafeNamespaceSegment on the '/'.
+  const name = stripExtension(rest[rest.length - 1] ?? '');
   if ((type === 'docs' || type === 'wiki') && !index.declares(NAMESPACE_AXIS[type], namespace!)) {
     return { name: stripExtension(rest.join('/')) };
   }
