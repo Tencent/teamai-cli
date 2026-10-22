@@ -1,8 +1,15 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { ResourceHandler } from './base.js';
+import { loadStateForScope } from '../config.js';
 import { isSelfMode, type LocalConfig, type ResourceItem, type ResourceType, type TeamaiConfig } from '../types.js';
+import { rootSegmentsFor, type PlaceableType } from '../push-namespaces.js';
 import { ensureDir, fileContentEqual, pathExists } from '../utils/fs.js';
+
+/** The namespace a placed path carries, from its position below the root. */
+function namespaceOfPlacedPath(type: PlaceableType, placedPath: string): string | undefined {
+  return placedPath.split('/')[rootSegmentsFor(type)];
+}
 
 export async function listRepoFilesRecursive(dir: string, baseDir = dir): Promise<string[]> {
   try {
@@ -37,20 +44,44 @@ export async function scanRepoResourceForPush(
     if (!await pathExists(activeRoot)) return [];
 
     const items: ResourceItem[] = [];
+    // Where an earlier push placed a resource this machine still edits at its
+    // shared-root path (`state.placements`, recorded once the PR landed). The
+    // author's copy never moves, so without the record every later scan reads
+    // it as brand new and collides with the placed copy it cannot see.
+    const placements = (await loadStateForScope(localConfig)).placements ?? {};
     const files = await listRepoFilesRecursive(activeRoot);
     for (const rel of files) {
       if (fileFilter && !fileFilter(rel)) continue;
       const activeFile = path.join(activeRoot, ...rel.split('/'));
       const baseFile = path.join(baselineRoot, ...rel.split('/'));
       const relativePath = `${dir}/${rel}`;
-      if (await pathExists(baseFile) && await fileContentEqual(activeFile, baseFile)) continue;
-      const status = await pathExists(baseFile) ? 'modified' : 'new';
+      const atBaseline = await pathExists(baseFile);
+      if (atBaseline && await fileContentEqual(activeFile, baseFile)) continue;
+      if (!atBaseline) {
+        const placedPath = placements[`${type}:${relativePath}`];
+        const placedFile = placedPath ? path.join(localConfig.repo.localPath, ...placedPath.split('/')) : null;
+        if (placedPath && placedFile && await pathExists(placedFile)) {
+          // Compare the copy the author edits against the file that landed in
+          // its place: unchanged means already delivered, and an edit belongs
+          // on that file rather than on a second copy at the shared root.
+          if (await fileContentEqual(activeFile, placedFile)) continue;
+          items.push({
+            name: rel,
+            type,
+            sourcePath: activeFile,
+            relativePath: placedPath,
+            namespace: namespaceOfPlacedPath(type as PlaceableType, placedPath),
+            status: 'modified',
+          });
+          continue;
+        }
+      }
       items.push({
         name: rel,
         type,
         sourcePath: activeFile,
         relativePath,
-        status,
+        status: atBaseline ? 'modified' : 'new',
       });
     }
     return items;

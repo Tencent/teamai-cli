@@ -215,15 +215,18 @@ export async function toPendingItems(items: ResourceItem[], repoPath: string): P
     // A placement is marked only with the blob that can prove it landed:
     // without one, reconcile would have nothing but the path existing, which
     // another member's later file at that path also satisfies (#649 review).
-    const blob = isPlacement(i) ? await hashObject(repoPath, i.relativePath) : null;
-    if (isPlacement(i) && !blob) {
+    const placed = isPlacement(i) || isRepoPlacement(i);
+    const blob = placed ? await hashObject(repoPath, i.relativePath) : null;
+    if (placed && !blob) {
       log.warn(`[${i.type}] ${i.name}: could not hash ${i.relativePath}, so this machine will not treat it as its placement once merged.`);
     }
+    const sourcePath = (i as ResourceItem & { prePlacementPath?: string }).prePlacementPath;
     out.push({
       type: i.type,
       name: i.name,
       relativePath: i.relativePath,
       namespace: i.namespace,
+      ...(sourcePath ? { sourcePath } : {}),
       ...(blob ? { placed: true, blob } : {}),
     });
   }
@@ -253,6 +256,21 @@ export function isPlacement(item: ResourceItem): boolean {
   // in its name and matches by full path, so it needs no record.
   if (item.type === 'rules') return !item.name.includes('/');
   return item.type === 'agents';
+}
+
+/**
+ * Whether pushing `item` PLACED a repo-backed resource (docs, wiki, prompts,
+ * workflows, ...): a new file the scan found at its shared-root path, which
+ * `pushItem` then wrote under `<root>/<ns>/`. Unlike a rule or agent, the author
+ * keeps editing the shared-root file, so the record has to name that path too
+ * (`sourcePath`) for a self-mode scan to compare against the destination.
+ */
+function isRepoPlacement(item: ResourceItem): boolean {
+  if (item.status !== 'new' || !item.namespace) return false;
+  // Skills, rules and agents keep their own records (placedRules/placedAgents,
+  // or a path derived from the skill name), so they are not keyed this way.
+  if (item.type === 'skills' || item.type === 'rules' || item.type === 'agents') return false;
+  return 'prePlacementPath' in item && typeof item.prePlacementPath === 'string';
 }
 
 /** The shared-root file(s) that, if present, mean `name` is not ours to redirect. */
@@ -302,7 +320,7 @@ function sharedRootPaths(root: 'rules' | 'agents', name: string): string[] {
  */
 export async function reconcilePlacementRecords(
   repoPath: string,
-  state: Pick<State, 'placedRules' | 'placedAgents' | 'pendingPushes' | 'placementsCheckedAt' | 'retiredPlacedAgents'>,
+  state: Pick<State, 'placedRules' | 'placedAgents' | 'pendingPushes' | 'placementsCheckedAt' | 'retiredPlacedAgents' | 'placements'>,
   tip?: string,
   deliversEveryNamespace: () => Promise<boolean> = async () => false,
 ): Promise<boolean> {
@@ -330,12 +348,24 @@ export async function reconcilePlacementRecords(
     for (const item of entry.items) {
       if (!item.placed) continue;
       const field = fieldFor(item.type);
-      if (!field) continue;
+      // A repo-backed placement (docs, wiki, prompts, ...) has no
+      // placedRules/placedAgents field: it is recorded by the path the author
+      // still edits, so a self-mode scan can compare that file against the
+      // destination instead of reading it as a brand-new resource. Without the
+      // recorded source path there is nothing to key it by, so the mark is
+      // spent rather than guessed at.
+      const placementKey = field || !item.sourcePath ? null : `${item.type}:${item.sourcePath}`;
+      if (!field && !placementKey) {
+        item.placed = false;
+        delete item.blob;
+        changed = true;
+        continue;
+      }
       // Without the blob push wrote, landing cannot be told from another
       // member creating the same path after this PR closed unmerged, so the
       // mark is spent rather than recorded on the path existing (#649 review).
       if (!item.blob) {
-        log.debug(`Not recording placement ${field}.${item.name}: no blob to prove it landed`);
+        log.debug(`Not recording placement ${field ?? placementKey}.${item.name}: no blob to prove it landed`);
         item.placed = false;
         changed = true;
         continue;
@@ -366,15 +396,19 @@ export async function reconcilePlacementRecords(
       // after this placement landed: what is there now was recreated by
       // someone else, and the placement is spent without a record.
       if (entry.base && await pathDeletedSince(repoPath, entry.base, item.relativePath, history) === true) {
-        log.debug(`Not recording placement ${field}.${item.name}: ${item.relativePath} was deleted after it landed`);
+        log.debug(`Not recording placement ${field ?? placementKey}.${item.name}: ${item.relativePath} was deleted after it landed`);
         item.placed = false;
         delete item.blob;
         changed = true;
         continue;
       }
-      log.debug(`Recording placement ${field}.${item.name} → ${item.relativePath}: landed on the default branch`);
-      state[field] = { ...state[field], [item.name]: item.relativePath };
-      recordedNow.add(`${field}:${item.name}`);
+      log.debug(`Recording placement ${field ?? placementKey}.${item.name} → ${item.relativePath}: landed on the default branch`);
+      if (field) {
+        state[field] = { ...state[field], [item.name]: item.relativePath };
+        recordedNow.add(`${field}:${item.name}`);
+      } else if (placementKey) {
+        state.placements = { ...state.placements, [placementKey]: item.relativePath };
+      }
       // Consumed: a placement is recorded once. Left marked, it would record
       // again after the team deleted the file and another member recreated
       // the path — the blob stays in history, so the check above would still
@@ -427,6 +461,25 @@ export async function reconcilePlacementRecords(
       kept[name] = recorded;
     }
     state[field] = kept;
+  }
+
+  // A repo-backed placement whose destination is gone from the default branch
+  // is dropped: the team deleted that file, so the author's root copy is a new
+  // resource again. Kept, it would compare the copy against a path nobody has
+  // and hide a genuine edit.
+  if (state.placements) {
+    const kept: Record<string, string> = {};
+    let dropped = false;
+    for (const [key, recorded] of Object.entries(state.placements)) {
+      if (await exists(recorded)) {
+        kept[key] = recorded;
+      } else {
+        log.debug(`Dropping placement record ${key} → ${recorded}: gone from the default branch`);
+        dropped = true;
+        changed = true;
+      }
+    }
+    if (dropped) state.placements = kept;
   }
 
   // The revision the surviving records were checked against, so the next run

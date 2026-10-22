@@ -16,6 +16,7 @@ import type { ProjectsManifest } from '../projects.js';
 import type { LocalConfig, ResourceItem } from '../types.js';
 import { scanRepoResourceForPush, pushRepoResourceItem } from '../resources/repo-resource.js';
 import { getHandler } from '../resources/index.js';
+import { loadStateForScope, saveStateForScope } from '../config.js';
 
 const dirs: string[] = [];
 
@@ -81,7 +82,11 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
       { type: 'workflows', path: 'workflows/ci.yaml', shared: true },
       { type: 'workflows', path: 'workflows/team-a/ci.yaml', shared: false },
       { type: 'prompts', path: 'prompts/review.md', shared: true },
-      { type: 'prompts', path: 'prompts/team-a/review.md', shared: false },
+      // An undeclared prompts/ directory is shared content, like docs/ and
+      // wiki/: a workflow resolves a nested prompt below the root when no
+      // namespace holds it.
+      { type: 'prompts', path: 'prompts/team-a/review.md', shared: true },
+      { type: 'prompts', path: 'prompts/topic/note.md', shared: true },
       { type: 'scorers', path: 'scorers/accuracy.py', shared: true },
       { type: 'scorers', path: 'scorers/team-a/accuracy.py', shared: false },
       { type: 'models', path: 'models/config.json', shared: true },
@@ -122,6 +127,24 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
     };
     expect(declaredNamespaceFor(nestedDoc, ['team-a'])).toBe('team-a');
     expect(declaredNamespaceFor(nestedDoc, ['other-team'])).toBeUndefined();
+
+    // prompts follow the same rule: only a declared first segment is a namespace.
+    const nestedPrompt: ResourceItem = {
+      name: 'topic/note.md',
+      type: 'prompts',
+      sourcePath: '/local/prompts/topic/note.md',
+      relativePath: 'prompts/topic/note.md',
+    };
+    expect(isAtSharedRoot(nestedPrompt)).toBe(true);
+    expect(declaredNamespaceFor(nestedPrompt, ['ops'])).toBeUndefined();
+
+    const namespacedPrompt: ResourceItem = {
+      name: 'note.md',
+      type: 'prompts',
+      sourcePath: '/local/prompts/ops/note.md',
+      relativePath: 'prompts/ops/note.md',
+    };
+    expect(declaredNamespaceFor(namespacedPrompt, ['ops'])).toBe('ops');
   });
 
   it('correctly inserts namespace segments for various resource formats', () => {
@@ -303,5 +326,47 @@ describe('repo resource handler push and scan', () => {
     const destFile = path.join(repoLocal, 'workflows', 'ops', 'test.yaml');
     expect(fs.existsSync(destFile)).toBe(true);
     expect(fs.readFileSync(destFile, 'utf8')).toBe('name: test\n');
+  });
+
+  it('compares a root-authored file against the destination an earlier push placed it at', async () => {
+    const root = makeTmpDir();
+    const projectRoot = path.join(root, 'project');
+    const repoLocal = path.join(root, 'team-repo');
+    const dataHome = path.join(root, 'data');
+    const localConfig: LocalConfig = {
+      repo: { localPath: repoLocal, remote: 'local', kind: 'self' },
+      username: 'alice',
+      scope: 'project',
+      projectRoot,
+      dataHome,
+      additionalRoles: [],
+    };
+
+    // The author still edits .teamai/docs/guide.md; the team file it became is
+    // docs/ops/guide.md, and state.placements remembers the two are one file.
+    const activeFile = path.join(projectRoot, '.teamai', 'docs', 'guide.md');
+    fs.mkdirSync(path.dirname(activeFile), { recursive: true });
+    fs.writeFileSync(activeFile, 'v1\n');
+    const destFile = path.join(repoLocal, 'docs', 'ops', 'guide.md');
+    fs.mkdirSync(path.dirname(destFile), { recursive: true });
+    fs.writeFileSync(destFile, 'v1\n');
+    const state = await loadStateForScope(localConfig);
+    state.placements = { 'docs:docs/guide.md': 'docs/ops/guide.md' };
+    await saveStateForScope(state, localConfig);
+
+    // Unchanged: already delivered, so it is not a new resource again.
+    expect(await scanRepoResourceForPush('docs', 'docs', {} as never, localConfig)).toEqual([]);
+
+    // Edited: the edit belongs on the placed file, not on a second copy that
+    // would collide with it, so the scan reports it as that path's modification.
+    fs.writeFileSync(activeFile, 'v2\n');
+    const edited = await scanRepoResourceForPush('docs', 'docs', {} as never, localConfig);
+    expect(edited).toHaveLength(1);
+    expect(edited[0]).toMatchObject({
+      name: 'guide.md',
+      relativePath: 'docs/ops/guide.md',
+      namespace: 'ops',
+      status: 'modified',
+    });
   });
 });

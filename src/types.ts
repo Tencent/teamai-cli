@@ -948,6 +948,13 @@ export const PendingPushItemSchema = z.object({
    */
   placed: z.boolean().optional(),
   /**
+   * For a placement, the path the author still edits — the shared-root form
+   * `relativePath` was derived from, e.g. "docs/guide.md" for a destination of
+   * "docs/ops/guide.md". A self-mode scan compares that file against its placed
+   * counterpart once the record lands (`state.placements`).
+   */
+  sourcePath: z.string().optional(),
+  /**
    * Git blob id of the file this push wrote at `relativePath`, for a placed
    * item. Landing is proven by that blob appearing in the default branch's
    * history for the path after the entry's `base` — not by the path merely
@@ -1109,6 +1116,20 @@ export const StateSchema = z.object({
    * `placedRules`.
    */
   placedAgents: z.record(z.string(), z.string()).optional(),
+  /**
+   * Where push placed a repo-backed resource (docs, wiki, prompts, workflows,
+   * scorers, models, env, hooks, claudemd, learnings) that the author still
+   * edits at its shared-root path, keyed `<type>:<path the author edits>`, e.g.
+   * `{ "docs:docs/guide.md": "docs/ops/guide.md" }`. Placement writes the team
+   * copy under `<root>/<ns>/` and leaves the author's own file at the root, so
+   * without this record the next self-mode scan reads that file as brand new,
+   * sends it to the same destination, and fails on the copy that is already
+   * there — once the PR has merged, the destination is exactly the file the
+   * scan never looks at. Recorded only after the placement landed, in
+   * `reconcilePlacementRecords`, on the same blob-in-history proof as
+   * `placedRules`, so a PR closed unmerged leaves no record behind.
+   */
+  placements: z.record(z.string(), z.string()).optional(),
   /**
    * Default-branch commit the placement records were last checked against. A
    * record whose file was deleted after it is dropped even if something is at

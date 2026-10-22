@@ -81,6 +81,24 @@ export const NAMESPACE_AXIS = {
 } as const satisfies Record<PlaceableType, AllProjectResourceType>;
 
 /**
+ * Types whose subtree nests freely below the root. For these a first directory
+ * is a namespace only when a role or project declares it, and anything else is
+ * ordinary shared content that a placement may still relocate:
+ *
+ * - docs and wiki are bundles of pages, so `docs/api/guide.md` is a shared page
+ *   under an undeclared `api`, not a page in namespace `api` (#1101).
+ * - prompts resolve the same way at runtime: a workflow's `prompt_file:
+ *   prompts/topic/note.md` looks for `prompts/<ns>/topic/note.md` in each active
+ *   namespace and falls back to the shared `prompts/topic/note.md`.
+ */
+export const NESTED_PLACEABLE_TYPES: ReadonlySet<PlaceableType> = new Set<PlaceableType>(['docs', 'wiki', 'prompts']);
+
+/** True for the types in `NESTED_PLACEABLE_TYPES`. */
+export function isNestedPlaceableType(type: PlaceableType): boolean {
+  return NESTED_PLACEABLE_TYPES.has(type);
+}
+
+/**
  * True when `item` would be written to the shared root — no namespace segment
  * between the resource root and the resource itself. Those are the only items
  * push places; anything already namespaced keeps the path it came with, since
@@ -89,18 +107,19 @@ export const NAMESPACE_AXIS = {
  */
 export function isAtSharedRoot(item: ResourceItem): boolean {
   if (item.namespace) return false;
-  // A first directory under docs/ or wiki/ is only a namespace when a manifest
-  // declares it. Undeclared directories are ordinary shared content (#1101).
-  if (item.type === 'docs' || item.type === 'wiki') return true;
+  // A first directory under docs/, wiki/ or prompts/ is only a namespace when a
+  // manifest declares it. Undeclared directories are ordinary shared content
+  // (#1101), which a placement still moves into the chosen namespace.
+  if (isNestedPlaceableType(item.type)) return true;
   return item.relativePath.split('/').length === 2;
 }
 
-/** Return the declared namespace carried by a docs/wiki path, if any. */
+/** Return the declared namespace carried by a docs/wiki/prompts path, if any. */
 export function declaredNamespaceFor(
   item: ResourceItem,
   declaredNamespaces: readonly string[],
 ): string | undefined {
-  if (item.type !== 'docs' && item.type !== 'wiki') return undefined;
+  if (!isNestedPlaceableType(item.type)) return undefined;
   const segments = item.relativePath.split('/');
   const candidate = segments[rootSegmentsFor(item.type)];
   return candidate && declaredNamespaces.includes(candidate) ? candidate : undefined;

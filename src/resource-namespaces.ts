@@ -40,6 +40,7 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig): Promi
     allSkillNamespaces: first.allSkillNamespaces,
     inactiveDocsNamespaces: inAll(resolved.map((one) => one.inactiveDocsNamespaces)),
     inactiveWikiNamespaces: inAll(resolved.map((one) => one.inactiveWikiNamespaces)),
+    inactivePromptsNamespaces: inAll(resolved.map((one) => one.inactivePromptsNamespaces)),
   };
 }
 
@@ -166,7 +167,18 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   const activeWiki = new Set(activeNamespaces.wiki ?? []);
   const inactiveWikiNamespaces = [...declaredWikiNamespaces].filter((namespace) => !activeWiki.has(namespace));
 
-  return { activeNamespaces, allSkillNamespaces, inactiveDocsNamespaces, inactiveWikiNamespaces };
+  // Prompts follow the same declared-vs-active rule as docs and wiki: a
+  // prompts/<dir>/ anyone lists under `resources.prompts` is a namespace, and a
+  // workflow resolves a nested prompt below it; every other directory is shared
+  // content, which a placement may still move into a namespace.
+  const declaredPromptsNamespaces = new Set<string>([
+    ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.prompts ?? []),
+    ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.prompts ?? []),
+  ]);
+  const activePrompts = new Set(activeNamespaces.prompts ?? []);
+  const inactivePromptsNamespaces = [...declaredPromptsNamespaces].filter((namespace) => !activePrompts.has(namespace));
+
+  return { activeNamespaces, allSkillNamespaces, inactiveDocsNamespaces, inactiveWikiNamespaces, inactivePromptsNamespaces };
 }
 
 /**

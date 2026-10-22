@@ -29,7 +29,7 @@ import { loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFound
 import { loadProjectsManifest, resolveProjectResourceNamespaces, type ProjectsManifest } from './projects.js';
 import { isSafeNamespaceSegment, NAMESPACE_RULE, fallbackNamespaceError } from './manifest-schema.js';
 import {
-  declaredNamespaceFor, isAtSharedRoot, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
+  declaredNamespaceFor, isAtSharedRoot, isNestedPlaceableType, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
   resolveProjectNamespace, rootSegmentsFor, skillNamespacePath, withNamespace, type PlaceableType,
 } from './push-namespaces.js';
 import { askQuestion, askSelection, isInteractive } from './utils/prompt.js';
@@ -1473,12 +1473,12 @@ async function pushCore(
     }
   }
 
-  // docs/ and wiki/ allow ordinary nested shared content. Only a first path
-  // segment declared by a role or project is a namespace, so annotate those
-  // items before the placement filter decides whether they are already scoped.
-  // A manifest that exists but cannot be read must stop the push: every
-  // placement below would fall through to the shared root, the widening #649
-  // is about — and nobody asked for it.
+  // docs/, wiki/ and prompts/ allow ordinary nested shared content. Only a
+  // first path segment declared by a role or project is a namespace, so
+  // annotate those items before the placement filter decides whether they are
+  // already scoped. A manifest that exists but cannot be read must stop the
+  // push: every placement below would fall through to the shared root, the
+  // widening #649 is about — and nobody asked for it.
   let resolvedNamespaces: Awaited<ReturnType<typeof resolveResourceNamespaces>> = null;
   try {
     resolvedNamespaces = await resolveResourceNamespaces(localConfig);
@@ -1488,7 +1488,7 @@ async function pushCore(
     return;
   }
   if (resolvedNamespaces) {
-    const declaredByType = {
+    const declaredByType: Partial<Record<PlaceableType, string[]>> = {
       docs: [
         ...(resolvedNamespaces.activeNamespaces.docs ?? []),
         ...resolvedNamespaces.inactiveDocsNamespaces,
@@ -1497,10 +1497,14 @@ async function pushCore(
         ...(resolvedNamespaces.activeNamespaces.wiki ?? []),
         ...resolvedNamespaces.inactiveWikiNamespaces,
       ],
+      prompts: [
+        ...(resolvedNamespaces.activeNamespaces.prompts ?? []),
+        ...resolvedNamespaces.inactivePromptsNamespaces,
+      ],
     };
     for (const item of fullScan) {
-      if (item.type !== 'docs' && item.type !== 'wiki') continue;
-      item.namespace ??= declaredNamespaceFor(item, declaredByType[item.type]);
+      if (!isPlaceableType(item.type) || !isNestedPlaceableType(item.type)) continue;
+      item.namespace ??= declaredNamespaceFor(item, declaredByType[item.type] ?? []);
     }
   }
 

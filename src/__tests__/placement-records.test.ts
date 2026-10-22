@@ -60,6 +60,29 @@ describe('reconcilePlacementRecords', () => {
     expect(state.placedRules).toEqual({ 'my-rule': 'rules/fe/my-rule.md' });
   });
 
+  it('records a repo-backed placement by the path the author still edits', async () => {
+    // docs, wiki, prompts and the other repo-backed types have no placedRules /
+    // placedAgents field: the record is keyed by the shared-root path the author
+    // keeps editing, so a self-mode scan can compare it with the destination.
+    const blob = await land('docs/ops/guide.md', 'x');
+    const state = {
+      placedRules: {}, placedAgents: {}, placements: {} as Record<string, string>,
+      pendingPushes: [pending([{
+        type: 'docs',
+        name: 'guide.md',
+        relativePath: 'docs/ops/guide.md',
+        namespace: 'ops',
+        sourcePath: 'docs/guide.md',
+        placed: true,
+        blob,
+      }])],
+    };
+
+    expect(await reconcilePlacementRecords(repoPath, state)).toBe(true);
+    expect(state.placements).toEqual({ 'docs:docs/guide.md': 'docs/ops/guide.md' });
+    expect(state.pendingPushes[0]?.items[0]?.placed).toBe(false);
+  });
+
   it('spends a placement with no blob instead of recording it because the path exists', async () => {
     // Nothing tells its landing from another member creating the path after
     // this PR closed unmerged (#649 review).

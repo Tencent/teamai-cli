@@ -29,7 +29,9 @@ import fse from 'fs-extra';
 import { resolveConfigForDir } from './config.js';
 import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
 import { ALL_PROJECT_RESOURCE_TYPES, loadProjectsManifest, type AllProjectResourceType, type ProjectsManifest } from './projects.js';
-import { NAMESPACE_AXIS, PLACEABLE_TYPES, rootSegmentsFor, type PlaceableType } from './push-namespaces.js';
+import {
+  isNestedPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, rootSegmentsFor, type PlaceableType,
+} from './push-namespaces.js';
 import { parseAgentYaml } from './resources/agent-format.js';
 import { hooksEntryReader } from './resources/hooks.js';
 import { getHandler } from './resources/index.js';
@@ -92,20 +94,6 @@ function stripExtension(segment: string): string {
 }
 
 /**
- * Types whose subtree nests freely below the root. For these a first directory
- * is a namespace only when a manifest declares it, and the whole sub-path —
- * extension included — is the resource identity.
- *
- * - docs and wiki are bundles of pages: `docs/api/guide.md` is a shared page
- *   under an undeclared `api` directory, not a page in namespace `api`.
- * - prompts resolve the same way at runtime: a workflow's `prompt_file:
- *   prompts/topic/note.md` looks for `prompts/<ns>/topic/note.md` in each
- *   active namespace and falls back to the shared `prompts/topic/note.md`, so
- *   a nested shared prompt is valid.
- */
-const NESTED_TYPES: ReadonlySet<PlaceableType> = new Set<PlaceableType>(['docs', 'wiki', 'prompts']);
-
-/**
  * Name and namespace from a repo-relative resource path, the same way pull reads
  * them (`<root>/<ns>/<name>` is namespaced, `<root>/<name>` is shared). The
  * handlers' own `name` is not used: for rules it carries the namespace segment.
@@ -120,7 +108,7 @@ function parseRelativePath(
   const rest = all.slice(rootSegs);
   if (rest.length <= 1) {
     const only = rest[0] ?? '';
-    return { name: NESTED_TYPES.has(type) ? only : stripExtension(only) };
+    return { name: isNestedPlaceableType(type) ? only : stripExtension(only) };
   }
   const namespace = rest[0];
   // Nested types keep the whole bundle-relative sub-path as the identity, never
@@ -128,7 +116,7 @@ function parseRelativePath(
   // two resources, not a duplicate "guide", and the extension stays because
   // docs/a/api/guide.md and docs/b/api/guide.png are distinct files. The name
   // may contain '/', which namingFindings validates one segment at a time.
-  if (NESTED_TYPES.has(type)) {
+  if (isNestedPlaceableType(type)) {
     if (index.declares(NAMESPACE_AXIS[type], namespace!)) {
       return { name: rest.slice(1).join('/'), namespace };
     }
