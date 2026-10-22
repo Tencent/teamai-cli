@@ -29,6 +29,7 @@ import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-
 import { ALL_PROJECT_RESOURCE_TYPES, loadProjectsManifest, type AllProjectResourceType, type ProjectsManifest } from './projects.js';
 import { NAMESPACE_AXIS, PLACEABLE_TYPES, rootSegmentsFor, type PlaceableType } from './push-namespaces.js';
 import { parseAgentYaml } from './resources/agent-format.js';
+import { hooksEntryReader } from './resources/hooks.js';
 import { getHandler } from './resources/index.js';
 import { listRepoFilesRecursive } from './resources/repo-resource.js';
 import { loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
@@ -103,13 +104,20 @@ function parseRelativePath(
     return { name: stripExtension(rest[0] ?? '') };
   }
   const namespace = rest[0];
-  // Use the basename as the name: a name must be a single safe path segment.
-  // Full sub-paths (e.g. 'api/guide') fail isSafeNamespaceSegment on the '/'.
-  const name = stripExtension(rest[rest.length - 1] ?? '');
-  if ((type === 'docs' || type === 'wiki') && !index.declares(NAMESPACE_AXIS[type], namespace!)) {
+  // docs and wiki nest freely below their root and their namespaces, so their
+  // identity is the whole bundle-relative sub-path, never the bare basename:
+  // co-active docs/a/api/guide.md and docs/b/ui/guide.md are two resources, not
+  // a duplicate "guide". The name may contain '/', which namingFindings
+  // validates one segment at a time.
+  if (type === 'docs' || type === 'wiki') {
+    if (index.declares(NAMESPACE_AXIS[type], namespace!)) {
+      return { name: stripExtension(rest.slice(1).join('/')), namespace };
+    }
     return { name: stripExtension(rest.join('/')) };
   }
-  return { name, namespace };
+  // A first segment under the other roots is a namespace by construction
+  // (`skills/<ns>/<name>`), so the name is the basename below it.
+  return { name: stripExtension(rest[rest.length - 1] ?? ''), namespace };
 }
 
 /** Enumerate the resources on the branch through the same scanners pull uses. */
@@ -124,16 +132,43 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
   }
   for (const type of PLACEABLE_TYPES) {
     if ((handlerTypes as readonly PlaceableType[]).includes(type)) continue;
-    const root = path.join(repoDir, type);
+    const rootRel = repoRootFor(type);
+    const root = path.join(repoDir, ...rootRel.split('/'));
     for (const file of await listRepoFilesRecursive(root)) {
       if (type === 'workflows' && !file.endsWith('.yaml')) continue;
+      if (type === 'hooks') {
+        // Hooks are reviewed by entry, the same identity pull's hooks reader
+        // delivers by: hooks/a/hooks.yaml and hooks/b/hooks.yaml are two files
+        // that may define disjoint ids, so the file name is not the identity.
+        const absolutePath = path.join(root, ...file.split('/'));
+        const relativePath = `${rootRel}/${file}`;
+        const segments = file.split('/');
+        const namespace = segments.length > 1 ? segments[0] : undefined;
+        const fileEntry = (name: string) => ({
+          type,
+          item: { type, name, namespace, sourcePath: absolutePath, relativePath },
+        });
+        if (path.posix.basename(file) === 'hooks.yaml') {
+          const read = await hooksEntryReader.read(absolutePath, relativePath);
+          if (read !== null && read.ok && read.entries.length > 0) {
+            for (const hook of read.entries) {
+              items.push(fileEntry(hook.id));
+            }
+            continue;
+          }
+        }
+        // Unreadable, entry-free, or non-canonical files keep a file identity,
+        // so the naming and leak checks still see them.
+        items.push(fileEntry(stripExtension(segments[segments.length - 1] ?? '')));
+        continue;
+      }
       items.push({
         type,
         item: {
           type,
           name: file,
           sourcePath: path.join(root, ...file.split('/')),
-          relativePath: `${type}/${file}`,
+          relativePath: `${rootRel}/${file}`,
         },
       });
     }
@@ -144,8 +179,9 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     // from mcp/<ns>/mcp.yaml), collapsing distinct servers into one identity.
     // Rules are an exception: the handler's name carries the namespace prefix
     // (e.g. 'ops/foo' for rules/ops/foo.md), so we parse name/namespace from
-    // the path instead.
-    if ((handlerTypes as readonly PlaceableType[]).includes(type) && type !== 'rules') {
+    // the path instead. Hook entry ids are authoritative too — they are what
+    // pull delivers by (the scan above already set them with the namespace).
+    if (((handlerTypes as readonly PlaceableType[]).includes(type) && type !== 'rules') || type === 'hooks') {
       return {
         type,
         name: item.name,
@@ -157,6 +193,15 @@ async function scanResources(repoDir: string, index: ManifestIndex): Promise<Rev
     const { name, namespace } = parseRelativePath(type, item.relativePath, index);
     return { type, name, namespace, relativePath: item.relativePath, absolutePath: item.sourcePath };
   });
+}
+
+/**
+ * The repo-relative directory a resource type lives under. It is the type name
+ * everywhere except wiki, whose authoritative root is `teamwiki/evidence/code`
+ * (three segments, as `rootSegmentsFor` counts), not `wiki/`.
+ */
+function repoRootFor(type: PlaceableType): string {
+  return type === 'wiki' ? 'teamwiki/evidence/code' : type;
 }
 
 // ─── Manifest index ──────────────────────────────────────────────────────────
@@ -286,12 +331,16 @@ async function namingFindings(resources: ReviewResource[], readText: (p: string)
         message: `Namespace "${resource.namespace}" in ${resource.relativePath} is not a usable path segment: ${NAMESPACE_RULE}.`,
       });
     }
-    if (!isSafeNamespaceSegment(resource.name)) {
+    // A name may be a multi-segment sub-path (docs and wiki keep their
+    // bundle-relative path below the root or namespace, e.g. 'api/guide'), so
+    // each segment is validated on its own rather than the joined string.
+    const badSegment = resource.name.split('/').find((segment) => !isSafeNamespaceSegment(segment));
+    if (badSegment !== undefined) {
       findings.push({
         level: 'fail',
         check: 'naming',
         path: resource.relativePath,
-        message: `Resource name "${resource.name}" in ${resource.relativePath} is not a usable path segment: ${NAMESPACE_RULE}.`,
+        message: `Resource name "${resource.name}" in ${resource.relativePath} has a segment ("${badSegment}") that is not usable: ${NAMESPACE_RULE}.`,
       });
     }
     const declaredName = await frontmatterName(resource, readText);
@@ -423,6 +472,9 @@ const MAX_SCANNED_FILE_BYTES = 512 * 1024;
 
 async function leakFindings(resources: ReviewResource[], readText: (p: string) => Promise<string | null>): Promise<Finding[]> {
   const findings: Finding[] = [];
+  // Several resources can share one file (every hook entry in a hooks.yaml is
+  // its own resource); its contents are checked once, not once per entry.
+  const seenFiles = new Set<string>();
   for (const resource of resources) {
     const files = resource.type === 'skills'
       ? (await listFilesRecursive(resource.absolutePath)).map((rel) => ({
@@ -432,6 +484,8 @@ async function leakFindings(resources: ReviewResource[], readText: (p: string) =
       : [{ relativePath: resource.relativePath, absolutePath: resource.absolutePath }];
 
     for (const file of files) {
+      if (seenFiles.has(file.absolutePath)) continue;
+      seenFiles.add(file.absolutePath);
       const content = await readText(file.absolutePath);
       if (content === null || content.length > MAX_SCANNED_FILE_BYTES || content.includes('\0')) continue;
 
@@ -489,8 +543,13 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
 
 // ─── Read-only branch reader ─────────────────────────────────────────────────
 
-/** The repo roots read out of the branch; everything else is irrelevant here. */
-const READ_ROOTS = [...PLACEABLE_TYPES, 'manifest'];
+/**
+ * The repo roots read out of the branch; everything else is irrelevant here.
+ * Wiki is read from its authoritative root `teamwiki/evidence/code`, matching
+ * where the resource handler and pull actually read it — reading `wiki/` would
+ * let everything under the real root bypass review.
+ */
+const READ_ROOTS = [...PLACEABLE_TYPES.map(repoRootFor), 'manifest'];
 
 /**
  * The ref to read `branch` from: the name itself when it resolves locally, else

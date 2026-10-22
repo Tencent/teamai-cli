@@ -38,6 +38,22 @@ function rolesYaml(namespaces: string[]): string {
   ].join('\n');
 }
 
+/** A roles manifest whose dev role declares `namespaces` on `axis`. */
+function resourcesYaml(axis: string, namespaces: string[]): string {
+  return [
+    'version: 1',
+    'roles:',
+    '  - id: dev',
+    '    description: dev',
+    '    resources:',
+    '      knowledge: []',
+    '      skills: []',
+    '      agents: []',
+    `      ${axis}: [${namespaces.join(', ')}]`,
+    '',
+  ].join('\n');
+}
+
 async function writeSkill(repoDir: string, relativeDir: string, body: string): Promise<void> {
   const dir = path.join(repoDir, ...relativeDir.split('/'));
   await fse.ensureDir(dir);
@@ -170,6 +186,117 @@ describe('reviewBranchDir — read-only health checks for a pushed branch (#776)
     const review = await reviewBranchDir(BRANCH, repoDir);
 
     expect(findings(review).some((f) => f.check === 'duplicates')).toBe(false);
+  });
+
+  it('passes a nested doc whose first directory is not a declared namespace', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('prompts', ['frontend']));
+    await fse.ensureDir(path.join(repoDir, 'docs', 'api'));
+    await fse.writeFile(path.join(repoDir, 'docs', 'api', 'guide.md'), '# API guide\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(true);
+    expect(findings(review)).toEqual([]);
+  });
+
+  it('keeps distinct nested doc sub-paths in co-active namespaces from conflicting', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('docs', ['a', 'b']));
+    await fse.ensureDir(path.join(repoDir, 'docs', 'a', 'api'));
+    await fse.writeFile(path.join(repoDir, 'docs', 'a', 'api', 'guide.md'), '# API guide\n');
+    await fse.ensureDir(path.join(repoDir, 'docs', 'b', 'ui'));
+    await fse.writeFile(path.join(repoDir, 'docs', 'b', 'ui', 'guide.md'), '# UI guide\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(true);
+    expect(findings(review)).toEqual([]);
+  });
+
+  it('fails the same nested doc sub-path in two co-active namespaces', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('docs', ['a', 'b']));
+    await fse.ensureDir(path.join(repoDir, 'docs', 'a', 'api'));
+    await fse.writeFile(path.join(repoDir, 'docs', 'a', 'api', 'guide.md'), '# API guide\n');
+    await fse.ensureDir(path.join(repoDir, 'docs', 'b', 'api'));
+    await fse.writeFile(path.join(repoDir, 'docs', 'b', 'api', 'guide.md'), '# other guide\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(false);
+    expect(findings(review).some((f) => (
+      f.check === 'duplicates' && /"api\/guide" is defined in both/.test(f.message)
+    ))).toBe(true);
+  });
+
+  it('reviews hooks by their entry ids, not their file names', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('hooks', ['a', 'b']));
+    for (const ns of ['a', 'b']) await fse.ensureDir(path.join(repoDir, 'hooks', ns));
+    await fse.writeFile(path.join(repoDir, 'hooks', 'a', 'hooks.yaml'), [
+      'hooks:',
+      '  - id: deploy',
+      '    description: deploy helper',
+      '    event: PreToolUse',
+      '    command: ~/.teamai/team-scripts/deploy.sh',
+      '',
+    ].join('\n'));
+    await fse.writeFile(path.join(repoDir, 'hooks', 'b', 'hooks.yaml'), [
+      'hooks:',
+      '  - id: notify',
+      '    description: notify helper',
+      '    event: PostToolUse',
+      '    command: ~/.teamai/team-scripts/notify.sh',
+      '',
+    ].join('\n'));
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(true);
+    expect(findings(review)).toEqual([]);
+  });
+
+  it('fails the same hook id in two co-active namespaces', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('hooks', ['a', 'b']));
+    for (const ns of ['a', 'b']) await fse.ensureDir(path.join(repoDir, 'hooks', ns));
+    const hook = [
+      'hooks:',
+      '  - id: deploy',
+      '    description: deploy helper',
+      '    event: PreToolUse',
+      '    command: ~/.teamai/team-scripts/deploy.sh',
+      '',
+    ].join('\n');
+    await fse.writeFile(path.join(repoDir, 'hooks', 'a', 'hooks.yaml'), hook);
+    await fse.writeFile(path.join(repoDir, 'hooks', 'b', 'hooks.yaml'), hook);
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(false);
+    expect(findings(review).some((f) => (
+      f.check === 'duplicates' && /"deploy" is defined in both/.test(f.message)
+    ))).toBe(true);
+  });
+
+  it('reviews wiki pages at teamwiki/evidence/code, not the wiki/ name', async () => {
+    await fse.ensureDir(path.join(repoDir, 'manifest'));
+    await fse.writeFile(path.join(repoDir, 'manifest', 'roles.yaml'), resourcesYaml('wiki', ['a', 'b']));
+    for (const ns of ['a', 'b']) await fse.ensureDir(path.join(repoDir, 'teamwiki', 'evidence', 'code', ns));
+    await fse.writeFile(path.join(repoDir, 'teamwiki', 'evidence', 'code', 'a', 'page.md'), '# page a\n');
+    await fse.writeFile(path.join(repoDir, 'teamwiki', 'evidence', 'code', 'b', 'page.md'), '# page b\n');
+    // A stray file under the old wiki/ root must not be reviewed at all.
+    await fse.ensureDir(path.join(repoDir, 'wiki'));
+    await fse.writeFile(path.join(repoDir, 'wiki', 'stray.md'), 'password: hunter2\n');
+
+    const review = await reviewBranchDir(BRANCH, repoDir);
+
+    expect(review.ok).toBe(false);
+    expect(findings(review).some((f) => (
+      f.check === 'duplicates' && /"page" is defined in both/.test(f.message)
+    ))).toBe(true);
+    expect(findings(review).some((f) => f.path?.startsWith('wiki/'))).toBe(false);
   });
 
   it('fails when a skill frontmatter name does not match its directory', async () => {
