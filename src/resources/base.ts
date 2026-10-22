@@ -12,6 +12,16 @@ import type { DeliveryLedger } from './delivered-copies.js';
 
 const TOMBSTONE_FILE = '.removed';
 
+/**
+ * Roots of newer app generations, which count as install proof beside the
+ * primary root: WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops
+ * reading `.workbuddy/`, so a member on 5.7+ has only the new root (#1273).
+ * The probe accepts either; which paths teamai writes stays the toolPaths
+ * entry's choice, per generation.
+ */
+const NEW_GENERATION_INSTALL_ROOTS: Readonly<Record<string, readonly string[]>> = {
+  workbuddy: ['.workbuddy-ai'],
+};
 /** Detect an installed tool while respecting tool-specific user roots. */
 export async function isToolInstalledForConfig(
   tool: string,
@@ -36,7 +46,11 @@ export async function isToolInstalledForConfig(
         return pathExists(defaultToolHome(tool, { home: getUserHome(), path }));
       case 'own-root': {
         const root = homeRoot(tool);
-        return ResourceHandler.isToolInstalled(root, baseDir, toolGateRoot(tool, root, localConfig.toolRoots));
+        if (await ResourceHandler.isToolInstalled(root, baseDir, toolGateRoot(tool, root, localConfig.toolRoots))) return true;
+        for (const nextRoot of NEW_GENERATION_INSTALL_ROOTS[tool] ?? []) {
+          if (await ResourceHandler.isToolInstalled(nextRoot, baseDir, toolGateRoot(tool, nextRoot, localConfig.toolRoots))) return true;
+        }
+        return false;
       }
       case undefined:
         break;
