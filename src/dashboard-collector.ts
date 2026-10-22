@@ -1211,6 +1211,23 @@ export interface ParseHookEventOptions {
   modelAliases?: Record<string, string>;
 }
 
+function codexReplyText(prompt: string): string {
+  const match = /^\s*<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>\s*$/.exec(prompt);
+  if (!match) return prompt;
+  try {
+    const replies: unknown = JSON.parse(match[1]);
+    if (!Array.isArray(replies) || replies.length === 0) return prompt;
+    const answers: string[] = [];
+    for (const reply of replies) {
+      if (!reply || typeof reply !== 'object' || typeof reply.answer !== 'string') return prompt;
+      answers.push(reply.answer);
+    }
+    return answers.join('\n');
+  } catch {
+    return prompt;
+  }
+}
+
 /**
  * Parse a hook STDIN JSON payload into a DashboardEvent.
  * Returns null if the payload is invalid or irrelevant.
@@ -1285,7 +1302,8 @@ export async function parseHookEvent(
   // is purely injected content produces no event at all, so it neither inflates the
   // prompt count nor shows up as a session prompt.
   if (eventType === 'prompt_submit' && typeof hookData.prompt === 'string') {
-    const human = stripInjectedPrompt(hookData.prompt);
+    const prompt = normalizeToolName(tool) === 'codex' ? codexReplyText(hookData.prompt) : hookData.prompt;
+    const human = stripInjectedPrompt(prompt);
     if (!human) return null;
     // Decide "correction" here, over the full prompt, because only the hook knows
     // which team (and so which extra keywords) the prompt belongs to. The

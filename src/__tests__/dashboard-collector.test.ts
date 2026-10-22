@@ -1159,6 +1159,40 @@ describe('parseHookEvent', () => {
     expect(event!.tool).toBe('claude-internal');
   });
 
+  it('extracts Codex answers before the summary limit and ignores question metadata', async () => {
+    const prompt = '<send_user_message_question_reply>' + JSON.stringify([
+      { questionItemId: 'id'.repeat(200), question: 'wrong?', answer: 'Use the web interface.' },
+      { question: 'Language?', answer: '简体中文' },
+    ]) + '</send_user_message_question_reply>';
+    const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt }), 'codex');
+    expect(event?.promptSummary).toBe('Use the web interface.\n简体中文');
+    expect(event?.correction).toBe(false);
+  });
+
+  it('redacts and caps extracted Codex answers', async () => {
+    const answer = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ' + 'x'.repeat(250) + ' wrong';
+    const prompt = '<send_user_message_question_reply>' + JSON.stringify([{ answer }]) + '</send_user_message_question_reply>';
+    const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt }), 'codex');
+    expect(event?.promptSummary).toContain('<REDACTED:gh_tok>');
+    expect(event?.promptSummary).not.toContain('ghp_');
+    expect(event?.promptSummary).toHaveLength(200);
+    expect(event?.correction).toBe(true);
+  });
+
+  it.each(['not JSON', '[]', '[{"answer":42}]', '[{"answer":"Yes"},{}]'])('preserves unsupported Codex reply payloads: %s', async (payload) => {
+    const prompt = '<send_user_message_question_reply>' + payload + '</send_user_message_question_reply>';
+    const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt }), 'codex');
+    expect(event?.promptSummary).toBe(prompt);
+  });
+
+  it('preserves ordinary prompts and wrappers from other tools', async () => {
+    const wrapper = '<send_user_message_question_reply>[{"answer":"Yes"}]</send_user_message_question_reply>';
+    for (const [tool, prompt] of [['claude', wrapper], ['codex', 'Explain ' + wrapper], ['codex', 'A normal prompt']]) {
+      const event = await parseHookEvent(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt }), tool);
+      expect(event?.promptSummary).toBe(prompt);
+    }
+  });
+
   it('flags a correction prompt on UserPromptSubmit', async () => {
     const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 's', prompt: 'wrong, redo it' });
     const event = await parseHookEvent(raw, 'claude');

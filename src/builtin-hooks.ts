@@ -251,7 +251,8 @@ export function toolUsesPwshShell(tool: string): boolean {
  * and the exit status, which carry a team hook's blocking decision (exit 2).
  */
 export function getTeamHookDispatchCommand(event: string, tool: string): string {
-  return `${getHookShellCommand()} -lc "teamai hook-dispatch ${event} --tool ${tool} --team-hooks"`;
+  const shell = isCodexTool(tool) ? 'bash' : getHookShellCommand();
+  return `${shell} -lc "teamai hook-dispatch ${event} --tool ${tool} --team-hooks"`;
 }
 
 /**
