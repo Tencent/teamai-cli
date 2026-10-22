@@ -59,10 +59,15 @@ function config(): LocalConfig {
   };
 }
 
+/** The captures come from POSIX shells, where a Windows path is spelled with forward slashes. */
+function posixPath(p: string): string {
+  return p.replaceAll(path.sep, '/');
+}
+
 function fixture(name: string): Record<string, unknown> {
   const text = fs.readFileSync(path.join(FIXTURES, `${name}.json`), 'utf-8')
-    .replaceAll('${HOME}', home)
-    .replaceAll('${CWD}', cwd);
+    .replaceAll('${HOME}', posixPath(home))
+    .replaceAll('${CWD}', posixPath(cwd));
   const payload: unknown = JSON.parse(text);
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) throw new Error(`${name} is not an object`);
   return { ...payload };
@@ -187,6 +192,24 @@ describe('skill use from a tool call (#1221)', () => {
     install('.codex/skills');
     await toolCall({ ...fixture('codex-real-a-cat'), tool_input: { command: `cat "$HOME/.codex/skills/${SKILL}/SKILL.md"` } }, 'codex');
     expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
+  });
+
+  it('credits a Codex skill read inside a shell command list', async () => {
+    const file = install('.codex/skills');
+    await toolCall({ ...fixture('codex-real-a-cat'), tool_input: { command: `pwd; cat ${file}` } }, 'codex');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
+  });
+
+  it('credits a Claude Bash skill read guarded by a test', async () => {
+    const file = install('.claude/skills');
+    await toolCall({ ...fixture('claude-skill'), tool_name: 'Bash', tool_input: { command: `test -f ${file} && cat ${file}` }, tool_response: { stdout: `# ${SKILL}\n`, stderr: '' } }, 'claude');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'claude' }]);
+  });
+
+  it('credits nothing when a skill path only appears inside a heredoc body', async () => {
+    const file = install('.codex/skills');
+    await toolCall({ ...fixture('codex-real-a-cat'), tool_input: { command: `cat <<'EOF'\ncat ${file}\nEOF` } }, 'codex');
+    expect(await credits()).toEqual([]);
   });
 
   it('gates a named Skill call on its calling tool but accepts a real read from another tool root', async () => {

@@ -16,7 +16,9 @@
  * scanners (`scanTeamForPull`), the same manifest loaders, the same
  * `NAMESPACE_AXIS` mapping, the same agent parser and the same secret
  * scrubber — so a branch this command calls clean is one pull reads the same
- * way. It deliberately does not re-implement any of that.
+ * way. Workflow files reuse `syncWorkflowDefinitions` with dry-run and an
+ * empty data home, and that check does not update this machine's workflow
+ * cache. It deliberately does not re-implement any of that.
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -33,12 +35,14 @@ import { AgentsHandler } from './resources/agents.js';
 import { RulesHandler } from './resources/rules.js';
 import { SkillsHandler } from './resources/skills.js';
 import { loadRolesManifestIfPresent, type RolesManifest } from './roles.js';
-import type { GlobalOptions, LocalConfig, ResourceItem, TeamaiConfig } from './types.js';
+import { LocalConfigSchema, type GlobalOptions, type LocalConfig, type ResourceItem, type TeamaiConfig } from './types.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
 import { listFilesRecursive, pathExists, readFileIfExists, writeFile, ensureDir } from './utils/fs.js';
-import { getFileContentAtRev, getHeadCommit, listFilesAtRev } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { getFileContentAtRev, getHeadCommit, listTreeAtRev } from './utils/git.js';
+import { isSilent, log, setSilent } from './utils/logger.js';
 import { redact } from './utils/redact.js';
+import { syncWorkflowDefinitions } from './workflow/cache.js';
+import { formatDiagnostic } from './workflow/parse.js';
 
 // ─── Findings ────────────────────────────────────────────────────────────────
 
@@ -46,7 +50,7 @@ import { redact } from './utils/redact.js';
 export type FindingLevel = 'fail' | 'warn' | 'info';
 
 /** Which group of checks produced a finding. */
-export type FindingCheck = 'structure' | 'naming' | 'duplicates' | 'format' | 'leaks';
+export type FindingCheck = 'structure' | 'naming' | 'duplicates' | 'format' | 'leaks' | 'workflows';
 
 /** One thing worth reporting about the branch. */
 export interface Finding {
@@ -414,6 +418,42 @@ async function leakFindings(resources: ReviewResource[], readText: (p: string) =
   return findings;
 }
 
+/**
+ * Config for checking the materialized branch. `kind` stays omitted, so this
+ * is not self mode, and `dataHome` is an empty directory rather than this
+ * machine's workflow cache.
+ */
+function reviewTreeConfig(repoDir: string, dataHome: string): LocalConfig {
+  const parsed = LocalConfigSchema.parse({
+    repo: { localPath: repoDir, remote: 'local' },
+    username: 'review',
+  });
+  return { ...parsed, dataHome };
+}
+
+/** Invalid workflow files. Dry-run, so the call does not write a cache. */
+async function workflowFindings(repoDir: string): Promise<Finding[]> {
+  const dataHome = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-review-workflows-'));
+  const wasSilent = isSilent();
+  setSilent(true);
+  try {
+    // Note: When #1085 adds scorers/, their validation diagnostics will join here.
+    const result = await syncWorkflowDefinitions(reviewTreeConfig(repoDir, dataHome), {
+      dryRun: true,
+      scopeLabel: 'review',
+    });
+    return result.invalid.map((diagnostic) => ({
+      level: 'fail',
+      check: 'workflows',
+      path: diagnostic.file,
+      message: formatDiagnostic(diagnostic),
+    }));
+  } finally {
+    setSilent(wasSilent);
+    await fse.remove(dataHome);
+  }
+}
+
 // ─── Engine ──────────────────────────────────────────────────────────────────
 
 /** Every check, in the order the reporter listed them. */
@@ -432,6 +472,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
     ...await duplicateFindings(resources, index),
     ...await formatFindings(resources, readText),
     ...await leakFindings(resources, readText),
+    ...await workflowFindings(repoDir),
   ];
 
   const counts: Record<FindingLevel, number> = { fail: 0, warn: 0, info: 0 };
@@ -443,7 +484,7 @@ export async function reviewBranchDir(branch: string, repoDir: string): Promise<
 // ─── Read-only branch reader ─────────────────────────────────────────────────
 
 /** The repo roots read out of the branch; everything else is irrelevant here. */
-const READ_ROOTS = ['skills', 'rules', 'agents', 'manifest'];
+const READ_ROOTS = ['skills', 'rules', 'agents', 'manifest', 'workflows', 'prompts', 'scorers'];
 
 /**
  * The ref to read `branch` from: the name itself when it resolves locally, else
@@ -463,12 +504,17 @@ export async function resolveBranchRef(repoPath: string, branch: string): Promis
 export async function materializeRef(repoPath: string, ref: string, destDir: string): Promise<number> {
   let written = 0;
   for (const root of READ_ROOTS) {
-    for (const file of await listFilesAtRev(repoPath, ref, root)) {
-      const content = await getFileContentAtRev(repoPath, ref, file);
+    for (const entry of await listTreeAtRev(repoPath, ref, root)) {
+      const content = await getFileContentAtRev(repoPath, ref, entry.path);
       if (content === null) continue;
-      const dest = path.join(destDir, ...file.split('/'));
+      const dest = path.join(destDir, ...entry.path.split('/'));
       await ensureDir(path.dirname(dest));
-      await writeFile(dest, content);
+      if (entry.mode === '120000') {
+        const target = content.toString('utf8');
+        await fse.symlink(target, dest);
+      } else {
+        await writeFile(dest, content);
+      }
       written++;
     }
   }

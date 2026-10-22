@@ -406,11 +406,14 @@ describe('push base in user scope (#823 item 4)', () => {
 
   it('keeps comparing with the last pull\'s revision in an install no pull has recorded', async () => {
     await run(['pull']);
-    // An install upgraded from a CLI that kept no user-scope record.
-    const statePath = path.join(home, '.teamai', 'state.json');
-    const { lastPullByWorkspace: _dropped, ...unrecorded } = userState();
-    fs.writeFileSync(statePath, `${JSON.stringify(unrecorded, null, 2)}\n`);
-    expect(await run(['pull'])).toContain('Already synced');
+    // An install upgraded from a CLI that kept no user-scope record. It has no
+    // record of where skills went either, so its first pull syncs in full and
+    // records one (#1221); the push below runs without it again.
+    dropUserRecord();
+    const pull = await run(['pull']);
+    expect(pull).not.toContain('Already synced');
+    expect(pull).toContain('Team repo: already up to date');
+    dropUserRecord();
 
     const R2 = '# Team rule\n\nVersion two, from a teammate.\n';
     teammatePublishes(R2);

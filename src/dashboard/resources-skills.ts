@@ -10,12 +10,12 @@
  */
 import matter from 'gray-matter';
 import { describeDeliveryConflict, resolveDesiredSkills } from '../resources/desired.js';
-import { skillsDirForTool } from '../resources/skills.js';
+import { installOf, locate, writableDir } from '../locate.js';
 import { getHandler } from '../resources/index.js';
 import { loadTagsConfig } from '../utils/tags.js';
 import { readFileSafe } from '../utils/fs.js';
 import { pathExists } from '../utils/fs.js';
-import { scopedToolPaths, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { type LocalConfig, type TeamaiConfig } from '../types.js';
 import { loadLocalConfig, loadLocalConfigForScope, loadStateForScope, saveLocalConfig, saveLocalConfigForScope, saveStateForScope } from '../config.js';
 import type { RolePullContext } from '../resources/desired.js';
 
@@ -161,11 +161,11 @@ async function installedAgentsFor(
   localConfig: LocalConfig,
   skillName: string,
 ): Promise<string[]> {
-  const toolPaths = scopedToolPaths(teamConfig, localConfig);
+  const install = installOf(teamConfig, localConfig);
   const installed: string[] = [];
-  for (const tool of Object.keys(toolPaths)) {
-    const skillsDir = await skillsDirForTool(tool, toolPaths[tool].skills, localConfig);
-    if (!skillsDir) continue;
+  for (const tool of Object.keys(install.toolPaths)) {
+    const skillsDir = writableDir(await locate(tool, 'skills', install));
+    if (skillsDir === null) continue;
     if (await pathExists(pathJoin(skillsDir, skillName))) installed.push(tool);
   }
   return installed;

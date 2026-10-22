@@ -121,16 +121,24 @@ describe('hooks', () => {
       expect(result.hooks.Stop[0].hooks[0]).not.toHaveProperty('additionalContextLimit');
     });
 
-    it('Codex format: gives every built-in entry its PowerShell form in commandWindows (#1074)', async () => {
+    it('Codex format: gives every built-in entry its cmd.exe form in commandWindows (#1215)', async () => {
       await injectHooks('/test/codex-hooks.json', 'codex');
 
       const result = mockFiles['/test/codex-hooks.json'] as { hooks: Record<string, Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>> };
+      // `command` keeps the POSIX fail-open form on every platform (#1074);
+      // Windows reads `commandWindows` under %COMSPEC% /C, where the
+      // pre-#1215 PowerShell syntax never ran: `2>$null` created a file named
+      // $null and `;` is an argument delimiter, so `exit 0` arrived as junk
+      // arguments. The cmd form redirects to `nul` and separates with `&`,
+      // which also restores the not-found fail-open on the real shell.
       expect(result.hooks.SessionStart[0].hooks[0].command).toBe('bash -lc "teamai hook-dispatch session-start --tool codex 2>/dev/null" || true');
-      expect(result.hooks.SessionStart[0].hooks[0].commandWindows).toBe('teamai hook-dispatch session-start --tool codex 2>$null; exit 0');
+      expect(result.hooks.SessionStart[0].hooks[0].commandWindows).toBe('teamai hook-dispatch session-start --tool codex 2>nul & exit 0');
       const todoWrite = result.hooks.PostToolUse.flatMap((group) => group.hooks).find((hook) => hook.command.includes('--matcher TodoWrite'));
-      expect(todoWrite?.commandWindows).toBe('teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>$null; exit 0');
+      expect(todoWrite?.commandWindows).toBe('teamai hook-dispatch post-tool-use --tool codex --matcher TodoWrite 2>nul & exit 0');
       for (const hook of Object.values(result.hooks).flat().flatMap((group) => group.hooks)) {
         expect(hook.commandWindows).toBeDefined();
+        expect(hook.commandWindows).not.toContain('$null');
+        expect(hook.commandWindows).not.toContain(';');
       }
     });
 

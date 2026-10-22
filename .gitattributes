@@ -10,3 +10,4 @@
 # CRLF on checkout, so on Windows the comparison failed for every tool while CI
 # (ubuntu/macos) stayed green. Pin them to LF so the anchor holds everywhere.
 src/__tests__/fixtures/hooks/*.json text eol=lf
+src/__tests__/fixtures/hooks-skill-retire/*.json text eol=lf

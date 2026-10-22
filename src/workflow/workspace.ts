@@ -19,16 +19,20 @@ export interface StepChanges {
   commits: string[];
 }
 
-/** The git contract on a `new` or `continue` lease. Paths stay off it. */
-export interface WorkspaceContract {
-  mode: 'new' | 'continue';
-  base: { ref: string; commit: string };
+/**
+ * The git contract on a lease that runs in a copy. Paths stay off it. A `new` or `continue` step commits to `branch`.
+ * A `read-only` step inside a copy runs in `branch`'s worktree, merges and commits nothing, and leaves it as it was.
+ */
+export type WorkspaceContract = {
+  base: { ref?: string; commit: string };
   /** The commit agent configuration is restored from before the step runs. */
   configCommit: string;
   branch: string;
   start: { commit: string; branch?: string };
-  merge: Array<{ branch: string; commit: string }>;
-}
+} & (
+  | { mode: 'new' | 'continue'; merge: Array<{ branch: string; commit: string }> }
+  | { mode: 'read-only'; merge: [] }
+);
 
 export interface SessionRef {
   tool: string;
@@ -56,7 +60,7 @@ export function branchName(runId: string, stepPath: string, pass: number): strin
 }
 
 /**
- * How a step runs. An explicit `workspace` wins. A command that omits it is read-only, even inside a copy.
+ * How a step runs. An explicit `workspace` wins. A command that omits it is read-only, even inside a copy, which it reads.
  * A prompt that omits it continues the nearest enclosing copy, or stays read-only. A `for_each` copy is `new`
  * per item, so siblings do not share a worktree.
  */
@@ -136,6 +140,32 @@ function mergeChanges(run: RunState, scope: Scope, state: StepState, definition:
     for (const id of definition.needs ?? []) push(states.find((item) => localId(scope, item) === id));
   }
   return ordered.map((item) => item.changes);
+}
+
+/**
+ * The branches a read-only step's own `needs` wrote or read, each with the newest commit a need left or read there.
+ * Inherited needs and `after` items are where a copy starts, not what a reader reads, so they are left out.
+ */
+function readHeads(run: RunState, scope: Scope, definition: WorkflowStep): Array<{ branch: string; commit: string; settledAt: number }> {
+  const heads: Array<{ branch: string; commit: string; settledAt: number }> = [];
+  const visit = (step: StepState | undefined): void => {
+    if (!step) return;
+    const changes = changesOf(step);
+    const read = 'read' in step ? step.read : undefined;
+    const head = changes ? { branch: changes.branch, commit: changes.to } : read;
+    if (!head) {
+      for (const item of itemsOf(run, step)) visit(item);
+      for (const child of workflowChildren(run, step)) visit(child);
+      return;
+    }
+    const settledAt = 'settledAt' in step ? step.settledAt : 0;
+    const earlier = heads.find((known) => known.branch === head.branch);
+    if (!earlier) heads.push({ branch: head.branch, commit: head.commit, settledAt });
+    else if (settledAt > earlier.settledAt) Object.assign(earlier, { commit: head.commit, settledAt });
+  };
+  const states = statesIn(run, scope);
+  for (const id of definition.needs ?? []) visit(states.find((item) => localId(scope, item) === id));
+  return heads;
 }
 
 /** Item ids on a step path, such as `fan[1]` inside `fan[1].check`. */
@@ -220,7 +250,7 @@ export interface WorkspaceRequest {
   driver: DriverIdentity;
   /** Modes this driver can run. Omitted means read-only only, so a workspace step waits. */
   modes?: WorkspaceMode[];
-  base?: { ref: string; commit: string };
+  base?: { ref?: string; commit: string };
 }
 
 /**
@@ -239,9 +269,33 @@ export function planWorkspace(
   const mode = resolveMode(definition, ancestors.map((ancestor) => ancestor.step));
   const sessionResult = sessionOf(run, scope, state, definition);
   if (sessionResult && 'code' in sessionResult) return { mode, fail: sessionResult };
-  if (mode === 'read-only') return { mode, ...(sessionResult ? { session: sessionResult } : {}) };
-
+  const session = sessionResult ? { session: sessionResult } : {};
+  const owner = [...ancestors].reverse().find((ancestor) => opensCopy(ancestor.step));
   const modes = request.modes ?? ['read-only'];
+  if (mode === 'read-only') {
+    if (!owner) return { mode, ...session };
+    // A reader runs where its need left the change, or in the copy a `continue` step there would use.
+    const heads = readHeads(run, scope, definition);
+    if (heads.length > 1) {
+      const branches = heads.map((head) => head.branch).join(', ');
+      return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" reads branches ${branches}; add a step that merges them and need that step` } };
+    }
+    const needed = heads.length === 1 ? heads[0] : undefined;
+    const branch = needed?.branch ?? branchName(run.id, owner.instance, owner.pass);
+    if (!handback && !modes.includes('continue')) {
+      return { mode, defer: `step "${state.id}" reads workspace ${branch}, which needs continue` };
+    }
+    const base = run.base ?? request.base;
+    if (!base) {
+      return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" needs the run's base commit` } };
+    }
+    const copy = run.copies?.[branch];
+    if (!handback && copy && !sameDriver(copy.owner, request.driver)) {
+      return { mode, defer: `step "${state.id}" reads a workspace owned by another driver` };
+    }
+    const start = { commit: copy?.commit ?? needed?.commit ?? base.commit };
+    return { mode, ...session, contract: { mode, base, configCommit: base.commit, branch, start, merge: [] } };
+  }
   if (!handback && !modes.includes(mode)) {
     return { mode, defer: `step "${state.id}" needs workspace ${mode}, which this driver does not provide` };
   }
@@ -249,8 +303,6 @@ export function planWorkspace(
   if (!base) {
     return { mode, fail: { code: 'workspace_base', message: `step "${state.id}" needs the run's base commit` } };
   }
-  const owner = [...ancestors].reverse().find((ancestor) => ancestor.step.workspace === 'new'
-    || (ancestor.step.forEach !== undefined && ancestor.step.workspace === 'continue'));
   const branch = mode === 'new' || !owner
     ? branchName(run.id, state.id, state.pass ?? 1)
     : branchName(run.id, owner.instance, owner.pass);
@@ -277,8 +329,22 @@ export function planWorkspace(
   };
 }
 
-/** The branch a step would use, when it runs in a workspace. */
+/** Whether the steps inside `step` run in a copy it opens rather than in the one around it. */
+function opensCopy(step: WorkflowStep): boolean {
+  return step.workspace === 'new' || (step.forEach !== undefined && step.workspace === 'continue');
+}
+
+/**
+ * The existing branch a step that has not started yet would run in. A leaf, or a `for_each` step whose items are leaves,
+ * uses the branch its lease names. The steps of a workflow continue or read the copy around it, unless it opens its own;
+ * a branch they open themselves does not exist yet.
+ */
 export function plannedBranch(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): string | undefined {
+  if (definition.workflow !== undefined) {
+    if (opensCopy(definition)) return undefined;
+    const owner = [...ancestorsOf(run, state.id)].reverse().find((ancestor) => opensCopy(ancestor.step));
+    return owner && branchName(run.id, owner.instance, owner.pass);
+  }
   return planWorkspace(run, scope, state, definition, {
     driver: { kind: '', machine: '', workspace: '' },
     modes: ['read-only', 'new', 'continue'],

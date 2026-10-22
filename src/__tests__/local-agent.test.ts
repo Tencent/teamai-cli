@@ -158,6 +158,27 @@ describe('local-agent: buildReportPayload disk scan', () => {
     expect(payload.user_level.skills?.[0]?.source).toBe('enterprise');
     expect(payload.user_level.rules?.map((r) => r.slug)).toEqual(['my-rule']);
   });
+
+  it('scans user-level skills where a moved home puts them: HERMES_HOME, not ~/.hermes', async () => {
+    await setupConfig();
+    const hermesHome = path.join(tmpDir, 'hermes-home');
+    vi.stubEnv('HERMES_HOME', hermesHome);
+    try {
+      await writeSkill(tmpDir, 'hermes', 'default-skill', 'default-skill');
+      const skillDir = path.join(hermesHome, 'skills', 'moved-skill');
+      await fse.ensureDir(skillDir);
+      await fse.writeFile(path.join(skillDir, 'SKILL.md'), ['---', 'name: moved-skill', '---', '', '# skill'].join('\n'));
+
+      const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+      const config = await loadLocalAgentConfig();
+      if (!config) throw new Error('expected the local-agent config setupConfig wrote');
+      const payload = await buildReportPayload(config, { tool: 'hermes' }) as { user_level: { skills?: Array<{ slug: string }> } };
+
+      expect(payload.user_level.skills?.map((s) => s.slug)).toEqual(['moved-skill']);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe('local-agent: project MCP report is per-worktree (issue #374 P1-2C)', () => {

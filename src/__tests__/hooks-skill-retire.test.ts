@@ -4,11 +4,12 @@
  * and only the Skill entry goes, every other byte stays. A project's team-only
  * file never held the built-in, so it is written as before.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { injectHooks, reconcileHooks } from '../hooks.js';
+import { _resetShellCache } from '../builtin-hooks.js';
 import type { HookDef } from '../types.js';
 
 const FIXTURES = path.resolve(__dirname, 'fixtures', 'hooks-skill-retire');
@@ -23,12 +24,17 @@ let tmp: string;
 let originalHome: string | undefined;
 
 beforeEach(() => {
+  // The captured files describe POSIX output, including ZCode's bash argv.
+  vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+  _resetShellCache();
   tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-skill-retire-')));
   originalHome = process.env.HOME;
   process.env.HOME = tmp;
 });
 
 afterEach(() => {
+  _resetShellCache();
+  vi.restoreAllMocks();
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
   fs.rmSync(tmp, { recursive: true, force: true });

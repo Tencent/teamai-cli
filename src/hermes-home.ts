@@ -1,17 +1,10 @@
-import path from 'node:path';
-import { homedir } from 'node:os';
+import { toolHome } from './tool-home.js';
 
 /**
- * Resolve the Hermes agent home directory.
- *
- * Mirrors Hermes' own `get_hermes_home()` semantics: honor the
- * `HERMES_HOME` environment variable when set, otherwise fall back
- * to `~/.hermes`.
+ * Hermes's home on this machine (`toolHome`): the recorded one, else as Hermes
+ * resolves it (`TOOLS.hermes.home`): `HERMES_HOME`, else
+ * `%LOCALAPPDATA%\hermes` on Windows, else `~/.hermes`.
  */
 export function getHermesHome(): string {
-  const fromEnv = process.env.HERMES_HOME;
-  if (fromEnv && fromEnv.trim() !== '') {
-    return path.resolve(fromEnv);
-  }
-  return path.join(homedir(), '.hermes');
+  return toolHome('hermes');
 }

@@ -14,7 +14,7 @@ import { z } from 'zod';
 
 import { ensureDir, writeFileAtomic } from './fs.js';
 import { parseFrontmatter } from './frontmatter.js';
-import { createGit } from './git.js';
+import { createGitWithBlockTimeout } from './git.js';
 import { learningsBranch } from './learnings-branch.js';
 import { CheckoutRefusedError, failureReason, fetchTrackingRef, type PublishResult } from './branch-worktree.js';
 import { log } from './logger.js';
@@ -202,7 +202,7 @@ async function queueImportRemnants(localConfig: LocalConfig): Promise<void> {
   try {
     const checkout = await learningsBranch.registeredCheckout(localConfig);
     if (checkout === null) return;
-    const git = createGit(checkout);
+    const git = createGitWithBlockTimeout(checkout);
     const lsFiles = async (args: string[]): Promise<string[]> =>
       (await git.raw(['ls-files', '-z', ...args, '--', 'learnings'])).split('\0').filter(Boolean);
 
@@ -377,7 +377,7 @@ const MaintenanceRecord = z.object({
 type MaintenanceRecord = z.infer<typeof MaintenanceRecord>;
 
 async function hasUncommittedChange(checkout: string, rel: string): Promise<boolean> {
-  const status = await createGit(checkout).raw(['--literal-pathspecs', 'status', '--porcelain', '-z', '--untracked-files=all', '--', rel]);
+  const status = await createGitWithBlockTimeout(checkout).raw(['--literal-pathspecs', 'status', '--porcelain', '-z', '--untracked-files=all', '--', rel]);
   return status.length > 0;
 }
 
@@ -392,7 +392,7 @@ async function contentDigest(file: string): Promise<string | null> {
  * changes they describe. One file per run, so a publish removes only what it read.
  */
 async function maintenanceRecordsDir(checkout: string): Promise<string> {
-  const gitPath = (await createGit(checkout).raw(['rev-parse', '--git-path', 'teamai-maintenance'])).trim();
+  const gitPath = (await createGitWithBlockTimeout(checkout).raw(['rev-parse', '--git-path', 'teamai-maintenance'])).trim();
   return path.resolve(checkout, gitPath);
 }
 
@@ -489,7 +489,7 @@ async function commitMaintenance(localConfig: LocalConfig, message: string, inCh
   let tracked = new Set<string>();
   if (removed.length > 0) {
     try {
-      tracked = new Set((await createGit(checkout).raw(['--literal-pathspecs', 'ls-files', '-z', '--', ...removed])).split('\0').filter(Boolean));
+      tracked = new Set((await createGitWithBlockTimeout(checkout).raw(['--literal-pathspecs', 'ls-files', '-z', '--', ...removed])).split('\0').filter(Boolean));
     } catch (e) {
       // Not a checkout git can read, such as an HTTP install's cache: the same
       // non-fatal result commitAndPush gives, never a throw after the removal.

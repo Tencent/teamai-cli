@@ -1,5 +1,8 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { builtinHookDefs, applyBuiltinOverride } from '../builtin-hooks.js';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { builtinHookDefs, applyBuiltinOverride, _resetShellCache } from '../builtin-hooks.js';
+
+beforeEach(() => _resetShellCache());
+afterEach(() => _resetShellCache());
 
 describe('builtinHookDefs — unified built-in hook model', () => {
   it('returns 6 built-in defs for Claude in canonical order, all tagged source=builtin', () => {

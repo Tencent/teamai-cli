@@ -115,6 +115,7 @@ import {
 } from './git-exclude-notices.js';
 import { blockingEntries, contentHash, deliveredSkillFiles, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir } from './resources/delivered-copies.js';
 import { skillOrigin, withSkillFrontmatter } from './resources/skills.js';
+import { installOf, locate } from './locate.js';
 import { acquireLock, releaseLock } from './update.js';
 
 const execFileAsync = promisify(execFile);
@@ -1922,9 +1923,8 @@ export async function buildReportPayload(
     const toolPath = scopedToolPaths(teamConfig, localConfig)[tool];
     if (!toolPath) return { skills: [], rules: [] };
     const baseDir = resolveToolBaseDir(tool, localConfig);
-    const skills = toolPath.skills
-      ? await scanSkillsFromDisk(path.join(baseDir, toolPath.skills), manifestSlugs.skills)
-      : [];
+    const skillsDir = (await locate(tool, 'skills', installOf(teamConfig, localConfig))).own;
+    const skills = skillsDir === null ? [] : await scanSkillsFromDisk(skillsDir, manifestSlugs.skills);
     const rules = toolPath.rules
       ? await scanRulesFromDisk(path.join(baseDir, toolPath.rules), manifestSlugs.rules)
       : [];

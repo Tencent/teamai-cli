@@ -83,7 +83,7 @@ const configured = (paths: ToolPaths): string | undefined => paths.claudemd;
  * also what says OpenClaw is not installed here (`isInstructionToolInstalled`).
  */
 const openclawWorkspace = async (): Promise<string | undefined> => {
-  const { resolveOpenclawWorkspace } = await import('./openclaw-hooks.js');
+  const { resolveOpenclawWorkspace } = await import('./openclaw-home.js');
   const workspace = await resolveOpenclawWorkspace();
   // An openclaw.json teamai cannot read may name another workspace: guess none (#946).
   return workspace.kind === 'found' ? path.join(workspace.dir, 'AGENTS.md') : undefined;
@@ -523,7 +523,7 @@ export async function userRulesFile(tool: string, paths: ToolPaths, localConfig:
   if (tool === 'openclaw') {
     // Installed where its workspace resolves, or where openclaw.json says
     // where it is in a form teamai cannot read.
-    const { resolveOpenclawWorkspace } = await import('./openclaw-hooks.js');
+    const { resolveOpenclawWorkspace } = await import('./openclaw-home.js');
     const workspace = await resolveOpenclawWorkspace();
     if (workspace.kind === 'unreadable-config') {
       return { file: undefined, installed: true, label, unreadable: { config: workspace.file, error: workspace.error } };

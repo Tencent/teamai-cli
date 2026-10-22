@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import YAML from 'yaml';
 import { projectSlug } from '../../utils/partition.js';
 import { queueLockPath } from '../../utils/pending-learnings.js';
 
@@ -931,7 +932,17 @@ describe('self mode with a linked worktree (#808)', () => {
     expect(downvote.output).toContain('Document not found in votes: foreign-doc');
     expect(downvote.output).not.toContain('Negative signal recorded');
 
-    // Nor does an index build: contribute's, then recall's own.
+    // Earlier recalls created one local recall credit. A foreign reports
+    // checkout must not hide this project's pending votes (#1233), nor add
+    // the other team's three recall credits and three upvotes.
+    const selfDocId = selfNote.replace(/\.md$/, '');
+    const localVotes = YAML.parse(fs.readFileSync(path.join(partition, 'votes', 'ci-808.yaml'), 'utf8'));
+    expect(localVotes.deltas[selfDocId]).toMatchObject({ recalled_delta: 1, upvoted_delta: 0 });
+    const feedback = await runCLI(['recall', 'feedback', '--positive', selfDocId], projectRoot, home);
+    expect(feedback.code, feedback.output).toBe(0);
+    expect(feedback.output).toContain(`Upvoted: ${selfDocId}`);
+
+    // Both rebuild paths retain exactly the local recall + feedback (1.3).
     const indexPath = path.join(partition, 'workspaces', workspaceId(projectRoot), 'search-index.json');
     const selfNoteVotes = (): number | undefined => {
       const index: unknown = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
@@ -940,10 +951,10 @@ describe('self mode with a linked worktree (#808)', () => {
       return entry && typeof entry === 'object' && 'votes' in entry && typeof entry.votes === 'number' ? entry.votes : undefined;
     };
     await runCLI(['contribute', '--title', 'another-note', '--file', note(project, 'another', 'Another note')], projectRoot, home);
-    expect(selfNoteVotes()).toBe(0);
+    expect(selfNoteVotes()).toBe(1.3);
     fs.rmSync(indexPath, { force: true });
     await runCLI(['recall', 'note'], projectRoot, home);
-    expect(selfNoteVotes()).toBe(0);
+    expect(selfNoteVotes()).toBe(1.3);
   });
 
   it('refuses and keeps a learnings checkout whose repository is gone, and indexes none of it', async () => {

@@ -73,7 +73,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin, gitCommonDir, unusedBranchName } from '../utils/git.js';
 import fse from 'fs-extra';
-import { createGit, createGitForInitPush, disableGitTerminalPrompt } from '../utils/git.js';
+import { createGit, createGitWithBlockTimeout, disableGitTerminalPrompt } from '../utils/git.js';
 
 describe('createGit', () => {
   // The init-hang bug: a push with missing credentials opened an invisible
@@ -81,8 +81,8 @@ describe('createGit', () => {
   // process-wide by disableGitTerminalPrompt (tested separately), NOT per
   // simple-git instance — simple-git's .env() replaces the whole child env,
   // which would drop PATH/HOME and break git. The spawn-level block timeout
-  // is NOT global either — it lives in createGitForInitPush so it cannot kill
-  // slow clones/fetches elsewhere.
+  // is NOT global either — it lives in createGitWithBlockTimeout, so slow
+  // clones/fetches through createGit are never killed.
   beforeEach(() => {
     simpleGitCalls.length = 0;
   });
@@ -100,13 +100,13 @@ describe('createGit', () => {
   });
 });
 
-describe('createGitForInitPush', () => {
+describe('createGitWithBlockTimeout', () => {
   beforeEach(() => {
     simpleGitCalls.length = 0;
   });
 
   it('adds the spawn-level block timeout so a hung init push subprocess is killed', () => {
-    createGitForInitPush('/some/path');
+    createGitWithBlockTimeout('/some/path');
     const options = simpleGitCalls.at(-1)![0] as { timeout?: { block?: number } };
     // simple-git's timeout.block actually kills the spawned process; a
     // Promise.race-style timeout would leave it running.
@@ -117,7 +117,7 @@ describe('createGitForInitPush', () => {
     const prev = process.env.TEAMAI_INIT_PUSH_TIMEOUT_MS;
     process.env.TEAMAI_INIT_PUSH_TIMEOUT_MS = '120000';
     try {
-      createGitForInitPush('/some/path');
+      createGitWithBlockTimeout('/some/path');
       const options = simpleGitCalls.at(-1)![0] as { timeout?: { block?: number } };
       expect(options.timeout?.block).toBe(120_000);
     } finally {

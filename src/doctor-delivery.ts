@@ -23,6 +23,11 @@ import {
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
 import { getUserHome } from './utils/home.js';
+import { loadStateForScope } from './config.js';
+import { installOf, locate, unreadWrites, writableDir, writesOf, type Location } from './locate.js';
+import { amongSkillDirs, sameSkillDir, sameSkillDirs } from './resources/skill-dirs.js';
+import { defaultToolHome, realHost, toolHome } from './tool-home.js';
+import { isToolId, movesPartly } from './tools.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
@@ -333,6 +338,156 @@ export async function buildDeliveryChecks(ctx: DoctorContext): Promise<Check[]> 
         : '')
       + membersOwnFix(memberLines, delivery),
   }));
+}
+
+/** Each tool teamai writes skills for now, with where it takes them. */
+async function writableSkillLocations(ctx: DoctorContext): Promise<{ tool: string; own: string; where: Location }[]> {
+  const { localConfig, teamConfig } = ctx;
+  if (!teamConfig) return [];
+  const install = installOf(teamConfig, localConfig);
+  const located: { tool: string; own: string; where: Location }[] = [];
+  for (const tool of Object.keys(ctx.toolPaths)) {
+    const where = await locate(tool, 'skills', install);
+    const own = writableDir(where);
+    if (own !== null) located.push({ tool, own, where });
+  }
+  return located;
+}
+
+/**
+ * Per tool, whether the last pull wrote its skills where it takes them now
+ * (#1221): the env, or a recorded home, can move them after that pull. And
+ * whether the tool reads the directory at all, when its reads are known.
+ */
+export async function buildSkillDirChecks(ctx: DoctorContext): Promise<Check[]> {
+  const located = await writableSkillLocations(ctx);
+  if (located.length === 0) return [];
+  const { checkoutRecordKey } = await import('./pull.js');
+  const key = await checkoutRecordKey(ctx.localConfig);
+  const recorded = key === undefined ? undefined : (await loadStateForScope(ctx.localConfig)).lastPullByWorkspace?.[key]?.skillDirs;
+  const unmoved = async (tool: string, where: Location): Promise<boolean> => {
+    const wrote = recorded?.[tool];
+    return wrote === undefined || sameSkillDirs({ [tool]: wrote }, { [tool]: writesOf(where) });
+  };
+  const moved = (await Promise.all(located.map(({ tool, where }) => unmoved(tool, where)))).includes(false);
+  const holds = moved ? await moveHolds(ctx, located) : { members: new Map<string, string[]>(), workspaceHeld: [] };
+  const checks: Check[] = [];
+  for (const { tool, own, where } of located) {
+    const wrote = recorded?.[tool];
+    if (wrote !== undefined) {
+      checks.push({
+        name: `${tool} skills are where the last pull wrote them`,
+        source: 'local',
+        check: async () => unmoved(tool, where),
+        fix: await moveFix({ tool, own, writes: writesOf(where), wrote, members: holds.members.get(tool) ?? [], workspaceHeld: holds.workspaceHeld }),
+      });
+    }
+    if (where.reads === 'unknown') continue;
+    const notRead = unreadWrites(where).filter((unread) => unread.reason === 'not-read');
+    checks.push({
+      name: `${tool} reads the skills teamai writes`,
+      source: 'local',
+      check: async () => notRead.length === 0,
+      fix: `${notRead.map((unread) => `${tool} does not read ${unread.write}`).join('; ')}. `
+        + `Point toolPaths.${tool}.skills in teamai.yaml at a directory ${tool} reads.`,
+    });
+  }
+  return checks;
+}
+
+/** Doctor's fix for a tool whose skills are not where the last pull wrote them. */
+async function moveFix({ tool, own, writes, wrote, members, workspaceHeld }: {
+  readonly tool: string;
+  readonly own: string;
+  readonly writes: readonly string[];
+  readonly wrote: readonly string[];
+  readonly members: readonly string[];
+  readonly workspaceHeld: readonly string[];
+}): Promise<string> {
+  const earlier: string[] = [];
+  for (const dir of wrote) if (!await amongSkillDirs(dir, writes)) earlier.push(dir);
+  let keptOldCopies = earlier.length > 0;
+  for (const write of writes) keptOldCopies &&= await amongSkillDirs(write, wrote);
+  if (!keptOldCopies) {
+    return `${tool} takes skills from ${own}, but the last pull wrote them to ${wrote[0]}. `
+      + (members.length > 0 ? members.join(' ') : 'Run `teamai pull` to sync them there.');
+  }
+  const { BUILTIN_SKILL_NAMES } = await import('./builtin-skills.js');
+  const reasons = [...members];
+  if (workspaceHeld.length > 0) reasons.push(`This workspace holds back ${workspaceHeld.join(', ')}: its members deliver different copies. Make the copies equal in the team repo, or rename one.`);
+  for (const name of BUILTIN_SKILL_NAMES) {
+    const deployed = await Promise.all(writes.map((dir) => pathExists(path.join(dir, name, 'SKILL.md'))));
+    if (!deployed.includes(true)) reasons.push(`The built-in ${name} skill is not there: \`teamai pull\` says why it could not deploy it.`);
+  }
+  return `${tool} takes skills from ${own}, but the last pull could not deliver every skill there, so it kept teamai's copies in ${earlier.join(', ')}. `
+    + (reasons.length > 0 ? reasons.join(' ') : 'Run `teamai pull`: it says what holds them back.');
+}
+
+/**
+ * What holds skills back where each tool takes them now: pull's line for each
+ * file of the member's own where a team or built-in skill goes, by tool, and
+ * the skills this workspace holds back (#913).
+ */
+async function moveHolds(
+  ctx: DoctorContext,
+  located: readonly { readonly tool: string; readonly where: Location }[],
+): Promise<{ readonly members: Map<string, string[]>; readonly workspaceHeld: readonly string[] }> {
+  const members = new Map<string, string[]>();
+  const { keptStubLine, BUILTIN_SKILL_NAMES } = await import('./builtin-skills.js');
+  for (const { tool, where } of located) {
+    for (const dir of writesOf(where)) {
+      for (const name of BUILTIN_SKILL_NAMES) {
+        const kept = await keptStubLine(path.join(dir, name), name);
+        if (kept !== null) linesFor(members, tool).push(kept);
+      }
+    }
+  }
+  const { localConfig, teamConfig } = ctx;
+  if (!teamConfig) return { members, workspaceHeld: [] };
+  const { buildRolePullContext, resolveDesiredSkills } = await import('./resources/desired.js');
+  // A team repo whose skills cannot be resolved fails the delivery check, which says why.
+  const desired = await resolveDesiredSkills(teamConfig, localConfig, await buildRolePullContext(localConfig)).catch(() => undefined);
+  if (desired?.kind !== 'resolved') return { members, workspaceHeld: [] };
+  const { getHandler } = await import('./resources/index.js');
+  const { deliveredHashes } = await import('./pull.js');
+  const { describeKeptEntry, judgeCopy } = await import('./resources/delivered-copies.js');
+  const previous = await deliveredHashes(localConfig);
+  await walkDelivery(getHandler('skills'), ctx, desired.items, async (target, item) => {
+    if (await pathExists(target.dest) && (await judgeCopy(previous, item, target)).kind === 'member') {
+      linesFor(members, target.tool).push(await describeKeptEntry(target.dest, item.relativePath));
+    }
+    return null;
+  });
+  return { members, workspaceHeld: desired.held };
+}
+
+/** Skills a tool reads only from a session started in one place (#1221). */
+export async function skillReadNotes(ctx: DoctorContext): Promise<string[]> {
+  const notes: string[] = [];
+  const host = realHost();
+  for (const { tool, own, where } of await writableSkillLocations(ctx)) {
+    if (ctx.localConfig.scope === 'user' && isToolId(tool) && movesPartly(tool)) {
+      const defaultHome = defaultToolHome(tool, host);
+      if (!await sameSkillDir(toolHome(tool, host), defaultHome)) notes.push(`${tool} takes skills from ${own}, but teamai still writes some of its other files under ${defaultHome}.`);
+    }
+    for (const unread of unreadWrites(where)) {
+      switch (unread.reason) {
+        case 'not-read':
+          break;
+        case 'cwd-only':
+          notes.push(`${tool} reads project skills only from a session started in ${unread.readFrom}.`);
+          break;
+        case 'outside-workspace':
+          notes.push(`${tool} reads ${unread.write} only from sessions under ${unread.readFrom}.`);
+          break;
+        default: {
+          const unhandled: never = unread;
+          return unhandled;
+        }
+      }
+    }
+  }
+  return notes;
 }
 
 /**

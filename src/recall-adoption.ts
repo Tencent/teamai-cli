@@ -317,7 +317,7 @@ function viewRoot(index: LogIndex, target: string): RootView {
     return docsOpened(e.path, docs).filter((d) => d.eligible);
   };
   const evidence = lines.filter((e): e is EvidenceLine => e.kind === 'evidence' && rootOf(e.session) === target
-    // A read of unknown status (Codex's shell) counts only as a simple read, never as a pipeline's head.
+    // A read of unknown status (Codex's shell) counts only as a simple read, never as a pipeline's head or an item of a list.
     && (e.status === 'success' || (e.status === 'unknown' && e.simple === true)));
   const credited = evidence.filter((e) => consumed.has(e.id)).flatMap(opened);
   const done = new Set(credited.map(creditOf));

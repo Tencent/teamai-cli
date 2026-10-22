@@ -23,6 +23,14 @@ const ChangesSchema = z.object({
   commits: z.array(z.string()),
 });
 
+/** What a read-only step inside a copy reports: the branch it ran on and the commit it read. It wrote nothing. */
+export const ReadSchema = z.object({
+  branch: z.string().min(1),
+  base: z.string().min(1),
+  commit: z.string().min(1),
+});
+export type StepRead = z.infer<typeof ReadSchema>;
+
 /** What a driver reports about the attempt that settled a step. */
 const report = {
   exitCode: z.number().optional(),
@@ -32,6 +40,7 @@ const report = {
   session: z.string().optional(),
   tokens: TokenUsageSchema.optional(),
   changes: ChangesSchema.optional(),
+  read: ReadSchema.optional(),
   /**
    * What the pass ran as (#1176), settled by the engine before it is saved. One this CLI cannot read, such as a newer
    * version's, reads as absent rather than making the run unreadable.

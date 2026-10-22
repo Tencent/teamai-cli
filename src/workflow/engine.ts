@@ -16,11 +16,14 @@ import {
   type StepExpression, type TemplateError,
 } from './template.js';
 import { parseStepPath } from './step-path.js';
-import { DriverSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, waitForAnswer, type ItemResult, type LeasedStep, type StepState } from './step-state.js';
+import {
+  DriverSchema, ReadSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, waitForAnswer,
+  type ItemResult, type LeasedStep, type StepRead, type StepState,
+} from './step-state.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { planWorkspace, plannedBranch, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
+import { planWorkspace, plannedBranch, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
 import { generateRunId, isRunId, readRun, runLockPath, writeRun } from './store.js';
 import type {
   CachedWorkflow,
@@ -61,6 +64,8 @@ export interface ReportInput {
   failure?: WorkflowFailure;
   /** The branch this attempt committed, when it ran in a workspace. */
   changes?: { branch: string; base: string; from: string; to: string; commits: string[] };
+  /** The branch and commit this attempt read, when it ran read-only in a workspace. */
+  read?: StepRead;
   agent?: ReportedAgent;
 }
 
@@ -445,12 +450,19 @@ function skipUnreachable(run: RunState, scope: Scope, states: StepState[], { con
   return ready;
 }
 
+/** A leaf step that can be leased, with what its lease renders to. */
+interface Ready {
+  lease: StepState;
+  definition: WorkflowStep;
+  rendered: RenderedLease;
+}
+
 /**
- * How settling a workflow of the run ended: a step to lease, the workflow's outcome, nothing to do until an open
- * lease is reported, or a run file that cannot settle.
+ * How settling a workflow of the run ended: the steps to lease, in the order they were found, the workflow's outcome,
+ * nothing to do until an open lease is reported, or a run file that cannot settle.
  */
 type Settled =
-  | { lease: StepState; definition: WorkflowStep; rendered: RenderedLease }
+  | { ready: Ready[] }
   | WorkflowResult
   | { inProgress: true }
   | { unreadable: string };
@@ -570,7 +582,7 @@ function advanceInstance(
   }
   if (definition.workflow === undefined) {
     const rendered = renderLease(scope, states, state, definition);
-    if (!('code' in rendered)) return { lease: state, definition, rendered };
+    if (!('code' in rendered)) return { ready: [{ lease: state, definition, rendered }] };
     failStep(state, rendered, run.revision);
     return undefined;
   }
@@ -582,8 +594,9 @@ function advanceInstance(
 }
 
 /**
- * Settles items at the current revision and returns the first leaf available to lease. An item waits for its
- * `after` dependencies and for room under `max_parallel`.
+ * Settles items at the current revision and returns the leaves available to lease. An item waits for its
+ * `after` dependencies and for room under `max_parallel`. A ready leaf does not take room until it is leased, and
+ * `next` leases one step per call, so a held-back item leaves its room to the next one.
  */
 function settleItems(
   run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep,
@@ -599,7 +612,7 @@ function settleItems(
     const maxParallel = definition.forEach?.maxParallel;
     let started = startedItems(items);
     let changed = false;
-    let candidate: Settled | undefined;
+    const ready: Ready[] = [];
     for (const [index, item] of items.entries()) {
       if (item.status === 'pending' && standing(index) === 'skip') {
         // A skip makes the items after it skippable wherever they are in item order, so it reaches them all now.
@@ -615,7 +628,7 @@ function settleItems(
       if (item.status !== 'running' && (item.status !== 'pending' || standing(index) !== 'ready' || (maxParallel !== undefined && started >= maxParallel))) continue;
       const advanced = advanceInstance(run, scope, states, item, definition);
       if (advanced && 'unreadable' in advanced) return advanced;
-      if (advanced && 'lease' in advanced) candidate ??= advanced;
+      if (advanced && 'ready' in advanced) ready.push(...advanced.ready);
       if (advanced) continue;
       changed = true;
       // Starting an item changes no other item's standing, so the scan goes on. Settling one can make an earlier item
@@ -625,7 +638,7 @@ function settleItems(
     }
     if (changed) continue;
     if (items.every(settled)) return itemsSettled(items, run.revision, run);
-    return candidate ?? { inProgress: true };
+    return ready.length > 0 ? { ready } : { inProgress: true };
   }
 }
 
@@ -637,8 +650,8 @@ function workflowOutputs(scope: Scope, states: StepState[], paths: Map<string, E
 }
 
 /**
- * Settles driverless transitions before applying an end or deciding a loop. A lease candidate is returned only
- * after this fixpoint, before another report can advance the revision.
+ * Settles driverless transitions before applying an end or deciding a loop. The steps ready to lease are returned
+ * only after this fixpoint, before another report can advance the revision.
  */
 function settleScope(run: RunState, scope: Scope): Settled {
   const reads = parseReads(run, scope);
@@ -648,7 +661,7 @@ function settleScope(run: RunState, scope: Scope): Settled {
   const definitionOf = (state: StepState): WorkflowStep | undefined => defined.get(localId(scope, state));
   for (;;) {
     let changed = false;
-    let candidate: Settled | undefined;
+    const ready: Ready[] = [];
     const canRun = skipUnreachable(run, scope, states, reads);
     for (const state of states) {
       if (state.status !== 'running' && (state.status !== 'pending' || !canRun(state))) continue;
@@ -682,7 +695,7 @@ function settleScope(run: RunState, scope: Scope): Settled {
       } else {
         const advanced = advanceInstance(run, scope, states, state, definition, reads.items.get(localId(scope, state)));
         if (advanced && 'unreadable' in advanced) return advanced;
-        if (advanced && 'lease' in advanced) candidate ??= advanced;
+        if (advanced && 'ready' in advanced) ready.push(...advanced.ready);
         if (advanced) continue;
       }
       changed = true;
@@ -727,7 +740,7 @@ function settleScope(run: RunState, scope: Scope): Settled {
       if (decided === 'again') continue;
       return decided === 'ended' ? result : { ...result, outcome: 'failed', failure: decided };
     }
-    if (candidate) return candidate;
+    if (ready.length > 0) return { ready };
     if (states.some((item) => item.status === 'waiting' || item.status === 'leased' || item.status === 'running')) return { inProgress: true };
     return { unreadable: `Run ${run.id} has pending steps whose needs cannot be met` };
   }
@@ -793,7 +806,7 @@ export async function startRun(
   config: LocalConfig,
   name: string,
   inputs: unknown = {},
-  options: { driver?: DriverIdentity } = {},
+  options: { driver?: DriverIdentity; base?: RunState['base']; checkout?: string } = {},
 ): Promise<WorkflowEnvelope> {
   const cached = await loadCachedWorkflow(config, name);
   if (!cached) {
@@ -817,6 +830,8 @@ export async function startRun(
     ...(Object.keys(tree.workflows).length > 0 ? { workflows: tree.workflows } : {}),
     steps: cached.definition.steps.map((step) => ({ id: step.id, status: 'pending' })),
     settledAttempts: [],
+    ...(options.base ? { base: options.base } : {}),
+    ...(options.checkout ? { checkout: options.checkout } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -849,8 +864,8 @@ export interface NextOptions {
   running?: string[];
   /** False to reconcile without issuing a new lease: `next` answers `done`, an unlisted lease, `hitl`, or `wait`. */
   canTakeLease?: boolean;
-  /** The checkout the run's workspaces start from. The first `next` that sends it fixes the run's base. */
-  base?: { ref: string; commit: string };
+  /** The checkout the run's workspaces start from. It fixes the run's base only when `workflow start` recorded none. */
+  base?: { ref?: string; commit: string };
   /** Workspace modes this driver can run. Omitted means read-only, so a `new` or `continue` step waits. */
   workspaceModes?: WorkspaceMode[];
   /** Whether a person is present for HITL requests and interactive work on this next request. */
@@ -912,25 +927,37 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           const hitl = options.hitl ? waitingHitl(run) : undefined;
           return hitl ? answer({ hitl }) : wait();
         }
-        if (result.definition.interactive && !options.hitl) {
-          const failure = interactiveHitlRequired(run.id, result.lease.id);
-          failStep(result.lease, failure, run.revision);
-          continue;
+        // A step this driver must not take is held back, and the next ready one is tried. A failed step can change
+        // what is ready, so the run settles again.
+        const held: string[] = [];
+        let failed = false;
+        for (const { lease: state, definition, rendered } of result.ready) {
+          if (definition.interactive && !options.hitl) {
+            failStep(state, interactiveHitlRequired(run.id, state.id), run.revision);
+            failed = true;
+            break;
+          }
+          const located = locateStep(run, state.id);
+          if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${state.id}"`) };
+          const plan = planWorkspace(run, located.scope, state, definition, {
+            driver, modes: options.workspaceModes, base: run.base ?? options.base,
+          });
+          if (plan.defer) {
+            held.push(plan.defer);
+            continue;
+          }
+          if (plan.fail) {
+            failStep(state, plan.fail, run.revision);
+            failed = true;
+            break;
+          }
+          if (plan.contract && options.base && !run.base) run.base = options.base;
+          const step = lease(state, { attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver });
+          rememberCopy(run, plan, driver);
+          return answer(leaseData(run, step, definition, rendered, plan));
         }
-        const located = locateStep(run, result.lease.id);
-        if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${result.lease.id}"`) };
-        const plan = planWorkspace(run, located.scope, result.lease, result.definition, {
-          driver, modes: options.workspaceModes, base: run.base ?? options.base,
-        });
-        if (plan.defer) return answer({ wait: { reason: plan.defer } });
-        if (plan.fail) {
-          failStep(result.lease, plan.fail, run.revision);
-          continue;
-        }
-        if (plan.contract && options.base && !run.base) run.base = options.base;
-        const step = lease(result.lease, { attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver });
-        rememberCopy(run, plan, driver);
-        return answer(leaseData(run, step, result.definition, result.rendered, plan));
+        if (failed) continue;
+        return answer({ wait: { reason: held.join('; ') } });
       }
       const located = locateStep(run, leased.id);
       if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${leased.id}"`) };
@@ -974,7 +1001,7 @@ const NEXT_PAYLOAD_FIELDS = new Set(['driver', 'running', 'canTakeLease', 'base'
 
 /** The top-level payload fields `parseReport` reads. Keep in sync with the fields it picks. */
 const REPORT_FIELDS = new Set([
-  'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'tokens', 'failure', 'changes', 'agent',
+  'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'tokens', 'failure', 'changes', 'read', 'agent',
 ]);
 
 /**
@@ -1071,6 +1098,11 @@ export function parseReport(value: unknown): ParsedReport | string {
     }
     report.changes = { branch: value.branch, base: value.base, from: value.from, to: value.to, commits: value.commits };
   }
+  if (record.read !== undefined) {
+    const read = ReadSchema.safeParse(record.read);
+    if (!read.success) return 'read must include branch, base, and commit';
+    report.read = read.data;
+  }
   if (record.agent !== undefined) {
     const agent = parseReportedAgent(record.agent);
     if (typeof agent === 'string') return agent;
@@ -1103,10 +1135,10 @@ export function parseNextPayload(value: unknown): ParsedNextPayload | string {
   if (record.base !== undefined) {
     if (!record.base || typeof record.base !== 'object' || Array.isArray(record.base)) return 'base must be an object';
     const base = record.base as Record<string, unknown>;
-    if (typeof base.ref !== 'string' || base.ref === '' || typeof base.commit !== 'string' || base.commit === '') {
-      return 'base must include ref and commit';
+    if ((base.ref !== undefined && (typeof base.ref !== 'string' || base.ref === '')) || typeof base.commit !== 'string' || base.commit === '') {
+      return 'base must include commit, and ref when it is set must not be empty';
     }
-    request.base = { ref: base.ref, commit: base.commit };
+    request.base = { ...(typeof base.ref === 'string' ? { ref: base.ref } : {}), commit: base.commit };
   }
   const ignored = unreadFields(record, NEXT_PAYLOAD_FIELDS);
   const can = isRecord(record.driver) ? record.driver.can : undefined;
@@ -1137,13 +1169,38 @@ function rememberSettledAttempt(run: RunState, attempt: string): void {
   if (extra > 0) run.settledAttempts.splice(0, extra);
 }
 
-/** A later leaf still runs in `branch`. Workflow and `for_each` steps are not leaves; their children are. */
-function branchStillUsed(run: RunState, branch: string, except: string): boolean {
-  for (const item of run.steps) {
-    if (item.id === except || settled(item)) continue;
-    const located = locateStep(run, item.id);
-    if (!located || located.step.workflow !== undefined || (located.step.forEach && !isItem(item))) continue;
-    if (plannedBranch(run, located.scope, item, located.step) === branch) return true;
+/**
+ * Why a report's `changes` or `read` do not fit the workspace its attempt was leased, or undefined when they fit.
+ * A step that writes reports `changes`. A read-only step in a copy reports `read`, and a success must carry it.
+ */
+function workspaceMismatch(report: ReportInput, contract: WorkspaceContract | undefined): string | undefined {
+  const readOnly = contract?.mode === 'read-only';
+  const leased = contract ? `${readOnly ? 'read-only ' : ''}branch ${contract.branch} on base ${contract.base.commit}` : 'no workspace';
+  const elsewhere = (branch: string, base: string): boolean => !contract || branch !== contract.branch || base !== contract.base.commit;
+  if (report.changes && (readOnly || elsewhere(report.changes.branch, report.changes.base))) {
+    return `changes name branch ${report.changes.branch} on base ${report.changes.base}, but attempt ${report.attempt} was leased ${leased}`;
+  }
+  if (report.read && (!readOnly || elsewhere(report.read.branch, report.read.base))) {
+    return `read names branch ${report.read.branch} on base ${report.read.base}, but attempt ${report.attempt} was leased ${leased}`;
+  }
+  if (readOnly && report.outcome === 'success' && !report.read) {
+    return `attempt ${report.attempt} was leased ${leased}, and its success report has no read`;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a step that can still run uses `branch`. It reads the run as the next `next` settles it, so a loop that runs
+ * steps again has made them pending, and a workflow or fan-out that can start has added its steps. A running workflow
+ * or `for_each` step is skipped, since its steps are in the run; one that has not started counts by what it would run.
+ */
+function branchStillUsed(run: RunState, branch: string): boolean {
+  const ahead = structuredClone(run);
+  if ('unreadable' in reconcileRun(ahead)) return true;
+  for (const item of ahead.steps) {
+    if (item.status === 'running' || settled(item)) continue;
+    const located = locateStep(ahead, item.id);
+    if (located && plannedBranch(ahead, located.scope, item, located.step) === branch) return true;
   }
   return false;
 }
@@ -1179,7 +1236,13 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       return { save: false, envelope: error('wrong_driver', 'This lease belongs to a different driver') };
     }
 
-    const defined = locateStep(run, step.id)?.step;
+    const located = locateStep(run, step.id);
+    const defined = located?.step;
+    const contract = located && planWorkspace(run, located.scope, step, located.step, {
+      driver: step.lease.driver, modes: ['read-only', 'new', 'continue'],
+    }, true).contract;
+    const mismatch = workspaceMismatch(report, contract);
+    if (mismatch) return { save: false, envelope: error('invalid_report', mismatch) };
     let outcome = report.outcome;
     let message = report.message;
     let failure = report.failure;
@@ -1204,6 +1267,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       session: report.session,
       tokens: report.tokens,
       ...(report.changes ? { changes: report.changes } : {}),
+      ...(report.read ? { read: report.read } : {}),
       agent: settleObservation(report, defined?.agent),
     };
     if (report.changes) {
@@ -1214,7 +1278,8 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     const settledStep = outcome === 'released' ? release(step)
       : outcome === 'success' ? succeed(step, { ...settlement, ...(report.outputs !== undefined ? { outputs: report.outputs } : {}) })
         : fail(step, { ...settlement, failure });
-    const cleanup = outcome === 'success' && report.changes !== undefined && !branchStillUsed(run, report.changes.branch, settledStep.id);
+    // From the lease, so a reader that was the copy's last user lets the driver remove the worktree.
+    const cleanup = outcome === 'success' && contract !== undefined && !branchStillUsed(run, contract.branch);
     return {
       save: true,
       envelope: ok({

@@ -1,0 +1,30 @@
+/**
+ * The unit test files the Windows CI job runs (vitest.windows.config.ts): the
+ * ones that pass on a real Windows runner. Alphabetical. windows-test-list.test.ts
+ * runs on every OS and fails a listed file that gains a POSIX-only construct.
+ */
+export const WINDOWS_TESTS = [
+  'src/__tests__/builtin-hooks.test.ts',
+  'src/__tests__/codex-hook-rules.test.ts',
+  'src/__tests__/codex-team-hooks.test.ts',
+  'src/__tests__/cursor-tool-roots.test.ts',
+  'src/__tests__/dsh-hooks.test.ts',
+  'src/__tests__/hermes-config.test.ts',
+  'src/__tests__/hermes-hooks.test.ts',
+  'src/__tests__/home-normalize.test.ts',
+  'src/__tests__/hooks-golden.test.ts',
+  'src/__tests__/hooks-shell-check.test.ts',
+  'src/__tests__/hooks-skill-retire.test.ts',
+  'src/__tests__/hooks-windows-bash.test.ts',
+  'src/__tests__/joycode.test.ts',
+  'src/__tests__/locate-matrix.test.ts',
+  'src/__tests__/locate.test.ts',
+  'src/__tests__/pi-adapter.test.ts',
+  'src/__tests__/qoder-cn.test.ts',
+  'src/__tests__/skill-use.test.ts',
+  'src/__tests__/tool-roots.test.ts',
+  'src/__tests__/tools.test.ts',
+  'src/__tests__/trae.test.ts',
+  'src/__tests__/user-home-resolution.test.ts',
+  'src/__tests__/windows-test-list.test.ts',
+] as const;

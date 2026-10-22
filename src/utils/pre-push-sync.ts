@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
-import { isAgentExcluded, resolveBaseDir, resolveToolBaseDir, scopedToolPaths, toolGateRoot } from '../types.js';
+import { isAgentExcluded, resolveToolBaseDir, scopedToolPaths } from '../types.js';
 import {
   listFilesRecursive,
   listDirs,
@@ -16,7 +16,8 @@ import {
   writeFile,
 } from './fs.js';
 import { getFileContentAtRev, getFileContentWhenAdded } from './git.js';
-import { isToolInstalledForConfig, ResourceHandler } from '../resources/base.js';
+import { isToolInstalledForConfig } from '../resources/base.js';
+import { installOf, locate } from '../locate.js';
 import { ruleFileExtensionForTool, ruleFormatForTool, teamRuleNameForFile, usesCopilotInstructions } from '../resources/rule-format.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { log } from './logger.js';
@@ -70,10 +71,9 @@ export async function syncTeamUpdatesToLocal(
   }
 
   const repoPath = localConfig.repo.localPath;
-  const baseDir = resolveBaseDir(localConfig);
 
   await syncRulesToLocal(teamConfig, localConfig, repoPath, bases, placedRules, delivered);
-  await syncSkillsToLocal(teamConfig, localConfig, repoPath, baseDir, bases, delivered);
+  await syncSkillsToLocal(teamConfig, localConfig, repoPath, bases, delivered);
 }
 
 /**
@@ -210,7 +210,6 @@ async function syncSkillsToLocal(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
   repoPath: string,
-  baseDir: string,
   bases: readonly string[],
   delivered: DeliveredHashes | undefined,
 ): Promise<void> {
@@ -236,12 +235,10 @@ async function syncSkillsToLocal(
     }
   }
 
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (!toolPath.skills) continue;
-    if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir, toolGateRoot(tool, toolPath.skills, localConfig.toolRoots))) continue;
-
-    const skillsDir = path.join(baseDir, toolPath.skills);
-    if (!await pathExists(skillsDir)) continue;
+  const install = installOf(teamConfig, localConfig);
+  for (const tool of Object.keys(install.toolPaths)) {
+    const skillsDir = (await locate(tool, 'skills', install)).own;
+    if (skillsDir === null || !await pathExists(skillsDir)) continue;
 
     const localSkillNames = await listDirs(skillsDir);
     for (const skillName of localSkillNames) {

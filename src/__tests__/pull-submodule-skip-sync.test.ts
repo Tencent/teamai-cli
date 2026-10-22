@@ -146,7 +146,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-const { pull } = await import('../pull.js');
+const { pull, checkoutKey } = await import('../pull.js');
 const { log } = await import('../utils/logger.js');
 
 afterAll(() => {
@@ -251,7 +251,7 @@ describe('pull submodule skip-sync (issue #525)', () => {
    * returns `rev-parse --short HEAD`, so a full SHA would never match and the
    * fast path this test exercises would never be reached.
    */
-  function seedSyncedState(): void {
+  async function seedSyncedState(): Promise<void> {
     const head = git(['rev-parse', '--short', 'HEAD'], localPath).trim();
     fs.writeFileSync(
       path.join(homeDir, '.teamai', 'state.json'),
@@ -260,6 +260,7 @@ describe('pull submodule skip-sync (issue #525)', () => {
         lastPull: '2026-04-01T00:00:00.000Z',
         lastPullRev: head,
         lastPullTargets: ['claude'],
+        lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: head, targets: ['claude'], skillDirs: { claude: [claudeSkills] } } },
         pushedRules: [],
         pushedSkills: [],
         pushedEnvVars: [],
@@ -273,7 +274,7 @@ describe('pull submodule skip-sync (issue #525)', () => {
   it('deploys submodule content on a pull whose parent rev is already cached', async () => {
     // The upgrade scenario: the parent SHA was already synced (empty submodule
     // dir), then the CLI starts honoring `submodules: true`.
-    seedSyncedState();
+    await seedSyncedState();
 
     await pull({});
 
@@ -291,7 +292,7 @@ describe('pull submodule skip-sync (issue #525)', () => {
     // Populate the submodule and cache the same rev: nothing changed this run,
     // so the fast path must still apply (no needless full re-deploy).
     git(['-c', 'protocol.file.allow=always', 'submodule', 'update', '--init'], localPath);
-    seedSyncedState();
+    await seedSyncedState();
 
     await pull({});
 

@@ -87,6 +87,8 @@ export interface DeliveryLedger {
   readonly held: { name: string; reason: string; tools?: string[]; everyTool: boolean }[];
   /** Copies that failed with an error, already reported: the pull is not synced, and the next one is full. */
   readonly failed: { name: string; tool: string }[];
+  /** Tools that did not receive every skill this pull delivers: a copy there was kept, skipped or failed. */
+  readonly toolsMissingSkills: Set<string>;
   /**
    * Where a writer reports the paths it delivered into the project checkout
    * and whether it delivered all it meant to (#915). Only pull's project
@@ -106,6 +108,7 @@ export function openLedger(
     otherRecords,
     held: [],
     failed: [],
+    toolsMissingSkills: new Set(),
     agentModels: Object.fromEntries(Object.entries(agentModels ?? {}).map(([stem, byTool]) => [stem, { ...byTool }])),
   };
 }

@@ -762,6 +762,74 @@ steps:
     expect(commandExitedFirst).toEqual([true]);
   });
 
+  it.each([
+    ['a command in another worktree', (mark: (name: string, untilRelease?: boolean) => string) => `  - id: change
+    workspace: new
+    prompt: Implement.
+  - id: lint
+    needs: []
+    workspace: new
+    command: ${mark('lint')}
+`, ['lint'], []],
+    ['a command in the current checkout', (mark: (name: string, untilRelease?: boolean) => string) => `  - id: change
+    workspace: new
+    prompt: Implement.
+  - id: lint
+    needs: []
+    command: ${mark('lint')}
+`, ['lint'], []],
+    ['a command in the prompt\'s own worktree', (mark: (name: string, untilRelease?: boolean) => string) => `  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: implement
+          prompt: Implement.
+        - id: lint
+          needs: []
+          workspace: continue
+          command: ${mark('lint')}
+`, [], ['lint']],
+    ['a command past max_parallel, counting the prompt', (mark: (name: string, untilRelease?: boolean) => string) => `  - id: change
+    workspace: new
+    prompt: Implement.
+  - id: first
+    needs: []
+    workspace: new
+    command: ${mark('first', true)}
+  - id: second
+    needs: []
+    workspace: new
+    command: ${mark('second')}
+`, ['first'], ['second']],
+  ] as const)('runs a ready step beside a headless prompt only in a free checkout and slot: %s', async (_name, steps, overlaps, waits) => {
+    const markers = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-markers-'));
+    dirs.push(markers);
+    const mark = (name: string, untilRelease = false): string => `node -e "const fs=require('fs'),p=require('path'); fs.writeFileSync(p.join('${markers}','${name}'),'');${
+      untilRelease ? ` const t=setInterval(()=>{ if (fs.existsSync(p.join('${markers}','release'))) clearInterval(t); },20);` : ''}"`;
+    const { config, workspace, runId } = await parallelFixture(`schemaVersion: v1alpha1
+name: build
+description: Steps beside a prompt.
+steps:
+${steps(mark)}`, 2);
+    const exists = (name: string): boolean => fs.existsSync(path.join(markers, name));
+    const seen: string[] = [];
+    const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
+      run: vi.fn(async () => {
+        for (const deadline = Date.now() + 3000; Date.now() < deadline && !overlaps.every(exists);) await new Promise((resolve) => setTimeout(resolve, 20));
+        if (waits.length > 0) await new Promise((resolve) => setTimeout(resolve, 500));
+        seen.push(...[...overlaps, ...waits].filter(exists));
+        fs.writeFileSync(path.join(markers, 'release'), '');
+        return { started: true as const, exitCode: 0 };
+      }),
+    };
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter, toolPaths });
+
+    expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(seen).toEqual(overlaps);
+  });
+
   it('drops a held prompt that an end cancels before it starts, and the run goes on', async () => {
     const { config, workspace, runId } = await parallelFixture(`schemaVersion: v1alpha1
 name: build

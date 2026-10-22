@@ -6,31 +6,11 @@ import type { ResourceType, ResourceItem, ResourceDiff, DeliveryTarget, TeamaiCo
 export type PlacementRecords = Pick<State, 'placedRules' | 'placedAgents'>;
 import { readFileSafe, writeFile, ensureDir, pathExists } from '../utils/fs.js';
 import { getUserHome } from '../utils/home.js';
+import { installGateOf, isToolId } from '../tools.js';
+import { defaultToolHome, homeRoot } from '../tool-home.js';
 import type { DeliveryLedger } from './delivered-copies.js';
 
 const TOMBSTONE_FILE = '.removed';
-
-/**
- * The root that says a tool is installed, for a tool with a path under
- * another tool's root: WorkBuddy reads a project's rules from CodeBuddy's
- * `.codebuddy/rules` (#946), which says nothing about WorkBuddy.
- */
-const INSTALL_ROOTS: Readonly<Record<string, string>> = { workbuddy: '.workbuddy' };
-
-/**
- * The HOME root that says a tool is installed, in every scope, for a tool with
- * no project path of its own: Muse Code's `.agents` and `.mcp.json` are read
- * by Codex and Claude Code too.
- */
-const HOME_INSTALL_ROOTS: Readonly<Record<string, string>> = { muse: '.config/muse' };
-
-/** Each edition of a product sharing one project directory, and the HOME root that alone says the member runs it. */
-const EDITION_HOME_ROOTS: Readonly<Record<string, string>> = {
-  trae: '.trae',
-  'trae-cn': '.trae-cn',
-  qoder: '.qoder',
-  'qoder-cn': '.qoder-cn',
-};
 
 /** Detect an installed tool while respecting tool-specific user roots. */
 export async function isToolInstalledForConfig(
@@ -45,20 +25,28 @@ export async function isToolInstalledForConfig(
       || (exactConfigPath !== undefined && await pathExists(exactConfigPath))
       || pathExists(getCopilotHome());
   }
-  // Editions of one product that share every project path (Trae and Trae CN
-  // share <root>/.trae/, Qoder and Qoder CN <root>/.qoder/): the shared root
-  // says nothing about which edition the member runs. Each edition counts as
-  // installed by its own HOME root, or by an explicit --agent whitelist entry
-  // naming it (#904) — the bootstrap a project-only init needs before the
-  // app has ever run and created its root.
-  const editionHomeRoot = EDITION_HOME_ROOTS[tool];
-  if (editionHomeRoot !== undefined) {
-    if (localConfig.enabledAgents?.includes(tool) === true) return true;
-    return pathExists(path.join(getUserHome(), editionHomeRoot));
+  // The `--agent` entry is the bootstrap a project-only init needs before the
+  // app has ever run and created its root (#904).
+  if (isToolId(tool)) {
+    const gate = installGateOf(tool);
+    switch (gate) {
+      case 'home-edition':
+        return localConfig.enabledAgents?.includes(tool) === true || pathExists(defaultToolHome(tool, { home: getUserHome(), path }));
+      case 'home':
+        return pathExists(defaultToolHome(tool, { home: getUserHome(), path }));
+      case 'own-root': {
+        const root = homeRoot(tool);
+        return ResourceHandler.isToolInstalled(root, baseDir, toolGateRoot(tool, root, localConfig.toolRoots));
+      }
+      case undefined:
+        break;
+      default: {
+        const unhandled: never = gate;
+        return unhandled;
+      }
+    }
   }
-  if (Object.hasOwn(HOME_INSTALL_ROOTS, tool)) return pathExists(path.join(getUserHome(), HOME_INSTALL_ROOTS[tool]));
-  const probe = Object.hasOwn(INSTALL_ROOTS, tool) ? INSTALL_ROOTS[tool] : toolPath;
-  return ResourceHandler.isToolInstalled(probe, baseDir, toolGateRoot(tool, probe, localConfig.toolRoots));
+  return ResourceHandler.isToolInstalled(toolPath, baseDir, toolGateRoot(tool, toolPath, localConfig.toolRoots));
 }
 
 /**

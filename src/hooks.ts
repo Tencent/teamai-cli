@@ -1542,18 +1542,24 @@ function toCodexEntry(def: HookDef): CodexHookMatcher {
 const BUILTIN_DISPATCH_COMMAND_RE = /^("[^"]+"|bash) -lc "(teamai hook-dispatch [^"]+) 2>\/dev\/null" \|\| true$/;
 
 /**
- * The `commandWindows` of a built-in Codex entry: the PowerShell form of its
- * dispatch (the contract of getPwshDispatchCommand in builtin-hooks.ts), since
- * Codex runs hook commands in PowerShell on Windows (#1074). Carrying it in
- * Codex' Windows-only override instead of in `command` keeps `command` the POSIX
- * form on every platform, so a project `.codex/hooks.json` a repository commits
- * reads the same after a Windows pull and after a Linux pull. A team hook keeps
- * the single command its author wrote.
+ * The `commandWindows` of a built-in Codex entry: the cmd.exe form of its
+ * dispatch. Codex runs hook commands through `%COMSPEC% /C` on Windows
+ * (codex-rs/hooks/src/engine/command_runner.rs, `default_shell_command`) —
+ * not PowerShell, so the pre-#1215 PowerShell syntax never ran correctly:
+ * `2>$null` created a file named `$null` and `;` is an argument delimiter in
+ * cmd, not a separator, so `exit 0` arrived as junk arguments. The cmd form
+ * redirects to `nul` and separates with `&`, which also restores the
+ * not-found fail-open (`&` runs the second command whatever the first did),
+ * mirroring `|| true` on the POSIX side. Carrying it in Codex's Windows-only
+ * override keeps `command` the POSIX form on every platform, so a project
+ * `.codex/hooks.json` a repository commits reads the same after a Windows
+ * pull and after a Linux pull. A team hook keeps the single command its
+ * author wrote.
  */
 function codexWindowsCommand(command: string): string | undefined {
   const match = command.match(BUILTIN_DISPATCH_COMMAND_RE);
   if (!match) return undefined;
-  return `${match[2]} 2>$null; exit 0`;
+  return `${match[2]} 2>nul & exit 0`;
 }
 
 /** Render a valid PowerShell equivalent for TeamAI's generated bash wrapper. */

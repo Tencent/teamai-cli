@@ -821,6 +821,20 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     expect(await fse.readFile(path.join(localSkillDir, 'notes.md'), 'utf-8')).toBe('v1 notes');
   });
 
+  it('syncs a skill in the home HERMES_HOME moved, not only in the configured directory (#1221)', async () => {
+    const hermesHome = path.join(tmpDir, 'hermes');
+    vi.stubEnv('HERMES_HOME', hermesHome);
+    teamConfig.toolPaths = { hermes: { skills: '.hermes/skills' } };
+    await fse.outputFile(path.join(repoPath, 'skills', 'my-skill', 'SKILL.md'), 'v2 skill');
+    const localSkillDir = path.join(hermesHome, 'skills', 'my-skill');
+    await fse.outputFile(path.join(localSkillDir, 'SKILL.md'), 'v1 skill');
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 skill'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    expect(await fse.readFile(path.join(localSkillDir, 'SKILL.md'), 'utf-8')).toBe('v2 skill');
+  });
+
   it('keeps files only the member has when it syncs a skill (#823)', async () => {
     const teamSkillDir = path.join(repoPath, 'skills', 'my-skill');
     await fse.outputFile(path.join(teamSkillDir, 'SKILL.md'), 'v2 skill');

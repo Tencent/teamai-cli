@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import fse from 'fs-extra';
-import simpleGit, { type SimpleGit } from 'simple-git';
+import simpleGit, { type SimpleGit, type outputHandler } from 'simple-git';
 import { z } from 'zod';
 import { execCommand } from './exec.js';
 import { GitAnswers } from './git-answers.js';
@@ -140,21 +140,23 @@ export function disableGitTerminalPrompt(): void {
 }
 
 /**
- * Block timeout for git subprocesses spawned during `teamai init` pushes.
- * simple-git's `timeout.block` kills the spawned process when it produces no
- * output for this long (unlike `withTimeout`, a Promise.race that only stops
- * awaiting while the child keeps running and holds the Node event loop open).
+ * Block timeout for git subprocesses spawned by `teamai init` pushes and by
+ * every write or refresh of a side branch (reports, learnings), which holds
+ * that branch's lock while git runs. simple-git's `timeout.block` kills the
+ * spawned process when it produces no output for this long (unlike
+ * `withTimeout`, a Promise.race that only stops awaiting while the child keeps
+ * running and holds the Node event loop open).
  *
- * Scoped to init's network pushes only: a global ceiling here would also kill
- * legitimate slow clones/fetches/rebases in unrelated commands. The env var
- * lets a slow link or a very large team repo raise the ceiling without a new
- * release. Read at call time (not module load) so tests can override it.
+ * Not global: a ceiling here would also kill legitimate slow clones/fetches/
+ * rebases of the team repo in unrelated commands. The env var lets a slow link
+ * or a very large team repo raise the ceiling without a new release. Read at
+ * call time (not module load) so tests can override it.
  *
  * Validates the env var: a non-numeric, negative, or non-finite value falls
  * back to the default rather than reaching simple-git (which would either
  * silently disable the timeout or misbehave).
  */
-export function initPushBlockTimeoutMs(): number {
+export function gitBlockTimeoutMs(): number {
   const raw = process.env.TEAMAI_INIT_PUSH_TIMEOUT_MS;
   if (raw !== undefined) {
     const parsed = Number(raw);
@@ -179,29 +181,35 @@ export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
   const git = basePath
     ? simpleGit({ baseDir: basePath, binary: gitBinary(), abort })
     : simpleGit({ binary: gitBinary(), abort });
-  // simple-git already waits for the process to close, then sleeps 50ms more
-  // when it printed nothing (`deferClose` in its completion plugin, not
-  // configurable). Silent commands (`add`, `fetch`, `worktree prune`, a config
-  // write) are common, so a pull spent much of its time in that sleep. An empty
-  // chunk once stdout ends marks the output seen: `end` precedes the `close`
-  // simple-git waits for, and an empty chunk adds nothing to the output.
-  return git.outputHandler((_command, stdout) => {
-    stdout.once('end', () => stdout.emit('data', Buffer.alloc(0)));
-  });
+  return git.outputHandler(markOutputSeen);
 }
+
+// simple-git already waits for the process to close, then sleeps 50ms more
+// when it printed nothing (`deferClose` in its completion plugin, not
+// configurable). Silent commands (`add`, `fetch`, `worktree prune`, a config
+// write) are common, so a pull spent much of its time in that sleep. An empty
+// chunk once stdout ends marks the output seen: `end` precedes the `close`
+// simple-git waits for, and an empty chunk adds nothing to the output.
+const markOutputSeen: outputHandler = (_command, stdout) => {
+  stdout.once('end', () => stdout.emit('data', Buffer.alloc(0)));
+};
 
 /**
  * Like {@link createGit}, but additionally kills any git subprocess that
- * produces no output for the configured init-push block timeout. Reserved for
- * `teamai init` pushes: a hung push is killed at the process level (the
- * `withTimeout` wrapper around the await is only a second layer), while
- * unrelated commands keep simple-git's default of no spawn timeout.
+ * produces no output for {@link gitBlockTimeoutMs}, so a stalled remote cannot
+ * hold a branch lock or the CLI forever.
  */
-export function createGitForInitPush(basePath?: string): SimpleGit {
-  const block = initPushBlockTimeoutMs();
-  return basePath
-    ? simpleGit({ baseDir: basePath, binary: gitBinary(), timeout: { block } })
-    : simpleGit({ binary: gitBinary(), timeout: { block } });
+export function createGitWithBlockTimeout(basePath?: string): SimpleGit {
+  const block = gitBlockTimeoutMs();
+  // The kill reaches git alone: its HTTP helper would keep the stalled
+  // connection, and the CLI with it, until the server dropped it. curl's own
+  // stall limit ends the helper, a second after the kill so the kill still
+  // decides how the command fails.
+  const config = ['http.lowSpeedLimit=1', `http.lowSpeedTime=${Math.ceil(block / 1000) + 1}`];
+  const git = basePath
+    ? simpleGit({ baseDir: basePath, binary: gitBinary(), timeout: { block }, config })
+    : simpleGit({ binary: gitBinary(), timeout: { block }, config });
+  return git.outputHandler(markOutputSeen);
 }
 
 /**
@@ -588,7 +596,7 @@ export async function getDefaultBranch(localPath: string): Promise<string> {
  * `master` or anything else. Used during init for first-time setup, and by CI.
  *
  * `opts.initPush` selects the spawn-level block timeout factory used by init
- * (see {@link createGitForInitPush}); other callers get the plain factory.
+ * (see {@link createGitWithBlockTimeout}); other callers get the plain factory.
  */
 export async function pushRepoDirectly(
   localPath: string,
@@ -596,7 +604,7 @@ export async function pushRepoDirectly(
   files: string[],
   opts: { initPush?: boolean } = {},
 ): Promise<void> {
-  const git = opts.initPush ? createGitForInitPush(localPath) : createGit(localPath);
+  const git = opts.initPush ? createGitWithBlockTimeout(localPath) : createGit(localPath);
   await assertAttachedTeamRepo(git, localPath);
   const existingFiles = [];
   for (const f of files) {
@@ -692,7 +700,7 @@ export async function autoPushViaMR(
     const { createPrWithFallback } = await import('../push.js');
     const prUrl = await createPrWithFallback(
       teamConfig, localConfig, branchName, message, message,
-      opts.initPush ? { spawnTimeoutMs: initPushBlockTimeoutMs() } : {},
+      opts.initPush ? { spawnTimeoutMs: gitBlockTimeoutMs() } : {},
     );
 
     await checkoutMaster(repoPath);
@@ -770,7 +778,7 @@ export async function remoteBranchExists(
  * pushed and the function returns false.
  *
  * `opts.initPush` selects the spawn-level block timeout factory used by init
- * (see {@link createGitForInitPush}); other callers get the plain factory.
+ * (see {@link createGitWithBlockTimeout}); other callers get the plain factory.
  */
 export async function pushRepoBranch(
   localPath: string,
@@ -779,7 +787,7 @@ export async function pushRepoBranch(
   branchName: string,
   opts: { reuseBranch?: boolean; initPush?: boolean } = {},
 ): Promise<boolean> {
-  const git = opts.initPush ? createGitForInitPush(localPath) : createGit(localPath);
+  const git = opts.initPush ? createGitWithBlockTimeout(localPath) : createGit(localPath);
   await assertAttachedTeamRepo(git, localPath);
 
   if (opts.reuseBranch) {
@@ -1481,6 +1489,31 @@ export async function isPastVersionOf(repoPath: string, absFile: string, relPath
 }
 
 /** The files under `dir` at `rev`, relative to the repo root; empty when either is unknown. */
+export interface GitTreeEntry {
+  path: string;
+  mode: string;
+}
+
+/** The files and modes under `dir` at `rev`, relative to the repo root; empty when either is unknown. */
+export async function listTreeAtRev(repoPath: string, rev: string, dir: string): Promise<GitTreeEntry[]> {
+  try {
+    const raw = await createGit(repoPath).raw(['ls-tree', '-r', '-z', rev, '--', dir]);
+    const entries: GitTreeEntry[] = [];
+    for (const line of raw.split('\0')) {
+      if (!line) continue;
+      const tabIndex = line.indexOf('\t');
+      if (tabIndex === -1) continue;
+      const meta = line.slice(0, tabIndex);
+      const filePath = line.slice(tabIndex + 1);
+      const mode = meta.split(' ')[0] ?? '';
+      entries.push({ path: filePath, mode });
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
 export async function listFilesAtRev(repoPath: string, rev: string, dir: string): Promise<string[]> {
   try {
     return (await createGit(repoPath).raw(['ls-tree', '-r', '-z', '--name-only', rev, '--', dir])).split('\0').filter(Boolean);

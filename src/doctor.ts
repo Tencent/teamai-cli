@@ -25,12 +25,17 @@ import {
   installScopeName,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
-import { skillsDirForTool } from './resources/skills.js';
+import { installOf, locate, writableDir } from './locate.js';
+import { sameSkillDir } from './resources/skill-dirs.js';
+import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
+import { isToolId } from './tools.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope } from './hooks.js';
 import {
   buildDeliveryChecks,
   toolPathsDroppedKeyNotes,
+  buildSkillDirChecks,
+  skillReadNotes,
   buildRulesDeliveryChecks,
   buildAgentsDeliveryChecks,
   buildInstructionDeliveryChecks,
@@ -186,9 +191,8 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
     // silently skips it — the same "reported success, received nothing" this
     // check exists to catch. A tool with no skills path (rules only) has no
     // such resolver, so it keeps the generic probe.
-    const skillsPath = paths.skills;
-    const isInstalled = skillsPath
-      ? async (): Promise<boolean> => await skillsDirForTool(tool, skillsPath, localConfig) !== null
+    const isInstalled = paths.skills
+      ? async (): Promise<boolean> => writableDir(await locate(tool, 'skills', installOf(ctx.teamConfig ?? { toolPaths }, localConfig))) !== null
       : (): Promise<boolean> => isToolInstalledForConfig(tool, probePath, localConfig);
 
     // Pushed whether or not it passes. Every other check in the registry
@@ -254,6 +258,50 @@ function buildToolRootChecks(localConfig: LocalConfig, teamConfig: TeamaiConfig 
         : `${envVar} is ${detected}; this config syncs ${label} to ${effective}`
           + `${recorded === undefined ? ' (no root recorded)' : ''}. `
           + 'Re-run `teamai init` to record it.',
+    });
+  }
+  return checks;
+}
+
+function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
+  const file = toolHomesPath();
+  const read = reloadToolHomes();
+  switch (read.kind) {
+    case 'missing':
+      return [];
+    case 'invalid':
+      return [{
+        name: 'tool homes record is readable',
+        source: 'local',
+        check: async () => false,
+        fix: describeInvalidToolHomes(read.error),
+      }];
+    case 'ok':
+      break;
+    default: {
+      const unhandled: never = read;
+      return unhandled;
+    }
+  }
+  const host = realHost();
+  const checks: Check[] = [];
+  for (const [tool, recorded] of Object.entries(read.homes)) {
+    if (!isToolId(tool) || isAgentExcluded(localConfig, tool)) continue;
+    checks.push({
+      name: `${tool} home exists`,
+      source: 'local',
+      check: async () => pathExists(recorded),
+      fix: `The ${tool} home recorded on this machine, ${recorded}, does not exist, so teamai skips ${tool}. `
+        + `Re-run \`teamai init\` from a shell that sets the home ${tool} uses, or remove "${tool}" from ${file}.`,
+    });
+    const live = envToolHome(tool, host);
+    if (live === null) continue;
+    checks.push({
+      name: `${tool} home matches ${live.variable}`,
+      source: 'local',
+      check: async () => sameSkillDir(live.dir, recorded),
+      fix: `${live.variable} puts the ${tool} home at ${live.dir}; this machine syncs ${tool} to ${recorded}. `
+        + 'Re-run `teamai init` to record it.',
     });
   }
   return checks;
@@ -608,9 +656,11 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...await buildGitHookChecks(localConfig, stage),
     ...await buildTrackedHookIndexCheck(localConfig),
     ...buildToolRootChecks(localConfig, teamConfig),
+    ...buildToolHomeChecks(localConfig),
     ...await buildEnabledToolChecks(ctx),
     ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),
+    ...await buildSkillDirChecks(ctx),
     // Built only for `doctor`: the work is in building these, not in running
     // them, so skipping them post-pull is what keeps the budget for the rest.
     ...(stage === 'doctor' ? await buildRulesDeliveryChecks(ctx) : []),
@@ -831,6 +881,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await deliveredGitExcludeNotes(ctx),
     ...await localAgentGitExcludeNotes(),
     ...await keptDocNotes(ctx),
+    ...await skillReadNotes(ctx),
   ];
 
   if (jsonMode) {

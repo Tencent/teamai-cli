@@ -27,7 +27,11 @@ import {
   resolveDesiredDocs, resolveDocsDestination,
 } from './resources/docs.js';
 import { isToolInstalledForConfig, ResourceHandler } from './resources/base.js';
-import { CODEX_TOOL, mayDeleteSkillCopy, SHARED_AGENT_SKILLS_PATH, skillOrigin, skillsDirForTool } from './resources/skills.js';
+import { CODEX_TOOL, mayDeleteSkillCopy, skillOrigin } from './resources/skills.js';
+import { installOf, locate, SHARED_AGENT_SKILLS_PATH, writableDir, writesOf } from './locate.js';
+import { describeToolHomeChange, recordToolHomes } from './tool-home-record.js';
+import { describeInvalidToolHomes, realHost } from './tool-home.js';
+import { recordSkillDirs, skillDirsOf, skillDirsUnmoved, type SessionToolHomes, type SkillDirs } from './resources/skill-dirs.js';
 import { flatStemsOfRemoved, ruleFileExtensionForTool, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { AGENT_FILE_EXTENSIONS } from './resources/agent-format.js';
 import {
@@ -45,9 +49,7 @@ import {
   TEAMAI_RECALL_RULES_START,
   TEAMAI_RECALL_RULES_END,
   CultureFrontmatterSchema,
-  resolveBaseDir,
   resolveToolBaseDir,
-  toolGateRoot,
   resolveHookScope,
   getDataHome,
   getProjectSearchIndexPath,
@@ -346,12 +348,12 @@ export async function cleanupInactiveNamespaceSkills(
   ledger?: DeliveryLedger,
 ): Promise<Set<string>> {
   const removed = new Set<string>();
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (isAgentExcluded(localConfig, tool)) continue;
+  const install = installOf(teamConfig, localConfig);
+  for (const tool of Object.keys(install.toolPaths)) {
     // Ask where delivery writes, not where the tool root sits: OpenClaw keeps
     // its skills under a workspace directory, so the generic probe sweeps a
     // directory a pull never wrote to and leaves the real one untouched (#624).
-    const skillsDir = await skillsDirForTool(tool, toolPath.skills, localConfig);
+    const skillsDir = writableDir(await locate(tool, 'skills', install));
     if (skillsDir === null) continue;
     if (tool === CODEX_TOOL) {
       const swept = (name: string): boolean => !retainedSkillNames.has(name) && inactiveSkillNames.has(name);
@@ -437,15 +439,12 @@ async function getExistingLocalNames(
   localConfig: LocalConfig,
 ): Promise<Set<string>> {
   const existing = new Set<string>();
-  const baseDir = resolveBaseDir(localConfig);
 
   if (type === 'skills') {
     // A skill exists if any tool has it, including the .agents/skills Codex reads.
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-      if (!toolPath.skills) continue;
-      const skillsDirs = [path.join(baseDir, toolPath.skills)];
-      if (tool === CODEX_TOOL) skillsDirs.push(path.join(resolveToolBaseDir(CODEX_TOOL, localConfig), SHARED_AGENT_SKILLS_PATH));
-      for (const skillsDir of skillsDirs) {
+    const install = installOf(teamConfig, localConfig);
+    for (const tool of Object.keys(install.toolPaths)) {
+      for (const skillsDir of writesOf(await locate(tool, 'skills', install))) {
         if (!await pathExists(skillsDir)) continue;
         for (const item of items) {
           if (await pathExists(path.join(skillsDir, item.name))) existing.add(item.name);
@@ -547,14 +546,18 @@ async function getInstalledResourceTargets(
   field?: 'skills' | 'rules' | 'agents',
 ): Promise<string[]> {
   const targets: string[] = [];
+  const install = installOf(teamConfig, localConfig);
 
   for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
     if (isAgentExcluded(localConfig, tool)) continue;
 
-    const resourcePaths = (field ? [toolPath[field]] : [toolPath.skills, toolPath.rules, toolPath.agents])
-      .filter((resourcePath): resourcePath is string => !!resourcePath);
-    for (const resourcePath of resourcePaths) {
-      if (await isToolInstalledForConfig(tool, resourcePath, localConfig)) {
+    for (const resource of field ? [field] : (['skills', 'rules', 'agents'] as const)) {
+      const resourcePath = toolPath[resource];
+      if (!resourcePath) continue;
+      const receives = resource === 'skills'
+        ? writableDir(await locate(tool, 'skills', install)) !== null
+        : await isToolInstalledForConfig(tool, resourcePath, localConfig);
+      if (receives) {
         targets.push(tool);
         break;
       }
@@ -619,9 +622,16 @@ async function cleanupTombstonedResources(
     for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
       const dir = toolPath[toolPathField];
       if (!dir) continue;
-      if (!await isToolInstalledForConfig(tool, dir, localConfig)) continue;
-      if (isAgentExcluded(localConfig, tool)) continue;
-      const baseDir = resolveToolBaseDir(tool, localConfig);
+      let typeDir: string;
+      if (type === 'skills') {
+        const skillsDir = writableDir(await locate(tool, 'skills', installOf(freshConfig, localConfig)));
+        if (skillsDir === null) continue;
+        typeDir = skillsDir;
+      } else {
+        if (!await isToolInstalledForConfig(tool, dir, localConfig)) continue;
+        if (isAgentExcluded(localConfig, tool)) continue;
+        typeDir = path.join(resolveToolBaseDir(tool, localConfig), dir);
+      }
       // OMP's copy of a namespaced rule is flat (#946). A file of that name
       // may be the member's own, so only its record makes it teamai's.
       const teamNames = type === 'rules' ? (await handler.scanTeamForPull(freshConfig, localConfig)).map((rule) => rule.name) : [];
@@ -632,7 +642,7 @@ async function cleanupTombstonedResources(
         ? new Set([...ruleStemsForTool(tool, teamNames)].filter(([name]) => name.includes('/')).map(([, stem]) => stem))
         : new Set<string>();
       for (const stem of flatStems) {
-        const localPath = path.join(baseDir, dir, `${stem}${ruleFileExtensionForTool(tool)}`);
+        const localPath = path.join(typeDir, `${stem}${ruleFileExtensionForTool(tool)}`);
         if (ledger.previous?.[localPath] === undefined || !await pathExists(localPath)) continue;
         if (await judgeRemoval(ledger.previous, localPath) !== 'remove') {
           log.warn(`[${scopeLabel}] Kept ${localPath}: the team removed the rule it is a copy of, but you changed this copy. Delete it when you no longer need it.`);
@@ -647,7 +657,7 @@ async function cleanupTombstonedResources(
 
       for (const name of tombstones) {
         for (const extension of tombstoneExtensions(type, tool)) {
-          const localPath = path.join(baseDir, dir, `${name}${extension}`);
+          const localPath = path.join(typeDir, `${name}${extension}`);
           if (!await pathExists(localPath)) continue;
           if (extraNames?.[type].has(name) && recordedUnder(ledger.previous ?? {}, localPath).length === 0) continue;
           // teamai-context in a rules directory is teamai's instruction file
@@ -1256,6 +1266,7 @@ function awaitingFullSync(records: Record<string, CheckoutRecord>): Record<strin
       ...(record.delivered ? { delivered: record.delivered } : {}),
       ...(record.agentModels ? { agentModels: record.agentModels } : {}),
       ...(record.gitExcludePaths ? { gitExcludePaths: record.gitExcludePaths } : {}),
+      ...(record.skillDirs ? { skillDirs: record.skillDirs } : {}),
       ...(record.rootsSeeded ? { rootsSeeded: true } : {}),
       ...(record.claudeMdExcludes ? { claudeMdExcludes: record.claudeMdExcludes } : {}),
     };
@@ -1360,6 +1371,13 @@ async function pullForScope(
     } catch (e) {
       log.debug(`[${scopeLabel}] Placement record cleanup skipped: ${(e as Error).message}`);
     }
+  }
+
+  // A home the env moves (XDG_CONFIG_HOME, HERMES_HOME, ...) is recorded by the
+  // first pull that sees it, so a pull from a hook or a shell without the
+  // variable still writes where the tool reads.
+  if (!options.dryRun) {
+    for (const change of await recordToolHomes('pull')) log.info(`[${scopeLabel}] ${describeToolHomeChange(change)}`);
   }
 
   // Publish what contribute queued. Here rather than inside the refresh, which
@@ -1492,8 +1510,7 @@ async function pullForScope(
       const docsRepoDir = path.join(localConfig.repo.localPath, 'docs');
       const rulesRepoDir = path.join(localConfig.repo.localPath, 'rules');
       const skillsRepoDir = path.join(localConfig.repo.localPath, 'skills');
-      const reportsRoot = await reportsRootReady;
-      const votesDir = reportsRoot ? path.join(reportsRoot, 'votes') : undefined;
+      await reportsRootReady;
 
       // user scope: sync learnings to ~/.teamai/learnings/ (legacy behavior)
       // project scope: use learnings directly from repo
@@ -1572,7 +1589,6 @@ async function pullForScope(
       // An index already on disk follows the last source away (#1006): left
       // alone, it would keep serving what the member no longer receives.
       if (hasAnySource || effectiveCodebaseDir || await pathExists(indexPath)) {
-        const votesExist = votesDir ? await pathExists(votesDir) : false;
         const { buildIndex, dropOtherCheckoutIndexes } = await import('./utils/search-index.js');
         // Other checkouts' indexes: this checkout's rebuild goes ahead without them.
         await dropOtherCheckoutIndexes(localConfig)
@@ -1612,7 +1628,7 @@ async function pullForScope(
           unreadable: unresolved,
           children: localConfig.children?.fingerprint,
           codebaseDir: undefined, // codebase now served by teamwiki/ graph engine
-          votesDir: votesExist ? votesDir : undefined,
+          voteScope: localConfig,
           indexPath,
         });
         if (learningsCount > 0) {
@@ -1659,6 +1675,7 @@ async function pullForScope(
 
   // Step 1b: Skip sync if the repo version hasn't changed since last pull
   let currentTargets: string[] | null = null;
+  let currentSkillDirs: SkillDirs | null = null;
   if (!options.force && !options.dryRun && !submodulesChanged) {
     try {
       const state = await loadStateForScope(localConfig);
@@ -1683,8 +1700,15 @@ async function pullForScope(
         const targetSetMatches = previousTargets !== undefined
           && previousTargets.length === currentTargets.length
           && currentTargets.every((target) => syncedTargets.has(target));
+        // A tool whose skills directory moved (a recorded home changed) is still
+        // a target by name: compare the directories too.
+        currentSkillDirs = await skillDirsOf(installOf(freshConfig, localConfig));
+        const checkout = recordKey ? state.lastPullByWorkspace?.[recordKey] : undefined;
+        const recordedSkillDirs = checkout?.skillDirs;
+        if (targetSetMatches && recordedSkillDirs === undefined) log.debug(`[${scopeLabel}] No record of the skills directories yet, syncing`);
 
-        if (targetSetMatches) {
+        if (targetSetMatches && recordedSkillDirs !== undefined
+          && await skillDirsUnmoved({ skillDirs: recordedSkillDirs, sessionToolHomes: checkout?.sessionToolHomes }, currentSkillDirs)) {
           log.success(`[${scopeLabel}] Already synced at ${currentRev}, skipping`);
           // 即使 repo 未变化，仍部署 CLI 内置资源（确保 CLI 升级后新版本 agent/rules 生效）
           const skipRecall = !isRecallEnabled(localConfig, freshConfig);
@@ -1825,6 +1849,8 @@ async function pullForScope(
   // Set when two active namespaces collide on a skill: skills are neither
   // installed nor cleaned up this run.
   let skillsHeld = false;
+  // Set when a workspace holds a skill back (#913): no tool took it this run.
+  let workspaceHeldSkills = false;
   // Set on the same collision among agents.
   let agentsHeld = false;
   // Set when an agent's model could not be resolved in some tool (#830). Its
@@ -1983,6 +2009,7 @@ async function pullForScope(
       skippedByTags = desired.skippedByTags;
       // A skill a workspace holds back keeps its installed copy (#913).
       desiredSkillNames = new Set([...items.map((i) => i.name), ...desired.held]);
+      workspaceHeldSkills = desired.held.length > 0;
       knownRepoSkillNames = new Set(desired.teamItems.map((i) => i.name));
       knownRepoSkillSources = new Map(desired.teamItems.map((i) => [i.name, [i.sourcePath]]));
       // A workspace's copy may come from any member's source of the name (#913).
@@ -2127,12 +2154,10 @@ async function pullForScope(
 
   // Step 3b: Clean up local skills not in the desired union set (role + tags)
   if (!options.dryRun && desiredSkillNames && knownRepoSkillNames) {
-    const baseDir = resolveBaseDir(localConfig);
-
-    for (const [tool, toolPath] of Object.entries(scopedToolPaths(freshConfig, localConfig))) {
-      if (isAgentExcluded(localConfig, tool)) continue;
-      if (!toolPath.skills) continue;
-      if (!await ResourceHandler.isToolInstalled(toolPath.skills, baseDir, toolGateRoot(tool, toolPath.skills, localConfig.toolRoots))) continue;
+    const install = installOf(freshConfig, localConfig);
+    for (const tool of Object.keys(install.toolPaths)) {
+      const skillsDir = writableDir(await locate(tool, 'skills', install));
+      if (skillsDir === null) continue;
       if (tool === CODEX_TOOL) {
         const swept = (name: string): boolean => !desiredSkillNames.has(name) && knownRepoSkillNames.has(name);
         for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, scopeLabel)) {
@@ -2141,7 +2166,6 @@ async function pullForScope(
           if (rootRepoSkillNames?.has(name)) rootSkillUndelivered = true;
         }
       }
-      const skillsDir = path.join(baseDir, toolPath.skills);
       if (!await pathExists(skillsDir)) continue;
 
       const localDirs = await listDirs(skillsDir);
@@ -2224,15 +2248,35 @@ async function pullForScope(
   // A dry run only reports what they would write, for the block's preview.
   const { recorder } = ledger;
   const { dryRun } = options;
+  let stubFailed = false;
   try {
     const { deployBuiltinSkills } = await import('./builtin-skills.js');
-    const deployed = await deployBuiltinSkills(freshConfig, localConfig, { recorder, dryRun });
+    const deployed = await deployBuiltinSkills(freshConfig, localConfig, { recorder, dryRun, toolsMissingSkills: ledger.toolsMissingSkills });
     if (deployed > 0 && !dryRun) {
       log.debug(`[${scopeLabel}] Deployed ${deployed} built-in skill(s)`);
     }
   } catch (e) {
+    stubFailed = true;
     recorder?.failed('builtin');
     if (!dryRun) warnStubNotDeployed(scopeLabel, e);
+  }
+
+  // Step 4b: Record where each tool took skills, once the skills and the stub
+  // had their chance at the new place, and name the directories a tool left.
+  const currentDirs = currentSkillDirs ?? await skillDirsOf(installOf(freshConfig, localConfig));
+  let syncedSkillDirs: SkillDirs | undefined;
+  let syncedSessionToolHomes: SessionToolHomes | undefined;
+  if (!options.dryRun && resourceTypes.includes('skills')) {
+    const previous = recordKey ? (await loadStateForScope(localConfig)).lastPullByWorkspace?.[recordKey] : undefined;
+    const incomplete = workspaceHeldSkills || stubFailed ? new Set(Object.keys(currentDirs)) : ledger.toolsMissingSkills;
+    if (skillsHeld) {
+      syncedSkillDirs = previous?.skillDirs;
+      syncedSessionToolHomes = previous?.sessionToolHomes;
+    } else {
+      ({ skillDirs: syncedSkillDirs, sessionToolHomes: syncedSessionToolHomes } = await recordSkillDirs({
+        previous, current: currentDirs, incomplete, scopeLabel,
+      }));
+    }
   }
 
   // Step 4.5: Deploy CLI built-in rules
@@ -2312,6 +2356,8 @@ async function pullForScope(
       setChildren(record, localConfig);
       addPushBaseRev(record, deliveredRev);
       record.delivered = ledger.hashes;
+      record.skillDirs = syncedSkillDirs;
+      record.sessionToolHomes = syncedSessionToolHomes;
       if (localConfig.repo.ref !== undefined) record.teamRef = localConfig.repo.ref;
       else delete record.teamRef;
       setAgentModels(record, ledger.agentModels);
@@ -2346,6 +2392,8 @@ async function pullForScope(
         ...(localConfig.scope === 'project' && localConfig.projectRoot ? { root: localConfig.projectRoot } : {}),
         targets: syncedTargets,
         delivered: ledger.hashes,
+        ...(syncedSkillDirs ? { skillDirs: syncedSkillDirs } : {}),
+        ...(syncedSessionToolHomes ? { sessionToolHomes: syncedSessionToolHomes } : {}),
         ...(gitExcludePaths ? { gitExcludePaths } : {}),
         ...(seeded ? { rootsSeeded: true } : {}),
         ...(claudeMdExcludes ? { claudeMdExcludes } : {}),
@@ -2975,6 +3023,16 @@ export async function pull(
     const message = `Nothing was synced: ${describeUnreadableConfig(problem)}`;
     // A pre-dispatch hook still runs `teamai pull --silent` in the foreground:
     // debug.log keeps the record, and its `|| true` absorbs the exit code.
+    if (options.silent) log.persist(message);
+    else log.error(message);
+    process.exitCode = 1;
+    return;
+  }
+  // Every scope finds tool homes through the record: while it is invalid, a
+  // pull would write to homes it no longer names.
+  const toolHomes = realHost().toolHomes;
+  if (toolHomes.kind === 'invalid') {
+    const message = describeInvalidToolHomes(toolHomes.error);
     if (options.silent) log.persist(message);
     else log.error(message);
     process.exitCode = 1;

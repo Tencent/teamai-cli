@@ -55,6 +55,8 @@ teamai recall feedback --positive <docId>
 teamai recall feedback --negative <docId>
 ```
 
+本地反馈在下次重建索引（例如 `teamai pull`）时影响排序，即使上报被禁用或失败也生效。重建时合并已确认的团队票数和本地未送达的票；若投票文件正被占用，本次重建只使用已确认票数。
+
 `teamai stats` 在有记录时，会列出最近 10 个跑过 recall 的会话。
 
 ### 开启 / 关闭 Recall

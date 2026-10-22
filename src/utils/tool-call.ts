@@ -35,7 +35,7 @@ export interface ToolCall {
    */
   paths: string[];
   status: ToolStatus;
-  /** True when the read or search was the call's only command: a tool, or a shell command outside a pipeline. */
+  /** True when the read or search was the call's only command: a tool, or a shell command neither in a pipeline nor an item of a list. */
   simple: boolean;
   /** A shell call's command line. */
   command?: string;
@@ -277,7 +277,7 @@ export function classifyToolCall(stdin: Record<string, unknown>, agent?: string)
 
   const command = input.command;
   if (typeof command !== 'string') return unknown;
-  const shell = classifyShellCommand(command, { powershell: name.toLowerCase() === 'powershell', home: getUserHome() });
+  const shell = classifyShellCommand(command, { powershell: name.toLowerCase() === 'powershell', home: getUserHome() }, status === 'success');
   const output = outputOf(response);
   const optional = output !== undefined ? { output } : {};
   // With no status, only the command's own error lines tell a failure apart.
