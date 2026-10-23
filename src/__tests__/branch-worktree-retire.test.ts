@@ -92,6 +92,18 @@ describe('retiring a branch worktree before replacing its clone', () => {
     expect(git(['rev-parse', 'refs/heads/teamai-reports'], remote)).toBe(remoteHead);
   });
 
+  it('recognizes its checkout through a symlinked parent path', async () => {
+    const alias = path.join(sandbox, 'alias');
+    fs.symlinkSync(sandbox, alias, process.platform === 'win32' ? 'junction' : 'dir');
+
+    await reportsBranch.retire({
+      ...config,
+      repo: { ...config.repo, localPath: path.join(alias, path.basename(clone)) },
+    });
+
+    expect(fs.existsSync(checkout)).toBe(false);
+  });
+
   it('keeps a clean checkout when local and origin have diverged', async () => {
     fs.writeFileSync(path.join(checkout, 'local-report.txt'), 'local only\n');
     git(['add', 'local-report.txt'], checkout);
@@ -136,6 +148,16 @@ describe('retiring a branch worktree before replacing its clone', () => {
 
     expect(fs.existsSync(checkout)).toBe(true);
     expect(fs.existsSync(clone)).toBe(true);
+  });
+
+  it('keeps a dirty checkout but continues replacement when switching owners', async () => {
+    fs.writeFileSync(path.join(checkout, 'pending.txt'), 'not committed\n');
+    let replaced = false;
+
+    await reportsBranch.retire(config, async () => { replaced = true; }, true);
+
+    expect(replaced).toBe(true);
+    expect(fs.existsSync(checkout)).toBe(true);
   });
 
   it('does not remove an unregistered directory at the managed path', async () => {

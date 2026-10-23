@@ -368,6 +368,7 @@ async function retireImpl(
   spec: BranchWorktreeSpec,
   localConfig: LocalConfig,
   whileLocked: () => Promise<void> = async () => {},
+  keepDirty = false,
 ): Promise<void> {
   if (!usesBranchWorktree(localConfig)) return;
 
@@ -386,7 +387,7 @@ async function retireImpl(
     if (await pathExists(wt)) {
       await checkOwnerImpl(spec, localConfig);
       const registered = await registeredCheckoutImpl(spec, localConfig);
-      if (registered === null || path.resolve(registered) !== path.resolve(wt)) {
+      if (registered === null || (await fse.realpath(registered)) !== (await fse.realpath(wt))) {
         throw new ForeignCheckoutError(
           `${wt} exists but is not registered to ${gitRoot(localConfig)} as its ${spec.branch} checkout. ` +
             'teamai left it and the current clone unchanged. Move it aside, or delete it if it holds nothing you need, ' +
@@ -397,6 +398,11 @@ async function retireImpl(
 
       const wtGit = createGitWithBlockTimeout(wt);
       if (!(await wtGit.status()).isClean()) {
+        if (keepDirty) {
+          log.warn(`${wt} has uncommitted changes, so teamai left that checkout in place while switching team repos.`);
+          await whileLocked();
+          return;
+        }
         throw new CheckoutRefusedError(
           `${wt} has uncommitted changes, so teamai left it and the current clone unchanged. ` +
             'Commit or move those changes, then run init again.',
@@ -1252,8 +1258,8 @@ export interface BranchWorktree {
   isForeignByFiles(localConfig: LocalConfig): Promise<boolean>;
   /** Where this repository has the branch checked out, the old `.teamai/` place included; creates nothing. */
   registeredCheckout(localConfig: LocalConfig): Promise<string | null>;
-  /** Push and remove this owned checkout, holding its writer lock through the optional replacement callback. */
-  retire(localConfig: LocalConfig, whileLocked?: () => Promise<void>): Promise<void>;
+  /** Push and remove this owned checkout, holding its writer lock through the optional replacement callback. Dirty checkouts may be kept during a team switch. */
+  retire(localConfig: LocalConfig, whileLocked?: () => Promise<void>, keepDirty?: boolean): Promise<void>;
 }
 
 /**
@@ -1283,6 +1289,6 @@ export function createBranchWorktree(spec: BranchWorktreeSpec): BranchWorktree {
     checkOwner: (localConfig) => checkOwnerImpl(spec, localConfig),
     isForeignByFiles: (localConfig) => isForeignByFilesImpl(spec, localConfig),
     registeredCheckout: (localConfig) => registeredCheckoutImpl(spec, localConfig),
-    retire: (localConfig, whileLocked) => retireImpl(spec, localConfig, whileLocked),
+    retire: (localConfig, whileLocked, keepDirty) => retireImpl(spec, localConfig, whileLocked, keepDirty),
   };
 }

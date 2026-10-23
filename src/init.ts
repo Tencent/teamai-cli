@@ -1755,12 +1755,17 @@ export async function init(options: GlobalOptions & {
           additionalRoles: existingLocalConfig?.additionalRoles ?? [],
           ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
         };
+        const changesOwner = !sameQueueOwner(
+          queueOwner(previous),
+          queueOwner({ ...previous, repo: { localPath, remote: repoInfo.httpsUrl } }),
+        );
         try {
           // Nest the retirements so both branch locks remain held until the old
           // clone is gone; otherwise a concurrent writer can recreate an
           // orphaned checkout between retirement and replacement.
           await reportsBranch.retire(previous, () =>
-            learningsBranch.retire(previous, () => remove(localPath)),
+            learningsBranch.retire(previous, () => remove(localPath), changesOwner),
+            changesOwner,
           );
         } catch (e) {
           log.error((e as Error).message);
