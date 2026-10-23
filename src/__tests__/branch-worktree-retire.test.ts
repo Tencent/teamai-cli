@@ -150,14 +150,10 @@ describe('retiring a branch worktree before replacing its clone', () => {
     expect(fs.existsSync(clone)).toBe(true);
   });
 
-  it('keeps a dirty checkout but continues replacement when switching owners', async () => {
+  it('reports an owned dirty checkout before replacement', async () => {
     fs.writeFileSync(path.join(checkout, 'pending.txt'), 'not committed\n');
-    let replaced = false;
 
-    await reportsBranch.retire(config, async () => { replaced = true; }, true);
-
-    expect(replaced).toBe(true);
-    expect(fs.existsSync(checkout)).toBe(true);
+    expect(await reportsBranch.isDirty(config)).toBe(true);
   });
 
   it('does not remove an unregistered directory at the managed path', async () => {

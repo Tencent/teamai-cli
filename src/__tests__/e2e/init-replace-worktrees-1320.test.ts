@@ -106,4 +106,35 @@ describe('init replaces a clone without orphaning its side worktrees (#1320)', (
     expect(git(['rev-parse', 'refs/heads/teamai-reports'], remoteA)).toBe(reportsRemoteHead);
     expect(fs.existsSync(learnings)).toBe(false);
   }, 120_000);
+
+  it('keeps the backing clone when a side checkout has uncommitted work', async () => {
+    const dirtyHome = path.join(sandbox, 'dirty-home');
+    fs.mkdirSync(dirtyHome);
+    fs.mkdirSync(path.join(dirtyHome, '.claude'));
+    git(['config', '--global', `url.${remoteA}.insteadOf`, URL_A], sandbox, dirtyHome);
+    const remoteB = path.join(sandbox, 'b.git');
+    git(['config', '--global', `url.${remoteB}.insteadOf`, URL_B], sandbox, dirtyHome);
+
+    const first = await runCLI(['init', URL_A, '--provider', 'git', '--scope', 'user', '--agent', 'claude', '--force'], cwd, dirtyHome);
+    expect(first.code, first.output).toBe(0);
+
+    const clone = path.join(dirtyHome, '.teamai', 'team-repo');
+    const learnings = path.join(dirtyHome, '.teamai', 'learnings-wt');
+    git(['branch', 'teamai-learnings'], clone);
+    git(['worktree', 'add', '-q', learnings, 'teamai-learnings'], clone);
+    fs.writeFileSync(path.join(learnings, 'committed.md'), 'unpushed commit\n');
+    git(['add', 'committed.md'], learnings);
+    git(['commit', '-qm', 'local learning'], learnings);
+    const localHead = git(['rev-parse', 'HEAD'], learnings);
+    fs.writeFileSync(path.join(learnings, 'dirty.md'), 'uncommitted work\n');
+
+    const second = await runCLI(['init', URL_B, '--provider', 'git', '--scope', 'user', '--agent', 'claude', '--force'], cwd, dirtyHome);
+
+    expect(second.code, second.output).toBe(0);
+    expect(second.output).toContain('Kept the old clone and its uncommitted side checkout(s)');
+    expect(git(['remote', 'get-url', 'origin'], clone)).toContain('b.git');
+    expect(fs.existsSync(path.join(clone + '.previous', '.git'))).toBe(true);
+    expect(git(['rev-parse', 'HEAD'], learnings)).toBe(localHead);
+    expect(git(['status', '--porcelain'], learnings)).toContain('?? dirty.md');
+  }, 120_000);
 });

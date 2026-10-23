@@ -4,7 +4,7 @@ import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { codexTrustPolicy, deliveredHookFiles, describeUnappliedTeamHooks, hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs, createGitWithBlockTimeout } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { getProvider, detectProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
@@ -1760,13 +1760,20 @@ export async function init(options: GlobalOptions & {
           queueOwner({ ...previous, repo: { localPath, remote: repoInfo.httpsUrl } }),
         );
         try {
-          // Nest the retirements so both branch locks remain held until the old
-          // clone is gone; otherwise a concurrent writer can recreate an
-          // orphaned checkout between retirement and replacement.
-          await reportsBranch.retire(previous, () =>
-            learningsBranch.retire(previous, () => remove(localPath), changesOwner),
-            changesOwner,
-          );
+          if (changesOwner && (await reportsBranch.isDirty(previous) || await learningsBranch.isDirty(previous))) {
+            let aside = `${localPath}.previous`;
+            for (let n = 1; await pathExists(aside); n++) aside = `${localPath}.previous.${n}`;
+            await fs.promises.rename(localPath, aside);
+            await createGitWithBlockTimeout(aside).raw(['worktree', 'repair']);
+            log.warn(`Kept the old clone and its uncommitted side checkout(s) at ${aside}.`);
+          } else {
+            // Nest the retirements so both branch locks remain held until the old
+            // clone is gone; otherwise a concurrent writer can recreate an
+            // orphaned checkout between retirement and replacement.
+            await reportsBranch.retire(previous, () =>
+              learningsBranch.retire(previous, () => remove(localPath)),
+            );
+          }
         } catch (e) {
           log.error((e as Error).message);
           process.exit(1);
