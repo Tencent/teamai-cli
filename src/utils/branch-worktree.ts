@@ -360,6 +360,65 @@ async function registeredCheckoutImpl(spec: BranchWorktreeSpec, localConfig: Loc
 }
 
 /**
+ * Remove this repository's side-branch checkout before its dedicated clone is
+ * replaced. Push first so a clean checkout with local-only commits is not
+ * silently discarded; dirty or unprovable checkouts are left untouched.
+ */
+async function retireImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): Promise<void> {
+  if (!usesBranchWorktree(localConfig)) return;
+
+  const wt = worktreePath(spec, localConfig);
+  if (!(await pathExists(wt))) return;
+
+  const lockPath = lockFilePath(spec, localConfig);
+  const locked = await acquireLock(lockPath);
+  if (!locked) {
+    throw new CheckoutRefusedError(
+      `${wt} is being written (${lockPath} is held), so teamai left it and the current clone unchanged. ` +
+        'Run init again when that command finishes.',
+      `the ${spec.branch} checkout is busy; see the warning above`,
+    );
+  }
+
+  try {
+    await checkOwnerImpl(spec, localConfig);
+    const registered = await registeredCheckoutImpl(spec, localConfig);
+    if (registered === null || path.resolve(registered) !== path.resolve(wt)) {
+      throw new ForeignCheckoutError(
+        `${wt} exists but is not registered to ${gitRoot(localConfig)} as its ${spec.branch} checkout. ` +
+          'teamai left it and the current clone unchanged. Move it aside, or delete it if it holds nothing you need, ' +
+          'then run init again.',
+        `the ${spec.branch} checkout cannot be shown to belong to this repository; see the warning above`,
+      );
+    }
+
+    const wtGit = createGitWithBlockTimeout(wt);
+    if (!(await wtGit.status()).isClean()) {
+      throw new CheckoutRefusedError(
+        `${wt} has uncommitted changes, so teamai left it and the current clone unchanged. ` +
+          'Commit or move those changes, then run init again.',
+        `the ${spec.branch} checkout has uncommitted changes; see the warning above`,
+      );
+    }
+
+    try {
+      await wtGit.push(['--progress', 'origin', `HEAD:refs/heads/${spec.branch}`]);
+    } catch (e) {
+      throw new CheckoutRefusedError(
+        `Could not preserve ${wt} on origin before replacing the clone (${failureReason(e).trim()}). ` +
+          'The checkout and current clone were left unchanged; push its commits or restore network access, then run init again.',
+        `the ${spec.branch} checkout could not be pushed; see the warning above`,
+      );
+    }
+
+    await createGitWithBlockTimeout(gitRoot(localConfig)).raw(['worktree', 'remove', wt]);
+    log.info(`Retired ${spec.branch} checkout at ${wt}`);
+  } finally {
+    await releaseLock(lockPath);
+  }
+}
+
+/**
  * Self and git mode keep this checkout at the same path in the partition
  * (#808), so after a project switches mode, the checkout there may belong to
  * the other repository: using it would publish to the wrong remote. Refuse it,
@@ -1159,6 +1218,8 @@ export interface BranchWorktree {
   isForeignByFiles(localConfig: LocalConfig): Promise<boolean>;
   /** Where this repository has the branch checked out, the old `.teamai/` place included; creates nothing. */
   registeredCheckout(localConfig: LocalConfig): Promise<string | null>;
+  /** Push and remove this owned checkout before its repository clone is replaced. */
+  retire(localConfig: LocalConfig): Promise<void>;
 }
 
 /**
@@ -1188,5 +1249,6 @@ export function createBranchWorktree(spec: BranchWorktreeSpec): BranchWorktree {
     checkOwner: (localConfig) => checkOwnerImpl(spec, localConfig),
     isForeignByFiles: (localConfig) => isForeignByFilesImpl(spec, localConfig),
     registeredCheckout: (localConfig) => registeredCheckoutImpl(spec, localConfig),
+    retire: (localConfig) => retireImpl(spec, localConfig),
   };
 }

@@ -12,6 +12,8 @@ import { probeSelfHostedGitLab } from './providers/gitlab/probe.js';
 import { ensureDir, writeFile, writeFileAtomic, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
 import { queueOwner, sameQueueOwner, setAsideQueueOnModeSwitch } from './utils/pending-learnings.js';
 import { dropAllSearchIndexes } from './utils/search-index.js';
+import { reportsBranch } from './utils/reports-branch.js';
+import { learningsBranch } from './utils/learnings-branch.js';
 
 /**
  * A re-init that changes the install's kind or team repository keeps the data
@@ -1731,7 +1733,6 @@ export async function init(options: GlobalOptions & {
         );
         if (options.force) {
           log.info('Replacing it with a fresh clone (--force)');
-          await remove(localPath);
         } else {
           const confirmed = await askConfirmation(
             'Remove it and clone the requested repo? [y/N] ',
@@ -1744,8 +1745,25 @@ export async function init(options: GlobalOptions & {
             process.exit(1);
             return;
           }
-          await remove(localPath);
         }
+        const previous: LocalConfig = {
+          ...existingLocalConfig,
+          repo: { localPath, remote: existingRemote },
+          username: existingLocalConfig?.username ?? username,
+          scope,
+          projectRoot,
+          additionalRoles: existingLocalConfig?.additionalRoles ?? [],
+          ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
+        };
+        try {
+          await reportsBranch.retire(previous);
+          await learningsBranch.retire(previous);
+        } catch (e) {
+          log.error((e as Error).message);
+          process.exit(1);
+          return;
+        }
+        await remove(localPath);
       } else {
         log.info(`Repo already exists at ${localPath}, using existing clone`);
         await settleReplacedInstall();
