@@ -7,14 +7,16 @@ import { expect, it } from 'vitest';
 
 const CLI = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
 
-it('migrates into and reads back a native CodeBuddy project directory through the real CLI', () => {
+it.each(['short', 'long'])('migrates into and reads back a native %s CodeBuddy project directory through the real CLI', (kind) => {
   const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-buddy-e2e-')));
   try {
     const source = path.join(home, 'source');
-    const target = path.join(home, 'my--project space');
+    // The long segments alone exceed 255 bytes, even under a short /tmp root.
+    const target = kind === 'short' ? path.join(home, 'my--project space')
+      : path.join(home, 'long-segment-'.repeat(14), 'nested-'.repeat(14), 'my--project space');
     fs.mkdirSync(path.join(home, '.codebuddy', 'projects'), { recursive: true });
     fs.mkdirSync(source);
-    fs.mkdirSync(target);
+    fs.mkdirSync(target, { recursive: true });
     const id = '6f0c2a9e-3b1d-4e5f-8a7b-9c0d1e2f3a4b';
     const dir = path.join(home, '.claude', 'projects', source.replace(/[^a-zA-Z0-9]/g, '-'));
     fs.mkdirSync(dir, { recursive: true });
@@ -33,7 +35,14 @@ it('migrates into and reads back a native CodeBuddy project directory through th
       return reply.data.sessionId as string;
     };
     const copied = migrate(id, 'claude-code', 'codebuddy', source, target);
-    const nativeName = target.replace(/[/\\:]/g, '-').replace(/^-+|-+$/g, '').replace(/-+/g, '-');
+    let nativeName = target.replace(/[/\\:]/g, '-').replace(/^-+|-+$/g, '').replace(/-+/g, '-');
+    if (kind === 'long') {
+      expect(Buffer.byteLength(nativeName, 'utf8')).toBeGreaterThan(255);
+      // ASCII fixture: the publisher's 180-byte prefix + unsigned djb2 base36.
+      let hash = 5381;
+      for (const byte of Buffer.from(nativeName, 'utf8')) hash = (hash * 33) ^ byte;
+      nativeName = `${nativeName.slice(0, 180)}-${(hash >>> 0).toString(36)}`;
+    }
     expect(fs.existsSync(path.join(home, '.codebuddy', 'projects', nativeName, `${copied}.jsonl`))).toBe(true);
     const restored = migrate(copied, 'codebuddy', 'claude-code', target, source);
     expect(fs.readFileSync(path.join(dir, `${restored}.jsonl`), 'utf8')).toContain('Native Buddy directory.');

@@ -24,3 +24,20 @@ describe('CodeBuddy and WorkBuddy native project directory encoding', () => {
     expect(encodeCwdCodeBuddy('/nonexistent-teamai/work space/team.ai_dev')).toBe('nonexistent-teamai-work space-team.ai_dev');
   });
 });
+
+// Fixed vectors evaluated with compressWorkspacePathName from the publisher's
+// @tencent-ai/codebuddy-code@2.173.0 bundle (cli.js), not TeamAI's encoder.
+describe('CodeBuddy long project directory names', () => {
+  it.each([
+    ['255 ASCII bytes', '/' + 'a'.repeat(255), 'a'.repeat(255)],
+    ['256 ASCII bytes', '/' + 'a'.repeat(256), 'a'.repeat(180) + '-77f405'],
+    ['multibyte cutoff', '/' + '界'.repeat(90), '界'.repeat(60) + '-mfc5vp'],
+    ['code point cutoff', '/' + 'a'.repeat(178) + '😀' + 'b'.repeat(80), 'a'.repeat(178) + '-fxv6qa'],
+    ['distinct suffix', '/' + 'a'.repeat(255) + 'b', 'a'.repeat(180) + '-77f406'],
+    ['Windows long path', 'C:\\' + 'work\\'.repeat(60) + 'project', 'C-' + 'work-'.repeat(35) + 'wor-1larcam'],
+  ])('%s matches the native byte limit and hash', (_name, cwd, expected) => {
+    vi.mocked(path.resolve).mockImplementation(cwd.startsWith('C:') ? path.win32.resolve : path.posix.resolve);
+    expect(encodeCwdCodeBuddy(cwd)).toBe(expected);
+    expect(Buffer.byteLength(expected, 'utf8')).toBeLessThanOrEqual(255);
+  });
+});

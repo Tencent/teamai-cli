@@ -133,10 +133,24 @@ export function encodeCwdGeneric(cwd: string): string {
  * "file not found". Project directories that contain spaces are common.
  */
 export function encodeCwdCodeBuddy(cwd: string): string {
-  return resolveRealCwd(cwd)
+  const encoded = resolveRealCwd(cwd)
     .replace(/[/\\:]/g, '-')
     .replace(/^-+|-+$/g, '')
     .replace(/-+/g, '-');
+  // CodeBuddy 2.173.0: compressWorkspacePathName keeps short names unchanged,
+  // truncates by UTF-8 code point, then hashes every original byte with djb2.
+  if (Buffer.byteLength(encoded, 'utf8') <= 255) return encoded;
+  let prefix = '';
+  let bytes = 0;
+  for (const point of encoded) {
+    const size = Buffer.byteLength(point, 'utf8');
+    if (bytes + size > 180) break;
+    bytes += size;
+    prefix += point;
+  }
+  let hash = 5381;
+  for (const byte of Buffer.from(encoded, 'utf8')) hash = (hash * 33) ^ byte;
+  return `${prefix}-${(hash >>> 0).toString(36)}`;
 }
 
 /**

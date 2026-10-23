@@ -422,6 +422,8 @@ If the state write fails, repair the state directory's permissions and retry
 If the config write fails, ownership stays available for retry. Entries the
 member already listed are never claimed.
 
+CodeBuddy CLI and WorkBuddy use compressed project directory names above 255 UTF-8 bytes (a code-point-safe 180-byte prefix plus the native hash). Session listing, reading and migration follow those names; do not rename the native directories manually.
+
 ## GitHub MR/PR import API error
 
 When import falls back from `gh` to the REST API, a failed metadata, commits,
