@@ -401,14 +401,42 @@ async function retireImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): P
       );
     }
 
-    try {
-      await wtGit.push(['--progress', 'origin', `HEAD:refs/heads/${spec.branch}`]);
-    } catch (e) {
+    const remoteExists = await remoteBranchExists(spec, wt);
+    if (remoteExists === null) {
       throw new CheckoutRefusedError(
-        `Could not preserve ${wt} on origin before replacing the clone (${failureReason(e).trim()}). ` +
-          'The checkout and current clone were left unchanged; push its commits or restore network access, then run init again.',
-        `the ${spec.branch} checkout could not be pushed; see the warning above`,
+        `Could not inspect origin/${spec.branch} before replacing the clone. ` +
+          'The checkout and current clone were left unchanged; restore network access, then run init again.',
+        `the ${spec.branch} checkout could not be compared with origin; see the warning above`,
       );
+    }
+
+    let localOnly = 1;
+    let remoteOnly = 0;
+    if (remoteExists) {
+      await fetchTrackingRef(wtGit, spec.branch);
+      [localOnly, remoteOnly] = (await wtGit.raw([
+        'rev-list', '--left-right', '--count', `HEAD...refs/remotes/origin/${spec.branch}`,
+      ])).trim().split(/\s+/).map(Number);
+    }
+
+    if (localOnly > 0 && remoteOnly > 0) {
+      throw new CheckoutRefusedError(
+        `${wt} and origin/${spec.branch} have diverged, so teamai left the checkout and current clone unchanged. ` +
+          'Reconcile and push the branch, then run init again.',
+        `the ${spec.branch} checkout has diverged from origin; see the warning above`,
+      );
+    }
+
+    if (localOnly > 0) {
+      try {
+        await wtGit.push(['--progress', 'origin', `HEAD:refs/heads/${spec.branch}`]);
+      } catch (e) {
+        throw new CheckoutRefusedError(
+          `Could not preserve ${wt} on origin before replacing the clone (${failureReason(e).trim()}). ` +
+            'The checkout and current clone were left unchanged; push its commits or restore network access, then run init again.',
+          `the ${spec.branch} checkout could not be pushed; see the warning above`,
+        );
+      }
     }
 
     await createGitWithBlockTimeout(gitRoot(localConfig)).raw(['worktree', 'remove', wt]);

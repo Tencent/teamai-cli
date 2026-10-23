@@ -60,6 +60,7 @@ describe('init replaces a clone without orphaning its side worktrees (#1320)', (
   let sandbox: string;
   let home: string;
   let cwd: string;
+  let remoteA: string;
 
   beforeAll(() => {
     if (!fs.existsSync(CLI)) throw new Error(`CLI binary not found at ${CLI}. Run "npm run build" first.`);
@@ -69,7 +70,7 @@ describe('init replaces a clone without orphaning its side worktrees (#1320)', (
     fs.mkdirSync(home);
     fs.mkdirSync(cwd);
     fs.mkdirSync(path.join(home, '.claude'));
-    const remoteA = makeRemote(sandbox, 'a', URL_A);
+    remoteA = makeRemote(sandbox, 'a', URL_A);
     const remoteB = makeRemote(sandbox, 'b', URL_B);
     git(['config', '--global', `url.${remoteA}.insteadOf`, URL_A], sandbox, home);
     git(['config', '--global', `url.${remoteB}.insteadOf`, URL_B], sandbox, home);
@@ -82,6 +83,14 @@ describe('init replaces a clone without orphaning its side worktrees (#1320)', (
     expect(first.code, first.output).toBe(0);
 
     const clone = path.join(home, '.teamai', 'team-repo');
+    const other = path.join(sandbox, 'other-member');
+    git(['clone', '-q', '-b', 'teamai-reports', remoteA, other], sandbox);
+    fs.writeFileSync(path.join(other, 'published-report.txt'), 'already preserved\n');
+    git(['add', 'published-report.txt'], other);
+    git(['commit', '-qm', 'publish report'], other);
+    git(['push', '-q', 'origin', 'teamai-reports'], other);
+    const reportsRemoteHead = git(['rev-parse', 'refs/heads/teamai-reports'], remoteA);
+
     const learnings = path.join(home, '.teamai', 'learnings-wt');
     git(['branch', 'teamai-learnings'], clone);
     git(['worktree', 'add', '-q', learnings, 'teamai-learnings'], clone);
@@ -94,6 +103,7 @@ describe('init replaces a clone without orphaning its side worktrees (#1320)', (
     expect(second.output).toContain('Retired teamai-learnings checkout');
     expect(second.output).toMatch(/teamai initialized successfully/i);
     expect(git(['remote', 'get-url', 'origin'], clone)).toContain('b.git');
+    expect(git(['rev-parse', 'refs/heads/teamai-reports'], remoteA)).toBe(reportsRemoteHead);
     expect(fs.existsSync(learnings)).toBe(false);
   }, 120_000);
 });

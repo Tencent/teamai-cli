@@ -75,6 +75,39 @@ describe('retiring a branch worktree before replacing its clone', () => {
     expect(git(['rev-parse', 'refs/heads/teamai-reports'], remote)).toBe(localHead);
   });
 
+  it('removes a clean checkout whose commits are already preserved on origin', async () => {
+    const other = path.join(sandbox, 'other');
+    git(['clone', '-q', '-b', 'teamai-reports', remote, other], sandbox);
+    fs.writeFileSync(path.join(other, 'remote-report.txt'), 'published elsewhere\n');
+    git(['add', 'remote-report.txt'], other);
+    git(['commit', '-qm', 'remote report'], other);
+    git(['push', '-q', 'origin', 'teamai-reports'], other);
+    const remoteHead = git(['rev-parse', 'refs/heads/teamai-reports'], remote);
+
+    await reportsBranch.retire(config);
+
+    expect(fs.existsSync(checkout)).toBe(false);
+    expect(git(['rev-parse', 'refs/heads/teamai-reports'], remote)).toBe(remoteHead);
+  });
+
+  it('keeps a clean checkout when local and origin have diverged', async () => {
+    fs.writeFileSync(path.join(checkout, 'local-report.txt'), 'local only\n');
+    git(['add', 'local-report.txt'], checkout);
+    git(['commit', '-qm', 'local report'], checkout);
+
+    const other = path.join(sandbox, 'other');
+    git(['clone', '-q', '-b', 'teamai-reports', remote, other], sandbox);
+    fs.writeFileSync(path.join(other, 'remote-report.txt'), 'remote only\n');
+    git(['add', 'remote-report.txt'], other);
+    git(['commit', '-qm', 'remote report'], other);
+    git(['push', '-q', 'origin', 'teamai-reports'], other);
+
+    await expect(reportsBranch.retire(config)).rejects.toThrow('have diverged');
+
+    expect(fs.existsSync(checkout)).toBe(true);
+    expect(fs.existsSync(clone)).toBe(true);
+  });
+
   it('keeps the checkout and clone when it has uncommitted work', async () => {
     fs.writeFileSync(path.join(checkout, 'pending.txt'), 'not committed\n');
 
