@@ -185,9 +185,18 @@ function makeFixture(options: {
 }
 
 /** Author a new rule, skill and agent at each tool directory's root. */
-function writeLocalResources(fixture: Fixture, ruleBody = '# Rule v1\n'): void {
+/**
+ * Only the rule: `--role be-know` names the backend role's knowledge namespace,
+ * which no role declares for skills or agents, so a push carrying those fails.
+ */
+function writeLocalRule(fixture: Fixture, ruleBody = '# Rule v1\n'): void {
   const { projectRoot, agent } = fixture;
   fs.writeFileSync(path.join(projectRoot, `.${agent}/rules`, 'my-rule.md'), ruleBody);
+}
+
+function writeLocalResources(fixture: Fixture, ruleBody = '# Rule v1\n'): void {
+  const { projectRoot, agent } = fixture;
+  writeLocalRule(fixture, ruleBody);
   fs.mkdirSync(path.join(projectRoot, `.${agent}/skills`, 'my-skill'), { recursive: true });
   fs.writeFileSync(
     path.join(projectRoot, `.${agent}/skills/my-skill`, 'SKILL.md'),
@@ -501,7 +510,7 @@ describe('push places new rules and agents in a namespace (issue #649)', () => {
 
   it('pull updates the author\'s root copy of a placed rule instead of writing a second one', async () => {
     const fixture = track(makeFixture({ agent: 'claude', provider: 'git' }));
-    writeLocalResources(fixture);
+    writeLocalRule(fixture);
     // be-know is the backend role's knowledge namespace, so it IS active here
     // and pull delivers the rule — which used to land at rules/be-know/ beside
     // the author's own copy at the root, the same rule twice for a tool that
@@ -520,7 +529,7 @@ describe('push places new rules and agents in a namespace (issue #649)', () => {
 
   it('pull keeps a member\'s own file at the namespaced path beside the author\'s root copy, and removes teamai\'s (#993)', async () => {
     const fixture = track(makeFixture({ agent: 'claude', provider: 'git' }));
-    writeLocalResources(fixture);
+    writeLocalRule(fixture);
     await runCLI(['push', '--role', 'be-know', '--all'], fixture.projectRoot, fixture.home);
     mergeBranch(fixture, branchFiles(fixture).branch);
     const namespaced = path.join(fixture.projectRoot, '.claude/rules', 'be-know', 'my-rule.md');
@@ -626,7 +635,7 @@ describe('push places new rules and agents in a namespace (issue #649)', () => {
 
   it('pull drops the placement record of a rule the team has since deleted', async () => {
     const fixture = track(makeFixture({ agent: 'claude', provider: 'git' }));
-    writeLocalResources(fixture);
+    writeLocalRule(fixture);
     await runCLI(['push', '--role', 'be-know', '--all'], fixture.projectRoot, fixture.home);
     mergeBranch(fixture, branchFiles(fixture).branch);
     const landed = await runCLI(['pull', '--force'], fixture.projectRoot, fixture.home);
@@ -652,7 +661,7 @@ describe('push places new rules and agents in a namespace (issue #649)', () => {
 
   it('never records a placement whose PR was closed without merging, even with the branch kept', async () => {
     const fixture = track(makeFixture({ agent: 'claude', provider: 'git' }));
-    writeLocalResources(fixture);
+    writeLocalRule(fixture);
     await runCLI(['push', '--role', 'be-know', '--all'], fixture.projectRoot, fixture.home);
     expect(branchFiles(fixture).files).toContain('rules/be-know/my-rule.md');
 
@@ -676,7 +685,7 @@ describe('push places new rules and agents in a namespace (issue #649)', () => {
     // its name here, as an active namespace's rule would (#707): the author's
     // root copy still stands for rules/be-know/my-rule.md.
     const fixture = track(makeFixture({ agent: 'claude', provider: 'git' }));
-    writeLocalResources(fixture);
+    writeLocalRule(fixture);
     await runCLI(['push', '--role', 'be-know', '--all'], fixture.projectRoot, fixture.home);
     mergeBranch(fixture, branchFiles(fixture).branch);
     await runCLI(['pull', '--force'], fixture.projectRoot, fixture.home);
