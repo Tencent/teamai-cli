@@ -59,7 +59,8 @@ export async function findSkillDirectoryBlock(
     const entry = await lstat(walked).catch((e: NodeJS.ErrnoException) => e.code === 'ENOENT' ? null : Promise.reject(e));
     if (!entry) break;
     if (!entry.isSymbolicLink()) {
-      if (!entry.isDirectory()) return { kind: 'not-directory', path: walked };
+      // A file at the skill itself is judged by ownership, as before.
+      if (!entry.isDirectory() && walked !== target) return { kind: 'not-directory', path: walked };
       continue;
     }
     // Team-skill ownership checks name and preserve a leaf link without following it.
