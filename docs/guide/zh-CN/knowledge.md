@@ -25,7 +25,7 @@ teamai contribute --file /tmp/session.md
 teamai contribute --file /tmp/session.md --namespace payments
 ```
 
-`--namespace` 必须是当前 scope 的项目在 `manifest/projects.yaml` 里、或其角色在 `manifest/roles.yaml` 里声明的 learnings namespace。
+`--namespace` 必须是当前 scope 的项目在 `manifest/projects.yaml` 里、或其角色在 `manifest/roles.yaml` 里声明的 learnings namespace。`--namespace ""` 写入共享根目录 `learnings/`。
 
 不想要这条提醒时，在 `teamai.yaml` 里写：
 

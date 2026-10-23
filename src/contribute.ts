@@ -195,7 +195,8 @@ export async function contribute(
   const ownNamespaces = await resolveActiveLearningsNamespaces(localConfig);
   const namespaces = await deliveredLearningsNamespaces(localConfig);
   // Validate before saving the queue, creating worktrees or rebuilding indexes.
-  if (options.namespace !== undefined &&
+  // An empty --namespace names the shared root, which every member may write.
+  if (options.namespace !== undefined && options.namespace !== '' &&
       (!isSafeNamespaceSegment(options.namespace) || !namespaces.includes(options.namespace))) {
     log.error(`Cannot contribute to namespace "${options.namespace}". Allowed learnings namespaces: ${namespaces.join(', ') || '(none)'}.`);
     process.exitCode = 1;

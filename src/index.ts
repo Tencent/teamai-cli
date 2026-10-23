@@ -1237,7 +1237,7 @@ program
   .description('Contribute session knowledge to team repo; projects list shows the default destination and allowed namespaces')
   .option('--file <path>', 'Path to the contribution document')
   .option('--title <title>', 'Title for the contribution document')
-  .option('--namespace <ns>', 'Write to an active learnings namespace (default: the only active namespace, or the shared root when none or several are active)')
+  .option('--namespace <ns>', 'Write to an active learnings namespace, or to the shared root with "" (default: the only active namespace, or the shared root when none or several are active)')
   .option('--session-id <id>', 'Session ID for dedup tracking')
   .option('--scope <scope>', 'Target scope: user or workspace')
   .action(async (cmdOpts) => {
