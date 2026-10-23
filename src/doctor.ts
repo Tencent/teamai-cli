@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
+import { getUserHome } from './utils/home.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import type { GlobalOptions } from './types.js';
 import {
@@ -325,6 +326,12 @@ async function buildHookChecks(
 ): Promise<Check[]> {
   const checks: Check[] = [];
   for (const [tool, paths] of Object.entries(toolPaths)) {
+    if (tool === 'kiro') {
+      if (!await pathExists(path.join(getUserHome(), '.kiro'))) continue;
+      const { hasKiroHooks } = await import('./kiro-hooks.js');
+      checks.push({ name: 'teamai hooks in Kiro standalone hook file', source: 'local', check: hasKiroHooks, fix: 'Run `teamai hooks inject`; standalone hooks require Kiro CLI V3.' });
+      continue;
+    }
     if (tool === 'pi') {
       const installed = await isToolInstalledForConfig(tool, paths.skills ?? '.pi/skills', localConfig);
       if (!installed) continue;
