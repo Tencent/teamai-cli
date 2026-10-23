@@ -264,6 +264,22 @@ describe('doctor checks the hook or extension that adds the project rules (#946)
     expect(await passing.check()).toBe(true);
   });
 
+  it('zcode: rejects profile output surrounding an otherwise intact reply', async () => {
+    await reconcileHooks(zcodeConfig(), 'zcode');
+    const cfg = await fse.readJson(zcodeConfig());
+    const launcher = path.join(tmpDir, 'noisy-launcher.cjs');
+    await fse.writeFile(launcher, [
+      "const { spawnSync } = require('node:child_process');",
+      "process.stdout.write('profile banner\\n');",
+      "const result = spawnSync(process.argv[2], { shell: true, stdio: 'inherit' });",
+      "process.exit(result.status ?? 1);",
+    ].join('\n'));
+    cfg.hooks.events.SessionStart[0].hooks[0].command = process.execPath;
+    cfg.hooks.events.SessionStart[0].hooks[0].args = [launcher, 'teamai hook-dispatch session-start --tool zcode'];
+    await fse.writeJson(zcodeConfig(), cfg);
+    expect(await (await find(['zcode'], DELIVERS))!.check()).toBe(false);
+  });
+
   it('zcode: fails when the registered entry cannot answer, while registration still passes', async () => {
     await reconcileHooks(zcodeConfig(), 'zcode');
     const cfg = await fse.readJson(zcodeConfig());

@@ -1664,14 +1664,14 @@ function toZcodeEntry(def: HookDef, launcherPath: string): ZcodeHookMatcher {
           timeoutMs,
         }
       : {
-          // POSIX has no console-flash problem: run the tail directly, like
-          // every other shell-based tool format.
+          // A login profile may print banners, corrupting the JSON reply.
+          // Inherit the host environment without sourcing startup files.
           type: 'process',
           command: 'bash',
           // Stored verbatim: the shell payload must equal `def.command` exactly
           // so managed-entry detection and the managed-hooks manifest share one
           // command representation (the same invariant the Codex format keeps).
-          args: ['-lc', def.command],
+          args: ['-c', def.command],
           timeoutMs,
         };
   const group: ZcodeHookMatcher = { hooks: [entry] };

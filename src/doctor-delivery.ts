@@ -964,7 +964,7 @@ const ZCODE_PROBE_TIMEOUT_MS = 10_000;
 
 function zcodeEntryCarriesItsReply(entry: { command: string; args: string[] }): boolean {
   // The tail is the entry's last argument: the dispatch command on POSIX
-  // (`bash -lc <tail>`), the same command behind the launcher on Windows
+  // (`bash -c <tail>`), the same command behind the launcher on Windows
   // (`node <launcher> <tail>`). Replacing only that slot leaves the rest of the
   // entry — the launcher included — exactly as ZCode will invoke it, which is
   // the point: the launcher is where #1030 broke.
@@ -979,11 +979,8 @@ function zcodeEntryCarriesItsReply(entry: { command: string; args: string[] }): 
   const probe = Buffer.from('{"probe":"teamai-zcode-delivery"}', 'utf8');
   const echoed = run('node -e "process.stdin.pipe(process.stdout)"', probe);
   if (echoed.error || echoed.status !== 0 || !Buffer.isBuffer(echoed.stdout)) return false;
-  // A substring rather than an exact match: on POSIX the entry runs its tail
-  // through `bash -lc`, and a login profile that prints puts its own bytes in
-  // front of the reply. What this has to catch is the reply going missing, not
-  // extra bytes around it.
-  if (!echoed.stdout.includes(probe)) return false;
+  // ZCode parses the whole reply as JSON: any startup output corrupts it.
+  if (!echoed.stdout.equals(probe)) return false;
   return run('node -e "process.exit(7)"').status === 7;
 }
 
