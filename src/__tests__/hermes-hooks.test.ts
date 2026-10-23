@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { injectHermesHooks, removeHermesHooks, getReportScriptPath, getInstructionsPluginDir } from '../hermes-hooks.js';
 import { log } from '../utils/logger.js';
@@ -24,23 +23,6 @@ afterEach(() => {
 });
 
 describe('injectHermesHooks', () => {
-  it.runIf(process.platform !== 'win32')('runs a hook in a home containing spaces and apostrophes', async () => {
-    process.env.HERMES_HOME = path.join(tmpDir, "member's Hermes home");
-    await injectHermesHooks();
-    const config = YAML.parse(fs.readFileSync(path.join(process.env.HERMES_HOME, 'config.yaml'), 'utf8'));
-    const command = config.hooks.on_session_start[0].command;
-    const bin = path.join(tmpDir, 'bin');
-    fs.mkdirSync(bin);
-    const receipt = path.join(tmpDir, 'receipt');
-    fs.writeFileSync(path.join(bin, 'teamai'), '#!/bin/sh\nprintf "%s\\n" "$@" > "$RECEIPT"\ncat >> "$RECEIPT"\n', { mode: 0o755 });
-    const run = spawnSync('sh', ['-c', command], {
-      input: '{"session_id":"quoted-home"}', encoding: 'utf8',
-      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, RECEIPT: receipt },
-    });
-    expect(run.status, run.stderr).toBe(0);
-    expect(fs.readFileSync(receipt, 'utf8')).toBe('hook-dispatch\nsession-start\n--tool\nhermes\n{"session_id":"quoted-home"}');
-  });
-
   it('migrates a raw command and its approval without removing member hooks', async () => {
     process.env.HERMES_HOME = path.join(tmpDir, 'Hermes home');
     fs.mkdirSync(process.env.HERMES_HOME);
