@@ -15,7 +15,7 @@ export default defineConfig({
       'src/__tests__/helpers/yield-between-tests.ts',
     ],
     // OpenCode's installer replaces a shared binary. Run it before workers.
-    globalSetup: ['src/__tests__/helpers/prepare-opencode-e2e.ts'],
+    globalSetup: ['src/__tests__/helpers/assert-safe-tmpdir.ts', 'src/__tests__/helpers/prepare-opencode-e2e.ts'],
     testTimeout: 60_000,
     hookTimeout: 30_000,
     // Build before the runner: rebuilding inside a test would delete dist
