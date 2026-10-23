@@ -789,7 +789,7 @@ envCmd
 
 const workflowCmd = program
   .command('workflow')
-  .description('Run a validated workflow from workflows/<name>.yaml');
+  .description('Run a validated workflow from workflows/<name>.yaml. Writable steps may set deliver: pr to open review requests; TeamAI never merges them.');
 
 workflowCmd
   .command('start <name>')

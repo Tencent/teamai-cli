@@ -120,6 +120,12 @@ export interface GitProvider {
    */
   createPullRequest(opts: PrCreateOptions): Promise<string>;
 
+  /** Finds an already open request, so a delivery restarted after a crash does not create another one. */
+  findOpenPullRequest?(opts: PrCreateOptions): Promise<string | undefined>;
+
+  /** False means known metadata disagrees; undefined means this provider cannot validate the URL. */
+  validatePullRequest?(url: string, opts: PrCreateOptions): Promise<boolean | undefined>;
+
   /**
    * 获取指定 MR/PR 的完整数据（标题、描述、提交列表、diff）。
    *

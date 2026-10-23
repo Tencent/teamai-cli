@@ -17,13 +17,14 @@ import {
 } from './template.js';
 import { parseStepPath } from './step-path.js';
 import {
-  DriverSchema, ReadSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, waitForAnswer,
+  DriverSchema, ReadSchema, answerHitl, cancel, deliver, fail, lease, release, settled, skip, start, stopped, succeed, waitForAnswer,
   type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { planWorkspace, plannedBranch, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
+import { branchName, planWorkspace, plannedBranch, type StepChanges, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
+import { deliverPending, validateReportedPr } from './delivery.js';
 import { generateRunId, isRunId, readRun, runLockPath, writeRun } from './store.js';
 import type {
   CachedWorkflow,
@@ -63,7 +64,7 @@ export interface ReportInput {
   tokens?: TokenUsage;
   failure?: WorkflowFailure;
   /** The branch this attempt committed, when it ran in a workspace. */
-  changes?: { branch: string; base: string; from: string; to: string; commits: string[] };
+  changes?: StepChanges;
   /** The branch and commit this attempt read, when it ran read-only in a workspace. */
   read?: StepRead;
   agent?: ReportedAgent;
@@ -265,8 +266,14 @@ function leaseData(
 /** Records who opened a workspace the first time this driver takes its branch. */
 function rememberCopy(run: RunState, plan: WorkspacePlan, driver: DriverIdentity): void {
   const branch = plan.contract?.branch;
-  if (!branch || run.copies?.[branch]) return;
-  (run.copies ??= {})[branch] = { owner: driver };
+  if (!branch) return;
+  const origin = plan.contract?.start.branch ?? plan.contract?.merge[0]?.branch;
+  const copy = run.copies?.[branch];
+  if (copy) {
+    if (!copy.origin && !copy.commit && origin && origin !== branch) copy.origin = origin;
+    return;
+  }
+  (run.copies ??= {})[branch] = { owner: driver, ...(origin ? { origin } : {}) };
 }
 
 /**
@@ -510,6 +517,7 @@ export function stopWhere(run: RunState, under: (id: string) => boolean, failure
         skip(state, settledAt);
         break;
       case 'running':
+      case 'delivering':
         cancel(state, failure, settledAt);
         break;
       case 'leased':
@@ -534,14 +542,41 @@ export function stopWhere(run: RunState, under: (id: string) => boolean, failure
  * A step takes how what it ran settled: a workflow step, the outcome, the end, and the outputs of its workflow; a
  * `for_each` step, the outcome and the results of its items.
  */
-function finishStep(state: StepState, result: WorkflowResult): void {
+function deliveryDeadline(run: RunState, state: StepState): number | undefined {
+  const limits: number[] = [];
+  const root = run.definition as WorkflowDefinition & { timeout?: number };
+  if (root.timeout) limits.push(Date.parse(run.createdAt) + root.timeout);
+  if (state.status === 'leased' && 'deadline' in state.lease && typeof state.lease.deadline === 'number') limits.push(state.lease.deadline);
+  for (const parent of run.steps) {
+    if (parent.id !== state.id && !state.id.startsWith(`${parent.id}.`)) continue;
+    const found = locateStep(run, parent.id);
+    const scope = found && found.step.workflow !== undefined ? childScope(run, found.scope, statesIn(run, found.scope), parent, found.step) : undefined;
+    const timeout = (found?.step as (WorkflowStep & { timeout?: number }) | undefined)?.timeout
+      ?? (scope?.definition as { timeout?: number } | undefined)?.timeout;
+    if (timeout && 'startedAt' in parent && typeof parent.startedAt === 'number') limits.push(parent.startedAt + timeout);
+  }
+  return limits.length ? Math.min(...limits) : undefined;
+}
+
+function finishStep(run: RunState, state: StepState, definition: WorkflowStep, result: WorkflowResult): void {
   const settlement = {
     settledAt: result.settledAt,
     ...(result.end !== undefined ? { end: result.end } : {}),
     ...(result.outputs !== undefined ? { outputs: result.outputs } : {}),
     ...(result.results ? { results: result.results } : {}),
   };
-  if (result.outcome === 'succeeded') succeed(state, settlement);
+  if (result.outcome === 'succeeded' && definition.deliver === 'pr' && (!definition.forEach || isItem(state))) {
+    // A workflow's children may continue one enclosing copy. Deliver that branch once at its workflow boundary.
+    const own = branchName(run.id, state.id, state.pass ?? 1);
+    const branches = [...new Set(run.steps.flatMap((child) => child.id.startsWith(`${state.id}.`) && 'changes' in child && child.changes ? [child.changes.branch] : []))];
+    const branch = run.copies?.[own] ? own : branches.length === 1 ? branches[0] : undefined;
+    const copy = branch && run.copies?.[branch];
+    if (!branch || !copy || !copy.commit || !run.base) {
+      fail(state, { ...settlement, failure: { code: 'delivery_failed', message: 'PR delivery needs one writable branch; set workspace: new on the workflow step.' } });
+    } else {
+      deliver(state, { ...settlement, changes: { branch, base: run.base.commit, from: run.base.commit, to: copy.commit, commits: [] } }, deliveryDeadline(run, state));
+    }
+  } else if (result.outcome === 'succeeded') succeed(state, settlement);
   else fail(state, { ...settlement, ...(result.failure ? { message: result.failure.message, failure: result.failure } : {}) });
 }
 
@@ -567,7 +602,7 @@ function advanceInstance(
   if (state.status === 'running') {
     const result = settleRunning(run, scope, states, state, definition);
     if (!('outcome' in result)) return result;
-    finishStep(state, result);
+    finishStep(run, state, definition, result);
     return undefined;
   }
   if (definition.forEach && !isItem(state)) {
@@ -741,7 +776,7 @@ function settleScope(run: RunState, scope: Scope): Settled {
       return decided === 'ended' ? result : { ...result, outcome: 'failed', failure: decided };
     }
     if (ready.length > 0) return { ready };
-    if (states.some((item) => item.status === 'waiting' || item.status === 'leased' || item.status === 'running')) return { inProgress: true };
+    if (states.some((item) => item.status === 'waiting' || item.status === 'leased' || item.status === 'running' || item.status === 'delivering')) return { inProgress: true };
     return { unreadable: `Run ${run.id} has pending steps whose needs cannot be met` };
   }
 }
@@ -875,6 +910,12 @@ export interface NextOptions {
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
+  const envelope = await leaseNextCore(config, runId, driver, options);
+  if ('error' in envelope || !await deliverPending(config, runId)) return envelope;
+  return leaseNext(config, runId, driver, options);
+}
+
+async function leaseNextCore(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions): Promise<WorkflowEnvelope> {
   driver = { kind: driver.kind, machine: driver.machine, workspace: driver.workspace };
   const running = new Set(options.running);
   // The end record is queued under the run lock, so the run stores whether it
@@ -900,7 +941,9 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       return answer(doneData(run));
     };
     const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => (
-      answer({ wait: { reason: open ? `${open.id} is leased` : 'canTakeLease is false' } })
+      answer({ wait: run.steps.some((step) => step.status === 'delivering')
+        ? { reason: 'PR delivery is in progress; poll next', delivery: true }
+        : { reason: open ? `${open.id} is leased` : 'canTakeLease is false' } })
     );
     if (run.status !== 'running') {
       // Settled by an earlier next, which queued the end record unless usage
@@ -1097,6 +1140,10 @@ export function parseReport(value: unknown): ParsedReport | string {
       return 'changes.commits must be an array of strings';
     }
     report.changes = { branch: value.branch, base: value.base, from: value.from, to: value.to, commits: value.commits };
+    if (value.pr_url !== undefined) {
+      // Invalid types are dropped with a value-free reason by reportAttempt too.
+      report.changes.pr_url = value.pr_url as string;
+    }
   }
   if (record.read !== undefined) {
     const read = ReadSchema.safeParse(record.read);
@@ -1108,7 +1155,12 @@ export function parseReport(value: unknown): ParsedReport | string {
     if (typeof agent === 'string') return agent;
     report.agent = agent;
   }
-  return { report, ignored: unreadFields(record, REPORT_FIELDS) };
+  const ignored = unreadFields(record, REPORT_FIELDS);
+  if (isRecord(record.changes)) {
+    const known = new Set(['branch', 'base', 'from', 'to', 'commits', 'pr_url']);
+    ignored.push(...Object.keys(record.changes).filter((key) => !known.has(key)).map((key) => `changes.${key}`));
+  }
+  return { report, ignored };
 }
 
 /** A `next` payload: who the driver is, and what else it tells `next`. */
@@ -1206,7 +1258,20 @@ function branchStillUsed(run: RunState, branch: string): boolean {
 }
 
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope> {
-  return withRun(config, runId, async (run) => {
+  const dropped: Array<{ field: string; reason: string }> = [];
+  if (report.changes && report.changes.pr_url !== undefined) {
+    report = structuredClone(report);
+    const run = await readRun(config, runId);
+    if (typeof run !== 'string') {
+      const result = await validateReportedPr(run, report.changes!);
+      if (result.url) report.changes!.pr_url = result.url;
+      else {
+        delete report.changes!.pr_url;
+        dropped.push({ field: 'changes.pr_url', reason: result.reason! });
+      }
+    }
+  }
+  const envelope = await withRun(config, runId, async (run) => {
     // Settled membership wins. An old revision of a settled attempt is still repeated_report.
     if (run.settledAttempts.includes(report.attempt)) {
       return { save: false, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) };
@@ -1266,7 +1331,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       model: report.model,
       session: report.session,
       tokens: report.tokens,
-      ...(report.changes ? { changes: report.changes } : {}),
+      ...(report.changes ? { changes: { ...report.changes, prRecordedAt: report.changes.pr_url ? run.revision : undefined } } : {}),
       ...(report.read ? { read: report.read } : {}),
       agent: settleObservation(report, defined?.agent),
     };
@@ -1275,11 +1340,12 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       copy.commit = report.changes.to;
       run.copies[report.changes.branch] = copy;
     }
+    const successful = { ...settlement, ...(report.outputs !== undefined ? { outputs: report.outputs } : {}) };
     const settledStep = outcome === 'released' ? release(step)
-      : outcome === 'success' ? succeed(step, { ...settlement, ...(report.outputs !== undefined ? { outputs: report.outputs } : {}) })
+      : outcome === 'success' ? defined?.deliver === 'pr' ? deliver(step, successful, deliveryDeadline(run, step)) : succeed(step, successful)
         : fail(step, { ...settlement, failure });
     // From the lease, so a reader that was the copy's last user lets the driver remove the worktree.
-    const cleanup = outcome === 'success' && contract !== undefined && !branchStillUsed(run, contract.branch);
+    const cleanup = outcome === 'success' && settledStep.status !== 'delivering' && contract !== undefined && !branchStillUsed(run, contract.branch);
     return {
       save: true,
       envelope: ok({
@@ -1290,4 +1356,22 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       }),
     };
   });
+  if ('error' in envelope) return envelope;
+  const pending = await readRun(config, runId);
+  if (typeof pending !== 'string' && pending.status === 'running' && pending.steps.some((step) => step.status === 'delivering')) {
+    // Reconcile before provider I/O too: limits reached by this report must stop delivery before it opens a PR.
+    const checked = await leaseNextCore(config, runId, report.driver, { canTakeLease: false,
+      running: pending.steps.flatMap((step) => step.status === 'leased' ? [step.attempt] : []),
+    });
+    if (!('error' in checked)) await deliverPending(config, runId);
+    const run = await readRun(config, runId);
+    const step = typeof run !== 'string' && run.steps.find((state) => 'attempt' in state && state.attempt === report.attempt);
+    if (step) {
+      envelope.data.revision = run.revision;
+      envelope.data.step = { id: step.id, status: step.status, outcome: step.status === 'failed' || step.status === 'cancelled' ? 'failed' : 'success' };
+      if (step.status === 'succeeded' && report.changes && !branchStillUsed(run, report.changes.branch)) envelope.data.cleanup = true;
+    }
+  }
+  if (dropped.length) envelope.data.dropped = dropped;
+  return envelope;
 }

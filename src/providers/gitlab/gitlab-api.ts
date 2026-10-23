@@ -301,6 +301,7 @@ export interface GitLabMrCreateOptions {
   reviewers?: string[];
   /** Working directory (unused for the REST path, kept for interface parity) */
   cwd?: string;
+  spawnTimeoutMs?: number;
 }
 
 interface GitLabUser {
@@ -355,6 +356,7 @@ export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<strin
     headers: authHeaders(token),
     body: JSON.stringify(body),
     redirect: 'manual',
+    ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
   });
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');

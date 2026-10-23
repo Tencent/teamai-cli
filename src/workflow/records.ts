@@ -25,6 +25,7 @@ import { stepDefinitions } from './scope.js';
 import { runLockPath } from './store.js';
 import { settled, VISIBLE_OUTCOMES, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
 import type { DriverIdentity, RunState, RunStatus, TokenUsage, WorkflowFailure } from './types.js';
+import { sanitizePrUrl } from './pr-url.js';
 
 /**
  * The failure codes the engine writes, then those the local driver sets. A code a model writes into its result, or
@@ -35,6 +36,7 @@ const RECORDED_FAILURES = [
   'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle',
   'tool_failed', 'tool_unavailable', 'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
   'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
+  'delivery_failed', 'timeout',
 ] as const;
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
 
@@ -94,6 +96,8 @@ export type WorkflowRunRecord = {
   stepCounts?: { total: number; succeeded: number; failed: number; skipped: number; cancelled: number };
   /** Settled attempts across the run — the cumulative iteration count. */
   iterations?: number;
+  /** Validated review links, first appearance order. Public on a public team repo; omitted before this version. */
+  prs?: string[];
   username: string;
   publishedAt: string;
 };
@@ -207,6 +211,13 @@ export function buildEndRecord(
     ]),
     ...(run.archive ?? []).map((archived) => entry(archived.step, archived.pass, archived)),
   ];
+  const changes = [
+    ...run.steps.flatMap((step) => [...(step.passes ?? []).flatMap((pass) => pass.changes ?? []), ...('changes' in step && step.changes ? [step.changes] : [])]),
+    ...(run.archive ?? []).flatMap((pass) => pass.changes ?? []),
+  ];
+  const prs = [...new Set(changes.filter((item) => item.prRecordedAt !== undefined)
+    .sort((a, b) => a.prRecordedAt! - b.prRecordedAt!)
+    .flatMap((item) => sanitizePrUrl(item.pr_url).url ?? []))];
   return {
     ...buildStartRecord(run, driver, username, now),
     phase: 'end',
@@ -228,6 +239,7 @@ export function buildEndRecord(
     // Cumulative when present; runs from before the counter fall back to the
     // bounded history length (their true count is unknowable now).
     iterations: run.settledCount ?? run.settledAttempts.length,
+    ...(prs.length ? { prs } : {}),
   };
 }
 

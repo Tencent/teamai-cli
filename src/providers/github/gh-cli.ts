@@ -556,6 +556,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
     {
       method: 'POST',
       headers: authHeaders,
+      ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
       body: JSON.stringify({
         title: opts.title,
         body: opts.description ?? opts.title,

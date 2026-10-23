@@ -17,6 +17,9 @@ export interface StepChanges {
   from: string;
   to: string;
   commits: string[];
+  pr_url?: string;
+  /** Engine revision at which the validated URL first appeared. Never accepted from a driver. */
+  prRecordedAt?: number;
 }
 
 /**
@@ -114,13 +117,26 @@ function workflowChildren(run: RunState, step: StepState): StepState[] {
 /** Branches a step merges, `after` items first, then its other needs. An omitted `needs` uses the parent step's needs. */
 function mergeChanges(run: RunState, scope: Scope, state: StepState, definition: WorkflowStep): StepChanges[] {
   const ordered: Array<{ changes: StepChanges; settledAt: number }> = [];
+  const visited = new Set<string>();
   const push = (step: StepState | undefined): void => {
-    if (!step) return;
+    if (!step || visited.has(step.id)) return;
+    visited.add(step.id);
     const changes = changesOf(step);
     // A for_each step keeps each item's branch on that item, and a workflow step keeps each child's on that child.
     if (!changes) {
       for (const item of itemsOf(run, step)) push(item);
       for (const child of workflowChildren(run, step)) push(child);
+      // A skipped or read-only need wrote no branch, but its earlier dependencies still supply the copy's origin.
+      let id: string | undefined = step.id;
+      while (id) {
+        const defined = stepDefinitions(run)(id);
+        const prefix: string = id.includes('.') ? id.slice(0, id.lastIndexOf('.') + 1) : '';
+        if (defined?.needs !== undefined) {
+          for (const need of defined.needs) push(run.steps.find((item) => item.id === `${prefix}${need}`));
+          break;
+        }
+        id = prefix ? prefix.slice(0, -1) : undefined;
+      }
       return;
     }
     const settledAt = 'settledAt' in step ? step.settledAt : 0;

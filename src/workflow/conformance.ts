@@ -28,7 +28,7 @@ export interface ConformanceScenario {
  * `absent` lists fields the lease must not carry.
  */
 export type ConformanceOperation =
-  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; hitl?: boolean; cancelled?: string[]; absent?: string[]; expect: Record<string, unknown> }
+  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; hitl?: boolean; workspace?: boolean; cancelled?: string[]; absent?: string[]; expect: Record<string, unknown> }
   | { kind: 'respond'; step: string; choice: string; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
   | { kind: 'retry'; step: string; expect: Record<string, unknown> }
   | { kind: 'cancel'; step?: string; expect: Record<string, unknown> }
@@ -37,6 +37,8 @@ export type ConformanceOperation =
     lease?: string;
     attempt?: string;
     revision?: number;
+    /** The harness fills the changes branch/base from this operation's saved lease. */
+    leasedChanges?: boolean;
     body: Record<string, unknown>;
     expect: Record<string, unknown>;
   };
@@ -52,6 +54,15 @@ steps:
     command: echo two
     output:
       ok: boolean
+`;
+
+const REVIEW_LINK = `schemaVersion: v1alpha1
+name: review-link
+description: A remote driver reports a review link.
+steps:
+  - id: work
+    workspace: new
+    command: echo work
 `;
 
 const FAILED_DEPENDENCY = `schemaVersion: v1alpha1
@@ -224,6 +235,23 @@ steps:
 `;
 
 export const workflowConformanceScenarios: ConformanceScenario[] = [
+  {
+    name: 'a driver reports a sanitized review URL', workflowName: 'review-link', yaml: REVIEW_LINK,
+    operations: [
+      { kind: 'next', saveAs: 'work', workspace: true, expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'report', lease: 'work', leasedChanges: true, body: { outcome: 'success', changes: { pr_url: 'https://review.example/changes/1?session=private#note', unknown: 'private' } }, expect: { data: { accepted: true, ignored: ['changes.unknown'] } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+    expectState: { steps: [{ id: 'work', changes: { pr_url: 'https://review.example/changes/1' } }] },
+  },
+  {
+    name: 'an unsafe review URL is dropped without rejecting the report', workflowName: 'review-link', yaml: REVIEW_LINK,
+    operations: [
+      { kind: 'next', saveAs: 'work', workspace: true, expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'report', lease: 'work', leasedChanges: true, body: { outcome: 'success', changes: { pr_url: 'https://user:token@review.example/changes/1' } }, expect: { data: { accepted: true, dropped: [{ field: 'changes.pr_url', reason: 'contains credentials' }] } } },
+      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+  },
   {
     name: 'two-step command success',
     workflowName: 'build',

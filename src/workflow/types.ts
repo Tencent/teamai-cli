@@ -72,6 +72,8 @@ export interface WorkflowStep {
    * A prompt that omits it continues an enclosing `new` or `continue` copy, or stays read-only.
    */
   workspace?: 'read-only' | 'new' | 'continue';
+  /** Opens a review request after the branch's work succeeds. TeamAI never merges it. */
+  deliver?: 'pr';
   /** A session this step resumes. `continue` uses this step's previous pass. `from` names another step. */
   session?: { continue: true } | { from: string };
 }
@@ -172,8 +174,9 @@ export interface WorkflowDiagnostic {
    *   to repeat or to run per item, or run on past the point the author wrote to stop at.
    * `bad_session`: a `session.from` pull rejects; the kept copy would resume a step the author did not name.
    * `bad_workspace`: `workspace` is not read-only, new, or continue; the kept copy would run the step in the wrong place.
+   * `bad_delivery`: delivery is not PR creation on a writable branch; the kept copy would apply a different policy.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_delivery';
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
@@ -242,7 +245,7 @@ export interface RunState {
   /** The checkout `workflow start` ran in. Local run state only: never on a lease or a record. */
   checkout?: string;
   /** Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. */
-  copies?: Record<string, { owner: DriverIdentity; commit?: string }>;
+  copies?: Record<string, { owner: DriverIdentity; commit?: string; origin?: string }>;
   createdAt: string;
   updatedAt: string;
 }

@@ -43,7 +43,7 @@ export const CNB_HOST = process.env.TEAMAI_CNB_HOST?.trim() || 'cnb.cool';
 /** Run a `cnb` subcommand. Returns { stdout, stderr, status }. */
 export function cnbExec(
   args: string[],
-  options?: { inheritStdio?: boolean; cwd?: string },
+  options?: { inheritStdio?: boolean; cwd?: string; timeoutMs?: number },
 ): { stdout: string; stderr: string; status: number } {
   // Resolve the executable first, then launch it through cross-spawn: on
   // Windows the npm-installed CLI is only a `.cmd` shim, which neither a bare
@@ -58,7 +58,7 @@ export function cnbExec(
 
   log.debug(`cnb exec: ${cnbPath} ${args.join(' ')}`);
   if (options?.inheritStdio) {
-    const r = crossSpawn.sync(cnbPath, args, { stdio: 'inherit', env: { ...process.env }, cwd: options.cwd });
+    const r = crossSpawn.sync(cnbPath, args, { stdio: 'inherit', env: { ...process.env }, cwd: options.cwd, ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}) });
     return { stdout: '', stderr: '', status: r.status ?? 1 };
   }
   const r = crossSpawn.sync(cnbPath, args, {
@@ -66,6 +66,7 @@ export function cnbExec(
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
     cwd: options?.cwd,
+    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
   });
   return {
     stdout: (r.stdout ?? '').toString().trim(),
@@ -339,6 +340,7 @@ export interface CnbPullCreateOptions {
   title: string;
   description?: string;
   cwd?: string;
+  spawnTimeoutMs?: number;
 }
 
 /**
@@ -357,7 +359,7 @@ export function cnbPullCreate(opts: CnbPullCreateOptions): string {
   ];
   if (opts.description) args.push('--body', opts.description);
 
-  const r = cnbExec(args, { cwd: opts.cwd });
+  const r = cnbExec(args, { cwd: opts.cwd, ...(opts.spawnTimeoutMs ? { timeoutMs: opts.spawnTimeoutMs } : {}) });
   if (r.status !== 0) {
     throw new Error(`cnb post-pull failed: ${r.stderr || r.stdout}`);
   }

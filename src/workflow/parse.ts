@@ -19,7 +19,7 @@ import { loopProblems } from './loop.js';
 
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'steps']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'deliver']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
@@ -491,6 +491,14 @@ function parseBody(
         });
       }
       const sessionPair = item.items.find((pair) => scalarString(pair.key) === 'session');
+      const deliverPair = item.items.find((pair) => scalarString(pair.key) === 'deliver');
+      const deliver = scalarString(deliverPair?.value)?.trim();
+      if (deliverPair && (deliver !== 'pr' || workspace === 'read-only')) {
+        diagnostics.push({
+          ...locate(file, lineCounter, deliverPair.value ?? deliverPair.key ?? item, `${field}.deliver`, 'deliver must be pr on a writable branch'),
+          code: 'bad_delivery',
+        });
+      }
       let session: WorkflowStep['session'];
       if (sessionPair) {
         const sessionText = scalarString(sessionPair.value)?.trim();
@@ -537,6 +545,7 @@ function parseBody(
           ...(breakSource !== undefined ? { break: breakSource } : {}),
           ...(forEach ? { forEach } : {}),
           ...(workspace ? { workspace } : {}),
+          ...(deliver === 'pr' ? { deliver } : {}),
           ...(session ? { session } : {}),
         });
       }

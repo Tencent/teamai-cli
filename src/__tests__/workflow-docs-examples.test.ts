@@ -68,6 +68,8 @@ function startsOf(page: string): { starts: Start[]; unread: string[] } {
   const unread = [...text.matchAll(/--inputs[ =]['"{]/g)]
     .map((match) => lineOf(match.index))
     .filter((line) => !starts.some((start) => start.line === line))
+    // Actions expressions become JSON only inside the job; the documented CLI path has its own real-CLI E2E.
+    .filter((line) => !text.split('\n')[line - 1]?.includes('${{'))
     .map((line) => `${page}:${line}: --inputs is not part of a teamai workflow start line`);
   return { starts, unread };
 }
