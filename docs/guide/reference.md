@@ -216,3 +216,7 @@ teamai models remove local:my-gateway
 ```
 
 `restore` puts back only the fields TeamAI changed. An agent you edited yourself is skipped by later switches and restores.
+
+## Kiro lifecycle hooks
+
+Kiro CLI V3 loads `~/.kiro/hooks/teamai.json` for every agent, including the default agent. Pull and hook injection install its SessionStart hook without requiring a team agent. `hooks list` and `doctor` check it; hook removal and user uninstall remove it. Project uninstall preserves this shared user hook. A same-named personal file is kept and reported. Pull removes the old managed `agentSpawn` entry from rendered team agents while preserving custom hooks. Lifecycle integration requires V3; Kiro 2.x does not load this standalone hook.
