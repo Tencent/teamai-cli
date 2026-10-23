@@ -294,3 +294,5 @@ projects:
     resources:
       docs: [checkout]
 ```
+
+In self mode, pushing an edited skill from a checkout behind the default branch stops with exit 2 if it would overwrite an upstream file. The check covers the whole skill directory, including references and deletions, even when your edit is in another file. Merge the default branch, reconcile the skill, and retry; a copy that already contains the upstream changes can be pushed.

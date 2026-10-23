@@ -122,8 +122,10 @@ The doc lands in the team's `learnings/` and appears for teammates on their next
    or copy the team's current file over it), redo the edit on top, and push again.
    Any other team file under `.teamai/` that the default branch changed since
    your branch left it is left out of the push when you did not edit it. A file
-   you edited too, a rule included but not a skill's file, stops the push with
-   exit 2; merge the default branch and push again.
+   you edited too stops the push with exit 2; merge the default branch and push
+   again. Skills are checked as whole directories, including reference files
+   and deletions: a skill edit stops when it would replace any changed upstream
+   file with a stale local copy, even if you edited a different file.
 
 ## After contributing
 

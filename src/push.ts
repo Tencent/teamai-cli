@@ -1109,6 +1109,24 @@ async function itemsChangedOnDefaultBranch(
       retiring.push(item);
       continue;
     }
+    if (item.type === 'skills') {
+      const source = path.resolve(item.sourcePath);
+      const destination = teamFile(item.relativePath);
+      // A skill is copied as a directory, including references and deletions.
+      // The scanner already leaves out an unchanged historical skill. Any
+      // remaining edit must not replace an upstream file with its stale copy,
+      // even when the member edited a different file in that directory.
+      for (const [file, change] of blobs) {
+        const root = [source, destination].find((dir) => file.startsWith(dir + path.sep));
+        if (!root) continue;
+        const memberBlob = await hashObject(memberRoot, path.join(source, path.relative(root, file)));
+        if (change.atTip !== memberBlob) {
+          edited.push(item);
+          break;
+        }
+      }
+      continue;
+    }
     const changes = [...new Set([path.resolve(item.sourcePath), teamFile(item.relativePath)])]
       .flatMap((file) => blobs.get(file) ?? []);
     if (changes.length === 0) continue;

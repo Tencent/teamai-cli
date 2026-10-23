@@ -171,6 +171,54 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(git(['show', 'main:.teamai/docs/README.md'], remote)).toBe(TEAMMATE_README.trim());
   });
 
+  it.each(['SKILL.md', 'references/guide.md', 'references/deleted.md', 'different files'])('refuses a stale skill push that would overwrite upstream changes: %s', async (changed) => {
+    const skill = '.teamai/skills/demo';
+    const body = '---\nname: demo\ndescription: Demo\n---\nBase skill.\n';
+    fs.mkdirSync(active(`${skill}/references`), { recursive: true });
+    fs.writeFileSync(active(`${skill}/SKILL.md`), body);
+    fs.writeFileSync(active(`${skill}/references/guide.md`), 'Base reference.\n');
+    fs.writeFileSync(active(`${skill}/references/deleted.md`), 'Base deletion candidate.\n');
+    git(['add', '.teamai/skills'], projectRoot);
+    git(['commit', '-q', '-m', 'seed skill'], projectRoot);
+    git(['push', '-q', 'origin', 'main'], projectRoot);
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    const file = changed === 'different files' ? 'references/guide.md' : changed;
+    const upstream = file === 'SKILL.md' ? `${body}Teammate fix.\n` : 'Teammate reference fix.\n';
+    teammateLandsOnMain({ [`${skill}/${file}`]: upstream });
+    if (changed === 'references/deleted.md') fs.unlinkSync(active(`${skill}/${file}`));
+    else if (changed === 'different files') fs.appendFileSync(active(`${skill}/SKILL.md`), 'Author edit.\n');
+    else fs.appendFileSync(active(`${skill}/${file}`), 'Author edit.\n');
+
+    const push = await runCLI(['push', '--all'], projectRoot, home);
+    expect(push.code, push.output).toBe(2);
+    expect(push.output).toContain('.teamai/skills/demo');
+    expect(push.output).toContain('git pull');
+    expect(pushBranches()).toEqual([]);
+    expect(git(['show', `main:${skill}/${file}`], remote)).toBe(upstream.trim());
+  });
+
+  it('allows a skill edit after its copy already includes the changed upstream file', async () => {
+    const skill = '.teamai/skills/demo';
+    const body = '---\nname: demo\ndescription: Demo\n---\nBase skill.\n';
+    fs.mkdirSync(active(`${skill}/references`), { recursive: true });
+    fs.writeFileSync(active(`${skill}/SKILL.md`), body);
+    fs.writeFileSync(active(`${skill}/references/guide.md`), 'Base reference.\n');
+    git(['add', '.teamai/skills'], projectRoot);
+    git(['commit', '-q', '-m', 'seed skill'], projectRoot);
+    git(['push', '-q', 'origin', 'main'], projectRoot);
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    teammateLandsOnMain({ [`${skill}/references/guide.md`]: 'Teammate fix.\n' });
+    fs.writeFileSync(active(`${skill}/references/guide.md`), 'Teammate fix.\n');
+    fs.appendFileSync(active(`${skill}/SKILL.md`), 'Author edit.\n');
+
+    const push = await runCLI(['push', '--all'], projectRoot, home);
+    expect(push.code, push.output).toBe(1); // Generic git provider prints a branch, without opening a PR.
+    expect(push.output).toContain('Pushed branch');
+    const [branch] = pushBranches();
+    expect(git(['show', `${branch}:${skill}/references/guide.md`], remote)).toBe('Teammate fix.');
+    expect(git(['show', `${branch}:${skill}/SKILL.md`], remote)).toContain('Author edit.');
+  });
+
   it('pushes a selected skill when a file it leaves out changed both here and on the default branch', async () => {
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
     teammateLandsOnMain({ '.teamai/env/env.yaml': TEAMMATE_ENV });
