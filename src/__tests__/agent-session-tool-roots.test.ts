@@ -216,7 +216,7 @@ describe('session commands with a recorded Claude Code root', () => {
     execFileSync('git', ['-C', cwd, 'remote', 'add', 'origin', 'https://github.com/org/alpha.git']);
     const repoRoot = path.join(mocks.home, 'team');
     const session = { ...mkSession(cwd, 'archived work'), sessionId: '0b6f3c1e-5a2d-4c8e-9f10-7a1b2c3d4e5f' };
-    new SyncManager(repoRoot).saveSession(
+    await new SyncManager(repoRoot).saveSession(
       session,
       defaultSyncMeta(
         { platform: 'claude-code', author: 'u', cwd, sessionId: session.sessionId, repoIdentity: 'github.com/org/alpha', title: session.title },

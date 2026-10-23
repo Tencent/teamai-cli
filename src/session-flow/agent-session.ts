@@ -16,6 +16,7 @@ import { resolveMemberToolRoots } from '../config.js';
 import { getTeamaiHomeDir, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ADAPTER_REGISTRY, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
+import { SESSION_PLATFORM_FACTS, sessionPlatformFacts } from './adapters/platform-facts.js';
 import { ToolUnavailableError, type AgentAdapter, type SessionMeta } from './adapters/base.js';
 import { imagePlaceholderText, type ContentBlock, type Message, type Session } from './ir.js';
 import { deriveTargetSessionId, legacyTargetSessionIds } from './ids.js';
@@ -122,9 +123,6 @@ export type AgentSession = {
   platformForTool(tool: string): string | undefined;
 };
 
-/** Targets that list a copy only once the sqlite3 CLI registers it. Windows ships no sqlite3. */
-const LISTED_THROUGH_SQLITE3 = new Set(['cursor', 'workbuddy']);
-
 /**
  * Why TeamAI cannot use `platform` on this machine, or undefined when it can. `write` also
  * refuses a target whose copy would never show here. Every command that names a platform
@@ -144,7 +142,7 @@ export function noAdapter(
       message: `Unknown platform "${platform}". Known platforms: ${known.join(', ')}.`,
     };
   }
-  if (use === 'write' && os === 'win32' && LISTED_THROUGH_SQLITE3.has(platform)) {
+  if (use === 'write' && os === 'win32' && sessionPlatformFacts(platform)?.sqliteRegistrationOnWindows) {
     return {
       code: 'no_adapter',
       platform,
@@ -493,13 +491,10 @@ function transcript(session: Session): AgentSessionTranscriptEntry[] {
   }));
 }
 
-/** Tool names whose session platform has another name. Every other platform is its own tool name. */
-const PLATFORM_OF_TOOL: Record<string, string> = { claude: 'claude-code' };
-
 /** The session platform a tool (a workflow step's `tool`) reads and writes, or undefined when it has none. */
 function platformForTool(tool: string): string | undefined {
-  const platform = PLATFORM_OF_TOOL[tool] ?? tool;
-  return listAvailablePlatforms().includes(platform) ? platform : undefined;
+  if (sessionPlatformFacts(tool)) return tool;
+  return Object.entries(SESSION_PLATFORM_FACTS).find(([, facts]) => facts.tool === tool)?.[0];
 }
 
 export const AgentSession = { list, copy, find, transcript, platformForTool } as const satisfies AgentSession;

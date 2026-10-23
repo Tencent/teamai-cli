@@ -21,6 +21,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { sessionPlatformFacts } from './adapters/platform-facts.js';
 
 /**
  * Derive the id to write a session under in `targetPlatform` at `targetCwd`.
@@ -52,7 +53,7 @@ export function deriveTargetSessionId(
     );
   }
   const key = `teamai:${targetPlatform}:${canonicalWorkspace(targetCwd, paths)}:${sourceSessionId}`;
-  if (targetPlatform === 'opencode') {
+  if (sessionPlatformFacts(targetPlatform)?.idFormat === 'opencode') {
     const time =
       OPENCODE_SESSION_TIME.exec(sourceSessionId)?.[1] ?? opencodeTime(opencodeClock(createdMs(target.sourceCreatedAt)), 'descending');
     return `ses_${time}${base62Suffix(key)}`;
@@ -105,7 +106,6 @@ function base62Suffix(key: string): string {
 }
 
 /** Platforms whose copies an older TeamAI derived without the workspace: per-project stores. */
-const DERIVED_WITHOUT_WORKSPACE = new Set(['claude-code', 'claude-internal', 'tclaude', 'codebuddy']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -126,7 +126,7 @@ export function legacyTargetSessionIds(target: {
   const { sourcePlatform, targetPlatform, sourceSessionId } = target;
   const ids: string[] = [];
   if (sourcePlatform !== targetPlatform && UUID_RE.test(sourceSessionId)) ids.push(sourceSessionId);
-  if (DERIVED_WITHOUT_WORKSPACE.has(targetPlatform)) ids.push(uuidV7Shaped(`teamai:${targetPlatform}:${sourceSessionId}`));
+  if (sessionPlatformFacts(targetPlatform)?.legacyIdWithoutWorkspace) ids.push(uuidV7Shaped(`teamai:${targetPlatform}:${sourceSessionId}`));
   return ids;
 }
 

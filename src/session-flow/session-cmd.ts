@@ -283,7 +283,8 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const finishIndexMerge = async (indexes: string[]): Promise<void> => {
         // The rebuild takes the lock and the network pull does not: a lock held across it would make other saves wait and fail busy.
         const merged = await withSessionIndexLock(repoRoot, async () =>
-          runGitStep(() => syncMgr.commitRebuiltIndexes(indexes), repoRoot, 'git pull'),
+          syncMgr.commitRebuiltIndexes(indexes).catch((error: unknown) =>
+            runGitStep(() => { throw error; }, repoRoot, 'git pull')),
         );
         if (merged.status === 'busy') {
           console.error(`Error: ${mergeBusyMessage(repoRoot, merged.lockPath)}`);

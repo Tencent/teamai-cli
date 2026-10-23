@@ -147,11 +147,11 @@ describe('listAllRepoIdentities', () => {
 });
 
 describe('listSessionsAcrossRepos', () => {
-  it('merges sessions from every repo and _unattributed', () => {
+  it('merges sessions from every repo and _unattributed', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession({ sessionId: 'a-1', title: 'alpha task' }), mkMeta({ sessionId: 'a-1', repoIdentity: 'github.com/org/alpha' }));
-    mgr.saveSession(mkSession({ sessionId: 'b-1', title: 'beta task' }), mkMeta({ sessionId: 'b-1', author: 'bob', repoIdentity: 'gitlab.company.com/g/beta' }));
-    mgr.saveSession(mkSession({ sessionId: 'c-1', title: 'plain task' }), mkMeta({ sessionId: 'c-1', author: 'carol', repoIdentity: null }));
+    await mgr.saveSession(mkSession({ sessionId: 'a-1', title: 'alpha task' }), mkMeta({ sessionId: 'a-1', repoIdentity: 'github.com/org/alpha' }));
+    await mgr.saveSession(mkSession({ sessionId: 'b-1', title: 'beta task' }), mkMeta({ sessionId: 'b-1', author: 'bob', repoIdentity: 'gitlab.company.com/g/beta' }));
+    await mgr.saveSession(mkSession({ sessionId: 'c-1', title: 'plain task' }), mkMeta({ sessionId: 'c-1', author: 'carol', repoIdentity: null }));
 
     const all = mgr.listSessionsAcrossRepos();
     expect(all.map((s) => s.sessionId).sort()).toEqual(['a-1', 'b-1', 'c-1']);
@@ -161,11 +161,11 @@ describe('listSessionsAcrossRepos', () => {
     expect(all.find((s) => s.sessionId === 'c-1')?.repoIdentity).toBeNull();
   });
 
-  it('filters by author across repos', () => {
+  it('filters by author across repos', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession({ sessionId: 'a-1', title: 'alpha alice' }), mkMeta({ sessionId: 'a-1', author: 'alice', repoIdentity: 'github.com/org/alpha' }));
-    mgr.saveSession(mkSession({ sessionId: 'b-1', title: 'beta bob' }), mkMeta({ sessionId: 'b-1', author: 'bob', repoIdentity: 'gitlab.company.com/g/beta' }));
-    mgr.saveSession(mkSession({ sessionId: 'c-1', title: 'plain alice' }), mkMeta({ sessionId: 'c-1', author: 'alice', repoIdentity: null }));
+    await mgr.saveSession(mkSession({ sessionId: 'a-1', title: 'alpha alice' }), mkMeta({ sessionId: 'a-1', author: 'alice', repoIdentity: 'github.com/org/alpha' }));
+    await mgr.saveSession(mkSession({ sessionId: 'b-1', title: 'beta bob' }), mkMeta({ sessionId: 'b-1', author: 'bob', repoIdentity: 'gitlab.company.com/g/beta' }));
+    await mgr.saveSession(mkSession({ sessionId: 'c-1', title: 'plain alice' }), mkMeta({ sessionId: 'c-1', author: 'alice', repoIdentity: null }));
 
     const byAlice = mgr.listSessionsAcrossRepos('alice');
     expect(byAlice.map((s) => s.sessionId).sort()).toEqual(['a-1', 'c-1']);
@@ -197,9 +197,9 @@ describe('listSessionsAcrossRepos', () => {
 });
 
 describe('saveSession dedup (origin sessionId + author)', () => {
-  it('updates the existing entry in place instead of creating a _1 duplicate', () => {
+  it('updates the existing entry in place instead of creating a _1 duplicate', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession({ title: 'fix payment', messages: mkSession().messages }), mkMeta());
+    await mgr.saveSession(mkSession({ title: 'fix payment', messages: mkSession().messages }), mkMeta());
 
     // 同一 sessionId + author 再推（内容有更新）→ 复用原 sessionName 覆盖写
     const second = mkSession({
@@ -210,7 +210,7 @@ describe('saveSession dedup (origin sessionId + author)', () => {
         { role: 'user', content: [{ type: 'text', text: 'continue' }] },
       ],
     });
-    mgr.saveSession(second, mkMeta());
+    await mgr.saveSession(second, mkMeta());
 
     const authorDir = path.join(repoDirOf('github.com/org/alpha'), 'alice');
     const jsonls = fs.readdirSync(authorDir).filter((f) => f.endsWith('.jsonl'));
@@ -225,10 +225,10 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     });
   });
 
-  it('treats the same sessionId under a different author as a separate session', () => {
+  it('treats the same sessionId under a different author as a separate session', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession({ sessionId: 'shared-1', title: 'shared' }), mkMeta({ sessionId: 'shared-1', author: 'alice' }));
-    mgr.saveSession(mkSession({ sessionId: 'shared-1', title: 'shared' }), mkMeta({ sessionId: 'shared-1', author: 'bob' }));
+    await mgr.saveSession(mkSession({ sessionId: 'shared-1', title: 'shared' }), mkMeta({ sessionId: 'shared-1', author: 'alice' }));
+    await mgr.saveSession(mkSession({ sessionId: 'shared-1', title: 'shared' }), mkMeta({ sessionId: 'shared-1', author: 'bob' }));
 
     const repoDir = repoDirOf('github.com/org/alpha');
     expect(fs.existsSync(path.join(repoDir, 'alice', 'claude-code_shared_20260102.jsonl'))).toBe(true);
@@ -241,7 +241,7 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     expect(idx.sessions.map((s) => s.author).sort()).toEqual(['alice', 'bob']);
   });
 
-  it('falls back to name-conflict suffixes when the legacy index has no sessionId', () => {
+  it('falls back to name-conflict suffixes when the legacy index has no sessionId', async () => {
     // 旧索引条目没有 sessionId → 按 sessionId 查重查不到 → 走旧的
     // resolveNameConflict 路径，生成 _1 副本（兼容旧行为）
     const base = generateSessionName('claude-code', 'fix payment', '2026-01-02T03:04:05.000Z');
@@ -258,19 +258,19 @@ describe('saveSession dedup (origin sessionId + author)', () => {
     });
 
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession({ sessionId: 'new-1' }), mkMeta({ sessionId: 'new-1' }));
+    await mgr.saveSession(mkSession({ sessionId: 'new-1' }), mkMeta({ sessionId: 'new-1' }));
 
     expect(fs.existsSync(path.join(authorDir, `${base}_1.jsonl`))).toBe(true);
     expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(2);
   });
 
-  it('rebuilds a missing index before dedup so a re-push keeps the other sessions', () => {
+  it('rebuilds a missing index before dedup so a re-push keeps the other sessions', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession({ sessionId: 's-1', title: 'fix payment' }), mkMeta({ sessionId: 's-1' }));
-    mgr.saveSession(mkSession({ sessionId: 's-2', title: 'other task' }), mkMeta({ sessionId: 's-2' }));
+    await mgr.saveSession(mkSession({ sessionId: 's-1', title: 'fix payment' }), mkMeta({ sessionId: 's-1' }));
+    await mgr.saveSession(mkSession({ sessionId: 's-2', title: 'other task' }), mkMeta({ sessionId: 's-2' }));
     fs.unlinkSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'));
 
-    mgr.saveSession(mkSession({ sessionId: 's-1', title: 'fix payment v2' }), mkMeta({ sessionId: 's-1' }));
+    await mgr.saveSession(mkSession({ sessionId: 's-1', title: 'fix payment v2' }), mkMeta({ sessionId: 's-1' }));
 
     const authorDir = path.join(repoDirOf('github.com/org/alpha'), 'alice');
     const jsonls = fs.readdirSync(authorDir).filter((f) => f.endsWith('.jsonl'));
@@ -296,6 +296,23 @@ describe('withSessionIndexLock', () => {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;
     fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it('the public archive save waits for the index lock without a caller wrapper', async () => {
+    let release!: () => void;
+    let ready!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    const held = withSessionIndexLock(repoRoot, async () => { ready(); await gate; });
+    await started;
+    const saving = new SyncManager(repoRoot).saveSession(mkSession(), mkMeta());
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(fs.existsSync(path.join(repoRoot, 'sessions'))).toBe(false);
+    } finally { release(); }
+    await held;
+    await saving;
+    expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(1);
   });
 
   it('lands both of two concurrent saves of different sessions with the same title and day', async () => {
@@ -343,81 +360,81 @@ describe('withSessionIndexLock', () => {
 });
 
 describe('rebuildIndex', () => {
-  it('preserves origin sessionId in rebuilt entries', () => {
+  it('preserves origin sessionId in rebuilt entries', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession(), mkMeta());
+    await mgr.saveSession(mkSession(), mkMeta());
 
     // 索引损坏后重建
     fs.writeFileSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'), '{ corrupted');
 
-    const count = mgr.rebuildIndex('github.com/org/alpha');
+    const count = (await mgr.rebuildIndex('github.com/org/alpha'));
     expect(count).toBe(1);
 
     const idx = readRepoIndex('github.com/org/alpha');
     expect(idx.sessions[0]).toMatchObject({ sessionName: 'claude-code_fix-payment_20260102', sessionId: 's-1' });
   });
 
-  it('keeps an author directory whose name starts with an underscore', () => {
+  it('keeps an author directory whose name starts with an underscore', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession(), mkMeta({ author: '_alice' }));
+    await mgr.saveSession(mkSession(), mkMeta({ author: '_alice' }));
     fs.unlinkSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'));
 
-    expect(mgr.rebuildIndex('github.com/org/alpha')).toBe(1);
+    expect((await mgr.rebuildIndex('github.com/org/alpha'))).toBe(1);
     expect(readRepoIndex('github.com/org/alpha').sessions[0]).toMatchObject({ author: '_alice', sessionId: 's-1' });
   });
 
-  it('is idempotent across repeated rebuilds', () => {
+  it('is idempotent across repeated rebuilds', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession(), mkMeta());
+    await mgr.saveSession(mkSession(), mkMeta());
 
-    expect(mgr.rebuildIndex('github.com/org/alpha')).toBe(1);
-    expect(mgr.rebuildIndex('github.com/org/alpha')).toBe(1);
+    expect((await mgr.rebuildIndex('github.com/org/alpha'))).toBe(1);
+    expect((await mgr.rebuildIndex('github.com/org/alpha'))).toBe(1);
     expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(1);
   });
 
-  it('keeps the original title and author instead of the sanitized directory name', () => {
+  it('keeps the original title and author instead of the sanitized directory name', async () => {
     // The author directory is sanitized (`alice:ci` → `alice_ci`) and the file
     // name is a truncated slug; rebuilding from those destroyed both fields.
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(
+    await mgr.saveSession(
       mkSession({ title: 'Fix Payment Retry Logic' }),
       mkMeta({ author: 'alice:ci', repoIdentity: 'github.com/org/alpha', title: 'Fix Payment Retry Logic' }),
     );
 
     fs.writeFileSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'), '{ corrupted');
-    mgr.rebuildIndex('github.com/org/alpha');
+    await mgr.rebuildIndex('github.com/org/alpha');
 
     const entry = readRepoIndex('github.com/org/alpha').sessions[0];
     expect(entry.author).toBe('alice:ci');
     expect(entry.title).toBe('Fix Payment Retry Logic');
   });
 
-  it('rebuilds repos whose index is missing entirely (pull --all repair path)', () => {
+  it('rebuilds repos whose index is missing entirely (pull --all repair path)', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession(), mkMeta());
+    await mgr.saveSession(mkSession(), mkMeta());
 
     // 删掉索引后，listAllRepoIdentities 反查不到 → 只有按目录重建才能修回来
     fs.unlinkSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'));
     expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual([]);
 
-    const { repos, sessions } = new SyncManager(repoRoot).rebuildAllIndexes();
+    const { repos, sessions } = (await new SyncManager(repoRoot).rebuildAllIndexes());
     expect(repos).toBe(1);
     expect(sessions).toBe(1);
     expect(new SyncManager(repoRoot).listAllRepoIdentities()).toEqual(['github.com/org/alpha']);
   });
 
-  it('repairs a corrupted index instead of overwriting it with the new entry', () => {
+  it('repairs a corrupted index instead of overwriting it with the new entry', async () => {
     // A corrupted index used to be read as empty, so the next upsert wrote a
     // one-entry index and every other session of that repo vanished from
     // `list` -- while their files were still on disk.
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(
+    await mgr.saveSession(
       mkSession({ sessionId: 'first', title: 'first session' }),
       mkMeta({ sessionId: 'first' }),
     );
     fs.writeFileSync(path.join(repoDirOf('github.com/org/alpha'), '_index.json'), '{ broken');
 
-    mgr.saveSession(
+    await mgr.saveSession(
       mkSession({ sessionId: 'second', title: 'second session' }),
       mkMeta({ sessionId: 'second' }),
     );
@@ -426,9 +443,9 @@ describe('rebuildIndex', () => {
     expect(idx.sessions.map((s) => s.sessionId).sort()).toEqual(['first', 'second']);
   });
 
-  it('makes a legacy _-folded repository directory readable again', () => {
+  it('makes a legacy _-folded repository directory readable again', async () => {
     const mgr = new SyncManager(repoRoot);
-    mgr.saveSession(mkSession(), mkMeta());
+    await mgr.saveSession(mkSession(), mkMeta());
 
     // Simulate a directory written by the old '_'-folding encoder.
     const reposDir = path.join(repoRoot, 'sessions', 'repos');
@@ -438,7 +455,7 @@ describe('rebuildIndex', () => {
     );
     fs.unlinkSync(path.join(reposDir, 'github.com_org_alpha', '_index.json'));
 
-    const { repos, sessions } = new SyncManager(repoRoot).rebuildAllIndexes();
+    const { repos, sessions } = (await new SyncManager(repoRoot).rebuildAllIndexes());
     expect(repos).toBe(1);
     expect(sessions).toBe(1);
 
@@ -464,37 +481,37 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     git(dir, 'config', 'user.email', `${name}@example.com`);
   }
 
-  function pushSession(checkout: string, sessionId: string, title: string): void {
+  async function pushSession(checkout: string, sessionId: string, title: string): Promise<void> {
     const mgr = new SyncManager(checkout);
-    mgr.saveSession(mkSession({ sessionId, title }), mkMeta({ sessionId, title }));
+    await mgr.saveSession(mkSession({ sessionId, title }), mkMeta({ sessionId, title }));
     expect(mgr.gitCommit(`push ${title}`).status).toBe('committed');
     mgr.gitPush();
   }
 
-  function pull(checkout: string): void {
+  async function pull(checkout: string): Promise<void> {
     const mgr = new SyncManager(checkout);
     mgr.gitPull();
-    mgr.rebuildIndex(identity);
+    await mgr.rebuildIndex(identity);
   }
 
-  it('leaves the checkout clean when nothing changed, so the next index change merges', () => {
+  it('leaves the checkout clean when nothing changed, so the next index change merges', async () => {
     const remote = path.join(repoRoot, 'team.git');
     git(repoRoot, 'init', '-q', '--bare', '-b', 'main', remote);
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);
     initCheckout(alice, 'alice');
     git(alice, 'remote', 'add', 'origin', remote);
-    pushSession(alice, 's-1', 'fix payment');
+    await pushSession(alice, 's-1', 'fix payment');
     const bob = path.join(repoRoot, 'bob');
     git(repoRoot, 'clone', '-q', remote, bob);
     initCheckout(bob, 'bob');
 
-    pull(bob);
-    pull(bob);
+    await pull(bob);
+    await pull(bob);
     expect(git(bob, 'status', '--porcelain')).toBe('');
 
-    pushSession(alice, 's-2', 'add refunds');
-    pull(bob);
+    await pushSession(alice, 's-2', 'add refunds');
+    await pull(bob);
     expect(git(bob, 'status', '--porcelain')).toBe('');
     expect(new SyncManager(bob).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2']);
   });

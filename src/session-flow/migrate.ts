@@ -7,87 +7,19 @@
  * the content in a <thinking> tag.
  */
 
+import { SESSION_PLATFORM_FACTS } from './adapters/platform-facts.js';
 import type { Session, ContentBlock } from './ir.js';
 import { getAdapter, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
 
-// ---------------------------------------------------------------------------
-// Per-platform capability matrix
-// ---------------------------------------------------------------------------
-
-export const THINKING_SUPPORT: Record<string, boolean> = {
-  'claude-code': true,
-  'claude-internal': true,
-  tclaude: true,
-  codex: true,
-  'codex-internal': true,
-  tcodex: true,
-  codebuddy: true,
-  'codebuddy-ide': true,
-  workbuddy: true,
-  cursor: false, // Cursor has no thinking; degrade to text
-  opencode: true, // reasoning parts
-};
-
-export const NATIVE_TOOLS: Record<string, Set<string>> = {
-  'claude-code': new Set([
-    'read_file', 'write_file', 'edit_file', 'multi_edit', 'bash', 'glob', 'grep',
-    'web_search', 'web_fetch', 'task', 'todo_write', 'notebook_edit', 'lsp',
-  ]),
-  'claude-internal': new Set([
-    'read_file', 'write_file', 'edit_file', 'multi_edit', 'bash', 'glob', 'grep',
-    'web_search', 'web_fetch', 'task', 'todo_write', 'notebook_edit', 'lsp',
-  ]),
-  tclaude: new Set([
-    'read_file', 'write_file', 'edit_file', 'multi_edit', 'bash', 'glob', 'grep',
-    'web_search', 'web_fetch', 'task', 'todo_write', 'notebook_edit', 'lsp',
-  ]),
-  codex: new Set(['bash', 'edit_file', 'read_file', 'write_file']),
-  'codex-internal': new Set(['bash', 'edit_file', 'read_file', 'write_file']),
-  tcodex: new Set(['bash', 'edit_file', 'read_file', 'write_file']),
-  codebuddy: new Set([
-    'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'task', 'todo_write',
-  ]),
-  // IDE tool names do not fully match the CLI (write_to_file / execute_command / search_content …).
-  // If they are not registered, the migration preview reports every one of these normal tools as tool_not_in_target.
-  'codebuddy-ide': new Set([
-    'read_file', 'write_file', 'write_to_file', 'edit_file', 'replace_in_file', 'delete_file',
-    'bash', 'execute_command', 'grep', 'search_content', 'glob', 'list_dir', 'codebase_search',
-    'web_search', 'web_fetch', 'preview_url', 'lsp', 'task', 'todo_write', 'use_skill',
-    'update_memory', 'image_gen',
-  ]),
-  // workbuddy has the same shape as codebuddy, but was not registered at all before: fidelity
-  // counted unknown tools as preserved (100%) and produced **no warnings**, so the user never saw tool incompatibility.
-  workbuddy: new Set([
-    'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'task', 'todo_write',
-  ]),
-  cursor: new Set([
-    'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'delete_file',
-    'web_fetch', 'web_search', 'semantic_search',
-  ]),
-  // The IR names adapters/opencode.ts reads OpenCode's tools as.
-  opencode: new Set([
-    'read_file', 'write_file', 'edit_file', 'bash', 'glob', 'grep', 'task', 'todo_write', 'web_fetch', 'web_search',
-  ]),
-};
-
-/**
- * Image support matrix. True only when the target platform can natively represent an inline
- * image in a message (an image block in user-message content). When false, images degrade to
- * placeholder text (counted as degraded in fidelity; see fidelityFromSession).
- */
-export const IMAGE_SUPPORT: Record<string, boolean> = {
-  'claude-code': true,
-  'claude-internal': true,
-  tclaude: true,
-  'codebuddy-ide': true, // Write back assets/ + codebuddy-asset:// refs, fully restored
-  codex: true, // a user message carries input_image items (data: URLs)
-  'codex-internal': true,
-  tcodex: true,
-  codebuddy: false,
-  workbuddy: false,
-  cursor: false,
-  opencode: true, // a user message carries image files inline (base64 + mime)
-};
+export const THINKING_SUPPORT: Record<string, boolean> = Object.fromEntries(
+  Object.entries(SESSION_PLATFORM_FACTS).map(([name, facts]) => [name, facts.thinking]),
+);
+export const IMAGE_SUPPORT: Record<string, boolean> = Object.fromEntries(
+  Object.entries(SESSION_PLATFORM_FACTS).map(([name, facts]) => [name, facts.images]),
+);
+export const NATIVE_TOOLS: Record<string, ReadonlySet<string>> = Object.fromEntries(
+  Object.entries(SESSION_PLATFORM_FACTS).map(([name, facts]) => [name, facts.nativeTools]),
+);
 
 // ---------------------------------------------------------------------------
 // FidelityReport
