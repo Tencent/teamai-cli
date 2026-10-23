@@ -27,3 +27,24 @@ it.runIf(process.platform !== 'win32')('refuses pull from a removed cwd before m
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+it.runIf(process.platform !== 'win32').each(['missing', 'live', 'omitted'])('dispatches hooks from a removed process cwd with a %s payload cwd', (payloadCwd) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hook-removed-cwd-'));
+  try {
+    const home = path.join(root, 'home');
+    const work = path.join(root, 'work');
+    fs.mkdirSync(path.join(home, '.teamai'), { recursive: true });
+    fs.mkdirSync(work);
+    const payload = { session_id: 'removed-cwd', ...(payloadCwd === 'omitted' ? {} : { cwd: payloadCwd === 'live' ? home : work }) };
+    const run = spawnSync('sh', ['-c', 'rmdir "$REMOVED_WORK" && exec "$TEST_NODE" "$TEST_CLI" hook-dispatch stop --tool claude --bg-only'], {
+      cwd: work, input: JSON.stringify(payload),
+      env: { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0', REMOVED_WORK: work, TEST_NODE: process.execPath, TEST_CLI: cli },
+      encoding: 'utf8', timeout: 15_000,
+    });
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout + run.stderr).not.toContain('uv_cwd');
+    expect(fs.readFileSync(path.join(home, '.teamai', 'debug.log'), 'utf8')).toContain('[hook-dispatch] stop/claude background:');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
