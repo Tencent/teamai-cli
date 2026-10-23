@@ -4,7 +4,8 @@ import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { deliveredHookFiles, describeUnappliedTeamHooks, hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs } from './utils/git.js';
+import { configureGitUser, createGit, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs } from './utils/git.js';
+import { archiveReplacedClone } from './utils/replaced-clone.js';
 import { withTimeout } from './utils/async.js';
 import { getProvider, detectProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
@@ -1700,7 +1701,9 @@ export async function init(options: GlobalOptions & {
   // it clones it now or reuses one an earlier init left: settle that install
   // now, as the config save below would, instead of leaving its config to run
   // against this clone should init stop first.
+  let replacedInstallSettled = false;
   const settleReplacedInstall = async (): Promise<void> => {
+    if (replacedInstallSettled) return;
     const next: LocalConfig = {
       repo: { localPath, remote: repoInfo.httpsUrl },
       username,
@@ -1713,6 +1716,7 @@ export async function init(options: GlobalOptions & {
       ? !sameQueueOwner(queueOwner(existingLocalConfig), queueOwner(next))
       : await pathExists(existingConfigPath);
     if (replacesAnother) await settleModeSwitch(existingLocalConfig, next, () => moveConfigAside(existingConfigPath, next));
+    replacedInstallSettled = true;
   };
 
   if (await pathExists(localPath)) {
@@ -1722,28 +1726,31 @@ export async function init(options: GlobalOptions & {
       // surfacing the wrong roles/skills (issue: re-init against a new --repo
       // kept serving the old clone's manifest). Compare ignoring credentials,
       // protocol, and .git suffix.
-      const existingRemote = await getRemoteUrl(localPath);
+      // Compare repository identity, before transport-only insteadOf rewrites.
+      const existingRemote = (await createGit(localPath).raw(['config', '--get-all', 'remote.origin.url']).catch(() => '')).trim().split(/\r?\n/)[0];
       if (existingRemote && !remotesMatch(existingRemote, repoInfo.httpsUrl)) {
         log.warn(
           `Existing clone at ${localPath} points at a different repo ` +
           `(${redactGitCredentials(existingRemote)}), not ${repoInfo.httpsUrl}.`,
         );
         if (options.force) {
-          log.info('Replacing it with a fresh clone (--force)');
-          await remove(localPath);
+          log.info('Archiving it before creating a fresh clone (--force)');
+          const backup = await archiveReplacedClone(localPath, settleReplacedInstall);
+          log.warn(`Archived previous team clone and worktrees at ${backup}; unpublished data is preserved.`);
         } else {
           const confirmed = await askConfirmation(
-            'Remove it and clone the requested repo? [y/N] ',
+            'Archive it and clone the requested repo? [y/N] ',
           );
           if (!confirmed) {
             log.error(
               'Aborted. The cached clone belongs to a different repo. ' +
-              `Remove ${localPath} manually or re-run with --force to replace it.`,
+              `Re-run with --force to archive and replace ${localPath}.`,
             );
             process.exit(1);
             return;
           }
-          await remove(localPath);
+          const backup = await archiveReplacedClone(localPath, settleReplacedInstall);
+          log.warn(`Archived previous team clone and worktrees at ${backup}; unpublished data is preserved.`);
         }
       } else {
         log.info(`Repo already exists at ${localPath}, using existing clone`);

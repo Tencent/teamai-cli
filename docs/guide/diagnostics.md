@@ -19,6 +19,8 @@ teamai remove rules <name> --force
 
 If a file occupies a tool's skills directory, `pull` keeps it, names the blocked path, and continues delivering to other tools. Move the file aside, then run `teamai pull` again to deliver the missing skills.
 
+When `init` switches the cache to another team repository, it archives the old clone and its reports/learnings worktrees in a printed `previous-team-*` directory. Uncommitted files and unpublished commits stay there with working Git links. Keep the backup until you have recovered or published anything needed. A busy writer, an unproven checkout or another registered worktree blocks replacement before files move. Git `url.*.insteadOf` transport rewrites do not count as a repository change.
+
 Auto-update runs when a session ends. The team can turn it off. A member's own policy wins:
 
 ```yaml

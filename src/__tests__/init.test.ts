@@ -12,7 +12,7 @@ const mockGit = {
   commit: vi.fn(),
   push: vi.fn(),
   revparse: vi.fn().mockResolvedValue('main'),
-  raw: vi.fn(),
+  raw: vi.fn().mockResolvedValue(''),
   outputHandler: vi.fn().mockReturnThis(),
 };
 

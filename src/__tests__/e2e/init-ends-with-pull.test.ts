@@ -168,6 +168,40 @@ describe.skipIf(process.platform === 'win32')('teamai init does not pull team re
     if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
+  it('reuses a clone with an insteadOf transport URL and archives both side worktrees on a repo switch', async () => {
+    const cwd = makeBusinessRepo(`switch-${Math.random().toString(36).slice(2)}`);
+    const directGit = { PATH: process.env.PATH ?? '' };
+    const args = ['--scope', 'user', '--provider', 'git', '--agent', 'claude', '--force'];
+    const first = await runCLI(['init', FAKE_URL, ...args], cwd, directGit);
+    expect(first.code, first.output).toBe(0);
+    const data = path.join(home, '.teamai');
+    const clone = path.join(data, 'team-repo');
+    fs.writeFileSync(path.join(clone, 'keep-local.txt'), 'uncommitted main copy');
+    const repeated = await runCLI(['init', FAKE_URL, ...args], cwd, directGit);
+    expect(repeated.code, repeated.output).toBe(0);
+    expect(fs.readFileSync(path.join(clone, 'keep-local.txt'), 'utf8')).toBe('uncommitted main copy');
+    for (const [dir, branch] of [['reports-wt', 'teamai-reports'], ['learnings-wt', 'teamai-learnings']]) {
+      if (!fs.existsSync(path.join(data, dir))) git(['worktree', 'add', '-b', branch, path.join(data, dir)], clone);
+      fs.writeFileSync(path.join(data, dir, 'pending.txt'), `pending ${dir}`);
+    }
+    const secondUrl = 'https://git.example.com/other/team.git';
+    const secondRemote = path.join(sandbox, `second-${Math.random().toString(36).slice(2)}.git`);
+    git(['clone', '-q', '--bare', remote, secondRemote], sandbox);
+    git(['config', '--global', `url.${secondRemote}.insteadOf`, secondUrl], cwd, { HOME: home, USERPROFILE: home });
+    const switched = await runCLI(['init', secondUrl, ...args], cwd, directGit);
+    expect(switched.code, switched.output).toBe(0);
+    expect(switched.output).toContain('Archived previous team clone');
+    const backup = path.join(data, fs.readdirSync(data).find(name => name.startsWith('previous-team-'))!);
+    expect(fs.readFileSync(path.join(backup, 'team-repo', 'keep-local.txt'), 'utf8')).toBe('uncommitted main copy');
+    for (const dir of ['reports-wt', 'learnings-wt']) {
+      const file = path.join(backup, dir);
+      expect(fs.readFileSync(path.join(file, 'pending.txt'), 'utf8')).toBe(`pending ${dir}`);
+      expect(git(['rev-parse', '--git-common-dir'], file)).toContain('previous-team-');
+    }
+    expect(fs.existsSync(path.join(data, 'learnings-wt'))).toBe(false);
+    expect(git(['config', '--get', 'remote.origin.url'], clone)).toBe(secondUrl);
+  }, 120_000);
+
   it('user scope: init succeeds without copying team skills, rules, agents or MCP', async () => {
     const cwd = path.join(sandbox, 'elsewhere');
     fs.mkdirSync(cwd, { recursive: true });
