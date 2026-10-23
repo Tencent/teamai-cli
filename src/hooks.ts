@@ -1512,7 +1512,14 @@ function toClaudeEntry(def: HookDef): HookMatcher {
 }
 
 function toCursorEntry(def: HookDef): CursorHookEntry {
-  const entry: CursorHookEntry = { command: def.command };
+  // Cursor stores one `command` and, on Windows, runs it through PowerShell 5.1.
+  // That shell rejects `||` and will not start a quoted Git Bash path without
+  // the call operator, so the per-machine hooks.json gets the same rewrite
+  // Copilot puts in its `powershell` field. POSIX injects keep `bash -lc … || true`.
+  // A team-authored command does not match the builtin wrapper and is left as written.
+  const entry: CursorHookEntry = {
+    command: process.platform === 'win32' ? copilotPowershellCommand(def.command) : def.command,
+  };
   if (def.timeout !== undefined) entry.timeout = def.timeout;
   if (def.matcher && def.matcher !== '*') entry.matcher = def.matcher;
   return entry;
