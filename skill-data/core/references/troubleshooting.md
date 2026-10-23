@@ -447,3 +447,7 @@ If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `team
 ## ZCode registered hooks but missing project rules
 
 Doctor checks the serialized rules reply against the user config `hooks.maxOutputBytes` (default 32768), counting UTF-8 bytes and JSON escaping. Other session hints make the complete stdout larger. Shorten the rules or raise the positive integer byte cap enough for the whole reply, then start a new session; registration alone does not prove the rules fit.
+
+## Placed agent format changes behind the default branch
+
+A `.md`/`.yaml` conversion may retire the agent this machine placed after its merge is proven. If the team changed that original, carry its changes into the conversion after updating the checkout. If the team deleted it, the remaining root copy is not a new agent to publish. Older records without a delivered blob need an updated checkout before conversion.

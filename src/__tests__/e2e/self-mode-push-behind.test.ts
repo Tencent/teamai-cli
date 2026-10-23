@@ -125,13 +125,13 @@ describe('single-repo push from a checkout behind the default branch', () => {
   const pushBranches = (): string[] =>
     git(['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/'], remote).split('\n').filter(Boolean);
   /** The team merges the member's only push branch; the member takes it with git and `teamai pull`. */
-  const mergePushAndPull = async (): Promise<void> => {
+  const mergePushAndPull = async (updateCheckout = true): Promise<void> => {
     const [branch] = pushBranches();
     git(['pull', '-q', 'origin', 'main'], teammate);
     git(['fetch', '-q', 'origin', branch], teammate);
     git(['merge', '-q', '--no-ff', '-m', `merge ${branch}`, 'FETCH_HEAD'], teammate);
     git(['push', '-q', 'origin', 'main', `:${branch}`], teammate);
-    git(['pull', '-q', '--ff-only', 'origin', 'main'], projectRoot);
+    if (updateCheckout) git(['pull', '-q', '--ff-only', 'origin', 'main'], projectRoot);
     expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
   };
 
@@ -352,5 +352,35 @@ describe('single-repo push from a checkout behind the default branch', () => {
     expect(push.output).toContain('carry that change into .teamai/agents/sample.yaml');
     expect(pushBranches()).toEqual([]);
     expect(git(['show', 'main:.teamai/agents/ops/sample.md'], remote)).toContain('Teammate safety instructions.');
+  });
+
+  it.each([false, true])('converts a placed agent behind its own merge, deleted upstream: %s', async (deleted) => {
+    expect((await runCLI(['pull'], projectRoot, home)).code).toBe(0);
+    fs.mkdirSync(active('.teamai/agents'), { recursive: true });
+    fs.writeFileSync(active('.teamai/agents/sample.md'), '---\nname: sample\ndescription: Sample\n---\nOriginal instructions.\n');
+    expect((await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home)).output).toContain('Pushed branch');
+    await mergePushAndPull(false);
+    if (deleted) {
+      git(['rm', '.teamai/agents/ops/sample.md'], teammate);
+      git(['commit', '-q', '-m', 'remove placed agent'], teammate);
+      git(['push', '-q', 'origin', 'main'], teammate);
+      fs.mkdirSync(active('.claude/agents'), { recursive: true });
+      fs.writeFileSync(active('.claude/agents/sample.md'), '---\nname: sample\ndescription: Sample\n---\nRemaining tool copy.\n');
+    }
+    fs.rmSync(active('.teamai/agents/sample.md'));
+    fs.writeFileSync(active('.teamai/agents/sample.yaml'), 'name: sample\ndescription: Sample\ninstructions: Converted instructions.\n');
+    const push = await runCLI(['push', '--all', '--role', 'ops'], projectRoot, home);
+    if (deleted) {
+      const stateFile = path.join(home, '.teamai/projects', projectSlug(projectRoot), 'state.json');
+      expect(push.output, fs.readFileSync(stateFile, 'utf8')).not.toContain('Pushed branch');
+      expect(push.output).toContain('removed from the team');
+      expect(pushBranches()).toEqual([]);
+    } else {
+      expect(push.code, push.output).toBe(1);
+      expect(push.output).toContain('Pushed branch');
+      const [branch] = pushBranches();
+      expect(git(['diff', '--name-status', 'main', branch], remote)).toContain('D\t.teamai/agents/ops/sample.md');
+      expect(git(['show', `${branch}:.teamai/agents/ops/sample.yaml`], remote)).toContain('Converted instructions.');
+    }
   });
 });

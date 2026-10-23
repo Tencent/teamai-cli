@@ -73,6 +73,8 @@ teamai remove agents code-reviewer
 
 `pull` 按工具自己的格式写入它的 agents 目录：Codex 系列是 `<name>.toml`，Copilot 是 `<name>.agent.md`，Kiro 是 `<name>.json`，其余是 `<name>.md`。
 
+单仓库模式下，已放入命名空间的 agent 从 `.md` 转为 `.yaml` 时，即使当前检出落后于自己已合并的 PR，也可以移除原文件。TeamAI 会对比确认该次放置已合并时记录的 blob；团队之后又编辑过原文件，仍会阻止推送。团队已删除的 agent 不会从根目录副本重新添加。旧记录没有 blob 时仍采用保守判断，请先更新检出再转换格式。
+
 ### 模型别名
 
 `model: strong` 这类名字在 `models/aliases.yaml` 里按工具对应到具体模型：

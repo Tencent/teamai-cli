@@ -17,7 +17,7 @@ import { log, spinner } from './utils/logger.js';
 import { getUserHome } from './utils/home.js';
 import { getHandler } from './resources/index.js';
 import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.js';
-import { AgentsHandler } from './resources/agents.js';
+import { AgentsHandler, type AgentResourceItem } from './resources/agents.js';
 import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-namespaces.js';
 import type {
   GlobalOptions, PendingPushItem, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
@@ -1124,7 +1124,8 @@ async function itemsChangedOnDefaultBranch(
   const retiring: ResourceItem[] = [];
   for (const item of teamItems) {
     const retired = supersededPathOf(item);
-    if (retired && blobs.get(teamFile(retired))?.atTip) {
+    const retiredTip = retired && blobs.get(teamFile(retired))?.atTip;
+    if (retiredTip && retiredTip !== (item as AgentResourceItem).supersededBlob) {
       retiring.push(item);
       continue;
     }

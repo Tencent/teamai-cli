@@ -60,6 +60,20 @@ describe('reconcilePlacementRecords', () => {
     expect(state.placedRules).toEqual({ 'my-rule': 'rules/fe/my-rule.md' });
   });
 
+  it('keeps the proven agent blob and removes it when the placed file is deleted', async () => {
+    const rel = 'agents/ops/sample.md';
+    const blob = await land(rel, 'Instructions');
+    const state: Pick<State, 'placedAgents' | 'placedAgentSources' | 'retiredPlacedAgents' | 'pendingPushes'> = {
+      pendingPushes: [pending([{ type: 'agents', name: 'sample', relativePath: rel, placed: true, blob }])],
+    };
+    await reconcilePlacementRecords(repoPath, state);
+    expect(state.placedAgentSources).toEqual({ sample: { path: rel, blob } });
+    await fse.remove(path.join(repoPath, rel));
+    await reconcilePlacementRecords(repoPath, state);
+    expect(state.placedAgentSources).toEqual({});
+    expect(state.retiredPlacedAgents).toEqual({ sample: rel });
+  });
+
   it('records a repo-backed placement by the path the author still edits', async () => {
     // docs, wiki, prompts and the other repo-backed types have no placedRules /
     // placedAgents field: the record is keyed by the shared-root path the author

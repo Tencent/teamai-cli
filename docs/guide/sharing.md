@@ -73,6 +73,8 @@ teamai remove agents code-reviewer
 
 `pull` writes each tool's own format into that tool's agents directory: `<name>.toml` for the Codex family, `<name>.agent.md` for Copilot, `<name>.json` for Kiro, and `<name>.md` for the rest.
 
+In single-repo mode, changing a placed agent from `.md` to `.yaml` can retire the original file while your checkout is behind its own merged PR. TeamAI compares the original with the blob that proved your placement landed; a later team edit still stops the push. An agent deleted by the team is not re-added from your root copy. Older placement records without a blob remain conservative: update the checkout before converting.
+
 ### Model aliases
 
 A name such as `model: strong` is mapped per tool in `models/aliases.yaml`:
