@@ -10,10 +10,11 @@ import matter from 'gray-matter';
 
 /**
  * A leading `---\n...\n---` frontmatter block, with an optional BOM. The inner
- * group is optional so an empty block (`---\n---`) matches too — otherwise its
- * delimiters would leak into the body and get pushed to the team repo verbatim.
+ * group matches zero or more complete lines so an empty block (`---\n---`)
+ * closes immediately, before any Markdown separators in the body.
+ * Delimiter lines allow trailing horizontal whitespace, but no other text.
  */
-const FRONTMATTER_RE = /^﻿?---\r?\n(?:[\s\S]*?\r?\n)?---\r?\n?/;
+const FRONTMATTER_RE = /^﻿?---[ \t]*\r?\n(?:[^\n]*\n)*?---[ \t]*(?:\r?\n|$)/;
 
 /**
  * Split a rule file into its leading frontmatter block (empty string when there

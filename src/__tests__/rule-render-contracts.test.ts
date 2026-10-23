@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { teamRuleToCodebuddyRule } from '../resources/codebuddy-rule.js';
 import { teamRuleToCopilotInstructions } from '../resources/copilot-instructions.js';
+import { teamRuleToCursorMdc } from '../resources/cursor-mdc.js';
 import { teamRuleToJoycodeRule } from '../resources/joycode-rule.js';
 import { teamRuleToKiroSteering } from '../resources/kiro-steering.js';
 import { teamRuleToOmpRule } from '../resources/omp-rule.js';
 import { teamRuleToQoderRule } from '../resources/qoder-rule.js';
 import { teamRuleToTraeRule } from '../resources/trae-rule.js';
+import { mergeRuleBodyIntoTeamMd, teamRuleBody } from '../resources/team-rule.js';
 
 /**
  * The exact bytes each tool's rule render writes (#946). Kiro and Qoder ship
@@ -18,6 +20,48 @@ const UNSCOPED = 'Use named exports.\n';
 const INLINE = '---\npaths: ["src/**/*.ts", "test/**"]\n---\n\nUse named exports.\n';
 const BLOCK = '---\npaths:\n  - "src/**/*.ts"\n  - test/**\n---\n\nUse named exports.\n';
 const BRACE = '---\npaths:\n  - "src/{a,b}/**"\n---\n\nUse named exports.\n';
+
+describe('team rule body', () => {
+  it.each(['\n', '\r\n'])('does not treat a partial fence as a closing delimiter with %j line endings', (eol) => {
+    const input = ['---', '---not-a-fence', '# Body', ''].join(eol);
+    expect(teamRuleBody(input)).toBe(input.trimEnd());
+  });
+
+  it.each(['\n', '\r\n'])('accepts whitespace on delimiter lines with a BOM and %j line endings', (eol) => {
+    const block = `\uFEFF--- \t${eol}---\t ${eol}`;
+    const body = `# Rule${eol}Never commit secrets.${eol}---`;
+    expect(teamRuleBody(block + body)).toBe(body);
+    expect(teamRuleBody(block.trimEnd())).toBe('');
+  });
+
+  it.each(['\n', '\r\n'])('preserves body separators when reading and updating empty frontmatter with %j line endings', (eol) => {
+    const block = `---${eol}---${eol}`;
+    const body = ['# Guardrails', 'Never delete user data.', '', '---', '# Style', 'Use English output.'].join(eol);
+    const source = block + body;
+
+    expect(teamRuleBody(source)).toBe(body);
+    expect(mergeRuleBodyIntoTeamMd(body, source)).toBe(source);
+    expect(mergeRuleBodyIntoTeamMd(`${body}${eol}Use named exports.`, source))
+      .toBe(`${block}\n${body}${eol}Use named exports.\n`);
+  });
+});
+
+describe('rule rendering – frontmatter boundaries', () => {
+  const renderers = [
+    { label: 'Cursor', render: teamRuleToCursorMdc, header: '---\nalwaysApply: true\n---\n\n' },
+    { label: 'Copilot', render: teamRuleToCopilotInstructions, header: "---\napplyTo: '**'\n---\n\n" },
+  ];
+
+  it.each(renderers)('preserves a trailing body separator in $label', ({ render, header }) => {
+    const body = '# Security Rule\n\nNever commit secrets.\n---\n';
+    expect(render(`---\n---\n${body}`)).toBe(header + body);
+  });
+
+  it.each(renderers)('preserves a partial closing fence in $label', ({ render, header }) => {
+    const input = '---\n---not-a-fence\n# Body\n';
+    expect(render(input)).toBe(header + input);
+  });
+});
 
 describe('Kiro steering render', () => {
   it('makes an unscoped rule always included', () => {
@@ -171,6 +215,12 @@ describe('Trae rule render (Trae and Trae CN)', () => {
 });
 
 describe('Copilot instructions render', () => {
+  it.each(['\n', '\r\n'])('preserves the whole rule after empty frontmatter with %j line endings', (eol) => {
+    const body = ['# Guardrails', 'Never delete user data.', '', '---', '# Style', 'Use English output.'].join(eol);
+    const source = `---${eol}---${eol}${body}`;
+    expect(teamRuleToCopilotInstructions(source)).toBe(`---\napplyTo: '**'\n---\n\n${body}\n`);
+  });
+
   it('applies an unscoped rule to every file', () => {
     expect(teamRuleToCopilotInstructions(UNSCOPED)).toBe("---\napplyTo: '**'\n---\n\nUse named exports.\n");
   });

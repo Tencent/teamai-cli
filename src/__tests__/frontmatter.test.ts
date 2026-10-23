@@ -79,6 +79,55 @@ describe('splitFrontmatter – round-trip', () => {
     });
 });
 
+describe('splitFrontmatter – empty frontmatter', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it.each([
+        { label: 'LF', prefix: '', eol: '\n' },
+        { label: 'CRLF', prefix: '', eol: '\r\n' },
+        { label: 'BOM+LF', prefix: BOM, eol: '\n' },
+        { label: 'BOM+CRLF', prefix: BOM, eol: '\r\n' },
+    ])('keeps body separators outside the frontmatter ($label)', ({ prefix, eol }) => {
+        const warnSpy = vi.spyOn(log, 'warn').mockImplementation(() => {});
+        const raw = `---${eol}---${eol}`;
+        const body = ['# Guardrails', 'Never delete user data.', '', '---', '# Style', 'Use English output.'].join(eol);
+        const input = prefix + raw + body;
+
+        expect(splitFrontmatter(input)).toEqual({ data: {}, valid: true, raw, body });
+        expect(stripFrontmatter(input)).toBe(body);
+        expect(hasFrontmatter(prefix + raw)).toBe(true);
+        expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it.each(['---\n---', '---\r\n---', '--- \n---\t'])('accepts an empty block at EOF: %j', (input) => {
+        expect(splitFrontmatter(input)).toEqual({ data: {}, valid: true, raw: input, body: '' });
+        expect(hasFrontmatter(input)).toBe(true);
+    });
+
+    it.each(['\n', '\r\n'])('accepts whitespace on delimiter lines with a BOM and %j line endings', (eol) => {
+        const raw = `--- \t${eol}---\t ${eol}`;
+        const body = `# Rule${eol}Never commit secrets.${eol}---${eol}`;
+        expect(splitFrontmatter(BOM + raw + body)).toEqual({ data: {}, valid: true, raw, body });
+    });
+});
+
+describe('splitFrontmatter – delimiter boundaries', () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it.each(['\n', '\r\n'])('does not treat a partial fence as a closing delimiter with %j line endings', (eol) => {
+        const warnSpy = vi.spyOn(log, 'warn').mockImplementation(() => {});
+        const input = ['---', '---not-a-fence', '# Body', ''].join(eol);
+
+        expect(splitFrontmatter(input)).toEqual({ data: {}, valid: false, raw: '', body: input });
+        expect(hasFrontmatter(input)).toBe(false);
+        expect(warnSpy).toHaveBeenCalledOnce();
+    });
+});
+
 describe('splitFrontmatter – root shape', () => {
     it('marks scalar frontmatter as invalid without exposing it as a record', () => {
         const result = splitFrontmatter('---\njust-a-scalar\n---\nbody');
