@@ -4,7 +4,7 @@ import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { codexTrustPolicy, deliveredHookFiles, describeUnappliedTeamHooks, hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, getConfiguredRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs, createGitWithBlockTimeout } from './utils/git.js';
+import { configureGitUser, resolveAnchors, initRepo, isGitRepo, getRemoteUrl, getConfiguredRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs, createGitWithBlockTimeout } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { getProvider, detectProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
@@ -574,12 +574,35 @@ async function newTeamConfigProvider(input: string, providerName: string, forced
   );
 }
 
+/** Init and later readers must agree on the repository that owns a workspace. */
+async function resolveInitContext(scopeFlag: string | undefined) {
+  const cwd = await fs.promises.realpath(process.cwd());
+  const root = scopeFlag === 'user' ? cwd : (await resolveAnchors(cwd))?.workspaceRoot ?? cwd;
+  const resolved = resolveInitScope(scopeFlag, root, getUserHome());
+  const inside = resolved.scope === 'project' && resolved.projectRoot !== cwd;
+  // A rejected init must not migrate roles, adopt a partition or bootstrap the ancestor.
+  const existingLocalConfig = await loadLocalConfigForScope(resolved.scope, resolved.projectRoot,
+    inside ? { dryRun: true, suppressMigrationNotice: true, selfHeal: false } : undefined);
+  const existingFile = inside && resolved.projectRoot && (
+    await pathExists(path.join(await resolveProjectDataHome(resolved.projectRoot, { dryRun: true }), 'config.yaml'))
+    || await pathExists(path.join(resolved.projectRoot, '.teamai', 'config.yaml'))
+  );
+  if (inside && (existingLocalConfig || existingFile)) {
+    throw new Error(
+      `${cwd} is inside the repository ${resolved.projectRoot}, which already has a workspace config. `
+      + 'A plain folder inside a repository cannot have its own config; only repositories are children of a workspace. '
+      + `Run teamai init in ${resolved.projectRoot} to change that config, or make ${cwd} a repository of its own.`,
+    );
+  }
+  return { ...resolved, existingLocalConfig };
+}
+
 function printScopeSummary(
   scope: Scope,
   projectRoot: string | undefined,
   explicit: boolean,
+  configPath: string,
 ): void {
-  const configPath = getConfigPath(scope, projectRoot);
   const baseDir = scope === 'project' ? (projectRoot ?? process.cwd()) : getUserHome();
   log.info(`Scope: ${installScopeName(scope)}${scope === 'project' ? ` (${projectRoot})` : ''}`);
   log.info(`  config    → ${configPath}`);
@@ -619,18 +642,14 @@ export async function initHttp(
   let projectRoot: string | undefined;
   let explicit: boolean;
   let fallbackReason: string | undefined;
+  let existingLocalConfig: LocalConfig | null;
   try {
-    ({ scope, projectRoot, explicit, fallbackReason } = resolveInitScope(
-      options.scope,
-      process.cwd(),
-      getUserHome(),
-    ));
+    ({ scope, projectRoot, explicit, fallbackReason, existingLocalConfig } = await resolveInitContext(options.scope));
   } catch (e) {
     log.error((e as Error).message);
     process.exit(1);
     return;
   }
-  const existingLocalConfig = await loadLocalConfigForScope(scope, projectRoot);
   let inheritUserScope: boolean | undefined;
   try {
     inheritUserScope = resolveInheritUserScope(
@@ -649,7 +668,7 @@ export async function initHttp(
   const teamaiHome = scope === 'project' && projectRoot
     ? (existingLocalConfig?.dataHome ?? await resolveProjectDataHome(projectRoot))
     : getTeamaiHome(scope, projectRoot);
-  printScopeSummary(scope, projectRoot, explicit);
+  printScopeSummary(scope, projectRoot, explicit, path.join(teamaiHome, 'config.yaml'));
 
   if (scope === 'project' && !(await isInsideGitRepo(process.cwd()))) {
     log.warn(`cwd is not inside a git repository; will create ${teamaiHome}/`);
@@ -1581,18 +1600,14 @@ export async function init(options: GlobalOptions & {
   let projectRoot: string | undefined;
   let explicit: boolean;
   let fallbackReason: string | undefined;
+  let existingLocalConfig: LocalConfig | null;
   try {
-    ({ scope, projectRoot, explicit, fallbackReason } = resolveInitScope(
-      options.scope,
-      process.cwd(),
-      getUserHome(),
-    ));
+    ({ scope, projectRoot, explicit, fallbackReason, existingLocalConfig } = await resolveInitContext(options.scope));
   } catch (e) {
     log.error((e as Error).message);
     process.exit(1);
     return;
   }
-  const existingLocalConfig = await loadLocalConfigForScope(scope, projectRoot);
   const teamaiHome = scope === 'project' && projectRoot
     ? (existingLocalConfig?.dataHome ?? await resolveProjectDataHome(projectRoot))
     : getTeamaiHome(scope, projectRoot);
@@ -1616,7 +1631,7 @@ export async function init(options: GlobalOptions & {
   if (fallbackReason) {
     log.warn(fallbackReason);
   }
-  printScopeSummary(scope, projectRoot, explicit);
+  printScopeSummary(scope, projectRoot, explicit, path.join(teamaiHome, 'config.yaml'));
 
   if (scope === 'project' && !(await isInsideGitRepo(process.cwd()))) {
     log.warn(`cwd is not inside a git repository; will create ${teamaiHome}/`);
