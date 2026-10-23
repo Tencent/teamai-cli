@@ -152,6 +152,8 @@ teamai codebase --lint
 
 `teamai codebase --extract` 已移除，改用 `teamai import --dir`。
 
+AI 子进程失败时优先显示 stderr，否则显示 stdout；都没有内容时显示退出码或终止信号。因此，OpenClaw 在 stdout 打印的服务错误会在深度加工时保留具体原因，不再只显示空的 `AI call failed:`。
+
 recall 结果里的 `Source freshness:`：`current` 是内容和上次扫描一致，`stale` 是变了，`missing` 是文件不在了，`unknown` 是对不上。`current` 也不代表文档本身正确。
 
 只让一部分人看到某个代码库时：

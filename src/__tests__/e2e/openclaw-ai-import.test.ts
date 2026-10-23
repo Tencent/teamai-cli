@@ -42,6 +42,15 @@ else process.exit(1);
     const domains = path.join(output, 'teamwiki', 'evidence', 'code', 'source', '_domains.json');
     expect(fs.existsSync(domains), run.stdout + run.stderr).toBe(true);
     expect(fs.readFileSync(domains, 'utf8')).toContain('openclaw-proof');
+
+    // OpenClaw can report provider failures on stdout rather than stderr.
+    fs.rmSync(path.join(output, 'teamwiki/evidence/code/source/docs/architecture.md'));
+    fs.writeFileSync(openclaw, `#!${process.execPath}\nconsole.log('OpenClaw provider rejected the request');\nprocess.exit(1);\n`, { mode: 0o755 });
+    const failed = spawnSync(process.execPath, [cli, 'codebase', '--deep-enrich', '--project', 'source', '--output', output], {
+      cwd: home, env: { ...process.env, HOME: home, USERPROFILE: home, PATH: `${bin}:/usr/bin:/bin`, FORCE_COLOR: '0' },
+      encoding: 'utf8', timeout: 30_000,
+    });
+    expect(failed.stdout + failed.stderr).toContain('AI call failed: OpenClaw provider rejected the request');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

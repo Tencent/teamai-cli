@@ -152,6 +152,8 @@ Without a team repo, add `--output <dir>` to both `teamai import` and `teamai co
 
 `teamai codebase --extract` is removed; use `teamai import --dir`.
 
+AI subprocess failures report stderr when available, otherwise stdout, otherwise the exit code or termination signal. An OpenClaw provider failure printed on stdout therefore remains visible during deep enrichment instead of an empty `AI call failed:` message.
+
 A recall hit may add `Source freshness:`: `current` matches the last scan, `stale` changed, `missing` is gone, `unknown` could not be checked. `current` does not mean the written knowledge is correct.
 
 Limit one codebase to some members:

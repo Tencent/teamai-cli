@@ -106,7 +106,7 @@ export function getAICliName(): string {
  * @param opts     可选参数：timeout 超时毫秒数，默认 600000（10 分钟）
  * @returns        CLI 输出的 stdout（已 trim）
  * @throws         超时时抛出 `Error('AI call timed out after Xs')`
- * @throws         退出码非 0 时抛出 `Error('AI call failed: <stderr>')`
+ * @throws         On failure, reports stderr, then stdout, then the exit status.
  * @throws         所有候选 CLI 均不可用时抛出 Error
  */
 export async function callClaude(
@@ -147,11 +147,13 @@ export async function callClaude(
       reject(err);
     });
 
-    child.on('close', (code: number | null) => {
+    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
       clearTimeout(timer);
       if (code !== 0) {
         const stderr = Buffer.concat(errChunks).toString('utf-8').trim();
-        reject(new Error(`AI call failed: ${stderr}`));
+        const stdout = Buffer.concat(chunks).toString('utf-8').trim();
+        const reason = stderr || stdout || (signal ? `signal ${signal}` : `exit code ${code}`);
+        reject(new Error(`AI call failed: ${reason}`));
         return;
       }
       const stdout = Buffer.concat(chunks).toString('utf-8').trim();

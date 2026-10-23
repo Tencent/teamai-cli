@@ -29,3 +29,21 @@ it('uses the OpenClaw agent command and a fresh session per AI task', async () =
   expect(first[1]![2]).not.toBe(second[1]![2]);
   expect(first[1]![2]).toMatch(/^[0-9a-f-]{36}$/);
 });
+
+it.each([
+  { stdout: 'Provider rejected the request\n', stderr: '', code: 1, signal: null, reason: 'Provider rejected the request' },
+  { stdout: 'partial answer', stderr: 'Authentication failed\n', code: 2, signal: null, reason: 'Authentication failed' },
+  { stdout: ' \n', stderr: '\t', code: 3, signal: null, reason: 'exit code 3' },
+  { stdout: '', stderr: '', code: null, signal: 'SIGTERM', reason: 'signal SIGTERM' },
+])('reports an AI failure with $reason', async ({ stdout, stderr, code, signal, reason }) => {
+  vi.mocked(spawn).mockImplementation(() => {
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    queueMicrotask(() => {
+      child.stdout.write(stdout);
+      child.stderr.write(stderr);
+      child.emit('close', code, signal);
+    });
+    return child as unknown as ChildProcess;
+  });
+  await expect(callClaude('task')).rejects.toThrow(`AI call failed: ${reason}`);
+});
