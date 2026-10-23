@@ -132,6 +132,11 @@ program
     const name = actionCommand.name();
     if (TEAMAI_HOOK_SUBCOMMANDS.includes(name as (typeof TEAMAI_HOOK_SUBCOMMANDS)[number])) return;
     if (!triggersMigration(actionCommand)) return;
+    try {
+      process.cwd();
+    } catch {
+      thisCommand.error('Current working directory is unavailable. Change to an existing directory and retry.', { exitCode: 1 });
+    }
     const { maybeMigrate, queueKeptInCheckout } = await import('./migrate.js');
     let migration;
     try {
