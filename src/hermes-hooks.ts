@@ -13,6 +13,7 @@ import { chmod } from 'node:fs/promises';
 import { generatedFileState, writeIfChanged, pathExists, remove } from './utils/fs.js';
 import { log } from './utils/logger.js';
 import { getHermesHome } from './hermes-home.js';
+import { shellQuoteValue } from './utils/shell-profile.js';
 import {
   upsertHermesHook,
   removeHermesHookByCommand,
@@ -116,6 +117,11 @@ export function getReportScriptPath(): string {
   return path.join(getHermesHome(), 'hooks', 'teamai-status-report.sh');
 }
 
+/** Hermes tokenizes commands before execution; a script path is one argument. */
+function reportCommand(scriptPath: string): string {
+  return process.platform === 'win32' ? `"${scriptPath}"` : shellQuoteValue(scriptPath);
+}
+
 /**
  * Return the content of the status-report shell script.
  * The script shells out to `teamai hook-dispatch` and swallows all errors so
@@ -141,14 +147,18 @@ function buildReportScript(): string {
  */
 export async function injectHermesHooks(): Promise<void> {
   const scriptPath = getReportScriptPath();
+  const command = reportCommand(scriptPath);
   const scriptChanged = await writeIfChanged(scriptPath, buildReportScript());
   try {
     await chmod(scriptPath, 0o755);
   } catch (e) {
     log.warn(`Failed to chmod Hermes hook script: ${(e as Error).message}`);
   }
-  const hookChanged = await upsertHermesHook(REPORT_EVENT, { command: scriptPath, timeout: 60 });
-  const allowlistChanged = await addHermesAllowlist(REPORT_EVENT, scriptPath);
+  // Retire the unquoted command as well as its exact-match approval on upgrade.
+  await removeHermesHookByCommand(scriptPath);
+  await removeHermesAllowlist(REPORT_EVENT, scriptPath);
+  const hookChanged = await upsertHermesHook(REPORT_EVENT, { command, timeout: 60 });
+  const allowlistChanged = await addHermesAllowlist(REPORT_EVENT, command);
   let pluginChanged = false;
   if (await ownsInstructionsPlugin()) {
     const plugin = buildInstructionsPlugin();
@@ -177,8 +187,10 @@ export async function injectHermesHooks(): Promise<void> {
  */
 export async function removeHermesHooks(): Promise<void> {
   const scriptPath = getReportScriptPath();
-  await removeHermesHookByCommand(scriptPath);
-  await removeHermesAllowlist(REPORT_EVENT, scriptPath);
+  for (const command of [scriptPath, reportCommand(scriptPath)]) {
+    await removeHermesHookByCommand(command);
+    await removeHermesAllowlist(REPORT_EVENT, command);
+  }
   if (await pathExists(scriptPath)) {
     await remove(scriptPath);
   }

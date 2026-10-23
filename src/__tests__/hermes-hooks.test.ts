@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import YAML from 'yaml';
 import { injectHermesHooks, removeHermesHooks, getReportScriptPath, getInstructionsPluginDir } from '../hermes-hooks.js';
 import { log } from '../utils/logger.js';
 import { instructionHookChannel } from '../instruction-targets.js';
@@ -22,6 +24,44 @@ afterEach(() => {
 });
 
 describe('injectHermesHooks', () => {
+  it.runIf(process.platform !== 'win32')('runs a hook in a home containing spaces and apostrophes', async () => {
+    process.env.HERMES_HOME = path.join(tmpDir, "member's Hermes home");
+    await injectHermesHooks();
+    const config = YAML.parse(fs.readFileSync(path.join(process.env.HERMES_HOME, 'config.yaml'), 'utf8'));
+    const command = config.hooks.on_session_start[0].command;
+    const bin = path.join(tmpDir, 'bin');
+    fs.mkdirSync(bin);
+    const receipt = path.join(tmpDir, 'receipt');
+    fs.writeFileSync(path.join(bin, 'teamai'), '#!/bin/sh\nprintf "%s\\n" "$@" > "$RECEIPT"\ncat >> "$RECEIPT"\n', { mode: 0o755 });
+    const run = spawnSync('sh', ['-c', command], {
+      input: '{"session_id":"quoted-home"}', encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, RECEIPT: receipt },
+    });
+    expect(run.status, run.stderr).toBe(0);
+    expect(fs.readFileSync(receipt, 'utf8')).toBe('hook-dispatch\nsession-start\n--tool\nhermes\n{"session_id":"quoted-home"}');
+  });
+
+  it('migrates a raw command and its approval without removing member hooks', async () => {
+    process.env.HERMES_HOME = path.join(tmpDir, 'Hermes home');
+    fs.mkdirSync(process.env.HERMES_HOME);
+    const raw = getReportScriptPath();
+    const configPath = path.join(process.env.HERMES_HOME, 'config.yaml');
+    const allowlistPath = path.join(process.env.HERMES_HOME, 'shell-hooks-allowlist.json');
+    fs.writeFileSync(configPath, YAML.stringify({ hooks: { on_session_start: [{ command: raw }, { command: 'echo mine' }] } }));
+    fs.writeFileSync(allowlistPath, JSON.stringify({ approvals: [{ event: 'on_session_start', command: raw }, { event: 'on_session_start', command: 'echo mine' }] }));
+    await injectHermesHooks();
+    const entries = YAML.parse(fs.readFileSync(configPath, 'utf8')).hooks.on_session_start;
+    expect(entries).toHaveLength(2);
+    expect(entries.some((entry: { command: string }) => entry.command === raw)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(allowlistPath, 'utf8')).approvals).toEqual(entries.map((entry: { command: string }) => ({ event: 'on_session_start', command: entry.command })));
+    const before = fs.readFileSync(configPath, 'utf8');
+    await injectHermesHooks();
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before);
+    await removeHermesHooks();
+    expect(YAML.parse(fs.readFileSync(configPath, 'utf8')).hooks.on_session_start).toEqual([{ command: 'echo mine' }]);
+    expect(JSON.parse(fs.readFileSync(allowlistPath, 'utf8')).approvals).toEqual([{ event: 'on_session_start', command: 'echo mine' }]);
+  });
+
   it('reports the injection only when the script, hook entry or allowlist changes', async () => {
     const success = vi.spyOn(log, 'success').mockImplementation(() => {});
     try {
