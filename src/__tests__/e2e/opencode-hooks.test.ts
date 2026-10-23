@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { applyOpencodeAgentHook } from '../../opencode-hooks.js';
 
 const ROOT = process.cwd();
@@ -54,14 +55,13 @@ describe.each([{ version: 'V1', binary: V1 }, { version: 'V2', binary: V2 }])('r
     fs.mkdirSync(path.join(env.OPENCODE_CONFIG_DIR, 'node_modules'));
     fs.writeFileSync(path.join(env.OPENCODE_CONFIG_DIR, 'package-lock.json'), JSON.stringify({ packages: { '': { dependencies: { '@opencode-ai/plugin': '*' } } } }));
     const shim = path.join(bin, 'capture.cjs');
-    fs.writeFileSync(shim, `let stdin='';process.stdin.on('data',d=>stdin+=d);process.stdin.on('end',()=>require('node:fs').appendFileSync(${JSON.stringify(records)},JSON.stringify({args:process.argv.slice(2),payload:JSON.parse(stdin)})+'\\n'));`);
-    fs.writeFileSync(path.join(bin, process.platform === 'win32' ? 'teamai.cmd' : 'teamai'), process.platform === 'win32'
-      ? `@"${process.execPath}" "${shim}" %*\r\n`
-      : `#!/bin/sh\nexec '${process.execPath}' '${shim}' "$@"\n`, { mode: 0o755 });
+    // Run injection through the installed-entry stand-in: dispatch captures
+    // the payload, while every other command executes the real built CLI.
+    fs.writeFileSync(shim, `if(process.argv[2]==='hook-dispatch'){let stdin='';process.stdin.on('data',d=>stdin+=d);process.stdin.on('end',()=>require('node:fs').appendFileSync(${JSON.stringify(records)},JSON.stringify({args:process.argv.slice(2),payload:JSON.parse(stdin)})+'\\n'));}else{import(${JSON.stringify(pathToFileURL(CLI).href)});}`);
     let server: ReturnType<typeof spawn> | undefined;
     let logs = '';
     try {
-      const output = execFileSync(process.execPath, [CLI, 'hooks', 'inject'], { env, cwd: work, encoding: 'utf8' });
+      const output = execFileSync(process.execPath, [shim, 'hooks', 'inject'], { env, cwd: work, encoding: 'utf8' });
       expect(output).toContain('OpenCode hook');
       await applyOpencodeAgentHook({ slug: 'start-proof', event: 'SessionStart', command: `node -e ${JSON.stringify(`require('node:fs').appendFileSync(${JSON.stringify(commands)},'start\\n')`)}`, baseDir: home, scope: 'user' });
       const port = await freePort();
