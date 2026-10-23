@@ -12,6 +12,7 @@ import {
 } from './gh-cli.js';
 import { ghListOrgRepos } from './gh-org.js';
 import { parseGitHubRepoInput } from './repo-url.js';
+import { findGitHubPull, validateGitHubPull } from './workflow-pr.js';
 
 export class GitHubProvider implements GitProvider {
   readonly name = 'github';
@@ -62,6 +63,14 @@ export class GitHubProvider implements GitProvider {
       cwd: opts.cwd,
       spawnTimeoutMs: opts.spawnTimeoutMs,
     });
+  }
+
+  findOpenPullRequest(opts: PrCreateOptions): Promise<string | undefined> {
+    return findGitHubPull(opts);
+  }
+
+  validatePullRequest(url: string, opts: PrCreateOptions): Promise<boolean | undefined> {
+    return validateGitHubPull(url, opts);
   }
 
   getDefaultEmailDomain(): string | null {

@@ -95,7 +95,7 @@ export function afterStanding(after: StepState[]): 'ready' | 'waiting' | 'skip' 
 
 /** How many items are started and not yet settled, which `max_parallel` bounds. */
 export function startedItems(items: StepState[]): number {
-  return items.filter((item) => item.status === 'leased' || item.status === 'running').length;
+  return items.filter((item) => item.status === 'leased' || item.status === 'running' || item.status === 'delivering').length;
 }
 
 /**

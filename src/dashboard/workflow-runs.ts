@@ -92,7 +92,7 @@ interface RunRow {
 /** A run on this machine, as its run file stands now. */
 export type LocalRunRow = RunRow & {
   source: 'local';
-  /** The leased steps: a driver may work on several at once. */
+  /** Agent leases and deliveries currently in progress. */
   current: string[];
   /** The steps whose HITL request waits for an answer. */
   waiting: string[];
@@ -176,7 +176,7 @@ function localRow(run: RunState, records: Map<string, RecordState>): LocalRunRow
   return {
     ...rowOf(localRecord(run)),
     source: 'local',
-    current: run.steps.filter((state) => state.status === 'leased').map((state) => state.id),
+    current: run.steps.filter((state) => state.status === 'leased' || state.status === 'delivering').map((state) => state.id),
     waiting: run.steps.filter((state) => state.status === 'waiting').map((state) => state.id),
     ...(record ? { record } : {}),
   };

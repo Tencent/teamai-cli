@@ -13,6 +13,7 @@ import { gitlabListOrgRepos } from './org.js';
 import { fetchGitLabMR } from './mr-fetch.js';
 import { parseGitLabRepoInput } from './repo-url.js';
 import type { MRData } from '../../types.js';
+import { findGitLabMergeRequest, validateGitLabMergeRequest } from './workflow-pr.js';
 
 /**
  * GitLab provider (supports self-hosted / enterprise GitLab instances).
@@ -72,11 +73,20 @@ export class GitLabProvider implements GitProvider {
       description: opts.description,
       reviewers: opts.reviewers,
       cwd: opts.cwd,
+      spawnTimeoutMs: opts.spawnTimeoutMs,
     });
   }
 
   async fetchMergeRequest(url: string): Promise<MRData> {
     return fetchGitLabMR(url);
+  }
+
+  findOpenPullRequest(opts: PrCreateOptions): Promise<string | undefined> {
+    return findGitLabMergeRequest(opts);
+  }
+
+  validatePullRequest(url: string, opts: PrCreateOptions): Promise<boolean | undefined> {
+    return validateGitLabMergeRequest(url, opts);
   }
 
   async listOrgRepos(org: string, opts?: { maxRepos?: number }): Promise<OrgRepoInfo[]> {

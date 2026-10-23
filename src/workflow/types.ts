@@ -76,6 +76,8 @@ export interface WorkflowStep {
    * A prompt that omits it continues an enclosing `new` or `continue` copy, or stays read-only.
    */
   workspace?: 'read-only' | 'new' | 'continue';
+  /** Opens a review request after the branch's work succeeds. TeamAI never merges it. */
+  deliver?: 'pr';
   /** A session this step resumes. `continue` uses this step's previous pass. `from` names another step. */
   session?: { continue: true } | { from: string };
 }
@@ -184,8 +186,9 @@ export interface WorkflowDiagnostic {
    *   to repeat or to run per item, or run on past the point the author wrote to stop at.
    * `bad_session`: a `session.from` pull rejects; the kept copy would resume a step the author did not name.
    * `bad_workspace`: `workspace` is not read-only, new, or continue; the kept copy would run the step in the wrong place.
+   * `bad_delivery`: delivery is not PR creation on a writable branch; the kept copy would apply a different policy.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'bad_delivery';
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
@@ -255,7 +258,7 @@ export interface RunState {
    * Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. A copy a
    * claim brought from another machine has no owner until a driver leases it.
    */
-  copies?: Record<string, { owner?: DriverIdentity; commit?: string }>;
+  copies?: Record<string, { owner?: DriverIdentity; commit?: string; origin?: string }>;
   /**
    * Sessions a step resumed and continued under another id, in report order: a copy on another machine or in another
    * tool. `to` holds the turns of `from` and the ones that step added, so a step that would resume `from` resumes `to`.

@@ -274,6 +274,7 @@ export interface GitCodePullCreateOptions {
   description?: string;
   /** Working directory (unused for the REST path, kept for interface parity) */
   cwd?: string;
+  spawnTimeoutMs?: number;
 }
 
 /**
@@ -296,6 +297,7 @@ export async function gitcodePullCreate(opts: GitCodePullCreateOptions): Promise
     headers: authHeaders(token),
     body: JSON.stringify(body),
     redirect: 'manual',
+    ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
   });
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');

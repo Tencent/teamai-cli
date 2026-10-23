@@ -75,7 +75,7 @@ describe('workflow protocol conformance through the CLI', () => {
       const started = await client.start(scenario.workflowName);
       if ('error' in started) throw new Error(started.error.message);
       const runId = String(started.data.run);
-      const leases = new Map<string, { attempt: string; revision: number }>();
+      const leases = new Map<string, { attempt: string; revision: number; workspace?: { branch: string; base: { commit: string } } }>();
       const attemptOf = (name: string): string | undefined => leases.get(name)?.attempt;
       for (const operation of scenario.operations) {
         if (operation.kind === 'next') {
@@ -84,6 +84,7 @@ describe('workflow protocol conformance through the CLI', () => {
             ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
             ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
             ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
+            ...(operation.workspace ? { driver: { ...driver, can: { workspace: ['read-only', 'new', 'continue'] } }, base: { ref: 'main', commit: 'a'.repeat(40) } } : {}),
           });
           expect(value).toMatchObject(operation.expect);
           if (operation.saveAs === 'busy') {
@@ -114,6 +115,7 @@ describe('workflow protocol conformance through the CLI', () => {
           revision: operation.revision ?? lease?.revision,
           driver,
           ...operation.body,
+          ...(operation.leasedChanges ? { changes: { branch: lease!.workspace!.branch, base: lease!.workspace!.base.commit, from: 'a'.repeat(40), to: 'b'.repeat(40), commits: [], ...(operation.body.changes as Record<string, unknown>) } } : {}),
         });
         expect(value).toMatchObject(operation.expect);
       }

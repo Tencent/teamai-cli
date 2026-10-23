@@ -173,7 +173,7 @@ teamai workflow next <run> --json '{"driver":{"kind":"local","machine":"host","w
 teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcome":"success","driver":{"kind":"local","machine":"host","workspace":"/work"}}'
 ```
 
-`outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。`changes` 的 `branch` 或 `base` 与租约不符时返回 `invalid_report`，步骤仍处于租约中。工作区里的只读步骤上报 `read`（`branch`、`base` 和它读取的 `commit`），而不是 `changes`。它上报 `changes`、成功时没有 `read`、其他步骤上报 `read`，或 `read` 与租约不符时，同样返回 `invalid_report`。`used`（`{"skills":["review-notes"]}`）写明该轮次加载过的团队技能，供它的[评分标签](scorers.md#任意-driver)使用。不是技能名的值会被丢弃，其他形状的 `used` 返回 `invalid_report`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next`、`report` 和 `respond --json` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
+`outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。`changes` 的 `branch` 或 `base` 与租约不符时返回 `invalid_report`，步骤仍处于租约中。工作区里的只读步骤上报 `read`（`branch`、`base` 和它读取的 `commit`），而不是 `changes`。它上报 `changes`、成功时没有 `read`、其他步骤上报 `read`，或 `read` 与租约不符时，同样返回 `invalid_report`。`used`（`{"skills":["review-notes"]}`）写明该轮次加载过的团队技能，供它的[评分标签](scorers.md#任意-driver)使用。不是技能名的值会被丢弃，其他形状的 `used` 返回 `invalid_report`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next`、`report` 和 `respond --json` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>` 和 `changes.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
 
 运行状态保存在当前 scope 的 TeamAI 数据目录里。命令结束后进程就退出。本地运行以 `failed` 或 `cancelled` 结束时，退出码是 1。不会留下常驻的工作流进程。
 
@@ -235,7 +235,56 @@ teamai workflow resume <run>      # 在另一台机器上，位于同一个仓�
 
 带 `session: continue` 或 `session.from` 的步骤在另一台机器上会开一个新的 agent 会话，除非发布时加上 `--sessions`。运行在机器之间来回交接时，每台继续过会话的机器都要在下一次认领前用 `--sessions` 发布，这样下一个步骤能拿到所有对话轮次。[发布和认领](workflow-advanced.md#发布和认领)说明发布的状态包含什么、每个错误及下一步怎么做，以及如何从 CI 发布。
 
+## 交付 PR
+
+在可写步骤上设置 `deliver: pr`，或在子步骤共用其 `workspace: new` 分支的 `workflow` 步骤上设置它。TeamAI 推送分支，通过产品仓库的 Git provider 创建供人审查的 PR，从不合并。`for_each` 每项交付一个 PR。循环中的 `new` 步骤每个 pass 使用新的 `/p<pass>` 分支和 PR，之前的 PR 保持打开。
+
+```yaml
+schemaVersion: v1alpha1
+name: ship-issue
+description: Implement an issue for review.
+inputs: { issue: number }
+steps:
+  - id: change
+    workspace: new
+    deliver: pr
+    prompt: "Implement issue #{{ inputs.issue }}."
+```
+
+PR 的目标沿分支记录的来源，追溯到最近已经交付的分支。`for_each.after` 优先于其他 `needs`，第一个子步骤继承外层工作流的依赖；跳过或只读的依赖会继续向前追溯。之前没有交付分支时，目标为运行开始时的分支。因此请从有名称的分支开始；detached checkout 没有 PR 目标。同一源分支和目标分支已有打开的 PR 时会复用。
+
+agent 完成后，步骤进入持久的 `delivering` 状态，后续依赖等待交付结束。Git 和 provider 操作不占用运行锁。创建 PR 失败时以 `delivery_failed` 结束，消息写明保留的分支。修好认证后，运行 `teamai workflow retry <run> <step>`，再运行 `teamai workflow resume <run>`，只重试这条分支的交付，不重跑 agent。推送失败仍为 `push_failed`，并保留 worktree。组合工作流结束时可能已移除 worktree，但提交和远程分支仍在。通用 Git 主机只支持传输：请自行创建 PR 并上报 URL，或使用支持创建 PR 的 provider。交付不会启动交互登录。
+
+创建 PR 前，TeamAI 将交付提交与运行的基准提交比较。CI、hooks、agent 指令、rules、MCP 和同类工具配置的修改会被拒绝，并列出路径。共享 agent 配置路径与工作区执行前恢复的路径相同。检查也覆盖从前序分支继承的修改，以及删除和重命名。
+
+远程驱动可在 `changes` 的 `branch`、`base`、`from`、`to`、`commits` 之外上报 `pr_url`。provider 能提供元数据时，会校验仓库和源、目标分支。私有审查服务可使用任意 HTTPS 主机和路径。带凭据、无效、非 HTTPS 或超过 512 字符的 URL 被丢弃；query 和 fragment 会移除。丢弃 URL 不会拒绝 report，`dropped` 以 `{ field: "changes.pr_url", reason: "…" }` 列出原因，不包含值。未知嵌套字段以 `changes.<字段>` 列入 `ignored`。驱动仍须遵守租约的工作区与提交契约。
+
+### 从 CI 启动
+
+将上面的工作流放进团队仓库，并在其中配置本地提示词工具。普通 GitHub Actions 作业是 v1 的触发方式。token 需要能读取团队仓库、向产品仓库推送分支和创建 PR。在仓库设置里配置 `TEAM_REPO` 和 `WORKFLOW_TOKEN`。
+
+```yaml
+on: { issues: { types: [labeled] } }
+concurrency: ship-issue-${{ github.event.issue.number }}
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    env:
+      TEAM_REPO: ${{ vars.TEAM_REPO }}
+      GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: main, token: "${{ secrets.WORKFLOW_TOKEN }}" }
+      - run: npx teamai-cli init "$TEAM_REPO" --scope workspace
+      - run: npx teamai-cli pull
+      - run: npx teamai-cli workflow start ship-issue --driver local --auto-approve --inputs '{"issue":${{ github.event.issue.number }}}'
+```
+
+`--auto-approve` 只回答可选 approve 和有默认值的可选 choose。必需的 gate 在无人值守作业中以 `hitl_required` 失败。从失败分支启动时，按分支名检出；默认的 `pull_request` checkout 是 detached merge commit。TeamAI 不安装触发器，也不等待 CI 或合并事件。
+
 ## 运行记录
+
+结束记录包含 `prs`：通过校验的 `changes.pr_url` 按首次出现顺序排列，跨 item 和循环 pass 去重。步骤 outputs 中的 URL 不会发布。`prs` 遵循相同的 usage-report 退出设置；团队仓库公开时它也公开。没有 `prs` 的旧记录仍可读取。
 
 开启[使用统计上报](reporting.md)时，每次运行都会向团队的 `teamai-reports` 分支发布一条保护隐私的记录：开始时一次，结束时一次。关闭后不发布任何记录，返回中也不带 `record`。记录存放在 `workflows/runs/<run id>.json`，以 run id 为键，重试的发布会更新同一条记录而不是产生副本。
 

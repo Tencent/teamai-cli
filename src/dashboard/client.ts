@@ -188,7 +188,7 @@ async function saveSelection() { if(!dist||!distDraft||!preview)return; const ge
 // records the team published. Rows carry only run-record fields, and a HITL
 // answer posts the pass the page showed so a replaced request is refused.
 const runStatusNames = { running:'Running', succeeded:'Succeeded', failed:'Failed', cancelled:'Cancelled' };
-const stepStatusNames = { pending:'Pending', waiting:'Waiting for an answer', leased:'Leased', running:'Running', succeeded:'Succeeded', failed:'Failed', skipped:'Skipped', cancelled:'Cancelled' };
+const stepStatusNames = { pending:'Pending', waiting:'Waiting for an answer', leased:'Leased', running:'Running', delivering:'Delivering PR', succeeded:'Succeeded', failed:'Failed', skipped:'Skipped', cancelled:'Cancelled' };
 function runStatus(status) { return '<span class="'+(status==='running'||status==='succeeded'?'good':status==='failed'||status==='waiting'?'amber':'')+'">'+label(runStatusNames[status]||stepStatusNames[status]||status)+'</span>'; }
 // A running run's duration is filled by tickRunDurations, so a poll that changes nothing leaves the HTML, and the buttons in it, alone.
 function runDurationHtml(r) { return r.durationMs==null&&r.status==='running'?'<span data-run-started="'+e(r.startedAt)+'"></span>':e(elapsed(r.durationMs ?? NaN)); }

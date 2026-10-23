@@ -220,7 +220,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## workflow
 
-- `teamai workflow` — Run a validated workflow from workflows/<name>.yaml
+- `teamai workflow` — Run a validated workflow from workflows/<name>.yaml. Writable steps may set deliver: pr to open review requests; TeamAI never merges them.
   - `teamai workflow start <name>` — Create a run. With --driver local, execute command and prompt steps in this process.
     - `--driver <kind>` — Run the workflow in this process. Only local is available.
     - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs

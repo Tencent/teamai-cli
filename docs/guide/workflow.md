@@ -173,7 +173,7 @@ teamai workflow next <run> --json '{"driver":{"kind":"local","machine":"host","w
 teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcome":"success","driver":{"kind":"local","machine":"host","workspace":"/work"}}'
 ```
 
-`outcome` is `success`, `failed`, or `released`. `released` puts the step back to pending. It does not use up a retry. A report for an attempt that was already settled returns `repeated_report`, even when the revision is old. The run keeps recent settled attempts for that check. An older attempt uses the other checks: an old revision returns `stale_revision`, and a current revision that is not the leased attempt returns `wrong_attempt`. Another driver returns `wrong_driver`. `changes` whose `branch` or `base` differs from the lease returns `invalid_report`, and the step stays leased. A read-only step in a workspace reports `read` (`branch`, `base`, and the `commit` it read) in place of `changes`. `changes` from it, a success without `read`, `read` from any other step, or `read` that differs from the lease returns `invalid_report` too. `used` (`{"skills":["review-notes"]}`) names the team skills the pass loaded, for its [scorer labels](scorers.md#any-driver). A value that is not a skill name is dropped, and a `used` of another shape returns `invalid_report`. A payload field the CLI does not read, such as a misspelled `tokens` written as `tokenz` or a field from a newer protocol version, is accepted but reported back: the success envelope of `next`, `report`, and `respond --json` carries `ignored` with those names — top-level fields first, then `driver.<field>` names — names only and never values. The key is left out when nothing was ignored, and an error envelope stays as it is.
+`outcome` is `success`, `failed`, or `released`. `released` puts the step back to pending. It does not use up a retry. A report for an attempt that was already settled returns `repeated_report`, even when the revision is old. The run keeps recent settled attempts for that check. An older attempt uses the other checks: an old revision returns `stale_revision`, and a current revision that is not the leased attempt returns `wrong_attempt`. Another driver returns `wrong_driver`. `changes` whose `branch` or `base` differs from the lease returns `invalid_report`, and the step stays leased. A read-only step in a workspace reports `read` (`branch`, `base`, and the `commit` it read) in place of `changes`. `changes` from it, a success without `read`, `read` from any other step, or `read` that differs from the lease returns `invalid_report` too. `used` (`{"skills":["review-notes"]}`) names the team skills the pass loaded, for its [scorer labels](scorers.md#any-driver). A value that is not a skill name is dropped, and a `used` of another shape returns `invalid_report`. A payload field the CLI does not read, such as a misspelled `tokens` written as `tokenz` or a field from a newer protocol version, is accepted but reported back: the success envelope of `next`, `report`, and `respond --json` carries `ignored` with those names — top-level fields first, then `driver.<field>` and `changes.<field>` names — names only and never values. The key is left out when nothing was ignored, and an error envelope stays as it is.
 
 The run is stored in this scope's TeamAI data directory. The command exits when it finishes. A local run that ends `failed` or `cancelled` exits with status 1. No workflow process keeps running.
 
@@ -235,7 +235,56 @@ When a published run ends, teamai publishes how it ended, without `--sessions`. 
 
 A step with `session: continue` or `session.from` starts a new agent session on the other machine, unless you publish with `--sessions`. When a run goes back and forth, every machine that continued a session publishes with `--sessions` before the next claim, so the next step gets every turn. [Publish and claim](workflow-advanced.md#publish-and-claim) covers what the published state carries, every error and its next step, and publishing from CI.
 
+## Deliver a PR
+
+Set `deliver: pr` on a writable step, or on a `workflow` step whose children share its `workspace: new` branch. TeamAI pushes the branch and opens a review request through the product repository's Git provider. It never merges it. A `for_each` delivers one PR per item. A looped `new` step gets a new `/p<pass>` branch and PR each pass; earlier PRs stay open.
+
+```yaml
+schemaVersion: v1alpha1
+name: ship-issue
+description: Implement an issue for review.
+inputs: { issue: number }
+steps:
+  - id: change
+    workspace: new
+    deliver: pr
+    prompt: "Implement issue #{{ inputs.issue }}."
+```
+
+The PR targets the nearest delivered branch along the branch's recorded origin; `for_each.after` comes before other `needs`, and the first child inherits the enclosing workflow's dependencies. Skipped or read-only dependencies are passed over. If no earlier branch delivered, the target is the run's original branch. Start from a named branch: a detached checkout has no PR target. An open PR for the same head and target is reused.
+
+Agent completion is followed by a durable `delivering` state. Dependents wait for it. Git and provider operations happen outside the run lock. A PR creation failure reports `delivery_failed` and names the preserved branch. Fix provider authentication, run `teamai workflow retry <run> <step>`, then `teamai workflow resume <run>`: this retries delivery on that branch without rerunning the agent. Push failures remain `push_failed` and retain the worktree. A completed composite may already have removed its worktree; its committed, pushed branch remains. Generic Git hosts support transport only: create a PR yourself and report its URL, or use a provider that supports PR creation. No interactive login starts during delivery.
+
+Before opening a PR, TeamAI checks the delivered commit against the run's base commit. Changes to CI, hooks, agent instructions, rules, MCP and equivalent tool configuration are rejected, with the paths named. The shared agent configuration paths are the same ones restored before workspace execution. This check includes changes inherited from earlier branches and deletions/renames.
+
+A remote driver may include `changes.pr_url` alongside `branch`, `base`, `from`, `to` and `commits`. Recognized provider metadata is checked against the expected repository and branches. Any HTTPS host/path is allowed for private review services. URLs containing credentials, invalid/non-HTTPS URLs, and URLs longer than 512 characters are dropped; query strings and fragments are stripped. A dropped URL does not reject the report: `dropped` lists `{ field: "changes.pr_url", reason: "…" }` without the value. Unknown nested fields are listed in `ignored` as `changes.<field>`. Drivers must still obey a lease's workspace and commit contract.
+
+### Start from CI
+
+Store the workflow above in the team repo and configure a local prompt tool there. A normal GitHub Actions job is the v1 trigger path. The token must read the team repo, push branches to the product repo, and create PRs there. Configure `TEAM_REPO` and `WORKFLOW_TOKEN` in the repository settings.
+
+```yaml
+on: { issues: { types: [labeled] } }
+concurrency: ship-issue-${{ github.event.issue.number }}
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    env:
+      TEAM_REPO: ${{ vars.TEAM_REPO }}
+      GH_TOKEN: ${{ secrets.WORKFLOW_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: main, token: "${{ secrets.WORKFLOW_TOKEN }}" }
+      - run: npx teamai-cli init "$TEAM_REPO" --scope workspace
+      - run: npx teamai-cli pull
+      - run: npx teamai-cli workflow start ship-issue --driver local --auto-approve --inputs '{"issue":${{ github.event.issue.number }}}'
+```
+
+`--auto-approve` answers optional approve requests and optional choose defaults only. A required gate fails with `hitl_required` in an unattended job. To start from a failing branch, check that branch out by name; the default `pull_request` checkout is a detached merge commit. TeamAI does not install triggers or wait for CI/merges.
+
 ## Run records
+
+The end record includes `prs`, the validated `changes.pr_url` links in first-appearance order, once per URL across items and loop passes. URLs from step outputs are never published. `prs` follows the same usage-report opt-out as the rest of the record and is public when the team repo is public. Older records without `prs` remain readable.
 
 With [usage reporting](reporting.md) on, every run publishes a privacy-preserving record to the team's `teamai-reports` branch: once when it starts and once when it ends. With it off, nothing is published and the envelopes carry no `record`. Records live in `workflows/runs/<run id>.json`, keyed by run id, so a retried publication updates the same record instead of adding a copy.
 

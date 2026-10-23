@@ -1097,6 +1097,10 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       if ('lease' in next.data && room()) continue;
       if (inFlight.size === 0 && dying.size === 0 && !prompt && !question) {
         // A wait for a call that could not take a lease says nothing about what is left; ask again with room.
+        if ((next.data.wait as { delivery?: boolean } | undefined)?.delivery) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          continue;
+        }
         if (!canTakeLease) continue;
         const reason = typeof (next.data.wait as { reason?: unknown }).reason === 'string'
           ? (next.data.wait as { reason: string }).reason
