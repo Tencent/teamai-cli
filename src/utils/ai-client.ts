@@ -1,4 +1,5 @@
 import spawn from 'cross-spawn';
+import { randomUUID } from 'node:crypto';
 import { log } from './logger.js';
 import { resolveCliPath } from './cli-path.js';
 
@@ -36,7 +37,8 @@ interface CliInfo {
  * 按优先级探测可用的 AI CLI，返回命令名与绝对路径。
  *
  * 各 CLI 非交互调用语法不同：
- *   - claude / claude-internal / codebuddy / workbuddy / openclaw：`<cli> -p <prompt>`
+ *   - claude / claude-internal / codebuddy / workbuddy: `<cli> -p <prompt>`
+ *   - openclaw: `openclaw agent --session-id <fresh id> --message <prompt>`
  *   - codex / codex-internal：`<cli> exec <prompt>`
  *
  * 探测顺序：`claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw`。
@@ -70,6 +72,10 @@ function detectClaudeCli(): CliInfo {
  * @returns      参数数组
  */
 function buildCliArgs(cmd: string, prompt: string): string[] {
+  if (cmd === 'openclaw') {
+    // Keep independent enrichment tasks out of the member's main conversation.
+    return ['agent', '--session-id', randomUUID(), '--message', prompt];
+  }
   if (cmd === 'codex' || cmd === 'codex-internal' || cmd === 'tcodex') {
     return ['exec', prompt];
   }
