@@ -95,6 +95,17 @@ import {
 // A timed-out report still owns its success bookkeeping. Do not start another
 // batch in this process until it settles and finishes consuming its events.
 let pendingUsageReport: Promise<void> | undefined;
+
+/** Drain the report and its lock cleanup before a detached hook forces exit. */
+export async function waitForPendingUsageReport(timeoutMs = 60_000): Promise<void> {
+  if (!pendingUsageReport) return;
+  try {
+    await withTimeout(pendingUsageReport, timeoutMs, `Auto-report is still running after ${timeoutMs / 1000}s`);
+  } catch (error) {
+    log.warn(`Background usage report did not finish: ${(error as Error).message}. Unacknowledged usage is kept for the next pull.`);
+  }
+}
+
 const FILE_NOT_FOUND_ERROR_CODE = 'ENOENT';
 
 /**
@@ -3273,7 +3284,10 @@ export async function pull(
       } catch (e) {
         log.debug(`Auto-report skipped: ${(e as Error).message}`);
       }
-    })().finally(() => { pendingUsageReport = undefined; });
+    })().finally(() => {
+      // The pull's finalizer may already be tracking the sync-lock cleanup.
+      if (pendingUsageReport === usageReport) pendingUsageReport = undefined;
+    });
     usageReport = pendingUsageReport;
     try {
       await withTimeout(pendingUsageReport, 5000, 'Auto-report is still running after 5s');
@@ -3380,9 +3394,9 @@ export async function pull(
     // Keep its partition locks until completion so another CLI cannot re-report
     // the same data while this pull is no longer waiting.
     if (usageReport && usageReport === pendingUsageReport) {
-      void usageReport.then(releaseSyncLocks, releaseSyncLocks).catch((e) => {
+      pendingUsageReport = usageReport.then(releaseSyncLocks, releaseSyncLocks).catch((e) => {
         log.error(`Could not release report sync locks: ${(e as Error).message}`);
-      });
+      }).finally(() => { pendingUsageReport = undefined; });
     } else {
       await releaseSyncLocks();
     }

@@ -166,6 +166,8 @@ Limits:
 | `UserPromptSubmit` | Record the prompt |
 | `Stop` | Check for a CLI update and record the session end |
 
+Before exiting, the detached SessionStart process waits up to 60 seconds for an in-flight usage report to finish. This does not delay the editor's foreground hook. Usage that has not been acknowledged stays available for the next pull.
+
 ```bash
 teamai hooks list
 teamai hooks inject --dry-run

@@ -60,12 +60,13 @@ function fixture(agent: keyof typeof agents, provider: string, team: Record<stri
         tokens: { input: 10, output: 5, cacheRead: 0, cacheCreation: 0 }, dataHomeKey: key },
     ].map((e) => JSON.stringify(e)).join('\n') + '\n');
   }
-  function receiver(mode: 'slow' | 'reject' | 'normal') {
-    fs.writeFileSync(path.join(remote, 'hooks/update'), `#!/bin/sh\nif [ "$1" = "refs/heads/teamai-reports" ]; then\n  ${mode === 'slow' ? 'sleep 7' : mode === 'reject' ? 'exit 1' : ':'}\nfi\nexit 0\n`, { mode: 0o755 });
+  function receiver(mode: 'slow' | 'reject' | 'normal' | 'slow-reject') {
+    const action = `${mode.startsWith('slow') ? 'sleep 7\n' : ''}${mode.endsWith('reject') ? 'exit 1' : ':'}`;
+    fs.writeFileSync(path.join(remote, 'hooks/update'), `#!/bin/sh\nif [ "$1" = "refs/heads/teamai-reports" ]; then\n  ${action}\nfi\nexit 0\n`, { mode: 0o755 });
   }
-  async function pull(onPending?: () => void) {
+  async function pull(onPending?: () => void, args = ['pull']) {
     return new Promise<string>((resolve, reject) => {
-      const child = spawn(process.execPath, [cli, '--verbose', 'pull'], {
+      const child = spawn(process.execPath, [cli, '--verbose', ...args], {
         cwd: sandbox, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let output = '';
@@ -115,6 +116,46 @@ afterAll(() => {
 });
 
 describe('real CLI report completion', () => {
+  it('finishes a slow session-start report before the background hook exits (#1322)', async () => {
+    const f = fixture('claude', 'git');
+    const warmOutput = await f.pull();
+    expect(git(['branch', '--list', 'teamai-reports'], f.clone, f.env), warmOutput).toContain('teamai-reports');
+    await f.seedEvents();
+    f.receiver('slow');
+    const output = await f.pull(undefined, ['hook-dispatch', 'session-start', '--tool', 'claude', '--bg-only']);
+    expect(() => f.stats(), output).not.toThrow();
+    expect(f.stats().skills.review.count).toBe(1);
+    expect(fs.readFileSync(f.usage, 'utf8')).toBe('');
+    for (const name of ['interventions', 'prompt-tokens', 'daily-sessions']) {
+      expect(f.snapshot(name)[f.runId]).toBeDefined();
+    }
+    for (const lock of ['.reports-lock', '.sync-lock']) {
+      expect(fs.existsSync(path.join(f.home, '.teamai', lock)), lock).toBe(false);
+    }
+    f.receiver('normal');
+    const stats = f.stats();
+    await f.pull();
+    expect(f.stats()).toEqual(stats);
+  }, 60_000);
+
+  it('keeps a rejected session-start report retryable and releases its locks (#1322)', async () => {
+    const f = fixture('claude', 'git');
+    await f.pull();
+    await f.seedEvents();
+    f.receiver('slow-reject');
+    const output = await f.pull(undefined, ['hook-dispatch', 'session-start', '--tool', 'claude', '--bg-only']);
+    expect(output).toContain('[reports] push failed');
+    expect(fs.readFileSync(f.usage, 'utf8')).toBe(f.usageLine);
+    expect(f.snapshot('prompt-tokens')[f.runId]).toBeUndefined();
+    for (const lock of ['.reports-lock', '.sync-lock']) {
+      expect(fs.existsSync(path.join(f.home, '.teamai', lock)), lock).toBe(false);
+    }
+    f.receiver('normal');
+    await f.pull();
+    expect(f.stats().skills.review.count).toBe(1);
+    expect(fs.readFileSync(f.usage, 'utf8')).toBe('');
+  }, 60_000);
+
   for (const provider of ['git', 'gitlab', 'github']) {
     for (const agent of Object.keys(agents) as Array<keyof typeof agents>) {
       // Concurrent: each case mostly waits out the remote's slow push, in its own sandbox.

@@ -1194,6 +1194,10 @@ program
       await hookDispatchCli(event, tool, cmdOpts.matcher ?? '*', { ...cmdOpts, hookArgs });
     } finally {
       if (hardExit) clearTimeout(hardExit);
+      if (bgOnly) {
+        const { waitForPendingUsageReport } = await import('./pull.js');
+        await waitForPendingUsageReport();
+      }
       // Hook subprocesses must exit promptly: a hung/unreachable backend fetch can
       // leave a socket pending on the event loop, blocking natural exit and tripping
       // the host IDE's default hook timeout. Force exit once dispatch has settled.

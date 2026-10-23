@@ -97,7 +97,7 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { pull } from '../pull.js';
+import { pull, waitForPendingUsageReport } from '../pull.js';
 import { getTeamSecretsPath } from '../secret-store.js';
 import { EnvHandler, readEnvBackup } from '../resources/env.js';
 import {
@@ -315,6 +315,76 @@ describe('pull scope isolation (issue #73)', () => {
     else expect(truncateUsageAfterReport).not.toHaveBeenCalled();
     await pull({ silent: true });
     expect(reportUsageToTeam).toHaveBeenCalledTimes(2);
+  });
+
+  it('drains a late report through acknowledgement and sync-lock cleanup (#1322)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(readUsageEvents).mockResolvedValue([{ skill: 'review', timestamp: new Date().toISOString(), tool: 'claude' }]);
+    let started!: () => void;
+    let finish!: (success: boolean) => void;
+    let unlock!: () => void;
+    const pushStarted = new Promise<void>((resolve) => { started = resolve; });
+    const pushResult = new Promise<boolean>((resolve) => { finish = resolve; });
+    const cleanup = new Promise<void>((resolve) => { unlock = resolve; });
+    vi.mocked(reportUsageToTeam).mockImplementationOnce(() => { started(); return pushResult; });
+    vi.mocked(releaseLock).mockImplementation(async (lock) => {
+      if (lock && path.basename(lock) === SYNC_LOCK_FILENAME) await cleanup;
+    });
+    try {
+      const pulling = pull({ silent: true });
+      await pushStarted;
+      await vi.advanceTimersByTimeAsync(5000);
+      await pulling;
+      let drained = false;
+      const draining = waitForPendingUsageReport().then(() => { drained = true; });
+      finish(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(truncateUsageAfterReport).toHaveBeenCalledWith(1, projectConfig);
+      expect(drained).toBe(false);
+      // A second reader must also see the cleanup, even after the report settled.
+      let secondDrained = false;
+      const secondDrain = waitForPendingUsageReport().then(() => { secondDrained = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(secondDrained).toBe(false);
+      unlock();
+      await Promise.all([draining, secondDrain]);
+      expect(drained).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      finish(true);
+      unlock();
+      await waitForPendingUsageReport();
+      vi.mocked(releaseLock).mockResolvedValue(undefined);
+    }
+  });
+
+  it('bounds the background drain without acknowledging an unfinished report (#1322)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.mocked(detectProjectConfig).mockResolvedValue(projectConfig);
+    vi.mocked(readUsageEvents).mockResolvedValue([{ skill: 'review', timestamp: new Date().toISOString(), tool: 'claude' }]);
+    let started!: () => void;
+    let finish!: (success: boolean) => void;
+    const pushStarted = new Promise<void>((resolve) => { started = resolve; });
+    const pushResult = new Promise<boolean>((resolve) => { finish = resolve; });
+    vi.mocked(reportUsageToTeam).mockImplementationOnce(() => { started(); return pushResult; });
+    try {
+      const pulling = pull({ silent: true });
+      await pushStarted;
+      await vi.advanceTimersByTimeAsync(5000);
+      await pulling;
+      const draining = waitForPendingUsageReport(100);
+      await vi.advanceTimersByTimeAsync(100);
+      await draining;
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Background usage report did not finish'));
+      expect(truncateUsageAfterReport).not.toHaveBeenCalled();
+      finish(false);
+      await waitForPendingUsageReport();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      finish(false);
+      await waitForPendingUsageReport();
+    }
   });
 
   it('project mode: skips user scope entirely and pulls source against project', async () => {

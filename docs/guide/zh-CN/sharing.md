@@ -166,6 +166,8 @@ shell 获得其启动目录的团队环境变量，因此同时打开的多个�
 | `UserPromptSubmit` | 记录输入 |
 | `Stop` | 检查 CLI 更新，并记下会话结束 |
 
+SessionStart 的独立后台进程在退出前，会为尚未完成的用量报告最多等待 60 秒，不增加编辑器前台 hook 的等待时间。尚未确认上报成功的本地用量会保留，供下次 pull 重试。
+
 ```bash
 teamai hooks list
 teamai hooks inject --dry-run
