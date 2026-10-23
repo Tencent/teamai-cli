@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { reportsBranch } from '../utils/reports-branch.js';
-import type { LocalConfig } from '../types.js';
+import { learningsBranch } from '../utils/learnings-branch.js';
+import { acquireLock, releaseLock } from '../update.js';
+import { LEARNINGS_LOCK_FILENAME, REPORTS_LOCK_FILENAME, type LocalConfig } from '../types.js';
 
 const GIT_ENV = {
   GIT_AUTHOR_NAME: 'TeamAI CI',
@@ -106,6 +108,25 @@ describe('retiring a branch worktree before replacing its clone', () => {
 
     expect(fs.existsSync(checkout)).toBe(true);
     expect(fs.existsSync(clone)).toBe(true);
+  });
+
+  it('holds both writer locks through replacement even when a checkout does not exist', async () => {
+    git(['worktree', 'remove', checkout], clone);
+    const reportsLockPath = path.join(path.dirname(checkout), REPORTS_LOCK_FILENAME);
+    const learningsLockPath = path.join(path.dirname(checkout), LEARNINGS_LOCK_FILENAME);
+
+    await reportsBranch.retire(config, () =>
+      learningsBranch.retire(config, async () => {
+        expect(await acquireLock(reportsLockPath)).toBe(false);
+        expect(await acquireLock(learningsLockPath)).toBe(false);
+        expect(fs.existsSync(clone)).toBe(true);
+      }),
+    );
+
+    expect(await acquireLock(reportsLockPath)).toBe(true);
+    expect(await acquireLock(learningsLockPath)).toBe(true);
+    await releaseLock(learningsLockPath);
+    await releaseLock(reportsLockPath);
   });
 
   it('keeps the checkout and clone when it has uncommitted work', async () => {

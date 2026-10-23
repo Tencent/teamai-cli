@@ -1756,14 +1756,17 @@ export async function init(options: GlobalOptions & {
           ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
         };
         try {
-          await reportsBranch.retire(previous);
-          await learningsBranch.retire(previous);
+          // Nest the retirements so both branch locks remain held until the old
+          // clone is gone; otherwise a concurrent writer can recreate an
+          // orphaned checkout between retirement and replacement.
+          await reportsBranch.retire(previous, () =>
+            learningsBranch.retire(previous, () => remove(localPath)),
+          );
         } catch (e) {
           log.error((e as Error).message);
           process.exit(1);
           return;
         }
-        await remove(localPath);
       } else {
         log.info(`Repo already exists at ${localPath}, using existing clone`);
         await settleReplacedInstall();
