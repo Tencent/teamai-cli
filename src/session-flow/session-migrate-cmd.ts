@@ -438,8 +438,8 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
 
       const syncMgr = new SyncManager(repoRoot);
       /** --json: the copy stays on this machine whatever happens to its archive, so say where it is. */
-      const archiveFailed = (code: string, reason: string) =>
-        ({ error: { code, message: `Copied as ${copied?.sessionId} in ${copied?.cwd}, but not archived: ${reason}` } });
+      const archiveFailed = (code: string, reason: string, failedCopy: { sessionId?: string; cwd?: string } | undefined = copied) =>
+        ({ error: { code, message: `Copied as ${failedCopy?.sessionId} in ${failedCopy?.cwd}, but not archived: ${reason}` } });
       let saved = 0;
       let unarchived = 0;
       for (const t of migratedTargets) {
@@ -476,11 +476,11 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
         try {
           const write = await withSessionIndexLock(repoRoot, async () => syncMgr.saveSession(session, meta));
           if (write.status === 'busy') {
-            return archiveFailed('busy', `${archiveBusyMessage(repoRoot, write.lockPath)} Run it again once that has finished.`);
+            return archiveFailed('busy', `${archiveBusyMessage(repoRoot, write.lockPath)} Run it again once that has finished.`, t);
           }
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
-          return archiveFailed('archive_failed', reason);
+          return archiveFailed('archive_failed', reason, t);
         }
         saved++;
       }

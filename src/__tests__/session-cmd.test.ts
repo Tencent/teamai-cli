@@ -1042,6 +1042,17 @@ describe('a batch over sessions when one session cannot be read', () => {
     },
   ];
 
+  it('names the currently failing archive copy rather than the last copy in a text batch', async () => {
+    adapterWith('fakeplat', ids, '');
+    adapterWith('tgtplat', ids.map((id) => `tgt-${id}`), '');
+    mocks.heldArchiveLock = '/fixture/session-archive.lock';
+    await runSession('migrate', '-s', 'fakeplat', '-t', 'tgtplat', '--all', '--push', '-y', '--repo-root', repoRoot, '--cwd', '/proj/beta');
+    const message = errored.join('\n');
+    expect(message).toContain('Copied as tgt-ok-1 in /proj/beta, but not archived');
+    expect(message).not.toContain('Copied as tgt-ok-3');
+    expect(process.exitCode).toBe(1);
+  });
+
   it.each(cases)('$name, names the failed one, and exits 1', async ({ setup, argv, done, expected, summary }) => {
     setup();
     // repoRoot is created per test, after the table is built.
