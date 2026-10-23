@@ -175,7 +175,7 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 `outcome` 可以是 `success`、`failed` 或 `released`。`released` 把步骤退回 pending，不消耗重试。已经上报过的 attempt 返回 `repeated_report`，revision 旧了也一样。运行状态会记住最近上报过的 attempt。更早的 attempt 走其余检查：revision 旧了返回 `stale_revision`，revision 是当前值但不是当前租约的 attempt 时返回 `wrong_attempt`。其他驱动返回 `wrong_driver`。`changes` 的 `branch` 或 `base` 与租约不符时返回 `invalid_report`，步骤仍处于租约中。工作区里的只读步骤上报 `read`（`branch`、`base` 和它读取的 `commit`），而不是 `changes`。它上报 `changes`、成功时没有 `read`、其他步骤上报 `read`，或 `read` 与租约不符时，同样返回 `invalid_report`。`used`（`{"skills":["review-notes"]}`）写明该轮次加载过的团队技能，供它的[评分标签](scorers.md#任意-driver)使用。不是技能名的值会被丢弃，其他形状的 `used` 返回 `invalid_report`。CLI 不读取的 payload 字段——例如把 `tokens` 拼成 `tokenz`，或来自更新协议版本的字段——会被接受但回报出来：`next`、`report` 和 `respond --json` 的成功信封会带上 `ignored`，先列顶层字段、再列 `driver.<字段>`，只有名字、没有值。没有未读字段时不带这个键，错误信封保持原样。
 
-运行状态保存在当前 scope 的 TeamAI 数据目录里。命令结束后进程就退出。本地运行以 `failed` 或 `cancelled` 结束时，退出码是 1。不会留下常驻的工作流进程。
+运行状态保存在所属 scope 的 TeamAI 数据目录里。`next`、`report`、`respond` 和运行控制命令按 id 跨本机已配置 scope 查找，工作流 worktree 内或产品仓库外也可以使用。命令结束后进程就退出。本地运行以 `failed` 或 `cancelled` 结束时，退出码是 1。不会留下常驻的工作流进程。
 
 等待 HITL 请求用 `workflow respond <run> <step> <choice>` 回答，失败或卡住的步骤用 `workflow retry <run> <step>` 重试，`workflow cancel <run> [step]` 停止工作，`workflow resume <run>` 继续本地执行，`workflow publish <run>` 让另一台机器接着运行（见[在另一台机器上继续运行](#在另一台机器上继续运行)）。next 返回 lease、hitl、wait 或 done。参见[HITL](workflow-advanced.md#hitl人在回路中)和[重试、取消和继续运行](workflow-advanced.md#重试取消和继续运行)。本地运行以 failed 或 cancelled 结束时退出码为 1。结束运行的操作在锁内排队写入结束记录，在释放锁后发布；重试后仍更新同一路径。回答记录只发布 choice、channel 和 agent，备注、回答时间和回答驱动身份只保存在本地。
 
@@ -248,3 +248,37 @@ teamai workflow resume <run>      # 在另一台机器上，位于同一个仓�
 Run id 是 `r` 加 16 位十六进制。此方案之前创建的运行用 8 位十六进制，仍然可以解析。
 
 工作流总量（runs、succeeded、failed、累计时长）在发布时折入 reports 分支的 `stats/<username>.yaml`，由 `teamai digest` 展示。
+
+## 在编程会话中运行
+
+设置 `invocable: true` 后，工作流才进入 SessionStart 发现列表。可选的 token `alias` 是 `workflow start` 的另一个入口名；完整工作流名优先于别名，重复别名不解析。没有启用发现的工作流仍可显式启动，但不会被广告给 agent。
+
+```yaml
+schemaVersion: v1alpha1
+name: session-change
+description: Implement a requested task in a separate branch.
+invocable: true
+alias: session-fix
+inputs: { task: string }
+steps:
+  - id: implement
+    workspace: new
+    prompt: "Implement {{ inputs.task }}."
+```
+
+SessionStart 注入有长度上限的名称、描述列表，引导 agent 读取 `teamai skill get workflow`，不携带图、提示词或命令体。Cursor 合并上下文超限时，发现提示先让出空间，保留原有用户规则。只部署现有 TeamAI 发现入口，工作流指令由已安装 CLI 提供。
+
+```bash
+teamai workflow start session-fix --describe
+teamai workflow start session-change --driver skill --inputs '{"task":"fix the retry"}'
+teamai workflow next <run> --prepare --json '<driver payload>'
+teamai workflow report <run> --json '<attempt report>'
+```
+
+`--describe` 只返回元数据和输入类型，不创建运行。会话收集必需输入，获取租约并报告实际结果。步骤路径是不透明标识；会话遵循 `wait`、`done`，停止被取消的 attempt，不重新实现依赖、条件或循环。工作流 skill 读取当前 CLI help，不复制参数表。宿主无法应用明确请求的模型时，以 `model_unavailable` 失败。
+
+使用 `next --prepare` 时，CLI 在运行最初保留的检出目录中创建或复用租约工作树，应用基线 agent 配置和团队资源，并返回 `lease.cwd`。重复准备不会覆盖已有编辑。会话只在那里工作，不自己运行工作区 git 操作。`report` 负责 commit、push、填充 `changes` 或 `read`；只有报告成功接受且允许 cleanup 时才删除工作树。对这类托管 attempt，不要自己提供 `changes` 和 `read`。失败时保留工作以便恢复。自行准备工作区的其他驱动不使用 `--prepare`。
+
+会话只声明宿主真正提供的工作区、人机交互、模型和执行能力，不能声称支持无法执行的环境隔离、setup 凭据、token 计量、网络控制或轮次限制。引擎支持要求字段时，能力协商遵循其要求契约。普通会话不能接收新注入的受限密钥，应关闭 env/setup 能力。worktree 本身不是 sandbox。必需审批由人执行返回的字面响应命令，或通过可信驱动 UI 回答；由 agent 转述的 CLI 回答以 `agent_in_path` 拒绝。
+
+运行 id 跨本机已配置 scope 定位。重复 id 以 `ambiguous_run` 失败，当前目录不参与选择。原始检出目录只保存在本机。attempt 准备记录只保存路径和文件指纹，不保存提示词、环境变量值或图。

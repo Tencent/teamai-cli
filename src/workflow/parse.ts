@@ -18,7 +18,7 @@ import { parseHitl } from './parse-hitl.js';
 import { loopProblems } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'steps']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'steps', 'invocable', 'alias']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
 const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
@@ -172,6 +172,13 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
     diagnostics.push(locate(file, lineCounter, descriptionPair?.value ?? descriptionPair?.key ?? root, 'description', 'description must be a non-empty string'));
   }
 
+  const invocableNode = valueNode(root, 'invocable');
+  const invocable = isScalar(invocableNode) && typeof invocableNode.value === 'boolean' ? invocableNode.value : undefined;
+  if (invocableNode && invocable === undefined) diagnostics.push({ ...locate(file, lineCounter, invocableNode, 'invocable', 'invocable must be a boolean'), code: 'bad_invocable' });
+  const aliasNode = valueNode(root, 'alias');
+  const alias = scalarString(aliasNode);
+  if (aliasNode && (!alias || !TOKEN.test(alias))) diagnostics.push({ ...locate(file, lineCounter, aliasNode, 'alias', 'alias must be a non-empty token'), code: 'bad_invocable' });
+
   const inputsPair = root.items.find((pair) => scalarString(pair.key) === 'inputs');
   let inputs: Record<string, OutputSchema> | undefined;
   if (inputsPair && !isMap(inputsPair.value)) {
@@ -191,7 +198,7 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
   return {
     ok: true,
     definition: {
-      schemaVersion: 'v1alpha1', name, description, ...(inputs ? { inputs } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}),
+      schemaVersion: 'v1alpha1', name, description, ...(invocable !== undefined ? { invocable } : {}), ...(alias ? { alias } : {}), ...(inputs ? { inputs } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}),
       ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), steps,
     },
     promptFileLocations,

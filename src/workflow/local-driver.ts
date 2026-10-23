@@ -158,6 +158,7 @@ export interface LocalDriverOptions {
 }
 
 interface Lease {
+  conflictsHashed?: true;
   /** The step path, such as `check.classify` inside a sub-workflow. */
   step: string;
   attempt: string;
@@ -562,7 +563,7 @@ async function conflictContents(dir: string): Promise<Map<string, string>> {
   return contents;
 }
 
-async function unresolvedConflicts(dir: string, before: Map<string, string> | undefined): Promise<string[]> {
+async function unresolvedConflicts(dir: string, before: Map<string, string> | undefined, hashed = false): Promise<string[]> {
   const textOf = async (file: string): Promise<string> => {
     try {
       return await fs.readFile(path.join(dir, file), 'utf8');
@@ -573,7 +574,7 @@ async function unresolvedConflicts(dir: string, before: Map<string, string> | un
   const listed = async (): Promise<string[]> => unmergedPaths(dir);
   for (const file of await listed()) {
     const text = await textOf(file);
-    if (text.includes('<<<<<<<') || before?.get(file) === text) continue;
+    if (text.includes('<<<<<<<') || before?.get(file) === (hashed ? createHash('sha256').update(text).digest('hex') : text)) continue;
     await git(dir, ['add', '--', file]);
   }
   const open = new Set(await listed());
@@ -660,7 +661,7 @@ async function finishWorkspace(lease: Lease, failed: boolean): Promise<{ changes
   // A commit on whatever HEAD the step left would be reported and pushed as the leased branch, which would lack it.
   const on = await offBranch(lease.cwd, lease.workspace.branch);
   if (on) return { failure: { code: 'workspace_base', message: `Step "${lease.step}" left workspace ${lease.cwd} ${on}, not on branch ${lease.workspace.branch}, so nothing was committed or pushed. Check out ${lease.workspace.branch} in ${lease.cwd} with the changes to keep, then retry the step.` } };
-  const open = await unresolvedConflicts(lease.cwd, lease.conflicts);
+  const open = await unresolvedConflicts(lease.cwd, lease.conflicts, lease.conflictsHashed);
   if (open.length > 0) return { failure: { code: 'merge_conflict', message: `Unresolved merge conflict: ${open.join(', ')}` } };
   const committed = await commitWork(lease.cwd, `teamai: ${lease.step}`, lease.rangeFrom);
   if ('error' in committed) return { failure: { code: 'push_failed', message: committed.error } };
@@ -1161,4 +1162,43 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     if (signalled) exitOn(signalled);
     handle([]);
   }
+}
+
+/** Local preparation data retained between the session's public next/report calls. No prompt, env value or graph. */
+export interface PreparedSessionWorkspace {
+  step: string; attempt: string; revision: number; cwd?: string; workspace?: WorkspaceContract;
+  before?: { ok: boolean; head?: string; branch: string; files: Array<[string, string]> };
+  found?: string[]; overlay?: string; rangeFrom?: string; conflicts?: Array<[string, string]>;
+}
+
+export async function prepareSessionWorkspace(raw: unknown, active: string, runId: string): Promise<PreparedSessionWorkspace | WorkflowFailure> {
+  const lease = parseLease(raw);
+  if (!lease) return { code: 'workspace_base', message: 'The session driver received an unreadable lease' };
+  const failure = await stageLease(lease, { active, runId });
+  if (failure) return failure;
+  return { step: lease.step, attempt: lease.attempt, revision: lease.revision, cwd: lease.cwd, workspace: lease.workspace,
+    ...(lease.before ? { before: { ...lease.before, files: [...lease.before.files] } } : {}),
+    found: lease.found, overlay: lease.overlay, rangeFrom: lease.rangeFrom,
+    ...(lease.conflicts ? { conflicts: [...lease.conflicts].map(([file, content]): [string, string] => [file, createHash('sha256').update(content).digest('hex')]) } : {}) };
+}
+
+export async function finishSessionWorkspace(prepared: PreparedSessionWorkspace, report: ReportBody): Promise<ReportBody> {
+  const { before, conflicts, ...fields } = prepared;
+  const lease: Lease = { ...fields, ...(before ? { before: { ...before, files: new Map(before.files) } } : {}),
+    ...(conflicts ? { conflicts: new Map(conflicts), conflictsHashed: true } : {}) };
+  if (report.outcome === 'released') {
+    await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
+    prepared.overlay = undefined;
+    return report;
+  }
+  const left = await leaveReadCopy(lease);
+  const paths = !left && lease.before && lease.cwd && !lease.workspace ? changedPaths(lease.before, await snapshotWorktree(lease.cwd)) : [];
+  const dirty = left && left.state !== 'untouched' ? readCopyFailure(left, `Read-only session step changed repository paths: ${left.changed.join(', ')}.`)
+    : paths.length ? { code: 'read_only_dirty', message: `Read-only session step changed repository paths: ${paths.join(', ')}` } : undefined;
+  const finished = lease.workspace && !left && !dirty ? await finishWorkspace(lease, report.outcome === 'success') : {};
+  prepared.overlay = lease.overlay;
+  const { changes: _changes, read: _read, ...body } = report;
+  const failure = dirty ?? finished.failure;
+  return { ...body, ...(finished.changes ? { changes: finished.changes } : {}), ...(left ? { read: left.read } : {}),
+    ...(failure ? failureReport(failure) : {}) };
 }

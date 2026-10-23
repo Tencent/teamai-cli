@@ -185,6 +185,18 @@ describe('hook-dispatch', () => {
       expect(result.output).toBeNull();
     });
 
+    it('drops workflow discovery before existing user rules when Cursor context is full', async () => {
+      const context = (text: string) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
+      const dispatcher = createDispatcher({ localConfig: null, handlers: [
+        { event: 'session-start', matcher: '*', handler: createHandler('cursor-user-rules', context('R'.repeat(8_000))), yieldsToContextLimit: true },
+        { event: 'session-start', matcher: '*', handler: createHandler('team-env-hint', context('ENV')) },
+        { event: 'session-start', matcher: '*', handler: createHandler('workflow-hint', context('W'.repeat(2_400))), yieldsToContextLimit: 'first' },
+      ] });
+      const answer = await dispatcher.dispatch('session-start', '*', {}, 'cursor');
+      const text = JSON.parse(answer.output!).hookSpecificOutput.additionalContext;
+      expect(text).toContain('R'.repeat(8_000)); expect(text).toContain('ENV'); expect(text).not.toContain('W');
+    });
+
     it('drops a yielding handler\'s context when the merged reply is over Cursor\'s limit, keeping the rest (#1197)', async () => {
       const context = (text: string) => JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
       const rules = createHandler('cursor-user-rules', context('R'.repeat(9_990)));

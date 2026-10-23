@@ -43,3 +43,7 @@ Each rule below spans more than one file. The rule names the code that owns it, 
 ## Tests
 
 Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the engine through `startRun`, `leaseNext`, and `reportAttempt`. Every driver must pass the protocol scenarios in `src/workflow/conformance.ts`, and a driver that takes workspace leases the git scenarios there too. If a driver can see a new behavior, add a scenario there.
+
+## Session driver workspace preparation
+
+`workflow next --prepare` delegates to the local driver's preparation; it never implements graph semantics. Attempt-local metadata contains paths, workspace contracts and fingerprints only. Repeated next calls reuse that metadata without reapplying an overlay over agent edits. Public report reconciles cancellations before git, checks driver/revision ownership, finishes through the shared local workspace helpers, and cleans up only after the engine accepts success with cleanup. No network operation holds the run lock. The existing per-run driver lock serializes local and public preparation/report. Run lookup scans configured local data homes by id and rejects duplicates, independent of cwd; the run's checkout governs git work.

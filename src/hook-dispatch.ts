@@ -46,7 +46,7 @@ export interface HandlerRegistration {
    * Its context is left out when the merged reply is over the host's limit
    * and the other handlers' replies fit without it.
    */
-  yieldsToContextLimit?: true;
+  yieldsToContextLimit?: true | 'first';
 }
 
 /** The most characters Cursor takes as a hook's `additional_context`; over it, Cursor drops the whole reply. */
@@ -251,7 +251,11 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
       }
 
       let output = mergeHookOutputs(outputs.map(({ value }) => value));
-      const length = contextLength(output);
+      let length = contextLength(output);
+      if (tool === 'cursor' && length > CURSOR_HOOK_CONTEXT_LIMIT && outputs.some(({ reg }) => reg.yieldsToContextLimit === 'first')) {
+        output = mergeHookOutputs(outputs.filter(({ reg }) => reg.yieldsToContextLimit !== 'first').map(({ value }) => value));
+        length = contextLength(output);
+      }
       if (tool === 'cursor' && length > CURSOR_HOOK_CONTEXT_LIMIT && outputs.some(({ reg }) => reg.yieldsToContextLimit)) {
         const rest = mergeHookOutputs(outputs.filter(({ reg }) => !reg.yieldsToContextLimit).map(({ value }) => value));
         const yielded = outputs.filter(({ reg }) => reg.yieldsToContextLimit).map(({ reg }) => reg.handler.name).join(', ');
