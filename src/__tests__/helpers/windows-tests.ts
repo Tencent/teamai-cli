@@ -4,6 +4,7 @@
  * runs on every OS and fails a listed file that gains a POSIX-only construct.
  */
 export const WINDOWS_TESTS = [
+  'src/__tests__/buddy-windows-cwd.test.ts',
   'src/__tests__/builtin-hooks.test.ts',
   'src/__tests__/codex-hook-rules.test.ts',
   'src/__tests__/codex-team-hooks.test.ts',

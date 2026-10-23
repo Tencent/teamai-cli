@@ -124,7 +124,7 @@ export function encodeCwdGeneric(cwd: string): string {
 }
 
 /**
- * CodeBuddy CLI cwd → directory-name encoding: replace only path separators with `-`.
+ * CodeBuddy CLI cwd → directory-name encoding: replace separators and drive colons with `-`.
  *
  * The generic version above cannot be used — it turns every non-alphanumeric character
  * into `-`, while CodeBuddy itself **keeps spaces**. In practice `.../Desktop/Code/teamai cli`
@@ -134,8 +134,9 @@ export function encodeCwdGeneric(cwd: string): string {
  */
 export function encodeCwdCodeBuddy(cwd: string): string {
   return resolveRealCwd(cwd)
-    .replace(/^([a-zA-Z]:)?[\\/]+/, '') // Drop the drive letter and root separator
-    .replace(/[\\/]/g, '-');
+    .replace(/[/\\:]/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
 }
 
 /**
