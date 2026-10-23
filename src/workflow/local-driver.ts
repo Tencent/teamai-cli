@@ -629,7 +629,7 @@ async function commandReport(attemptResultPath: string, driver: DriverIdentity, 
     return { attempt: lease.attempt, revision: lease.revision, driver, ...failureReport({ code: 'timeout', message: 'Step deadline passed before delivery' }) };
   }
   result = maskSecrets(result, lease.secrets ?? []);
-  const output = jsonStdout(result.stdout);
+  const output = maskSecrets(jsonStdout(result.stdout), lease.secrets ?? []);
   await fs.mkdir(path.dirname(attemptResultPath), { recursive: true });
   await writeJsonAtomic(attemptResultPath, output !== undefined ? { output } : {});
   const snippet = result.stderr.trim().slice(0, 400);
@@ -812,13 +812,37 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
   let setupController: AbortController | undefined;
   const stage = async (lease: Lease): Promise<WorkflowFailure | undefined> => {
     if (lease.deadline && Date.now() >= lease.deadline) return { code: 'timeout', message: 'Step deadline passed before execution' };
-    const failure = await stageLease(lease, { active: cwd, runId });
-    if (failure) return failure;
     setupController = new AbortController();
+    const controller = setupController;
     if (maxParallel === 1) for (const name of STOP_SIGNALS) process.on(name, onSignal);
     let setupFailure: WorkflowFailure | undefined;
-    try { setupFailure = await setupWorkspace(lease, environment, setupController.signal); }
+    const preparing = (async (): Promise<{ failure?: WorkflowFailure }> => {
+      const failure = await stageLease(lease, { active: cwd, runId });
+      if (failure) return { failure };
+      if (controller.signal.aborted) return { failure: { code: 'setup_failed', message: 'Workspace preparation was cancelled; the agent was not started' } };
+      if (lease.deadline && Date.now() >= lease.deadline) return { failure: { code: 'timeout', message: 'Step deadline passed while preparing the workspace' } };
+      return { failure: await setupWorkspace(lease, environment, controller.signal) };
+    })();
+    try {
+      for (;;) {
+        const done = maxParallel === 1 ? await preparing : await Promise.race([
+          preparing, new Promise<undefined>((resolve) => setTimeout(resolve, 100)),
+        ]);
+        if (done) { setupFailure = done.failure; break; }
+        // Preparation holds a worker slot, but it must not suspend deadline/budget cancellation of other workers.
+        const polled = await leaseNext(config, runId, driver, { canTakeLease: false,
+          running: [...inFlight.keys(), ...held.map((item) => item.attempt), ...(prompt ? [prompt.lease.attempt] : []), lease.attempt],
+        });
+        if ('error' in polled) { setupFailure = polled.error; break; }
+        for (const attempt of Array.isArray(polled.data.cancelled) ? polled.data.cancelled as string[] : []) {
+          if (attempt === lease.attempt) controller.abort();
+          else cancel(attempt);
+        }
+      }
+    }
     finally {
+      controller.abort();
+      await preparing.catch(() => undefined);
       setupController = undefined;
       if (maxParallel === 1) for (const name of STOP_SIGNALS) process.off(name, onSignal);
     }

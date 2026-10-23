@@ -241,11 +241,11 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, auto
 }
 
 function leaseData(
-  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease, plan?: WorkspacePlan, effectiveRequires?: import('./requirements.js').WorkflowRequirements,
+  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease, plan?: WorkspacePlan, effectiveRequires?: import('./requirements.js').WorkflowRequirements, effectiveSetup?: import('./requirements.js').WorkflowSetup,
 ): Record<string, unknown> {
   const located = locateStep(run, state.id);
   const requires = effectiveRequires ?? (located ? mergeRequirements(located.scope.requirements, located.scope.definition.defaults?.requires, definition.requires) : definition.requires);
-  const setup = plan?.contract ? located?.scope.setup : undefined;
+  const setup = plan?.contract ? effectiveSetup ?? located?.scope.setup : undefined;
   return { lease: {
     ...(requires && Object.keys(requires).length ? { requires } : {}),
     ...(setup ? { setup } : {}),
@@ -990,7 +990,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
             break;
           }
           if (plan.contract && options.base && !run.base) run.base = options.base;
-          const setup = plan.contract ? located.scope.setup : undefined;
+          const setup = plan.contract && located.scope.setup ? { ...located.scope.setup,
+            requires: mergeRequirements(config.workflows?.allow?.network === false ? { network: false } : undefined, located.scope.setup.requires) } : undefined;
           if (setup) {
             const missing = missingEnvironment(environment, setup.requires?.env ?? []);
             if (missing) { failStep(state, missing, run.revision); failed = true; break; }
@@ -1002,7 +1003,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           const deadline = leaseDeadline(run, state, definition, startedAt);
           const step = lease(state, { startedAt, ...(deadline ? { deadline } : {}), attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver });
           rememberCopy(run, plan, driver);
-          return answer(leaseData(run, step, definition, rendered, plan, requires));
+          return answer(leaseData(run, step, definition, rendered, plan, requires, setup));
         }
         if (failed) continue;
         return answer({ wait: { reason: held.join('; ') } });
@@ -1032,19 +1033,21 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           continue;
         }
         const can = { ...options.capabilities, human: options.capabilities?.human ?? options.hitl };
+        const setup = plan.contract && located.scope.setup ? { ...located.scope.setup,
+          requires: mergeRequirements(config.workflows?.allow?.network === false ? { network: false } : undefined, located.scope.setup.requires) } : undefined;
         const mismatch = (located.step.interactive && config.workflows?.allow?.human === false ? 'Member workflow policy disallows human' : located.step.session && config.workflows?.allow?.resume === false ? 'Member workflow policy disallows resume' : undefined)
           ?? requirementsMismatch(requires, config.workflows?.allow ?? {}, can)
           ?? (located.step.maxTurns && !can.max_turns ? 'Driver cannot enforce max_turns' : undefined)
           ?? (located.step.prompt !== undefined && scopeBudgeted(run, located.scope) && !can.tokens ? 'Driver cannot report tokens required by budget' : undefined)
           ?? options.supports?.(located.step, requires)
-          ?? (plan.contract && located.scope.setup && !can.setup ? 'Driver cannot run setup' : undefined)
-          ?? (plan.contract && located.scope.setup ? requirementsMismatch(located.scope.setup.requires ?? {}, config.workflows?.allow ?? {}, can) : undefined);
+          ?? (setup && !can.setup ? 'Driver cannot run setup' : undefined)
+          ?? (setup ? requirementsMismatch(setup.requires ?? {}, config.workflows?.allow ?? {}, can) : undefined);
         if (mismatch || plan.defer) return answer({ wait: { reason: mismatch ?? plan.defer } });
         const setupMissing = plan.contract && located.scope.setup ? missingEnvironment(environment, located.scope.setup.requires?.env ?? []) : undefined;
         if (setupMissing) {
           (run.cancelledAttempts ??= []).push(leased.attempt); failStep(leased, setupMissing, run.revision); continue;
         }
-        return answer(leaseData(run, leased, located.step, rendered, plan, requires));
+        return answer(leaseData(run, leased, located.step, rendered, plan, requires, setup));
       }
       failStep(leased, rendered, leased.lease.revision);
     }
@@ -1403,7 +1406,8 @@ function enforceLimits(run: RunState, now: number): WorkflowFailure | undefined 
     } else if (state.status === 'running') {
       const found = locateStep(run, state.id);
       const scope = found && childScope(run, found.scope, statesIn(run, found.scope), state, found.step);
-      const timeout = found?.step.timeout ?? scope?.definition.timeout;
+      const bounds = [found?.step.timeout, scope?.definition.timeout].filter((value): value is number => value !== undefined);
+      const timeout = bounds.length ? Math.min(...bounds) : undefined;
       const failure = timeout && state.startedAt && now >= state.startedAt + timeout
         ? { code: 'timeout', message: `Workflow step "${state.id}" timeout exceeded` }
         : scope?.definition.budget && runTokens(run, state.id + '.') >= scope.definition.budget.tokens
@@ -1422,8 +1426,7 @@ function leaseDeadline(run: RunState, state: StepState, definition: WorkflowStep
     if (parent.status !== 'running' || !parent.startedAt || !state.id.startsWith(parent.id + '.')) continue;
     const found = locateStep(run, parent.id);
     const scope = found && childScope(run, found.scope, statesIn(run, found.scope), parent, found.step);
-    const timeout = found?.step.timeout ?? scope?.definition.timeout;
-    if (timeout) deadlines.push(parent.startedAt + timeout);
+    for (const timeout of [found?.step.timeout, scope?.definition.timeout]) if (timeout) deadlines.push(parent.startedAt + timeout);
   }
   return deadlines.length ? Math.min(...deadlines) : undefined;
 }

@@ -39,6 +39,40 @@ function declare(repo: string) {
 }
 
 describe('workflow requirements and limits (#1082)', () => {
+  it('keeps the shorter nested workflow timeout when its enclosing step has a longer timeout', async () => {
+    const f = await fixture('', '  - id: work\n    timeout: 1h\n    workflow:\n      timeout: 1s\n      steps:\n        - id: child\n          command: echo child\n');
+    const now = Date.now(); vi.spyOn(Date, 'now').mockReturnValue(now);
+    const next = await leaseNext(f.config, f.runId, driver);
+    expect(next).toMatchObject({ data: { lease: { deadline: now + 1000 } } });
+    vi.spyOn(Date, 'now').mockReturnValue(now + 2000);
+    await leaseNext(f.config, f.runId, driver, { canTakeLease: false });
+    expect(await readRun(f.config, f.runId)).toMatchObject({ steps: expect.arrayContaining([expect.objectContaining({ id: 'work', failure: { code: 'timeout', message: expect.any(String) } })]) });
+  });
+  it('applies member network ceilings to setup on the lease and on handback', async () => {
+    const f = await fixture('setup: { command: echo prepare }\n', '  - id: work\n    workspace: new\n    command: echo work\n');
+    f.config.workflows = { tools: {}, allow: { network: false } };
+    const options = { workspaceModes: ['new' as const], base: { ref: 'main', commit: 'a'.repeat(40) }, capabilities: { setup: true, network: [true, false] } };
+    expect(await leaseNext(f.config, f.runId, driver, options)).toMatchObject({ data: { lease: { setup: { requires: { network: false } } } } });
+    expect(await leaseNext(f.config, f.runId, driver, options)).toMatchObject({ data: { lease: { setup: { requires: { network: false } } } } });
+  });
+  it('masks parsed multiline command outputs before persisting result artifacts', async () => {
+    const f = await fixture('', `  - id: work\n    requires: { env: [WORKFLOW_TEST_TOKEN] }\n    command: node -e 'console.log(JSON.stringify({token:process.env.WORKFLOW_TEST_TOKEN}))'\n`);
+    declare(f.repo); vi.stubEnv('WORKFLOW_TEST_TOKEN', 'fixture-line-one\nfixture-line-two');
+    await runLocalDriver(f.config, f.runId, f.work);
+    const run = await readRun(f.config, f.runId);
+    if (typeof run === 'string') throw new Error(run);
+    const attempt = run.steps[0] && 'attempt' in run.steps[0] ? run.steps[0].attempt : undefined;
+    const result = fs.readFileSync(path.join(f.config.dataHome!, 'workflows', 'runs', f.runId, 'attempts', attempt!, 'result.json'), 'utf8');
+    expect(JSON.parse(result)).toEqual({ output: { token: '[REDACTED]' } });
+  });
+  it('continues cancelling expired siblings while another workspace setup is running', async () => {
+    const marker = path.join(os.tmpdir(), `teamai-late-setup-${Date.now()}`); dirs.push(marker);
+    const f = await fixture("setup:\n  command: node -e 'setTimeout(()=>{},4000)'\n", `  - id: timed\n    timeout: 1s\n    command: node -e 'setTimeout(()=>require("fs").writeFileSync(${JSON.stringify(marker)},"late"),2000)'\n  - id: setup\n    needs: []\n    workspace: new\n    command: echo ready\n`);
+    f.config.usageReportEnabled = false; f.config.workflows = { tools: {}, max_parallel: 2 };
+    await runLocalDriver(f.config, f.runId, f.work);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(await readRun(f.config, f.runId)).toMatchObject({ steps: [expect.objectContaining({ failure: { code: 'timeout', message: expect.any(String) } }), expect.objectContaining({ status: 'succeeded' })] });
+  }, 15_000);
   it('merges env names and replaces scalar defaults', () => {
     expect(mergeRequirements({ network: false, env: ['A'] }, { network: true, env: ['B', 'A'] })).toEqual({ network: true, env: ['A', 'B'] });
     expect(requirementsMismatch({ network: true }, { network: false }, { network: true })).toContain('policy');

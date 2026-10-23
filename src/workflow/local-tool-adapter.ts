@@ -137,10 +137,15 @@ function parseResultFile(value: unknown): ResultFile | null {
   return result;
 }
 
-async function readResultFile(resultPath: string): Promise<ResultFile | null> {
+async function readResultFile(resultPath: string, secrets: readonly string[] = []): Promise<ResultFile | null> {
   try {
-    return parseResultFile(JSON.parse(await fs.readFile(resultPath, 'utf8')) as unknown);
+    const raw: unknown = JSON.parse(await fs.readFile(resultPath, 'utf8'));
+    const sanitized = maskSecrets(raw, secrets);
+    // Invalid result schemas still contain arbitrary tool output. Sanitize them before validation can return null.
+    if (secrets.length) await writeJsonAtomic(resultPath, sanitized);
+    return parseResultFile(sanitized);
   } catch {
+    if (secrets.length) await fs.rm(resultPath, { force: true });
     return null;
   }
 }
@@ -370,6 +375,7 @@ export function createLocalToolAdapter(
       const completed = await closed;
       if (signal?.aborted) await stop?.();
       signal?.removeEventListener('abort', abort);
+      const fileResult = await readResultFile(input.resultPath, input.secrets);
       if (!started || completed.error?.code === 'ENOENT') {
         return {
           started: false,
@@ -387,7 +393,6 @@ export function createLocalToolAdapter(
           failure: { code: 'tool_failed', message: `${tool} could not be started` },
         };
       }
-      const fileResult = await readResultFile(input.resultPath);
       const reported = toolStdout(tool, completed.stdout);
       const result = maskSecrets(combineResults(fileResult, reported) ?? (interactive ? {} : null), input.secrets ?? []);
       if (!result) {
