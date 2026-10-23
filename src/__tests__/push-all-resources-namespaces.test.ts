@@ -87,8 +87,10 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
       // namespace holds it.
       { type: 'prompts', path: 'prompts/team-a/review.md', shared: true },
       { type: 'prompts', path: 'prompts/topic/note.md', shared: true },
-      { type: 'scorers', path: 'scorers/accuracy.py', shared: true },
-      { type: 'scorers', path: 'scorers/team-a/accuracy.py', shared: false },
+      // A scorer is scorers/<name>.md (frontmatter plus a prompt), never .py:
+      // review --branch fails any other file under scorers/ but README.md.
+      { type: 'scorers', path: 'scorers/accuracy.md', shared: true },
+      { type: 'scorers', path: 'scorers/team-a/accuracy.md', shared: false },
       { type: 'models', path: 'models/config.json', shared: true },
       { type: 'models', path: 'models/team-a/config.json', shared: false },
       { type: 'wiki', path: 'wiki/home.md', shared: true },
@@ -151,7 +153,7 @@ describe('isAtSharedRoot and withNamespace across all resource types', () => {
     expect(withNamespace('docs/readme.md', 'core')).toBe('docs/core/readme.md');
     expect(withNamespace('workflows/build.yaml', 'ci')).toBe('workflows/ci/build.yaml');
     expect(withNamespace('prompts/codegen.txt', 'ai')).toBe('prompts/ai/codegen.txt');
-    expect(withNamespace('scorers/metric.py', 'eval')).toBe('scorers/eval/metric.py');
+    expect(withNamespace('scorers/metric.md', 'eval')).toBe('scorers/eval/metric.md');
     expect(withNamespace('models/deepseek.json', 'llm')).toBe('models/llm/deepseek.json');
     expect(withNamespace('wiki/architecture.md', 'docs')).toBe('wiki/docs/architecture.md');
     expect(withNamespace('hooks/pre-push.sh', 'git')).toBe('hooks/git/pre-push.sh');
