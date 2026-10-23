@@ -192,14 +192,15 @@ describe('pre-push sync in single-repo mode (#823 items 2 and 10)', () => {
     expect(fs.readFileSync(activeRule(), 'utf8')).toBe(R1);
   });
 
-  it('still lists a genuine edit of a stale .teamai/rules copy as modified (#823 item 10)', async () => {
+  it('refuses a genuine edit of a stale .teamai/rules copy rather than push it over the teammate\'s update (#823 item 10)', async () => {
     await run(['pull']);
     teammateLandsOnMain('.teamai/rules/team-rule.md', R2);
     fs.writeFileSync(activeRule(), `${R1}\nA local edit.\n`);
 
-    const push = await run(['--dry-run', 'push']);
-    expect(push).toContain('[rules] team-rule (modified)');
-    expect(push).not.toContain(HELD);
+    const push = await runCLI(['--dry-run', 'push'], projectRoot, home);
+    expect(push.code, push.output).toBe(2);
+    expect(push.output).toContain('.teamai/rules/team-rule.md changed both here and on origin/main');
+    expect(push.output).not.toContain(HELD);
   });
 
   it('holds a stale .teamai/skills copy on a branch behind a teammate\'s update (#823 item 10)', async () => {
