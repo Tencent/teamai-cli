@@ -576,7 +576,13 @@ async function resolvePromptFiles(
         // Namespace lookup works for any leaf depth — a nested path like
         // prompts/topic/note.md resolves to prompts/<ns>/topic/note.md
         // just as a flat prompts/note.md resolves to prompts/<ns>/note.md.
-        const found = (await Promise.all(
+        //
+        // A leaf whose first segment is already an active namespace is explicit
+        // and resolved as written: prepending another namespace would look up
+        // prompts/<other>/ops/note.md and load that file instead.
+        const lead = leaf.split('/')[0];
+        const alreadyNamespaced = lead !== undefined && activePromptsNamespaces.includes(lead);
+        const found = alreadyNamespaced ? [] : (await Promise.all(
           activePromptsNamespaces.map(async (ns) => {
             const candidate = path.join(root, 'prompts', ns, ...leaf.split('/'));
             return (await pathExists(candidate)) ? `prompts/${ns}/${leaf}` : null;

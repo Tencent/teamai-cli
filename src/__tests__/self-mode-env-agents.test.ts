@@ -117,6 +117,44 @@ describe('single-repo mode: env + agents direct .teamai scan', () => {
     expect(await fse.readFile(path.join(worktreeTeamai, 'env', 'secrets.yaml'), 'utf8')).toContain('GITHUB_TOKEN');
   });
 
+  it('env: retires the clone-local original after a placement copies it', async () => {
+    // Non-self push: the source IS inside the clone (a team clone's env/env.yaml)
+    // and placement moved it to env/ops/env.yaml. The leftover original stays
+    // untracked, is rediscovered as new by the next push, and that push aborts
+    // because the placed copy already exists — so it is retired after the copy,
+    // the same way pushRepoResourceItem handles a placed repo resource.
+    const repoRoot = path.join(tmp, 'team-clone');
+    const plainConfig: LocalConfig = {
+      repo: { localPath: repoRoot, remote: 'https://github.com/acme/team.git', kind: 'git' },
+      username: 'alice',
+      scope: 'project',
+      additionalRoles: [],
+    };
+    const original = path.join(repoRoot, 'env', 'env.yaml');
+    await fse.outputFile(original, 'variables:\n  - key: A\n    value: "1"\n');
+    await new EnvHandler().pushItem(
+      { name: 'env.yaml', type: 'env', sourcePath: original, relativePath: 'env/ops/env.yaml' },
+      teamConfig,
+      plainConfig,
+    );
+    expect(await fse.readFile(path.join(repoRoot, 'env', 'ops', 'env.yaml'), 'utf8')).toContain('key: A');
+    expect(await fse.pathExists(original)).toBe(false);
+  });
+
+  it('env: keeps a self-mode source outside the clone after a placement copies it', async () => {
+    // The active tree's .teamai/env/env.yaml is what the author keeps editing;
+    // only a clone-local original is retired.
+    const active = path.join(bizRoot, '.teamai', 'env', 'env.yaml');
+    await fse.writeFile(active, 'variables:\n  - key: B\n    value: "2"\n');
+    await new EnvHandler().pushItem(
+      { name: 'env.yaml', type: 'env', sourcePath: active, relativePath: 'env/ops/env.yaml' },
+      teamConfig,
+      localConfig,
+    );
+    expect(await fse.readFile(path.join(worktreeTeamai, 'env', 'ops', 'env.yaml'), 'utf8')).toContain('key: B');
+    expect(await fse.pathExists(active)).toBe(true);
+  });
+
   // Regression: a teammate who clones a self-mode repo has .teamai/env/ as a
   // committed DIRECTORY (holding env.yaml). pullItem must NOT try to write its
   // KEY=value backup at <teamaiHome>/env (that path is the dir → EISDIR). It must

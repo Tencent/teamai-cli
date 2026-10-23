@@ -428,11 +428,22 @@ export class EnvHandler extends ResourceHandler {
     // Self mode: the source is the ACTIVE tree's .teamai/env/ file, but the
     // commit happens in the knowledge worktree (localConfig.repo.localPath).
     // Non-self: the source is the clone, but placement may have moved the path.
-    const dest = path.join(localConfig.repo.localPath, ...item.relativePath.split('/'));
-    if (item.sourcePath !== dest) {
+    const repoRoot = path.resolve(localConfig.repo.localPath);
+    const dest = path.resolve(repoRoot, ...item.relativePath.split('/'));
+    const original = path.resolve(item.sourcePath);
+    if (original !== dest) {
       await ensureDir(path.dirname(dest));
-      const content = await readFileSafe(item.sourcePath);
-      if (content !== null) await writeFile(dest, content);
+      const content = await readFileSafe(original);
+      if (content !== null) {
+        await writeFile(dest, content);
+        // Retire the clone-local original, as pushRepoResourceItem does: the
+        // placement moved the file, and a leftover env/env.yaml stays untracked
+        // and is rediscovered as new by the next push, which then aborts
+        // because the placed env/<ns>/env.yaml already exists. In self mode the
+        // source is the ACTIVE tree's .teamai/env file, outside the clone, and
+        // must stay: that is the copy the author keeps editing.
+        if (original.startsWith(repoRoot + path.sep)) await remove(original);
+      }
     }
   }
 

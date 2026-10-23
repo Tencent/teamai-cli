@@ -507,6 +507,29 @@ steps:
     expect((await loadCachedWorkflow(config, 'build'))?.definition.steps[0]?.prompt).toBe('second prompt');
   });
 
+  it('resolves an already namespace-qualified prompt path as written', async () => {
+    const config = testConfig();
+    // Two active namespaces, and prompts/dev/ops/note.md exists — the shape that
+    // used to make an explicit prompts/ops/note.md load the wrong file: the path
+    // was prefixed with every active namespace, and prompts/dev/ops/note.md won.
+    fs.mkdirSync(path.join(config.repo.localPath, 'prompts', 'ops'), { recursive: true });
+    fs.mkdirSync(path.join(config.repo.localPath, 'prompts', 'dev', 'ops'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'prompts', 'ops', 'note.md'), 'ops prompt');
+    fs.writeFileSync(path.join(config.repo.localPath, 'prompts', 'dev', 'ops', 'note.md'), 'dev prompt');
+    writeWorkflow(config, 'build', `schemaVersion: v1alpha1
+name: build
+description: Review the project.
+steps:
+  - id: review
+    prompt_file: prompts/ops/note.md
+`);
+
+    await syncWorkflowDefinitions(config);
+
+    const cached = await loadCachedWorkflow(config, 'build');
+    expect(cached?.definition.steps[0]).toMatchObject({ prompt: 'ops prompt' });
+  });
+
   it('rejects symlinked prompt files that escape the team repo', async () => {
     const config = testConfig();
     const outside = path.join(path.dirname(config.repo.localPath), 'outside-prompt.md');
