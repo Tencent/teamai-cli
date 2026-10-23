@@ -5,7 +5,7 @@ import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.j
 import { assertNotReadOnly } from './read-only.js';
 import {
   createGit, pullRepo, pushRepoBranch, checkoutMaster, generateBranchName, unusedBranchName,
-  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit,
+  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit, hashObject,
 } from './utils/git.js';
 import { reconcilePlacementRecords, dropClosedPendingPushes,
   findPendingForItem, isRecordedItem, partiallySelectedEntries, pendingNamespaceFor, planPushGroups, recordedNamespace,
@@ -1055,6 +1055,134 @@ async function pendingSelfTeamConfig(localConfig: LocalConfig): Promise<string |
   return committed === null || committed.toString() !== activeConfig ? activeConfig : null;
 }
 
+type DefaultBranchChanges =
+  | { history: 'complete'; untouched: ResourceItem[]; edited: ResourceItem[]; retiring: ResourceItem[] }
+  | { history: 'missing'; shallow: boolean; unclassified: ResourceItem[] };
+
+/**
+ * The self-mode push items sourced from `.teamai/` whose source, destination or
+ * retired file the default branch changed since this checkout branched from it,
+ * and which the checkout does not already hold at the branch's version:
+ * `untouched` when the checkout still holds the version it branched from,
+ * `edited` when it changed the file too, `retiring` when the push would delete
+ * a file the branch changed. Self-mode scans compare the checkout with the default
+ * branch, so on a checkout behind it both read as this member's edit, and
+ * pushing either reverts the other side. Without a common ancestor (a shallow
+ * clone, or rewritten history), what differs from its own HEAD is
+ * `unclassified`. A tool-directory copy is left alone: the pre-push sync can
+ * move it to the default branch's version while `.teamai/` stays behind, so
+ * where this checkout branched says nothing about it.
+ */
+async function itemsChangedOnDefaultBranch(
+  localConfig: LocalConfig,
+  memberRoot: string,
+  items: readonly ResourceItem[],
+): Promise<DefaultBranchChanges> {
+  const teamDir = path.join(memberRoot, '.teamai');
+  const teamFile = (relativePath: string): string => path.join(teamDir, ...relativePath.split('/'));
+  const teamItems = items.filter((item) => path.resolve(item.sourcePath).startsWith(teamDir + path.sep));
+  const git = createGit(memberRoot);
+  const missing = async (unclassified: ResourceItem[]): Promise<DefaultBranchChanges> => ({
+    history: 'missing',
+    shallow: (await git.raw(['rev-parse', '--is-shallow-repository'])).trim() === 'true',
+    unclassified,
+  });
+  const defaultTip = await getHeadCommit(localConfig.repo.businessRepoRoot ?? localConfig.repo.localPath);
+  if (!defaultTip) return missing(teamItems);
+  const branchedFrom = (await git.raw(['merge-base', 'HEAD', defaultTip]).catch(() => '')).trim();
+  const raw = await git.raw([
+    'diff', '--raw', '-z', '--no-renames', '--no-abbrev', '--relative', branchedFrom || 'HEAD', defaultTip, '--', '.teamai/',
+  ]);
+  const blobs = new Map<string, { atBase: string | null; atTip: string | null }>();
+  const fields = raw.split('\0');
+  const blobOrNull = (sha: string | undefined): string | null => (!sha || /^0+$/.test(sha) ? null : sha);
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const [, , atBase, atTip] = fields[i].split(' ');
+    blobs.set(path.join(memberRoot, ...fields[i + 1].split('/')), { atBase: blobOrNull(atBase), atTip: blobOrNull(atTip) });
+  }
+  const untouched: ResourceItem[] = [];
+  const edited: ResourceItem[] = [];
+  const retiring: ResourceItem[] = [];
+  for (const item of teamItems) {
+    const retired = supersededPathOf(item);
+    if (retired && blobs.get(teamFile(retired))?.atTip) {
+      retiring.push(item);
+      continue;
+    }
+    const changes = [...new Set([path.resolve(item.sourcePath), teamFile(item.relativePath)])]
+      .flatMap((file) => blobs.get(file) ?? []);
+    if (changes.length === 0) continue;
+    const memberBlob = await hashObject(memberRoot, item.sourcePath);
+    const behind = changes.filter((change) => change.atTip !== memberBlob);
+    if (behind.length === 0) continue;
+    (behind.every((change) => change.atBase === memberBlob) ? untouched : edited).push(item);
+  }
+  return branchedFrom
+    ? { history: 'complete', untouched, edited, retiring }
+    : missing([...untouched, ...edited, ...retiring]);
+}
+
+/**
+ * Where the default branch moved under a self-mode checkout: the items to
+ * leave out of the push (announced here), and a check that stops the push,
+ * exit 2, when an item going out would overwrite or delete that branch's change.
+ */
+async function defaultBranchGuard(
+  localConfig: LocalConfig,
+  memberRoot: string,
+  items: readonly ResourceItem[],
+): Promise<{ leftOut: readonly ResourceItem[]; stops: (going: readonly ResourceItem[]) => Promise<boolean> }> {
+  const changes = await itemsChangedOnDefaultBranch(localConfig, memberRoot, items);
+  const sourceOf = (item: ResourceItem): string => path.relative(memberRoot, item.sourcePath).split(path.sep).join('/');
+  const named = (list: readonly ResourceItem[]): string => list.map((item) => {
+    const source = sourceOf(item);
+    const destination = `.teamai/${item.relativePath}`;
+    return source === destination ? source : `${source} (pushed to ${destination})`;
+  }).join(', ');
+  const leftOut = changes.history === 'complete' ? changes.untouched : [];
+  if (leftOut.length > 0) {
+    const defaultBranch = await getDefaultBranch(memberRoot);
+    log.info(
+      `Left out ${named(leftOut)}: changed on origin/${defaultBranch} since `
+        + `this checkout branched from it, and not edited here. \`git pull origin ${defaultBranch}\` brings the change in.`,
+    );
+  }
+
+  // Like the destination errors in pushCore, this stops the push only for an
+  // item that is going out: a file left out by --skill, a filter or the
+  // selection must not hold back the rest.
+  const stops = async (going: readonly ResourceItem[]): Promise<boolean> => {
+    const goingOut = (list: readonly ResourceItem[]): ResourceItem[] => list.filter((item) => going.includes(item));
+    const edited = goingOut(changes.history === 'complete' ? changes.edited : changes.unclassified);
+    const retiring = goingOut(changes.history === 'complete' ? changes.retiring : []);
+    if (edited.length === 0 && retiring.length === 0) return false;
+    const defaultBranch = await getDefaultBranch(memberRoot);
+    if (changes.history === 'missing') {
+      log.error(changes.shallow
+        ? `${named(edited)} differs from origin/${defaultBranch}, and this checkout lacks the history to tell `
+          + 'whether that is your edit or a change on that branch, so pushing could overwrite a teammate\'s change. '
+          + 'Nothing was pushed. Run `git fetch --unshallow origin`, then push again.'
+        : `${named(edited)} differs from origin/${defaultBranch}, and this checkout shares no history with `
+          + `origin/${defaultBranch} to tell whether that is your edit or a change on that branch, so pushing could `
+          + 'overwrite a teammate\'s change. Nothing was pushed. '
+          + `Merge or rebase onto origin/${defaultBranch}, then push again.`);
+    }
+    if (changes.history === 'complete' && edited.length > 0) {
+      log.error(`${named(edited)} changed both here and on origin/${defaultBranch} since this checkout branched `
+        + 'from it, so pushing would overwrite that change. Nothing was pushed. '
+        + `Merge origin/${defaultBranch} (\`git pull origin ${defaultBranch}\`), resolve any conflict, then push again.`);
+    }
+    for (const item of retiring) {
+      log.error(`${named([item])} would delete .teamai/${supersededPathOf(item)}, which changed on `
+        + `origin/${defaultBranch} since this checkout branched from it. Nothing was pushed. `
+        + `Run \`git pull origin ${defaultBranch}\`, carry that change into ${sourceOf(item)}, then push again.`);
+    }
+    process.exitCode = 2;
+    return true;
+  };
+  return { leftOut, stops };
+}
+
 async function pushCore(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
@@ -1537,7 +1665,7 @@ async function pushCore(
 
   // Preserve blocked items in the full scan so their pending PR records survive.
   // Exclude them before selection and grouping: pushItem cannot write their paths.
-  const allItems = fullScan.filter((item) => {
+  const listed = fullScan.filter((item) => {
     if ('skipReason' in item && typeof item.skipReason === 'string' && item.skipReason) {
       log.warn(`[${item.type}] Skipped ${item.name}: ${item.skipReason}`);
       return false;
@@ -1548,6 +1676,12 @@ async function pushCore(
     }
     return true;
   });
+
+  const memberRoot = selfMode ? localConfig.projectRoot : undefined;
+  const branchGuard = memberRoot
+    ? await defaultBranchGuard(localConfig, memberRoot, listed)
+    : { leftOut: [], stops: async () => false };
+  const allItems = listed.filter((item) => !branchGuard.leftOut.includes(item));
 
   // Such an agent is skipped like any other, and a skipped agent does not
   // block the rest of the push: a stale copy of an agent from a dropped role
@@ -1945,6 +2079,7 @@ async function pushCore(
   // before this would let a dry run call a push viable that the real command
   // refuses — and say nothing about who the new resources reach.
   if (options.dryRun) {
+    if (await branchGuard.stops(allItems)) return;
     // Same two steps, same order as a real run: an open PR's recorded
     // destination first, then placement for whatever is still at the root.
     const settled = reuseRecordedDestinations(planPushGroups(allItems, reusablePending));
@@ -1971,6 +2106,7 @@ async function pushCore(
     }
     selectedItems = indices.map((i) => allItems[i]);
   }
+  if (await branchGuard.stops(selectedItems)) return;
 
   // ── Step 3b: Split the selection into per-PR groups ────────────────
   // Resources that belong to an open PR are pushed by force-pushing that PR's

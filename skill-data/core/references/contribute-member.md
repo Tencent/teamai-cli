@@ -120,6 +120,10 @@ The doc lands in the team's `learnings/` and appears for teammates on their next
    pushing it would revert a teammate's update. To publish an edit of it, bring
    the current version in first (`git fetch origin && git merge origin/<default>`,
    or copy the team's current file over it), redo the edit on top, and push again.
+   Any other team file under `.teamai/` that the default branch changed since
+   your branch left it is left out of the push when you did not edit it. A file
+   you edited too, a rule included but not a skill's file, stops the push with
+   exit 2; merge the default branch and push again.
 
 ## After contributing
 
