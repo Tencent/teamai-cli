@@ -89,9 +89,10 @@ describe('scopedToolPaths swaps WorkBuddy skills to the 5.7+ root (#1273)', () =
     expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy-ai/skills');
   });
 
-  it('keeps the old path when the old root is still there', async () => {
+  it('prefers the new root when an upgrade left both roots behind (#1290 P1)', async () => {
     await fse.ensureDir(path.join(home, '.workbuddy'));
-    expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy/skills');
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    expect(paths(defaultTeam).workbuddy.skills).toBe('.workbuddy-ai/skills');
   });
 
   it('keeps the old path when neither root exists (nothing detected)', () => {
@@ -104,6 +105,26 @@ describe('scopedToolPaths swaps WorkBuddy skills to the 5.7+ root (#1273)', () =
     expect(paths(redirected).workbuddy.skills).toBe('.workbuddy-ai/skills');
     const elsewhere = { toolPaths: { workbuddy: { skills: 'custom/skills' } } };
     expect(paths(elsewhere).workbuddy.skills).toBe('custom/skills');
+  });
+
+  it('keeps the swap after the user-scope override merges the default path (#1290 P1)', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    const scoped = {
+      toolPaths: {
+        workbuddy: { skills: '.workbuddy/skills', userScope: { skills: '.workbuddy/skills' } },
+      },
+    };
+    expect(paths(scoped).workbuddy.skills).toBe('.workbuddy-ai/skills');
+  });
+
+  it('never stomps a userScope skills redirect of its own (#1290 P1)', async () => {
+    await fse.ensureDir(path.join(home, '.workbuddy-ai'));
+    const scoped = {
+      toolPaths: {
+        workbuddy: { skills: '.workbuddy/skills', userScope: { skills: 'custom/skills' } },
+      },
+    };
+    expect(paths(scoped).workbuddy.skills).toBe('custom/skills');
   });
 
   it('swaps against the project root in project scope', async () => {

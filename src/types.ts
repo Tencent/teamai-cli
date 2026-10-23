@@ -2909,7 +2909,9 @@ export function applyToolRoots(
  * WorkBuddy 5.7+ moved its runtime to `.workbuddy-ai/` and stops reading
  * `.workbuddy/` (#1273): on an install that left only the new root, deliver
  * skills to the directory the app actually scans — live-verified in the issue
- * (13 team skills showed in the live `/` menu). Only the default skills path
+ * (13 team skills showed in the live `/` menu); the new root wins whenever it
+ * exists, because an upgrade leaves the old one behind as an unread leftover.
+ * Only the default skills path
  * swaps, so a team that redirected on purpose keeps its own; every other
  * surface keeps its configured path (writes into the dead old layout are
  * no-ops the app ignores). Returns the same object when no swap fires.
@@ -2923,7 +2925,10 @@ function applyWorkBuddyGeneration(
   const baseDir = localConfig.scope === 'project' && localConfig.projectRoot !== undefined
     ? localConfig.projectRoot
     : getUserHome();
-  if (fs.existsSync(path.join(baseDir, WORKBUDDY_NEW_GENERATION_ROOT)) && !fs.existsSync(path.join(baseDir, WORKBUDDY_TOOL_ROOT))) {
+  // The new root present means 5.7+ is the live generation (an upgrade leaves
+  // `.workbuddy/` behind as a leftover the app no longer reads), so it wins
+  // even when both roots exist (#1290).
+  if (fs.existsSync(path.join(baseDir, WORKBUDDY_NEW_GENERATION_ROOT))) {
     return { ...toolPaths, [WORKBUDDY_TOOL_ID]: { ...workbuddy, skills: `${WORKBUDDY_NEW_GENERATION_ROOT}/skills` } };
   }
   return toolPaths;
@@ -2960,7 +2965,10 @@ export function scopedToolPaths(
   // Copilot loads user hooks only from files directly in `$COPILOT_HOME/hooks/`.
   const copilot = out[COPILOT_TOOL_ID];
   if (copilot?.hooks) out[COPILOT_TOOL_ID] = { ...copilot, hooks: `hooks/${path.basename(copilot.hooks)}` };
-  return out;
+  // Re-apply the WorkBuddy generation swap after the user-scope merge: a
+  // `userScope.skills` carrying the default `.workbuddy/skills` restores the
+  // unread old path over the adjusted one (#1290).
+  return applyWorkBuddyGeneration(out, localConfig);
 }
 
 /** True when the local config is single-repo mode (the business repo is the team repo). */
