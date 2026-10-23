@@ -27,7 +27,7 @@ import {
   toolRootsLookup,
   writeCopyOnce,
 } from './agent-session.js';
-import { SyncManager, getGitAuthor, defaultSyncMeta, withSessionIndexLock } from './sync.js';
+import { SyncManager, getGitAuthor, defaultSyncMeta, withSessionIndexLock, withSessionPublicationLock } from './sync.js';
 import { SessionSearchEngine, type LoadedSession } from './search.js';
 import { isSafeSessionFileId } from './ids.js';
 import { isInteractive } from '../utils/prompt.js';
@@ -172,92 +172,95 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
 
-      const syncMgr = new SyncManager(repoRoot);
-      const toolRootsFor = toolRootsLookup();
-      let saved = 0;
-      let unreadable = 0;
-      let redactedTotal = 0;
-      for (const m of selected) {
-        // Read the file that was listed: with --all, one id can live in several workspaces.
-        // What gets archived is the full original text, and the team can read it: redact first when --scrub is set; when not redacted, say so once explicitly.
-        const found = await AgentSession.find(
-          { platform: source, sessionId: m.sessionId, cwd: opts.all ? undefined : workCwd, filePath: m.filePath },
-          { scrub: Boolean(opts.scrub), toolRootsFor },
-        );
-        if (found.status === 'failed') {
-          // This session alone is skipped; the rest of the batch is still archived.
-          console.error(`  ✗ Not archived: ${found.failure.message}`);
-          unreadable++;
-          continue;
-        }
-        const session = found.session;
-        redactedTotal += found.redactedCount ?? 0;
-        if (opts.all) {
-          console.log(`  Source: ${safeText(session.cwd || 'unknown directory')}`);
-        }
-        // P3: the archive key is derived from the session's native cwd (see deriveArchiveIdentity), not the directory the CLI is running in
-        const meta = defaultSyncMeta(
-          {
-            platform: source,
-            // Each session is signed with the git identity of its own workspace (especially important for --all across workspaces)
-            author: authorForCwd(session.cwd, author),
-            cwd: session.cwd || workCwd,
-            sessionId: m.sessionId,
-            repoIdentity: deriveArchiveIdentity(session, source),
-            title: session.title,
-          },
-          session.createdAt,
-        );
-        // A corrupted index is repaired from disk, or the save throws: failing
-        // mid-batch must not fall through to a commit that publishes a
-        // half-archive.
-        try {
-          const write = await withSessionIndexLock(repoRoot, async () => syncMgr.saveSession(session, meta));
-          if (write.status === 'busy') {
-            reportArchiveBusy(repoRoot, write.lockPath);
+      const publication = await withSessionPublicationLock(repoRoot, async () => {
+        const syncMgr = new SyncManager(repoRoot);
+        const toolRootsFor = toolRootsLookup();
+        let saved = 0;
+        let unreadable = 0;
+        let redactedTotal = 0;
+        for (const m of selected) {
+          // Read the file that was listed: with --all, one id can live in several workspaces.
+          // What gets archived is the full original text, and the team can read it: redact first when --scrub is set; when not redacted, say so once explicitly.
+          const found = await AgentSession.find(
+            { platform: source, sessionId: m.sessionId, cwd: opts.all ? undefined : workCwd, filePath: m.filePath },
+            { scrub: Boolean(opts.scrub), toolRootsFor },
+          );
+          if (found.status === 'failed') {
+            // This session alone is skipped; the rest of the batch is still archived.
+            console.error(`  ✗ Not archived: ${found.failure.message}`);
+            unreadable++;
+            continue;
+          }
+          const session = found.session;
+          redactedTotal += found.redactedCount ?? 0;
+          if (opts.all) {
+            console.log(`  Source: ${safeText(session.cwd || 'unknown directory')}`);
+          }
+          // P3: the archive key is derived from the session's native cwd (see deriveArchiveIdentity), not the directory the CLI is running in
+          const meta = defaultSyncMeta(
+            {
+              platform: source,
+              // Each session is signed with the git identity of its own workspace (especially important for --all across workspaces)
+              author: authorForCwd(session.cwd, author),
+              cwd: session.cwd || workCwd,
+              sessionId: m.sessionId,
+              repoIdentity: deriveArchiveIdentity(session, source),
+              title: session.title,
+            },
+            session.createdAt,
+          );
+          // A corrupted index is repaired from disk, or the save throws: failing
+          // mid-batch must not fall through to a commit that publishes a
+          // half-archive.
+          try {
+            const write = await withSessionIndexLock(repoRoot, async () => syncMgr.saveSession(session, meta));
+            if (write.status === 'busy') {
+              reportArchiveBusy(repoRoot, write.lockPath);
+              return;
+            }
+          } catch (err) {
+            console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+            process.exitCode = 1;
             return;
           }
-        } catch (err) {
-          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-          process.exitCode = 1;
-          return;
+          saved++;
         }
-        saved++;
-      }
-      if (unreadable > 0) {
-        console.error(`  ✗ ${unreadable} session(s) could not be read and were not archived.`);
-        process.exitCode = 1;
-      }
-      if (opts.scrub) {
-        console.log(`  Redacted: ${redactedTotal} secret-looking value(s) (best-effort; review before sharing)`);
-      } else if (saved > 0) {
-        console.log(
-          '  ⚠ Archived as-is: full transcripts (possibly secrets/paths) are team-readable. Use --scrub to redact.',
+        if (unreadable > 0) {
+          console.error(`  ✗ ${unreadable} session(s) could not be read and were not archived.`);
+          process.exitCode = 1;
+        }
+        if (opts.scrub) {
+          console.log(`  Redacted: ${redactedTotal} secret-looking value(s) (best-effort; review before sharing)`);
+        } else if (saved > 0) {
+          console.log(
+            '  ⚠ Archived as-is: full transcripts (possibly secrets/paths) are team-readable. Use --scrub to redact.',
+          );
+        }
+        // [fixed] a gitCommit failure (not a git directory / index.lock race) used to crash with a raw stack trace
+        const commit = runGitStep(
+          () => syncMgr.gitCommit(`sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`),
+          repoRoot,
+          'git commit',
         );
-      }
-      // [fixed] a gitCommit failure (not a git directory / index.lock race) used to crash with a raw stack trace
-      const commit = runGitStep(
-        () => syncMgr.gitCommit(`sync: push ${saved} session(s) from ${source}${opts.all ? ' (all workspaces)' : ''}`),
-        repoRoot,
-        'git commit',
-      );
-      if (commit.status === 'committed') {
-        const pushed = await pushToRemote(syncMgr, repoRoot);
-        if (pushed) {
-          console.log(`\n  ✓ Pushed ${saved} session(s) from ${source}`);
+        if (commit.status === 'committed') {
+          const pushed = await pushToRemote(syncMgr, repoRoot);
+          if (pushed) {
+            console.log(`\n  ✓ Pushed ${saved} session(s) from ${source}`);
+          } else {
+            console.log(`\n  · ${saved} session(s) committed locally but not pushed`);
+            process.exitCode = 1;
+          }
+          console.log(`  commit: ${commit.commit.slice(0, 8)}\n`);
+        } else if (commit.status === 'failed') {
+          console.error(
+            `\n  ✗ Commit failed, ${saved} session(s) left staged in ${repoRoot}: ${safeText(commit.reason)}`,
+          );
+          process.exitCode = 1;
         } else {
-          console.log(`\n  · ${saved} session(s) committed locally but not pushed`);
-          process.exitCode = 1;
+          console.log(`\n  · No changes to push\n`);
         }
-        console.log(`  commit: ${commit.commit.slice(0, 8)}\n`);
-      } else if (commit.status === 'failed') {
-        console.error(
-          `\n  ✗ Commit failed, ${saved} session(s) left staged in ${repoRoot}: ${safeText(commit.reason)}`,
-        );
-        process.exitCode = 1;
-      } else {
-        console.log(`\n  · No changes to push\n`);
-      }
+      });
+      if (publication.status === 'busy') reportArchiveBusy(repoRoot, publication.lockPath);
       } finally {
         closeStdin();
       }
@@ -279,43 +282,46 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         console.log(`Dry-run: would pull from the team repo remote and rebuild indexes (repo root: ${repoRoot}).`);
         return;
       }
-      // [fixed] a gitPull failure (no remote / repoRoot does not exist) used to crash with a raw stack trace
-      const finishIndexMerge = async (indexes: string[]): Promise<void> => {
-        // The rebuild takes the lock and the network pull does not: a lock held across it would make other saves wait and fail busy.
-        const merged = await withSessionIndexLock(repoRoot, async () =>
-          syncMgr.commitRebuiltIndexes(indexes).catch((error: unknown) =>
-            runGitStep(() => { throw error; }, repoRoot, 'git pull')),
-        );
-        if (merged.status === 'busy') {
-          console.error(`Error: ${mergeBusyMessage(repoRoot, merged.lockPath)}`);
+      const publication = await withSessionPublicationLock(repoRoot, async () => {
+        // [fixed] a gitPull failure (no remote / repoRoot does not exist) used to crash with a raw stack trace
+        const finishIndexMerge = async (indexes: string[]): Promise<void> => {
+          // The rebuild takes the lock and the network pull does not: a lock held across it would make other saves wait and fail busy.
+          const merged = await withSessionIndexLock(repoRoot, async () =>
+            syncMgr.commitRebuiltIndexes(indexes).catch((error: unknown) =>
+              runGitStep(() => { throw error; }, repoRoot, 'git pull')),
+          );
+          if (merged.status === 'busy') {
+            console.error(`Error: ${mergeBusyMessage(repoRoot, merged.lockPath)}`);
+            process.exit(1);
+          }
+          console.log(`  ✓ Merged remote sessions and rebuilt ${indexes.length} conflicted session index(es)`);
+        };
+        let pulled = runGitStep(() => syncMgr.gitPull(), repoRoot, 'git pull');
+        // A merge an earlier pull left on the session indexes is finished first; it does not replace this pull.
+        if (pulled.status === 'indexes-conflicted' && pulled.pending) {
+          await finishIndexMerge(pulled.indexes);
+          pulled = runGitStep(() => syncMgr.gitPull(), repoRoot, 'git pull');
+        }
+        if (pulled.status === 'stopped') {
+          console.error(`Error: ${pulled.reason}`);
           process.exit(1);
         }
-        console.log(`  ✓ Merged remote sessions and rebuilt ${indexes.length} conflicted session index(es)`);
-      };
-      let pulled = runGitStep(() => syncMgr.gitPull(), repoRoot, 'git pull');
-      // A merge an earlier pull left on the session indexes is finished first; it does not replace this pull.
-      if (pulled.status === 'indexes-conflicted' && pulled.pending) {
-        await finishIndexMerge(pulled.indexes);
-        pulled = runGitStep(() => syncMgr.gitPull(), repoRoot, 'git pull');
-      }
-      if (pulled.status === 'stopped') {
-        console.error(`Error: ${pulled.reason}`);
-        process.exit(1);
-      }
-      if (pulled.status === 'indexes-conflicted') await finishIndexMerge(pulled.indexes);
-      if (opts.all) {
-        // P2: rebuild by directory (including repos whose index is missing or corrupt — those are exactly the ones that most need repair),
-        // rather than only rebuilding the ones whose identity can be recovered from _index.json.
-        const rebuilt = await withSessionIndexLock(repoRoot, async () => syncMgr.rebuildAllIndexes());
-        if (rebuilt.status === 'busy') return reportArchiveBusy(repoRoot, rebuilt.lockPath);
-        const { repos, sessions } = rebuilt.value;
-        console.log(`\n  ✓ Pulled and indexed ${sessions} session(s) across ${repos} repo(s)\n`);
-      } else {
-        const repoIdentity = resolveRepoIdentity(workCwd);
-        const rebuilt = await withSessionIndexLock(repoRoot, async () => syncMgr.rebuildIndex(repoIdentity));
-        if (rebuilt.status === 'busy') return reportArchiveBusy(repoRoot, rebuilt.lockPath);
-        console.log(`\n  ✓ Pulled and indexed ${rebuilt.value} session(s)\n`);
-      }
+        if (pulled.status === 'indexes-conflicted') await finishIndexMerge(pulled.indexes);
+        if (opts.all) {
+          // P2: rebuild by directory (including repos whose index is missing or corrupt — those are exactly the ones that most need repair),
+          // rather than only rebuilding the ones whose identity can be recovered from _index.json.
+          const rebuilt = await withSessionIndexLock(repoRoot, async () => syncMgr.rebuildAllIndexes());
+          if (rebuilt.status === 'busy') return reportArchiveBusy(repoRoot, rebuilt.lockPath);
+          const { repos, sessions } = rebuilt.value;
+          console.log(`\n  ✓ Pulled and indexed ${sessions} session(s) across ${repos} repo(s)\n`);
+        } else {
+          const repoIdentity = resolveRepoIdentity(workCwd);
+          const rebuilt = await withSessionIndexLock(repoRoot, async () => syncMgr.rebuildIndex(repoIdentity));
+          if (rebuilt.status === 'busy') return reportArchiveBusy(repoRoot, rebuilt.lockPath);
+          console.log(`\n  ✓ Pulled and indexed ${rebuilt.value} session(s)\n`);
+        }
+      });
+      if (publication.status === 'busy') reportArchiveBusy(repoRoot, publication.lockPath);
     });
 
   // ── session list ───────────────────────────────────────────

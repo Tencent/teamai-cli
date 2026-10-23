@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,8 +11,15 @@ import {
   decodeRepoIdentity,
   canonicalizeRemote,
   withSessionIndexLock,
+  withSessionPublicationLock,
 } from '../session-flow/sync.js';
 import type { Session } from '../session-flow/ir.js';
+
+// Keep the named filesystem boundary live so fault injection reaches sync.ts.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, renameSync: (...args: Parameters<typeof actual.renameSync>) => fs.renameSync(...args) };
+});
 
 /**
  * SyncManager 跨 repo 能力测试（M2）。
@@ -83,6 +90,50 @@ function readRepoIndex(identity: string): { sessions: Array<Record<string, unkno
 }
 
 const unattrDir = () => path.join(repoRoot, 'sessions', '_unattributed');
+
+describe('archive save rollback', () => {
+  it.each([false, true].flatMap((existing) => ['index', 'metadata'].map((failure) => ({ existing, failure }))))('restores the previous pair after a $failure rename fails (existing: $existing)', async ({ existing, failure }) => {
+    const mgr = new SyncManager(repoRoot);
+    if (existing) await mgr.saveSession(mkSession(), mkMeta());
+    const before = fs.readdirSync(repoRoot, { recursive: true }).map(String).filter((p) => fs.statSync(path.join(repoRoot, p)).isFile());
+    const bytes = new Map(before.map((p) => [p, fs.readFileSync(path.join(repoRoot, p))]));
+    const rename = fs.renameSync;
+    const fail = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (failure === 'index' ? String(to).endsWith('_index.json') : String(to).endsWith('.meta.json') && String(from).endsWith('.tmp')) {
+        throw new Error('injected archive rename failure');
+      }
+      return rename(from, to);
+    });
+    try {
+      await expect(mgr.saveSession(mkSession({ messages: [{ role: 'user', content: [{ type: 'text', text: 'new transcript' }] }] }), mkMeta()))
+        .rejects.toThrow('injected archive rename failure');
+    } finally { fail.mockRestore(); }
+    const after = fs.readdirSync(repoRoot, { recursive: true }).map(String).filter((p) => fs.statSync(path.join(repoRoot, p)).isFile());
+    expect(after.sort()).toEqual(before.sort());
+    for (const [p, content] of bytes) expect(fs.readFileSync(path.join(repoRoot, p))).toEqual(content);
+    const saved = await mgr.saveSession(mkSession(), mkMeta());
+    expect(saved).not.toMatch(/_1\.jsonl$/);
+    expect(readRepoIndex('github.com/org/alpha').sessions).toHaveLength(1);
+  });
+});
+
+it('holds publication ownership through Git work and releases it after failure', async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const enteredFirst = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const first = withSessionPublicationLock(repoRoot, async () => { entered(); await gate; return 'published'; });
+  await enteredFirst;
+  let ranSecond = false;
+  const second = withSessionPublicationLock(repoRoot, async () => { ranSecond = true; return 'second'; });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  expect(ranSecond).toBe(false);
+  release();
+  expect(await first).toEqual({ status: 'done', value: 'published' });
+  expect(await second).toEqual({ status: 'done', value: 'second' });
+  await expect(withSessionPublicationLock(repoRoot, async () => { throw new Error('push failed'); })).rejects.toThrow('push failed');
+  expect(await withSessionPublicationLock(repoRoot, async () => 'retry')).toEqual({ status: 'done', value: 'retry' });
+});
 
 describe('listAllRepoIdentities', () => {
   it('reverse-maps canonical identities from each repo _index.json', () => {

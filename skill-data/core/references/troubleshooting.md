@@ -428,3 +428,7 @@ When import falls back from `gh` to the REST API, a failed metadata, commits,
 or diff request stops before AI extraction and names the HTTP status and
 response body. Check PR visibility and authentication for 404/403, the rate
 limit for 429, or retry a temporary server failure. The error page is not a diff.
+
+## Session archive publication is busy or failed
+
+Session archive writers (`session push`, `migrate --push`, and `session pull`) wait up to ten seconds for another publication on the same machine. If busy, retry once it finishes. A failed save removes the new pair or restores the previous pair; a rollback failure names the retained backups. Remote push failures still keep the local commit.

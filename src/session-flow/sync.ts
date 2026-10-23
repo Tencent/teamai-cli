@@ -30,7 +30,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { getTeamaiHomeDir } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
@@ -383,6 +383,25 @@ const INDEX_LOCK_ATTEMPTS = 100;
 const INDEX_LOCK_RETRY_MS = 100;
 const indexLockOwner = new AsyncLocalStorage<{ path: string; active: boolean }>();
 
+/** Serialize a command's archive writes and Git publication, including pull/merge. */
+export async function withSessionPublicationLock<T>(
+  repoRoot: string,
+  fn: () => Promise<T>,
+): Promise<{ status: 'done'; value: T } | { status: 'busy'; lockPath: string }> {
+  const real = await fs.promises.realpath(repoRoot).catch(() => path.resolve(repoRoot));
+  const key = createHash('sha256').update(real).digest('hex').slice(0, 16);
+  const lockPath = path.join(getTeamaiHomeDir(), 'locks', `session-publish-${key}.lock`);
+  for (let attempt = 1; !(await acquireLock(lockPath)); attempt++) {
+    if (attempt === INDEX_LOCK_ATTEMPTS) return { status: 'busy', lockPath };
+    await new Promise((resolve) => setTimeout(resolve, INDEX_LOCK_RETRY_MS));
+  }
+  try {
+    return { status: 'done', value: await fn() };
+  } finally {
+    await releaseLock(lockPath);
+  }
+}
+
 /**
  * Run `fn` holding the lock on the team repo's `sessions/` archive, or report
  * who holds it. Take it around each `saveSession` (dedup lookup, name choice,
@@ -595,8 +614,7 @@ export class SyncManager {
     }
   }
 
-  private upsertIndexEntry(repoIdentity: string | null, entry: IndexEntry): void {
-    const index = this.readIndexForWrite(repoIdentity);
+  private upsertIndexEntry(repoIdentity: string | null, entry: IndexEntry, index: RepoIndex): void {
     const key = `${entry.sessionName}:${entry.author}`;
     const idx = index.sessions.findIndex((s) => `${s.sessionName}:${s.author}` === key);
     if (idx >= 0) {
@@ -687,30 +705,61 @@ export class SyncManager {
     const paths = this.sessionPaths(repoId, author, sessionName);
     this.guardWrite(paths.jsonl);
     this.guardWrite(paths.meta);
+
+    // Resolve/repair the index before installing the pair: a rebuild must
+    // never adopt half of this transaction as an existing archive.
+    const index = this.readIndexForWrite(repoId);
     fs.mkdirSync(path.dirname(paths.jsonl), { recursive: true });
-
-    // Write JSONL — one message per line
-    const lines = session.messages.map((m) => JSON.stringify(messageToDict(m)));
-    fs.writeFileSync(paths.jsonl, lines.join('\n') + '\n', 'utf-8');
-
-    // Write meta.json
     meta.sync.pushedAt = utcNow();
-    fs.writeFileSync(paths.meta, JSON.stringify(meta, null, 2), 'utf-8');
-
-    // Update the index
-    this.upsertIndexEntry(repoId, {
-      sessionName,
-      author,
-      platform: session.platform,
-      title: session.title,
-      cwd: session.cwd,
-      repoIdentity: repoId,
-      messageCount: session.messages.length,
-      createdAt: session.createdAt,
-      updatedAt: session.updatedAt,
-      status: meta.status,
-      sessionId: meta.origin.sessionId,
-    });
+    const token = randomUUID();
+    const files = [
+      { file: paths.jsonl, content: session.messages.map((m) => JSON.stringify(messageToDict(m))).join('\n') + '\n' },
+      { file: paths.meta, content: JSON.stringify(meta, null, 2) },
+    ].map((file) => ({ ...file, temp: `${file.file}.${token}.tmp`, backup: `${file.file}.${token}.bak`, backedUp: false, installed: false }));
+    let committed = false;
+    try {
+      for (const file of files) fs.writeFileSync(file.temp, file.content, { encoding: 'utf-8', flag: 'wx' });
+      for (const file of files) {
+        if (fs.existsSync(file.file)) {
+          fs.renameSync(file.file, file.backup);
+          file.backedUp = true;
+        }
+        fs.renameSync(file.temp, file.file);
+        file.installed = true;
+      }
+      this.upsertIndexEntry(repoId, {
+        sessionName,
+        author,
+        platform: session.platform,
+        title: session.title,
+        cwd: session.cwd,
+        repoIdentity: repoId,
+        messageCount: session.messages.length,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        status: meta.status,
+        sessionId: meta.origin.sessionId,
+      }, index);
+      committed = true;
+    } catch (error) {
+      const failures: unknown[] = [];
+      for (const file of [...files].reverse()) {
+        try {
+          if (file.installed) fs.unlinkSync(file.file);
+          if (file.backedUp) fs.renameSync(file.backup, file.file);
+        } catch (rollbackError) { failures.push(rollbackError); }
+      }
+      if (failures.length > 0) {
+        throw new AggregateError([error, ...failures], `Session archive rollback failed; original files kept at ${files.filter((f) => f.backedUp).map((f) => f.backup).join(', ')}`);
+      }
+      throw error;
+    } finally {
+      for (const file of files) {
+        try { fs.unlinkSync(file.temp); } catch { /* already installed, or staging failed */ }
+        // Never delete a backup whose rollback failed.
+        if (committed) try { fs.unlinkSync(file.backup); } catch { /* absent or kept for recovery */ }
+      }
+    }
 
     return path.relative(this.repoRoot, paths.jsonl);
   }
