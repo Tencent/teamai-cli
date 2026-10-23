@@ -349,3 +349,20 @@ export function renderCodexBlock(def: McpServerDef): string {
 export function entryHash(rendered: unknown): string {
   return crypto.createHash('sha1').update(JSON.stringify(rendered)).digest('hex').slice(0, 16);
 }
+
+/** Muse saves inferred stdio types and object keys differently; array order remains meaningful. */
+export function museEntryHash(rendered: unknown): string {
+  let value = rendered;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const entry = value as Record<string, unknown>;
+    if (entry.type === undefined && typeof entry.command === 'string' && entry.url === undefined) {
+      value = { type: 'stdio', ...entry };
+    }
+  }
+  const canonical = JSON.stringify(value, (_key, item: unknown) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const object = item as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(object).sort().map(key => [key, object[key]]));
+  });
+  return crypto.createHash('sha1').update(canonical).digest('hex').slice(0, 16);
+}
