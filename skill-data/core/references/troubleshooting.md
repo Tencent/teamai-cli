@@ -447,3 +447,7 @@ If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `team
 ## ZCode registered hooks but missing project rules
 
 Doctor checks the serialized rules reply against the user config `hooks.maxOutputBytes` (default 32768), counting UTF-8 bytes and JSON escaping. Other session hints make the complete stdout larger. Shorten the rules or raise the positive integer byte cap enough for the whole reply, then start a new session; registration alone does not prove the rules fit.
+
+## A file blocks skill delivery
+
+When a file occupies a tool skills directory, doctor fails the directory check even if delivery skipped that tool. Move the file aside and run `teamai pull`. Uninstall keeps the blocking file and cleans the other managed resources.
