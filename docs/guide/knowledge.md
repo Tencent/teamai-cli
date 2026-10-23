@@ -134,6 +134,8 @@ Each GitLab MR API request has a 30-second deadline, including reading its respo
 
 The extraction reads the MR's review threads along with its description, commits and diff: GitLab discussions, GitHub review comments, reviews and conversation comments, TGit notes. Each thread goes into the prompt with the file and line it is anchored to, whether it is resolved, and its notes marked as the MR author's or a reviewer's; a decision in a resolved thread outweighs the diff. teamai's own CI comments are skipped. `--no-discussions` leaves the threads out, for `teamai ci extract-mr` too. With `language: en` in `teamai.yaml` the learning is written in English; otherwise in Chinese.
 
+If an AI-generated MR learning has a non-string `title`, the MR title is used for its summary and queued filename. Only string entries in a `tags` array are displayed. The draft content is not rewritten to repair metadata.
+
 `--incremental` re-extracts only the files changed since the last import; each codebase keeps that baseline in its own `evidence/code/<slug>/`. A remote repo's slug is `<provider>__<owner>__<repo>`, shared by `--from-repo`, `--from-mr` and `teamai ci extract-mr`; `--dir` uses the repo name.
 
 `--max-files` raises the cap on source files collected per repository (default 200). Files are collected key-file first; a source with more files is truncated, and the run warns with both counts instead of dropping the rest silently.
