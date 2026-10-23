@@ -40,6 +40,9 @@ vi.mock('../utils/learnings-publish.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/learnings-publish.js')>()),
   publishLearningsMaintenance: vi.fn(async () => ({ status: 'published' })),
 }));
+vi.mock('../maintenance/promotion-publish.js', () => ({
+  promoteAndPublish: vi.fn(async () => undefined),
+}));
 vi.mock('../utils/logger.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/logger.js')>()),
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
@@ -64,6 +67,7 @@ async function mocks() {
   return {
     ...(await import('../maintenance/index.js')),
     ...(await import('../utils/learnings-publish.js')),
+    ...(await import('../maintenance/promotion-publish.js')),
     ...(await import('../config.js')),
   };
 }
@@ -86,6 +90,7 @@ describe('recall maintenance and recall promote under --dry-run (#900)', () => {
     for (const call of vi.mocked(m.writeBackConfidence).mock.calls) expect(call[3]).toEqual({ dryRun: true });
     expect(m.generateUpdateDraft).not.toHaveBeenCalled();
     expect(m.publishLearningsMaintenance).not.toHaveBeenCalled();
+    expect(m.promoteAndPublish).not.toHaveBeenCalled();
   });
 
   // The positive control: the same commands without the flag do reach the
@@ -97,6 +102,6 @@ describe('recall maintenance and recall promote under --dry-run (#900)', () => {
   ])('%s still publishes without the flag', async (_label, args) => {
     await run(args);
     const m = await mocks();
-    expect(m.publishLearningsMaintenance).toHaveBeenCalledTimes(1);
+    expect(args[1] === 'promote' ? m.promoteAndPublish : m.publishLearningsMaintenance).toHaveBeenCalledTimes(1);
   });
 });

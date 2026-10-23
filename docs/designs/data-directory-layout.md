@@ -914,6 +914,14 @@ checkout's learnings: the queue, docs, rules, skills and older learnings stay
 recallable, and a plain `recall` runs no git. `digest` and the dashboard (`viz`:
 its throwaway index and its promotion and prune candidates) use the same roots.
 
+Promotion publishes the new knowledge entry from a disposable worktree based on
+the freshly fetched default branch, for both separate team repositories and self
+mode. Only the new entry is staged on a review branch; the user's active branch,
+index and working files are left alone. The artifact push must succeed before
+`promoted_to` is written to the learning. That marker is then published through
+the existing learnings maintenance journal, so a failed marker push can retry on
+the next pull without generating the knowledge entry again. A failed artifact
+push leaves the learning eligible. Existing targets are refused, never replaced.
 
 Those builds, and the reports checkout `teamai recall feedback --negative` counts
 the team's upvotes from, take the votes directory from `indexableVotesDir`,

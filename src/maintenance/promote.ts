@@ -1,8 +1,10 @@
 // -*- coding: utf-8 -*-
 import path from 'node:path';
+import { writeFile as writeNewFile } from 'node:fs/promises';
 
 import matter from 'gray-matter';
-import { readFileSafe, writeFile, listFiles, ensureDir } from '../utils/fs.js';
+import { readFileSafe, writeFile, listFiles, ensureDir, pathExists } from '../utils/fs.js';
+import { assertSafePath } from '../utils/path-safety.js';
 import { isInWriteRoot, listLearningFiles } from '../utils/learnings-roots.js';
 import { log } from '../utils/logger.js';
 import { computeAllConfidence } from './confidence.js';
@@ -155,11 +157,22 @@ Output ONLY the transformed markdown content (including YAML frontmatter with ti
 export async function executePromotion(
   candidate: PromotionCandidate,
   repoPath: string,
-  options: PromoteOptions & { learningsWriteDir?: string } = {},
+  options: PromoteOptions & {
+    learningsWriteDir?: string;
+    /** Publish the artifact before recording the learning as promoted. A failure leaves it eligible. */
+    publish?: (targetPath: string) => Promise<void>;
+  } = {},
 ): Promise<{ targetPath: string; marked: string | null }> {
   const category = options.category ?? candidate.suggestedCategory;
+  if (!['skills', 'rules', 'docs'].includes(category)) {
+    throw new Error(`Invalid promotion category "${category}". Use skills, rules, or docs.`);
+  }
   const targetDir = path.join(repoPath, category);
   const targetPath = path.join(targetDir, candidate.filename);
+  assertSafePath(targetPath, [repoPath]);
+  if (await pathExists(targetPath)) {
+    throw new Error(`Promotion target already exists: ${targetPath}. Nothing was overwritten.`);
+  }
 
   if (options.dryRun) {
     log.info(`[dry-run] Would promote ${candidate.docId} -> ${category}/${candidate.filename}`);
@@ -168,13 +181,14 @@ export async function executePromotion(
 
   const originalContent = await readFileSafe(candidate.path);
   if (!originalContent) {
-    log.error(`Cannot read source file: ${candidate.path}`);
-    return { targetPath, marked: null };
+    throw new Error(`Cannot read source file: ${candidate.path}`);
   }
 
   // AI transforms the learning into a generalized format for the target category
   const promotedContent = await generatePromotedContent(originalContent, category, candidate.title);
-  await writeFile(targetPath, promotedContent);
+  await ensureDir(path.dirname(targetPath));
+  await writeNewFile(targetPath, promotedContent, { flag: 'wx' });
+  await options.publish?.(targetPath);
 
   // Mark the learning as promoted. When it lives in a root nothing pushes, the
   // mark goes to the write root instead: written in place it would be discarded

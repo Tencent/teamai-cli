@@ -31,6 +31,7 @@ import {
   REPORTS_LOCK_FILENAME,
   KNOWLEDGE_WORKTREE_DIRNAME,
   getBusinessRoot,
+  getDataHome,
   type LocalConfig,
 } from '../types.js';
 
@@ -190,23 +191,26 @@ export class EmptyRepoError extends Error {
 }
 
 /**
- * Run `fn` against a disposable knowledge worktree for single-repo mode.
+ * Run `fn` against a disposable knowledge worktree.
  *
  * Knowledge PRs (skills/rules/docs/learnings → main) must never run `checkout -b`
  * / `reset --hard` on the user's active working tree. This checks out a fresh,
- * detached worktree at origin/<default> under .teamai/knowledge-wt, passes fn a
- * clone of localConfig whose repo.localPath points at <wt>/.teamai (so all the
- * existing push/remove/roles machinery operates on the worktree), then removes
- * the worktree afterward. The user's active branch and working tree are untouched.
+ * detached worktree at origin/<default>, under .teamai in self mode or the data
+ * home for a separate team repo. In self mode, repo.localPath points at
+ * <wt>/.teamai; otherwise it points at <wt>. The worktree is removed afterward.
+ * The active checkout stays untouched.
+ * Callers publishing new knowledge can require a successful fetch of the base.
  *
  * @returns whatever fn returns.
  */
 export async function withKnowledgeWorktree<T>(
   localConfig: LocalConfig,
   fn: (worktreeConfig: LocalConfig) => Promise<T>,
+  options: { requireFreshBase?: boolean } = {},
 ): Promise<T> {
-  const repoRoot = getBusinessRoot(localConfig);
-  const wt = path.join(localConfig.repo.localPath, KNOWLEDGE_WORKTREE_DIRNAME);
+  const selfMode = localConfig.repo.kind === 'self';
+  const repoRoot = selfMode ? getBusinessRoot(localConfig) : localConfig.repo.localPath;
+  const wt = path.join(selfMode ? localConfig.repo.localPath : getDataHome(localConfig), KNOWLEDGE_WORKTREE_DIRNAME);
   const git = createGit(repoRoot);
 
   // A knowledge worktree must branch off a base commit. A freshly `git init`'d
@@ -235,7 +239,8 @@ export async function withKnowledgeWorktree<T>(
   const defaultBranch = await getDefaultBranch(repoRoot);
   try {
     await git.fetch(['origin', defaultBranch]);
-  } catch {
+  } catch (error) {
+    if (options.requireFreshBase) throw error;
     // offline / no remote — fall back to local default branch state
   }
 
@@ -244,7 +249,8 @@ export async function withKnowledgeWorktree<T>(
   let base = `origin/${defaultBranch}`;
   try {
     await git.raw(['worktree', 'add', '--detach', wt, base]);
-  } catch {
+  } catch (error) {
+    if (options.requireFreshBase) throw error;
     // origin/<default> may not exist locally (fresh repo); fall back to HEAD.
     base = 'HEAD';
     await git.raw(['worktree', 'add', '--detach', wt, base]);
@@ -254,8 +260,8 @@ export async function withKnowledgeWorktree<T>(
     ...localConfig,
     repo: {
       ...localConfig.repo,
-      localPath: path.join(wt, '.teamai'),
-      businessRepoRoot: wt,
+      localPath: selfMode ? path.join(wt, '.teamai') : wt,
+      ...(selfMode ? { businessRepoRoot: wt } : {}),
     },
   };
 

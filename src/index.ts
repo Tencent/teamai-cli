@@ -1566,14 +1566,19 @@ recallCmd
 
 recallCmd
   .command('promote [learningId]')
-  .description('Promote a high-confidence learning to formal knowledge (docs/skills/rules)')
-  .option('--category <cat>', 'Target category: skills | rules | docs')
+  .description('Publish a high-confidence learning as new knowledge on a review branch, then mark it promoted')
+  .addOption(new Option('--category <cat>', 'Target category: skills | rules | docs').choices(['skills', 'rules', 'docs']))
   .option('--dry-run', 'Show what would be done without making changes')
   .action(async (learningId, localOpts) => {
     // As in `recall maintenance`: `--dry-run` reaches the root's options only (#900).
     const cmdOpts = { ...(program.opts() as GlobalOptions), ...localOpts };
     const { autoDetectInit } = await import('./config.js');
-    const { localConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
+    const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: cmdOpts.dryRun });
+    if (learningId && !cmdOpts.dryRun) {
+      const { promoteAndPublish } = await import('./maintenance/promotion-publish.js');
+      await promoteAndPublish(learningId, localConfig, teamConfig, { category: cmdOpts.category });
+      return;
+    }
     const {
       findPromotionCandidates,
       executePromotion,
@@ -1607,14 +1612,11 @@ recallCmd
       return;
     }
 
-    const { marked } = await executePromotion(candidate, repoPath, {
+    await executePromotion(candidate, repoPath, {
       category: cmdOpts.category as 'skills' | 'rules' | 'docs' | undefined,
       dryRun: cmdOpts.dryRun,
       learningsWriteDir,
     });
-    if (marked) {
-      await publishMaintenance(localConfig, `[teamai] Mark ${candidate.docId} as promoted`, [marked]);
-    }
   });
 
 
