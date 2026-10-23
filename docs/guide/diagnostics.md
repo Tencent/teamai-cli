@@ -19,6 +19,8 @@ teamai remove rules <name> --force
 
 If a file occupies a tool's skills directory, `pull` keeps it, names the blocked path, and continues delivering to other tools. Move the file aside, then run `teamai pull` again to deliver the missing skills.
 
+ZCode's CLI reads hooks from `~/.zcode/cli/config.json` even in single-repo mode. `hooks inject` moves teamai's old project-file entries there, keeps personal settings, and gates team hooks to their project. `hooks list` and `doctor` check that same HOME file.
+
 Auto-update runs when a session ends. The team can turn it off. A member's own policy wins:
 
 ```yaml

@@ -1,3 +1,4 @@
+import { hookSettingsPath, hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
@@ -351,7 +352,7 @@ async function buildHookChecks(
     const hookPath = hookToolPaths[tool]?.hooks
       ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: resolveHookScope(localConfig).scope }), hookToolPaths[tool]?.hooks ?? paths.hooks)
       : settings
-        ? path.join(baseDir, settings)
+        ? hookSettingsPath(tool, baseDir, settings)
         : undefined;
     if (!hookPath) continue;
     const settingsPath = hookPath;
@@ -503,7 +504,7 @@ export async function resolveDoctorContext(options: { gitContext?: GitContext } 
   const hookScope = resolveHookScope(localConfig);
   const hookToolPaths: TeamaiConfig['toolPaths'] = teamConfig
     ? Object.fromEntries(
-      Object.entries(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope.scope }))
+      Object.entries(hookToolPathsForConfig(teamConfig, localConfig))
         .filter(([tool]) => !isAgentExcluded(localConfig, tool)),
     )
     : {};

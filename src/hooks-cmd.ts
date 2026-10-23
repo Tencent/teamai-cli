@@ -1,3 +1,4 @@
+import { hookSettingsPath, hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { autoDetectInit } from './config.js';
 import { migrateLegacyManagedHooks, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig, removeCopilotGlobalBuiltins, sweepLegacyProjectHooks, getHookStatus, reportCodexTrust, resolveMainCheckoutHooks, trustCodexForScope, type HookStatus } from './hooks.js';
@@ -139,7 +140,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
     // tool whose user-scope prefix differs from its project-scope one (Qoder CN:
     // `~/.qoder-cn` vs `<root>/.qoder`) would otherwise be probed in the *other*
     // build's file and always reported missing.
-    const hookScopedPaths = scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope });
+    const hookScopedPaths = hookToolPathsForConfig(teamConfig, localConfig);
     // The team's `builtin:` block can disable built-in hooks (§4.8); the
     // reconcile engine applies it, so the listing must too or it shows hooks
     // that were just removed from the settings files.
@@ -178,7 +179,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
         const hookPath = hookScopedPaths[tool]?.hooks
             ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: hookScope }), hookScopedPaths[tool]?.hooks ?? paths.hooks)
             : hookScopedPaths[tool]?.settings
-                ? path.join(baseDir, hookScopedPaths[tool].settings)
+                ? hookSettingsPath(tool, baseDir, hookScopedPaths[tool].settings)
                 : undefined;
         if (hookPath) {
             if (seenSettingsFiles.has(hookPath)) continue;
@@ -283,7 +284,7 @@ export async function hooksRemove(_options: GlobalOptions): Promise<void> {
     // Removal must target the same paths injection used. A non-self project
     // scope injects into HOME, so resolving the project-scope paths here would
     // miss (and leave behind) every tool whose user-scope prefix differs.
-    const reconciledMainTools = await reconcileHooksToAllTools(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope }), baseDir, [], manifestPath, {
+    const reconciledMainTools = await reconcileHooksToAllTools(hookToolPathsForConfig(teamConfig, localConfig), baseDir, [], manifestPath, {
         removeAll: true,
         scope: localConfig.scope,
         toolRoots: localConfig.toolRoots,

@@ -41,6 +41,7 @@ import {
   resolveLegacyProjectHookScope,
   resolveToolBaseDir,
   scopedToolPaths,
+  hookToolPathsForConfig,
   SYNC_LOCK_FILENAME,
   toolInstallRoot,
   type GlobalOptions,
@@ -924,6 +925,16 @@ async function buildRemovalPlan(
     ...(localConfig.scope === 'project' && !isSelfMode(localConfig) && localConfig.projectRoot
       ? { teamHookProjectRoot: localConfig.projectRoot } : {}),
   }];
+  // ZCode always reads HOME; a project removes only its gated team hooks.
+  const zcodeSettings = hookToolPathsForConfig(teamConfig, localConfig).zcode?.settings;
+  if (localConfig.scope === 'project' && localConfig.projectRoot && zcodeSettings) {
+    hookTargets.unshift({
+      baseDir: getUserHome(), manifestPath: primaryHookScope.manifestPath,
+      teamOnly: true, teamHookProjectRoot: localConfig.projectRoot,
+      fileFor: tool => tool === 'zcode' ? path.join(getUserHome(), zcodeSettings) : null,
+      teamHookHistory: hookHistory,
+    });
+  }
   // Self mode: team hooks in the checkout's settings.local.json (#915), removed
   // by their records before the tracked file's pass drops those records.
   const selfLocalToolPaths = scopedToolPaths(teamConfig, { ...localConfig, scope: primaryHookScope.scope });
@@ -988,7 +999,7 @@ async function buildRemovalPlan(
   // whose two scopes differ kept its hooks in HOME forever). Skills, rules,
   // agents and CLAUDE.md stay on the config-scope paths below — those are real
   // project resources.
-  const hookToolPaths = scopedToolPaths(teamConfig, { ...localConfig, scope: primaryHookScope.scope });
+  const hookToolPaths = hookToolPathsForConfig(teamConfig, localConfig);
   const toolPaths = scopedToolPaths(teamConfig, localConfig);
   const install = installOf(teamConfig, localConfig);
   const perTool = new Map<string, ToolResources>();
@@ -1162,7 +1173,7 @@ async function buildRemovalPlan(
     // no-op for shared resources (plan will be empty → "Nothing to uninstall").
     includeShared = targetHasResources && !othersHaveResources;
     // Keep this project's config so the global hook can read its exclusion.
-    if (!globalAdapters && CODEX_TOOL_IDS.some((id) => id === agentFilter)) includeShared = false;
+    if (!globalAdapters && (CODEX_TOOL_IDS.some((id) => id === agentFilter) || agentFilter === 'zcode')) includeShared = false;
   } else {
     toolsToMerge = [...perTool.keys()];
     includeShared = true;
@@ -2474,7 +2485,7 @@ export async function uninstall(opts: UninstallOptions): Promise<void> {
     for (const line of [...plan.keptSkillDirs, ...plan.keptFiles]) log.warn(line);
 
     const exclusionOnly = isPlanEmpty(plan) && agentKey && localConfig.scope === 'project'
-      && (['pi', 'omp', 'hermes', 'opencode', ...CODEX_TOOL_IDS].includes(agentKey) || plan.sharedRetentionOnly);
+      && (['pi', 'omp', 'hermes', 'opencode', 'zcode', ...CODEX_TOOL_IDS].includes(agentKey) || plan.sharedRetentionOnly);
     if (isPlanEmpty(plan) && !exclusionOnly) {
       log.info('Nothing to uninstall');
       return;

@@ -888,12 +888,11 @@ function zcodeEntryCarriesItsReply(entry: { command: string; args: string[] }): 
 async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]> {
   const { localConfig, teamConfig } = ctx;
   if (!teamConfig || localConfig.scope !== 'project') return [];
-  const paths = scopedToolPaths(teamConfig, localConfig);
   const home = getUserHome();
   const inject = 'Run `teamai hooks inject` to rewrite it.';
   const checks: Check[] = [];
 
-  const zcodeSettings = paths.zcode?.settings;
+  const zcodeSettings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' }).zcode?.settings;
   if (zcodeSettings && !isAgentExcluded(localConfig, 'zcode') && await pathExists(path.join(home, '.zcode'))) {
     const file = path.join(home, zcodeSettings);
     const read = await readJsonObject(file);

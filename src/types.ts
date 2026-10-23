@@ -3130,6 +3130,18 @@ export function resolveHookScope(
   };
 }
 
+/** ZCode reads CLI hooks only from HOME, including in self/project mode. */
+export function hookSettingsPath(tool: string, baseDir: string, settings: string): string {
+  return path.join(tool === 'zcode' ? getUserHome() : baseDir, settings);
+}
+
+/** Hook paths follow their delivery scope; ZCode's CLI config is always user scoped. */
+export function hookToolPathsForConfig(teamConfig: TeamaiConfig, localConfig: LocalConfig): TeamaiConfig['toolPaths'] {
+  const paths = scopedToolPaths(teamConfig, { ...localConfig, scope: resolveHookScope(localConfig).scope });
+  const zcode = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' }).zcode;
+  return zcode ? { ...paths, zcode } : paths;
+}
+
 /**
  * Absolute user-scope root directory of a tool (`.claude` → `~/.claude`),
  * honoring a member's `toolRoots`. For the few writers that address a tool's
