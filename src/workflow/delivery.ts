@@ -85,7 +85,7 @@ export async function validateReportedPr(run: RunState, changes: StepChanges): P
   }
 }
 
-async function createDelivery(run: RunState, state: Extract<StepState, { status: 'delivering' }>): Promise<string> {
+async function createDelivery(config: LocalConfig, run: RunState, state: Extract<StepState, { status: 'delivering' }>): Promise<string> {
   const remaining = (): number => {
     const ms = state.deliveryDeadline === undefined ? 30_000 : Math.min(30_000, state.deliveryDeadline - Date.now());
     if (ms <= 0) throw new Error('The execution deadline expired before delivery completed.');
@@ -114,9 +114,15 @@ async function createDelivery(run: RunState, state: Extract<StepState, { status:
   const request: PrCreateOptions = { ...opts, source: changes.branch, target,
     title: `${run.name}: ${state.id}`, description: `Workflow ${run.name}, run ${run.id}, step ${state.id}.\n\nBase: ${run.base.commit}\n\nCreated for human review. TeamAI never merges this request.` };
   const existing = await provider.findOpenPullRequest?.(request);
-  request.spawnTimeoutMs = remaining();
   let url = existing;
   if (!url) {
+    const latest = await readRun(config, run.id);
+    const active = typeof latest !== 'string' && latest.steps.find((step) => step.id === state.id);
+    if (typeof latest === 'string' || latest.status !== 'running' || !active || active.status !== 'delivering'
+      || active.pass !== state.pass || active.attempt !== state.attempt || active.settledAt !== state.settledAt) {
+      throw new Error('Delivery was cancelled or replaced during PR lookup; no PR was created.');
+    }
+    request.spawnTimeoutMs = remaining();
     try { url = await provider.createPullRequest(request); }
     catch (error) {
       // A provider's response body or CLI output may contain credentials. Keep its established transport-only
@@ -146,7 +152,7 @@ export async function deliverPending(config: LocalConfig, runId: string): Promis
       if (!state) break;
       let url: string | undefined;
       let failure: string | undefined;
-      try { url = await createDelivery(run, state); }
+      try { url = await createDelivery(config, run, state); }
       catch (error) { failure = error instanceof Error ? error.message : 'PR delivery failed'; }
       const applied = await withRun(config, runId, async (current) => {
         const step = current.steps.find((item) => item.id === state.id);

@@ -253,6 +253,8 @@ steps:
 
 PR 的目标沿分支记录的来源，追溯到最近已经交付的分支。`for_each.after` 优先于其他 `needs`，第一个子步骤继承外层工作流的依赖；跳过或只读的依赖会继续向前追溯。之前没有交付分支时，目标为运行开始时的分支。因此请从有名称的分支开始；detached checkout 没有 PR 目标。同一源分支和目标分支已有打开的 PR 时会复用。
 
+交付 PR 的命令必须显式选择 `workspace: new` 或 `continue`；即使位于可写工作流中，省略 workspace 的命令仍为只读。提示词可以继承外层的可写工作区。
+
 agent 完成后，步骤进入持久的 `delivering` 状态，后续依赖等待交付结束。Git 和 provider 操作不占用运行锁。创建 PR 失败时以 `delivery_failed` 结束，消息写明保留的分支。修好认证后，运行 `teamai workflow retry <run> <step>`，再运行 `teamai workflow resume <run>`，只重试这条分支的交付，不重跑 agent。推送失败仍为 `push_failed`，并保留 worktree。组合工作流结束时可能已移除 worktree，但提交和远程分支仍在。通用 Git 主机只支持传输：请自行创建 PR 并上报 URL，或使用支持创建 PR 的 provider。交付不会启动交互登录。
 
 创建 PR 前，TeamAI 将交付提交与运行的基准提交比较。CI、hooks、agent 指令、rules、MCP 和同类工具配置的修改会被拒绝，并列出路径。共享 agent 配置路径与工作区执行前恢复的路径相同。检查也覆盖从前序分支继承的修改，以及删除和重命名。
