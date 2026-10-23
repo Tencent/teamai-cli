@@ -359,7 +359,7 @@ export async function cleanupInactiveNamespaceSkills(
       const swept = (name: string): boolean => !retainedSkillNames.has(name) && inactiveSkillNames.has(name);
       for (const name of await sweepSharedSkillCopies(localConfig, swept, ledger, installScopeName(localConfig.scope))) removed.add(name);
     }
-    if (!await pathExists(skillsDir)) continue;
+    if (!await pathExists(skillsDir) || !(await stat(skillsDir)).isDirectory()) continue;
 
     const localSkillNames = await listDirs(skillsDir);
     for (const skillName of localSkillNames) {
@@ -2166,7 +2166,7 @@ async function pullForScope(
           if (rootRepoSkillNames?.has(name)) rootSkillUndelivered = true;
         }
       }
-      if (!await pathExists(skillsDir)) continue;
+      if (!await pathExists(skillsDir) || !(await stat(skillsDir)).isDirectory()) continue;
 
       const localDirs = await listDirs(skillsDir);
       for (const dir of localDirs) {

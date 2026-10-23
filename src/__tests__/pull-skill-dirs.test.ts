@@ -79,6 +79,20 @@ describe('a pull and the homes the env moves', () => {
   });
   afterEach(async () => { vi.unstubAllEnvs(); vi.mocked(log.warn).mockClear(); vi.mocked(log.info).mockClear(); await fse.remove(tmp); });
 
+  it('keeps a file blocking Hermes skills and still delivers to the other tools', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    const blocked = path.join(home, '.hermes', 'skills');
+    await fse.outputFile(blocked, 'member data: do not delete');
+    await expect(pull({ force: true })).resolves.toBeUndefined();
+    expect(await fse.readFile(blocked, 'utf8')).toBe('member data: do not delete');
+    expect(await fse.pathExists(path.join(home, '.config', 'opencode', 'skills', 'deploy', 'SKILL.md'))).toBe(true);
+    expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).toContain(blocked);
+    expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).toContain('not a directory');
+    await fse.remove(blocked);
+    await pull({});
+    expect(await fse.pathExists(path.join(blocked, 'deploy', 'SKILL.md'))).toBe(true);
+  });
+
   it('records an env-moved home that exists on the first pull that sees it, and keeps an existing record', async () => {
     const xdg = path.join(tmp, 'xdg');
     await fse.ensureDir(path.join(xdg, 'opencode'));

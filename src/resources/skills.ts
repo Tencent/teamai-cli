@@ -34,6 +34,7 @@ export const CODEX_TOOL = 'codex';
 /** Why delivery may not write a skill directory: the path itself, or a link on the way to it. */
 export type SkillDirectoryBlock =
   | { kind: 'outside-base'; target: string; baseDir: string }
+  | { kind: 'not-directory'; path: string }
   | { kind: 'members-link'; link: string }
   | { kind: 'broken-link'; link: string }
   | { kind: 'link-outside-base'; link: string; resolved: string; baseDir: string }
@@ -57,7 +58,10 @@ export async function findSkillDirectoryBlock(
     walked = path.join(walked, segment);
     const entry = await lstat(walked).catch((e: NodeJS.ErrnoException) => e.code === 'ENOENT' ? null : Promise.reject(e));
     if (!entry) break;
-    if (!entry.isSymbolicLink()) continue;
+    if (!entry.isSymbolicLink()) {
+      if (!entry.isDirectory()) return { kind: 'not-directory', path: walked };
+      continue;
+    }
     // Team-skill ownership checks name and preserve a leaf link without following it.
     if (walked === target) return keepSkillLink ? null : { kind: 'members-link', link: walked };
     const resolved = await realpath(walked).catch(() => null);
@@ -82,12 +86,15 @@ export function describeSkippedSkillDirectory(skillName: string, tool: string, b
   const why = describeSkillDirectoryBlock(block);
   const next = block.kind === 'members-link'
     ? 'Remove the link to let teamai deliver this skill.'
+    : block.kind === 'not-directory'
+    ? 'Move the file aside and run `teamai pull` again.'
     : 'Point the skill directory inside the same repository.';
   return `Skipped ${skillName} (${tool}): ${why}. ${next}`;
 }
 
 function describeSkillDirectoryBlock(block: SkillDirectoryBlock): string {
   switch (block.kind) {
+    case 'not-directory': return `${block.path} is not a directory; the existing file was left unchanged`;
     case 'outside-base': return `${block.target} is outside ${block.baseDir}`;
     case 'members-link': return `${block.link} is your own link`;
     case 'broken-link': return `${block.link} is a link whose target does not exist`;
@@ -1254,6 +1261,10 @@ export class SkillsHandler extends ResourceHandler {
       if (block) {
         warnOnce(describeSkippedSkillDirectory(item.name, tool, block));
         ledger?.toolsMissingSkills.add(tool);
+        if (block.kind === 'not-directory') {
+          ledger?.failed.push({ name: item.name, tool });
+          ledger?.recorder?.failed('skills');
+        }
         continue;
       }
       const ownsShared = async (dest: string): Promise<boolean> =>
