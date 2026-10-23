@@ -71,7 +71,7 @@ import {
 } from './builtin-skills.js';
 import { cleanupOf, installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH, writesOf, type Location } from './locate.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
-import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, skillOrigin } from './resources/skills.js';
+import { allowsSkillDirectory, CODEX_TOOL, describeOutsideSkillLink, describeSkillDirectoryBlock, findSkillDirectoryBlock, skillOrigin } from './resources/skills.js';
 import { describeKeptDir, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir, teamaiSkillFiles } from './resources/delivered-copies.js';
 import { clearInstructionFile, resolveInstructionTargets } from './instruction-targets.js';
 import {
@@ -657,6 +657,11 @@ async function discoverToolResources(
     for (const skillsDir of skillWrites) skillRoots.set(skillsDir, await skillsGuardBase(scopeRoot, skillsDir));
     // A team skill's name is no proof: only teamai's copies go (#993).
     for (const [skillsDir, rootBase] of skillRoots) {
+      const block = await findSkillDirectoryBlock(rootBase, path.join(skillsDir, 'teamai'), { keepSkillLink: true });
+      if (block) {
+        res.keptSkillDirs.push(`Kept ${skillsDir}: ${describeSkillDirectoryBlock(block)}.`);
+        continue;
+      }
       if (await pathExists(skillsDir)) {
         const dirs = await listDirs(skillsDir);
         for (const dir of dirs) {

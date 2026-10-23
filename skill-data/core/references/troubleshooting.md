@@ -443,3 +443,7 @@ Session archive writers (`session push`, `migrate --push`, and `session pull`) w
 ## OpenCode hooks cannot start the CLI
 
 If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `teamai hooks inject` or `teamai pull` and restart OpenCode. The plugin records the installed Node and CLI paths so it also works without `teamai` on the service PATH.
+
+## A file blocks skill delivery
+
+When a file occupies a tool skills directory, doctor fails the directory check even if delivery skipped that tool. Move the file aside and run `teamai pull`. Uninstall keeps the blocking file and cleans the other managed resources.
