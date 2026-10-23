@@ -23,7 +23,9 @@ teamai push
 teamai push --role pm
 ```
 
-`push` fills in `name` and `description` when the frontmatter is missing. A new skill goes to `skills/<ns>/<name>/`, where `<ns>` comes from your role or the active projects. Several choices ask which one. `--role` picks one. When the team has `manifest/roles.yaml` or `manifest/projects.yaml`, a role or project there must declare it.
+`push` fills in `name` and `description` when the frontmatter is missing. A new skill goes to `skills/<ns>/<name>/`, where `<ns>` comes from your role or the active projects. Several choices ask which one, including an explicit shared-root choice. `--role` picks a namespace; `--shared` places new resources at the shared root for the whole team, even when namespaces exist. It cannot combine with `--role` or `--project`. Edits of resources already delivered from a namespace keep their destination. When a namespace is selected and the team has `manifest/roles.yaml` or `manifest/projects.yaml`, a role or project there must declare it.
+
+Shared-root skills keep the existing tag-subscription delivery rules when roles or projects filter skills. `--shared` selects the publishing location.
 
 ## Rules
 

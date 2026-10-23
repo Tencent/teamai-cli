@@ -23,7 +23,9 @@ teamai push
 teamai push --role pm
 ```
 
-没有 frontmatter 时，`push` 会补上 `name` 和 `description`。新 skill 写到你的角色或当前项目给出的 `skills/<ns>/<name>/`。有多个时会问。`--role` 指定一个。团队有 `manifest/roles.yaml` 或 `manifest/projects.yaml` 时，它必须由其中某个角色或项目声明。
+没有 frontmatter 时，`push` 会补上 `name` 和 `description`。新 skill 写到你的角色或当前项目给出的 `skills/<ns>/<name>/`。有多个时会问，并提供明确的共享根目录选项。`--role` 指定命名空间；`--shared` 把新资源放到整个团队共享的根目录，即使已有命名空间。它不能与 `--role` 或 `--project` 同用。已从命名空间交付的资源，编辑后仍回到原位置。选择命名空间且团队有 `manifest/roles.yaml` 或 `manifest/projects.yaml` 时，该空间必须由其中某个角色或项目声明。
+
+角色或项目过滤 skill 时，共享根目录的 skill 仍按原有 tags 订阅规则交付。`--shared` 选择的是发布位置。
 
 ## Rules
 

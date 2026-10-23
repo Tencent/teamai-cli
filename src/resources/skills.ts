@@ -912,7 +912,7 @@ export async function resolveDestination(input: {
   }
   const open = await openPrDestinations({ pending: input.pending, name, repoPath });
   const awaiting = open.length > 1
-    ? open.find((o) => input.role !== undefined && recordedNamespace(o.recorded) === input.role)?.recorded
+    ? open.find((o) => input.role !== undefined && (recordedNamespace(o.recorded) ?? '') === input.role)?.recorded
     : open[0]?.recorded;
   if (!awaiting && open.length > 1) {
     // A namespace the flag names that none of them holds is a new destination: the flag places it.

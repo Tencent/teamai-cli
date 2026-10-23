@@ -390,6 +390,32 @@ describe('push namespace routing', () => {
     expect(mockPushRepoBranch).not.toHaveBeenCalled();
   });
 
+  it('places new resources at the shared root only when explicitly requested', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(), teamConfig: makeTeamConfig() });
+    mockSkillHandler(pushedItems);
+    await push({ all: true, shared: true });
+    expect(pushedItems[0].namespace).toBeUndefined();
+    expect(pushedItems[0].relativePath).toBe('skills/skill-a');
+  });
+
+  it.each([{ role: 'hai' }, { project: 'svc-a' }])('rejects --shared combined with %j before touching the install', async flags => {
+    mockAutoDetectInit.mockClear();
+    await push({ all: true, shared: true, ...flags });
+    expect(process.exitCode).toBe(2);
+    expect(mockAutoDetectInit).not.toHaveBeenCalled();
+  });
+
+  it('lets the interactive namespace menu explicitly select the shared root', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(), teamConfig: makeTeamConfig() });
+    mockSkillHandler(pushedItems);
+    readlineAnswer = '3';
+    await push({ all: true });
+    expect(pushedItems[0].namespace).toBeUndefined();
+    expect(pushedItems[0].relativePath).toBe('skills/skill-a');
+  });
+
   it('explicit --role flag bypasses namespace resolution', async () => {
     const pushedItems: Array<Record<string, unknown>> = [];
     mockAutoDetectInit.mockResolvedValue({
@@ -1744,6 +1770,40 @@ describe('push namespace routing for rules and agents', () => {
 
     expect(process.exitCode).toBe(2);
     expect(pushedItems).toHaveLength(0);
+  });
+
+  it('places new rules and agents at root while existing namespaced edits keep their path', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(), teamConfig: makeTeamConfig() });
+    mockHandlers({ rules: [{ ...newRule }], agents: [{ ...newAgent }], skills: [{ name: 'edit', type: 'skills', sourcePath: '/tmp/edit', relativePath: 'skills/hai/edit', namespace: 'hai', status: 'modified' }] }, pushedItems);
+    await push({ all: true, shared: true });
+    expect(pushedItems.map(item => item.relativePath)).toEqual(expect.arrayContaining(['rules/my-rule.md', 'agents/vr.yaml', 'skills/hai/edit']));
+  });
+
+  it('refuses to overwrite an existing root skill with an unrelated new copy', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-shared-collide-'));
+    fs.mkdirSync(path.join(repoDir, 'skills/skill-a'), { recursive: true });
+    fs.writeFileSync(path.join(repoDir, 'skills/skill-a/SKILL.md'), 'existing shared skill');
+    try {
+      const pushedItems: Array<Record<string, unknown>> = [];
+      mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig({ repo: { localPath: repoDir, remote: 'fixture' } }), teamConfig: makeTeamConfig() });
+      mockHandlers({ skills: [{ name: 'skill-a', type: 'skills', sourcePath: '/tmp/skill-a', relativePath: 'skills/skill-a', status: 'new' }] }, pushedItems);
+      await push({ all: true, shared: true });
+      expect(process.exitCode).toBe(2);
+      expect(pushedItems).toHaveLength(0);
+      expect(fs.readFileSync(path.join(repoDir, 'skills/skill-a/SKILL.md'), 'utf8')).toBe('existing shared skill');
+    } finally { fs.rmSync(repoDir, { recursive: true, force: true }); }
+  });
+
+  it('leaves a pending namespaced skill review intact when a new shared root is requested', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(), teamConfig: makeTeamConfig() });
+    mockLoadStateForScope.mockResolvedValue({ lastPush: null, lastPull: null, pushedRules: [], pushedSkills: [], pushedEnvVars: [], lastUpdateCheck: null, availableUpdate: null,
+      pendingPushes: [{ branch: 'teamai/push/test/old', createdAt: '2026-01-01T00:00:00.000Z', items: [{ type: 'skills', name: 'skill-a', relativePath: 'skills/js/skill-a', namespace: 'js' }] }] });
+    mockHandlers({ skills: [{ name: 'skill-a', type: 'skills', sourcePath: '/tmp/skill-a', relativePath: 'skills/js/skill-a', namespace: 'js', status: 'new' }] }, pushedItems);
+    await push({ all: true, shared: true });
+    expect(pushedItems[0].relativePath).toBe('skills/skill-a');
+    expect(vi.mocked(log.warn).mock.calls.flat().join(' ')).toContain('separate PR');
   });
 
   it('keeps the namespace an open PR recorded for a skill even under --role', async () => {
