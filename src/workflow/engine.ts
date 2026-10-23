@@ -551,9 +551,9 @@ function deliveryDeadline(run: RunState, state: StepState): number | undefined {
     if (parent.id !== state.id && !state.id.startsWith(`${parent.id}.`)) continue;
     const found = locateStep(run, parent.id);
     const scope = found && found.step.workflow !== undefined ? childScope(run, found.scope, statesIn(run, found.scope), parent, found.step) : undefined;
-    const timeout = (found?.step as (WorkflowStep & { timeout?: number }) | undefined)?.timeout
-      ?? (scope?.definition as { timeout?: number } | undefined)?.timeout;
-    if (timeout && 'startedAt' in parent && typeof parent.startedAt === 'number') limits.push(parent.startedAt + timeout);
+    const bounds = [(found?.step as (WorkflowStep & { timeout?: number }) | undefined)?.timeout,
+      (scope?.definition as { timeout?: number } | undefined)?.timeout];
+    for (const timeout of bounds) if (timeout && 'startedAt' in parent && typeof parent.startedAt === 'number') limits.push(parent.startedAt + timeout);
   }
   return limits.length ? Math.min(...limits) : undefined;
 }
