@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { readFile, readdir, rm, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import matter from 'gray-matter';
 import { expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isIgnored } from './fs.js';
@@ -16,6 +17,7 @@ import {
   type LearningDocMeta,
   type SearchIndex,
   type SearchIndexEntry,
+  type SearchIndexFileCache,
   type UserVotes,
   type VoteEntryV2,
   type KnowledgeType,
@@ -432,6 +434,31 @@ interface BuildReads {
   readonly previous: () => Promise<readonly SearchIndexEntry[]>;
   /** Previous entries already put back, so none is put back twice. */
   readonly kept: Set<SearchIndexEntry>;
+  readonly cached: ReadonlyMap<string, CachedFile>;
+  readonly files: Map<string, CachedFile>;
+  readonly counts: { reused: number; rebuilt: number };
+}
+
+type CachedFile = Omit<SearchIndexFileCache['files'][number], 'entry'> & { entry: SearchIndexEntry | null };
+
+// Bump the derivation revision when parsing, domain inference or token construction changes.
+// Intl.Segmenter's output also depends on the runtime's Unicode/ICU tables.
+const FILE_DERIVATION = `1:${SEARCH_INDEX_VERSION}:${process.versions.node}:${process.versions.icu}`;
+
+async function fileFingerprint(file: string): Promise<string | undefined> {
+  try {
+    const s = await stat(expandHome(file), { bigint: true });
+    return [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join(':');
+  } catch {
+    // The read below remains the source of unreadable-path handling.
+    return undefined;
+  }
+}
+
+function derivedEntry(entry: SearchIndexEntry | null): SearchIndexEntry | null {
+  if (!entry) return null;
+  const { votes: _votes, hotness: _hotness, confidence: _confidence, ...derived } = entry;
+  return { ...derived, votes: 0 };
 }
 
 function isUnder(file: string, dir: string): boolean {
@@ -483,6 +510,15 @@ async function entryFromMdFile(
   const kept = async (): Promise<SearchIndexEntry | null> =>
     (await keptUnder(absPath, type, reads, (rel) => rel === ''))[0] ?? null;
   if (reads.given.some((given) => isUnder(absPath, given))) return kept();
+  const key = JSON.stringify([absPath, filenameForId, type]);
+  const fingerprint = await fileFingerprint(absPath);
+  const cached = reads.cached.get(key);
+  const reuse = (file: CachedFile): SearchIndexEntry | null => {
+    reads.files.set(key, file);
+    reads.counts.reused++;
+    return file.entry ? { ...file.entry, votes: 0 } : null;
+  };
+  if (fingerprint !== undefined && cached?.fingerprint === fingerprint) return reuse(cached);
   let content: string;
   try {
     content = await readFile(expandHome(absPath), 'utf-8');
@@ -490,7 +526,17 @@ async function entryFromMdFile(
     reads.unreadable.push({ path: absPath, reason: failureReason(e) });
     return kept();
   }
-  if (!content) return null;
+  const hash = createHash('sha256').update(content).digest('hex');
+  // A copy or checkout may change metadata without changing any source bytes.
+  const after = await fileFingerprint(absPath);
+  const stable = fingerprint !== undefined && fingerprint === after;
+  if (stable && cached?.hash === hash) return reuse({ ...cached, fingerprint });
+  reads.counts.rebuilt++;
+  const remember = (entry: SearchIndexEntry | null): SearchIndexEntry | null => {
+    if (stable) reads.files.set(key, { key, fingerprint, hash, entry: derivedEntry(entry) });
+    return entry;
+  };
+  if (!content) return remember(null);
 
   if (Buffer.byteLength(content, 'utf-8') > MAX_DOC_BYTES) {
     content = content.slice(0, MAX_DOC_BYTES);
@@ -498,7 +544,7 @@ async function entryFromMdFile(
   }
 
   const parsed = parseLearningDoc(content, filenameForId);
-  if (!parsed) return null;
+  if (!parsed) return remember(null);
 
   const { meta, bodyExcerpt } = parsed;
   const title = meta.title ?? titleFromFilename(filenameForId);
@@ -532,7 +578,7 @@ async function entryFromMdFile(
 
   const docId = filenameForId.replace(/\.md$/i, '');
 
-  return {
+  return remember({
     filename: filenameForId,
     title,
     author: meta.author ?? '',
@@ -543,7 +589,7 @@ async function entryFromMdFile(
     type,
     domain,
     path: absPath,
-  };
+  });
 }
 
 /** Files a build reads at once: enough to keep the fs thread pool queued while the main thread tokenizes, few enough to stay clear of the descriptor limit. */
@@ -857,7 +903,6 @@ export async function buildIndex(
     ? { learningsDir: optionsOrLearningsDir, votesDir, indexPath }
     : optionsOrLearningsDir;
   const index = await indexInMemory(opts);
-  const elapsed = Date.now() - start;
 
   // A torn in-place write parses as null on the next loadIndex, which silently
   // wipes recall until the next rebuild — same shape as the votes file (#854).
@@ -876,11 +921,7 @@ export async function buildIndex(
     throw e;
   }
 
-  if (elapsed > 2000) {
-    log.warn(`Search index build took ${elapsed}ms — consider incremental updates for large knowledge bases`);
-  }
-
-  return elapsed;
+  return Date.now() - start;
 }
 
 /** Name the files and directories a build could not read, which keep their entries from the previous index. */
@@ -913,12 +954,29 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
     previous ??= loadIndex(opts.indexPath ?? getSearchIndexPath());
     return (await previous)?.entries ?? [];
   };
+  await previousEntries();
+  const prior = await previous;
+  const cached = new Map<string, CachedFile>();
+  if (prior?.version === SEARCH_INDEX_VERSION && prior.fileCache?.derivation === FILE_DERIVATION
+      && Array.isArray(prior.fileCache.files)) {
+    for (const file of prior.fileCache.files) {
+      if (typeof file?.key !== 'string' || typeof file.fingerprint !== 'string' || typeof file.hash !== 'string') continue;
+      const entry = typeof file.entry === 'number' ? prior.entries[file.entry] : file.entry;
+      if (entry !== null && (!entry || !Array.isArray(entry.tokens)
+          || !Array.isArray(entry.tags) || typeof entry.filename !== 'string'
+          || JSON.stringify([entry.path, entry.filename, entry.type]) !== file.key)) continue;
+      cached.set(file.key, { ...file, entry: derivedEntry(entry) });
+    }
+  }
   const reads: BuildReads = {
     voteCounts: voteAgg.scores,
     unreadable: [...opts.unreadable ?? []],
     given: (opts.unreadable ?? []).map((unreadable) => unreadable.path),
     previous: previousEntries,
     kept: new Set(),
+    cached,
+    files: new Map(),
+    counts: { reused: 0, rebuilt: 0 },
   };
 
   const entries: SearchIndexEntry[] = [];
@@ -951,6 +1009,12 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   // only the entries the collectors put back for what they could not read stay.
   if (reads.unreadable.length > 0) warnUnreadable(reads.unreadable);
 
+  // Kept unreadable entries, like reused files, must not carry yesterday's votes.
+  for (const entry of entries) {
+    entry.votes = voteAgg.scores.get(entry.filename.replace(/\.md$/i, '')) ?? 0;
+    delete entry.confidence;
+    delete entry.hotness;
+  }
   // Annotate entries with confidence/hotness for hot/cold scoring.
   if (voteAgg.confidenceMap.size > 0) {
     try {
@@ -974,6 +1038,9 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
     }
   }
 
+  const dropped = [...cached.keys()].filter((key) => !reads.files.has(key)).length;
+  log.debug(`Search index files: ${reads.counts.reused} reused, ${reads.counts.rebuilt} rebuilt, ${dropped} dropped`);
+  const positions = new Map(entries.map((entry, i) => [JSON.stringify([entry.path, entry.filename, entry.type]), i]));
   return {
     version: SEARCH_INDEX_VERSION,
     builtAt: new Date().toISOString(),
@@ -981,6 +1048,11 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
     entries,
     df,
     dfByDomain,
+    fileCache: {
+      derivation: FILE_DERIVATION,
+      files: [...reads.files.values()].sort((a, b) => a.key.localeCompare(b.key))
+        .map((file) => ({ ...file, entry: positions.get(file.key) ?? file.entry })),
+    },
     ...(opts.children ? { children: opts.children } : {}),
   };
 }

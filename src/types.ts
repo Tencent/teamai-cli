@@ -2304,8 +2304,21 @@ export interface SearchIndexEntry {
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
 export const SEARCH_INDEX_VERSION = 7;
 
+/** Per-file derivation only; votes and selection are recomputed on every build. */
+export interface SearchIndexFileCache {
+  derivation: string;
+  files: Array<{
+    key: string;
+    fingerprint: string;
+    hash: string;
+    /** Selected entries refer to `SearchIndex.entries` instead of duplicating tokens. */
+    entry: number | SearchIndexEntry | null;
+  }>;
+}
+
 /** Shape of the search-index.json file. */
 export interface SearchIndex {
+  fileCache?: SearchIndexFileCache;
   /** Schema version. Phase 1 introduces v2 (multi-category index). */
   version?: number;
   /** ISO timestamp of when the index was built */
