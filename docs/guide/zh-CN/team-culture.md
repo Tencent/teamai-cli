@@ -34,7 +34,8 @@ team:
 | Cursor | `~/.cursor/rules/teamai-context.mdc`；工作区不在主目录下时由 session-start hook 加入 | `.cursor/rules/teamai-context.mdc` |
 | CodeBuddy、WorkBuddy | 各自的用户文件 | 共用 `.codebuddy/rules/teamai-context.md` |
 | OpenCode | `~/.config/opencode/teamai-context.md` | `.opencode/teamai-context.md` |
-| Pi、Oh My Pi | 各自的用户文件 | 扩展加进系统提示 |
+| Pi | 存在时写入 `~/.pi/agent/AGENTS.override.md`，否则写入 `AGENTS.md` | 扩展加进系统提示 |
+| Oh My Pi | 它的用户文件 | 扩展加进系统提示 |
 | Hermes | `$HERMES_HOME/SOUL.md` | Hermes 插件 |
 | ZCode | `~/.zcode/AGENTS.md` | session-start hook |
 | DeepSeek Harness | `$DSH_HOME/AGENTS.md`（未设置时 `~/.dsh/AGENTS.md`） | session-start hook |
