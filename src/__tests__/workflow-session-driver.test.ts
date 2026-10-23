@@ -16,7 +16,7 @@ vi.mock('../pull.js', () => ({ pull: vi.fn() }));
 const dirs: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 function git(cwd: string, ...args: string[]) { return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim(); }
-async function fixture() {
+async function fixture(yaml?: string) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-skill-driver-'))); dirs.push(root);
   const home = path.join(root, 'home'); fs.mkdirSync(home); vi.stubEnv('HOME', home); vi.stubEnv('USERPROFILE', home);
   const work = path.join(root, 'work'); const repo = path.join(root, 'knowledge'); const remote = path.join(root, 'remote.git');
@@ -27,7 +27,7 @@ async function fixture() {
   git(work, 'remote', 'add', 'origin', remote); git(work, 'push', '-q', 'origin', 'main');
   const config: LocalConfig = { repo: { kind: 'self', localPath: repo, remote }, username: 'test', scope: 'project', projectRoot: work, additionalRoles: [], dataHome: path.join(home, '.teamai', 'projects', 'fixture') };
   fs.mkdirSync(config.dataHome!, { recursive: true }); fs.writeFileSync(path.join(config.dataHome!, 'config.yaml'), YAML.stringify(config));
-  fs.writeFileSync(path.join(repo, 'workflows', 'build.yaml'), `schemaVersion: v1alpha1
+  fs.writeFileSync(path.join(repo, 'workflows', 'build.yaml'), yaml ?? `schemaVersion: v1alpha1
 name: build
 description: Session work.
 invocable: true
@@ -49,7 +49,7 @@ steps:
   return { config, work, repo, remote, root, runId: String(started.data.run), driver: { kind: 'skill', machine: 'fixture', workspace: work } };
 }
 async function next(f: Awaited<ReturnType<typeof fixture>>) {
-  const answer = await leaseNext(f.config, f.runId, f.driver, { workspaceModes: ['read-only', 'new', 'continue'] });
+  const answer = await leaseNext(f.config, f.runId, f.driver, { hitl: true, workspaceModes: ['read-only', 'new', 'continue'] });
   if ('error' in answer || !answer.data.lease) throw new Error(JSON.stringify({ answer, run: await readRun(f.config, f.runId) }));
   const raw = answer.data.lease as { attempt: string; revision: number; step: string };
   const prepared = await prepareSessionLease(f.config, f.runId, f.driver, raw);
@@ -58,6 +58,14 @@ async function next(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe('session driver public workspace operations (#1086)', () => {
+  it.each([false, true])('preserves interactive prompt write permissions with explicit read-only=%s', async (readOnly) => {
+    const f = await fixture(`schemaVersion: v1alpha1\nname: build\ndescription: Interactive session.\nalias: ship\nsteps:\n  - id: pair\n    prompt: Pair on the code.\n    interactive: true\n${readOnly ? '    workspace: read-only\n' : ''}`);
+    const lease = await next(f);
+    fs.writeFileSync(path.join(lease.cwd, 'pair.txt'), 'human edits\n');
+    expect(await reportSessionLease(f.config, f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }))
+      .toMatchObject({ data: { accepted: true, step: { status: readOnly ? 'failed' : 'succeeded' } } });
+    expect(fs.readFileSync(path.join(f.work, 'pair.txt'), 'utf8')).toBe('human edits\n');
+  });
   it('reuses a prepared lease without overwriting edits, restores base instructions, and reports committed changes', async () => {
     const f = await fixture(); const first = await next(f);
     expect(await findRunConfig(f.runId, { ...f.config, projectRoot: first.cwd })).toMatchObject({ config: { projectRoot: f.work } });

@@ -20,6 +20,7 @@ const PreparedSchema = z.object({
   driver: DriverSchema, active: z.string(),
   step: z.string(), attempt: z.string(), revision: z.number(), cwd: z.string(),
   workspace: WorkspaceSchema.optional(),
+  interactive: z.literal(true).optional(), readOnly: z.literal(true).optional(),
   before: z.object({ ok: z.boolean(), head: z.string().optional(), branch: z.string(), files: z.array(z.tuple([z.string(), z.string()])) }).optional(),
   found: z.array(z.string()).optional(), overlay: z.string().optional(), rangeFrom: z.string().optional(),
   conflicts: z.array(z.tuple([z.string(), z.string()])).optional(),

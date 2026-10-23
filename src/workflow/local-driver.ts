@@ -1167,6 +1167,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
 /** Local preparation data retained between the session's public next/report calls. No prompt, env value or graph. */
 export interface PreparedSessionWorkspace {
   step: string; attempt: string; revision: number; cwd?: string; workspace?: WorkspaceContract;
+  interactive?: true; readOnly?: true;
   before?: { ok: boolean; head?: string; branch: string; files: Array<[string, string]> };
   found?: string[]; overlay?: string; rangeFrom?: string; conflicts?: Array<[string, string]>;
 }
@@ -1177,6 +1178,7 @@ export async function prepareSessionWorkspace(raw: unknown, active: string, runI
   const failure = await stageLease(lease, { active, runId });
   if (failure) return failure;
   return { step: lease.step, attempt: lease.attempt, revision: lease.revision, cwd: lease.cwd, workspace: lease.workspace,
+    ...(lease.interactive ? { interactive: true } : {}), ...(lease.readOnly ? { readOnly: true } : {}),
     ...(lease.before ? { before: { ...lease.before, files: [...lease.before.files] } } : {}),
     found: lease.found, overlay: lease.overlay, rangeFrom: lease.rangeFrom,
     ...(lease.conflicts ? { conflicts: [...lease.conflicts].map(([file, content]): [string, string] => [file, createHash('sha256').update(content).digest('hex')]) } : {}) };
@@ -1192,7 +1194,7 @@ export async function finishSessionWorkspace(prepared: PreparedSessionWorkspace,
     return report;
   }
   const left = await leaveReadCopy(lease);
-  const paths = !left && lease.before && lease.cwd && !lease.workspace ? changedPaths(lease.before, await snapshotWorktree(lease.cwd)) : [];
+  const paths = !left && lease.before && lease.cwd && !lease.workspace && !(lease.interactive && !lease.readOnly) ? changedPaths(lease.before, await snapshotWorktree(lease.cwd)) : [];
   const dirty = left && left.state !== 'untouched' ? readCopyFailure(left, `Read-only session step changed repository paths: ${left.changed.join(', ')}.`)
     : paths.length ? { code: 'read_only_dirty', message: `Read-only session step changed repository paths: ${paths.join(', ')}` } : undefined;
   const finished = lease.workspace && !left && !dirty ? await finishWorkspace(lease, report.outcome === 'success') : {};

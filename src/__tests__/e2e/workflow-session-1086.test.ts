@@ -50,6 +50,7 @@ steps:
           prompt: Polish the implementation.
 `);
       fs.writeFileSync(path.join(workflows, 'private.yaml'), 'schemaVersion: v1alpha1\nname: private\ndescription: Not advertised.\nsteps:\n  - id: work\n    command: echo private\n');
+      fs.writeFileSync(path.join(workflows, 'pair.yaml'), 'schemaVersion: v1alpha1\nname: pair\ndescription: Interactive editing.\nsteps:\n  - id: pair\n    prompt: Pair on code.\n    interactive: true\n');
       const pulled = call(['pull']); expect(pulled.status, pulled.stderr).toBe(0);
       const hook = call(['hook-dispatch', 'session-start', '--tool', 'claude'], repo, JSON.stringify({ cwd: repo, session_id: 'session-fixture', hook_event_name: 'SessionStart' }));
       expect(hook.status, hook.stderr).toBe(0);
@@ -84,6 +85,14 @@ steps:
       const pushed = run('git', ['--git-dir', bare, 'show', `${first.workspace.branch}:code.txt`]); expect(pushed.status, pushed.stderr).toBe(0);
       expect(pushed.stdout).toBe('first\nsecond\n'); expect(fs.existsSync(path.join(repo, 'code.txt'))).toBe(false);
       const skill = call(['skill', 'get', 'workflow']); expect(skill.status, skill.stderr).toBe(0); expect(skill.stdout).toContain('Never run git');
+      const pair = call(['workflow', 'start', 'pair', '--driver', 'skill']); expect(pair.status, pair.stderr).toBe(0);
+      const pairId = envelope(pair.stdout).data.run;
+      const pairNext = call(['workflow', 'next', pairId, '--prepare', '--json', JSON.stringify({ driver })]); expect(pairNext.status, pairNext.stderr).toBe(0);
+      const pairLease = envelope(pairNext.stdout).data.lease;
+      fs.writeFileSync(path.join(pairLease.cwd, 'pair.txt'), 'human edits\n');
+      const pairReport = call(['workflow', 'report', pairId, '--json', JSON.stringify({ driver, attempt: pairLease.attempt, revision: pairLease.revision, outcome: 'success' })]);
+      expect(envelope(pairReport.stdout)).toMatchObject({ data: { step: { status: 'succeeded' } } });
+      expect(fs.readFileSync(path.join(repo, 'pair.txt'), 'utf8')).toBe('human edits\n');
     } finally { await detached.waitForExit(); fs.rmSync(root, { recursive: true, force: true }); }
   });
 });
