@@ -40,6 +40,7 @@ import { chooseStepModel } from './step-model.js';
 import type { StepRead } from './step-state.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isWorkflowError } from './types.js';
+import { maskSecrets, scopedEnvironment, workflowEnvironment, type WorkflowEnvironment, type WorkflowRequirements, type WorkflowSetup } from './requirements.js';
 import type { WorkspaceContract } from './workspace.js';
 import {
   applyBaseConfig, commitWork, ensureWorktree, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, mergeBranch, offBranch, pushIfOrigin, putBackCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, unrestoredCopy, worktreePath,
@@ -79,8 +80,8 @@ const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM',
  * variables. A detached command leads a process group of its own, so `stop` reaches everything it started; it has no
  * controlling terminal, and a terminal's Ctrl-C does not reach it.
  */
-function startCommand(command: string, cwd: string, env: Record<string, string>, detached: boolean): CommandProcess {
-  const child = spawn(command, { cwd, shell: true, env: { ...process.env, ...env }, windowsHide: true, detached });
+function startCommand(command: string, cwd: string, env: NodeJS.ProcessEnv, detached: boolean): CommandProcess {
+  const child = spawn(command, { cwd, shell: true, env, windowsHide: true, detached });
   const exit = new Promise<CommandResult>((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -148,6 +149,13 @@ export interface LocalDriverOptions {
 }
 
 interface Lease {
+  requires?: WorkflowRequirements;
+  setup?: WorkflowSetup;
+  maxTurns?: number;
+  deadline?: number;
+  /** In-memory only, never emitted in a lease or written to the run. */
+  environment?: NodeJS.ProcessEnv;
+  secrets?: string[];
   /** The step path, such as `check.classify` inside a sub-workflow. */
   step: string;
   attempt: string;
@@ -350,6 +358,10 @@ function parseLease(raw: unknown): Lease | undefined {
   const session = isRecord(rawLease.session) && typeof rawLease.session.tool === 'string' && typeof rawLease.session.id === 'string'
     ? { tool: rawLease.session.tool, id: rawLease.session.id } : undefined;
   const lease: Lease = {
+    ...(isRecord(rawLease.requires) ? { requires: rawLease.requires as WorkflowRequirements } : {}),
+    ...(isRecord(rawLease.setup) ? { setup: rawLease.setup as unknown as WorkflowSetup } : {}),
+    ...(typeof rawLease.max_turns === 'number' ? { maxTurns: rawLease.max_turns } : {}),
+    ...(typeof rawLease.deadline === 'number' ? { deadline: rawLease.deadline } : {}),
     step: rawLease.step,
     attempt: rawLease.attempt,
     revision: rawLease.revision,
@@ -612,6 +624,11 @@ async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?:
 }
 
 async function commandReport(attemptResultPath: string, driver: DriverIdentity, lease: Lease, result: CommandResult): Promise<ReportBody> {
+  if (lease.deadline && Date.now() >= lease.deadline) {
+    await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
+    return { attempt: lease.attempt, revision: lease.revision, driver, ...failureReport({ code: 'timeout', message: 'Step deadline passed before delivery' }) };
+  }
+  result = maskSecrets(result, lease.secrets ?? []);
   const output = jsonStdout(result.stdout);
   await fs.mkdir(path.dirname(attemptResultPath), { recursive: true });
   await writeJsonAtomic(attemptResultPath, output !== undefined ? { output } : {});
@@ -711,9 +728,11 @@ async function promptReport(
   ]);
   let result: LocalToolResult;
   try {
+    if (lease.deadline && Date.now() >= lease.deadline) return giveUp({ code: 'timeout', message: 'Step deadline passed before launching the tool' });
     if (lease.interactive) log.info(`Step "${lease.step}" opens ${selected} here for interactive work.`);
     const run = lease.interactive ? adapter.runInteractive.bind(adapter) : adapter.run.bind(adapter);
     result = await run(selected, {
+      env: lease.environment, secrets: lease.secrets, maxTurns: lease.maxTurns,
       prompt: lease.prompt!,
       cwd,
       resultPath: attemptResultPath,
@@ -729,6 +748,8 @@ async function promptReport(
       failure: { code: 'tool_failed', message: `${selected} could not complete the workflow step` },
     };
   }
+  result = maskSecrets(result, lease.secrets ?? []);
+  if (lease.deadline && Date.now() >= lease.deadline) return giveUp({ code: 'timeout', message: 'Step deadline passed before delivery' }, selected);
   const left = await leaveReadCopy(lease);
   const touched = left?.state === 'untouched' ? undefined : left;
   const paths = !left && before && !lease.workspace ? changedPaths(before, await snapshotWorktree(cwd)) : [];
@@ -787,6 +808,26 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
   const tools = { ...config.workflows?.tools, ...options.tools };
   const adapter = options.adapter ?? createLocalToolAdapter();
   const maxParallel = config.workflows?.max_parallel ?? 1;
+  const environment = await workflowEnvironment(config);
+  let setupController: AbortController | undefined;
+  const stage = async (lease: Lease): Promise<WorkflowFailure | undefined> => {
+    if (lease.deadline && Date.now() >= lease.deadline) return { code: 'timeout', message: 'Step deadline passed before execution' };
+    const failure = await stageLease(lease, { active: cwd, runId });
+    if (failure) return failure;
+    setupController = new AbortController();
+    if (maxParallel === 1) for (const name of STOP_SIGNALS) process.on(name, onSignal);
+    let setupFailure: WorkflowFailure | undefined;
+    try { setupFailure = await setupWorkspace(lease, environment, setupController.signal); }
+    finally {
+      setupController = undefined;
+      if (maxParallel === 1) for (const name of STOP_SIGNALS) process.off(name, onSignal);
+    }
+    if (setupFailure) { await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease)); return setupFailure; }
+    if (lease.deadline && Date.now() >= lease.deadline) { await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease)); return { code: 'timeout', message: 'Step deadline passed while preparing the workspace' }; }
+    lease.environment = await scopedEnvironment(environment, lease.requires?.env ?? [], lease.env);
+    lease.secrets = environment.secrets;
+    return undefined;
+  };
   // One command at a time keeps the terminal: Ctrl-C reaches it, and it can prompt on /dev/tty. Parallel commands get
   // process groups of their own, which `stop` and the signal handlers below can end as a whole.
   const detached = maxParallel > 1 && process.platform !== 'win32';
@@ -825,6 +866,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
   // exits the way the signal would. An interactive tool that the terminal's signals reach handles them itself. With
   // nothing running, the signal ends teamai at once, as it would without a handler.
   const onSignal = (signal: NodeJS.Signals): void => {
+    if (setupController) { signalled ??= signal; setupController.abort(); return; }
     if (prompt?.lease.interactive && interactiveIgnores.includes(signal)) return;
     if (inFlight.size === 0 && dying.size === 0 && !prompt) return exitOn(signal);
     signalled ??= signal;
@@ -853,6 +895,13 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       const next = await leaseNext(config, runId, driver, {
         running, canTakeLease, hitl: canHitl, autoApprove: options.autoApprove,
         ...(base ? { base } : {}), workspaceModes: ['read-only', 'new', 'continue'],
+        capabilities: { env: true, network: true, isolation: 'worktree', human: canHitl, resume: true, tokens: true, max_turns: true, setup: true },
+        supports: (step, requires) => {
+          const tool = step.agent && tools[step.agent] ? tools[step.agent] : tools.default;
+          if (step.maxTurns && (step.interactive || !tool || !isLocalWorkflowTool(tool) || localToolFamily(tool) !== 'claude')) return 'This tool cannot enforce max_turns (supported for headless Claude only)';
+          if (requires.resume && tool === 'opencode') return 'OpenCode cannot enforce session resume';
+          return undefined;
+        },
       });
       if (signalled) continue;
       if (isWorkflowError(next)) return next;
@@ -898,13 +947,14 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           continue;
         }
         held.splice(index, 1);
-        const failure = await stageLease(lease, { active: cwd, runId });
+        const failure = await stage(lease);
+        if (signalled) return { error: { code: 'interrupted', message: `Stopped by ${signalled} during workspace preparation` } };
         if (failure) {
           const failed = await failStaged(lease, failure);
           if (failed) return failed;
           continue;
         }
-        inFlight.set(lease.attempt, { lease, command: startCommand(lease.command!, lease.cwd ?? cwd, lease.env ?? {}, detached) });
+        inFlight.set(lease.attempt, { lease, command: startCommand(lease.command!, lease.cwd ?? cwd, lease.environment ?? {}, detached) });
       }
       if (!prompt && busy() < maxParallel) {
         const promptAt = held.findIndex((lease) => lease.prompt !== undefined
@@ -919,7 +969,8 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
             if (failed) return failed;
             continue;
           }
-          const failure = await stageLease(lease, { active: cwd, runId });
+          const failure = await stage(lease);
+          if (signalled) return { error: { code: 'interrupted', message: `Stopped by ${signalled} during workspace preparation` } };
           if (failure) {
             const failed = await failStaged(lease, failure);
             if (failed) return failed;
@@ -1007,4 +1058,61 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     if (signalled) exitOn(signalled);
     for (const name of STOP_SIGNALS) process.off(name, onSignal);
   }
+}
+
+/** Scan files without following symlinks or traversing .git. No content enters errors or state. */
+async function secretInWorkspace(dir: string, secrets: readonly string[]): Promise<boolean> {
+  if (!secrets.length) return false;
+  const needles = secrets.filter(Boolean).map((secret) => Buffer.from(secret));
+  const overlap = Math.max(...needles.map((secret) => secret.length), 1) - 1;
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    if (entry.name === '.git') continue;
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) { if (await secretInWorkspace(file, secrets)) return true; }
+    else if (entry.isFile()) {
+      const handle = await fs.open(file, 'r');
+      try {
+        const buffer = Buffer.alloc(64 * 1024); let tail = Buffer.alloc(0);
+        for (;;) {
+          const { bytesRead } = await handle.read(buffer, 0, buffer.length);
+          if (!bytesRead) break;
+          const chunk = Buffer.concat([tail, buffer.subarray(0, bytesRead)]);
+          if (needles.some((secret) => chunk.includes(secret))) return true;
+          tail = chunk.subarray(Math.max(0, chunk.length - overlap));
+        }
+      } finally { await handle.close(); }
+    }
+  }
+  return false;
+}
+
+async function setupWorkspace(lease: Lease, environment: WorkflowEnvironment, signal?: AbortSignal): Promise<WorkflowFailure | undefined> {
+  if (!lease.setup || !lease.cwd || !lease.workspace) return undefined;
+  const setup = lease.setup;
+  const marker = path.resolve(lease.cwd, (await git(lease.cwd, ['rev-parse', '--git-path', 'teamai-workflow-setup.json'])).stdout.trim());
+  const signature = createHash('sha256').update(JSON.stringify(setup)).digest('hex');
+  const previous = await readJson(marker);
+  if (isRecord(previous) && previous.complete === true) return undefined;
+  await writeJsonAtomic(marker, { signature, complete: false });
+  const before = await snapshotWorktree(lease.cwd);
+  const command = startCommand(setup.command, lease.cwd, await scopedEnvironment(environment, setup.requires?.env ?? []), process.platform !== 'win32');
+  const deadline = Math.min(lease.deadline ?? Infinity, setup.timeout ? Date.now() + setup.timeout : Date.now() + 30 * 60_000);
+  let stopping: Promise<CommandResult> | undefined;
+  const stop = (): void => { stopping = command.stop(); };
+  signal?.addEventListener('abort', stop, { once: true });
+  if (signal?.aborted) stop();
+  const timer = setInterval(() => { if (Date.now() >= deadline) { clearInterval(timer); stop(); } }, Math.min(1000, Math.max(1, deadline - Date.now())));
+  let result: CommandResult;
+  try { result = await command.exit; } finally { clearInterval(timer); signal?.removeEventListener('abort', stop); }
+  if (stopping) await stopping;
+  if (Date.now() >= deadline) return { code: 'timeout', message: 'Workspace setup timeout exceeded; the agent was not started' };
+  if (result.exitCode !== 0) return { code: 'setup_failed', message: 'Workspace setup failed; the agent was not started' };
+  if (changedPaths(before, await snapshotWorktree(lease.cwd)).length) return { code: 'setup_dirty', message: 'Workspace setup changed tracked or non-ignored files; the agent was not started' };
+  try {
+    if (await secretInWorkspace(lease.cwd, environment.secrets)) return { code: 'setup_secret', message: 'Workspace setup left a known secret in a file; remove setup credentials before starting the agent' };
+  } catch {
+    return { code: 'setup_secret', message: 'Could not verify workspace setup files for retained secrets; the agent was not started' };
+  }
+  await writeJsonAtomic(marker, { signature, complete: true });
+  return undefined;
 }

@@ -78,7 +78,7 @@ describe('workflow protocol conformance through the CLI', () => {
       for (const operation of scenario.operations) {
         if (operation.kind === 'next') {
           const value = await client.next(runId, {
-            driver: { ...driver, ...(operation.hitl !== undefined ? { can: { hitl: operation.hitl } } : {}) },
+            driver: { ...driver, ...((operation.hitl !== undefined || operation.can) ? { can: { ...operation.can, ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}) } } : {}) },
             ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
             ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
           });

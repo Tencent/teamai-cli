@@ -286,3 +286,5 @@ projects:
     resources:
       docs: [checkout]
 ```
+
+工作流步骤只接收 `requires.env` 列出的团队键，即使 shell 已导出其他团队键也如此。setup 使用独立的键列表。不要把凭据写入工作流输入或命令 `env`；见[执行要求和限制](workflow.md#执行要求和限制)。

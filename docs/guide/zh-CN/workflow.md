@@ -33,7 +33,7 @@ steps:
 3. `defaults.model`；
 4. 工具的默认模型。
 
-步骤的 `model` 替换 agent 的模型和推理强度（effort），保留其他设置。不是别名的模型名使用工具默认的推理强度。被另一个工作流运行的工作流文件使用自己的 `defaults.model`，没有时使用运行它的步骤所在处生效的那个。内联工作流使用外层的。别名没有该步骤工具的模型，或成员的 `~/.teamai/models/aliases.yaml` 关闭了它时，步骤会在工具启动前以 `model_unavailable` 失败。在 OpenCode 1 上，步骤的 `model` 是其 agent 自己的模型且没有推理强度、而 agent 文件设置了 `variant` 且 `mode` 不是 `subagent` 时，也会这样失败，因为 OpenCode 1 会套用那个 variant。OpenCode 2 不从 agent 文件读取模型和 variant，OpenCode 1 的 `opencode run --agent` 也不会启动 subagent，所以驱动在命令行上传入定义自己的模型和 variant。对 `mode: subagent` 的 agent 文件（pull 默认这样写），OpenCode 1 从提示词中获得 agent 的指令，驱动会对此时不生效的文件设置发出警告。租约原样携带 `model` 和 `defaultModel`，由驱动解析。
+步骤的 `model` 替换 agent 的模型和推理强度（effort），保留其他设置。不是别名的模型名使用工具默认的推理强度。被另一个工作流运行的工作流文件使用自己的 `defaults.model`，没有时使用运行它的步骤所在处生效的那个。内联工作流可以设置自己的 defaults，没有时使用外层的。别名没有该步骤工具的模型，或成员的 `~/.teamai/models/aliases.yaml` 关闭了它时，步骤会在工具启动前以 `model_unavailable` 失败。在 OpenCode 1 上，步骤的 `model` 是其 agent 自己的模型且没有推理强度、而 agent 文件设置了 `variant` 且 `mode` 不是 `subagent` 时，也会这样失败，因为 OpenCode 1 会套用那个 variant。OpenCode 2 不从 agent 文件读取模型和 variant，OpenCode 1 的 `opencode run --agent` 也不会启动 subagent，所以驱动在命令行上传入定义自己的模型和 variant。对 `mode: subagent` 的 agent 文件（pull 默认这样写），OpenCode 1 从提示词中获得 agent 的指令，驱动会对此时不生效的文件设置发出警告。租约原样携带 `model` 和 `defaultModel`，由驱动解析。
 
 第一个步骤之后的每个步骤都要用 `needs` 列出它等待的步骤。`needs: []` 表示另起一个没有依赖的分支。每次 `next` 租出文件中第一个依赖都已完成的步骤。`--driver local` 一次运行一个步骤，除非 `workflows.max_parallel` 大于 1。某个依赖失败，或所有依赖都被跳过时，该步骤会被跳过。被跳过的步骤不会运行。一个步骤失败不会停止其他分支。没有可运行的步骤时，只要有步骤失败，运行结果就是 `failed`，否则是 `succeeded`。缺少 `needs`、`needs` 中的 id 不是本工作流的步骤，或依赖成环，都会让该文件无效。缺少 `needs` 时，即使之前有有效版本，该工作流也没有可运行版本。
 
@@ -211,3 +211,41 @@ steps:
 Run id 是 `r` 加 16 位十六进制。此方案之前创建的运行用 8 位十六进制，仍然可以解析。
 
 工作流总量（runs、succeeded、failed、累计时长）在发布时折入 reports 分支的 `stats/<username>.yaml`，由 `teamai digest` 展示。
+
+## 执行要求和限制
+
+```yaml
+schemaVersion: v1alpha1
+name: implement-task
+description: Implement a task with scoped credentials and limits.
+requires: { isolation: worktree }
+defaults:
+  requires: { network: true }
+setup:
+  command: npm ci
+  requires: { network: true, env: [NPM_TOKEN] }
+  timeout: 10m
+timeout: 2h
+budget: { tokens: 20M }
+steps:
+  - id: implement
+    workspace: new
+    prompt: Implement the task.
+    requires: { env: [API_TOKEN] }
+    timeout: 30m
+    max_turns: 30
+```
+
+`requires` 支持 `network`（布尔值）、`env`（已声明的键名）、`isolation`（`none`、`worktree`、`sandbox`）、`human` 和 `resume`（布尔值）。工作流要求作用于后代步骤。defaults 为步骤提供默认要求；步骤替换标量默认值，`env` 则合并去重。嵌套工作流继承要求和 setup，也可声明自己的设置。发放租约前，要求必须同时符合成员 `workflows.allow` 上限和驱动能力。等待能力的步骤不阻塞其他已就绪步骤。显式配置的 `workflows.max_parallel` 也限制外部驱动持有的租约数。即使工作流没有声明网络要求，`allow.network: false` 也要求驱动强制关闭网络。
+
+本地驱动声明网络访问、按键隔离环境变量、worktree 隔离、token 用量报告和会话续接能力。它不能关闭网络或提供 sandbox；这类要求会等待，并返回明确原因。worktree 隔离要求有独立工作区契约，不能让在当前检出目录运行的步骤声称已隔离。worktree 分开 git 改动，不限制对机器其他位置的访问。`human` 取决于是否有人在场。这里的 OpenCode 不支持续接会话。只有无交互 Claude 执行 `max_turns`，其他工具和交互提示词会等待，不会悄悄忽略限制。
+
+外部驱动在 `driver.can` 中发送 `network`、`env`（是否按键控制环境变量）、`isolation`、`human`、`resume`、`tokens`、`max_turns`、`setup`，以及原有的 `workspace` 和 `hitl`。`can.network` 可以是固定的布尔模式；能够为 setup 和 agent 分别控制网络时声明 `[true, false]`。只声明真正执行的能力。TeamAI 信任驱动的声明，这不能防御同机恶意程序。
+
+`requires.env` 引用当前启用的 `env.yaml` 或 `env/secrets.yaml` 中的键，值遵循现有 TeamAI 解析顺序，CI 密钥可从进程环境获取。租约和状态只保存键名。缺少值时，在执行前以 `missing_env` 失败，并提示 `teamai env set KEY`。驱动从继承环境中移除该步骤没有声明需要的团队键，包括继承的团队变量，保留其他宿主环境。setup 只拿到自己要求的键。命令 `env` 和工作流输入不能覆盖已声明键；已知密钥值不能作为输入或定义中的字面值保存。报告中的每一个字符串值在校验和保存前都会遮蔽，包括嵌套输出和错误消息，对象键名保持可见。编码或变换后的密钥无法识别，未声明的宿主凭据也不在此按键策略内。
+
+setup 在恢复基线配置和交付团队资源后，对每个新工作区执行一次，返回前必须删除凭据。修改已跟踪或未忽略文件会以 `setup_dirty` 失败；在任何工作区文件（包括忽略文件）留下已知密钥会以 `setup_secret` 失败。agent 不会启动，该步骤不会 push。重试失败步骤时会重新执行 setup。setup 未设置超时时默认为 30 分钟，同时受步骤和工作流截止时间限制。
+
+超时使用正时长，例如 `500ms`、`30s`、`10m`、`2h`。工作流超时包含所有工作和轮次，步骤超时覆盖其租约或嵌套工作流。引擎在截止时间后的第一次 `next` 或 `report` 执行限制；本地驱动在执行期间轮询，取消过期租约并停止进程。迟到报告返回 `lease_cancelled`。超时步骤的 outcome 是 `failed`，failure.code 是 `timeout`，恢复步骤可据此判断。
+
+工作流预算累计当前步骤、所有历史 pass 和已归档子步骤报告的 `input`、`output`、`cachedInput` token 数。嵌套预算限制自己的后代，同时仍计入外层预算。提示词步骤要求驱动声明 `tokens` 能力；成功报告缺少用量时以 `unsupported_enforcement` 失败。预算在报告后检查，因此尚未报告的工作可能先超出阈值。预算耗尽后，预算范围内的所有租约被取消，工作流以 `budget_exceeded` 失败。

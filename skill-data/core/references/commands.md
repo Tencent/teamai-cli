@@ -226,7 +226,7 @@ Generated: do not edit by hand. Regenerate with
     - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
     - `--auto-approve` — With --driver local, automatically answer optional approve HITL requests and choose defaults in this process
     - `--inputs <json>` — Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.
-  - `teamai workflow next <run>` — Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.
+  - `teamai workflow next <run>` — Get a lease, hitl, wait, or done JSON envelope. Declare enforced requirements in driver.can (network, env, isolation, human, resume, tokens, max_turns, setup). Show hitl.message and hitl.respond to a person.
     - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can.hitl, true when a person can answer HITL requests and work interactively. Send driver.can.hitl on every next request, including busy polls. Every answer lists in cancelled the running attempts whose tools the driver must stop.
   - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
     - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver

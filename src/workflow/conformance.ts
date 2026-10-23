@@ -28,7 +28,7 @@ export interface ConformanceScenario {
  * `absent` lists fields the lease must not carry.
  */
 export type ConformanceOperation =
-  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; hitl?: boolean; cancelled?: string[]; absent?: string[]; expect: Record<string, unknown> }
+  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; hitl?: boolean; can?: Record<string, unknown>; cancelled?: string[]; absent?: string[]; expect: Record<string, unknown> }
   | { kind: 'respond'; step: string; choice: string; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
   | { kind: 'retry'; step: string; expect: Record<string, unknown> }
   | { kind: 'cancel'; step?: string; expect: Record<string, unknown> }
@@ -619,4 +619,45 @@ workflowConformanceScenarios.push({
   ],
   expectState: { steps: [{ id: 'work', status: 'leased', answer: { choice: 'yes', channel: 'driver', agent: false,
     note: 'Person approved in the UI', driver: { kind: 'ide', machine: 'host', workspace: '/ui' } } }, { id: 'later', status: 'pending' }] },
+});
+
+workflowConformanceScenarios.push({
+  name: 'workflow requirements negotiate before leasing without blocking other roots', workflowName: 'build',
+  yaml: `schemaVersion: v1alpha1
+name: build
+description: Negotiate requirements.
+steps:
+  - id: online
+    command: echo online
+    requires: { network: true }
+  - id: plain
+    needs: []
+    command: echo plain
+`, operations: [
+    { kind: 'next', saveAs: 'plain', expect: { data: { lease: { step: 'plain' } } } },
+    { kind: 'report', lease: 'plain', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+    { kind: 'next', saveAs: 'waiting', expect: { data: { wait: { reason: 'online: Driver cannot enforce requires.network=true' } } } },
+    { kind: 'next', saveAs: 'online', can: { network: true }, expect: { data: { lease: { step: 'online', requires: { network: true } } } } },
+    { kind: 'report', lease: 'online', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+    { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
+  ],
+}, {
+  name: 'workflow budget cancels parallel attempts and rejects late reports', workflowName: 'build',
+  yaml: `schemaVersion: v1alpha1
+name: build
+description: Enforce budget.
+budget: { tokens: 10 }
+steps:
+  - id: a
+    prompt: A
+  - id: b
+    needs: []
+    prompt: B
+`, operations: [
+    { kind: 'next', saveAs: 'a', can: { tokens: true }, expect: { data: { lease: { step: 'a' } } } },
+    { kind: 'next', saveAs: 'b', running: ['a'], can: { tokens: true }, expect: { data: { lease: { step: 'b' } } } },
+    { kind: 'report', lease: 'a', body: { outcome: 'success', tokens: { input: 10 } }, expect: { data: { accepted: true } } },
+    { kind: 'next', saveAs: 'done', running: ['b'], cancelled: ['b'], expect: { data: { done: { outcome: 'failed', failure: { code: 'budget_exceeded' } } } } },
+    { kind: 'report', lease: 'b', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+  ],
 });

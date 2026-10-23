@@ -13,7 +13,7 @@ const FailureSchema: z.ZodType<WorkflowFailure> = z.object({ code: z.string(), m
 /** Stored driver identity, with per-request capabilities omitted. */
 export const DriverSchema: z.ZodType<DriverIdentity> = z.object({ kind: z.string(), machine: z.string(), workspace: z.string() });
 
-const LeaseSchema: z.ZodType<StepLease> = z.object({ attempt: z.string(), revision: z.number(), driver: DriverSchema });
+const LeaseSchema: z.ZodType<StepLease> = z.object({ attempt: z.string(), revision: z.number(), driver: DriverSchema, startedAt: z.number().optional(), deadline: z.number().optional() });
 
 const ChangesSchema = z.object({
   branch: z.string(),
@@ -97,6 +97,7 @@ export type ArchivedPass = z.infer<typeof ArchivedPassSchema>;
  */
 const StepBaseSchema = z.object({
   id: z.string(),
+  startedAt: z.number().optional(),
   pass: z.number().int().optional(),
   passes: z.array(StepPassSchema).optional(),
   /** The current pass's answer, cleared only when that pass is replaced. */
@@ -205,8 +206,9 @@ export function lease(state: StepState, held: StepLease): LeasedStep {
 }
 
 /** A workflow step starts; `inputs` are the values its `with` passed, when that workflow declares inputs. */
-export function start(state: StepState, inputs?: Record<string, unknown>): RunningStep {
+export function start(state: StepState, inputs?: Record<string, unknown>, timed = false): RunningStep {
   const running = become<RunningStep>(state, { status: 'running' });
+  if (timed) running.startedAt ??= Date.now();
   if (inputs) running.inputs = inputs;
   return running;
 }
@@ -241,6 +243,7 @@ export function repend(state: StepState, iteration?: number): PendingStep {
   const pass = (state.pass ?? 1) + 1;
   const pending = become<PendingStep>(state, { status: 'pending' });
   delete pending.inputs;
+  delete pending.startedAt;
   delete pending.round;
   delete pending.answer;
   return Object.assign(pending, { pass, passes }, iteration !== undefined ? { iteration } : {});

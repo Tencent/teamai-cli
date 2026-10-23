@@ -40,3 +40,9 @@ Each rule below spans more than one file. The rule names the code that owns it, 
 ## Tests
 
 Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the engine through `startRun`, `leaseNext`, and `reportAttempt`. Every driver must pass the conformance suite in `src/workflow/conformance.ts`. If a driver can see a new behavior, add a scenario there.
+
+## Requirements and limits
+
+`requirements.ts` resolves names and local values separately. Values stay in driver memory; leases carry names only. Every report string is masked before validation or state mutation. Command overlays and persisted inputs cannot shadow declared keys. `next` negotiates requirements, member policy and driver capabilities before both a new lease and a restarted driver's handback; held work does not block another ready root.
+
+Deadlines and token budgets reconcile in `next` and `report` before accepting a late attempt. Root limits end through `finishRun`; nested limits fail their runner and use `stopWhere` for all descendants. Token totals include step passes and `run.archive`. New failure codes are in `RECORDED_FAILURES`. The local driver scopes command/tool environments through the env-exec Bash startup guard, runs setup once per new worktree outside the run lock, rejects setup edits and retained known secrets, and polls cancellation while tools run. It does not claim network-off or sandbox enforcement.

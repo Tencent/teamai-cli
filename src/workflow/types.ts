@@ -1,6 +1,7 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
 import type { ArchivedPass, StepState } from './step-state.js';
+import type { WorkflowRequirements, WorkflowSetup } from './requirements.js';
 
 /** The driver's lease ownership, independent of its per-request capabilities. */
 export interface DriverIdentity {
@@ -33,6 +34,10 @@ export interface StepHitl {
 
 export interface WorkflowStep {
   id: string;
+  requires?: WorkflowRequirements;
+  /** Milliseconds, parsed from a duration such as 30m. */
+  timeout?: number;
+  maxTurns?: number;
   /** Step ids this step waits for. Absent only on the first step, which is a root. */
   needs?: string[];
   /** Expression source; a false value skips the step. */
@@ -121,6 +126,11 @@ export type EndOutcome = 'succeeded' | 'failed';
  * and the steps the enclosing step needs, directly or through their needs.
  */
 export interface InlineWorkflow {
+  requires?: WorkflowRequirements;
+  defaults?: WorkflowDefaults;
+  setup?: WorkflowSetup;
+  timeout?: number;
+  budget?: { tokens: number };
   ends?: Record<string, EndOutcome>;
   outputs?: Record<string, string>;
   loop?: WorkflowLoop;
@@ -129,11 +139,16 @@ export interface InlineWorkflow {
 
 /** Values a workflow file sets for its steps. */
 export interface WorkflowDefaults {
+  requires?: WorkflowRequirements;
   /** The model of a prompt step whose step and definition choose none, as written. */
   model?: string;
 }
 
 export interface WorkflowDefinition {
+  requires?: WorkflowRequirements;
+  setup?: WorkflowSetup;
+  timeout?: number;
+  budget?: { tokens: number };
   schemaVersion: 'v1alpha1';
   name: string;
   description: string;
@@ -173,13 +188,15 @@ export interface WorkflowDiagnostic {
    * `bad_session`: a `session.from` pull rejects; the kept copy would resume a step the author did not name.
    * `bad_workspace`: `workspace` is not read-only, new, or continue; the kept copy would run the step in the wrong place.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_requirements';
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
 export type RunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface StepLease {
+  startedAt?: number;
+  deadline?: number;
   attempt: string;
   revision: number;
   driver: DriverIdentity;

@@ -31,7 +31,7 @@ import type { DriverIdentity, RunState, RunStatus, TokenUsage, WorkflowFailure }
  * another driver reports, can be any text, so a record carries only these.
  */
 const RECORDED_FAILURES = [
-  'cancelled', 'hitl_required',
+  'cancelled', 'hitl_required', 'timeout', 'budget_exceeded', 'missing_env', 'env_unavailable', 'env_collision', 'unsupported_enforcement', 'setup_dirty', 'setup_secret', 'setup_failed',
   'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle',
   'tool_failed', 'tool_unavailable', 'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
   'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',

@@ -286,3 +286,5 @@ projects:
     resources:
       docs: [checkout]
 ```
+
+Workflow steps receive only the team keys they list in `requires.env`, even when the shell already exported other team keys. Setup has a separate key list. Keep credentials out of workflow inputs and command `env`; see [Requirements and execution limits](workflow.md#requirements-and-execution-limits).

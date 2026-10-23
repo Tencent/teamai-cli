@@ -1241,7 +1241,7 @@ describe('file sub-workflows', () => {
     fs.writeFileSync(path.join(workflows, 'check.yaml'), CHECK);
     await syncWorkflowDefinitions(fixture.config);
     const restoreShip = saveCachedCopy(fixture.config, 'ship');
-    fs.writeFileSync(path.join(workflows, 'check.yaml'), `${CHECK}    timeout: 10m\n`);
+    fs.writeFileSync(path.join(workflows, 'check.yaml'), `${CHECK}    future_timeout: 10m\n`);
     await syncWorkflowDefinitions(fixture.config);
     restoreShip();
 

@@ -20,7 +20,7 @@ import { reportMissingSecrets } from './env-advisories.js';
 import { appliedTeamEnv, resolvesTeamEnv, resolveTeamEnv } from './env-resolution.js';
 import { memberEnvironmentWithoutScope, type MemberEnvironment } from './member-env.js';
 import { describeEntryFailure } from './namespaced-entries.js';
-import { ENV_KEY_RE, envTable } from './resources/env-key.js';
+import { ENV_KEY_RE, envTable, sameEnvName } from './resources/env-key.js';
 import { envExecBashEnvPath, envLoaderPath, writeEnvExecBashEnv } from './resources/env-loader.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { getDataHome, type GlobalOptions, type LocalConfig } from './types.js';
@@ -180,6 +180,20 @@ function inheritedEnvironment(): NodeJS.ProcessEnv {
   for (const key of Object.keys(env)) if (key.startsWith('__TEAMAI_ENV_')) delete env[key];
   if (bashEnv) env.BASH_ENV = bashEnv;
   else delete env.BASH_ENV;
+  return env;
+}
+
+/** A workflow step's overlay, including withheld keys, survives nested bash startup files. */
+export async function workflowCommandEnvironment(values: Record<string, string>, removed: readonly string[]): Promise<NodeJS.ProcessEnv> {
+  const env = inheritedEnvironment();
+  for (const key of Object.keys(env)) if (sameEnvName(removed, key) !== undefined) delete env[key];
+  Object.assign(env, values);
+  if (env.BASH_ENV && removed.length) {
+    const member = env.BASH_ENV;
+    env.BASH_ENV = await writeEnvExecBashEnv();
+    env.__TEAMAI_ENV_EXEC_BASH_ENV = member;
+    env.__TEAMAI_ENV_EXEC_KEYS = [...new Set([...removed, ...Object.keys(values)])].join(' ');
+  }
   return env;
 }
 

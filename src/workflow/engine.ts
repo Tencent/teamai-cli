@@ -39,6 +39,7 @@ import type {
   WorkflowStep,
 } from './types.js';
 import { hasAction } from './types.js';
+import { CapabilitiesSchema, environmentCollision, maskSecrets, mergeRequirements, missingEnvironment, requirementsMismatch, runTokens, workflowEnvironment, type WorkflowCapabilities } from './requirements.js';
 
 const LOCK_ATTEMPTS = 40;
 const LOCK_WAIT_MS = 25;
@@ -240,9 +241,16 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, auto
 }
 
 function leaseData(
-  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease, plan?: WorkspacePlan,
+  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease, plan?: WorkspacePlan, effectiveRequires?: import('./requirements.js').WorkflowRequirements,
 ): Record<string, unknown> {
+  const located = locateStep(run, state.id);
+  const requires = effectiveRequires ?? (located ? mergeRequirements(located.scope.requirements, located.scope.definition.defaults?.requires, definition.requires) : definition.requires);
+  const setup = plan?.contract ? located?.scope.setup : undefined;
   return { lease: {
+    ...(requires && Object.keys(requires).length ? { requires } : {}),
+    ...(setup ? { setup } : {}),
+    ...(state.lease.deadline ? { deadline: state.lease.deadline } : {}),
+    ...(definition.maxTurns ? { max_turns: definition.maxTurns } : {}),
     run: run.id,
     step: state.id,
     attempt: state.lease.attempt,
@@ -484,7 +492,7 @@ function startWorkflowStep(run: RunState, scope: Scope, states: StepState[], sta
       child.inputs = inputs;
     }
   }
-  start(state, inputs);
+  start(state, inputs, Boolean(step.timeout || child.definition.timeout));
   const steps = child.definition.steps.map((step): StepState => {
     const id = `${child.prefix}${step.id}`;
     const pass = firstPass(run, id);
@@ -576,7 +584,7 @@ function advanceInstance(
       failStep(state, values, run.revision);
       return undefined;
     }
-    start(state);
+    start(state, undefined, Boolean(definition.timeout));
     addItems(run, state, values);
     return undefined;
   }
@@ -816,6 +824,11 @@ export async function startRun(
   if (mismatch) return error('invalid_inputs', mismatch);
   const tree = await loadWorkflows(config, cached);
   if ('failed' in tree) return tree.failed;
+  const environment = await workflowEnvironment(config);
+  if (environment.failure) return error(environment.failure.code, environment.failure.message);
+  if (JSON.stringify(maskSecrets(inputs, environment.secrets)) !== JSON.stringify(inputs)) return error('invalid_inputs', 'Workflow inputs must not contain known secret values; use requires.env.');
+  if (isRecord(inputs) && environmentCollision(environment, Object.fromEntries(Object.keys(inputs).map((key) => [key, ''])))) return error('invalid_inputs', 'Workflow inputs must not shadow declared environment keys; use requires.env.');
+  if (JSON.stringify(maskSecrets(tree.workflows, environment.secrets)) !== JSON.stringify(tree.workflows) || JSON.stringify(maskSecrets(cached.definition, environment.secrets)) !== JSON.stringify(cached.definition)) return error('invalid_inputs', 'Workflow definitions must not contain known secret values; use requires.env.');
   const now = new Date().toISOString();
   const run: RunState = {
     schemaVersion: 'v1alpha1',
@@ -872,10 +885,14 @@ export interface NextOptions {
   hitl?: boolean;
   /** Process-only override of the member's automatic HITL approval setting. */
   autoApprove?: boolean;
+  capabilities?: WorkflowCapabilities;
+  /** Local tool-specific enforcement, evaluated before leasing. */
+  supports?: (step: WorkflowStep, requires: import('./requirements.js').WorkflowRequirements) => string | undefined;
 }
 
 export async function leaseNext(config: LocalConfig, runId: string, driver: DriverIdentity, options: NextOptions = {}): Promise<WorkflowEnvelope> {
   driver = { kind: driver.kind, machine: driver.machine, workspace: driver.workspace };
+  const environment = await workflowEnvironment(config);
   const running = new Set(options.running);
   // The end record is queued under the run lock, so the run stores whether it
   // was in the same save. It publishes AFTER withRun releases the lock (#1126
@@ -889,11 +906,11 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     // are no longer its open leases.
     const answer = (data: Record<string, unknown>): { save: boolean; envelope: WorkflowEnvelope } => ({
       save: JSON.stringify(run) !== before,
-      envelope: ok({
+      envelope: ok(maskSecrets({
         ...data,
         cancelled: [...running].filter((attempt) => !run.steps.some((step) => step.status === 'leased'
           && step.lease.attempt === attempt && sameDriver(step.lease.driver, driver))),
-      }),
+      }, environment.secrets)),
     });
     const done = async (result: WorkflowResult): Promise<{ save: boolean; envelope: WorkflowEnvelope }> => {
       queued = await finishRun(config, run, now, result, driver);
@@ -908,6 +925,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       alreadySettled = run;
       return answer(doneData(run));
     }
+    const limit = enforceLimits(run, Date.now());
+    if (limit) return done({ outcome: 'failed', failure: limit, settledAt: run.revision });
     const older = missingNeeds(run);
     if (older) return { save: false, envelope: error('run_unreadable', older) };
     const other = run.steps.find((step): step is LeasedStep => step.status === 'leased' && !sameDriver(step.lease.driver, driver));
@@ -929,6 +948,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         }
         // A step this driver must not take is held back, and the next ready one is tried. A failed step can change
         // what is ready, so the run settles again.
+        if (config.workflows?.max_parallel && run.steps.filter((step) => step.status === 'leased').length >= config.workflows.max_parallel) return answer({ wait: { reason: 'Member workflow max_parallel reached' } });
         const held: string[] = [];
         let failed = false;
         for (const { lease: state, definition, rendered } of result.ready) {
@@ -939,6 +959,24 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           }
           const located = locateStep(run, state.id);
           if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${state.id}"`) };
+          const requires = mergeRequirements(config.workflows?.allow?.network === false ? { network: false } : undefined, located.scope.requirements, located.scope.definition.defaults?.requires, definition.requires);
+          const missing = missingEnvironment(environment, requires.env ?? []);
+          const collision = environmentCollision(environment, rendered.env);
+          if (missing || collision) {
+            failStep(state, missing ?? { code: 'env_collision', message: 'Command env must not shadow a declared environment key; use requires.env.' }, run.revision);
+            failed = true; break;
+          }
+          const can = { ...options.capabilities, human: options.capabilities?.human ?? options.hitl };
+          const mismatch = (definition.interactive && config.workflows?.allow?.human === false ? 'Member workflow policy disallows human' : definition.session && config.workflows?.allow?.resume === false ? 'Member workflow policy disallows resume' : undefined)
+            ?? requirementsMismatch(requires, config.workflows?.allow ?? {}, can)
+            ?? (definition.maxTurns && !can.max_turns ? 'Driver cannot enforce max_turns' : undefined)
+            ?? (definition.prompt !== undefined && scopeBudgeted(run, located.scope) && !can.tokens ? 'Driver cannot report tokens required by budget' : undefined)
+            ?? options.supports?.(definition, requires);
+          if (mismatch) { held.push(`${state.id}: ${mismatch}`); continue; }
+          if (JSON.stringify(maskSecrets(rendered, environment.secrets)) !== JSON.stringify(rendered)) {
+            failStep(state, { code: 'env_collision', message: 'Rendered lease contains a known secret value; pass secrets through requires.env.' }, run.revision);
+            failed = true; break;
+          }
           const plan = planWorkspace(run, located.scope, state, definition, {
             driver, modes: options.workspaceModes, base: run.base ?? options.base,
           });
@@ -952,9 +990,19 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
             break;
           }
           if (plan.contract && options.base && !run.base) run.base = options.base;
-          const step = lease(state, { attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver });
+          const setup = plan.contract ? located.scope.setup : undefined;
+          if (setup) {
+            const missing = missingEnvironment(environment, setup.requires?.env ?? []);
+            if (missing) { failStep(state, missing, run.revision); failed = true; break; }
+            const mismatch = !can.setup ? 'Driver cannot run setup' : requirementsMismatch(setup.requires ?? {}, config.workflows?.allow ?? {}, can);
+            if (mismatch) { held.push(`${state.id} setup: ${mismatch}`); continue; }
+          }
+          if (requires.isolation === 'worktree' && !plan.contract) { held.push(`${state.id}: requires.isolation=worktree needs a separate workspace`); continue; }
+          const startedAt = Date.now();
+          const deadline = leaseDeadline(run, state, definition, startedAt);
+          const step = lease(state, { startedAt, ...(deadline ? { deadline } : {}), attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver });
           rememberCopy(run, plan, driver);
-          return answer(leaseData(run, step, definition, rendered, plan));
+          return answer(leaseData(run, step, definition, rendered, plan, requires));
         }
         if (failed) continue;
         return answer({ wait: { reason: held.join('; ') } });
@@ -972,7 +1020,31 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         const plan = planWorkspace(run, located.scope, leased, located.step, {
           driver, modes: options.workspaceModes, base: run.base ?? options.base,
         }, true);
-        return answer(leaseData(run, leased, located.step, rendered, plan.fail ? undefined : plan));
+        if (plan.fail) {
+          (run.cancelledAttempts ??= []).push(leased.attempt); failStep(leased, plan.fail, run.revision); continue;
+        }
+        const requires = mergeRequirements(config.workflows?.allow?.network === false ? { network: false } : undefined, located.scope.requirements, located.scope.definition.defaults?.requires, located.step.requires);
+        const missing = missingEnvironment(environment, requires.env ?? []);
+        const collision = environmentCollision(environment, rendered.env);
+        if (missing || collision) {
+          (run.cancelledAttempts ??= []).push(leased.attempt);
+          failStep(leased, missing ?? { code: 'env_collision', message: 'Command env shadows a declared environment key' }, run.revision);
+          continue;
+        }
+        const can = { ...options.capabilities, human: options.capabilities?.human ?? options.hitl };
+        const mismatch = (located.step.interactive && config.workflows?.allow?.human === false ? 'Member workflow policy disallows human' : located.step.session && config.workflows?.allow?.resume === false ? 'Member workflow policy disallows resume' : undefined)
+          ?? requirementsMismatch(requires, config.workflows?.allow ?? {}, can)
+          ?? (located.step.maxTurns && !can.max_turns ? 'Driver cannot enforce max_turns' : undefined)
+          ?? (located.step.prompt !== undefined && scopeBudgeted(run, located.scope) && !can.tokens ? 'Driver cannot report tokens required by budget' : undefined)
+          ?? options.supports?.(located.step, requires)
+          ?? (plan.contract && located.scope.setup && !can.setup ? 'Driver cannot run setup' : undefined)
+          ?? (plan.contract && located.scope.setup ? requirementsMismatch(located.scope.setup.requires ?? {}, config.workflows?.allow ?? {}, can) : undefined);
+        if (mismatch || plan.defer) return answer({ wait: { reason: mismatch ?? plan.defer } });
+        const setupMissing = plan.contract && located.scope.setup ? missingEnvironment(environment, located.scope.setup.requires?.env ?? []) : undefined;
+        if (setupMissing) {
+          (run.cancelledAttempts ??= []).push(leased.attempt); failStep(leased, setupMissing, run.revision); continue;
+        }
+        return answer(leaseData(run, leased, located.step, rendered, plan, requires));
       }
       failStep(leased, rendered, leased.lease.revision);
     }
@@ -1154,7 +1226,10 @@ export function parseNextPayload(value: unknown): ParsedNextPayload | string {
       }
       request.workspaceModes = workspace;
     }
-    ignored.push(...Object.keys(can).filter((key) => key !== 'hitl' && key !== 'workspace').map((key) => `driver.can.${key}`));
+    const caps = CapabilitiesSchema.safeParse(Object.fromEntries(Object.entries(can).filter(([key]) => key !== 'hitl' && key !== 'workspace' && key in CapabilitiesSchema.shape)));
+    if (!caps.success) return 'driver.can contains an invalid workflow capability';
+    if (Object.keys(caps.data).length) request.capabilities = caps.data;
+    ignored.push(...Object.keys(can).filter((key) => key !== 'hitl' && key !== 'workspace' && !(key in CapabilitiesSchema.shape)).map((key) => `driver.can.${key}`));
   }
   return { request, ignored };
 }
@@ -1206,34 +1281,41 @@ function branchStillUsed(run: RunState, branch: string): boolean {
 }
 
 export async function reportAttempt(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope> {
-  return withRun(config, runId, async (run) => {
+  const environment = await workflowEnvironment(config);
+  if (environment.failure) return error(environment.failure.code, environment.failure.message);
+  report = maskSecrets(report, environment.secrets);
+  let queued = false;
+  const envelope = await withRun(config, runId, async (run, now) => {
+    const before = JSON.stringify(run);
+    const limit = enforceLimits(run, Date.now());
+    if (limit) queued = await finishRun(config, run, now, { outcome: 'failed', failure: limit, settledAt: run.revision }, report.driver);
     // Settled membership wins. An old revision of a settled attempt is still repeated_report.
     if (run.settledAttempts.includes(report.attempt)) {
-      return { save: false, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) };
+      return { save: JSON.stringify(run) !== before, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) };
     }
     // Before the driver check, so any driver learns that the attempt was cancelled.
     if (run.cancelledAttempts?.includes(report.attempt)) {
-      return { save: false, envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) };
+      return { save: JSON.stringify(run) !== before, envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) };
     }
     const step = run.steps.find((item): item is LeasedStep => item.status === 'leased' && item.lease.attempt === report.attempt);
     if (!step) {
       if (report.revision !== run.revision) {
-        return { save: false, envelope: error('stale_revision', `Revision ${report.revision} is stale; the run is at ${run.revision}`) };
+        return { save: JSON.stringify(run) !== before, envelope: error('stale_revision', `Revision ${report.revision} is stale; the run is at ${run.revision}`) };
       }
-      return { save: false, envelope: error('wrong_attempt', `Attempt ${report.attempt} is not the leased attempt`) };
+      return { save: JSON.stringify(run) !== before, envelope: error('wrong_attempt', `Attempt ${report.attempt} is not the leased attempt`) };
     }
     const reconciled = reconcileRun(run);
-    if ('unreadable' in reconciled) return { save: false, envelope: error('run_unreadable', reconciled.unreadable) };
+    if ('unreadable' in reconciled) return { save: JSON.stringify(run) !== before, envelope: error('run_unreadable', reconciled.unreadable) };
     if (run.cancelledAttempts?.includes(report.attempt)) {
       return { save: true, envelope: error('lease_cancelled', `Attempt ${report.attempt} was cancelled; its report is not recorded`) };
     }
 
     // A lease is checked against the revision it was handed out at, so a report of a parallel lease does not make it stale.
     if (report.revision !== step.lease.revision) {
-      return { save: false, envelope: error('stale_revision', `Revision ${report.revision} is stale; attempt ${report.attempt} was leased at ${step.lease.revision}`) };
+      return { save: JSON.stringify(run) !== before, envelope: error('stale_revision', `Revision ${report.revision} is stale; attempt ${report.attempt} was leased at ${step.lease.revision}`) };
     }
     if (!sameDriver(step.lease.driver, report.driver)) {
-      return { save: false, envelope: error('wrong_driver', 'This lease belongs to a different driver') };
+      return { save: JSON.stringify(run) !== before, envelope: error('wrong_driver', 'This lease belongs to a different driver') };
     }
 
     const located = locateStep(run, step.id);
@@ -1242,10 +1324,14 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       driver: step.lease.driver, modes: ['read-only', 'new', 'continue'],
     }, true).contract;
     const mismatch = workspaceMismatch(report, contract);
-    if (mismatch) return { save: false, envelope: error('invalid_report', mismatch) };
+    if (mismatch) return { save: JSON.stringify(run) !== before, envelope: error('invalid_report', mismatch) };
+    if (report.tokens && Object.values(report.tokens).some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) return { save: JSON.stringify(run) !== before, envelope: error('invalid_report', 'Token usage must contain non-negative finite numbers') };
     let outcome = report.outcome;
     let message = report.message;
     let failure = report.failure;
+    if (report.outcome === 'success' && defined?.prompt !== undefined && located && scopeBudgeted(run, located.scope) && report.tokens === undefined) {
+      outcome = 'failed'; failure = { code: 'unsupported_enforcement', message: 'Driver reported no token usage for a budgeted prompt' }; message = failure.message;
+    }
     if (outcome === 'success' && defined?.output && (!defined.interactive || report.outputs !== undefined)) {
       const mismatch = outputMismatch(defined.output, report.outputs);
       if (mismatch) {
@@ -1290,4 +1376,54 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       }),
     };
   });
+  if (queued) await publishRunRecords(config);
+  return envelope;
+}
+
+/** A nested workflow shares every enclosing budget. */
+function scopeBudgeted(run: RunState, scope: Scope): boolean {
+  if (run.definition.budget || scope.definition.budget) return true;
+  return run.steps.some((state) => scope.prefix.startsWith(state.id + '.') && locateStep(run, state.id)?.step.workflow !== undefined
+    && (() => { const found = locateStep(run, state.id); return found && childScope(run, found.scope, statesIn(run, found.scope), state, found.step)?.definition.budget !== undefined; })());
+}
+
+/** Reconciliation happens only on next/report; the local driver polls while work is outstanding. */
+function enforceLimits(run: RunState, now: number): WorkflowFailure | undefined {
+  if (run.status !== 'running') return undefined;
+  const rootFailure = run.definition.timeout && now >= Date.parse(run.createdAt) + run.definition.timeout
+    ? { code: 'timeout', message: 'Workflow timeout exceeded' }
+    : run.definition.budget && runTokens(run) >= run.definition.budget.tokens
+      ? { code: 'budget_exceeded', message: 'Workflow token budget exceeded' } : undefined;
+  if (rootFailure) { stopWhere(run, () => true, rootFailure, run.revision); return rootFailure; }
+  for (const state of run.steps) {
+    if (state.status === 'leased' && state.lease.deadline && now >= state.lease.deadline) {
+      const failure = { code: 'timeout', message: `Step "${state.id}" timeout exceeded` };
+      (run.cancelledAttempts ??= []).push(state.attempt);
+      failStep(state, failure, run.revision);
+    } else if (state.status === 'running') {
+      const found = locateStep(run, state.id);
+      const scope = found && childScope(run, found.scope, statesIn(run, found.scope), state, found.step);
+      const timeout = found?.step.timeout ?? scope?.definition.timeout;
+      const failure = timeout && state.startedAt && now >= state.startedAt + timeout
+        ? { code: 'timeout', message: `Workflow step "${state.id}" timeout exceeded` }
+        : scope?.definition.budget && runTokens(run, state.id + '.') >= scope.definition.budget.tokens
+          ? { code: 'budget_exceeded', message: `Workflow step "${state.id}" token budget exceeded` } : undefined;
+      if (failure) { stopWhere(run, (id) => id.startsWith(state.id + '.'), failure, run.revision); failStep(state, failure, run.revision); }
+    }
+  }
+  return undefined;
+}
+
+function leaseDeadline(run: RunState, state: StepState, definition: WorkflowStep, now: number): number | undefined {
+  const deadlines: number[] = [];
+  if (definition.timeout) deadlines.push(now + definition.timeout);
+  if (run.definition.timeout) deadlines.push(Date.parse(run.createdAt) + run.definition.timeout);
+  for (const parent of run.steps) {
+    if (parent.status !== 'running' || !parent.startedAt || !state.id.startsWith(parent.id + '.')) continue;
+    const found = locateStep(run, parent.id);
+    const scope = found && childScope(run, found.scope, statesIn(run, found.scope), parent, found.step);
+    const timeout = found?.step.timeout ?? scope?.definition.timeout;
+    if (timeout) deadlines.push(parent.startedAt + timeout);
+  }
+  return deadlines.length ? Math.min(...deadlines) : undefined;
 }
