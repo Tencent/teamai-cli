@@ -817,6 +817,18 @@ export async function holdsInstructionBlocks(file: string): Promise<boolean> {
   return content !== null && hasTeamaiBlock(content);
 }
 
+/** Whether a shared instruction file contains complete TeamAI blocks and no member text. */
+export async function holdsOnlyInstructionBlocks(file: string): Promise<boolean> {
+  let content = await readFileSafe(file);
+  if (content === null || !hasTeamaiBlock(content)) return false;
+  for (const pair of STALE_BLOCKS) {
+    const edited = editBlock(content, pair, null);
+    if ('malformed' in edited) return false;
+    content = edited.content;
+  }
+  return content.trim() === '';
+}
+
 function withoutHeader(content: string, header: string | undefined): string {
   return header && content.startsWith(header) ? content.substring(header.length) : content;
 }

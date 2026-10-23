@@ -8,6 +8,7 @@ import {
   applyInstructionPlan,
   clearInstructionFile,
   instructionChannelProblems,
+  holdsOnlyInstructionBlocks,
   instructionHookTextFor,
   planInstructionFiles,
   readsTeamRulesFromFile,
@@ -49,6 +50,18 @@ describe('instruction file planning (#945)', () => {
     tools: ['claude'],
     recall: false,
     ...extra,
+  });
+
+  it.each([
+    ['blocks alone', `${culture('c')}\n\n${claudemd('s')}\n`, true],
+    ['member text', `# Mine\n${culture('c')}\n`, false],
+    ['incomplete block', `${TEAMAI_CLAUDEMD_START}\nunfinished`, false],
+    ['duplicate blocks', `${culture('c')}\n${culture('c')}\n`, false],
+    ['empty file', '', false],
+  ])('classifies %s before excluding a shared instruction file', async (_name, content, onlyBlocks) => {
+    const file = path.join(dir, 'shared.md');
+    fs.writeFileSync(file, content as string);
+    expect(await holdsOnlyInstructionBlocks(file)).toBe(onlyBlocks);
   });
 
   it('gives the recall block to a target whose tool has the subagent, and the direct variant otherwise', async () => {
