@@ -34,7 +34,8 @@ They are not written into the project's `AGENTS.md`. Each tool gets its own file
 | Cursor | `~/.cursor/rules/teamai-context.mdc`; in a workspace outside the home directory, the session-start hook | `.cursor/rules/teamai-context.mdc` |
 | CodeBuddy, WorkBuddy | each tool's user file | one shared `.codebuddy/rules/teamai-context.md` |
 | OpenCode | `~/.config/opencode/teamai-context.md` | `.opencode/teamai-context.md` |
-| Pi, Oh My Pi | each tool's user file | an extension adds them to the system prompt |
+| Pi | `~/.pi/agent/AGENTS.override.md` when present, otherwise `AGENTS.md` | an extension adds them to the system prompt |
+| Oh My Pi | its user file | an extension adds them to the system prompt |
 | Hermes | `$HERMES_HOME/SOUL.md` | the Hermes plugin |
 | ZCode | `~/.zcode/AGENTS.md` | session-start hook |
 | DeepSeek Harness | `$DSH_HOME/AGENTS.md` (`~/.dsh/AGENTS.md` when unset) | session-start hook |

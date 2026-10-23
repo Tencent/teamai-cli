@@ -447,3 +447,7 @@ If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `team
 ## ZCode registered hooks but missing project rules
 
 Doctor checks the serialized rules reply against the user config `hooks.maxOutputBytes` (default 32768), counting UTF-8 bytes and JSON escaping. Other session hints make the complete stdout larger. Shorten the rules or raise the positive integer byte cap enough for the whole reply, then start a new session; registration alone does not prove the rules fit.
+
+## Pi user instructions with an override file
+
+Pi reads `AGENTS.override.md` before `AGENTS.md` in the same directory. In user scope, pull writes rules and instruction blocks into the existing override and strips only TeamAI blocks from the older configured file. Personal text in both files is preserved, including on uninstall. Without an override, the configured user file remains the target.

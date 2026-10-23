@@ -103,6 +103,29 @@ function makeUserSandbox(toolDirs: string[], options: { rule?: boolean } = {}): 
 
 const PROJECT_AGENTS_MD = '# Project\n\nAuthored project instructions.\n';
 
+it('pulls Pi rules and instructions into the existing override and preserves personal text on uninstall', async () => {
+  const { sandbox, home } = makeUserSandbox(['.pi/agent'], { rule: true });
+  const normal = path.join(home, '.pi/agent/AGENTS.md');
+  const override = path.join(home, '.pi/agent/AGENTS.override.md');
+  fs.writeFileSync(normal, `# Personal normal\n\n${CULTURE_START}\nOLD-CULTURE\n${CULTURE_END}\n`);
+  fs.writeFileSync(override, '# Personal override\n');
+  try {
+    const pull = await runCLI(['pull', '--force'], { HOME: home }, home);
+    expect(pull.code, pull.output).toBe(0);
+    const read = fs.readFileSync(override, 'utf8');
+    expect(read).toContain('# Personal override');
+    expect(read).toContain('Be kind.');
+    expect(read).toContain('Shared team instructions.');
+    expect(read).toContain('RULE-SENTINEL');
+    expect(fs.readFileSync(normal, 'utf8')).toBe('# Personal normal\n');
+    const uninstall = await runCLI(['uninstall', '--force'], { HOME: home }, home);
+    expect(uninstall.code, uninstall.output).toBe(0);
+    expect(fs.readFileSync(override, 'utf8')).toBe('# Personal override\n');
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 /**
  * A team whose roles select different `claudemd/` namespaces, and a project
  * repo with an authored, committed AGENTS.md (#945).
