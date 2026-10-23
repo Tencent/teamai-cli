@@ -1099,6 +1099,7 @@ export async function installedMcpEntries(
   const allowBare = target.format === 'copilot' && target.projectScope;
   const doc = await readJsonDoc(target.file, serverKey, allowBare, target.projectKey);
   if (doc === null) return null;
+  normalizeMuseServers(target, doc.servers);
   return new Map([...options.underKeyOnly ? [] : Object.entries(doc.beside ?? {}), ...Object.entries(doc.servers)]);
 }
 
@@ -2588,6 +2589,18 @@ export function ownsJsonMcpEntry(
   });
 }
 
+/** Muse saves stdio entries without the inferred type; retain the original render for ownership hashes. */
+function normalizeMuseServers(target: McpTarget, servers: Record<string, unknown>): void {
+  if (target.format !== 'muse') return;
+  for (const [name, value] of Object.entries(servers)) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    if (entry.type === undefined && typeof entry.command === 'string' && entry.url === undefined) {
+      servers[name] = { type: 'stdio', ...entry };
+    }
+  }
+}
+
 // ─── Appliers ────────────────────────────────────────────────
 
 /** `judgeUnrecordedMcpEntry` for one target. */
@@ -2625,6 +2638,7 @@ async function applyJson(
   }
   const existed = await pathExists(target.file);
   const previousData = structuredClone(doc.data);
+  normalizeMuseServers(target, doc.servers);
 
   const ownedHere = owned.filter((record) => ownsJsonMcpEntry(doc, record.name, [record], allowBare));
   const ownedHash = new Map(ownedHere.map((r) => [r.name, r.hash]));

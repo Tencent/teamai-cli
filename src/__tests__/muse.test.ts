@@ -141,6 +141,32 @@ describe('Muse Code MCP', () => {
     await fse.remove(root);
   });
 
+  it('preserves a member-edited stdio server after Muse omits type', async () => {
+    await fse.outputJson(settingsPath, { schema_version: 1 });
+    await reconcileMcpForConfig(team, config);
+    const settings = await fse.readJson(settingsPath);
+    delete settings.mcpServers.local.type;
+    settings.mcpServers.local.command = 'my-node';
+    await fse.writeJson(settingsPath, settings);
+
+    await reconcileMcpForConfig(team, config, { removeAll: true });
+    expect((await fse.readJson(settingsPath)).mcpServers.local.command).toBe('my-node');
+  });
+
+  it('keeps a stdio server managed after Muse saves it without type', async () => {
+    await fse.outputJson(settingsPath, { schema_version: 1 });
+    await reconcileMcpForConfig(team, config);
+    const settings = await fse.readJson(settingsPath);
+    delete settings.mcpServers.local.type;
+    await fse.writeJson(settingsPath, settings);
+    const context = { localConfig: config, teamConfig: team, toolPaths: team.toolPaths, hookToolPaths: team.toolPaths, baseDir: home };
+    const checks = await buildMcpDeliveryChecks(context);
+    const delivery = checks.find(check => check.name === 'MCP servers delivered to muse');
+    expect(await delivery!.check()).toBe(true);
+    await reconcileMcpForConfig(team, config, { removeAll: true });
+    expect((await fse.readJson(settingsPath)).mcpServers).not.toHaveProperty('local');
+  });
+
   it('writes stdio and http servers into settings.json, keeping its schema_version and hooks, and leaves sse out', async () => {
     const hooks = { SessionStart: [{ hooks: [{ type: 'command', command: 'echo mine' }] }] };
     await fse.outputJson(settingsPath, { schema_version: 1, hooks });
