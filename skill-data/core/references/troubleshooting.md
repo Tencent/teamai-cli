@@ -186,6 +186,8 @@ reference to VAR (`--from-env`) and VAR is unset in this environment. Ask the
 user whether to set VAR in their shell or replace the reference with the
 command in the line; do not choose for them.
 
+Muse may omit `type` when saving a stdio server. Pull and removal compare that form separately from the document they write, so a change to one server leaves personal servers and unchanged managed entries as saved.
+
 ## "Did not write <tool>'s MCP servers to <file>" / `withheld:`
 
 `pull` prints this, and `teamai mcp list` (`withheld:`) and `teamai doctor`

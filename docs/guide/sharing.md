@@ -201,6 +201,8 @@ Turn team hooks off on this machine with `TEAMAI_HOOKS_DISABLED=1`.
 
 ## MCP servers
 
+Muse may save stdio servers without `type`. Pull and removal compare that form without rewriting personal servers or unchanged managed entries when another server changes.
+
 ```yaml
 # mcp/mcp.yaml
 servers:

@@ -2638,9 +2638,10 @@ async function applyJson(
   }
   const existed = await pathExists(target.file);
   const previousData = structuredClone(doc.data);
-  normalizeMuseServers(target, doc.servers);
+  const comparable = { ...doc, servers: { ...doc.servers } };
+  normalizeMuseServers(target, comparable.servers);
 
-  const ownedHere = owned.filter((record) => ownsJsonMcpEntry(doc, record.name, [record], allowBare));
+  const ownedHere = owned.filter((record) => ownsJsonMcpEntry(comparable, record.name, [record], allowBare));
   const ownedHash = new Map(ownedHere.map((r) => [r.name, r.hash]));
   let dirty = false;
   // A kept entry holds the value an earlier pull resolved (desiredMcpForTarget).
@@ -2649,8 +2650,8 @@ async function applyJson(
   for (const [name, { entry, hash, resolvedValue }] of desired) {
     const existing = doc.servers[name];
     // An entry with no record is teamai's when it equals a team render of `name` (#993), and is adopted.
-    const unrecorded = existing !== undefined && !ownsJsonMcpEntry(doc, name, owned, allowBare) && !options.force;
-    const owner = unrecorded ? await judge(name, existing) : 'teamai';
+    const unrecorded = existing !== undefined && !ownsJsonMcpEntry(comparable, name, owned, allowBare) && !options.force;
+    const owner = unrecorded ? await judge(name, comparable.servers[name]) : 'teamai';
     if (owner !== 'teamai') {
       changes.push(unrecordedServerKept(target, name, owner));
       const previous = owned.find((record) => record.name === name);
@@ -2667,7 +2668,7 @@ async function applyJson(
       delete doc.data[name];
       dirty = true;
     }
-    if (existing !== undefined && (unrecorded ? entryHash(existing) : ownedHash.get(name)) === hash) {
+    if (existing !== undefined && (unrecorded ? entryHash(comparable.servers[name]) : ownedHash.get(name)) === hash) {
       if (unrecorded && options.dryRun) log.info(describeAdoptionPreview(target, name));
       continue;
     }
@@ -2680,18 +2681,18 @@ async function applyJson(
   for (const name of ownedNames) {
     if (desired.has(name)) continue;
     const previous = ownedHere.find((record) => record.name === name);
-    if (options.removeAll && previous && doc.servers[name] !== undefined && entryHash(doc.servers[name]) !== previous.hash) {
+    if (options.removeAll && previous && doc.servers[name] !== undefined && entryHash(comparable.servers[name]) !== previous.hash) {
       log.warn(`Kept MCP server ${name} in ${describeMcpLocation(target)}: you changed it since teamai wrote it. `
         + 'Remove it there when you no longer need it.');
       continue;
     }
     const kept = keep.get(name);
-    if (kept && ((ownsJsonMcpEntry(doc, name, owned, allowBare) && doc.servers[name] !== undefined) || isTeamaiBareCopy(doc, name, owned))) {
+    if (kept && ((ownsJsonMcpEntry(comparable, name, owned, allowBare) && doc.servers[name] !== undefined) || isTeamaiBareCopy(doc, name, owned))) {
       nextRecords.push(kept);
       holdsResolvedValue = true;
       continue;
     }
-    if (ownsJsonMcpEntry(doc, name, owned, allowBare) && doc.servers[name] !== undefined) {
+    if (ownsJsonMcpEntry(comparable, name, owned, allowBare) && doc.servers[name] !== undefined) {
       delete doc.servers[name];
       dirty = true;
     }
@@ -2706,7 +2707,7 @@ async function applyJson(
   // An unrecorded entry of a server the team deleted is teamai's when it equals a render of that
   // server from the team history (#993), and goes like any other server teamai no longer delivers.
   for (const [name, entry] of Object.entries(doc.servers)) {
-    if (desired.has(name) || ownedNames.has(name) || await judge(name, entry) !== 'teamai') continue;
+    if (desired.has(name) || ownedNames.has(name) || await judge(name, comparable.servers[name] ?? entry) !== 'teamai') continue;
     if (options.dryRun) log.info(describeRemovedServerPreview(target, name));
     delete doc.servers[name];
     dirty = true;

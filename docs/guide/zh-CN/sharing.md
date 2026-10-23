@@ -201,6 +201,8 @@ sharing:
 
 ## MCP Server
 
+Muse 保存 stdio server 时可能省略 `type`。pull 和移除操作会兼容这种格式；其他 server 发生变化时，个人 server 和未变更的受管条目保持原样。
+
 ```yaml
 # mcp/mcp.yaml
 servers:

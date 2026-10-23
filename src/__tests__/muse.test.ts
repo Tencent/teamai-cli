@@ -141,6 +141,30 @@ describe('Muse Code MCP', () => {
     await fse.remove(root);
   });
 
+  it.each(['add', 'update', 'remove'])('preserves foreign Muse-saved entries when a pull must %s team servers', async (operation) => {
+    await fse.outputJson(settingsPath, { schema_version: 1 });
+    await reconcileMcpForConfig(team, config);
+    const settings = await fse.readJson(settingsPath);
+    const foreign = { command: 'my-server', args: ['--local'], env: { B: 'two', A: 'one' } };
+    settings.mcpServers.personal = foreign;
+    delete settings.mcpServers.local.type;
+    const savedLocal = structuredClone(settings.mcpServers.local);
+    if (operation === 'add') delete settings.mcpServers.remote;
+    if (operation === 'update') {
+      const file = path.join(root, 'repo', 'mcp', 'mcp.yaml');
+      await fse.writeFile(file, (await fse.readFile(file, 'utf8')).replace('command: node', 'command: new-node'));
+    }
+    await fse.writeJson(settingsPath, settings);
+
+    await reconcileMcpForConfig(team, config, { removeAll: operation === 'remove' });
+
+    const after = await fse.readJson(settingsPath);
+    expect(JSON.stringify(after.mcpServers.personal)).toBe(JSON.stringify(foreign));
+    if (operation === 'add') expect(after.mcpServers.local).toEqual(savedLocal);
+    if (operation === 'update') expect(after.mcpServers.local.command).toBe('new-node');
+    if (operation === 'remove') expect(after.mcpServers).not.toHaveProperty('local');
+  });
+
   it('preserves a member-edited stdio server after Muse omits type', async () => {
     await fse.outputJson(settingsPath, { schema_version: 1 });
     await reconcileMcpForConfig(team, config);
