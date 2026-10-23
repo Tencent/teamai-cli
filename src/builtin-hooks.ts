@@ -239,7 +239,7 @@ const WINDOWS_PWSH_TOOLS = new Set(['dsh']);
 /**
  * True when this tool's hook runner is PowerShell on this platform, so the
  * rendered command must be PowerShell syntax (getPwshDispatchCommand). Kept
- * platform-gated: the same tool's POSIX hosts keep the bash wrapper.
+ * platform-gated: POSIX hosts use their shell and TeamAI's PATH wrapper.
  */
 export function toolUsesPwshShell(tool: string): boolean {
   return process.platform === 'win32' && WINDOWS_PWSH_TOOLS.has(tool);
@@ -285,7 +285,7 @@ export function getRawDispatchCommand(event: string, tool: string, matcher?: str
 /**
  * Build a hook command that prepends `$HOME/.teamai/bin` to PATH so the
  * wrapper script is found even without the user's login shell PATH.
- * Used by GUI tools (WorkBuddy, CodeBuddy) that spawn hook subprocesses
+ * Used by GUI tools (WorkBuddy, CodeBuddy) and POSIX DSH that spawn hook subprocesses
  * with a limited environment. The PATH value uses the `$HOME` shell literal
  * so that golden fixture output stays stable across machines.
  */
@@ -410,7 +410,7 @@ export function builtinHookDefs(tool: string): HookDef[] {
     ? getRawDispatchCommand
     : toolUsesPwshShell(tool)
       ? getPwshDispatchCommand
-      : WRAPPER_TOOLS.has(tool)
+      : WRAPPER_TOOLS.has(tool) || tool === 'dsh'
         ? getWrapperDispatchCommand
         : getDispatchCommand;
   const specs = [
