@@ -30,3 +30,5 @@ autoUpdate: false
 # ~/.teamai/config.yaml
 updatePolicy: skip    # auto / prompt / skip，优先于团队设置
 ```
+
+对于 OpenClaw 的默认工作区，`doctor` 会根据实际 `openclaw.json` 的 `agents.defaults.bootstrapMaxChars` 和 `bootstrapTotalMaxChars` 检查整个 `AGENTS.md`，包括个人内容。两项默认分别为 20,000 和 60,000 字符。如果会截断或跳过，请缩短文件或检查上限；`pull` 不会截断你的指令。单独智能体的覆盖配置需要另行检查。

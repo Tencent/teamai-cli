@@ -30,3 +30,5 @@ autoUpdate: false
 # ~/.teamai/config.yaml
 updatePolicy: skip    # auto, prompt, or skip
 ```
+
+For OpenClaw's default workspace, `doctor` checks the whole `AGENTS.md`, including personal text, against `agents.defaults.bootstrapMaxChars` and `bootstrapTotalMaxChars` in the resolved `openclaw.json`. Their defaults are 20,000 and 60,000 characters. Shorten the file or review these limits if it would be truncated or skipped; `pull` does not truncate your instructions. Per-agent overrides require checking that agent's configuration separately.
