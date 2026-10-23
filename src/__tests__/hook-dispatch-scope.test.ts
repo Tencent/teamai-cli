@@ -30,7 +30,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
     return child;
   }),
 }));
-vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined) }));
+vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined), settleLateUsageReport: vi.fn(async () => undefined) }));
 // votes.ts's withVotesLock imports acquireLock/releaseLock from update.js; a
 // no-op lock (always acquired) is enough in this single-process test.
 vi.mock('../update.js', () => ({

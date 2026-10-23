@@ -144,13 +144,17 @@ const pullHandler: HookHandler = {
     } catch (e) {
       log.debug(`hook-dispatch: seedProjectAgentRoot failed: ${(e as Error).message}`);
     }
-    const { pull } = await import('./pull.js');
+    const { pull, settleLateUsageReport } = await import('./pull.js');
     await pull({ silent: true });
     await packageHints.stashPackageHintAfterPull(
       hintCwd,
       deriveSessionId(stdin, { includeCwd: true }),
       packageHashBeforePull,
     );
+    // The detached background pass exits once its handlers settle, which would
+    // cut the push of a report pull() stopped waiting for. The host does not
+    // wait for this pass, so waiting here does not delay the session.
+    await settleLateUsageReport();
     return null;
   },
 };

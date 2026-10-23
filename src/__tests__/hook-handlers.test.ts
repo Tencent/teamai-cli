@@ -7,6 +7,7 @@ import path from 'node:path';
 // Mock the underlying modules so handlers don't do real I/O
 
 const mockPull = vi.fn().mockResolvedValue(undefined);
+const mockSettleLateUsageReport = vi.fn().mockResolvedValue(undefined);
 const mockDashboardReport = vi.fn().mockResolvedValue(undefined);
 const mockParseHookEvent = vi.fn().mockResolvedValue({ type: 'session_start', timestamp: '2026-01-01', sessionId: 'test', tool: 'claude' });
 const mockAppendEvent = vi.fn().mockResolvedValue(undefined);
@@ -32,6 +33,7 @@ const mockTakePendingPackageHint = vi.fn().mockResolvedValue(null);
 
 vi.mock('../pull.js', () => ({
   pull: mockPull,
+  settleLateUsageReport: mockSettleLateUsageReport,
 }));
 
 vi.mock('../dashboard-collector.js', () => ({
@@ -441,6 +443,24 @@ describe('hook-handlers registry', () => {
     expect(mockSeedProjectAgentRoot.mock.invocationCallOrder[0]).toBeLessThan(
       mockPull.mock.invocationCallOrder[0],
     );
+  });
+
+  it('session-start pull returns only after a report the pull stopped waiting for settles (#1322)', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'session-start' && r.handler.name === 'pull',
+    )!.handler;
+    let settle!: () => void;
+    mockSettleLateUsageReport.mockReturnValueOnce(new Promise<void>((resolve) => { settle = resolve; }));
+    let returned = false;
+
+    const done = handler.execute({ cwd: '/tmp/some-project' }, 'claude', null).then(() => { returned = true; });
+    await vi.waitFor(() => expect(mockSettleLateUsageReport).toHaveBeenCalledOnce());
+    expect(returned).toBe(false);
+    settle();
+    await done;
+
+    expect(returned).toBe(true);
   });
 
   it('session-start pull seeds from workspace_roots when cwd is absent', async () => {
