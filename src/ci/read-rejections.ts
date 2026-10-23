@@ -14,6 +14,8 @@ import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { log } from '../utils/logger.js';
 
 const API_TIMEOUT_MS = 15_000;
+// GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
+const MAX_NOTE_PAGES = 20;
 
 // ─── 类型 ────────────────────────────────────────────────
 
@@ -183,9 +185,17 @@ async function readGitLabRejections(mrUrl: string): Promise<RejectionResult> {
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
   });
 
-  const resp = await doFetch(`/projects/${enc}/merge_requests/${mrIid}/notes?per_page=100`);
-  if (!resp.ok) throw new Error(`GitLab notes request failed (${resp.status})`);
-  const notes = (await resp.json()) as GitLabNote[];
+  // GitLab returns notes newest-first, capped at 100 per page. Page through
+  // all of them: a 👎 on an older note (pushed past page 1 by newer discussion)
+  // must still reject the learning, same as fetchGitLabDiscussions paging.
+  const notes: GitLabNote[] = [];
+  for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
+    const resp = await doFetch(`/projects/${enc}/merge_requests/${mrIid}/notes?per_page=100&page=${page}`);
+    if (!resp.ok) throw new Error(`GitLab notes request failed (${resp.status})`);
+    const pageNotes = (await resp.json()) as GitLabNote[];
+    notes.push(...pageNotes);
+    if (!resp.headers.get('x-next-page')) break;
+  }
 
   for (const note of notes) {
     const markerId = extractMarkerId(note.body);

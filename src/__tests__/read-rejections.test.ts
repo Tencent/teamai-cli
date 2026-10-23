@@ -109,7 +109,7 @@ describe('GitLab (默认写入，👎 thumbsdown = reject)', () => {
     { id: 1, body: '<!-- teamai:ci-extract:learning -->\ncontent' },
     { id: 2, body: '<!-- teamai:ci-extract:suggestion:1 -->\ncontent' },
   ]);
-  const notesUrl = 'https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes?per_page=100';
+  const notesUrl = 'https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes?per_page=100&page=1';
   const emojiUrl = (noteId: number) =>
     `https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes/${noteId}/award_emoji?per_page=100`;
 
@@ -127,6 +127,29 @@ describe('GitLab (默认写入，👎 thumbsdown = reject)', () => {
     expect(result.approvedIds).toEqual(new Set(['suggestion:1']));
     expect(shouldWrite('learning', result, 'gitlab')).toBe(false);
     expect(shouldWrite('suggestion:1', result, 'gitlab')).toBe(true);
+  });
+
+  it('reads marker notes beyond the first page (newest-first paging)', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    // The learning note is the oldest of many: it lands on page 2, not page 1.
+    const page1 = JSON.stringify(
+      Array.from({ length: 100 }, (_, i) => ({ id: 100 + i, body: `chat ${i}` })),
+    );
+    const page2 = JSON.stringify([{ id: 1, body: '<!-- teamai:ci-extract:learning -->\ncontent' }]);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === 'https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes?per_page=100&page=1') {
+        return new Response(page1, { status: 200, headers: { 'x-next-page': '2' } });
+      }
+      if (url === 'https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes?per_page=100&page=2') {
+        return new Response(page2, { status: 200 });
+      }
+      if (url === emojiUrl(1)) return new Response(JSON.stringify([{ name: 'thumbsdown' }]), { status: 200 });
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    const result = await readRejections('https://gitlab.com/acme/app/-/merge_requests/7');
+    expect(result.rejectedIds).toEqual(new Set(['learning']));
+    expect(shouldWrite('learning', result, 'gitlab')).toBe(false);
   });
 
   it('fails when the GitLab note list cannot be read', async () => {

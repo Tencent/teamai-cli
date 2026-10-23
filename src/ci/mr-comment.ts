@@ -16,6 +16,8 @@ import { log } from '../utils/logger.js';
 
 const DEFAULT_MARKER = '<!-- teamai:ci-extract -->';
 const API_TIMEOUT_MS = 15_000;
+// GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
+const MAX_NOTE_PAGES = 20;
 
 // ─── 类型 ────────────────────────────────────────────────
 
@@ -319,19 +321,27 @@ async function gitlabRequest(mrUrl: string, path: string, method: string, body?:
 }
 
 async function findGitLabComment(mrUrl: string, marker: string): Promise<GitLabNote | null> {
-  const resp = await gitlabRequest(mrUrl, '?per_page=100', 'GET');
-  if (!resp.ok) {
-    throw new Error(`GitLab note list request failed (${resp.status})`);
+  // GitLab returns notes newest-first, capped at 100 per page. Page through all
+  // of them: a marker note pushed far back by newer discussion is still the one
+  // to update in place, and missing it would post a duplicate instead.
+  for (let page = 1; page <= MAX_NOTE_PAGES; page++) {
+    const resp = await gitlabRequest(mrUrl, `?per_page=100&page=${page}`, 'GET');
+    if (!resp.ok) {
+      throw new Error(`GitLab note list request failed (${resp.status})`);
+    }
+    const notes = (await resp.json()) as GitLabNote[];
+    const found = notes.find((n) => n.body.includes(marker));
+    if (found) return found;
+    if (!resp.headers.get('x-next-page')) break;
   }
-  const notes = (await resp.json()) as GitLabNote[];
-  return notes.find((n) => n.body.includes(marker)) ?? null;
+  return null;
 }
 
 async function postGitLabComment(mrUrl: string, body: string): Promise<CommentResult> {
   const resp = await gitlabRequest(mrUrl, '', 'POST', { body });
   if (!resp.ok) {
     const errText = await resp.text();
-    throw new Error(`GitLab comment 创建失败 (${resp.status}): ${errText}`);
+    throw new Error(`GitLab comment post failed (${resp.status}): ${errText}`);
   }
   return { created: true };
 }
@@ -340,7 +350,7 @@ async function updateGitLabComment(mrUrl: string, noteId: number, body: string):
   const resp = await gitlabRequest(mrUrl, `/${noteId}`, 'PUT', { body });
   if (!resp.ok) {
     const errText = await resp.text();
-    throw new Error(`GitLab comment 更新失败 (${resp.status}): ${errText}`);
+    throw new Error(`GitLab comment update failed (${resp.status}): ${errText}`);
   }
   return { created: false };
 }
@@ -395,7 +405,7 @@ export async function postOrUpdateMrComment(
   if (parsed.provider === 'gitlab') {
     const existing = await findGitLabComment(mrUrl, effectiveMarker);
     if (existing) {
-      log.debug(`发现已有 note #${existing.id}，更新中...`);
+      log.debug(`Found existing note #${existing.id}; updating in place...`);
       return updateGitLabComment(mrUrl, existing.id, body);
     }
     return postGitLabComment(mrUrl, body);

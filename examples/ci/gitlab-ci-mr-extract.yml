@@ -22,17 +22,17 @@ stages:
   - teamai-extract
   - teamai-write
 
-variables:
-  # callClaude 与 REST 调用均为同步阻塞，给足超时
-  TEAMAI_TIMEOUT: "20m"
-
 # ── MR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
 teamai-extract-comment:
   stage: teamai-extract
   image: node:22
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merged_result"'
-  timeout: $TEAMAI_TIMEOUT
+  # timeout 必须是字面量时长（GitLab 不展开 CI/CD 变量）
+  timeout: 20m
+  variables:
+    # 自建 GitLab 必须：CLI 只向配置过的实例发 PAT（默认 gitlab.com 会拒绝本实例 MR）
+    GITLAB_URL: $CI_SERVER_URL
   script:
     - npm install -g teamai-cli @anthropic-ai/claude-code
     - |
@@ -50,7 +50,10 @@ teamai-post-merge-write:
   image: node:22
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-  timeout: $TEAMAI_TIMEOUT
+  # timeout 必须是字面量时长（GitLab 不展开 CI/CD 变量）
+  timeout: 20m
+  variables:
+    GITLAB_URL: $CI_SERVER_URL
   script:
     - npm install -g teamai-cli @anthropic-ai/claude-code
     - |
