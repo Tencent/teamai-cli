@@ -216,6 +216,8 @@ steps:
 
 The PR targets the nearest delivered branch along the branch's recorded origin; `for_each.after` comes before other `needs`, and the first child inherits the enclosing workflow's dependencies. Skipped or read-only dependencies are passed over. If no earlier branch delivered, the target is the run's original branch. Start from a named branch: a detached checkout has no PR target. An open PR for the same head and target is reused.
 
+Commands that deliver must explicitly choose `workspace: new` or `continue`: omitting workspace makes a command read-only even inside a writable workflow. Prompts can inherit an enclosing writable workspace.
+
 Agent completion is followed by a durable `delivering` state. Dependents wait for it. Git and provider operations happen outside the run lock. A PR creation failure reports `delivery_failed` and names the preserved branch. Fix provider authentication, run `teamai workflow retry <run> <step>`, then `teamai workflow resume <run>`: this retries delivery on that branch without rerunning the agent. Push failures remain `push_failed` and retain the worktree. A completed composite may already have removed its worktree; its committed, pushed branch remains. Generic Git hosts support transport only: create a PR yourself and report its URL, or use a provider that supports PR creation. No interactive login starts during delivery.
 
 Before opening a PR, TeamAI checks the delivered commit against the run's base commit. Changes to CI, hooks, agent instructions, rules, MCP and equivalent tool configuration are rejected, with the paths named. The shared agent configuration paths are the same ones restored before workspace execution. This check includes changes inherited from earlier branches and deletions/renames.

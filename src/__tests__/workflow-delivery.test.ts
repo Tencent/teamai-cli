@@ -77,6 +77,10 @@ describe('workflow PR delivery contract', () => {
     const parsed = parseWorkflow('ship.yaml', yaml);
     expect(parsed.ok && parsed.definition.steps[0]).toMatchObject({ deliver: 'pr' });
     expect(parseWorkflow('ship.yaml', yaml.replace('deliver: pr', 'deliver: merge')).ok).toBe(false);
+    expect(parseWorkflow('ship.yaml', yaml.replace('    workspace: new\n', '')).ok).toBe(false);
+    const inherited = 'schemaVersion: v1alpha1\nname: ship\ndescription: Ship changes\nsteps:\n  - id: change\n    workspace: new\n    workflow:\n      steps:\n        - id: write\n          prompt: Edit the code.\n          deliver: pr\n';
+    expect(parseWorkflow('ship.yaml', inherited).ok).toBe(true);
+    expect(parseWorkflow('ship.yaml', inherited.replace('prompt: Edit the code.', 'command: echo edit')).ok).toBe(false);
   });
 
   it('keeps the URL for validation and names unread nested fields without values', () => {
@@ -268,6 +272,17 @@ describe('durable PR delivery', () => {
     const run = await state(config, runId);
     expect(run.steps[0]).toMatchObject({ status: 'cancelled', changes: { pr_url: 'https://github.com/fixture/app/pull/99' } });
     expect(buildEndRecord(run, driver, 'tester').prs).toEqual(['https://github.com/fixture/app/pull/99']);
+  });
+  it('does not create a PR when cancellation completed during the open-request lookup', async () => {
+    const api = provider();
+    const { config, cwd, runId } = await fixture(`  - id: write\n    command: ${command}\n    workspace: new\n    deliver: pr\n`);
+    api.lookup.mockImplementation(async () => {
+      await cancelRun(config, runId, 'write');
+      return undefined;
+    });
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(api.create).not.toHaveBeenCalled();
+    expect((await state(config, runId)).steps[0]).toMatchObject({ status: 'cancelled' });
   });
 
   it('keeps an execution deadline across delivery and makes no provider call once it expired', async () => {

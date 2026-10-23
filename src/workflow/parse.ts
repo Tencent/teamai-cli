@@ -493,7 +493,8 @@ function parseBody(
       const sessionPair = item.items.find((pair) => scalarString(pair.key) === 'session');
       const deliverPair = item.items.find((pair) => scalarString(pair.key) === 'deliver');
       const deliver = scalarString(deliverPair?.value)?.trim();
-      if (deliverPair && (deliver !== 'pr' || workspace === 'read-only')) {
+      // A command without workspace is always read-only, including inside a writable workflow.
+      if (deliverPair && (deliver !== 'pr' || workspace === 'read-only' || (commandPair && workspace === undefined))) {
         diagnostics.push({
           ...locate(file, lineCounter, deliverPair.value ?? deliverPair.key ?? item, `${field}.deliver`, 'deliver must be pr on a writable branch'),
           code: 'bad_delivery',
