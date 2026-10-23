@@ -121,10 +121,10 @@ describe('getDispatchCommand shell resolution', () => {
 });
 
 // Cursor's hooks.json has a single `command`, and the Windows desktop app runs
-// that string through PowerShell 5.1. `||` is a parse error there (InvalidEndOfLine),
-// and a quoted Git Bash path is not invoked without `&`, so bash and teamai never
-// start. Copilot already stores this rewrite in a separate `powershell` field;
-// Cursor has to put it in `command` itself. The file is per-machine.
+// that string through PowerShell. Inbox Windows PowerShell rejects `||`
+// (`InvalidEndOfLine`); every PowerShell also needs `&` before a quoted path.
+// Without the rewrite, bash and teamai never start. Copilot already stores this
+// in a separate `powershell` field; Cursor has to put it in `command` itself.
 
 type CursorHooksFile = {
   hooks: Record<string, Array<{ command: string; matcher?: string; timeout?: number }>>;
@@ -134,7 +134,7 @@ function cursorCommands(parsed: CursorHooksFile): string[] {
   return Object.values(parsed.hooks).flatMap((entries) => entries.map((entry) => entry.command));
 }
 
-describe('Cursor hook command on Windows PowerShell 5.1', () => {
+describe('Cursor hook command on Windows PowerShell', () => {
   let tmp: string;
 
   beforeEach(() => {
