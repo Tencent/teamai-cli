@@ -10,6 +10,7 @@ import {
 } from '../openclaw-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { log } from '../utils/logger.js';
+import * as builtinHooks from '../builtin-hooks.js';
 import { OPENCLAW_EVENT_KEYS, openclawEvents, type OpenClawHookEvent } from './fixtures/openclaw/events.js';
 
 let tmpDir: string;
@@ -276,21 +277,23 @@ describe('the generated handler', () => {
   let origPath: string | undefined;
 
   beforeEach(() => {
-    // A `teamai` first on PATH that records its argv and stdin, one line each call.
+    // A Node entry point records argv and stdin, including when PATH is empty.
     binDir = path.join(tmpDir, 'bin');
     logFile = path.join(tmpDir, 'teamai-calls.log');
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(binDir, 'teamai'),
-      `#!/bin/sh\nstdin=$(cat)\nprintf '%s\\t%s\\n' "$*" "$stdin" >> "${logFile}"\n`,
-      { mode: 0o755 },
-    );
+    const entry = path.join(binDir, 'teamai entry.mjs');
+    fs.writeFileSync(entry, `import fs from 'node:fs';
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+fs.appendFileSync(${JSON.stringify(logFile)}, process.argv.slice(2).join(' ') + '\\t' + input + '\\n');
+`);
+    vi.spyOn(builtinHooks, 'resolveCliEntry').mockReturnValue(entry);
     origPath = process.env.PATH;
-    process.env.PATH = `${binDir}${path.delimiter}${origPath ?? ''}`;
   });
 
   afterEach(() => {
     process.env.PATH = origPath;
+    vi.restoreAllMocks();
   });
 
   /** Transpile handler.ts the way a TypeScript-stripping loader would, beside the original. */
@@ -312,13 +315,21 @@ describe('the generated handler', () => {
     });
   }
 
-  /** Wait until the shim has logged `n` calls, then a little longer to catch extras. */
+  /** Wait until the entry has logged `n` calls, then a little longer to catch extras. */
   async function settle(n: number): Promise<void> {
     await vi.waitFor(() => expect(calls().length).toBeGreaterThanOrEqual(n), { timeout: 5000, interval: 25 });
     await new Promise((r) => setTimeout(r, 200));
   }
 
   const workspace = (): string => path.join(tmpDir, 'agent-ws');
+
+  it('dispatches with no teamai or node on the gateway PATH', async () => {
+    const handler = await loadHandler();
+    process.env.PATH = '';
+    await handler(openclawEvents(workspace())['command:new']);
+    await settle(1);
+    expect(calls()[0].argv).toBe('hook-dispatch session-start --tool openclaw');
+  });
 
   it.each([
     ['command:new', 'session-start'],

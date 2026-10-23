@@ -29,6 +29,7 @@ import { log } from './utils/logger.js';
 import { debugOnce } from './utils/warn-once.js';
 import { getUserHome } from './utils/home.js';
 import { resolveOpenclawConfigPath, resolveOpenclawStateDir, resolveOpenclawWorkspace } from './openclaw-home.js';
+import { resolveCliEntry } from './builtin-hooks.js';
 
 /**
  * Resolve the managed hooks directory for an OpenClaw-family tool:
@@ -87,7 +88,7 @@ function buildHookMd(tool: string): string {
   ].join('\n');
 }
 
-function buildHandlerTs(tool: string): string {
+function buildHandlerTs(tool: string, entry: string): string {
   // OpenClaw calls the default export with the event itself
   // ({ type, action, sessionKey, context, ... }). Map `${type}:${action}` to a
   // teamai dispatch event and shell out, passing the event's workspace as the
@@ -103,6 +104,8 @@ import { fileURLToPath } from 'node:url';
 
 const EVENT_MAP: Record<string, string> = ${mapLiteral};
 const TOOL = ${JSON.stringify(tool)};
+const NODE = ${JSON.stringify(process.execPath)};
+const ENTRY = ${JSON.stringify(entry)};
 const HOOK_WORKSPACE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 type HookEvent = { type?: unknown; action?: unknown; sessionKey?: unknown; context?: { workspaceDir?: unknown } | null };
@@ -118,8 +121,9 @@ export default async function handler(event?: HookEvent): Promise<void> {
   };
   if (typeof event.sessionKey === 'string' && event.sessionKey) payload.session_id = event.sessionKey;
   try {
-    const child = spawn('teamai', ['hook-dispatch', dispatchEvent, '--tool', TOOL], {
+    const child = spawn(NODE, [ENTRY, 'hook-dispatch', dispatchEvent, '--tool', TOOL], {
       stdio: ['pipe', 'ignore', 'ignore'],
+      windowsHide: true,
     });
     child.on('error', () => {});
     child.stdin?.on('error', () => {});
@@ -145,6 +149,11 @@ export default async function handler(event?: HookEvent): Promise<void> {
  * @param tool          claw variant (openclaw/qclaw/easyclaw/autoclaw)
  */
 export async function injectOpenClawHooks(workspacePath?: string, tool = 'openclaw'): Promise<void> {
+  const entry = resolveCliEntry();
+  if (!entry) {
+    log.warn('OpenClaw: cannot resolve the teamai CLI entry; run `teamai hooks inject` from the installed CLI.');
+    return;
+  }
   const wsDir = await resolveOpenclawWorkspaceDir(workspacePath);
   if (!wsDir) {
     log.debug(`openclaw: skip hook injection for ${tool} — workspace dir not found`);
@@ -152,7 +161,7 @@ export async function injectOpenClawHooks(workspacePath?: string, tool = 'opencl
   }
   const dir = path.join(wsDir, 'hooks', OPENCLAW_HOOK_DIR);
   const hookMdChanged = await writeIfChanged(path.join(dir, 'HOOK.md'), buildHookMd(tool));
-  const handlerChanged = await writeIfChanged(path.join(dir, 'handler.ts'), buildHandlerTs(tool));
+  const handlerChanged = await writeIfChanged(path.join(dir, 'handler.ts'), buildHandlerTs(tool, entry));
   if (hookMdChanged || handlerChanged) {
     log.success(`Injected teamai OpenClaw hook into ${dir}`);
   } else {
