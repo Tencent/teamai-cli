@@ -40,6 +40,7 @@ import {
   renderJsonEntry,
   renderCodexBlock,
   entryHash,
+  museEntryHash,
 } from './resources/mcp-format.js';
 import {
   readJsonDoc,
@@ -4015,6 +4016,7 @@ async function installMcpServer(
     const entry = renderJsonEntry(format, def);
     const serverKey = active ? mcpKeyOf(active) : place.key;
     const hash = entryHash(entry);
+    const valueHash = format === 'muse' ? museEntryHash(entry) : undefined;
     const allowBare = format === 'copilot' && projectScope;
     const doc = await readJsonDoc(targetFile, serverKey, allowBare, active?.projectKey);
     if (!doc) {
@@ -4035,7 +4037,7 @@ async function installMcpServer(
     // Existing ownership stays valid until the config write completes. New installs
     // still persist a provisional record before adding a Git exclusion (#882).
     if (!previousRecord) {
-      updateManifestRecord(manifest, manifestKey, { name: slug, hash, ...projectScope ? { resolved: credential } : {}, file: targetFile });
+      updateManifestRecord(manifest, manifestKey, { name: slug, hash, ...valueHash === undefined ? {} : { valueHash }, ...projectScope ? { resolved: credential } : {}, file: targetFile });
       await save();
     }
     if (credential) await keepCredentialOutOfGit({ ...localConfig, dataHome }, tool, slug, targetFile, entry);
@@ -4045,7 +4047,7 @@ async function installMcpServer(
     if (allowBare || previousRecord) {
       // Placement is evidence of a completed write, not just an attempted install.
       updateManifestRecord(manifest, manifestKey, {
-        name: slug, hash, ...projectScope ? { resolved: credential } : {}, ...allowBare ? { bare: doc.bare } : {}, file: targetFile,
+        name: slug, hash, ...valueHash === undefined ? {} : { valueHash }, ...projectScope ? { resolved: credential } : {}, ...allowBare ? { bare: doc.bare } : {}, file: targetFile,
       });
       // A record in the tool's other place goes with the copy there, once this write holds the server.
       if (otherKey && manifest[otherKey]) {
