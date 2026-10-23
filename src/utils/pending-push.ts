@@ -321,7 +321,7 @@ function sharedRootPaths(root: 'rules' | 'agents', name: string): string[] {
  */
 export async function reconcilePlacementRecords(
   repoPath: string,
-  state: Pick<State, 'placedRules' | 'placedAgents' | 'pendingPushes' | 'placementsCheckedAt' | 'retiredPlacedAgents' | 'placements'>,
+  state: Pick<State, 'placedRules' | 'placedAgents' | 'placedAgentSources' | 'pendingPushes' | 'placementsCheckedAt' | 'retiredPlacedAgents' | 'placements'>,
   tip?: string,
   deliversEveryNamespace: () => Promise<boolean> = async () => false,
 ): Promise<boolean> {
@@ -371,7 +371,18 @@ export async function reconcilePlacementRecords(
         changed = true;
         continue;
       }
-      if (!await exists(item.relativePath)) continue;
+      if (!await exists(item.relativePath)) {
+        // A placement can merge and be deleted before this machine observes
+        // it. History still proves that the root copy belongs to that agent.
+        if (field === 'placedAgents'
+          && await blobInHistory(repoPath, item.blob, item.relativePath, entry.base, history) === true) {
+          state.retiredPlacedAgents = { ...state.retiredPlacedAgents, [item.name]: item.relativePath };
+          item.placed = false;
+          delete item.blob;
+          changed = true;
+        }
+        continue;
+      }
       // Bounded by `base`: the same bytes may have sat at this path before the
       // push, and a PR closed unmerged must not borrow that history.
       if (await blobInHistory(repoPath, item.blob, item.relativePath, entry.base, history) !== true) {
@@ -399,6 +410,7 @@ export async function reconcilePlacementRecords(
       if (entry.base && await pathDeletedSince(repoPath, entry.base, item.relativePath, history) === true) {
         log.debug(`Not recording placement ${field ?? placementKey}.${item.name}: ${item.relativePath} was deleted after it landed`);
         item.placed = false;
+        if (field === 'placedAgents') state.retiredPlacedAgents = { ...state.retiredPlacedAgents, [item.name]: item.relativePath };
         delete item.blob;
         changed = true;
         continue;
@@ -406,6 +418,9 @@ export async function reconcilePlacementRecords(
       log.debug(`Recording placement ${field ?? placementKey}.${item.name} → ${item.relativePath}: landed on the default branch`);
       if (field) {
         state[field] = { ...state[field], [item.name]: item.relativePath };
+        if (field === 'placedAgents') {
+          state.placedAgentSources = { ...state.placedAgentSources, [item.name]: { path: item.relativePath, blob: item.blob } };
+        }
         recordedNow.add(`${field}:${item.name}`);
       } else if (placementKey) {
         state.placements = { ...state.placements, [placementKey]: { path: item.relativePath, blob: item.blob } };
@@ -463,6 +478,13 @@ export async function reconcilePlacementRecords(
       kept[name] = recorded;
     }
     state[field] = kept;
+  }
+
+  for (const [name, source] of Object.entries(state.placedAgentSources ?? {})) {
+    if (state.placedAgents?.[name] !== source.path) {
+      delete state.placedAgentSources![name];
+      changed = true;
+    }
   }
 
   // A repo-backed placement whose destination is gone from the default branch

@@ -78,6 +78,8 @@ export interface AgentResourceItem extends ResourceItem {
    * `pushItem` deletes it and `push` stages the deletion and moves the record.
    */
   supersedes?: string;
+  /** Blob this machine placed at `supersedes`, when its merge was proven. */
+  supersededBlob?: string;
 }
 
 /**
@@ -250,6 +252,12 @@ export class AgentsHandler extends ResourceHandler {
             const stem = file.replace(/\.(yaml|md)$/, '');
             if (tombstones.has(stem)) continue;
             if (BUILTIN_AGENT_NAMES.has(stem)) continue;
+            if (!namespace && !placedResourcePath(placedAgents, 'agents', stem)
+              && placedResourcePath(state.retiredPlacedAgents, 'agents', stem)) {
+              log.warn(`[agents] ${stem} was removed from the team; its root copy is not pushed as a new agent.`);
+              directStems.add(stem);
+              continue;
+            }
 
             const activePath = path.join(dir, file);
             let teamRelPath = `${relDir}/${file}`;
@@ -301,6 +309,8 @@ export class AgentsHandler extends ResourceHandler {
                 ? { namespace: teamRelPath.split('/')[1] }
                 : {}),
               ...(supersedes ? { supersedes } : {}),
+              ...(supersedes && state.placedAgentSources?.[stem]?.path === supersedes
+                ? { supersededBlob: state.placedAgentSources[stem].blob } : {}),
             });
             directStems.add(stem);
           }
