@@ -370,19 +370,15 @@ async function retireImpl(
   whileLocked: () => Promise<void> = async () => {},
 ): Promise<void> {
   if (!usesBranchWorktree(localConfig)) return;
+  await withLockImpl(spec, localConfig, async () => {
+    await retireWhileLockedImpl(spec, localConfig);
+    await whileLocked();
+  });
+}
 
+/** Retire one checkout after its writer lock has already been acquired. */
+async function retireWhileLockedImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): Promise<void> {
   const wt = worktreePath(spec, localConfig);
-  const lockPath = lockFilePath(spec, localConfig);
-  const locked = await acquireLock(lockPath);
-  if (!locked) {
-    throw new CheckoutRefusedError(
-      `${wt} is being written (${lockPath} is held), so teamai left it and the current clone unchanged. ` +
-        'Run init again when that command finishes.',
-      `the ${spec.branch} checkout is busy; see the warning above`,
-    );
-  }
-
-  try {
     if (await pathExists(wt)) {
       await checkOwnerImpl(spec, localConfig);
       const registered = await registeredCheckoutImpl(spec, localConfig);
@@ -445,8 +441,22 @@ async function retireImpl(
       await createGitWithBlockTimeout(gitRoot(localConfig)).raw(['worktree', 'remove', wt]);
       log.info(`Retired ${spec.branch} checkout at ${wt}`);
     }
+}
 
-    await whileLocked();
+/** Run while holding this branch's writer lock. */
+async function withLockImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig, action: () => Promise<void>): Promise<void> {
+  const wt = worktreePath(spec, localConfig);
+  const lockPath = lockFilePath(spec, localConfig);
+  const locked = await acquireLock(lockPath);
+  if (!locked) {
+    throw new CheckoutRefusedError(
+      `${wt} is being written (${lockPath} is held), so teamai left it and the current clone unchanged. ` +
+        'Run init again when that command finishes.',
+      `the ${spec.branch} checkout is busy; see the warning above`,
+    );
+  }
+  try {
+    await action();
   } finally {
     await releaseLock(lockPath);
   }
@@ -1265,6 +1275,10 @@ export interface BranchWorktree {
   registeredCheckout(localConfig: LocalConfig): Promise<string | null>;
   /** Whether this repository owns a side checkout with uncommitted changes. */
   isDirty(localConfig: LocalConfig): Promise<boolean>;
+  /** Run an action while holding this branch's writer lock. */
+  withLock(localConfig: LocalConfig, action: () => Promise<void>): Promise<void>;
+  /** Retire this checkout while its writer lock is already held. */
+  retireWhileLocked(localConfig: LocalConfig): Promise<void>;
   /** Push and remove this owned checkout, holding its writer lock through the optional replacement callback. */
   retire(localConfig: LocalConfig, whileLocked?: () => Promise<void>): Promise<void>;
 }
@@ -1297,6 +1311,8 @@ export function createBranchWorktree(spec: BranchWorktreeSpec): BranchWorktree {
     isForeignByFiles: (localConfig) => isForeignByFilesImpl(spec, localConfig),
     registeredCheckout: (localConfig) => registeredCheckoutImpl(spec, localConfig),
     isDirty: (localConfig) => dirtyImpl(spec, localConfig),
+    withLock: (localConfig, action) => withLockImpl(spec, localConfig, action),
+    retireWhileLocked: (localConfig) => retireWhileLockedImpl(spec, localConfig),
     retire: (localConfig, whileLocked) => retireImpl(spec, localConfig, whileLocked),
   };
 }

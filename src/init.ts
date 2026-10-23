@@ -1760,20 +1760,21 @@ export async function init(options: GlobalOptions & {
           queueOwner({ ...previous, repo: { localPath, remote: repoInfo.httpsUrl } }),
         );
         try {
-          if (changesOwner && (await reportsBranch.isDirty(previous) || await learningsBranch.isDirty(previous))) {
-            let aside = `${localPath}.previous`;
-            for (let n = 1; await pathExists(aside); n++) aside = `${localPath}.previous.${n}`;
-            await fs.promises.rename(localPath, aside);
-            await createGitWithBlockTimeout(aside).raw(['worktree', 'repair']);
-            log.warn(`Kept the old clone and its uncommitted side checkout(s) at ${aside}.`);
-          } else {
-            // Nest the retirements so both branch locks remain held until the old
-            // clone is gone; otherwise a concurrent writer can recreate an
-            // orphaned checkout between retirement and replacement.
-            await reportsBranch.retire(previous, () =>
-              learningsBranch.retire(previous, () => remove(localPath)),
-            );
-          }
+          // Hold both branch locks from inspection through removal or relocation;
+          // otherwise a writer can mutate a checkout while its Git dir moves.
+          await reportsBranch.withLock(previous, () => learningsBranch.withLock(previous, async () => {
+            if (changesOwner && (await reportsBranch.isDirty(previous) || await learningsBranch.isDirty(previous))) {
+              let aside = `${localPath}.previous`;
+              for (let n = 1; await pathExists(aside); n++) aside = `${localPath}.previous.${n}`;
+              await fs.promises.rename(localPath, aside);
+              await createGitWithBlockTimeout(aside).raw(['worktree', 'repair']);
+              log.warn(`Kept the old clone and its uncommitted side checkout(s) at ${aside}.`);
+            } else {
+              await reportsBranch.retireWhileLocked(previous);
+              await learningsBranch.retireWhileLocked(previous);
+              await remove(localPath);
+            }
+          }));
         } catch (e) {
           log.error((e as Error).message);
           process.exit(1);
