@@ -441,6 +441,15 @@ export async function hookDispatchCli(
         : await readStdin();
     const stdin = parseStdin(raw, event);
 
+    // Dynamic imports and handlers may resolve paths through process.cwd().
+    // A removed worktree has no usable process cwd; keep its payload intact
+    // for recorded-scope recovery, but run the dispatcher from a live directory.
+    try {
+      process.cwd();
+    } catch {
+      process.chdir(os.tmpdir());
+    }
+
     // Config gates: a directory without teamai runs no team handlers (#748), and
     // HTTP-only teams must not receive git-provider-only hook prompts
     // (contribute / mr-hint / votes). The project-scope config of the host's
