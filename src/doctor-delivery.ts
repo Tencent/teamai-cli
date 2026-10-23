@@ -1013,7 +1013,7 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
   if (zcodeSettings && !isAgentExcluded(localConfig, 'zcode') && await pathExists(path.join(home, '.zcode'))) {
     const file = path.join(home, zcodeSettings);
     const read = await readJsonObject(file);
-    const hooks = read.kind === 'ok' ? read.value.hooks as { enabled?: unknown; events?: unknown } | undefined : undefined;
+    const hooks = read.kind === 'ok' ? read.value.hooks as { enabled?: unknown; events?: unknown; maxOutputBytes?: unknown } | undefined : undefined;
     const entries = sessionStartDispatchEntries(hooks?.events);
     const registered = entries.length > 0;
     const enabled = hooks?.enabled === true;
@@ -1036,6 +1036,24 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
     // already fails and names the reason.
     const entry = entries[0];
     if (entry && enabled) {
+      const { teamRulesContext } = await import('./resources/rules.js');
+      const rules = await teamRulesContext(teamConfig, localConfig);
+      if (rules !== null) {
+        // ZCode caps the serialized stdout, not the number of context characters.
+        // Other session hints can make the final reply larger; this is a lower bound.
+        const bytes = Buffer.byteLength(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rules } }), 'utf8');
+        const limit = hooks?.maxOutputBytes ?? 32_768;
+        const valid = typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0;
+        checks.push({
+          name: 'Project rules fit the zcode hook stdout budget',
+          source: 'local',
+          check: async () => valid && bytes <= limit,
+          fix: `The project rules alone need ${bytes} UTF-8 bytes of hook stdout, before other session hints. `
+            + `${file} uses hooks.maxOutputBytes=${String(limit)} (default 32768). ZCode truncates oversized stdout and drops the reply when it no longer parses, `
+            + 'so registration can be healthy while no rules reach the model. Shorten the project rules or set '
+            + 'hooks.maxOutputBytes to a positive integer large enough for the complete reply, then start a new ZCode session.',
+        });
+      }
       checks.push({
         name: 'The teamai SessionStart hook for zcode returns its reply to the session',
         source: 'local',
