@@ -1,0 +1,85 @@
+# TeamAI MR Knowledge Extract — GitLab CI（git.guazi-corp.com 等自建 GitLab，API v4）
+#
+# MR 创建/更新时自动提炼知识并以 comment 贴到 MR 上；
+# MR 合入默认分支后自动把 learning 和 teamwiki/ 图谱写入团队知识仓库。
+#
+# 使用前请配置：
+#   1. 本文件放入业务仓根目录 .gitlab-ci.yml（或 include 引入）。
+#      触发点必须在业务仓：只有业务仓自己的 pipeline 能收到 merge_request_event，
+#      团队知识仓的 CI 无法订阅其它项目的 MR 事件。
+#   2. Settings → CI/CD → Variables（勾选 Masked）：
+#        GITLAB_TOKEN           GitLab Personal Access Token（api 权限），
+#                               对团队知识仓库有 push 权限
+#        ANTHROPIC_AUTH_TOKEN   AI 认证 Token（callClaude 会 spawn 本地 AI CLI，必须）
+#   3. 普通 Variables：
+#        TEAMAI_KNOWLEDGE_REPO    团队知识仓库路径（如 wangchongfei/c2-teamai-test）
+#        TEAMAI_KNOWLEDGE_BRANCH  团队知识仓库分支（如 main）
+#        ANTHROPIC_BASE_URL       AI 网关地址（走内网网关时必填）
+#   4. teamai-cli 版本需包含 GitLab CI 支持（ci extract-mr 的 GitLab 平台适配）。
+#      内网无公网 npm 时：npm install -g --registry=http://npm.guazi-corp.com teamai-cli
+
+stages:
+  - teamai-extract
+  - teamai-write
+
+variables:
+  # callClaude 与 REST 调用均为同步阻塞，给足超时
+  TEAMAI_TIMEOUT: "20m"
+
+# ── MR 创建/更新时：提炼知识并以 comment 形式展示 ──────────
+teamai-extract-comment:
+  stage: teamai-extract
+  image: node:22
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_EVENT_TYPE != "merged_result"'
+  timeout: $TEAMAI_TIMEOUT
+  script:
+    - npm install -g teamai-cli @anthropic-ai/claude-code
+    - |
+      MR_URL="${CI_MERGE_REQUEST_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
+      echo "=== [TeamAI] MR_URL=$MR_URL ==="
+      # comment 模式仅通过 REST 拉取 MR 并回帖，无需克隆任何仓库。
+      # --individual-comments：每条建议独立成评，reviewer 点 👎 emoji 可拒绝写入。
+      teamai ci extract-mr --url "$MR_URL" --mode comment --individual-comments
+
+# ── MR 合入默认分支后：将知识写入团队知识仓库 ─────────────
+# GitLab 没有 "MR merged" 原生 CI 触发器：合入表现为默认分支的一次 push，
+# 因此在默认分支 push pipeline 里按 merge/squash commit 反查对应 MR。
+teamai-post-merge-write:
+  stage: teamai-write
+  image: node:22
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  timeout: $TEAMAI_TIMEOUT
+  script:
+    - npm install -g teamai-cli @anthropic-ai/claude-code
+    - |
+      echo "=== [TeamAI] Looking up the MR merged by ${CI_COMMIT_SHA} ==="
+      MR_JSON=$(curl -sf -H "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests?state=merged&target_branch=${CI_DEFAULT_BRANCH}&per_page=20&order_by=updated_at")
+      MR_URL=$(printf '%s' "$MR_JSON" | node -e '
+        let d = "";
+        process.stdin.on("data", (c) => (d += c)).on("end", () => {
+          const sha = process.env.CI_COMMIT_SHA;
+          const mrs = JSON.parse(d);
+          const mr = mrs.find((m) => m.merge_commit_sha === sha || m.squash_commit_sha === sha);
+          process.stdout.write(mr ? mr.web_url : "");
+        });')
+      if [ -z "$MR_URL" ]; then
+        echo "=== [TeamAI] SKIP: this push is not an MR merge ==="
+        exit 0
+      fi
+      echo "=== [TeamAI] Writing knowledge for $MR_URL ==="
+      # 团队知识仓库克隆到源码 checkout 之外：克隆在 checkout 内会被当成源码提取，
+      # CLI 会跳过 teamwiki/ 更新，只写 learning。
+      TEAM_REPO_DIR=/tmp/teamai-team-repo
+      git clone --branch "${TEAMAI_KNOWLEDGE_BRANCH}" \
+        "https://oauth2:${GITLAB_TOKEN}@${CI_SERVER_HOST}/${TEAMAI_KNOWLEDGE_REPO}.git" \
+        "$TEAM_REPO_DIR"
+      # 在合入后的源码 checkout（GitLab 已自动 clone 到 CI_PROJECT_DIR）中运行：
+      # teamwiki/ 走 `teamai import --dir . --incremental` 的同一流程，
+      # 写入 teamwiki/evidence/code/gitlab__<group>__<repo>/。
+      # --write-mode direct：CLI 自行 commit 并 push，git 身份由 GITLAB_TOKEN
+      # 对应账号（REST /user）推导，无需手动 git config/commit/push。
+      teamai ci extract-mr --url "$MR_URL" --mode write --individual-comments \
+        --team-repo "$TEAM_REPO_DIR" --write-mode direct

@@ -18,8 +18,18 @@ describe('parseMrUrl', () => {
     expect(result).toEqual({ provider: 'tgit', owner: 'group/sub', repo: 'project', number: '123' });
   });
 
+  it('解析 GitLab MR URL（自建实例 + 多级 group）', () => {
+    const result = parseMrUrl('https://git.guazi-corp.com/znkf/order-service/-/merge_requests/88');
+    expect(result).toEqual({ provider: 'gitlab', owner: 'znkf', repo: 'order-service', number: '88' });
+  });
+
+  it('解析 GitLab MR URL（嵌套 subgroup）', () => {
+    const result = parseMrUrl('https://gitlab.com/group/sub/proj/-/merge_requests/5');
+    expect(result).toEqual({ provider: 'gitlab', owner: 'group/sub', repo: 'proj', number: '5' });
+  });
+
   it('不支持的 URL 抛出错误', () => {
-    expect(() => parseMrUrl('https://gitlab.com/org/repo/-/merge_requests/1')).toThrow('无法解析 MR URL');
+    expect(() => parseMrUrl('https://example.com/org/repo/pull/1')).toThrow('仅支持 GitHub、TGit 和 GitLab');
   });
 });
 
@@ -95,5 +105,30 @@ describe('postOrUpdateMrComment API failures', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('fails without creating a duplicate GitLab note when listing notes fails', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postOrUpdateMrComment(
+      'https://gitlab.com/acme/app/-/merge_requests/7', undefined, undefined,
+    )).rejects.toThrow('GitLab note list request failed (503)');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('GET');
+  });
+
+  it('refuses a GitLab MR URL whose host is not the configured instance', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postOrUpdateMrComment(
+      'https://evil.example/acme/app/-/merge_requests/7', undefined, undefined,
+    )).rejects.toThrow('Refusing to fetch GitLab MR');
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -98,3 +98,42 @@ describe('readRejections API failures', () => {
       .rejects.toThrow('TGit notes request failed (500)');
   });
 });
+
+describe('GitLab (默认写入，👎 thumbsdown = reject)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  const notes = JSON.stringify([
+    { id: 1, body: '<!-- teamai:ci-extract:learning -->\ncontent' },
+    { id: 2, body: '<!-- teamai:ci-extract:suggestion:1 -->\ncontent' },
+  ]);
+  const notesUrl = 'https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes?per_page=100';
+  const emojiUrl = (noteId: number) =>
+    `https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests/7/notes/${noteId}/award_emoji?per_page=100`;
+
+  it('thumbsdown award 标记为 reject，无 emoji 默认 approve', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === notesUrl) return new Response(notes, { status: 200 });
+      if (url === emojiUrl(1)) return new Response(JSON.stringify([{ name: 'thumbsdown' }]), { status: 200 });
+      if (url === emojiUrl(2)) return new Response(JSON.stringify([{ name: 'thumbsup' }]), { status: 200 });
+      throw new Error(`unexpected ${url}`);
+    }));
+
+    const result = await readRejections('https://gitlab.com/acme/app/-/merge_requests/7');
+    expect(result.rejectedIds).toEqual(new Set(['learning']));
+    expect(result.approvedIds).toEqual(new Set(['suggestion:1']));
+    expect(shouldWrite('learning', result, 'gitlab')).toBe(false);
+    expect(shouldWrite('suggestion:1', result, 'gitlab')).toBe(true);
+  });
+
+  it('fails when the GitLab note list cannot be read', async () => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 500 })));
+
+    await expect(readRejections('https://gitlab.com/acme/app/-/merge_requests/7'))
+      .rejects.toThrow('GitLab notes request failed (500)');
+  });
+});
