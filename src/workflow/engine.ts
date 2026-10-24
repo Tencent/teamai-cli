@@ -29,7 +29,7 @@ import {
   CAN_KEYS, CanSchema, ReportedUnenforcedSchema, heldFor, mergeRequirements, negotiate, reportedUnenforced, requiredEnvKeys, unionUnenforced,
   type Allow, type DriverCan, type EnvFacts, type Held, type Negotiation, type ReportedUnenforced, type Terms,
 } from './requirements.js';
-import { knownSecrets, workflowEnvFacts } from '../env-resolution.js';
+import { knownSecrets, secretKey, workflowEnvFacts } from '../env-resolution.js';
 import { redactJson } from '../utils/redact.js';
 import { generateRunId, installOwner, isRunId, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
@@ -886,11 +886,13 @@ function secretMismatch(
   secrets: Record<string, string>,
 ): string | null {
   for (const [input, value] of isRecord(inputs) ? Object.entries(inputs) : []) {
-    const secret = heldSecret(value, secrets);
+    const held = heldSecret(value, secrets);
+    const secret = held && secretKey(held);
     if (secret) return `inputs.${input} holds the value of ${secret}, a secret on this machine, which a run never stores. Pass the step a way to read ${secret} instead, such as requires.env: [${secret}].`;
   }
-  for (const [label, held] of Object.entries(pinned)) {
-    const secret = heldSecret(held, secrets);
+  for (const [label, pinnedValue] of Object.entries(pinned)) {
+    const held = heldSecret(pinnedValue, secrets);
+    const secret = held && secretKey(held);
     if (secret) return `${label} holds the value of ${secret}, a secret on this machine, which a run never stores. Replace the value with requires.env: [${secret}], then pull again.`;
   }
   return null;

@@ -348,10 +348,20 @@ export async function collectTeamSecrets(localConfig: LocalConfig, env: NodeJS.P
 
 /**
  * Every value teamai masks on this machine, keyed by name: environment values that look secret, and the team's
- * declared secrets. Publishing a run, writing its file, and printing a workflow envelope agree on it.
+ * declared secrets. Publishing a run, writing its file, and printing a workflow envelope agree on it. A team value
+ * replaces the environment's under the same name for a step, but both stay known: the environment's is kept as
+ * `<name> (environment)`.
  */
 export async function knownSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
-  return { ...collectEnvSecrets(env), ...await collectTeamSecrets(localConfig, env) };
+  const fromEnvironment = collectEnvSecrets(env);
+  const team = await collectTeamSecrets(localConfig, env);
+  const shadowed = Object.entries(fromEnvironment).flatMap(([key, value]) => (key in team && team[key] !== value ? [[`${key} (environment)`, value]] : []));
+  return { ...fromEnvironment, ...team, ...Object.fromEntries(shadowed) };
+}
+
+/** The env key a `knownSecrets` name stands for. */
+export function secretKey(label: string): string {
+  return label.split(' ')[0] ?? label;
 }
 
 export function secretState(secrets: StoreResolution<SecretValue>, key: string): SecretState {

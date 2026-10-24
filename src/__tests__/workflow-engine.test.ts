@@ -12,6 +12,7 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { outputMismatch } from '../workflow/output.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
+import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
@@ -1066,6 +1067,19 @@ steps:
 
     expect(await startRun(fixture.config, 'build', inputs)).toEqual({ error: { code: 'invalid_inputs', message } });
     expect(fs.existsSync(runsDir(fixture.config))).toBe(false);
+  });
+
+  it('refuses the environment value of a secret whose team value differs, naming the key', async () => {
+    vi.stubEnv('GH_TOKEN', 'personal-token-value-1082');
+    const fixture = testConfig();
+    fs.mkdirSync(path.join(fixture.config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GH_TOKEN\n');
+    await writeSecretStore(getTeamSecretsPath(fixture.config), { GH_TOKEN: { value: 'team-token-value-1082' } });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n', 'inputs:\n  note: string\n'));
+    await syncWorkflowDefinitions(fixture.config);
+
+    expect(await startRun(fixture.config, 'build', { note: 'personal-token-value-1082' })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
+    expect(await startRun(fixture.config, 'build', { note: 'team-token-value-1082' })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
   });
 
   it('starts a run whose input shares a name with a secret env key', async () => {
