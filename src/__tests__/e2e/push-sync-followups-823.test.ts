@@ -224,7 +224,7 @@ describe('pre-push sync in single-repo mode (#823 items 2 and 10)', () => {
     expect(push).toContain(`[skills] Skipped team-skill: .teamai/skills/team-skill is an older version of skills/team-skill, ${HELD}`);
   });
 
-  it('still lists a stale .teamai/skills copy whose branch file the member deleted as modified (#823 item 10)', async () => {
+  it('refuses a stale skill with a locally deleted branch file without resurrecting it (#823 item 10)', async () => {
     await run(['pull']);
     // The member's branch has the teammate's file, then falls behind again.
     teammateLandsOnMain('.teamai/skills/team-skill/reference.md', 'On the branch.\n');
@@ -232,19 +232,23 @@ describe('pre-push sync in single-repo mode (#823 items 2 and 10)', () => {
     teammateLandsOnMain('.teamai/skills/team-skill/SKILL.md', S1.replace('Version one.', 'Version two, from a teammate.'));
     fs.rmSync(path.join(activeSkill(), 'reference.md'));
 
-    const push = await run(['--dry-run', 'push']);
-    expect(push).toContain('[skills] team-skill (modified)');
-    expect(push).not.toContain(HELD);
+    const pushed = await runCLI(['--dry-run', 'push'], projectRoot, home);
+    expect(pushed.code, pushed.output).toBe(2);
+    expect(pushed.output).toContain('changed both here and on origin/main');
+    expect(pushed.output).toContain('Nothing was pushed');
+    expect(fs.existsSync(path.join(activeSkill(), 'reference.md'))).toBe(false);
   });
 
-  it('still lists a genuine edit of a stale .teamai/skills copy as modified (#823 item 10)', async () => {
+  it('refuses conflicting genuine skill edits and preserves the member copy (#823 item 10)', async () => {
     await run(['pull']);
     teammateLandsOnMain('.teamai/skills/team-skill/SKILL.md', S1.replace('Version one.', 'Version two, from a teammate.'));
     fs.writeFileSync(path.join(activeSkill(), 'SKILL.md'), `${S1}\nA local edit.\n`);
 
-    const push = await run(['--dry-run', 'push']);
-    expect(push).toContain('[skills] team-skill (modified)');
-    expect(push).not.toContain(HELD);
+    const pushed = await runCLI(['--dry-run', 'push'], projectRoot, home);
+    expect(pushed.code, pushed.output).toBe(2);
+    expect(pushed.output).toContain('changed both here and on origin/main');
+    expect(pushed.output).toContain('Nothing was pushed');
+    expect(fs.readFileSync(path.join(activeSkill(), 'SKILL.md'), 'utf8')).toBe(`${S1}\nA local edit.\n`);
   });
 });
 
