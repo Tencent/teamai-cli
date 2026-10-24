@@ -218,7 +218,7 @@ steps:
 
 ## Deliver a PR
 
-Set `deliver: pr` on a step that writes a branch, and TeamAI opens a pull request from that branch once the step succeeds. It never merges it. A step writes a branch when it has `workspace: new` or `continue`, or when it is a prompt inside a workflow that opened one. A command that delivers must set `workspace`, since a command without one is read-only. A `workflow` step with `workspace: new` delivers its branch once, for all its steps. On a `for_each` step, each item delivers its own branch.
+Set `deliver: pr` on a step that writes a branch, and TeamAI opens a pull request from that branch once the step succeeds. It never merges it. A step writes a branch when it has `workspace: new` or `continue`, or when it is a prompt inside a workflow that opened one. A command that delivers must set `workspace`, since a command without one is read-only. A `workflow` step with `workspace: new` delivers its branch once, for all its steps. A step inside it that writes a branch of its own needs a later step that merges that branch through `needs`, or its own `deliver: pr`. Otherwise the delivery fails with `delivery_failed`, since the pull request would leave that work out. On a `for_each` step, each item delivers its own branch.
 
 ```yaml
 schemaVersion: v1alpha1

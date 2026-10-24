@@ -371,7 +371,7 @@ describe('delivering a step', () => {
     const fix = await take(config, runId);
     if (!fix.workspace) throw new Error('fix has no workspace');
     const to = pushWork(root, fix);
-    const job = { key: { step: 'fix', pass: 1, settledAt: 2, branch: fix.workspace.branch, head: to }, runId, runName: 'ship', checkout: cwd, base: fix.workspace.base.commit, target: 'main' };
+    const job = { key: { step: 'fix', pass: 1, settledAt: 2, branch: fix.workspace.branch, head: to }, runId, runName: 'ship', checkout: cwd, base: fix.workspace.base.commit, target: 'main', childWork: [] };
 
     expect(await deliverPr(job, async () => 'refused')).toEqual({ ok: false, fault: { kind: 'withdrawn' } });
     expect(gh.calls().map((call) => call.args[0])).toEqual(['api']);
@@ -630,6 +630,37 @@ describe('where a pull request goes', () => {
     const run = await state(config, runId);
     expect(commitsBeyond(root, a, change)).toEqual([changedTo(run, 'change.more'), changedTo(run, 'change.write')]);
     expect(run.deliveries?.map((receipt) => [receipt.step, receipt.branch])).toEqual([['a', a], ['change', change]]);
+  });
+
+  /** A workflow step that delivers its copy, where `a` writes the copy and `b` writes a branch of its own after it. */
+  const COPY_AND_SIDE_BRANCH = [
+    `  - id: work\n    workspace: new\n    deliver: pr\n    workflow:\n      steps:\n`,
+    `        - id: a\n          workspace: continue\n          command: ${bump('a.txt')}\n`,
+    `        - id: b\n          needs: [a]\n          workspace: new\n          command: ${bump('b.txt')}\n`,
+  ].join('');
+
+  it('opens no pull request for a workflow step whose branch leaves out the work of a step inside it on another branch', async () => {
+    const { config, cwd, root, runId } = await fixture(COPY_AND_SIDE_BRANCH);
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    const [work, b] = [`teamai/${runId}/work/p1`, `teamai/${runId}/work-b/p1`];
+    expect(run.steps.find((step) => step.id === 'work.b')).toMatchObject({ status: 'succeeded', changes: { branch: b } });
+    expect(run.steps.find((step) => step.id === 'work')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`step "work.b" wrote branch ${b}, which branch ${work} does not hold, so a pull request from it would leave that work out`) } });
+    expect(run.steps.find((step) => step.id === 'work')).toMatchObject({ failure: { message: expect.stringContaining('Have a later step in the workflow need step "work.b", so it merges branch') } });
+    expect(creates(gh)).toEqual([]);
+    expect(run.deliveries).toBeUndefined();
+  });
+
+  it('opens the pull request of a workflow step once a later step inside it merges the branch another step wrote', async () => {
+    const { config, cwd, root, runId } = await fixture(`${COPY_AND_SIDE_BRANCH}        - id: c\n          needs: [b]\n          workspace: continue\n          command: ${bump('c.txt')}\n`);
+    const gh = fakeGh(path.join(root, 'gh'));
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const work = `teamai/${runId}/work/p1`;
+    expect(creates(gh)).toEqual([[work, 'main']]);
+    expect(commitsBeyond(root, 'main', work)).toContain(changedTo(await state(config, runId), 'work.b'));
   });
 
   it('opens a pull request for each pass of a looped new step, leaves the earlier ones open, and lists them in order', async () => {

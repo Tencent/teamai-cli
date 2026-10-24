@@ -218,7 +218,7 @@ steps:
 
 ## 交付 PR
 
-在写分支的步骤上设置 `deliver: pr`，步骤成功后 TeamAI 会从这条分支开一个 pull request，并且从不合并它。设置了 `workspace: new` 或 `continue` 的步骤会写分支，位于已开分支的工作流中的提示词步骤也会。交付的命令必须设置 `workspace`，因为没有 `workspace` 的命令是只读的。设置了 `workspace: new` 的 `workflow` 步骤为它的全部步骤只交付一次自己的分支。`for_each` 步骤的每个 item 各自交付自己的分支。
+在写分支的步骤上设置 `deliver: pr`，步骤成功后 TeamAI 会从这条分支开一个 pull request，并且从不合并它。设置了 `workspace: new` 或 `continue` 的步骤会写分支，位于已开分支的工作流中的提示词步骤也会。交付的命令必须设置 `workspace`，因为没有 `workspace` 的命令是只读的。设置了 `workspace: new` 的 `workflow` 步骤为它的全部步骤只交付一次自己的分支。其中写自己分支的步骤，需要有后续步骤通过 `needs` 合并那条分支，或者自己设置 `deliver: pr`。否则交付以 `delivery_failed` 失败，因为 pull request 会漏掉那部分工作。`for_each` 步骤的每个 item 各自交付自己的分支。
 
 ```yaml
 schemaVersion: v1alpha1

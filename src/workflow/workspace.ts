@@ -179,6 +179,19 @@ export function deliverableOf(run: RunState, state: StepState, step: WorkflowSte
 }
 
 /**
+ * The work steps inside `state` that succeeded left on other branches than `branch`, the one `state` delivers, which no
+ * step inside it delivers: a pull request of `branch` leaves out any of it that `branch` does not hold.
+ */
+export function childWorkOff(run: RunState, state: StepState, branch: string): Array<{ step: string; branch: string; commit: string }> {
+  const inside = run.steps.filter((item) => item.id.startsWith(`${state.id}.`) && item.status === 'succeeded');
+  const delivered = new Set(inside.flatMap((item) => ('delivery' in item && item.delivery ? [item.delivery.branch] : [])));
+  return inside.flatMap((item) => {
+    const changes = changesOf(item);
+    return changes && changes.branch !== branch && !delivered.has(changes.branch) ? [{ step: item.id, branch: changes.branch, commit: changes.to }] : [];
+  });
+}
+
+/**
  * The branch a pull request from `branch` goes into: the nearest branch it grew from that delivered a pull request, so
  * the request holds only the work done since, else the run base branch. Undefined when the run started from no branch.
  */

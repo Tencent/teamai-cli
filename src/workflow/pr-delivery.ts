@@ -23,6 +23,8 @@ export interface DeliveryJob {
   base: string;
   /** The latest commit a report recorded on this branch, read under the run lock. */
   recordedHead?: string;
+  /** Work steps inside the delivering one left on branches no step delivers, which the delivered branch must hold. */
+  childWork: Array<{ step: string; branch: string; commit: string }>;
   /** The branch the pull request goes into. */
   target: string;
   /** A URL the step's driver reported and the engine kept: nothing is opened for it. */
@@ -41,6 +43,8 @@ export type DeliveryFault =
   | { kind: 'branch_ahead'; tip: string }
   /** The recorded commit origin's branch is at lacks the step's head: a later step rewrote the branch's history. */
   | { kind: 'branch_rewritten' }
+  /** Origin's branch lacks the work step `step` inside the delivering one left on `branch`. */
+  | { kind: 'child_work_left_out'; step: string; branch: string }
   | { kind: 'branch_missing' }
   | { kind: 'branch_unreadable' }
   | { kind: 'no_provider' }
@@ -101,6 +105,11 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
     return failed(owned.length > 0 ? { kind: 'protected_path', files: owned } : { kind: 'later_protected_path', files });
   }
   if (files.length > 0) return failed({ kind: 'protected_path', files });
+  for (const child of job.childWork) {
+    const held = await contains(job, { commit: tip.commit, ancestor: child.commit });
+    if ('fault' in held) return failed(held.fault);
+    if (!held.contains) return failed({ kind: 'child_work_left_out', step: child.step, branch: child.branch });
+  }
   if (job.reported) return { ok: true, pr: job.reported };
   const origin = await originOf(job.checkout);
   if (origin.kind === 'transport') return failed({ kind: 'no_provider' });
@@ -269,6 +278,11 @@ export function deliveryFailure({ runId, key, recordedHead }: Pick<DeliveryJob, 
       return {
         code: 'delivery_failed',
         message: `PR delivery for step "${step}" failed: commit ${head}, the last one a report recorded on branch ${branch}, does not contain commit ${key.head} the step reported, so a pull request from it would not hold the step's work, and none was opened or accepted. Have a step on that branch record a commit that contains both, or put branch ${branch} on origin back at ${key.head}, then run: ${retry}`,
+      };
+    case 'child_work_left_out':
+      return {
+        code: 'delivery_failed',
+        message: `PR delivery for step "${step}" failed: step "${fault.step}" wrote branch ${fault.branch}, which branch ${branch} does not hold, so a pull request from it would leave that work out, and none was opened or accepted. The work is kept in branches ${branch} and ${fault.branch}. Have a later step in the workflow need step "${fault.step}", so it merges branch ${fault.branch}, or give step "${fault.step}" its own deliver: pr. A run keeps the workflow it started with, so start the run again after you change the workflow.`,
       };
     case 'branch_unreadable':
       return {

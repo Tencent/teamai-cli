@@ -4,7 +4,7 @@ import type { DeliveryKey, UnresolvedCreate } from './delivery-schema.js';
 import { deliveryFailure, type DeliveryJob, type DeliveryOutcome, type findDelivered } from './pr-delivery.js';
 import { delivered, deliveryFailed, type DeliveringStep } from './step-state.js';
 import type { RunState } from './types.js';
-import { deliveryTarget } from './workspace.js';
+import { childWorkOff, deliveryTarget } from './workspace.js';
 
 /** The delivery of `step`, as the drain and the outcome it applies name it. */
 function deliveryKey(step: DeliveringStep): DeliveryKey {
@@ -41,7 +41,7 @@ export function nextDelivery(run: RunState, reconcile: (run: RunState) => object
     }
     return {
       key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target,
-      recordedHead: run.copies?.[key.branch]?.commit,
+      recordedHead: run.copies?.[key.branch]?.commit, childWork: childWorkOff(run, step, key.branch),
       ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
     };
   }
