@@ -5,7 +5,8 @@
 import { isItem } from './fan-out.js';
 import { isUnder, runPasses } from './loop.js';
 import { topScope, type Scope } from './scope.js';
-import { stopWhere, timeOut, type LeasedStep, type LimitsFrom, type StepState } from './step-state.js';
+import { stopAttempt, stopWhere, timeOut, type LeasedStep, type LimitsFrom, type StepState, type StoppedAttempt } from './step-state.js';
+import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { WorkflowResult } from './engine.js';
 import type { RunState, WorkflowStep } from './types.js';
 
@@ -35,7 +36,26 @@ export function ownDeadline(run: RunState, state: StepState, step: WorkflowStep,
  */
 export function spentTokens(run: RunState, prefix: string): number {
   const used = [...runPasses(run), ...run.releasedTokens ?? []].filter((entry) => entry.step.startsWith(prefix));
-  return used.reduce((sum, { tokens }) => sum + (tokens?.input ?? 0) + (tokens?.output ?? 0), 0);
+  return used.reduce((sum, { tokens }) => sum + budgeted(tokens), 0);
+}
+
+function budgeted(tokens: TokenUsage | undefined): number {
+  return (tokens?.input ?? 0) + (tokens?.output ?? 0);
+}
+
+/**
+ * Counts the tokens a stopped attempt's driver reported after the stop, and forgets the attempt, so they count once. A
+ * budget that started counting at or after the stop, such as the run's once a retry reopened it, did not run the
+ * attempt, so the tokens join what it counts from rather than what it spent.
+ */
+export function countLateTokens(run: RunState, stopped: StoppedAttempt, tokens: TokenUsage): void {
+  run.stoppedAttempts = run.stoppedAttempts?.filter((entry) => entry.attempt !== stopped.attempt);
+  (run.releasedTokens ??= []).push({ step: stopped.step, attempt: stopped.attempt, tokens });
+  const later = (from: LimitsFrom | undefined): void => {
+    if (from && Date.parse(from.at) >= Date.parse(stopped.stoppedAt)) from.tokens += budgeted(tokens);
+  };
+  later(run.limitsFrom);
+  for (const step of run.steps) if (step.status === 'running' && isUnder(step.id)(stopped.step)) later(step.limitsFrom);
 }
 
 /**
@@ -82,7 +102,7 @@ export function expire(run: RunState, now: string): WorkflowResult | undefined {
   const runEnds = runDeadline(run);
   if (runEnds !== undefined && passed(runEnds, now)) {
     const failure = { code: 'timeout', message: `Run ${run.id} passed its timeout at ${runEnds}` };
-    stopWhere(run, () => true, failure, run.revision);
+    stopWhere(run, () => true, failure, run.revision, now);
     return { outcome: 'failed', failure, settledAt: run.revision };
   }
   // A step's instance comes before the instances of what it runs, so an outer deadline applies first.
@@ -90,8 +110,8 @@ export function expire(run: RunState, now: string): WorkflowResult | undefined {
     const expiresAt = state.status === 'running' ? state.expiresAt : state.status === 'leased' ? state.lease.expiresAt : undefined;
     if (expiresAt === undefined || !passed(expiresAt, now)) continue;
     const failure = { code: 'timeout', message: `Step "${state.id}" passed its timeout at ${expiresAt}` } as const;
-    if (state.status === 'running') stopWhere(run, isUnder(state.id), { code: 'timeout', message: `Cancelled: ${failure.message}` }, run.revision);
-    else if (state.status === 'leased') (run.cancelledAttempts ??= []).push(state.attempt);
+    if (state.status === 'running') stopWhere(run, isUnder(state.id), { code: 'timeout', message: `Cancelled: ${failure.message}` }, run.revision, now);
+    else if (state.status === 'leased') stopAttempt(run, state, now);
     if (state.status === 'running' || state.status === 'leased') timeOut(state, failure, run.revision);
   }
   return undefined;

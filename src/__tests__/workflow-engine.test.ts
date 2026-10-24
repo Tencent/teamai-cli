@@ -4803,6 +4803,46 @@ describe('token budgets', () => {
     expect(await readRun(config, runId)).toMatchObject({ releasedTokens: [{ step: 'other', attempt: other.attempt, tokens: { input: 7 } }] });
   });
 
+  it('charges a stopped attempt\'s late tokens to the budget it was leased under, not to the one a retry opened after it', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: a
+    prompt: A.
+  - id: b
+    needs: []
+    prompt: B.
+  - id: c
+    needs: []
+    prompt: C.
+`, 'budget: { tokens: 10 }\n'));
+    const a = leaseIn(await leaseNext(config, runId, driverA, reports));
+    const b = leaseIn(await leaseNext(config, runId, driverA, { ...reports, running: [a.attempt] }));
+    const c = leaseIn(await leaseNext(config, runId, driverA, { ...reports, running: [a.attempt, b.attempt] }));
+    await report(config, runId, a, 'success', { input: 12 });
+    expect(await leaseNext(config, runId, driverA, { ...reports, running: [b.attempt, c.attempt] })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await retryStep(config, runId, 'b')).toMatchObject({ data: { reopened: true } });
+    expect(await reportAttempt(config, runId, { attempt: c.attempt, revision: c.revision, outcome: 'success', driver: driverA, tokens: { input: 20 } }))
+      .toMatchObject({ error: { code: 'lease_cancelled' } });
+
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { lease: { step: 'b' } } });
+  });
+
+  it('counts the late tokens of a stopped attempt whose step a retry already replaced', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: a
+    prompt: A.
+  - id: b
+    needs: []
+    prompt: B.
+`, 'budget: { tokens: 100 }\n'));
+    const a = leaseIn(await leaseNext(config, runId, driverA, reports));
+    const b = leaseIn(await leaseNext(config, runId, driverA, { ...reports, running: [a.attempt] }));
+    expect(await cancelRun(config, runId, 'a')).toMatchObject({ data: { cancelled: { attempts: [a.attempt] } } });
+    expect(await retryStep(config, runId, 'a')).toMatchObject({ data: {} });
+    expect(await reportAttempt(config, runId, { attempt: a.attempt, revision: a.revision, outcome: 'success', driver: driverA, tokens: { input: 7 } }))
+      .toMatchObject({ error: { code: 'lease_cancelled' } });
+
+    expect(await readRun(config, runId)).toMatchObject({ releasedTokens: [{ step: 'a', attempt: a.attempt, tokens: { input: 7 } }] });
+    expect(b.step).toBe('b');
+  });
+
   it('gives a workflow step a whole budget on each pass a loop runs it', async () => {
     const { config, runId } = await startBuild(graph(`  - id: work
     budget: { tokens: 5 }

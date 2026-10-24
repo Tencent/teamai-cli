@@ -21,7 +21,7 @@ import {
   ReadSchema, answerHitl, fail, lease, release, settled, skip, start, stopWhere, stopped, succeed, waitForAnswer,
   type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
-import { budgetSpent, expire, leaseDeadline, ownDeadline, startLimits } from './limits.js';
+import { budgetSpent, countLateTokens, expire, leaseDeadline, ownDeadline, startLimits } from './limits.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
@@ -670,7 +670,7 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
   const spent = scope.budget === undefined ? 0 : budgetSpent(run, scope);
   if (scope.budget !== undefined && spent > scope.budget) {
     const failure = { code: 'budget_exceeded', message: `${workflowLabel(scope)} spent ${spent} of its ${scope.budget}-token budget` };
-    stopWhere(run, (id) => id.startsWith(scope.prefix), failure, run.revision);
+    stopWhere(run, (id) => id.startsWith(scope.prefix), failure, run.revision, now);
     return { outcome: 'failed', failure, settledAt: run.revision };
   }
   const states = statesIn(run, scope);
@@ -729,7 +729,7 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
     if (reached) {
       const end = definitionOf(reached)?.end;
       const label = end === undefined ? `the break of step "${reached.id}"` : `end "${end}"`;
-      stopWhere(run, (id) => id.startsWith(scope.prefix), { code: 'end_reached', message: `Cancelled: ${workflowLabel(scope)} reached ${label}` }, settledAtOf(reached));
+      stopWhere(run, (id) => id.startsWith(scope.prefix), { code: 'end_reached', message: `Cancelled: ${workflowLabel(scope)} reached ${label}` }, settledAtOf(reached), now);
       const result = { outputs: workflowOutputs(scope, states, reads.outputs), settledAt: settledAtOf(reached) };
       return end === undefined ? { outcome: 'succeeded', ...result } : { outcome: scope.definition.ends?.[end] ?? 'failed', end, ...result };
     }
@@ -1382,11 +1382,9 @@ function continueSession(run: RunState, report: ReportInput): void {
  * stop cut short. Only the driver that held the lease counts, and only once. Returns whether it counted them.
  */
 function countStoppedTokens(run: RunState, report: ReportInput): boolean {
-  const stopped = run.steps.find((step): step is Extract<StepState, { status: 'failed' | 'cancelled' }> => (
-    (step.status === 'failed' || step.status === 'cancelled') && step.attempt === report.attempt));
-  if (!report.tokens || !stopped?.leaseDriver || !sameDriver(stopped.leaseDriver, report.driver)) return false;
-  if (run.releasedTokens?.some((entry) => entry.attempt === report.attempt)) return false;
-  (run.releasedTokens ??= []).push({ step: stopped.id, attempt: report.attempt, tokens: report.tokens });
+  const stopped = run.stoppedAttempts?.find((entry) => entry.attempt === report.attempt);
+  if (!report.tokens || !stopped || !sameDriver(stopped.driver, report.driver)) return false;
+  countLateTokens(run, stopped, report.tokens);
   return true;
 }
 

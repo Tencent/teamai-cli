@@ -10,7 +10,7 @@ import { archiveUnder, isUnder } from './loop.js';
 import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
-import { answerHitl, cancel, repend, resetIteration, resetPending, settled, start, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
+import { answerHitl, cancel, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { RunState, WorkflowEnvelope } from './types.js';
 
 async function controlRun(
@@ -115,7 +115,7 @@ export async function cancelRun(config: LocalConfig, runId: string, step?: strin
     let changed: string[];
     const attemptsBefore = run.cancelledAttempts?.length ?? 0;
     if (step === undefined) {
-      changed = stopWhere(run, () => true, failure, run.revision);
+      changed = stopWhere(run, () => true, failure, run.revision, now);
       await finish({ outcome: 'cancelled', settledAt: run.revision });
     } else {
       const state = run.steps.find((state) => state.id === step);
@@ -123,9 +123,9 @@ export async function cancelRun(config: LocalConfig, runId: string, step?: strin
       if (state.status !== 'pending' && state.status !== 'waiting' && state.status !== 'leased' && state.status !== 'running') return error('not_cancellable', `Step "${state.id}" is ${state.status}; only pending, waiting, leased or running steps can be cancelled`);
       const located = locateStep(run, step);
       if (!located) return missingStepError(run, step);
-      changed = state.status === 'running' ? stopWhere(run, isUnder(state.id), failure, run.revision) : [];
+      changed = state.status === 'running' ? stopWhere(run, isUnder(state.id), failure, run.revision, now) : [];
       changed.push(state.id);
-      if (state.status === 'leased') (run.cancelledAttempts ??= []).push(state.attempt);
+      if (state.status === 'leased') stopAttempt(run, state, now);
       cancel(state, failure, run.revision);
       const reconciled = reconcileRun(run, now);
       if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
@@ -210,7 +210,7 @@ function retryContainers(run: RunState, target: StepState): RetryContainer[] | W
  * Starts a new pass of a step in a retry cone. A waiting HITL request, or one answered but not yet run, is asked again,
  * because its context changed. Only an unanswered pending or skipped step stays in its pass.
  */
-function retryInstance(run: RunState, state: StepState): void {
+function retryInstance(run: RunState, state: StepState, now: string): void {
   const failure = { code: 'retried', message: 'Cancelled by teamai workflow retry' };
   switch (state.status) {
     case 'pending':
@@ -225,11 +225,11 @@ function retryInstance(run: RunState, state: StepState): void {
       }
       break;
     case 'leased':
-      (run.cancelledAttempts ??= []).push(state.attempt);
+      stopAttempt(run, state, now);
       cancel(state, failure, run.revision);
       break;
     case 'running':
-      stopWhere(run, isUnder(state.id), failure, run.revision);
+      stopWhere(run, isUnder(state.id), failure, run.revision, now);
       break;
     case 'succeeded':
     case 'failed':
@@ -272,12 +272,12 @@ export async function retryStep(config: LocalConfig, runId: string, step: string
     const reopened = run.status !== 'running';
     for (const container of containers) {
       if (container.child === target) {
-        retryInstance(run, target);
+        retryInstance(run, target, now);
         resetIteration(target);
       }
       for (const state of container.states) {
         if (state === container.child) continue;
-        if (container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached')) retryInstance(run, state);
+        if (container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached')) retryInstance(run, state, now);
         else if (state.status === 'skipped' && !state.answer) resetPending(state);
       }
       // A retried workflow runs again, so its timeout and budget count from now.

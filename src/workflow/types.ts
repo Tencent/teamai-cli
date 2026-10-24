@@ -1,7 +1,7 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
 import type { PinnedScorer } from '../scorers/pin.js';
-import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState } from './step-state.js';
+import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState, StoppedAttempt } from './step-state.js';
 import type { Requirements, Setup, Unenforced } from './requirements.js';
 import type { LeaseSession } from './workspace.js';
 
@@ -278,6 +278,8 @@ export interface RunState {
   archive?: ArchivedPass[];
   /** The tokens of attempts their driver released, or reported after the engine stopped them, which no pass keeps. */
   releasedTokens?: ReleasedTokens[];
+  /** Attempts the engine stopped whose driver has not reported their tokens yet. Local run state only. */
+  stoppedAttempts?: StoppedAttempt[];
   /** The round of a looping top-level workflow. */
   round?: number;
   /**

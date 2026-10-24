@@ -193,7 +193,7 @@ const RUN_RULES = {
   end: 'publish', failure: 'rewrite', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish',
   definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
-  checkout: 'drop', copies: 'rewrite', sessionContinuations: 'publish', releasedTokens: 'publish', publication: 'drop', createdAt: 'publish', limitsFrom: 'publish',
+  checkout: 'drop', copies: 'rewrite', sessionContinuations: 'publish', releasedTokens: 'publish', stoppedAttempts: 'drop', publication: 'drop', createdAt: 'publish', limitsFrom: 'publish',
   updatedAt: 'publish',
 } satisfies FieldRules<RunState>;
 
@@ -203,7 +203,7 @@ const STEP_RULES = {
   outputs: 'publish', end: 'publish', results: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
   tool: 'publish', model: 'publish', session: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
   agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite', unenforced: 'publish', expiresAt: 'publish',
-  limitsFrom: 'publish', leaseDriver: 'drop',
+  limitsFrom: 'publish',
 } satisfies FieldRules<StepState>;
 
 const PASS_RULES = {
