@@ -5,7 +5,7 @@ import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists, readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { leaseNext, reportAttempt, type ReportInput } from './engine.js';
 import { finishSessionWorkspace, prepareSessionWorkspace, type PreparedSessionWorkspace } from './local-driver.js';
-import { DriverSchema } from './step-state.js';
+import { DriverSchema } from '../driver-identity.js';
 import { driverLockPath, readRun } from './store.js';
 import type { DriverIdentity, WorkflowEnvelope } from './types.js';
 import { removeWorktree, worktreePath } from './worktree.js';

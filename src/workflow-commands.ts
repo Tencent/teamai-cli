@@ -63,10 +63,13 @@ async function readyConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiC
   return loaded;
 }
 
-async function readyRunConfig(runId: string): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | undefined> {
+async function readyRunConfig(runId: string, allowRemote = false): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | undefined> {
   const current = await loadConfig(true);
   const found = await findRunConfig(runId, 'config' in current ? current.config : undefined);
-  if (!('config' in found)) { writeEnvelope(found); return undefined; }
+  if (!('config' in found)) {
+    if (allowRemote && 'error' in found && found.error.code === 'run_not_found' && 'config' in current) return current;
+    writeEnvelope(found); return undefined;
+  }
   if ('config' in current && getDataHome(current.config) === getDataHome(found.config) && getBusinessRoot(current.config) === getBusinessRoot(found.config)) return { config: found.config, teamConfig: current.teamConfig };
   const teamConfig = await loadTeamConfig(found.config.repo.localPath);
   if (!teamConfig) { writeEnvelope({ error: { code: 'not_initialized', message: 'The run owning team configuration cannot be read' } }); return undefined; }
@@ -142,7 +145,7 @@ export async function workflowNext(runId: string, options: { json?: string; prep
     writeEnvelope({ error: { code: 'invalid_json', message: parsed } });
     return;
   }
-  const loaded = await readyRunConfig(runId);
+  const loaded = await readyRunConfig(runId, parsed.request.claim === true);
   if (!loaded) return;
   const { config } = loaded;
   const { driver, ...next } = parsed.request;
@@ -236,7 +239,7 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
 
 export async function workflowResume(runId: string, options: { tools?: string; autoApprove?: boolean; claim?: boolean }): Promise<void> {
   setStderrOnly(true);
-  const loaded = await readyRunConfig(runId);
+  const loaded = await readyRunConfig(runId, true);
   if (!loaded) return;
   if (!isRunId(runId)) {
     writeEnvelope({ error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } });
