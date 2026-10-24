@@ -107,14 +107,14 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   const { provider, repo } = origin;
   const ref: PullRequestRef = { repo, source: job.key.branch, target: job.target, timeoutMs: DELIVERY_TIMEOUT_MS };
   const found = await findOpen(origin, ref);
-  if (found.kind === 'found') return { ok: true, pr: found.pr };
   if (found.kind === 'failed') return failed({ kind: 'lookup_failed', provider: provider.name });
   if (found.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
-  // A step of the branch may have pushed while the lookup ran. A push after this read shows in the pull request itself,
-  // and nothing here closes that window.
+  // A step of the branch may have pushed while the lookup ran, so neither a found request nor a new one is taken on the
+  // commit checked before it. A push after this read shows in the pull request itself, and nothing here closes that window.
   const checked = await originTip(job.checkout, job.key.branch);
   if (checked.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
   if (checked.commit !== tip.commit) return 'busy';
+  if (found.kind === 'found') return { ok: true, pr: found.pr };
   const gated = await gate();
   if (gated === 'busy') return 'busy';
   if (gated === 'refused') return failed({ kind: 'withdrawn' });

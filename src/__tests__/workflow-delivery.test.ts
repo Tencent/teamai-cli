@@ -1253,10 +1253,11 @@ describe('retrying and cancelling a delivery', () => {
   });
 
   it.each([
-    ['pushes and records a protected commit while the lookup runs', 'lookup', true],
-    ['pushes a protected commit while the lookup runs, and records it later', 'lookup', false],
-    ['pushes and records a protected commit once delivery read origin\'s branch for the last time', 'last read', true],
-  ] as const)('opens nothing when a sibling %s, and checks that commit on the next call', async (_case, when, recorded) => {
+    ['pushes and records a protected commit while the lookup runs', 'lookup', true, false],
+    ['pushes a protected commit while the lookup runs, and records it later', 'lookup', false, false],
+    ['pushes and records a protected commit once delivery read origin\'s branch for the last time', 'last read', true, false],
+    ['pushes and records a protected commit while the lookup finds the branch\'s open pull request', 'lookup', true, true],
+  ] as const)('opens nothing when a sibling %s, and checks that commit on the next call', async (_case, when, recorded, open) => {
     const { config, root, runId } = await fixture(IMPL_AND_DOCS);
     const impl = await take(config, runId);
     await succeed(config, runId, impl, { to: pushWork(root, impl) });
@@ -1277,7 +1278,7 @@ describe('retrying and cancelling a delivery', () => {
       if (when === 'last read' && looked && sibling === undefined && args[1].includes('ls-remote')) await siblingPushes();
       return answer;
     });
-    let opened: string | undefined;
+    let opened: string | undefined = open ? 'https://github.com/fixture/app/pull/1' : undefined;
     const create = providerDouble(async () => {
       if (when === 'lookup' && sibling === undefined) await siblingPushes();
       looked = true;
