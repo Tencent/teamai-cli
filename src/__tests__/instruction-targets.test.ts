@@ -6,7 +6,6 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   applyInstructionPlan,
-  instructionTargetFile,
   clearInstructionFile,
   instructionChannelProblems,
   holdsOnlyInstructionBlocks,
@@ -41,13 +40,11 @@ it('delivers Pi user blocks and rules to the override Pi actually reads', async 
   vi.stubEnv('HOME', root);
   const normal = path.join(root, '.pi/agent/AGENTS.md');
   const override = path.join(root, '.pi/agent/AGENTS.override.md');
-  const paths = { claudemd: '.pi/agent/AGENTS.md' };
   try {
     await fse.outputFile(normal, `# Personal normal\n\n${culture('OLD')}\n`);
     await fse.outputFile(override, '# Personal override\n');
     const team = TeamaiConfigSchema.parse({ team: 't', repo: 'https://example.invalid/t.git' });
     const local = { repo: { localPath: path.join(root, 'repo'), remote: '' }, username: 'u', additionalRoles: [], scope: 'user', enabledAgents: ['pi'] } as LocalConfig;
-    expect(await instructionTargetFile('pi', paths, 'user')).toBe('.pi/agent/AGENTS.override.md');
     expect(ownOf((await inlineRulesLocationOf('pi', installOf(team, local)))!)?.path).toBe(override);
     const targets = await resolveInstructionTargets(team, local);
     expect(targets.targets.find(t => t.tools.includes('pi'))?.path).toBe(override);
@@ -57,7 +54,7 @@ it('delivers Pi user blocks and rules to the override Pi actually reads', async 
     expect(await fse.readFile(override, 'utf8')).toContain('CURRENT');
     expect(await fse.readFile(normal, 'utf8')).toBe('# Personal normal\n');
     await fse.remove(override);
-    expect(await instructionTargetFile('pi', paths, 'user')).toBe(paths.claudemd);
+    expect(ownOf((await inlineRulesLocationOf('pi', installOf(team, local)))!)?.path).toBe(normal);
   } finally {
     vi.unstubAllEnvs();
     await fse.remove(root);
