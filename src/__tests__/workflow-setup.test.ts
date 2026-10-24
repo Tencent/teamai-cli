@@ -63,6 +63,14 @@ describe('workspace setup', () => {
     expect(fs.existsSync(path.join(dir, 'started'))).toBe(false);
   });
 
+  it('stops setup at the step deadline when no caller stops it', async () => {
+    const dir = workspace();
+    const startedAt = Date.now();
+    const failure = await runSetup({ command: 'sleep 20', dir, env: process.env, keys: [], expiresAt: new Date(startedAt + 500).toISOString() });
+    expect(failure).toMatchObject({ code: 'setup_failed', message: expect.stringContaining('timeout') });
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+  });
+
   it('scans only the files setup created or changed, and never .git', async () => {
     const dir = workspace();
     fs.writeFileSync(path.join(dir, '.npmrc'), TOKEN);

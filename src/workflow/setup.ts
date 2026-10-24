@@ -21,6 +21,8 @@ export interface SetupRun {
   keys: readonly string[];
   /** Stops setup's process group: SIGTERM, then SIGKILL after five seconds. */
   signal?: AbortSignal;
+  /** The lease's deadline, which stops setup the same way for a caller that has no loop to cancel it. */
+  expiresAt?: string;
 }
 
 /** The last characters of setup's output a failure quotes. */
@@ -32,7 +34,26 @@ const OUTPUT_TAIL = 400;
  * `setup_dirty`; a value of one of setup's keys in a file setup created or changed, ignored files included and `.git`
  * excluded, is `setup_secret`, naming the file and the key, never the value.
  */
-export async function runSetup({ command, dir, env, keys, signal }: SetupRun): Promise<WorkflowFailure | undefined> {
+export async function runSetup({ expiresAt, signal: caller, ...run }: SetupRun): Promise<WorkflowFailure | undefined> {
+  if (expiresAt === undefined) return checkedSetup({ ...run, signal: caller });
+  const bound = new AbortController();
+  const stop = (): void => bound.abort();
+  caller?.addEventListener('abort', stop, { once: true });
+  if (caller?.aborted) stop();
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; stop(); }, Math.max(0, Date.parse(expiresAt) - Date.now()));
+  try {
+    const failure = await checkedSetup({ ...run, signal: bound.signal });
+    return timedOut
+      ? { code: 'setup_failed', message: `Setup "${run.command}" did not finish before the step's timeout, so the step did not run. Make setup faster or raise the step's timeout, then retry the step.` }
+      : failure;
+  } finally {
+    clearTimeout(timer);
+    caller?.removeEventListener('abort', stop);
+  }
+}
+
+async function checkedSetup({ command, dir, env, keys, signal }: Omit<SetupRun, 'expiresAt'>): Promise<WorkflowFailure | undefined> {
   const stopped: WorkflowFailure = { code: 'setup_failed', message: `Setup "${command}" was stopped, so the step did not run.` };
   if (signal?.aborted) return stopped;
   const tracked = await snapshotWorktree(dir);

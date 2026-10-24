@@ -462,7 +462,7 @@ async function stageLease(lease: Lease, { active, runId, values, signal }: { act
     // Setup gets its own keys and none of the step's.
     const scope = lease.setup.envScope ?? { provide: [], withhold: [] };
     const scoped = await stepEnvironment(values, scope);
-    const failure = scoped.ok ? await runSetup({ command: lease.setup.command, dir: opened.dir, env: scoped.env, keys: scope.provide, signal }) : scoped.failure;
+    const failure = scoped.ok ? await runSetup({ command: lease.setup.command, dir: opened.dir, env: scoped.env, keys: scope.provide, signal, ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}) }) : scoped.failure;
     if (failure) {
       await removeWorktree(active, opened.dir);
       return failure;
