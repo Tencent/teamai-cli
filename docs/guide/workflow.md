@@ -244,7 +244,7 @@ Before it opens or accepts a pull request, TeamAI compares the delivered commit 
 
 Any other delivery failure fails the step with `delivery_failed`. Its message says what went wrong, names the branch the work is kept in, and gives the retry command. Fix the cause, such as the provider's credentials, then run `teamai workflow retry <run> <step>`, and run `teamai workflow resume <run>` or let your driver call `next`. The retry delivers the same branch again, without running the step again. A run cancelled while its pull request is being opened cannot take that pull request back. The run lists it, and the step stays cancelled.
 
-If origin has no branch to deliver, TeamAI opens no request. The failure names the missing branch and the commit to push to it, then gives the retry command. The origin check disables terminal and credential-manager prompts.
+If origin has no branch to deliver, TeamAI opens no request. The failure names the missing branch and the commit to push to it, then gives the retry command.
 
 If a host may have opened the request but TeamAI cannot confirm it, the step fails with `delivery_failed` and records no URL. Run the retry command in the message. TeamAI looks for the request before opening one again.
 

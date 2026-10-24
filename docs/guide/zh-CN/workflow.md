@@ -244,7 +244,7 @@ pull request 合入这条分支来源中最近一条已经交付过的分支，�
 
 其他交付失败会让步骤以 `delivery_failed` 失败。消息说明出了什么问题、工作保存在哪条分支，并给出重试命令。修复原因（例如 provider 的凭据）后，运行 `teamai workflow retry <run> <step>`，再运行 `teamai workflow resume <run>`，或让驱动调用 `next`。重试会再次交付同一条分支，不会重新运行步骤。运行在开 pull request 期间被取消时，这个 pull request 无法收回。运行会列出它，步骤保持 cancelled。
 
-如果 origin 没有要交付的分支，TeamAI 不会打开请求。失败消息会指出缺失的分支和要推送到该分支的提交，然后给出重试命令。检查 origin 时会禁用终端和凭据管理器的提示。
+如果 origin 没有要交付的分支，TeamAI 不会打开请求。失败消息会指出缺失的分支和要推送到该分支的提交，然后给出重试命令。
 
 如果主机可能已打开请求，但 TeamAI 无法确认，步骤会以 `delivery_failed` 失败，且不记录 URL。运行消息中的重试命令。TeamAI 会先查找已有请求，再尝试打开请求。
 

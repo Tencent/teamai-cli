@@ -447,12 +447,13 @@ describe('delivering a step', () => {
     git(root, ['--git-dir=remote.git', 'update-ref', '-d', `refs/heads/${branch}`]);
     await succeed(config, runId, fix, { to });
     vi.stubEnv('GIT_TERMINAL_PROMPT', '1');
+    vi.stubEnv('GIT_ASKPASS', '/opt/editor/askpass.sh');
     const reads = vi.spyOn(worktree, 'git');
 
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await state(config, runId);
     expect(run.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`origin has no branch ${branch}; push ${to} to it, then run: teamai workflow retry ${runId} fix`) } });
-    expect(reads).toHaveBeenCalledWith(cwd, ['-c', 'credential.interactive=false', 'ls-remote', 'origin', `refs/heads/${branch}`], { timeoutMs: 30000, env: { GIT_TERMINAL_PROMPT: '0' } });
+    expect(reads).toHaveBeenCalledWith(cwd, ['-c', 'credential.interactive=false', 'ls-remote', 'origin', `refs/heads/${branch}`], { timeoutMs: 30000, env: { GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: 'echo', GCM_INTERACTIVE: 'never' } });
     expect(run.deliveries).toBeUndefined();
     expect(gh.calls()).toEqual([]);
   });

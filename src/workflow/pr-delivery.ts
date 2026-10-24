@@ -5,6 +5,7 @@
  */
 import os from 'node:os';
 import { providerForRemote, type OriginProvider } from '../providers/registry.js';
+import { NON_INTERACTIVE_GIT_ENV } from '../utils/git-env.js';
 import type { PullRequestRef } from '../providers/types.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
 import type { DeliveryKey, UnresolvedCreate } from './delivery-ledger.js';
@@ -190,7 +191,7 @@ async function findOpen(
 /** The commit origin's `branch` is at, read by the checkout; none when origin has no such branch. */
 async function originTip(checkout: string, branch: string): Promise<{ kind: 'read'; commit?: string } | { kind: 'unreadable' }> {
   const ref = `refs/heads/${branch}`;
-  const listed = await git(checkout, ['-c', 'credential.interactive=false', 'ls-remote', 'origin', ref], { timeoutMs: DELIVERY_TIMEOUT_MS, env: { GIT_TERMINAL_PROMPT: '0' } });
+  const listed = await git(checkout, ['-c', 'credential.interactive=false', 'ls-remote', 'origin', ref], { timeoutMs: DELIVERY_TIMEOUT_MS, env: NON_INTERACTIVE_GIT_ENV });
   if (listed.code !== 0) return { kind: 'unreadable' };
   const commit = listed.stdout.split('\n').map((line) => line.split('\t')).find(([, name]) => name?.trim() === ref)?.[0];
   return commit ? { kind: 'read', commit } : { kind: 'read' };
