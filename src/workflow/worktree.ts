@@ -64,8 +64,7 @@ export function git(cwd: string, args: string[], options?: { input: string } | {
   if (options === undefined || !('input' in options)) {
     return new Promise((resolve) => {
       execFile('git', args, { cwd, env: { ...process.env, ...options?.env }, windowsHide: true, timeout: options?.timeoutMs }, (error, stdout, stderr) => {
-        const failed = error as NodeJS.ErrnoException & { status?: number } | null;
-        const code = typeof failed?.status === 'number' ? failed.status : failed ? 1 : 0;
+        const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0;
         resolve({ code, stdout: String(stdout), stderr: String(stderr) });
       });
     });

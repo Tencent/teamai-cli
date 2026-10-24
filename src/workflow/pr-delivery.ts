@@ -211,7 +211,8 @@ async function contains({ runId, checkout }: DeliveryJob, { commit, ancestor }: 
   if (fetched.missing.includes(commit)) return { fault: { kind: 'unreadable' } };
   // A commit the checkout holds brings its history, so an ancestor still missing is not in it.
   if (fetched.missing.length > 0) return { contains: false };
-  return { contains: (await git(checkout, ['merge-base', '--is-ancestor', ancestor, commit])).code === 0 };
+  const { code } = await git(checkout, ['merge-base', '--is-ancestor', ancestor, commit]);
+  return code === 0 || code === 1 ? { contains: code === 0 } : { fault: { kind: 'unreadable' } };
 }
 
 const LISTED_FILES = 20;

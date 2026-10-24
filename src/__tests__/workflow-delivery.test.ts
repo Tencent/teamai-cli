@@ -727,6 +727,20 @@ describe('protected paths', () => {
   });
 });
 
+describe('reading the delivered branch', () => {
+  it('tells a commit that is not an ancestor from a git error', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-git-code-'));
+    execFileSync('git', ['init', '-q', repo]);
+    const missing = '0'.repeat(40);
+
+    try {
+      expect((await worktree.git(repo, ['merge-base', '--is-ancestor', missing, missing], { timeoutMs: 5_000 })).code).toBe(128);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('reported URLs from a driver', () => {
   it('drops a URL with credentials without failing the report, and never stores, echoes or publishes it', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
