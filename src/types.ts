@@ -1049,6 +1049,8 @@ export const DeliverySelectionSchema = z.object({
   scope: InstallScopeSchema,
   primaryRole: z.string().optional(),
   additionalRoles: z.array(z.string()),
+  /** The roles came from manifest/members.yaml (#1186): holding none then filters, where a bare config does not. */
+  rolesAssigned: z.boolean().optional(),
   projects: z.array(z.string()).optional(),
   subscribedTags: z.array(z.string()).optional(),
   excludedSkills: z.array(z.string()).optional(),

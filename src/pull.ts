@@ -1130,15 +1130,25 @@ function setChildren(record: CheckoutRecord, localConfig: LocalConfig): void {
 
 /** The selection `localConfig` makes a pull deliver for, as the checkout's record keeps it. */
 export function deliverySelection(localConfig: LocalConfig): DeliverySelection {
-  const { scope, primaryRole, additionalRoles, projects, subscribedTags, excludedSkills, inheritUserScope } = localConfig;
+  const { scope, primaryRole, additionalRoles, roleAssignment, projects, subscribedTags, excludedSkills, inheritUserScope } = localConfig;
   const lists = Object.entries({ projects, subscribedTags, excludedSkills }).flatMap(([key, values]) => values ? [[key, [...values].sort()]] : []);
   return DeliverySelectionSchema.parse({
     scope,
     ...(primaryRole !== undefined ? { primaryRole } : {}),
     additionalRoles: [...additionalRoles].sort(),
+    ...(roleAssignment ? { rolesAssigned: true } : {}),
     ...Object.fromEntries(lists),
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   });
+}
+
+/**
+ * The part of a selection that manifest/members.yaml decides (#1186). The rest
+ * changes only through commands that clear lastPullRev; an assignment arrives
+ * with a fetch, so the fast path has to compare this itself.
+ */
+function assignedRolePart(selection: DeliverySelection): Pick<DeliverySelection, 'primaryRole' | 'additionalRoles' | 'rolesAssigned'> {
+  return { primaryRole: selection.primaryRole, additionalRoles: [...selection.additionalRoles].sort(), rolesAssigned: selection.rolesAssigned ?? false };
 }
 
 /** Put `agentModels` on `record`, leaving the key out while there are none. */
@@ -1749,15 +1759,20 @@ async function pullForScope(
       const sameChildren = !workspaceKey || state.lastPullByWorkspace?.[workspaceKey]?.children === localConfig.children?.fingerprint;
       if (!sameChildren) log.debug(`[${scopeLabel}] The workspace's children changed, syncing`);
       const checkout = recordKey ? state.lastPullByWorkspace?.[recordKey] : undefined;
-      // A reassignment in manifest/members.yaml arrives with the fetch and can
-      // leave the checked-out revision where it was — a pinned workspace reads
+      // A change in manifest/members.yaml arrives with the fetch and can leave
+      // the checked-out revision where it was — a pinned workspace reads
       // origin/<default> for it (#1186). A local selection change clears
       // lastPullRev instead; an assignment has no command to do that, so the
-      // record's own selection gates the fast path. A record without one is
-      // from an older CLI and is read as unchanged.
-      const sameSelection = checkout?.selection === undefined || isDeepStrictEqual(checkout.selection, deliverySelection(localConfig));
-      if (!sameSelection) log.debug(`[${scopeLabel}] The delivered selection changed, syncing`);
-      if (currentRev && state[revisionField] === currentRev && recorded?.rev === currentRev && recorded.teamRef === localConfig.repo.ref && listed && sameChildren && sameSelection) {
+      // roles the record delivered for gate the fast path: which ones, and
+      // whether the team assigned them, since holding none then filters where
+      // a bare config does not. Only the roles: the rest of the selection is
+      // compared by nothing else either, and a config edited by hand kept the
+      // fast path before. A record without a selection is from an older CLI
+      // and is read as unchanged.
+      const sameRoles = checkout?.selection === undefined
+        || isDeepStrictEqual(assignedRolePart(checkout.selection), assignedRolePart(deliverySelection(localConfig)));
+      if (!sameRoles) log.debug(`[${scopeLabel}] The roles delivered for changed, syncing`);
+      if (currentRev && state[revisionField] === currentRev && recorded?.rev === currentRev && recorded.teamRef === localConfig.repo.ref && listed && sameChildren && sameRoles) {
         currentTargets = await getInstalledResourceTargets(freshConfig, localConfig);
         const previousTargets = recorded.targets;
         const syncedTargets = new Set(previousTargets ?? []);

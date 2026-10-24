@@ -253,6 +253,38 @@ describe('assigned roles (#1186)', () => {
     const list = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
     expect(JSON.parse(list.output)).toMatchObject({ roles: ['backend'], source: 'assigned' });
   });
+
+  // The file appearing is a change too: a role-less member goes from every
+  // namespace to the shared root, with no role list changing and no revision
+  // moving in a pinned checkout.
+  it('withdraws role namespaces from a pinned workspace when members.yaml appears on main', async () => {
+    const membersFile = path.join(remoteRepo, 'manifest', 'members.yaml');
+    const members = fs.readFileSync(membersFile, 'utf8');
+    git(['rm', '-q', 'manifest/members.yaml'], remoteRepo);
+    git(['commit', '-qm', 'no assignments'], remoteRepo);
+    git(['tag', 'pin-1186-open'], remoteRepo);
+    const projectRoot = project('erin-project', 'erin');
+    const pin = await runCLI(['pull', '--team-ref', 'pin-1186-open'], homeDir, projectRoot);
+    expect(pin.code, pin.output).toBe(0);
+    expect(deliveredSkills(projectRoot)).toEqual(['backend-only', 'frontend-only', 'teamai']);
+
+    fs.writeFileSync(membersFile, members);
+    git(['add', 'manifest/members.yaml'], remoteRepo);
+    git(['commit', '-qm', 'assignments back'], remoteRepo);
+
+    const second = await runCLI(['pull'], homeDir, projectRoot);
+    expect(second.code, second.output).toBe(0);
+    expect(second.output).not.toContain('Already synced');
+    // The sync withdraws both role skills, or keeps a copy it cannot verify and
+    // says so — the fixture's copies take that path, as a plain `roles set`
+    // change does with no members.yaml at all. Either way the pull judged them.
+    for (const skill of ['backend-only', 'frontend-only']) {
+      const withdrawn = !deliveredSkills(projectRoot).includes(skill) || second.output.includes(`Kept skill "${skill}"`);
+      expect(withdrawn, second.output).toBe(true);
+    }
+    const list = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
+    expect(JSON.parse(list.output)).toMatchObject({ roles: [], source: 'default' });
+  });
 });
 
 /**

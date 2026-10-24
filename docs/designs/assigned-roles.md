@@ -42,7 +42,7 @@ With assignments in place, nothing falls back to an unfiltered sync:
 
 ### Resolved again where a load cannot reach
 
-`refreshRoleAssignment` re-resolves the assignment on a config already in memory. The checkout record keeps the selection it delivered, and pull's revision fast path compares it: a reassignment that arrives without moving the checkout — a workspace pinned to a tag reads `origin/<default>` for it — still gets a full sync. It **mutates** that config rather than returning a copy: pull keys `teamEnvs` and `instructions` on config identity, and reconciles hooks, MCP and env on the object its caller holds, so a replacement would reach none of them.
+`refreshRoleAssignment` re-resolves the assignment on a config already in memory. The checkout record keeps the selection it delivered, and pull's revision fast path compares the roles in it — which ones, and whether the team assigned them: a reassignment, or the file appearing, that arrives without moving the checkout — a workspace pinned to a tag reads `origin/<default>` for it — still gets a full sync. It **mutates** that config rather than returning a copy: pull keys `teamEnvs` and `instructions` on config identity, and reconciles hooks, MCP and env on the object its caller holds, so a replacement would reach none of them.
 
 Two callers:
 
