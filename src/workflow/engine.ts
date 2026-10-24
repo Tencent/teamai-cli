@@ -18,11 +18,12 @@ import {
 } from './template.js';
 import { parseStepPath } from './step-path.js';
 import {
-  ReadSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, takeOver, timeOut, waitForAnswer,
-  type ItemResult, type LeasedStep, type LimitsFrom, type StepRead, type StepState,
+  ReadSchema, answerHitl, fail, lease, release, settled, skip, start, stopWhere, stopped, succeed, takeOver, waitForAnswer,
+  type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
+import { budgetSpent, expire, leaseDeadline, ownDeadline, startLimits } from './limits.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
-import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled, runPasses } from './loop.js';
+import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
@@ -525,42 +526,6 @@ function startWorkflowStep(
 }
 
 /**
- * Stops every open step whose path `under` matches, in sub-workflows too: a leased step is cancelled and its attempt
- * kept in `cancelledAttempts`, a running workflow step is cancelled, and a pending or waiting step is skipped. Used by
- * an end or break, cancel and retry, each with its own failure. Returns the ids this walk changed.
- */
-export function stopWhere(run: RunState, under: (id: string) => boolean, failure: WorkflowFailure, settledAt: number): string[] {
-  const changed: string[] = [];
-  for (const state of run.steps) {
-    if (!under(state.id)) continue;
-    if (!settled(state)) changed.push(state.id);
-    switch (state.status) {
-      case 'pending':
-      case 'waiting':
-        skip(state, settledAt);
-        break;
-      case 'running':
-        cancel(state, failure, settledAt);
-        break;
-      case 'leased':
-        (run.cancelledAttempts ??= []).push(state.attempt);
-        cancel(state, failure, settledAt);
-        break;
-      case 'succeeded':
-      case 'failed':
-      case 'skipped':
-      case 'cancelled':
-        break;
-      default: {
-        const unknown: never = state;
-        return unknown;
-      }
-    }
-  }
-  return changed;
-}
-
-/**
  * A step takes how what it ran settled: a workflow step, the outcome, the end, and the outputs of its workflow; a
  * `for_each` step, the outcome and the results of its items.
  */
@@ -688,7 +653,7 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
   if (typeof reads === 'string') return { unreadable: reads };
   // A workflow that spent more than its budget stops what it still runs and fails: the run, or the step that runs it, so a step
   // around it that reads its outcome can recover.
-  const spent = scope.budget === undefined ? 0 : spentTokens(run, scope.prefix) - limitsFrom(run, scope).tokens;
+  const spent = scope.budget === undefined ? 0 : budgetSpent(run, scope);
   if (scope.budget !== undefined && spent > scope.budget) {
     const failure = { code: 'budget_exceeded', message: `${workflowLabel(scope)} spent ${spent} of its ${scope.budget}-token budget` };
     stopWhere(run, (id) => id.startsWith(scope.prefix), failure, run.revision);
@@ -790,89 +755,6 @@ function settleScope(run: RunState, scope: Scope, now: string): Settled {
  */
 export function reconcileRun(run: RunState, now: string): Settled {
   return expire(run, now) ?? settleScope(run, topScope(run), now);
-}
-
-function after(from: string, ms: number): string {
-  return new Date(Date.parse(from) + ms).toISOString();
-}
-
-function passed(deadline: string, now: string): boolean {
-  return Date.parse(deadline) <= Date.parse(now);
-}
-
-/**
- * When instance `state` of `step`, leased or started at `now`, must settle: by its own `timeout`, and when it runs a
- * workflow file, by that file's if it is shorter. A `for_each` step's `timeout` bounds the whole fan-out, so it is its
- * own instance's alone; each item runs the file, so the file's is the item's.
- */
-export function ownDeadline(run: RunState, state: StepState, step: WorkflowStep, now: string): string | undefined {
-  const item = step.forEach !== undefined && isItem(state);
-  const file = typeof step.workflow === 'string' && (!step.forEach || item) ? run.workflows?.[step.workflow]?.timeout : undefined;
-  const limits = [item ? undefined : step.timeout, file].filter((ms) => ms !== undefined);
-  return limits.length > 0 ? after(now, Math.min(...limits)) : undefined;
-}
-
-/**
- * The input and output tokens spent under a workflow, by the prefix of its step paths: every pass, current or archived,
- * and every released attempt. Cached input is shown, not budgeted: tools report it inside or beside input differently.
- */
-export function spentTokens(run: RunState, prefix: string): number {
-  const used = [...runPasses(run), ...run.releasedTokens ?? []].filter((entry) => entry.step.startsWith(prefix));
-  return used.reduce((sum, { tokens }) => sum + (tokens?.input ?? 0) + (tokens?.output ?? 0), 0);
-}
-
-/**
- * What a workflow step, or `for_each` item, starting at `now` records: when its timeout ends it, and where the budget of
- * what it runs counts from. What it ran before, such as an earlier pass a loop archived, is not counted again.
- */
-export function startLimits(run: RunState, state: StepState, step: WorkflowStep, now: string): { expiresAt?: string; limitsFrom: LimitsFrom } {
-  const expiresAt = ownDeadline(run, state, step, now);
-  return { ...(expiresAt !== undefined ? { expiresAt } : {}), limitsFrom: { at: now, tokens: spentTokens(run, `${state.id}.`) } };
-}
-
-/** Where the limits of a workflow of the run count from: the run's, or those its running step recorded when it started. */
-function limitsFrom(run: RunState, scope: Scope): LimitsFrom {
-  const recorded = scope.runner ? (scope.runner.status === 'running' ? scope.runner.limitsFrom : undefined) : run.limitsFrom;
-  return recorded ?? { at: run.createdAt, tokens: 0 };
-}
-
-/** The run's own deadline, from when it started or a retry reopened it. */
-function runDeadline(run: RunState): string | undefined {
-  return run.definition.timeout === undefined ? undefined : after(limitsFrom(run, topScope(run)).at, run.definition.timeout);
-}
-
-/** When a lease ends: the first of its own deadline, that of every running step it is under, fan-out items included, and the run's. */
-function leaseDeadline(run: RunState, state: LeasedStep): string | undefined {
-  const deadlines = [
-    state.lease.expiresAt,
-    runDeadline(run),
-    ...run.steps.map((step) => (step.status === 'running' && isUnder(step.id)(state.id) ? step.expiresAt : undefined)),
-  ].filter((deadline) => deadline !== undefined);
-  return deadlines.sort((left, right) => Date.parse(left) - Date.parse(right))[0];
-}
-
-/**
- * Applies every deadline `now` has passed, outer first, so what an expired step stops does not time out on its own.
- * The run's own deadline cancels every open step and settles the run. A step's fails it with `timeout`, so a step that
- * reads its outcome can recover, and cancels what it runs. Applying it again with the same `now` changes nothing.
- */
-function expire(run: RunState, now: string): WorkflowResult | undefined {
-  const runEnds = runDeadline(run);
-  if (runEnds !== undefined && passed(runEnds, now)) {
-    const failure = { code: 'timeout', message: `Run ${run.id} passed its timeout at ${runEnds}` };
-    stopWhere(run, () => true, failure, run.revision);
-    return { outcome: 'failed', failure, settledAt: run.revision };
-  }
-  // A step's instance comes before the instances of what it runs, so an outer deadline applies first.
-  for (const state of run.steps) {
-    const expiresAt = state.status === 'running' ? state.expiresAt : state.status === 'leased' ? state.lease.expiresAt : undefined;
-    if (expiresAt === undefined || !passed(expiresAt, now)) continue;
-    const failure = { code: 'timeout', message: `Step "${state.id}" passed its timeout at ${expiresAt}` } as const;
-    if (state.status === 'running') stopWhere(run, isUnder(state.id), { code: 'timeout', message: `Cancelled: ${failure.message}` }, run.revision);
-    else if (state.status === 'leased') (run.cancelledAttempts ??= []).push(state.attempt);
-    if (state.status === 'running' || state.status === 'leased') timeOut(state, failure, run.revision);
-  }
-  return undefined;
 }
 
 /** Why `inputs` do not fit what the workflow declares, naming the field, or null when they fit. Every declared input is required. */

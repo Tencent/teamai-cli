@@ -3,7 +3,7 @@ import { AgentObservationSchema, UsedSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import { UnenforcedSchema } from './requirements.js';
-import type { StepLease, WorkflowFailure } from './types.js';
+import type { RunState, StepLease, WorkflowFailure } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
 const TokenUsageSchema: z.ZodType<TokenUsage> = z.object({
@@ -424,4 +424,40 @@ export function settled(step: StepState | undefined): step is Extract<StepState,
       return unknown;
     }
   }
+}
+
+/**
+ * Stops every open step whose path `under` matches, in sub-workflows too: a leased step is cancelled and its attempt
+ * kept in `cancelledAttempts`, a running workflow step is cancelled, and a pending or waiting step is skipped. Used by
+ * an end or break, cancel and retry, each with its own failure. Returns the ids this walk changed.
+ */
+export function stopWhere(run: RunState, under: (id: string) => boolean, failure: WorkflowFailure, settledAt: number): string[] {
+  const changed: string[] = [];
+  for (const state of run.steps) {
+    if (!under(state.id)) continue;
+    if (!settled(state)) changed.push(state.id);
+    switch (state.status) {
+      case 'pending':
+      case 'waiting':
+        skip(state, settledAt);
+        break;
+      case 'running':
+        cancel(state, failure, settledAt);
+        break;
+      case 'leased':
+        (run.cancelledAttempts ??= []).push(state.attempt);
+        cancel(state, failure, settledAt);
+        break;
+      case 'succeeded':
+      case 'failed':
+      case 'skipped':
+      case 'cancelled':
+        break;
+      default: {
+        const unknown: never = state;
+        return unknown;
+      }
+    }
+  }
+  return changed;
 }
