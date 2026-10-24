@@ -25,9 +25,9 @@ import { budgetSpent, countLateTokens, expire, itemsSpent, leaseDeadline, ownDea
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, isUnder, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { deliverableOf, deliveryProblem, deliveryTarget, planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
+import { deliverableOf, deliveryProblem, deliveryTarget, planWorkspace, plannedBranch, sessionOf, workLeftUndelivered, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
 import {
-  deliverPr, findDelivered, reportedPrMismatch, type DeliveryJob,
+  deliverPr, deliveryFailure, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
 import { completeDelivery, deliveringStep, nextDelivery, resolveCreate, sameCreate, unresolvedCreate } from './delivery-ledger.js';
@@ -565,9 +565,16 @@ function finishStep(run: RunState, state: StepState, definition: WorkflowStep, r
     fail(state, { ...settlement, ...(result.failure ? { message: result.failure.message, failure: result.failure } : {}) });
     return;
   }
-  const delivery = definition.deliver === 'pr' && (!definition.forEach || isItem(state)) ? deliverableOf(run, state, definition) : undefined;
+  const delivers = definition.deliver === 'pr' && (!definition.forEach || isItem(state));
+  const delivery = delivers ? deliverableOf(run, state, definition) : undefined;
+  // A branch that holds nothing beyond the run base opens no pull request, so work a step inside wrote elsewhere would be lost.
+  const left = delivers && !delivery && definition.workflow !== undefined ? workLeftUndelivered(run, state) : undefined;
   if (delivery) startDelivery(state, settlement, delivery);
-  else succeed(state, settlement);
+  else if (left) {
+    const key = { step: state.id, pass: state.pass ?? 1, settledAt: result.settledAt, branch: left.branch, head: left.head };
+    const failure = deliveryFailure({ runId: run.id, key }, { kind: 'child_work_left_out', ...left.child });
+    fail(state, { ...settlement, message: failure.message, failure });
+  } else succeed(state, settlement);
 }
 
 function childOrUnreadable(run: RunState, scope: Scope, states: StepState[], state: StepState, definition: WorkflowStep): Scope | { unreadable: string } {

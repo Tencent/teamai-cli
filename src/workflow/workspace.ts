@@ -172,13 +172,31 @@ export function deliverableOf(run: RunState, state: StepState, step: WorkflowSte
   let branch = changes?.branch;
   let head = changes?.to;
   if (step.workflow !== undefined) {
-    const own = branchName(run.id, state.id, state.pass ?? 1);
-    const latest = run.steps.filter((item) => item.id.startsWith(`${state.id}.`) && item.status !== 'cancelled' && changesOf(item))
-      .sort((left, right) => ('settledAt' in right ? right.settledAt : 0) - ('settledAt' in left ? left.settledAt : 0))[0];
-    branch = run.copies?.[own]?.commit !== undefined ? own : changesOf(latest)?.branch;
+    branch = workflowBranch(run, state);
     head = branch === undefined ? undefined : run.copies?.[branch]?.commit;
   }
   return branch === undefined || head === undefined || head === run.base?.commit ? undefined : { branch, head };
+}
+
+/** The branch workflow step `state` delivers: its own copy, else the branch its latest step wrote. */
+function workflowBranch(run: RunState, state: StepState): string | undefined {
+  const own = branchName(run.id, state.id, state.pass ?? 1);
+  if (run.copies?.[own]?.commit !== undefined) return own;
+  const latest = run.steps.filter((item) => item.id.startsWith(`${state.id}.`) && item.status !== 'cancelled' && changesOf(item))
+    .sort((left, right) => ('settledAt' in right ? right.settledAt : 0) - ('settledAt' in left ? left.settledAt : 0))[0];
+  return changesOf(latest)?.branch;
+}
+
+/**
+ * Work a step inside workflow step `state` wrote beyond the run base, when `state` delivers nothing of its own: no
+ * pull request would hold it. Undefined when there is none.
+ */
+export function workLeftUndelivered(run: RunState, state: StepState): { branch: string; head: string; child: { step: string; branch: string } } | undefined {
+  const branch = workflowBranch(run, state);
+  const base = run.base?.commit;
+  if (branch === undefined || base === undefined) return undefined;
+  const child = childWorkOff(run, state, branch).find((item) => item.commit !== base);
+  return child && { branch, head: base, child };
 }
 
 /**
