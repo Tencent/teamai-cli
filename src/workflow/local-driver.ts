@@ -1,5 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,15 +16,19 @@ import { isAgentToolId } from '../tools.js';
 import { observeLaunch, type Used } from '../agent-observation.js';
 import { detectProjectConfig } from '../config.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { commandSignalPolicy, exitLike, terminalReachesCommand } from '../env-exec.js';
+import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand } from '../env-exec.js';
+import { knownSecrets, resolveWorkflowEnv, type WorkflowEnv } from '../env-resolution.js';
 import { workflowLaunch } from '../launch-context.js';
 import { getDataHome, type LocalConfig, type TeamaiConfig } from '../types.js';
-import { readFileSafe, readJson, writeJsonAtomic } from '../utils/fs.js';
+import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { redact, redactJson } from '../utils/redact.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../skill-use.js';
-import { interactiveHitlRequired, leaseNext, reportAttempt } from './engine.js';
+import { leaseNext, reportAttempt } from './engine.js';
+import { EnvScopeSchema, LeaseSetupSchema, type DriverCan, type EnvScope, type LeaseSetup } from './requirements.js';
+import { runSetup } from './setup.js';
 import { respondToHitl } from './run-controls.js';
 import { isRecord } from './expression.js';
 import {
@@ -40,11 +43,12 @@ import { isLaunchTool, localToolFamily, type LaunchTool } from '../tool-launch/t
 import { chooseStepModel } from './step-model.js';
 import type { StepRead } from './step-state.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from './types.js';
-import { isWorkflowError } from './types.js';
+import { isWorkflowError, WORKSPACE_MODES } from './types.js';
 import type { LeaseSession, SessionRef, WorkspaceContract } from './workspace.js';
 import {
-  applyBaseConfig, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, stepCheckout, unrestoredCopy, worktreePath,
+  applyBaseConfig, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, markSetup, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, setupUnfinished, stepCheckout, unrestoredCopy, worktreePath,
 } from './worktree.js';
+import { changedPaths, snapshotWorktree, type WorktreeSnapshot } from './worktree-snapshot.js';
 
 /** Local lease identity, stable across restarts in the same workspace. */
 export function localDriver(cwd: string): DriverIdentity {
@@ -84,12 +88,12 @@ export function _setDriverPollMs(ms: number): void {
 }
 
 /**
- * Starts a leased command. The lease `env` is set over the inherited environment, so values reach the shell only as
- * variables. A detached command leads a process group of its own, so `stop` reaches everything it started; it has no
- * controlling terminal, and a terminal's Ctrl-C does not reach it.
+ * Starts a leased command with `env`: the step's environment with the lease `env` set over it, so values reach the
+ * shell only as variables. A detached command leads a process group of its own, so `stop` reaches everything it
+ * started; it has no controlling terminal, and a terminal's Ctrl-C does not reach it.
  */
-function startCommand(command: string, cwd: string, env: Record<string, string>, detached: boolean): CommandProcess {
-  const child = spawn(command, { cwd, shell: true, env: { ...process.env, ...env }, windowsHide: true, detached });
+function startCommand(command: string, cwd: string, env: NodeJS.ProcessEnv, detached: boolean): CommandProcess {
+  const child = spawn(command, { cwd, shell: true, env, windowsHide: true, detached });
   const exit = new Promise<CommandResult>((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -101,6 +105,41 @@ function startCommand(command: string, cwd: string, env: Record<string, string>,
     child.on('close', (code) => resolve({ exitCode: code ?? 1, stdout, stderr }));
   });
   return { exit, stop: stopProcess(child, exit, detached) };
+}
+
+/** What a leased command came to: it ran, staging failed, or it was stopped or its lease ended before it could start. */
+type StagedResult = { kind: 'ran'; result: CommandResult } | { kind: 'unstaged'; failure: WorkflowFailure } | { kind: 'stopped' };
+
+interface StagedCommand {
+  exit: Promise<StagedResult>;
+  /** Aborts staging and setup, or stops the command once it runs. Settles once the attempt is over; a second call changes nothing. */
+  stop(): Promise<unknown>;
+}
+
+/** Whether a staged lease may start its command or tool: nothing stopped it, and its deadline has not passed. */
+function startable(lease: Lease, signal: AbortSignal): boolean {
+  return !signal.aborted && (lease.expiresAt === undefined || Date.now() < Date.parse(lease.expiresAt));
+}
+
+/**
+ * Stages a leased command, then starts it, as one attempt, so the driver keeps asking the run what to do while staging
+ * and setup run, and a cancel reaches either phase.
+ */
+function stageThenStart(lease: Lease, stage: (signal: AbortSignal) => Promise<WorkflowFailure | undefined>, start: () => CommandProcess): StagedCommand {
+  const controller = new AbortController();
+  let command: CommandProcess | undefined;
+  const exit = (async (): Promise<StagedResult> => {
+    const failure = await stage(controller.signal);
+    if (!startable(lease, controller.signal)) return { kind: 'stopped' };
+    if (failure) return { kind: 'unstaged', failure };
+    command = start();
+    return { kind: 'ran', result: await command.exit };
+  })();
+  return { exit, stop: async () => {
+    controller.abort();
+    await command?.stop();
+    return exit;
+  } };
 }
 
 function jsonStdout(stdout: string): unknown | undefined {
@@ -172,6 +211,16 @@ interface Lease {
   /** The lease named a workspace this driver cannot read. The step fails instead of running in the active checkout. */
   unreadableWorkspace?: true;
   session?: LeaseSession;
+  /** The env keys the step gets and the ones kept from it, by name. */
+  envScope?: EnvScope;
+  /** The most agent turns the prompt's tool may take. */
+  maxTurns?: number;
+  /** What to run in a workspace this driver creates, before the step. */
+  setup?: LeaseSetup;
+  /** When the engine cancels the lease. A step staged after it does not start. */
+  expiresAt?: string;
+  /** The environment the step's command or tool runs with, built from `envScope` when the lease is staged. */
+  processEnv?: NodeJS.ProcessEnv;
   /** Set once the step has a directory to run in. */
   cwd?: string;
   before?: WorktreeSnapshot;
@@ -194,8 +243,39 @@ function stringMap(value: unknown): Record<string, string> | undefined {
   return entries.every(([, item]) => typeof item === 'string') ? Object.fromEntries(entries) as Record<string, string> : undefined;
 }
 
+function attemptsDir(config: LocalConfig, runId: string): string {
+  return path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
+}
+
 function resultPath(config: LocalConfig, runId: string, attempt: string): string {
-  return path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts', attempt, 'result.json');
+  return path.join(attemptsDir(config, runId), attempt, 'result.json');
+}
+
+/**
+ * Masks the secret values an attempt's result file holds, so the copy it keeps on disk carries none. A file that is
+ * not JSON, such as one a tool stopped writing halfway, is masked as text.
+ */
+async function maskResultFile(file: string, secrets: Record<string, string>): Promise<void> {
+  const text = await readFileSafe(file);
+  if (text === null) return;
+  let kept: unknown;
+  try {
+    kept = JSON.parse(text);
+  } catch {
+    // Text a tool wrote as JSON holds a secret with a quote or a backslash in its escaped form.
+    const escaped = Object.fromEntries(Object.entries(secrets).map(([label, value]) => [label, JSON.stringify(value).slice(1, -1)]));
+    const masked = redact(redact(text, { envSecrets: escaped, patterns: false }), { envSecrets: secrets, patterns: false });
+    if (masked !== text) await writeFileAtomic(file, masked);
+    return;
+  }
+  const masked = redactJson(kept, secrets);
+  if (JSON.stringify(masked) !== JSON.stringify(kept)) await writeJsonAtomic(file, masked);
+}
+
+/** Masks the result file of every attempt of the run, so one that ended without a report, on a signal too, keeps no secret. */
+async function maskAttemptFiles(config: LocalConfig, runId: string, secrets: Record<string, string>): Promise<void> {
+  const listed = await fs.readdir(attemptsDir(config, runId)).catch(() => []);
+  await Promise.all(listed.map((attempt) => maskResultFile(resultPath(config, runId, attempt), secrets)));
 }
 
 function supportedTool(value: string): value is LaunchTool {
@@ -237,100 +317,6 @@ async function loadAgent(
   return reversed.ok ? { spec: reversed.spec, file } : null;
 }
 
-interface WorktreeSnapshot {
-  ok: boolean;
-  files: Map<string, string>;
-  head?: string;
-  /** The ref HEAD points to, empty when it is detached, so a switch at the same commit is a change too. */
-  branch: string;
-}
-
-function gitStatus(workspace: string): Promise<{ ok: boolean; text: string }> {
-  return new Promise((resolve) => {
-    execFile('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--ignore-submodules=none'], { cwd: workspace, env: process.env }, (error, stdout, stderr) => {
-      resolve(error ? { ok: false, text: stderr.trim() } : { ok: true, text: stdout });
-    });
-  });
-}
-
-/** Porcelain records from `git status -z`. A rename's first path is the one in the worktree; the next field is the old path. */
-function statusEntries(text: string): { mark: string; relative: string }[] {
-  const parts = text.split('\0');
-  const entries: { mark: string; relative: string }[] = [];
-  for (let index = 0; index < parts.length; index += 1) {
-    const item = parts[index] ?? '';
-    if (item.length < 4) continue;
-    const mark = item.slice(0, 2);
-    if (mark.includes('R') || mark.includes('C')) index += 1;
-    entries.push({ mark, relative: item.slice(3) });
-  }
-  return entries;
-}
-
-async function hashPath(workspace: string, relative: string): Promise<string> {
-  const full = path.resolve(workspace, relative);
-  try {
-    const stats = await fs.lstat(full);
-    const bytes = stats.isSymbolicLink() ? await fs.readlink(full) : await fs.readFile(full);
-    return createHash('sha256').update(bytes).digest('hex');
-  } catch {
-    return 'missing';
-  }
-}
-
-async function stagedEntry(workspace: string, relative: string): Promise<string> {
-  const listed = await git(workspace, ['ls-files', '-s', '--', relative]);
-  const entries = listed.stdout.split('\n').filter((line) => line.trim() !== '').map((line) => {
-    const [mode, blob, stage] = line.split(/\s+/);
-    return `${mode}:${blob}:${stage}`;
-  });
-  return entries.join(',') || 'none';
-}
-
-async function worktreeMode(workspace: string, relative: string): Promise<string> {
-  try {
-    return String((await fs.lstat(path.resolve(workspace, relative))).mode);
-  } catch {
-    return 'missing';
-  }
-}
-
-async function snapshotWorktree(workspace: string, depth = 0): Promise<WorktreeSnapshot> {
-  const status = await gitStatus(workspace);
-  const head = (await git(workspace, ['rev-parse', 'HEAD'])).stdout.trim();
-  const branch = (await git(workspace, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim();
-  if (!status.ok) return { ok: false, files: new Map(), ...(head ? { head } : {}), branch };
-  const files = new Map<string, string>();
-  for (const { mark, relative } of statusEntries(status.text)) {
-    if (files.has(relative)) continue;
-    const staged = await stagedEntry(workspace, relative);
-    const mode = await worktreeMode(workspace, relative);
-    const gitlink = staged.split(',').some((entry) => entry.startsWith('160000:'));
-    const body = gitlink && depth < 3
-      ? await submoduleSnapshot(path.resolve(workspace, relative), depth)
-      : await hashPath(workspace, relative);
-    files.set(relative, `${mark}:${staged}:${mode}:${body}`);
-  }
-  return { ok: true, files, ...(head ? { head } : {}), branch };
-}
-
-async function submoduleSnapshot(dir: string, depth: number): Promise<string> {
-  const snap = await snapshotWorktree(dir, depth + 1);
-  const files = [...snap.files.entries()].sort(([left], [right]) => left.localeCompare(right))
-    .map(([name, value]) => `${name}=${value}`).join('\n');
-  return `${snap.ok ? 'ok' : 'unreadable'}:${snap.head ?? ''}:${files}`;
-}
-
-function changedPaths(before: WorktreeSnapshot, after: WorktreeSnapshot): string[] {
-  const files = !after.ok
-    ? []
-    : !before.ok
-      ? (after.files.size === 0 ? [] : [...after.files.keys()])
-      : [...new Set([...before.files.keys(), ...after.files.keys()])].filter((name) => before.files.get(name) !== after.files.get(name));
-  if ((before.head && after.head && before.head !== after.head) || before.branch !== after.branch) files.push('HEAD');
-  return files;
-}
-
 function failureReport(failure: WorkflowFailure): { outcome: 'failed'; message: string; failure: WorkflowFailure } {
   return { outcome: 'failed', message: failure.message, failure };
 }
@@ -357,6 +343,8 @@ function parseLease(raw: unknown): Lease | undefined {
   const rawLease = raw as Record<string, unknown> | undefined;
   if (!rawLease || typeof rawLease.step !== 'string' || typeof rawLease.attempt !== 'string' || typeof rawLease.revision !== 'number') return undefined;
   const env = stringMap(rawLease.env);
+  const envScope = EnvScopeSchema.safeParse(rawLease.envScope);
+  const setup = LeaseSetupSchema.safeParse(rawLease.setup);
   const workspace = workspaceOf(rawLease.workspace);
   const session = sessionRefOf(rawLease.session);
   const earlier = isRecord(rawLease.session) && Array.isArray(rawLease.session.earlier)
@@ -367,6 +355,10 @@ function parseLease(raw: unknown): Lease | undefined {
     revision: rawLease.revision,
     ...(typeof rawLease.command === 'string' ? { command: rawLease.command } : {}),
     ...(env ? { env } : {}),
+    ...(envScope.success ? { envScope: envScope.data } : {}),
+    ...(typeof rawLease.maxTurns === 'number' ? { maxTurns: rawLease.maxTurns } : {}),
+    ...(setup.success ? { setup: setup.data } : {}),
+    ...(typeof rawLease.expiresAt === 'string' ? { expiresAt: rawLease.expiresAt } : {}),
     ...(typeof rawLease.prompt === 'string' ? { prompt: rawLease.prompt } : {}),
     ...(typeof rawLease.agent === 'string' ? { agent: rawLease.agent } : {}),
     ...(typeof rawLease.model === 'string' ? { model: rawLease.model } : {}),
@@ -394,9 +386,18 @@ function placeOf(lease: Lease, active: string): string {
   return lease.cwd ?? stepCheckout(active, lease.workspace?.branch);
 }
 
-async function stageLease(lease: Lease, { active, runId }: { active: string; runId: string }): Promise<WorkflowFailure | undefined> {
+/**
+ * Gets the lease a place to run, with the team env `values` resolved for it. `signal` stops setup, which then fails, and
+ * the workspace it was preparing is removed.
+ */
+async function stageLease(lease: Lease, { active, runId, values, signal }: { active: string; runId: string; values: ReadonlyMap<string, string>; signal?: AbortSignal }): Promise<WorkflowFailure | undefined> {
   if (lease.unreadableWorkspace) {
     return { code: 'workspace_base', message: `Step "${lease.step}" was leased a workspace this teamai cannot read. Update teamai.` };
+  }
+  if (lease.envScope) {
+    const scoped = await stepEnvironment(values, lease.envScope);
+    if (!scoped.ok) return scoped.failure;
+    lease.processEnv = scoped.env;
   }
   if (!lease.workspace) {
     lease.cwd = active;
@@ -421,8 +422,11 @@ async function stageLease(lease: Lease, { active, runId }: { active: string; run
     const said = fetched.fetchError ? ` Git said: ${fetched.fetchError}.` : '';
     return { code: 'workspace_base', message: `Step "${lease.step}" needs ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then retry this step with teamai workflow retry ${runId} ${lease.step}.` };
   }
+  const place = worktreePath(active, lease.workspace.branch);
+  if (lease.setup && await setupUnfinished(place)) await removeWorktree(active, place);
   const opened = await ensureWorktree(active, lease.workspace.branch, lease.workspace.start.commit);
   if ('error' in opened) return { code: 'workspace_base', message: opened.error };
+  if (lease.setup && opened.created) await markSetup(opened.dir, 'unfinished');
   lease.cwd = opened.dir;
   if (lease.workspace.mode === 'read-only') {
     const marked = await markReadCopy(opened.dir, { branch: lease.workspace.branch, step: lease.step });
@@ -456,6 +460,17 @@ async function stageLease(lease: Lease, { active, runId }: { active: string; run
   if (!applied.ok) return { code: 'base_config', message: applied.message };
   await deliverTeamAssets(opened.dir);
   await recordConfigOverlay(opened.dir, applied.saved);
+  if (lease.setup && opened.created) {
+    // Setup gets its own keys and none of the step's.
+    const scope = lease.setup.envScope ?? { provide: [], withhold: [] };
+    const scoped = await stepEnvironment(values, scope);
+    const failure = scoped.ok ? await runSetup({ command: lease.setup.command, dir: opened.dir, env: scoped.env, keys: scope.provide, signal, ...(lease.expiresAt !== undefined ? { expiresAt: lease.expiresAt } : {}) }) : scoped.failure;
+    if (failure) {
+      await removeWorktree(active, opened.dir);
+      return failure;
+    }
+    await markSetup(opened.dir, 'finished');
+  }
   lease.overlay = applied.saved;
   if (lease.workspace.mode === 'read-only') {
     // Taken over the base overlay, so only what the step itself changes differs from it.
@@ -805,6 +820,8 @@ async function promptReport(
     workflowLaunch(stepConfig, selected),
     delivered ? deliveredTeamSkills(stepConfig, cwd, delivered).catch(() => undefined) : undefined,
   ]);
+  // Only headless Claude has a turn limit; any other launch reports the cap as not enforced.
+  const capsTurns = lease.maxTurns !== undefined && !lease.interactive && localToolFamily(selected) === 'claude';
   let result: LocalToolResult;
   const launchedAt = Date.now();
   try {
@@ -814,10 +831,12 @@ async function promptReport(
       prompt: lease.prompt!,
       cwd,
       resultPath: attemptResultPath,
+      ...(lease.processEnv ? { env: lease.processEnv } : {}),
       ...(launch ? { launch } : {}),
       ...(resume ? { resume: resume.id } : {}),
       ...(agent ? { agent: definitionRun(selected, lease.agent!, agent) } : {}),
       ...(chosen.model ? { model: chosen.model } : {}),
+      ...(capsTurns ? { maxTurns: lease.maxTurns } : {}),
     }, signal);
   } catch {
     result = {
@@ -849,6 +868,7 @@ async function promptReport(
     // How the definition was handed over is known only once the launch resolved its tool: OpenCode's depends on its major.
     ...(ran ? { agent: ran.applied ? { ...observed, definition: { applied: ran.applied } } : observed } : {}),
     ...(used ? { used } : {}),
+    ...(lease.maxTurns !== undefined && !capsTurns ? { unenforced: ['max_turns' as const] } : {}),
     exitCode: result.exitCode,
     ...(finished.changes ? { changes: finished.changes } : {}),
     ...(left ? { read: left.read } : {}),
@@ -912,7 +932,7 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
     const refused = await reconcileCopy(active, branch, commit);
     if (refused) return { code: 'branch_diverged', message: refused.error };
   }
-  await updateRun(config, runId, async (local) => {
+  await updateRun(config, runId, await knownSecrets(config), async (local) => {
     if (local === 'missing' || !local.publication?.reconcileCopies) return { value: undefined };
     const { reconcileCopies: _done, ...publication } = local.publication;
     return { value: undefined, write: { ...local, publication } };
@@ -920,10 +940,33 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
   return undefined;
 }
 
+/** Adds to `seen` each value of `secrets` it lacks, under a label of its own when its name already holds another value. */
+function rememberSecrets(seen: Record<string, string>, secrets: Record<string, string>): Record<string, string> {
+  const known = new Set(Object.values(seen));
+  for (const [key, value] of Object.entries(secrets)) {
+    if (known.has(value)) continue;
+    let label = key;
+    for (let count = 2; label in seen; count += 1) label = `${key} (value ${count})`;
+    seen[label] = value;
+    known.add(value);
+  }
+  return { ...seen };
+}
+
+/**
+ * What this driver declares on every `next`. Every key is set, so a new capability does not compile until it is decided.
+ * It cannot deny a step the network, and keeps it from the member's machine only on a host the member marks `sandbox`.
+ * It gives each command and tool only the env keys its lease provides, and runs setup in each workspace it creates.
+ */
+function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
+  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none', env: true, tokens: true, max_turns: true, setup: true };
+}
+
 async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
   const unreconciled = await reconcileTakenCopies(config, runId, cwd);
   if (unreconciled) return { error: unreconciled };
   const canHitl = options.hitl ?? (process.stdin.isTTY === true && process.stderr.isTTY === true);
+  const can = localCan(config, canHitl);
   const driver = localDriver(cwd);
   const tools = { ...config.workflows?.tools, ...options.tools };
   const adapter = options.adapter ?? createLocalToolAdapter();
@@ -933,15 +976,16 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
   // process groups of their own, which `stop` and the signal handlers below can end as a whole.
   const detached = maxParallel > 1 && process.platform !== 'win32';
   const reported = new Set<string>();
-  const inFlight = new Map<string, { lease: Lease; command: CommandProcess }>();
+  const inFlight = new Map<string, { lease: Lease; command: StagedCommand }>();
   // Leases not started yet, in lease order. Steps that share a checkout run one at a time. Distinct worktrees overlap.
   const held: Lease[] = [];
   // Cancelled commands whose process group is not gone yet. They are not sent as running, so `next` does not cancel
   // them again. They still take a slot, and a new attempt of their step waits until they are gone, so a retried step
   // never runs beside its cancelled attempt.
-  const dying = new Map<string, { step: string; lease: Lease; command: CommandProcess }>();
+  const dying = new Map<string, { step: string; lease: Lease; command: StagedCommand }>();
   const base = await headCommit(cwd);
-  let prompt: { lease: Lease; controller: AbortController; exit: Promise<ReportBody> } | undefined;
+  // A prompt that was stopped before its tool started has nothing to report.
+  let prompt: { lease: Lease; controller: AbortController; exit: Promise<ReportBody | undefined> } | undefined;
   let question: { hitl: LocalHitl; controller: AbortController; exit: Promise<{ kind: 'question'; line?: string }> } | undefined;
   // A headless prompt takes a slot as a command does, so a step in another checkout starts beside it. An interactive one has the terminal.
   const busy = (): number => inFlight.size + dying.size + (prompt ? 1 : 0);
@@ -981,8 +1025,14 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     wake();
   };
   if (maxParallel > 1) handle(STOP_SIGNALS);
+  // The team env, resolved once per turn of the loop: the leases it hands out, their env, and what it masks agree. It
+  // masks every value the drive has seen, so a value that changed while an attempt ran stays masked in what it reports.
+  let env: WorkflowEnv | undefined;
+  const seen: Record<string, string> = {};
   const report = async (body: ReportBody, lease?: Lease): Promise<WorkflowEnvelope | undefined> => {
-    const answer = await reportAttempt(config, runId, body);
+    const secrets = env?.secrets ?? await knownSecrets(config);
+    await maskResultFile(resultPath(config, runId, body.attempt), secrets);
+    const answer = await reportAttempt(config, runId, body, secrets);
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;
     if (lease?.workspace && 'data' in answer && answer.data.cleanup === true) {
@@ -991,17 +1041,17 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     reported.add(body.attempt);
     return undefined;
   };
-  const failStaged = async (lease: Lease, failure: WorkflowFailure): Promise<WorkflowEnvelope | undefined> => report({
-    attempt: lease.attempt, revision: lease.revision, outcome: 'failed', driver, message: failure.message, failure,
-  }, lease);
+  const unstaged = (lease: Lease, failure: WorkflowFailure): ReportBody => ({ attempt: lease.attempt, revision: lease.revision, driver, ...failureReport(failure) });
   try {
     for (;;) {
       if (signalled) return { error: { code: 'interrupted', message: `Stopped by ${signalled} after every command it started exited` } };
       const running = [...inFlight.keys(), ...held.map((lease) => lease.attempt), ...(prompt ? [prompt.lease.attempt] : [])];
       const canTakeLease = room();
+      const resolved = await resolveWorkflowEnv(config);
+      const turn = { ...resolved, secrets: rememberSecrets(seen, resolved.secrets) };
+      env = turn;
       const next = await leaseNext(config, runId, driver, {
-        running, canTakeLease, hitl: canHitl, autoApprove: options.autoApprove,
-        ...(base ? { base } : {}), workspaceModes: ['read-only', 'new', 'continue'],
+        running, canTakeLease, can, autoApprove: options.autoApprove, ...(base ? { base } : {}), env: turn,
       });
       if (signalled) continue;
       if (isWorkflowError(next)) return next;
@@ -1011,7 +1061,8 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         if (prompt) {
           const lease = prompt.lease;
           prompt.controller.abort();
-          const failed = await report(await prompt.exit, lease);
+          const body = await prompt.exit;
+          const failed = body && await report(body, lease);
           prompt = undefined;
           if (failed) return failed;
         }
@@ -1038,8 +1089,10 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         ...[...dying.values()].map(({ lease }) => placeOf(lease, cwd)),
         ...(prompt ? [placeOf(prompt.lease, cwd)] : []),
       ]);
-      for (let index = 0; !prompt?.lease.interactive && held[index]?.command !== undefined && busy() < maxParallel;) {
-        const lease = held[index]!;
+      for (let index = 0; !prompt?.lease.interactive && busy() < maxParallel;) {
+        const lease = held[index];
+        const command = lease?.command;
+        if (lease === undefined || command === undefined) break;
         if ([...dying.values()].some((stopping) => stopping.step === lease.step)
           || placesBusy().has(placeOf(lease, cwd))
           || held.slice(0, index).some((earlier) => earlier.prompt !== undefined && placeOf(earlier, cwd) === placeOf(lease, cwd))) {
@@ -1047,15 +1100,19 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           continue;
         }
         held.splice(index, 1);
-        const failure = await stageLease(lease, { active: cwd, runId });
-        if (failure) {
-          const failed = await failStaged(lease, failure);
-          if (failed) return failed;
-          continue;
-        }
-        // An attached command already has the signals its terminal sends to the whole group; a second would force-quit some tools.
-        if (maxParallel === 1) handle(commandSignalPolicy(await terminalReachesCommand()).forwarded);
-        inFlight.set(lease.attempt, { lease, command: startCommand(lease.command!, lease.cwd ?? cwd, lease.env ?? {}, detached) });
+        // Setup runs in its own process group, out of the terminal's reach, so the driver handles every stop signal until
+        // the command starts. An attached command already has the signals its terminal sends to the whole group; a second
+        // would force-quit some tools.
+        const forwarded = maxParallel === 1 ? commandSignalPolicy(await terminalReachesCommand()).forwarded : undefined;
+        if (forwarded) handle(STOP_SIGNALS);
+        inFlight.set(lease.attempt, { lease, command: stageThenStart(
+          lease,
+          (signal) => stageLease(lease, { active: cwd, runId, values: turn.values, signal }),
+          () => {
+            if (forwarded) handle(forwarded);
+            return startCommand(command, lease.cwd ?? cwd, { ...lease.processEnv ?? process.env, ...lease.env }, detached);
+          },
+        ) });
       }
       if (!prompt && busy() < maxParallel) {
         const promptAt = held.findIndex((lease) => lease.prompt !== undefined
@@ -1064,29 +1121,26 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           && (!lease.interactive || (inFlight.size === 0 && dying.size === 0)));
         if (promptAt !== -1) {
           const lease = held.splice(promptAt, 1)[0]!;
-          if (lease.interactive && !canHitl) {
-            const failed = await report({ attempt: lease.attempt, revision: lease.revision, driver,
-              ...failureReport(interactiveHitlRequired(runId, lease.step)) }, lease);
-            if (failed) return failed;
-            continue;
+          if (lease.interactive && question) {
+            question.controller.abort();
+            await question.exit;
+            question = undefined;
           }
-          const failure = await stageLease(lease, { active: cwd, runId });
-          if (failure) {
-            const failed = await failStaged(lease, failure);
-            if (failed) return failed;
-            continue;
-          }
-          if (lease.interactive) {
-            if (question) {
-              question.controller.abort();
-              await question.exit;
-              question = undefined;
-            }
-            interactiveIgnores = commandSignalPolicy(await terminalReachesCommand()).ignored;
-          }
+          // Setup runs out of the terminal's reach, so the tool's signals are left to it only once it starts.
+          interactiveIgnores = [];
+          const ignored = lease.interactive ? commandSignalPolicy(await terminalReachesCommand()).ignored : [];
           const controller = new AbortController();
           if (maxParallel === 1) handle(STOP_SIGNALS);
-          prompt = { lease, controller, exit: promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options, archive, controller.signal) };
+          prompt = { lease, controller, exit: (async () => {
+            const failure = await stageLease(lease, { active: cwd, runId, values: turn.values, signal: controller.signal });
+            if (!startable(lease, controller.signal)) {
+              await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
+              return undefined;
+            }
+            if (failure) return unstaged(lease, failure);
+            interactiveIgnores = ignored;
+            return promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options, archive, controller.signal);
+          })() };
         }
       }
       if (canHitl && hitl && !question && !prompt?.lease.interactive) {
@@ -1124,7 +1178,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         question = undefined;
         if (exited.line === undefined) return { error: { code: 'interrupted', message: 'The HITL question closed without an answer. Continue with teamai workflow resume.' } };
         const [choice = '', ...words] = exited.line.trim().split(/\s+/);
-        const answer = await respondToHitl(config, runId, { step: hitl.step, pass: hitl.pass, choice, ...(words.length > 0 ? { note: words.join(' ') } : {}), channel: 'tty', agent: false });
+        const answer = await respondToHitl(config, runId, turn.secrets, { step: hitl.step, pass: hitl.pass, choice, ...(words.length > 0 ? { note: words.join(' ') } : {}), channel: 'tty', agent: false });
         if (isWorkflowError(answer)) {
           if (!['repeated_response', 'stale_response', 'invalid_choice', 'not_waiting', 'run_settled'].includes(answer.error.code)) return answer;
           log.warn(answer.error.message);
@@ -1135,7 +1189,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         const lease = prompt?.lease;
         prompt = undefined;
         if (maxParallel === 1) handle([]);
-        const failed = await report(exited.body, lease);
+        const failed = exited.body && await report(exited.body, lease);
         if (failed) return failed;
         continue;
       }
@@ -1148,18 +1202,32 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       }
       inFlight.delete(exited.attempt);
       if (maxParallel === 1) handle([]);
-      const failed = await report(await commandReport(resultPath(config, runId, exited.attempt), driver, exited.lease, exited.result), exited.lease);
+      const staged = exited.result;
+      if (staged.kind === 'stopped') {
+        // Its lease ended while it was staged: the engine stops it, and the driver leaves the copy as it found it.
+        await (exited.lease.workspace?.mode === 'read-only' ? leaveReadCopy(exited.lease) : restoreLeaseOverlay(exited.lease));
+        continue;
+      }
+      const body = staged.kind === 'unstaged'
+        ? unstaged(exited.lease, staged.failure)
+        : await commandReport(resultPath(config, runId, exited.attempt), driver, exited.lease, staged.result);
+      const failed = await report(body, exited.lease);
       if (failed) return failed;
     }
   } finally {
-    question?.controller.abort();
-    prompt?.controller.abort(signalled);
-    if (prompt) await prompt.exit;
-    for (const attempt of inFlight.keys()) cancel(attempt);
-    await Promise.all([...dying.values()].map(async ({ lease, command }) => {
-      await command.stop();
-      await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
-    }));
+    // The sweep runs even when stopping what still runs throws, so no attempt's result file keeps a secret.
+    try {
+      question?.controller.abort();
+      prompt?.controller.abort(signalled);
+      if (prompt) await prompt.exit;
+      for (const attempt of inFlight.keys()) cancel(attempt);
+      await Promise.all([...dying.values()].map(async ({ lease, command }) => {
+        await command.stop();
+        await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
+      }));
+    } finally {
+      await maskAttemptFiles(config, runId, env?.secrets ?? await knownSecrets(config));
+    }
     await archive.close();
     if (signalled) exitOn(signalled);
     handle([]);

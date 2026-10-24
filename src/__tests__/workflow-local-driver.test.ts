@@ -12,7 +12,7 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { Session } from '../session-flow/ir.js';
 import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
-import { getReportsDir, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { getDataHome, getReportsDir, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
@@ -21,8 +21,10 @@ import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, ty
 import { _setDriverPollMs, localDriver, runLocalDriver } from '../workflow/local-driver.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { driverLockPath, readRun } from '../workflow/store.js';
+import * as worktreeSnapshot from '../workflow/worktree-snapshot.js';
 import type { DriverIdentity } from '../workflow/types.js';
 import { commitFile, fakeClaude, git, recordDelivery } from './helpers/delivered-checkout.js';
+import { knownSecrets } from '../env-resolution.js';
 
 _setDriverPollMs(20);
 
@@ -62,7 +64,7 @@ async function workflowFixture(yaml: string): Promise<{ config: LocalConfig; wor
   };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), yaml);
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'build');
+  const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
 }
@@ -1176,7 +1178,8 @@ const timer = setInterval(() => { if (fs.existsSync('go')) clearInterval(timer);
     const slow = typeof run === 'object' ? run.steps.find((step) => step.id === 'slow') : undefined;
     if (slow?.status !== 'leased') throw new Error('slow is not leased');
     const same = localDriver(workspace);
-    const leased = await leaseNext(config, runId, same, { running: [slow.attempt] });
+    // The other caller runs with room for a second open lease.
+    const leased = await leaseNext({ ...config, workflows: { tools: {}, max_parallel: 2 } }, runId, same, { running: [slow.attempt] });
     const finish = 'data' in leased ? leased.data.lease as { attempt: string; revision: number } : undefined;
     if (!finish) throw new Error('finish was not leased');
     await reportAttempt(config, runId, { attempt: finish.attempt, revision: finish.revision, outcome: 'success', driver: same });
@@ -1229,9 +1232,11 @@ steps:
 `, 1);
     fs.writeFileSync(path.join(workspace, 'log.js'), LOG);
     const earlier = localDriver(workspace);
-    const a = await leaseNext(config, runId, earlier);
+    // The earlier driver ran while this machine allowed more open leases.
+    const before: LocalConfig = { ...config, workflows: { tools: {}, max_parallel: 2 } };
+    const a = await leaseNext(before, runId, earlier);
     const attempt = 'data' in a ? (a.data.lease as { attempt: string }).attempt : '';
-    expect(await leaseNext(config, runId, earlier, { running: [attempt] })).toMatchObject({ data: { lease: { step: 'b' } } });
+    expect(await leaseNext(before, runId, earlier, { running: [attempt] })).toMatchObject({ data: { lease: { step: 'b' } } });
 
     const done = await runLocalDriver(config, runId, workspace);
 
@@ -1258,9 +1263,11 @@ steps:
 `, 2);
     fs.writeFileSync(path.join(workspace, 'log.js'), LOG);
     const earlier = localDriver(workspace);
+    // The earlier driver ran while this machine allowed more open leases.
+    const before: LocalConfig = { ...config, workflows: { tools: {}, max_parallel: 3 } };
     const running: string[] = [];
     for (const step of ['c1', 'ask', 'c2']) {
-      const leased = await leaseNext(config, runId, earlier, { running });
+      const leased = await leaseNext(before, runId, earlier, { running });
       expect(leased).toMatchObject({ data: { lease: { step } } });
       if ('data' in leased) running.push((leased.data.lease as { attempt: string }).attempt);
     }
@@ -1309,13 +1316,13 @@ setInterval(() => {}, 1000);
     try {
       await vi.waitFor(() => expect(fs.existsSync(path.join(workspace, 'child.pid'))).toBe(true), { timeout: 10_000, interval: 20 });
       pid = Number(fs.readFileSync(path.join(workspace, 'child.pid'), 'utf8'));
-      expect(await cancelRun(config, runId)).not.toHaveProperty('error');
+      expect(await cancelRun(config, runId, await knownSecrets(config))).not.toHaveProperty('error');
 
       expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
       expect(await exitsWithin(pid, 1000)).toBe(true);
     } finally {
       if (pid !== undefined && alive(pid)) process.kill(pid, 'SIGKILL');
-      await cancelRun(config, runId);
+      await cancelRun(config, runId, await knownSecrets(config));
       await driving;
     }
   }, 30_000);
@@ -1359,7 +1366,7 @@ fs.writeFileSync(file('first.pid'), String(process.pid));
 fs.writeFileSync(file('first.started'), '');
 setInterval(() => {}, 1000);
 `);
-      expect(await respondToHitl(config, runId, { step: 'plan', choice: 'small', channel: 'cli', agent: false }))
+      expect(await respondToHitl(config, runId, await knownSecrets(config), { step: 'plan', choice: 'small', channel: 'cli', agent: false }))
         .not.toHaveProperty('error');
       const options = { hitl: true, question: async () => 'big' };
       const driving = runLocalDriver(config, runId, workspace, options);
@@ -1367,9 +1374,9 @@ setInterval(() => {}, 1000);
         await vi.waitFor(() => expect(fs.existsSync(path.join(markers, 'first.started'))).toBe(true), { timeout: 10_000, interval: 20 });
         expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'plan', status: 'succeeded' }, { id: 'work', status: 'leased' }] });
         if (control.startsWith('cancel')) {
-          expect(await cancelRun(config, runId, control.startsWith('cancel step') ? 'work' : undefined)).not.toHaveProperty('error');
+          expect(await cancelRun(config, runId, await knownSecrets(config), control.startsWith('cancel step') ? 'work' : undefined)).not.toHaveProperty('error');
         }
-        expect(await retryStep(config, runId, control === 'retry ancestor' ? 'plan' : 'work'))
+        expect(await retryStep(config, runId, await knownSecrets(config), control === 'retry ancestor' ? 'plan' : 'work'))
           .toMatchObject({ data: { retried: { pass: 2 } } });
         await vi.waitFor(() => expect(fs.existsSync(path.join(markers, 'first.stopping'))).toBe(true), { timeout: 7000, interval: 20 });
         expect(await driving).not.toHaveProperty('error');
@@ -1382,7 +1389,7 @@ setInterval(() => {}, 1000);
         expect(fs.existsSync(path.join(markers, 'overlap'))).toBe(false);
         expect(fs.readFileSync(path.join(markers, 'second.saw'), 'utf8')).toBe('cleaned');
       } finally {
-        await cancelRun(config, runId);
+        await cancelRun(config, runId, await knownSecrets(config));
         const pidFile = path.join(markers, 'first.pid');
         if (fs.existsSync(pidFile) && !fs.existsSync(path.join(markers, 'first.cleaned'))) {
           try { process.kill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* Already exited. */ }
@@ -1803,7 +1810,7 @@ steps:
     let aborted = false;
     const question = vi.fn((_hitl, signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
       signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
-      void respondToHitl(config, runId, { step: 'ask', choice: 'one', channel: 'cli', agent: true });
+      void knownSecrets(config).then((secrets) => respondToHitl(config, runId, secrets, { step: 'ask', choice: 'one', channel: 'cli', agent: true }));
     }));
     expect(await runLocalDriver(config, runId, workspace, { hitl: true, question })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(aborted).toBe(true);
@@ -1820,7 +1827,7 @@ steps:
           aborted = true;
           resolve({ started: true, exitCode: 1 });
         });
-        void cancelRun(config, runId);
+        void knownSecrets(config).then((secrets) => cancelRun(config, runId, secrets));
       })),
     };
     expect(await runLocalDriver(config, runId, workspace, { adapter })).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
@@ -1843,6 +1850,38 @@ steps:
     expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(adapter.runInteractive).toHaveBeenCalledWith('claude', expect.objectContaining({ prompt: 'Work together.', cwd: workspace }), expect.any(AbortSignal));
     expect(adapter.run).not.toHaveBeenCalled();
+  });
+
+  it('caps the turns of headless Claude, and reports max_turns as unenforced for another tool and for an interactive prompt', async () => {
+    const yaml = (interactive: boolean) => `schemaVersion: v1alpha1
+name: build
+description: Plan in a few turns.
+steps:
+  - id: plan
+    prompt: Plan it.
+    max_turns: 3
+${interactive ? '    interactive: true\n' : ''}`;
+    const inputs: LocalToolRun[] = [];
+    const ran = vi.fn(async (_tool: string, input: LocalToolRun) => {
+      inputs.push(input);
+      return { started: true as const, exitCode: 0, tokens: { input: 1, output: 1 } };
+    });
+    const adapter: LocalToolAdapter = { run: ran, runInteractive: ran };
+    const headless = await workflowFixture(yaml(false));
+    const codex = await workflowFixture(yaml(false));
+    codex.config.workflows = { tools: { default: 'codex' } };
+    const interactive = await workflowFixture(yaml(true));
+    for (const { config, workspace, runId } of [headless, codex, interactive]) {
+      expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    }
+    expect(inputs.map((input) => input.maxTurns)).toEqual([3, undefined, undefined]);
+    const unenforced = async ({ config, runId }: { config: LocalConfig; runId: string }) => {
+      const run = await readRun(config, runId);
+      return typeof run === 'object' && run.steps[0] && 'unenforced' in run.steps[0] ? run.steps[0].unenforced : undefined;
+    };
+    expect(await unenforced(headless)).toBeUndefined();
+    expect(await unenforced(codex)).toEqual([{ requirement: 'max_turns', asked: 3 }]);
+    expect(await unenforced(interactive)).toEqual([{ requirement: 'max_turns', asked: 3 }]);
   });
 
   it('auto-approves only for this driver process without HITL', async () => {
@@ -1878,7 +1917,7 @@ steps:
     }) });
     await asked;
     expect(await runLocalDriver(config, runId, workspace)).toEqual({ error: { code: 'driver_running', message: `Run ${runId} is already driven by process ${process.pid} on this machine. Stop that driver, or wait for it.` } });
-    await respondToHitl(config, runId, { step: 'ask', choice: 'no', channel: 'cli', agent: true });
+    await respondToHitl(config, runId, await knownSecrets(config), { step: 'ask', choice: 'no', channel: 'cli', agent: true });
     expect(await first).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(fs.existsSync(driverLockPath(config, runId))).toBe(false);
     expect(await runLocalDriver(config, runId, workspace)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
@@ -1899,6 +1938,172 @@ steps:
     const absent = 'r0123456789abcdef';
     expect(await runLocalDriver(config, absent, workspace)).toMatchObject({ error: { code: 'run_not_found' } });
     expect(fs.existsSync(driverLockPath(config, absent))).toBe(false);
+  });
+
+  it.each([
+    [false, [{ requirement: 'network', asked: false }, { requirement: 'isolation', asked: 'sandbox', provided: 'none' }]],
+    [true, [{ requirement: 'network', asked: false }]],
+  ])('records what it cannot enforce, and isolates to sandbox only on a host marked sandbox (%s)', async (sandbox, unenforced) => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Run contained.
+steps:
+  - id: work
+    command: echo work
+    requires: { network: false, isolation: sandbox }
+`);
+    config.workflows = { tools: {}, sandbox };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'work', status: 'succeeded', unenforced }] });
+  });
+
+  it('gives each command only the env keys its step requires, the team value first, and keeps the rest of the environment', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Scope env.
+steps:
+  - id: deploy
+    command: test "$DEPLOY_TOKEN" = deploy-value && test "$TEAM_URL" = https://team.example && test -n "$PATH"
+    requires: { env: [DEPLOY_TOKEN, TEAM_URL] }
+  - id: check
+    needs: []
+    command: test -z "$DEPLOY_TOKEN" && test -z "$TEAM_URL" && test -n "$PATH"
+`);
+    fs.mkdirSync(path.join(config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'env', 'env.yaml'), 'variables:\n  - key: TEAM_URL\n    value: https://team.example\n');
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    vi.stubEnv('TEAM_URL', 'exported-by-another-shell');
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    vi.unstubAllEnvs();
+  });
+
+  it('leaves no secret value in the result file an attempt keeps on disk', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Print a secret.
+steps:
+  - id: deploy
+    command: printf '{"token":"%s"}' "$DEPLOY_TOKEN"
+    requires: { env: [DEPLOY_TOKEN] }
+`);
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    vi.unstubAllEnvs();
+    const attempts = path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
+    const [attempt] = fs.readdirSync(attempts);
+    const kept = fs.readFileSync(path.join(attempts, attempt ?? '', 'result.json'), 'utf8');
+    expect(kept).toContain('<REDACTED:DEPLOY_TOKEN>');
+    expect(kept).not.toContain('deploy-secret-value-1082');
+  });
+
+  it('masks the environment value of a key env/secrets.yaml declares whose name does not look secret, and not a plain env.yaml value', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Print a required value.
+steps:
+  - id: migrate
+    command: echo "could not connect to $DATABASE_URL from $TEAM_URL" >&2; exit 1
+    requires: { env: [DATABASE_URL, TEAM_URL] }
+`);
+    fs.mkdirSync(path.join(config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'env', 'env.yaml'), 'variables:\n  - key: TEAM_URL\n    value: https://team.example\n');
+    fs.writeFileSync(path.join(config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: DATABASE_URL\n');
+    vi.stubEnv('DATABASE_URL', 'postgres://ci:pw@db.example/app');
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    vi.unstubAllEnvs();
+    const runFile = JSON.stringify(await readRun(config, runId));
+    expect(runFile).toContain('could not connect to <REDACTED:DATABASE_URL> from https://team.example');
+    expect(runFile).not.toContain('postgres://ci:pw@db.example/app');
+    expect(JSON.stringify(await endRecord(config))).not.toContain('postgres://ci:pw@db.example/app');
+  });
+
+  it('masks a value an attempt was given after the value changes while the attempt runs', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Print a secret late.
+steps:
+  - id: deploy
+    command: sleep 0.5; echo "deploying with $DEPLOY_TOKEN" >&2; exit 1
+    requires: { env: [DEPLOY_TOKEN] }
+`);
+    vi.stubEnv('DEPLOY_TOKEN', 'old-deploy-secret-value');
+    const rotated = setTimeout(() => vi.stubEnv('DEPLOY_TOKEN', 'new-deploy-secret-value'), 200);
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    clearTimeout(rotated);
+    vi.unstubAllEnvs();
+    const runFile = JSON.stringify(await readRun(config, runId));
+    expect(runFile).toContain('deploying with <REDACTED:DEPLOY_TOKEN');
+    expect(runFile).not.toContain('old-deploy-secret-value');
+  });
+
+  function keptResult(config: LocalConfig, runId: string): string {
+    const attempts = path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
+    return fs.readdirSync(attempts).map((attempt) => fs.readFileSync(path.join(attempts, attempt, 'result.json'), 'utf8')).join('\n');
+  }
+
+  it('masks a result file that is not valid JSON', async () => {
+    const { config, workspace, runId } = await fixture();
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>(async (_tool, input) => {
+      fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
+      fs.writeFileSync(input.resultPath, '{"output":{"token":"deploy-secret-value-1082');
+      return { started: true, exitCode: 1, failure: { code: 'tool_failed', message: 'claude wrote no result' } };
+    }) };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    vi.unstubAllEnvs();
+    expect(keptResult(config, runId)).toBe('{"output":{"token":"<REDACTED:DEPLOY_TOKEN>');
+  });
+
+  it('masks a secret JSON escaped in a result file that is not valid JSON', async () => {
+    const { config, workspace, runId } = await fixture();
+    const secret = 'deploy"secret\\value-1082';
+    vi.stubEnv('DEPLOY_TOKEN', secret);
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>(async (_tool, input) => {
+      fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
+      fs.writeFileSync(input.resultPath, `{"output":{"token":${JSON.stringify(secret)}`);
+      return { started: true, exitCode: 1, failure: { code: 'tool_failed', message: 'claude wrote no result' } };
+    }) };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    vi.unstubAllEnvs();
+    expect(keptResult(config, runId)).toBe('{"output":{"token":"<REDACTED:DEPLOY_TOKEN>"');
+  });
+
+  it('masks every result file when the driver stops on an error before it reports', async () => {
+    const { config, workspace, runId } = await fixture();
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    let ran = false;
+    const snapshot = worktreeSnapshot.snapshotWorktree;
+    vi.spyOn(worktreeSnapshot, 'snapshotWorktree').mockImplementation(async (dir) => {
+      if (ran) throw new Error('snapshot failed');
+      return snapshot(dir);
+    });
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>(async (_tool, input) => {
+      fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
+      fs.writeFileSync(input.resultPath, JSON.stringify({ output: { token: 'deploy-secret-value-1082' } }));
+      ran = true;
+      return { started: true, exitCode: 0 };
+    }) };
+    await expect(runLocalDriver(config, runId, workspace, { hitl: false, adapter })).rejects.toThrow('snapshot failed');
+    vi.unstubAllEnvs();
+    expect(keptResult(config, runId)).toContain('<REDACTED:DEPLOY_TOKEN>');
+    expect(keptResult(config, runId)).not.toContain('deploy-secret-value-1082');
+  });
+
+  it('masks the result file of a prompt a signal stopped before it was reported', async () => {
+    const { config, workspace, runId } = await fixture();
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
+    const before = new Set(process.listeners('SIGTERM'));
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>((_tool, input, signal) => new Promise((resolve) => {
+      fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
+      fs.writeFileSync(input.resultPath, JSON.stringify({ output: { token: 'deploy-secret-value-1082' } }));
+      signal?.addEventListener('abort', () => resolve({ started: true, exitCode: 1 }));
+      for (const handler of process.listeners('SIGTERM')) if (!before.has(handler)) handler('SIGTERM');
+    })) };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ error: { code: 'interrupted' } });
+    vi.unstubAllEnvs();
+    expect(keptResult(config, runId)).toContain('<REDACTED:DEPLOY_TOKEN>');
+    expect(keptResult(config, runId)).not.toContain('deploy-secret-value-1082');
   });
 });
 
@@ -1950,7 +2155,7 @@ steps:
     let abortedBeforeLaunch = false;
     const question = vi.fn((_hitl, signal: AbortSignal) => new Promise<string>((_resolve, reject) => {
       signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); });
-      void respondToHitl(config, runId, { step: 'pair', choice: 'yes', channel: 'cli', agent: true });
+      void knownSecrets(config).then((secrets) => respondToHitl(config, runId, secrets, { step: 'pair', choice: 'yes', channel: 'cli', agent: true }));
     }));
     const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => {
       abortedBeforeLaunch = aborted;
@@ -1978,7 +2183,7 @@ steps:
     expect(fs.readFileSync(path.join(workspace, 'tracked.txt'), 'utf8')).toBe('fixed\n');
   });
 
-  it('refuses an interactive hand-back to a local driver without HITL', async () => {
+  it('gives up an interactive hand-back without HITL and leaves the step for a driver with HITL', async () => {
     const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
 name: build
 description: Need a person.
@@ -1987,10 +2192,13 @@ steps:
     prompt: Pair with me.
     interactive: true
 `);
-    await leaseNext(config, runId, localDriver(workspace), { hitl: true });
+    await leaseNext(config, runId, localDriver(workspace), { can: { hitl: true } });
     const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
-    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({
+      error: { code: 'busy', message: 'step "pair" needs hitl, which this driver does not declare' },
+    });
     expect(adapter.runInteractive).not.toHaveBeenCalled();
+    expect(await readRun(config, runId)).toMatchObject({ status: 'running', steps: [{ id: 'pair', status: 'pending' }] });
   });
 
   it.each([1, 2])('ignores terminal Ctrl-C and Ctrl-\\ in an interactive tool at max_parallel %s', async (parallel) => {
@@ -2242,5 +2450,234 @@ steps:
 
     expect(resumed).toEqual([undefined]);
     expect(seen).toBe('{"sessions": [');
+  });
+});
+
+describe('local workflow driver setup', () => {
+  const TOKEN = 'setup-token-value-1082';
+
+  async function setupFixture(setup: string, steps: string): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
+    const built = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Prepare each new workspace.
+setup:
+${setup}
+steps:
+${steps}`);
+    fs.writeFileSync(path.join(built.workspace, '.gitignore'), '.npmrc\n.prepared\n');
+    execFileSync('git', ['add', '.gitignore'], { cwd: built.workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'ignore'], { cwd: built.workspace });
+    vi.stubEnv('SETUP_TOKEN', TOKEN);
+    return built;
+  }
+
+  function worktrees(workspace: string): string[] {
+    return execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: workspace, encoding: 'utf8' })
+      .split('\n').filter((line) => line.startsWith('worktree ')).slice(1);
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('runs setup once in the workspace it creates, with its keys, and the steps there never get them', async () => {
+    const log = path.join(os.tmpdir(), `teamai-setup-log-${randomUUID()}`);
+    dirs.push(log);
+    const { config, workspace, runId } = await setupFixture(`  command: test "$SETUP_TOKEN" = setup-token-value-1082 && echo prepared > .prepared && echo ran >> ${log}\n  requires: { env: [SETUP_TOKEN] }`, `  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: first
+          command: test -f .prepared && test -z "$SETUP_TOKEN"
+        - id: second
+          needs: [first]
+          command: test -f .prepared && test -z "$SETUP_TOKEN"
+`);
+    fs.writeFileSync(log, '');
+    const done = await runLocalDriver(config, runId, workspace, { hitl: false });
+    expect(done, JSON.stringify(await readRun(config, runId))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(log, 'utf8')).toBe('ran\n');
+  });
+
+  it('runs setup again when a retried step finds the workspace of a copy a step already ran in gone', async () => {
+    const log = path.join(os.tmpdir(), `teamai-setup-log-${randomUUID()}`);
+    const ready = path.join(os.tmpdir(), `teamai-setup-ready-${randomUUID()}`);
+    dirs.push(log, ready);
+    const { config, workspace, runId } = await setupFixture(`  command: echo prepared > .prepared && echo ran >> ${log}`, `  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: first
+          command: test -f .prepared
+        - id: second
+          needs: [first]
+          command: test -f .prepared && test -f ${JSON.stringify(ready)}
+`);
+    fs.writeFileSync(log, '');
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    for (const line of worktrees(workspace)) fs.rmSync(line.slice('worktree '.length), { recursive: true, force: true });
+    fs.writeFileSync(ready, '');
+    expect(await retryStep(config, runId, await knownSecrets(config), 'change.second')).toMatchObject({ data: {} });
+
+    const done = await runLocalDriver(config, runId, workspace, { hitl: false });
+    expect(done, JSON.stringify(await readRun(config, runId))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(fs.readFileSync(log, 'utf8')).toBe('ran\nran\n');
+  });
+
+  it.each([
+    ['setup_failed', 'echo broken; exit 4'],
+    ['setup_dirty', 'echo changed > tracked.txt'],
+    ['setup_secret', 'printf "//registry/:_authToken=%s\\n" "$SETUP_TOKEN" > .npmrc'],
+  ])('fails %s without running the step, and removes the workspace', async (code, command) => {
+    const marker = path.join(os.tmpdir(), `teamai-setup-step-${randomUUID()}`);
+    dirs.push(marker);
+    const { config, workspace, runId } = await setupFixture(`  command: ${JSON.stringify(command)}\n  requires: { env: [SETUP_TOKEN] }`, `  - id: change
+    workspace: new
+    command: touch ${JSON.stringify(marker)}
+`);
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await readRun(config, runId);
+    expect(run).toMatchObject({ steps: [{ id: 'change', status: 'failed', failure: { code } }] });
+    expect(JSON.stringify(run)).not.toContain(TOKEN);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(worktrees(workspace)).toEqual([]);
+  });
+
+  async function slowSetup(maxParallel: number, timeout = ''): Promise<{ config: LocalConfig; workspace: string; runId: string; pidFile: string; marker: string }> {
+    const pidFile = path.join(os.tmpdir(), `teamai-setup-pid-${randomUUID()}`);
+    const marker = path.join(os.tmpdir(), `teamai-setup-step-${randomUUID()}`);
+    dirs.push(pidFile, marker);
+    const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 4000)`;
+    const built = await setupFixture(`  command: ${JSON.stringify(`node -e ${JSON.stringify(script)}`)}`, `  - id: change
+    workspace: new
+    command: touch ${JSON.stringify(marker)}
+${timeout}`);
+    built.config.workflows = { tools: { default: 'claude' }, max_parallel: maxParallel };
+    return { ...built, pidFile, marker };
+  }
+
+  async function setupPid(pidFile: string): Promise<number> {
+    for (let waited = 0; !fs.existsSync(pidFile) || fs.readFileSync(pidFile, 'utf8') === ''; waited += 20) {
+      if (waited > 10_000) throw new Error('setup did not start');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return Number(fs.readFileSync(pidFile, 'utf8'));
+  }
+
+  it.each([1, 2])('stops setup when the run is cancelled while it runs at max_parallel %i, and never runs the step', async (maxParallel) => {
+    const { config, workspace, runId, pidFile, marker } = await slowSetup(maxParallel);
+    const driving = runLocalDriver(config, runId, workspace, { hitl: false });
+    const pid = await setupPid(pidFile);
+    const cancelledAt = Date.now();
+    expect(await cancelRun(config, runId, await knownSecrets(config))).toMatchObject({ data: { run: { status: 'cancelled' } } });
+    expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
+    expect(Date.now() - cancelledAt, 'the driver did not wait for setup to finish').toBeLessThan(2500);
+    expect(await exitsWithin(pid, 1000)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 4500));
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'cancelled', failure: { code: 'cancelled' } }] });
+  });
+
+  it('stops setup on a terminal Ctrl-C at max_parallel 1, before the step command that would get it itself starts', async () => {
+    const { config, workspace, runId, pidFile, marker } = await slowSetup(1);
+    vi.spyOn(envExec, 'terminalReachesCommand').mockResolvedValue(true);
+    const exit = vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
+    const before = new Set(process.listeners('SIGINT'));
+    const driving = runLocalDriver(config, runId, workspace, { hitl: false });
+    const pid = await setupPid(pidFile);
+    const handlers = process.listeners('SIGINT').filter((handler) => !before.has(handler));
+    expect(handlers, 'the driver leaves Ctrl-C during setup to the terminal, which does not reach setup').not.toHaveLength(0);
+    for (const handler of handlers) handler('SIGINT');
+
+    expect(await driving).toMatchObject({ error: { code: 'interrupted' } });
+    expect(exit).toHaveBeenCalledWith({ kind: 'signaled', signal: 'SIGINT' });
+    expect(await exitsWithin(pid, 1000)).toBe(true);
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('stops setup on a terminal Ctrl-C before an interactive tool that would ignore it starts', async () => {
+    const pidFile = path.join(os.tmpdir(), `teamai-setup-pid-${randomUUID()}`);
+    dirs.push(pidFile);
+    const script = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 4000)`;
+    const { config, workspace, runId } = await setupFixture(`  command: ${JSON.stringify(`node -e ${JSON.stringify(script)}`)}`, `  - id: pair
+    workspace: new
+    interactive: true
+    prompt: Pair with me.
+`);
+    vi.spyOn(envExec, 'terminalReachesCommand').mockResolvedValue(true);
+    const exit = vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
+    const before = new Set(process.listeners('SIGINT'));
+    const adapter: LocalToolAdapter = { run: vi.fn(), runInteractive: vi.fn<LocalToolAdapter['runInteractive']>(async () => ({ started: true, exitCode: 0 })) };
+    const driving = runLocalDriver(config, runId, workspace, { hitl: true, adapter });
+    const pid = await setupPid(pidFile);
+    for (const handler of process.listeners('SIGINT')) if (!before.has(handler)) handler('SIGINT');
+
+    expect(await driving).toMatchObject({ error: { code: 'interrupted' } });
+    expect(exit).toHaveBeenCalledWith({ kind: 'signaled', signal: 'SIGINT' });
+    expect(await exitsWithin(pid, 1000)).toBe(true);
+    expect(adapter.runInteractive).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2])('stops setup when the lease passes its timeout at max_parallel %i, and never runs the step', async (maxParallel) => {
+    const { config, workspace, runId, pidFile, marker } = await slowSetup(maxParallel, '    timeout: 1s\n');
+    const startedAt = Date.now();
+    const done = await runLocalDriver(config, runId, workspace, { hitl: false });
+    expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(Date.now() - startedAt, 'the driver did not wait for setup to finish').toBeLessThan(3500);
+    expect(await exitsWithin(await setupPid(pidFile), 1000)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 4500));
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'failed', failure: { code: 'timeout' } }] });
+  });
+
+  it.each([1, 2])('does not start a step whose setup finished after its timeout, before the run said so, at max_parallel %i', async (maxParallel) => {
+    const marker = path.join(os.tmpdir(), `teamai-setup-step-${randomUUID()}`);
+    dirs.push(marker);
+    const { config, workspace, runId } = await setupFixture(`  command: ${JSON.stringify('node -e "setTimeout(() => {}, 1500)"')}`, `  - id: change
+    workspace: new
+    timeout: 1s
+    command: touch ${JSON.stringify(marker)}
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: maxParallel };
+    _setDriverPollMs(10_000);
+    try {
+      expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    } finally {
+      _setDriverPollMs(20);
+    }
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'failed', failure: { code: 'timeout' } }] });
+  });
+});
+
+describe('local workflow driver staging', () => {
+  it.each([1, 2])('does not start a step whose run was cancelled while its workspace was checked out, at max_parallel %i', async (maxParallel) => {
+    const marker = path.join(os.tmpdir(), `teamai-staged-step-${randomUUID()}`);
+    const checkingOut = path.join(os.tmpdir(), `teamai-checking-out-${randomUUID()}`);
+    dirs.push(marker, checkingOut);
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Change the project.
+steps:
+  - id: change
+    workspace: new
+    command: touch ${JSON.stringify(marker)}
+`);
+    // A smudge filter, as Git LFS uses, keeps the checkout busy while the run is cancelled.
+    execFileSync('git', ['config', 'filter.slow.smudge', `touch ${JSON.stringify(checkingOut)}; sleep 2; cat`], { cwd: workspace });
+    fs.writeFileSync(path.join(workspace, '.gitattributes'), 'slow.txt filter=slow\n');
+    fs.writeFileSync(path.join(workspace, 'slow.txt'), 'slow\n');
+    execFileSync('git', ['add', '.gitattributes', 'slow.txt'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'slow checkout'], { cwd: workspace });
+    config.workflows = { tools: { default: 'claude' }, max_parallel: maxParallel };
+    const driving = runLocalDriver(config, runId, workspace, { hitl: false });
+    for (let waited = 0; !fs.existsSync(checkingOut); waited += 20) {
+      if (waited > 10_000) throw new Error('checkout did not start');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(await cancelRun(config, runId, await knownSecrets(config))).toMatchObject({ data: { run: { status: 'cancelled' } } });
+    expect(await driving).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'change', status: 'cancelled', failure: { code: 'cancelled' } }] });
   });
 });

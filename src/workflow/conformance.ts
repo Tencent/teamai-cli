@@ -1,47 +1,5 @@
-import type { WorkflowEnvelope } from './types.js';
-
-export interface WorkflowClient {
-  start(name: string): Promise<WorkflowEnvelope>;
-  next(runId: string, body: unknown): Promise<WorkflowEnvelope>;
-  report(runId: string, body: unknown): Promise<WorkflowEnvelope>;
-  /** Records an answer through the client's channel. */
-  respond(runId: string, step: string, choice: string, options?: { note?: string; pass?: number; json?: unknown }): Promise<WorkflowEnvelope>;
-  /** Reopens the target step's dependency cone. */
-  retry(runId: string, step: string): Promise<WorkflowEnvelope>;
-  /** Stops the run or the named step. */
-  cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
-}
-
-export interface ConformanceScenario {
-  name: string;
-  workflowName: string;
-  yaml: string;
-  /** Other workflow files the scenario runs, by name. */
-  workflows?: Record<string, string>;
-  operations: ConformanceOperation[];
-  /** Expected fields in the persisted run after all operations. */
-  expectState?: Record<string, unknown>;
-}
-
-/**
- * `running` and `cancelled` name leases that earlier operations saved; `cancelled` must match exactly.
- * `absent` lists fields the lease must not carry.
- */
-export type ConformanceOperation =
-  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean; workspace?: boolean; cancelled?: string[]; absent?: string[]; expect: Record<string, unknown> }
-  | { kind: 'respond'; step: string; choice: string; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
-  | { kind: 'retry'; step: string; expect: Record<string, unknown> }
-  | { kind: 'cancel'; step?: string; expect: Record<string, unknown> }
-  | {
-    kind: 'report';
-    lease?: string;
-    attempt?: string;
-    revision?: number;
-    /** Fields added to the `changes` the harness reports from the workspace of this operation's saved lease. */
-    changes?: Record<string, unknown>;
-    body: Record<string, unknown>;
-    expect: Record<string, unknown>;
-  };
+import { PARALLEL_ROOTS, controlsYaml, type ConformanceScenario } from './conformance-interpreter.js';
+import { limitsConformanceScenarios } from './limits-conformance.js';
 
 const TWO_STEPS = `schemaVersion: v1alpha1
 name: build
@@ -170,20 +128,6 @@ steps:
       task: "{{ steps.plan.outputs.task }}"
 `;
 
-const PARALLEL_ROOTS = `schemaVersion: v1alpha1
-name: build
-description: Two roots a driver runs in parallel, then a join.
-steps:
-  - id: a
-    command: echo a
-  - id: b
-    needs: []
-    command: echo b
-  - id: join
-    needs: [a, b]
-    command: echo join
-`;
-
 const END_WHILE_RUNNING = `schemaVersion: v1alpha1
 name: build
 description: A step reaches the end while another one runs.
@@ -260,12 +204,13 @@ steps:
     session: { from: plan }
 `;
 
+/** Every protocol scenario a driver must pass, the ones each concern keeps in its own file included. */
 export const workflowConformanceScenarios: ConformanceScenario[] = [
   {
     name: 'a pull request a driver reports is kept, without its query or fragment, for the step to deliver',
     workflowName: 'reported-pr', yaml: REPORTED_PR,
     operations: [
-      { kind: 'next', saveAs: 'work', workspace: true, expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'next', saveAs: 'work', base: { ref: 'main', commit: 'a'.repeat(40) }, expect: { data: { lease: { step: 'work' } } } },
       { kind: 'report', lease: 'work', changes: { pr_url: 'https://review.example/changes/1?session=private#note', unknown: 'private' }, body: { outcome: 'success' }, expect: { data: { accepted: true, step: { id: 'work', status: 'delivering', outcome: 'success' }, ignored: ['changes.unknown'] } } },
     ],
     expectState: { steps: [{ id: 'work', status: 'delivering', delivery: { reported: 'https://review.example/changes/1' } }] },
@@ -273,7 +218,7 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
   {
     name: 'an unsafe review URL is dropped without rejecting the report', workflowName: 'review-link', yaml: REVIEW_LINK,
     operations: [
-      { kind: 'next', saveAs: 'work', workspace: true, expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'next', saveAs: 'work', base: { ref: 'main', commit: 'a'.repeat(40) }, expect: { data: { lease: { step: 'work' } } } },
       { kind: 'report', lease: 'work', changes: { pr_url: 'https://user:token@review.example/changes/1' }, body: { outcome: 'success' }, expect: { data: { accepted: true, dropped: [{ field: 'changes.pr_url', reason: 'contains credentials' }] } } },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
     ],
@@ -294,6 +239,10 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
       },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
     ],
+    expectState: { steps: [{ id: 'one', status: 'succeeded' }, {
+      id: 'two', status: 'succeeded', outcome: 'success', outputs: { ok: true }, tool: 'claude', model: 'claude-sonnet', session: 'session-1',
+      tokens: { input: 3, output: 2, cachedInput: 1 },
+    }] },
   },
   {
     name: 'report with an unread payload field lists it in ignored',
@@ -322,6 +271,7 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
         expect: { data: { step: { status: 'failed', outcome: 'failed' } } },
       },
     ],
+    expectState: { steps: [{ id: 'two', status: 'failed', failure: { code: 'invalid_output', message: 'stdout JSON does not match output: output.ok must be a boolean' } }] },
   },
   {
     name: 'repeated report',
@@ -599,10 +549,6 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
   },
 ];
 
-
-function controlsYaml(steps: string): string {
-  return `schemaVersion: v1alpha1\nname: build\ndescription: Exercise manual controls.\nsteps:\n${steps}\n`;
-}
 const APPROVE = controlsYaml('  - id: work\n    approve: Build it?\n    command: echo work\n  - id: later\n    needs: [work]\n    command: echo later');
 const CHOOSE = controlsYaml(`  - id: decide
     choose: { message: Pick one, options: [build, revise] }
@@ -613,13 +559,14 @@ const CHOOSE = controlsYaml(`  - id: decide
     command: echo work`);
 workflowConformanceScenarios.push(
   {
-    name: 'interactive hand-back refuses a driver that no longer has HITL', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
+    name: 'interactive hand-back to a driver that no longer has HITL releases the lease and waits', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
     operations: [
       { kind: 'next', saveAs: 'pair', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
-      { kind: 'next', saveAs: 'done', hitl: false, expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'next', saveAs: 'held', hitl: false, expect: { data: { wait: { held: [{ step: 'pair', missing: ['hitl'] }] } } } },
       { kind: 'report', lease: 'pair', body: { outcome: 'success' }, expect: { error: { code: 'lease_cancelled' } } },
+      { kind: 'next', saveAs: 'again', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
     ],
-    expectState: { steps: [{ id: 'pair', status: 'failed', failure: { code: 'hitl_required' } }] },
+    expectState: { status: 'running', steps: [{ id: 'pair', status: 'leased' }] },
   },
   {
     name: 'retry after the final failure does not provisionally finish the run', workflowName: 'build', yaml: TWO_STEPS,
@@ -635,7 +582,8 @@ workflowConformanceScenarios.push(
     operations: [
       { kind: 'next', saveAs: 'parallel', hitl: true, expect: { data: { lease: { step: 'parallel' } } } },
       { kind: 'next', saveAs: 'hitl', hitl: true, canTakeLease: false, running: ['parallel'], expect: { data: { hitl: { step: 'work', kind: 'approve', pass: 1, options: ['yes', 'no'] } } } },
-      { kind: 'next', saveAs: 'busy', canTakeLease: false, running: ['parallel'], expect: { data: { wait: { reason: 'parallel is leased' } } } },
+      { kind: 'next', saveAs: 'busy', canTakeLease: false, running: ['parallel'], expect: { data: { wait: { reason: 'parallel is leased' } } },
+        state: { steps: [{ id: 'work', status: 'waiting' }, { id: 'later', status: 'pending' }, { id: 'parallel', status: 'leased' }] } },
       { kind: 'respond', step: 'work', choice: 'yes', pass: 1, expect: { data: { answered: { step: 'work', choice: 'yes', channel: 'cli' }, run: { revision: 1 } } } },
       { kind: 'respond', step: 'work', choice: 'no', expect: { error: { code: 'repeated_response' } } },
       { kind: 'next', saveAs: 'work', hitl: true, running: ['parallel'], expect: { data: { lease: { step: 'work' } } } },
@@ -719,13 +667,26 @@ workflowConformanceScenarios.push(
     ],
   },
   {
-    name: 'interactive work requires a driver with HITL', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
+    name: 'interactive work waits for a driver with HITL', workflowName: 'build', yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true'),
     operations: [
-      { kind: 'next', saveAs: 'hitl', hitl: true, expect: { data: { lease: { step: 'pair', interactive: true } } } },
-      { kind: 'retry', step: 'pair', expect: { data: { retried: { pass: 2 } } } },
-      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'failed' } } } },
+      { kind: 'next', saveAs: 'held', as: 'external', expect: { data: { wait: {
+        reason: 'step "pair" needs hitl, which this driver does not declare',
+        held: [{ step: 'pair', reason: 'step "pair" needs hitl, which this driver does not declare', missing: ['hitl'] }],
+      } } } },
+      { kind: 'next', saveAs: 'local', expect: { data: { wait: { held: [{ step: 'pair', missing: ['hitl'] }] } } } },
+      { kind: 'next', saveAs: 'pair', as: 'session', expect: { data: { lease: { step: 'pair', interactive: true } } } },
     ],
-    expectState: { steps: [{ id: 'pair', status: 'failed', failure: { code: 'hitl_required' } }] },
+    expectState: { status: 'running', steps: [{ id: 'pair', status: 'leased', lease: { driver: { kind: 'session' } } }] },
+  },
+  {
+    name: 'a held step does not block a ready sibling', workflowName: 'build',
+    yaml: controlsYaml('  - id: pair\n    prompt: Work together.\n    interactive: true\n  - id: build\n    needs: []\n    command: echo build'),
+    operations: [
+      { kind: 'next', saveAs: 'build', as: 'external', expect: { data: { lease: { step: 'build' } } } },
+      { kind: 'report', lease: 'build', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'held', as: 'external', expect: { data: { wait: { held: [{ step: 'pair', missing: ['hitl'] }] } } } },
+    ],
+    expectState: { status: 'running', steps: [{ id: 'pair', status: 'pending' }, { id: 'build', status: 'succeeded' }] },
   },
   {
     name: 'whole run cancel has its own outcome', workflowName: 'build', yaml: TWO_STEPS,
@@ -735,7 +696,6 @@ workflowConformanceScenarios.push(
     ],
   },
 );
-
 
 workflowConformanceScenarios.push({
   name: 'a driver UI answers a required HITL request',
@@ -755,6 +715,8 @@ workflowConformanceScenarios.push({
   expectState: { steps: [{ id: 'work', status: 'leased', answer: { choice: 'yes', channel: 'driver', agent: false,
     note: 'Person approved in the UI', driver: { kind: 'ide', machine: 'host', workspace: '/ui' } } }, { id: 'later', status: 'pending' }] },
 });
+
+workflowConformanceScenarios.push(...limitsConformanceScenarios);
 
 /** A value a scenario reads from the run once it is done: its base, or what a step reported in `changes`. */
 export type GitConformanceName = 'base.commit' | 'base.ref' | `steps.${string}.commit` | `steps.${string}.branch`;

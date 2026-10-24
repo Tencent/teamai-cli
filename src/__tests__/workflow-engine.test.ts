@@ -12,9 +12,12 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { outputMismatch } from '../workflow/output.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
-import { readRun, runFilePath, runLockPath, updateRun } from '../workflow/store.js';
+import { cancelRun, retryStep } from '../workflow/run-controls.js';
+import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
+import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
+import { knownSecrets } from '../env-resolution.js';
 
 _setDriverPollMs(20);
 
@@ -22,7 +25,7 @@ const dirs: string[] = [];
 
 /** Saves an edited run file under its lock, as a hand edit or an older teamai leaves one. */
 async function saveRun(config: LocalConfig, run: RunState): Promise<void> {
-  await updateRun(config, run.id, async () => ({ value: undefined, write: run }));
+  await updateRun(config, run.id, {}, async () => ({ value: undefined, write: run }));
 }
 
 function testConfig(): { config: LocalConfig; work: string } {
@@ -52,7 +55,7 @@ async function startBuild(body: string): Promise<{ config: LocalConfig; work: st
   const fixture = testConfig();
   fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), body);
   await syncWorkflowDefinitions(fixture.config);
-  const started = await startRun(fixture.config, 'build');
+  const started = await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) });
   if ('error' in started) throw new Error(started.error.message);
   return { ...fixture, runId: String(started.data.run) };
 }
@@ -98,6 +101,7 @@ ${steps}`;
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -500,7 +504,7 @@ steps:
     fs.writeFileSync(path.join(work, 'two.js'), "process.stdout.write(JSON.stringify({ ok: true }))\n");
     await syncWorkflowDefinitions(config);
 
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     expect(started.data).not.toHaveProperty('record');
     const runId = String(started.data.run);
@@ -516,7 +520,7 @@ steps:
     fs.writeFileSync(path.join(work, 'one.js'), "process.stdout.write(JSON.stringify({ ok: true }))\n");
     fs.writeFileSync(path.join(work, 'two.js'), "process.stdout.write(JSON.stringify({ ok: true }))\n");
     await syncWorkflowDefinitions(config);
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     await runLocalDriver(config, runId, work);
@@ -531,7 +535,7 @@ steps:
     await syncWorkflowDefinitions(config);
     const locked = vi.spyOn(update, 'acquireLock').mockResolvedValue(false);
     try {
-      const started = await startRun(config, 'build');
+      const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
 
       expect(started).toMatchObject({ error: { code: 'busy' } });
       expect(await pendingRecords(config)).toEqual([]);
@@ -551,7 +555,7 @@ steps:
     fs.writeFileSync(queue, '');
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
 
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const settling = await runLocalDriver(config, runId, work);
@@ -577,7 +581,7 @@ steps:
     // The fixture has no reports remote; clearing this run's queue entries stands in for a delivery.
     const queue = path.join(config.dataHome!, 'workflows', 'pending');
     for (const file of fs.readdirSync(queue)) if (file.startsWith(`${runId}.`)) fs.rmSync(path.join(queue, file));
-    const other = await startRun(config, 'build');
+    const other = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in other) throw new Error(other.error.message);
     expect(other.data.record).toBe('pending');
 
@@ -609,7 +613,7 @@ steps:
       TITLE: "{{ inputs.title }}"
 `, 'inputs:\n  title: string\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { title: '$(touch pwned)' });
+    const started = await startRun(fixture.config, 'build', { title: '$(touch pwned)' }, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
 
     const done = await runLocalDriver(fixture.config, String(started.data.run), fixture.work);
@@ -982,7 +986,7 @@ steps:
     command: node ship.js
 `, 'inputs:\n  ship: boolean\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { ship: true });
+    const started = await startRun(fixture.config, 'build', { ship: true }, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
 
     const { leased } = await drive(fixture.config, String(started.data.run));
@@ -1048,8 +1052,128 @@ steps:
 `, 'inputs:\n  issue: number\n  title: string\n'));
     await syncWorkflowDefinitions(fixture.config);
 
-    expect(await startRun(fixture.config, 'build', inputs)).toEqual({ error: { code: 'invalid_inputs', message } });
+    expect(await startRun(fixture.config, 'build', inputs, { secrets: await knownSecrets(fixture.config) })).toEqual({ error: { code: 'invalid_inputs', message } });
     expect(fs.existsSync(path.join(fixture.config.dataHome!, 'workflows', 'runs'))).toBe(false);
+  });
+
+  it.each([
+    ['an input that holds a secret value', '    command: node fix.js\n', { DEPLOY_TOKEN: 'Bearer deploy-secret-value-1082' },
+      'inputs.DEPLOY_TOKEN holds the value of DEPLOY_TOKEN, a secret on this machine, which a run never stores. Pass the step a way to read DEPLOY_TOKEN instead, such as requires.env: [DEPLOY_TOKEN].'],
+    ['a workflow that holds a secret value', '    command: node fix.js deploy-secret-value-1082\n', { DEPLOY_TOKEN: 'plain' },
+      'workflows/build.yaml holds the value of DEPLOY_TOKEN, a secret on this machine, which a run never stores. Replace the value with requires.env: [DEPLOY_TOKEN], then pull again.'],
+  ])('refuses %s with invalid_inputs naming the key, never the value', async (_case, step, inputs, message) => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    const fixture = testConfig();
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: fix\n${step}`, 'inputs:\n  DEPLOY_TOKEN: string\n'));
+    await syncWorkflowDefinitions(fixture.config);
+
+    expect(await startRun(fixture.config, 'build', inputs, { secrets: await knownSecrets(fixture.config) })).toEqual({ error: { code: 'invalid_inputs', message } });
+    expect(fs.existsSync(runsDir(fixture.config))).toBe(false);
+  });
+
+  it.each([
+    ['', ''],
+    [' a step requires', '    requires: { env: [GH_TOKEN] }\n'],
+  ])('refuses the environment value of a secret%s whose team value differs, naming the key', async (_case, requires) => {
+    vi.stubEnv('GH_TOKEN', 'personal-token-value-1082');
+    const fixture = testConfig();
+    fs.mkdirSync(path.join(fixture.config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GH_TOKEN\n');
+    await writeSecretStore(getTeamSecretsPath(fixture.config), { GH_TOKEN: { value: 'team-token-value-1082' } });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: fix\n    command: node fix.js\n${requires}`, 'inputs:\n  note: string\n'));
+    await syncWorkflowDefinitions(fixture.config);
+
+    expect(await startRun(fixture.config, 'build', { note: 'personal-token-value-1082' }, { secrets: await knownSecrets(fixture.config) })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
+    expect(await startRun(fixture.config, 'build', { note: 'team-token-value-1082' }, { secrets: await knownSecrets(fixture.config) })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
+  });
+
+  it('starts a workflow that holds the environment value of a required key the team does not declare secret', async () => {
+    vi.stubEnv('DEPLOY_ENV', 'production-eu-west');
+    const fixture = testConfig();
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: deploy
+    command: echo production-eu-west
+    requires: { env: [DEPLOY_ENV] }
+`));
+    await syncWorkflowDefinitions(fixture.config);
+
+    expect(await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) })).toMatchObject({ data: { status: 'running' } });
+  });
+
+  it('keeps the lease of a driver whose checkout path is the value of a required key', async () => {
+    const checkout = '/tmp/teamai-checkout-1082';
+    vi.stubEnv('PWD', checkout);
+    const driver: DriverIdentity = { kind: 'external', machine: 'a', workspace: checkout };
+    const fixture = testConfig();
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n    requires: { env: [PWD] }\n'));
+    await syncWorkflowDefinitions(fixture.config);
+    const started = await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const fix = leaseIn(await leaseNext(fixture.config, runId, driver, { can: { env: true } }));
+
+    expect(await leaseNext(fixture.config, runId, driver, { can: { env: true }, running: [fix.attempt] })).toMatchObject({ data: { cancelled: [] } });
+    expect(await reportAttempt(fixture.config, runId, { attempt: fix.attempt, revision: fix.revision, outcome: 'success', driver })).not.toHaveProperty('error');
+  });
+
+  it.each(['GH_TOKEN', 'VALUE'])('refuses the environment value of declared %s whose team value differs, naming the key', async (key) => {
+    vi.stubEnv(key, 'personal-token-value-1082');
+    const fixture = testConfig();
+    fs.mkdirSync(path.join(fixture.config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'secrets.yaml'), `secrets:\n  - key: ${key}\n`);
+    await writeSecretStore(getTeamSecretsPath(fixture.config), { [key]: { value: 'team-token-value-1082' } });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n', 'inputs:\n  note: string\n'));
+    await syncWorkflowDefinitions(fixture.config);
+
+    expect(await startRun(fixture.config, 'build', { note: 'personal-token-value-1082' }, { secrets: await knownSecrets(fixture.config) })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining(`requires.env: [${key}]`) } });
+    expect(await startRun(fixture.config, 'build', { note: 'team-token-value-1082' }, { secrets: await knownSecrets(fixture.config) })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining(`requires.env: [${key}]`) } });
+  });
+
+  it('warns that it cannot mask the team secrets when their store cannot be read', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const fixture = testConfig();
+    fs.mkdirSync(path.join(fixture.config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GH_TOKEN\n');
+    fs.mkdirSync(path.dirname(getTeamSecretsPath(fixture.config)), { recursive: true });
+    fs.writeFileSync(getTeamSecretsPath(fixture.config), '{ not json');
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n'));
+    await syncWorkflowDefinitions(fixture.config);
+    expect(await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) })).toMatchObject({ data: { status: 'running' } });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('does not mask the team\'s secret values'));
+  });
+
+  it('fails env_conflict only for a step env that shadows a team secret or a required key, not a plain team variable', async () => {
+    const fixture = testConfig();
+    fs.mkdirSync(path.join(fixture.config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'env.yaml'), 'variables:\n  - key: NODE_ENV\n    value: production\n');
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GH_TOKEN\n');
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: test
+    command: npm test
+    env: { NODE_ENV: test }
+  - id: push
+    needs: [test]
+    command: git push
+    env: { GH_TOKEN: plain }
+`));
+    await syncWorkflowDefinitions(fixture.config);
+    const started = await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const test = leaseIn(await leaseNext(fixture.config, runId, driverA, { can: { env: true } }));
+    expect(test.step).toBe('test');
+    await reportAttempt(fixture.config, runId, { attempt: test.attempt, revision: test.revision, outcome: 'success', driver: driverA });
+    expect(await leaseNext(fixture.config, runId, driverA, { can: { env: true } })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(fixture.config, runId)).toMatchObject({ steps: [{ id: 'test', status: 'succeeded' }, { id: 'push', status: 'failed', failure: { code: 'env_conflict' } }] });
+  });
+
+  it('starts a run whose input shares a name with a secret env key', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    const fixture = testConfig();
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n', 'inputs:\n  DEPLOY_TOKEN: string\n'));
+    await syncWorkflowDefinitions(fixture.config);
+
+    const started = await startRun(fixture.config, 'build', { DEPLOY_TOKEN: 'staging' }, { secrets: await knownSecrets(fixture.config) });
+    const stored = await readRun(fixture.config, String('data' in started ? started.data.run : ''));
+    expect(typeof stored === 'object' ? stored.inputs : stored).toEqual({ DEPLOY_TOKEN: 'staging' });
   });
 
   it('stores the inputs and renders inputs and step outputs into a prompt, leaving other braces as written', async () => {
@@ -1064,7 +1188,7 @@ steps:
     prompt: "Fix #{{ inputs.issue }} {{inputs.title}} in {{ steps.plan.outputs.task }}. Keep \${{ secrets.TOKEN }} and {{ name }}."
 `, 'inputs:\n  issue: number\n  title: string\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { issue: 42, title: 'Crash' });
+    const started = await startRun(fixture.config, 'build', { issue: 42, title: 'Crash' }, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const plan = await leaseNext(fixture.config, runId, driverA);
@@ -1092,7 +1216,7 @@ steps:
       PORT: 8080
 `, 'inputs:\n  issue: number\n  title: string\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { issue: 42, title: '$(touch pwned)' });
+    const started = await startRun(fixture.config, 'build', { issue: 42, title: '$(touch pwned)' }, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const plan = await leaseNext(fixture.config, runId, driverA);
@@ -1122,7 +1246,7 @@ steps:
     prompt: "Review {{ inputs.owner }}/{{ inputs.repo }}."
 `, 'inputs:\n  owner: string\n  repo: string\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { owner: 'tencent', repo: 'teamai-cli' });
+    const started = await startRun(fixture.config, 'build', { owner: 'tencent', repo: 'teamai-cli' }, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
 
@@ -1200,7 +1324,7 @@ async function startTree(
     fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', `${file}.yaml`), body);
   }
   await syncWorkflowDefinitions(fixture.config);
-  const started = await startRun(fixture.config, name, inputs);
+  const started = await startRun(fixture.config, name, inputs, { secrets: await knownSecrets(fixture.config) });
   if ('error' in started) throw new Error(started.error.message);
   return { ...fixture, runId: String(started.data.run) };
 }
@@ -1265,11 +1389,11 @@ describe('file sub-workflows', () => {
     fs.writeFileSync(path.join(workflows, 'check.yaml'), CHECK);
     await syncWorkflowDefinitions(fixture.config);
     const restoreShip = saveCachedCopy(fixture.config, 'ship');
-    fs.writeFileSync(path.join(workflows, 'check.yaml'), `${CHECK}    timeout: 10m\n`);
+    fs.writeFileSync(path.join(workflows, 'check.yaml'), `${CHECK}    future_option: 10m\n`);
     await syncWorkflowDefinitions(fixture.config);
     restoreShip();
 
-    expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
+    expect(await startRun(fixture.config, 'ship', {}, { secrets: await knownSecrets(fixture.config) })).toEqual({ error: {
       code: 'workflow_not_found',
       message: 'Workflow "ship" step "check" runs workflow "check", which has no runnable version. Check workflows/check.yaml and pull again.',
     } });
@@ -1286,7 +1410,7 @@ describe('file sub-workflows', () => {
     command: node other.js
 `));
     await syncWorkflowDefinitions(config);
-    const second = await startRun(config, 'ship');
+    const second = await startRun(config, 'ship', {}, { secrets: await knownSecrets(config) });
     if ('error' in second) throw new Error(second.error.message);
     fs.writeFileSync(path.join(workflows, 'ship.yaml'), `${ship}  - id: extra\n    needs: []\n    command: node extra.js\n`);
     await syncWorkflowDefinitions(config);
@@ -1536,7 +1660,7 @@ describe('file sub-workflows', () => {
     // The cache now holds check running ship next to the ship that runs check.
     restoreShip();
 
-    expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
+    expect(await startRun(fixture.config, 'ship', {}, { secrets: await knownSecrets(fixture.config) })).toEqual({ error: {
       code: 'workflow_recursion',
       message: 'Workflow "ship" cannot start: its sub-workflows run in a cycle: ship -> check -> ship',
     } });
@@ -1563,7 +1687,7 @@ describe('with on prompt steps', () => {
       task: "{{ steps.plan.outputs.task }}"
 `, 'inputs:\n  issue: number\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { issue: 42 });
+    const started = await startRun(fixture.config, 'build', { issue: 42 }, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const plan = await leaseNext(fixture.config, runId, driverA);
@@ -1801,7 +1925,7 @@ describe('inline workflows', () => {
     // The cache now holds check running ship next to the ship that runs check.
     restoreShip();
 
-    expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
+    expect(await startRun(fixture.config, 'ship', {}, { secrets: await knownSecrets(fixture.config) })).toEqual({ error: {
       code: 'workflow_recursion',
       message: 'Workflow "ship" cannot start: its sub-workflows run in a cycle: ship -> check -> ship',
     } });
@@ -2213,7 +2337,7 @@ describe('parallel leases', () => {
     command: node after.js
 `, 'inputs:\n  skip: boolean\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { skip: false });
+    const started = await startRun(fixture.config, 'build', { skip: false }, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const a = leaseIn(await leaseNext(fixture.config, runId, driverA));
@@ -2538,14 +2662,209 @@ describe('held-back steps', () => {
     command: node b.js
 `));
 
-    const next = await leaseNext(config, runId, driverA, { workspaceModes: ['read-only'] });
+    const next = await leaseNext(config, runId, driverA, { can: { workspace: ['read-only'] } });
 
     expect(next).toMatchObject({ data: { lease: { step: 'b' } } });
     expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'a', status: 'pending' }, { id: 'b', status: 'leased' }] });
     await reportAttempt(config, runId, { ...leaseIn(next), outcome: 'success', driver: driverA });
-    expect(await leaseNext(config, runId, driverA, { workspaceModes: ['read-only'] })).toEqual({ data: {
-      wait: { reason: 'step "a" needs workspace new, which this driver does not provide' }, cancelled: [],
+    const reason = 'step "a" needs workspace new, which this driver does not provide';
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: ['read-only'] } })).toEqual({ data: {
+      wait: { reason, held: [{ step: 'a', reason, missing: ['workspace.new'] }] }, cancelled: [],
     } });
+  });
+
+  it('lets another driver take a new copy a driver handed back unused for a capability it lost', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: a
+    workspace: new
+    requires: { env: [DEPLOY_TOKEN] }
+    command: node a.js
+`));
+    const first = await leaseNext(config, runId, driverA, { can: { workspace: [...allModes], env: true }, base });
+    expect(first).toMatchObject({ data: { lease: { step: 'a', workspace: { branch: expect.stringMatching(/a/) } } } });
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'a', missing: ['env'] }] } },
+    });
+    const taken = await leaseNext(config, runId, driverB, { can: { workspace: [...allModes], env: true }, base });
+    expect(taken).toMatchObject({ data: { lease: { step: 'a', workspace: { branch: expect.stringMatching(/a/) } } } });
+  });
+
+  it('asks for setup on every lease with a workspace in a workflow that declares it, also one that continues a copy another lease opened', async () => {
+    const fixture = testConfig();
+    const workflows = path.join(fixture.config.repo.localPath, 'workflows');
+    fs.writeFileSync(path.join(workflows, 'build.yaml'), graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          command: node a.js
+        - id: b
+          needs: [a]
+          workflow: inner
+`));
+    fs.writeFileSync(path.join(workflows, 'inner.yaml'), 'schemaVersion: v1alpha1\nname: inner\ndescription: Inner.\nsetup:\n  command: npm ci\nsteps:\n  - id: c\n    workspace: continue\n    command: node c.js\n');
+    await syncWorkflowDefinitions(fixture.config);
+    const started = await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const a = leaseIn(await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes] }, base }));
+    expect(a.step).toBe('box.a');
+    await reportAttempt(fixture.config, runId, { attempt: a.attempt, revision: a.revision, outcome: 'success', driver: driverA });
+    expect(await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'box.b.c', missing: ['setup'] }] } },
+    });
+    expect(await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes], setup: true }, base })).toMatchObject({
+      data: { lease: { step: 'box.b.c', setup: { command: 'npm ci' } } },
+    });
+  });
+
+  it('keeps setup on the lease that replaces a released one, since no report has used the copy yet', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: a
+    workspace: new
+    command: node a.js
+`, 'setup:\n  command: npm ci\n'));
+    const can = { workspace: [...allModes], setup: true };
+    const first = await leaseNext(config, runId, driverA, { can, base });
+    expect(first).toMatchObject({ data: { lease: { step: 'a', setup: { command: 'npm ci' } } } });
+    await reportAttempt(config, runId, { ...leaseIn(first), outcome: 'released', driver: driverA });
+
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'a', missing: ['setup'] }] } },
+    });
+    expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({
+      data: { lease: { step: 'a', setup: { command: 'npm ci' } } },
+    });
+  });
+
+  it('keeps a copy a step ran in with its owner when the owner hands back a later step it can no longer run', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          command: node a.js
+        - id: b
+          needs: [a]
+          workspace: continue
+          requires: { env: [DEPLOY_TOKEN] }
+          command: node b.js
+`));
+    const can = { workspace: [...allModes], env: true };
+    const a = leaseIn(await leaseNext(config, runId, driverA, { can, base }));
+    await reportAttempt(config, runId, { ...a, outcome: 'success', driver: driverA });
+    expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({ data: { lease: { step: 'box.b' } } });
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'box.b', missing: ['env'] }] } },
+    });
+
+    expect(await leaseNext(config, runId, driverB, { can, base })).toMatchObject({
+      data: { wait: { reason: 'step "box.b" continues a workspace owned by another driver' } },
+    });
+  });
+
+  it.each([
+    ['its setup failed', { code: 'setup_failed', message: 'Setup "npm ci" exited with code 1, so the step did not run.' }],
+    ['its workspace lacked a commit', { code: 'workspace_base', message: 'Step "box.a" needs commit abc, which this checkout does not have.' }],
+    ['its base config could not be applied', { code: 'base_config', message: 'Could not apply the base config.' }],
+  ])('carries setup again when a step is retried after %s, since the step never ran in the copy', async (_case, failure) => {
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          command: node a.js
+`, 'setup:\n  command: npm ci\n'));
+    const can = { workspace: [...allModes], setup: true };
+    const a = leaseIn(await leaseNext(config, runId, driverA, { can, base }));
+    await reportAttempt(config, runId, { ...a, outcome: 'failed', driver: driverA, failure });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'box.a')).toMatchObject({ data: {} });
+
+    expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({
+      data: { lease: { step: 'box.a', setup: { command: 'npm ci' } } },
+    });
+  });
+
+  it('lets another driver take the first step of an enclosing copy a driver handed back unused for a capability it lost', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: work
+          workspace: continue
+          requires: { env: [DEPLOY_TOKEN] }
+          command: node work.js
+`));
+    const first = await leaseNext(config, runId, driverA, { can: { workspace: [...allModes], env: true }, base });
+    expect(first).toMatchObject({ data: { lease: { step: 'box.work' } } });
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'box.work', missing: ['env'] }] } },
+    });
+
+    expect(await leaseNext(config, runId, driverB, { can: { workspace: [...allModes], env: true }, base })).toMatchObject({
+      data: { lease: { step: 'box.work' } },
+    });
+  });
+
+  it('keeps the copy with its owner when a held hand-back leaves the owner another lease in it', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          requires: { env: [DEPLOY_TOKEN] }
+          command: node a.js
+        - id: b
+          needs: []
+          workspace: continue
+          command: node b.js
+`));
+    const can = { workspace: [...allModes], env: true };
+    const a = leaseIn(await leaseNext(config, runId, driverA, { can, base }));
+    expect(a.step).toBe('box.a');
+    const b = leaseIn(await leaseNext(config, runId, driverA, { can, base, running: [a.attempt] }));
+    expect(b.step).toBe('box.b');
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base, running: [b.attempt] })).toMatchObject({
+      data: { wait: { held: [{ step: 'box.a', missing: ['env'] }] } },
+    });
+    await reportAttempt(config, runId, { ...b, outcome: 'success', exitCode: 0, driver: driverA });
+
+    expect(await leaseNext(config, runId, driverB, { can, base })).toMatchObject({
+      data: { wait: { reason: 'step "box.a" continues a workspace owned by another driver' } },
+    });
+  });
+
+  it('gives a copy back its owner when the owner takes back a lease in it', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          command: node a.js
+        - id: b
+          needs: [a]
+          workspace: continue
+          command: node b.js
+`));
+    const can = { workspace: [...allModes] };
+    const a = leaseIn(await leaseNext(config, runId, driverA, { can, base }));
+    const stored = await readRun(config, runId);
+    if (typeof stored !== 'object') throw new Error('run unreadable');
+    for (const copy of Object.values(stored.copies ?? {})) delete copy.owner;
+    await saveRun(config, stored);
+    expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({ data: { lease: { step: 'box.a' } } });
+    await reportAttempt(config, runId, { ...a, outcome: 'success', exitCode: 0, driver: driverA });
+
+    expect(await leaseNext(config, runId, driverB, { can, base })).toMatchObject({
+      data: { wait: { reason: 'step "box.b" continues a workspace owned by another driver' } },
+    });
   });
 
   it('waits when every ready step is held back, and names each one in order', async () => {
@@ -2558,10 +2877,14 @@ describe('held-back steps', () => {
     command: node c.js
 `));
 
-    const next = await leaseNext(config, runId, driverA, { workspaceModes: ['read-only'] });
+    const next = await leaseNext(config, runId, driverA, { can: { workspace: ['read-only'] } });
 
     expect(next).toEqual({ data: { wait: {
       reason: 'step "a" needs workspace new, which this driver does not provide; step "c" needs workspace new, which this driver does not provide',
+      held: [
+        { step: 'a', reason: 'step "a" needs workspace new, which this driver does not provide', missing: ['workspace.new'] },
+        { step: 'c', reason: 'step "c" needs workspace new, which this driver does not provide', missing: ['workspace.new'] },
+      ],
     }, cancelled: [] } });
   });
 
@@ -2571,11 +2894,11 @@ describe('held-back steps', () => {
     workspace: new
     command: node build.js
 `, 'inputs:\n  targets: [string]\n') }, 'build', { targets: ['web', 'api', 'cli'] });
-    const web = leaseIn(await leaseNext(config, runId, driverB, { workspaceModes: [...allModes], base }));
+    const web = leaseIn(await leaseNext(config, runId, driverB, { can: { workspace: [...allModes] }, base }));
     await reportAttempt(config, runId, { ...web, outcome: 'released', driver: driverB });
 
-    const api = await leaseNext(config, runId, driverA, { workspaceModes: [...allModes], base });
-    const full = await leaseNext(config, runId, driverA, { workspaceModes: [...allModes], base, running: [leaseIn(api).attempt] });
+    const api = await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base });
+    const full = await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base, running: [leaseIn(api).attempt] });
 
     expect(web.step).toBe('build[0]');
     expect(api).toMatchObject({ data: { lease: { step: 'build[1]' } } });
@@ -2606,7 +2929,7 @@ ${build}  - id: stop
     const { config } = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), body);
     expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
-    const started = await startRun(config, 'build', { items: [1] });
+    const started = await startRun(config, 'build', { items: [1] }, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const built = leaseIn(await leaseNext(config, runId, driverA));
@@ -3519,7 +3842,7 @@ describe('for_each', () => {
     prompt: "Build {{ item.dir }}."
 `, 'inputs:\n  packages: [{ dir: string }]\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'fan', { packages: [{ dir: 'packages/core' }] });
+    const started = await startRun(fixture.config, 'fan', { packages: [{ dir: 'packages/core' }] }, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
     const leases: Array<Pick<LoopLease, 'step' | 'command' | 'prompt' | 'env'>> = [];
 
@@ -3573,7 +3896,7 @@ describe('for_each', () => {
 `, 'inputs:\n  packages: [{ id: string, dir: string }]\n'));
     const synced = await syncWorkflowDefinitions(fixture.config);
     expect(synced.invalid.map((diagnostic) => diagnostic.message)).toEqual([]);
-    const started = await startRun(fixture.config, 'triage', { packages: [{ id: 'core', dir: 'packages/core' }, { id: 'cli', dir: 'packages/cli' }] });
+    const started = await startRun(fixture.config, 'triage', { packages: [{ id: 'core', dir: 'packages/core' }, { id: 'cli', dir: 'packages/cli' }] }, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
     const leases: Array<Pick<LoopLease, 'step' | 'prompt' | 'env'>> = [];
 
@@ -4009,7 +4332,7 @@ ${pair(prompt, '      ')}`, header) }), 'each[0].s', true],
     expect(pulled.invalid.map((diagnostic) => diagnostic.message).filter((message) => message.includes('steps.p'))).toHaveLength(bound ? 1 : 0);
     if (bound) return;
     // Where item is not bound, the step reads no step, so it does not wait for p.
-    const started = await startRun(fixture.config, 'top', inputs);
+    const started = await startRun(fixture.config, 'top', inputs, { secrets: await knownSecrets(fixture.config) });
     if ('error' in started) throw new Error(started.error.message);
     expect(leaseIn(await leaseNext(fixture.config, String(started.data.run), driverA)).step).toBe(step);
   });
@@ -4419,7 +4742,7 @@ describe('deliver: pr at workflow start', () => {
     const { config } = testConfig();
     for (const [file, body] of Object.entries(files)) fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${file}.yaml`), body);
     await syncWorkflowDefinitions(config);
-    return { config, started: await startRun(config, name, {}, base ? { base } : {}) };
+    return { config, started: await startRun(config, name, {}, { secrets: await knownSecrets(config), ...(base ? { base } : {}) }) };
   }
   const commit = 'a'.repeat(40);
 
@@ -4488,7 +4811,7 @@ ${workspace}    deliver: pr
 `, 'inputs: { packages: [string] }\n'));
     expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
 
-    expect(await startRun(config, 'ship', { packages: ['web'] }, { base: { ref: 'main', commit } })).toMatchObject(expected);
+    expect(await startRun(config, 'ship', { packages: ['web'] }, { base: { ref: 'main', commit }, secrets: await knownSecrets(config) })).toMatchObject(expected);
   });
 
   it.each(['approve: Continue?', 'end: done'])('refuses delivery when an inherited writable workflow contains only approval or end steps (%s)', async (action) => {
@@ -4529,5 +4852,308 @@ ${workspace}    deliver: pr
 `) }, 'ship', { commit });
 
     expect(started).toMatchObject({ data: { status: 'running' } });
+  });
+});
+
+describe('deadlines', () => {
+  const at = (minutes: number): string => new Date(Date.UTC(2026, 0, 1) + minutes * 60_000).toISOString();
+
+  it('gives a lease the first of its own deadline, those of the steps it is under, fan-out items included, and the run\'s', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: plan
+    command: echo plan
+    output:
+      targets: [string]
+  - id: batch
+    needs: [plan]
+    timeout: 30m
+    for_each: { items: steps.plan.outputs.targets }
+    workflow:
+      steps:
+        - id: work
+          command: echo work
+          timeout: 45m
+`, 'timeout: 1h\n'));
+      const plan = leaseIn(await leaseNext(config, runId, driverA));
+      expect(plan).toMatchObject({ step: 'plan', expiresAt: at(60) });
+      await reportAttempt(config, runId, { attempt: plan.attempt, revision: plan.revision, outcome: 'success', driver: driverA, outputs: { targets: ['a'] } });
+      vi.setSystemTime(new Date(at(20)));
+      expect(await leaseNext(config, runId, driverA)).toMatchObject({ data: { lease: { step: 'batch[0].work', expiresAt: at(50) } } });
+      vi.setSystemTime(new Date(at(25)));
+      expect(await leaseNext(config, runId, driverA, { running: [] })).toMatchObject({ data: { lease: { step: 'batch[0].work', expiresAt: at(50) } } });
+      expect(await readRun(config, runId)).toMatchObject({ steps: [
+        { id: 'plan' },
+        { id: 'batch', status: 'running', expiresAt: at(50) },
+        { id: 'batch[0]', status: 'running' },
+        { id: 'batch[0].work', status: 'leased', lease: { expiresAt: at(65) } },
+      ] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps what a lease did not enforce on the step its timeout or a cancel stopped', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    requires: { network: false }
+    command: echo slow
+  - id: other
+    needs: []
+    requires: { network: false }
+    command: echo other
+`));
+      const slow = leaseIn(await leaseNext(config, runId, driverA));
+      const other = leaseIn(await leaseNext(config, runId, driverA, { running: [slow.attempt] }));
+      expect(other.step).toBe('other');
+      vi.setSystemTime(new Date(at(15)));
+      expect(await leaseNext(config, runId, driverA, { running: [slow.attempt, other.attempt] })).toMatchObject({ data: { cancelled: [slow.attempt] } });
+      await cancelRun(config, runId, await knownSecrets(config));
+      const unenforced = [{ requirement: 'network', asked: false }];
+      expect(await readRun(config, runId)).toMatchObject({ steps: [
+        { id: 'slow', status: 'failed', failure: { code: 'timeout' }, unenforced },
+        { id: 'other', status: 'cancelled', unenforced },
+      ] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds a workflow step by the timeout of the file it runs when that is shorter', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const fixture = testConfig();
+      const workflows = path.join(fixture.config.repo.localPath, 'workflows');
+      fs.writeFileSync(path.join(workflows, 'build.yaml'), graph('  - id: check\n    workflow: check\n    timeout: 1h\n'));
+      fs.writeFileSync(path.join(workflows, 'check.yaml'), 'schemaVersion: v1alpha1\nname: check\ndescription: Check it.\ntimeout: 10m\nsteps:\n  - id: inner\n    command: echo inner\n');
+      await syncWorkflowDefinitions(fixture.config);
+      const started = await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) });
+      if ('error' in started) throw new Error(started.error.message);
+      const runId = String(started.data.run);
+      expect(await leaseNext(fixture.config, runId, driverA)).toMatchObject({ data: { lease: { step: 'check.inner', expiresAt: at(10) } } });
+      vi.setSystemTime(new Date(at(10)));
+      expect(await leaseNext(fixture.config, runId, driverA)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+      expect(await readRun(fixture.config, runId)).toMatchObject({ steps: [
+        { id: 'check', status: 'failed', failure: { code: 'timeout' } },
+        { id: 'check.inner', status: 'cancelled', failure: { code: 'timeout' } },
+      ] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('token budgets', () => {
+  const reports = { can: { tokens: true } };
+
+  async function report(config: LocalConfig, runId: string, lease: { attempt: string; revision: number }, outcome: ReportInput['outcome'], tokens: TokenUsage): Promise<void> {
+    expect(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome, driver: driverA, tokens })).toMatchObject({ data: { accepted: true } });
+  }
+
+  it('fails a workflow step that spent its budget, counting released attempts and not cached input, so a step that reads it recovers', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: check
+    budget: { tokens: 100 }
+    workflow:
+      steps:
+        - id: first
+          prompt: First.
+        - id: second
+          needs: [first]
+          prompt: Second.
+  - id: recover
+    needs: [check]
+    if: steps.check.outcome == 'failed'
+    command: echo recover
+`));
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10, cachedInput: 1000 });
+    const second = leaseIn(await leaseNext(config, runId, driverA, reports));
+    expect(second.step).toBe('check.second');
+    await report(config, runId, second, 'released', { input: 30, output: 20 });
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { lease: { step: 'recover' } } });
+    expect(await readRun(config, runId)).toMatchObject({
+      releasedTokens: [{ step: 'check.second', attempt: second.attempt, tokens: { input: 30, output: 20 } }],
+      steps: [
+        { id: 'check', status: 'failed', failure: { code: 'budget_exceeded', message: 'step "check" inline workflow spent 110 of its 100-token budget' } },
+        { id: 'check.first', status: 'succeeded' },
+        { id: 'check.second', status: 'skipped' },
+        { id: 'recover', status: 'leased' },
+      ],
+    });
+  });
+
+  it('spends a for_each workflow step\'s budget over all its items', async () => {
+    const { config, runId } = await startTree({ build: workflow('build', `  - id: check
+    budget: { tokens: 100 }
+    for_each: { items: inputs.targets, max_parallel: 1 }
+    workflow:
+      steps:
+        - id: review
+          prompt: "Review {{ item }}."
+  - id: recover
+    needs: [check]
+    if: steps.check.outcome == 'failed'
+    command: echo recover
+`, 'inputs:\n  targets: [string]\n') }, 'build', { targets: ['web', 'api', 'cli'] });
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10 });
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10 });
+
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { lease: { step: 'recover' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: expect.arrayContaining([
+      expect.objectContaining({ id: 'check', status: 'failed', failure: { code: 'budget_exceeded', message: 'step "check" spent 120 of its 100-token budget' } }),
+      expect.objectContaining({ id: 'check[2]', status: 'skipped' }),
+    ]) });
+  });
+
+  it('keeps the budget of the workflow file each for_each item runs to that item', async () => {
+    const { config, runId } = await startTree({
+      build: workflow('build', `  - id: check
+    for_each: { items: inputs.targets, max_parallel: 1 }
+    workflow: review
+`, 'inputs:\n  targets: [string]\n'),
+      review: workflow('review', `  - id: review
+    prompt: Review.
+`, 'budget: { tokens: 100 }\n'),
+    }, 'build', { targets: ['web', 'api'] });
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10 });
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 50, output: 10 });
+
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('counts the passes a loop archived, so the run fails before a pass that would start past its budget', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: work
+    workflow:
+      steps:
+        - id: review
+          prompt: Review.
+    loop: { back_to: work, max_iterations: 5 }
+`, 'budget: { tokens: 5 }\n'));
+    for (let pass = 0; pass < 2; pass += 1) {
+      const review = leaseIn(await leaseNext(config, runId, driverA, reports));
+      expect(review.step).toBe('work.review');
+      await report(config, runId, review, 'success', { input: 2, output: 1 });
+    }
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'failed', failure: { code: 'budget_exceeded' } } } });
+  });
+
+  it('lets a workflow spend exactly its budget', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: work
+    prompt: Work.
+`, 'budget: { tokens: 10 }\n'));
+    await report(config, runId, leaseIn(await leaseNext(config, runId, driverA, reports)), 'success', { input: 6, output: 4 });
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+  });
+
+  it('counts the tokens a stopped attempt\'s own driver reports, once, and still answers lease_cancelled', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: work
+    prompt: Work.
+  - id: other
+    needs: []
+    prompt: Other.
+`, 'budget: { tokens: 10 }\n'));
+    const work = leaseIn(await leaseNext(config, runId, driverA, reports));
+    const other = leaseIn(await leaseNext(config, runId, driverA, { ...reports, running: [work.attempt] }));
+    await report(config, runId, work, 'success', { input: 15, output: 5 });
+    expect(await leaseNext(config, runId, driverA, { ...reports, running: [other.attempt] })).toMatchObject({ data: { done: { outcome: 'failed' }, cancelled: [other.attempt] } });
+    const late = { attempt: other.attempt, revision: other.revision, outcome: 'success' as const, tokens: { input: 7 } };
+    expect(await reportAttempt(config, runId, { ...late, driver: driverB })).toMatchObject({ error: { code: 'lease_cancelled' } });
+    expect(await reportAttempt(config, runId, { ...late, driver: driverA })).toMatchObject({ error: { code: 'lease_cancelled' } });
+    expect(await reportAttempt(config, runId, { ...late, driver: driverA })).toMatchObject({ error: { code: 'lease_cancelled' } });
+    expect(await readRun(config, runId)).toMatchObject({ releasedTokens: [{ step: 'other', attempt: other.attempt, tokens: { input: 7 } }] });
+  });
+
+  it('counts the late tokens of an attempt a held hand-back stopped', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: work
+    prompt: Work.
+    requires: { env: [DEPLOY_TOKEN] }
+`));
+    const work = leaseIn(await leaseNext(config, runId, driverA, { can: { tokens: true, env: true } }));
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { wait: { held: [{ step: 'work', missing: ['env'] }] } } });
+    expect(await reportAttempt(config, runId, { attempt: work.attempt, revision: work.revision, outcome: 'success', driver: driverA, tokens: { input: 7 } }))
+      .toMatchObject({ error: { code: 'lease_cancelled' } });
+
+    expect(await readRun(config, runId)).toMatchObject({ releasedTokens: [{ step: 'work', attempt: work.attempt, tokens: { input: 7 } }] });
+  });
+
+  it('charges a stopped attempt\'s late tokens to the budget it was leased under, not to the one a retry opened after it', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: a
+    prompt: A.
+  - id: b
+    needs: []
+    prompt: B.
+  - id: c
+    needs: []
+    prompt: C.
+`, 'budget: { tokens: 10 }\n'));
+    const a = leaseIn(await leaseNext(config, runId, driverA, reports));
+    const b = leaseIn(await leaseNext(config, runId, driverA, { ...reports, running: [a.attempt] }));
+    const c = leaseIn(await leaseNext(config, runId, driverA, { ...reports, running: [a.attempt, b.attempt] }));
+    await report(config, runId, a, 'success', { input: 12 });
+    expect(await leaseNext(config, runId, driverA, { ...reports, running: [b.attempt, c.attempt] })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'b')).toMatchObject({ data: { reopened: true } });
+    expect(await reportAttempt(config, runId, { attempt: c.attempt, revision: c.revision, outcome: 'success', driver: driverA, tokens: { input: 20 } }))
+      .toMatchObject({ error: { code: 'lease_cancelled' } });
+
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { lease: { step: 'b' } } });
+  });
+
+  it('counts the late tokens of a stopped attempt whose step a retry already replaced', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: a
+    prompt: A.
+  - id: b
+    needs: []
+    prompt: B.
+`, 'budget: { tokens: 100 }\n'));
+    const a = leaseIn(await leaseNext(config, runId, driverA, reports));
+    const b = leaseIn(await leaseNext(config, runId, driverA, { ...reports, running: [a.attempt] }));
+    expect(await cancelRun(config, runId, await knownSecrets(config), 'a')).toMatchObject({ data: { cancelled: { attempts: [a.attempt] } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'a')).toMatchObject({ data: {} });
+    expect(await reportAttempt(config, runId, { attempt: a.attempt, revision: a.revision, outcome: 'success', driver: driverA, tokens: { input: 7 } }))
+      .toMatchObject({ error: { code: 'lease_cancelled' } });
+
+    expect(await readRun(config, runId)).toMatchObject({ releasedTokens: [{ step: 'a', attempt: a.attempt, tokens: { input: 7 } }] });
+    expect(b.step).toBe('b');
+  });
+
+  it('gives a workflow step a whole budget on each pass a loop runs it', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: work
+    budget: { tokens: 5 }
+    workflow:
+      steps:
+        - id: review
+          prompt: Review.
+    loop: { back_to: work, max_iterations: 3 }
+`));
+    for (let pass = 0; pass < 3; pass += 1) {
+      const review = leaseIn(await leaseNext(config, runId, driverA, reports));
+      expect(review.step).toBe('work.review');
+      await report(config, runId, review, 'success', { input: 2, output: 1 });
+    }
+    expect(await leaseNext(config, runId, driverA, reports)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'work', status: 'failed', failure: { code: 'loop_exhausted' } }] });
+  });
+
+  it('gives a budgeted interactive prompt to a driver that cannot meter it, and records its spend as not counted', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: pair
+    interactive: true
+    prompt: Work on it with me.
+  - id: after
+    needs: [pair]
+    prompt: Sum it up.
+`, 'budget: { tokens: 100 }\n'));
+    const pair = leaseIn(await leaseNext(config, runId, driverA, { can: { hitl: true } }));
+    expect(pair.step).toBe('pair');
+    expect(await reportAttempt(config, runId, { attempt: pair.attempt, revision: pair.revision, outcome: 'success', driver: driverA })).toMatchObject({
+      data: { step: { id: 'pair', status: 'succeeded', unenforced: [{ requirement: 'budget' }] } },
+    });
+    expect(await leaseNext(config, runId, driverA, { can: { hitl: true } })).toMatchObject({
+      data: { wait: { held: [{ step: 'after', missing: ['tokens'] }] } },
+    });
   });
 });

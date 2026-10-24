@@ -4,10 +4,11 @@ import path from 'node:path';
 import { z } from 'zod';
 import { DriverSchema } from '../driver-identity.js';
 import { readFileSafe, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
+import { redactJson } from '../utils/redact.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { PinnedScorerSchema } from '../scorers/pin.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { ArchivedPassSchema, SessionContinuationSchema, StepStateSchema } from './step-state.js';
+import { ArchivedPassSchema, ReleasedTokensSchema, SessionContinuationSchema, StepStateSchema, StoppedAttemptSchema } from './step-state.js';
 import type { HandoffOwner } from './snapshot.js';
 import type { RunState, WorkflowDefinition } from './types.js';
 
@@ -82,6 +83,8 @@ const RunProgressSchema = z.object({
   driver: DriverSchema.optional(),
   publication: z.object({ stateRevision: z.number().int(), pending: z.string().optional(), reconcileCopies: z.literal(true).optional() }).optional(),
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
+  releasedTokens: z.array(ReleasedTokensSchema).optional(),
+  stoppedAttempts: z.array(StoppedAttemptSchema).optional(),
   scorers: z.record(PinnedScorerSchema).optional(),
 });
 
@@ -108,13 +111,24 @@ function delay(ms: number): Promise<void> {
 /** What a locked run update found: the value its change returned, or why the change did not run. */
 export type RunUpdate<T> = { status: 'done'; value: T } | { status: 'busy' } | { status: 'corrupt' };
 
+/** The definitions a run pins as they were pulled, which the run file keeps byte for byte. */
+const PINNED: ReadonlySet<string> = new Set(['definition', 'workflows', 'scorers'] satisfies Array<keyof RunState>);
+
+/** `run` as its file holds it: each of `secrets` masked in every field but the pinned definitions. */
+function maskedRun(run: RunState, secrets: Record<string, string>): unknown {
+  if (Object.keys(secrets).length === 0) return run;
+  return Object.fromEntries(Object.entries(run).map(([key, value]) => [key, PINNED.has(key) ? value : redactJson(value, secrets)]));
+}
+
 /**
- * Reads run `runId` under its lock, `missing` when it has no file, and writes the run `change` returns, if any.
+ * Reads run `runId` under its lock, `missing` when it has no file, and writes the run `change` returns, if any, with
+ * each of `secrets` masked. The caller resolves `secrets` before the lock, once per operation.
  * The only writer of run files, so no write lands between another process's read and its write.
  */
 export async function updateRun<T>(
   config: LocalConfig,
   runId: string,
+  secrets: Record<string, string>,
   change: (run: RunState | 'missing') => Promise<{ value: T; write?: RunState }>,
 ): Promise<RunUpdate<T>> {
   const lock = runLockPath(config, runId);
@@ -128,7 +142,7 @@ export async function updateRun<T>(
     const loaded = await readRun(config, runId);
     if (loaded === 'corrupt') return { status: 'corrupt' };
     const { value, write } = await change(loaded);
-    if (write) await writeJsonAtomic(runFilePath(config, runId), write);
+    if (write) await writeJsonAtomic(runFilePath(config, runId), maskedRun(write, secrets));
     return { status: 'done', value };
   } finally {
     await releaseLock(lock);

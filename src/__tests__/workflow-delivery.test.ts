@@ -6,7 +6,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { z } from 'zod';
 import { parseWorkflow } from '../workflow/parse.js';
-import { leaseNext, parseReport, reportAttempt, startRun, withIgnored } from '../workflow/engine.js';
+import { leaseNext, parseReport, reportAttempt, startRun, withIgnored, type NextOptions } from '../workflow/engine.js';
+import { knownSecrets } from '../env-resolution.js';
 import { sanitizePrUrl } from '../workflow/pr-url.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { deliveryLockPath, readRun, runLockPath } from '../workflow/store.js';
@@ -60,7 +61,7 @@ async function fixture(steps: string, inputs?: unknown): Promise<{ config: Local
     username: 'tester', usageReportEnabled: false, additionalRoles: [], projectRoot: cwd, dataHome: path.join(root, 'data'), workflows: { tools: {}, max_parallel: 1 } };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'ship.yaml'), `schemaVersion: v1alpha1\nname: ship\ndescription: Deliver work\n${inputs ? 'inputs:\n  packages: [{ name: string, id: string, after: [string] }]\n' : ''}steps:\n${steps}`);
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'ship', inputs ?? {}, { checkout: cwd, base: { ref: 'main', commit: git(cwd, ['rev-parse', 'HEAD']) } });
+  const started = await startRun(config, 'ship', inputs ?? {}, { checkout: cwd, base: { ref: 'main', commit: git(cwd, ['rev-parse', 'HEAD']) }, secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, cwd, root, runId: String(started.data.run) };
 }
@@ -77,7 +78,7 @@ const LeaseSchema = z.object({
 });
 type Lease = z.infer<typeof LeaseSchema>;
 const remote = { kind: 'remote', machine: 'paseo', workspace: 'session-1' };
-const writable = { workspaceModes: ['read-only', 'new', 'continue'] as Array<'read-only' | 'new' | 'continue'> };
+const writable: NextOptions = { can: { workspace: ['read-only', 'new', 'continue'] } };
 const head = 'c'.repeat(40);
 
 /** Takes the next lease as a driver that speaks only CLI JSON does. */
@@ -360,7 +361,7 @@ describe('delivering a step', () => {
     expect(git(root, ['--git-dir=remote.git', 'rev-parse', `refs/heads/${branch}`])).toBe(to);
 
     gh.configure({});
-    expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: {} });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'fix')).toMatchObject({ data: {} });
     expect(await take(config, runId)).toMatchObject({ step: 'review' });
     expect((await state(config, runId)).deliveries?.map((receipt) => receipt.url)).toEqual(['https://github.com/fixture/app/pull/1']);
   });
@@ -382,7 +383,7 @@ describe('delivering a step', () => {
     const fix = await take(config, runId);
     await succeed(config, runId, fix, { pr_url: 'https://review.acme.internal/changes/1' });
 
-    expect(await cancelRun(config, runId, 'fix')).toMatchObject({ data: { cancelled: { steps: ['fix'], attempts: [] }, run: { status: 'failed' } } });
+    expect(await cancelRun(config, runId, await knownSecrets(config), 'fix')).toMatchObject({ data: { cancelled: { steps: ['fix'], attempts: [] }, run: { status: 'failed' } } });
     const run = await state(config, runId);
     expect(run.steps).toMatchObject([
       { id: 'fix', status: 'cancelled', attempt: fix.attempt, delivery: { branch: `teamai/${runId}/fix/p1`, head } }, { id: 'review', status: 'skipped' },
@@ -524,7 +525,7 @@ describe('delivering a step', () => {
     await succeed(config, runId, fix, { to: pushWork(root, fix), pr_url: url });
     const read = worktree.fetchMissingCommits;
     vi.spyOn(worktree, 'fetchMissingCommits').mockImplementation(async (dir, options) => {
-      await cancelRun(config, runId);
+      await cancelRun(config, runId, await knownSecrets(config));
       return read(dir, options);
     });
 
@@ -972,7 +973,7 @@ describe('retrying and cancelling a delivery', () => {
     const to = pushOnto(root, docs.workspace?.branch ?? '', { 'docs.txt': 'docs' });
     await succeed(config, runId, docs, { to });
     const settledAt = (await state(config, runId)).steps.find((step) => step.id === 'work.impl');
-    await cancelRun(config, runId, 'work.impl');
+    await cancelRun(config, runId, await knownSecrets(config), 'work.impl');
 
     const recovery = await take(config, runId);
     expect(recovery).toMatchObject({ step: 'work.recover', workspace: { start: { commit: to } } });
@@ -1003,7 +1004,7 @@ describe('retrying and cancelling a delivery', () => {
     await succeed(config, runId, docs, { to });
     expect((await state(config, runId)).copies?.[docs.workspace?.branch ?? '']?.commit).toBe(to);
     gh.configure({});
-    await retryStep(config, runId, 'work.impl');
+    await retryStep(config, runId, await knownSecrets(config), 'work.impl');
 
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: protectedChange ? 'failed' : 'succeeded' } } });
     const run = await state(config, runId);
@@ -1012,7 +1013,7 @@ describe('retrying and cancelling a delivery', () => {
       expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(message) } });
       expect(creates(gh)).toEqual([]);
       expect(run.deliveries).toBeUndefined();
-      await retryStep(config, runId, 'work.impl');
+      await retryStep(config, runId, await knownSecrets(config), 'work.impl');
       expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'delivering', attempt: impl.attempt });
     } else {
       expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'succeeded' });
@@ -1031,19 +1032,19 @@ describe('retrying and cancelling a delivery', () => {
     const branch = docs.workspace?.branch ?? '';
     await succeed(config, runId, docs, { to: pushOnto(root, branch, { '.github/workflows/docs.yml': 'docs' }) });
     gh.configure({});
-    await retryStep(config, runId, 'work.impl');
+    await retryStep(config, runId, await knownSecrets(config), 'work.impl');
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const failure = (await state(config, runId)).steps.find((step) => step.id === 'work.impl');
     expect(failure).toMatchObject({ failure: { code: 'delivery_failed', message: expect.stringContaining(`put branch ${branch} on origin back at ${own}, the commit the step reported, then run: teamai workflow retry ${runId} work.impl`) } });
     expect(failure).toMatchObject({ failure: { message: expect.stringContaining(`run its steps again in a new branch: teamai workflow retry ${runId} work`) } });
 
     if (remedy === 'retries the workflow step') {
-      expect(await retryStep(config, runId, 'work')).toMatchObject({ data: { retried: { step: 'work', pass: 2 } } });
+      expect(await retryStep(config, runId, await knownSecrets(config), 'work')).toMatchObject({ data: { retried: { step: 'work', pass: 2 } } });
       expect(await take(config, runId)).toMatchObject({ step: 'work.impl', workspace: { branch: `teamai/${runId}/work/p2` } });
       return;
     }
     git(root, ['--git-dir=remote.git', 'update-ref', `refs/heads/${branch}`, own]);
-    await retryStep(config, runId, 'work.impl');
+    await retryStep(config, runId, await knownSecrets(config), 'work.impl');
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(creates(gh)).toEqual([[branch, 'main']]);
     expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'succeeded' });
@@ -1140,7 +1141,7 @@ describe('retrying and cancelling a delivery', () => {
     if (change === 'moved') pushOnto(root, branch, { 'later.txt': 'later' });
     else git(root, ['--git-dir=remote.git', 'update-ref', '-d', `refs/heads/${branch}`]);
     gh.configure({});
-    await retryStep(config, runId, 'work.impl');
+    await retryStep(config, runId, await knownSecrets(config), 'work.impl');
 
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const failure = (await state(config, runId)).steps.find((step) => step.id === 'work.impl');
@@ -1251,7 +1252,7 @@ describe('retrying and cancelling a delivery', () => {
     expect(lookup).toHaveBeenCalledTimes(2);
 
     recovered = true;
-    await retryStep(config, runId, 'fix');
+    await retryStep(config, runId, await knownSecrets(config), 'fix');
     expect(await take(config, runId)).toMatchObject({ step: 'review' });
     const run = await state(config, runId);
     expect(run.creating).toBeUndefined();
@@ -1278,7 +1279,7 @@ describe('retrying and cancelling a delivery', () => {
 
     listed = true;
     await leaseNext(config, runId, remote, writable);
-    await retryStep(config, runId, 'fix');
+    await retryStep(config, runId, await knownSecrets(config), 'fix');
     expect(await take(config, runId)).toMatchObject({ step: 'review' });
     const run = await state(config, runId);
     expect(run.creating).toBeUndefined();
@@ -1294,7 +1295,7 @@ describe('retrying and cancelling a delivery', () => {
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
 
     gh.configure({});
-    expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: {} });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'fix')).toMatchObject({ data: {} });
     const retried = (await state(config, runId)).steps[0];
     expect(retried).toMatchObject({ id: 'fix', status: 'delivering', attempt: fix.attempt });
     expect(retried?.pass ?? 1).toBe(1);
@@ -1310,7 +1311,7 @@ describe('retrying and cancelling a delivery', () => {
     await succeed(config, runId, fix, { to: pushWork(root, fix, { '.github/workflows/ci.yml': 'on: push\n' }) });
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
 
-    expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: {} });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'fix')).toMatchObject({ data: {} });
     const again = await take(config, runId);
     expect(again).toMatchObject({ step: 'fix', pass: 2, workspace: { branch: `teamai/${runId}/fix/p2` } });
     expect(again.attempt).not.toBe(fix.attempt);
@@ -1324,7 +1325,7 @@ describe('retrying and cancelling a delivery', () => {
     const to = pushWork(root, fix);
     await succeed(config, runId, fix, { to });
 
-    expect(await cancelRun(config, runId, 'fix')).toMatchObject({ data: { cancelled: { steps: ['fix'] } } });
+    expect(await cancelRun(config, runId, await knownSecrets(config), 'fix')).toMatchObject({ data: { cancelled: { steps: ['fix'] } } });
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'cancelled' });
     expect(git(root, ['--git-dir=remote.git', 'rev-parse', `refs/heads/teamai/${runId}/fix/p1`])).toBe(to);
@@ -1373,7 +1374,7 @@ describe('retrying and cancelling a delivery', () => {
     const fix = await take(config, runId);
     await succeed(config, runId, fix, { to: pushWork(root, fix) });
     const create = providerDouble(async () => {
-      await cancelRun(config, runId);
+      await cancelRun(config, runId, await knownSecrets(config));
       return undefined;
     }, async () => 'https://github.com/fixture/app/pull/1');
 
@@ -1523,7 +1524,7 @@ describe('retrying and cancelling a delivery', () => {
     const url = 'https://github.com/fixture/app/pull/8';
     let opened: string | undefined;
     providerDouble(async () => opened, async () => {
-      await cancelRun(config, runId);
+      await cancelRun(config, runId, await knownSecrets(config));
       opened = url;
       return url;
     });
@@ -1548,7 +1549,7 @@ describe('retrying and cancelling a delivery', () => {
       return answer === 'unsafe' ? 'https://other.example/pull/7' : undefined;
     });
     const create = providerDouble(lookup, async () => {
-      await cancelRun(config, runId);
+      await cancelRun(config, runId, await knownSecrets(config));
       throw new Error('create timed out');
     });
     await leaseNext(config, runId, remote, writable);
@@ -1580,7 +1581,7 @@ describe('retrying and cancelling a delivery', () => {
     let url: string | undefined;
     const lookup = vi.fn(async () => url);
     providerDouble(lookup, async () => {
-      await cancelRun(config, runId);
+      await cancelRun(config, runId, await knownSecrets(config));
       throw new Error('create timed out');
     });
     await leaseNext(config, runId, remote, writable);
@@ -1606,7 +1607,7 @@ describe('retrying and cancelling a delivery', () => {
     await leaseNext(config, runId, remote, writable);
     expect((await state(config, runId)).creating).toEqual([expect.objectContaining({ lookups: { total: 1, none: 1, failed: 0 } })]);
 
-    await retryStep(config, runId, 'fix');
+    await retryStep(config, runId, await knownSecrets(config), 'fix');
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     expect((await state(config, runId)).creating).toEqual([expect.objectContaining({ lookups: { total: 0, none: 0, failed: 0 } })]);
     await leaseNext(config, runId, remote, writable);
@@ -1625,7 +1626,7 @@ describe('retrying and cancelling a delivery', () => {
     let opened = (): void => {};
     const creating = new Promise<void>((resolve) => { opened = resolve; });
     const create = providerDouble(async ({ source, target }) => (source === branch && target === 'main' ? open[0] : undefined), async () => {
-      await cancelRun(config, runId);
+      await cancelRun(config, runId, await knownSecrets(config));
       open.push(url);
       opened();
       // The process stops here: the host opened the request, and the run never hears of it.
@@ -1658,7 +1659,7 @@ describe('retrying and cancelling a delivery', () => {
     const creating = new Promise<void>((resolve) => { opened = resolve; });
     const create = providerDouble(async () => undefined, async () => {
       if (create.mock.calls.length > 1) return 'https://github.com/fixture/app/pull/9';
-      await cancelRun(config, runId);
+      await cancelRun(config, runId, await knownSecrets(config));
       opened();
       // The process stops here, before the host opened anything.
       return new Promise<string>(() => {});
@@ -1689,7 +1690,7 @@ describe('retrying and cancelling a delivery', () => {
     let opened = (): void => {};
     const creating = new Promise<void>((resolve) => { opened = resolve; });
     const create = providerDouble(async ({ source, target }) => (source === branch && target === 'main' ? open[0] : undefined), async () => {
-      await cancelRun(config, runId, 'fix');
+      await cancelRun(config, runId, await knownSecrets(config), 'fix');
       open.push(url);
       opened();
       return new Promise<string>(() => {});
@@ -1697,7 +1698,7 @@ describe('retrying and cancelling a delivery', () => {
     void leaseNext(config, runId, remote, writable);
     await creating;
     fs.rmSync(deliveryLockPath(config, runId), { force: true });
-    expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: { retried: { step: 'fix', pass: 2 } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'fix')).toMatchObject({ data: { retried: { step: 'fix', pass: 2 } } });
 
     expect(await take(config, runId)).toMatchObject({ step: 'fix', pass: 2 });
     expect((await state(config, runId)).deliveries).toEqual([{ url, branch, base: 'main', step: 'fix', pass: 1 }]);
@@ -1715,7 +1716,7 @@ describe('retrying and cancelling a delivery', () => {
       const step = (await state(config, runId)).steps[0];
       if (step?.status === 'failed' && !retried) {
         retried = true;
-        expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: { retried: { step: 'fix', pass: 1 } } });
+        expect(await retryStep(config, runId, await knownSecrets(config), 'fix')).toMatchObject({ data: { retried: { step: 'fix', pass: 1 } } });
         return undefined;
       }
       if (create.mock.calls.length === 1 && !retried) throw new Error('GitHub timed out');

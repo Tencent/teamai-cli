@@ -2,7 +2,8 @@
 
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { DeliveryReceipt, UnresolvedCreate } from './delivery-schema.js';
-import type { ArchivedPass, SessionContinuation, StepState } from './step-state.js';
+import type { ArchivedPass, LimitsFrom, ReleasedTokens, SessionContinuation, StepState, StoppedAttempt } from './step-state.js';
+import type { Requirements, Setup, Unenforced } from './requirements.js';
 import type { LeaseSession } from './workspace.js';
 
 /** The driver's lease ownership, independent of its per-request capabilities. */
@@ -76,11 +77,30 @@ export interface WorkflowStep {
    * Where the step runs. A command that omits it uses the active checkout and is read-only.
    * A prompt that omits it continues an enclosing `new` or `continue` copy, or stays read-only.
    */
-  workspace?: 'read-only' | 'new' | 'continue';
+  workspace?: typeof WORKSPACE_MODES[number];
   /** Opens a review request after the branch's work succeeds. TeamAI never merges it. */
   deliver?: 'pr';
   /** A session this step resumes. `continue` uses this step's previous pass. `from` names another step. */
   session?: { continue: true } | { from: string };
+  /** What the driver that runs this step, or every step of the workflow it runs, must provide. */
+  requires?: Requirements;
+  /** Milliseconds the step's lease, or the workflow or items it runs, may take before the step fails with `timeout`. */
+  timeout?: number;
+  /**
+   * On a workflow step: the tokens its workflow may spend each time the step starts, a loop's next pass or a retry
+   * included. Spending more fails the step with `budget_exceeded`.
+   */
+  budget?: Budget;
+  /** On a prompt step: the most agent turns its tool may take, for a driver that can cap them. */
+  maxTurns?: number;
+}
+
+/**
+ * The input and output tokens a workflow may spend over every pass of its steps, counted from when it starts: the run's
+ * from its start, or from the retry that reopened it, and a workflow step's from each time the step starts.
+ */
+export interface Budget {
+  tokens: number;
 }
 
 /** A `for_each`: the list of items, and how many of them may run at once. */
@@ -113,6 +133,9 @@ export interface StepLoop {
   maxIterations: number;
 }
 
+/** Where a step runs: in the checkout as it is, in a new copy, or in the copy an enclosing step opened. */
+export const WORKSPACE_MODES = ['read-only', 'new', 'continue'] as const;
+
 /** The keys that give a step its action, as YAML writes them, each with the definition field it fills. */
 export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
 
@@ -140,6 +163,8 @@ export interface WorkflowDefaults {
   model?: string;
   /** Whether a step's scorers share one judge call when the step does not say. */
   scorers?: { batch: boolean };
+  /** Requirements as if written on every step of the file. */
+  requires?: Requirements;
 }
 
 /** `scorers: [a, b]`, or `scorers: { names: [a, b], batch: true }`. Each name is a file in `scorers/`. */
@@ -161,6 +186,11 @@ export interface WorkflowDefinition {
   /** Runs the workflow's steps again, round after round. */
   loop?: WorkflowLoop;
   defaults?: WorkflowDefaults;
+  /** Milliseconds a run of this file may take, counted from its start, or from the step that runs it. */
+  timeout?: number;
+  budget?: Budget;
+  /** Runs in each workspace a driver creates for a step of this file, or of a workflow it runs that has no setup. */
+  setup?: Setup;
   steps: WorkflowStep[];
 }
 
@@ -201,6 +231,10 @@ export interface StepLease {
   driver: DriverIdentity;
   /** The session the lease offers the step: the report may name it, or one it continued, as `resumed`. */
   session?: LeaseSession;
+  /** The best-effort requirements the driver could not enforce, decided when the lease was issued; a hand-back only adds. */
+  unenforced?: Unenforced[];
+  /** When the step's own `timeout` ends this lease, set when it is issued so a hand-back keeps it. */
+  expiresAt?: string;
 }
 
 export interface WorkflowFailure {
@@ -246,6 +280,10 @@ export interface RunState {
   cancelledAttempts?: string[];
   /** Passes of child and item instances a loop removed from `steps`. */
   archive?: ArchivedPass[];
+  /** The tokens of attempts their driver released, or reported after the engine stopped them, which no pass keeps. */
+  releasedTokens?: ReleasedTokens[];
+  /** Attempts the engine stopped whose driver has not reported their tokens yet. Local run state only. */
+  stoppedAttempts?: StoppedAttempt[];
   /** The round of a looping top-level workflow. */
   round?: number;
   /**
@@ -259,8 +297,11 @@ export interface RunState {
    * Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. A copy a
    * claim brought from another machine has no owner until a driver leases it. `from` is the run branch the copy started
    * from, `after` items before other needs, so a pull request from it targets the nearest delivered branch it grew from.
+   * `used` is set once a step ran in the copy: a report on a lease of it was accepted, neither `released` nor a setup
+   * failure. Only a lease on an unused copy carries setup, and only an unused copy's owner gives it up when it hands its
+   * lease back. `used` is local run state only.
    */
-  copies?: Record<string, { owner?: DriverIdentity; commit?: string; from?: string }>;
+  copies?: Record<string, { owner?: DriverIdentity; commit?: string; from?: string; used?: true }>;
   /**
    * The pull requests delivered on this run, once each, in the order they first appeared. Append-only: a receipt says a
    * request was opened, never that it is still open, so whether a delivery reuses one is its host's lookup to say.
@@ -279,6 +320,11 @@ export interface RunState {
   /** How this machine last published the run, or took it from another machine. Local run state only. */
   publication?: RunPublication;
   createdAt: string;
+  /**
+   * Where the workflow's `timeout` and `budget` count from once a retry reopened the run, so the reopened run gets a whole
+   * window and a whole budget. Absent, they count from `createdAt`, with nothing spent.
+   */
+  limitsFrom?: LimitsFrom;
   updatedAt: string;
 }
 

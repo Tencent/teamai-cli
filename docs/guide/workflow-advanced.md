@@ -35,8 +35,8 @@ Each call to `next` does this, in order:
 
 1. It settles the run. If the run has ended, it answers `done`.
 2. It hands back an open lease of this driver that `running` leaves out. A restarted driver sends `"running":[]` and gets its open leases back, one per call.
-3. It leases the first ready step in file order. The steps of a sub-workflow take the place of the step that runs it. A step that needs a workspace mode `driver.can.workspace` does not list, or a workspace another driver opened, is held back, and the next ready step is leased.
-4. When every ready step is leased, it answers `wait`, and `reason` names the first open lease. When every ready step is held back, `reason` names each one, separated by `; `.
+3. It leases the first ready step in file order. The steps of a sub-workflow take the place of the step that runs it. A step that needs a workspace mode `driver.can.workspace` does not list, something else `driver.can` does not declare (see [Requirements and limits](#requirements-and-limits)), or a workspace another driver opened, is held back, and the next ready step is leased.
+4. When every ready step is leased, it answers `wait`, and `reason` names the first open lease. When every ready step is held back, `reason` names each one, separated by `; `, and `held` lists them as `{ step, reason, missing }`. `missing` names what the driver lacks, such as `hitl` or `workspace.new`, and is empty when another driver holds the workspace.
 
 A driver that sends no `running` gets its open lease back on every call, so it runs one step at a time.
 
@@ -578,6 +578,79 @@ steps:
 Pass the whole list, as `explain` does in `fan-build`, when the prompt needs every entry.
 
 
+## Requirements and limits
+
+A step says what it needs in `requires`. `defaults.requires` in a workflow file applies to each step in it. A step's own keys replace those, and `env` lists add up. The workflow file can also set `setup`, `timeout`, and `budget`, and a prompt step can set `max_turns`.
+
+```yaml
+schemaVersion: v1alpha1
+name: release
+description: Build the package, then review it.
+timeout: 1h
+budget: { tokens: 200000 }
+setup:
+  command: npm ci
+  requires: { env: [NPM_TOKEN] }
+defaults:
+  requires: { network: false }
+steps:
+  - id: build
+    workspace: new
+    timeout: 10m
+    requires: { env: [SIGNING_KEY] }
+    command: npm run build
+  - id: review
+    needs: [build]
+    prompt: Review the build.
+    max_turns: 5
+```
+
+| Key | What it does | A driver that cannot do it |
+|---|---|---|
+| `requires.env` | Gives the step these [team env](sharing.md#env-environment-variables) keys. Every other team env key, and every key another step of the run requires, is kept from it. Only key names enter the run. A key with no value on this machine fails the step `missing_env` before it runs, with the `teamai env set` command to run. A step `env:` entry that names a team secret or a required key fails `env_conflict`. | The step waits. |
+| `requires.network` | `false` asks that the step get no network. | The step runs, and its `unenforced` lists `network`. The local driver cannot deny the network. |
+| `requires.isolation` | `none`, `worktree`, or `sandbox`. A step with a workspace has at least `worktree`. | The step runs, and its `unenforced` lists `isolation`. |
+| `setup` | The driver runs `command` in each workspace it creates, before the step. Setup gets its `requires.env` keys; a step gets them only if it requires them too. Setup fails the step without running it, and the workspace is removed, when it exits non-zero (`setup_failed`), changes a file git would commit (`setup_dirty`), or leaves the value of one of its keys in a file it wrote, ignored files included (`setup_secret`). The step's `timeout` bounds setup. | Steps with a workspace wait. |
+| `timeout` | `500ms`, `30s`, `10m`, or `2h`, on a step or the workflow file. A step past it is stopped and ends with outcome `timeout`. On a workflow step, it stops every step inside. On the workflow file, the run ends `failed` with `timeout`. A retry starts the timeout again. | Not a capability. Every driver gets `expiresAt` on the lease. |
+| `budget` | `{ tokens: N }` on the workflow file or a workflow step. Input and output tokens of every step under it count from when it starts: the run's from its start, a workflow step's from each time it starts, such as a loop's next pass. A retry starts the budget again. Once they pass `N`, its open steps stop and it fails `budget_exceeded`. | A headless prompt under a budget waits. Its success report without tokens fails `budget_unmeasured`. An interactive prompt runs, since a person drives it; when its report has no tokens, its `unenforced` lists `budget`. |
+| `max_turns` | Caps the agent turns of a prompt step. The local driver passes it to headless Claude only. | The step runs, and its `unenforced` lists `max_turns`. |
+
+`unenforced` is on the lease, the step, and the run record. Each `interactive: true` step also needs a driver with HITL, as [HITL](#hitl-human-in-the-loop) describes.
+
+A member can set what any driver may use on their machine, beside `max_parallel` in local config:
+
+```yaml
+workflows:
+  max_parallel: 4
+  sandbox: true
+  allow:
+    network: false
+    env: [NPM_TOKEN]
+```
+
+- `allow.network: false` holds each step that requires `network: true`. `allow.env` holds each step whose `requires.env`, or whose setup's, names a key it does not list. `wait.held[].missing` names `policy.network` or `policy.env`.
+- `sandbox: true` says this host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation.
+- `max_parallel` also caps how many leases of one run every driver on this machine holds at once.
+
+`allow.network` filters declared step requests. Setup declares only environment keys in v1 and receives no network restriction from that setting. To guarantee that setup and steps cannot reach the network, use a driver and host that enforce it for every process.
+
+The value of each key declared in `env/secrets.yaml`, including one this machine takes from the environment as a CI job does, and of each environment variable whose name looks like a secret, is masked as `<REDACTED:KEY>` in the run file, the run records, every `teamai workflow` output, and the `result.json` the local driver keeps for each attempt. `start` refuses inputs that hold one with `invalid_inputs`, naming the key and never the value. To mask a value whose name does not look secret, such as `DATABASE_URL`, declare its key in `env/secrets.yaml`.
+
+A driver other than `local` declares what it can do in `driver.can` on each `next`:
+
+| `driver.can` key | The driver |
+|---|---|
+| `hitl` | Lets a person answer HITL requests and work in interactive steps. |
+| `workspace` | Takes leases in these workspace modes: `read-only`, `new`, `continue`. |
+| `env` | Resolves `lease.envScope.provide` itself, removes `lease.envScope.withhold`, and keeps the values from what runs the step. A driver whose agent runs the step leaves it out. |
+| `setup` | Runs `lease.setup.command`, with `lease.setup.envScope`, in each workspace it creates and in one whose setup never finished, and fails the step with the codes above. Every lease with a workspace carries `setup` when the workflow declares it. |
+| `tokens` | Reports the tokens of every successful headless prompt step. |
+| `max_turns` | Passes `lease.maxTurns` to the tools it can cap, and reports `"unenforced":["max_turns"]` for the others. |
+| `network` | Can deny a step the network. |
+| `isolation` | Keeps every step at this level: `none`, `worktree`, or `sandbox`. |
+
+An omitted key means the driver cannot. `next` lists any other key in `ignored`.
+
 ## HITL (human in the loop)
 
 HITL covers `approve`, `choose`, and `interactive` steps where a person takes part.
@@ -619,7 +692,7 @@ teamai workflow resume <run>
 
 Drivers other than `local` use the same HITL contract. Send `driver.can.hitl` on every `next` request, including busy polls. Set it to `true` when a person can answer HITL requests and work in interactive steps. When no lease is ready, `next` returns `hitl` with `run`, `step`, `pass`, `kind`, rendered `message`, `options`, optional `default`, and `required`, plus a `respond` command template. Show `hitl.message` and `hitl.respond` to that person, who runs `teamai workflow respond` with `<option>` replaced by a choice. The template quotes fan-out step paths such as `'items[0].ask'`; keep those quotes. The `cli` channel can answer optional HITL requests only. A driver with its own UI can submit a person's answer, including a required approval, with `respond --json '{"driver":{"kind":"ide","machine":"host","workspace":"/work"}}'`; this records channel `driver`, `agent: false`, and the driver identity locally. The driver declares that a person answered in its UI and must never send an answer its agent chose; like the TTY convention, this is a declaration, not protection.
 
-A ready lease wins over a HITL request. While a tool runs, poll `next` with its attempt id in `running` and `canTakeLease: false`, show any HITL request, and stop tools whose attempt ids appear in `cancelled`. Only a driver with HITL may take `interactive` leases; a driver without HITL fails them with `hitl_required`.
+A ready lease wins over a HITL request. While a tool runs, poll `next` with its attempt id in `running` and `canTakeLease: false`, show any HITL request, and stop tools whose attempt ids appear in `cancelled`. Only a driver with HITL may take `interactive` leases; an interactive step waits for one.
 
 Without that capability, a `next` request that can take a lease applies this table. Busy polls leave waiting HITL requests unanswered and return `wait` when the driver has no HITL capability.
 
@@ -632,7 +705,7 @@ Without that capability, a `next` request that can take a lease applies this tab
 
 Every decision without HITL and `hitl_required` failure logs a warning to stderr. Set `workflows.auto_approve` beside `workflows.max_parallel` in local config, or pass `--auto-approve` to `start --driver local` or `resume` for that process only. JSON `next` cannot set this override. The local driver declares HITL only when stdin and stderr are TTYs. It asks on stderr, accepts a choice followed by an optional note, and keeps polling while the question is open. An answer from elsewhere or a cancellation closes that question. Questions wait while an interactive tool owns the terminal.
 
-`interactive: true` needs `prompt` or `prompt_file`. A driver without HITL fails it with `hitl_required`. The local driver opens the tool here in the workspace with inherited stdio and the prompt as its first message. Repository edits by the person are kept, and the step succeeds. An interactive step that sets `workspace: read-only` is checked like a command: a checkout change fails `read_only_dirty` and the edits stay. Inside a workspace an enclosing step opened, they are kept on `refs/teamai/kept/<attempt>` and removed from the workspace. An interactive step in its own workspace can still change that workspace. Headless prompts remain read-only. Terminal Ctrl-C and Ctrl-\ go to the interactive tool; SIGTERM and SIGHUP stop it and the driver. A result file is optional when the interactive tool exits successfully without outputs. The driver polls every two seconds during prompts and stops a cancelled tool.
+`interactive: true` needs `prompt` or `prompt_file`. The step waits for a driver with HITL. Without a terminal, `--driver local` stops with `busy` and a reason that names `hitl`; run `resume` from a terminal. The local driver opens the tool here in the workspace with inherited stdio and the prompt as its first message. Repository edits by the person are kept, and the step succeeds. An interactive step that sets `workspace: read-only` is checked like a command: a checkout change fails `read_only_dirty` and the edits stay. Inside a workspace an enclosing step opened, they are kept on `refs/teamai/kept/<attempt>` and removed from the workspace. An interactive step in its own workspace can still change that workspace. Headless prompts remain read-only. Terminal Ctrl-C and Ctrl-\ go to the interactive tool; SIGTERM and SIGHUP stop it and the driver. A result file is optional when the interactive tool exits successfully without outputs. The driver polls every two seconds during prompts and stops a cancelled tool.
 
 ## Retry, cancel, and resume
 

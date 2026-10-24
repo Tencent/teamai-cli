@@ -19,13 +19,15 @@ import { loadTeamConfig } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { getDataHome, isUsageReportEnabled } from '../types.js';
 import { log } from '../utils/logger.js';
+import { redactJson } from '../utils/redact.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { isLaunchTool } from '../tool-launch/tools.js';
 import { stepDefinitions } from './scope.js';
 import { snapshotPath } from './snapshot.js';
 import { installOwner, runLockPath } from './store.js';
-import { settled, VISIBLE_OUTCOMES, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
+import { settled, visibleOutcome, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
+import { LIMIT_FAILURES, type Unenforced } from './requirements.js';
 import type { DriverIdentity, RunState, RunStatus, WorkflowFailure } from './types.js';
 
 /**
@@ -37,6 +39,7 @@ const RECORDED_FAILURES = [
   'loop_exhausted', 'invalid_output', 'invalid_template', 'invalid_inputs', 'invalid_items', 'item_cycle',
   'tool_failed', 'tool_unavailable', 'agent_unavailable', 'model_unavailable', 'read_only_dirty', 'tool_unconfigured', 'tool_unsupported',
   'merge_conflict', 'base_config', 'push_failed', 'workspace_base', 'bad_session',
+  ...LIMIT_FAILURES,
   'delivery_failed', 'protected_path',
 ] as const;
 type RecordedFailure = (typeof RECORDED_FAILURES)[number];
@@ -89,6 +92,8 @@ export type WorkflowRunRecord = {
     tokens?: TokenUsage;
     /** Answer provenance only; free-text notes and answer times stay local. */
     answer?: Pick<NonNullable<StepPass['answer']>, 'choice' | 'channel' | 'agent'>;
+    /** The best-effort requirements the pass's driver could not enforce. */
+    unenforced?: Unenforced[];
   }>;
   /**
    * Counts of the step instances the run ended with, by status. A step a loop
@@ -109,7 +114,7 @@ export type CurrentWorkflowRunRecord = WorkflowRunRecord & { sourceHash: string 
 type StepEntry = NonNullable<WorkflowRunRecord['steps']>[number];
 
 /** What one pass of a step reported. */
-type Reported = Pick<StepPass, 'outcome' | 'tool' | 'model' | 'tokens' | 'agent' | 'answer'>;
+type Reported = Pick<StepPass, 'outcome' | 'tool' | 'model' | 'tokens' | 'agent' | 'answer' | 'unenforced'>;
 
 /** The directory on the reports branch that holds every run record. */
 export const RECORDS_DIR = 'workflows/runs';
@@ -200,6 +205,7 @@ export function buildEndRecord(
       ...(reported?.model && isNameShaped(reported.model) ? { model: reported.model } : {}),
       ...(outcome ? { outcome } : {}),
       ...(reported?.tokens ? { tokens: reported.tokens } : {}),
+      ...(reported?.unenforced ? { unenforced: reported.unenforced } : {}),
     };
   };
   // A loop keeps a step's earlier passes in `passes`, and the passes of the
@@ -208,7 +214,7 @@ export function buildEndRecord(
   const steps = [
     ...run.steps.flatMap((step) => [
       ...(step.passes ?? []).map((earlier) => entry(step.id, earlier.pass, earlier)),
-      entry(step.id, step.pass, settled(step) ? { ...step, outcome: VISIBLE_OUTCOMES[step.status] } : undefined),
+      entry(step.id, step.pass, settled(step) ? { ...step, outcome: visibleOutcome(step) } : undefined),
     ]),
     ...(run.archive ?? []).map((archived) => entry(archived.step, archived.pass, archived)),
   ];
@@ -276,6 +282,7 @@ export async function queueRunRecord(
   run: RunState,
   driver: DriverIdentity | undefined,
   phase: 'start' | 'end',
+  secrets: Record<string, string>,
 ): Promise<boolean> {
   try {
     if (!await isRecordingEnabled(config)) return false;
@@ -283,7 +290,7 @@ export async function queueRunRecord(
     const record = phase === 'start'
       ? buildStartRecord(run, driver, username)
       : buildEndRecord(run, driver, username);
-    await enqueueRecord(config, record);
+    await enqueueRecord(config, record, secrets);
     return true;
   } catch (error) {
     log.warn(`[workflows] Could not queue the ${phase} record of run ${run.id}, so the team report will not include it: ${error instanceof Error ? error.message : String(error)}`);
@@ -333,12 +340,12 @@ function pendingPath(config: LocalConfig, record: WorkflowRunRecord): string {
 }
 
 /** Queue a record for (re)publication; the write is atomic per file. */
-export async function enqueueRecord(config: LocalConfig, record: CurrentWorkflowRunRecord): Promise<void> {
+export async function enqueueRecord(config: LocalConfig, record: CurrentWorkflowRunRecord, secrets: Record<string, string>): Promise<void> {
   const dir = pendingDir(config);
   await fs.mkdir(dir, { recursive: true });
   const target = pendingPath(config, record);
   const tmp = `${target}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(record, null, 2)}\n`, 'utf-8');
+  await fs.writeFile(tmp, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`, 'utf-8');
   await fs.rename(tmp, target);
 }
 

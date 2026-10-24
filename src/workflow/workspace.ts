@@ -6,9 +6,9 @@ import { itemsAfter, itemsOf } from './fan-out.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
 import { passOf, type Delivery, type StepState } from './step-state.js';
-import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowFailure, WorkflowStep } from './types.js';
+import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowFailure, WorkflowStep, WORKSPACE_MODES } from './types.js';
 
-export type WorkspaceMode = 'read-only' | 'new' | 'continue';
+export type WorkspaceMode = typeof WORKSPACE_MODES[number];
 
 /** What a driver reports for a step that ran in a change branch. */
 export interface StepChanges {
@@ -48,8 +48,11 @@ export interface WorkspacePlan {
   mode: WorkspaceMode;
   contract?: WorkspaceContract;
   session?: LeaseSession;
-  /** The step stays pending. `next` does not hand it to this driver. */
-  defer?: string;
+  /**
+   * The step stays pending. `next` does not hand it to this driver: it lacks the workspace mode `needs`, or, without
+   * `needs`, another driver owns the copy.
+   */
+  defer?: { reason: string; needs?: WorkspaceMode };
   fail?: WorkflowFailure;
 }
 
@@ -421,7 +424,7 @@ export function planWorkspace(
     const needed = heads.length === 1 ? heads[0] : undefined;
     const branch = needed?.branch ?? branchName(run.id, owner.instance, owner.pass);
     if (!handback && !modes.includes('continue')) {
-      return { mode, defer: `step "${state.id}" reads workspace ${branch}, which needs continue` };
+      return { mode, defer: { reason: `step "${state.id}" reads workspace ${branch}, which needs continue`, needs: 'continue' } };
     }
     const base = run.base ?? request.base;
     if (!base) {
@@ -429,13 +432,13 @@ export function planWorkspace(
     }
     const copy = run.copies?.[branch];
     if (!handback && copy?.owner && !sameDriver(copy.owner, request.driver)) {
-      return { mode, defer: `step "${state.id}" reads a workspace owned by another driver` };
+      return { mode, defer: { reason: `step "${state.id}" reads a workspace owned by another driver` } };
     }
     const start = { commit: copy?.commit ?? needed?.commit ?? base.commit };
     return { mode, ...session, contract: { mode, base, configCommit: base.commit, branch, start, merge: [] } };
   }
   if (!handback && !modes.includes(mode)) {
-    return { mode, defer: `step "${state.id}" needs workspace ${mode}, which this driver does not provide` };
+    return { mode, defer: { reason: `step "${state.id}" needs workspace ${mode}, which this driver does not provide`, needs: mode } };
   }
   const base = run.base ?? request.base;
   if (!base) {
@@ -449,7 +452,7 @@ export function planWorkspace(
   }
   const copy = run.copies?.[branch];
   if (!handback && copy?.owner && !sameDriver(copy.owner, request.driver)) {
-    return { mode, defer: `step "${state.id}" continues a workspace owned by another driver` };
+    return { mode, defer: { reason: `step "${state.id}" continues a workspace owned by another driver` } };
   }
   const changes = mergeChanges(run, scope, state, definition);
   const [first, ...rest] = mode === 'new' ? changes : [];

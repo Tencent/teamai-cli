@@ -6,9 +6,10 @@ import { branchNames, type ExpressionStep } from './expression.js';
 import { isItem } from './fan-out.js';
 import { passesOf, previousPass, stepLoops, type StepLoops } from './loop.js';
 import { parseStepPath } from './step-path.js';
-import { settled, VISIBLE_OUTCOMES, type StepState } from './step-state.js';
+import { settled, visibleOutcome, type StepState } from './step-state.js';
 import type { TemplateContext } from './template.js';
-import type { InlineWorkflow, RunState, WorkflowDefinition, WorkflowStep } from './types.js';
+import type { Budget, InlineWorkflow, RunState, WorkflowDefinition, WorkflowStep } from './types.js';
+import { mergeRequirements, type Requirements, type Setup } from './requirements.js';
 
 /** A workflow inside a run: the top-level one, or the sub-workflow a step runs. */
 export interface Scope {
@@ -25,12 +26,36 @@ export interface Scope {
   item?: unknown;
   /** The `defaults.model` in effect: the workflow file's own, else the enclosing scope's. */
   defaultModel?: string;
+  /** The requirements every step here has: the enclosing scope's, the workflow step's own, then the file's `defaults.requires`. */
+  requires: Requirements;
+  /** The tokens this workflow may spend: the file's budget, or the workflow step's when that is smaller. */
+  budget?: number;
+  /** Whether this workflow or one around it has a budget. */
+  budgeted: boolean;
+  /** The `setup` in effect: the workflow file's own, else the enclosing scope's. */
+  setup?: Setup;
 }
 
 export function topScope(run: RunState): Scope {
   return {
     prefix: '', definition: run.definition, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
+    requires: mergeRequirements(run.definition.defaults?.requires),
+    ...budgetOf(false, run.definition.budget), ...setupOf(run.definition.setup),
   };
+}
+
+function setupOf(setup: Setup | undefined): Pick<Scope, 'setup'> {
+  return setup ? { setup } : {};
+}
+
+/** A workflow step's budget, which a `for_each` step spends over all its items instead of giving each item its own. */
+function ownBudget(step: WorkflowStep): Budget | undefined {
+  return step.forEach ? undefined : step.budget;
+}
+
+function budgetOf(outer: boolean, ...budgets: ReadonlyArray<Budget | undefined>): Pick<Scope, 'budget' | 'budgeted'> {
+  const limits = budgets.flatMap((budget) => (budget ? [budget.tokens] : []));
+  return limits.length > 0 ? { budget: Math.min(...limits), budgeted: true } : { budgeted: outer };
 }
 
 /**
@@ -42,12 +67,16 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
     return {
       prefix: `${state.id}.`, definition: step.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
       loops: stepLoops(step.workflow.steps), runner: state, ...itemOf(scope, state), defaultModel: scope.defaultModel,
+      requires: mergeRequirements(scope.requires, step.requires),
+      ...budgetOf(scope.budgeted || step.budget !== undefined, ownBudget(step)), ...setupOf(scope.setup),
     };
   }
   const definition = step.workflow === undefined ? undefined : run.workflows?.[step.workflow];
   return definition && {
     prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
     defaultModel: definition.defaults?.model ?? scope.defaultModel,
+    requires: mergeRequirements(scope.requires, step.requires, definition.defaults?.requires),
+    ...budgetOf(scope.budgeted || step.budget !== undefined, ownBudget(step), definition.budget), ...setupOf(definition.setup ?? scope.setup),
   };
 }
 
@@ -136,7 +165,7 @@ export function contextOf(scope: Scope, states: StepState[], reader?: StepState)
 function expressionSteps(scope: Scope, states: StepState[], reader?: StepState): Record<string, ExpressionStep> {
   const previous = reader ? scope.loops.previous(localId(scope, reader)) : new Set<string>();
   return { ...scope.outer, ...Object.fromEntries(states.map((step) => [localId(scope, step), previous.has(localId(scope, step)) ? previousPass(step) : {
-    ...(settled(step) ? { outcome: VISIBLE_OUTCOMES[step.status] } : {}),
+    ...(settled(step) ? { outcome: visibleOutcome(step) } : {}),
     ...('end' in step && step.end !== undefined ? { end: step.end } : {}),
     ...('outputs' in step && step.outputs !== undefined ? { outputs: step.outputs } : {}),
     ...('results' in step && step.results !== undefined ? { results: step.results } : {}),

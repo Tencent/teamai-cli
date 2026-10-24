@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { redact, collectEnvSecrets, redactWithEnv } from '../utils/redact.js';
+import { redact, redactJson, collectEnvSecrets, redactWithEnv } from '../utils/redact.js';
 
 describe('redact', () => {
   it('returns empty and non-secret text unchanged', () => {
@@ -310,5 +310,14 @@ describe('redactWithEnv on a fixed env', () => {
     expect(redactWithEnv('nextPageToken: CjQKEgoQbG9yZW0taXBzdW0tZG9sb3I', env)).toBe(
       'nextPageToken: <REDACTED:kv>',
     );
+  });
+});
+
+describe('redactJson', () => {
+  it('masks secrets in nested object keys and values', () => {
+    const secret = 'known-private-value-1082';
+    const value = { items: [{ [secret]: { value: secret } }] };
+    expect(redactJson(value, { VALUE: secret })).toEqual({ items: [{ '<REDACTED:VALUE>': { value: '<REDACTED:VALUE>' } }] });
+    expect(JSON.stringify(redactJson(value, { VALUE: secret }))).not.toContain(secret);
   });
 });

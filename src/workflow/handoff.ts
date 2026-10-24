@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { collectTeamSecrets } from '../env-resolution.js';
+import { knownSecrets } from '../env-resolution.js';
 import { pinScorers } from '../scorers/cache.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { archiveSessions, type ArchiveSessionRef } from '../session-flow/archive.js';
 import { usesBranchWorktree, type LocalConfig } from '../types.js';
 import { canonicalJson } from '../utils/canonical-json.js';
-import { collectEnvSecrets, sanitizeGitUrl } from '../utils/redact.js';
+import { sanitizeGitUrl } from '../utils/redact.js';
 import { fetchReportsOriginFile, updateReports, type ReportsChange } from '../utils/reports-branch.js';
 import { loadWorkflowBundle, loadWorkflowBundleAt, type WorkflowBundle } from './cache.js';
 import { pendingRecords, publishPendingRecords, type RecordDelivery } from './records.js';
@@ -202,7 +202,7 @@ export async function publishRun(
   const stored = await readRun(config, runId);
   if (stored === 'missing') return refused({ code: 'run_not_found', message: `Run ${runId} was not found` });
   if (stored === 'corrupt') return refused(runUnreadable(runId));
-  const secrets = { ...collectEnvSecrets(env), ...await collectTeamSecrets(config, env) };
+  const secrets = await knownSecrets(config, env);
   const projected = projectRun(stored, secrets);
   if (!projected.ok) return projected;
   const checked = checkedOutsideLocks(stored, options.sessions);
@@ -245,18 +245,18 @@ export async function publishRun(
     // The commit may still have landed, or may land with the next reports write: origin decides.
     const origin = await readPublished(config, runId);
     if (origin.ok && origin.value !== 'absent' && origin.value.write === written.write) {
-      return acknowledge(config, runId, written, sessions);
+      return acknowledge(config, runId, written, secrets, sessions);
     }
     if (origin.ok && origin.value !== 'absent' && origin.value.owner.id !== owner.id) return refused(notOwner(runId, origin.value));
     if (!origin.ok && origin.error.code === 'reports_unreachable') return refused(origin.error);
     return refused(writeFailed(runId, result));
   }
-  return acknowledge(config, runId, written, sessions);
+  return acknowledge(config, runId, written, secrets, sessions);
 }
 
 /** Decides a publish under the run lock, refusing while a record of the run waits to reach teamai-reports. */
 async function decideLocked(config: LocalConfig, runId: string, against: PublishAgainst): Promise<Result<PublishVerdict>> {
-  const locked = await updateRun(config, runId, async (local): Promise<{ value: Result<PublishVerdict>; write?: RunState }> => {
+  const locked = await updateRun(config, runId, against.secrets, async (local): Promise<{ value: Result<PublishVerdict>; write?: RunState }> => {
     if (local === 'missing') return { value: refused({ code: 'run_not_found', message: `Run ${runId} was not found` }) };
     // A run's end record is queued under this lock, so none can arrive between this check and the snapshot.
     if ((await pendingRecords(config)).some((record) => record.run === runId)) {
@@ -497,8 +497,14 @@ function header(runId: string, owner: HandoffOwner, ownedAt: string, stateRevisi
 }
 
 /** Records that origin holds `snapshot`, which this machine wrote, unless the run has since recorded another write. */
-async function acknowledge(config: LocalConfig, runId: string, snapshot: RunSnapshot, sessions?: SessionShare): Promise<Result<PublishReceipt>> {
-  await updateRun(config, runId, async (local) => {
+async function acknowledge(
+  config: LocalConfig,
+  runId: string,
+  snapshot: RunSnapshot,
+  secrets: Record<string, string>,
+  sessions?: SessionShare,
+): Promise<Result<PublishReceipt>> {
+  await updateRun(config, runId, secrets, async (local) => {
     if (local === 'missing' || local.publication?.pending !== snapshot.write) return { value: undefined };
     return { value: undefined, write: published(local, { stateRevision: snapshot.stateRevision }) };
   });
@@ -569,18 +575,19 @@ async function acquire(
 ): Promise<Result<ClaimReceipt>> {
   if (!origin.ok) return origin;
   const owner = await installOwner(config);
+  const secrets = await knownSecrets(config);
   // Decided outside the reports lock: rebuilding definitions and checking the business origin can take a while.
   const decided = await decideClaim(config, runId, origin.value, owner, { transfer, checkout });
   if (!decided.ok) return decided;
   const verdict = decided.value;
   switch (verdict.kind) {
     case 'owned':
-      return settleOwned(config, runId, checkout, owner, verdict.snapshot);
+      return settleOwned(config, runId, checkout, owner, verdict.snapshot, secrets);
     case 'claimed': {
       const landed = await replaceSnapshot(config, runId, verdict.replaces, verdict.snapshot);
       // Origin took no claim this machine can prove, so nothing local changes; claiming again finds out.
       if (!landed.ok) return landed;
-      return install(config, runId, checkout, verdict.snapshot, verdict.definitions, verdict.handed);
+      return install(config, runId, checkout, verdict.snapshot, verdict.definitions, verdict.handed, secrets);
     }
     default: {
       const unhandled: never = verdict;
@@ -717,8 +724,15 @@ async function definitionsOf(config: LocalConfig, snapshot: RunSnapshot): Promis
  * Origin shows this install as the owner. A local run at that state revision, or whose pending write origin shows,
  * keeps its progress; a missing or older one is replaced by the published state.
  */
-async function settleOwned(config: LocalConfig, runId: string, checkout: string, owner: HandoffOwner, snapshot: RunSnapshot): Promise<Result<ClaimReceipt>> {
-  const kept = await updateRun(config, runId, async (local): Promise<{ value: Result<boolean>; write?: RunState }> => {
+async function settleOwned(
+  config: LocalConfig,
+  runId: string,
+  checkout: string,
+  owner: HandoffOwner,
+  snapshot: RunSnapshot,
+  secrets: Record<string, string>,
+): Promise<Result<ClaimReceipt>> {
+  const kept = await updateRun(config, runId, secrets, async (local): Promise<{ value: Result<boolean>; write?: RunState }> => {
     if (local === 'missing') return { value: ok(false) };
     if (local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };
     const seen = acknowledged(local, snapshot);
@@ -733,7 +747,7 @@ async function settleOwned(config: LocalConfig, runId: string, checkout: string,
   if (kept.value.value) return ok({ run: runId, ownership: 'already_owned', owner, stateRevision: snapshot.stateRevision });
   const definitions = await definitionsOf(config, snapshot);
   if (!definitions.ok) return definitions;
-  return install(config, runId, checkout, snapshot, definitions.value, handedOver(snapshot, definitions.value));
+  return install(config, runId, checkout, snapshot, definitions.value, handedOver(snapshot, definitions.value), secrets);
 }
 
 async function install(
@@ -743,6 +757,7 @@ async function install(
   snapshot: RunSnapshot,
   definitions: Definitions,
   handed: Handover,
+  secrets: Record<string, string>,
 ): Promise<Result<ClaimReceipt>> {
   // Every published field comes from the body as it is; only what the snapshot rewrites or leaves out is rebuilt here.
   const { definitionHash: _hash, copies: _copies, steps: _steps, scorers: published, ...body } = snapshotBody(snapshot);
@@ -764,7 +779,7 @@ async function install(
       ...(Object.values(handed.copies).some((copy) => copy.commit !== undefined) ? { reconcileCopies: true } : {}),
     },
   };
-  const installed = await updateRun(config, runId, async (local) => {
+  const installed = await updateRun(config, runId, secrets, async (local) => {
     if (local !== 'missing' && local.createdAt !== snapshot.createdAt) return { value: refused(mismatch(runId, local, snapshot)) };
     return { value: ok(undefined), write: run };
   });

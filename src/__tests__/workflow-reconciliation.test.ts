@@ -9,6 +9,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity } from '../workflow/types.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -322,7 +323,7 @@ steps:
 
 async function replay(config: LocalConfig, key: string, seed: number, between: boolean): Promise<unknown[]> {
   const scenario = scenarios[key]!;
-  const started = await startRun(config, scenario.name);
+  const started = await startRun(config, scenario.name, {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   const runId = String(started.data.run);
   const nextRandom = random(seed);

@@ -36,6 +36,23 @@ it('gives an attached child five seconds before SIGKILL and waits for its exit',
   await stopping;
 });
 
+it('finishes promptly when a signalled group disappears shortly after the shell exits', async () => {
+  vi.useFakeTimers();
+  const child = new ChildProcess();
+  Object.defineProperty(child, 'pid', { value: 2147483647 });
+  let probes = 0;
+  vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+    if (signal === 0 && ++probes > 1) throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+    return true;
+  });
+  let ended = false;
+  const stopping = stopProcess(child, Promise.resolve('closed'), true)().then(() => { ended = true; });
+  try {
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ended).toBe(true);
+  } finally { await vi.runAllTimersAsync(); await stopping; }
+});
+
 it('stops a detached group that outlives its child', async () => {
   vi.useFakeTimers();
   const child = new ChildProcess();
@@ -44,7 +61,8 @@ it('stops a detached group that outlives its child', async () => {
   const stopping = stopProcess(child, Promise.resolve('closed'), true)();
   await vi.advanceTimersByTimeAsync(5000);
   expect(await stopping).toBe('closed');
-  expect(kill.mock.calls).toEqual([[-2147483647, 'SIGTERM'], [-2147483647, 0], [-2147483647, 'SIGKILL']]);
+  expect(kill.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([[-2147483647, 'SIGTERM'], [-2147483647, 'SIGKILL']]);
+  expect(kill).toHaveBeenCalledWith(-2147483647, 0);
 });
 
 it.skipIf(process.platform === 'win32')('stops an attached command when ps is unavailable', async () => {
@@ -122,7 +140,8 @@ esac
     await vi.advanceTimersByTimeAsync(5000);
     expect(await stopping).toBe('closed');
     expect(processKill.mock.calls).toEqual([[424243, 'SIGTERM']]);
-    expect(kill.mock.calls).toEqual([['SIGTERM'], [0], ['SIGKILL']]);
+    expect(kill.mock.calls.filter(([signal]) => signal !== 0)).toEqual([['SIGTERM'], ['SIGKILL']]);
+    expect(kill).toHaveBeenCalledWith(0);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

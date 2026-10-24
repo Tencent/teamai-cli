@@ -57,6 +57,8 @@ teamai recall feedback --negative <docId>
 
 Local feedback affects ranking on the next index rebuild (for example, `teamai pull`), even when report uploads are disabled or fail. Rebuilds combine confirmed team votes with undelivered local votes. If the votes file is busy, that rebuild uses confirmed votes only.
 
+Index rebuilds reuse unchanged files' parsed tokens. Changes, deletions, source selection and votes still take effect on every build. `~/.teamai/debug.log` reports how many files were reused, rebuilt or dropped. Older indexes and a different Node/ICU version trigger a full parse once.
+
 When the log has runs, `teamai stats` lists the last 10 sessions that ran recall.
 
 ### Enabling / Disabling Recall

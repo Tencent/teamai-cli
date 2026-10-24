@@ -143,7 +143,7 @@ export async function headCommit(cwd: string): Promise<{ ref?: string; commit: s
  * Creates the worktree when it is missing. A branch that already exists is checked out as it is. An existing worktree
  * off its branch is refused, so a step never commits on whatever HEAD was left.
  */
-export async function ensureWorktree(main: string, branch: string, start: string): Promise<{ dir: string } | { error: string }> {
+export async function ensureWorktree(main: string, branch: string, start: string): Promise<{ dir: string; created: boolean } | { error: string }> {
   const dir = worktreePath(main, branch);
   const hooks = hooksPath(main);
   await fs.mkdir(hooks, { recursive: true });
@@ -159,7 +159,7 @@ export async function ensureWorktree(main: string, branch: string, start: string
     const on = await offBranch(dir, branch);
     if (on) return { error: `Workspace ${dir} is ${on}, not on branch ${branch}. Check out ${branch} in ${dir}, then retry the step.` };
     await worktreeHooks(main, dir, hooks);
-    return { dir };
+    return { dir, created: false };
   }
   await fs.mkdir(path.dirname(dir), { recursive: true });
   const config = ['-c', `core.hooksPath=${hooks}`];
@@ -169,7 +169,22 @@ export async function ensureWorktree(main: string, branch: string, start: string
     : await git(main, [...config, 'worktree', 'add', '-b', branch, dir, start]);
   if (created.code !== 0) return { error: created.stderr.trim() || created.stdout.trim() || 'git worktree add failed' };
   await worktreeHooks(main, dir, hooks);
-  return { dir };
+  return { dir, created: true };
+}
+
+/** In the worktree's own git dir from its creation until its setup finished, so one whose setup never finished is made again. */
+const SETUP_UNFINISHED = 'teamai-setup-unfinished';
+
+export async function setupUnfinished(dir: string): Promise<boolean> {
+  const marker = await gitPath(dir, SETUP_UNFINISHED);
+  return marker !== undefined && await fs.stat(marker).then(() => true, () => false);
+}
+
+export async function markSetup(dir: string, state: 'unfinished' | 'finished'): Promise<void> {
+  const marker = await gitPath(dir, SETUP_UNFINISHED);
+  if (!marker) return;
+  if (state === 'unfinished') await fs.writeFile(marker, '');
+  else await fs.rm(marker, { force: true });
 }
 
 /** Where HEAD is, such as `on refs/heads/other` or `detached at <commit>`, when it is not on `branch`. Undefined when it is. */
