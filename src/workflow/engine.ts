@@ -900,7 +900,11 @@ function nextDelivery(run: RunState): DeliveryJob | undefined {
   if ('unreadable' in settledRun || 'outcome' in settledRun) return undefined;
   const step = run.steps.find((item): item is DeliveringStep => item.status === 'delivering');
   if (!step) return undefined;
-  return { key: deliveryKey(step), runId: run.id, ...(step.delivery.reported ? { reported: step.delivery.reported } : {}) };
+  return {
+    key: deliveryKey(step), runId: run.id,
+    ...(run.checkout ? { checkout: run.checkout } : {}), ...(run.base ? { base: run.base.commit } : {}),
+    ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
+  };
 }
 
 /**

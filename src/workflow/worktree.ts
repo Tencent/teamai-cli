@@ -35,6 +35,24 @@ function configRoot(relative: string): string {
   return first !== relative && first.startsWith('.') && first !== '.github' ? first : relative;
 }
 
+/** Paths a delivered branch may not change beyond AGENT_PATHS: CI and hooks, which run with someone's credentials. */
+export const DELIVERY_ONLY_PATHS: readonly string[] = [
+  '.github/workflows', '.github/actions', '.github/CODEOWNERS', '.gitlab-ci.yml', '.gitlab', '.coding-ci.yaml', '.cnb.yml', '.cnb',
+  '.circleci', '.buildkite', '.husky', 'Jenkinsfile', 'azure-pipelines.yml', 'bitbucket-pipelines.yml', '.pre-commit-config.yaml',
+];
+
+/**
+ * The files among `changed` that no pull request TeamAI delivers may change: AGENT_PATHS, DELIVERY_ONLY_PATHS, and
+ * AGENTS.md or CLAUDE.md at any depth. Case-insensitive, as a checkout on a case-insensitive file system reads them.
+ */
+export function protectedPaths(changed: readonly string[]): string[] {
+  const roots = [...AGENT_PATHS, ...DELIVERY_ONLY_PATHS].map((root) => root.toLowerCase());
+  return changed.filter((file) => {
+    const lower = file.toLowerCase();
+    return /(^|\/)(agents|claude)\.md$/.test(lower) || roots.some((root) => lower === root || lower.startsWith(`${root}/`));
+  });
+}
+
 export interface GitResult {
   code: number;
   stdout: string;

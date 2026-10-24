@@ -12,6 +12,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { deliveryLockPath, readRun } from '../workflow/store.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { acquireLock, releaseLock } from '../update.js';
+import { AGENT_PATHS, DELIVERY_ONLY_PATHS, protectedPaths } from '../workflow/worktree.js';
 import { GitHubProvider } from '../providers/github/index.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { cancelRun } from '../workflow/run-controls.js';
@@ -85,11 +86,37 @@ async function report(config: LocalConfig, runId: string, body: Record<string, u
   return withIgnored(await reportAttempt(config, runId, parsed.report), parsed.ignored);
 }
 
-/** Reports a lease's success with one commit on its branch, and `changes` fields the driver adds. */
+/** Commits `files` on the lease's branch in a clone of its own and pushes it, as a remote driver does, and returns the commit. */
+function pushWork(root: string, lease: Lease, files: Record<string, string> = { 'work.txt': 'work\n' }): string {
+  if (!lease.workspace) throw new Error(`lease ${lease.step} has no workspace`);
+  const clone = fs.mkdtempSync(path.join(root, 'driver-'));
+  git(root, ['clone', '-q', path.join(root, 'remote.git'), clone]);
+  git(clone, ['checkout', '-q', '-b', lease.workspace.branch, lease.workspace.base.commit]);
+  for (const [file, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(clone, file)), { recursive: true });
+    fs.writeFileSync(path.join(clone, file), content);
+  }
+  git(clone, ['add', '-A']);
+  git(clone, ['-c', 'user.name=Driver', '-c', 'user.email=driver@example.com', 'commit', '-qm', 'work']);
+  git(clone, ['push', '-q', 'origin', lease.workspace.branch]);
+  return git(clone, ['rev-parse', 'HEAD']);
+}
+
+/** Reports a lease's success with one commit on its branch (`to`, a commit no repository has unless given), and `changes` fields the driver adds. */
 async function succeed(config: LocalConfig, runId: string, lease: Lease, changes: Record<string, unknown> = {}) {
   const base = lease.workspace?.base.commit;
+  const to = typeof changes.to === 'string' ? changes.to : head;
   return report(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success',
-    ...(lease.workspace ? { changes: { branch: lease.workspace.branch, base, from: base, to: head, commits: [head], ...changes } } : {}) });
+    ...(lease.workspace ? { changes: { branch: lease.workspace.branch, base, from: base, to, commits: [to], ...changes } } : {}) });
+}
+
+/** The pull request lookups and creates a GitHub origin could see, none of which may run. */
+function provider() {
+  return [
+    vi.spyOn(GitHubProvider.prototype, 'createPullRequest').mockRejectedValue(new Error('no PR may be opened')),
+    vi.spyOn(GitHubProvider.prototype, 'findOpenPullRequest').mockRejectedValue(new Error('no PR may be looked up')),
+    vi.spyOn(GitHubProvider.prototype, 'validatePullRequest').mockRejectedValue(new Error('no PR may be read')),
+  ];
 }
 
 const FIX_THEN_REVIEW = `  - id: fix\n    workspace: new\n    command: node fix.js\n    deliver: pr\n  - id: review\n    needs: [fix]\n    command: echo review\n`;
@@ -152,12 +179,12 @@ describe('workflow PR delivery contract', () => {
 describe('delivering a step', () => {
   it('delivers a driver-reported URL without opening a PR, and leases the dependent in the same next', async () => {
     const create = vi.spyOn(GitHubProvider.prototype, 'createPullRequest').mockRejectedValue(new Error('no PR may be opened'));
-    const { config, runId } = await fixture(FIX_THEN_REVIEW);
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     const fix = await take(config, runId);
     const branch = `teamai/${runId}/fix/p1`;
     expect(fix).toMatchObject({ step: 'fix', workspace: { branch } });
 
-    expect(await succeed(config, runId, fix, { pr_url: 'https://review.acme.internal/changes/4821?session=abc#c3' }))
+    expect(await succeed(config, runId, fix, { to: pushWork(root, fix), pr_url: 'https://review.acme.internal/changes/4821?session=abc#c3' }))
       .toEqual({ data: { accepted: true, revision: 2, step: { id: 'fix', status: 'delivering', outcome: 'success' }, cleanup: true } });
 
     const held = deliveryLockPath(config, runId);
@@ -181,8 +208,9 @@ describe('delivering a step', () => {
   });
 
   it('keeps the local driver polling while another process delivers, rather than giving up as busy', async () => {
-    const { config, cwd, runId } = await fixture(FIX_THEN_REVIEW);
-    await succeed(config, runId, await take(config, runId), { pr_url: 'https://review.acme.internal/changes/1' });
+    const { config, cwd, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix), pr_url: 'https://review.acme.internal/changes/1' });
     const held = deliveryLockPath(config, runId);
     expect(await acquireLock(held)).toBe(true);
     const released = new Promise<void>((resolve) => setTimeout(() => void releaseLock(held).then(resolve), 200));
@@ -194,12 +222,14 @@ describe('delivering a step', () => {
   it('fails a delivery that has no URL and no host to open one on, naming the branch that keeps the work', async () => {
     const { config, cwd, root, runId } = await fixture(FIX_THEN_REVIEW);
     git(cwd, ['remote', 'set-url', 'origin', path.join(root, 'remote.git')]);
-    expect(await succeed(config, runId, await take(config, runId))).toMatchObject({ data: { step: { id: 'fix', status: 'delivering' } } });
+    const fix = await take(config, runId);
+    const to = pushWork(root, fix);
+    expect(await succeed(config, runId, fix, { to })).toMatchObject({ data: { step: { id: 'fix', status: 'delivering' } } });
 
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const branch = `teamai/${runId}/fix/p1`;
     expect((await state(config, runId)).steps).toMatchObject([
-      { id: 'fix', status: 'failed', delivery: { branch, head }, failure: { code: 'delivery_failed', message: expect.stringContaining(`The work is kept on origin in branch ${branch}.`) } },
+      { id: 'fix', status: 'failed', delivery: { branch, head: to }, failure: { code: 'delivery_failed', message: expect.stringContaining(`The work is kept on origin in branch ${branch}.`) } },
       { id: 'review', status: 'skipped' },
     ]);
     expect((await state(config, runId)).steps[0]).toMatchObject({ failure: { message: expect.stringContaining(`teamai workflow retry ${runId} fix`) } });
@@ -216,9 +246,61 @@ describe('delivering a step', () => {
     expect(run.copies?.[`teamai/${runId}/fix/p1`]?.pr).toBeUndefined();
   });
 
+  it.each([
+    ['TeamAI would open the pull request', {}],
+    ['the driver reported one', { pr_url: 'https://github.com/fixture/app/pull/1' }],
+  ])('refuses a branch that changes protected paths, naming them, before any provider request, when %s', async (_case, changes) => {
+    const calls = provider();
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    const to = pushWork(root, fix, { '.github/workflows/ci.yml': 'on: push\n', 'src/app.ts': 'ok\n', 'packages/web/CLAUDE.md': 'rules\n' });
+    await succeed(config, runId, fix, { to, ...changes });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    expect(run.steps).toMatchObject([
+      { id: 'fix', status: 'failed', failure: { code: 'protected_path', message: expect.stringContaining('.github/workflows/ci.yml, packages/web/CLAUDE.md.') } },
+      { id: 'review', status: 'skipped' },
+    ]);
+    expect(run.steps[0]).not.toMatchObject({ failure: { message: expect.stringContaining('src/app.ts') } });
+    expect(run.copies?.[`teamai/${runId}/fix/p1`]?.pr).toBeUndefined();
+    for (const call of calls) expect(call).not.toHaveBeenCalled();
+  });
+
+  it('reads a reported head only as a full commit id, so a ref name cannot stand in for the pushed branch', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    pushWork(root, fix, { '.github/workflows/ci.yml': 'on: push\n' });
+    await succeed(config, runId, fix, { to: 'main', pr_url: 'https://github.com/fixture/app/pull/1' });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect((await state(config, runId)).steps[0]).toMatchObject({
+      status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`Push branch teamai/${runId}/fix/p1 to origin`) },
+    });
+  });
+
+  it('refuses protected changes the branch inherited from a step it needs, though the delivering step left them alone', async () => {
+    const calls = provider();
+    const write = (file: string) => `node -e "require('fs').mkdirSync(require('path').dirname('${file}'),{recursive:true});require('fs').writeFileSync('${file}','x')"`;
+    const { config, cwd, runId } = await fixture(`  - id: earlier\n    workspace: new\n    command: ${write('.github/workflows/ci.yml')}\n  - id: later\n    needs: [earlier]\n    workspace: new\n    command: ${write('change.txt')}\n    deliver: pr\n`);
+
+    expect(await runLocalDriver(config, runId, cwd)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect((await state(config, runId)).steps[1]).toMatchObject({ id: 'later', status: 'failed', failure: { code: 'protected_path', message: expect.stringContaining('.github/workflows/ci.yml') } });
+    for (const call of calls) expect(call).not.toHaveBeenCalled();
+  });
+
   it.todo('delivers a workflow step with workspace: new once, against the delivered branch of the step it needs');
   it.todo('delivers each for_each item against the delivered branch of the item it waited for, and lists the PRs in item order');
   it.todo('targets the nearest delivered branch, passing over a need that was skipped');
+});
+
+describe('protected paths', () => {
+  it('protect every path a step reads from the run base, every CI and hook path, and AGENTS.md or CLAUDE.md at any depth, in any case', () => {
+    const changed = [...AGENT_PATHS, ...DELIVERY_ONLY_PATHS].flatMap((root) => [root, `${root}/nested/file`, root.toUpperCase()]);
+    expect(protectedPaths(changed)).toEqual(changed);
+    expect(protectedPaths(['src/app.ts', 'docs/agents.mdx', '.claudeignore', '.github/dependabot.yml', '.github/workflows-notes.md', 'packages/web/AGENTS.md', 'Claude.md']))
+      .toEqual(['packages/web/AGENTS.md', 'Claude.md']);
+  });
 });
 
 describe('reported URLs from a driver', () => {

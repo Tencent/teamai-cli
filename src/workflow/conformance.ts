@@ -262,14 +262,13 @@ steps:
 
 export const workflowConformanceScenarios: ConformanceScenario[] = [
   {
-    name: 'a driver reports the pull request it opened, which delivers the step without opening another',
+    name: 'a pull request a driver reports is kept, without its query or fragment, for the step to deliver',
     workflowName: 'reported-pr', yaml: REPORTED_PR,
     operations: [
       { kind: 'next', saveAs: 'work', workspace: true, expect: { data: { lease: { step: 'work' } } } },
       { kind: 'report', lease: 'work', changes: { pr_url: 'https://review.example/changes/1?session=private#note', unknown: 'private' }, body: { outcome: 'success' }, expect: { data: { accepted: true, step: { id: 'work', status: 'delivering', outcome: 'success' }, ignored: ['changes.unknown'] } } },
-      { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
     ],
-    expectState: { steps: [{ id: 'work', status: 'succeeded', delivery: { reported: 'https://review.example/changes/1' } }] },
+    expectState: { steps: [{ id: 'work', status: 'delivering', delivery: { reported: 'https://review.example/changes/1' } }] },
   },
   {
     name: 'an unsafe review URL is dropped without rejecting the report', workflowName: 'review-link', yaml: REVIEW_LINK,
