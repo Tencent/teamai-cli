@@ -1099,6 +1099,22 @@ steps:
     expect(await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) })).toMatchObject({ data: { status: 'running' } });
   });
 
+  it('keeps the lease of a driver whose checkout path is the value of a required key', async () => {
+    const checkout = '/tmp/teamai-checkout-1082';
+    vi.stubEnv('PWD', checkout);
+    const driver: DriverIdentity = { kind: 'external', machine: 'a', workspace: checkout };
+    const fixture = testConfig();
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n    requires: { env: [PWD] }\n'));
+    await syncWorkflowDefinitions(fixture.config);
+    const started = await startRun(fixture.config, 'build', {}, { secrets: await knownSecrets(fixture.config) });
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const fix = leaseIn(await leaseNext(fixture.config, runId, driver, { can: { env: true } }));
+
+    expect(await leaseNext(fixture.config, runId, driver, { can: { env: true }, running: [fix.attempt] })).toMatchObject({ data: { cancelled: [] } });
+    expect(await reportAttempt(fixture.config, runId, { attempt: fix.attempt, revision: fix.revision, outcome: 'success', driver })).not.toHaveProperty('error');
+  });
+
   it.each(['GH_TOKEN', 'VALUE'])('refuses the environment value of declared %s whose team value differs, naming the key', async (key) => {
     vi.stubEnv(key, 'personal-token-value-1082');
     const fixture = testConfig();
