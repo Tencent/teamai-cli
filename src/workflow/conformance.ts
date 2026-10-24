@@ -82,6 +82,7 @@ export type ConformanceExpect = (actual: unknown, message?: string) => {
 export interface ConformanceRunner {
   client: WorkflowClient;
   readRun(runId: string): Promise<RunState>;
+  /** The run's queued end record, undefined while it has none. */
   readEndRecord(runId: string): Promise<unknown>;
   advance(ms: number): Promise<void>;
   expect: ConformanceExpect;
@@ -154,6 +155,14 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
   }
   if (scenario.expectState) expect(await runner.readRun(runId)).toMatchObject(scenario.expectState);
   if (scenario.expectRecord) expect(await runner.readEndRecord(runId)).toMatchObject(scenario.expectRecord);
+  const secrets = Object.entries(scenario.env ?? {});
+  if (secrets.length === 0) return;
+  const stored = JSON.stringify(await runner.readRun(runId));
+  const record = JSON.stringify(await runner.readEndRecord(runId)) ?? '';
+  for (const [name, value] of secrets) {
+    expect(stored.includes(value), `the run file holds the value of ${name}`).toEqual(false);
+    expect(record.includes(value), `the end record holds the value of ${name}`).toEqual(false);
+  }
 }
 
 const TWO_STEPS = `schemaVersion: v1alpha1
@@ -913,6 +922,23 @@ workflowConformanceScenarios.push(
       message: 'Step "deploy" requires env CONFORMANCE_TOKEN, which has no value on this machine. Run teamai env set CONFORMANCE_TOKEN, or set it in the environment, then retry the step.',
     } }, { id: 'build', status: 'succeeded' }] },
     expectRecord: { failure: { code: 'missing_env' } },
+  },
+  {
+    name: 'a secret a driver reports reaches neither the run file, the record, nor an envelope the CLI prints', workflowName: 'build',
+    yaml: NEEDS_TOKEN.replace('command: echo deploy', 'command: echo deploy\n    output:\n      note: string'), env: { CONFORMANCE_TOKEN: CONFORMANCE_SECRET },
+    operations: [
+      { kind: 'next', saveAs: 'deploy', as: 'local', expect: { data: { lease: { step: 'deploy' } } } },
+      // An error that names what the driver sent masks it too.
+      { kind: 'report', lease: 'deploy', as: 'local', attempt: CONFORMANCE_SECRET, body: { outcome: 'success' }, expect: { error: { code: 'wrong_attempt' } } },
+      { kind: 'report', lease: 'deploy', as: 'local', body: { outcome: 'success', model: CONFORMANCE_SECRET, outputs: { note: `token ${CONFORMANCE_SECRET}` } }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'build', as: 'local', expect: { data: { lease: { step: 'build' } } } },
+      { kind: 'report', lease: 'build', as: 'local', body: { outcome: 'failed', message: `build saw ${CONFORMANCE_SECRET}` }, expect: { data: { accepted: true } } },
+      { kind: 'next', saveAs: 'done', as: 'local', expect: { data: { done: { outcome: 'failed' } } } },
+    ],
+    expectState: { steps: [
+      { id: 'deploy', status: 'succeeded', outputs: { note: 'token <REDACTED:CONFORMANCE_TOKEN>' } },
+      { id: 'build', status: 'failed', message: 'build saw <REDACTED:CONFORMANCE_TOKEN>' },
+    ] },
   },
   {
     name: 'a step env that names a required key fails env_conflict', workflowName: 'build',

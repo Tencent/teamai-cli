@@ -19,6 +19,7 @@ import { loadTeamConfig } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { getDataHome, isUsageReportEnabled } from '../types.js';
 import { log } from '../utils/logger.js';
+import { redactJson } from '../utils/redact.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { isLaunchTool } from '../tool-launch/tools.js';
 import { stepDefinitions } from './scope.js';
@@ -274,6 +275,7 @@ export async function queueRunRecord(
   run: RunState,
   driver: DriverIdentity | undefined,
   phase: 'start' | 'end',
+  secrets: Record<string, string>,
 ): Promise<boolean> {
   try {
     if (!await isRecordingEnabled(config)) return false;
@@ -281,7 +283,7 @@ export async function queueRunRecord(
     const record = phase === 'start'
       ? buildStartRecord(run, driver, username)
       : buildEndRecord(run, driver, username);
-    await enqueueRecord(config, record);
+    await enqueueRecord(config, record, secrets);
     return true;
   } catch (error) {
     log.warn(`[workflows] Could not queue the ${phase} record of run ${run.id}, so the team report will not include it: ${error instanceof Error ? error.message : String(error)}`);
@@ -331,12 +333,12 @@ function pendingPath(config: LocalConfig, record: WorkflowRunRecord): string {
 }
 
 /** Queue a record for (re)publication; the write is atomic per file. */
-export async function enqueueRecord(config: LocalConfig, record: CurrentWorkflowRunRecord): Promise<void> {
+export async function enqueueRecord(config: LocalConfig, record: CurrentWorkflowRunRecord, secrets: Record<string, string>): Promise<void> {
   const dir = pendingDir(config);
   await fs.mkdir(dir, { recursive: true });
   const target = pendingPath(config, record);
   const tmp = `${target}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(record, null, 2)}\n`, 'utf-8');
+  await fs.writeFile(tmp, `${JSON.stringify(redactJson(record, secrets), null, 2)}\n`, 'utf-8');
   await fs.rename(tmp, target);
 }
 

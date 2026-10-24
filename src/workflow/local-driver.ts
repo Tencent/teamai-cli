@@ -18,6 +18,7 @@ import { observeLaunch, type Used } from '../agent-observation.js';
 import { detectProjectConfig } from '../config.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand } from '../env-exec.js';
+import { knownSecrets } from '../env-resolution.js';
 import { workflowLaunch } from '../launch-context.js';
 import { getDataHome, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { readFileSafe, readJson, writeJsonAtomic } from '../utils/fs.js';
@@ -925,7 +926,7 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
     const refused = await reconcileCopy(active, branch, commit);
     if (refused) return { code: 'branch_diverged', message: refused.error };
   }
-  await updateRun(config, runId, async (local) => {
+  await updateRun(config, runId, await knownSecrets(config), async (local) => {
     if (local === 'missing' || !local.publication?.reconcileCopies) return { value: undefined };
     const { reconcileCopies: _done, ...publication } = local.publication;
     return { value: undefined, write: { ...local, publication } };

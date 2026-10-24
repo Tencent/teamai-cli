@@ -12,7 +12,7 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { outputMismatch } from '../workflow/output.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
-import { readRun, runFilePath, runLockPath, updateRun } from '../workflow/store.js';
+import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 
@@ -22,7 +22,7 @@ const dirs: string[] = [];
 
 /** Saves an edited run file under its lock, as a hand edit or an older teamai leaves one. */
 async function saveRun(config: LocalConfig, run: RunState): Promise<void> {
-  await updateRun(config, run.id, async () => ({ value: undefined, write: run }));
+  await updateRun(config, run.id, {}, async () => ({ value: undefined, write: run }));
 }
 
 function testConfig(): { config: LocalConfig; work: string } {
@@ -98,6 +98,7 @@ ${steps}`;
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1050,6 +1051,32 @@ steps:
 
     expect(await startRun(fixture.config, 'build', inputs)).toEqual({ error: { code: 'invalid_inputs', message } });
     expect(fs.existsSync(path.join(fixture.config.dataHome!, 'workflows', 'runs'))).toBe(false);
+  });
+
+  it.each([
+    ['an input that holds a secret value', '    command: node fix.js\n', { DEPLOY_TOKEN: 'Bearer deploy-secret-value-1082' },
+      'inputs.DEPLOY_TOKEN holds the value of DEPLOY_TOKEN, a secret on this machine, which a run never stores. Pass the step a way to read DEPLOY_TOKEN instead, such as requires.env: [DEPLOY_TOKEN].'],
+    ['a workflow that holds a secret value', '    command: node fix.js deploy-secret-value-1082\n', { DEPLOY_TOKEN: 'plain' },
+      'workflows/build.yaml holds the value of DEPLOY_TOKEN, a secret on this machine, which a run never stores. Replace the value with requires.env: [DEPLOY_TOKEN], then pull again.'],
+  ])('refuses %s with invalid_inputs naming the key, never the value', async (_case, step, inputs, message) => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    const fixture = testConfig();
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: fix\n${step}`, 'inputs:\n  DEPLOY_TOKEN: string\n'));
+    await syncWorkflowDefinitions(fixture.config);
+
+    expect(await startRun(fixture.config, 'build', inputs)).toEqual({ error: { code: 'invalid_inputs', message } });
+    expect(fs.existsSync(runsDir(fixture.config))).toBe(false);
+  });
+
+  it('starts a run whose input shares a name with a secret env key', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    const fixture = testConfig();
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n', 'inputs:\n  DEPLOY_TOKEN: string\n'));
+    await syncWorkflowDefinitions(fixture.config);
+
+    const started = await startRun(fixture.config, 'build', { DEPLOY_TOKEN: 'staging' });
+    const stored = await readRun(fixture.config, String('data' in started ? started.data.run : ''));
+    expect(typeof stored === 'object' ? stored.inputs : stored).toEqual({ DEPLOY_TOKEN: 'staging' });
   });
 
   it('stores the inputs and renders inputs and step outputs into a prompt, leaving other braces as written', async () => {

@@ -22,7 +22,7 @@ import {
 import { getDataHome, getEnvBackupPath, type LocalConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 import { warnOnce } from './utils/warn-once.js';
-import { MIN_DECLARED_SECRET_LENGTH } from './utils/redact.js';
+import { collectEnvSecrets, MIN_DECLARED_SECRET_LENGTH } from './utils/redact.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
 import type { EnvFacts } from './workflow/requirements.js';
 
@@ -344,6 +344,14 @@ export async function collectTeamSecrets(localConfig: LocalConfig, env: NodeJS.P
     if (value) warnOnce(`Secret ${key} in env/secrets.yaml is shorter than ${MIN_DECLARED_SECRET_LENGTH} characters, so teamai cannot tell it from ordinary text and does not mask it. Give it a longer value.`);
     return [];
   }));
+}
+
+/**
+ * Every value teamai masks on this machine, keyed by name: environment values that look secret, and the team's
+ * declared secrets. Publishing a run, writing its file, and printing a workflow envelope agree on it.
+ */
+export async function knownSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
+  return { ...collectEnvSecrets(env), ...await collectTeamSecrets(localConfig, env) };
 }
 
 export function secretState(secrets: StoreResolution<SecretValue>, key: string): SecretState {

@@ -397,7 +397,7 @@ describe('#1083 workflow run records', () => {
   it('queues records durably and keeps them across failure', async () => {
     const { config } = testConfig();
     const record = buildStartRecord(runState({ status: 'running' }), driver, 'tester');
-    await enqueueRecord(config, record);
+    await enqueueRecord(config, record, {});
     const pending = await pendingRecords(config);
     expect(pending).toHaveLength(1);
     expect(pending[0].run).toBe(record.run);
@@ -512,7 +512,7 @@ describe('#1083 workflow stats merge', () => {
   it('folds a queued record into the stats file of the member who ran it', async () => {
     // The queue outlives a username change: alice ran the workflow, bob drains it.
     const { config, origin } = await reportsRemote('bob');
-    await enqueueRecord(config, buildEndRecord(runState(), driver, 'alice'));
+    await enqueueRecord(config, buildEndRecord(runState(), driver, 'alice'), {});
 
     expect(await publishPendingRecords(config)).toEqual({ state: 'published' });
 
@@ -524,9 +524,9 @@ describe('#1083 workflow stats merge', () => {
 
   it('moves a run out of the stats of the member whose end another member replaced', async () => {
     const { config, origin } = await reportsRemote('bob');
-    await enqueueRecord(config, buildEndRecord(runState({ status: 'failed' }), driver, 'alice'));
+    await enqueueRecord(config, buildEndRecord(runState({ status: 'failed' }), driver, 'alice'), {});
     expect(await publishPendingRecords(config)).toEqual({ state: 'published' });
-    await enqueueRecord(config, buildEndRecord(runState({ updatedAt: '2026-10-14T10:05:00.000Z' }), driver, 'bob'));
+    await enqueueRecord(config, buildEndRecord(runState({ updatedAt: '2026-10-14T10:05:00.000Z' }), driver, 'bob'), {});
 
     expect(await publishPendingRecords(config)).toEqual({ state: 'published' });
 
@@ -598,9 +598,9 @@ it('keeps a replacement end queued when an earlier end finishes publishing', asy
   const { config } = testConfig();
   const old = buildEndRecord(runState({ status: 'failed' }), driver, 'tester');
   const replacement = buildEndRecord(runState({ updatedAt: '2026-10-14T10:05:00.000Z' }), driver, 'tester');
-  await enqueueRecord(config, old);
+  await enqueueRecord(config, old, {});
   vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async () => {
-    await enqueueRecord(config, replacement);
+    await enqueueRecord(config, replacement, {});
     return { status: 'published' };
   });
   const result = await publishPendingRecords(config);
@@ -614,7 +614,7 @@ it('keeps a replacement end queued when its producer starts after the dequeue re
   const old = buildEndRecord(runState({ status: 'failed' }), driver, 'tester');
   const replacement = buildEndRecord(runState({ updatedAt: '2026-10-14T10:05:00.000Z' }), driver, 'tester');
   const lock = runLockPath(config, old.run);
-  await enqueueRecord(config, old);
+  await enqueueRecord(config, old, {});
   let delivered = false;
   vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async () => {
     delivered = true;
@@ -631,7 +631,7 @@ it('keeps a replacement end queued when its producer starts after the dequeue re
           while (!await acquireLock(lock)) await new Promise((resolve) => setTimeout(resolve, 10));
         }
         try {
-          await enqueueRecord(config, replacement);
+          await enqueueRecord(config, replacement, {});
         } finally {
           await releaseLock(lock);
         }
@@ -646,10 +646,17 @@ it('keeps a replacement end queued when its producer starts after the dequeue re
   expect(await pendingRecords(config)).toEqual([replacement]);
 });
 
+it('queues a record with each known secret value masked', async () => {
+  const { config } = testConfig();
+  const record = buildEndRecord(runState(), driver, 'deploy-secret-value-1082');
+  await enqueueRecord(config, record, { DEPLOY_TOKEN: 'deploy-secret-value-1082' });
+  expect(await pendingRecords(config)).toEqual([{ ...record, username: '<REDACTED:DEPLOY_TOKEN>' }]);
+});
+
 it('leaves a delivered record queued while its run lock is held, then drains it', async () => {
   const { config } = testConfig();
   const record = buildEndRecord(runState(), driver, 'tester');
-  await enqueueRecord(config, record);
+  await enqueueRecord(config, record, {});
   vi.spyOn(reportsBranch, 'updateReports').mockResolvedValue({ status: 'published' });
   const lock = runLockPath(config, record.run);
   expect(await acquireLock(lock)).toBe(true);
@@ -666,7 +673,7 @@ it('leaves a delivered record queued while its run lock is held, then drains it'
 it.each(['invalid JSON', 'directory'])('leaves a delivered queue path containing %s pending', async (tampering) => {
   const { config } = testConfig();
   const record = buildEndRecord(runState(), driver, 'tester');
-  await enqueueRecord(config, record);
+  await enqueueRecord(config, record, {});
   const target = path.join(config.dataHome!, 'workflows', 'pending', `${record.run}.end.json`);
   vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async () => {
     if (tampering === 'invalid JSON') fs.writeFileSync(target, '{');
@@ -684,9 +691,9 @@ it('reports published when only another run was queued during delivery', async (
   const { config } = testConfig();
   const delivered = buildEndRecord(runState(), driver, 'tester');
   const other = buildStartRecord(runState({ id: 'rabcdef1234567890', status: 'running' }), driver, 'tester');
-  await enqueueRecord(config, delivered);
+  await enqueueRecord(config, delivered, {});
   vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async () => {
-    await enqueueRecord(config, other);
+    await enqueueRecord(config, other, {});
     return { status: 'published' };
   });
   expect(await publishPendingRecords(config)).toEqual({ state: 'published' });

@@ -29,7 +29,8 @@ import {
   CAN_KEYS, CanSchema, heldFor, mergeRequirements, negotiate, requiredEnvKeys, unionUnenforced,
   type Allow, type DriverCan, type EnvFacts, type EnvScope, type Held, type Negotiation, type Requirements,
 } from './requirements.js';
-import { workflowEnvFacts } from '../env-resolution.js';
+import { knownSecrets, workflowEnvFacts } from '../env-resolution.js';
+import { redactJson } from '../utils/redact.js';
 import { generateRunId, installOwner, isRunId, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
 import { isLeaseRef } from '../scorers/entry.js';
@@ -100,18 +101,22 @@ function sameDriver(left: DriverIdentity, right: DriverIdentity): boolean {
   return left.kind === right.kind && left.machine === right.machine && left.workspace === right.workspace;
 }
 
-/** Applies one operation under the run lock and saves only when requested. */
+/**
+ * Applies one operation under the run lock and saves only when requested. The secrets the run file and records mask
+ * are resolved before the lock, since resolving them can read the team env.
+ */
 export async function withRun<T extends WorkflowEnvelope>(
   config: LocalConfig,
   runId: string,
-  mutate: (run: RunState, now: string) => Promise<{ envelope: T; save: boolean }>,
+  mutate: (run: RunState, now: string, secrets: Record<string, string>) => Promise<{ envelope: T; save: boolean }>,
 ): Promise<T> {
   if (!isRunId(runId)) return error('invalid_run', 'Run id must look like r followed by 8 or 16 hex digits') as T;
-  const updated = await updateRun(config, runId, async (loaded) => {
+  const secrets = await knownSecrets(config);
+  const updated = await updateRun(config, runId, secrets, async (loaded) => {
     if (loaded === 'missing') return { value: error('run_not_found', `Run ${runId} was not found`) as T };
     // One timestamp per operation, so a settled run's end record and its run file agree.
     const now = new Date().toISOString();
-    const result = await mutate(loaded, now);
+    const result = await mutate(loaded, now, secrets);
     if (!result.save) return { value: result.envelope };
     loaded.updatedAt = now;
     return { value: result.envelope, write: loaded };
@@ -318,9 +323,16 @@ function settleRun(run: RunState, now: string, { outcome, end, failure }: Workfl
 }
 
 /** Settles a run and queues its end record in the same locked operation. */
-export async function finishRun(config: LocalConfig, run: RunState, now: string, result: WorkflowResult, driver?: DriverIdentity): Promise<boolean> {
+export async function finishRun(
+  config: LocalConfig,
+  run: RunState,
+  now: string,
+  result: WorkflowResult,
+  secrets: Record<string, string>,
+  driver?: DriverIdentity,
+): Promise<boolean> {
   settleRun(run, now, result);
-  const queued = await queueRunRecord(config, run, driver, 'end');
+  const queued = await queueRunRecord(config, run, driver, 'end', secrets);
   run.endRecordQueued = queued;
   return queued;
 }
@@ -770,6 +782,33 @@ function inputsMismatch(name: string, declared: Record<string, OutputSchema> | u
   return extra === undefined ? null : `inputs.${extra} is not an input workflow "${name}" declares`;
 }
 
+/** The name of the first of `secrets` whose value `value` holds, as the run file would mask it. */
+function heldSecret(value: unknown, secrets: Record<string, string>): string | undefined {
+  const text = JSON.stringify(value);
+  return Object.entries(secrets).find(([name, secret]) => JSON.stringify(redactJson(value, { [name]: secret })) !== text)?.[0];
+}
+
+/**
+ * Why the run file would not keep what `start` was given: masking would change an input that holds a secret value
+ * without a word, and the pinned definitions are kept as pulled, unmasked. Names the input and the secret, never the
+ * value. An input may share a name with an env key; only values count.
+ */
+function secretMismatch(
+  inputs: unknown,
+  pinned: Record<string, unknown>,
+  secrets: Record<string, string>,
+): string | null {
+  for (const [input, value] of isRecord(inputs) ? Object.entries(inputs) : []) {
+    const secret = heldSecret(value, secrets);
+    if (secret) return `inputs.${input} holds the value of ${secret}, a secret on this machine, which a run never stores. Pass the step a way to read ${secret} instead, such as requires.env: [${secret}].`;
+  }
+  for (const [label, held] of Object.entries(pinned)) {
+    const secret = heldSecret(held, secrets);
+    if (secret) return `${label} holds the value of ${secret}, a secret on this machine, which a run never stores. Replace the value with requires.env: [${secret}], then pull again.`;
+  }
+  return null;
+}
+
 /** Every scorer name a step of `definitions` lists, inline workflows included. */
 function listedScorers(definitions: ReadonlyArray<{ steps: WorkflowStep[] }>): string[] {
   return definitions.flatMap((definition) => definition.steps.flatMap((step) => [
@@ -794,6 +833,13 @@ export async function startRun(
   const tree = await loadWorkflowTree(config, cached);
   if ('failed' in tree) return error(tree.failed.code, tree.failed.message);
   const scorers = await pinScorers(config, listedScorers([cached.definition, ...Object.values(tree.workflows)]));
+  const secrets = await knownSecrets(config);
+  const pinned = Object.fromEntries([
+    ...[cached.definition, ...Object.values(tree.workflows)].map((definition) => [`workflows/${definition.name}.yaml`, definition]),
+    ...Object.entries(scorers).map(([name, scorer]) => [`scorer ${name}`, scorer]),
+  ]);
+  const holdsSecret = secretMismatch(inputs, pinned, secrets);
+  if (holdsSecret) return error('invalid_inputs', holdsSecret);
   const now = new Date().toISOString();
   const run: RunState = {
     schemaVersion: 'v1alpha1',
@@ -814,7 +860,7 @@ export async function startRun(
     createdAt: now,
     updatedAt: now,
   };
-  const written = await updateRun(config, run.id, async () => ({ value: undefined, write: run }));
+  const written = await updateRun(config, run.id, secrets, async () => ({ value: undefined, write: run }));
   switch (written.status) {
     case 'done':
       break;
@@ -829,7 +875,7 @@ export async function startRun(
   }
   // #1083: publish the start record; a failed publication is queued locally
   // and retried on the next pull — it never fails the run itself.
-  const record = await queueRunRecord(config, run, options.driver, 'start') ? await publishRunRecords(config) : undefined;
+  const record = await queueRunRecord(config, run, options.driver, 'start', secrets) ? await publishRunRecords(config) : undefined;
   return ok({ run: run.id, name: run.name, status: run.status, revision: run.revision, ...(record ? { record } : {}) });
 }
 
@@ -895,7 +941,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   // the lock other engine operations wait on.
   let queued = false;
   let alreadySettled: RunState | undefined;
-  const envelope = await withRun(config, runId, async (run, now) => {
+  const envelope = await withRun(config, runId, async (run, now, secrets) => {
     const before = JSON.stringify(run);
     // Whatever settling changed is saved. `cancelled` is derived after settling: the attempts the driver runs that
     // are no longer its open leases.
@@ -908,7 +954,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       }),
     });
     const done = async (result: WorkflowResult): Promise<{ save: boolean; envelope: WorkflowEnvelope }> => {
-      queued = await finishRun(config, run, now, result, driver);
+      queued = await finishRun(config, run, now, result, secrets, driver);
       return answer(doneData(run));
     };
     const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => (

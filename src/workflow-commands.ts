@@ -1,6 +1,8 @@
 import { autoDetectInit } from './config.js';
+import { knownSecrets } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
+import { collectEnvSecrets, redactJson } from './utils/redact.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, resumableSessions, startRun, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { publishRun, resumeRun } from './workflow/handoff.js';
 import { cancelRun, respondToHitl, retryStep } from './workflow/run-controls.js';
@@ -10,8 +12,9 @@ import { isRunId, readRun } from './workflow/store.js';
 import { headCommit } from './workflow/worktree.js';
 import type { WorkflowEnvelope } from './workflow/types.js';
 
-function writeEnvelope(envelope: WorkflowEnvelope): void {
-  process.stdout.write(`${JSON.stringify(envelope)}\n`);
+/** Prints `envelope` with each of `secrets` masked, and sets the exit code from the envelope as the operation returned it. */
+function writeEnvelope(envelope: WorkflowEnvelope, secrets: Record<string, string>): void {
+  process.stdout.write(`${JSON.stringify(redactJson(envelope, secrets))}\n`);
   if ('error' in envelope) {
     process.exitCode = 1;
     return;
@@ -51,13 +54,14 @@ function readJson(payload: string | undefined, missing: string): JsonRead {
   }
 }
 
-async function readyConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig } | undefined> {
+/** The member's config, and the secrets every envelope the command prints masks, resolved once for the command. */
+async function readyConfig(): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; secrets: Record<string, string> } | undefined> {
   const loaded = await loadConfig();
   if (!('config' in loaded)) {
-    writeEnvelope(loaded);
+    writeEnvelope(loaded, collectEnvSecrets());
     return undefined;
   }
-  return loaded;
+  return { ...loaded, secrets: await knownSecrets(loaded.config) };
 }
 
 function parseTools(value: string | undefined): Record<string, string> | string {
@@ -77,14 +81,14 @@ export async function workflowStart(name: string, options: { driver?: string; to
   setStderrOnly(true);
   const loaded = await readyConfig();
   if (!loaded) return;
-  const { config, teamConfig } = loaded;
+  const { config, teamConfig, secrets } = loaded;
   if (options.driver !== undefined && options.driver !== 'local') {
-    writeEnvelope({ error: { code: 'unsupported_driver', message: `Driver "${options.driver}" is not available. Use --driver local.` } });
+    writeEnvelope({ error: { code: 'unsupported_driver', message: `Driver "${options.driver}" is not available. Use --driver local.` } }, secrets);
     return;
   }
   const tools = parseTools(options.tools);
   if (typeof tools === 'string') {
-    writeEnvelope({ error: { code: 'invalid_tools', message: tools } });
+    writeEnvelope({ error: { code: 'invalid_tools', message: tools } }, secrets);
     return;
   }
   let inputs: unknown = {};
@@ -92,90 +96,90 @@ export async function workflowStart(name: string, options: { driver?: string; to
     try {
       inputs = JSON.parse(options.inputs) as unknown;
     } catch {
-      writeEnvelope({ error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON' } });
+      writeEnvelope({ error: { code: 'invalid_json', message: 'Could not parse --inputs as JSON' } }, secrets);
       return;
     }
   }
   const base = await headCommit(process.cwd());
   const started = await startRun(config, name, inputs, base ? { base, checkout: process.cwd() } : {});
   if ('error' in started || options.driver !== 'local') {
-    writeEnvelope(started);
+    writeEnvelope(started, secrets);
     return;
   }
   const runId = started.data.run;
   if (typeof runId !== 'string') {
-    writeEnvelope({ error: { code: 'run_unreadable', message: 'The new run id was missing' } });
+    writeEnvelope({ error: { code: 'run_unreadable', message: 'The new run id was missing' } }, secrets);
     return;
   }
   log.info(`Run ${runId} started. If it stops before it ends, continue it with: teamai workflow resume ${runId}`);
-  writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }));
+  writeEnvelope(await runLocalDriver(config, runId, process.cwd(), { tools, toolPaths: teamConfig.toolPaths, autoApprove: options.autoApprove }), secrets);
 }
 
 export async function workflowNext(runId: string, options: { json?: string }): Promise<void> {
   setStderrOnly(true);
   const loaded = await readyConfig();
   if (!loaded) return;
-  const { config } = loaded;
+  const { config, secrets } = loaded;
   const payload = readJson(options.json, 'Pass --json with a driver object');
   if (!payload.ok) {
-    writeEnvelope(payload.envelope);
+    writeEnvelope(payload.envelope, secrets);
     return;
   }
   const parsed = parseNextPayload(payload.value);
   if (typeof parsed === 'string') {
-    writeEnvelope({ error: { code: 'invalid_json', message: parsed } });
+    writeEnvelope({ error: { code: 'invalid_json', message: parsed } }, secrets);
     return;
   }
   const { driver, ...next } = parsed.request;
-  writeEnvelope(withIgnored(await leaseNext(config, runId, driver, next), parsed.ignored));
+  writeEnvelope(withIgnored(await leaseNext(config, runId, driver, next), parsed.ignored), secrets);
 }
 
 export async function workflowReport(runId: string, options: { json?: string }): Promise<void> {
   setStderrOnly(true);
   const loaded = await readyConfig();
   if (!loaded) return;
-  const { config } = loaded;
+  const { config, secrets } = loaded;
   if (isLeaseRef(runId)) {
-    writeEnvelope({ error: { code: 'judge_lease', message: `${runId} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${runId} --submit --stdin` } });
+    writeEnvelope({ error: { code: 'judge_lease', message: `${runId} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${runId} --submit --stdin` } }, secrets);
     return;
   }
   const payload = readJson(options.json, 'Pass --json with attempt, revision, outcome, and driver');
   if (!payload.ok) {
-    writeEnvelope(payload.envelope);
+    writeEnvelope(payload.envelope, secrets);
     return;
   }
   const parsed = parseReport(payload.value);
   if (typeof parsed === 'string') {
-    writeEnvelope({ error: { code: 'invalid_report', message: parsed } });
+    writeEnvelope({ error: { code: 'invalid_report', message: parsed } }, secrets);
     return;
   }
-  writeEnvelope(withIgnored(await reportAttempt(config, runId, parsed.report), parsed.ignored));
+  writeEnvelope(withIgnored(await reportAttempt(config, runId, parsed.report), parsed.ignored), secrets);
 }
 
 
 async function workflowControl(operation: (config: LocalConfig) => Promise<WorkflowEnvelope>): Promise<void> {
   setStderrOnly(true);
   const loaded = await readyConfig();
-  if (loaded) writeEnvelope(await operation(loaded.config));
+  if (loaded) writeEnvelope(await operation(loaded.config), loaded.secrets);
 }
 
 /** Records a HITL answer with terminal or declared driver UI provenance. */
 export async function workflowRespond(runId: string, step: string, choice: string, options: { note?: string; pass?: string; json?: string }): Promise<void> {
   const pass = options.pass === undefined ? undefined : Number(options.pass);
   if (pass !== undefined && (!/^\d+$/.test(options.pass!) || !Number.isSafeInteger(pass) || pass < 1)) {
-    writeEnvelope({ error: { code: 'invalid_pass', message: 'Pass --pass as a positive integer identifying the HITL pass' } });
+    writeEnvelope({ error: { code: 'invalid_pass', message: 'Pass --pass as a positive integer identifying the HITL pass' } }, collectEnvSecrets());
     return;
   }
   let driverAnswer: ParsedResponsePayload | undefined;
   if (options.json !== undefined) {
     const payload = readJson(options.json, 'Pass --json with a driver object');
     if (!payload.ok) {
-      writeEnvelope(payload.envelope);
+      writeEnvelope(payload.envelope, collectEnvSecrets());
       return;
     }
     const declared = parseResponsePayload(payload.value);
     if (typeof declared === 'string') {
-      writeEnvelope({ error: { code: 'invalid_json', message: declared } });
+      writeEnvelope({ error: { code: 'invalid_json', message: declared } }, collectEnvSecrets());
       return;
     }
     driverAnswer = declared;
@@ -202,25 +206,27 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
   setStderrOnly(true);
   const loaded = await readyConfig();
   if (!loaded) return;
+  const { secrets } = loaded;
   const published = await publishRun(loaded.config, runId, { checkout: process.cwd(), ...(options.sessions ? { sessions: resumableSessions } : {}) });
   if (published.ok && published.value.skipped) {
     const list = published.value.skipped.map((session) => `${session.tool} session ${session.id}`).join(', ');
     log.warn(`Could not read ${list} on this machine, so they were not archived. Each step that continues them resumes the newest session of its chain that was.`);
   }
-  writeEnvelope(published.ok ? { data: { ...published.value } } : { error: published.error });
+  writeEnvelope(published.ok ? { data: { ...published.value } } : { error: published.error }, secrets);
 }
 
 export async function workflowResume(runId: string, options: { tools?: string; autoApprove?: boolean; claim?: boolean }): Promise<void> {
   setStderrOnly(true);
   const loaded = await readyConfig();
   if (!loaded) return;
+  const { secrets } = loaded;
   if (!isRunId(runId)) {
-    writeEnvelope({ error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } });
+    writeEnvelope({ error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } }, secrets);
     return;
   }
   const tools = parseTools(options.tools);
   if (typeof tools === 'string') {
-    writeEnvelope({ error: { code: 'invalid_tools', message: tools } });
+    writeEnvelope({ error: { code: 'invalid_tools', message: tools } }, secrets);
     return;
   }
   // Claimed under the driver lock, so a driver of this run already running here never drives the claimed run.
@@ -238,5 +244,5 @@ export async function workflowResume(runId: string, options: { tools?: string; a
     const cwd = lease?.status === 'leased' ? lease.lease.driver.workspace
       : stored.driver?.kind === 'local' && stored.driver.machine === local.machine ? stored.driver.workspace : process.cwd();
     return drive(cwd, { tools, toolPaths: loaded.teamConfig.toolPaths, autoApprove: options.autoApprove });
-  }));
+  }), secrets);
 }

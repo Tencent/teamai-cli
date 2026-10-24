@@ -219,7 +219,7 @@ function receiveHook(origin: string, script: string): void {
 }
 
 async function editRun(config: LocalConfig, runId: string, edit: (run: RunState) => RunState): Promise<void> {
-  await updateRun(config, runId, async (run) => (run === 'missing' ? { value: undefined } : { value: undefined, write: edit(run) }));
+  await updateRun(config, runId, {}, async (run) => (run === 'missing' ? { value: undefined } : { value: undefined, write: edit(run) }));
 }
 
 /** Settles a run whose steps all reported: the next `next` ends it and publishes its end record. */
@@ -461,7 +461,7 @@ describe('workflow handoff through teamai-reports', () => {
     await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
     const local = await readRun(alice.config, runId);
     if (typeof local !== 'object') throw new Error('no run');
-    await updateRun(bob.config, runId, async () => ({ value: undefined, write: { ...local, createdAt: '2020-01-01T00:00:00.000Z' } }));
+    await updateRun(bob.config, runId, {}, async () => ({ value: undefined, write: { ...local, createdAt: '2020-01-01T00:00:00.000Z' } }));
 
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({
       ok: false,
@@ -826,7 +826,7 @@ describe('workflow handoff through teamai-reports', () => {
     const write = reportsBranch.updateReports;
     vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async (config, change) => {
       const run = await readRun(alice.config, runId);
-      if (typeof run === 'object') await queueRunRecord(alice.config, run, alice.driver, 'end');
+      if (typeof run === 'object') await queueRunRecord(alice.config, run, alice.driver, 'end', {});
       return write(config, change);
     });
 
@@ -841,10 +841,10 @@ describe('workflow handoff through teamai-reports', () => {
     const other = await start(alice);
     const otherRun = await readRun(alice.config, other);
     if (typeof otherRun !== 'object') throw new Error('run was not stored');
-    await queueRunRecord(alice.config, otherRun, alice.driver, 'end');
+    await queueRunRecord(alice.config, otherRun, alice.driver, 'end', {});
     const write = reportsBranch.updateReports;
     vi.spyOn(reportsBranch, 'updateReports').mockImplementationOnce(async (config, change) => {
-      await queueRunRecord(alice.config, otherRun, alice.driver, 'end');
+      await queueRunRecord(alice.config, otherRun, alice.driver, 'end', {});
       return write(config, change);
     });
 
@@ -1983,7 +1983,7 @@ steps:
     git(alice.checkout, 'push', '-q', 'origin', '--delete', `teamai/${runId}/base`);
     const run = await readRun(alice.config, runId);
     if (typeof run !== 'object') throw new Error('run was not stored');
-    await queueRunRecord(alice.config, run, alice.driver, 'end');
+    await queueRunRecord(alice.config, run, alice.driver, 'end', {});
     const refs = git(acme.business, 'for-each-ref');
     const archive = (): string => execFileSync('git', ['--git-dir', acme.origin, 'ls-tree', '-r', '--name-only', 'main', 'sessions'], { encoding: 'utf8' });
 

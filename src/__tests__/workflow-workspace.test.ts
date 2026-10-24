@@ -31,7 +31,7 @@ _setDriverPollMs(20);
 
 /** Saves an edited run file under its lock, as a hand edit or an older teamai leaves one. */
 async function saveRun(config: LocalConfig, run: RunState): Promise<void> {
-  await updateRun(config, run.id, async () => ({ value: undefined, write: run }));
+  await updateRun(config, run.id, {}, async () => ({ value: undefined, write: run }));
 }
 
 const dirs: string[] = [];

@@ -172,6 +172,19 @@ export function redact(text: string, options: RedactOptions = {}): string {
 }
 
 /**
+ * A copy of the JSON value `value` with each known secret value masked in every string it holds, as `redact` masks
+ * text without the shape patterns. Object keys stay as they are, so the reader still sees what each field is.
+ */
+export function redactJson(value: unknown, envSecrets: Record<string, string>): unknown {
+  if (typeof value === 'string') return redact(value, { envSecrets, patterns: false });
+  if (Array.isArray(value)) return value.map((item) => redactJson(item, envSecrets));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactJson(item, envSecrets)]));
+  }
+  return value;
+}
+
+/**
  * Convenience wrapper: redact using both the built-in patterns and secrets
  * discovered in the current environment.
  */

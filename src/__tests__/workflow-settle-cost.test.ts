@@ -39,7 +39,7 @@ vi.mock('../workflow/store.js', async (importOriginal) => {
   return {
     ...actual,
     readRun: async (...args: Parameters<typeof actual.readRun>) => counted(await actual.readRun(...args)),
-    updateRun: (...[config, runId, change]: Parameters<typeof actual.updateRun>) => actual.updateRun(config, runId, async (run) => change(counted(run))),
+    updateRun: (...[config, runId, secrets, change]: Parameters<typeof actual.updateRun>) => actual.updateRun(config, runId, secrets, async (run) => change(counted(run))),
   };
 });
 

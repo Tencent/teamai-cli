@@ -65,7 +65,11 @@ describe('workflow protocol conformance through the CLI', () => {
       const pulled = await runCLI(['pull'], repo);
       expect(pulled.code, `${pulled.stdout}\n${pulled.stderr}`).toBe(0);
       const env = { ...process.env, ...scenario.env };
-      const call = async (args: string[]): Promise<WorkflowEnvelope> => envelope((await runCLI(['workflow', ...args], repo, env)).stdout);
+      const call = async (args: string[]): Promise<WorkflowEnvelope> => {
+        const { stdout } = await runCLI(['workflow', ...args], repo, env);
+        for (const [name, value] of Object.entries(scenario.env ?? {})) expect(stdout.includes(value), `workflow ${args[0]} printed the value of ${name}`).toBe(false);
+        return envelope(stdout);
+      };
       const client: WorkflowClient = {
         start: (name) => call(['start', name]),
         next: (run, body) => call(['next', run, '--json', JSON.stringify(body)]),
@@ -82,7 +86,8 @@ describe('workflow protocol conformance through the CLI', () => {
         },
         readEndRecord: async (runId) => {
           const dataHome = await resolveProjectDataHome(repo);
-          return JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'pending', `${runId}.end.json`), 'utf8')) as unknown;
+          const file = path.join(dataHome, 'workflows', 'pending', `${runId}.end.json`);
+          return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) as unknown : undefined;
         },
         // Each CLI call reads the system clock, so the runner waits for real.
         advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),

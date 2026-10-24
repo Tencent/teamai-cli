@@ -20,12 +20,12 @@ async function controlRun(
   let queued = false;
   let settled = false;
   let checkout = process.cwd();
-  const envelope = await withRun(config, runId, async (run, now) => {
+  const envelope = await withRun(config, runId, async (run, now, secrets) => {
     const before = JSON.stringify(run);
     checkout = run.driver?.workspace ?? checkout;
     const finish = async (result: WorkflowResult): Promise<void> => {
       settled = true;
-      queued = await finishRun(config, run, now, result, run.driver);
+      queued = await finishRun(config, run, now, result, secrets, run.driver);
     };
     const envelope = await operation(run, now, finish);
     return { envelope, save: JSON.stringify(run) !== before };
