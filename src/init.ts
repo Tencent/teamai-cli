@@ -4,7 +4,7 @@ import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { codexTrustPolicy, deliveredHookFiles, describeUnappliedTeamHooks, hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs, createGitWithBlockTimeout } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, getConfiguredRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs, createGitWithBlockTimeout } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { getProvider, detectProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
@@ -1729,7 +1729,13 @@ export async function init(options: GlobalOptions & {
       // kept serving the old clone's manifest). Compare ignoring credentials,
       // protocol, and .git suffix.
       const existingRemote = await getRemoteUrl(localPath);
-      if (existingRemote && !remotesMatch(existingRemote, repoInfo.httpsUrl)) {
+      // `git remote get-url` expands url.*.insteadOf. Compare the literal URL as
+      // well so a rewrite does not turn a same-repository re-init into a clone
+      // replacement (and consequently retire its queues and worktrees).
+      const configuredRemote = await getConfiguredRemoteUrl(localPath);
+      const sameRepo = [existingRemote, configuredRemote]
+        .some((remote) => remote !== null && remotesMatch(remote, repoInfo.httpsUrl));
+      if (existingRemote && !sameRepo) {
         log.warn(
           `Existing clone at ${localPath} points at a different repo ` +
           `(${redactGitCredentials(existingRemote)}), not ${repoInfo.httpsUrl}.`,

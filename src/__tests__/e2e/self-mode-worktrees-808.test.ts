@@ -1758,13 +1758,17 @@ describe('a checkout an older git-mode install left (#808)', () => {
     // The new clone sits where team A's did, and has no registration of the old checkout.
     expect(git(['remote', 'get-url', 'origin'], path.join(partition, 'team-repo')).trim()).toBe(teamB.url);
 
-    const refusal = `${checkout} is a teamai-learnings checkout teamai cannot show to be ${path.join(partition, 'team-repo')}'s`;
     const contribute = await runCLI(
       ['contribute', '--title', 'team-b-note', '--file', note(install, 'team-b', 'Note for team B')],
       projectRoot,
       home,
     );
+    // Replacing the clone preserves the dirty checkout with its backing clone,
+    // so later commands correctly identify that preserved clone in the warning.
+    const preservedClone = path.join(partition, 'team-repo.previous');
+    const refusal = `${checkout} is a teamai-learnings checkout teamai cannot show to be ${preservedClone}'s`;
     expect(contribute.output.split(refusal).length - 1, contribute.output).toBe(1);
+    expect(fs.existsSync(path.join(preservedClone, '.git'))).toBe(true);
     expect(contribute.output).toContain('Saved locally');
     expect(fs.readFileSync(draft, 'utf8')).toBe('# Team A draft nobody committed\n');
     expect(git(['log', '--all', '--name-only', '--format='], teamB.bare)).not.toContain('team-a-');
