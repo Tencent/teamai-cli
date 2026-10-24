@@ -46,8 +46,9 @@ import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from
 import { isWorkflowError, WORKSPACE_MODES } from './types.js';
 import type { LeaseSession, SessionRef, WorkspaceContract } from './workspace.js';
 import {
-  applyBaseConfig, changedPaths, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, markSetup, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, setupUnfinished, snapshotWorktree, stepCheckout, unrestoredCopy, worktreePath, type WorktreeSnapshot,
+  applyBaseConfig, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, markSetup, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, setupUnfinished, stepCheckout, unrestoredCopy, worktreePath,
 } from './worktree.js';
+import { changedPaths, snapshotWorktree, type WorktreeSnapshot } from './worktree-snapshot.js';
 
 /** Local lease identity, stable across restarts in the same workspace. */
 export function localDriver(cwd: string): DriverIdentity {

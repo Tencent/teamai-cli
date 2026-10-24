@@ -9,7 +9,7 @@ import path from 'node:path';
 import { stopProcess } from '../tool-launch/process-stop.js';
 import { redact } from '../utils/redact.js';
 import type { WorkflowFailure } from './types.js';
-import { changedPaths, snapshotWorktree } from './worktree.js';
+import { changedPaths, snapshotWorktree } from './worktree-snapshot.js';
 
 export interface SetupRun {
   command: string;
