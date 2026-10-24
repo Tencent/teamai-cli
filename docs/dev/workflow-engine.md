@@ -43,4 +43,4 @@ Each rule below spans more than one file. The rule names the code that owns it, 
 
 ## Tests
 
-Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the engine through `startRun`, `leaseNext`, and `reportAttempt`. Every driver must pass the protocol scenarios in `src/workflow/conformance.ts`, and a driver that takes workspace leases the git scenarios there too. If a driver can see a new behavior, add a scenario there.
+Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the engine through `startRun`, `leaseNext`, and `reportAttempt`. Every driver must pass the protocol scenarios in `src/workflow/conformance.ts` and `src/workflow/limits-conformance.ts`, which `runConformanceScenario` in `src/workflow/conformance-interpreter.ts` runs, and a driver that takes workspace leases the git scenarios in `conformance.ts` too. If a driver can see a new behavior, add a scenario to the file for its concern.

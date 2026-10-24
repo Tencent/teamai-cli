@@ -4,7 +4,9 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { runConformanceScenario, workflowConformanceScenarios, type WorkflowClient } from '../workflow/conformance.js';
+import { runConformanceScenario, type WorkflowClient } from '../workflow/conformance-interpreter.js';
+import { workflowConformanceScenarios } from '../workflow/conformance.js';
+import { limitsConformanceScenarios } from '../workflow/limits-conformance.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, startRun, withIgnored } from '../workflow/engine.js';
 import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { pendingRecords } from '../workflow/records.js';
@@ -19,7 +21,7 @@ afterEach(() => {
 });
 
 describe('workflow protocol conformance in process', () => {
-  for (const scenario of workflowConformanceScenarios) {
+  for (const scenario of [...workflowConformanceScenarios, ...limitsConformanceScenarios]) {
     it(scenario.name, async () => {
       for (const [name, value] of Object.entries(scenario.env ?? {})) vi.stubEnv(name, value);
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-conformance-'));
