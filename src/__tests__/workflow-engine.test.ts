@@ -2801,7 +2801,9 @@ describe('held-back steps', () => {
     expect(a.step).toBe('box.a');
     const b = leaseIn(await leaseNext(config, runId, driverA, { can, base, running: [a.attempt] }));
     expect(b.step).toBe('box.b');
-    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({ data: { lease: { step: 'box.b' } } });
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base, running: [b.attempt] })).toMatchObject({
+      data: { wait: { held: [{ step: 'box.a', missing: ['env'] }] } },
+    });
     await reportAttempt(config, runId, { ...b, outcome: 'success', exitCode: 0, driver: driverA });
 
     expect(await leaseNext(config, runId, driverB, { can, base })).toMatchObject({
