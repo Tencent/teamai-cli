@@ -1,60 +1,42 @@
+/**
+ * Real CLI: the "Start from CI" job in docs/guide/workflow.md, run the way GitHub Actions runs it. The test reads the
+ * job's checkout ref, `env` and `run:` commands from the guide, fills in the Actions expressions, and runs each command
+ * with bash in a clone of the product, where `npx teamai-cli` is the built CLI and `gh` is the fake every delivery test
+ * shares. The product's origin is GitHub, or a host TeamAI reaches through git alone, and the team repo is on a generic
+ * git host; git rewrites each to a bare repository.
+ */
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
+import { ciRecipesOf, runCommandsOf, type CiRecipe } from '../helpers/ci-recipe.js';
 import { trackDetachedProcesses } from '../helpers/detached-processes.js';
-import type { RunState } from '../../workflow/types.js';
+import { fakeGhHost, type FakeGh } from '../helpers/fake-gh.js';
 
-const cli = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const CLI = path.join(ROOT, 'dist', 'index.js');
+const GUIDE = path.join(ROOT, 'docs', 'guide', 'workflow.md');
+const TEAM_URL = 'https://git.example.internal/acme/team.git';
+const GITHUB_URL = 'https://github.com/fixture/app.git';
+const GENERIC_URL = 'https://git.example.internal/acme/app.git';
+const ISSUE = 42;
+/** What each Actions expression in the recipe stands for in the fixture. */
+const EXPRESSIONS: Record<string, string> = {
+  'github.event.issue.number': String(ISSUE),
+  'vars.TEAM_REPO': TEAM_URL,
+  'secrets.WORKFLOW_TOKEN': 'fixture-token',
+};
 
-describe('workflow PR delivery CLI (#1090)', () => {
-  it('runs the documented CI path, creates/reuses a provider PR, retains generic-git work, and refuses required unattended approvals', async () => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-pr-cli-')));
-    const home = path.join(root, 'home'); const product = path.join(root, 'product'); const team = path.join(root, 'team'); const bin = path.join(root, 'bin');
-    for (const dir of [home, product, team, bin]) fs.mkdirSync(dir);
-    const detached = trackDetachedProcesses(root);
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, FORCE_COLOR: '0',
-      GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1',
-      GIT_AUTHOR_NAME: 'Fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid',
-      NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '), PR_FIXTURE: path.join(root, 'pr.json') };
-    delete env.CLAUDE_CONFIG_DIR; delete env.CODEX_HOME; delete env.GITHUB_TOKEN; delete env.GH_TOKEN;
-    const run = (command: string, args: string[], cwd = product) => spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 30_000 });
-    const git = (args: string[], cwd = product) => { const result = run('git', args, cwd); expect(result.status, result.stderr).toBe(0); return result.stdout.trim(); };
-    const call = (args: string[]) => run(process.execPath, [cli, ...args]);
-    const envelope = (stdout: string) => JSON.parse(stdout.trim().split('\n').filter((line) => line.startsWith('{')).at(-1)!);
-    const productUrl = 'https://github.com/fixture/app.git'; const teamUrl = 'https://team.example.invalid/fixture/team.git';
-    const bare = path.join(root, 'product.git');
-    fs.writeFileSync(path.join(bin, 'gh'), `#!${process.execPath}
-const fs = require('fs'); const args = process.argv.slice(2); const file = process.env.PR_FIXTURE;
-if (args[0] === '--version') { console.log('gh version 2.80.0'); process.exit(0); }
-if (args[0] === 'api') {
-  const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
-  console.log(JSON.stringify(args[1].includes('?') ? saved ? [saved] : [] : saved)); process.exit(0);
-}
-if (args[0] === 'pr' && args[1] === 'create') {
-  const val = key => args[args.indexOf(key) + 1];
-  if (val('-R') !== 'fixture/app' || val('-B') !== 'main') process.exit(7);
-  const pr = { state: 'open', html_url: 'https://github.com/fixture/app/pull/41', head: { ref: val('-H'), repo: { full_name: 'fixture/app' } }, base: { ref: val('-B'), repo: { full_name: 'fixture/app' } } };
-  fs.writeFileSync(file, JSON.stringify(pr)); fs.appendFileSync(file + '.creates', 'create\\n'); console.log(pr.html_url); process.exit(0);
-}
-if (args[0] === 'pr' && args[1] === 'list') { console.log('[]'); process.exit(0); }
-console.error('Unexpected provider operation: ' + args[0]); process.exit(9);
-`, { mode: 0o755 });
-    try {
-      git(['init', '-q', '-b', 'main']); fs.writeFileSync(path.join(product, 'README.md'), '# Product\n'); git(['add', '.']); git(['commit', '-qm', 'base']);
-      git(['init', '-q', '--bare', '-b', 'main', bare]); git(['remote', 'add', 'origin', productUrl]);
-      git(['config', '--global', `url.${bare}.insteadOf`, productUrl]); git(['push', '-qu', 'origin', 'main']);
-      git(['init', '-q', '-b', 'main'], team); fs.mkdirSync(path.join(team, 'workflows'));
-      fs.writeFileSync(path.join(team, 'teamai.yaml'), `team: fixture\nrepo: ${teamUrl}\nprovider: git\nusageReport: false\n`);
-      const yaml = `schemaVersion: v1alpha1
+const workflow = (required: boolean): string => `schemaVersion: v1alpha1
 name: ship-issue
-description: Deliver an issue change for review.
+description: Write the issue number on a branch and deliver it for review.
 inputs: { issue: number }
 steps:
   - id: approve
-    approve: { message: Start the fixture?, required: false }
+    approve: { message: Ship it?, required: ${required} }
   - id: work
     needs: [approve]
     workspace: new
@@ -63,40 +45,213 @@ steps:
     env:
       ISSUE: "{{ inputs.issue }}"
 `;
-      fs.writeFileSync(path.join(team, 'workflows', 'ship-issue.yaml'), yaml);
-      fs.writeFileSync(path.join(team, 'workflows', 'required.yaml'), yaml.replace('name: ship-issue', 'name: required').replace('required: false', 'required: true'));
-      git(['add', '.'], team); git(['commit', '-qm', 'team workflows'], team);
-      git(['config', '--global', `url.${team}.insteadOf`, teamUrl]);
-      const initialized = call(['init', teamUrl, '--scope', 'workspace', '--agent', 'claude', '--force']); expect(initialized.status, `${initialized.stdout}\n${initialized.stderr}`).toBe(0);
-      const pulled = call(['pull']); expect(pulled.status, pulled.stderr).toBe(0); await detached.waitForExit();
-      const started = call(['workflow', 'start', 'ship-issue', '--driver', 'local', '--auto-approve', '--inputs', '{"issue":42}']);
-      expect(started.status, `${started.stdout}\n${started.stderr}`).toBe(0);
-      const done = envelope(started.stdout).data.done; expect(done.outcome).toBe('succeeded');
-      const runFile = fs.readdirSync(root, { recursive: true, encoding: 'utf8' }).find((file) => file.endsWith(path.join('workflows', 'runs', `${done.run}.json`)));
-      expect(runFile).toBeDefined();
-      const dataHome = path.dirname(path.dirname(path.dirname(path.join(root, runFile!))));
-      const read = (id: string) => JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'runs', `${id}.json`), 'utf8')) as RunState;
-      const state = read(done.run); const work = state.steps.find((step) => step.id === 'work');
-      expect(work).toMatchObject({ status: 'succeeded', changes: { pr_url: 'https://github.com/fixture/app/pull/41' } });
-      const branch = `teamai/${done.run}/work/p1`;
-      expect(git(['--git-dir', bare, 'show', `${branch}:issue.txt`])).toBe('42'); expect(fs.existsSync(path.join(product, 'issue.txt'))).toBe(false);
-      // Re-enter durable post-agent delivery as after a crash: the open PR is reused, with no new agent work or create.
-      if (work?.status !== 'succeeded') throw new Error('missing successful work');
-      const persisted = state as unknown as { status: string; steps: Array<Record<string, unknown>> };
-      persisted.status = 'running'; const target = persisted.steps.find((step) => step.id === 'work')!; target.status = 'delivering'; delete target.outcome;
-      delete (target.changes as Record<string, unknown>).pr_url; delete (target.changes as Record<string, unknown>).prRecordedAt;
-      fs.writeFileSync(path.join(dataHome, 'workflows', 'runs', `${done.run}.json`), JSON.stringify(persisted));
-      const resumed = call(['workflow', 'resume', done.run]); expect(resumed.status, resumed.stderr).toBe(0);
-      expect(fs.readFileSync(`${env.PR_FIXTURE}.creates`, 'utf8')).toBe('create\n');
-      git(['remote', 'set-url', 'origin', bare]);
-      const generic = call(['workflow', 'start', 'ship-issue', '--driver', 'local', '--auto-approve', '--inputs', '{"issue":43}']);
-      expect(generic.status).toBe(1); const genericDone = envelope(generic.stdout).data.done;
-      const failed = read(genericDone.run).steps.find((step) => step.id === 'work'); const failedBranch = `teamai/${genericDone.run}/work/p1`;
-      expect(failed).toMatchObject({ failure: { code: 'delivery_failed', message: expect.stringContaining(failedBranch) } });
-      expect(git(['--git-dir', bare, 'show', `${failedBranch}:issue.txt`])).toBe('43');
-      const required = call(['workflow', 'start', 'required', '--driver', 'local', '--auto-approve', '--inputs', '{"issue":44}']);
-      expect(required.status).toBe(1); expect(read(envelope(required.stdout).data.done.run).steps[0]).toMatchObject({ failure: { code: 'hitl_required' } });
-      expect(fs.readFileSync(`${env.PR_FIXTURE}.creates`, 'utf8')).toBe('create\n');
-    } finally { await detached.waitForExit(); fs.rmSync(root, { recursive: true, force: true }); }
+
+const DoneSchema = z.object({ data: z.object({ done: z.object({ run: z.string(), outcome: z.string() }) }) });
+const RunSchema = z.object({
+  steps: z.array(z.object({
+    id: z.string(), status: z.string(),
+    changes: z.object({ to: z.string() }).optional(),
+    failure: z.object({ code: z.string(), message: z.string() }).optional(),
+  })),
+  deliveries: z.array(z.object({ url: z.string(), branch: z.string(), base: z.string(), step: z.string(), pass: z.number() })).optional(),
+});
+const RecordSchema = z.object({ run: z.string(), prs: z.array(z.string()).optional() });
+const OpenSchema = z.array(z.object({ html_url: z.string(), head: z.object({ ref: z.string() }) }));
+
+interface Ran {
+  command: string;
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Each fixture root, and a wait for the detached processes its commands left running, which still write there. */
+const fixtures: Array<{ root: string; settled: () => Promise<void> }> = [];
+
+afterAll(async () => {
+  for (const { root, settled } of fixtures.splice(0)) {
+    await settled();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = process.env): string {
+  const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed:\n${result.stderr}`);
+  return result.stdout.trim();
+}
+
+/** `text` with each `${{ <expression> }}` replaced as Actions does before the shell runs. */
+function expand(text: string): string {
+  return text.replace(/\$\{\{\s*(.+?)\s*\}\}/g, (_, expression: string) => {
+    const value = EXPRESSIONS[expression];
+    if (value === undefined) throw new Error(`the recipe uses \${{ ${expression} }}, which the fixture does not fill in`);
+    return value;
   });
+}
+
+function seed(root: string, bare: string, files: Record<string, string>): void {
+  const dir = fs.mkdtempSync(path.join(root, 'seed-'));
+  git(root, ['init', '-q', '--bare', '-b', 'main', bare]);
+  git(dir, ['init', '-q', '-b', 'main']);
+  for (const [file, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), text);
+  }
+  git(dir, ['add', '-A']);
+  git(dir, ['-c', 'user.name=Seed', '-c', 'user.email=seed@example.com', 'commit', '-qm', 'seed']);
+  git(dir, ['push', '-q', bare, 'main']);
+}
+
+/**
+ * The run state `run` left in the data home of the checkout's workspace scope, `~/.teamai/projects/<checkout>/`, not
+ * the copy of its record in that data home's reports worktree.
+ */
+function runState(root: string, run: string): z.infer<typeof RunSchema> {
+  const state = new RegExp(`^home/\\.teamai/projects/[^/]+/workflows/runs/${run}\\.json$`);
+  const file = fs.readdirSync(root, { recursive: true, encoding: 'utf8' }).find((name) => state.test(name.split(path.sep).join('/')));
+  if (!file) throw new Error(`no run state for ${run} under ${root}`);
+  return RunSchema.parse(JSON.parse(fs.readFileSync(path.join(root, file), 'utf8')));
+}
+
+/**
+ * Runs the recipe's one job against a fresh product whose origin is `origin`, with a team repo whose `ship-issue`
+ * workflow asks an approval that is `required` or optional. A step that fails stops the job, as in Actions.
+ */
+function runRecipe(origin: string, required: boolean): { recipe: CiRecipe; ran: Ran[]; root: string; gh: FakeGh; team: string; product: string } {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-ci-recipe-')));
+  const detached = trackDetachedProcesses(root);
+  fixtures.push({ root, settled: detached.waitForExit });
+  const home = path.join(root, 'home');
+  const bin = path.join(root, 'bin');
+  const team = path.join(root, 'team.git');
+  const product = path.join(root, 'app.git');
+  for (const dir of [home, bin, path.join(home, '.gh')]) fs.mkdirSync(dir);
+  const gh = fakeGhHost(path.join(root, 'gh'));
+  fs.writeFileSync(path.join(bin, 'npx'), [
+    '#!/bin/sh',
+    '[ "$1" = teamai-cli ] || { echo "the recipe ran npx $*" >&2; exit 97; }',
+    'shift',
+    `exec ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} "$@"`, '',
+  ].join('\n'), { mode: 0o755 });
+  fs.writeFileSync(path.join(home, '.gitconfig'), [
+    '[user]', '\tname = runner', '\temail = runner@example.com',
+    `[url "file://${team}"]`, `\tinsteadOf = ${TEAM_URL}`,
+    `[url "file://${product}"]`, `\tinsteadOf = ${origin}`, '',
+  ].join('\n'));
+  seed(root, team, { 'teamai.yaml': `team: acme\nrepo: ${TEAM_URL}\n`, 'workflows/ship-issue.yaml': workflow(required) });
+  seed(root, product, { 'README.md': '# app\n' });
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home, USERPROFILE: home, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GH_CONFIG_DIR: path.join(home, '.gh'),
+    PATH: [bin, path.dirname(gh.bin), process.env.PATH ?? ''].join(path.delimiter),
+    GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', FORCE_COLOR: '0',
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, detached.nodeOptions].filter(Boolean).join(' '),
+  };
+  for (const name of ['XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GITHUB_TOKEN', 'GH_TOKEN']) delete env[name];
+
+  const [recipe, ...others] = ciRecipesOf(GUIDE);
+  if (!recipe || others.length > 0) throw new Error(`${GUIDE} shows ${others.length + (recipe ? 1 : 0)} GitHub Actions workflows, not one`);
+  const [job, ...jobs] = Object.values(recipe.jobs);
+  if (!job || jobs.length > 0) throw new Error('the recipe has more than one job');
+  const checkout = job.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+  const ref = z.string().parse(checkout?.with?.ref);
+  const work = path.join(root, 'work');
+  git(root, ['clone', '-q', '-b', ref, origin, work], env);
+  const jobEnv = Object.fromEntries(Object.entries(job.env ?? {}).map(([name, value]) => [name, expand(value)]));
+
+  const ran: Ran[] = [];
+  for (const command of runCommandsOf(recipe)) {
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', expand(command)], {
+      cwd: work, env: { ...env, ...jobEnv }, encoding: 'utf8', timeout: 120_000,
+    });
+    ran.push({ command, status: result.status, stdout: result.stdout, stderr: result.stderr });
+    if (result.status !== 0) break;
+  }
+  return { recipe, ran, root, gh, team, product };
+}
+
+function said(ran: Ran[]): string {
+  return ran.map((step) => `$ ${step.command}\nexit ${step.status}\n${step.stdout}\n${step.stderr}`).join('\n');
+}
+
+function doneOf(step: Ran | undefined): { run: string; outcome: string } {
+  const line = step?.stdout.trim().split('\n').filter((item) => item.startsWith('{')).at(-1);
+  if (!line) throw new Error(`no JSON envelope from ${step?.command}`);
+  return DoneSchema.parse(JSON.parse(line)).data.done;
+}
+
+function createsOf(gh: FakeGh): string[][] {
+  return gh.calls().filter((call) => call.args[0] === 'pr' && call.args[1] === 'create')
+    .map((call) => ['-R', '-H', '-B'].map((flag) => call.args[call.args.indexOf(flag) + 1] ?? ''));
+}
+
+/** The query the guide's run records section gives for the run that opened `url`, run over the records on `team`. */
+function runThatOpened(root: string, team: string, url: string): string {
+  const query = /^jq -r .+ workflows\/runs\/\*\.json$/m.exec(fs.readFileSync(GUIDE, 'utf8'))?.[0];
+  if (!query) throw new Error(`${GUIDE} shows no jq query over workflows/runs`);
+  const reports = path.join(root, 'reports');
+  fs.mkdirSync(path.join(reports, 'workflows', 'runs'), { recursive: true });
+  for (const file of git(root, ['--git-dir', team, 'ls-tree', '--name-only', 'teamai-reports', 'workflows/runs/']).split('\n').filter(Boolean)) {
+    fs.writeFileSync(path.join(reports, file), git(root, ['--git-dir', team, 'show', `teamai-reports:${file}`]));
+  }
+  const result = spawnSync('bash', ['-c', query.replace('<url>', url)], { cwd: reports, encoding: 'utf8' });
+  expect(result.status, result.stderr).toBe(0);
+  return result.stdout.trim();
+}
+
+const hasJq = spawnSync('jq', ['--version']).status === 0;
+
+describe('the CI recipe in the workflow guide, run through the real CLI', () => {
+  describe('on a GitHub origin', () => {
+    let job: ReturnType<typeof runRecipe>;
+    let done: { run: string; outcome: string };
+    const url = 'https://github.com/fixture/app/pull/1';
+    beforeAll(() => {
+      job = runRecipe(GITHUB_URL, false);
+      expect(job.ran.map((step) => step.status), said(job.ran)).toEqual(runCommandsOf(job.recipe).map(() => 0));
+      done = doneOf(job.ran.at(-1));
+    }, 180_000);
+
+    it('opens one pull request from the delivered branch into the checked-out branch, and lists it in the run record', () => {
+      const { root, gh, team, product } = job;
+      expect(done.outcome).toBe('succeeded');
+      const branch = `teamai/${done.run}/work/p1`;
+      expect(createsOf(gh)).toEqual([['fixture/app', branch, 'main']]);
+      const opened = OpenSchema.parse(JSON.parse(fs.readFileSync(path.join(path.dirname(gh.bin), 'open.json'), 'utf8')));
+      expect(opened.map((pull) => [pull.head.ref, pull.html_url])).toEqual([[branch, url]]);
+      expect(runState(root, done.run).deliveries).toEqual([{ url, branch, base: 'main', step: 'work', pass: 1 }]);
+      expect(git(root, ['--git-dir', product, 'show', `${branch}:issue.txt`])).toBe(String(ISSUE));
+      const record = RecordSchema.parse(JSON.parse(git(root, ['--git-dir', team, 'show', `teamai-reports:workflows/runs/${done.run}.json`])));
+      expect(record.prs).toEqual([url]);
+    });
+
+    it.skipIf(!hasJq)('finds the run that opened the pull request with the jq query of the guide', () => {
+      expect(runThatOpened(job.root, job.team, url)).toBe(done.run);
+    });
+  });
+
+  it('fails a run whose origin TeamAI reaches through git alone, naming the branch it pushed there', () => {
+    const { recipe, ran, root, gh, product } = runRecipe(GENERIC_URL, false);
+
+    expect(ran.map((step) => step.status), said(ran)).toEqual(runCommandsOf(recipe).map((_, index, all) => (index === all.length - 1 ? 1 : 0)));
+    const done = doneOf(ran.at(-1));
+    expect(done.outcome).toBe('failed');
+    const branch = `teamai/${done.run}/work/p1`;
+    const work = runState(root, done.run).steps.find((step) => step.id === 'work');
+    expect(work?.failure).toMatchObject({ code: 'delivery_failed', message: expect.stringContaining(`The work is kept on origin in branch ${branch}.`) });
+    expect(git(root, ['--git-dir', product, 'rev-parse', `refs/heads/${branch}`])).toBe(work?.changes?.to);
+    expect(createsOf(gh)).toEqual([]);
+  }, 180_000);
+
+  it('fails a required approval unattended with hitl_required, and opens nothing', () => {
+    const { recipe, ran, root, gh } = runRecipe(GITHUB_URL, true);
+
+    expect(ran.map((step) => step.status), said(ran)).toEqual(runCommandsOf(recipe).map((_, index, all) => (index === all.length - 1 ? 1 : 0)));
+    const done = doneOf(ran.at(-1));
+    expect(done.outcome).toBe('failed');
+    expect(runState(root, done.run).steps.find((step) => step.id === 'approve')?.failure).toMatchObject({ code: 'hitl_required' });
+    expect(createsOf(gh)).toEqual([]);
+  }, 180_000);
 });

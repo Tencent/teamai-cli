@@ -840,7 +840,7 @@ workflowCmd
 
 workflowCmd
   .command('retry <run> <step>')
-  .description('Retry a leased or stopped step, or a HITL request to answer it again, with a new pass and revision. Reopen its dependent steps and a settled run; keep earlier passes. After reopening, run resume or let your driver poll next. Prints one JSON envelope.')
+  .description('Retry a leased or stopped step, or a HITL request to answer it again, with a new pass and revision. A failed pull request delivery is retried in the same pass, without running the step again. Reopen its dependent steps and a settled run; keep earlier passes. After reopening, run resume or let your driver poll next. Prints one JSON envelope.')
   .action(async (run: string, step: string) => {
     const { workflowRetry } = await import('./workflow-commands.js');
     await workflowRetry(run, step);
@@ -868,7 +868,7 @@ workflowCmd
 
 workflowCmd
   .command('cancel <run> [step]')
-  .description('Cancel a whole run, or a pending, waiting, leased, or running step and its open descendants. Invalidates leases; drivers stop tools listed in next.cancelled. Prints one JSON envelope.')
+  .description('Cancel a whole run, or a pending, waiting, leased, running, or delivering step and its open descendants. Invalidates leases; drivers stop tools listed in next.cancelled. Prints one JSON envelope.')
   .action(async (run: string, step?: string) => {
     const { workflowCancel } = await import('./workflow-commands.js');
     await workflowCancel(run, step);

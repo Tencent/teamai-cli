@@ -218,7 +218,7 @@ steps:
 
 ## 交付 PR
 
-在可写步骤上设置 `deliver: pr`，或在子步骤共用其 `workspace: new` 分支的 `workflow` 步骤上设置它。TeamAI 推送分支，通过产品仓库的 Git provider 创建供人审查的 PR，从不合并。`for_each` 每项交付一个 PR。循环中的 `new` 步骤每个 pass 使用新的 `/p<pass>` 分支和 PR，之前的 PR 保持打开。
+在写分支的步骤上设置 `deliver: pr`，步骤成功后 TeamAI 会从这条分支开一个 pull request，并且从不合并它。设置了 `workspace: new` 或 `continue` 的步骤会写分支，位于已开分支的工作流中的提示词步骤也会。交付的命令必须设置 `workspace`，因为没有 `workspace` 的命令是只读的。设置了 `workspace: new` 的 `workflow` 步骤为它的全部步骤只交付一次自己的分支。`for_each` 步骤的每个 item 各自交付自己的分支。
 
 ```yaml
 schemaVersion: v1alpha1
@@ -232,19 +232,23 @@ steps:
     prompt: "Implement issue #{{ inputs.issue }}."
 ```
 
-PR 的目标沿分支记录的来源，追溯到最近已经交付的分支。`for_each.after` 优先于其他 `needs`，第一个子步骤继承外层工作流的依赖；跳过或只读的依赖会继续向前追溯。之前没有交付分支时，目标为运行开始时的分支。因此请从有名称的分支开始；detached checkout 没有 PR 目标。同一源分支和目标分支已有打开的 PR 时会复用。
+会以只读方式运行的 `deliver: pr` 步骤无法通过校验。运行若会从 detached HEAD 开始，`workflow start` 会拒绝它，因为 pull request 没有可以合入的分支。请先检出一个有名称的分支。
 
-交付 PR 的命令必须显式选择 `workspace: new` 或 `continue`；即使位于可写工作流中，省略 workspace 的命令仍为只读。提示词可以继承外层的可写工作区。
+步骤成功时，驱动已经像对任何可写步骤一样推送了分支，步骤进入 `delivering` 状态，需要它的步骤会等待。下一次 `teamai workflow next`（无论哪个驱动调用）会查找从这条分支合入目标分支的已打开 pull request，没有时才新开一个。因崩溃而中断、或被另一台机器接管的运行，会找到之前开的 pull request，不会再开第二个。TeamAI 在 GitHub、GitLab、TGit 和 GitCode 的 origin 上开 pull request，使用 provider 的 CLI 或 token 已有的登录，从不弹出登录提示。在其他 origin 上（例如通用 Git 主机或 CNB），它不开 pull request，步骤失败并写明分支。
 
-agent 完成后，步骤进入持久的 `delivering` 状态，后续依赖等待交付结束。Git 和 provider 操作不占用运行锁。创建 PR 失败时以 `delivery_failed` 结束，消息写明保留的分支。修好认证后，运行 `teamai workflow retry <run> <step>`，再运行 `teamai workflow resume <run>`，只重试这条分支的交付，不重跑 agent。推送失败仍为 `push_failed`，并保留 worktree。组合工作流结束时可能已移除 worktree，但提交和远程分支仍在。通用 Git 主机只支持传输：请自行创建 PR 并上报 URL，或使用支持创建 PR 的 provider。交付不会启动交互登录。
+pull request 合入这条分支来源中最近一条已经交付过的分支，没有时合入运行开始时的分支。分支首先来自其 `for_each` item 的 `after` 分支，然后依次来自 `needs`。子工作流的第一个步骤来自运行它的步骤的 needs。跳过的步骤没有写分支，会被越过。因此每个 pull request 只显示它所合入的分支之后的工作。
 
-创建 PR 前，TeamAI 将交付提交与运行的基准提交比较。CI、hooks、agent 指令、rules、MCP 和同类工具配置的修改会被拒绝，并列出路径。共享 agent 配置路径与工作区执行前恢复的路径相同。检查也覆盖从前序分支继承的修改，以及删除和重命名。
+循环中 `workspace: new` 步骤的每个 pass 都有自己的 `/p<pass>` 分支，因此各开一个 pull request。之前的 pull request 保持打开，这是有意为之。在同一条 `continue` 分支上循环的步骤只有一个 pull request。
 
-远程驱动可在 `changes` 的 `branch`、`base`、`from`、`to`、`commits` 之外上报 `pr_url`。provider 能提供元数据时，会校验仓库和源、目标分支。私有审查服务可使用任意 HTTPS 主机和路径。带凭据、无效、非 HTTPS 或超过 512 字符的 URL 被丢弃；query 和 fragment 会移除。丢弃 URL 不会拒绝 report，`dropped` 以 `{ field: "changes.pr_url", reason: "…" }` 列出原因，不包含值。未知嵌套字段以 `changes.<字段>` 列入 `ignored`。驱动仍须遵守租约的工作区与提交契约。
+开出或接受 pull request 之前，TeamAI 将交付的提交与运行的基准提交比较。修改 CI 配置（例如 `.github/workflows` 或 `.gitlab-ci.yml`）、hooks、任意层级的 `AGENTS.md` 或 `CLAUDE.md`，或任一工具的 agent、rule、MCP 文件，步骤会以 `protected_path` 失败，消息列出这些文件。这些路径就是工作区步骤从运行基准获得的 agent 文件，再加上 CI 和 hook 路径。删除和重命名也算，分支从前序步骤带来的修改也算。之后运行 `teamai workflow retry <run> <step>`，会在新的 pass 中重新运行这个步骤。
+
+其他交付失败会让步骤以 `delivery_failed` 失败。消息说明出了什么问题、工作保存在哪条分支，并给出重试命令。修复原因（例如 provider 的凭据）后，运行 `teamai workflow retry <run> <step>`，再运行 `teamai workflow resume <run>`，或让驱动调用 `next`。重试会再次交付同一条分支，不会重新运行步骤。运行在开 pull request 期间被取消时，这个 pull request 无法收回。运行会列出它，步骤保持 cancelled。
+
+自己开 pull request 的驱动（例如在另一台机器上的驱动）把它作为 `changes.pr_url`，和步骤的其他 `changes` 一起上报。TeamAI 保留不含凭据、不超过 512 个字符的 `https` URL，并去掉 query 和 fragment。在 origin 自己的主机上，URL 必须是这条分支合入目标分支的已打开 pull request。其他主机上的 URL（例如私有审查服务）原样保留。TeamAI 不保留的 URL，以及来自未设置 `deliver: pr` 的步骤的 URL，会被丢弃。report 仍会被接受，其信封列出 `"dropped":[{"field":"changes.pr_url","reason":"…"}]`，不包含 URL 本身。随后这条分支像其他驱动的分支一样交付。
 
 ### 从 CI 启动
 
-将上面的工作流放进团队仓库，并在其中配置本地提示词工具。普通 GitHub Actions 作业是 v1 的触发方式。token 需要能读取团队仓库、向产品仓库推送分支和创建 PR。在仓库设置里配置 `TEAM_REPO` 和 `WORKFLOW_TOKEN`。
+GitHub Actions 作业可以用本地驱动启动运行，运行会在无人值守的情况下交付它的 pull request。把工作流放进团队仓库。给作业一个 token，它要能读取团队仓库、向产品仓库推送分支，并在产品仓库开 pull request。下面的作业从 `WORKFLOW_TOKEN` secret 读取它，从 `TEAM_REPO` 变量读取团队仓库的 URL。runner 还需要运行提示词步骤的工具，并且已经登录，`--tools` 为这次启动选择它。
 
 ```yaml
 on: { issues: { types: [labeled] } }
@@ -260,10 +264,10 @@ jobs:
         with: { ref: main, token: "${{ secrets.WORKFLOW_TOKEN }}" }
       - run: npx teamai-cli init "$TEAM_REPO" --scope workspace
       - run: npx teamai-cli pull
-      - run: npx teamai-cli workflow start ship-issue --driver local --auto-approve --inputs '{"issue":${{ github.event.issue.number }}}'
+      - run: npx teamai-cli workflow start ship-issue --driver local --tools default=claude --auto-approve --inputs '{"issue":${{ github.event.issue.number }}}'
 ```
 
-`--auto-approve` 只回答可选 approve 和有默认值的可选 choose。必需的 gate 在无人值守作业中以 `hitl_required` 失败。从失败分支启动时，按分支名检出；默认的 `pull_request` checkout 是 detached merge commit。TeamAI 不安装触发器，也不等待 CI 或合并事件。
+`--auto-approve` 对可选的 `approve` 请求回答 yes，对可选的 `choose` 请求选择默认值。无人值守的作业里没人能回答必需的请求，因此它所在的步骤以 `hitl_required` 失败，运行也随之失败。要从另一条分支启动运行（例如 CI 失败的分支），请按分支名检出它，例如在 `pull_request` 事件中使用 `ref: ${{ github.head_ref }}`。默认的 `pull_request` checkout 是 detached merge commit，`workflow start` 会拒绝它。TeamAI 不安装触发器，也不等待 CI 或合并。
 
 ## 在另一台机器上继续运行
 
@@ -286,13 +290,17 @@ teamai workflow resume <run>      # 在另一台机器上，位于同一个仓�
 
 ## 运行记录
 
-结束记录包含 `prs`：通过校验的 `changes.pr_url` 按首次出现顺序排列，跨 item 和循环 pass 去重。步骤 outputs 中的 URL 不会发布。`prs` 遵循相同的 usage-report 退出设置；团队仓库公开时它也公开。没有 `prs` 的旧记录仍可读取。
-
 开启[使用统计上报](reporting.md)时，每次运行都会向团队的 `teamai-reports` 分支发布一条保护隐私的记录：开始时一次，结束时一次。关闭后不发布任何记录，返回中也不带 `record`。记录存放在 `workflows/runs/<run id>.json`，以 run id 为键，重试的发布会更新同一条记录而不是产生副本。
 
-记录只包含：run id、工作流名、`sourceHash`、可选的 `teamRevision`、阶段（`start` 或 `end`）、驱动的 kind、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数，以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
+记录只包含：run id、工作流名、`sourceHash`、可选的 `teamRevision`、阶段（`start` 或 `end`）、驱动的 kind、状态、运行到达的 end（到达时才有）、未到达 end 就失败的运行的失败代码（仅限 teamai 设定的代码，如循环用完次数时的 `loop_exhausted`，或本地驱动找不到工具时的 `tool_unavailable`，不含失败消息）、开始和结束时间、时长、逐步条目（step 路径如 `check.classify`、agent、tool、model、outcome、tokens——混合 agent 的运行会分别记录每步自己的字段；`tool` 仅在是本地驱动的工具之一时保留，`model` 是驱动报告的名称，仅在形如模型名时保留）、步骤汇总计数（succeeded、failed、skipped、cancelled）、累计已结算 attempt 数、运行交付的 pull request（`prs`），以及发布者用户名。`sourceHash` 标识实际运行的工作流和提示文件的精确字节。只有一个远端可达的团队提交同时保存父工作流和所有子工作流的这些精确字节时，才写入 `teamRevision`；本地或未推送的修改以及混合缓存版本都会省略它。每条条目都带 `pass` 编号，循环运行了多次的步骤每个 pass 各有一条条目。`for_each` 的项按该项自己运行的次数计 `pass`，所以前面某个 pass 的项较少时，项的 `pass` 可能比所属步骤的小。被取消步骤的条目 outcome 为 `cancelled`，被跳过的步骤没有 outcome。汇总计数按运行结束时的状态，每个步骤只计一次。从未开始的子工作流里的步骤不计入。提示词、命令文本、输入值、`env` 值、输出、diff、秘密值、本地工作区路径、会话 id 和主机名没有可落地的字段——记录由白名单构建，而不是从运行状态里过滤。
 
 条目的 `agent` 是该 pass 实际运行时观察到的组合：步骤的 `agent:` 定义及工具如何拿到它（工具自己读取 agent 文件时为 `main`，指令拼接到提示词前时为 `prompt`）、工具及其版本、启动时请求的模型和 effort、工具报告的模型、检出最近一次 pull 的团队提交以及之后是否改过已下发的文件、项目提交、TeamAI 版本和驱动的 kind。没有观察到的值不写。`fingerprint` 对定义、工具、模型、effort 和团队提交做哈希，fingerprint 相同的两个 pass 记录下来的这些部分相同。模型或团队提交未知，或改过已下发的文件时，不写 `fingerprint`。没有任何观察的 pass，以及旧版 TeamAI 写的记录，只带定义的名称。步骤运行期间，如果该检出最近一次 pull 已完整下发到步骤启动的工具，该工具以及它在同一检出中启动的会话都会跳过会话开始时的 pull，步骤因此保持它记录的团队提交。
+
+`prs` 列出运行交付的每个 pull request，无论是 TeamAI 开的还是驱动上报的，每个只列一次，按运行首次交付它们的顺序排列。步骤输出中的 URL 从不列入。和记录的其他部分一样，`prs` 遵循 usage-report 的退出设置，团队仓库公开时它也公开。没有 `prs` 的旧记录仍可读取。要查找开出某个 pull request 的运行，在团队仓库 `teamai-reports` 分支的检出中运行：
+
+```text
+jq -r 'select((.prs // []) | index("<url>")) | .run' workflows/runs/*.json
+```
 
 结束运行的操作在锁内排队保存结束记录，在释放锁后发布。发布失败时——没有远端、reports 锁被占用、push 被拒——记录会进入当前 scope 数据目录的本地队列，在下一次 `teamai pull` 时重试。此时 `start`、`next` 的返回会带 `record: pending` 而不是 `record: published`。运行本身不受影响：一台机器在运行开始后崩溃，该运行会以"已开始未结束"的状态保持可见。
 

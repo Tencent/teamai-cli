@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseDocument } from 'yaml';
 import { syncScorerDefinitions } from '../scorers/cache.js';
+import { ciRecipesOf, runCommandsOf } from './helpers/ci-recipe.js';
 import { formatScorerDiagnostic } from '../scorers/definition.js';
 import type { LocalConfig } from '../types.js';
 import { formatUnknownScorer, syncWorkflowDefinitions } from '../workflow/cache.js';
@@ -307,6 +308,19 @@ describe('workflow guide examples', () => {
 
     const prompt = answers.map(leaseOf).find((lease) => lease?.step === 'explain')?.prompt ?? '';
     expect(JSON.parse(prompt.slice(prompt.indexOf('[')))).toEqual(shown);
+  });
+
+  it.each(PAGES)('%s: every job of a GitHub Actions workflow it shows says what it runs on', (page) => {
+    const jobs = ciRecipesOf(path.join(ROOT, page)).flatMap((recipe) => Object.entries(recipe.jobs));
+    expect(jobs.filter(([, job]) => !job['runs-on']).map(([name]) => `${page}: job ${name} has no runs-on`)).toEqual([]);
+  });
+
+  it('shows the same CI recipe commands in every language', () => {
+    const recipes = PAGES.filter((page) => path.posix.basename(page) === 'workflow.md')
+      .map((page) => ({ page, commands: ciRecipesOf(path.join(ROOT, page)).map(runCommandsOf) }));
+    expect(recipes.map(({ page }) => page)).toEqual(['docs/guide/workflow.md', 'docs/guide/zh-CN/workflow.md']);
+    expect(recipes[0]?.commands.flat().length, 'the English guide shows a CI recipe with run commands').toBeGreaterThan(0);
+    for (const { page, commands } of recipes.slice(1)) expect(commands, page).toEqual(recipes[0]?.commands);
   });
 
   it.each([...PAGES, ...SCORER_PAGES])('%s: every relative link to a .md file resolves', (page) => {
