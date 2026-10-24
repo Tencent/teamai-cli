@@ -371,7 +371,7 @@ describe('delivering a step', () => {
     const fix = await take(config, runId);
     if (!fix.workspace) throw new Error('fix has no workspace');
     const to = pushWork(root, fix);
-    const job = { key: { step: 'fix', pass: 1, settledAt: 2, branch: fix.workspace.branch, head: to }, runId, runName: 'ship', checkout: cwd, base: fix.workspace.base.commit, target: 'main', childWork: [] };
+    const job = { key: { step: 'fix', pass: 1, settledAt: 2, branch: fix.workspace.branch, head: to }, runId, runName: 'ship', checkout: cwd, base: fix.workspace.base.commit, target: 'main', childWork: [], writerLeased: false };
 
     expect(await deliverPr(job, async () => 'refused')).toEqual({ ok: false, fault: { kind: 'withdrawn' } });
     expect(gh.calls().map((call) => call.args[0])).toEqual(['api']);
@@ -1403,6 +1403,36 @@ describe('retrying and cancelling a delivery', () => {
     expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(message) } });
     expect(run.deliveries).toBeUndefined();
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['TeamAI would open its pull request', {}, false],
+    ['its driver reported its pull request', { pr_url: 'https://github.com/fixture/app/pull/1' }, true],
+    ['the lookup finds its open pull request', {}, true],
+  ])('delivers nothing while a sibling that writes the shared branch is leased, when %s, and checks the sibling\'s commit once it reports', async (_case, changes, open) => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const impl = await take(config, runId);
+    const branch = impl.workspace?.branch ?? '';
+    const gh = fakeGh(path.join(root, 'gh'), { open: open ? [pull(1, branch)] : [] });
+    expect(await succeed(config, runId, impl, { to: pushWork(root, impl), ...changes })).not.toHaveProperty('data.dropped');
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+
+    expect(await leaseNext(config, runId, remote, { ...writable, running: [docs.attempt] })).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
+    const waiting = await state(config, runId);
+    expect(waiting.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'delivering' });
+    expect(waiting.creating).toBeUndefined();
+    expect(waiting.deliveries).toBeUndefined();
+
+    const sibling = pushOnto(root, branch, { '.github/workflows/x.yml': 'on: push\n' });
+    await succeed(config, runId, docs, { to: sibling });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`commit ${sibling}, which a later report recorded on the shared branch ${branch}`) } });
+    expect(run.deliveries).toBeUndefined();
+    expect(creates(gh)).toEqual([]);
   });
 
   it('records a pull request opened while the run was cancelled, keeps the step cancelled, and queues the end record again with it', async () => {

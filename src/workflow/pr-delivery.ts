@@ -27,6 +27,8 @@ export interface DeliveryJob {
   childWork: Array<{ step: string; branch: string; commit: string }>;
   /** The workflow step whose copy the branch is, when another step's: retrying it runs its steps again in a new branch. */
   openedBy?: string;
+  /** A step that writes the branch was leased, so its next push would enter a pull request unchecked: none is taken yet. */
+  writerLeased: boolean;
   /** The branch the pull request goes into. */
   target: string;
   /** A URL the step's driver reported and the engine kept: nothing is opened for it. */
@@ -61,8 +63,8 @@ export type DeliveryOutcome = { ok: true; pr: PrUrl } | { ok: false; fault: Deli
 /**
  * Asked under the run lock right before a pull request is opened: `open` while the step still delivers the job, whose
  * request the run then lists as unresolved; `refused` when it no longer does; `busy` when nobody knows yet, because the
- * run lock could not be taken or a report recorded another commit on the branch since the job was picked. Only `open`
- * opens anything.
+ * run lock could not be taken, a report recorded another commit on the branch since the job was picked, or a step that
+ * writes the branch is leased. Only `open` opens anything.
  */
 export type CreateGate = () => Promise<'open' | 'refused' | 'busy'>;
 
@@ -78,8 +80,8 @@ const failed = (fault: DeliveryFault): DeliveryOutcome => ({ ok: false, fault })
  * Delivers one branch. Its changes against the run base are checked before anything else, a reported URL included,
  * so no pull request goes out, and no step succeeds, with a protected path changed. Then the open request of the branch
  * is looked up, and only when there is none, origin's branch is still at the checked commit, and `gate` opens, is one
- * opened; then it is looked up again. `busy` is nothing opened and no outcome: the branch moved while the lookup ran, or
- * the gate could not answer, and the job is for a later call, which checks it again.
+ * opened; then it is looked up again. `busy` is nothing opened and no outcome: the branch moved while the lookup ran, a
+ * step that writes it was leased, or the gate could not answer, and the job is for a later call, which checks it again.
  * Nothing here logs in, prompts or merges, and no text a host answered with is kept, since it may hold a credential.
  */
 export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<DeliveryOutcome | 'busy'> {
@@ -112,7 +114,7 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
     if ('fault' in held) return failed(held.fault);
     if (!held.contains) return failed({ kind: 'child_work_left_out', step: child.step, branch: child.branch });
   }
-  if (job.reported) return { ok: true, pr: job.reported };
+  if (job.reported) return job.writerLeased ? 'busy' : { ok: true, pr: job.reported };
   const origin = await originOf(job.checkout);
   if (origin.kind === 'transport') return failed({ kind: 'no_provider' });
   const { provider, repo } = origin;
@@ -125,7 +127,7 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   const checked = await originTip(job.checkout, job.key.branch);
   if (checked.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
   if (checked.commit !== tip.commit) return 'busy';
-  if (found.kind === 'found') return { ok: true, pr: found.pr };
+  if (found.kind === 'found') return job.writerLeased ? 'busy' : { ok: true, pr: found.pr };
   const gated = await gate();
   if (gated === 'busy') return 'busy';
   if (gated === 'refused') return failed({ kind: 'withdrawn' });

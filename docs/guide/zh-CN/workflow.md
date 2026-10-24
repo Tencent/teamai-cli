@@ -234,7 +234,7 @@ steps:
 
 会以只读方式运行的 `deliver: pr` 步骤无法通过校验；设置了 `deliver: pr` 的 `workflow` 步骤（无论是否 `for_each`），若其工作流中没有步骤写分支，也无法通过校验。运行若会从 detached HEAD 开始，`workflow start` 会拒绝它，因为 pull request 没有可以合入的分支。请先检出一个有名称的分支。
 
-步骤成功时，驱动已经像对任何可写步骤一样推送了分支，步骤进入 `delivering` 状态，需要它的步骤会等待。下一次 `teamai workflow next`（无论哪个驱动调用）会查找从这条分支合入目标分支的已打开 pull request，没有时才新开一个。因崩溃而中断的运行，会找到之前开的 pull request，不会再开第二个。被另一台机器接管的运行也是如此，除非交出运行的机器此刻仍在开 pull request；GitHub 和 GitLab 会拒绝这样的重复请求。TeamAI 在 GitHub、GitLab、TGit 和 GitCode 的 origin 上开 pull request，使用 provider 的 CLI 或 token 已有的登录，从不弹出登录提示。在其他 origin 上（例如通用 Git 主机或 CNB），它不开 pull request，步骤失败并写明分支。
+步骤成功时，驱动已经像对任何可写步骤一样推送了分支，步骤进入 `delivering` 状态，需要它的步骤会等待。下一次 `teamai workflow next`（无论哪个驱动调用）会查找从这条分支合入目标分支的已打开 pull request，没有时才新开一个。写同一条分支的另一个步骤仍在运行时，交付会等它上报，这样 TeamAI 会在开出或接受 pull request 之前检查那个步骤的提交。因崩溃而中断的运行，会找到之前开的 pull request，不会再开第二个。被另一台机器接管的运行也是如此，除非交出运行的机器此刻仍在开 pull request；GitHub 和 GitLab 会拒绝这样的重复请求。TeamAI 在 GitHub、GitLab、TGit 和 GitCode 的 origin 上开 pull request，使用 provider 的 CLI 或 token 已有的登录，从不弹出登录提示。在其他 origin 上（例如通用 Git 主机或 CNB），它不开 pull request，步骤失败并写明分支。
 
 pull request 合入这条分支来源中最近一条已经交付过的分支，没有时合入运行开始时的分支。分支首先来自其 `for_each` item 的 `after` 分支，然后依次来自 `needs`。子工作流的第一个步骤来自运行它的步骤的 needs。跳过的步骤没有写分支，会被越过。因此每个 pull request 只显示它所合入的分支之后的工作。
 

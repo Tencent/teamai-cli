@@ -26,7 +26,9 @@ export function deliveringStep(run: RunState, key: DeliveryKey): DeliveringStep 
  * stopped is not delivered. One in `waiting`, whose branch this drain found ahead of the recorded commit, waits for a
  * later drain. Undefined when nothing delivers, or when the run settles, which the locked body of `next` finishes.
  */
-export function nextDelivery(run: RunState, reconcile: (run: RunState) => object, waiting: readonly DeliveryKey[]): DeliveryJob | undefined {
+export function nextDelivery(
+  run: RunState, reconcile: (run: RunState) => object, writerLeased: (run: RunState, branch: string) => boolean, waiting: readonly DeliveryKey[],
+): DeliveryJob | undefined {
   if (run.status !== 'running') return undefined;
   const settledRun = reconcile(run);
   if ('unreadable' in settledRun || 'outcome' in settledRun) return undefined;
@@ -43,6 +45,7 @@ export function nextDelivery(run: RunState, reconcile: (run: RunState) => object
       key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target,
       recordedHead: run.copies?.[key.branch]?.commit, childWork: childWorkOff(run, step, key.branch),
       openedBy: run.steps.find((item) => item !== step && branchName(run.id, item.id, item.pass ?? 1) === key.branch)?.id,
+      writerLeased: writerLeased(run, key.branch),
       ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
     };
   }

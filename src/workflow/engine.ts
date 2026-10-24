@@ -885,8 +885,9 @@ export interface NextOptions {
 
 /**
  * The gate before a pull request is opened: with what reports and controls left pending applied, whether the step still
- * delivers `job`, and the branch's recorded commit is still the one `job` checked. If so, the run lists its request in
- * the same write, so one opened by a process that then stops is looked up, whatever becomes of the step, rather than lost.
+ * delivers `job`, the branch's recorded commit is still the one `job` checked, and no step that writes the branch is
+ * leased. If so, the run lists its request in the same write, so one opened by a process that then stops is looked up,
+ * whatever becomes of the step, rather than lost.
  */
 async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob): Promise<'open' | 'refused' | 'busy'> {
   const marked = await updateRun(config, runId, async (run): Promise<{ value: 'open' | 'refused' | 'busy'; write?: RunState }> => {
@@ -894,7 +895,7 @@ async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob
     const settledRun = reconcileRun(run);
     const step = 'unreadable' in settledRun || 'outcome' in settledRun ? undefined : deliveringStep(run, job.key);
     if (!step) return { value: 'refused' };
-    if (run.copies?.[job.key.branch]?.commit !== job.recordedHead) return { value: 'busy' };
+    if (run.copies?.[job.key.branch]?.commit !== job.recordedHead || branchWriterLeased(run, job.key.branch)) return { value: 'busy' };
     const create = { ...job.key, target: job.target };
     const listed = run.creating?.find((item) => sameCreate(item, create));
     // A request listed before is asked again now, so its lookups count from this create.
@@ -926,7 +927,7 @@ async function drainDeliveries(config: LocalConfig, runId: string): Promise<void
       const picked = await updateRun(config, runId, async (run) => {
         if (run === 'missing') return { value: undefined };
         const before = JSON.stringify(run);
-        const job = nextDelivery(run, reconcileRun, waiting);
+        const job = nextDelivery(run, reconcileRun, branchWriterLeased, waiting);
         const value = job ? { job } : unresolvedCreate(run, tried);
         return { value, ...(JSON.stringify(run) !== before ? { write: { ...run, updatedAt: new Date().toISOString() } } : {}) };
       });
