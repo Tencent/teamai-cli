@@ -337,6 +337,17 @@ export async function getRemoteUrl(localPath: string, remoteName = 'origin'): Pr
   }
 }
 
+/** Read the literal configured remote URL without applying url.*.insteadOf rewrites. */
+export async function getConfiguredRemoteUrl(localPath: string, remoteName = 'origin'): Promise<string | null> {
+  const git = createGit(localPath);
+  try {
+    const url = (await git.raw(['config', '--get', `remote.${remoteName}.url`])).trim();
+    return url || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Strip embedded credentials from a git remote URL for safe display, e.g.
  * `https://oauth2:TOKEN@host/o/r.git` → `https://host/o/r.git`. Leaves URLs

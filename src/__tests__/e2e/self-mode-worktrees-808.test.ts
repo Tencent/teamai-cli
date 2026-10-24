@@ -1534,9 +1534,21 @@ describe('a checkout an older git-mode install left (#808)', () => {
     expect(initSame.output).not.toContain('Set aside');
     const samePull = await runCLI(['pull'], projectRoot, home);
     expect(samePull.code, samePull.output).toBe(0);
-    expect(partitionQueue(install)).toContain(name);
+    expect(partitionQueue(install)).not.toContain(name);
+    expect(published({ ...install, remote: teamA.bare })).toContain(`learnings/${name}`);
     const indexed = (JSON.parse(fs.readFileSync(index, 'utf8')) as { entries: Array<{ filename: string }> }).entries;
     expect(indexed.map((entry) => entry.filename)).toContain(name);
+
+    // Queue another Team A learning so the A -> B switch still exercises the
+    // set-aside boundary after the same-repo pull published the first one.
+    const queuedForSwitch = await withPushesRejected({ ...install, remote: teamA.bare }, () => runCLI(
+      ['contribute', '--title', 'team-a-switch-note', '--file', note(install, 'team-a-switch', 'Set aside for Team A')],
+      projectRoot,
+      home,
+    ));
+    expect(queuedForSwitch.output).toContain('Saved locally');
+    const [switchName] = partitionQueue(install).filter((f) => f.startsWith('team-a-switch-note-'));
+    expect(switchName, partitionQueue(install).join('\n')).toBeDefined();
 
     const initB = await runCLI(['init', teamB.url, '--scope', 'project', '--force'], projectRoot, home);
     expect(initB.code, initB.output).toBe(0);
@@ -1544,9 +1556,9 @@ describe('a checkout an older git-mode install left (#808)', () => {
     expect(switched.code, switched.output).toBe(0);
     const partition = partitionOf(install);
     const aside = path.join(partition, 'pending-learnings.git-git.example.com-team-team-a');
-    expect(fs.readFileSync(path.join(aside, name), 'utf8')).toContain('Note for team A');
+    expect(fs.readFileSync(path.join(aside, switchName), 'utf8')).toContain('Set aside for Team A');
     expect(initB.output).toContain(`Set aside 1 queued learning(s) from the previous git install in ${aside}`);
-    expect(partitionQueue(install)).not.toContain(name);
+    expect(partitionQueue(install)).not.toContain(switchName);
     expect(fs.existsSync(index)).toBe(false);
 
     const pull = await runCLI(['pull'], projectRoot, home);
@@ -1758,13 +1770,18 @@ describe('a checkout an older git-mode install left (#808)', () => {
     // The new clone sits where team A's did, and has no registration of the old checkout.
     expect(git(['remote', 'get-url', 'origin'], path.join(partition, 'team-repo')).trim()).toBe(teamB.url);
 
-    const refusal = `${checkout} is a teamai-learnings checkout teamai cannot show to be ${path.join(partition, 'team-repo')}'s`;
     const contribute = await runCLI(
       ['contribute', '--title', 'team-b-note', '--file', note(install, 'team-b', 'Note for team B')],
       projectRoot,
       home,
     );
+    // Replacing the clone preserves the dirty checkout with its backing clone,
+    // so later commands correctly identify that preserved clone in the warning.
+    const preservedClone = path.join(partition, 'team-repo.previous');
+    const refusal = `${checkout} is a teamai-learnings checkout of ${preservedClone}, ` +
+      `not of ${path.join(partition, 'team-repo')}, left by an install in another mode.`;
     expect(contribute.output.split(refusal).length - 1, contribute.output).toBe(1);
+    expect(fs.existsSync(path.join(preservedClone, '.git'))).toBe(true);
     expect(contribute.output).toContain('Saved locally');
     expect(fs.readFileSync(draft, 'utf8')).toBe('# Team A draft nobody committed\n');
     expect(git(['log', '--all', '--name-only', '--format='], teamB.bare)).not.toContain('team-a-');

@@ -359,6 +359,129 @@ async function registeredCheckoutImpl(spec: BranchWorktreeSpec, localConfig: Loc
   return checkout ?? null;
 }
 
+/** Whether the managed path is registered to this repository for this branch. */
+async function ownsCheckoutImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): Promise<boolean> {
+  if (!usesBranchWorktree(localConfig)) return false;
+  const wt = worktreePath(spec, localConfig);
+  if (!(await pathExists(wt))) return false;
+  const registered = await registeredCheckoutImpl(spec, localConfig);
+  return registered !== null && (await fse.realpath(registered)) === (await fse.realpath(wt));
+}
+
+/**
+ * Remove this repository's side-branch checkout before its dedicated clone is
+ * replaced. Push first so a clean checkout with local-only commits is not
+ * silently discarded; dirty or unprovable checkouts are left untouched.
+ */
+async function retireImpl(
+  spec: BranchWorktreeSpec,
+  localConfig: LocalConfig,
+  whileLocked: () => Promise<void> = async () => {},
+): Promise<void> {
+  if (!usesBranchWorktree(localConfig)) return;
+  await withLockImpl(spec, localConfig, async () => {
+    await retireWhileLockedImpl(spec, localConfig);
+    await whileLocked();
+  });
+}
+
+/** Retire one checkout after its writer lock has already been acquired. */
+async function retireWhileLockedImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): Promise<void> {
+  const wt = worktreePath(spec, localConfig);
+    if (await pathExists(wt)) {
+      await checkOwnerImpl(spec, localConfig);
+      const registered = await registeredCheckoutImpl(spec, localConfig);
+      if (registered === null || (await fse.realpath(registered)) !== (await fse.realpath(wt))) {
+        throw new ForeignCheckoutError(
+          `${wt} exists but is not registered to ${gitRoot(localConfig)} as its ${spec.branch} checkout. ` +
+            'teamai left it and the current clone unchanged. Move it aside, or delete it if it holds nothing you need, ' +
+            'then run init again.',
+          `the ${spec.branch} checkout cannot be shown to belong to this repository; see the warning above`,
+        );
+      }
+
+      const wtGit = createGitWithBlockTimeout(wt);
+      if (!(await wtGit.status()).isClean()) {
+        throw new CheckoutRefusedError(
+          `${wt} has uncommitted changes, so teamai left it and the current clone unchanged. ` +
+            'Commit or move those changes, then run init again.',
+          `the ${spec.branch} checkout has uncommitted changes; see the warning above`,
+        );
+      }
+
+      const remoteExists = await remoteBranchExists(spec, wt);
+      if (remoteExists === null) {
+        throw new CheckoutRefusedError(
+          `Could not inspect origin/${spec.branch} before replacing the clone. ` +
+            'The checkout and current clone were left unchanged; restore network access, then run init again.',
+          `the ${spec.branch} checkout could not be compared with origin; see the warning above`,
+        );
+      }
+
+      let localOnly = 1;
+      let remoteOnly = 0;
+      if (remoteExists) {
+        await fetchTrackingRef(wtGit, spec.branch);
+        [localOnly, remoteOnly] = (await wtGit.raw([
+          'rev-list', '--left-right', '--count', `HEAD...refs/remotes/origin/${spec.branch}`,
+        ])).trim().split(/\s+/).map(Number);
+      }
+
+      if (localOnly > 0 && remoteOnly > 0) {
+        throw new CheckoutRefusedError(
+          `${wt} and origin/${spec.branch} have diverged, so teamai left the checkout and current clone unchanged. ` +
+            'Reconcile and push the branch, then run init again.',
+          `the ${spec.branch} checkout has diverged from origin; see the warning above`,
+        );
+      }
+
+      if (localOnly > 0) {
+        try {
+          await wtGit.push(['--progress', 'origin', `HEAD:refs/heads/${spec.branch}`]);
+        } catch (e) {
+          throw new CheckoutRefusedError(
+            `Could not preserve ${wt} on origin before replacing the clone (${failureReason(e).trim()}). ` +
+              'The checkout and current clone were left unchanged; push its commits or restore network access, then run init again.',
+            `the ${spec.branch} checkout could not be pushed; see the warning above`,
+          );
+        }
+      }
+
+      await createGitWithBlockTimeout(gitRoot(localConfig)).raw(['worktree', 'remove', wt]);
+      log.info(`Retired ${spec.branch} checkout at ${wt}`);
+    }
+}
+
+/** Run while holding this branch's writer lock. */
+async function withLockImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig, action: () => Promise<void>): Promise<void> {
+  const wt = worktreePath(spec, localConfig);
+  const lockPath = lockFilePath(spec, localConfig);
+  const locked = await acquireLock(lockPath);
+  if (!locked) {
+    throw new CheckoutRefusedError(
+      `${wt} is being written (${lockPath} is held), so teamai left it and the current clone unchanged. ` +
+        'Run init again when that command finishes.',
+      `the ${spec.branch} checkout is busy; see the warning above`,
+    );
+  }
+  try {
+    await action();
+  } finally {
+    await releaseLock(lockPath);
+  }
+}
+
+/** Whether this repository owns a side checkout with uncommitted changes. */
+async function dirtyImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): Promise<boolean> {
+  if (!usesBranchWorktree(localConfig)) return false;
+  const wt = worktreePath(spec, localConfig);
+  if (!(await pathExists(wt))) return false;
+  await checkOwnerImpl(spec, localConfig);
+  const registered = await registeredCheckoutImpl(spec, localConfig);
+  if (registered === null || (await fse.realpath(registered)) !== (await fse.realpath(wt))) return false;
+  return !(await createGitWithBlockTimeout(wt).status()).isClean();
+}
+
 /**
  * Self and git mode keep this checkout at the same path in the partition
  * (#808), so after a project switches mode, the checkout there may belong to
@@ -1159,6 +1282,16 @@ export interface BranchWorktree {
   isForeignByFiles(localConfig: LocalConfig): Promise<boolean>;
   /** Where this repository has the branch checked out, the old `.teamai/` place included; creates nothing. */
   registeredCheckout(localConfig: LocalConfig): Promise<string | null>;
+  /** Whether the managed checkout path is registered to this repository. */
+  ownsCheckout(localConfig: LocalConfig): Promise<boolean>;
+  /** Whether this repository owns a side checkout with uncommitted changes. */
+  isDirty(localConfig: LocalConfig): Promise<boolean>;
+  /** Run an action while holding this branch's writer lock. */
+  withLock(localConfig: LocalConfig, action: () => Promise<void>): Promise<void>;
+  /** Retire this checkout while its writer lock is already held. */
+  retireWhileLocked(localConfig: LocalConfig): Promise<void>;
+  /** Push and remove this owned checkout, holding its writer lock through the optional replacement callback. */
+  retire(localConfig: LocalConfig, whileLocked?: () => Promise<void>): Promise<void>;
 }
 
 /**
@@ -1188,5 +1321,10 @@ export function createBranchWorktree(spec: BranchWorktreeSpec): BranchWorktree {
     checkOwner: (localConfig) => checkOwnerImpl(spec, localConfig),
     isForeignByFiles: (localConfig) => isForeignByFilesImpl(spec, localConfig),
     registeredCheckout: (localConfig) => registeredCheckoutImpl(spec, localConfig),
+    ownsCheckout: (localConfig) => ownsCheckoutImpl(spec, localConfig),
+    isDirty: (localConfig) => dirtyImpl(spec, localConfig),
+    withLock: (localConfig, action) => withLockImpl(spec, localConfig, action),
+    retireWhileLocked: (localConfig) => retireWhileLockedImpl(spec, localConfig),
+    retire: (localConfig, whileLocked) => retireImpl(spec, localConfig, whileLocked),
   };
 }

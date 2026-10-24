@@ -4,7 +4,7 @@ import path from 'node:path';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { saveLocalConfig, loadTeamConfig, saveLocalConfigForScope, loadLocalConfigForScope, loadStateForScope, saveStateForScope, resolveProjectDataHome } from './config.js';
 import { codexTrustPolicy, deliveredHookFiles, describeUnappliedTeamHooks, hasTeamaiHooks, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope } from './hooks.js';
-import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs } from './utils/git.js';
+import { configureGitUser, initRepo, isGitRepo, getRemoteUrl, getConfiguredRemoteUrl, remotesMatch, redactGitCredentials, pullRepoFastForward, DetachedTeamRepoError, pushRepoDirectly, autoPushViaMR, gitBlockTimeoutMs, createGitWithBlockTimeout } from './utils/git.js';
 import { withTimeout } from './utils/async.js';
 import { getProvider, detectProvider, detectProviderForInit, RepoNotFoundError, OrganizationNotFoundError, RepoCreatePermissionError } from './providers/index.js';
 import { parseGenericGitExistingRemote } from './providers/git/repo-url.js';
@@ -12,6 +12,8 @@ import { probeSelfHostedGitLab } from './providers/gitlab/probe.js';
 import { ensureDir, writeFile, writeFileAtomic, pathExists, expandHome, readFileSafe, remove } from './utils/fs.js';
 import { queueOwner, sameQueueOwner, setAsideQueueOnModeSwitch } from './utils/pending-learnings.js';
 import { dropAllSearchIndexes } from './utils/search-index.js';
+import { reportsBranch } from './utils/reports-branch.js';
+import { learningsBranch } from './utils/learnings-branch.js';
 
 /**
  * A re-init that changes the install's kind or team repository keeps the data
@@ -1701,7 +1703,9 @@ export async function init(options: GlobalOptions & {
   // it clones it now or reuses one an earlier init left: settle that install
   // now, as the config save below would, instead of leaving its config to run
   // against this clone should init stop first.
+  let replacedInstallSettled = false;
   const settleReplacedInstall = async (): Promise<void> => {
+    if (replacedInstallSettled) return;
     const next: LocalConfig = {
       repo: { localPath, remote: repoInfo.httpsUrl },
       username,
@@ -1714,6 +1718,7 @@ export async function init(options: GlobalOptions & {
       ? !sameQueueOwner(queueOwner(existingLocalConfig), queueOwner(next))
       : await pathExists(existingConfigPath);
     if (replacesAnother) await settleModeSwitch(existingLocalConfig, next, () => moveConfigAside(existingConfigPath, next));
+    replacedInstallSettled = true;
   };
 
   if (await pathExists(localPath)) {
@@ -1724,14 +1729,19 @@ export async function init(options: GlobalOptions & {
       // kept serving the old clone's manifest). Compare ignoring credentials,
       // protocol, and .git suffix.
       const existingRemote = await getRemoteUrl(localPath);
-      if (existingRemote && !remotesMatch(existingRemote, repoInfo.httpsUrl)) {
+      // `git remote get-url` expands url.*.insteadOf. Compare the literal URL as
+      // well so a rewrite does not turn a same-repository re-init into a clone
+      // replacement (and consequently retire its queues and worktrees).
+      const configuredRemote = await getConfiguredRemoteUrl(localPath);
+      const sameRepo = [existingRemote, configuredRemote]
+        .some((remote) => remote !== null && remotesMatch(remote, repoInfo.httpsUrl));
+      if (existingRemote && !sameRepo) {
         log.warn(
           `Existing clone at ${localPath} points at a different repo ` +
           `(${redactGitCredentials(existingRemote)}), not ${repoInfo.httpsUrl}.`,
         );
         if (options.force) {
           log.info('Replacing it with a fresh clone (--force)');
-          await remove(localPath);
         } else {
           const confirmed = await askConfirmation(
             'Remove it and clone the requested repo? [y/N] ',
@@ -1744,7 +1754,59 @@ export async function init(options: GlobalOptions & {
             process.exit(1);
             return;
           }
-          await remove(localPath);
+        }
+        const previous: LocalConfig = {
+          ...existingLocalConfig,
+          repo: { localPath, remote: existingRemote },
+          username: existingLocalConfig?.username ?? username,
+          scope,
+          projectRoot,
+          additionalRoles: existingLocalConfig?.additionalRoles ?? [],
+          ...(scope === 'project' ? { dataHome: teamaiHome } : {}),
+        };
+        const changesOwner = !sameQueueOwner(
+          queueOwner(previous),
+          queueOwner({ ...previous, repo: { localPath, remote: repoInfo.httpsUrl } }),
+        );
+        try {
+          // Hold both branch locks from inspection through removal or relocation;
+          // otherwise a writer can mutate a checkout while its Git dir moves.
+          await reportsBranch.withLock(previous, () => learningsBranch.withLock(previous, async () => {
+            const reportsOwned = await reportsBranch.ownsCheckout(previous);
+            const learningsOwned = await learningsBranch.ownsCheckout(previous);
+            const ownedCheckoutIsDirty =
+              (reportsOwned && await reportsBranch.isDirty(previous)) ||
+              (learningsOwned && await learningsBranch.isDirty(previous));
+            if (changesOwner && ownedCheckoutIsDirty) {
+              await settleReplacedInstall();
+              let aside = `${localPath}.previous`;
+              for (let n = 1; await pathExists(aside); n++) aside = `${localPath}.previous.${n}`;
+              await fs.promises.rename(localPath, aside);
+              log.warn(`Kept the old clone and its uncommitted side checkout(s) at ${aside}.`);
+              try {
+                await createGitWithBlockTimeout(aside).raw(['worktree', 'repair']);
+              } catch (e) {
+                throw new Error(
+                  `The old clone was kept at ${aside}, but Git could not repair its worktree links. ` +
+                    `Run \`git -C ${aside} worktree repair\` to recover them before retrying init. ` +
+                    `Git reported: ${(e as Error).message}`,
+                  { cause: e },
+                );
+              }
+            } else {
+              // A checkout not registered to this clone belongs to an older or
+              // different install. Leave it for the existing foreign-checkout
+              // handling instead of blocking replacement of the current clone.
+              if (reportsOwned) await reportsBranch.retireWhileLocked(previous);
+              if (learningsOwned) await learningsBranch.retireWhileLocked(previous);
+              await settleReplacedInstall();
+              await remove(localPath);
+            }
+          }));
+        } catch (e) {
+          log.error((e as Error).message);
+          process.exit(1);
+          return;
         }
       } else {
         log.info(`Repo already exists at ${localPath}, using existing clone`);
