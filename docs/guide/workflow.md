@@ -232,7 +232,7 @@ steps:
     prompt: "Implement issue #{{ inputs.issue }}."
 ```
 
-A `deliver: pr` step that would run read-only fails validation. `workflow start` refuses a run that would start from a detached HEAD, which has no branch for a pull request to go into. Check out a named branch first.
+A `deliver: pr` step that would run read-only fails validation, and so does a delivering `workflow` step, `for_each` or not, when no step of its workflow writes a branch. `workflow start` refuses a run that would start from a detached HEAD, which has no branch for a pull request to go into. Check out a named branch first.
 
 When the step succeeds, its driver has already pushed the branch, as for any writable step, and the step is `delivering`. Steps that need it wait. The next `teamai workflow next`, from whichever driver calls it, looks for an open pull request from that branch into its target, and opens one only when there is none. A run that a crash stopped, or that another machine took over, finds the pull request it opened before and opens no other. TeamAI opens pull requests on GitHub, GitLab, TGit, and GitCode origins, with the login the provider's CLI or token already has, and never starts a login prompt. On any other origin, such as a generic git host or CNB, it opens none, and the step fails naming its branch.
 

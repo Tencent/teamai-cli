@@ -4467,6 +4467,30 @@ describe('deliver: pr at workflow start', () => {
     } });
   });
 
+  it.each([
+    ['refuses', '', { error: {
+      code: 'bad_delivery',
+      message: 'Step "each" has deliver: pr, but no step of the workflow it runs writes a branch, so it would deliver nothing. Set workspace: new on "each" so its prompt steps write, or give a step in that workflow workspace: new or continue.',
+    } }],
+    ['starts', '    workspace: new\n', { data: { status: 'running' } }],
+  ])('%s a for_each workflow step that delivers, by whether a step its items run writes a branch', async (_case, workspace, expected) => {
+    const { config } = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'review.yaml'), workflow('review', `  - id: read
+    prompt: Review the package.
+  - id: lint
+    needs: [read]
+    command: npm run lint
+`));
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'ship.yaml'), workflow('ship', `  - id: each
+    for_each: inputs.packages
+${workspace}    deliver: pr
+    workflow: review
+`, 'inputs: { packages: [string] }\n'));
+    expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
+
+    expect(await startRun(config, 'ship', { packages: ['web'] }, { base: { ref: 'main', commit } })).toMatchObject(expected);
+  });
+
   it('refuses a run that delivers from a detached HEAD, telling to start from a named branch', async () => {
     const { started } = await start({ ship: workflow('ship', `  - id: fix
     workspace: new

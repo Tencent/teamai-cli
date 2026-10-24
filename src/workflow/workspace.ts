@@ -88,19 +88,27 @@ export function deliveryProblem(
   definition: WorkflowDefinition, workflows: Record<string, WorkflowDefinition>, base: RunState['base'],
 ): WorkflowFailure | undefined {
   let delivering: string | undefined;
+  const childOf = (step: WorkflowStep) => (typeof step.workflow === 'string' ? workflows[step.workflow] : step.workflow);
+  const writes = (steps: WorkflowStep[], ancestors: WorkflowStep[]): boolean => steps.some((step) => {
+    const child = childOf(step);
+    return child ? writes(child.steps, [...ancestors, step]) : resolveMode(step, ancestors) !== 'read-only';
+  });
   const visit = (steps: WorkflowStep[], ancestors: WorkflowStep[], prefix: string): WorkflowFailure | undefined => {
     for (const step of steps) {
       const path = `${prefix}${step.id}`;
+      const child = childOf(step);
       if (step.deliver === 'pr') {
         delivering ??= path;
         if (step.workflow !== undefined && step.workspace !== 'new' && !step.forEach) {
           return { code: 'bad_delivery', message: `Step "${path}" delivers its workflow, so it needs workspace: new to own the branch it delivers.` };
         }
+        if (child && !writes(child.steps, [...ancestors, step])) {
+          return { code: 'bad_delivery', message: `Step "${path}" has deliver: pr, but no step of the workflow it runs writes a branch, so it would deliver nothing. Set workspace: new on "${path}" so its prompt steps write, or give a step in that workflow workspace: new or continue.` };
+        }
         if (step.workflow === undefined && resolveMode(step, ancestors) === 'read-only') {
           return { code: 'bad_delivery', message: `Step "${path}" has deliver: pr but runs read-only. Set workspace: new on it, or on the workflow step that runs it.` };
         }
       }
-      const child = typeof step.workflow === 'string' ? workflows[step.workflow] : step.workflow;
       const problem = child && visit(child.steps, [...ancestors, step], `${path}.`);
       if (problem) return problem;
     }
