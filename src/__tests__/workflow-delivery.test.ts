@@ -371,7 +371,7 @@ describe('delivering a step', () => {
     const fix = await take(config, runId);
     if (!fix.workspace) throw new Error('fix has no workspace');
     const to = pushWork(root, fix);
-    const job = { key: { step: 'fix', pass: 1, settledAt: 2, branch: fix.workspace.branch, head: to }, runId, runName: 'ship', checkout: cwd, base: fix.workspace.base.commit, target: 'main', childWork: [], writerLeased: false };
+    const job = { key: { step: 'fix', pass: 1, settledAt: 2, branch: fix.workspace.branch, head: to }, runId, runName: 'ship', checkout: cwd, base: fix.workspace.base.commit, target: 'main', childWork: [] };
 
     expect(await deliverPr(job, async () => 'refused')).toEqual({ ok: false, fault: { kind: 'withdrawn' } });
     expect(gh.calls().map((call) => call.args[0])).toEqual(['api']);
@@ -1155,15 +1155,25 @@ describe('retrying and cancelling a delivery', () => {
     const gh = fakeGh(path.join(root, 'gh'));
     const impl = await take(config, runId);
     await succeed(config, runId, impl, { to: pushWork(root, impl) });
-    const lock = deliveryLockPath(config, runId);
-    expect(await acquireLock(lock)).toBe(true);
-    const docs = await take(config, runId);
-    await releaseLock(lock);
-    const branch = docs.workspace?.branch ?? '';
-    const ahead = pushOnto(root, branch, { 'docs.txt': 'docs' });
+    const branch = impl.workspace?.branch ?? '';
+    let pushed = false;
+    let docs: Lease | undefined;
+    let ahead = '';
+    const read = worktree.git;
+    // The sibling is leased and pushes once delivery picked work.impl, before delivery reads the branch.
+    vi.spyOn(worktree, 'git').mockImplementation(async (...args) => {
+      if (!pushed && args[1].includes('ls-remote')) {
+        pushed = true;
+        docs = await take(config, runId);
+        ahead = pushOnto(root, branch, { 'docs.txt': 'docs' });
+      }
+      return read(...args);
+    });
 
-    expect(await leaseNext(config, runId, remote, { ...writable, running: [docs.attempt] })).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { lease: { step: 'work.docs' } } });
+    expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'delivering' });
     expect(creates(gh)).toEqual([]);
+    if (!docs) throw new Error('work.docs was never leased');
     await succeed(config, runId, docs, { to: ahead });
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(creates(gh)).toEqual([[branch, 'main']]);
@@ -1198,20 +1208,17 @@ describe('retrying and cancelling a delivery', () => {
     const gh = fakeGh(path.join(root, 'gh'));
     const impl = await take(config, runId);
     await succeed(config, runId, impl, { to: pushWork(root, impl) });
-    const lock = deliveryLockPath(config, runId);
-    expect(await acquireLock(lock)).toBe(true);
-    const docs = await take(config, runId);
-    await releaseLock(lock);
-    const branch = docs.workspace?.branch ?? '';
-    const ahead = pushOnto(root, branch, { 'docs.txt': 'docs' });
+    const branch = impl.workspace?.branch ?? '';
     let reported = false;
     const read = worktree.git;
+    // The sibling is leased and pushes once delivery picked work.impl, and reports right after delivery read its push.
     vi.spyOn(worktree, 'git').mockImplementation(async (...args) => {
+      if (reported || !args[1].includes('ls-remote')) return read(...args);
+      reported = true;
+      const docs = await take(config, runId);
+      const ahead = pushOnto(root, branch, { 'docs.txt': 'docs' });
       const answer = await read(...args);
-      if (!reported && args[1].includes('ls-remote')) {
-        reported = true;
-        await succeed(config, runId, docs, { to: ahead });
-      }
+      await succeed(config, runId, docs, { to: ahead });
       return answer;
     });
 
@@ -1386,13 +1393,12 @@ describe('retrying and cancelling a delivery', () => {
     const { config, root, runId } = await fixture(IMPL_AND_DOCS);
     const impl = await take(config, runId);
     await succeed(config, runId, impl, { to: pushWork(root, impl) });
-    const lock = deliveryLockPath(config, runId);
-    expect(await acquireLock(lock)).toBe(true);
-    const docs = await take(config, runId);
-    await releaseLock(lock);
-    const branch = docs.workspace?.branch ?? '';
+    const branch = impl.workspace?.branch ?? '';
+    let docs: Lease | undefined;
     let sibling: string | undefined;
+    // Leased only once delivery picked work.impl: a sibling leased before the pick holds the delivery back.
     const siblingPushes = async () => {
+      docs = await take(config, runId);
       sibling = pushOnto(root, branch, { '.github/workflows/ci.yml': 'on: push\n' });
       if (recorded) await succeed(config, runId, docs, { to: sibling });
     };
@@ -1413,7 +1419,10 @@ describe('retrying and cancelling a delivery', () => {
       return opened;
     });
 
-    expect(await leaseNext(config, runId, remote, { ...writable, ...(recorded ? {} : { running: [docs.attempt] }) })).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
+    const answer = await leaseNext(config, runId, remote, writable);
+    if (!docs) throw new Error('work.docs was never leased');
+    // A sibling that has not reported is still leased, and this call did not list it as running, so it gets it back.
+    expect(answer).toMatchObject({ data: recorded ? { wait: { delivering: ['work.impl'] } } : { lease: { step: 'work.docs', attempt: docs.attempt } } });
     const waiting = await state(config, runId);
     expect(waiting.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'delivering' });
     expect(waiting.creating).toBeUndefined();
@@ -1426,6 +1435,54 @@ describe('retrying and cancelling a delivery', () => {
     expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(message) } });
     expect(run.deliveries).toBeUndefined();
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('opens nothing when a sibling that writes the shared branch is leased while the lookup runs, and checks its commit once it reports', async () => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl) });
+    const branch = impl.workspace?.branch ?? '';
+    let docs: Lease | undefined;
+    const create = providerDouble(async () => {
+      docs ??= await take(config, runId);
+      return undefined;
+    }, async () => 'https://github.com/fixture/app/pull/1');
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { lease: { step: 'work.docs' } } });
+    const waiting = await state(config, runId);
+    expect(waiting.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'delivering' });
+    expect(waiting.creating).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+
+    if (!docs) throw new Error('work.docs was never leased');
+    const sibling = pushOnto(root, branch, { '.github/workflows/x.yml': 'on: push\n' });
+    await succeed(config, runId, docs, { to: sibling });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`commit ${sibling}, which a later report recorded on the shared branch ${branch}`) } });
+    expect(run.deliveries).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('asks the host nothing while a sibling that writes the shared branch is leased, however many calls come', async () => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl) });
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+    const branch = docs.workspace?.branch ?? '';
+
+    for (let call = 1; call <= 3; call += 1) {
+      expect(await leaseNext(config, runId, remote, { ...writable, running: [docs.attempt] })).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
+    }
+    expect(gh.calls()).toEqual([]);
+
+    await succeed(config, runId, docs, { to: pushOnto(root, branch, { 'docs.txt': 'docs' }) });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[branch, 'main']]);
   });
 
   it.each([

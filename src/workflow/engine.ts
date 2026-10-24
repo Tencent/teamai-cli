@@ -994,7 +994,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
     };
     const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => {
       // Steps still delivering here are being delivered by another process of this machine, waited for a busy run
-      // lock, or wait for a report of the commit their branch is ahead at on origin; a driver polls until they settle.
+      // lock, or wait for a report: of the commit their branch is ahead at on origin, or of a leased step that writes
+      // their branch. A driver polls until they settle.
       const delivering = run.steps.filter((step) => step.status === 'delivering').map((step) => step.id);
       const reason = open ? `${open.id} is leased` : delivering.length > 0 ? `${delivering[0]} is delivering` : 'canTakeLease is false';
       return answer({ wait: { reason, ...(delivering.length > 0 ? { delivering } : {}) } });

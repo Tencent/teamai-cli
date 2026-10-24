@@ -24,7 +24,8 @@ export function deliveringStep(run: RunState, key: DeliveryKey): DeliveringStep 
 /**
  * The first delivery to run, after what reports and controls left pending is applied, so a step an end or a cancel
  * stopped is not delivered. One in `waiting`, whose branch this drain found ahead of the recorded commit, waits for a
- * later drain. Undefined when nothing delivers, or when the run settles, which the locked body of `next` finishes.
+ * later drain, and so does one whose branch a leased step writes, since that step's next push would enter its pull
+ * request unchecked. Undefined when nothing delivers, or when the run settles, which the locked body of `next` finishes.
  */
 export function nextDelivery(
   run: RunState, reconcile: (run: RunState) => object, writerLeased: (run: RunState, branch: string) => boolean, waiting: readonly DeliveryKey[],
@@ -35,7 +36,7 @@ export function nextDelivery(
   for (const step of run.steps) {
     if (step.status !== 'delivering') continue;
     const key = deliveryKey(step);
-    if (waiting.some((ahead) => sameKey(ahead, key))) continue;
+    if (waiting.some((ahead) => sameKey(ahead, key)) || writerLeased(run, key.branch)) continue;
     const target = deliveryTarget(run, key.branch);
     if (!run.checkout || !run.base || target === undefined) {
       deliveryFailed(step, deliveryFailure({ runId: run.id, key }, { kind: 'no_checkout' }));
@@ -45,7 +46,6 @@ export function nextDelivery(
       key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target,
       recordedHead: run.copies?.[key.branch]?.commit, childWork: childWorkOff(run, step, key.branch),
       openedBy: run.steps.find((item) => item !== step && branchName(run.id, item.id, item.pass ?? 1) === key.branch)?.id,
-      writerLeased: writerLeased(run, key.branch),
       ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
     };
   }
