@@ -1071,17 +1071,17 @@ steps:
     expect(fs.existsSync(runsDir(fixture.config))).toBe(false);
   });
 
-  it('refuses the environment value of a secret whose team value differs, naming the key', async () => {
-    vi.stubEnv('GH_TOKEN', 'personal-token-value-1082');
+  it.each(['GH_TOKEN', 'VALUE'])('refuses the environment value of declared %s whose team value differs, naming the key', async (key) => {
+    vi.stubEnv(key, 'personal-token-value-1082');
     const fixture = testConfig();
     fs.mkdirSync(path.join(fixture.config.repo.localPath, 'env'), { recursive: true });
-    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GH_TOKEN\n');
-    await writeSecretStore(getTeamSecretsPath(fixture.config), { GH_TOKEN: { value: 'team-token-value-1082' } });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'secrets.yaml'), `secrets:\n  - key: ${key}\n`);
+    await writeSecretStore(getTeamSecretsPath(fixture.config), { [key]: { value: 'team-token-value-1082' } });
     fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n', 'inputs:\n  note: string\n'));
     await syncWorkflowDefinitions(fixture.config);
 
-    expect(await startRun(fixture.config, 'build', { note: 'personal-token-value-1082' }, { secrets: await startSecrets(fixture.config, 'build') })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
-    expect(await startRun(fixture.config, 'build', { note: 'team-token-value-1082' }, { secrets: await startSecrets(fixture.config, 'build') })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
+    expect(await startRun(fixture.config, 'build', { note: 'personal-token-value-1082' }, { secrets: await startSecrets(fixture.config, 'build') })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining(`requires.env: [${key}]`) } });
+    expect(await startRun(fixture.config, 'build', { note: 'team-token-value-1082' }, { secrets: await startSecrets(fixture.config, 'build') })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining(`requires.env: [${key}]`) } });
   });
 
   it('warns that it cannot mask the team secrets when their store cannot be read', async () => {

@@ -431,6 +431,7 @@ export async function resolveWorkflowEnv(localConfig: LocalConfig, required: Ite
   }
   const teamEnv = await resolveTeamEnv(localConfig, undefined, env);
   const applied = appliedTeamEnv(teamEnv);
+  const personalSecrets = requiredSecrets(applied.secretKeys, values, new Set());
   const declared = new Set([...applied.variables.keys(), ...applied.secretKeys]);
   for (const key of declared) values.delete(sameEnvName(values.keys(), key) ?? key);
   for (const [key, value] of applied.variables) values.set(key, value);
@@ -445,7 +446,7 @@ export async function resolveWorkflowEnv(localConfig: LocalConfig, required: Ite
   return {
     facts: { declared, secrets: new Set(applied.secretKeys), present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) },
     values,
-    secrets: maskSet({ ...collectEnvSecrets(env), ...requiredSecrets(required, values, new Set(literal)) }, teamSecretsOf(teamEnv.secrets)),
+    secrets: maskSet({ ...collectEnvSecrets(env), ...requiredSecrets(required, values, new Set(literal)), ...personalSecrets }, teamSecretsOf(teamEnv.secrets)),
   };
 }
 
