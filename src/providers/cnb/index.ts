@@ -20,6 +20,12 @@ import {
  */
 export class CNBProvider implements GitProvider {
   readonly name = 'cnb';
+  /**
+   * None, so workflow delivery pushes to a CNB origin and opens no pull request. Delivery must find an open request
+   * before it opens one, and neither this code nor its docs confirm how the `cnb` CLI lists open pull requests (even the
+   * `post-pull` output `cnbPullCreate` parses is unconfirmed), so a lookup could answer a false "none" and open a second.
+   */
+  readonly pullRequests = null;
 
   parseRepoInput(input: string): RepoInfo {
     return cnbParseRepoInput(input);
@@ -72,6 +78,7 @@ export class CNBProvider implements GitProvider {
       title: opts.title,
       description: opts.description,
       cwd: opts.cwd,
+      spawnTimeoutMs: opts.spawnTimeoutMs,
     });
   }
 

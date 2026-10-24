@@ -214,6 +214,30 @@ describe('doctor checks the hook or extension that adds the project rules (#946)
   const DSH = 'Project rules reach dsh through its session-start hook';
   const PI = 'pi adds the team instructions and rules to its prompt';
 
+  it('zcode: measures the project rules reply in UTF-8 bytes against the configured stdout cap', async () => {
+    await reconcileHooks(zcodeConfig(), 'zcode');
+    await fse.outputFile(path.join(repoPath, 'rules', 'codeword.md'), '界'.repeat(11_000));
+    const name = 'Project rules fit the zcode hook stdout budget';
+    const failing = await find(['zcode'], name);
+    expect(failing).toBeDefined();
+    expect(await failing!.check()).toBe(false);
+    expect(failing!.fix).toContain('32768');
+    expect(failing!.fix).toContain('UTF-8');
+    expect(failing!.fix).toContain('maxOutputBytes');
+    const cfg = await fse.readJson(zcodeConfig());
+    cfg.hooks.maxOutputBytes = 65_536;
+    await fse.writeJson(zcodeConfig(), cfg);
+    expect(await (await find(['zcode'], name))!.check()).toBe(true);
+    const text = await sessionStart('zcode', config('project', ['zcode']));
+    const bytes = Buffer.byteLength(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } }), 'utf8');
+    cfg.hooks.maxOutputBytes = bytes;
+    await fse.writeJson(zcodeConfig(), cfg);
+    expect(await (await find(['zcode'], name))!.check()).toBe(true);
+    cfg.hooks.maxOutputBytes = bytes - 1;
+    await fse.writeJson(zcodeConfig(), cfg);
+    expect(await (await find(['zcode'], name))!.check()).toBe(false);
+  });
+
   it('zcode: passes once teamai\'s SessionStart hook is in ~/.zcode/cli/config.json and hooks are on', async () => {
     await reconcileHooks(zcodeConfig(), 'zcode');
 
@@ -262,6 +286,22 @@ describe('doctor checks the hook or extension that adds the project rules (#946)
     const passing = (await find(['zcode'], DELIVERS))!;
     expect(passing).toBeDefined();
     expect(await passing.check()).toBe(true);
+  });
+
+  it('zcode: rejects profile output surrounding an otherwise intact reply', async () => {
+    await reconcileHooks(zcodeConfig(), 'zcode');
+    const cfg = await fse.readJson(zcodeConfig());
+    const launcher = path.join(tmpDir, 'noisy-launcher.cjs');
+    await fse.writeFile(launcher, [
+      "const { spawnSync } = require('node:child_process');",
+      "process.stdout.write('profile banner\\n');",
+      "const result = spawnSync(process.argv[2], { shell: true, stdio: 'inherit' });",
+      "process.exit(result.status ?? 1);",
+    ].join('\n'));
+    cfg.hooks.events.SessionStart[0].hooks[0].command = process.execPath;
+    cfg.hooks.events.SessionStart[0].hooks[0].args = [launcher, 'teamai hook-dispatch session-start --tool zcode'];
+    await fse.writeJson(zcodeConfig(), cfg);
+    expect(await (await find(['zcode'], DELIVERS))!.check()).toBe(false);
   });
 
   it('zcode: fails when the registered entry cannot answer, while registration still passes', async () => {

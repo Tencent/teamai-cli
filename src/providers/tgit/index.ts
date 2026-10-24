@@ -1,4 +1,4 @@
-import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
+import type { GitProvider, PrCreateOptions, PullRequestLookup, RepoInfo, OrgRepoInfo } from '../types.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   ensureGfInstalled,
@@ -8,6 +8,7 @@ import {
   gfRepoClone,
   gfCreateRepo,
   gfMrCreate,
+  tgitFindOpenMr,
   RepoNotFoundError as GfRepoNotFoundError,
 } from './gf-cli.js';
 import { gfListOrgRepos } from './gf-org.js';
@@ -15,6 +16,7 @@ import { parseTGitRepoInput } from './repo-url.js';
 
 export class TGitProvider implements GitProvider {
   readonly name = 'tgit';
+  readonly pullRequests: PullRequestLookup = { findOpen: tgitFindOpenMr };
 
   parseRepoInput(input: string): RepoInfo {
     return parseTGitRepoInput(input);

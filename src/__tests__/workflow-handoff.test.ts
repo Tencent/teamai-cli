@@ -22,6 +22,8 @@ import type { StepPass, StepState } from '../workflow/step-state.js';
 import { readRun, runLockPath, updateRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
 import { ensureWorktree, fetchMissingCommits, headCommit, markReadCopy, worktreePath } from '../workflow/worktree.js';
+import { knownSecrets } from '../env-resolution.js';
+import { fakeGh } from './helpers/fake-gh.js';
 
 const dirs: string[] = [];
 
@@ -90,6 +92,34 @@ steps:
   - id: change
     workspace: new
     command: echo change > change.txt
+`;
+
+const STACK = `schemaVersion: v1alpha1
+name: stack
+description: A change, and one that starts from it.
+steps:
+  - id: a
+    workspace: new
+    command: echo a > a.txt
+  - id: b
+    needs: [a]
+    workspace: new
+    command: echo b > b.txt
+`;
+
+const DELIVERED_STACK = `schemaVersion: v1alpha1
+name: stack
+description: A change delivered as a pull request, and one stacked on it.
+steps:
+  - id: a
+    workspace: new
+    command: echo a > a.txt
+    deliver: pr
+  - id: b
+    needs: [a]
+    workspace: new
+    command: echo b > b.txt
+    deliver: pr
 `;
 
 const WORKSPACES = ['read-only', 'new', 'continue'] as const;
@@ -219,7 +249,7 @@ function receiveHook(origin: string, script: string): void {
 }
 
 async function editRun(config: LocalConfig, runId: string, edit: (run: RunState) => RunState): Promise<void> {
-  await updateRun(config, runId, async (run) => (run === 'missing' ? { value: undefined } : { value: undefined, write: edit(run) }));
+  await updateRun(config, runId, {}, async (run) => (run === 'missing' ? { value: undefined } : { value: undefined, write: edit(run) }));
 }
 
 /** Settles a run whose steps all reported: the next `next` ends it and publishes its end record. */
@@ -230,7 +260,7 @@ async function settle(member: Member, runId: string): Promise<void> {
 /** Starts `workflow` in the member's business checkout, which fixes the run's base. */
 async function startIn({ config, checkout }: Member, workflow: string): Promise<string> {
   const base = await headCommit(checkout);
-  const started = await startRun(config, workflow, {}, { ...(base ? { base } : {}), checkout });
+  const started = await startRun(config, workflow, {}, { secrets: await knownSecrets(config), ...(base ? { base } : {}), checkout });
   if ('error' in started) throw new Error(started.error.message);
   return String(started.data.run);
 }
@@ -246,7 +276,7 @@ async function work(
   driver = member.driver,
   { push = true }: { push?: boolean } = {},
 ): Promise<{ step: string; branch: string; commit: string }> {
-  const next = await leaseNext(member.config, runId, driver, { workspaceModes: [...WORKSPACES] });
+  const next = await leaseNext(member.config, runId, driver, { can: { workspace: [...WORKSPACES] } });
   if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
   const lease = next.data.lease as {
     step: string; attempt: string; revision: number; workspace: { branch: string; base: { commit: string }; start: { commit: string } };
@@ -303,7 +333,7 @@ function hasCommit(dir: string, commit: string): boolean {
 }
 
 async function start({ config }: Member): Promise<string> {
-  const started = await startRun(config, 'build');
+  const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return String(started.data.run);
 }
@@ -318,6 +348,38 @@ async function runStep(member: Member, runId: string, outputs?: Record<string, u
   });
   if ('error' in reported) throw new Error(reported.error.message);
   return lease.step;
+}
+
+/** Gives each member's business checkout a GitHub origin that git reaches as `business`, so delivery opens pull requests there. */
+function onGitHub(business: string, members: Member[]): void {
+  for (const { checkout } of members) {
+    git(checkout, 'remote', 'set-url', 'origin', 'https://github.com/acme/app.git');
+    git(checkout, 'config', `url.${business}.insteadOf`, 'https://github.com/acme/app.git');
+  }
+}
+
+/** An open pull request as GitHub lists it. */
+function openPull(number: number, head: string, base = 'main') {
+  const repo = { full_name: 'acme/app' };
+  return { state: 'open', html_url: `https://github.com/acme/app/pull/${number}`, head: { ref: head, repo }, base: { ref: base, repo } };
+}
+
+/** The head and target branch of each pull request the fake gh was asked to open, in order. */
+function creates(gh: ReturnType<typeof fakeGh>): string[][] {
+  return gh.calls().filter((call) => call.args[0] === 'pr').map((call) => ['-H', '-B'].map((flag) => call.args[call.args.indexOf(flag) + 1] ?? ''));
+}
+
+/**
+ * Starts the delivered stack on `alice`, delivers `a` and reports `b`, so `b` is delivering when the run is published.
+ * The fake host keeps `a`'s pull request.
+ */
+async function deliveringStack(acme: ReturnType<typeof team>, alice: Member, bob: Member) {
+  onGitHub(acme.business, [alice, bob]);
+  const gh = fakeGh(path.join(path.dirname(acme.origin), 'gh'));
+  const runId = await startIn(alice, 'stack');
+  const a = await work(alice, runId, 'a.txt');
+  const b = await work(alice, runId, 'b.txt');
+  return { gh, runId, a, b };
 }
 
 describe('workflow handoff through teamai-reports', () => {
@@ -461,7 +523,7 @@ describe('workflow handoff through teamai-reports', () => {
     await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
     const local = await readRun(alice.config, runId);
     if (typeof local !== 'object') throw new Error('no run');
-    await updateRun(bob.config, runId, async () => ({ value: undefined, write: { ...local, createdAt: '2020-01-01T00:00:00.000Z' } }));
+    await updateRun(bob.config, runId, {}, async () => ({ value: undefined, write: { ...local, createdAt: '2020-01-01T00:00:00.000Z' } }));
 
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({
       ok: false,
@@ -518,7 +580,7 @@ describe('workflow handoff through teamai-reports', () => {
   });
 
   interface HandedStep { id: string; changes: { branch: string; base: string; from: string; to: string; commits: string[] }; read?: unknown; passes?: unknown[] }
-  interface HandedRun { base: { commit: string }; copies: Record<string, { commit: string }>; steps: HandedStep[]; archive: unknown[] }
+  interface HandedRun { base: { commit: string }; copies: Record<string, { commit: string; from?: string }>; steps: HandedStep[]; archive: unknown[] }
   it.each<[string, (snapshot: HandedRun, step: HandedStep, branch: string) => void, (at: number, branch: string) => string]>([
     ['its base', (snapshot) => { snapshot.base.commit = 'main'; }, () => 'base.commit'],
     ['a copy', (snapshot, _step, branch) => { snapshot.copies[branch] = { commit: 'HEAD' }; }, (_at, branch) => `copies.${branch}.commit`],
@@ -560,9 +622,13 @@ describe('workflow handoff through teamai-reports', () => {
     expect(await readRun(bob.config, runId)).toBe('missing');
   });
 
-  it.each([['a branch outside any run', 'main'], ['a branch of another run', 'teamai/r0123456789abcdef/change/p1']])(
-    'refuses to claim a snapshot whose copy is %s, and changes nothing',
-    async (_name, branch) => {
+  it.each<[string, (branch: string, commit: string) => HandedRun['copies'], (branch: string) => string]>([
+    ['is a branch outside any run', (_branch, commit) => ({ main: { commit } }), () => 'copies.main'],
+    ['is a branch of another run', (_branch, commit) => ({ 'teamai/r0123456789abcdef/change/p1': { commit } }), () => 'copies.teamai/r0123456789abcdef/change/p1'],
+    ['started from a branch outside the run', (branch, commit) => ({ [branch]: { commit, from: 'main' } }), (branch) => `copies.${branch}.from`],
+  ])(
+    'refuses to claim a snapshot whose copy %s, and changes nothing',
+    async (_name, copies, field) => {
       const acme = team({ ship: SHIP });
       const alice = await acme.member('alice');
       const bob = await acme.member('bob');
@@ -573,12 +639,12 @@ describe('workflow handoff through teamai-reports', () => {
       git(path.dirname(acme.origin), 'clone', '-q', '--branch', 'teamai-reports', acme.origin, editor);
       const rel = `workflows/runs/${runId}/state.json`;
       const snapshot: HandedRun = JSON.parse(fs.readFileSync(path.join(editor, rel), 'utf8'));
-      snapshot.copies = { [branch]: { commit: wrote.commit } };
+      snapshot.copies = copies(wrote.branch, wrote.commit);
       fs.writeFileSync(path.join(editor, rel), `${JSON.stringify(snapshot, null, 2)}\n`);
       git(editor, 'commit', '-qam', 'hand edit');
       git(editor, 'push', '-q', 'origin', 'teamai-reports');
 
-      expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: false, error: { code: 'snapshot_unsupported', field: `copies.${branch}` } });
+      expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: false, error: { code: 'snapshot_unsupported', field: field(wrote.branch) } });
       expect(await readRun(bob.config, runId)).toBe('missing');
     },
   );
@@ -826,7 +892,7 @@ describe('workflow handoff through teamai-reports', () => {
     const write = reportsBranch.updateReports;
     vi.spyOn(reportsBranch, 'updateReports').mockImplementation(async (config, change) => {
       const run = await readRun(alice.config, runId);
-      if (typeof run === 'object') await queueRunRecord(alice.config, run, alice.driver, 'end');
+      if (typeof run === 'object') await queueRunRecord(alice.config, run, alice.driver, 'end', {});
       return write(config, change);
     });
 
@@ -841,10 +907,10 @@ describe('workflow handoff through teamai-reports', () => {
     const other = await start(alice);
     const otherRun = await readRun(alice.config, other);
     if (typeof otherRun !== 'object') throw new Error('run was not stored');
-    await queueRunRecord(alice.config, otherRun, alice.driver, 'end');
+    await queueRunRecord(alice.config, otherRun, alice.driver, 'end', {});
     const write = reportsBranch.updateReports;
     vi.spyOn(reportsBranch, 'updateReports').mockImplementationOnce(async (config, change) => {
-      await queueRunRecord(alice.config, otherRun, alice.driver, 'end');
+      await queueRunRecord(alice.config, otherRun, alice.driver, 'end', {});
       return write(config, change);
     });
 
@@ -999,13 +1065,13 @@ describe('workflow handoff through teamai-reports', () => {
     const runId = await start(alice);
     expect(await leaseNext(alice.config, runId, alice.driver)).toMatchObject({ data: { lease: { step: 'one' } } });
     await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
-    expect(await cancelRun(alice.config, runId)).not.toHaveProperty('data.notPublished');
+    expect(await cancelRun(alice.config, runId, await knownSecrets(alice.config))).not.toHaveProperty('data.notPublished');
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'cancelled', stateRevision: 2 });
 
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
     expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { done: { outcome: 'cancelled' } } });
 
-    expect(await retryStep(bob.config, runId, 'one')).toMatchObject({ data: { reopened: true } });
+    expect(await retryStep(bob.config, runId, await knownSecrets(bob.config), 'one')).toMatchObject({ data: { reopened: true } });
     expect(await resumeRun(bob.config, runId, { claim: false, checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'already_owned' } });
     expect(await runStep(bob, runId)).toBe('one');
   });
@@ -1042,7 +1108,7 @@ describe('workflow handoff through teamai-reports', () => {
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'failed', stateRevision: 2 });
 
     expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed', stateRevision: 3 } });
-    expect(await retryStep(bob.config, runId, 'two')).toMatchObject({ data: { reopened: true } });
+    expect(await retryStep(bob.config, runId, await knownSecrets(bob.config), 'two')).toMatchObject({ data: { reopened: true } });
     expect(await runStep(bob, runId)).toBe('two');
     expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'succeeded', stateRevision: 4 });
@@ -1174,14 +1240,14 @@ describe('workflow handoff through teamai-reports', () => {
       await settle(alice, runId);
     } },
     { status: 'failed', end: async (alice: Member, runId: string) => {
-      const next = await leaseNext(alice.config, runId, alice.driver, { workspaceModes: [...WORKSPACES] });
+      const next = await leaseNext(alice.config, runId, alice.driver, { can: { workspace: [...WORKSPACES] } });
       if (!('data' in next) || !next.data.lease) throw new Error(`no lease: ${JSON.stringify(next)}`);
       const lease = next.data.lease as { attempt: string; revision: number };
       await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', driver: alice.driver, message: 'broke' });
       await settle(alice, runId);
     } },
     { status: 'cancelled', end: async (alice: Member, runId: string) => {
-      await cancelRun(alice.config, runId);
+      await cancelRun(alice.config, runId, await knownSecrets(alice.config));
     } },
   ])('needs the branches of a $status run on the business origin to claim it only while it runs', async ({ status, end }) => {
     const acme = team({ ship: SHIP });
@@ -1208,7 +1274,7 @@ describe('workflow handoff through teamai-reports', () => {
     const { acme, alice, runId } = await finishedCopyRun();
     deleteRunBranches(acme.business, runId);
 
-    expect(await cancelRun(alice.config, runId)).toMatchObject({ error: { code: 'run_settled' } });
+    expect(await cancelRun(alice.config, runId, await knownSecrets(alice.config))).toMatchObject({ error: { code: 'run_settled' } });
     expect(originRef(acme.business, `refs/heads/teamai/${runId}/base`)).toBeUndefined();
   });
 
@@ -1224,7 +1290,7 @@ describe('workflow handoff through teamai-reports', () => {
     expect(await reportAttempt(alice.config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'failed', driver: alice.driver }))
       .toMatchObject({ data: { accepted: true } });
 
-    expect(await cancelRun(alice.config, runId, 'two')).toMatchObject({ error: { code: 'run_settled' } });
+    expect(await cancelRun(alice.config, runId, await knownSecrets(alice.config), 'two')).toMatchObject({ error: { code: 'run_settled' } });
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).toMatchObject({ status: 'failed', stateRevision: 2 });
   });
 
@@ -1317,6 +1383,80 @@ describe('workflow handoff through teamai-reports', () => {
     expect(git(bob.checkout, 'rev-parse', `${more.commit}^`)).toBe(wrote.commit);
   });
 
+  it('hands over a copy that started from the branch of a step it needs, with the branch it started from', async () => {
+    const acme = team({ stack: STACK });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await startIn(alice, 'stack');
+    const a = await work(alice, runId, 'a.txt');
+    const b = await work(alice, runId, 'b.txt');
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { publication: 'published' } });
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    const claimed = await readRun(bob.config, runId);
+    expect(typeof claimed !== 'string' && claimed.copies?.[b.branch]).toEqual({ commit: b.commit, from: a.branch });
+  });
+
+  it('publishes a step that delivers with what it delivers, and the claim finds the pull request the first machine opened and opens no other', async () => {
+    const acme = team({ stack: DELIVERED_STACK });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const { gh, runId, a, b } = await deliveringStack(acme, alice, bob);
+    // Alice's process opened b's request too, then stopped before the run heard of it.
+    gh.configure({ open: [openPull(1, a.branch), openPull(2, b.branch, a.branch)] });
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { publication: 'published' } });
+    expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? 'null')).toMatchObject({
+      copies: { [b.branch]: { commit: b.commit, from: a.branch } },
+      deliveries: [{ url: 'https://github.com/acme/app/pull/1', branch: a.branch, base: 'main', step: 'a', pass: 1 }],
+      steps: [{ id: 'a', status: 'succeeded' }, { id: 'b', status: 'delivering', delivery: { branch: b.branch, head: b.commit } }],
+    });
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+
+    expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(bob.config, runId);
+    expect(typeof run !== 'string' && run.steps[1]).toMatchObject({ id: 'b', status: 'succeeded' });
+    expect(typeof run !== 'string' && run.deliveries?.[1]).toEqual({ url: 'https://github.com/acme/app/pull/2', branch: b.branch, base: a.branch, step: 'b', pass: 1 });
+    expect(creates(gh)).toEqual([[a.branch, 'main']]);
+  });
+
+  it('opens the pull request of a step that was delivering when the run was claimed, once, on the machine that claimed it', async () => {
+    const acme = team({ stack: DELIVERED_STACK });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const { gh, runId, a, b } = await deliveringStack(acme, alice, bob);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    expect(creates(gh)).toEqual([[a.branch, 'main']]);
+
+    expect(await leaseNext(bob.config, runId, bob.driver)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[a.branch, 'main'], [b.branch, a.branch]]);
+    const run = await readRun(bob.config, runId);
+    expect(typeof run !== 'string' && run.deliveries?.map((receipt) => receipt.url)).toEqual(['https://github.com/acme/app/pull/1', 'https://github.com/acme/app/pull/2']);
+  });
+
+  it.each<[string, (snapshot: { deliveries: Array<{ url: string }>; steps: Array<{ delivery?: { reported?: string } }> }) => void, string]>([
+    ['a receipt', (snapshot) => { snapshot.deliveries = snapshot.deliveries.map((receipt) => ({ ...receipt, url: 'https://user:token@github.com/acme/app/pull/1' })); }, 'deliveries[0].url'],
+    ['a reported URL', (snapshot) => { const step = snapshot.steps[1]; if (step?.delivery) step.delivery.reported = 'http://github.com/acme/app/pull/2'; }, 'steps[1].delivery.reported'],
+  ])('refuses to claim a snapshot whose pull request URL in %s is not one TeamAI keeps, naming the field', async (_name, edit, field) => {
+    const acme = team({ stack: DELIVERED_STACK });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const { runId } = await deliveringStack(acme, alice, bob);
+    await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
+    const editor = path.join(path.dirname(acme.origin), 'editor');
+    git(path.dirname(acme.origin), 'clone', '-q', '--branch', 'teamai-reports', acme.origin, editor);
+    const rel = `workflows/runs/${runId}/state.json`;
+    const snapshot = JSON.parse(fs.readFileSync(path.join(editor, rel), 'utf8'));
+    edit(snapshot);
+    fs.writeFileSync(path.join(editor, rel), `${JSON.stringify(snapshot, null, 2)}\n`);
+    git(editor, 'commit', '-qam', 'hand edit');
+    git(editor, 'push', '-q', 'origin', 'teamai-reports');
+
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: false, error: { code: 'snapshot_unsupported', field } });
+    expect(await readRun(bob.config, runId)).toBe('missing');
+  });
+
   it('refuses to publish, telling to publish again, when the run moves while publish checks the business origin', async () => {
     const acme = team({ ship: SHIP });
     const alice = await acme.member('alice');
@@ -1344,7 +1484,7 @@ describe('workflow handoff through teamai-reports', () => {
 
     const publishing = publishRun(alice.config, runId, { env: {}, checkout: alice.checkout });
     await pin.held();
-    expect(await leaseNext(alice.config, runId, alice.driver, { workspaceModes: [...WORKSPACES] })).toMatchObject({ data: { lease: { step: 'change.write' } } });
+    expect(await leaseNext(alice.config, runId, alice.driver, { can: { workspace: [...WORKSPACES] } })).toMatchObject({ data: { lease: { step: 'change.write' } } });
     pin.release();
 
     expect(await publishing).toMatchObject({ ok: true, value: { publication: 'published', stateRevision: 1, inFlight: [{ step: 'change.write' }] } });
@@ -1432,10 +1572,10 @@ describe('workflow handoff through teamai-reports', () => {
     const bob = await acme.member('bob');
     const runId = await startIn(alice, 'pair');
     const base = git(alice.checkout, 'rev-parse', 'main');
-    const first = await leaseNext(alice.config, runId, alice.driver, { workspaceModes: [...WORKSPACES] });
+    const first = await leaseNext(alice.config, runId, alice.driver, { can: { workspace: [...WORKSPACES] } });
     const built = 'data' in first ? (first.data.lease as { attempt: string; workspace: { branch: string } }) : undefined;
     expect(built?.workspace.branch).toBe(`teamai/${runId}/build/p1`);
-    expect(await leaseNext(alice.config, runId, alice.driver, { workspaceModes: [...WORKSPACES], running: [built?.attempt ?? ''] }))
+    expect(await leaseNext(alice.config, runId, alice.driver, { can: { workspace: [...WORKSPACES] }, running: [built?.attempt ?? ''] }))
       .toMatchObject({ data: { lease: { step: 'change.write', workspace: { branch: `teamai/${runId}/change/p1` } } } });
 
     expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({
@@ -1452,7 +1592,7 @@ describe('workflow handoff through teamai-reports', () => {
     expect(claimed).not.toHaveProperty('pushedBranches');
     expect(JSON.parse(originFile(acme.origin, `workflows/runs/${runId}/state.json`) ?? '{}')).not.toHaveProperty('pushedBranches');
     expect(typeof claimed === 'object' && Object.keys(claimed.copies ?? {})).toEqual([`teamai/${runId}/change/p1`]);
-    const again = await leaseNext(bob.config, runId, bob.driver, { workspaceModes: [...WORKSPACES] });
+    const again = await leaseNext(bob.config, runId, bob.driver, { can: { workspace: [...WORKSPACES] } });
     expect(again).toMatchObject({ data: { lease: { step: 'build', pass: 2, workspace: { branch: `teamai/${runId}/build/p2`, start: { commit: base } } } } });
   });
 
@@ -1466,12 +1606,12 @@ describe('workflow handoff through teamai-reports', () => {
     await claimRun(bob.config, runId, { checkout: bob.checkout });
     const runner: DriverIdentity = { kind: 'runner', machine: 'ci', workspace: bob.checkout };
     // The runner takes the copy's next step and hands it back unrun: the copy stays the runner's.
-    const taken = await leaseNext(bob.config, runId, runner, { workspaceModes: [...WORKSPACES] });
+    const taken = await leaseNext(bob.config, runId, runner, { can: { workspace: [...WORKSPACES] } });
     expect(taken).toMatchObject({ data: { lease: { step: 'change.more' } } });
     const lease = 'data' in taken ? (taken.data.lease as { attempt: string; revision: number }) : { attempt: '', revision: 0 };
     expect(await reportAttempt(bob.config, runId, { ...lease, outcome: 'released', driver: runner })).toMatchObject({ data: { accepted: true } });
 
-    expect(await leaseNext(bob.config, runId, bob.driver, { workspaceModes: [...WORKSPACES] })).toMatchObject({ data: { wait: {} } });
+    expect(await leaseNext(bob.config, runId, bob.driver, { can: { workspace: [...WORKSPACES] } })).toMatchObject({ data: { wait: {} } });
     expect(await work(bob, runId, 'more.txt', runner)).toMatchObject({ step: 'change.more' });
   });
 
@@ -1498,7 +1638,7 @@ steps:
     const acme = team({ review: REVIEW, check: CHECK }, { 'prompts/read.md': 'Read the change.\n' });
     const alice = await acme.member('alice');
     const bob = await acme.member('bob');
-    const started = await startRun(alice.config, 'review');
+    const started = await startRun(alice.config, 'review', {}, { secrets: await knownSecrets(alice.config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     expect(await runStep(alice, runId)).toBe('build');
@@ -1983,7 +2123,7 @@ steps:
     git(alice.checkout, 'push', '-q', 'origin', '--delete', `teamai/${runId}/base`);
     const run = await readRun(alice.config, runId);
     if (typeof run !== 'object') throw new Error('run was not stored');
-    await queueRunRecord(alice.config, run, alice.driver, 'end');
+    await queueRunRecord(alice.config, run, alice.driver, 'end', {});
     const refs = git(acme.business, 'for-each-ref');
     const archive = (): string => execFileSync('git', ['--git-dir', acme.origin, 'ls-tree', '-r', '--name-only', 'main', 'sessions'], { encoding: 'utf8' });
 

@@ -527,7 +527,7 @@ class Harness {
     for (const { args: argv, payload } of dispatches.splice(0)) {
       // The Skill / TodoWrite matcher pass repeats the wildcard pass's payload.
       if (argv.includes('--matcher')) continue;
-      await this.dispatch(argv[1], { session_id: undefined, ...payload }, null, 'opencode');
+      await this.dispatch(argv[2], { session_id: undefined, ...payload }, null, 'opencode');
     }
   }
 

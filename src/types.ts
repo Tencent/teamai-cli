@@ -6,6 +6,7 @@ import { log } from './utils/logger.js';
 import { realHost, toolHome } from './tool-home.js';
 import type { WorkspaceChildren } from './workspace-children.js';
 import type { HeadState } from './utils/git.js';
+import { AllowSchema } from './workflow/requirements.js';
 
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
 const COPILOT_PROJECT_MCP_CONFIG = '.github/mcp.json';
@@ -883,6 +884,10 @@ export const LocalConfigSchema = z.object({
     max_parallel: z.number().int().positive().optional(),
     /** Whether a driver without HITL automatically answers optional approve requests and uses choose defaults. Unset means false. */
     auto_approve: z.boolean().optional(),
+    /** This host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation. */
+    sandbox: z.boolean().optional(),
+    /** What a workflow step may use on this machine, whatever driver runs it. An unset key allows. */
+    allow: AllowSchema.optional(),
   }).optional(),
   /**
    * Per-machine map from a gateway/proxy model alias to a known Claude model
@@ -2304,8 +2309,21 @@ export interface SearchIndexEntry {
 /** Schema version of the on-disk search-index.json (bump on breaking change). */
 export const SEARCH_INDEX_VERSION = 7;
 
+/** Per-file derivation only; votes and selection are recomputed on every build. */
+export interface SearchIndexFileCache {
+  derivation: string;
+  files: Array<{
+    key: string;
+    fingerprint: string;
+    hash: string;
+    /** Selected entries refer to `SearchIndex.entries` instead of duplicating tokens. */
+    entry: number | SearchIndexEntry | null;
+  }>;
+}
+
 /** Shape of the search-index.json file. */
 export interface SearchIndex {
+  fileCache?: SearchIndexFileCache;
   /** Schema version. Phase 1 introduces v2 (multi-category index). */
   version?: number;
   /** ISO timestamp of when the index was built */

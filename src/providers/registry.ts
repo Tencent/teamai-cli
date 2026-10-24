@@ -1,4 +1,4 @@
-import type { GitProvider } from './types.js';
+import type { GitProvider, PullRequestLookup } from './types.js';
 import { TGitProvider } from './tgit/index.js';
 import { GitHubProvider } from './github/index.js';
 import { CNBProvider } from './cnb/index.js';
@@ -212,4 +212,55 @@ export function getProvider(providerName?: string): GitProvider {
 export function getProviderFromUrl(repoUrl: string): GitProvider {
   const name = detectProvider(repoUrl);
   return getProvider(name);
+}
+
+// ─── Workflow delivery ───────────────────────────────────
+
+/**
+ * A checkout's origin as workflow delivery reaches it: through a provider that can look up its pull requests, or git
+ * alone. `hostname` is the host the origin's pull requests are on: its web host, which an ssh or scp remote shares, since
+ * a self-hosted GitLab refuses a GITLAB_URL on another host than TEAMAI_GITLAB_HOST.
+ */
+export type OriginProvider =
+  | { kind: 'provider'; provider: GitProvider; pullRequests: PullRequestLookup; repo: string; hostname: string }
+  | { kind: 'transport' };
+
+/**
+ * The provider of a checkout's configured origin URL, `remote.origin.url` as written before `insteadOf` rewrites it, and
+ * the repository on it. Credentials, query and fragment are dropped first. A filesystem path, a file:// URL, a host no
+ * provider owns, a provider with no pull request lookup, or a URL its provider cannot parse is reached through git alone.
+ * The bare `owner/repo` default is for user input, never for a remote.
+ */
+export function providerForRemote(remoteUrl: string): OriginProvider {
+  const hosted = hostingUrl(remoteUrl.trim());
+  if (!hosted) return { kind: 'transport' };
+  const provider = getProviderFromUrl(hosted.href);
+  if (!provider.pullRequests) return { kind: 'transport' };
+  try {
+    const { owner, repo } = provider.parseRepoInput(hosted.href);
+    return { kind: 'provider', provider, pullRequests: provider.pullRequests, repo: `${owner}/${repo}`, hostname: hosted.hostname };
+  } catch {
+    return { kind: 'transport' };
+  }
+}
+
+/** The web URL of a remote in its https, ssh or scp form, without credentials, query or fragment; undefined for any other form. */
+function hostingUrl(remote: string): URL | undefined {
+  const scp = /^[^@\s/]+@([^:\s/]+):(.+)$/.exec(remote);
+  if (scp) {
+    const [, host, repoPath] = scp;
+    return host && repoPath ? parsedUrl(`https://${host}/${repoPath}`) : undefined;
+  }
+  if (!/^(https?|ssh):\/\//i.test(remote)) return undefined;
+  const url = parsedUrl(remote);
+  if (!url) return undefined;
+  return parsedUrl(url.protocol === 'ssh:' ? `https://${url.hostname}${url.pathname}` : `${url.protocol}//${url.host}${url.pathname}`);
+}
+
+function parsedUrl(value: string): URL | undefined {
+  try {
+    return new URL(value);
+  } catch {
+    return undefined;
+  }
 }

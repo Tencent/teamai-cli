@@ -23,10 +23,11 @@
 import { isInteractive } from './prompt.js';
 
 /**
- * Applied only where the caller left the variable unset, so an explicit value
- * always wins.
+ * Applied process-wide only where the caller left the variable unset, so an
+ * explicit value always wins there. A git child that must never prompt, even
+ * in an interactive run, gets it as its own environment.
  */
-const NON_INTERACTIVE_GIT_ENV: Record<string, string> = {
+export const NON_INTERACTIVE_GIT_ENV: Readonly<Record<string, string>> = {
   GIT_TERMINAL_PROMPT: '0',
   // `echo` answers the askpass request with an empty line, so the credential is
   // rejected at once instead of a dialog waiting for a person who is not there.

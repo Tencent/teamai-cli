@@ -48,6 +48,25 @@ export interface PrCreateOptions {
   spawnTimeoutMs?: number;
 }
 
+/** The pull request workflow delivery looks for: head branch `source` into `target`, both in `repo`. */
+export interface PullRequestRef {
+  /** Repository in "owner/repo" format, as parseRepoInput gives it. */
+  repo: string;
+  source: string;
+  target: string;
+  /** How long the host may take to answer. */
+  timeoutMs: number;
+}
+
+/**
+ * Read-only pull request lookup for workflow delivery. It has no merge, close, approve or update member, and a test
+ * pins its key set. It never prompts, logs in or calls authenticate().
+ */
+export interface PullRequestLookup {
+  /** The web URL of the open request `ref` names, if any. Throws when the host cannot answer, never answering "none". */
+  findOpen(ref: PullRequestRef): Promise<string | undefined>;
+}
+
 /**
  * 轻量级仓库元信息，用于 listOrgRepos 返回。
  */
@@ -119,6 +138,12 @@ export interface GitProvider {
    * Providers that only shell out to a CLI may return a resolved promise.
    */
   createPullRequest(opts: PrCreateOptions): Promise<string>;
+
+  /**
+   * How workflow delivery finds the open request of a branch before it opens one, so a delivery that ran before opens
+   * no second request. Null for a host only git reaches, where delivery opens none.
+   */
+  readonly pullRequests: PullRequestLookup | null;
 
   /**
    * 获取指定 MR/PR 的完整数据（标题、描述、提交列表、diff）。

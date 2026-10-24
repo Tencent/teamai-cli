@@ -13,6 +13,7 @@ import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 import type { WorkspaceContract } from '../workflow/workspace.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const dirs: string[] = [];
 
@@ -93,13 +94,13 @@ describe('workflow git conformance of the local driver', () => {
       // Without a handoff the other machine's driver reports into the same install.
       const starter = scenario.handoff ? install('elsewhere', elsewhere, path.join(root, 'other', 'team-repo')) : config;
       if (starter !== config) await syncWorkflowDefinitions(starter);
-      const started = await startRun(starter, scenario.workflowName, undefined, { base: { ref: 'main', commit: git(elsewhere, 'rev-parse', 'HEAD') } });
+      const started = await startRun(starter, scenario.workflowName, {}, { secrets: await knownSecrets(starter), base: { ref: 'main', commit: git(elsewhere, 'rev-parse', 'HEAD') } });
       if ('error' in started) throw new Error(started.error.message);
       const runId = String(started.data.run);
 
       const other: DriverIdentity = { kind: 'local', machine: 'elsewhere', workspace: elsewhere };
       for (const step of scenario.elsewhere ?? []) {
-        const next = await leaseNext(starter, runId, other, { workspaceModes: ['new', 'continue', 'read-only'] });
+        const next = await leaseNext(starter, runId, other, { can: { workspace: ['new', 'continue', 'read-only'] } });
         if (!('data' in next) || !next.data.lease) throw new Error(`no lease for ${step.step}: ${JSON.stringify(next)}`);
         const lease = next.data.lease as { step: string; attempt: string; revision: number; workspace: WorkspaceContract };
         expect(lease).toMatchObject({ step: step.step, workspace: { merge: [] } });

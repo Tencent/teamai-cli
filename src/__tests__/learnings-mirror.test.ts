@@ -25,6 +25,28 @@ describe('mirrorLearnings', () => {
     await fse.remove(tmpDir);
   });
 
+  it('keeps unchanged root and namespaced learning timestamps stable', async () => {
+    await mirrorLearnings(sourceDir, destinationDir, ['alpha']);
+    const files = ['shared-a.md', 'alpha/keep.md'];
+    for (const file of files) await fse.utimes(path.join(destinationDir, file), new Date(1000000), new Date(1000000));
+    await mirrorLearnings(sourceDir, destinationDir, ['alpha']);
+    for (const file of files) expect((await fse.stat(path.join(destinationDir, file))).mtimeMs).toBe(1000000);
+    await fse.writeFile(path.join(sourceDir, 'alpha/keep.md'), '# updated');
+    await mirrorLearnings(sourceDir, destinationDir, ['alpha']);
+    expect(await fse.readFile(path.join(destinationDir, 'alpha/keep.md'), 'utf8')).toBe('# updated');
+  });
+
+  it.skipIf(process.platform === 'win32')('propagates executable permissions even when mirrored bytes are unchanged', async () => {
+    const source = path.join(sourceDir, 'alpha/helper.sh');
+    const destination = path.join(destinationDir, 'alpha/helper.sh');
+    await fse.outputFile(source, '#!/bin/sh\necho helper\n');
+    await fse.chmod(source, 0o644);
+    await mirrorLearnings(sourceDir, destinationDir, ['alpha']);
+    await fse.chmod(source, 0o755);
+    await mirrorLearnings(sourceDir, destinationDir, ['alpha']);
+    expect((await fse.stat(destination)).mode & 0o777).toBe(0o755);
+  });
+
   it('keeps what another source root provides instead of deleting it', async () => {
     // The mirror deletes anything its source does not have. With learnings split
     // across roots (#485) a single-source mirror would wipe the other root's

@@ -264,6 +264,7 @@ export const dashboardMessages: Record<string, string> = {
   "Cancelled": "已取消",
   "Pending": "待运行",
   "Leased": "已租用",
+  "Delivering PR": "正在交付 PR",
   "Skipped": "已跳过",
   "Waiting for an answer": "等待回答",
   "Waiting": "等待中",

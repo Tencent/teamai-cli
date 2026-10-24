@@ -398,11 +398,11 @@ export class AgentsHandler extends ResourceHandler {
       // delivered here, so this local file is not a copy of it — the agent is
       // new there and would land on somebody else's, which rules already
       // refuse (#649 review).
-      const inRequested = requestedNamespace
-        ? sources.find((file) => file.namespace === requestedNamespace)
+      const inRequested = requestedNamespace !== undefined
+        ? sources.find((file) => (file.namespace ?? '') === requestedNamespace)
         : undefined;
       if (candidates.length === 0 && inRequested) {
-        const taken = `agents/${requestedNamespace}/${stem}${inRequested.ext}`;
+        const taken = `agents/${requestedNamespace ? requestedNamespace + '/' : ''}${stem}${inRequested.ext}`;
         items.push({ name: stem, type: 'agents', sourcePath: teamAgentsDir,
           relativePath: taken, status: 'new', namespace: requestedNamespace,
           skipReason: `Agent "${stem}" cannot be placed: ${taken} already exists in the team repo and was never `
@@ -413,7 +413,7 @@ export class AgentsHandler extends ResourceHandler {
       // With no destination named, a stem that exists only in namespaces this
       // directory has not activated is not ours to edit — unless this machine
       // has it awaiting review as a placement, whose open PR it goes back to.
-      if (!requestedNamespace && sources.length > 0 && candidates.length === 0 && !pendingPlacedAgents.has(stem)) {
+      if (requestedNamespace === undefined && sources.length > 0 && candidates.length === 0 && !pendingPlacedAgents.has(stem)) {
         items.push({ name: stem, type: 'agents', sourcePath: teamAgentsDir,
           relativePath: `agents/${stem}.yaml`, status: 'modified',
           needsDestination: true,

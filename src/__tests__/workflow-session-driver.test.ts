@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resolveWorkflowEnv } from '../env-resolution.js';
 import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
@@ -44,15 +45,16 @@ steps:
           prompt: Polish the project.
 `);
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'ship', {}, { checkout: work, base: { ref: 'main', commit: git(work, 'rev-parse', 'HEAD') } });
+  const env = await resolveWorkflowEnv(config);
+  const started = await startRun(config, 'ship', {}, { secrets: env.secrets, checkout: work, base: { ref: 'main', commit: git(work, 'rev-parse', 'HEAD') } });
   if ('error' in started) throw new Error(started.error.message);
-  return { config, work, repo, remote, root, runId: String(started.data.run), driver: { kind: 'skill', machine: 'fixture', workspace: work } };
+  return { config, env, work, repo, remote, root, runId: String(started.data.run), driver: { kind: 'skill', machine: 'fixture', workspace: work } };
 }
 async function next(f: Awaited<ReturnType<typeof fixture>>) {
-  const answer = await leaseNext(f.config, f.runId, f.driver, { hitl: true, workspaceModes: ['read-only', 'new', 'continue'] });
+  const answer = await leaseNext(f.config, f.runId, f.driver, { can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } });
   if ('error' in answer || !answer.data.lease) throw new Error(JSON.stringify({ answer, run: await readRun(f.config, f.runId) }));
   const raw = answer.data.lease as { attempt: string; revision: number; step: string };
-  const prepared = await prepareSessionLease(f.config, f.runId, f.driver, raw);
+  const prepared = await prepareSessionLease(f.config, f.runId, f.driver, raw, f.env);
   if ('error' in prepared) throw new Error(prepared.error.message);
   return prepared.data.lease as typeof raw & { cwd: string; workspace: { branch: string } };
 }
@@ -62,7 +64,7 @@ describe('session driver public workspace operations (#1086)', () => {
     const f = await fixture(`schemaVersion: v1alpha1\nname: build\ndescription: Interactive session.\nalias: ship\nsteps:\n  - id: pair\n    prompt: Pair on the code.\n    interactive: true\n${readOnly ? '    workspace: read-only\n' : ''}`);
     const lease = await next(f);
     fs.writeFileSync(path.join(lease.cwd, 'pair.txt'), 'human edits\n');
-    expect(await reportSessionLease(f.config, f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }))
+    expect(await reportSessionLease(f.config, f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }, f.env))
       .toMatchObject({ data: { accepted: true, step: { status: readOnly ? 'failed' : 'succeeded' } } });
     expect(fs.readFileSync(path.join(f.work, 'pair.txt'), 'utf8')).toBe('human edits\n');
   });
@@ -73,14 +75,14 @@ describe('session driver public workspace operations (#1086)', () => {
     expect((await next(f)).cwd).toBe(first.cwd);
     expect(fs.readFileSync(path.join(first.cwd, 'code.txt'), 'utf8')).toBe('first\n');
     const report = { attempt: first.attempt, revision: first.revision, outcome: 'success' as const, driver: f.driver };
-    expect(await reportSessionLease(f.config, f.runId, report)).toMatchObject({ data: { accepted: true } });
+    expect(await reportSessionLease(f.config, f.runId, report, f.env)).toMatchObject({ data: { accepted: true } });
     const committed = git(f.work, 'rev-parse', first.workspace.branch);
-    expect(await reportSessionLease(f.config, f.runId, report)).toMatchObject({ error: { code: 'repeated_report' } });
+    expect(await reportSessionLease(f.config, f.runId, report, f.env)).toMatchObject({ error: { code: 'repeated_report' } });
     expect(git(f.work, 'rev-parse', first.workspace.branch)).toBe(committed);
     const second = await next(f);
     expect(fs.readFileSync(path.join(second.cwd, 'AGENTS.md'), 'utf8')).toBe('Trusted base instructions.\n');
     fs.appendFileSync(path.join(second.cwd, 'code.txt'), 'second\n');
-    expect(await reportSessionLease(f.config, f.runId, { attempt: second.attempt, revision: second.revision, outcome: 'success', driver: f.driver })).toMatchObject({ data: { accepted: true, cleanup: true } });
+    expect(await reportSessionLease(f.config, f.runId, { attempt: second.attempt, revision: second.revision, outcome: 'success', driver: f.driver }, f.env)).toMatchObject({ data: { accepted: true, cleanup: true } });
     expect(git(f.remote, 'show', `${first.workspace.branch}:code.txt`)).toBe('first\nsecond');
     expect(fs.existsSync(second.cwd)).toBe(false);
     const markers = path.join(f.config.dataHome!, 'workflows', 'runs', f.runId, 'attempts');
@@ -94,7 +96,7 @@ describe('session driver public workspace operations (#1086)', () => {
     const hook = path.join(f.remote, 'hooks/pre-receive');
     fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
     const answer = await reportSessionLease(f.config, f.runId, { attempt: lease.attempt, revision: lease.revision, outcome, driver: f.driver,
-      ...(outcome === 'failed' ? { failure: { code: 'tool_failed', message: 'Original tool failure' } } : {}) });
+      ...(outcome === 'failed' ? { failure: { code: 'tool_failed', message: 'Original tool failure' } } : {}) }, f.env);
     expect(answer).toMatchObject({ data: { accepted: true, step: { status: 'failed' } } });
     const run = await readRun(f.config, f.runId);
     expect(run).toMatchObject({ steps: expect.arrayContaining([expect.objectContaining({ id: 'change.write', status: 'failed', failure: { code: outcome === 'success' ? 'push_failed' : 'tool_failed', message: expect.stringContaining('push') } })]) });
@@ -105,8 +107,8 @@ describe('session driver public workspace operations (#1086)', () => {
   it('does not commit or push a cancelled attempt', async () => {
     const f = await fixture(); const lease = await next(f); fs.writeFileSync(path.join(lease.cwd, 'code.txt'), 'preserve me');
     const before = git(f.work, 'rev-parse', lease.workspace.branch);
-    await cancelRun(f.config, f.runId);
-    expect(await reportSessionLease(f.config, f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver })).toMatchObject({ error: { code: 'lease_cancelled' } });
+    await cancelRun(f.config, f.runId, f.env.secrets);
+    expect(await reportSessionLease(f.config, f.runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: f.driver }, f.env)).toMatchObject({ error: { code: 'lease_cancelled' } });
     expect(git(f.work, 'rev-parse', lease.workspace.branch)).toBe(before);
     expect(fs.readFileSync(path.join(lease.cwd, 'code.txt'), 'utf8')).toBe('preserve me');
   });

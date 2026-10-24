@@ -1,31 +1,33 @@
 import type { LocalConfig } from '../types.js';
 import {
-  error, finishRun, locateStep, ok, parseReads, reconcileRun, runData, stopWhere, withRun, workflowLabel,
+  error, finishRun, locateStep, ok, parseReads, reconcileRun, runData, withRun, workflowLabel,
   type RunReads, type WorkflowResult,
 } from './engine.js';
 import { evaluateExpression, isTruthy } from './expression.js';
 import { isItem, itemsAfter, itemsOf } from './fan-out.js';
 import { publishRunEnd } from './handoff.js';
 import { archiveUnder, isUnder } from './loop.js';
+import { spentTokens, startLimits } from './limits.js';
 import { publishRunRecords, removeQueuedEndRecord } from './records.js';
 import { contextOf, localId, statesIn } from './scope.js';
-import { answerHitl, cancel, repend, resetIteration, resetPending, settled, start, stopped, type HitlAnswer, type StepState } from './step-state.js';
+import { answerHitl, cancel, cancellable, redeliver, repend, resetIteration, resetPending, settled, start, stopAttempt, stopWhere, stopped, type HitlAnswer, type StepState } from './step-state.js';
 import type { RunState, WorkflowEnvelope } from './types.js';
 
 async function controlRun(
   config: LocalConfig,
   runId: string,
+  secrets: Record<string, string>,
   operation: (run: RunState, now: string, finish: (result: WorkflowResult) => Promise<void>) => Promise<WorkflowEnvelope>,
 ): Promise<WorkflowEnvelope> {
   let queued = false;
   let settled = false;
   let checkout = process.cwd();
-  const envelope = await withRun(config, runId, async (run, now) => {
+  const envelope = await withRun(config, runId, secrets, async (run, now) => {
     const before = JSON.stringify(run);
     checkout = run.driver?.workspace ?? checkout;
     const finish = async (result: WorkflowResult): Promise<void> => {
       settled = true;
-      queued = await finishRun(config, run, now, result, run.driver);
+      queued = await finishRun(config, run, now, result, secrets, run.driver);
     };
     const envelope = await operation(run, now, finish);
     return { envelope, save: JSON.stringify(run) !== before };
@@ -65,10 +67,10 @@ export interface ResponseInput {
 }
 
 /** Records a HITL request answer under the run lock and settles any work it enables. */
-export async function respondToHitl(config: LocalConfig, runId: string, input: ResponseInput): Promise<WorkflowEnvelope> {
-  return controlRun(config, runId, async (run, now, finish) => {
+export async function respondToHitl(config: LocalConfig, runId: string, secrets: Record<string, string>, input: ResponseInput): Promise<WorkflowEnvelope> {
+  return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
-    const result = reconcileRun(run);
+    const result = reconcileRun(run, now);
     if ('unreadable' in result) return error('run_unreadable', result.unreadable);
     if ('outcome' in result) {
       await finish(result);
@@ -91,7 +93,7 @@ export async function respondToHitl(config: LocalConfig, runId: string, input: R
     if (hitl.required && input.agent) return error('agent_in_path', `Step "${state.id}" needs an answer from a terminal with no agent in the path. Run teamai workflow respond yourself in a terminal.`);
     const answered = { step: state.id, pass: state.pass ?? 1, choice: input.choice, channel: input.channel };
     answerHitl(state, { choice: input.choice, ...(input.note !== undefined ? { note: input.note } : {}), at: now, channel: input.channel, agent: input.agent, ...(input.driver ? { driver: input.driver } : {}) });
-    const reconciled = reconcileRun(run);
+    const reconciled = reconcileRun(run, now);
     if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
     if ('outcome' in reconciled) await finish(reconciled);
     return ok({ answered, run: runData(run) });
@@ -99,12 +101,12 @@ export async function respondToHitl(config: LocalConfig, runId: string, input: R
 }
 
 /** Stops a whole run or one open step and invalidates the attempts it cancelled. */
-export async function cancelRun(config: LocalConfig, runId: string, step?: string): Promise<WorkflowEnvelope> {
-  return controlRun(config, runId, async (run, _now, finish) => {
+export async function cancelRun(config: LocalConfig, runId: string, secrets: Record<string, string>, step?: string): Promise<WorkflowEnvelope> {
+  return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
     const failure = { code: 'cancelled', message: 'Cancelled by teamai workflow cancel' };
     if (step !== undefined) {
-      const reconciled = reconcileRun(run);
+      const reconciled = reconcileRun(run, now);
       if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
       if ('outcome' in reconciled) {
         await finish(reconciled);
@@ -114,19 +116,19 @@ export async function cancelRun(config: LocalConfig, runId: string, step?: strin
     let changed: string[];
     const attemptsBefore = run.cancelledAttempts?.length ?? 0;
     if (step === undefined) {
-      changed = stopWhere(run, () => true, failure, run.revision);
+      changed = stopWhere(run, () => true, failure, run.revision, now);
       await finish({ outcome: 'cancelled', settledAt: run.revision });
     } else {
       const state = run.steps.find((state) => state.id === step);
       if (!state) return missingStepError(run, step);
-      if (state.status !== 'pending' && state.status !== 'waiting' && state.status !== 'leased' && state.status !== 'running') return error('not_cancellable', `Step "${state.id}" is ${state.status}; only pending, waiting, leased or running steps can be cancelled`);
+      if (!cancellable(state)) return error('not_cancellable', `Step "${state.id}" is ${state.status}; only pending, waiting, leased, running or delivering steps can be cancelled`);
       const located = locateStep(run, step);
       if (!located) return missingStepError(run, step);
-      changed = state.status === 'running' ? stopWhere(run, isUnder(state.id), failure, run.revision) : [];
+      changed = state.status === 'running' ? stopWhere(run, isUnder(state.id), failure, run.revision, now) : [];
       changed.push(state.id);
-      if (state.status === 'leased') (run.cancelledAttempts ??= []).push(state.attempt);
+      if (state.status === 'leased') stopAttempt(run, state, now);
       cancel(state, failure, run.revision);
-      const reconciled = reconcileRun(run);
+      const reconciled = reconcileRun(run, now);
       if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
       if ('outcome' in reconciled) await finish(reconciled);
     }
@@ -209,7 +211,7 @@ function retryContainers(run: RunState, target: StepState): RetryContainer[] | W
  * Starts a new pass of a step in a retry cone. A waiting HITL request, or one answered but not yet run, is asked again,
  * because its context changed. Only an unanswered pending or skipped step stays in its pass.
  */
-function retryInstance(run: RunState, state: StepState): void {
+function retryInstance(run: RunState, state: StepState, now: string): void {
   const failure = { code: 'retried', message: 'Cancelled by teamai workflow retry' };
   switch (state.status) {
     case 'pending':
@@ -224,11 +226,12 @@ function retryInstance(run: RunState, state: StepState): void {
       }
       break;
     case 'leased':
-      (run.cancelledAttempts ??= []).push(state.attempt);
+      stopAttempt(run, state, now);
       cancel(state, failure, run.revision);
       break;
     case 'running':
-      stopWhere(run, isUnder(state.id), failure, run.revision);
+    case 'delivering':
+      stopWhere(run, isUnder(state.id), failure, run.revision, now);
       break;
     case 'succeeded':
     case 'failed':
@@ -244,11 +247,14 @@ function retryInstance(run: RunState, state: StepState): void {
 }
 
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
-export async function retryStep(config: LocalConfig, runId: string, step: string): Promise<WorkflowEnvelope> {
-  return controlRun(config, runId, async (run, _now, finish) => {
-    if (run.status === 'running') {
-      const reconciled = reconcileRun(run);
+export async function retryStep(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
+  return controlRun(config, runId, secrets, async (run, now, finish) => {
+    // A run this reconcile finds ended, by its timeout or budget too, is reopened by the retry like a settled one.
+    let ended = run.status !== 'running';
+    if (!ended) {
+      const reconciled = reconcileRun(run, now);
       if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
+      ended = 'outcome' in reconciled;
     }
     const target = run.steps.find((state) => state.id === step);
     if (!target) return missingStepError(run, step);
@@ -268,16 +274,22 @@ export async function retryStep(config: LocalConfig, runId: string, step: string
     const reopened = run.status !== 'running';
     for (const container of containers) {
       if (container.child === target) {
-        retryInstance(run, target);
+        // A failed delivery delivers the same branch again; the agent's work it delivers does not change.
+        if (target.status === 'failed' && target.failure?.code === 'delivery_failed' && target.delivery) redeliver(target, target.delivery);
+        else retryInstance(run, target, now);
         resetIteration(target);
       }
       for (const state of container.states) {
         if (state === container.child) continue;
-        if (container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached')) retryInstance(run, state);
+        if (container.cone.has(state) || (container.resetStops && state.status === 'cancelled' && state.failure.code === 'end_reached')) retryInstance(run, state, now);
         else if (state.status === 'skipped' && !state.answer) resetPending(state);
       }
-      if (container.runner && settled(container.runner)) start(container.runner);
+      // A retried workflow runs again, so its timeout and budget count from now.
+      const runner = container.runner && settled(container.runner) ? container.runner : undefined;
+      const located = runner && locateStep(run, runner.id);
+      if (runner) start(runner, undefined, located ? startLimits(run, runner, located.step, now) : undefined);
     }
+    if (ended) run.limitsFrom = { at: now, tokens: spentTokens(run, () => true) };
     if (reopened) {
       run.status = 'running';
       delete run.end;
@@ -286,7 +298,7 @@ export async function retryStep(config: LocalConfig, runId: string, step: string
       delete run.endRecordQueued;
     }
     run.revision += 1;
-    const reconciled = reconcileRun(run);
+    const reconciled = reconcileRun(run, now);
     if ('unreadable' in reconciled) return error('run_unreadable', reconciled.unreadable);
     if ('outcome' in reconciled) await finish(reconciled);
     return ok({ retried: { step: target.id, pass: target.pass ?? 1 }, reopened, run: runData(run),

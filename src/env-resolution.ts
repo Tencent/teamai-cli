@@ -22,8 +22,9 @@ import {
 import { getDataHome, getEnvBackupPath, type LocalConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 import { warnOnce } from './utils/warn-once.js';
-import { MIN_DECLARED_SECRET_LENGTH } from './utils/redact.js';
+import { collectEnvSecrets, MIN_DECLARED_SECRET_LENGTH } from './utils/redact.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
+import type { EnvFacts } from './workflow/requirements.js';
 
 export interface SecretValue {
   readonly source: 'team' | 'global' | 'environment';
@@ -330,19 +331,45 @@ function variableValues(
 /**
  * The value of each secret the team declares in `env/secrets.yaml`, as this
  * member resolves it, keyed by name, for redaction. A declared name need not
- * look secret, so `collectEnvSecrets` misses these. Empty when the values
- * can't be read. A value too short to tell from ordinary text is left out,
- * with a warning that names it.
+ * look secret, so `collectEnvSecrets` misses these. Empty, with a warning,
+ * when the values can't be read. A value too short to tell from ordinary text
+ * is left out, with a warning that names it.
  */
 export async function collectTeamSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
   if (!resolvesTeamEnv(localConfig)) return {};
-  const { secrets } = await resolveTeamEnv(localConfig, undefined, env);
-  if (secrets.kind !== 'resolved') return {};
+  return teamSecretsOf((await resolveTeamEnv(localConfig, undefined, env)).secrets);
+}
+
+function teamSecretsOf(secrets: StoreResolution<SecretValue>): Record<string, string> {
+  if (secrets.kind !== 'resolved') {
+    warnOnce(`${secrets.reason} Until it can be read, teamai does not mask the team's secret values in what it writes.`);
+    return {};
+  }
   return Object.fromEntries([...secrets.values].flatMap(([key, { value }]) => {
     if (value.length >= MIN_DECLARED_SECRET_LENGTH) return [[key, value]];
     if (value) warnOnce(`Secret ${key} in env/secrets.yaml is shorter than ${MIN_DECLARED_SECRET_LENGTH} characters, so teamai cannot tell it from ordinary text and does not mask it. Give it a longer value.`);
     return [];
   }));
+}
+
+/**
+ * Every value teamai masks on this machine, keyed by name: environment values that look secret, and the team's
+ * declared secrets. Publishing a run, writing its file, and printing a workflow envelope agree on it. A team value
+ * replaces the environment's under the same name for a step, but both stay known: the environment's is kept as
+ * `<name> (environment)`.
+ */
+export async function knownSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
+  return (await resolveWorkflowEnv(localConfig, env)).secrets;
+}
+
+function maskSet(fromEnvironment: Record<string, string>, team: Record<string, string>): Record<string, string> {
+  const shadowed = Object.entries(fromEnvironment).flatMap(([key, value]) => (key in team && team[key] !== value ? [[`${key} (environment)`, value]] : []));
+  return { ...fromEnvironment, ...team, ...Object.fromEntries(shadowed) };
+}
+
+/** The env key a `knownSecrets` name stands for. */
+export function secretKey(label: string): string {
+  return label.split(' ')[0] ?? label;
 }
 
 export function secretState(secrets: StoreResolution<SecretValue>, key: string): SecretState {
@@ -380,4 +407,51 @@ export function keptFromUserScope(localConfig: LocalConfig, teamEnv: TeamEnv, ex
 /** What a pull and MCP do while the member's values can't be read: keep what the last pull wrote. */
 export function variablesKeptWarning(reason: string): string {
   return `${reason} Team env variables keep the values the last pull wrote until it is fixed.`;
+}
+
+/** This machine's team env for one workflow operation, resolved once, so what the engine holds and what is masked agree. */
+export interface WorkflowEnv {
+  /** By name only, which is all the workflow engine may hold. */
+  readonly facts: EnvFacts;
+  /** Each value a step can be given: the variables `teamai env exec` applies, each declared secret's, else the environment's. */
+  readonly values: ReadonlyMap<string, string>;
+  /** What every write and print masks, as `knownSecrets` says. */
+  readonly secrets: Record<string, string>;
+}
+
+/**
+ * The team env a workflow step can be given on this machine, and what masking hides. A key nothing here declares takes
+ * its value from the environment, as a CI job's token does.
+ */
+export async function resolveWorkflowEnv(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnv> {
+  const values = new Map(Object.entries(env).flatMap(([key, value]) => (value ? [[key, value]] : [])));
+  if (!resolvesTeamEnv(localConfig)) {
+    return { facts: { declared: new Set(), secrets: new Set(), present: new Set(values.keys()) }, values, secrets: collectEnvSecrets(env) };
+  }
+  const teamEnv = await resolveTeamEnv(localConfig, undefined, env);
+  const applied = appliedTeamEnv(teamEnv);
+  // The environment's own value of a declared secret is a secret too, whatever its name, even when the team value differs.
+  const personalSecrets = environmentValuesOf(applied.secretKeys, values);
+  const declared = new Set([...applied.variables.keys(), ...applied.secretKeys]);
+  for (const key of declared) values.delete(sameEnvName(values.keys(), key) ?? key);
+  for (const [key, value] of applied.variables) values.set(key, value);
+  if (teamEnv.secrets.kind === 'resolved') for (const [key, { value }] of teamEnv.secrets.values) values.set(key, value);
+  const failed = [teamEnv.variables, teamEnv.declarations].find((entries) => entries.kind === 'failed');
+  const unreadable = failed?.kind === 'failed' ? describeEntryFailure(failed.failure)
+    : teamEnv.secrets.kind === 'store-unreadable' ? teamEnv.secrets.reason
+      : teamEnv.variableValues.kind === 'store-unreadable' ? teamEnv.variableValues.reason : undefined;
+  return {
+    facts: { declared, secrets: new Set(applied.secretKeys), present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) },
+    values,
+    secrets: maskSet({ ...collectEnvSecrets(env), ...personalSecrets }, teamSecretsOf(teamEnv.secrets)),
+  };
+}
+
+/** The environment's value of each of `keys`, long enough to mask. */
+function environmentValuesOf(keys: Iterable<string>, values: ReadonlyMap<string, string>): Record<string, string> {
+  return Object.fromEntries([...keys].flatMap((key) => {
+    const name = sameEnvName(values.keys(), key) ?? key;
+    const value = values.get(name);
+    return value !== undefined && value.length >= MIN_DECLARED_SECRET_LENGTH ? [[name, value]] : [];
+  }));
 }

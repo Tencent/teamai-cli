@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import crossSpawn from 'cross-spawn';
+import { z } from 'zod';
 import { log } from '../../utils/logger.js';
 import { resolveCliPath } from '../../utils/cli-path.js';
 import { isInteractive } from '../../utils/prompt.js';
+import type { PullRequestRef } from '../types.js';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -562,6 +564,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
     {
       method: 'POST',
       headers: authHeaders,
+      ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
       body: JSON.stringify({
         title: opts.title,
         body: opts.description ?? opts.title,
@@ -598,4 +601,85 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
     throw new Error('PR created but response did not include html_url.');
   }
   return pr.html_url;
+}
+
+// ─── Open pull request lookup ────────────────────────────
+
+const GhPullSchema = z.object({
+  html_url: z.string(),
+  state: z.string(),
+  head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
+  base: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }) }),
+});
+
+/**
+ * The open pull request from `source` into `target` in `repo`, asked of an installed gh or, without one, of the API with
+ * GITHUB_TOKEN or GH_TOKEN. A request from a fork with the same branch name is not it. Never logs in or prompts, and
+ * throws, rather than answering none, when GitHub cannot be asked or answers what this cannot read.
+ */
+export async function ghFindOpenPull({ repo, source, target, timeoutMs }: PullRequestRef): Promise<string | undefined> {
+  const owner = repo.split('/')[0] ?? repo;
+  const query = new URLSearchParams({ state: 'open', head: `${owner}:${source}`, base: target, per_page: '100' });
+  const pulls = z.array(GhPullSchema).safeParse(await ghApiGet(`repos/${repo}/pulls?${query}`, timeoutMs));
+  if (!pulls.success) throw new Error('GitHub answered the open pull request lookup with data TeamAI cannot read.');
+  const ours = (name: string | undefined): boolean => name?.toLowerCase() === repo.toLowerCase();
+  return pulls.data.find((pull) => pull.state === 'open' && pull.head.ref === source && pull.base.ref === target
+    && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name))?.html_url;
+}
+
+async function ghApiGet(path: string, timeoutMs: number): Promise<unknown> {
+  const ghPath = getGhPath();
+  if (ghPath) {
+    const result = await ghSpawn(ghPath, ['api', path], { timeoutMs, env: { GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' } });
+    if (result.status !== 0) throw new Error('gh could not look up open pull requests. Check gh auth status and its access to the repository.');
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      throw new Error('GitHub answered the open pull request lookup with data TeamAI cannot read.');
+    }
+  }
+  const token = getGitHubToken();
+  if (!token) throw new Error('GitHub credentials are unavailable: install gh and log in, or set GITHUB_TOKEN or GH_TOKEN.');
+  const response = await fetch(`${GITHUB_API}/${path}`, {
+    headers: { 'Accept': 'application/vnd.github+json', 'Authorization': `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`GitHub answered the open pull request lookup with HTTP ${response.status}. Check the token's access to the repository.`);
+  try {
+    return await response.json();
+  } catch {
+    throw new Error('GitHub answered the open pull request lookup with data TeamAI cannot read.');
+  }
+}
+
+/**
+ * Runs gh as `ghExec` does, through cross-spawn with the same arguments, environment and timeout, but without blocking
+ * the process, which a workflow driver shares with the agents it runs, while gh waits on GitHub.
+ */
+function ghSpawn(ghPath: string, args: string[], { env, timeoutMs }: { env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<{ stdout: string; status: number }> {
+  log.debug(`gh exec: ${ghPath} ${args.join(' ')}`);
+  return new Promise((resolve) => {
+    const child = crossSpawn(ghPath, args, { env: { ...process.env, ...env } });
+    let stdout = '';
+    let settled = false;
+    const finish = (status: number): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      resolve({ stdout: stdout.trim(), status });
+    };
+    const deadline = setTimeout(() => {
+      finish(1);
+      child.kill('SIGKILL');
+      child.stdin?.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    }, timeoutMs);
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr?.resume();
+    child.on('error', () => finish(1));
+    child.on('close', (code) => finish(code ?? 1));
+  });
 }

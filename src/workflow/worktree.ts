@@ -35,18 +35,36 @@ function configRoot(relative: string): string {
   return first !== relative && first.startsWith('.') && first !== '.github' ? first : relative;
 }
 
+/** Paths a delivered branch may not change beyond AGENT_PATHS: CI and hooks, which run with someone's credentials. */
+export const DELIVERY_ONLY_PATHS: readonly string[] = [
+  '.github/workflows', '.github/actions', '.github/CODEOWNERS', '.gitlab-ci.yml', '.gitlab', '.coding-ci.yaml', '.cnb.yml', '.cnb',
+  '.circleci', '.buildkite', '.husky', 'Jenkinsfile', 'azure-pipelines.yml', 'bitbucket-pipelines.yml', '.pre-commit-config.yaml',
+];
+
+/**
+ * The files among `changed` that no pull request TeamAI delivers may change: AGENT_PATHS, DELIVERY_ONLY_PATHS, and
+ * AGENTS.md or CLAUDE.md at any depth. Case-insensitive, as a checkout on a case-insensitive file system reads them.
+ */
+export function protectedPaths(changed: readonly string[]): string[] {
+  const roots = [...AGENT_PATHS, ...DELIVERY_ONLY_PATHS].map((root) => root.toLowerCase());
+  return changed.filter((file) => {
+    const lower = file.toLowerCase();
+    return /(^|\/)(agents|claude)\.md$/.test(lower) || roots.some((root) => lower === root || lower.startsWith(`${root}/`));
+  });
+}
+
 export interface GitResult {
   code: number;
   stdout: string;
   stderr: string;
 }
 
-export function git(cwd: string, args: string[], input?: string): Promise<GitResult> {
-  if (input === undefined) {
+/** Runs git in `cwd`, writing `input` to its stdin, or stopping it once `timeoutMs` passed. */
+export function git(cwd: string, args: string[], options?: { input: string } | { timeoutMs: number; env?: NodeJS.ProcessEnv }): Promise<GitResult> {
+  if (options === undefined || !('input' in options)) {
     return new Promise((resolve) => {
-      execFile('git', args, { cwd, env: process.env, windowsHide: true }, (error, stdout, stderr) => {
-        const failed = error as NodeJS.ErrnoException & { status?: number } | null;
-        const code = typeof failed?.status === 'number' ? failed.status : failed ? 1 : 0;
+      execFile('git', args, { cwd, env: { ...process.env, ...options?.env }, windowsHide: true, timeout: options?.timeoutMs }, (error, stdout, stderr) => {
+        const code = typeof error?.code === 'number' ? error.code : error ? 1 : 0;
         resolve({ code, stdout: String(stdout), stderr: String(stderr) });
       });
     });
@@ -67,7 +85,7 @@ export function git(cwd: string, args: string[], input?: string): Promise<GitRes
     child.stderr.on('data', (chunk: string) => { stderr += chunk; });
     child.on('error', () => finish(1));
     child.on('close', (code) => finish(code ?? 1));
-    child.stdin.end(input);
+    child.stdin.end(options.input);
   });
 }
 
@@ -125,7 +143,7 @@ export async function headCommit(cwd: string): Promise<{ ref?: string; commit: s
  * Creates the worktree when it is missing. A branch that already exists is checked out as it is. An existing worktree
  * off its branch is refused, so a step never commits on whatever HEAD was left.
  */
-export async function ensureWorktree(main: string, branch: string, start: string): Promise<{ dir: string } | { error: string }> {
+export async function ensureWorktree(main: string, branch: string, start: string): Promise<{ dir: string; created: boolean } | { error: string }> {
   const dir = worktreePath(main, branch);
   const hooks = hooksPath(main);
   await fs.mkdir(hooks, { recursive: true });
@@ -141,7 +159,7 @@ export async function ensureWorktree(main: string, branch: string, start: string
     const on = await offBranch(dir, branch);
     if (on) return { error: `Workspace ${dir} is ${on}, not on branch ${branch}. Check out ${branch} in ${dir}, then retry the step.` };
     await worktreeHooks(main, dir, hooks);
-    return { dir };
+    return { dir, created: false };
   }
   await fs.mkdir(path.dirname(dir), { recursive: true });
   const config = ['-c', `core.hooksPath=${hooks}`];
@@ -151,7 +169,22 @@ export async function ensureWorktree(main: string, branch: string, start: string
     : await git(main, [...config, 'worktree', 'add', '-b', branch, dir, start]);
   if (created.code !== 0) return { error: created.stderr.trim() || created.stdout.trim() || 'git worktree add failed' };
   await worktreeHooks(main, dir, hooks);
-  return { dir };
+  return { dir, created: true };
+}
+
+/** In the worktree's own git dir from its creation until its setup finished, so one whose setup never finished is made again. */
+const SETUP_UNFINISHED = 'teamai-setup-unfinished';
+
+export async function setupUnfinished(dir: string): Promise<boolean> {
+  const marker = await gitPath(dir, SETUP_UNFINISHED);
+  return marker !== undefined && await fs.stat(marker).then(() => true, () => false);
+}
+
+export async function markSetup(dir: string, state: 'unfinished' | 'finished'): Promise<void> {
+  const marker = await gitPath(dir, SETUP_UNFINISHED);
+  if (!marker) return;
+  if (state === 'unfinished') await fs.writeFile(marker, '');
+  else await fs.rm(marker, { force: true });
 }
 
 /** Where HEAD is, such as `on refs/heads/other` or `detached at <commit>`, when it is not on `branch`. Undefined when it is. */
@@ -211,12 +244,14 @@ async function worktreeHooks(main: string, dir: string, hooks: string): Promise<
 /**
  * The commits among `commits` this checkout still lacks after fetching run `run`'s branches from origin. A fetch whose
  * refspec matches no branch exits 0, so each commit is checked again after it. `fetchError` is git's message when the
- * fetch itself failed.
+ * fetch itself failed. `fetch` bounds the fetch and sets its environment.
  */
-export async function fetchMissingCommits(dir: string, { run, commits }: { run: string; commits: string[] }): Promise<{ missing: string[]; fetchError?: string }> {
+export async function fetchMissingCommits(
+  dir: string, { run, commits }: { run: string; commits: string[] }, fetch?: { timeoutMs: number; env?: NodeJS.ProcessEnv },
+): Promise<{ missing: string[]; fetchError?: string }> {
   const lacking = await lackedCommits(dir, commits);
   if (lacking.length === 0) return { missing: [] };
-  const fetched = await git(dir, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/teamai/${run}/*:refs/remotes/origin/teamai/${run}/*`]);
+  const fetched = await git(dir, ['fetch', '--quiet', '--no-tags', 'origin', `+refs/heads/teamai/${run}/*:refs/remotes/origin/teamai/${run}/*`], fetch);
   const missing = await lackedCommits(dir, lacking);
   if (fetched.code === 0 || missing.length === 0) return { missing };
   return { missing, fetchError: (fetched.stderr || fetched.stdout).trim() || 'git fetch failed' };
@@ -472,7 +507,7 @@ async function restoreConflictStages(dir: string, conflicts: string, paths: stri
   // `git rm --cached` leaves stage 0 in place beside the restored stages, and then `git add` cannot clear them.
   const removal = paths.map((relative) => `0 ${'0'.repeat(40)}\t${relative}`);
   const payload = [...removal, ...lines];
-  if (payload.length > 0) await git(dir, ['update-index', '--index-info'], `${payload.join('\n')}\n`);
+  if (payload.length > 0) await git(dir, ['update-index', '--index-info'], { input: `${payload.join('\n')}\n` });
 }
 
 async function fileManifest(root: string): Promise<Record<string, string>> {

@@ -439,3 +439,11 @@ limit for 429, or retry a temporary server failure. The error page is not a diff
 ## Session archive publication is busy or failed
 
 Session archive writers (`session push`, `migrate --push`, and `session pull`) wait up to ten seconds for another publication on the same machine. If busy, retry once it finishes. A failed save removes the new pair or restores the previous pair; a rollback failure names the retained backups. Remote push failures still keep the local commit.
+
+## OpenCode hooks cannot start the CLI
+
+If OpenCode hooks stopped after moving or reinstalling Node or TeamAI, run `teamai hooks inject` or `teamai pull` and restart OpenCode. The plugin records the installed Node and CLI paths so it also works without `teamai` on the service PATH.
+
+## ZCode registered hooks but missing project rules
+
+Doctor checks the serialized rules reply against the user config `hooks.maxOutputBytes` (default 32768), counting UTF-8 bytes and JSON escaping. Other session hints make the complete stdout larger. Shorten the rules or raise the positive integer byte cap enough for the whole reply, then start a new session; registration alone does not prove the rules fit.

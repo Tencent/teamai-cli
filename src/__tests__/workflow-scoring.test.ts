@@ -16,8 +16,11 @@ import { workflowRunDetail } from '../dashboard/workflow-runs.js';
 import { buildEndRecord } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import { nextJudgeLease, parseJudgeRequest, parseJudgeSubmission, runJudgeLease, scoreOnDemand, scoredPasses, submitJudgeLease, type JudgeRequest } from '../workflow/scoring.js';
-import { installOwner, readRun } from '../workflow/store.js';
+import { cancelRun, retryStep } from '../workflow/run-controls.js';
+import { installOwner, readRun, updateRun } from '../workflow/store.js';
+import type { StepState } from '../workflow/step-state.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from '../workflow/types.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -89,7 +92,7 @@ async function runOf(config: LocalConfig, runId: string): Promise<RunState> {
  */
 async function settledRun(config: LocalConfig, reported: Record<string, unknown> = {}): Promise<string> {
   await syncWorkflowDefinitions(config);
-  const runId = String(data(await startRun(config, 'review')).run);
+  const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
   const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
   const parsed = parseReport({ attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { reviewed: true }, ...reported });
   if (typeof parsed === 'string') throw new Error(parsed);
@@ -98,7 +101,51 @@ async function settledRun(config: LocalConfig, reported: Record<string, unknown>
   return runId;
 }
 
+/** Rewrites run `runId`'s one step as `step`, with the run still running, as a delivery would leave it. */
+async function setStep(config: LocalConfig, runId: string, step: (run: RunState) => StepState): Promise<void> {
+  await updateRun(config, runId, await knownSecrets(config), async (run) => (run === 'missing' ? { value: undefined } : { value: undefined, write: { ...run, status: 'running', steps: [step(run)] } }));
+}
+
 describe('judge work', () => {
+  it('judges a step while it delivers, and its label stays the judgement however the delivery ends', async () => {
+    const config = fixture(scorer(100));
+    const runId = await settledRun(config);
+    const settled = (await runOf(config, runId)).steps[0];
+    if (settled?.status !== 'succeeded') throw new Error('review did not succeed');
+    const reported = (run: RunState) => ({ ...settled, delivery: { branch: `teamai/${run.id}/review/p1`, head: 'c'.repeat(40) } });
+    await setStep(config, runId, (run) => ({ ...reported(run), status: 'delivering' }));
+
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    data(await submitJudgeLease(config, lease.ref, { driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' } }));
+    const labels = await LabelStore.local(config);
+    expect(labels).toMatchObject([{ subject: { runId, step: 'review', pass: 1 }, label: 'good' }]);
+
+    await setStep(config, runId, (run) => ({ ...reported(run), status: 'failed', outcome: 'failed', failure: { code: 'delivery_failed', message: 'm' } }));
+    expect(data(await nextJudgeLease(config, request()))).not.toHaveProperty('lease');
+    await setStep(config, runId, (run) => ({ ...reported(run), status: 'succeeded', outcome: 'success' }));
+    expect(data(await nextJudgeLease(config, request()))).not.toHaveProperty('lease');
+    expect(await LabelStore.local(config)).toEqual(labels);
+  });
+
+  it('judges a step cancelled while it delivers as its agent left it, and the run record keeps the tokens of that pass', async () => {
+    const config = fixture(scorer(100));
+    const tokens = { input: 1200, output: 80 };
+    const runId = await settledRun(config, { tokens });
+    const settled = (await runOf(config, runId)).steps[0];
+    if (settled?.status !== 'succeeded') throw new Error('review did not succeed');
+    await setStep(config, runId, (run) => ({ ...settled, status: 'delivering', delivery: { branch: `teamai/${run.id}/review/p1`, head: 'c'.repeat(40) } }));
+    expect(await cancelRun(config, runId, await knownSecrets(config), 'review')).toMatchObject({ data: { cancelled: { steps: ['review'] } } });
+
+    const cancelled = await runOf(config, runId);
+    expect(cancelled.steps[0]).toMatchObject({ status: 'cancelled', tokens, outputs: { reviewed: true } });
+    expect(buildEndRecord(cancelled, workDriver, 'tester').steps).toEqual([expect.objectContaining({ step: 'review', pass: 1, outcome: 'cancelled', tokens })]);
+    expect(data(await nextJudgeLease(config, request()))).toHaveProperty('lease');
+
+    expect(await retryStep(config, runId, await knownSecrets(config), 'review')).toMatchObject({ data: { retried: { step: 'review', pass: 2 } } });
+    const install = (await installOwner(config)).id;
+    expect(scoredPasses(await runOf(config, runId), install)).toEqual([{ subject: { runId, step: 'review', pass: 1 }, scorers: ['quality'] }]);
+  });
+
   it('finalizes the selected Codex tool in the lease', async () => {
     const config = fixture(scorer(100));
     await settledRun(config);
@@ -282,7 +329,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'great'
   it('names the entry it closed for empty evidence in the next answer', async () => {
     const config = fixture(scorer(100));
     await syncWorkflowDefinitions(config);
-    const runId = String(data(await startRun(config, 'review')).run);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     const work = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
     data(await reportAttempt(config, runId, { ...work, outcome: 'success', driver: workDriver }));
 
@@ -462,6 +509,57 @@ process.stdin.resume(); process.stdin.on('end', () => console.log(JSON.stringify
   });
 });
 
+describe('judge work and a work budget', () => {
+  const BUDGETED = `schemaVersion: v1alpha1
+name: review
+description: A reviewed step, then a fix, under one token budget.
+budget: { tokens: 100 }
+steps:
+  - id: review
+    prompt: Review the change.
+    scorers: [quality]
+  - id: fix
+    needs: [review]
+    prompt: Fix what the review found.
+`;
+  const reports = { can: { tokens: true } };
+
+  /** Settles the review with 90 of the run's 100 tokens and returns the run, still running. */
+  async function reviewed(config: LocalConfig): Promise<string> {
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'review.yaml'), BUDGETED);
+    await syncWorkflowDefinitions(config);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
+    const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver, reports)).lease);
+    data(await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { reviewed: true }, tokens: { input: 60, output: 30 } }));
+    return runId;
+  }
+
+  it('leaves the work budget as it was when a judge spends tokens on a pass of the running run', async () => {
+    const config = fixture(scorer(100));
+    const runId = await reviewed(config);
+    const before = await runOf(config, runId);
+    const lease = leaseOf(await nextJudgeLease(config, request()));
+    data(await submitJudgeLease(config, lease.ref, {
+      driver: judgeDriver, outcome: 'success', answer: { label: 'good', reasoning: 'r' }, judge: { usage: { inputTokens: 5000, outputTokens: 500 } },
+    }));
+    expect(await runOf(config, runId)).toEqual(before);
+    expect(data(await leaseNext(config, runId, workDriver, reports))).toMatchObject({ lease: { step: 'fix' } });
+  });
+
+  it('settles a judge lease that keeps lapsing without a label, and the run it judged goes on', async () => {
+    const config = fixture(scorer(100));
+    const runId = await reviewed(config);
+    const before = await runOf(config, runId);
+    const start = Date.parse(before.updatedAt);
+    const minutes = (count: number): string => new Date(start + count * 60 * 1000).toISOString();
+    for (const count of [0, 31, 62, 93]) leaseOf(await nextJudgeLease(config, request(), minutes(count)));
+    expect(data(await nextJudgeLease(config, request(), minutes(124)))).toEqual({ idle: { open: 0, leased: 0 } });
+    expect(fs.existsSync(path.join(config.dataHome ?? '', 'scores', 'labels.jsonl'))).toBe(false);
+    expect(await runOf(config, runId)).toEqual(before);
+    expect(data(await leaseNext(config, runId, workDriver, reports))).toMatchObject({ lease: { step: 'fix' } });
+  });
+});
+
 describe('scoring totals', () => {
   /** Settles a run at `samplingRate`, judges whatever is offered with a released then a labelled attempt, and returns its end record. */
   async function judgedRun(samplingRate: number) {
@@ -494,6 +592,28 @@ describe('scoring totals', () => {
 });
 
 describe('scoredPasses', () => {
+  it('judges the agent pass of a step that delivers, for the install that reported it, whatever becomes of its delivery', async () => {
+    const config = fixture(scorer(100));
+    const run = await runOf(config, await settledRun(config));
+    const install = (await installOwner(config)).id;
+    const reported = { id: 'review', settledAt: 2, attempt: 'a1', installId: install, delivery: { branch: `teamai/${run.id}/review/p1`, head: 'c'.repeat(40) } };
+    const judged = [{ subject: { runId: run.id, step: 'review', pass: 1 }, scorers: ['quality'] }];
+    const withStep = (step: StepState): RunState => ({ ...run, status: 'running', steps: [step] });
+
+    expect(scoredPasses(withStep({ ...reported, status: 'delivering' }), install)).toEqual(judged);
+    expect(scoredPasses(withStep({ ...reported, status: 'succeeded', outcome: 'success' }), install)).toEqual(judged);
+    for (const code of ['delivery_failed', 'protected_path']) {
+      expect(scoredPasses(withStep({ ...reported, status: 'failed', outcome: 'failed', failure: { code, message: 'm' } }), install)).toEqual(judged);
+      const retried: StepState = { id: 'review', status: 'pending', pass: 2, passes: [{ pass: 1, outcome: 'failed', failure: { code, message: 'm' }, installId: install }] };
+      expect(scoredPasses(withStep(retried), install)).toEqual(judged);
+    }
+    expect(scoredPasses(withStep({ id: 'review', status: 'failed', outcome: 'failed', settledAt: 2, installId: install, failure: { code: 'tool_failed', message: 'm' } }), install)).toEqual([]);
+    // Claimed mid-delivery: the install that reported the pass judges it, the one that claimed the run does not.
+    const claimed = { ...withStep({ ...reported, status: 'delivering' }), publication: { stateRevision: 2 } };
+    expect(scoredPasses(claimed, install)).toEqual(judged);
+    expect(scoredPasses(claimed, 'claimer')).toEqual([]);
+  });
+
   it('keeps only the passes this install settled, and attributes archived children to the workflow pass that held them', async () => {
     const config = fixture(scorer(100));
     const run = await runOf(config, await settledRun(config));
@@ -561,7 +681,7 @@ describe('scoredPasses', () => {
     const config = fixture(scorer(100));
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'review.yaml'), WORKFLOW.replace('    scorers:', "    for_each: '[]'\n    scorers:"));
     await syncWorkflowDefinitions(config);
-    const runId = String(data(await startRun(config, 'review')).run);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     expect(data(await leaseNext(config, runId, workDriver))).toMatchObject({ done: { outcome: 'succeeded' } });
     const install = (await installOwner(config)).id;
     const run = await runOf(config, runId);
@@ -624,7 +744,7 @@ steps:
           prompt: Review the change.
 `);
     await syncWorkflowDefinitions(config);
-    const runId = String(data(await startRun(config, 'review')).run);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     for (const reported of reports) {
       const lease = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
       const parsed = parseReport({ attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: workDriver, outputs: { done: true }, ...reported });
@@ -910,7 +1030,7 @@ console.log(JSON.stringify({ type: 'result', structured_output: { label: 'good',
   it('says the evidence is empty when a pass on demand recorded nothing to judge', async () => {
     const config = fixture(scorer(0));
     await syncWorkflowDefinitions(config);
-    const runId = String(data(await startRun(config, 'review')).run);
+    const runId = String(data(await startRun(config, 'review', {}, { secrets: await knownSecrets(config) })).run);
     const work = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, workDriver)).lease);
     data(await reportAttempt(config, runId, { ...work, outcome: 'success', driver: workDriver }));
     fakeClaude(config);

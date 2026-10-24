@@ -5,12 +5,14 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseDocument } from 'yaml';
 import { syncScorerDefinitions } from '../scorers/cache.js';
+import { ciRecipesOf, runCommandsOf } from './helpers/ci-recipe.js';
 import { formatScorerDiagnostic } from '../scorers/definition.js';
 import type { LocalConfig } from '../types.js';
 import { formatUnknownScorer, syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
+import { knownSecrets } from '../env-resolution.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GUIDE = path.join(ROOT, 'docs', 'guide');
@@ -75,6 +77,8 @@ function startsOf(page: string): { starts: Start[]; unread: string[] } {
   const unread = [...text.matchAll(/--inputs[ =]['"{]/g)]
     .map((match) => lineOf(match.index))
     .filter((line) => !starts.some((start) => start.line === line))
+    // Actions expressions become JSON only inside the job; the documented CLI path has its own real-CLI E2E.
+    .filter((line) => !text.split('\n')[line - 1]?.includes('${{'))
     .map((line) => `${page}:${line}: --inputs is not part of a teamai workflow start line`);
   return { starts, unread };
 }
@@ -165,11 +169,11 @@ function leaseOf(answer: WorkflowEnvelope): Lease | undefined {
 }
 
 /** Starts the workflow `name` that `page` shows. */
-async function startExample(page: string, name: string, inputs?: unknown): Promise<{ config: LocalConfig; runId: string }> {
+async function startExample(page: string, name: string, inputs: unknown = {}): Promise<{ config: LocalConfig; runId: string }> {
   const config = teamRepo();
   writeExamples(page, config);
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, name, inputs);
+  const started = await startRun(config, name, inputs, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(`${page}: ${started.error.message}`);
   return { config, runId: String(started.data.run) };
 }
@@ -257,13 +261,13 @@ describe('workflow guide examples', () => {
         failures.push(`${start.label}: --inputs is not JSON`);
         continue;
       }
-      const started = await startRun(config, start.name, inputs);
+      const started = await startRun(config, start.name, inputs, { secrets: await knownSecrets(config) });
       if ('error' in started) {
         failures.push(`${start.label}: ${started.error.code}: ${started.error.message}`);
         continue;
       }
       // Some inputs, such as the `after` of a for_each item, are read only when the first step is leased.
-      const next = await leaseNext(config, String(started.data.run), driver, { workspaceModes: ['read-only', 'new', 'continue'], base: { ref: 'main', commit: 'fixture-base' } });
+      const next = await leaseNext(config, String(started.data.run), driver, { can: { workspace: ['read-only', 'new', 'continue'] }, base: { ref: 'main', commit: 'fixture-base' } });
       if (!('data' in next) || !next.data.lease) failures.push(`${start.label}: the first next leases nothing: ${JSON.stringify(next)}`);
     }
     expect(failures).toEqual([]);
@@ -305,6 +309,19 @@ describe('workflow guide examples', () => {
 
     const prompt = answers.map(leaseOf).find((lease) => lease?.step === 'explain')?.prompt ?? '';
     expect(JSON.parse(prompt.slice(prompt.indexOf('[')))).toEqual(shown);
+  });
+
+  it.each(PAGES)('%s: every job of a GitHub Actions workflow it shows says what it runs on', (page) => {
+    const jobs = ciRecipesOf(path.join(ROOT, page)).flatMap((recipe) => Object.entries(recipe.jobs));
+    expect(jobs.filter(([, job]) => !job['runs-on']).map(([name]) => `${page}: job ${name} has no runs-on`)).toEqual([]);
+  });
+
+  it('shows the same CI recipe commands in every language', () => {
+    const recipes = PAGES.filter((page) => path.posix.basename(page) === 'workflow.md')
+      .map((page) => ({ page, commands: ciRecipesOf(path.join(ROOT, page)).map(runCommandsOf) }));
+    expect(recipes.map(({ page }) => page)).toEqual(['docs/guide/workflow.md', 'docs/guide/zh-CN/workflow.md']);
+    expect(recipes[0]?.commands.flat().length, 'the English guide shows a CI recipe with run commands').toBeGreaterThan(0);
+    for (const { page, commands } of recipes.slice(1)) expect(commands, page).toEqual(recipes[0]?.commands);
   });
 
   it.each([...PAGES, ...SCORER_PAGES])('%s: every relative link to a .md file resolves', (page) => {

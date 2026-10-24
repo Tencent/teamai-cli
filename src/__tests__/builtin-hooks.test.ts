@@ -92,7 +92,7 @@ describe('builtinHookDefs — unified built-in hook model', () => {
 // DSH's Windows hook runner is PowerShell (@deepseek-ai/dsh-pwsh-local), so the
 // POSIX `bash -lc "…"` wrapper is a ParserError there and every dsh hook failed
 // silently (issue #1005). The rendered command has to be PowerShell syntax on
-// Windows and keep the bash form everywhere else.
+// Windows and use the PATH wrapper on POSIX.
 describe('builtinHookDefs — dsh shell syntax by platform (#1005)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -119,18 +119,19 @@ describe('builtinHookDefs — dsh shell syntax by platform (#1005)', () => {
     const windows = builtinHookDefs('dsh');
     expect(windows.map((d) => d.key)).toEqual(posix.map((d) => d.key));
     windows.forEach((def, i) => {
-      const dispatch = posix[i].command.replace(/^bash -lc "(.+) 2>\/dev\/null" \|\| true$/, '$1');
+      const dispatch = posix[i].command.replace(/^PATH="\$HOME\/\.teamai\/bin:\$PATH" (.+) 2>\/dev\/null \|\| true$/, '$1');
       expect(dispatch).not.toBe(posix[i].command);
       expect(def.command).toBe(`${dispatch} 2>$null; exit 0`);
     });
   });
 
-  it('keeps the bash form on non-Windows platforms', () => {
+  it('uses the managed PATH wrapper without a login shell on POSIX', () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     const defs = builtinHookDefs('dsh');
     expect(defs.length).toBeGreaterThan(0);
     for (const def of defs) {
-      expect(def.command).toContain('-lc');
+      expect(def.command).not.toContain('-lc');
+      expect(def.command).toContain('PATH="$HOME/.teamai/bin:$PATH" teamai');
       expect(def.command).toContain('2>/dev/null');
       expect(def.command).toContain('|| true');
       expect(def.command).not.toContain('2>$null');

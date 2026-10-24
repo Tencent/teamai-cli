@@ -2,6 +2,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { acquireLock, releaseLock } from '../update.js';
 import { getDataHome, type LocalConfig } from '../types.js';
+import type { WorkflowEnv } from '../env-resolution.js';
 import { pathExists, readFileSafe, writeJsonAtomic } from '../utils/fs.js';
 import { leaseNext, reportAttempt, type ReportInput } from './engine.js';
 import { finishSessionWorkspace, prepareSessionWorkspace, type PreparedSessionWorkspace } from './local-driver.js';
@@ -39,7 +40,7 @@ async function locked(config: LocalConfig, run: string, fn: () => Promise<Workfl
 }
 
 /** Opt-in public next preparation. The original checkout, not the caller's cwd, owns all git operations. */
-export async function prepareSessionLease(config: LocalConfig, runId: string, driver: DriverIdentity, raw: Record<string, unknown>): Promise<WorkflowEnvelope> {
+export async function prepareSessionLease(config: LocalConfig, runId: string, driver: DriverIdentity, raw: Record<string, unknown>, env: WorkflowEnv): Promise<WorkflowEnvelope> {
   return locked(config, runId, async () => {
     const run = await readRun(config, runId);
     if (typeof run !== 'object' || !run.checkout) return { error: { code: 'workspace_base', message: `Run ${runId} has no retained checkout; start a new run in the product repository` } };
@@ -55,9 +56,9 @@ export async function prepareSessionLease(config: LocalConfig, runId: string, dr
       } catch { /* Never reapply an overlay over work after a corrupt preparation record. */ }
       return { error: { code: 'workspace_base', message: 'The prepared workspace record is unreadable; preserve the worktree before retrying' } };
     }
-    const prepared = await prepareSessionWorkspace(raw, run.checkout, runId);
+    const prepared = await prepareSessionWorkspace(raw, run.checkout, runId, env.values);
     if ('code' in prepared) {
-      await reportAttempt(config, runId, { attempt: state.attempt, revision: state.lease.revision, driver, outcome: 'failed', failure: prepared, message: prepared.message });
+      await reportAttempt(config, runId, { attempt: state.attempt, revision: state.lease.revision, driver, outcome: 'failed', failure: prepared, message: prepared.message }, env.secrets);
       return { error: prepared };
     }
     await writeJsonAtomic(file, { ...prepared, driver, active: run.checkout });
@@ -66,7 +67,7 @@ export async function prepareSessionLease(config: LocalConfig, runId: string, dr
 }
 
 /** Returns undefined for a driver that did not opt into public CLI preparation. */
-export async function reportSessionLease(config: LocalConfig, runId: string, report: ReportInput): Promise<WorkflowEnvelope | undefined> {
+export async function reportSessionLease(config: LocalConfig, runId: string, report: ReportInput, env: WorkflowEnv): Promise<WorkflowEnvelope | undefined> {
   const file = marker(config, runId, report.attempt);
   if (!file) return undefined;
   if (!await pathExists(file)) return undefined;
@@ -74,13 +75,13 @@ export async function reportSessionLease(config: LocalConfig, runId: string, rep
     let run = await readRun(config, runId);
     if (typeof run === 'object') {
       const running = run.steps.filter((step) => step.status === 'leased' && same(step.lease.driver, report.driver)).map((step) => step.status === 'leased' ? step.attempt : '');
-      const polled = await leaseNext(config, runId, report.driver, { running, canTakeLease: false });
+      const polled = await leaseNext(config, runId, report.driver, { running, canTakeLease: false, env });
       if ('error' in polled) return polled;
       run = await readRun(config, runId);
     }
     const active = typeof run === 'object' && run.steps.find((step) => step.status === 'leased' && step.attempt === report.attempt);
     // Reject stale/cancelled/repeated reports before touching the worktree.
-    if (!active || active.status !== 'leased' || active.lease.revision !== report.revision || !same(active.lease.driver, report.driver)) return reportAttempt(config, runId, report);
+    if (!active || active.status !== 'leased' || active.lease.revision !== report.revision || !same(active.lease.driver, report.driver)) return reportAttempt(config, runId, report, env.secrets);
     let prepared: z.infer<typeof PreparedSchema>;
     try { prepared = PreparedSchema.parse(JSON.parse((await readFileSafe(file)) ?? 'null')); }
     catch { return { error: { code: 'workspace_base', message: 'The prepared workspace record is unreadable; preserve the worktree before retrying' } }; }
@@ -92,7 +93,7 @@ export async function reportSessionLease(config: LocalConfig, runId: string, rep
     const metadata = prepared as PreparedSessionWorkspace & { active: string };
     const body = await finishSessionWorkspace(metadata, report);
     await writeJsonAtomic(file, prepared);
-    const answer = await reportAttempt(config, runId, body);
+    const answer = await reportAttempt(config, runId, body, env.secrets);
     if ('data' in answer && answer.data.cleanup === true && body.outcome === 'success' && metadata.cwd) await removeWorktree(metadata.active, metadata.cwd);
     return answer;
   });

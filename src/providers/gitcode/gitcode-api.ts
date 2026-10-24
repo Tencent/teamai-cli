@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
+import type { PullRequestRef } from '../types.js';
 import { GITCODE_HOST } from './repo-url.js';
 import { getUserHome, legacyUserHome } from '../../utils/home.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
@@ -274,6 +276,7 @@ export interface GitCodePullCreateOptions {
   description?: string;
   /** Working directory (unused for the REST path, kept for interface parity) */
   cwd?: string;
+  spawnTimeoutMs?: number;
 }
 
 /**
@@ -296,6 +299,7 @@ export async function gitcodePullCreate(opts: GitCodePullCreateOptions): Promise
     headers: authHeaders(token),
     body: JSON.stringify(body),
     redirect: 'manual',
+    ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
   });
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');
@@ -308,4 +312,42 @@ export async function gitcodePullCreate(opts: GitCodePullCreateOptions): Promise
   // (singular), verified against the live API — not `/pulls/`.
   if (pr.number) return `https://${GITCODE_HOST}/${opts.repo}/pull/${pr.number}`;
   throw new Error('GitCode PR created but response did not include html_url.');
+}
+
+// ─── Open pull request lookup ────────────────────────────
+
+const LOOKUP_PAGE = 100;
+
+/** A listed pull request; a state outside Gitee's three is one this cannot read. */
+const GitCodeOpenPullSchema = z.object({
+  html_url: z.string(),
+  state: z.enum(['open', 'closed', 'merged']),
+  head: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }).nullable() }),
+  base: z.object({ ref: z.string(), repo: z.object({ full_name: z.string() }) }),
+});
+
+/**
+ * The open pull request from `source` into `target` in `repo`, asked of the GitCode REST API with the token
+ * `getGitCodeToken` resolves. A request from a fork with the same branch name is not it. Never prompts, and throws,
+ * rather than answering none, when GitCode cannot be asked or answers in time, answers what this cannot read, fills a
+ * whole page without it, or names a request on another host.
+ */
+export async function gitcodeFindOpenPull({ repo, source, target, timeoutMs }: PullRequestRef): Promise<string | undefined> {
+  const token = requireToken();
+  const query = new URLSearchParams({ state: 'open', head: source, base: target, per_page: String(LOOKUP_PAGE) });
+  const resp = await fetch(`${gitcodeApiBase()}/repos/${repo}/pulls?${query}`, {
+    headers: authHeaders(token), redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!resp.ok) throw new Error(`GitCode answered the open pull request lookup with HTTP ${resp.status}. Check GITCODE_TOKEN and its access to the repository.`);
+  const pulls = z.array(GitCodeOpenPullSchema).safeParse(await resp.json().catch(() => undefined));
+  if (!pulls.success) throw new Error('GitCode answered the open pull request lookup with data TeamAI cannot read.');
+  const ours = (name: string | undefined): boolean => name?.toLowerCase() === repo.toLowerCase();
+  const found = pulls.data.find((pull) => pull.state === 'open' && pull.head.ref === source && pull.base.ref === target
+    && ours(pull.head.repo?.full_name) && ours(pull.base.repo.full_name));
+  if (!found) {
+    if (pulls.data.length >= LOOKUP_PAGE) throw new Error('GitCode listed more open pull requests than one page, so TeamAI cannot tell whether this branch has one.');
+    return undefined;
+  }
+  if (!found.html_url.startsWith(`https://${GITCODE_HOST}/`)) throw new Error('GitCode answered the open pull request lookup with a URL on another host.');
+  return found.html_url;
 }

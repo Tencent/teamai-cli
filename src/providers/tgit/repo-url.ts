@@ -1,6 +1,6 @@
 import type { RepoInfo } from '../types.js';
 
-const TGIT_HOST = 'git.woa.com';
+export const TGIT_HOST = 'git.woa.com';
 
 /**
  * Parse user input into a standardized RepoInfo structure for TGit.

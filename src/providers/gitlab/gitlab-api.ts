@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process';
+import { z } from 'zod';
 import { GITLAB_HOST } from './repo-url.js';
 import { sanitizeGitUrl } from '../../utils/redact.js';
+import type { PullRequestRef } from '../types.js';
 
 /**
  * GitLab REST API client (API v4).
@@ -301,6 +303,7 @@ export interface GitLabMrCreateOptions {
   reviewers?: string[];
   /** Working directory (unused for the REST path, kept for interface parity) */
   cwd?: string;
+  spawnTimeoutMs?: number;
 }
 
 interface GitLabUser {
@@ -355,6 +358,7 @@ export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<strin
     headers: authHeaders(token),
     body: JSON.stringify(body),
     redirect: 'manual',
+    ...(opts.spawnTimeoutMs ? { signal: AbortSignal.timeout(opts.spawnTimeoutMs) } : {}),
   });
   if (!resp.ok) {
     const errBody = await resp.text().catch(() => '');
@@ -365,4 +369,50 @@ export async function gitlabMrCreate(opts: GitLabMrCreateOptions): Promise<strin
   if (mr.web_url) return mr.web_url;
   if (mr.iid) return `${gitlabBaseUrl()}/${opts.repo}/-/merge_requests/${mr.iid}`;
   throw new Error('GitLab MR created but response did not include web_url.');
+}
+
+// ─── Open merge request lookup ───────────────────────────
+
+const LOOKUP_PAGE = 100;
+
+const GitLabOpenMrSchema = z.object({
+  web_url: z.string(),
+  state: z.string(),
+  source_branch: z.string(),
+  target_branch: z.string(),
+  source_project_id: z.number(),
+  target_project_id: z.number(),
+});
+
+/**
+ * The open merge request from `source` into `target` in project `repo`, asked of the GitLab API with the configured
+ * token. A request from a fork with the same branch name is not it. Never prompts, and throws, rather than answering
+ * none, when GitLab cannot be asked or answers in time, answers what this cannot read, fills a whole page without it,
+ * or names a request on another host.
+ */
+export async function gitlabFindOpenMr({ repo, source, target, timeoutMs }: PullRequestRef): Promise<string | undefined> {
+  const token = requireToken();
+  const query = new URLSearchParams({ state: 'opened', source_branch: source, target_branch: target, per_page: String(LOOKUP_PAGE) });
+  const response = await fetch(`${gitlabApiBase()}/projects/${encodeURIComponent(repo)}/merge_requests?${query}`, {
+    headers: authHeaders(token), redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`GitLab answered the open merge request lookup with HTTP ${response.status}. Check the token's access to the project.`);
+  const requests = z.array(GitLabOpenMrSchema).safeParse(await response.json().catch(() => undefined));
+  if (!requests.success) throw new Error('GitLab answered the open merge request lookup with data TeamAI cannot read.');
+  const found = requests.data.find((mr) => mr.state === 'opened' && mr.source_branch === source && mr.target_branch === target
+    && mr.source_project_id === mr.target_project_id);
+  if (!found) {
+    if (requests.data.length >= LOOKUP_PAGE) throw new Error('GitLab listed more open merge requests than one page, so TeamAI cannot tell whether this branch has one.');
+    return undefined;
+  }
+  if (hostOf(found.web_url) !== hostOf(gitlabBaseUrl())) throw new Error('GitLab answered the open merge request lookup with a URL on another host.');
+  return found.web_url;
+}
+
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).host;
+  } catch {
+    return undefined;
+  }
 }

@@ -1,4 +1,4 @@
-import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
+import type { GitProvider, PrCreateOptions, PullRequestLookup, RepoInfo, OrgRepoInfo } from '../types.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   ensureGitLabAvailable,
@@ -7,6 +7,7 @@ import {
   gitlabRepoClone,
   gitlabCreateRepo,
   gitlabMrCreate,
+  gitlabFindOpenMr,
   GitLabRepoNotFoundError,
 } from './gitlab-api.js';
 import { gitlabListOrgRepos } from './org.js';
@@ -22,6 +23,7 @@ import type { MRData } from '../../types.js';
  */
 export class GitLabProvider implements GitProvider {
   readonly name = 'gitlab';
+  readonly pullRequests: PullRequestLookup = { findOpen: gitlabFindOpenMr };
 
   parseRepoInput(input: string): RepoInfo {
     return parseGitLabRepoInput(input);
@@ -72,6 +74,7 @@ export class GitLabProvider implements GitProvider {
       description: opts.description,
       reviewers: opts.reviewers,
       cwd: opts.cwd,
+      spawnTimeoutMs: opts.spawnTimeoutMs,
     });
   }
 

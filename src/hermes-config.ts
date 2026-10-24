@@ -18,6 +18,21 @@ export function getHermesSoulPath(): string {
   return path.join(getHermesHome(), 'SOUL.md');
 }
 
+/** Hermes uses an explicit cap, or a model-dependent cap with a 20,000-character floor. */
+export async function hermesContextFileBudget(): Promise<{ limit: number; explicit: boolean; error?: string }> {
+  const raw = await readFileSafe(getHermesConfigPath());
+  try {
+    const config = raw ? YAML.parse(raw) as { context_file_max_chars?: unknown } | null : null;
+    const value = config?.context_file_max_chars;
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return { limit: Math.trunc(value), explicit: true };
+    }
+    return { limit: 20_000, explicit: false };
+  } catch (error) {
+    return { limit: 20_000, explicit: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /**
  * Read the Hermes config.yaml as a YAML Document, preserving comments and
  * formatting. Returns an empty Document when the file is missing or empty.

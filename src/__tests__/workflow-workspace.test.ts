@@ -26,17 +26,18 @@ import { applyBaseConfig, ensureWorktree, hooksPath, pushIfOrigin, worktreePath 
 import { launchHoldsCheckout } from '../launch-context.js';
 import { teamDelivery } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
+import { knownSecrets } from '../env-resolution.js';
 
 _setDriverPollMs(20);
 
 /** Saves an edited run file under its lock, as a hand edit or an older teamai leaves one. */
 async function saveRun(config: LocalConfig, run: RunState): Promise<void> {
-  await updateRun(config, run.id, async () => ({ value: undefined, write: run }));
+  await updateRun(config, run.id, {}, async () => ({ value: undefined, write: run }));
 }
 
 const dirs: string[] = [];
 
-async function fixture(yaml: string, inputs?: unknown): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
+async function fixture(yaml: string, inputs: unknown = {}): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workspace-'));
   dirs.push(root);
   const knowledge = path.join(root, 'knowledge');
@@ -58,7 +59,7 @@ async function fixture(yaml: string, inputs?: unknown): Promise<{ config: LocalC
   };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), yaml);
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'build', inputs);
+  const started = await startRun(config, 'build', inputs, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
 }
@@ -113,7 +114,7 @@ async function teamWorkspace(yaml: string): Promise<{ config: LocalConfig; works
   if (!config) throw new Error('project config was not found');
   config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'build');
+  const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
 }
@@ -614,7 +615,7 @@ steps:
     const owner = driver(workspace);
     const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
     const modes = ['read-only', 'new', 'continue'] as const;
-    const leased = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] });
+    const leased = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } });
     const lease = 'data' in leased ? leased.data.lease as { attempt: string; revision: number; step: string; workspace?: { branch: string } } : undefined;
     if (!lease?.workspace) throw new Error(JSON.stringify(leased));
     expect(lease.step).toBe('edit.first');
@@ -623,7 +624,7 @@ steps:
       changes: { branch: lease.workspace.branch, base: base.commit, from: base.commit, to: base.commit, commits: [] },
     });
 
-    const other = await leaseNext(config, runId, driver(workspace, 'other'), { base, workspaceModes: [...modes] });
+    const other = await leaseNext(config, runId, driver(workspace, 'other'), { base, can: { workspace: [...modes] } });
 
     expect(other).toMatchObject({ data: { wait: { reason: expect.stringContaining('another driver') } } });
   });
@@ -685,7 +686,7 @@ steps:
 `);
     const owner = driver(workspace);
     const base = { ref: 'HEAD', commit: git(['rev-parse', 'HEAD'], workspace).trim() };
-    const leased = await leaseNext(config, runId, owner, { base, workspaceModes: ['read-only', 'new', 'continue'] });
+    const leased = await leaseNext(config, runId, owner, { base, can: { workspace: ['read-only', 'new', 'continue'] } });
     const lease = 'data' in leased ? leased.data.lease as { attempt: string; revision: number; workspace?: { branch: string } } : undefined;
     if (!lease?.workspace) throw new Error(JSON.stringify(leased));
     const changes = { branch: lease.workspace.branch, base: base.commit, from: base.commit, to: base.commit, commits: [] };
@@ -919,7 +920,7 @@ steps:
     fs.symlinkSync(outside, path.join(workspace, '.github'));
     execFileSync('git', ['add', '.github'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'link'], { cwd: workspace });
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
 
@@ -946,7 +947,7 @@ steps:
     fs.writeFileSync(path.join(workspace, '.github', 'agents', 'a.md'), 'agent');
     execFileSync('git', ['add', '.github'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agent'], { cwd: workspace });
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
 
@@ -1523,7 +1524,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base rules\n');
     execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await knownSecrets(config) });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const branch = branchName(runId, 'work', 1);
@@ -1534,7 +1535,7 @@ steps:
     if (typeof run !== 'object') throw new Error('run missing');
     expect(run.steps.find((step) => step.id === 'work.check')).toMatchObject({ status: 'failed', failure: { code: 'base_config', message: expect.stringContaining('smudge filter boom failed') } });
     fs.rmSync(path.join(workspace, '.git', 'info', 'attributes'));
-    expect(await retryStep(config, runId, 'work.check')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'work.check')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     const done = await runLocalDriver(config, runId, workspace);
 
@@ -1888,7 +1889,7 @@ steps:
 
     const failed = await runLocalDriver(config, runId, workspace);
     expect(failed, JSON.stringify(failed)).toMatchObject({ data: { done: { outcome: 'failed' } } });
-    const opened = await retryStep(config, runId, 'work.ask');
+    const opened = await retryStep(config, runId, await knownSecrets(config), 'work.ask');
     expect(opened, JSON.stringify(opened)).toMatchObject({ data: { retried: { pass: 2 } } });
     config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
     const adapter: LocalToolAdapter = {
@@ -2590,7 +2591,7 @@ setInterval(() => {}, 1000);
       if (Date.now() > deadline) throw new Error('the command did not start');
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    expect(await cancelRun(config, runId, 'work.slow')).not.toHaveProperty('error');
+    expect(await cancelRun(config, runId, await knownSecrets(config), 'work.slow')).not.toHaveProperty('error');
     await driving;
     fs.writeFileSync(again, '');
     const stored = await readRun(config, runId);
@@ -2642,7 +2643,7 @@ steps:
     const { config, workspace, runId } = await fixture(yaml);
     const owner = driver(workspace);
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
-    const implement = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const implement = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
     const branch = branchName(runId, 'change', 1);
     expect(implement).toMatchObject({ step: 'change.implement', workspace: { mode: 'continue', branch } });
     const reported = await reportAttempt(config, runId, {
@@ -2656,7 +2657,7 @@ steps:
   it('leases a read-only step inside a copy on the branch its need wrote, merging nothing', async () => {
     const { config, runId, owner, base, branch } = await implemented();
 
-    const test = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] });
+    const test = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } });
 
     expect(test).toMatchObject({ data: { lease: { step: 'change.test', workspace: {
       mode: 'read-only', base: { commit: base.commit }, configCommit: base.commit, branch, start: { commit: commit('c') }, merge: [],
@@ -2666,11 +2667,14 @@ steps:
   it('holds a reader in a copy back from a driver without continue, and from a driver that does not own the copy', async () => {
     const { config, runId, owner, base, branch } = await implemented();
 
-    const reader = await leaseNext(config, runId, owner, { base, workspaceModes: ['read-only', 'new'] });
-    const other = await leaseNext(config, runId, driver(owner.workspace, 'other'), { base, workspaceModes: [...modes] });
+    const reader = await leaseNext(config, runId, owner, { base, can: { workspace: ['read-only', 'new'] } });
+    const other = await leaseNext(config, runId, driver(owner.workspace, 'other'), { base, can: { workspace: [...modes] } });
 
-    expect(reader).toEqual({ data: { wait: { reason: `step "change.test" reads workspace ${branch}, which needs continue` }, cancelled: [] } });
-    expect(other).toEqual({ data: { wait: { reason: 'step "change.test" reads a workspace owned by another driver' }, cancelled: [] } });
+    const needsContinue = `step "change.test" reads workspace ${branch}, which needs continue`;
+    const owned = 'step "change.test" reads a workspace owned by another driver';
+    expect(reader).toEqual({ data: { wait: { reason: needsContinue, held: [{ step: 'change.test', reason: needsContinue, missing: ['workspace.continue'] }] }, cancelled: [] } });
+    // Another driver owns the copy: this one lacks nothing, so `missing` is empty.
+    expect(other).toEqual({ data: { wait: { reason: owned, held: [{ step: 'change.test', reason: owned, missing: [] }] }, cancelled: [] } });
   });
 
   it('runs an item reader on its own item branch, after the items its item waits for, and publishes only writer branches', async () => {
@@ -2703,7 +2707,7 @@ steps:
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
     const ran = new Map<string, string | undefined>();
     for (;;) {
-      const next = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] });
+      const next = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } });
       if ('data' in next && next.data.done) break;
       const lease = leaseOf(next);
       const contract = lease.workspace;
@@ -2740,7 +2744,7 @@ steps:
 
   it('accepts read for a read-only lease, refuses changes or a success without read, and keeps the copy for the reader', async () => {
     const { config, runId, owner, base, branch } = await implemented();
-    const test = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const test = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
     const read = { branch, base: base.commit, commit: commit('d') };
     const report = (fields: Partial<engine.ReportInput>) => reportAttempt(config, runId, {
       attempt: test.attempt, revision: test.revision, outcome: 'success', driver: owner, ...fields,
@@ -2757,14 +2761,14 @@ steps:
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error('run missing');
     expect(run.steps.find((step) => step.id === 'change.test')).toMatchObject({ read });
-    expect(run.copies?.[branch]).toEqual({ owner, commit: commit('c') });
+    expect(run.copies?.[branch]).toEqual({ owner, commit: commit('c'), used: true });
   });
 
   it('keeps the copy when a writer reports while its reader is pending, and refuses read for a writable lease', async () => {
     const { config, workspace, runId } = await fixture(EXAMPLE);
     const owner = driver(workspace);
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
-    const implement = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const implement = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
     const branch = branchName(runId, 'change', 1);
     const report = (fields: Partial<engine.ReportInput>) => reportAttempt(config, runId, {
       attempt: implement.attempt, revision: implement.revision, outcome: 'success', driver: owner, ...fields,
@@ -2878,7 +2882,7 @@ ${steps}`, steps.startsWith('inputs:') ? { items: ['a', 'b'] } : undefined);
     const open: Leased[] = [];
     const reported: Array<[string, boolean]> = [];
     for (let turn = 0; turn < 50; turn += 1) {
-      const next = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes], hitl: true, running: open.map((lease) => lease.attempt) });
+      const next = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes], hitl: true }, running: open.map((lease) => lease.attempt) });
       if ('error' in next) throw new Error(JSON.stringify(next));
       if (next.data.done) break;
       if (next.data.lease) {
@@ -2889,7 +2893,7 @@ ${steps}`, steps.startsWith('inputs:') ? { items: ['a', 'b'] } : undefined);
       if (!lease) {
         const hitl = next.data.hitl as { step: string } | undefined;
         if (!hitl) throw new Error(JSON.stringify(next));
-        await respondToHitl(config, runId, { step: hitl.step, choice: 'yes', channel: 'cli', agent: false });
+        await respondToHitl(config, runId, await knownSecrets(config), { step: hitl.step, choice: 'yes', channel: 'cli', agent: false });
         continue;
       }
       const contract = lease.workspace;
@@ -3112,7 +3116,7 @@ steps:
     const copy = worktreePath(workspace, branch);
     expect(fs.existsSync(path.join(copy, 'polish.txt'))).toBe(false);
     git(['checkout', '-q', '-b', branch], copy);
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     const done = await runLocalDriver(config, runId, workspace);
 
@@ -3226,7 +3230,7 @@ steps:
     fs.writeFileSync(marker, staged);
     fs.writeFileSync(path.join(copy, 'junk.txt'), 'reader');
     fs.writeFileSync(path.join(workspace, 'go'), '');
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     await runLocalDriver(config, runId, workspace);
 
@@ -3237,7 +3241,7 @@ steps:
     });
     expect(() => git(['show', `${branch}:junk.txt`], workspace)).toThrow();
     fs.rmSync(path.join(copy, 'junk.txt'));
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 3 } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'change.polish')).toMatchObject({ data: { retried: { pass: 3 } } });
 
     await runLocalDriver(config, runId, workspace);
 
@@ -3270,7 +3274,7 @@ steps:
     const copy = worktreePath(workspace, branch);
     git(['checkout', '-q', '--detach'], copy);
     fs.writeFileSync(path.join(workspace, 'go'), '');
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     await runLocalDriver(config, runId, workspace);
 
@@ -3348,7 +3352,7 @@ steps:
     await runLocalDriver(config, runId, workspace);
     fs.rmSync(worktreePath(workspace, branch), { recursive: true, force: true });
     fs.writeFileSync(path.join(workspace, 'go'), '');
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     await runLocalDriver(config, runId, workspace);
 
@@ -3413,7 +3417,7 @@ steps:
     await runLocalDriver(config, runId, workspace);
     fs.mkdirSync(path.resolve(copy, git(['rev-parse', '--git-path', 'teamai-unrestored'], copy).trim()));
     fs.writeFileSync(path.join(workspace, 'go'), '');
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await knownSecrets(config), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     await runLocalDriver(config, runId, workspace);
 
@@ -3854,14 +3858,14 @@ steps:
 `);
     const owner = driver(workspace);
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
-    const edit = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const edit = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
     const branch = branchName(runId, 'edit', 1);
     await reportAttempt(config, runId, {
       attempt: edit.attempt, revision: edit.revision, outcome: 'success', driver: owner,
       changes: { branch, base: base.commit, from: base.commit, to: commit('c'), commits: [commit('c')] },
     });
 
-    const check = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+    const check = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
 
     expect(check.step).toBe('check');
     expect(check).not.toHaveProperty('workspace');
@@ -3890,7 +3894,7 @@ steps:
     const owner = driver(workspace);
     const base = { commit: git(['rev-parse', 'HEAD'], workspace).trim() };
     for (const [step, to] of [['left', commit('1')], ['right', commit('2')]] as const) {
-      const leased = leaseOf(await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] }));
+      const leased = leaseOf(await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } }));
       expect(leased.step).toBe(`change.${step}`);
       await reportAttempt(config, runId, {
         attempt: leased.attempt, revision: leased.revision, outcome: 'success', driver: owner,
@@ -3898,7 +3902,7 @@ steps:
       });
     }
 
-    const done = await leaseNext(config, runId, owner, { base, workspaceModes: [...modes] });
+    const done = await leaseNext(config, runId, owner, { base, can: { workspace: [...modes] } });
 
     expect(done).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await readRun(config, runId);

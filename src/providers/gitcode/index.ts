@@ -1,4 +1,4 @@
-import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
+import type { GitProvider, PrCreateOptions, PullRequestLookup, RepoInfo, OrgRepoInfo } from '../types.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   gitcodeIsAuthenticated,
@@ -6,6 +6,7 @@ import {
   gitcodeRepoClone,
   gitcodeCreateRepo,
   gitcodePullCreate,
+  gitcodeFindOpenPull,
   writeNetrcToken,
   GitCodeRepoNotFoundError,
 } from './gitcode-api.js';
@@ -26,6 +27,7 @@ import { askQuestion, isInteractive } from '../../utils/prompt.js';
  */
 export class GitCodeProvider implements GitProvider {
   readonly name = 'gitcode';
+  readonly pullRequests: PullRequestLookup = { findOpen: gitcodeFindOpenPull };
 
   parseRepoInput(input: string): RepoInfo {
     return parseGitCodeRepoInput(input);
@@ -111,6 +113,7 @@ export class GitCodeProvider implements GitProvider {
       title: opts.title,
       description: opts.description,
       cwd: opts.cwd,
+      spawnTimeoutMs: opts.spawnTimeoutMs,
     });
   }
 

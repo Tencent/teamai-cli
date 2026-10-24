@@ -93,7 +93,7 @@ export function afterStanding(after: StepState[]): 'ready' | 'waiting' | 'skip' 
   return after.every((item) => item.status === 'succeeded') ? 'ready' : 'waiting';
 }
 
-/** How many items are started and not yet settled, which `max_parallel` bounds. */
+/** How many items have an agent or workflow at work, which `max_parallel` bounds. An item that delivers has none. */
 export function startedItems(items: StepState[]): number {
   return items.filter((item) => item.status === 'leased' || item.status === 'running').length;
 }
@@ -127,6 +127,7 @@ export function itemsSettled(
 function branchesFromChildren(run: RunState): Map<string, string> {
   const best = new Map<string, { branch: string; settledAt: number }>();
   for (const step of run.steps) {
+    if (step.status === 'cancelled') continue;
     const branch = 'changes' in step ? step.changes?.branch : undefined;
     if (!branch) continue;
     const settledAt = 'settledAt' in step ? step.settledAt : 0;

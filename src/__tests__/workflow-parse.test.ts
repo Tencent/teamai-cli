@@ -137,15 +137,15 @@ description: Build it.
 steps:
   - id: one
     command: npm test
-    timeout: 10m
+    future_option: 10m
 `);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: 'unknown_key',
-        field: 'steps[0].timeout',
-        message: 'workflows/build.yaml uses `timeout`, which this teamai does not know. Update teamai.',
+        field: 'steps[0].future_option',
+        message: 'workflows/build.yaml uses `future_option`, which this teamai does not know. Update teamai.',
       }),
     ]));
   });
@@ -426,6 +426,36 @@ steps:
     command: node fix.js
     loop: { back_to: review, max_iterations: 3 }
 `;
+
+describe('deliver', () => {
+  const FIX = `schemaVersion: v1alpha1
+name: build
+description: Fix a bug.
+steps:
+  - id: fix
+`;
+
+  it('parses deliver: pr on a step that writes a branch', () => {
+    const result = parse(`${FIX}    command: node fix.js
+    workspace: new
+    deliver: pr
+`);
+    expect(result.ok && result.definition.steps[0]).toMatchObject({ deliver: 'pr' });
+  });
+
+  it('rejects a delivery other than pr, and deliver: pr on a step that can only read', () => {
+    expect(rejected(`${FIX}    prompt: Fix it.
+    deliver: merge
+`)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" deliver must be pr; TeamAI opens a pull request and never merges`, code: 'bad_delivery' }]);
+    expect(rejected(`${FIX}    prompt: Fix it.
+    workspace: read-only
+    deliver: pr
+`)).toEqual([{ message: `${FILE}:8: field "steps[0].deliver": step "fix" has deliver: pr but runs read-only; set workspace: new so it has a branch to deliver`, code: 'bad_delivery' }]);
+    expect(rejected(`${FIX}    command: node fix.js
+    deliver: pr
+`)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" has deliver: pr but runs read-only, as a command without workspace does; set workspace: new so it has a branch to deliver`, code: 'bad_delivery' }]);
+  });
+});
 
 describe('step loops', () => {
   it('parses a loop back to a step the owner needs, with an optional while', () => {
@@ -947,14 +977,14 @@ name: build
 description: Build it.
 defaults:
   model: fast
-  requires: [git]
+  retries: 2
 steps:
   - id: plan
     prompt: Plan it.
 `);
     expect(unknown.ok).toBe(false);
     if (unknown.ok) return;
-    expect(unknown.diagnostics).toEqual([expect.objectContaining({ field: 'defaults.requires', line: 6, code: 'unknown_key' })]);
+    expect(unknown.diagnostics).toEqual([expect.objectContaining({ field: 'defaults.retries', line: 6, code: 'unknown_key' })]);
 
     const scalar = parse(`schemaVersion: v1alpha1
 name: build
@@ -967,6 +997,209 @@ steps:
     expect(scalar.ok).toBe(false);
     if (scalar.ok) return;
     expect(scalar.diagnostics.map(formatDiagnostic)).toEqual(['workflows/build.yaml:4: field "defaults": defaults must be a mapping']);
+  });
+
+  it('parses requires on a step and in defaults', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  requires: { network: false }
+steps:
+  - id: plan
+    prompt: Plan it.
+    requires: { network: true, isolation: sandbox }
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.defaults).toEqual({ requires: { network: false } });
+    expect(result.definition.steps[0]?.requires).toEqual({ network: true, isolation: 'sandbox' });
+  });
+
+  it('reports a requires key this version does not know as unknown_key, a value of the wrong type, and requires on a step with no action', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  requires: [network]
+steps:
+  - id: plan
+    prompt: Plan it.
+    requires: { network: maybe, isolation: vm, gpu: true }
+  - id: done
+    needs: [plan]
+    end: shipped
+    requires: { network: true }
+ends: { shipped: succeeded }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:5: field "defaults.requires": defaults.requires must map network, isolation, env to values',
+      'workflows/build.yaml:9: field "steps[0].requires.network": steps[0].requires.network: Expected boolean, received string',
+      expect.stringContaining('field "steps[0].requires.isolation": steps[0].requires.isolation: Invalid enum value'),
+      expect.stringContaining('field "steps[1].requires": step "done" has no action'),
+    ]));
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[0].requires.gpu', code: 'unknown_key' }));
+  });
+
+  it('reads timeout on the file and on a step as milliseconds', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+timeout: 2h
+steps:
+  - id: plan
+    prompt: Plan it.
+    timeout: 30s
+  - id: check
+    needs: [plan]
+    command: echo check
+    timeout: 500ms
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.timeout).toBe(7_200_000);
+    expect(result.definition.steps.map((step) => step.timeout)).toEqual([30_000, 500]);
+  });
+
+  it('reports a timeout that is not a positive duration, and timeout on an inline workflow or a step with no action', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+timeout: soon
+steps:
+  - id: plan
+    prompt: Plan it.
+    timeout: 0s
+  - id: check
+    needs: [plan]
+    workflow:
+      timeout: 1m
+      steps:
+        - id: inner
+          command: echo inner
+  - id: done
+    needs: [check]
+    end: shipped
+    timeout: 1m
+ends: { shipped: succeeded }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:4: field "timeout": timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h',
+      'workflows/build.yaml:8: field "steps[0].timeout": steps[0].timeout must be a positive duration, such as 500ms, 30s, 10m, or 2h',
+      expect.stringContaining('field "steps[1].workflow.timeout": step "check" runs an inline workflow'),
+      expect.stringContaining('field "steps[2].timeout": step "done" has no action'),
+    ]));
+  });
+
+  it('reads a token budget on the file and on a workflow step', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+budget: { tokens: 20000 }
+steps:
+  - id: check
+    workflow:
+      steps:
+        - id: inner
+          prompt: Check it.
+    budget: { tokens: 500 }
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.budget).toEqual({ tokens: 20000 });
+    expect(result.definition.steps[0]?.budget).toEqual({ tokens: 500 });
+  });
+
+  it('reports a budget that is not a positive token count, a budget key this version does not know, and a budget on a step that runs no workflow', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+budget: { tokens: 0 }
+steps:
+  - id: plan
+    prompt: Plan it.
+    budget: { tokens: 10 }
+  - id: check
+    needs: [plan]
+    workflow: check
+    budget: { tokens: 10, dollars: 5 }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:4: field "budget.tokens": budget.tokens must be a positive whole number of tokens',
+      'workflows/build.yaml:8: field "steps[0].budget": step "plan" budget is only allowed on a workflow step; a workflow spends it over all its steps',
+    ]));
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[1].budget.dollars', code: 'unknown_key' }));
+  });
+
+  it('reads setup on the file, and reports a setup without a command, an inline one, and a key this version does not know', () => {
+    const ok = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+setup:
+  command: npm ci
+  requires: { env: [NPM_TOKEN] }
+steps:
+  - id: plan
+    workspace: new
+    prompt: Plan it.
+`);
+    expect(ok.ok && ok.definition.setup).toEqual({ command: 'npm ci', requires: { env: ['NPM_TOKEN'] } });
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+setup: { timeout: 1m, requires: { network: false } }
+steps:
+  - id: check
+    workflow:
+      setup: { command: npm ci }
+      steps:
+        - id: inner
+          command: echo inner
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      expect.stringContaining('field "setup.command": setup.command'),
+      expect.stringContaining('field "steps[0].workflow.setup": step "check" runs an inline workflow'),
+    ]));
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'setup.timeout', code: 'unknown_key' }));
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'setup.requires.network', code: 'unknown_key' }));
+  });
+
+  it('reads max_turns on a prompt step, and reports it on another step or when it is not a positive whole number', () => {
+    const ok = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    max_turns: 30
+`);
+    expect(ok.ok && ok.definition.steps[0]?.maxTurns).toBe(30);
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    max_turns: many
+  - id: check
+    needs: [plan]
+    command: echo check
+    max_turns: 3
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:7: field "steps[0].max_turns": step "plan" max_turns must be a positive whole number',
+      'workflows/build.yaml:11: field "steps[1].max_turns": step "check" max_turns is only allowed on a prompt or prompt_file step',
+    ]));
   });
 
   it('reports defaults on an inline workflow, which carries none', () => {

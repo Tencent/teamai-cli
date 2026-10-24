@@ -63,14 +63,19 @@ export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: 
     }
     signal(initial);
     let timer: NodeJS.Timeout | undefined;
+    let escalated = false;
     const killed = new Promise<void>((resolve) => {
-      timer = setTimeout(() => { signal('SIGKILL'); resolve(); }, 5000);
+      timer = setTimeout(() => { escalated = true; signal('SIGKILL'); resolve(); }, 5000);
     });
     const result = await exit;
     // A process with its own output can ignore SIGTERM and outlive the shell. Keep SIGKILL while any captured
     // descendant or process in the detached group remains.
-    if (signal(0)) await killed;
-    else clearTimeout(timer);
+    // Descendants may still be exiting when the shell closes. Recheck instead
+    // of waiting the whole grace period after that first successful probe.
+    while (!escalated && signal(0)) {
+      await Promise.race([killed, new Promise<void>((resolve) => setTimeout(resolve, 50))]);
+    }
+    clearTimeout(timer);
     return result;
   };
   return (initial = 'SIGTERM') => (stopping ??= stop(initial));

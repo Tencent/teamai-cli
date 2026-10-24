@@ -49,6 +49,8 @@
    teamai init https://github.com/your-org/your-repo
    ```
    加上 `--scope user` 会装到用户主目录，这台机器上的每个项目都能看见。不加的话，文件只进当前项目。
+
+   在 Git 仓库中，即使从子目录运行 init，也会使用仓库根目录。如果根目录已有 workspace 配置，要到根目录修改；普通子文件夹不能单独配置，即使加 `--force` 也不能覆盖父配置。嵌套仓库和 linked worktree 各自使用自己的工作区根目录。
 2. 检查一下。
    ```bash
    teamai doctor

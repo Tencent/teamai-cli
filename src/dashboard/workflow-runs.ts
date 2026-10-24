@@ -14,6 +14,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
+import { knownSecrets } from '../env-resolution.js';
 import { LabelStore, type PassScore } from '../scorers/label-store.js';
 import { locateStep } from '../workflow/engine.js';
 import { buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
@@ -63,7 +64,7 @@ const RecordSchema: z.ZodType<ReadRecord, z.ZodTypeDef, unknown> = z.object({
   steps: z.array(z.object({
     step: z.string(),
     pass: z.number(),
-    outcome: z.enum(['success', 'failed', 'cancelled']).optional(),
+    outcome: z.enum(['success', 'failed', 'timeout', 'cancelled']).optional(),
     tokens: TokensSchema.optional(),
     answer: z.object({ choice: z.string(), channel: z.string() }).optional(),
   })).optional(),
@@ -92,7 +93,7 @@ interface RunRow {
 /** A run on this machine, as its run file stands now. */
 export type LocalRunRow = RunRow & {
   source: 'local';
-  /** The leased steps: a driver may work on several at once. */
+  /** Agent leases and deliveries currently in progress. */
   current: string[];
   /** The steps whose HITL request waits for an answer. */
   waiting: string[];
@@ -126,7 +127,7 @@ export type RunDetail = { run: LocalRunRow | ReportedRunRow; steps: StepRow[]; s
 /** The team history, or why it could not be read; the local runs show either way. */
 export type ReportedHistory = { state: 'ok'; runs: ReportedRunRow[] } | { state: 'unavailable' };
 
-const STATUS_OF_OUTCOME = { success: 'succeeded', failed: 'failed', cancelled: 'cancelled' } as const;
+const STATUS_OF_OUTCOME = { success: 'succeeded', failed: 'failed', timeout: 'failed', cancelled: 'cancelled' } as const;
 
 function tokenTotal(steps: StepEntry[] | undefined): number {
   return (steps ?? []).reduce((sum, entry) => sum + (entry.tokens?.input ?? 0) + (entry.tokens?.output ?? 0), 0);
@@ -176,7 +177,7 @@ function localRow(run: RunState, records: Map<string, RecordState>): LocalRunRow
   return {
     ...rowOf(localRecord(run)),
     source: 'local',
-    current: run.steps.filter((state) => state.status === 'leased').map((state) => state.id),
+    current: run.steps.filter((state) => state.status === 'leased' || state.status === 'delivering').map((state) => state.id),
     waiting: run.steps.filter((state) => state.status === 'waiting').map((state) => state.id),
     ...(record ? { record } : {}),
   };
@@ -298,7 +299,7 @@ export async function answerFromDashboard(config: LocalConfig, body: Record<stri
   const parsed = AnswerSchema.safeParse(body);
   if (!parsed.success) throw new HttpError(400, 'Send run, step, pass and choice of the HITL request you answer.');
   const { run, step, pass, choice } = parsed.data;
-  const envelope = await respondToHitl(config, run, { step, choice, pass, channel: 'dashboard', agent: false });
+  const envelope = await respondToHitl(config, run, await knownSecrets(config), { step, choice, pass, channel: 'dashboard', agent: false });
   if ('error' in envelope) throw new HttpError(STALE_CODES.has(envelope.error.code) ? 409 : 400, envelope.error.message);
   return { answered: envelope.data.answered };
 }

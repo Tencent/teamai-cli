@@ -8,7 +8,10 @@ import { getUserHome, legacyUserHome } from '../../utils/home.js';
 import { log, spinner } from '../../utils/logger.js';
 import { isInteractive } from '../../utils/prompt.js';
 import { getTeamaiHomeDir } from '../../types.js';
+import { z } from 'zod';
+import type { PullRequestRef } from '../types.js';
 import { tgitFetch, tgitGitCloneUrl } from './rest-auth.js';
+import { TGIT_HOST } from './repo-url.js';
 
 /** Path where gf CLI is installed */
 function gfInstallDir(): string {
@@ -551,4 +554,41 @@ export function gfMrCreate(opts: GfMrCreateOptions): string {
 
   // Could not extract MR URL — treat as failure
   throw new Error(`gf mr create succeeded but returned unexpected output: ${output}`);
+}
+
+// ─── Open merge request lookup ───────────────────────────
+
+const LOOKUP_PAGE = 100;
+
+const TGitOpenMrSchema = z.object({
+  web_url: z.string(),
+  state: z.string(),
+  source_branch: z.string(),
+  target_branch: z.string(),
+  source_project_id: z.number(),
+  target_project_id: z.number(),
+});
+
+/**
+ * The open merge request from `source` into `target` in project `repo`, asked of the git.woa.com REST API with the
+ * credential `tgitFetch` resolves; a reopened request is open too. A request from a fork with the same branch name is
+ * not it. Never prompts, and throws, rather than answering none, when TGit cannot be asked or answers in time, answers
+ * what this cannot read, fills a whole page without it, or names a request on another host.
+ */
+export async function tgitFindOpenMr({ repo, source, target, timeoutMs }: PullRequestRef): Promise<string | undefined> {
+  const query = new URLSearchParams({ state: 'opened', source_branch: source, target_branch: target, per_page: String(LOOKUP_PAGE) });
+  const response = await tgitFetch(`/projects/${encodeURIComponent(repo)}/merge_requests?${query}`, {
+    redirect: 'manual', signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) throw new Error(`TGit answered the open merge request lookup with HTTP ${response.status}. Check TGIT_TOKEN or the gf login and their access to the project.`);
+  const requests = z.array(TGitOpenMrSchema).safeParse(await response.json().catch(() => undefined));
+  if (!requests.success) throw new Error('TGit answered the open merge request lookup with data TeamAI cannot read.');
+  const found = requests.data.find((mr) => (mr.state === 'opened' || mr.state === 'reopened') && mr.source_branch === source
+    && mr.target_branch === target && mr.source_project_id === mr.target_project_id);
+  if (!found) {
+    if (requests.data.length >= LOOKUP_PAGE) throw new Error('TGit listed more open merge requests than one page, so TeamAI cannot tell whether this branch has one.');
+    return undefined;
+  }
+  if (!found.web_url.startsWith(`https://${TGIT_HOST}/`)) throw new Error('TGit answered the open merge request lookup with a URL on another host.');
+  return found.web_url;
 }

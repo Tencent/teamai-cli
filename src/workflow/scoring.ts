@@ -35,6 +35,7 @@ import { error, ok } from './engine.js';
 import { localDriver } from './local-driver.js';
 import { firstSettled, passesWithin, runPasses, type RunPass } from './loop.js';
 import { stepDefinitions } from './scope.js';
+import { agentPassOf, agentSucceeded } from './step-state.js';
 import { parseStepPath } from './step-path.js';
 import { installOwner, isRunId, readRun, runsDir } from './store.js';
 import type { InlineWorkflow, RunState, WorkflowDefinition, WorkflowEnvelope, WorkflowStep } from './types.js';
@@ -50,12 +51,15 @@ function settledHere(run: RunState, pass: RunPass, install: string): boolean {
   return pass.installId === undefined ? run.publication === undefined : pass.installId === install;
 }
 
-/** The passes a judge can judge: succeeded passes of prompt and workflow steps, and of a `for_each` step only its items. */
+/**
+ * The passes a judge can judge: passes of prompt and workflow steps whose agent succeeded, delivering or not, and of a
+ * `for_each` step only its items.
+ */
 function judgeablePasses(run: RunState): Array<{ pass: RunPass; definition: WorkflowStep }> {
   const definitionOf = stepDefinitions(run);
-  return runPasses(run).flatMap((pass) => {
+  return runPasses(run, agentPassOf).flatMap((pass) => {
     const definition: WorkflowStep | undefined = definitionOf(pass.step);
-    if (pass.outcome !== 'success' || !definition) return [];
+    if (!agentSucceeded(pass) || !definition) return [];
     if (definition.forEach && parseStepPath(pass.step).at(-1)?.index === undefined) return [];
     return [{ pass, definition }];
   });
@@ -67,7 +71,7 @@ function judgeablePasses(run: RunState): Array<{ pass: RunPass; definition: Work
  * stamp. Sampling is left to the caller.
  */
 export function scoredPasses(run: RunState, install: string): ScorablePass[] {
-  const all = runPasses(run);
+  const all = runPasses(run, agentPassOf);
   const pinned = run.scorers ?? {};
   return judgeablePasses(run).flatMap(({ pass, definition }) => {
     const scorers = (definition.scorers?.names ?? []).filter((name) => Object.hasOwn(pinned, name));
