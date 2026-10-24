@@ -499,10 +499,15 @@ function parseBody(
       const sessionPair = item.items.find((pair) => scalarString(pair.key) === 'session');
       const deliverPair = item.items.find((pair) => scalarString(pair.key) === 'deliver');
       const deliver = scalarString(deliverPair?.value)?.trim();
-      // A command without workspace is always read-only, including inside a writable workflow.
-      if (deliverPair && (deliver !== 'pr' || workspace === 'read-only' || (commandPair && workspace === undefined))) {
+      // Only what no enclosing step can change is checked per file. A prompt without workspace may continue the copy of
+      // the step that runs its workflow, so workflow start checks it on the whole tree.
+      const undeliverable = deliver !== 'pr' ? `${label} deliver must be pr; TeamAI opens a pull request and never merges`
+        : workspace === 'read-only' ? `${label} has deliver: pr but runs read-only; set workspace: new so it has a branch to deliver`
+          : commandPair && workspace === undefined ? `${label} has deliver: pr but runs read-only, as a command without workspace does; set workspace: new so it has a branch to deliver`
+            : undefined;
+      if (deliverPair && undeliverable) {
         diagnostics.push({
-          ...locate(file, lineCounter, deliverPair.value ?? deliverPair.key ?? item, `${field}.deliver`, 'deliver must be pr on a writable branch'),
+          ...locate(file, lineCounter, deliverPair.value ?? deliverPair.key ?? item, `${field}.deliver`, undeliverable),
           code: 'bad_delivery',
         });
       }

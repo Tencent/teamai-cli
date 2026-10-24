@@ -427,6 +427,36 @@ steps:
     loop: { back_to: review, max_iterations: 3 }
 `;
 
+describe('deliver', () => {
+  const FIX = `schemaVersion: v1alpha1
+name: build
+description: Fix a bug.
+steps:
+  - id: fix
+`;
+
+  it('parses deliver: pr on a step that writes a branch', () => {
+    const result = parse(`${FIX}    command: node fix.js
+    workspace: new
+    deliver: pr
+`);
+    expect(result.ok && result.definition.steps[0]).toMatchObject({ deliver: 'pr' });
+  });
+
+  it('rejects a delivery other than pr, and deliver: pr on a step that can only read', () => {
+    expect(rejected(`${FIX}    prompt: Fix it.
+    deliver: merge
+`)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" deliver must be pr; TeamAI opens a pull request and never merges`, code: 'bad_delivery' }]);
+    expect(rejected(`${FIX}    prompt: Fix it.
+    workspace: read-only
+    deliver: pr
+`)).toEqual([{ message: `${FILE}:8: field "steps[0].deliver": step "fix" has deliver: pr but runs read-only; set workspace: new so it has a branch to deliver`, code: 'bad_delivery' }]);
+    expect(rejected(`${FIX}    command: node fix.js
+    deliver: pr
+`)).toEqual([{ message: `${FILE}:7: field "steps[0].deliver": step "fix" has deliver: pr but runs read-only, as a command without workspace does; set workspace: new so it has a branch to deliver`, code: 'bad_delivery' }]);
+  });
+});
+
 describe('step loops', () => {
   it('parses a loop back to a step the owner needs, with an optional while', () => {
     const result = parse(`${REVIEW_AND_FIX}  - id: decide

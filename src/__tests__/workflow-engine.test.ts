@@ -4413,3 +4413,79 @@ describe('the session a step resumes after other steps continued it', () => {
     expect(parseReport({ ...report, resumed: { tool: 'claude', id: '' } })).toBe('resumed must be a session: a tool and an id');
   });
 });
+
+describe('deliver: pr at workflow start', () => {
+  async function start(files: Record<string, string>, name: string, base?: RunState['base']): Promise<{ config: LocalConfig; started: Awaited<ReturnType<typeof startRun>> }> {
+    const { config } = testConfig();
+    for (const [file, body] of Object.entries(files)) fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${file}.yaml`), body);
+    await syncWorkflowDefinitions(config);
+    return { config, started: await startRun(config, name, {}, base ? { base } : {}) };
+  }
+  const commit = 'a'.repeat(40);
+
+  it('refuses a top-level prompt that delivers but runs read-only, naming the step, before the run exists', async () => {
+    const { config, started } = await start({ ship: workflow('ship', `  - id: fix
+    prompt: Fix the bug.
+    deliver: pr
+`) }, 'ship', { ref: 'main', commit });
+
+    expect(started).toEqual({ error: {
+      code: 'bad_delivery',
+      message: 'Step "fix" has deliver: pr but runs read-only. Set workspace: new on it, or on the workflow step that runs it.',
+    } });
+    expect(fs.existsSync(path.join(config.dataHome ?? '', 'workflows', 'runs'))).toBe(false);
+  });
+
+  it('starts the same prompt inside a sub-workflow that a workspace: new step runs', async () => {
+    const { started } = await start({
+      fix: workflow('fix', `  - id: write
+    prompt: Fix the bug.
+    deliver: pr
+`),
+      ship: workflow('ship', `  - id: change
+    workspace: new
+    workflow: fix
+`),
+    }, 'ship', { ref: 'main', commit });
+
+    expect(started).toMatchObject({ data: { status: 'running' } });
+  });
+
+  it('refuses a workflow step that delivers without a copy of its own', async () => {
+    const { started } = await start({ ship: workflow('ship', `  - id: change
+    deliver: pr
+    workflow:
+      steps:
+        - id: write
+          workspace: new
+          prompt: Fix the bug.
+`) }, 'ship', { ref: 'main', commit });
+
+    expect(started).toEqual({ error: {
+      code: 'bad_delivery',
+      message: 'Step "change" delivers its workflow, so it needs workspace: new to own the branch it delivers.',
+    } });
+  });
+
+  it('refuses a run that delivers from a detached HEAD, telling to start from a named branch', async () => {
+    const { started } = await start({ ship: workflow('ship', `  - id: fix
+    workspace: new
+    prompt: Fix the bug.
+    deliver: pr
+`) }, 'ship', { commit });
+
+    expect(started).toEqual({ error: {
+      code: 'no_base_branch',
+      message: `Step "fix" delivers a pull request, but the run would start from a detached HEAD at ${commit}, so no branch is there for the pull request to target. Check out a named branch, then start the run again.`,
+    } });
+  });
+
+  it('starts a run from a detached HEAD when no step delivers', async () => {
+    const { started } = await start({ ship: workflow('ship', `  - id: fix
+    workspace: new
+    prompt: Fix the bug.
+`) }, 'ship', { commit });
+
+    expect(started).toMatchObject({ data: { status: 'running' } });
+  });
+});

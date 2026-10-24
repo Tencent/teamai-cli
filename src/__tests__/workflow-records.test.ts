@@ -218,6 +218,8 @@ describe('#1083 workflow run records', () => {
       'judge_model_unavailable',
       // Refusals of a teamai score or teamai workflow command line before it reads any run or judge work.
       'invalid_arguments', 'invalid_pass', 'not_initialized', 'unsupported_driver', 'invalid_tools',
+      // Refusals of teamai workflow start for a run whose pull requests would have no branch to target.
+      'no_base_branch',
       // Refusals of teamai score --run, answered to the member who asked for a pass to be judged.
       'scoring_unavailable', 'pass_not_found', 'scorer_not_found', 'entry_leased',
       // Refusals of teamai score --session, answered to the member who asked for a session to be judged.
@@ -234,7 +236,7 @@ describe('#1083 workflow run records', () => {
       ...[...text.matchAll(/(?<![.\w]|function )(?:error|failure)\('([^']+)'/g)].flatMap((match) => match[1] ?? []),
     ]));
     // An `error(…)` whose code is not a literal passes on a code written as a literal elsewhere; each one is named here.
-    const passedOn = ['session-flow/scoring.ts: result.code', 'workflow/engine.ts: tree.failed.code', 'workflow/scoring.ts: built.code', 'workflow/scoring.ts: result.code'];
+    const passedOn = ['session-flow/scoring.ts: result.code', 'workflow/engine.ts: tree.failed.code', 'workflow/engine.ts: undeliverable.code', 'workflow/scoring.ts: built.code', 'workflow/scoring.ts: result.code'];
     const unnamed = files.flatMap(({ file, text }) => [...text.matchAll(/(?<![.\w]|function )(?:error|failure)\((?!')([^,)]+)/g)].map((match) => `${file}: ${match[1]}`)).sort();
     const failedWith = (code: string): RunState => runState({
       status: 'failed',

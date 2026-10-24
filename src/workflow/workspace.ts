@@ -6,7 +6,7 @@ import { itemsAfter, itemsOf } from './fan-out.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
 import { passOf, type StepState } from './step-state.js';
-import type { DriverIdentity, RunState, WorkflowFailure, WorkflowStep } from './types.js';
+import type { DriverIdentity, RunState, WorkflowDefinition, WorkflowFailure, WorkflowStep } from './types.js';
 
 export type WorkspaceMode = 'read-only' | 'new' | 'continue';
 
@@ -80,6 +80,41 @@ export function resolveMode(step: WorkflowStep, ancestors: WorkflowStep[]): Work
     return ancestor.forEach ? 'new' : 'continue';
   }
   return 'read-only';
+}
+
+/**
+ * Why a run of `definition` cannot deliver what its steps declare, or undefined when it can. A step in a sub-workflow
+ * continues the copy of the step that runs it, so this reads the whole tree a run executes, which one file cannot.
+ * `base` is the checkout the run starts from: a pull request targets a branch, and a detached HEAD has none.
+ */
+export function deliveryProblem(
+  definition: WorkflowDefinition, workflows: Record<string, WorkflowDefinition>, base: RunState['base'],
+): WorkflowFailure | undefined {
+  let delivering: string | undefined;
+  const visit = (steps: WorkflowStep[], ancestors: WorkflowStep[], prefix: string): WorkflowFailure | undefined => {
+    for (const step of steps) {
+      const path = `${prefix}${step.id}`;
+      if (step.deliver === 'pr') {
+        delivering ??= path;
+        if (step.workflow !== undefined && step.workspace !== 'new' && !step.forEach) {
+          return { code: 'bad_delivery', message: `Step "${path}" delivers its workflow, so it needs workspace: new to own the branch it delivers.` };
+        }
+        if (step.workflow === undefined && resolveMode(step, ancestors) === 'read-only') {
+          return { code: 'bad_delivery', message: `Step "${path}" has deliver: pr but runs read-only. Set workspace: new on it, or on the workflow step that runs it.` };
+        }
+      }
+      const child = typeof step.workflow === 'string' ? workflows[step.workflow] : step.workflow;
+      const problem = child && visit(child.steps, [...ancestors, step], `${path}.`);
+      if (problem) return problem;
+    }
+    return undefined;
+  };
+  const problem = visit(definition.steps, [], '');
+  if (problem || delivering === undefined || !base || base.ref !== undefined) return problem;
+  return {
+    code: 'no_base_branch',
+    message: `Step "${delivering}" delivers a pull request, but the run would start from a detached HEAD at ${base.commit}, so no branch is there for the pull request to target. Check out a named branch, then start the run again.`,
+  };
 }
 
 /** How step instance `path` runs, or undefined when the run's definitions have no such step. */

@@ -24,7 +24,7 @@ import {
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
-import { branchName, planWorkspace, plannedBranch, sessionOf, type StepChanges, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
+import { branchName, deliveryProblem, planWorkspace, plannedBranch, sessionOf, type StepChanges, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
 import { deliverPending, validateReportedPr } from './delivery.js';
 import { generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
@@ -818,6 +818,8 @@ export async function startRun(
   if (mismatch) return error('invalid_inputs', mismatch);
   const tree = await loadWorkflowTree(config, cached);
   if ('failed' in tree) return error(tree.failed.code, tree.failed.message);
+  const undeliverable = deliveryProblem(cached.definition, tree.workflows, options.base);
+  if (undeliverable) return error(undeliverable.code, undeliverable.message);
   const scorers = await pinScorers(config, listedScorers([cached.definition, ...Object.values(tree.workflows)]));
   const now = new Date().toISOString();
   const run: RunState = {
