@@ -114,7 +114,18 @@ async function readCache(config: LocalConfig, name: string): Promise<CachedWorkf
 /** The last validated definition for `name`, or null when this file has never been valid. */
 export async function loadCachedWorkflow(config: LocalConfig, name: string): Promise<CachedWorkflow | null> {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return null;
-  return readCache(config, name);
+  const direct = await readCache(config, name);
+  if (direct) return direct;
+  const aliases = (await listCachedWorkflows(config)).filter((entry) => entry.definition.alias === name);
+  return aliases.length === 1 ? aliases[0] : null;
+}
+
+/** All runnable cached files in stable name order, without resolving aliases recursively. */
+export async function listCachedWorkflows(config: LocalConfig): Promise<CachedWorkflow[]> {
+  let files: string[];
+  try { files = await fs.readdir(cacheDir(config)); } catch { return []; }
+  const entries = await Promise.all(files.filter((file) => file.endsWith('.json')).sort().map((file) => readCache(config, file.slice(0, -5))));
+  return entries.filter((entry): entry is CachedWorkflow => entry !== null);
 }
 
 /** Removes every cached workflow this sync did not settle to a version, missing files included. */

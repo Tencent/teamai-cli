@@ -263,7 +263,7 @@ describe('workflow guide examples', () => {
         continue;
       }
       // Some inputs, such as the `after` of a for_each item, are read only when the first step is leased.
-      const next = await leaseNext(config, String(started.data.run), driver);
+      const next = await leaseNext(config, String(started.data.run), driver, { workspaceModes: ['read-only', 'new', 'continue'], base: { ref: 'main', commit: 'fixture-base' } });
       if (!('data' in next) || !next.data.lease) failures.push(`${start.label}: the first next leases nothing: ${JSON.stringify(next)}`);
     }
     expect(failures).toEqual([]);

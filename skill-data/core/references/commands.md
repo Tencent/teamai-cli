@@ -222,11 +222,13 @@ Generated: do not edit by hand. Regenerate with
 
 - `teamai workflow` — Run a validated workflow from workflows/<name>.yaml
   - `teamai workflow start <name>` — Create a run. With --driver local, execute command and prompt steps in this process.
-    - `--driver <kind>` — Run the workflow in this process. Only local is available.
+    - `--describe` — Show workflow metadata and required input schemas without creating a run
+    - `--driver <kind>` — Select local for headless execution in this process, or skill for the current coding session.
     - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
     - `--auto-approve` — With --driver local, automatically answer optional approve HITL requests and choose defaults in this process
     - `--inputs <json>` — Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.
   - `teamai workflow next <run>` — Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.
+    - `--prepare` — Prepare the leased workspace in its original checkout; report commits and pushes it automatically
     - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can.hitl, true when a person can answer HITL requests and work interactively. Send driver.can.hitl on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.
   - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
     - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver

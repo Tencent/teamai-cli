@@ -37,6 +37,7 @@ The CLI serves skill content that always matches the installed version, so instr
 teamai skill get setup            # day 0: create a team repo (admin) or join one (member), manage, uninstall
 teamai skill get wiki             # large multi-repo codebase: architecture reverse-engineering and knowledge base
 teamai skill get share            # turn what this session taught you into a team learning (needs recall on)
+teamai skill get workflow         # drive a requested team workflow from this coding session
 ```
 
 Publishing a skill, rule or doc the user already has is in `core`; it needs no recall.

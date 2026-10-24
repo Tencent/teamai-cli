@@ -84,6 +84,16 @@ afterEach(() => {
 });
 
 describe('workflow json payloads', () => {
+  it('claims a remotely published run through next before a local run file exists', async () => {
+    const config = testConfig();
+    state.config = config;
+    const engine = await import('../workflow/engine.js');
+    const next = vi.spyOn(engine, 'leaseNext').mockResolvedValue({ data: { wait: { reason: 'claimed' } } });
+    const answer = await capture(() => workflowNext('rffffffffffffffff', { json: JSON.stringify({ driver, claim: true }) }));
+    expect(answer).toMatchObject({ data: { wait: { reason: 'claimed' } } });
+    expect(next).toHaveBeenCalledWith(config, 'rffffffffffffffff', driver, expect.objectContaining({ claim: true }));
+  });
+
   it('validates a payload that contains a top-level error field', async () => {
     const { config, runId } = await startBuild();
     state.config = config;

@@ -175,7 +175,7 @@ teamai workflow report <run> --json '{"attempt":"<attempt>","revision":1,"outcom
 
 `outcome` is `success`, `failed`, or `released`. `released` puts the step back to pending. It does not use up a retry. A report for an attempt that was already settled returns `repeated_report`, even when the revision is old. The run keeps recent settled attempts for that check. An older attempt uses the other checks: an old revision returns `stale_revision`, and a current revision that is not the leased attempt returns `wrong_attempt`. Another driver returns `wrong_driver`. `changes` whose `branch` or `base` differs from the lease returns `invalid_report`, and the step stays leased. A read-only step in a workspace reports `read` (`branch`, `base`, and the `commit` it read) in place of `changes`. `changes` from it, a success without `read`, `read` from any other step, or `read` that differs from the lease returns `invalid_report` too. `used` (`{"skills":["review-notes"]}`) names the team skills the pass loaded, for its [scorer labels](scorers.md#any-driver). A value that is not a skill name is dropped, and a `used` of another shape returns `invalid_report`. A payload field the CLI does not read, such as a misspelled `tokens` written as `tokenz` or a field from a newer protocol version, is accepted but reported back: the success envelope of `next`, `report`, and `respond --json` carries `ignored` with those names — top-level fields first, then `driver.<field>` names — names only and never values. The key is left out when nothing was ignored, and an error envelope stays as it is.
 
-The run is stored in this scope's TeamAI data directory. The command exits when it finishes. A local run that ends `failed` or `cancelled` exits with status 1. No workflow process keeps running.
+The run is stored in its owning scope's TeamAI data directory. `next`, `report`, `respond`, and the run controls find it by id across configured local scopes, including from a workflow worktree or outside the product repository. The command exits when it finishes. A local run that ends `failed` or `cancelled` exits with status 1. No workflow process keeps running.
 
 Use `workflow respond <run> <step> <choice>` for a waiting HITL request, `workflow retry <run> <step>` for a failed or stuck step, `workflow cancel <run> [step]` to stop work, `workflow resume <run>` to continue locally, and `workflow publish <run>` to let another machine continue it ([Continue a run on another machine](#continue-a-run-on-another-machine)). `next` answers `lease`, `hitl`, `wait`, or `done`. See [HITL](workflow-advanced.md#hitl-human-in-the-loop) and [Retry, cancel, and resume](workflow-advanced.md#retry-cancel-and-resume).
 
@@ -248,3 +248,37 @@ The operation that settles the run queues its end record under the run lock and 
 Run ids are `r` plus 16 hex digits. Runs created before this scheme used 8 hex digits and still resolve.
 
 Workflow totals (runs, succeeded, failed, cumulative duration) are folded into `stats/<username>.yaml` on the reports branch at publication time and shown by `teamai digest`.
+
+## Run from a coding session
+
+Opt a workflow into SessionStart discovery with `invocable: true`. An optional token `alias` is another entry name for `workflow start`; an exact workflow name wins over an alias, and duplicate aliases do not resolve. Workflows without the opt-in can still be started explicitly but are not advertised.
+
+```yaml
+schemaVersion: v1alpha1
+name: session-change
+description: Implement a requested task in a separate branch.
+invocable: true
+alias: session-fix
+inputs: { task: string }
+steps:
+  - id: implement
+    workspace: new
+    prompt: "Implement {{ inputs.task }}."
+```
+
+SessionStart adds a bounded name/description list and points the agent at `teamai skill get workflow`. The list carries no graph, prompt or command bodies. Discovery yields before existing user rules when Cursor's combined context would exceed its limit. Only the existing TeamAI discovery stub is deployed; the workflow instructions are served by the installed CLI.
+
+```bash
+teamai workflow start session-fix --describe
+teamai workflow start session-change --driver skill --inputs '{"task":"fix the retry"}'
+teamai workflow next <run> --prepare --json '<driver payload>'
+teamai workflow report <run> --json '<attempt report>'
+```
+
+`--describe` returns metadata and input schemas without creating a run. The session collects required inputs, requests leases and reports their actual results. It treats step paths as opaque, follows `wait` and `done`, stops cancelled attempts, and never reproduces dependencies, conditions or loops. The workflow skill reads current CLI help rather than copying its flags. A requested model the host cannot apply fails with `model_unavailable`.
+
+With `next --prepare`, the CLI creates or reuses the leased worktree in the checkout the run originally retained, applies base agent configuration and team delivery, and returns `lease.cwd`. Repeat preparation does not overwrite edits. The session works there and never runs git for that workspace. `report` commits, pushes, fills `changes` or `read`, and removes the worktree only after an accepted successful report authorizes cleanup. Omit caller-supplied `changes` and `read` for these managed attempts. Failure keeps work for recovery. Other drivers that prepare their own workspaces omit `--prepare`.
+
+A session declares only its host's actual workspace, human, model and execution capabilities. It must not claim scoped env, setup credentials, token measurement, network controls or turn limits it cannot enforce. Requirement negotiation follows the engine's requirements contract when those fields are available. The ordinary session profile cannot receive fresh scoped secrets and leaves env/setup capabilities off. A worktree alone does not provide a sandbox. Required approvals use the literal response command answered by the person or a trusted driver UI; an agent-mediated CLI response is rejected with `agent_in_path`.
+
+Run ids address all configured local scopes. Duplicate ids fail with `ambiguous_run`; the current directory never chooses between duplicates. The retained checkout stays local. Attempt preparation records keep paths and file fingerprints, with no prompt, env values or graph.
