@@ -2470,7 +2470,9 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
     const { hermesContextFileBudget, getHermesConfigPath } = await import('./hermes-config.js');
     const budget = await hermesContextFileBudget();
     // Hermes counts Python Unicode code points after stripping whitespace.
-    const length = Array.from((await readFileSafe(hermesSoul.path) ?? '').trim()).length;
+    // Python str.strip includes C0 separators and NEL, and excludes BOM.
+    // eslint-disable-next-line no-control-regex
+    const length = Array.from((await readFileSafe(hermesSoul.path) ?? '').replace(/^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/gu, '')).length;
     checks.push({
       name: 'Hermes SOUL.md fits the context-file read budget',
       source: 'local',

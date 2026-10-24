@@ -43,6 +43,11 @@ it('uses Python code points and strips surrounding whitespace at the exact bound
   expect(await (await budget(text, '\n   '))!.check()).toBe(true);
   expect(await (await budget(text + 'x'))!.check()).toBe(false);
 });
+it('matches Python strip for C0 and NEL whitespace, but keeps BOM', async () => {
+  fs.writeFileSync(path.join(home, '.hermes', 'config.yaml'), `context_file_max_chars: ${Array.from(block).length}\n`);
+  expect(await (await budget('\u0085\u001c\u001f', '\u0085\u001c\u001f'))!.check()).toBe(true);
+  expect(await (await budget('\ufeff'))!.check()).toBe(false);
+});
 it('warns informationally about the model-dependent default floor', async () => {
   fs.rmSync(path.join(home, '.hermes', 'config.yaml'));
   const check = await budget('x'.repeat(20000));
