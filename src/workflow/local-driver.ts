@@ -1071,7 +1071,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         capabilities: { env: true, network: true, isolation: 'worktree', human: canHitl, resume: true, tokens: true, max_turns: true, setup: true },
         supports: (step, requires) => {
           const tool = step.agent && tools[step.agent] ? tools[step.agent] : tools.default;
-          if (step.maxTurns && (step.interactive || !tool || !isLocalWorkflowTool(tool) || localToolFamily(tool) !== 'claude')) return 'This tool cannot enforce max_turns (supported for headless Claude only)';
+          if (step.maxTurns && (step.interactive || !tool || !isLaunchTool(tool) || localToolFamily(tool) !== 'claude')) return 'This tool cannot enforce max_turns (supported for headless Claude only)';
           if (requires.resume && tool === 'opencode') return 'OpenCode cannot enforce session resume';
           return undefined;
         },
