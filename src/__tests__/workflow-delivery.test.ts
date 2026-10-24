@@ -1229,6 +1229,56 @@ describe('retrying and cancelling a delivery', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['pushes and records a protected commit while the lookup runs', 'lookup', true],
+    ['pushes a protected commit while the lookup runs, and records it later', 'lookup', false],
+    ['pushes and records a protected commit once delivery read origin\'s branch for the last time', 'last read', true],
+  ] as const)('opens nothing when a sibling %s, and checks that commit on the next call', async (_case, when, recorded) => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl) });
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+    const branch = docs.workspace?.branch ?? '';
+    let sibling: string | undefined;
+    const siblingPushes = async () => {
+      sibling = pushOnto(root, branch, { '.github/workflows/ci.yml': 'on: push\n' });
+      if (recorded) await succeed(config, runId, docs, { to: sibling });
+    };
+    let looked = false;
+    const read = worktree.git;
+    vi.spyOn(worktree, 'git').mockImplementation(async (...args) => {
+      const answer = await read(...args);
+      if (when === 'last read' && looked && sibling === undefined && args[1].includes('ls-remote')) await siblingPushes();
+      return answer;
+    });
+    let opened: string | undefined;
+    const create = providerDouble(async () => {
+      if (when === 'lookup' && sibling === undefined) await siblingPushes();
+      looked = true;
+      return opened;
+    }, async () => {
+      opened = 'https://github.com/fixture/app/pull/1';
+      return opened;
+    });
+
+    expect(await leaseNext(config, runId, remote, { ...writable, ...(recorded ? {} : { running: [docs.attempt] }) })).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
+    const waiting = await state(config, runId);
+    expect(waiting.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'delivering' });
+    expect(waiting.creating).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+
+    if (!recorded) await succeed(config, runId, docs, { to: sibling });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    const message = `commit ${sibling}, which a later report recorded on the shared branch ${branch}, changed protected paths against the run base: .github/workflows/ci.yml.`;
+    expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(message) } });
+    expect(run.deliveries).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('records a pull request opened while the run was cancelled, keeps the step cancelled, and queues the end record again with it', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     config.usageReportEnabled = true;

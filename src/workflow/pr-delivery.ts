@@ -54,8 +54,9 @@ export type DeliveryOutcome = { ok: true; pr: PrUrl } | { ok: false; fault: Deli
 
 /**
  * Asked under the run lock right before a pull request is opened: `open` while the step still delivers the job, whose
- * request the run then lists as unresolved; `refused` when it no longer does; `busy` when the run lock could not be
- * taken, so nobody knows yet. Only `open` opens anything.
+ * request the run then lists as unresolved; `refused` when it no longer does; `busy` when nobody knows yet, because the
+ * run lock could not be taken or a report recorded another commit on the branch since the job was picked. Only `open`
+ * opens anything.
  */
 export type CreateGate = () => Promise<'open' | 'refused' | 'busy'>;
 
@@ -70,13 +71,13 @@ const failed = (fault: DeliveryFault): DeliveryOutcome => ({ ok: false, fault })
 /**
  * Delivers one branch. Its changes against the run base are checked before anything else, a reported URL included,
  * so no pull request goes out, and no step succeeds, with a protected path changed. Then the open request of the branch
- * is looked up, and only when there is none, and `gate` opens, is one opened; then it is looked up again. `busy` is a
- * gate that could not answer: nothing was opened, and the job is for a later call.
+ * is looked up, and only when there is none, origin's branch is still at the checked commit, and `gate` opens, is one
+ * opened; then it is looked up again. `busy` is nothing opened and no outcome: the branch moved while the lookup ran, or
+ * the gate could not answer, and the job is for a later call, which checks it again.
  * Nothing here logs in, prompts or merges, and no text a host answered with is kept, since it may hold a credential.
  */
 export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<DeliveryOutcome | 'busy'> {
   if (!OBJECT_ID.test(job.key.head) || !OBJECT_ID.test(job.base)) return failed({ kind: 'unreadable' });
-  // A later push can still change an open request after this read; only the driver holding the branch can make it.
   const tip = await originTip(job.checkout, job.key.branch);
   if (tip.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
   if (tip.commit === undefined) return failed({ kind: 'branch_missing' });
@@ -109,6 +110,11 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   if (found.kind === 'found') return { ok: true, pr: found.pr };
   if (found.kind === 'failed') return failed({ kind: 'lookup_failed', provider: provider.name });
   if (found.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
+  // A step of the branch may have pushed while the lookup ran. A push after this read shows in the pull request itself,
+  // and nothing here closes that window.
+  const checked = await originTip(job.checkout, job.key.branch);
+  if (checked.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
+  if (checked.commit !== tip.commit) return 'busy';
   const gated = await gate();
   if (gated === 'busy') return 'busy';
   if (gated === 'refused') return failed({ kind: 'withdrawn' });
