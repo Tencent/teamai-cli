@@ -28,9 +28,18 @@ it('manages a Kiro default-agent lifecycle hook without any team agent', () => {
     const edited = path.join(home, '.kiro/agents/reviewer.json');
     fs.mkdirSync(path.dirname(edited), { recursive: true });
     fs.writeFileSync(edited, JSON.stringify({ name: 'reviewer', prompt: 'Member-edited prompt', hooks: { agentSpawn: [{ command: getDispatchCommand('session-start', 'kiro') }, { command: 'echo personal' }] } }));
+    const otherRoot = path.join(root, 'project-b');
+    const otherAgent = path.join(otherRoot, '.kiro/agents/reviewer.json');
+    const otherPartition = path.join(home, '.teamai/projects/project-b');
+    fs.mkdirSync(path.dirname(otherAgent), { recursive: true });
+    fs.mkdirSync(otherPartition, { recursive: true });
+    fs.writeFileSync(path.join(otherPartition, 'anchor'), otherRoot + '\n');
+    fs.writeFileSync(otherAgent, fs.readFileSync(edited));
     const pull = run(['pull', '--force']);
     expect(pull.status, pull.stdout + pull.stderr).toBe(0);
     expect(JSON.parse(fs.readFileSync(edited, 'utf8'))).toEqual({ name: 'reviewer', prompt: 'Member-edited prompt', hooks: { agentSpawn: [{ command: 'echo personal' }] } });
+    expect(JSON.parse(fs.readFileSync(otherAgent, 'utf8'))).toEqual(JSON.parse(fs.readFileSync(edited, 'utf8')));
+    expect(fs.existsSync(path.join(otherPartition, 'config.yaml'))).toBe(false);
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ version: 'v1', hooks: [{ trigger: 'SessionStart', action: { type: 'command' } }] });
     const list = run(['hooks', 'list']);
     expect(list.status, list.stdout + list.stderr).toBe(0);

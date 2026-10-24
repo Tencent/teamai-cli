@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { getDispatchCommand } from './builtin-hooks.js';
-import { listFiles, pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
+import { listDirs, listFiles, pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 
 /** Kiro CLI V3 loads user hook files independently of the selected agent. */
@@ -31,6 +31,37 @@ export async function hasKiroHooks(): Promise<boolean> {
   return await readFileSafe(kiroHookFile()) === buildKiroHooks();
 }
 
+/** The global hook affects every registered project, including its linked worktrees. */
+async function legacyAgentDirs(projectRoot?: string): Promise<Set<string>> {
+  const home = getUserHome();
+  const dirs = new Set([path.join(home, '.kiro', 'agents'),
+    ...projectRoot ? [path.join(projectRoot, '.kiro', 'agents')] : []]);
+  const { projectsRootDir, readAnchorFile } = await import('./utils/partition.js');
+  const { listWorktrees } = await import('./utils/git.js');
+  const { readConfigFrom, loadTeamConfig } = await import('./config.js');
+  const { installOf, locate, ownOf } = await import('./locate.js');
+  const scopes = [{ dataHome: path.join(home, '.teamai'), root: home }];
+  for (const name of await listDirs(projectsRootDir())) {
+    const dataHome = path.join(projectsRootDir(), name);
+    const anchor = await readAnchorFile(dataHome);
+    if (!anchor) continue;
+    for (const root of new Set([anchor, ...await listWorktrees(anchor).catch(() => [])])) {
+      dirs.add(path.join(root, '.kiro', 'agents'));
+      scopes.push({ dataHome, root });
+    }
+  }
+  for (const { dataHome, root } of scopes) {
+    const config = await readConfigFrom(dataHome, root, undefined, undefined,
+      { selfHeal: false, dryRun: true, suppressMigrationNotice: true });
+    if (!config) continue;
+    const team = await loadTeamConfig(config.repo.localPath);
+    if (!team) continue;
+    const own = ownOf(await locate('kiro', 'agents', installOf(team, config)));
+    if (own) dirs.add(own.path);
+  }
+  return dirs;
+}
+
 export async function injectKiroHooks(projectRoot?: string): Promise<void> {
   if (!await pathExists(path.join(getUserHome(), '.kiro'))) return;
   if (await pathExists(kiroHookFile()) && !await ownsKiroHooks()) {
@@ -38,8 +69,7 @@ export async function injectKiroHooks(projectRoot?: string): Promise<void> {
   }
   // An edited agent is intentionally kept by pull. Retire only our exact old
   // agentSpawn command before enabling V3's shared hook; keep every private field.
-  const dirs = new Set([path.join(getUserHome(), '.kiro', 'agents'),
-    ...projectRoot ? [path.join(projectRoot, '.kiro', 'agents')] : []]);
+  const dirs = await legacyAgentDirs(projectRoot);
   for (const dir of dirs) {
     for (const name of await listFiles(dir)) {
       if (!name.endsWith('.json')) continue;
