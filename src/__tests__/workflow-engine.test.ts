@@ -2590,6 +2590,22 @@ describe('held-back steps', () => {
     } });
   });
 
+  it('gives a new copy a driver handed back for a capability it lost to another driver, on a branch of its own', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: a
+    workspace: new
+    requires: { env: [DEPLOY_TOKEN] }
+    command: node a.js
+`));
+    const first = await leaseNext(config, runId, driverA, { can: { workspace: [...allModes], env: true }, base });
+    expect(first).toMatchObject({ data: { lease: { step: 'a', workspace: { branch: expect.stringMatching(/a/) } } } });
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'a', missing: ['env'] }] } },
+    });
+    const taken = await leaseNext(config, runId, driverB, { can: { workspace: [...allModes], env: true }, base });
+    expect(taken).toMatchObject({ data: { lease: { step: 'a', pass: 2 } } });
+  });
+
   it('waits when every ready step is held back, and names each one in order', async () => {
     const { config, runId } = await startBuild(graph(`  - id: a
     workspace: new

@@ -18,7 +18,7 @@ import {
 } from './template.js';
 import { parseStepPath } from './step-path.js';
 import {
-  ReadSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, timeOut, waitForAnswer,
+  ReadSchema, answerHitl, cancel, fail, lease, release, settled, skip, start, stopped, succeed, takeOver, timeOut, waitForAnswer,
   type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, itemsSettled, startedItems } from './fan-out.js';
@@ -1132,10 +1132,11 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
         }, true);
         const offered = plan.fail ? undefined : plan;
         const terms = offerTerms(run, leased.id, located, offered, context);
-        // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping.
+        // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping,
+        // in a copy no other driver is kept from.
         if (terms.kind === 'hold') {
           (run.cancelledAttempts ??= []).push(leased.attempt);
-          release(leased);
+          takeOver(leased, offered?.contract?.mode);
           continue;
         }
         if (terms.kind === 'fail') {
