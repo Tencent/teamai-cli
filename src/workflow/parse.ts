@@ -404,10 +404,10 @@ function parseBody(
       if (maxTurnsPair && maxTurns === undefined) {
         diagnostics.push(locate(file, lineCounter, maxTurnsPair.value ?? maxTurnsPair.key, `${field}.max_turns`, `${label} max_turns must be a positive whole number`));
       } else if (maxTurnsPair && actions.length > 0 && !promptPair && !promptFilePair) {
-        diagnostics.push(locate(file, lineCounter, maxTurnsPair.key as Node, `${field}.max_turns`, `${label} max_turns is only allowed on a prompt or prompt_file step`));
+        diagnostics.push(locate(file, lineCounter, maxTurnsPair.key, `${field}.max_turns`, `${label} max_turns is only allowed on a prompt or prompt_file step`));
       }
       if (budgetPair && actions.length > 0 && !workflowPair) {
-        diagnostics.push(locate(file, lineCounter, budgetPair.key as Node, `${field}.budget`, `${label} budget is only allowed on a workflow step; a workflow spends it over all its steps`));
+        diagnostics.push(locate(file, lineCounter, budgetPair.key, `${field}.budget`, `${label} budget is only allowed on a workflow step; a workflow spends it over all its steps`));
       }
       const envPair = item.items.find((pair) => scalarString(pair.key) === 'env');
       const env = envPair ? parseEnv(envPair.value ?? envPair.key, `${field}.env`, label, ctx) : undefined;
