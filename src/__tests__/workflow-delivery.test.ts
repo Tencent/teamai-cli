@@ -629,6 +629,29 @@ describe('where a pull request goes', () => {
     expect(buildEndRecord(await state(config, runId), remote, 'tester').prs).toEqual(['https://github.com/fixture/app/pull/1']);
   });
 
+  it.each([
+    ['lists a request on another host', async (): Promise<string | undefined> => 'https://other.example/review/1', 'https://github.com/fixture/app/pull/1', false],
+    ['cannot answer, and the create named a request on another host', (): Promise<string | undefined> => Promise.reject(new Error('GitHub timed out')), 'https://other.example/review/1', false],
+    ['cannot answer, and the create named a request on the origin host', (): Promise<string | undefined> => Promise.reject(new Error('GitHub timed out')), 'https://github.com/fixture/app/pull/1', true],
+  ])('records the URL a create answered only on the origin host, when the lookup after it %s', async (_case, lookupAfter, answered, kept) => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const create = providerDouble(async () => (create.mock.calls.length === 0 ? undefined : lookupAfter()), async () => answered);
+
+    if (kept) {
+      expect(await take(config, runId)).toMatchObject({ step: 'review' });
+      expect((await state(config, runId)).deliveries?.map((receipt) => receipt.url)).toEqual([answered]);
+      return;
+    }
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    expect(run.steps[0]).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`answered with a pull request URL TeamAI cannot keep. The work is kept on origin in branch ${branch}.`) } });
+    expect(run.deliveries).toBeUndefined();
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it('starts the next for_each item while an earlier one delivers, since max_parallel bounds agents', async () => {
     const { config, root, runId } = await fixture(`  - id: build\n    for_each: { items: inputs.packages, max_parallel: 1 }\n    workspace: new\n    command: node build.js\n    deliver: pr\n`,
       { packages: ['one', 'two'].map((name) => ({ name, id: name, after: [] })) });

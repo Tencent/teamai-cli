@@ -111,8 +111,11 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   // than the lookup a later delivery of the branch finds it by, so the lookup's is kept: one request, one receipt.
   const opened = await findOpen(origin, ref);
   if (opened.kind === 'found') return { ok: true, pr: opened.pr };
+  if (opened.kind === 'unsafe') return failed({ kind: 'unsafe_url', provider: provider.name });
   if (!created) return failed({ kind: 'create_failed', provider: provider.name });
-  return created.url ? { ok: true, pr: created.url } : failed({ kind: 'unsafe_url', provider: provider.name });
+  return created.url && new URL(created.url).hostname === origin.hostname
+    ? { ok: true, pr: created.url }
+    : failed({ kind: 'unsafe_url', provider: provider.name });
 }
 
 /**
