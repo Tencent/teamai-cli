@@ -20,9 +20,10 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getTeamHookDispatchCommand, getTeamHookDispatchCommandWindows } from './builtin-hooks.js';
+import type { CodexGroupSlot, CodexTrustPolicy } from './hooks.js';
 import { CODEX_TOOL_ID, getTeamaiHomeDir } from './types.js';
 import { checkoutForProjectAnchor } from './utils/git.js';
-import { ensureDir, readJson, readJsonObject, writeJson, writeJsonAtomic } from './utils/fs.js';
+import { readJson, readJsonObject, writeJsonAtomic } from './utils/fs.js';
 import { log, setStderrOnly } from './utils/logger.js';
 
 /** One team hook a project runs through the dispatcher, as pull resolved it. */
@@ -166,16 +167,14 @@ export async function setCodexDispatcherHooks(project: string, hooks: CodexTeamH
   }
 }
 
-interface CodexHookGroup { matcher?: string; hooks?: Array<{ type?: string; command?: string; commandWindows?: string; timeout?: number }> }
-
 /**
  * Make the Codex hook file `hooksFile` (`~/.codex/hooks.json`) hold exactly one
  * dispatcher entry for each event a recorded project has team hooks for, with
- * the largest of their timeouts, and none for any other event. The entries sit
- * before teamai's built-ins, where the built-in pass leaves them, so neither
- * pass moves what the other wrote. Writes only on change.
+ * the largest of their timeouts, and none for any other event. An entry is
+ * rewritten where it is and a new one appended, so only a removed entry moves
+ * the groups after it (#1250). Writes only on change.
  */
-export async function reconcileCodexDispatchers(hooksFile: string): Promise<void> {
+export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: CodexTrustPolicy): Promise<void> {
   const timeouts = new Map<string, number>();
   for (const [root, record] of Object.entries((await readIndex()).projects)) {
     // A project or checkout that is gone needs no entry; the index drops it on its next write.
@@ -191,42 +190,34 @@ export async function reconcileCodexDispatchers(hooksFile: string): Promise<void
     }
   }
   if (timeouts.size === 0 && (await readJsonObject(hooksFile)).kind === 'missing') return;
-  // One that does not parse is left byte-identical, as every hook writer leaves it (#993).
-  const { readHookFile } = await import('./hooks.js');
-  const doc = await readHookFile<{ hooks?: Record<string, CodexHookGroup[]> }>(hooksFile, {});
-  const all = doc.hooks && typeof doc.hooks === 'object' ? doc.hooks : {};
-  const isDispatcher = (group: CodexHookGroup) => isCodexTeamHookDispatcher(group?.hooks?.[0]?.command ?? '');
-  let changed = false;
-  for (const event of new Set([...Object.keys(all), ...timeouts.keys()])) {
-    const existing = Array.isArray(all[event]) ? all[event] : [];
-    const rest = existing.filter((group) => !isDispatcher(group));
-    const timeout = timeouts.get(event);
-    const wanted: CodexHookGroup[] = timeout === undefined ? []
-      : [{
-        hooks: [{
-          type: 'command',
-          command: getTeamHookDispatchCommand(event, CODEX_TOOL_ID),
-          // The Windows form drops the bash wrapper cmd.exe cannot resolve
-          // (#1215); the block contract passes through natively (#1209). On
-          // `command` the entry keeps the POSIX form on every platform, like
-          // the built-in entries (#1074).
-          commandWindows: getTeamHookDispatchCommandWindows(event, CODEX_TOOL_ID),
-          timeout,
-        }],
-      }];
-    const builtin = rest.findIndex((group) => (group?.hooks?.[0]?.command ?? '').includes('teamai hook-dispatch'));
-    const at = builtin < 0 ? rest.length : builtin;
-    const next = [...rest.slice(0, at), ...wanted, ...rest.slice(at)];
-    if (JSON.stringify(next) === JSON.stringify(existing)) continue;
-    changed = true;
-    if (next.length === 0 && existing.every(isDispatcher)) delete all[event];
-    else all[event] = next;
-  }
-  if (!changed) return;
-  doc.hooks = all;
-  await ensureDir(path.dirname(hooksFile));
-  await writeJson(hooksFile, doc);
-  log.debug(`Updated the Codex team-hook dispatchers in ${hooksFile}`);
+  const { editCodexHookFile } = await import('./hooks.js');
+  const isDispatcher = (group: { hooks?: Array<{ command?: string }> }) => isCodexTeamHookDispatcher(group?.hooks?.[0]?.command ?? '');
+  const written = await editCodexHookFile(hooksFile, CODEX_TOOL_ID, (all) => Object.fromEntries(
+    [...new Set([...Object.keys(all), ...timeouts.keys()])].map((event) => {
+      const existing = all[event] ?? [];
+      const timeout = timeouts.get(event);
+      const wanted: CodexGroupSlot | undefined = timeout === undefined ? undefined
+        : {
+          write: {
+            hooks: [{
+              type: 'command',
+              command: getTeamHookDispatchCommand(event, CODEX_TOOL_ID),
+              // The Windows form drops the bash wrapper cmd.exe cannot resolve
+              // (#1215); the block contract passes through natively (#1209). On
+              // `command` the entry keeps the POSIX form on every platform, like
+              // the built-in entries (#1074).
+              commandWindows: getTeamHookDispatchCommandWindows(event, CODEX_TOOL_ID),
+              timeout,
+            }],
+          },
+        };
+      const at = existing.findIndex(isDispatcher);
+      const slots = existing.flatMap((group, index): CodexGroupSlot[] =>
+        !isDispatcher(group) ? [{ keep: index }] : index === at && wanted ? [wanted] : []);
+      if (wanted && at < 0) slots.push(wanted);
+      return [event, slots.length === 0 && existing.length > 0 ? null : slots];
+    })), codexTrust);
+  if (written) log.debug(`Updated the Codex team-hook dispatchers in ${hooksFile}`);
 }
 
 /** The payload field Codex tests an event's matcher against; events without one ignore it. */

@@ -7,6 +7,7 @@ import path from 'node:path';
 // Mock the underlying modules so handlers don't do real I/O
 
 const mockPull = vi.fn().mockResolvedValue(undefined);
+const mockSettleLateUsageReport = vi.fn().mockResolvedValue(undefined);
 const mockDashboardReport = vi.fn().mockResolvedValue(undefined);
 const mockParseHookEvent = vi.fn().mockResolvedValue({ type: 'session_start', timestamp: '2026-01-01', sessionId: 'test', tool: 'claude' });
 const mockAppendEvent = vi.fn().mockResolvedValue(undefined);
@@ -30,8 +31,11 @@ const mockStashPackageHint = vi.fn().mockResolvedValue(undefined);
 const mockClaimPackageHint = vi.fn().mockResolvedValue(null);
 const mockTakePendingPackageHint = vi.fn().mockResolvedValue(null);
 
+const mockTeamDelivery = vi.fn().mockResolvedValue({ complete: false, key: undefined, gap: 'no_record' });
 vi.mock('../pull.js', () => ({
   pull: mockPull,
+  settleLateUsageReport: mockSettleLateUsageReport,
+  teamDelivery: mockTeamDelivery,
 }));
 
 vi.mock('../dashboard-collector.js', () => ({
@@ -42,6 +46,7 @@ vi.mock('../dashboard-collector.js', () => ({
   dataHomeKey: vi.fn().mockResolvedValue('key'),
   eventProjectAnchor: vi.fn().mockResolvedValue(undefined),
   addGitStateAtStart: vi.fn().mockResolvedValue(undefined),
+  gitStateIn: vi.fn().mockReturnValue(undefined),
   // The payload's cwd: what hookScopeDir answers for a cwd that exists (#810).
   hookScopeDir: async (stdin: Record<string, unknown>) =>
     (await vi.importActual<typeof import('../utils/hook-cwd.js')>('../utils/hook-cwd.js')).resolveHookCwd(stdin),
@@ -273,6 +278,41 @@ describe('hook-handlers registry', () => {
     expect(sessionStartHandlers).toContain('dashboard-report');
   });
 
+  it.skipIf(process.platform === 'win32')('session-start adds the tool version to the capture its start wrote, and sweeps captures of sessions that are gone, in the background (#1178)', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'capture-version-')));
+    const captureId = '0b6f2a52-5d7e-4c7e-9a43-6a3c1d0e2f11';
+    const dir = path.join(root, 'data', 'sessions', 'captures', 'claude-code', 's-capture');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${captureId}.json`), JSON.stringify({
+      captureId, platform: 'claude-code', sessionId: 's-capture', capturedAt: '2026-10-23T10:00:00.000Z',
+      agent: { v: 1, tool: { name: 'claude' }, teamai: '0.0.0', driver: 'session' },
+    }));
+    const gone = path.join(root, 'data', 'sessions', 'captures', 'claude-code', 's-gone');
+    fs.mkdirSync(gone, { recursive: true });
+    fs.writeFileSync(path.join(gone, `${captureId}.json`), JSON.stringify({
+      captureId, platform: 'claude-code', sessionId: 's-gone', capturedAt: '2026-10-01T10:00:00.000Z', sessionFile: path.join(root, 's-gone.jsonl'),
+      agent: { v: 1, tool: { name: 'claude' }, teamai: '0.0.0', driver: 'session' },
+    }));
+    const { clearVersionCache } = await import('../agent-version.js');
+    fs.mkdirSync(path.join(root, 'bin'));
+    fs.writeFileSync(path.join(root, 'bin', 'claude'), '#!/bin/sh\necho "2.1.308 (Claude Code)"\n', { mode: 0o755 });
+    vi.stubEnv('PATH', `${path.join(root, 'bin')}${path.delimiter}${process.env.PATH ?? ''}`);
+    clearVersionCache();
+    const config: LocalConfig = { repo: { kind: 'git', localPath: root, remote: '' }, username: 'test', scope: 'user', additionalRoles: [], dataHome: path.join(root, 'data') };
+    const registration = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'session-capture');
+
+    try {
+      expect(registration).toMatchObject({ background: true, requiresConfig: true });
+      await registration?.handler.execute({ session_id: 's-capture', teamai_capture: captureId }, 'claude', config);
+      expect(JSON.parse(fs.readFileSync(path.join(dir, `${captureId}.json`), 'utf8')).agent.tool).toEqual({ name: 'claude', version: '2.1.308' });
+      expect(fs.existsSync(path.join(root, 'data', 'sessions', 'captures', 'claude-code', 's-gone'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      clearVersionCache();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('caps the self-mode post-merge lock wait at five seconds', async () => {
     const handler = buildHandlerRegistry().find(r => r.event === 'post-merge')!.handler;
     await handler.execute({ cwd: '/tmp/self-project' }, 'git', {
@@ -441,6 +481,46 @@ describe('hook-handlers registry', () => {
     expect(mockSeedProjectAgentRoot.mock.invocationCallOrder[0]).toBeLessThan(
       mockPull.mock.invocationCallOrder[0],
     );
+  });
+
+  it('session-start pull returns only after a report the pull stopped waiting for settles (#1322)', async () => {
+    const registry = buildHandlerRegistry();
+    const handler = registry.find(
+      (r) => r.event === 'session-start' && r.handler.name === 'pull',
+    )!.handler;
+    let settle!: () => void;
+    mockSettleLateUsageReport.mockReturnValueOnce(new Promise<void>((resolve) => { settle = resolve; }));
+    let returned = false;
+
+    const done = handler.execute({ cwd: '/tmp/some-project' }, 'claude', null).then(() => { returned = true; });
+    await vi.waitFor(() => expect(mockSettleLateUsageReport).toHaveBeenCalledOnce());
+    expect(returned).toBe(false);
+    settle();
+    await done;
+
+    expect(returned).toBe(true);
+  });
+
+  it('session-start pull marks the session\'s captures when it delivers a new revision (#1178)', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'capture-pull-')));
+    const captureId = '0b6f2a52-5d7e-4c7e-9a43-6a3c1d0e2f12';
+    const dir = path.join(root, 'data', 'sessions', 'captures', 'claude-code', 's-pull');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${captureId}.json`), JSON.stringify({
+      captureId, platform: 'claude-code', sessionId: 's-pull', capturedAt: '2026-10-23T10:00:00.000Z',
+      agent: { v: 1, tool: { name: 'claude' }, teamai: '0.0.0', driver: 'session' },
+    }));
+    const record = (rev: string) => ({ complete: true, key: 'k', commit: rev.repeat(40), record: { rev, targets: ['claude'] } });
+    mockTeamDelivery.mockResolvedValueOnce(record('a')).mockResolvedValueOnce(record('b'));
+    const config: LocalConfig = { repo: { kind: 'git', localPath: root, remote: '' }, username: 'test', scope: 'user', additionalRoles: [], dataHome: path.join(root, 'data') };
+    const handler = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'pull')?.handler;
+
+    try {
+      await handler?.execute({ session_id: 's-pull', cwd: root }, 'claude', config);
+      expect(JSON.parse(fs.readFileSync(path.join(dir, `${captureId}.json`), 'utf8')).teamChanged).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('session-start pull seeds from workspace_roots when cwd is absent', async () => {

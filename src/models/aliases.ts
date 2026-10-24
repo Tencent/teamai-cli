@@ -47,7 +47,8 @@ import { activeEntryNamespaces, describeEntryFailure, entryLayout, listEntryFile
 import { resolveNamespacedItems, type NamespaceCandidate } from '../namespace-resolver.js';
 import { listDirs } from '../utils/fs.js';
 import { liveModelSwitches, type LiveModelSwitch } from './switch.js';
-import { ALL_SUPPORTED_TOOLS, agentEffortField, toolExtrasFor, type AgentSpec, type ToolName } from '../resources/agent-format.js';
+import { agentEffortField, toolExtrasFor, type AgentSpec, type ToolName } from '../resources/agent-format.js';
+import { AGENT_TOOLS, isAgentToolId } from '../tools.js';
 
 /**
  * Alias names every team has, whether or not it maps them. A team maps one
@@ -63,8 +64,6 @@ const RESERVED_ALIASES = ['strong', 'fast'] as const;
  * A full model id is not covered.
  */
 const NATIVE_MODEL_ALIASES: ReadonlySet<string> = new Set(['opus', 'sonnet', 'haiku', 'fable', 'inherit', 'default', 'auto', 'lite']);
-
-const KNOWN_TOOLS: ReadonlySet<string> = new Set(ALL_SUPPORTED_TOOLS);
 
 const OPTION_FIELDS: ReadonlySet<string> = new Set(['model', 'effort']);
 
@@ -212,27 +211,58 @@ export type ModelResolution =
   | { readonly ok: true; readonly step: ResolutionStep; readonly model?: string; readonly effort?: string; readonly source?: string }
   | { readonly ok: false; readonly reason: string };
 
+/** Why a value gives the tool no model: no entry for it, the member's `~` or `default`, a model switch, or an error. */
+export type NoModel = 'unmapped' | 'local' | 'switched' | 'unresolved';
+
+/** Why a resolution step gives no model. The only other one that can is `default`: the alias does not map the tool. */
+const NO_MODEL_STEPS: Partial<Record<ResolutionStep, NoModel>> = { local: 'local', switched: 'switched' };
+
+/** Why a resolution that gives the tool no model gives none. */
+export function noModelReason(resolution: ModelResolution): NoModel {
+  return resolution.ok ? NO_MODEL_STEPS[resolution.step] ?? 'unmapped' : 'unresolved';
+}
+
+/** Why `resolution` gives `tool` no model, worded to follow "which": `has no model for codex in models/aliases.yaml`. */
+export function noModelCause(resolution: ModelResolution, tool: string): string {
+  const source = (resolution.ok && resolution.source) || TEAM_ALIASES_FILE;
+  const reason = noModelReason(resolution);
+  switch (reason) {
+    case 'unmapped': return `has no model for ${tool} in ${source}`;
+    case 'local': return `${source} turns off for ${tool}`;
+    case 'switched': return `gives no model for ${tool} while teamai models switch points ${tool} at a model profile`;
+    case 'unresolved': return `cannot be resolved for ${tool}: ${resolution.ok ? '' : resolution.reason}`;
+    default: {
+      const unhandled: never = reason;
+      return unhandled;
+    }
+  }
+}
+
+/** Why `value` cannot be a `model`, worded to follow "model", or undefined when it can: an alias or a model name as is. */
+export function modelValueProblem(value: string | undefined): string | undefined {
+  if (value?.includes('{{')) return 'cannot contain a template; write an alias or a model name as is';
+  if (!value || /\s/.test(value)) return 'must be a non-empty string without spaces';
+  return undefined;
+}
+
 /**
  * Load the aliases `localConfig`'s scope reads: the team files of its
  * checkout and the member's override. A missing file is an empty mapping, so
  * `strong` and `fast` resolve to no model field.
  */
 export async function loadModelAliases(localConfig: LocalConfig): Promise<ModelAliases> {
-  const team = await loadTeamAliases(localConfig);
+  const team = await loadTeamModelAliases(localConfig);
   if (!team.ok) return team;
+  const { names } = team;
   const localPath = localAliasesPath();
   const read = await readAliasesFile(localPath, localPath);
   const local = read.ok ? read : { aliases: new Map<string, AliasEntries>(), warnings: [] };
-  const names = new Set<string>([...RESERVED_ALIASES, ...team.names]);
   // Read once per load, and only matters for aliases: a literal model is written as is.
   const switches = await liveModelSwitches();
   // A local name no team here defines is another team's: it has no effect, so no warning either.
   const localHere = new Map([...local.aliases].filter(([alias]) => names.has(alias)));
   return {
-    ok: true,
-    names,
-    team: team.active,
-    inactive: team.inactive,
+    ...team,
     local: localHere,
     ...(read.ok ? {} : { localFailure: read.reason }),
     warnings: [
@@ -242,6 +272,21 @@ export async function loadModelAliases(localConfig: LocalConfig): Promise<ModelA
       ...[...localHere].flatMap(([alias, entries]) => droppedEffortWarnings(alias, entries, localPath)),
     ],
     switches,
+  };
+}
+
+/** The aliases the team files alone give, with no member override and no model switch, as `review --branch` checks them. */
+export async function loadTeamModelAliases(localConfig: LocalConfig): Promise<ModelAliases> {
+  const team = await loadTeamAliases(localConfig);
+  if (!team.ok) return team;
+  return {
+    ok: true,
+    names: new Set<string>([...RESERVED_ALIASES, ...team.names]),
+    team: team.active,
+    inactive: team.inactive,
+    local: new Map(),
+    warnings: team.warnings,
+    switches: {},
   };
 }
 
@@ -396,7 +441,7 @@ function dropUnknownEntries(document: unknown, file: string): { document: unknow
     const entries: Record<string, unknown> = {};
     for (const [tool, entry] of Object.entries(value)) {
       if (tool === 'gateways') continue;
-      if (!KNOWN_TOOLS.has(tool)) {
+      if (!isAgentToolId(tool)) {
         warnings.push({ alias, file, message: `${file}: alias "${alias}" maps "${tool}", which is not a tool teamai knows, so that entry `
           + 'is ignored. Fix the tool id, or update teamai if a newer version added that tool.' });
         continue;
@@ -411,7 +456,7 @@ function dropUnknownEntries(document: unknown, file: string): { document: unknow
       entries[tool] = Array.isArray(entry) ? entry.map(withoutUnknown) : withoutUnknown(entry);
       if (unknown.size > 0) {
         const fields = [...unknown].map((field) => `"${field}"`).join(', ');
-        warnings.push({ alias, file, tool: tool as ToolName, message: `${file}: alias "${alias}" sets ${fields} for ${tool}, which teamai `
+        warnings.push({ alias, file, tool, message: `${file}: alias "${alias}" sets ${fields} for ${tool}, which teamai `
           + `does not know, so ${tool} receives that entry without it. Remove it, or update teamai if a newer version added it.` });
       }
     }
@@ -427,7 +472,7 @@ function dropUnknownEntries(document: unknown, file: string): { document: unknow
  */
 function droppedEffortWarnings(alias: string, entries: AliasEntries, file: string): AliasWarning[] {
   const warnings: AliasWarning[] = [];
-  for (const tool of ALL_SUPPORTED_TOOLS) {
+  for (const tool of AGENT_TOOLS) {
     const entry = entries[tool];
     if (entry === undefined || entry === null || agentEffortField(tool) !== undefined) continue;
     const withEffort = (Array.isArray(entry) ? entry : [entry]).find((option) => typeof option !== 'string' && option.effort !== undefined);

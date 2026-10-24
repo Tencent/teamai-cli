@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fse from 'fs-extra';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
-import { isAgentExcluded, resolveToolBaseDir, scopedToolPaths } from '../types.js';
 import {
   listFilesRecursive,
   listDirs,
@@ -16,8 +15,7 @@ import {
   writeFile,
 } from './fs.js';
 import { getFileContentAtRev, getFileContentWhenAdded } from './git.js';
-import { isToolInstalledForConfig } from '../resources/base.js';
-import { installOf, locate } from '../locate.js';
+import { installOf, locate, ownOf, writable } from '../locate.js';
 import { ruleFileExtensionForTool, ruleFormatForTool, teamRuleNameForFile, usesCopilotInstructions } from '../resources/rule-format.js';
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { log } from './logger.js';
@@ -93,12 +91,11 @@ async function syncRulesToLocal(
   const { RulesHandler } = await import('../resources/rules.js');
   const rulesHandler = new RulesHandler();
 
-  for (const [tool, toolPath] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (!toolPath.rules) continue;
-    if (isAgentExcluded(localConfig, tool)) continue;
-    if (!await isToolInstalledForConfig(tool, toolPath.rules, localConfig)) continue;
-
-    const rulesDir = path.join(resolveToolBaseDir(tool, localConfig), toolPath.rules);
+  const install = installOf(teamConfig, localConfig);
+  for (const tool of Object.keys(install.toolPaths)) {
+    const own = writable(await locate(tool, 'rules', install));
+    if (own?.kind !== 'dir') continue;
+    const rulesDir = own.path;
     if (!await pathExists(rulesDir)) continue;
 
     // A tool with its own rules format holds a render with derived
@@ -237,7 +234,7 @@ async function syncSkillsToLocal(
 
   const install = installOf(teamConfig, localConfig);
   for (const tool of Object.keys(install.toolPaths)) {
-    const skillsDir = (await locate(tool, 'skills', install)).own;
+    const skillsDir = ownOf(await locate(tool, 'skills', install))?.path ?? null;
     if (skillsDir === null || !await pathExists(skillsDir)) continue;
 
     const localSkillNames = await listDirs(skillsDir);

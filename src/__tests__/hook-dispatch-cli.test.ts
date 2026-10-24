@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
+import type { LocalConfig } from '../types.js';
 
 const { mockSpawn, mockDispatcher } = vi.hoisted(() => ({
   mockSpawn: vi.fn(),
@@ -26,6 +27,7 @@ const { parseStdin, readStdin, trySpawnDetachedViaWmi, deriveDispatchSessionId, 
 const { claudeHookOtherHostSkip } = await import('../claude-hook-host.js');
 const { reconcileHooks } = await import('../hooks.js');
 const { log } = await import('../utils/logger.js');
+const { commitFile, initRepo, recordDelivery } = await import('./helpers/delivered-checkout.js');
 
 describe('readStdin', () => {
   it('closes a pipe after the EOF timeout so the hook process can exit', async () => {
@@ -58,6 +60,17 @@ describe('deriveDispatchSessionId', () => {
 });
 
 describe('hookDispatchCli', () => {
+  it('skips scorer hooks before reading stdin or resolving config, including background children', async () => {
+    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookConfig');
+    const readFile = vi.spyOn(fs, 'readFileSync');
+    vi.stubEnv('TEAMAI_LAUNCHED_BY', 'scorer');
+    try {
+      for (const bgOnly of [false, true]) await hookDispatchCli('SessionStart', 'claude', '*', { bgOnly, stdinFile: '/missing-judge-payload' });
+      expect(resolveConfig).not.toHaveBeenCalled();
+      expect(readFile).not.toHaveBeenCalledWith('/missing-judge-payload', expect.anything());
+    } finally { resolveConfig.mockRestore(); readFile.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
   it('records why a Git hook cannot sync an unreadable project config, without dispatching', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'git-hook-broken-config-'));
     const previousCwd = process.cwd();
@@ -302,6 +315,47 @@ describe('hookDispatchCli', () => {
         else process.env[key] = saved[key];
       }
       fs.rmSync(stdinFile, { force: true });
+    }
+  });
+
+  it('captures the session before the detached pull starts, and hands it the capture and the one git state it read (#1178)', async () => {
+    const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'capture-hook-')));
+    const team = path.join(root, 'team');
+    const project = path.join(root, 'project');
+    initRepo(team);
+    initRepo(project);
+    commitFile(project, 'README.md');
+    const rev = commitFile(team, 'skills/review/SKILL.md');
+    const config: LocalConfig = {
+      repo: { localPath: team, remote: 'local', kind: 'git' },
+      username: 'tester', scope: 'project', additionalRoles: [], projectRoot: project, dataHome: path.join(root, 'data'),
+    };
+    await recordDelivery(config, { rev, targets: ['claude'] });
+    const stdinFile = path.join(root, 'payload.json');
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'c1', cwd: project, source: 'startup', teamai_capture: 'from-host' }));
+    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookConfig').mockResolvedValue(config);
+    const capturesDir = path.join(root, 'data', 'sessions', 'captures', 'claude-code', 'c1');
+    let detachedPayload = '';
+    let capturedFirst: string[] = [];
+    mockSpawn.mockImplementation(() => {
+      capturedFirst = fs.existsSync(capturesDir) ? fs.readdirSync(capturesDir) : [];
+      return { on: vi.fn(), stdin: { on: vi.fn(), end: vi.fn((raw: string, done: () => void) => { detachedPayload = raw; done(); }) }, unref: vi.fn() };
+    });
+    const originalCwd = process.cwd();
+    vi.stubEnv('HOME', path.join(root, 'home'));
+
+    try {
+      await hookDispatchCli('session-start', 'claude', '*', { stdinFile });
+      expect(capturedFirst).toEqual([`${JSON.parse(detachedPayload).teamai_capture}.json`]);
+      expect(JSON.parse(fs.readFileSync(path.join(capturesDir, capturedFirst[0] ?? ''), 'utf8')).agent.team).toMatchObject({ revision: rev, localChanges: false });
+      const { agent } = JSON.parse(fs.readFileSync(path.join(capturesDir, capturedFirst[0] ?? ''), 'utf8'));
+      expect(JSON.parse(detachedPayload).teamai_git_at_start).toEqual({ head: agent.project.commit, dirty: agent.project.dirty });
+    } finally {
+      process.chdir(originalCwd);
+      vi.unstubAllEnvs();
+      resolveConfig.mockRestore();
+      mockSpawn.mockReset();
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 

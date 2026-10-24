@@ -15,17 +15,24 @@ import type { LocalConfig } from '../types.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import * as engine from '../workflow/engine.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
-import { runLocalDriver } from '../workflow/local-driver.js';
+import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import type { LocalToolAdapter } from '../workflow/local-tool-adapter.js';
 import { parseWorkflow } from '../workflow/parse.js';
-import { readRun, writeRun } from '../workflow/store.js';
-import type { DriverIdentity } from '../workflow/types.js';
+import { readRun, updateRun } from '../workflow/store.js';
+import type { DriverIdentity, RunState } from '../workflow/types.js';
 import { branchName } from '../workflow/workspace.js';
-import { pushIfOrigin, worktreePath } from '../workflow/worktree.js';
+import { applyBaseConfig, ensureWorktree, hooksPath, pushIfOrigin, worktreePath } from '../workflow/worktree.js';
 import { launchHoldsCheckout } from '../launch-context.js';
 import { teamDelivery } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
+
+_setDriverPollMs(20);
+
+/** Saves an edited run file under its lock, as a hand edit or an older teamai leaves one. */
+async function saveRun(config: LocalConfig, run: RunState): Promise<void> {
+  await updateRun(config, run.id, async () => ({ value: undefined, write: run }));
+}
 
 const dirs: string[] = [];
 
@@ -511,6 +518,39 @@ steps:
     expect(git(['show', `${branch}:new.txt`], bare)).toBe('yes');
   });
 
+  it('keeps the failure of a prompt that fails, and adds that the push of its commits failed', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A prompt writes a file and fails, and origin refuses the push.
+steps:
+  - id: change
+    workspace: new
+    prompt: Change it.
+`);
+    config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
+    git(['remote', 'add', 'origin', path.join(path.dirname(workspace), 'missing.git')], workspace);
+    const adapter: LocalToolAdapter = {
+      async runInteractive() {
+        return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
+      },
+      async run(_tool, input) {
+        fs.writeFileSync(path.join(input.cwd, 'new.txt'), 'yes');
+        return { started: true, exitCode: 1, failure: { code: 'tool_failed', message: 'claude exited with status 1' } };
+      },
+    };
+
+    await runLocalDriver(config, runId, workspace, { adapter });
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error('run missing');
+    const branch = branchName(runId, 'change', 1);
+    expect(run.steps.find((step) => step.id === 'change')).toMatchObject({
+      status: 'failed',
+      changes: { branch },
+      failure: { code: 'tool_failed', message: expect.stringMatching(new RegExp(`^claude exited with status 1\\. Step "change" committed on ${branch} in .*, but pushing it to origin failed\\.`)) },
+    });
+  });
+
   it('commits a writer whose only change is a new file when the repository hides untracked files from status', async () => {
     const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
 name: build
@@ -802,6 +842,34 @@ steps:
     expect(git(['show', `${branch}:.mcp.json`], workspace)).toBe('later');
     expect(git(['show', `${branch}:opencode.json`], workspace)).toBe('earlier');
     expect(git(['show', `${branch}:.tclaude/settings.json`], workspace)).toBe('earlier');
+  });
+
+  it('keeps a .github agent file an earlier step committed on the branch after a later step runs on the base', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A later step runs without the Copilot instructions committed earlier, and the branch keeps them.
+steps:
+  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: plant
+          workspace: continue
+          command: node -e "const fs=require('fs'); fs.mkdirSync('.github',{recursive:true}); fs.writeFileSync('.github/copilot-instructions.md','earlier')"
+        - id: check
+          needs: [plant]
+          workspace: continue
+          command: node -e "const fs=require('fs'); if (fs.existsSync('.github/copilot-instructions.md')) process.exit(2); fs.writeFileSync('ok.txt','yes')"
+`);
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const run = await readRun(config, runId);
+    const check = typeof run === 'object' ? run.steps.find((step) => step.id === 'work.check') : undefined;
+    const branch = check && 'changes' in check ? check.changes?.branch : 'none';
+    expect(git(['show', `${branch}:ok.txt`], workspace)).toBe('yes');
+    expect(git(['show', `${branch}:.github/copilot-instructions.md`], workspace)).toBe('earlier');
   });
 
   it('fails a later step with base_config when an earlier step committed .github as a symlink, and leaves its target alone', async () => {
@@ -1374,6 +1442,190 @@ steps:
     git(['config', 'color.branch', 'always'], repo);
 
     expect(await pushIfOrigin(repo, 'teamai/solo', [])).toBe('pushed');
+  });
+
+  it('fails the agent configuration reset to a base commit this checkout does not have, and leaves the branch agent files', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-base-config-'));
+    dirs.push(root);
+    const commitIn = (repo: string, text: string): string => {
+      execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+      fs.writeFileSync(path.join(repo, 'AGENTS.md'), text);
+      execFileSync('git', ['add', 'AGENTS.md'], { cwd: repo });
+      execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: repo });
+      return git(['rev-parse', 'HEAD'], repo).trim();
+    };
+    const repo = path.join(root, 'repo');
+    const head = commitIn(repo, 'branch rules\n');
+    const elsewhere = commitIn(path.join(root, 'elsewhere'), 'base rules\n');
+    const opened = await ensureWorktree(repo, 'teamai/r/step/p1', head);
+    if ('error' in opened) throw new Error(opened.error);
+
+    const applied = await applyBaseConfig(opened.dir, elsewhere, hooksPath(repo));
+
+    expect(applied).toEqual({ ok: false, message: expect.stringContaining(elsewhere) });
+    expect(fs.readFileSync(path.join(opened.dir, 'AGENTS.md'), 'utf8')).toBe('branch rules\n');
+  });
+
+  it.each([
+    ['git cannot check the base out', (repo: string) => {
+      fs.writeFileSync(path.join(repo, '.git', 'info', 'attributes'), 'AGENTS.md filter=boom\n');
+      for (const [key, value] of [['smudge', 'false'], ['clean', 'cat'], ['required', 'true']]) git(['config', `filter.boom.${key}`, value], repo);
+    }],
+    ['the base checks out different from its commit', (repo: string) => {
+      fs.writeFileSync(path.join(repo, '.git', 'info', 'attributes'), 'AGENTS.md text\n');
+    }],
+  ])('leaves the branch agent files, its index and no temporary copy when %s', async (_fault, fault) => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-base-config-')));
+    dirs.push(root);
+    const repo = path.join(root, 'repo');
+    const commit = (text: string): string => {
+      fs.writeFileSync(path.join(repo, 'AGENTS.md'), text);
+      execFileSync('git', ['add', 'AGENTS.md'], { cwd: repo });
+      execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: repo });
+      return git(['rev-parse', 'HEAD'], repo).trim();
+    };
+    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+    const base = commit('base rules\r\n');
+    const head = commit('branch rules\n');
+    const opened = await ensureWorktree(repo, 'teamai/r/step/p1', head);
+    if ('error' in opened) throw new Error(opened.error);
+    fault(repo);
+    const temp = path.join(root, 'tmp');
+    fs.mkdirSync(temp);
+    vi.stubEnv('TMPDIR', temp);
+
+    const applied = await applyBaseConfig(opened.dir, base, hooksPath(repo));
+
+    vi.unstubAllEnvs();
+    expect(fs.readFileSync(path.join(opened.dir, 'AGENTS.md'), 'utf8')).toBe('branch rules\n');
+    expect(git(['status', '--porcelain'], opened.dir)).toBe('');
+    expect(fs.readdirSync(temp)).toEqual([]);
+    expect(applied).toEqual({ ok: false, message: expect.stringContaining(base) });
+  });
+
+  it('keeps the branch agent files when a step is retried after git could not check out the base agent configuration', async () => {
+    const { config, workspace } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A failed reset of the agent configuration leaves the branch copy for the retry.
+steps:
+  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: plant
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('AGENTS.md','branch rules\\n')" && git config filter.boom.smudge false && git config filter.boom.clean cat && git config filter.boom.required true && echo 'AGENTS.md filter=boom' > "$(git rev-parse --git-common-dir)/info/attributes"
+        - id: check
+          needs: [plant]
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('ok.txt','yes')"
+`);
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base rules\n');
+    execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
+    const started = await startRun(config, 'build');
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const branch = branchName(runId, 'work', 1);
+
+    await runLocalDriver(config, runId, workspace);
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error('run missing');
+    expect(run.steps.find((step) => step.id === 'work.check')).toMatchObject({ status: 'failed', failure: { code: 'base_config', message: expect.stringContaining('smudge filter boom failed') } });
+    fs.rmSync(path.join(workspace, '.git', 'info', 'attributes'));
+    expect(await retryStep(config, runId, 'work.check')).toMatchObject({ data: { retried: { pass: 2 } } });
+
+    const done = await runLocalDriver(config, runId, workspace);
+
+    expect(done, JSON.stringify(done)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(git(['show', `${branch}:AGENTS.md`], workspace)).toBe('branch rules\n');
+    expect(git(['show', `${branch}:ok.txt`], workspace)).toBe('yes');
+  });
+
+  it('fails a step with workspace_base, naming the branch, its commit and what git said, when a merge fails without a conflict', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A merge git refuses is not a conflict.
+steps:
+  - id: left
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('left.txt','L')"
+  - id: right
+    needs: []
+    workspace: new
+    command: node -e "require('fs').writeFileSync('in-the-way.txt','R')"
+  - id: join
+    needs: [left, right]
+    workspace: new
+    command: node -e "require('fs').writeFileSync('ok.txt','yes')"
+`);
+    const opened = await ensureWorktree(workspace, branchName(runId, 'join', 1), git(['rev-parse', 'HEAD'], workspace).trim());
+    if ('error' in opened) throw new Error(opened.error);
+    fs.writeFileSync(path.join(opened.dir, 'in-the-way.txt'), 'untracked\n');
+
+    await runLocalDriver(config, runId, workspace);
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error('run missing');
+    const right = run.steps.find((step) => step.id === 'right');
+    const commit = right && 'changes' in right ? right.changes?.to : undefined;
+    if (!commit) throw new Error('right reported no commit');
+    const join = run.steps.find((step) => step.id === 'join');
+    expect(join).toMatchObject({ status: 'failed', failure: { code: 'workspace_base' } });
+    const message = join && 'failure' in join ? join.failure?.message : undefined;
+    expect(message).toContain(`branch ${branchName(runId, 'right', 1)} at ${commit}`);
+    expect(message).toContain('untracked working tree files would be overwritten by merge');
+    expect(message).toContain(`teamai workflow retry ${runId} join`);
+    expect(fs.existsSync(path.join(opened.dir, 'ok.txt'))).toBe(false);
+  });
+
+  it('fails a step with workspace_base, committing nothing, when git cannot list its agent files to put the branch copy back', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A listing git fails is not an empty one.
+steps:
+  - id: work
+    workspace: new
+    command: node -e "const cp=require('child_process'); require('fs').writeFileSync('ok.txt','yes'); require('fs').writeFileSync(cp.execFileSync('git',['rev-parse','--git-path','index']).toString().trim(),'garbage')"
+`);
+    const start = git(['rev-parse', 'HEAD'], workspace).trim();
+
+    await runLocalDriver(config, runId, workspace);
+
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error('run missing');
+    const work = run.steps.find((step) => step.id === 'work');
+    expect(work).toMatchObject({ status: 'failed', failure: { code: 'workspace_base', message: expect.stringContaining('index file smaller than expected') } });
+    expect(work && 'failure' in work ? work.failure?.message : undefined).toContain('nothing was committed');
+    expect(git(['rev-parse', branchName(runId, 'work', 1)], workspace).trim()).toBe(start);
+  });
+
+  it('fails a reader with workspace_base when git cannot list its copy to put the branch agent files back', async () => {
+    const { config, workspace, runId } = await fixture(`schemaVersion: v1alpha1
+name: build
+description: A reader whose copy git cannot list is not put back.
+steps:
+  - id: change
+    workspace: new
+    workflow:
+      steps:
+        - id: implement
+          workspace: continue
+          command: node -e "require('fs').writeFileSync('impl.txt','yes')"
+        - id: test
+          needs: [implement]
+          command: node -e "const cp=require('child_process'); require('fs').writeFileSync(cp.execFileSync('git',['rev-parse','--git-path','index']).toString().trim(),'garbage')"
+`);
+
+    await runLocalDriver(config, runId, workspace);
+
+    const run = await readRun(config, runId);
+    const test = typeof run === 'object' ? run.steps.find((step) => step.id === 'change.test') : undefined;
+    expect(test).toMatchObject({ status: 'failed', failure: { code: 'workspace_base', message: expect.stringContaining('could NOT be put back') } });
+    expect(test).toMatchObject({ failure: { message: expect.stringContaining('index file smaller than expected') } });
+    expect(test).not.toMatchObject({ failure: { message: expect.stringContaining('changed repository paths') } });
   });
 
   it('commits a hook a step made executable without editing its text', async () => {
@@ -2232,7 +2484,7 @@ steps:
     delete stored.failure;
     delete stored.end;
     stored.steps = stored.steps.map((step) => step.id === 'join' ? { id: step.id, status: 'pending' as const, pass: step.pass } : step);
-    await writeRun(config, stored);
+    await saveRun(config, stored);
 
     const second = await runLocalDriver(config, runId, workspace, { adapter });
 
@@ -2289,7 +2541,7 @@ steps:
     delete stored.failure;
     delete stored.end;
     stored.steps = stored.steps.map((step) => step.id === 'join' ? { id: step.id, status: 'pending' as const, pass: step.pass } : step);
-    await writeRun(config, stored);
+    await saveRun(config, stored);
 
     const second = await runLocalDriver(config, runId, workspace, { adapter });
 
@@ -2351,7 +2603,7 @@ setInterval(() => {}, 1000);
       if (step.id === 'work.slow') return { id: step.id, status: 'pending' as const, pass: step.pass };
       return step;
     });
-    await writeRun(config, stored);
+    await saveRun(config, stored);
 
     const second = await runLocalDriver(config, runId, workspace);
 

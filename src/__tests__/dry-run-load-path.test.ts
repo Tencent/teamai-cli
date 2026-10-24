@@ -29,6 +29,7 @@ vi.mock('../utils/reports-branch.js', async (importOriginal) => ({
   updateReports: vi.fn(),
 }));
 
+import { Command } from 'commander';
 import { codebaseCmd } from '../codebase-cmd.js';
 import { contribute } from '../contribute.js';
 import { generateDigest } from '../digest.js';
@@ -49,6 +50,7 @@ import { pull } from '../pull.js';
 import { push } from '../push.js';
 import { recall } from '../recall.js';
 import { recallStatus } from '../recall-toggle.js';
+import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
 import { remove } from '../remove.js';
 import { rolesAdd, rolesInit, rolesList, rolesRemove, rolesSet, rolesUpdate } from '../roles-cmd.js';
 import { skillList, skillShow } from '../skill-cmd.js';
@@ -158,6 +160,14 @@ function snapshotTree(root: string): Record<string, string> {
   };
   walk(root);
   return files;
+}
+
+/** Runs `teamai --dry-run session <args>`. */
+async function sessionDryRun(...args: string[]): Promise<void> {
+  const program = new Command();
+  program.option('--dry-run', 'preview');
+  registerSessionFlowCommands(program.command('session'));
+  await program.parseAsync(['node', 'teamai', '--dry-run', 'session', ...args]);
 }
 
 /** `env exec` sends the logger to stderr for the rest of the process; put it back for the next case. */
@@ -310,6 +320,8 @@ describe('--dry-run through the loaders the commands share (#850)', () => {
     ['skill show', () => skillShow('core', {})],
     ['webhook list', async () => { await listWebhooks(); }],
     ['digest', () => generateDigest()],
+    ['session list --dry-run', () => sessionDryRun('list')],
+    ['session pull --dry-run', () => sessionDryRun('pull')],
   ];
 
   // The loader logs this line when it previews the migration, so it proves the

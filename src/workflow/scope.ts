@@ -55,7 +55,7 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
  * Finds the definition of the step at a path in the run's workflow definitions alone, so a path still resolves after
  * a loop archived the instances along it. Each workflow's steps are indexed by id once, when a path first reaches it.
  */
-export function stepDefinitions(run: RunState): (path: string) => WorkflowStep | undefined {
+export function stepDefinitions(run: Pick<RunState, 'definition' | 'workflows'>): (path: string) => WorkflowStep | undefined {
   const indexes = new Map<WorkflowDefinition | InlineWorkflow, Map<string, WorkflowStep>>();
   return (path) => {
     let workflow: WorkflowDefinition | InlineWorkflow | undefined = run.definition;

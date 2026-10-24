@@ -1,4 +1,5 @@
 import spawn from 'cross-spawn';
+import { randomUUID } from 'node:crypto';
 import { log } from './logger.js';
 import { resolveCliPath } from './cli-path.js';
 
@@ -36,7 +37,8 @@ interface CliInfo {
  * 按优先级探测可用的 AI CLI，返回命令名与绝对路径。
  *
  * 各 CLI 非交互调用语法不同：
- *   - claude / claude-internal / codebuddy / workbuddy / openclaw：`<cli> -p <prompt>`
+ *   - claude / claude-internal / codebuddy / workbuddy: `<cli> -p <prompt>`
+ *   - openclaw: `openclaw agent --session-id <fresh id> --message <prompt>`
  *   - codex / codex-internal：`<cli> exec <prompt>`
  *
  * 探测顺序：`claude` → `claude-internal` → `codex` → `codex-internal` → `codebuddy` → `workbuddy` → `openclaw`。
@@ -70,6 +72,10 @@ function detectClaudeCli(): CliInfo {
  * @returns      参数数组
  */
 function buildCliArgs(cmd: string, prompt: string): string[] {
+  if (cmd === 'openclaw') {
+    // Keep independent enrichment tasks out of the member's main conversation.
+    return ['agent', '--session-id', randomUUID(), '--message', prompt];
+  }
   if (cmd === 'codex' || cmd === 'codex-internal' || cmd === 'tcodex') {
     return ['exec', prompt];
   }
@@ -100,7 +106,7 @@ export function getAICliName(): string {
  * @param opts     可选参数：timeout 超时毫秒数，默认 600000（10 分钟）
  * @returns        CLI 输出的 stdout（已 trim）
  * @throws         超时时抛出 `Error('AI call timed out after Xs')`
- * @throws         退出码非 0 时抛出 `Error('AI call failed: <stderr>')`
+ * @throws         On failure, reports stderr, then stdout, then the exit status.
  * @throws         所有候选 CLI 均不可用时抛出 Error
  */
 export async function callClaude(
@@ -141,11 +147,13 @@ export async function callClaude(
       reject(err);
     });
 
-    child.on('close', (code: number | null) => {
+    child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
       clearTimeout(timer);
       if (code !== 0) {
         const stderr = Buffer.concat(errChunks).toString('utf-8').trim();
-        reject(new Error(`AI call failed: ${stderr}`));
+        const stdout = Buffer.concat(chunks).toString('utf-8').trim();
+        const reason = stderr || stdout || (signal ? `signal ${signal}` : `exit code ${code}`);
+        reject(new Error(`AI call failed: ${reason}`));
         return;
       }
       const stdout = Buffer.concat(chunks).toString('utf-8').trim();

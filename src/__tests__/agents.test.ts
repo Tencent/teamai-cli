@@ -1129,3 +1129,42 @@ projects:
     expect(items.find((i) => i.name === 'vr')).toBeUndefined();
   });
 });
+
+describe('AgentsHandler and a home XDG_CONFIG_HOME moves', () => {
+  let tmpDir: string; let homeDir: string; let repoPath: string; let xdg: string;
+  let teamConfig: TeamaiConfig; let localConfig: LocalConfig;
+  const handler = new AgentsHandler();
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-agents-xdg-'));
+    homeDir = path.join(tmpDir, 'home'); repoPath = path.join(tmpDir, 'team-repo'); xdg = path.join(tmpDir, 'xdg');
+    await fse.ensureDir(path.join(repoPath, 'agents'));
+    await fse.ensureDir(path.join(xdg, 'opencode', 'agents'));
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('XDG_CONFIG_HOME', xdg);
+    teamConfig = buildTeamConfig({ opencode: { skills: '.opencode/skills', agents: '.opencode/agents', userScope: { skills: '.config/opencode/skills', agents: '.config/opencode/agents' } } });
+    localConfig = { repo: { localPath: repoPath, remote: 'https://example.com/test/repo.git' }, username: 'testuser', additionalRoles: [], scope: 'user' };
+  });
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fse.remove(tmpDir);
+  });
+
+  it('push finds a new agent in OpenCode\'s moved home', async () => {
+    await fse.outputFile(path.join(xdg, 'opencode', 'agents', 'helper.md'), '---\ndescription: Mine\nmode: subagent\n---\n\nHelp.\n');
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    expect(items.map((item) => [item.name, item.status])).toEqual([['helper', 'new']]);
+  });
+
+  it('remove deletes the copy in OpenCode\'s moved home', async () => {
+    await fse.outputFile(path.join(repoPath, 'agents/fe/vr.yaml'), 'name: vr\ndescription: Mine\ninstructions: A.\n');
+    await fse.outputFile(path.join(xdg, 'opencode', 'agents', 'vr.md'), '# the author copy');
+    await fse.outputJson(path.join(getDataHome(localConfig), 'state.json'), { placedAgents: { vr: 'agents/fe/vr.yaml' } });
+
+    await handler.removeItem('fe/vr', teamConfig, localConfig);
+
+    expect(await fse.pathExists(path.join(xdg, 'opencode', 'agents', 'vr.md'))).toBe(false);
+  });
+});

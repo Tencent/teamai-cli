@@ -13,6 +13,7 @@ import { CodeBuddyIdeAdapter } from './codebuddy-ide.js';
 import { WorkBuddyAdapter } from './workbuddy.js';
 import { CursorAdapter } from './cursor.js';
 import { OpencodeAdapter } from './opencode.js';
+import type { SESSION_PLATFORM_FACTS } from './platform-facts.js';
 import {
   getClaudeCodeProjectsDir,
   getClaudeInternalProjectsDir,
@@ -43,7 +44,7 @@ export const ADAPTER_REGISTRY: Record<string, AdapterFactory> = {
   tclaude: () => new ClaudeCodeAdapter('tclaude', getTClaudeProjectsDir()),
   'codex-internal': () => new CodexAdapter('codex-internal', getCodexInternalSessionsDir()),
   tcodex: () => new CodexAdapter('tcodex', getTCodexSessionsDir()),
-};
+} satisfies Record<keyof typeof SESSION_PLATFORM_FACTS, AdapterFactory>;
 
 export function getAdapter(platform: string, toolRoots?: LocalConfig['toolRoots']): AgentAdapter {
   const factory = ADAPTER_REGISTRY[platform];

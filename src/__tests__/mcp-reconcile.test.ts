@@ -55,11 +55,15 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
   };
 });
 
+import { _setExcludeLockRetryMs } from '../git-exclude.js';
 import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets, spliceCodexBlock, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
+
+// The held-lock cases here wait out the whole retry budget; none races a writer.
+_setExcludeLockRetryMs(1);
 
 const TOOL_PATHS = {
   claude: { skills: '.claude/skills', settings: '.claude/settings.json', mcp: '.claude.json', mcpProject: '.mcp.json' },
@@ -869,8 +873,7 @@ servers:
 
     const targets = await resolveMcpTargets(defaults, projectConfig);
     expect(targets.find((target) => target.tool === 'codebuddy')?.file).toBe(projectFile);
-    expect(targets.find((target) => target.tool === 'workbuddy')?.file)
-      .toBe(path.join(projectRoot, '.workbuddy', 'mcp.json'));
+    expect(targets.find((target) => target.tool === 'workbuddy')?.file).toBe(projectFile);
     const userTargets = await resolveMcpTargets(defaults, localConfig);
     expect(userTargets.find((target) => target.tool === 'codebuddy')?.file).toBe(userFile);
 

@@ -24,7 +24,7 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { AgentAdapter, type SessionMeta, type SessionReadRef } from './base.js';
+import { AgentAdapter, type SessionMeta, type SessionReadRef, type SubagentsRead } from './base.js';
 import type { Session, Message, ContentBlock, ThinkingBlock, ToolCallBlock, ToolResultBlock } from '../ir.js';
 import { imagePlaceholderText } from '../ir.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
@@ -295,6 +295,20 @@ export class CodeBuddyAdapter extends AgentAdapter {
       filePath: jsonlPath,
       sizeBytes,
     };
+  }
+
+  /**
+   * The agents a session started, from `<session id>/subagents/*.jsonl` beside its transcript, read like the session.
+   * CodeBuddy records neither which call started an agent nor whether it finished, so they come in file name order.
+   */
+  async readSubagents(session: Session, ref: SessionReadRef): Promise<SubagentsRead> {
+    const jsonlPath = ref.filePath ?? this.findSessionFile(session.sessionId, ref.projectPath);
+    if (!jsonlPath) return { status: 'unread', reason: `The transcript of session ${session.sessionId} was not found again` };
+    const dir = path.join(path.dirname(jsonlPath), path.basename(jsonlPath, '.jsonl'), 'subagents');
+    if (!dirExists(dir)) return { status: 'read', agents: [] };
+    const files = fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl')).sort();
+    const agents = await Promise.all(files.map((name) => this.readSession({ sessionId: session.sessionId, filePath: path.join(dir, name) })));
+    return { status: 'read', agents: agents.map((agent) => ({ session: agent, depth: 1 })) };
   }
 
   async readSession(ref: SessionReadRef): Promise<Session> {

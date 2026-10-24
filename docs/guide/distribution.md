@@ -101,7 +101,7 @@ sharing:
 .teamai/mcp/mcp.yaml
 ```
 
-`teamai push` sends skills and rules. Commit `docs/`, `hooks/hooks.yaml`, `mcp/mcp.yaml`, and `models/models.yaml` yourself.
+`teamai push` sends every distributed resource type — skills, rules, agents, docs, env, hooks, mcp, models, claudemd, learnings, wiki, workflows, prompts, and scorers — with `--project` and `--role` namespace placement.
 
 ### Git permissions
 

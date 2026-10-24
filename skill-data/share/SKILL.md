@@ -19,6 +19,9 @@ URLs, paths and code identifiers stay as they are.
 - When you've solved a tricky problem and want to document the solution
 - When you've discovered a useful workflow or pattern
 - After a long session with diverse tool usage
+- When `teamai score` printed a label that did not pass: read the reasoning file it names
+  (`<dataHome>/scores/reasoning/<labelVersion>.md`) and turn what went wrong into a learning,
+  contributed with the `--session-id` that line gives, if any. Summarize it; do not paste the file
 
 ## How It Works
 

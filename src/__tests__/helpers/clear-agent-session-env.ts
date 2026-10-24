@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, vi } from 'vitest';
+import { homeVariables, isToolId, TOOLS } from '../../tools.js';
 import { GIT_REPOSITORY_ENV } from '../../utils/git-env.js';
 import { AGENT_SESSION_ENV } from '../../utils/session-id.js';
 
@@ -15,14 +16,11 @@ for (const name of AGENT_SESSION_ENV) {
   delete process.env[name];
 }
 
-// The same shell may relocate an agent's root (CLAUDE_CONFIG_DIR, COPILOT_HOME,
-// OPENCLAW_STATE_DIR, and every home `TOOLS[tool].home.moves` names), which
-// teamai honors, so a test that stubs only HOME would still read, write or
-// remove the developer's real tool files. A test that needs one sets it.
-for (const name of [
-  'CLAUDE_CONFIG_DIR', 'COPILOT_HOME', 'OPENCLAW_STATE_DIR', 'OPENCLAW_PROFILE', 'HERMES_HOME', 'DSH_HOME',
-  'PI_CODING_AGENT_DIR', 'OPENCODE_CONFIG_DIR', 'XDG_CONFIG_HOME',
-]) {
+// The same shell may relocate an agent's root (CLAUDE_CONFIG_DIR, and every
+// home `TOOLS[tool].home.moves` names), which teamai honors, so a test that
+// stubs only HOME would still read, write or remove the developer's real tool
+// files. A test that needs one sets it.
+for (const name of ['CLAUDE_CONFIG_DIR', ...Object.keys(TOOLS).filter(isToolId).flatMap(homeVariables)]) {
   delete process.env[name];
 }
 

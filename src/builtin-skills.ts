@@ -9,7 +9,7 @@ import type { TeamaiConfig, LocalConfig } from './types.js';
 import { getCopilotHome, resolveBaseDir, isAgentExcluded, scopedToolPaths } from './types.js';
 import { getHermesHome } from './hermes-home.js';
 import { resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
-import { installOf, locate, SHARED_AGENT_SKILLS_PATH, writableDir } from './locate.js';
+import { installOf, locate, SHARED_AGENT_SKILLS_PATH, writable } from './locate.js';
 import {
   CODEX_TOOL, allowsSkillDirectory, describeSkippedSkillDirectory, findSkillDirectoryBlock,
   skillTargetsFor,
@@ -390,7 +390,7 @@ export async function builtinSkillsTarget(
   teamConfig: Pick<TeamaiConfig, 'toolPaths'>,
   localConfig: LocalConfig,
 ): Promise<BuiltinSkillsTarget | null> {
-  const skillsDir = writableDir(await locate(tool, 'skills', installOf(teamConfig, localConfig)));
+  const skillsDir = writable(await locate(tool, 'skills', installOf(teamConfig, localConfig)))?.path ?? null;
   if (skillsDir === null) return null;
   return { skillsDir, guardBase: await skillsGuardBase(resolveBaseDir(localConfig), skillsDir) };
 }

@@ -7,7 +7,8 @@ import {
   type ResourceNamespaces,
   type RolesManifest,
 } from './roles.js';
-import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces, projectNamespaceEntries } from './projects.js';
+import { loadProjectsManifest, resolveProjectResourceNamespaces, mergeNamespaces, projectNamespaceEntries, type AllProjectResourceType } from './projects.js';
+import { isNestedPlaceableType, NAMESPACE_AXIS, type PlaceableType } from './push-namespaces.js';
 import { assertNoCaseAliasedNamespaces } from './manifest-schema.js';
 import { warnOnce } from './utils/warn-once.js';
 import { deliveredMembers } from './workspace-children.js';
@@ -40,6 +41,8 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig): Promi
     allSkillNamespaces: first.allSkillNamespaces,
     inactiveDocsNamespaces: inAll(resolved.map((one) => one.inactiveDocsNamespaces)),
     inactiveWikiNamespaces: inAll(resolved.map((one) => one.inactiveWikiNamespaces)),
+    inactivePromptsNamespaces: inAll(resolved.map((one) => one.inactivePromptsNamespaces)),
+    inactiveScorersNamespaces: inAll(resolved.map((one) => one.inactiveScorersNamespaces)),
   };
 }
 
@@ -166,7 +169,53 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   const activeWiki = new Set(activeNamespaces.wiki ?? []);
   const inactiveWikiNamespaces = [...declaredWikiNamespaces].filter((namespace) => !activeWiki.has(namespace));
 
-  return { activeNamespaces, allSkillNamespaces, inactiveDocsNamespaces, inactiveWikiNamespaces };
+  // Prompts follow the same declared-vs-active rule as docs and wiki: a
+  // prompts/<dir>/ anyone lists under `resources.prompts` is a namespace, and a
+  // workflow resolves a nested prompt below it; every other directory is shared
+  // content, which a placement may still move into a namespace.
+  const declaredPromptsNamespaces = new Set<string>([
+    ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.prompts ?? []),
+    ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.prompts ?? []),
+  ]);
+  const activePrompts = new Set(activeNamespaces.prompts ?? []);
+  const inactivePromptsNamespaces = [...declaredPromptsNamespaces].filter((namespace) => !activePrompts.has(namespace));
+
+  // Which scorers/<dir>/ is a namespace is `isNamespaceDir`'s rule; the scorer
+  // cache withholds this set.
+  const declaredScorersNamespaces = new Set<string>([
+    ...(rolesManifest?.roles ?? []).flatMap((role) => role.resources.scorers ?? []),
+    ...(projectsManifest?.projects ?? []).flatMap((project) => project.resources.scorers ?? []),
+  ]);
+  const activeScorers = new Set(activeNamespaces.scorers ?? []);
+  const inactiveScorersNamespaces = [...declaredScorersNamespaces].filter((namespace) => !activeScorers.has(namespace));
+
+  return {
+    activeNamespaces,
+    allSkillNamespaces,
+    inactiveDocsNamespaces,
+    inactiveWikiNamespaces,
+    inactivePromptsNamespaces,
+    inactiveScorersNamespaces,
+  };
+}
+
+/** What the roles and projects manifests declare, as far as `isNamespaceDir` needs it. */
+export interface NamespaceDeclarations {
+  /** True when any role or project declares `namespace` on `axis`. */
+  declares(axis: AllProjectResourceType, namespace: string): boolean;
+  /** True when there is neither a roles nor a projects manifest. */
+  readonly manifestFree: boolean;
+}
+
+/**
+ * Whether `<type>/<dir>/` is a namespace rather than shared content. Most types namespace their first directory by
+ * construction. docs, wiki and prompts nest freely, so a directory is a namespace only where a role or project declares
+ * it. Scorers are flat files and follow prompts, except that with no manifest at all every directory is a namespace.
+ */
+export function isNamespaceDir(type: PlaceableType, dir: string, declarations: NamespaceDeclarations): boolean {
+  if (type === 'scorers') return declarations.manifestFree || declarations.declares(NAMESPACE_AXIS.scorers, dir);
+  if (isNestedPlaceableType(type)) return declarations.declares(NAMESPACE_AXIS[type], dir);
+  return true;
 }
 
 /**

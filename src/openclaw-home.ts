@@ -63,3 +63,18 @@ export async function resolveOpenclawWorkspace(
   }
   return exists ? { kind: 'found', dir: candidate } : { kind: 'none', tried: [workspacePath, candidate].filter(Boolean).join(', '), candidate };
 }
+
+/** The default workspace's AGENTS.md is the first bootstrap file and shares the total cap. */
+export async function openclawBootstrapBudget(): Promise<{ limit: number; config: string; error?: string }> {
+  const config = resolveOpenclawConfigPath();
+  const read = await realHost().readJson(config);
+  if (read.kind === 'invalid') return { limit: 0, config, error: read.error };
+  const agents = read.kind === 'ok' ? read.value.agents as { defaults?: Record<string, unknown> } | undefined : undefined;
+  const defaults = agents?.defaults;
+  const cap = (value: unknown, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+  const perFile = cap(defaults?.bootstrapMaxChars, 20_000);
+  const total = Math.max(1, cap(defaults?.bootstrapTotalMaxChars, 60_000));
+  // OpenClaw skips even the first existing file when less than 64 chars remain.
+  return { limit: total < 64 ? 0 : Math.max(1, Math.min(perFile, total)), config };
+}

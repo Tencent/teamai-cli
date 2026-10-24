@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LocalConfig } from '../types.js';
-import { loadCachedWorkflow, syncWorkflowDefinitions } from '../workflow/cache.js';
+import { formatUnknownScorer, loadCachedWorkflow, syncWorkflowDefinitions } from '../workflow/cache.js';
 import type { SyncWorkflowResult } from '../workflow/cache.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
@@ -507,6 +507,29 @@ steps:
     expect((await loadCachedWorkflow(config, 'build'))?.definition.steps[0]?.prompt).toBe('second prompt');
   });
 
+  it('resolves an already namespace-qualified prompt path as written', async () => {
+    const config = testConfig();
+    // Two active namespaces, and prompts/dev/ops/note.md exists — the shape that
+    // used to make an explicit prompts/ops/note.md load the wrong file: the path
+    // was prefixed with every active namespace, and prompts/dev/ops/note.md won.
+    fs.mkdirSync(path.join(config.repo.localPath, 'prompts', 'ops'), { recursive: true });
+    fs.mkdirSync(path.join(config.repo.localPath, 'prompts', 'dev', 'ops'), { recursive: true });
+    fs.writeFileSync(path.join(config.repo.localPath, 'prompts', 'ops', 'note.md'), 'ops prompt');
+    fs.writeFileSync(path.join(config.repo.localPath, 'prompts', 'dev', 'ops', 'note.md'), 'dev prompt');
+    writeWorkflow(config, 'build', `schemaVersion: v1alpha1
+name: build
+description: Review the project.
+steps:
+  - id: review
+    prompt_file: prompts/ops/note.md
+`);
+
+    await syncWorkflowDefinitions(config);
+
+    const cached = await loadCachedWorkflow(config, 'build');
+    expect(cached?.definition.steps[0]).toMatchObject({ prompt: 'ops prompt' });
+  });
+
   it('rejects symlinked prompt files that escape the team repo', async () => {
     const config = testConfig();
     const outside = path.join(path.dirname(config.repo.localPath), 'outside-prompt.md');
@@ -634,7 +657,7 @@ steps:
 
     const result = await syncWorkflowDefinitions(config);
 
-    expect(result).toEqual({ cached: [], kept: [], invalid: [], unrunnable: [] });
+    expect(result).toEqual({ cached: [], kept: [], invalid: [], unrunnable: [], scorers: { cached: [], invalid: [], verified: [] }, unknownScorers: [] });
     expect(await startRun(config, 'build')).toMatchObject({ error: { code: 'workflow_not_found' } });
   });
 
@@ -2351,5 +2374,41 @@ steps:
       'workflows/build.yaml:14: field "steps[1].model": model is only allowed on a prompt or prompt_file step',
     ]);
     expect((await loadCachedWorkflow(config, 'build'))?.definition.steps.some((step) => step.model !== undefined)).toBe(false);
+  });
+});
+
+describe('workflow cache: scorers a step lists', () => {
+  const SCORER = '---\nlabels:\n  - { value: good, score: 1, description: Good. }\n  - { value: bad, score: 0, description: Bad. }\npassingScore: 1\n---\nJudge.\n';
+  const SCORED = `schemaVersion: v1alpha1
+name: ship
+description: Ship it.
+steps:
+  - id: plan
+    prompt: Plan it.
+    scorers: [quality, nope]
+  - id: check
+    needs: [plan]
+    workflow:
+      steps:
+        - id: review
+          prompt: Review it.
+          scorers: { names: [broken], batch: true }
+`;
+
+  it('caches a workflow that lists an unknown or invalid scorer, and names each one so the step runs without it', async () => {
+    const config = testConfig();
+    fs.mkdirSync(path.join(config.repo.localPath, 'scorers'));
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'quality.md'), SCORER);
+    fs.writeFileSync(path.join(config.repo.localPath, 'scorers', 'broken.md'), '---\npassingScore: 1\n---\nJudge.\n');
+    writeWorkflow(config, 'ship', SCORED);
+
+    const result = await syncWorkflowDefinitions(config);
+
+    expect(result.cached).toEqual(['ship']);
+    expect(result.invalid).toEqual([]);
+    expect(result.unknownScorers.map(formatUnknownScorer)).toEqual([
+      'workflows/ship.yaml: step "plan" lists scorer "nope", which has no valid scorers/nope.md; the step runs without it',
+      'workflows/ship.yaml: step "check.review" lists scorer "broken", which has no valid scorers/broken.md; the step runs without it',
+    ]);
   });
 });

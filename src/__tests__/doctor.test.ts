@@ -41,6 +41,8 @@ vi.mock('../utils/logger.js', () => ({
         debug: vi.fn(),
     },
     setStderrOnly: vi.fn(),
+    isSilent: () => false,
+    setSilent: vi.fn(),
 }));
 
 // This suite isolates hook/config checks from disk delivery. Docs now compare
@@ -490,6 +492,27 @@ describe('doctor — hook checks', () => {
             expect(fix).toContain('then open a new session');
         });
 
+        it('fails "Codex builds agree" naming each build when they hash a teamai hook differently', async () => {
+            const skew = {
+                chosen: { path: '/Applications/Codex.app/Contents/Resources/codex', version: '0.163.0' },
+                others: [{ path: '/usr/local/bin/codex', version: '0.142.5' }],
+            };
+            mockedReadCodexHookTrust.mockResolvedValueOnce({ kind: 'listed', notTrusted: [], skew });
+            const ok = await doctor({});
+            expect(ok).toBe(false);
+            const lines = consoleSpy.mock.calls.map((c) => String(c[0]));
+            expect(lines.filter((msg) => msg.includes('Codex builds agree'))).toEqual([expect.stringContaining('✖')]);
+            const fix = lines.find((msg) => msg.includes('Codex builds disagree:'));
+            expect(fix).toContain('/Applications/Codex.app/Contents/Resources/codex (codex-cli 0.163.0)');
+            expect(fix).toContain('/usr/local/bin/codex (codex-cli 0.142.5) hashes some of them differently');
+        });
+
+        it('adds no build check when the builds agree', async () => {
+            mockedReadCodexHookTrust.mockResolvedValueOnce({ kind: 'listed', notTrusted: [] });
+            await doctor({});
+            expect(consoleSpy.mock.calls.some((c) => String(c[0]).includes('Codex builds'))).toBe(false);
+        });
+
         it('includes the app-server failure cause in the note', async () => {
             mockedReadCodexHookTrust.mockResolvedValueOnce({ kind: 'failed', reason: 'hooks/list: boom' });
             await doctor({});
@@ -728,6 +751,24 @@ describe('buildChecks', () => {
         // warning already says it, with the push error, so the post-pull pass
         // skips this one rather than repeat it — see pull-post-checks.test.ts.
         expect(check?.reportedByPull).toBe('pending-learnings');
+    });
+
+    it('reports score labels that are kept but not published, next to learnings', async () => {
+        mockedLoadLocalConfig.mockResolvedValue(mockLocalConfig);
+        mockedLoadTeamConfig.mockResolvedValue(mockTeamConfig);
+
+        const ctx = await resolveDoctorContext();
+        if (!ctx) throw new Error('expected a resolved doctor context');
+
+        const names = (await buildChecks(ctx)).map((c) => c.name);
+        expect(names.slice(names.indexOf('Contributed learnings are published'), names.indexOf('Contributed learnings are published') + 2))
+            .toEqual(['Contributed learnings are published', 'Score labels are published']);
+        const check = (await buildChecks(ctx)).find((c) => c.name === 'Score labels are published');
+        expect(check?.fix).toContain('teamai score --push');
+        const { LabelStore } = await import('../scorers/label-store.js');
+        vi.spyOn(LabelStore, 'unpublished').mockResolvedValueOnce(2).mockResolvedValueOnce(0);
+        expect(await check?.check()).toBe(false);
+        expect(await check?.check()).toBe(true);
     });
 
     it('flags only the queue check as one the pull reports itself', async () => {

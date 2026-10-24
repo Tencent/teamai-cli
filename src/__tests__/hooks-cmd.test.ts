@@ -24,6 +24,7 @@ vi.mock('../hooks.js', async () => {
         resolveMainCheckoutHooks: vi.fn(),
         // Keep the real report so assertions verify the actual wording.
         reportCodexTrust: actual.reportCodexTrust,
+        codexTrustPolicy: actual.codexTrustPolicy,
     };
 });
 
@@ -785,7 +786,7 @@ describe('hooksRemove', () => {
             expect.any(String),
             [],
             expect.stringContaining('managed-hooks.json'),
-            { removeAll: true, scope: 'user', installedBaseDir: undefined, teamHookProjectRoot: undefined, mainCheckout: null },
+            { removeAll: true, scope: 'user', installedBaseDir: undefined, teamHookProjectRoot: undefined, mainCheckout: null, codexTrust: { kind: 'enabled', codexHome: expect.any(String) } },
         );
         expect(mockedLog.success).toHaveBeenCalledWith(expect.stringContaining('Hooks removed'));
     });
@@ -811,7 +812,7 @@ describe('hooksRemove', () => {
             '/home/testuser',
             [],
             expect.any(String),
-            { removeAll: true, scope: 'project', installedBaseDir: '/path/to/project', teamHookProjectRoot: '/path/to/project', mainCheckout: null },
+            { removeAll: true, scope: 'project', installedBaseDir: '/path/to/project', teamHookProjectRoot: '/path/to/project', mainCheckout: null, codexTrust: { kind: 'enabled', codexHome: '/home/testuser/.codex' } },
         );
         const userManifest = mockedReconcile.mock.calls[0][3] as string;
         expect(userManifest).toContain('/home/testuser');
@@ -853,6 +854,7 @@ describe('hooksRemove', () => {
                 removeAll: true, scope: 'project', installedBaseDir: '/path/to/project', teamHookProjectRoot: undefined, mainCheckout: null,
                 // The team hooks in settings.local.json go too (#915).
                 selfLocalTeamHooks: { relocate: false },
+                codexTrust: { kind: 'enabled', codexHome: '/home/testuser/.codex' },
             },
         );
     });

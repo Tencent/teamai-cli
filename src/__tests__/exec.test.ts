@@ -8,7 +8,7 @@ vi.mock('cross-spawn', () => ({
 }));
 
 import spawn from 'cross-spawn';
-import { execCommand } from '../utils/exec.js';
+import { captureTail, execCommand } from '../utils/exec.js';
 
 interface Emitters {
   stdout: (chunk: Buffer) => void;
@@ -147,5 +147,80 @@ describe('execCommand', () => {
       out.mockRestore();
       err.mockRestore();
     }
+  });
+});
+
+describe('captureTail', () => {
+  const text = '会话标题 café 😀';
+  const splitInside = (s: string, char: string): [Buffer, Buffer] => {
+    const bytes = Buffer.from(s);
+    const at = bytes.indexOf(Buffer.from(char)) + 1;
+    return [bytes.subarray(0, at), bytes.subarray(at)];
+  };
+
+  it('captures output and collapses whitespace within maxChars', () => {
+    const { proc, emit } = makeMockProcess();
+    const readTail = captureTail(proc, 50);
+
+    emit.stdout(Buffer.from('line 1\n  line 2\t\n'));
+    emit.stderr(Buffer.from('line 3\n'));
+
+    expect(readTail()).toBe('line 1 line 2 line 3');
+  });
+
+  it('bounds the captured output to the last maxChars', () => {
+    const { proc, emit } = makeMockProcess();
+    const readTail = captureTail(proc, 10);
+
+    emit.stdout(Buffer.from('prefix text that exceeds the limit'));
+
+    expect(readTail()).toBe('the limit');
+  });
+
+  it('preserves multi-byte UTF-8 characters split across stdout chunks', () => {
+    const { proc, emit } = makeMockProcess();
+    const readTail = captureTail(proc, 100);
+
+    for (const chunk of splitInside(text, '标')) emit.stdout(chunk);
+
+    expect(readTail()).toBe(text);
+  });
+
+  it('preserves multi-byte UTF-8 characters split across stderr chunks', () => {
+    const { proc, emit } = makeMockProcess();
+    const readTail = captureTail(proc, 100);
+
+    for (const chunk of splitInside(text, '😀')) emit.stderr(chunk);
+
+    expect(readTail()).toBe(text);
+  });
+
+  it('keeps stdout and stderr decoder state separate so interleaved chunks do not corrupt UTF-8', () => {
+    const { proc, emit } = makeMockProcess();
+    const readTail = captureTail(proc, 100);
+
+    const [out1, out2] = splitInside('中文测试', '文');
+    const [err1, err2] = splitInside('其他错误', '他');
+
+    // Interleave partial byte chunks from both streams
+    emit.stdout(out1);
+    emit.stderr(err1);
+    emit.stdout(out2);
+    emit.stderr(err2);
+
+    expect(readTail()).toBe('中其文测试他错误');
+    expect(readTail()).not.toContain('\ufffd');
+  });
+
+  it('returns identical results when readTail is called multiple times', () => {
+    const { proc, emit } = makeMockProcess();
+    const readTail = captureTail(proc, 100);
+
+    for (const chunk of splitInside(text, '标')) emit.stdout(chunk);
+
+    const first = readTail();
+    const second = readTail();
+    expect(first).toBe(text);
+    expect(second).toBe(text);
   });
 });

@@ -17,7 +17,6 @@ import {
   loadLocalConfigForScope,
 } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
-import { DetachedTeamRepoError, pushRepoDirectly, pullRepo } from './utils/git.js';
 import { readEvents } from './dashboard-collector.js';
 import {
   collectSession,
@@ -28,7 +27,7 @@ import {
 import { log, spinner } from './utils/logger.js';
 import { withTimeout } from './utils/async.js';
 import { agentSessionIdFromEnv } from './utils/session-id.js';
-import { getSessionLogsDir, parseInstallScope, usesBranchWorktree } from './types.js';
+import { getSessionLogsDir, parseInstallScope } from './types.js';
 import type { GlobalOptions, LocalConfig } from './types.js';
 
 export interface SaveSessionOptions extends GlobalOptions {
@@ -62,12 +61,14 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
     options.sessionId || (await agentSessionIdFromEnv()) || mostRecentSessionId(events);
   if (!sessionId) {
     log.error('Could not determine a session id. Pass --session-id <id>.');
+    process.exitCode = 1;
     return;
   }
 
   const summary = collectSession(sessionId, events);
   if (!summary) {
     log.error(`No events found for session ${sessionId}.`);
+    process.exitCode = 1;
     return;
   }
 
@@ -107,6 +108,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
       const cfg = await loadLocalConfigForScope('project', process.cwd(), loadOpts);
       if (!cfg) {
         log.error('No workspace teamai config in the current directory.');
+        process.exitCode = 1;
         return;
       }
       localConfig = cfg;
@@ -119,6 +121,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
   } catch (e) {
     log.error(`Cannot push: ${(e as Error).message}`);
     log.info('The local log was still saved.');
+    process.exitCode = 1;
     return;
   }
   try {
@@ -126,6 +129,7 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
   } catch (e) {
     log.error((e as Error).message);
     log.info('The local log was still saved.');
+    process.exitCode = 1;
     return;
   }
 
@@ -137,71 +141,43 @@ export async function saveSession(options: SaveSessionOptions): Promise<void> {
     return;
   }
 
-  // Non-HTTP repos: session summaries are report data → the teamai-reports
-  // orphan branch, written through an isolated worktree so the default branch
-  // (and in self mode, the user's active tree) is never touched.
-  if (usesBranchWorktree(localConfig)) {
-    const spin = (await spinner('Pushing session summary to team...')).start();
-    try {
-      const { updateReports } = await import('./utils/reports-branch.js');
-      const { isPublished } = await import('./utils/branch-worktree.js');
-      let rel: string | undefined;
-      let ran = false;
-      const result = await withTimeout(
-        updateReports(localConfig, async (wt) => {
-          ran = true;
-          const teamDir = path.join(wt, 'sessions', username);
-          const written = await appendMonthlyLog(teamDir, summary, { includePrompt: options.includePrompt });
-          if (!written) return { files: [], message: commitMsg };
-          rel = path.relative(wt, written);
-          return { files: [rel], message: commitMsg };
-        }),
-        10_000,
-        'Push timeout (10s)',
-      );
-      const pushed = isPublished(result);
-      if (ran && !rel) {
-        if (pushed) spin.succeed('Pushed a previously unpushed session summary.');
-        else if (result.status === 'failed') spin.warn('Push failed. The summary is saved locally; retry with: teamai session save --push');
-        else if (result.status === 'busy') spin.warn('Team reports branch is busy. The summary is saved locally; retry with: teamai session save --push');
-        else spin.info('Session already present in the team log — nothing to push.');
-        return;
-      }
-      if (pushed) spin.succeed(`Pushed: ${rel}`);
-      else spin.info('Nothing new to push.');
-    } catch (e) {
-      spin.fail(`Team push failed: ${(e as Error).message}`);
-      log.info('The local log was still saved. Retry later with: teamai session save --push');
-    }
-    return;
-  }
-
-  const repoPath = localConfig.repo.localPath;
-  const teamDir = path.join(repoPath, 'sessions', username);
-
+  // Session summaries are report data → the teamai-reports orphan branch,
+  // written through an isolated worktree so the default branch (and in self
+  // mode, the user's active tree) is never touched.
   const spin = (await spinner('Pushing session summary to team...')).start();
   try {
-    try {
-      await pullRepo(repoPath);
-    } catch (e) {
-      DetachedTeamRepoError.rethrow(e);
-      log.debug('session save: pull failed, continuing with local state');
+    const { updateReports } = await import('./utils/reports-branch.js');
+    const rel = path.join('sessions', username, `${monthKey(summary)}.md`);
+    const result = await withTimeout(
+      updateReports(localConfig, async (wt) => {
+        await appendMonthlyLog(path.join(wt, 'sessions', username), summary, { includePrompt: options.includePrompt });
+        // Named even when the summary was already there: an earlier attempt may have committed it and failed to push.
+        return { files: [rel], message: commitMsg };
+      }),
+      10_000,
+      'Push timeout (10s)',
+    );
+    switch (result.status) {
+      case 'published':
+        spin.succeed(`Pushed: ${rel}`);
+        return;
+      case 'already-present':
+        spin.info('Session already present in the team log — nothing to push.');
+        return;
+      case 'busy':
+        spin.fail('Team push failed: another teamai write holds the team reports branch, so the session summary was not pushed.');
+        break;
+      case 'failed':
+        spin.fail(`Team push failed: ${result.reason}`);
+        break;
+      default: {
+        const unhandled: never = result;
+        throw new Error(`Unhandled reports publish result: ${JSON.stringify(unhandled)}`);
+      }
     }
-
-    // Team upload defaults to counts + tools only; the redacted prompt line is
-    // opt-in via --include-prompt, since redact() is best-effort.
-    const written = await appendMonthlyLog(teamDir, summary, { includePrompt: options.includePrompt });
-    if (!written) {
-      spin.info('Session already present in the team log — nothing to push.');
-      return;
-    }
-    const rel = path.relative(repoPath, written);
-
-    await withTimeout(pushRepoDirectly(repoPath, commitMsg, [rel]), 10_000, 'Push timeout (10s)');
-
-    spin.succeed(`Pushed: ${rel}`);
   } catch (e) {
     spin.fail(`Team push failed: ${(e as Error).message}`);
-    log.info('The local log was still saved. Retry later with: teamai session save --push');
   }
+  log.info('The local log was still saved. Retry later with: teamai session save --push');
+  process.exitCode = 1;
 }

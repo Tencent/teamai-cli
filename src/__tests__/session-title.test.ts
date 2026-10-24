@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cleanTitleText, fallbackTitle, isInjectedText } from '../session-flow/title.js';
+import { cleanTitleText, fallbackTitle, isInjectedText, titleFromCandidates } from '../session-flow/title.js';
 
 describe('session title cleaning', () => {
   it('detects platform-injected message heads', () => {
@@ -26,6 +26,13 @@ describe('session title cleaning', () => {
   it('flags an unterminated injected head even though tag-stripping would leave plain text', () => {
     // 整条是不是注入由 isInjectedText 先判断；cleanTitleText 只负责剥标签
     expect(isInjectedText('<system-reminder>unterminated caveat')).toBe(true);
+  });
+
+  it('titles a Codex session by the question after the AGENTS.md block Codex injects as its first message', () => {
+    const agents = '# AGENTS.md instructions for /work/app\n\n<INSTRUCTIONS>\n# Team rules\n\nAlways write tests.\n</INSTRUCTIONS>';
+
+    expect(isInjectedText(agents)).toBe(true);
+    expect(titleFromCandidates([agents, 'Add retries to the client'])).toBe('Add retries to the client');
   });
 
   it('falls back to a short id-based title', () => {

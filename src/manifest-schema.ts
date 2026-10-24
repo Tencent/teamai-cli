@@ -71,7 +71,17 @@ export const NamespaceSegmentSchema = z.string().min(1).refine(isSafeNamespaceSe
  * writes back carries one only when an admin declared it. A new type is one
  * entry here plus one line in the shape below.
  */
-export const HAND_DECLARED_RESOURCE_TYPES = ['env', 'hooks', 'mcp', 'models', 'docs', 'wiki'] as const;
+export const HAND_DECLARED_RESOURCE_TYPES = [
+  'env',
+  'hooks',
+  'mcp',
+  'models',
+  'docs',
+  'wiki',
+  'workflows',
+  'prompts',
+  'scorers',
+] as const;
 
 export type HandDeclaredResourceType = typeof HAND_DECLARED_RESOURCE_TYPES[number];
 
@@ -105,6 +115,9 @@ export const HandDeclaredNamespacesShape = {
   // project id — a team picks one it already uses so declaring it needs no
   // new convention.
   wiki: OptionalNamespaceList,
+  workflows: OptionalNamespaceList,
+  prompts: OptionalNamespaceList,
+  scorers: OptionalNamespaceList,
 } satisfies Record<HandDeclaredResourceType, z.ZodOptional<z.ZodArray<z.ZodType<string>>>>;
 
 /**

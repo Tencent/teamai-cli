@@ -331,6 +331,7 @@ async function replay(config: LocalConfig, key: string, seed: number, between: b
   const unreported = new Set<string>();
   const names = new Map<string, string>();
   const normalize = (value: unknown): unknown => JSON.parse(JSON.stringify(value).replaceAll(runId, '<run>')
+    .replace(/"installId":"[^"]+"/g, '"installId":"<install>"')
     .replace(/a[0-9a-f]{8}/g, (attempt) => names.get(attempt) ?? attempt));
   const trace: unknown[] = [];
   let done = false;
@@ -387,13 +388,13 @@ async function replay(config: LocalConfig, key: string, seed: number, between: b
  * back. After a change that is meant to move leases, take the new digest from the failure.
  */
 const TRACE_DIGESTS: Record<string, string> = {
-  nested: '51c333ea87245bf7062dd75eedfd60e3a49bd40a',
-  fan: '8409e84163f667f26db9cb8fedd7033755c2377b',
-  fanafter: '837bae14a541473ba6915d84239732e9111ffe36',
-  rounds: '497799353921a38f7d2a2e6f63cbc63ee03bda81',
-  loopwhile: '63fdc60ac3cf158ababaa29b204edf2d099c2785',
-  itemloop: 'd0afb7c749c9a84c0e5141633ac02d7f38a16b06',
-  deep: '76c90bd6071acb9eb73f44b7d4587d80e3a313fc',
+  nested: '6e6fd747678923f5fdd691bf805ecf0d15177a12',
+  fan: 'fcca32cd8ca1a8cae21f00591fd3389f69624f6e',
+  fanafter: '86faabb77f80db3102854c29e31a9568e0043d50',
+  rounds: '3c33dd97dbb4082ab756b08aa1ec872e17f0ed83',
+  loopwhile: 'a909c2e9fb540a4e227a33a8d41522da49f67738',
+  itemloop: 'f11047ad887b8c0abfed29bb78f8ab8cc26fd94b',
+  deep: '892032c5d23025cf4f1ce0606ac2a73535670f51',
 };
 
 describe('workflow report reconciliation', () => {

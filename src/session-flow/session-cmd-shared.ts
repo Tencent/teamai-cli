@@ -13,8 +13,11 @@ import {
   getGitAuthor,
   withSessionIndexLock,
 } from './sync.js';
+import { getReportsDir, isSelfMode, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { isInteractive } from '../utils/prompt.js';
+import { readableReportsWorktree, updateReports } from '../utils/reports-branch.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
+import { worktreeCheckout } from '../workflow/worktree.js';
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -199,7 +202,8 @@ export function resolveRepoIdentity(cwd?: string): string | null {
 export function deriveArchiveIdentity(session: { cwd: string }, platform: string): string | null {
   const nativeCwd = session.cwd;
   if (nativeCwd && path.isAbsolute(nativeCwd)) {
-    return getRepoIdentity(nativeCwd);
+    // A workflow step's worktree is removed once the step is done; the checkout it was made from has the same remote.
+    return getRepoIdentity(worktreeCheckout(nativeCwd) ?? nativeCwd);
   }
   console.warn(
     `  ⚠ native cwd unknowable for ${platform} session, archived under _unattributed`,
@@ -207,33 +211,82 @@ export function deriveArchiveIdentity(session: { cwd: string }, platform: string
   return null;
 }
 
+/** Where this machine has the team session archive: the reports checkout in self mode, else the team repo clone. An http team has none. */
+export function sessionArchiveRoot(config: LocalConfig): string | undefined {
+  if (!usesBranchWorktree(config)) return undefined;
+  return isSelfMode(config) ? getReportsDir(config) : config.repo.localPath;
+}
+
 /**
- * Resolve the team-repo root.
- * Prefer --repo-root; otherwise use cwd (assuming cwd is the team-repo clone).
+ * Resolve the session archive root a session command works in: --repo-root, else the archive of this workspace's
+ * install, else of the user install (see sessionArchiveRoot). Without one, this throws, and the CLI entry point
+ * reports the reason and fails the run.
+ * `reports` is set when that archive is the teamai-reports checkout: a write there goes through `updateReports` with it.
+ * A `read` gets that checkout as `readableReportsWorktree` leaves it.
  */
 export async function resolveRepoRoot(
-  repoRoot?: string,
-  options?: { materialize?: boolean },
-): Promise<string> {
-  if (repoRoot?.trim()) return repoRoot.trim();
-  const { detectProjectConfig } = await import('../config.js');
-  const { getReportsDir, isSelfMode } = await import('../types.js');
-  const { ensureReportsWorktree } = await import('../utils/reports-branch.js');
-  const cfg = await detectProjectConfig();
-  if (!cfg || cfg.repo.kind === 'http' || !cfg.repo.localPath?.trim()) {
+  repoRoot: string | undefined,
+  options: { dryRun: boolean; read?: boolean },
+): Promise<{ root: string; reports?: LocalConfig }> {
+  if (repoRoot?.trim()) return { root: repoRoot.trim() };
+  const { detectProjectConfig, requireInit, NotInitializedError } = await import('../config.js');
+  const loadOpts = { dryRun: options.dryRun };
+  let cfg: LocalConfig;
+  try {
+    cfg = (await detectProjectConfig(undefined, undefined, loadOpts)) ?? (await requireInit(loadOpts)).localConfig;
+  } catch (e) {
+    if (!(e instanceof NotInitializedError)) throw e;
     throw new Error(
-      'No teamai project config found. Run `teamai init` or pass --repo-root. Session sync will not use the current working directory.',
+      'teamai is not set up for this directory. It has no workspace install, and there is no user install. Run `teamai init`, or pass --repo-root <path to the team repo clone>.',
     );
   }
-  if (isSelfMode(cfg)) {
-    // Readers and --dry-run must not publish a brand-new teamai-reports branch.
-    // The default ensure() pushes the orphan branch as soon as it creates it.
-    if (options?.materialize !== false) {
-      await ensureReportsWorktree(cfg, { pushIfCreated: false });
-    }
-    return getReportsDir(cfg);
+  const root = cfg.repo.localPath?.trim() ? sessionArchiveRoot(cfg) : undefined;
+  if (!root) {
+    throw new Error(
+      'This teamai install keeps no team repo clone on this machine, so it has no session archive. Pass --repo-root <path to a team repo clone>.',
+    );
   }
-  return cfg.repo.localPath;
+  if (!isSelfMode(cfg)) return { root };
+  // A writer opens the checkout itself, under the lock, in updateReports.
+  if (!options.read) return { root, reports: cfg };
+  try {
+    return { root: await readableReportsWorktree(cfg, { dryRun: options.dryRun }), reports: cfg };
+  } catch (e) {
+    throw new Error(safeText(e instanceof Error ? e.message : String(e)));
+  }
+}
+
+export const REPORTS_ARCHIVE_BUSY =
+  'Another teamai command is writing teamai-reports, so nothing was archived. Run this command again once it has finished.';
+
+/** What became of sessions archived on teamai-reports. `stopped`: `save` hit a failure it already reported, and nothing was published. */
+export type ReportsArchive =
+  | { status: 'busy' }
+  | { status: 'stopped' }
+  | { status: 'published' | 'already-present'; saved: number }
+  | { status: 'failed'; saved: number; reason: string };
+
+/**
+ * Archive sessions on teamai-reports under the lock every teamai-reports writer takes: `save` writes them into the
+ * checkout and returns how many, or undefined once it reported a failure; what it wrote is committed and pushed.
+ * While another write holds the lock, `save` never runs.
+ */
+export async function archiveToReports(
+  reports: LocalConfig,
+  save: (syncMgr: SyncManager, root: string) => Promise<number | undefined>,
+  commitMessage: (saved: number) => string,
+): Promise<ReportsArchive> {
+  // Stays 0 when the write never ran, so a failure before it is still reported.
+  let saved: number | undefined = 0;
+  const result = await updateReports(reports, async (worktree) => {
+    const syncMgr = new SyncManager(worktree);
+    saved = await save(syncMgr, worktree);
+    return saved ? { files: syncMgr.writtenFiles(), message: commitMessage(saved) } : null;
+  });
+  if (result.status === 'busy') return result;
+  if (saved === undefined) return { status: 'stopped' };
+  if (result.status === 'failed') return { status: 'failed', saved, reason: result.reason };
+  return { status: result.status, saved };
 }
 
 /**
@@ -246,6 +299,16 @@ export async function resolveRepoRoot(
  * failure, and running it again would create duplicate commits.
  */
 export async function pushToRemote(syncMgr: SyncManager, repoRoot: string): Promise<boolean> {
+  const pushed = await pushArchive(syncMgr, repoRoot);
+  if (pushed.status === 'pushed') return true;
+  // The local commit is kept, so nothing is lost -- but this is still a
+  // failure and must not be printed as "✓ Pushed".
+  console.error(`  ✗ Remote push failed (local commit kept): ${pushed.reason}`);
+  return false;
+}
+
+/** Push the team repo's archive commits; a merge the push needs that stops on the session indexes is finished by rebuilding them. */
+export async function pushArchive(syncMgr: SyncManager, repoRoot: string): Promise<{ status: 'pushed' } | { status: 'failed'; reason: string }> {
   try {
     const pushed = syncMgr.gitPush();
     if (pushed.status === 'indexes-conflicted') {
@@ -255,12 +318,42 @@ export async function pushToRemote(syncMgr: SyncManager, repoRoot: string): Prom
         throw new Error(`The remote moved on again and its merge stopped on the session indexes; run \`teamai session pull\` to finish it.`);
       }
     }
-    return true;
+    return { status: 'pushed' };
   } catch (err) {
-    // The local commit is kept, so nothing is lost -- but this is still a
-    // failure and must not be printed as "✓ Pushed".
-    console.error(`  ✗ Remote push failed (local commit kept): ${gitFailureReason(err)}`);
-    return false;
+    return { status: 'failed', reason: gitFailureReason(err) };
+  }
+}
+
+/**
+ * Pull the team repo's archive. A merge that stops on the session indexes, an earlier pull's included, is finished by
+ * rebuilding them under the index lock; the network pull takes no lock. `rebuilt` counts the indexes rebuilt.
+ */
+export async function pullArchive(syncMgr: SyncManager, repoRoot: string): Promise<{ status: 'pulled'; rebuilt: number } | { status: 'failed'; reason: string }> {
+  let rebuilt = 0;
+  const finishMerge = async (indexes: string[]): Promise<string | undefined> => {
+    const merged = await withSessionIndexLock(repoRoot, async () => syncMgr.commitRebuiltIndexes(indexes));
+    if (merged.status === 'busy') return mergeBusyMessage(repoRoot, merged.lockPath);
+    rebuilt += indexes.length;
+    return undefined;
+  };
+  try {
+    let pulled = syncMgr.gitPull();
+    if (pulled.status === 'indexes-conflicted' && pulled.pending) {
+      const busy = await finishMerge(pulled.indexes);
+      if (busy) return { status: 'failed', reason: busy };
+      pulled = syncMgr.gitPull();
+    }
+    if (pulled.status === 'stopped') return { status: 'failed', reason: pulled.reason };
+    if (pulled.status === 'indexes-conflicted') {
+      const busy = await finishMerge(pulled.indexes);
+      if (busy) return { status: 'failed', reason: busy };
+    }
+    return { status: 'pulled', rebuilt };
+  } catch (err) {
+    return {
+      status: 'failed',
+      reason: `git pull failed in ${repoRoot}: ${gitFailureReason(err)}. Check that ${repoRoot} is a git repository with a configured remote, then retry.`,
+    };
   }
 }
 

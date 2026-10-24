@@ -101,7 +101,7 @@ sharing:
 .teamai/mcp/mcp.yaml
 ```
 
-skill 和 rule 用 `teamai push`。`docs/`、`hooks/hooks.yaml`、`mcp/mcp.yaml`、`models/models.yaml` 自己 commit。
+`teamai push` 发送所有分布式资源类型——skills、rules、agents、docs、env、hooks、mcp、models、claudemd、learnings、wiki、workflows、prompts、scorers——并按 `--project` 和 `--role` 做命名空间放置。
 
 ### Git 权限
 

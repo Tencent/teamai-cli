@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
-import { reconcileMcpForConfig, resolveMcpTargets } from '../mcp-reconcile.js';
+import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { buildMcpDeliveryChecks, mcpTransportNotes } from '../doctor-delivery.js';
 import { detectMcpFormat, renderJsonEntry, supportsTransport } from '../resources/mcp-format.js';
 import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
@@ -71,9 +71,6 @@ describe('Pi MCP', () => {
       : path.join(projectRoot, '.pi/mcp.json');
     const personal = { command: 'personal-server', exposure: 'direct' };
     await fse.outputJson(file, { autoEnableCodemode: false, mcpServers: { personal } });
-    expect(await resolveMcpTargets(team, local)).toContainEqual(expect.objectContaining({
-      tool: 'pi', file, projectScope: scope === 'project',
-    }));
     const dry = await reconcileMcpForConfig(team, local, { dryRun: true });
     expect(dry.wrote).toBe(false);
     expect((await fse.readJson(file)).mcpServers).toEqual({ personal });

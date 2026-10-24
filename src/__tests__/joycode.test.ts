@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { KNOWN_AGENTS } from '../known-agents.js';
-import { ALL_SUPPORTED_TOOLS } from '../resources/agent-format.js';
 import { ruleFileExtensionForTool, usesMdcRules } from '../resources/rule-format.js';
 import { scopedToolPaths, TeamaiConfigSchema } from '../types.js';
+import { AGENT_TOOLS } from '../tools.js';
 
 describe('JoyCode support', () => {
   it('ships the standard .joycode resource paths', () => {
@@ -23,7 +23,7 @@ describe('JoyCode support', () => {
       displayName: 'JoyCode',
       skillsPath: '.joycode/skills',
     });
-    expect(ALL_SUPPORTED_TOOLS).toContain('joycode');
+    expect(AGENT_TOOLS).toContain('joycode');
   });
 
   it('uses .mdc rule files', () => {

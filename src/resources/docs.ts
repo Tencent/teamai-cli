@@ -9,8 +9,9 @@ import { caseFoldKey } from '../manifest-schema.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { describeKeptEntry, describeMembersDirLeft, isLink, isTeamaiCopy, isTeamaiSkillCopy } from './delivered-copies.js';
 import { blobIdOf, historicalVersions, type HistoricalVersion } from '../utils/team-history.js';
-import type { DeliveryRecorder } from '../git-exclude-delivered.js';
 import { gitTracks, realFilePath, updateFileLocked, withOwnerLines } from '../git-exclude.js';
+import type { DeliveryRecorder } from '../git-exclude-delivered.js';
+import { pushRepoResourceItem, scanRepoResourceForPush } from './repo-resource.js';
 
 /**
  * The single directory the team docs bundle is copied into. In project scope a
@@ -618,9 +619,8 @@ async function withdrawInactiveNamespaces(desired: DesiredDocs, localDocsDir: st
 export class DocsHandler extends ResourceHandler {
   readonly type = 'docs' as const;
 
-  async scanLocalForPush(_teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<ResourceItem[]> {
-    // Docs are managed directly in team repo
-    return [];
+  async scanLocalForPush(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
+    return scanRepoResourceForPush('docs', 'docs', teamConfig, localConfig);
   }
 
   async scanTeamForPull(_teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<ResourceItem[]> {
@@ -640,8 +640,8 @@ export class DocsHandler extends ResourceHandler {
     return (await listDocFiles(sourcePath)).length;
   }
 
-  async pushItem(_item: ResourceItem, _teamConfig: TeamaiConfig, _localConfig: LocalConfig): Promise<void> {
-    // No-op
+  async pushItem(item: ResourceItem, _teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<void> {
+    await pushRepoResourceItem(item, localConfig);
   }
 
   /**

@@ -15,7 +15,8 @@ import { loadLocalConfig, loadTeamConfig } from './config.js';
 import { CURSOR_HOOK_CONTEXT_LIMIT } from './hook-dispatch.js';
 import { instructionHookTextFor } from './instruction-targets.js';
 import { teamRulesContext } from './resources/rules.js';
-import { isAgentExcluded, resolveToolBaseDir, scopedToolPaths, type LocalConfig, type TeamaiConfig } from './types.js';
+import { installOf, locate, ownOf } from './locate.js';
+import { isAgentExcluded, type LocalConfig, type TeamaiConfig } from './types.js';
 import { log } from './utils/logger.js';
 
 async function canonicalPath(p: string): Promise<string> {
@@ -36,9 +37,9 @@ async function cursorWalkReaches(workspace: string, rulesDir: string): Promise<b
 }
 
 /** The user-scope rules directory a pull writes Cursor's rules to, or undefined when Cursor gets none. */
-export function cursorUserRulesDir(teamConfig: TeamaiConfig, userConfig: LocalConfig): string | undefined {
-  const rules = scopedToolPaths(teamConfig, userConfig).cursor?.rules;
-  return rules === undefined ? undefined : path.join(resolveToolBaseDir('cursor', userConfig), rules);
+export async function cursorUserRulesDir(teamConfig: TeamaiConfig, userConfig: LocalConfig): Promise<string | undefined> {
+  const own = ownOf(await locate('cursor', 'rules', installOf(teamConfig, userConfig)));
+  return own?.kind === 'dir' ? own.path : undefined;
 }
 
 /** The user-scope instruction blocks and team rules, as the hook adds them; null when there are none. */
@@ -59,7 +60,7 @@ export async function cursorUserRulesContext(workspace: string, config: LocalCon
   if (!userConfig || isAgentExcluded(userConfig, 'cursor')) return null;
   const teamConfig = await loadTeamConfig(userConfig.repo.localPath);
   if (!teamConfig) return null;
-  const rulesDir = cursorUserRulesDir(teamConfig, userConfig);
+  const rulesDir = await cursorUserRulesDir(teamConfig, userConfig);
   if (rulesDir === undefined || await cursorWalkReaches(workspace, rulesDir)) return null;
   const text = await cursorUserRulesText(teamConfig, userConfig);
   if (text !== null && text.length > CURSOR_HOOK_CONTEXT_LIMIT) {

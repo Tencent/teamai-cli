@@ -12,20 +12,49 @@
  * reached the whole team (issue #649). It lives here so every type answers the
  * same question the same way, and so the answer can be tested without a repo.
  */
-import { isSafeNamespaceSegment, NAMESPACE_RULE } from './manifest-schema.js';
+import { isSafeNamespaceSegment, NAMESPACE_RULE, type NamespaceEntry } from './manifest-schema.js';
 import {
   findProject, unknownProjectMessage,
-  type ProjectResourceType, type ProjectsManifest,
+  type AllProjectResourceType, type ProjectsManifest,
 } from './projects.js';
 import type { ResourceItem, ResourceType } from './types.js';
 
 /** Resource types `pull` namespaces, and push therefore has to place. */
-export type PlaceableType = 'skills' | 'rules' | 'agents';
+export type PlaceableType =
+  | 'skills'
+  | 'rules'
+  | 'agents'
+  | 'docs'
+  | 'env'
+  | 'hooks'
+  | 'mcp'
+  | 'models'
+  | 'claudemd'
+  | 'learnings'
+  | 'wiki'
+  | 'workflows'
+  | 'prompts'
+  | 'scorers';
 
-export const PLACEABLE_TYPES: readonly PlaceableType[] = ['skills', 'rules', 'agents'];
+export const PLACEABLE_TYPES: readonly PlaceableType[] = [
+  'skills',
+  'rules',
+  'agents',
+  'docs',
+  'env',
+  'hooks',
+  'mcp',
+  'models',
+  'claudemd',
+  'learnings',
+  'wiki',
+  'workflows',
+  'prompts',
+  'scorers',
+];
 
-export function isPlaceableType(type: ResourceType): type is PlaceableType {
-  return (PLACEABLE_TYPES as readonly ResourceType[]).includes(type);
+export function isPlaceableType(type: ResourceType | string): type is PlaceableType {
+  return (PLACEABLE_TYPES as readonly string[]).includes(type);
 }
 
 /**
@@ -38,7 +67,36 @@ export const NAMESPACE_AXIS = {
   skills: 'skills',
   rules: 'knowledge',
   agents: 'agents',
-} as const satisfies Record<PlaceableType, ProjectResourceType>;
+  docs: 'docs',
+  env: 'env',
+  hooks: 'hooks',
+  mcp: 'mcp',
+  models: 'models',
+  claudemd: 'knowledge',
+  learnings: 'learnings',
+  wiki: 'wiki',
+  workflows: 'workflows',
+  prompts: 'prompts',
+  scorers: 'scorers',
+} as const satisfies Record<PlaceableType, AllProjectResourceType>;
+
+/**
+ * Types whose subtree nests freely below the root. For these a first directory
+ * is a namespace only when a role or project declares it, and anything else is
+ * ordinary shared content that a placement may still relocate:
+ *
+ * - docs and wiki are bundles of pages, so `docs/api/guide.md` is a shared page
+ *   under an undeclared `api`, not a page in namespace `api` (#1101).
+ * - prompts resolve the same way at runtime: a workflow's `prompt_file:
+ *   prompts/topic/note.md` looks for `prompts/<ns>/topic/note.md` in each active
+ *   namespace and falls back to the shared `prompts/topic/note.md`.
+ */
+export const NESTED_PLACEABLE_TYPES: ReadonlySet<PlaceableType> = new Set<PlaceableType>(['docs', 'wiki', 'prompts']);
+
+/** True for the types in `NESTED_PLACEABLE_TYPES`. */
+export function isNestedPlaceableType(type: PlaceableType): boolean {
+  return NESTED_PLACEABLE_TYPES.has(type);
+}
 
 /**
  * True when `item` would be written to the shared root — no namespace segment
@@ -48,17 +106,51 @@ export const NAMESPACE_AXIS = {
  * behind.
  */
 export function isAtSharedRoot(item: ResourceItem): boolean {
+  if (item.namespace) return false;
+  // A first directory under docs/, wiki/ or prompts/ is only a namespace when a
+  // manifest declares it. Undeclared directories are ordinary shared content
+  // (#1101), which a placement still moves into the chosen namespace.
+  if (isNestedPlaceableType(item.type)) return true;
   return item.relativePath.split('/').length === 2;
+}
+
+/** Return the declared namespace carried by a docs/wiki/prompts path, if any. */
+export function declaredNamespaceFor(
+  item: ResourceItem,
+  declaredNamespaces: readonly string[],
+): string | undefined {
+  if (!isNestedPlaceableType(item.type)) return undefined;
+  const segments = item.relativePath.split('/');
+  const candidate = segments[rootSegmentsFor(item.type)];
+  return candidate && declaredNamespaces.includes(candidate) ? candidate : undefined;
 }
 
 /**
  * Insert `namespace` after the resource root. Only the directory changes, so
  * the basename — `.yaml` or a legacy `.md` for agents, a bare directory name
  * for skills — survives without the caller knowing which it has.
+ *
+ * `rootSegments` is how many leading path segments form the root before the
+ * namespace insertion point: 1 for `docs/`, `skills/` etc., 3 for wiki's
+ * `teamwiki/evidence/code/`.
  */
-export function withNamespace(relativePath: string, namespace: string): string {
-  const [root, ...rest] = relativePath.split('/');
-  return [root, namespace, ...rest].join('/');
+export function withNamespace(relativePath: string, namespace: string, rootSegments = 1): string {
+  const parts = relativePath.split('/');
+  return [...parts.slice(0, rootSegments), namespace, ...parts.slice(rootSegments)].join('/');
+}
+
+/** Leading path segments before the namespace slot, per resource type. */
+export function rootSegmentsFor(type: PlaceableType): number {
+  return type === 'wiki' ? 3 : 1;
+}
+
+/**
+ * The namespace a placed path carries, read from the slot `withNamespace`
+ * inserted: `docs/ops/guide.md` → `ops`, `teamwiki/evidence/code/ops/page.md` →
+ * `ops`. Undefined when that segment is missing (a malformed record).
+ */
+export function namespaceOfPlacedPath(type: PlaceableType, placedPath: string): string | undefined {
+  return placedPath.split('/')[rootSegmentsFor(type)];
 }
 
 /**
@@ -76,6 +168,30 @@ export function skillNamespacePath(namespace: string, name: string): string {
 export type NamespaceResolution =
   | { ok: true; namespace: string }
   | { ok: false; message: string };
+
+/**
+ * The namespace `--role <ns>` places `type` in. A team with a roles or projects
+ * manifest delivers a namespace only to the members of a role or project that
+ * declares it for the type's axis, so any other namespace would reach nobody;
+ * `declared` is every namespace those manifests declare. A team with neither
+ * manifest (`declared` null) delivers every namespace, so any one goes.
+ */
+export function resolveRoleNamespace(
+  declared: readonly NamespaceEntry[] | null,
+  namespace: string,
+  type: PlaceableType,
+): NamespaceResolution {
+  if (declared === null) return { ok: true, namespace };
+  const axis = NAMESPACE_AXIS[type];
+  const onAxis = [...new Set(declared.filter((entry) => entry.type === axis).map((entry) => entry.namespace))];
+  if (onAxis.includes(namespace)) return { ok: true, namespace };
+  return {
+    ok: false,
+    message: `--role ${namespace} cannot take new ${type}: no role or project declares "${namespace}" as a ${axis} `
+      + 'namespace in manifest/roles.yaml or manifest/projects.yaml, so pull would deliver it to nobody. '
+      + (onAxis.length > 0 ? `Pass one that is declared (${onAxis.join(', ')}), or declare it.` : `Declare it for ${axis} first.`),
+  };
+}
 
 /**
  * The namespace `--project <id>` places `type` in, read from that type's own
@@ -97,7 +213,7 @@ export function resolveProjectNamespace(
   }
 
   const axis = NAMESPACE_AXIS[type];
-  const namespaces = project.resources[axis];
+  const namespaces = project.resources[axis] ?? [];
   if (namespaces.length === 0) {
     return {
       ok: false,

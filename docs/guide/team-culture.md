@@ -36,10 +36,10 @@ They are not written into the project's `AGENTS.md`. Each tool gets its own file
 | OpenCode | `~/.config/opencode/teamai-context.md` | `.opencode/teamai-context.md` |
 | Pi, Oh My Pi | each tool's user file | an extension adds them to the system prompt |
 | Hermes | `$HERMES_HOME/SOUL.md` | the Hermes plugin |
-| ZCode | `~/.zcode/AGENTS.md` | only a `claudemd` named in `toolPaths` |
-| DeepSeek Harness | `$DSH_HOME/AGENTS.md` (`~/.dsh/AGENTS.md` when unset) | only a `claudemd` named in `toolPaths` |
-| JoyCode | `~/.joycode/rules.txt` | only a `claudemd` named in `toolPaths` |
-| Muse Code | `~/.config/muse/AGENTS.md` | only a `claudemd` named in `toolPaths` |
+| ZCode | `~/.zcode/AGENTS.md` | session-start hook |
+| DeepSeek Harness | `$DSH_HOME/AGENTS.md` (`~/.dsh/AGENTS.md` when unset) | session-start hook |
+| JoyCode | `~/.joycode/rules.txt` | none |
+| Muse Code | `~/.config/muse/AGENTS.md` | session-start hook |
 
 ## Viewing the result
 

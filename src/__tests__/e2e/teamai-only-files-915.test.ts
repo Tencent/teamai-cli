@@ -75,6 +75,8 @@ interface MachineOptions {
   committed?: Record<string, string>;
   /** Directories in HOME that make a tool look installed. */
   homeDirs?: string[];
+  /** Directories under the project that make a project-scoped tool look installed. */
+  projectDirs?: string[];
 }
 
 function machine(base: string, opts: MachineOptions): Machine {
@@ -121,6 +123,7 @@ function machine(base: string, opts: MachineOptions): Machine {
 
   const dir = path.join(caseDir, 'biz');
   writeFile(path.join(dir, 'README.md'), '# app\n');
+  for (const probe of opts.projectDirs ?? []) fs.mkdirSync(path.join(dir, probe), { recursive: true });
   for (const [rel, content] of Object.entries(opts.committed ?? {})) writeFile(path.join(dir, rel), content);
   gitOk(['init', '-q', '-b', 'main'], dir);
   gitOk(['add', '-A'], dir);
@@ -218,7 +221,6 @@ describe.each([
   ['kiro', '.kiro/settings/mcp.json', ['.kiro']],
   ['omp', '.omp/mcp.json', ['.omp']],
   ['pi', '.pi/mcp.json', ['.pi']],
-  ['workbuddy', '.workbuddy/mcp.json', ['.workbuddy']],
   ['opencode', 'opencode.json', ['.config/opencode']],
 ])('%s: the teamai-only %s', (agent, rel, homeDirs) => {
   it('is listed, and leaves the block with a notice once the member adds a server', () => {
@@ -232,6 +234,28 @@ describe.each([
     expect(m.ok(['pull']).output).toContain(nowVisible(rel));
     expect(m.deliveredLines()).not.toContain(`/${rel}`);
     expect(m.status()).toContain(`?? ${rel}`);
+  });
+});
+
+describe('WorkBuddy project MCP while sharing.gitExclude is on', () => {
+  it('writes the servers to ~/.codebuddy.json, so the project has no .mcp.json for git to see', () => {
+    // Locate's project row writes <root>/.mcp.json when the servers stay in the
+    // tree. This fixture turns sharing.gitExclude on, and WorkBuddy then uses
+    // its local scope (~/.codebuddy.json), the same way Claude uses ~/.claude.json.
+    // <root>/.workbuddy/mcp.json is the retired project path.
+    const m = machine('mcp-workbuddy', {
+      agents: 'workbuddy',
+      homeDirs: ['.workbuddy'],
+      projectDirs: ['.workbuddy'],
+      files: { 'mcp/mcp.yaml': mcpYaml(['plain-api', 'https://api.example.com/mcp']) },
+    });
+    const local = readJson(path.join(m.home, '.codebuddy.json'));
+    expect(local.projects[m.dir].mcpServers['plain-api'].url).toBe('https://api.example.com/mcp');
+    expect(fs.existsSync(path.join(m.dir, '.mcp.json'))).toBe(false);
+    expect(fs.existsSync(path.join(m.dir, '.workbuddy', 'mcp.json'))).toBe(false);
+    expect(m.deliveredLines()).not.toContain('/.mcp.json');
+    expect(m.deliveredLines()).not.toContain('/.workbuddy/mcp.json');
+    expect(m.status().join('\n')).not.toContain('mcp.json');
   });
 });
 

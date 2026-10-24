@@ -33,7 +33,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
     return child;
   }),
 }));
-vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined) }));
+vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined), settleLateUsageReport: vi.fn(async () => undefined) }));
 vi.mock('../update.js', () => ({
   doUpdate: vi.fn(async () => undefined),
   // appendEvent and compactEvents take the events file's lock (#804); the

@@ -127,12 +127,14 @@ export const NO_DRY_RUN_PREVIEW: Readonly<Record<string, string>> = {
   'todowrite-hint': 'hook-only',
   'mr-hint': 'hook-only',
   'workflow start': 'creates a run and, with --driver local, runs its commands',
+  score: 'leases judge work, runs judges, writes labels and, with --push, publishes them',
   'workflow next': 'leases a step and writes the run',
   'workflow report': 'writes the reported step outcome',
   'workflow respond': 'writes a HITL request answer',
   'workflow retry': 'reopens steps and writes a new revision',
   'workflow cancel': 'cancels steps or the run',
   'workflow resume': 'runs the local driver and writes the run',
+  'workflow publish': 'writes the run to teamai-reports',
 };
 
 /** The refusal printed when a command has no `--dry-run` preview. */

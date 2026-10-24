@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,16 +7,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as envExec from '../env-exec.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { checkoutRecordKey, type CheckoutRecord } from '../pull.js';
-import type { LocalConfig, TeamaiConfig } from '../types.js';
+import { getAdapter } from '../session-flow/adapters/index.js';
+import { AgentSession } from '../session-flow/agent-session.js';
+import { encodeCwdClaude } from '../session-flow/fs.js';
+import type { Session } from '../session-flow/ir.js';
+import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
+import { getReportsDir, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { createLocalToolAdapter, type LocalToolAdapter, type LocalToolResult, type LocalToolRun, type ToolSpawn } from '../workflow/local-tool-adapter.js';
-import { localDriver, runLocalDriver } from '../workflow/local-driver.js';
+import { _setDriverPollMs, localDriver, runLocalDriver } from '../workflow/local-driver.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
 import { driverLockPath, readRun } from '../workflow/store.js';
+import type { DriverIdentity } from '../workflow/types.js';
 import { commitFile, fakeClaude, git, recordDelivery } from './helpers/delivered-checkout.js';
+
+_setDriverPollMs(20);
 
 const dirs: string[] = [];
 
@@ -342,6 +351,36 @@ model = "gpt-5.4"
     });
   });
 
+  it('loads a user-scope OpenCode agent from the home XDG_CONFIG_HOME moves', async () => {
+    const { config, workspace, runId } = await fixture('reviewer');
+    const xdg = path.join(path.dirname(workspace), 'xdg');
+    vi.stubEnv('HOME', path.join(path.dirname(workspace), 'home'));
+    vi.stubEnv('XDG_CONFIG_HOME', xdg);
+    fs.mkdirSync(path.join(xdg, 'opencode', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(xdg, 'opencode', 'agents', 'reviewer.md'), '---\ndescription: Reviews changes.\nmode: subagent\n---\n\nReview the change.\n');
+    const userConfig: LocalConfig = { ...config, scope: 'user', workflows: { tools: { reviewer: 'opencode' } } };
+    let input: LocalToolRun | undefined;
+    const adapter: LocalToolAdapter = {
+      runInteractive: vi.fn(),
+      run: vi.fn(async (_selected, value) => {
+        input = value;
+        return { started: true as const, exitCode: 0, output: { ok: true } };
+      }),
+    };
+
+    try {
+      await runLocalDriver(userConfig, runId, workspace, {
+        adapter,
+        toolPaths: { opencode: { agents: '.opencode/agents', userScope: { agents: '.config/opencode/agents' } } } as TeamaiConfig['toolPaths'],
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(await readRun(userConfig, runId)).toMatchObject({ steps: [{ status: 'succeeded' }] });
+    expect(input?.agent).toMatchObject({ instructions: 'Review the change.' });
+  });
+
   it('warns when codex exec cannot apply the deployed agent settings, and still runs the step', async () => {
     const { config, workspace, runId } = await fixture('reviewer');
     config.workflows = { tools: { reviewer: 'codex' } };
@@ -501,6 +540,96 @@ ${agent ? `    agent: ${agent}\n` : ''}`;
         driver: 'local',
         fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
       },
+    });
+  });
+
+  describe('the team skills a pass used', () => {
+    const SESSION = 'b0d5e000-0000-4000-8000-0000000000d1';
+    const line = (record: unknown): string => `${JSON.stringify(record)}\n`;
+    const skillCall = (uuid: string, skill: string, sidechain = false, timestamp = new Date().toISOString()): string => line({
+      type: 'assistant', uuid, parentUuid: 'u1', sessionId: SESSION, timestamp, ...(sidechain ? { isSidechain: true } : {}),
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: `toolu_${uuid}`, name: 'Skill', input: { skill } }] },
+    });
+
+    /**
+     * A Claude pass that runs `during`, then writes a session whose main thread loads `main` and whose subagent loads
+     * `subagent` through the skill tool, after a pass before it that loaded `earlier` when the pass resumes one.
+     */
+    const loading = (workspace: string, { main, subagent, earlier }: { main: string; subagent: string; earlier?: string }, during = () => {}): LocalToolAdapter => ({
+      runInteractive: vi.fn(),
+      run: vi.fn(async () => {
+        during();
+        const project = path.join(os.homedir(), '.claude', 'projects', encodeCwdClaude(workspace));
+        const subagents = path.join(project, SESSION, 'subagents');
+        fs.mkdirSync(subagents, { recursive: true });
+        const before = new Date(Date.now() - 3_600_000).toISOString();
+        fs.writeFileSync(path.join(project, `${SESSION}.jsonl`), (earlier ? skillCall('m0', earlier, false, before) : '') + line({
+          type: 'user', uuid: 'u1', parentUuid: null, cwd: workspace, sessionId: SESSION, timestamp: new Date().toISOString(), message: { role: 'user', content: 'Review this project.' },
+        }) + skillCall('m1', main));
+        fs.writeFileSync(path.join(subagents, 'agent-a.meta.json'), JSON.stringify({ toolUseId: 'toolu_m1', spawnDepth: 1 }));
+        fs.writeFileSync(path.join(subagents, 'agent-a.jsonl'), skillCall('s1', subagent, true));
+        return { started: true as const, exitCode: 0, session: SESSION };
+      }),
+    });
+
+    async function usedOf(config: LocalConfig, runId: string): Promise<unknown> {
+      const run = await readRun(config, runId);
+      if (typeof run !== 'object') throw new Error(`run ${runId} is ${run}`);
+      const [step] = run.steps;
+      return step && 'used' in step ? step.used : 'absent';
+    }
+
+    it('records a team skill its subagent loaded that the checkout held as delivered at launch, and not the member\'s own skill', async () => {
+      const { config, workspace, runId } = await observed(reviewStep());
+      commitFile(config.repo.localPath, 'skills/review/SKILL.md');
+      fs.mkdirSync(path.join(workspace, '.claude', 'skills', 'mine'), { recursive: true });
+      fs.writeFileSync(path.join(workspace, '.claude', 'skills', 'mine', 'SKILL.md'), 'Mine.\n');
+
+      await runLocalDriver(config, runId, workspace, { adapter: loading(workspace, { main: 'mine', subagent: 'review' }), toolPaths });
+
+      expect(await usedOf(config, runId)).toEqual({ skills: ['review'] });
+    });
+
+    it('still records a team skill that a pull removed while the pass ran', async () => {
+      const { config, workspace, runId, skill } = await observed(reviewStep());
+      commitFile(config.repo.localPath, 'skills/review/SKILL.md');
+      const pulled = () => {
+        fs.rmSync(path.join(config.repo.localPath, 'skills'), { recursive: true });
+        fs.rmSync(path.dirname(skill), { recursive: true });
+      };
+
+      await runLocalDriver(config, runId, workspace, { adapter: loading(workspace, { main: 'review', subagent: 'review' }, pulled), toolPaths });
+
+      expect(await usedOf(config, runId)).toEqual({ skills: ['review'] });
+    });
+
+    it('records no skill whose copy in the checkout is not the one teamai delivered, though the team has one of its name', async () => {
+      const { config, workspace, runId, skill } = await observed(reviewStep());
+      commitFile(config.repo.localPath, 'skills/review/SKILL.md');
+      fs.writeFileSync(skill, 'Review my way.\n');
+
+      await runLocalDriver(config, runId, workspace, { adapter: loading(workspace, { main: 'review', subagent: 'review' }), toolPaths });
+
+      expect(await usedOf(config, runId)).toEqual({ skills: [] });
+    });
+
+    it('records no skill that only a pass before it loaded in the session this pass resumes', async () => {
+      const { config, workspace, runId } = await observed(reviewStep());
+      commitFile(config.repo.localPath, 'skills/review/SKILL.md');
+
+      await runLocalDriver(config, runId, workspace, { adapter: loading(workspace, { main: 'mine', subagent: 'mine', earlier: 'review' }), toolPaths });
+
+      expect(await usedOf(config, runId)).toEqual({ skills: [] });
+    });
+
+    it('records nothing for a checkout no pull delivered to', async () => {
+      const { config, workspace, runId } = await workflowFixture(reviewStep());
+      fs.mkdirSync(path.join(config.repo.localPath, 'skills', 'review'), { recursive: true });
+      fs.writeFileSync(path.join(config.repo.localPath, 'skills', 'review', 'SKILL.md'), 'Review carefully.\n');
+
+      await runLocalDriver(config, runId, workspace, { adapter: loading(workspace, { main: 'review', subagent: 'review' }), toolPaths });
+
+      expect(await usedOf(config, runId)).toBe('absent');
     });
   });
 
@@ -1973,4 +2102,145 @@ steps:
   const question = vi.fn(async () => { askedAfterTool.push(ran); return 'yes'; });
   expect(await runLocalDriver(config, runId, workspace, { hitl: true, adapter, question })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
   expect(askedAfterTool).toEqual([true]);
+});
+
+describe('a session another machine ran', () => {
+  const CONTINUED = `schemaVersion: v1alpha1
+name: build
+description: Review the project again in the same session.
+steps:
+  - id: review
+    prompt: Review this project.
+    session: continue
+    loop: { back_to: review, while: "length(steps.review.passes) < 2", max_iterations: 2 }
+`;
+
+  function archivedSession(id: string): Session {
+    return {
+      sessionId: id,
+      title: 'Review this project',
+      cwd: '/elsewhere/app',
+      platform: 'claude-code',
+      createdAt: '2026-10-01T10:00:00.000Z',
+      updatedAt: '2026-10-01T10:00:05.000Z',
+      messages: [
+        { role: 'user', timestamp: '2026-10-01T10:00:00.000Z', content: [{ type: 'text', text: 'Review this project.' }] },
+        { role: 'assistant', timestamp: '2026-10-01T10:00:05.000Z', content: [{ type: 'text', text: 'Found two problems.' }] },
+      ],
+      metadata: {},
+    };
+  }
+
+  /**
+   * A run of `yaml` whose passes before this machine's ran Claude Code sessions `sessions` on another machine, and that
+   * machine's member, alice, archived those in `archived` in this team's session archive. This machine has none of them.
+   */
+  async function ranElsewhere(yaml: string, sessions: string[], archived: string[]): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
+    const { config, workspace, runId } = await workflowFixture(yaml);
+    git(workspace, 'remote', 'add', 'origin', 'https://github.com/acme/app.git');
+    fs.mkdirSync(path.join(os.homedir(), '.claude', 'projects'), { recursive: true });
+    const elsewhere: DriverIdentity = { kind: 'local', machine: 'alice-laptop', workspace: '/elsewhere/app' };
+    for (const session of sessions) {
+      const leased = await leaseNext(config, runId, elsewhere);
+      const lease = 'data' in leased ? leased.data.lease as { attempt: string; revision: number } | undefined : undefined;
+      if (!lease) throw new Error(JSON.stringify(leased));
+      await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: elsewhere, tool: 'claude', session });
+    }
+    const archive = new SyncManager(getReportsDir(config));
+    for (const id of archived) {
+      const session = archivedSession(id);
+      await archive.saveSession(session, defaultSyncMeta({
+        platform: 'claude-code', author: 'alice', cwd: session.cwd, sessionId: id, repoIdentity: getRepoIdentity(workspace), title: session.title,
+      }, session.createdAt));
+    }
+    return { config, workspace, runId };
+  }
+
+  /** A tool that records the session each run resumes, and reports none of its own. */
+  function recordingTool(resumed: Array<string | undefined>): LocalToolAdapter {
+    return {
+      runInteractive: vi.fn(),
+      run: vi.fn(async (_tool, input) => {
+        resumed.push(input.resume);
+        return { started: true as const, exitCode: 0 };
+      }),
+    };
+  }
+
+  it('continues a session only the team archive has, through a copy under its own id', async () => {
+    const { config, workspace, runId } = await ranElsewhere(CONTINUED, ['session-a'], ['session-a']);
+    const resumed: Array<string | undefined> = [];
+
+    const done = await runLocalDriver(config, runId, workspace, { adapter: recordingTool(resumed) });
+
+    expect(done, JSON.stringify(await readRun(config, runId))).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    const [resume] = resumed;
+    expect(resume).toEqual(expect.any(String));
+    expect(resume).not.toBe('session-a');
+    expect(await AgentSession.find({ platform: 'claude-code', sessionId: resume ?? '' }, { scrub: false })).toMatchObject({
+      status: 'done',
+      session: { messages: [{ content: [{ text: 'Review this project.' }] }, { content: [{ text: 'Found two problems.' }] }] },
+    });
+  });
+
+  it('continues the same copy on a later pass, with the turns added to it', async () => {
+    const { config, workspace, runId } = await ranElsewhere(
+      CONTINUED.replace('< 2", max_iterations: 2', '< 3", max_iterations: 3'), ['session-a'], ['session-a'],
+    );
+    const resumed: Array<string | undefined> = [];
+    const tool = recordingTool(resumed);
+    const recorded = tool.run;
+    tool.run = vi.fn(async (name, input) => {
+      const result = await recorded(name, input);
+      if (resumed.length === 1) {
+        const [copy] = (await getAdapter('claude-code').listConversations(workspace)).filter((meta) => meta.sessionId === input.resume);
+        const records = fs.readFileSync(copy?.filePath ?? '', 'utf8').trimEnd().split('\n').map((line): Record<string, unknown> => JSON.parse(line));
+        const answer = [...records].reverse().find((record) => record.type === 'assistant');
+        const turn = { ...answer, type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Fix both.' }] }, uuid: randomUUID(), parentUuid: answer?.uuid };
+        fs.appendFileSync(copy?.filePath ?? '', `${JSON.stringify(turn)}\n`);
+      }
+      return result;
+    });
+
+    await runLocalDriver(config, runId, workspace, { adapter: tool });
+
+    expect(resumed).toHaveLength(2);
+    expect(resumed[1]).toBe(resumed[0]);
+    const copy = await AgentSession.find({ platform: 'claude-code', sessionId: resumed[0] ?? '' }, { scrub: false });
+    expect(copy.status === 'done' && copy.session.messages).toHaveLength(3);
+  });
+
+  it('starts a new session and says why when the latest session is neither here nor archived, never an earlier pass\'s', async () => {
+    const { config, workspace, runId } = await ranElsewhere(
+      CONTINUED.replace('< 2", max_iterations: 2', '< 3", max_iterations: 3'), ['session-a', 'session-b'], ['session-a'],
+    );
+    const warn = vi.spyOn(log, 'warn');
+    const resumed: Array<string | undefined> = [];
+
+    await runLocalDriver(config, runId, workspace, { adapter: recordingTool(resumed) });
+
+    expect(resumed).toEqual([undefined]);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^Step "review" starts a new claude session: .*session-b.*team session archive.*session-b/));
+  });
+
+  it('reads an archive whose index is damaged without rebuilding or rewriting it', async () => {
+    const { config, workspace, runId } = await ranElsewhere(CONTINUED, ['session-a'], ['session-a']);
+    const repos = path.join(getReportsDir(config), 'sessions', 'repos');
+    const damaged = path.join(repos, fs.readdirSync(repos)[0] ?? '', '_index.json');
+    fs.writeFileSync(damaged, '{"sessions": [');
+    const resumed: Array<string | undefined> = [];
+    const tool = recordingTool(resumed);
+    const recorded = tool.run;
+    let seen = '';
+    // Read as the tool starts: the run's records, published as it ends, rebuild the reports checkout this archive is in.
+    tool.run = vi.fn(async (name, input) => {
+      seen = fs.readFileSync(damaged, 'utf8');
+      return recorded(name, input);
+    });
+
+    await runLocalDriver(config, runId, workspace, { adapter: tool });
+
+    expect(resumed).toEqual([undefined]);
+    expect(seen).toBe('{"sessions": [');
+  });
 });

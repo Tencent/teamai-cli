@@ -991,3 +991,83 @@ steps:
   });
 });
 
+
+describe('step scorers', () => {
+  it('reads the short and the long form on prompt and workflow steps, and defaults.scorers.batch', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  scorers: { batch: true }
+steps:
+  - id: plan
+    prompt: Plan it.
+    scorers: [quality, scope]
+  - id: check
+    needs: [plan]
+    workflow:
+      steps:
+        - id: lint
+          prompt: Lint it.
+    scorers: { names: [quality], batch: false }
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.defaults).toEqual({ scorers: { batch: true } });
+    expect(result.definition.steps.map((step) => step.scorers)).toEqual([
+      { names: ['quality', 'scope'] },
+      { names: ['quality'], batch: false },
+    ]);
+  });
+
+  it('reports scorers on a command step, an empty or repeated list, a name that is not a token, and a bad batch', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+steps:
+  - id: compile
+    command: npm run build
+    scorers: [quality]
+  - id: plan
+    needs: [compile]
+    prompt: Plan it.
+    scorers: []
+  - id: review
+    needs: [plan]
+    prompt: Review it.
+    scorers: [quality, quality, "a b"]
+  - id: ship
+    needs: [review]
+    prompt: Ship it.
+    scorers: { names: [quality], batch: yes please }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].scorers": scorers is only allowed on a prompt, prompt_file, or workflow step',
+      'workflows/build.yaml:11: field "steps[1].scorers": scorers must list scorer names, as [name, …] or { names: [name, …], batch: true }',
+      'workflows/build.yaml:15: field "steps[2].scorers": scorers lists "quality" twice',
+      'workflows/build.yaml:15: field "steps[2].scorers": scorer "a b" must be a token, the name of a file in scorers/',
+      'workflows/build.yaml:19: field "steps[3].scorers.batch": batch must be true or false',
+    ]);
+  });
+
+  it('reports an unknown key under scorers and defaults.scorers as unknown_key', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  scorers: { batch: true, every: 2 }
+steps:
+  - id: plan
+    prompt: Plan it.
+    scorers: { names: [quality], sample: 10 }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ field: 'defaults.scorers.every', code: 'unknown_key' }),
+      expect.objectContaining({ field: 'steps[0].scorers.sample', code: 'unknown_key' }),
+    ]);
+  });
+});

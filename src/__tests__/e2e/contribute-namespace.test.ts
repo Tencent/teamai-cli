@@ -132,6 +132,15 @@ describe('contribute --namespace through the built CLI (#916)', () => {
     if (projects[0] === 'svc-a') expect(result.output).toContain('pass --namespace <ns>: svc-a, payments');
   });
 
+  it('publishes to the shared root with an empty --namespace when the default is a namespace', () => {
+    setProjects(['alpha']);
+    const result = run(['contribute', '--file', note, '--title', 'narwhal', '--namespace', '']);
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('Contributed: learnings/narwhal-');
+    const files = git(['ls-tree', '-r', '--name-only', 'teamai-learnings'], origin).split('\n');
+    expect(files.filter((f) => f.endsWith('.md'))).toEqual([expect.stringMatching(/^learnings\/narwhal-/)]);
+  });
+
   it.each(['project', 'user'])('previews the selected %s namespace without filesystem writes', (scope) => {
     if (scope === 'user') {
       const config = YAML.parse(fs.readFileSync(configPath, 'utf8'));
@@ -145,7 +154,7 @@ describe('contribute --namespace through the built CLI (#916)', () => {
     expect(snapshot()).toEqual(before);
   });
 
-  it.each(['alpha-notes', '../escape', 'a/b', 'a\\b', ''])('rejects the unavailable namespace %j before writing', (namespace) => {
+  it.each(['alpha-notes', '../escape', 'a/b', 'a\\b'])('rejects the unavailable namespace %j before writing', (namespace) => {
     const before = snapshot(sandbox, true);
     const result = run(['contribute', '--file', note, '--namespace', namespace]);
     expect(result.code, result.output).toBe(1);

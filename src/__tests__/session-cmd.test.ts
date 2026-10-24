@@ -269,7 +269,7 @@ function fakeAdapter(sessions: Session[], platform = 'fakeplat') {
 }
 
 /** 用真实 SyncManager 落盘一个已归档会话（种子数据）。 */
-function seed(identity: string | null, author: string, sessionId: string, title: string, text: string): void {
+async function seed(identity: string | null, author: string, sessionId: string, title: string, text: string): Promise<void> {
   const mgr = new SyncManager(repoRoot);
   const session = mkSession({
     sessionId,
@@ -282,7 +282,7 @@ function seed(identity: string | null, author: string, sessionId: string, title:
     { platform: 'claude-code', author, cwd: '/proj/seed', sessionId, repoIdentity: identity },
     '2026-01-02T00:00:00.000Z',
   );
-  mgr.saveSession(session, meta);
+  await mgr.saveSession(session, meta);
 }
 
 const CJK = /[\u4e00-\u9fff]/;
@@ -291,8 +291,8 @@ const CJK = /[\u4e00-\u9fff]/;
 
 describe('session list --all', () => {
   it('prints a SOURCE column showing repo identity and _unattributed', async () => {
-    seed('github.com/org/alpha', 'alice', 'a-1', 'payment alpha', 'alpha payment retry');
-    seed(null, 'bob', 'b-1', 'payment plain', 'plain payment notes');
+    await seed('github.com/org/alpha', 'alice', 'a-1', 'payment alpha', 'alpha payment retry');
+    await seed(null, 'bob', 'b-1', 'payment plain', 'plain payment notes');
 
     await runSession('list', '--all', '--repo-root', repoRoot, '--cwd', '/tmp/nowhere');
 
@@ -305,7 +305,7 @@ describe('session list --all', () => {
   });
 
   it('keeps the single-project format without --all', async () => {
-    seed('github.com/org/alpha', 'alice', 'a-1', 'payment', 'payment retry');
+    await seed('github.com/org/alpha', 'alice', 'a-1', 'payment', 'payment retry');
     mocks.remotes['/run/alpha'] = 'https://github.com/org/alpha.git';
 
     await runSession('list', '--repo-root', repoRoot, '--cwd', '/run/alpha');
@@ -318,8 +318,8 @@ describe('session list --all', () => {
 
 describe('session pull --all', () => {
   it('rebuilds the index of every repo including _unattributed', async () => {
-    seed('github.com/org/alpha', 'alice', 'a-1', 'payment', 'payment alpha');
-    seed(null, 'bob', 'b-1', 'plain', 'plain notes');
+    await seed('github.com/org/alpha', 'alice', 'a-1', 'payment', 'payment alpha');
+    await seed(null, 'bob', 'b-1', 'plain', 'plain notes');
 
     // 手动清空 alpha 的索引条目，验证 pull --all 会按磁盘内容幂等重建
     const idxPath = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('github.com/org/alpha'), '_index.json');
@@ -346,8 +346,8 @@ describe('session pull', () => {
     ['pull --all', ['--all']],
     ['pull', ['--cwd', '/run/alpha']],
   ])('a second %s leaves _index.json byte-identical', async (_name, args) => {
-    seed('github.com/org/alpha', 'alice', 'a-1', 'payment', 'payment alpha');
-    seed('github.com/org/alpha', 'bob', 'b-1', 'refunds', 'refund notes');
+    await seed('github.com/org/alpha', 'alice', 'a-1', 'payment', 'payment alpha');
+    await seed('github.com/org/alpha', 'bob', 'b-1', 'refunds', 'refund notes');
     mocks.remotes['/run/alpha'] = 'https://github.com/org/alpha.git';
     const idxPath = path.join(repoRoot, 'sessions', 'repos', encodeRepoIdentity('github.com/org/alpha'), '_index.json');
 
@@ -378,9 +378,9 @@ describe('session pull failure', () => {
 
 describe('session search --all', () => {
   it('searches every repo including _unattributed without double-loading the current one', async () => {
-    seed('github.com/org/alpha', 'alice', 'a-1', 'payment alpha', 'alpha payment retry');
-    seed('gitlab.company.com/g/beta', 'bob', 'b-1', 'payment beta', 'beta payment retry');
-    seed(null, 'carol', 'c-1', 'payment plain', 'plain payment notes');
+    await seed('github.com/org/alpha', 'alice', 'a-1', 'payment alpha', 'alpha payment retry');
+    await seed('gitlab.company.com/g/beta', 'bob', 'b-1', 'payment beta', 'beta payment retry');
+    await seed(null, 'carol', 'c-1', 'payment plain', 'plain payment notes');
     mocks.remotes['/run/alpha'] = 'https://github.com/org/alpha.git';
 
     const loadSpy = vi.spyOn(SyncManager.prototype, 'loadSession');
@@ -397,8 +397,8 @@ describe('session search --all', () => {
   });
 
   it('prints a nonzero score for a session that matches only in tool output', async () => {
-    seed('github.com/org/alpha', 'alice', 'a-1', 'docs', 'fix the readme');
-    new SyncManager(repoRoot).saveSession(
+    await seed('github.com/org/alpha', 'alice', 'a-1', 'docs', 'fix the readme');
+    await new SyncManager(repoRoot).saveSession(
       mkSession({
         sessionId: 'b-1',
         title: 'build',
@@ -423,8 +423,8 @@ describe('session search --all', () => {
   });
 
   it('scopes search to the current repo without --all', async () => {
-    seed('github.com/org/alpha', 'alice', 'a-1', 'payment alpha', 'alpha payment retry');
-    seed('gitlab.company.com/g/beta', 'bob', 'b-1', 'payment beta', 'beta payment retry');
+    await seed('github.com/org/alpha', 'alice', 'a-1', 'payment alpha', 'alpha payment retry');
+    await seed('gitlab.company.com/g/beta', 'bob', 'b-1', 'payment beta', 'beta payment retry');
     mocks.remotes['/run/alpha'] = 'https://github.com/org/alpha.git';
 
     const loadSpy = vi.spyOn(SyncManager.prototype, 'loadSession');
@@ -1042,6 +1042,17 @@ describe('a batch over sessions when one session cannot be read', () => {
     },
   ];
 
+  it('names the currently failing archive copy rather than the last copy in a text batch', async () => {
+    adapterWith('fakeplat', ids, '');
+    adapterWith('tgtplat', ids.map((id) => `tgt-${id}`), '');
+    mocks.heldArchiveLock = '/fixture/session-archive.lock';
+    await runSession('migrate', '-s', 'fakeplat', '-t', 'tgtplat', '--all', '--push', '-y', '--repo-root', repoRoot, '--cwd', '/proj/beta');
+    const message = errored.join('\n');
+    expect(message).toContain('Copied as tgt-ok-1 in /proj/beta, but not archived');
+    expect(message).not.toContain('Copied as tgt-ok-3');
+    expect(process.exitCode).toBe(1);
+  });
+
   it.each(cases)('$name, names the failed one, and exits 1', async ({ setup, argv, done, expected, summary }) => {
     setup();
     // repoRoot is created per test, after the table is built.
@@ -1325,7 +1336,7 @@ describe('session resume of a session already restored', () => {
     const ws = fs.realpathSync.native(fs.mkdtempSync(path.join(mocks.home, 'ws-')));
     mocks.remotes[ws] = 'https://github.com/org/alpha.git';
     const session = mkSession({ sessionId: '0b6f3c1e-5a2d-4c8e-9f10-7a1b2c3d4e5f', cwd: ws, platform: 'codex' });
-    new SyncManager(repoRoot).saveSession(
+    await new SyncManager(repoRoot).saveSession(
       session,
       defaultSyncMeta(
         {
@@ -1366,7 +1377,7 @@ describe('session resume of a restore whose write failed', () => {
     const ws = fs.realpathSync.native(fs.mkdtempSync(path.join(mocks.home, 'ws-')));
     mocks.remotes[ws] = 'https://github.com/org/alpha.git';
     const session = mkSession({ sessionId: '0b6f3c1e-5a2d-4c8e-9f10-7a1b2c3d4e5f', cwd: ws, platform: 'codex' });
-    new SyncManager(repoRoot).saveSession(
+    await new SyncManager(repoRoot).saveSession(
       session,
       defaultSyncMeta(
         {
@@ -1418,7 +1429,7 @@ describe('session resume on Windows', () => {
   it.each(['cursor', 'workbuddy'])('refuses to restore into %s, which would never show the copy', async (platform) => {
     mocks.remotes['/run/dir'] = 'https://github.com/org/alpha.git';
     const session = mkSession({ cwd: '/run/dir', platform: 'claude-code' });
-    new SyncManager(repoRoot).saveSession(
+    await new SyncManager(repoRoot).saveSession(
       session,
       defaultSyncMeta(
         {
@@ -1455,7 +1466,7 @@ describe('session resume --dry-run', () => {
     const title = 'pay\u001b[31mment\u001b[0m';
     mocks.remotes['/run/dir'] = 'https://github.com/org/alpha.git';
     const session = mkSession({ title, cwd: '/run/dir', platform: 'claude-code' });
-    new SyncManager(repoRoot).saveSession(
+    await new SyncManager(repoRoot).saveSession(
       session,
       defaultSyncMeta(
         {

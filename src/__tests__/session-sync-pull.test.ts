@@ -41,7 +41,7 @@ function useGitConfig(extra = ''): void {
   process.env.GIT_CONFIG_NOSYSTEM = '1';
 }
 
-function archive(clone: string, sessionId: string, author: string): void {
+async function archive(clone: string, sessionId: string, author: string): Promise<void> {
   const session: Session = {
     sessionId,
     title: `session ${sessionId}`,
@@ -57,7 +57,7 @@ function archive(clone: string, sessionId: string, author: string): void {
     session.createdAt,
   );
   const mgr = new SyncManager(clone);
-  mgr.saveSession(session, meta);
+  await mgr.saveSession(session, meta);
   mgr.gitCommit(`sync: ${sessionId}`);
 }
 
@@ -77,10 +77,10 @@ function indexedSessionIds(clone: string): string[] {
 }
 
 /** Pull, and finish a merge stopped on the session indexes the way the session commands do. */
-function pullAndRebuild(clone: string): PullResult {
+async function pullAndRebuild(clone: string): Promise<PullResult> {
   const mgr = new SyncManager(clone);
   const result = mgr.gitPull();
-  if (result.status === 'indexes-conflicted') mgr.commitRebuiltIndexes(result.indexes);
+  if (result.status === 'indexes-conflicted') await mgr.commitRebuiltIndexes(result.indexes);
   return result;
 }
 
@@ -130,19 +130,19 @@ function conflictOnNotes(a: string, b: string): void {
   git(a, 'push', '-q', 'origin', 'main');
 }
 
-function seedRemote(): { a: string; b: string } {
+async function seedRemote(): Promise<{ a: string; b: string }> {
   git(tmp, 'init', '-q', '--bare', '-b', 'main', 'remote.git');
   const seed = clone('seed');
-  archive(seed, 's0', 'carol');
+  await archive(seed, 's0', 'carol');
   git(seed, 'push', '-q', 'origin', 'main');
   return { a: clone('a'), b: clone('b') };
 }
 
-function divergeOnIndex(): { a: string; b: string } {
-  const { a, b } = seedRemote();
-  archive(a, 'a1', 'alice');
+async function divergeOnIndex(): Promise<{ a: string; b: string }> {
+  const { a, b } = (await seedRemote());
+  await archive(a, 'a1', 'alice');
   git(a, 'push', '-q', 'origin', 'main');
-  archive(b, 'b1', 'bob');
+  await archive(b, 'b1', 'bob');
   return { a, b };
 }
 
@@ -168,20 +168,20 @@ describe('SyncManager.gitPull', () => {
     ['pull.rebase=false', '[pull]\n\trebase = false\n'],
     ['pull.rebase=true', '[pull]\n\trebase = true\n'],
     ['pull.ff=only', '[pull]\n\tff = only\n'],
-  ])('merges a diverged session index and rebuilds it (%s)', (_label, pullConfig) => {
+  ])('merges a diverged session index and rebuilds it (%s)', async (_label, pullConfig) => {
     useGitConfig(pullConfig);
-    const { b } = divergeOnIndex();
+    const { b } = (await divergeOnIndex());
 
-    const result = pullAndRebuild(b);
+    const result = (await pullAndRebuild(b));
 
     expect(result).toEqual({ status: 'indexes-conflicted', indexes: [INDEX] });
     expect(indexedSessionIds(b)).toEqual(['a1', 'b1', 's0']);
     expect(git(b, 'status', '--porcelain')).toBe('');
   });
 
-  it('aborts the merge and names the files when another file conflicts too', () => {
+  it('aborts the merge and names the files when another file conflicts too', async () => {
     useGitConfig();
-    const { a, b } = divergeOnIndex();
+    const { a, b } = (await divergeOnIndex());
     conflictOnNotes(a, b);
     const headBefore = git(b, 'rev-parse', 'HEAD');
 
@@ -195,9 +195,9 @@ describe('SyncManager.gitPull', () => {
     expect(git(b, 'status', '--porcelain')).toBe('');
   });
 
-  it('points at git commit when only another file conflicts', () => {
+  it('points at git commit when only another file conflicts', async () => {
     useGitConfig();
-    const { a, b } = seedRemote();
+    const { a, b } = (await seedRemote());
     conflictOnNotes(a, b);
 
     const result = new SyncManager(b).gitPull();
@@ -209,21 +209,21 @@ describe('SyncManager.gitPull', () => {
     expect(git(b, 'status', '--porcelain')).toBe('');
   });
 
-  it('finishes a merge an earlier pull left stopped on the index', () => {
+  it('finishes a merge an earlier pull left stopped on the index', async () => {
     useGitConfig();
-    const { b } = divergeOnIndex();
+    const { b } = (await divergeOnIndex());
     expect(() => git(b, '-c', 'pull.rebase=false', 'pull', '-q', 'origin', 'main')).toThrow();
 
-    const result = pullAndRebuild(b);
+    const result = (await pullAndRebuild(b));
 
     expect(result).toEqual({ status: 'indexes-conflicted', indexes: [INDEX], pending: true });
     expect(indexedSessionIds(b)).toEqual(['a1', 'b1', 's0']);
     expect(git(b, 'status', '--porcelain')).toBe('');
   });
 
-  it('leaves a merge with other conflicts for the user to finish', () => {
+  it('leaves a merge with other conflicts for the user to finish', async () => {
     useGitConfig();
-    const { a, b } = divergeOnIndex();
+    const { a, b } = (await divergeOnIndex());
     conflictOnNotes(a, b);
     expect(() => git(b, '-c', 'pull.rebase=false', 'pull', '-q', 'origin', 'main')).toThrow();
 
@@ -236,9 +236,9 @@ describe('SyncManager.gitPull', () => {
     expect(git(b, 'status', '--porcelain')).toMatch(/^AA notes\.md$/m);
   });
 
-  it('leaves a merge with only another file in conflict for the user to commit', () => {
+  it('leaves a merge with only another file in conflict for the user to commit', async () => {
     useGitConfig();
-    const { a, b } = seedRemote();
+    const { a, b } = (await seedRemote());
     conflictOnNotes(a, b);
     expect(() => git(b, '-c', 'pull.rebase=false', 'pull', '-q', 'origin', 'main')).toThrow();
 
@@ -251,9 +251,9 @@ describe('SyncManager.gitPull', () => {
     expect(git(b, 'status', '--porcelain')).toMatch(/^AA notes\.md$/m);
   });
 
-  it('leaves a merge with nothing unmerged for the user to commit', () => {
+  it('leaves a merge with nothing unmerged for the user to commit', async () => {
     useGitConfig();
-    const { b } = divergeOnIndex();
+    const { b } = (await divergeOnIndex());
     git(b, 'checkout', '-qb', 'feature');
     fs.writeFileSync(path.join(b, 'notes.md'), 'feature\n');
     git(b, 'add', 'notes.md');
@@ -272,9 +272,9 @@ describe('SyncManager.gitPull', () => {
     expect(() => git(b, 'rev-parse', '-q', '--verify', 'MERGE_HEAD')).not.toThrow();
   });
 
-  it('leaves unmerged files from another git operation alone', () => {
+  it('leaves unmerged files from another git operation alone', async () => {
     useGitConfig();
-    const { b } = divergeOnIndex();
+    const { b } = (await divergeOnIndex());
     const index = path.join(b, INDEX);
     const committed = fs.readFileSync(index, 'utf-8');
     fs.writeFileSync(index, committed.replace('"version": 1', '"version": 2'));
@@ -297,9 +297,9 @@ describe('SyncManager.gitPull', () => {
   it.each([
     ['merge.autostash', '[merge]\n\tautostash = true\n'],
     ['pull.autostash', '[pull]\n\tautostash = true\n'],
-  ])('refuses to merge over local index edits instead of autostashing them (%s)', (_label, autostashConfig) => {
+  ])('refuses to merge over local index edits instead of autostashing them (%s)', async (_label, autostashConfig) => {
     useGitConfig(autostashConfig);
-    const { b } = divergeOnIndex();
+    const { b } = (await divergeOnIndex());
     const index = path.join(b, INDEX);
     fs.writeFileSync(index, fs.readFileSync(index, 'utf-8').replace('"version": 1', '"version": 2'));
 
@@ -316,11 +316,11 @@ describe('SyncManager.gitPull', () => {
     ['ours is not a string, theirs has it', 42, 'kept'],
     ['ours has it, theirs has none', 'kept', undefined],
     ['neither has one, so the directory name decides', undefined, null],
-  ])('takes the repo identity from a side that recorded one (%s)', (_label, ours, theirs) => {
+  ])('takes the repo identity from a side that recorded one (%s)', async (_label, ours, theirs) => {
     useGitConfig();
-    const { a, b } = seedRemote();
-    const commitIndex = (clone: string, sessionId: string, author: string, identity: unknown): void => {
-      archive(clone, sessionId, author);
+    const { a, b } = (await seedRemote());
+    const commitIndex = async (clone: string, sessionId: string, author: string, identity: unknown): Promise<void> => {
+      await archive(clone, sessionId, author);
       if (identity === 'kept') return;
       const file = path.join(clone, INDEX);
       const index = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
@@ -329,17 +329,17 @@ describe('SyncManager.gitPull', () => {
       fs.writeFileSync(file, JSON.stringify(index, null, 2));
       git(clone, 'commit', '-qam', `edit ${sessionId} index`);
     };
-    commitIndex(a, 'a1', 'alice', theirs);
+    await commitIndex(a, 'a1', 'alice', theirs);
     git(a, 'push', '-q', 'origin', 'main');
-    commitIndex(b, 'b1', 'bob', ours);
+    await commitIndex(b, 'b1', 'bob', ours);
 
-    expect(pullAndRebuild(b).status).toBe('indexes-conflicted');
+    expect((await pullAndRebuild(b)).status).toBe('indexes-conflicted');
 
     const index = JSON.parse(fs.readFileSync(path.join(b, INDEX), 'utf-8')) as { repoIdentity: unknown };
     expect(index.repoIdentity).toBe(REPO);
   });
 
-  it('keeps the identity a legacy directory name cannot encode', () => {
+  it('keeps the identity a legacy directory name cannot encode', async () => {
     useGitConfig();
     const identity = 'github.com/acme/my_app';
     const dir = 'sessions/repos/github.com_acme_my_app';
@@ -368,16 +368,16 @@ describe('SyncManager.gitPull', () => {
     git(a, 'push', '-q', 'origin', 'main');
     writeLegacy(b, ['s0', 'b1']);
 
-    const result = pullAndRebuild(b);
+    const result = (await pullAndRebuild(b));
 
     expect(result).toEqual({ status: 'indexes-conflicted', indexes: [`${dir}/_index.json`] });
     const index = JSON.parse(fs.readFileSync(path.join(b, dir, '_index.json'), 'utf-8')) as { repoIdentity: string };
     expect(index.repoIdentity).toBe(identity);
   });
 
-  it('refuses to pull while a rebase is stopped', () => {
+  it('refuses to pull while a rebase is stopped', async () => {
     useGitConfig();
-    const { b } = divergeOnIndex();
+    const { b } = (await divergeOnIndex());
     expect(() => git(b, '-c', 'pull.rebase=true', 'pull', '-q', 'origin', 'main')).toThrow();
 
     const result = new SyncManager(b).gitPull();
@@ -392,9 +392,9 @@ describe('SyncManager.gitPull', () => {
 describe('session pull', () => {
   it('finishes a merge an earlier pull left on the session index, then pulls what the remote got since', async () => {
     useGitConfig();
-    const { a, b } = divergeOnIndex();
+    const { a, b } = (await divergeOnIndex());
     expect(() => git(b, '-c', 'pull.rebase=false', 'pull', '-q', 'origin', 'main')).toThrow();
-    archive(a, 'a2', 'alice');
+    await archive(a, 'a2', 'alice');
     git(a, 'push', '-q', 'origin', 'main');
 
     const pulled = await session('pull', '--all', '--repo-root', b);
@@ -412,7 +412,7 @@ describe('session pull', () => {
 
   it('leaves a merge stopped on the session index for a rerun while another command holds the archive lock', async () => {
     useGitConfig();
-    const { b } = divergeOnIndex();
+    const { b } = (await divergeOnIndex());
     lock.heldBy = path.join(tmp, 'home', '.teamai', 'locks', 'sessions-held.lock');
 
     const busy = await session('pull', '--all', '--repo-root', b);
@@ -436,7 +436,7 @@ describe('session pull', () => {
 describe('session push --all', () => {
   it('skips an unreadable session, still merges a diverged index and pushes the rest, and exits 1', async () => {
     useGitConfig();
-    const { b } = divergeOnIndex();
+    const { b } = (await divergeOnIndex());
     const projects = path.join(tmp, 'home', '.claude', 'projects', '-proj-app');
     fs.mkdirSync(projects, { recursive: true });
     const record = (text: string) =>
@@ -466,22 +466,22 @@ describe('session push --all', () => {
 });
 
 describe('SyncManager.gitPush', () => {
-  it('pulls once when the remote moved on and leaves a merge stopped on the index to the caller', () => {
+  it('pulls once when the remote moved on and leaves a merge stopped on the index to the caller', async () => {
     useGitConfig();
-    const { b } = divergeOnIndex();
+    const { b } = (await divergeOnIndex());
     const mgr = new SyncManager(b);
 
     expect(mgr.gitPush()).toEqual({ status: 'indexes-conflicted', indexes: [INDEX] });
     expect(git(b, 'status', '--porcelain')).toContain(`UU ${INDEX}`);
 
-    mgr.commitRebuiltIndexes([INDEX]);
+    await mgr.commitRebuiltIndexes([INDEX]);
     expect(mgr.gitPush()).toEqual({ status: 'pushed' });
     expect(indexedSessionIds(clone('fresh'))).toEqual(['a1', 'b1', 's0']);
   });
 
-  it('stops with the pull reason when the retry hits a real conflict', () => {
+  it('stops with the pull reason when the retry hits a real conflict', async () => {
     useGitConfig();
-    const { a, b } = divergeOnIndex();
+    const { a, b } = (await divergeOnIndex());
     conflictOnNotes(a, b);
     const headBefore = git(b, 'rev-parse', 'HEAD');
 
@@ -490,15 +490,15 @@ describe('SyncManager.gitPush', () => {
     expect(git(b, 'status', '--porcelain')).toBe('');
   });
 
-  it('rethrows a rejection a pull cannot fix, without merging', () => {
+  it('rethrows a rejection a pull cannot fix, without merging', async () => {
     useGitConfig();
     git(tmp, 'init', '-q', '--bare', '-b', 'main', 'remote.git');
     const seed = clone('seed');
-    archive(seed, 's0', 'carol');
+    await archive(seed, 's0', 'carol');
     git(seed, 'push', '-q', 'origin', 'main');
     const hook = path.join(tmp, 'remote.git', 'hooks', 'pre-receive');
     fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-    archive(seed, 's1', 'carol');
+    await archive(seed, 's1', 'carol');
 
     expect(() => new SyncManager(seed).gitPush()).toThrow(/pre-receive hook declined/);
     expect(git(seed, 'rev-list', '--merges', 'HEAD')).toBe('');

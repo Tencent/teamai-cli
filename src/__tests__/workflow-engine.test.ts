@@ -3,18 +3,27 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
+import * as update from '../update.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { leaseNext, parseNextPayload, parseReport, reportAttempt, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
-import { runLocalDriver } from '../workflow/local-driver.js';
+import { leaseNext, parseNextPayload, parseReport, reportAttempt, resumableSessions, SETTLED_ATTEMPTS_LIMIT, startRun, type ReportInput } from '../workflow/engine.js';
+import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { outputMismatch } from '../workflow/output.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
-import { readRun, runFilePath, runLockPath, writeRun } from '../workflow/store.js';
-import type { DriverIdentity, RunState, TokenUsage } from '../workflow/types.js';
+import { readRun, runFilePath, runLockPath, updateRun } from '../workflow/store.js';
+import type { TokenUsage } from '../tool-launch/stdout.js';
+import type { DriverIdentity, RunState } from '../workflow/types.js';
+
+_setDriverPollMs(20);
 
 const dirs: string[] = [];
+
+/** Saves an edited run file under its lock, as a hand edit or an older teamai leaves one. */
+async function saveRun(config: LocalConfig, run: RunState): Promise<void> {
+  await updateRun(config, run.id, async () => ({ value: undefined, write: run }));
+}
 
 function testConfig(): { config: LocalConfig; work: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workflow-engine-'));
@@ -231,7 +240,7 @@ describe('workflow engine', () => {
       const stored = await readRun(finishing.config, finishing.runId);
       if (typeof stored !== 'object') throw new Error('run missing');
       stored.steps = stored.steps.map((step) => ({ ...step, status: 'succeeded', outcome: 'success', settledAt: 0 }));
-      await writeRun(finishing.config, stored);
+      await saveRun(finishing.config, stored);
       vi.setSystemTime(new Date('2026-01-01T00:02:00.000Z'));
       await leaseNext(finishing.config, finishing.runId, driverA);
       expect(await readRun(finishing.config, finishing.runId)).toMatchObject({
@@ -304,7 +313,7 @@ describe('workflow engine', () => {
       { id: 'one', status: 'failed', outcome: 'failed', settledAt: 0 },
       { id: 'two', status: 'succeeded', outcome: 'success', settledAt: 0 },
     ];
-    await writeRun(config, stored);
+    await saveRun(config, stored);
 
     const done = await leaseNext(config, runId, driverA);
 
@@ -516,6 +525,21 @@ steps:
     expect(await leaseNext(config, runId, driverA)).toEqual({ data: { done: { run: runId, outcome: 'succeeded' }, cancelled: [] } });
   });
 
+  it('refuses to start a run whose file it could not write, and publishes no start record', async () => {
+    const { config } = testConfig();
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), TWO_STEPS);
+    await syncWorkflowDefinitions(config);
+    const locked = vi.spyOn(update, 'acquireLock').mockResolvedValue(false);
+    try {
+      const started = await startRun(config, 'build');
+
+      expect(started).toMatchObject({ error: { code: 'busy' } });
+      expect(await pendingRecords(config)).toEqual([]);
+    } finally {
+      locked.mockRestore();
+    }
+  });
+
   it('reports no record for a run whose records could not be queued', async () => {
     const { config, work } = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), TWO_STEPS);
@@ -568,7 +592,7 @@ steps:
     const stored = await readRun(config, runId);
     if (typeof stored !== 'object') throw new Error('run missing');
     // A run file from before settledCount: five settled attempts and no counter.
-    await writeRun(config, { ...stored, settledAttempts: ['x1', 'x2', 'x3', 'x4', 'x5'], settledCount: undefined });
+    await saveRun(config, { ...stored, settledAttempts: ['x1', 'x2', 'x3', 'x4', 'x5'], settledCount: undefined });
 
     await reportAttempt(config, runId, { attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: driverA });
 
@@ -1124,7 +1148,7 @@ steps:
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error('run missing');
     run.definition.steps[0]!.env = { TITLE: '{{ inputs.a b }}' };
-    await writeRun(config, run);
+    await saveRun(config, run);
 
     const { leased, done } = await drive(config, runId);
 
@@ -1149,7 +1173,7 @@ steps:
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error('run missing');
     run.definition.steps[1]!.if = 'steps.check.outcome = 1';
-    await writeRun(config, run);
+    await saveRun(config, run);
 
     expect(await leaseNext(config, runId, driverA)).toMatchObject({
       error: { code: 'run_unreadable', message: expect.stringContaining('step "label" has an if that does not parse') },
@@ -1467,7 +1491,7 @@ describe('file sub-workflows', () => {
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error('run missing');
     delete run.workflows!.check!.steps[1]!.needs;
-    await writeRun(config, run);
+    await saveRun(config, run);
 
     expect(await leaseNext(config, runId, driverA)).toEqual({ error: {
       code: 'run_unreadable',
@@ -1605,7 +1629,7 @@ describe('with on prompt steps', () => {
     const run = await readRun(config, runId);
     if (typeof run !== 'object' || !run.definition.steps[0]?.with) throw new Error('run missing');
     run.definition.steps[0].with = { task: '{{ inputs.task = 1 }}' };
-    await writeRun(config, run);
+    await saveRun(config, run);
 
     const { leased, done } = await drive(config, runId);
 
@@ -2272,7 +2296,7 @@ describe('parallel leases', () => {
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error('run missing');
     run.definition.steps[2]!.env = { TITLE: '{{ inputs.a b }}' };
-    await writeRun(config, run);
+    await saveRun(config, run);
     const check = leaseIn(await leaseNext(config, runId, driverA));
     const other = leaseIn(await leaseNext(config, runId, driverA, { running: [check.attempt] }));
     await reportAttempt(config, runId, { ...check, outcome: 'success', driver: driverA });
@@ -2294,7 +2318,7 @@ describe('parallel leases', () => {
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error('run missing');
     run.definition.steps[0]!.env = { TITLE: '{{ inputs.a b }}' };
-    await writeRun(config, run);
+    await saveRun(config, run);
 
     expect(await leaseNext(config, runId, driverA)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     expect(await readRun(config, runId)).toMatchObject({ steps: [
@@ -2654,7 +2678,7 @@ ${build}  - id: stop
       const stored = await readRun(config, runId);
       if (typeof stored !== 'object') throw new Error(`run ${stored}`);
       const names = new Map([review, guard, fix, after].map((lease) => [lease.attempt, lease.step]));
-      return JSON.parse(JSON.stringify(stored.steps).replace(/a[0-9a-f]{8}/g, (attempt) => names.get(attempt) ?? attempt));
+      return JSON.parse(JSON.stringify(stored.steps).replace(/"installId":"[^"]+"/g, '"installId":"<install>"').replace(/a[0-9a-f]{8}/g, (attempt) => names.get(attempt) ?? attempt));
     };
     expect(await run(false)).toEqual(await run(true));
   });
@@ -2684,7 +2708,7 @@ ${action}  - id: failed
       const stored = await readRun(config, runId);
       if (typeof stored !== 'object') throw new Error(`run ${stored}`);
       stored.definition.steps[1]!.env = { TITLE: '{{ inputs.bad path }}' };
-      await writeRun(config, stored);
+      await saveRun(config, stored);
     }
     const plan = leaseIn(await leaseNext(config, runId, driverA));
     const fast = leaseIn(await leaseNext(config, runId, driverA, { running: [plan.attempt] }));
@@ -2833,7 +2857,7 @@ ${action}  - id: failed
       expect(next).toMatchObject({ data: { done } });
       const stored = await readRun(config, runId);
       if (typeof stored !== 'object') throw new Error(`run ${stored}`);
-      const normalize = (value: unknown) => JSON.parse(JSON.stringify(value).replaceAll(runId, '<run>').replace(/a[0-9a-f]{8}/g, (attempt) =>
+      const normalize = (value: unknown) => JSON.parse(JSON.stringify(value).replaceAll(runId, '<run>').replace(/"installId":"[^"]+"/g, '"installId":"<install>"').replace(/a[0-9a-f]{8}/g, (attempt) =>
         [...held.values()].find((lease) => lease.attempt === attempt)?.step ?? attempt));
       if ('error' in next) throw new Error(next.error.message);
       return { done: normalize(next.data.done), steps: normalize(stored.steps) };
@@ -3779,9 +3803,9 @@ describe('for_each', () => {
     expect(leased).toEqual(['plan#1', 'ship#1']);
     expect(done).toEqual({ run: runId, record: 'pending', outcome: 'succeeded' });
     expect((await readRun(config, runId) as RunState).steps).toEqual([
-      { id: 'plan', status: 'succeeded', outcome: 'success', attempt: expect.any(String), outputs: { targets: [] }, settledAt: 2 },
+      { id: 'plan', status: 'succeeded', outcome: 'success', attempt: expect.any(String), installId: expect.any(String), outputs: { targets: [] }, settledAt: 2 },
       { id: 'build', status: 'succeeded', outcome: 'success', results: [], settledAt: 2 },
-      { id: 'ship', status: 'succeeded', outcome: 'success', attempt: expect.any(String), settledAt: 3 },
+      { id: 'ship', status: 'succeeded', outcome: 'success', attempt: expect.any(String), installId: expect.any(String), settledAt: 3 },
     ]);
   });
 
@@ -4153,5 +4177,239 @@ describe('the agent a pass ran as (#1176)', () => {
 
     expect(stored).toMatchObject({ steps: [{ status: 'succeeded', tool: 'claude' }] });
     expect(typeof stored === 'object' && stored.steps[0]).toEqual(expect.not.objectContaining({ agent: expect.anything() }));
+  });
+});
+
+describe('sessions a step can still continue', () => {
+  /** Leases and reports `count` steps, each with the session `sessions` gives its path, if any. */
+  async function settleSteps(config: LocalConfig, runId: string, count: number, sessions: Record<string, string[]>): Promise<string[]> {
+    const leased: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const lease = leaseIn(await leaseNext(config, runId, driverA));
+      leased.push(lease.step);
+      const session = sessions[lease.step]?.shift();
+      await reportAttempt(config, runId, {
+        attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: driverA, ...(session ? { tool: 'claude', session } : {}),
+      });
+    }
+    return leased;
+  }
+
+  async function continued(config: LocalConfig, runId: string): Promise<string[]> {
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(String(run));
+    return resumableSessions(run).map((session) => `${session.tool}:${session.id}`).sort();
+  }
+
+  it('names the latest session of a step a loop runs again and of the step a later one resumes, and no other', async () => {
+    const { config, runId } = await startBuild(workflow('build', `  - id: plan
+    prompt: Plan.
+  - id: aside
+    needs: [plan]
+    prompt: Look elsewhere.
+  - id: review
+    needs: [plan]
+    prompt: Review.
+    session: continue
+    loop: { back_to: review, while: "length(steps.review.passes) < 3", max_iterations: 3 }
+  - id: fix
+    needs: [plan, review]
+    prompt: Fix.
+    session: { from: plan }
+`));
+    await settleSteps(config, runId, 4, { plan: ['p1'], aside: ['a1'], review: ['r1', 'r2'] });
+
+    expect(await continued(config, runId)).toEqual(['claude:p1', 'claude:r2']);
+  });
+
+  it('names what the steps of a workflow that has not started yet will continue', async () => {
+    const { config, runId } = await startBuild(workflow('build', `  - id: plan
+    prompt: Plan.
+  - id: brief
+    needs: []
+    prompt: Brief.
+  - id: round
+    needs: []
+    workflow:
+      steps:
+        - id: plan
+          prompt: Plan this round.
+        - id: ask
+          needs: [plan]
+          prompt: Ask.
+          session: continue
+    loop: { back_to: round, while: "length(steps.round.passes) < 2", max_iterations: 2 }
+  - id: gate
+    needs: [plan, brief]
+    prompt: Gate.
+  - id: work
+    needs: [plan, brief, gate]
+    workflow:
+      steps:
+        - id: plan
+          prompt: Plan the work.
+        - id: draft
+          needs: [plan]
+          prompt: Draft.
+          session: { from: plan }
+        - id: check
+          needs: []
+          prompt: Check.
+          session: { from: brief }
+`));
+    const leased = await settleSteps(config, runId, 4, { 'round.plan': ['q1'], 'round.ask': ['s1'], plan: ['p1'], brief: ['b1'] });
+
+    expect(leased).toEqual(['plan', 'brief', 'round.plan', 'round.ask']);
+    expect(await continued(config, runId)).toEqual(['claude:b1', 'claude:s1']);
+  });
+
+  it('names nothing for a run whose steps have all settled', async () => {
+    const { config, runId } = await startBuild(workflow('build', `  - id: plan
+    prompt: Plan.
+  - id: fix
+    needs: [plan]
+    prompt: Fix.
+    session: { from: plan }
+`));
+    await settleSteps(config, runId, 2, { plan: ['p1'], fix: ['f1'] });
+
+    expect(await continued(config, runId)).toEqual([]);
+  });
+});
+
+describe('the session a step resumes after other steps continued it', () => {
+  const PLAN = workflow('build', `  - id: plan
+    prompt: Plan.
+  - id: build
+    needs: [plan]
+    prompt: Build.
+    session: { from: plan }
+  - id: check
+    needs: [build]
+    prompt: Check.
+    session: { from: plan }
+  - id: final
+    needs: [check]
+    prompt: Wrap up.
+    session: { from: plan }
+`);
+
+  /**
+   * Leases the next step and reports it through the report payload a driver sends, with the session the step ran in and
+   * the extra fields `fields` adds. Returns the session the lease carried.
+   */
+  async function step(config: LocalConfig, runId: string, ran: { tool: string; session: string }, fields: Record<string, unknown> = {}): Promise<unknown> {
+    const next = await leaseNext(config, runId, driverA);
+    const lease = leaseIn(next);
+    const parsed = parseReport({ attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: driverA, ...ran, ...fields });
+    if (typeof parsed === 'string') throw new Error(parsed);
+    expect(parsed.ignored).toEqual([]);
+    expect(await reportAttempt(config, runId, parsed.report)).toMatchObject({ data: { accepted: true } });
+    return 'data' in next ? (next.data.lease as { session?: unknown }).session : undefined;
+  }
+
+  it('hands every later step the plan\'s session while each step resumes it by the same id', async () => {
+    const { config, runId } = await startBuild(PLAN);
+    const plan = { tool: 'claude', id: 'plan-1' };
+
+    expect(await step(config, runId, { tool: 'claude', session: 'plan-1' })).toBeUndefined();
+    expect(await step(config, runId, { tool: 'claude', session: 'plan-1' }, { resumed: plan })).toEqual(plan);
+    expect(await step(config, runId, { tool: 'claude', session: 'plan-1' }, { resumed: plan })).toEqual(plan);
+    expect(await step(config, runId, { tool: 'claude', session: 'plan-1' }, { resumed: plan })).toEqual(plan);
+  });
+
+  it('hands later steps the copy a step continued the session in, through every tool and copy after it', async () => {
+    const { config, runId } = await startBuild(PLAN);
+
+    await step(config, runId, { tool: 'claude', session: 'plan-1' });
+    expect(await step(config, runId, { tool: 'codex', session: 'copy-1' }, { resumed: { tool: 'claude', id: 'plan-1' } }))
+      .toEqual({ tool: 'claude', id: 'plan-1' });
+    expect(await step(config, runId, { tool: 'claude', session: 'copy-2' }, { resumed: { tool: 'codex', id: 'copy-1' } }))
+      .toEqual({ tool: 'codex', id: 'copy-1', earlier: [{ tool: 'claude', id: 'plan-1' }] });
+    const run = await readRun(config, runId);
+    if (typeof run !== 'object') throw new Error(String(run));
+    expect(resumableSessions(run)).toEqual([{ tool: 'claude', id: 'copy-2', earlier: [{ tool: 'codex', id: 'copy-1' }, { tool: 'claude', id: 'plan-1' }] }]);
+    expect(await step(config, runId, { tool: 'claude', session: 'copy-2' }, { resumed: { tool: 'claude', id: 'copy-2' } }))
+      .toEqual({ tool: 'claude', id: 'copy-2', earlier: [{ tool: 'codex', id: 'copy-1' }, { tool: 'claude', id: 'plan-1' }] });
+  });
+
+  it('keeps handing later steps the plan\'s session when a step started a new session instead of resuming it', async () => {
+    const { config, runId } = await startBuild(PLAN);
+
+    await step(config, runId, { tool: 'claude', session: 'plan-1' });
+    expect(await step(config, runId, { tool: 'opencode', session: 'ses_fresh' })).toEqual({ tool: 'claude', id: 'plan-1' });
+    expect(await step(config, runId, { tool: 'claude', session: 'plan-1' }, { resumed: { tool: 'claude', id: 'plan-1' } }))
+      .toEqual({ tool: 'claude', id: 'plan-1' });
+  });
+
+  it('refuses a resumed session another step of the run holds, which the lease did not offer', async () => {
+    const { config, runId } = await startBuild(workflow('build', `  - id: plan
+    prompt: Plan.
+  - id: other
+    needs: []
+    prompt: Other.
+  - id: check
+    needs: [plan, other]
+    prompt: Check.
+    session: { from: plan }
+`));
+    await step(config, runId, { tool: 'claude', session: 'plan-1' });
+    await step(config, runId, { tool: 'claude', session: 'other-1' });
+    const lease = leaseIn(await leaseNext(config, runId, driverA));
+
+    expect(await reportAttempt(config, runId, {
+      attempt: lease.attempt, revision: lease.revision, outcome: 'success', driver: driverA, tool: 'claude', session: 'check-1',
+      resumed: { tool: 'claude', id: 'other-1' },
+    })).toMatchObject({ error: { code: 'invalid_report', message: expect.stringContaining('other-1') } });
+  });
+
+  it('adds no link when a step releases the session it resumed', async () => {
+    const { config, runId } = await startBuild(PLAN);
+    await step(config, runId, { tool: 'claude', session: 'plan-1' });
+    const lease = leaseIn(await leaseNext(config, runId, driverA));
+
+    expect(await reportAttempt(config, runId, {
+      attempt: lease.attempt, revision: lease.revision, outcome: 'released', driver: driverA, tool: 'codex', session: 'copy-1',
+      resumed: { tool: 'claude', id: 'plan-1' },
+    })).toMatchObject({ data: { accepted: true } });
+    const again = await leaseNext(config, runId, driverA);
+    expect('data' in again ? (again.data.lease as { session?: unknown }).session : undefined).toEqual({ tool: 'claude', id: 'plan-1' });
+  });
+
+  it('accepts the session a lease is handed back with, which a copy continued since it was first leased', async () => {
+    const { config, runId } = await startBuild(workflow('build', `  - id: plan
+    prompt: Plan.
+  - id: review
+    needs: [plan]
+    prompt: Review.
+    session: { from: plan }
+  - id: check
+    needs: [plan]
+    prompt: Check.
+    session: { from: plan }
+`));
+    await step(config, runId, { tool: 'claude', session: 'plan-1' });
+    const review = leaseIn(await leaseNext(config, runId, driverA));
+    const check = leaseIn(await leaseNext(config, runId, driverA, { running: [review.attempt] }));
+    await reportAttempt(config, runId, {
+      attempt: check.attempt, revision: check.revision, outcome: 'success', driver: driverA, tool: 'claude', session: 'check-1',
+      resumed: { tool: 'claude', id: 'plan-1' },
+    });
+    const handedBack = await leaseNext(config, runId, driverA, { running: [] });
+    expect(handedBack).toMatchObject({
+      data: { lease: { attempt: review.attempt, session: { tool: 'claude', id: 'check-1', earlier: [{ tool: 'claude', id: 'plan-1' }] } } },
+    });
+
+    expect(await reportAttempt(config, runId, {
+      attempt: review.attempt, revision: review.revision, outcome: 'success', driver: driverA, tool: 'claude', session: 'review-1',
+      resumed: { tool: 'claude', id: 'check-1' },
+    })).toMatchObject({ data: { accepted: true } });
+  });
+
+  it('refuses a report whose resumed session is not a tool and an id', () => {
+    const report = { attempt: 'a00000000', revision: 1, outcome: 'success', driver: driverA, tool: 'claude', session: 's' };
+
+    expect(parseReport({ ...report, resumed: 's' })).toBe('resumed must be a session: a tool and an id');
+    expect(parseReport({ ...report, resumed: { tool: 'claude', id: '' } })).toBe('resumed must be a session: a tool and an id');
   });
 });

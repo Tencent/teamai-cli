@@ -9,7 +9,11 @@ import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/eng
 import { sanitizePrUrl } from '../workflow/pr-url.js';
 import { deliveryTarget, protectedDeliveryPaths, validateReportedPr } from '../workflow/delivery.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { readRun, writeRun } from '../workflow/store.js';
+import { readRun, updateRun } from '../workflow/store.js';
+
+async function writeRun(config: LocalConfig, run: RunState): Promise<void> {
+  await updateRun(config, run.id, async () => ({ value: undefined, write: run }));
+}
 import { runLocalDriver } from '../workflow/local-driver.js';
 import { GitHubProvider } from '../providers/github/index.js';
 import { buildEndRecord } from '../workflow/records.js';

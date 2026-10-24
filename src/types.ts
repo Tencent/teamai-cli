@@ -555,11 +555,11 @@ export const DEFAULT_TOOL_PATHS = {
   // `hooks.enabled` (config-file hooks are disabled by default; the writer
   // must force it on). Subagents deploy to ~/.zcode/agents/ as Claude-style
   // Markdown (the CLI also reads <project>/.zcode/agents/ per workspace).
-  // User-scope MCP mirrors Claude's shape (`mcpServers` key) in
-  // ~/.agents/mcp.json; project scope writes `mcp.servers` inside
-  // .zcode/config.json (a different key), which the Claude writer cannot
-  // emit — so no mcpProject. ZCode has no user-level rules dir convention.
-  zcode: { skills: '.zcode/skills', agents: '.zcode/agents', settings: '.zcode/cli/config.json', mcp: '.agents/mcp.json' },
+  // MCP servers go under `mcp.servers` in that config.json, and in a
+  // project's .zcode/config.json (#1221). ZCode has no user-level rules dir convention.
+  zcode: {
+    skills: '.zcode/skills', agents: '.zcode/agents', settings: '.zcode/cli/config.json', mcp: '.zcode/cli/config.json', mcpProject: '.zcode/config.json',
+  },
   // Oh My Pi (OMP): the config root is ~/.omp on every platform (no %APPDATA%
   // on Windows); user-scope resources live in the agent dir ~/.omp/agent/, a
   // different prefix from the project <root>/.omp/, hence userScope. Rules are
@@ -589,9 +589,8 @@ export const DEFAULT_TOOL_PATHS = {
   // from AGENTS.md/CLAUDE.md walking up the workspace tree. Hooks are
   // TypeScript extensions rather than a settings hook list, so the adapter
   // keeps one user extension and forwards the active cwd to hook-dispatch.
-  // Profile overrides (PI_CODING_AGENT_DIR / PI_CONFIG_DIR) that relocate
-  // the agent dir are not supported for hooks or MCP, same as the OMP adapter;
-  // model profiles do read PI_CODING_AGENT_DIR. Pi reads no rules
+  // MCP and model profiles follow PI_CODING_AGENT_DIR; hooks stay at the
+  // default agent dir until their callers move to locate. Pi reads no rules
   // directory: its user team rules are a block in ~/.pi/agent/AGENTS.md, and
   // in a project teamai's extension adds them to the system prompt (#946).
   pi: {
@@ -624,7 +623,7 @@ export const DEFAULT_TOOL_PATHS = {
     claudemd: 'AGENTS.md',
     agents: '.workbuddy/agents',
     mcp: '.workbuddy/mcp.json',
-    mcpProject: '.workbuddy/mcp.json',
+    mcpProject: '.mcp.json',
     userScope: { rules: '.workbuddy/rules' },
   },
   // OpenCode reads project config from <root>/.opencode/ but user config from
@@ -893,6 +892,10 @@ export const LocalConfigSchema = z.object({
    * mythos + version). Unset means "match the raw model name only".
    */
   modelAliases: z.record(z.string(), z.string()).optional(),
+  scoring: z.object({
+    /** The least isolation a judge of this scope needs, raising the team's and the scorer's. A value teamai does not know counts as `verified`. */
+    isolation: z.string().optional().catch(({ input }) => JSON.stringify(input)),
+  }).optional(),
 });
 
 /**
@@ -948,6 +951,13 @@ export const PendingPushItemSchema = z.object({
    */
   placed: z.boolean().optional(),
   /**
+   * For a placement, the path the author still edits — the shared-root form
+   * `relativePath` was derived from, e.g. "docs/guide.md" for a destination of
+   * "docs/ops/guide.md". A self-mode scan compares that file against its placed
+   * counterpart once the record lands (`state.placements`).
+   */
+  sourcePath: z.string().optional(),
+  /**
    * Git blob id of the file this push wrote at `relativePath`, for a placed
    * item. Landing is proven by that blob appearing in the default branch's
    * history for the path after the entry's `base` — not by the path merely
@@ -1000,6 +1010,36 @@ const RecordedAgentModelSchema = z.object({
 export type RecordedAgentModel = z.infer<typeof RecordedAgentModelSchema>;
 /** `RecordedAgentModel` by agent stem, then tool. */
 export type AgentModelRecords = Record<string, Record<string, RecordedAgentModel>>;
+
+/** One Codex binary teamai found, and the version its `--version` printed (null when it did not parse). */
+const CodexBuildSchema = z.object({ path: z.string(), version: z.string().nullable() });
+export type CodexBuild = z.infer<typeof CodexBuildSchema>;
+
+/**
+ * Builds that hash a teamai hook differently: teamai trusts with `chosen`, the
+ * newest, and each of `others` hashes at least one of those hooks another way.
+ */
+const CodexBuildSkewSchema = z.object({ chosen: CodexBuildSchema, others: z.array(CodexBuildSchema) });
+export type CodexBuildSkew = z.infer<typeof CodexBuildSkewSchema>;
+
+/** A repo-backed placement that landed: the placed path and the blob push delivered there. */
+const PlacementRecordSchema = z.object({ path: z.string(), blob: z.string() });
+export type PlacementRecord = z.infer<typeof PlacementRecordSchema>;
+
+/**
+ * The member's choices that decide which team assets a pull delivers (#1178), as that pull read them from
+ * `LocalConfig`. The lists are sorted, so the same choices compare equal however they were entered.
+ */
+export const DeliverySelectionSchema = z.object({
+  scope: InstallScopeSchema,
+  primaryRole: z.string().optional(),
+  additionalRoles: z.array(z.string()),
+  projects: z.array(z.string()).optional(),
+  subscribedTags: z.array(z.string()).optional(),
+  excludedSkills: z.array(z.string()).optional(),
+  inheritUserScope: z.boolean().optional(),
+});
+export type DeliverySelection = z.infer<typeof DeliverySelectionSchema>;
 
 export const StateSchema = z.object({
   lastPush: z.string().nullable().default(null),
@@ -1059,18 +1099,28 @@ export const StateSchema = z.object({
     agentModels: z.record(z.string(), z.record(z.string(), RecordedAgentModelSchema)).optional(),
     gitExcludePaths: z.record(z.string(), z.array(z.string())).optional(),
     /**
-     * Each tool's skills directories (`writesOf(locate(...))`) the last full pull
-     * of this checkout delivered into, write gates met only, and for a tool
-     * that missed a skill there, the directories it took skills from before
-     * (`settleSkillDirs`). A tool whose skills follow the session is left out.
-     * A record without it, from an older CLI, misses the fast path once.
+     * Per resource, each tool's places (`writesOf(locate(...))`) the last full
+     * pull of this checkout delivered into, write gates met only, and for a
+     * tool that missed an item there, the places it took the resource from
+     * before (`settlePlaces`). A tool whose skills follow the session is left
+     * out. A record without a resource, from an older CLI, misses the fast
+     * path once.
      */
+    places: z.object({
+      skills: z.record(z.string(), z.array(z.string())).optional(),
+      rules: z.record(z.string(), z.array(z.string())).optional(),
+      blocks: z.record(z.string(), z.array(z.string())).optional(),
+      agents: z.record(z.string(), z.array(z.string())).optional(),
+    }).optional(),
+    /** An earlier release's `places.skills`: read as that when `places` is missing (`placesRecordOf`), never written. */
     skillDirs: z.record(z.string(), z.array(z.string())).optional(),
     /** The home (`toolHome`) of each tool whose skills follow the session, at the last full pull that delivered it every skill. */
     sessionToolHomes: z.record(z.string(), z.string()).optional(),
     rootsSeeded: z.boolean().optional(),
     /** The children a workspace was last delivered with (`WorkspaceChildren.fingerprint`, #913). */
     children: z.string().optional(),
+    /** The selection the last pull that delivered into this checkout read. Absent in a record an older CLI wrote. */
+    selection: DeliverySelectionSchema.optional(),
     /**
      * The `claudeMdExcludes` entries teamai wrote into this checkout's
      * `.claude/settings.local.json` for the workspaces above it (#913).
@@ -1110,6 +1160,26 @@ export const StateSchema = z.object({
    */
   placedAgents: z.record(z.string(), z.string()).optional(),
   /**
+   * Where push placed a repo-backed resource (docs, wiki, prompts, workflows,
+   * scorers, models, env, hooks, claudemd, learnings) that the author still edits at
+   * its shared-root path, keyed `<type>:<path the author edits>`, e.g.
+   * `{ "docs:docs/guide.md": { "path": "docs/ops/guide.md", "blob": "<git blob id>" } }`.
+   * `blob` is what that push delivered. A self-mode scan compares the author's
+   * copy with it, not with the placed file: equal means already delivered,
+   * whatever the team did to the placed file since, and different is the
+   * author's edit. Recorded only after the placement landed, in
+   * `reconcilePlacementRecords`, on the same blob-in-history proof as
+   * `placedRules`, so a PR closed unmerged leaves no record behind. An entry
+   * holding only the path, as earlier builds wrote, is dropped: without the
+   * blob nothing tells an unchanged copy from an edit.
+   */
+  placements: z.record(z.string(), z.unknown())
+    .transform((records) => Object.fromEntries(Object.entries(records).flatMap(([key, record]) => {
+      const parsed = PlacementRecordSchema.safeParse(record);
+      return parsed.success ? [[key, parsed.data] as const] : [];
+    })))
+    .optional(),
+  /**
    * Default-branch commit the placement records were last checked against. A
    * record whose file was deleted after it is dropped even if something is at
    * that path again: whatever is there now is somebody else's.
@@ -1143,6 +1213,10 @@ export const StateSchema = z.object({
    * inputs still match skips spawning `codex app-server`. Absent = run it.
    */
   codexTrustFingerprint: z.string().optional(),
+  /** The Codex builds that disagreed in that pass (#1244), so a pull that skips it still warns. Absent = none. */
+  codexBuildSkew: CodexBuildSkewSchema.optional(),
+  /** The Codex builds that could not list the hooks in the last uncached pass; the same set failing again is cached. Absent = none. */
+  codexBuildUncompared: z.array(CodexBuildSchema).optional(),
   /** Project grants this installation actually created; pre-existing user choices are never recorded. */
   codexProjectTrust: z.array(z.object({ home: z.string(), project: z.string() })).optional(),
   /**
@@ -1177,9 +1251,21 @@ export interface TagsConfig {
   rules: Record<string, string[]>;
 }
 
-// ─── Resource types ─────────────────────────────────────
-
-export type ResourceType = 'skills' | 'rules' | 'docs' | 'env' | 'agents' | 'hooks' | 'mcp';
+export type ResourceType =
+  | 'skills'
+  | 'rules'
+  | 'docs'
+  | 'env'
+  | 'agents'
+  | 'hooks'
+  | 'mcp'
+  | 'models'
+  | 'claudemd'
+  | 'learnings'
+  | 'wiki'
+  | 'workflows'
+  | 'prompts'
+  | 'scorers';
 
 export type ResourceItemStatus = 'new' | 'modified';
 
@@ -1192,6 +1278,8 @@ export interface ResourceItem {
   namespace?: string;
   /** A kept skill with a recorded origin: `--role`/`--project` never relocate it (#1020). */
   fromInactiveNamespace?: true;
+  /** When placed into a namespace, the original relative path superseded by this item. */
+  supersedes?: string;
 }
 
 export interface ResourceDiff {
@@ -1344,11 +1432,15 @@ export interface ManagedMcpRecord {
    */
   unnoted?: true;
   /**
-   * User scope, a tool that reads the first of several files (CodeBuddy,
-   * #993): the file holding this server. Absent in records an older teamai
-   * wrote, whose server is in the tool's mapped file (`McpTarget.mappedFile`).
+   * The file holding this server, which every MCP writer notes (#1221).
+   * Absent in records an older teamai wrote (`recordedFileOf`).
    */
   file?: string;
+  /**
+   * The key the server sits under in `file` when it is not the tool's current
+   * one: a retired place's, as ZCode's `mcpServers` (#1221). Absent: the current key.
+   */
+  key?: readonly [string, ...string[]];
 }
 
 /** ~/.teamai/managed-mcp.json — team MCP servers injected per tool+scope key. */
@@ -1526,7 +1618,22 @@ export function getUpdateLockPath(): string {
   return path.join(getTeamaiHomeDir(), '.update-lock');
 }
 
-export const RESOURCE_TYPES: ResourceType[] = ['skills', 'rules', 'docs', 'env', 'agents', 'hooks', 'mcp'];
+export const RESOURCE_TYPES: ResourceType[] = [
+  'skills',
+  'rules',
+  'docs',
+  'env',
+  'agents',
+  'hooks',
+  'mcp',
+  'models',
+  'claudemd',
+  'learnings',
+  'wiki',
+  'workflows',
+  'prompts',
+  'scorers',
+];
 
 export const TEAMAI_RULES_START = '<!-- [teamai:rules:start] -->';
 export const TEAMAI_RULES_END = '<!-- [teamai:rules:end] -->';
@@ -3068,6 +3175,18 @@ export function resolveHookScope(
     manifestPath: getManagedHooksPath(localConfig),
     scope: localConfig.scope,
   };
+}
+
+/** ZCode reads CLI hooks only from HOME, including in self/project mode. */
+export function hookSettingsPath(tool: string, baseDir: string, settings: string): string {
+  return path.join(tool === 'zcode' ? getUserHome() : baseDir, settings);
+}
+
+/** Hook paths follow their delivery scope; ZCode's CLI config is always user scoped. */
+export function hookToolPathsForConfig(teamConfig: TeamaiConfig, localConfig: LocalConfig): TeamaiConfig['toolPaths'] {
+  const paths = scopedToolPaths(teamConfig, { ...localConfig, scope: resolveHookScope(localConfig).scope });
+  const zcode = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' }).zcode;
+  return zcode ? { ...paths, zcode } : paths;
 }
 
 /**

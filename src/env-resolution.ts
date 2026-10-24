@@ -21,6 +21,8 @@ import {
 } from './secret-store.js';
 import { getDataHome, getEnvBackupPath, type LocalConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
+import { warnOnce } from './utils/warn-once.js';
+import { MIN_DECLARED_SECRET_LENGTH } from './utils/redact.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
 
 export interface SecretValue {
@@ -323,6 +325,24 @@ function variableValues(
       : { source: 'env.yaml', value: variable.entry.value, fromEnv });
   }
   return { kind: 'resolved', values };
+}
+
+/**
+ * The value of each secret the team declares in `env/secrets.yaml`, as this
+ * member resolves it, keyed by name, for redaction. A declared name need not
+ * look secret, so `collectEnvSecrets` misses these. Empty when the values
+ * can't be read. A value too short to tell from ordinary text is left out,
+ * with a warning that names it.
+ */
+export async function collectTeamSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
+  if (!resolvesTeamEnv(localConfig)) return {};
+  const { secrets } = await resolveTeamEnv(localConfig, undefined, env);
+  if (secrets.kind !== 'resolved') return {};
+  return Object.fromEntries([...secrets.values].flatMap(([key, { value }]) => {
+    if (value.length >= MIN_DECLARED_SECRET_LENGTH) return [[key, value]];
+    if (value) warnOnce(`Secret ${key} in env/secrets.yaml is shorter than ${MIN_DECLARED_SECRET_LENGTH} characters, so teamai cannot tell it from ordinary text and does not mask it. Give it a longer value.`);
+    return [];
+  }));
 }
 
 export function secretState(secrets: StoreResolution<SecretValue>, key: string): SecretState {

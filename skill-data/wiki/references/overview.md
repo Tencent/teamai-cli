@@ -123,3 +123,5 @@ The files below ship with the CLI; `teamai skill path wiki` prints the directory
 | Structural quality | Dead links = 0, search-anchor coverage ≥95% |
 | AI usability | RAG retrieval spot check accuracy ≥85% |
 | Relation trustworthiness | AMBIGUOUS relations < 10%, all listed for confirmation |
+
+When AI enrichment fails, the diagnostic uses stderr, then stdout, then the exit code or signal. Use that reported cause to resolve the AI CLI or provider failure before retrying.

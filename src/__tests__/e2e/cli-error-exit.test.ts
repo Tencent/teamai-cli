@@ -51,7 +51,7 @@ describe('an async command action that throws', () => {
     try {
       const { code, stdout, stderr } = await runCLI(['session', 'list'], home, work);
       expect(code).toBe(1);
-      expect(stderr).toContain('No teamai project config found');
+      expect(stderr).toContain('teamai is not set up for this directory');
       // The `cli.js:NNNN` header and the `at ...` frames of an unhandled rejection.
       expect(stderr).not.toContain('cli.js:');
       expect(stderr).not.toMatch(/^\s+at /m);
@@ -66,7 +66,7 @@ describe('an async command action that throws', () => {
     try {
       const { code, stdout, stderr } = await runCLI(['-v', 'session', 'list'], home, work);
       expect(code).toBe(1);
-      expect(stderr).toContain('No teamai project config found');
+      expect(stderr).toContain('teamai is not set up for this directory');
       expect(stdout).toMatch(/^\s+at /m);
       expect(stdout).toContain('resolveRepoRoot');
     } finally {

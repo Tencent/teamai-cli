@@ -17,7 +17,7 @@ export interface FrontmatterSplit {
  * Matches a leading YAML frontmatter block, tolerant of an optional UTF-8 BOM,
  * LF or CRLF line endings, and trailing horizontal whitespace on delimiter lines.
  */
-const FRONTMATTER_BLOCK = /^﻿?---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/;
+const FRONTMATTER_BLOCK = /^﻿?---[ \t]*\r?\n(?:[^\n]*\n)*?---[ \t]*(?:\r?\n|$)/;
 
 /** Matches a leading line that looks like a frontmatter opening delimiter. */
 const OPENING_FENCE = /^﻿?---[ \t]*(?:\r?\n|$)/;

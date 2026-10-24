@@ -70,7 +70,7 @@ workflows:
 - 每个命令都在没有终端的情况下运行，因此无法读取你的输入。
 - 收到 Ctrl-C，或 SIGTERM、SIGQUIT、SIGHUP 时，teamai 停止所有命令，等它们退出，然后以该信号退出。
 
-为 1 时，驱动一次运行一个步骤，命令在你的终端里运行，Ctrl-C 会直接到达它。
+为 1 时，驱动一次运行一个步骤，命令在你的终端里运行，Ctrl-C 会直接到达它。只发给 teamai 的 SIGTERM 或 SIGHUP 会停止命令，等它退出，然后以该信号退出。
 
 结局取消一个正在运行的命令时，驱动向它及其启动的进程发送 SIGTERM，5 秒后如果其中任何进程仍在运行，再发送 SIGKILL。正在停止的命令仍占用并行槽位，直到它的所有进程退出。
 
@@ -648,4 +648,113 @@ teamai workflow resume <run> --tools default=claude
 
 指定步骤的 cancel 停止 pending、waiting、leased 或 running 工作，同时停止尚未结束的后代。cancelled 属于 stopped，因此依赖步骤会跳过，除非其 if 读取取消结果来恢复；运行通常失败。取消整个运行立即以 `cancelled` 结束，不启动下一轮。cancel 不增加修订号。迟到的报告返回 `lease_cancelled`，`next.cancelled` 告诉驱动停止哪些工具。
 
-在重试、回答、Ctrl-C 或关闭终端后，用 resume 继续本地运行。它优先使用本机未结本地租约的工作目录，其次使用最近调用 `next` 的驱动工作目录（该驱动必须是本机本地驱动），最后使用当前目录。因此重试后即使从子目录继续，也会保留原来的本地工作目录。每个运行同时只能有一个本地驱动。重复 resume 返回 driver_running 和持有者进程号，请停止该驱动或等待；死进程留下的锁会自动回收。已结算运行返回 done。本地运行以 failed 或 cancelled 结束时退出码为 1；控制命令成功时退出码为 0，即使返回的运行状态为 failed 或 cancelled。
+在重试、回答、Ctrl-C 或关闭终端后，用 resume 继续本地运行。`workflow start --driver local` 在运行开始时就把运行 id 和继续它的 `resume` 命令输出到 stderr。它优先使用本机未结本地租约的工作目录，其次使用最近调用 `next` 的驱动工作目录（该驱动必须是本机本地驱动），最后使用当前目录。因此重试后即使从子目录继续，也会保留原来的本地工作目录。每个运行同时只能有一个本地驱动。重复 resume 返回 driver_running 和持有者进程号，请停止该驱动或等待；死进程留下的锁会自动回收。已结算运行返回 done。本地运行以 failed 或 cancelled 结束时退出码为 1；控制命令成功时退出码为 0，即使返回的运行状态为 failed 或 cancelled。
+
+## 发布和认领
+
+```sh
+teamai workflow publish <run> [--sessions]
+teamai workflow resume <run> [--claim]
+```
+
+[在另一台机器上继续运行](workflow.md#在另一台机器上继续运行)介绍常见用法。本节说明具体规则。
+
+第一次 `publish` 让本安装实例成为该运行的所有者。所有者是一个安装实例 id（保存在 TeamAI 数据目录下的 `workflows/owner.json`）加上成员的 TeamAI 用户名，与运行记录中的相同。同一成员的两个安装实例显示相同的用户名，用 id 区分它们。`publish` 输出一个信封：
+
+```json
+{"data":{"run":"<run>","publication":"published","stateRevision":1,"inFlight":[{"step":"fix","attempt":"<attempt>","driverKind":"local"}]}}
+```
+
+`inFlight` 列出仍未结束的租约。认领会释放它们，所以这些步骤会重新运行。发布一个自上次发布以来没有变化的运行，返回 `"publication":"unchanged"` 和相同的 `stateRevision`，不写入任何内容。每次发布有变化的运行，都会把完整状态加入 `teamai-reports` 的历史，所以在交接运行时发布，而不是每个步骤后都发布。只有所有者能发布该运行。在另一个安装实例上，`publish` 返回 `not_owner`，不做任何改动。
+
+已发布的运行结束时（通过 `next`，或通过 `workflow respond`、`retry`、`cancel`），teamai 会像 `workflow publish` 一样发布它的结束状态。被拒绝时，`next` 的 `done` 信封，或该命令的 `data`，会带上 `notPublished`，内容是下表中的一个拒绝。`not_owner` 表示另一个安装实例认领了该运行，所以它的状态和运行记录保持那个安装实例的样子。其他拒绝按其下一步处理。之后对该运行的 `next` 或 `workflow resume` 也会再次发布结束状态。
+
+`resume` 根据本机已有的内容决定怎么做：
+
+- 本机有、且从未发布过的运行在本地继续。`resume` 不读取 `teamai-reports`。
+- 第一次发布没有到达 `teamai-reports` 的运行也在本地继续。`resume` 会读取 `teamai-reports` 来确认，读不到时返回 `reports_unreachable`。
+- 本机没有的运行从 `teamai-reports` 认领，然后运行。
+- 已发布的运行只在本安装实例拥有它时继续。否则 `resume` 返回 `not_owner`，带 `owner`（`id`、`user`）和 `ownedAt`。
+- 认领一个已结束的运行，不会重新运行它的任何步骤。认领的安装实例成为该运行的所有者，所以在那里执行 `workflow retry` 只重新运行指定的步骤和依赖它的步骤。
+- `--claim` 从所有者那里接管已发布的运行，并替换本机的运行副本。本机有该运行的本地驱动正在运行时，它返回 `driver_running`，不认领任何内容。
+
+在该运行的业务仓库的检出目录中执行 `resume`。认领仍在运行的运行时，会用 `git ls-remote` 检查该运行的分支在这个检出目录的 `origin` 上，并且停在运行记录的提交上。它从不 fetch 到这个检出目录。已结束的运行不需要它的任何分支，所以即使合并后分支已被删除，认领也会成功，`resume` 会报告它的结束结果。如果重试重新打开了它，下一次 `resume` 会 fetch 它需要的分支。本机的工作流缓存与运行所用的工作流不同时，认领会在运行的团队提交上读取它们（团队仓库没有该提交时先 fetch），并在 stderr 输出 `[team commit <commit>] Synced N workflows`。你的缓存和团队仓库检出目录保持不变。
+
+发布的状态是 `teamai-reports` 上的 `workflows/runs/<run>/state.json`。它包含运行继续所需的内容：状态、输入、每个步骤的结果、输出、pass 和带备注的 HITL 回答、基准、每个工作区的提交，以及步骤继续过的每个会话副本的工具和 id。工作流本身只以 `sourceHash`、`definitionHash` 和 `teamRevision` 传递。它不包含步骤和 pass 的 `message`、每个租约和回答的驱动身份（租约保留驱动类型）、工作区所有者，以及业务检出目录的路径。每条失败消息都换成 `The details stay on the machine that ran this step.`，失败的 `code` 保留。提交只以完整 id（40 或 64 位十六进制）出现。`publish` 用 TeamAI 的密钥规则、本进程环境变量里的密钥，以及团队在 [`env/secrets.yaml`](sharing.md#env环境变量) 中声明的每个密钥的值（无论名称如何）检查每个值和键，遇到第一个匹配就以 `secret_detected` 拒绝。声明的值短于 8 个字符时只按完整单词匹配，短于 4 个字符时不检查，`publish` 会给出警告并写明它的名称。拒绝信息写明步骤、字段和密钥类型，从不包含值本身。本机的绝对路径同样以 `local_path_detected` 拒绝：Windows 盘符或共享路径、`~/` 路径、`file://` URL，以及第一级目录存在于本机根目录下的 `/` 路径，例如 `/Users/alice/data.csv`。URL、`src/main.ts` 这样的相对路径和 `/api/v1` 这样的路由可以发布。这样的运行不能交接，请在本机继续，或改用相对于仓库的路径重新启动它。
+
+`--sessions` 还会把未结算步骤将要继续的每个 agent 会话的最新副本（`session: continue` 或 `session.from`）放进团队会话归档，并像 `teamai session push --scrub` 一样脱敏。这包括循环即将再次运行的步骤，以及尚未开始的工作流步骤里的步骤。已结算步骤的会话和更早 pass 的会话从不包括在内。信封随后在 `sessions` 中以 `{"tool","id"}` 列出它们，没有时为空列表。本机读不到的会话不归档：其所在的链归档本机能读的最新会话，`skipped` 列出被跳过的较新会话。整条链都读不到时，发布被拒绝。会话在写入状态之前归档，所以之后被拒绝的发布仍会留下已归档的会话，没有变化的发布也照样归档。在接着运行的机器上，本地驱动按以下顺序恢复步骤的会话：
+
+1. 本机上的会话。步骤的工具与会话的工具相同时按 id 恢复，否则得到它的一份副本。
+2. 归档会话的副本。副本只写一次，之后的恢复会复用它，包括后来加入的对话轮次。驱动按团队仓库的 origin 上的样子读取归档，每次驱动运行 fetch 一次，所以你不需要先执行 `teamai pull`，你的团队仓库克隆也保持不变。fetch 失败时，驱动读取你的克隆，并说明它可能比 origin 旧。
+3. 如果该会话是另一个步骤做出的副本，而前两种方式都拿不到它，就对这个副本所继续的会话用同样两种方式，依此类推直到最初的会话。这时步骤会缺少拿不到的那些副本中的对话轮次。
+4. 新会话，并在 stderr 输出以 `⚠ Step "<id>" starts a new <tool> session:` 开头的警告，说明上述每种方式为什么失败。
+
+步骤的工具需要在那台机器上有自己的会话存储，例如 Claude Code 的 `~/.claude/projects`，和 `teamai session restore` 一样。OpenCode 会得到归档的会话，但它的步骤仍然开一个新会话，因为 OpenCode 没有恢复会话的参数。
+
+租约的 `session` 在 `earlier` 中按从新到旧列出它所继续的会话，供拿不到该会话本身的驱动使用。`local` 以外的驱动如果继续了租约的 `session` 或 `earlier` 中的某个会话（按 id 或在副本中），要在上报中把它继续的那个会话作为 `resumed`（`{"tool","id"}`）放在它运行的 `session` 旁边。新开会话时不带 `resumed`。没有 `resumed` 时，后续步骤恢复租约的会话，而不是副本。缺少工具或 id 的 `resumed`、出现在不恢复会话的步骤上的 `resumed`，或指向租约未提供的会话（既不是它的 `session`，也不在 `earlier` 中）的 `resumed`，都返回 `invalid_report`。
+
+每个拒绝都是一个 JSON 信封，带 `error.code`、`error.message` 和下表列出的额外字段。命令以退出码 1 结束。
+
+| 代码 | 发生了什么 | 下一步 |
+|---|---|---|
+| `not_owner` | 另一个安装实例拥有该运行。带 `owner` 和 `ownedAt`。 | 联系所有者，或用 `resume <run> --claim` 接管。 |
+| `state_moved` | 本机准备认领或发布期间，运行发生了变化：认领时在 `teamai-reports` 上，发布时在本机上。没有认领或发布任何内容。 | 再认领一次，或再发布一次。 |
+| `state_conflict` | `teamai-reports` 上的状态比本机上次看到的更新。 | 执行 `resume <run>` 取得已发布的状态。 |
+| `run_not_published` | 没有人发布过该运行。 | 在有这个运行的机器上发布它。 |
+| `run_not_found` | 本机没有这个 id 的运行。 | 检查 id。 |
+| `run_unreadable` | 本机的运行文件无法读取。 | 检查 TeamAI 数据目录中的运行文件。 |
+| `run_mismatch` | 本机有一个 id 相同、但开始时间不同的运行。带 `localCreatedAt` 和 `remoteCreatedAt`。 | 两个运行都不会被改动。它们是不同的运行。 |
+| `invalid_run` | id 不是 `r` 加 8 或 16 位十六进制数字。 | 检查 id。 |
+| `unsupported_repo` | 团队仓库是 `http` 仓库，没有 `teamai-reports`。 | 在有这个运行的机器上继续。 |
+| `busy` | 另一个 teamai 进程正在写 `teamai-reports` 或该运行。 | 重试。 |
+| `reports_unreachable` | 无法从团队仓库的 origin 读取 `teamai-reports`。 | 检查网络连接后重试。 |
+| `reports_failed` | 写入 `teamai-reports` 失败。 | 重试。 |
+| `records_pending` | 运行记录没有到达 `teamai-reports`：git 推送出错、另一个写入方占用，或发布期间有记录排队。 | 重试。 |
+| `definition_mismatch` | 认领拿不到运行所用的工作流。可能带 `teamRevision`。 | 按消息操作：等另一台机器推送工作流后执行 `teamai pull`，fetch 该团队提交，或两台机器使用相同的 teamai 版本。 |
+| `snapshot_unsupported` | 状态中有一个字段（`field` 给出）快照格式无法承载，或当前 teamai 无法读取。 | 认领时，更新 teamai 后重试。发布时，修复写入该值的驱动，例如不是完整 id 的提交。 |
+| `secret_detected` | 某个值看起来像密钥。带 `step`（位于步骤中时）、`field` 和 `label`。 | 在本机继续该运行。 |
+| `local_path_detected` | 某个值包含本机的绝对路径。带 `step`（位于步骤中时）和 `field`。 | 在本机继续该运行，或改用相对于仓库的路径重新启动它。 |
+| `sessions_not_archived` | 本机读不到某条链的所有会话（或其工具不是 teamai 能读取的）、归档被占用，或提交或推送失败。 | 再发布一次，或不加 `--sessions` 发布，让这些步骤开新会话。 |
+| `origin_unavailable` | 无法读取或更新业务仓库的 origin。 | 在该运行的业务检出目录中执行命令，并确保能访问它的 origin。 |
+| `commit_missing` | 记录的分支不在 origin 上，发布时落后于记录的提交，或本检出目录缺少基准提交，无法固定基准。带 `branch` 和 `commit`。 | 在有该提交的机器上推送分支。发布时，消息会给出要执行的 `git -C <checkout> push origin <commit>:refs/heads/<branch>`。或在运行开始时所在的检出目录中发布。 |
+| `branch_diverged` | origin 上的某个分支包含运行不知道的工作。带 `branch`、`expected` 和 `actual`。 | 发布时，让推送它的驱动上报它，或把 origin 上的分支移回记录的提交。认领时，消息里写明的成员可以再发布一次该运行；把分支移回会丢弃记录的提交之后的提交。 |
+
+认领之后，如果本地分支无法移到运行记录的提交，`resume` 也可能返回 `branch_diverged`。消息里写明工作区和该怎么做。见[在自己的驱动里使用工作区](#在自己的驱动里使用工作区)。
+
+### 从 CI 发布
+
+用 `--driver local` 运行工作流的 CI 任务可以在运行失败时发布它，让成员在自己的机器上继续。任务在运行开始时所在的检出目录中发布。`publish` 把运行的基准以 `teamai/<run>/base` 推送到业务仓库的 origin，只推一次且不强制推送，并用 `git ls-remote` 读取运行在那里的分支。因此任务的 token 需要业务仓库的推送权限：在 GitHub Actions 上是 `permissions: contents: write`。为来自 fork 的 pull request 运行的工作流只拿到只读 token，无法发布。任务还需要团队仓库的写权限，因为 `teamai-reports` 在团队仓库里。
+
+### 在自己的驱动里认领
+
+`local` 以外的驱动在第一次 `next` 的 payload 中加上 `"claim": true` 来认领运行：
+
+```text
+teamai workflow next <run> --json '{"claim":true,"driver":{"kind":"script","machine":"runner","workspace":"/work"}}'
+```
+
+认领在 `next` 租出任何步骤之前执行，并在 `driver.workspace` 的 origin 上检查仍在运行的运行的分支。本安装实例已经拥有的运行保持原样。认领被拒绝时，作为 `next` 的错误信封返回。遇到 `state_moved` 时，再发送一次认领。非布尔值返回 `invalid_json`，消息为 `claim must be a boolean`。运行可能被其他机器继续的驱动，要在 `changes` 和 `read` 中上报完整的提交 id。`publish` 遇到其他形式的提交值时以 `snapshot_unsupported` 拒绝，并写明字段。
+
+## 在自己的驱动里使用工作区
+
+`local` 以外领取工作区租约的驱动，要把运行的提交放在其他驱动或其他机器能找到的地方。每个驱动都遵守两条规则：
+
+1. 从 `workspace.start` 开始一个步骤、合并 `workspace.merge` 里的一项，或从 `workspace.configCommit` 恢复 agent 文件之前，先用 `git cat-file -e <commit>^{commit}` 检查检出目录里有没有这个提交。缺少时，用 refspec `+refs/heads/teamai/<run>/*:refs/remotes/origin/teamai/<run>/*` 取回这次运行的分支，再检查一次。refspec 没有匹配到任何分支时，fetch 也会成功，所以只有第二次检查算数。仍然缺少的提交会让步骤在运行任何内容之前以 `workspace_base` 失败，消息里写明该提交和它所在的分支。
+2. 检出目录有 `origin` 时，驱动在发送报告之前推送 `changes` 里报告的提交所在的分支，步骤失败时也一样。推送失败时，这些提交仍然会被报告。成功的步骤随后以 `push_failed` 失败。本身已失败的步骤保留自己的失败，消息里再补充该分支没有推送。
+
+`src/workflow/conformance.ts` 里的 `workflowGitConformanceScenarios` 在一个 bare `origin` 上检查这两条规则。像 `src/__tests__/workflow-git-conformance.test.ts` 对 `local` 所做的那样，用它们检查你的驱动。
+
+继续一个[已发布的运行](#发布和认领)的驱动同样依赖这些规则：
+
+- `publish` 把运行的基准以 `teamai/<run>/base` 固定在 `origin` 上，所以规则 1 的 fetch 也会取回基准提交。
+- 认领之后，驱动在继续一个本地已有的工作区之前，先把该分支向前移到运行记录的提交。本地分支领先于该提交或与它分叉、worktree 有改动或不在该分支上、或被只读步骤留下且尚未恢复时，驱动拒绝，什么都不移动。本地驱动在每次认领后、第一次租约前做一次这项检查，并以 `branch_diverged` 返回，说明该怎么做。
+- 认领带来的工作区在某个驱动租下其中的步骤之前没有所有者。该驱动成为它的所有者。
+- 另一台机器在一个自己打开工作区的步骤上持有的租约，会作为该步骤的下一个 pass 重新开始，使用新分支。旧分支和推送到它上面的内容留在 `origin` 上。该步骤会重新询问它的 HITL 问题。其他步骤上的租约被释放，并在同一个 pass 中重新运行。
+
+## 在自己的驱动里评审
+
+```text
+teamai score --next --json '{"driver":{"kind":"script","machine":"runner","workspace":"/work","can":{"judge":{"isolation":"best-effort","tools":["claude"]}}},"running":[]}'
+```
+
+评审任务来自 `teamai score --next`，从不来自 `workflow next`。见[评分器](scorers.md#任意-driver)。

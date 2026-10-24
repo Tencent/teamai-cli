@@ -1,6 +1,8 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
-import type { ArchivedPass, StepState } from './step-state.js';
+import type { PinnedScorer } from '../scorers/pin.js';
+import type { ArchivedPass, SessionContinuation, StepState } from './step-state.js';
+import type { LeaseSession } from './workspace.js';
 
 /** The driver's lease ownership, independent of its per-request capabilities. */
 export interface DriverIdentity {
@@ -49,6 +51,8 @@ export interface WorkflowStep {
   agent?: string;
   /** The model a prompt step runs on, as written: an alias from `models/aliases.yaml` or a model name. The driver resolves it. */
   model?: string;
+  /** The scorers that judge this prompt or workflow step's succeeded passes. */
+  scorers?: StepScorers;
   output?: OutputSchema;
   /** Variables a command step receives, as written; `{{ inputs.… }}` and `{{ steps.… }}` render when the step is leased. */
   env?: Record<string, string>;
@@ -133,6 +137,14 @@ export interface InlineWorkflow {
 export interface WorkflowDefaults {
   /** The model of a prompt step whose step and definition choose none, as written. */
   model?: string;
+  /** Whether a step's scorers share one judge call when the step does not say. */
+  scorers?: { batch: boolean };
+}
+
+/** `scorers: [a, b]`, or `scorers: { names: [a, b], batch: true }`. Each name is a file in `scorers/`. */
+export interface StepScorers {
+  names: string[];
+  batch?: boolean;
 }
 
 export interface WorkflowDefinition {
@@ -176,7 +188,7 @@ export interface WorkflowDiagnostic {
    * `bad_workspace`: `workspace` is not read-only, new, or continue; the kept copy would run the step in the wrong place.
    * `bad_delivery`: delivery is not PR creation on a writable branch; the kept copy would apply a different policy.
    */
-  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'bad_delivery';
+  code?: 'unknown_key' | 'missing_needs' | 'false_if' | 'bad_template' | 'dotted_name' | 'undeclared_output' | 'undeclared_end' | 'bad_loop' | 'bad_session' | 'bad_workspace' | 'workflow_namespace_conflict' | 'prompt_namespace_conflict' | 'bad_delivery';
 }
 
 export type StepOutcome = 'success' | 'failed' | 'released';
@@ -186,12 +198,8 @@ export interface StepLease {
   attempt: string;
   revision: number;
   driver: DriverIdentity;
-}
-
-export interface TokenUsage {
-  input?: number;
-  output?: number;
-  cachedInput?: number;
+  /** The session the lease offers the step: the report may name it, or one it continued, as `resumed`. */
+  session?: LeaseSession;
 }
 
 export interface WorkflowFailure {
@@ -221,6 +229,8 @@ export interface RunState {
   definition: WorkflowDefinition;
   /** The sub-workflows the run uses, by name, as they were cached when it started. */
   workflows?: Record<string, WorkflowDefinition>;
+  /** The scorers its steps list, by name, as they were cached when it started. A name with no valid scorer then is absent. */
+  scorers?: Record<string, PinnedScorer>;
   /**
    * Step instances in declaration order; a sub-workflow's steps follow the step that runs it. Never changed in place:
    * adding or removing an instance assigns a new array, so an index the engine keeps per array never goes stale.
@@ -242,12 +252,32 @@ export interface RunState {
    * in a git checkout, else by the first `next` that sends `base`. A later `base` does not change it.
    */
   base?: { ref?: string; commit: string };
-  /** The checkout `workflow start` ran in. Local run state only: never on a lease or a record. */
+  /** The checkout `workflow start` ran in, or the one a claim took the run into. Local run state only: never on a lease or a record. */
   checkout?: string;
-  /** Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. */
-  copies?: Record<string, { owner: DriverIdentity; commit?: string; origin?: string }>;
+  /**
+   * Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. A copy a
+   * claim brought from another machine has no owner until a driver leases it.
+   */
+  copies?: Record<string, { owner?: DriverIdentity; commit?: string; origin?: string }>;
+  /**
+   * Sessions a step resumed and continued under another id, in report order: a copy on another machine or in another
+   * tool. `to` holds the turns of `from` and the ones that step added, so a step that would resume `from` resumes `to`.
+   */
+  sessionContinuations?: SessionContinuation[];
+  /** How this machine last published the run, or took it from another machine. Local run state only. */
+  publication?: RunPublication;
   createdAt: string;
   updatedAt: string;
+}
+
+/** What this machine knows of the run's snapshot on `teamai-reports`. */
+export interface RunPublication {
+  /** The snapshot's state revision when this machine last wrote it or took the run, as origin confirmed it. */
+  stateRevision: number;
+  /** The `write` of a snapshot this machine committed whose delivery it has not seen. Another reports write may push it later. */
+  pending?: string;
+  /** Set when this machine takes the run over: the local driver brings its copies' local branches to the recorded commits once. */
+  reconcileCopies?: true;
 }
 
 export interface CachedWorkflow {
@@ -266,10 +296,10 @@ export interface CachedWorkflow {
 
 export type WorkflowEnvelope =
   | { data: Record<string, unknown> }
-  | { error: { code: string; message: string } };
+  | { error: { code: string; message: string; labels?: Array<Record<string, unknown>> } };
 
 export function isWorkflowError(
   envelope: WorkflowEnvelope,
-): envelope is { error: { code: string; message: string } } {
+): envelope is Extract<WorkflowEnvelope, { error: unknown }> {
   return 'error' in envelope;
 }

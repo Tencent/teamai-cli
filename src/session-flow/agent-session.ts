@@ -16,7 +16,8 @@ import { resolveMemberToolRoots } from '../config.js';
 import { getTeamaiHomeDir, type LocalConfig } from '../types.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { ADAPTER_REGISTRY, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
-import { ToolUnavailableError, type AgentAdapter, type SessionMeta } from './adapters/base.js';
+import { SESSION_PLATFORM_FACTS, sessionPlatformFacts } from './adapters/platform-facts.js';
+import { ToolUnavailableError, type AgentAdapter, type SessionMeta, type SubagentsRead } from './adapters/base.js';
 import { imagePlaceholderText, type ContentBlock, type Message, type Session } from './ir.js';
 import { deriveTargetSessionId, legacyTargetSessionIds } from './ids.js';
 import { degradeThinkingBlocks, fidelityFromSession, type FidelityReport } from './migrate.js';
@@ -72,15 +73,21 @@ export type AgentSessionFindOptions = {
   scrub?: boolean;
   /** Where the recorded tool roots come from; a run that reads many sessions passes one `toolRootsLookup()`. */
   toolRootsFor?: ToolRootsLookup;
+  /** Also read the agents the session started, into `subagents`; off by default, so the session itself is unchanged. */
+  subagents?: boolean;
 };
+
+export type { Subagent, SubagentsRead } from './adapters/base.js';
 
 export type AgentSessionFound =
   | {
       status: 'done';
       /** The session as stored, its id taken from what was opened, never from the request. */
       session: Session;
-      /** Secret-looking values replaced, when `scrub` was set. */
+      /** Secret-looking values replaced, when `scrub` was set, the subagents' included. */
       redactedCount?: number;
+      /** The agents the session started, when `subagents` was set. */
+      subagents?: SubagentsRead;
     }
   | { status: 'failed'; failure: AgentSessionFailure };
 
@@ -105,6 +112,8 @@ export type AgentSessionListQuery = {
   cwd?: string;
   /** ISO 8601. Sessions last updated before it are left out. */
   updatedSince?: string;
+  /** Also list the sessions a tool archived and `find` still reads, such as Codex's `archived_sessions/`. */
+  archived?: boolean;
 };
 
 export type AgentSessionList = {
@@ -120,10 +129,8 @@ export type AgentSession = {
   find(ref: AgentSessionRef, options?: AgentSessionFindOptions): Promise<AgentSessionFound>;
   transcript(session: Session): AgentSessionTranscriptEntry[];
   platformForTool(tool: string): string | undefined;
+  toolForPlatform(platform: string): string;
 };
-
-/** Targets that list a copy only once the sqlite3 CLI registers it. Windows ships no sqlite3. */
-const LISTED_THROUGH_SQLITE3 = new Set(['cursor', 'workbuddy']);
 
 /**
  * Why TeamAI cannot use `platform` on this machine, or undefined when it can. `write` also
@@ -144,7 +151,7 @@ export function noAdapter(
       message: `Unknown platform "${platform}". Known platforms: ${known.join(', ')}.`,
     };
   }
-  if (use === 'write' && os === 'win32' && LISTED_THROUGH_SQLITE3.has(platform)) {
+  if (use === 'write' && os === 'win32' && sessionPlatformFacts(platform)?.sqliteRegistrationOnWindows) {
     return {
       code: 'no_adapter',
       platform,
@@ -337,7 +344,7 @@ async function listedFilePath(target: AgentAdapter, sessionId: string, cwd: stri
   }
 }
 
-async function listPlatform(platform: string, cwd: string | undefined, toolRoots: ToolRoots): Promise<AgentSessionList> {
+async function listPlatform(platform: string, cwd: string | undefined, toolRoots: ToolRoots, archived: boolean): Promise<AgentSessionList> {
   const adapter = adapterFor(platform, 'read', toolRoots);
   if ('code' in adapter) return { sessions: [], failures: [adapter] };
   if (!adapter.isReady()) {
@@ -346,7 +353,7 @@ async function listPlatform(platform: string, cwd: string | undefined, toolRoots
   }
   let metas: SessionMeta[];
   try {
-    metas = await adapter.listConversations(cwd);
+    metas = await (archived ? adapter.listConversations(cwd, { archived }) : adapter.listConversations(cwd));
   } catch (e) {
     const message = messageOf(e);
     if (e instanceof ToolUnavailableError) return { sessions: [], failures: [{ code: 'tool_unavailable', platform, message }] };
@@ -370,10 +377,10 @@ async function listPlatform(platform: string, cwd: string | undefined, toolRoots
  * The sessions of the tools named, or of every installed tool. Tools are listed concurrently and
  * each failure is that tool's alone.
  */
-async function list({ platforms, cwd, updatedSince }: AgentSessionListQuery = {}): Promise<AgentSessionList> {
+async function list({ platforms, cwd, updatedSince, archived = false }: AgentSessionListQuery = {}): Promise<AgentSessionList> {
   const toolRoots = await recordedToolRoots(cwd);
   const listed = await Promise.all(
-    (platforms ?? listInstalledPlatforms(toolRoots)).map((platform) => listPlatform(platform, cwd, toolRoots)),
+    (platforms ?? listInstalledPlatforms(toolRoots)).map((platform) => listPlatform(platform, cwd, toolRoots, archived)),
   );
   const since = updatedSince === undefined ? undefined : Date.parse(updatedSince);
   const sessions = listed
@@ -389,15 +396,31 @@ async function list({ platforms, cwd, updatedSince }: AgentSessionListQuery = {}
  */
 async function find(
   ref: AgentSessionRef,
-  { scrub = true, toolRootsFor = recordedToolRoots }: AgentSessionFindOptions = {},
+  { scrub = true, toolRootsFor = recordedToolRoots, subagents = false }: AgentSessionFindOptions = {},
 ): Promise<AgentSessionFound> {
   const source = adapterFor(ref.platform, 'read', await toolRootsFor(ref.cwd));
   if ('code' in source) return { status: 'failed', failure: source };
   const session = await readSource(source, ref);
   if ('code' in session) return { status: 'failed', failure: session };
-  if (!scrub) return { status: 'done', session };
+  const agents = subagents ? { subagents: await readSubagents(source, session, ref) } : {};
+  if (!scrub) return { status: 'done', session, ...agents };
   const scrubbed = scrubSession(session);
-  return { status: 'done', session: scrubbed.session, redactedCount: scrubbed.redactedCount };
+  if (agents.subagents?.status !== 'read') return { status: 'done', session: scrubbed.session, redactedCount: scrubbed.redactedCount, ...agents };
+  const read = agents.subagents.agents.map((agent) => ({ agent, scrubbed: scrubSession(agent.session) }));
+  return {
+    status: 'done',
+    session: scrubbed.session,
+    redactedCount: read.reduce((count, item) => count + item.scrubbed.redactedCount, scrubbed.redactedCount),
+    subagents: { status: 'read', agents: read.map(({ agent, scrubbed: own }) => ({ ...agent, session: own.session })) },
+  };
+}
+
+async function readSubagents(source: AgentAdapter, session: Session, ref: AgentSessionRef): Promise<SubagentsRead> {
+  try {
+    return await source.readSubagents(session, { sessionId: ref.sessionId, projectPath: ref.cwd, filePath: ref.filePath });
+  } catch (e) {
+    return { status: 'unread', reason: messageOf(e) };
+  }
 }
 
 async function copy({ from, to, scrub = false, toolRootsFor = recordedToolRoots }: AgentSessionCopyRequest): Promise<AgentSessionCopy> {
@@ -493,13 +516,15 @@ function transcript(session: Session): AgentSessionTranscriptEntry[] {
   }));
 }
 
-/** Tool names whose session platform has another name. Every other platform is its own tool name. */
-const PLATFORM_OF_TOOL: Record<string, string> = { claude: 'claude-code' };
-
 /** The session platform a tool (a workflow step's `tool`) reads and writes, or undefined when it has none. */
 function platformForTool(tool: string): string | undefined {
-  const platform = PLATFORM_OF_TOOL[tool] ?? tool;
-  return listAvailablePlatforms().includes(platform) ? platform : undefined;
+  if (sessionPlatformFacts(tool)) return tool;
+  return Object.entries(SESSION_PLATFORM_FACTS).find(([, facts]) => facts.tool === tool)?.[0];
 }
 
-export const AgentSession = { list, copy, find, transcript, platformForTool } as const satisfies AgentSession;
+/** The tool whose sessions `platform` holds, the reverse of `platformForTool`. */
+function toolForPlatform(platform: string): string {
+  return sessionPlatformFacts(platform)?.tool ?? platform;
+}
+
+export const AgentSession = { list, copy, find, transcript, platformForTool, toolForPlatform } as const satisfies AgentSession;

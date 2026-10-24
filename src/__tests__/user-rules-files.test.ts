@@ -193,6 +193,30 @@ describe('a user-scope rules sync puts the team rules in a file only the tool re
     expect(await fse.pathExists(home('.dsh/AGENTS.md'))).toBe(false);
   });
 
+  it('writes Muse\'s block to $XDG_CONFIG_HOME/muse/AGENTS.md, the only one Muse reads then (#1221)', async () => {
+    const xdgMuse = path.join(tmpDir, 'xdg', 'muse');
+    await fse.ensureDir(xdgMuse);
+    await fse.ensureDir(home('.config/muse'));
+    vi.stubEnv('XDG_CONFIG_HOME', path.join(tmpDir, 'xdg'));
+
+    await new RulesHandler().pullAllRules(teamConfig(), config('user', ['muse']));
+
+    expect(await fse.readFile(path.join(xdgMuse, 'AGENTS.md'), 'utf8')).toBe(`${BLOCK}\n`);
+    expect(await fse.pathExists(home('.config/muse/AGENTS.md'))).toBe(false);
+  });
+
+  it('writes Pi\'s block to $PI_CODING_AGENT_DIR/AGENTS.md (#1221)', async () => {
+    const piAgent = path.join(tmpDir, 'pi-agent');
+    await fse.ensureDir(piAgent);
+    await fse.ensureDir(home('.pi/agent'));
+    vi.stubEnv('PI_CODING_AGENT_DIR', piAgent);
+
+    await new RulesHandler().pullAllRules(teamConfig(), config('user', ['pi']));
+
+    expect(await fse.readFile(path.join(piAgent, 'AGENTS.md'), 'utf8')).toBe(`${BLOCK}\n`);
+    expect(await fse.pathExists(home('.pi/agent/AGENTS.md'))).toBe(false);
+  });
+
   it('writes the other tools\' files when one cannot be written, and names that one', async () => {
     await fse.ensureDir(home('.zcode/AGENTS.md')); // a directory where the file should be
     await fse.ensureDir(home('.pi/agent'));

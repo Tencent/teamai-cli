@@ -1,20 +1,17 @@
 import path from 'node:path';
-import { isToolInstalledForConfig } from './resources/base.js';
 import { getsRulesFromExtension } from './resources/rule-format.js';
-import { pathExists, readFileSafe, remove, writeFile } from './utils/fs.js';
+import { pathExists, readFileSafe, readJsonObject, remove, writeFile } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 import { CODEX_TOOL_IDS } from './utils/tool-names.js';
+import { channelsOf, TOOLS, type BlocksHeader, type ChannelProbe, type RunTime } from './tools.js';
+import { installOf, locate, ownOf, writable, type FilePlace, type Gate, type Install } from './locate.js';
 import {
-  opencodeClaudeFallback, opencodeContextReference, readOpencodeInstructionList, reconcileOpencodeInstructions,
+  opencodeContextReference, opencodeV1ClaudeFile, readOpencodeInstructionList, reconcileOpencodeInstructions,
 } from './resources/opencode-config.js';
 import { gitUntracked } from './git-exclude.js';
 import { TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
-import { getHermesHome } from './hermes-home.js';
-import { getHermesSoulPath } from './hermes-config.js';
-import { HERMES_SECTION_LIMIT } from './hermes-hooks.js';
 import {
   isAgentExcluded,
-  isGitExcludeEnabled,
   resolveToolBaseDir,
   resolveHookScope,
   scopedToolPaths,
@@ -39,177 +36,15 @@ import {
  * file the project or another tool shares (#945).
  */
 
-type ToolPaths = TeamaiConfig['toolPaths'][string];
-
 /**
- * A file of a tool, relative to the tool's base dir for the scope
- * (`resolveToolBaseDir`) or absolute; undefined when it has none.
+ * The frontmatter teamai writes above its blocks when it creates an owned
+ * file. Cursor applies an `.mdc` rule in every session only with
+ * `alwaysApply`, which CodeBuddy and WorkBuddy read too; Copilot inlines a
+ * `.github/instructions` file in every request only for the `**` glob (#915).
  */
-type ToolFile = (paths: ToolPaths) => string | undefined | Promise<string | undefined>;
-
-interface TargetEntry {
-  /** The file this tool reads the blocks from in this scope. */
-  readonly file: ToolFile;
-  /**
-   * For a tool with no rules format, in user scope: the team rules go in the
-   * blocks' `file` too (#938, #946, #1029), and this is how doctor names it.
-   */
-  readonly teamRules?: { readonly label: string };
-  /** The tool gets this scope's blocks from teamai's session hook or extension instead of a file. */
-  readonly hook?: boolean;
-  /** The most characters the hook channel takes; the tool drops a larger text whole. */
-  readonly hookLimit?: number;
-  /** Text teamai writes above the blocks when it creates the file, e.g. the frontmatter a rules loader needs. */
-  readonly header?: string;
-  /** teamai owns the whole file: one it did not write is left alone, and it is deleted once its blocks are gone. */
-  readonly owned?: boolean;
-  /** A surface of the tool reads no agents from the scope's `agents` directory, so the `teamai-recall` subagent is not there to call. */
-  readonly noRecallAgent?: boolean;
-  /**
-   * Files an earlier release wrote this tool's blocks to by default, relative
-   * to the same base dir. A pull strips teamai blocks from them once no
-   * installed tool targets them. A tool whose target is not its `claudemd`
-   * retires the team's configured `claudemd` too (`retiredInstructionFiles`).
-   */
-  readonly retired: readonly string[];
-}
-
-/** The tool's `claudemd` path from the team's `toolPaths` (honors `toolRoots`). */
-const configured = (paths: ToolPaths): string | undefined => paths.claudemd;
-
-/**
- * OpenClaw's workspace AGENTS.md, in the workspace its hooks resolve
- * (`resolveOpenclawWorkspaceDir`); none when no workspace resolves, which is
- * also what says OpenClaw is not installed here (`isInstructionToolInstalled`).
- */
-const openclawWorkspace = async (): Promise<string | undefined> => {
-  const { resolveOpenclawWorkspace } = await import('./openclaw-home.js');
-  const workspace = await resolveOpenclawWorkspace();
-  // An openclaw.json teamai cannot read may name another workspace: guess none (#946).
-  return workspace.kind === 'found' ? path.join(workspace.dir, 'AGENTS.md') : undefined;
-};
-
-/** DeepSeek Harness reads `$DSH_HOME/AGENTS.md` (`~/.dsh` by default) in its first request. */
-const dshAgentsMd = async (): Promise<string> => {
-  const { resolveDshHome } = await import('./dsh-hooks.js');
-  return path.join(resolveDshHome(), 'AGENTS.md');
-};
-
-const codexUser: TargetEntry = { file: configured, teamRules: { label: 'Codex AGENTS.md' }, retired: [] };
-
-/**
- * teamai's own always-applied file in the tool's rules directory. A team's
- * `toolPaths` entry without `rules` keeps its configured `claudemd`, which is
- * the member's file there, not teamai's.
- */
-const contextRule = (extension: string) => (paths: ToolPaths): string | undefined =>
-  paths.rules === undefined ? paths.claudemd : path.posix.join(paths.rules, `${TEAMAI_CONTEXT_RULE_NAME}${extension}`);
-
-/**
- * Cursor applies an `.mdc` rule in every session only with this frontmatter;
- * CodeBuddy and WorkBuddy read the same key.
- */
-const ALWAYS_APPLY = '---\nalwaysApply: true\n---\n';
-const cursor: TargetEntry = { file: contextRule('.mdc'), header: ALWAYS_APPLY, owned: true, retired: [] };
-// The Cursor CLI reads agents only from the workspace, never ~/.cursor/agents (#1218).
-const cursorUser: TargetEntry = { ...cursor, noRecallAgent: true };
-
-// A team override or an earlier build could have pointed Codex at the project AGENTS.md.
-const codexHook: TargetEntry = { file: () => undefined, hook: true, retired: ['AGENTS.md'] };
-
-/**
- * CodeBuddy and WorkBuddy both read the project's .codebuddy/rules, so they
- * share one copy there; uninstalling one keeps it while the other remains.
- * An entry without `rules` keeps its configured `claudemd`, as `contextRule`.
- */
-const codebuddyProjectRule = (paths: ToolPaths): string | undefined =>
-  paths.rules === undefined ? paths.claudemd : `.codebuddy/rules/${TEAMAI_CONTEXT_RULE_NAME}.md`;
-
-// One line per tool, so a change to one tool's target edits one line.
-const USER_TARGETS: Readonly<Record<string, TargetEntry>> = {
-  claude: { file: configured, retired: [] },
-  // Cursor reads ~/.cursor/rules only in a workspace under $HOME; elsewhere its session-start hook adds the blocks (cursor-user-rules.ts).
-  cursor: cursorUser,
-  'claude-internal': { file: configured, retired: [] },
-  tclaude: { file: configured, retired: [] },
-  // Hermes loads SOUL.md in every session; teamai's rules block is already there.
-  hermes: { file: () => getHermesSoulPath(), retired: ['AGENTS.md'] },
-  copilot: { file: configured, retired: [] },
-  // RULES.md is an always-applied rule beside OMP's single user context file,
-  // which ~/.omp/agent/AGENTS.md would take from ~/.agents/AGENTS.md.
-  omp: { file: () => '.omp/agent/RULES.md', retired: ['.omp/agent/AGENTS.md'] },
-  // Pi reads no user rules directory: the team rules sit beside the blocks.
-  pi: { file: configured, teamRules: { label: 'Pi AGENTS.md' }, retired: [] },
-  // $CODEX_HOME/AGENTS.md (a `toolRoots` entry moves the claudemd path).
-  codex: codexUser,
-  'codex-internal': codexUser,
-  tcodex: codexUser,
-  // ZCode reads ~/.zcode/AGENTS.md as its user context; the team rules sit beside the blocks.
-  zcode: { file: () => '.zcode/AGENTS.md', teamRules: { label: 'ZCode AGENTS.md' }, retired: [] },
-  dsh: { file: dshAgentsMd, teamRules: { label: 'DeepSeek Harness AGENTS.md' }, retired: [] },
-  // JoyCode reads its user rules from one plain text file.
-  joycode: { file: () => '.joycode/rules.txt', teamRules: { label: 'JoyCode rules.txt' }, retired: [] },
-  // Muse Code reads ~/.config/muse/AGENTS.md as its user rules file; the team rules sit beside the blocks.
-  muse: { file: () => '.config/muse/AGENTS.md', teamRules: { label: 'Muse Code AGENTS.md' }, retired: [] },
-  // WorkBuddy reads user rules from ~/.workbuddy/rules; nothing else reads them.
-  workbuddy: { file: contextRule('.md'), header: ALWAYS_APPLY, owned: true, retired: ['AGENTS.md'] },
-  codebuddy: { file: configured, retired: [] },
-  // A profile or OPENCLAW_WORKSPACE_DIR moves the workspace off the default
-  // path. The default workspace is not retired: OpenClaw's default profile
-  // still reads it.
-  openclaw: { file: openclawWorkspace, teamRules: { label: 'OpenClaw workspace AGENTS.md' }, retired: [] },
-  // Registered in the user opencode.json `instructions`; AGENTS.md beside it stays the member's.
-  opencode: { file: () => '.config/opencode/teamai-context.md', owned: true, retired: [] },
-};
-
-const PROJECT_TARGETS: Readonly<Record<string, TargetEntry>> = {
-  // Claude loads every unscoped .claude/rules file from the root and any
-  // subdirectory, and still reads AGENTS.md and an authored CLAUDE.md as it
-  // chose to. CLAUDE.local.md would stop the native AGENTS.md load (#945).
-  claude: { file: contextRule('.md'), owned: true, retired: ['.claude/CLAUDE.md'] },
-  cursor,
-  'claude-internal': { file: configured, retired: [] },
-  tclaude: { file: configured, retired: [] },
-  // Hermes reads the project's AGENTS.md itself; teamai's Hermes plugin adds
-  // the blocks as a system prompt section, which holds 4,000 characters.
-  hermes: { file: () => undefined, hook: true, hookLimit: HERMES_SECTION_LIMIT, retired: ['AGENTS.md'] },
-  copilot: { file: configured, retired: [] },
-  // OMP reads project rules only from the root and keeps one context file per
-  // level, so .omp/AGENTS.md would hide the project's AGENTS.md: teamai's OMP
-  // extension adds the blocks to each turn's system prompt instead.
-  omp: { file: () => undefined, hook: true, retired: ['.omp/AGENTS.md'] },
-  // Pi reads the project's AGENTS.md itself; teamai's Pi extension adds the
-  // blocks to each run's system prompt.
-  pi: { file: () => undefined, hook: true, retired: ['AGENTS.md'] },
-  workbuddy: { file: codebuddyProjectRule, header: ALWAYS_APPLY, owned: true, retired: ['AGENTS.md'] },
-  codebuddy: { file: codebuddyProjectRule, header: ALWAYS_APPLY, owned: true, retired: ['.codebuddy/CODEBUDDY.md'] },
-  // OpenClaw's only project file is the shared AGENTS.md; it reads no
-  // project .openclaw/workspace (#946).
-  openclaw: { file: () => undefined, retired: ['.openclaw/workspace/AGENTS.md'] },
-  // Codex reads no project file only it reads; its session-start and
-  // subagent-start hooks add the blocks (#938, #940).
-  codex: codexHook,
-  'codex-internal': codexHook,
-  tcodex: codexHook,
-  // Registered in .opencode/opencode.json `instructions`; the root opencode.json stays the project's.
-  opencode: { file: () => '.opencode/teamai-context.md', owned: true, retired: [] },
-};
-
-/**
- * Copilot inlines a `.github/instructions` file in every request, a question
- * with no file in context included, only for exactly this glob; any other
- * applies only when a matching file is in context (#915).
- */
-const APPLY_TO_ALL = '---\napplyTo: "**"\n---\n';
-
-/**
- * With sharing.gitExclude on (#915), Copilot reads the blocks from teamai's
- * own file in its instructions directory, which git can be told to ignore, so
- * the team's copilot-instructions.md stays untouched.
- */
-const GIT_EXCLUDED_PROJECT_TARGETS: Readonly<Record<string, TargetEntry>> = {
-  ...PROJECT_TARGETS,
-  copilot: { file: contextRule('.instructions.md'), header: APPLY_TO_ALL, owned: true, retired: [] },
+const HEADERS: { readonly [H in BlocksHeader]: string } = {
+  'always-apply': '---\nalwaysApply: true\n---\n',
+  'apply-to-all': '---\napplyTo: "**"\n---\n',
 };
 
 type MarkerPair = readonly [start: string, end: string, name: string];
@@ -229,15 +64,15 @@ const TEAM_RULES: MarkerPair = [TEAMAI_TEAM_RULES_START, TEAMAI_TEAM_RULES_END, 
 /** Every teamai block a stale target can hold. */
 const STALE_BLOCKS: readonly MarkerPair[] = [CULTURE, CLAUDEMD, RECALL, LEGACY_RULES, TEAM_RULES];
 
-/** `gitExclude`: the resolved sharing.gitExclude flag (`isGitExcludeEnabled`), which moves Copilot's project target (#915). */
-function entryFor(tool: string, scope: Scope, gitExclude = false): TargetEntry | undefined {
-  if (scope === 'user') return USER_TARGETS[tool];
-  return (gitExclude ? GIT_EXCLUDED_PROJECT_TARGETS : PROJECT_TARGETS)[tool];
-}
-
-/** Whether `tool` has the `teamai-recall` subagent in `scope`, which decides the recall block it gets. */
-function hasRecallAgent(tool: string, paths: ToolPaths | undefined, scope: Scope): boolean {
-  return Boolean(paths?.agents) && !entryFor(tool, scope)?.noRecallAgent;
+/**
+ * Whether `tool` has the `teamai-recall` subagent in this scope, which decides
+ * the recall block it gets: teamai writes it agents there, and every surface
+ * of the tool reads them.
+ */
+async function hasRecallAgent(tool: string, install: Install): Promise<boolean> {
+  const blocks = channelsOf(tool).blocks[install.scope];
+  if (typeof blocks === 'object' && blocks.channel === 'file' && blocks.noRecallAgent === true) return false;
+  return ownOf(await locate(tool, 'agents', install)) !== null;
 }
 
 /** One instruction file and the tools that read it. */
@@ -254,6 +89,8 @@ export interface InstructionTarget {
 /** An installed, non-excluded tool that gets this scope's blocks from its session hook or extension. */
 export interface InstructionHook {
   tool: string;
+  /** What says the hook, extension or plugin is installed (`channelReadiness`). */
+  probe: ChannelProbe;
   recall: boolean;
   /** The most characters its channel takes, when it has a limit. */
   limit?: number;
@@ -287,36 +124,14 @@ export interface InstructionBlocks {
   directRecall?: string | null;
 }
 
-/**
- * The instruction file `tool` reads in the active scope, relative to its base
- * dir or absolute (see `TargetEntry.file`). Tools absent from the table keep
- * their configured `claudemd` path.
- */
-export async function instructionTargetFile(tool: string, paths: ToolPaths, scope: Scope, gitExclude = false): Promise<string | undefined> {
-  return (entryFor(tool, scope, gitExclude)?.file ?? configured)(paths);
-}
-
-/**
- * Files, relative to the tool's base dir or absolute, an earlier release wrote
- * `tool`'s blocks to in `scope`: the defaults, the `claudemd` the team's
- * `toolPaths` gives a tool whose target moved off it, and the target the
- * other value of the sharing.gitExclude flag selects, so turning the flag
- * either way moves the blocks on the next pull (#915).
- */
-export async function retiredInstructionFiles(tool: string, paths: ToolPaths, scope: Scope, gitExclude = false): Promise<readonly string[]> {
-  const entry = entryFor(tool, scope, gitExclude);
-  if (!entry) return [];
-  // OpenClaw's default workspace stays read by its default profile (#946).
-  if (tool === 'openclaw') return entry.retired;
-  const current = await instructionTargetFile(tool, paths, scope, gitExclude);
-  const previous = [paths.claudemd, await instructionTargetFile(tool, paths, scope, !gitExclude)]
-    .filter((file): file is string => file !== undefined && file !== current && !entry.retired.includes(file));
-  return previous.length === 0 ? entry.retired : [...entry.retired, ...new Set(previous)];
-}
-
 /** Whether `tool` gets this scope's blocks from teamai's session hook or extension rather than a file. */
 export function deliversInstructionsByHook(tool: string, scope: Scope): boolean {
-  return entryFor(tool, scope)?.hook === true;
+  return runTimeBlocksOf(tool, scope) !== null;
+}
+
+function runTimeBlocksOf(tool: string, scope: Scope): RunTime | null {
+  const channel = channelsOf(tool).blocks[scope];
+  return typeof channel === 'object' && channel.channel !== 'file' ? channel : null;
 }
 
 /**
@@ -353,7 +168,7 @@ export async function instructionHookTextFor(teamConfig: TeamaiConfig, localConf
     if (native.includes(CLAUDEMD[0]) || native.includes(CLAUDEMD[1])) blocks.claudemd = null;
     if (native.includes(RECALL[0]) || native.includes(RECALL[1])) blocks.recall = blocks.directRecall = null;
   }
-  return instructionHookText(blocks, hasRecallAgent(tool, scopedToolPaths(teamConfig, localConfig)[tool], localConfig.scope));
+  return instructionHookText(blocks, await hasRecallAgent(tool, installOf(teamConfig, localConfig)));
 }
 
 /** The message for hook text over its channel's limit, or null when it fits. */
@@ -366,56 +181,114 @@ export function hookLimitProblem(hook: InstructionHook, text: string): string | 
 }
 
 /**
- * Whether the extension or plugin that adds a hook tool's team instructions is
- * installed as this build writes it, and if not, what to do.
+ * Whether the hook, extension or plugin `probe` names is installed where
+ * `tool` runs it, as this build writes it, and if not, what to do. The probe
+ * comes from the tool's run-time channel (`locate`); every probe has its own
+ * check, so a new one fails the type check until it has one.
  */
-export async function instructionHookChannel(
+export async function channelReadiness(
   tool: string,
+  probe: ChannelProbe,
   context?: { teamConfig: TeamaiConfig; localConfig: LocalConfig },
 ): Promise<{ ready: boolean; fix: string }> {
   const rerun = 'Run `teamai hooks inject` to reinstall it; `teamai hooks remove` takes it away.';
-  if (tool === 'omp' || tool === 'pi') {
-    const { buildOmpExtensionSource, resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
-    const { buildPiExtensionSource, resolvePiExtensionsDir, PI_HOOK_FILE } = await import('./pi-hooks.js');
-    const file = tool === 'omp' ? path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE) : path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
-    const expected = tool === 'omp' ? buildOmpExtensionSource() : buildPiExtensionSource();
-    return {
-      ready: await readFileSafe(file) === expected,
-      // Pi's extension also carries a project's team rules (#946); OMP reads its own rules files.
-      fix: `${file} is missing or out of date, so ${tool} sessions in this project get no team instructions`
-        + `${getsRulesFromExtension(tool) ? ' or rules' : ''}. ${rerun}`,
-    };
-  }
-  if (tool === 'hermes') {
-    const {
-      buildInstructionsPlugin, foreignInstructionsPlugin, getInstructionsPluginDir, HERMES_INSTRUCTIONS_PLUGIN, ownsInstructionsPlugin,
-    } = await import('./hermes-hooks.js');
-    const { getHermesConfigPath, isHermesPluginEnabled } = await import('./hermes-config.js');
-    if (!await ownsInstructionsPlugin()) return { ready: false, fix: foreignInstructionsPlugin() };
-    const dir = getInstructionsPluginDir();
-    const plugin = buildInstructionsPlugin();
-    const installed = await readFileSafe(path.join(dir, '__init__.py')) === plugin.init
-      && await readFileSafe(path.join(dir, 'plugin.yaml')) === plugin.manifest;
-    if (!installed) {
-      return { ready: false, fix: `The Hermes plugin ${dir} is missing or out of date, so Hermes sessions in this project get no team instructions. ${rerun}` };
+  switch (probe) {
+    case 'omp-extension':
+    case 'pi-extension': {
+      const { buildOmpExtensionSource, resolveOmpExtensionsDir, OMP_HOOK_FILE } = await import('./omp-hooks.js');
+      const { buildPiExtensionSource, resolvePiExtensionsDir, PI_HOOK_FILE } = await import('./pi-hooks.js');
+      const omp = probe === 'omp-extension';
+      const file = omp ? path.join(resolveOmpExtensionsDir(), OMP_HOOK_FILE) : path.join(resolvePiExtensionsDir(), PI_HOOK_FILE);
+      const expected = omp ? buildOmpExtensionSource() : buildPiExtensionSource();
+      return {
+        ready: await readFileSafe(file) === expected,
+        // Pi's extension also carries a project's team rules (#946); OMP reads its own rules files.
+        fix: `${file} is missing or out of date, so ${tool} sessions in this project get no team instructions`
+          + `${getsRulesFromExtension(tool) ? ' or rules' : ''}. ${rerun}`,
+      };
     }
-    return {
-      ready: await isHermesPluginEnabled(HERMES_INSTRUCTIONS_PLUGIN),
-      fix: `${HERMES_INSTRUCTIONS_PLUGIN} is not in plugins.enabled of ${getHermesConfigPath()}, and Hermes loads no user plugin that is not listed there. `
-        + 'Add it there (or remove it from plugins.disabled), then start a new Hermes session.',
-    };
+    case 'hermes-plugin': {
+      const {
+        buildInstructionsPlugin, foreignInstructionsPlugin, getInstructionsPluginDir, HERMES_INSTRUCTIONS_PLUGIN, ownsInstructionsPlugin,
+      } = await import('./hermes-hooks.js');
+      const { getHermesConfigPath, isHermesPluginEnabled } = await import('./hermes-config.js');
+      if (!await ownsInstructionsPlugin()) return { ready: false, fix: foreignInstructionsPlugin() };
+      const dir = getInstructionsPluginDir();
+      const plugin = buildInstructionsPlugin();
+      const installed = await readFileSafe(path.join(dir, '__init__.py')) === plugin.init
+        && await readFileSafe(path.join(dir, 'plugin.yaml')) === plugin.manifest;
+      if (!installed) {
+        return { ready: false, fix: `The Hermes plugin ${dir} is missing or out of date, so Hermes sessions in this project get no team instructions. ${rerun}` };
+      }
+      return {
+        ready: await isHermesPluginEnabled(HERMES_INSTRUCTIONS_PLUGIN),
+        fix: `${HERMES_INSTRUCTIONS_PLUGIN} is not in plugins.enabled of ${getHermesConfigPath()}, and Hermes loads no user plugin that is not listed there. `
+          + 'Add it there (or remove it from plugins.disabled), then start a new Hermes session.',
+      };
+    }
+    case 'codex-hooks': {
+      const file = hooksFileOf(tool, context);
+      return {
+        ready: file !== undefined && await hooksInstalled(file, tool),
+        fix: `${file ?? `${tool}'s hooks file`} is missing or out of date, so ${tool} sessions get no team instructions. ${rerun}`,
+      };
+    }
+    case 'muse-session-start': {
+      const file = hooksFileOf(tool, context);
+      return {
+        ready: file !== undefined && await hooksInstalled(file, tool),
+        fix: `${file ?? `${tool}'s hooks file`} registers no current teamai SessionStart hook, so Muse Code sessions in this project `
+          + `get none of the team rules or instructions. ${rerun}`,
+      };
+    }
+    case 'zcode-session-start': {
+      const file = hooksFileOf(tool, context);
+      if (file === undefined || !await hooksInstalled(file, tool)) {
+        return {
+          ready: false,
+          fix: `${file ?? `${tool}'s hooks file`} registers no current teamai SessionStart hook, so ZCode sessions in this project `
+            + `get none of the team rules or instructions. ${rerun}`,
+        };
+      }
+      const read = await readJsonObject(file);
+      const hooks = read.kind === 'ok' ? read.value.hooks : undefined;
+      return {
+        ready: typeof hooks === 'object' && hooks !== null && 'enabled' in hooks && hooks.enabled === true,
+        fix: `${file} sets hooks.enabled to something other than true, so ZCode runs none of the hooks it registers, and sessions `
+          + 'in this project get none of the team rules or instructions. Run `teamai hooks inject`, which turns them on.',
+      };
+    }
+    case 'dsh-session-start': {
+      const { isDshHooksMounted, resolveDshHomePatchPath, resolveDshHookConfigPath } = await import('./dsh-hooks.js');
+      const configPath = resolveDshHookConfigPath();
+      const broken = [
+        ...await isDshHooksMounted(configPath) ? [] : [resolveDshHomePatchPath()],
+        ...await hooksInstalled(configPath, tool) ? [] : [configPath],
+      ];
+      return {
+        ready: broken.length === 0,
+        fix: `${broken.join(' and ')} ${broken.length === 1 ? 'is' : 'are'} missing or out of date, so DeepSeek Harness sessions in this `
+          + `project get none of the team rules or instructions. ${rerun}`,
+      };
+    }
+    default: {
+      const unhandled: never = probe;
+      return unhandled;
+    }
   }
-  if (CODEX_TOOL_IDS.some((id) => id === tool)) {
-    const { getHookStatus } = await import('./hooks.js');
-    const hookScope = context && resolveHookScope(context.localConfig);
-    const settings = context && hookScope && scopedToolPaths(context.teamConfig, { ...context.localConfig, scope: hookScope.scope })[tool]?.settings;
-    const file = settings && hookScope ? path.resolve(hookScope.baseDir, settings) : undefined;
-    return {
-      ready: file !== undefined && await getHookStatus(file, tool) === 'installed',
-      fix: `${file ?? `${tool}'s hooks file`} is missing or out of date, so ${tool} sessions get no team instructions. ${rerun}`,
-    };
-  }
-  return { ready: true, fix: '' };
+}
+
+/** The hooks file teamai writes `tool`'s hooks to for this member, user-level for a project that is not the team repo. */
+function hooksFileOf(tool: string, context: { teamConfig: TeamaiConfig; localConfig: LocalConfig } | undefined): string | undefined {
+  if (context === undefined) return undefined;
+  const hookScope = resolveHookScope(context.localConfig);
+  const settings = scopedToolPaths(context.teamConfig, { ...context.localConfig, scope: hookScope.scope })[tool]?.settings;
+  return settings === undefined ? undefined : path.resolve(hookScope.baseDir, settings);
+}
+
+async function hooksInstalled(file: string, tool: string): Promise<boolean> {
+  const { getHookStatus } = await import('./hooks.js');
+  return await getHookStatus(file, tool) === 'installed';
 }
 
 /**
@@ -450,7 +323,7 @@ export async function instructionChannelProblems(teamConfig: TeamaiConfig, local
   for (const hook of hooks) {
     const text = await instructionHookTextFor(teamConfig, localConfig, hook.tool);
     if (!text) continue;
-    const channel = await instructionHookChannel(hook.tool, { teamConfig, localConfig });
+    const channel = await channelReadiness(hook.tool, hook.probe, { teamConfig, localConfig });
     if (!channel.ready) {
       problems.push(channel.fix);
       continue;
@@ -470,136 +343,22 @@ function managedBlockBody(block: string): string {
     .trim();
 }
 
-/** Absolute instruction file of `tool` in the active scope, or undefined when it takes none. */
-export async function instructionTargetPath(
-  tool: string,
-  paths: ToolPaths,
-  localConfig: LocalConfig,
-  gitExclude = false,
-): Promise<string | undefined> {
-  const file = await instructionTargetFile(tool, paths, localConfig.scope, gitExclude);
-  return file === undefined ? undefined : path.resolve(resolveToolBaseDir(tool, localConfig), file);
-}
-
-/** The file a tool with no rules format reads the team rules from in user scope (`userRulesFile`). */
-export interface UserRulesFile {
-  /** Absolute; undefined when the tool has none here (the team's `toolPaths` gives it no `claudemd`, or no OpenClaw workspace resolves). */
-  readonly file: string | undefined;
-  /** Whether the tool is installed, probed the way its instruction blocks are, so pull writes the block. */
-  readonly installed: boolean;
-  /** How doctor names the file: "Team rules are inlined in <label>". */
-  readonly label: string;
-  /** The tool's config, which names the file, could not be read: pull writes no block and doctor fails (OpenClaw's openclaw.json). */
-  readonly unreadable?: { readonly config: string; readonly error: string };
-}
-
 /**
  * What happened and what to do when `tool`'s config, which names its rules
- * file, cannot be read (`UserRulesFile.unreadable`): pull warns with it and
- * doctor's fix says it.
+ * file, cannot be read (OpenClaw's openclaw.json, the `readable-config` gate):
+ * pull warns with it and doctor's fix says it.
  */
-export function unreadableRulesFileMessage(tool: string, unreadable: NonNullable<UserRulesFile['unreadable']>): string {
-  return `teamai cannot read ${unreadable.config} as plain JSON (${unreadable.error}), so it cannot tell which `
+export async function unreadableRulesFileMessage(tool: string, gate: { readonly file: string }): Promise<string> {
+  const read = await readJsonObject(gate.file);
+  const why = read.kind === 'invalid' ? ` (${read.error})` : '';
+  return `teamai cannot read ${gate.file} as plain JSON${why}, so it cannot tell which `
     + `workspace ${tool} reads: it writes no team-rules block, and ${tool} gets none of the team rules from teamai. `
     + 'Make that file plain JSON (no comments or trailing commas), then run `teamai pull`.';
 }
 
-/** Whether `tool` reads the team rules from a file of its own in user scope. */
-export function readsTeamRulesFromFile(tool: string): boolean {
-  return entryFor(tool, 'user')?.teamRules !== undefined;
-}
-
-/**
- * The file `tool` reads the team rules from in this scope: one only it reads,
- * in its home, for a tool with no rules format in user scope (#938, #946);
- * undefined for every other tool and scope. The rules writer, doctor and
- * uninstall all ask here.
- */
-export async function userRulesFile(tool: string, paths: ToolPaths, localConfig: LocalConfig): Promise<UserRulesFile | undefined> {
-  if (localConfig.scope !== 'user') return undefined;
-  const entry = entryFor(tool, 'user');
-  if (entry?.teamRules === undefined) return undefined;
-  const { label } = entry.teamRules;
-  if (tool === 'openclaw') {
-    // Installed where its workspace resolves, or where openclaw.json says
-    // where it is in a form teamai cannot read.
-    const { resolveOpenclawWorkspace } = await import('./openclaw-home.js');
-    const workspace = await resolveOpenclawWorkspace();
-    if (workspace.kind === 'unreadable-config') {
-      return { file: undefined, installed: true, label, unreadable: { config: workspace.file, error: workspace.error } };
-    }
-    return { file: workspace.kind === 'found' ? path.join(workspace.dir, 'AGENTS.md') : undefined, installed: workspace.kind === 'found', label };
-  }
-  const relative = await entry.file(paths);
-  const file = relative === undefined ? undefined : path.resolve(resolveToolBaseDir(tool, localConfig), relative);
-  return { file, installed: await isInstructionToolInstalled(tool, paths, localConfig), label };
-}
-
-/**
- * The target `tool` reads from `file` in `scope`, with the header and
- * ownership its entry declares. Only teamai's `teamai-context` file takes
- * them; a configured file is the member's.
- */
-export async function instructionTargetAt(
-  tool: string, file: string, scope: Scope, paths: ToolPaths, gitExclude = false,
-): Promise<InstructionTarget> {
-  const entry = entryFor(tool, scope, gitExclude);
-  // teamai's file is the one its entry generates; the team's configured
-  // `claudemd` (the fallback without `rules`) is the member's, whatever its name.
-  const own = path.basename(file).startsWith(`${TEAMAI_CONTEXT_RULE_NAME}.`)
-    && await instructionTargetFile(tool, paths, scope, gitExclude) !== paths.claudemd;
-  return { path: file, tools: [], recall: false, header: own ? entry?.header : undefined, owned: own ? entry?.owned : undefined };
-}
-
-/**
- * The files earlier releases wrote instruction blocks to in the active scope.
- * A tool's current target is not among them: a tool that is not installed
- * here may still be installed by a teammate who shares the file (#945).
- */
-async function retiredTargets(
-  toolPaths: Record<string, ToolPaths>, localConfig: LocalConfig, gitExclude: boolean,
-): Promise<Map<string, InstructionTarget>> {
-  const current = new Set(await Promise.all(Object.entries(toolPaths).map(([tool, paths]) => instructionTargetPath(tool, paths, localConfig, gitExclude))));
-  const known = new Map<string, InstructionTarget>();
-  const table = localConfig.scope === 'user' ? USER_TARGETS : PROJECT_TARGETS;
-  for (const tool of Object.keys(table)) {
-    const baseDir = resolveToolBaseDir(tool, localConfig);
-    for (const retired of await retiredInstructionFiles(tool, toolPaths[tool] ?? {}, localConfig.scope, gitExclude)) {
-      const file = path.resolve(baseDir, retired);
-      if (!current.has(file) && !known.has(file)) known.set(file, { path: file, tools: [], recall: false });
-    }
-  }
-  return known;
-}
-
-/**
- * Whether `tool` is installed, probed through a path under its own root. The
- * instruction file is the probe only when the entry has no other path, and
- * then only through its directory: a bare `AGENTS.md` is shared by several
- * tools and says nothing about any one of them, so such an entry counts as
- * installed, as it did before #945.
- */
-export async function isInstructionToolInstalled(tool: string, paths: ToolPaths, localConfig: LocalConfig): Promise<boolean> {
-  // Hermes lives in $HERMES_HOME, which ~/.hermes need not be.
-  if (tool === 'hermes') return pathExists(getHermesHome());
-  // teamai installs the OMP extension only where ~/.omp exists; a project's
-  // own .omp/ says nothing about this member using OMP.
-  if (tool === 'omp') return pathExists(path.join(getUserHome(), '.omp'));
-  // OpenClaw is installed where its workspace resolves, whatever ~/.openclaw
-  // holds; its target file is there only then (`openclawWorkspace`).
-  if (tool === 'openclaw') return true;
-  // DeepSeek Harness runs from $DSH_HOME (`~/.dsh` by default), whatever ~/.dsh holds.
-  if (tool === 'dsh') {
-    const { isDshInstalled } = await import('./dsh-hooks.js');
-    return isDshInstalled();
-  }
-  // teamai installs the Pi extension in ~/.pi/agent/extensions when ~/.pi
-  // exists, so a project needs no .pi/ of its own.
-  if (tool === 'pi' && await pathExists(path.join(getUserHome(), '.pi'))) return true;
-  const nestedClaudemd = paths.claudemd !== undefined && paths.claudemd.includes('/') ? paths.claudemd : undefined;
-  const probe = paths.skills ?? paths.rules ?? paths.agents ?? paths.settings ?? nestedClaudemd;
-  if (probe === undefined) return paths.claudemd !== undefined;
-  return isToolInstalledForConfig(tool, probe, localConfig);
+/** The target teamai writes `place`'s blocks to, with the header and ownership `locate` gives it. */
+export function instructionTargetOf(place: FilePlace, recall = false): InstructionTarget {
+  return { path: place.path, tools: [], recall, header: place.header === null ? undefined : HEADERS[place.header], owned: place.owned || undefined };
 }
 
 /** Resolve where this scope's instruction blocks go, and which files to clean. */
@@ -607,63 +366,65 @@ export async function resolveInstructionTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
 ): Promise<InstructionTargets> {
+  const install = installOf(teamConfig, localConfig);
   const targets = new Map<string, InstructionTarget>();
   // Files an installed tool reads, excluded or not: an excluded tool's file is
   // left alone, not cleaned.
   const inUse = new Set<string>();
+  const current = new Set<string>();
+  const retired = new Map<string, InstructionTarget>();
   const hooks: InstructionHook[] = [];
-  const toolPaths = scopedToolPaths(teamConfig, localConfig);
-  const gitExclude = isGitExcludeEnabled(localConfig, teamConfig);
-  for (const [tool, paths] of Object.entries(toolPaths)) {
-    const entry = entryFor(tool, localConfig.scope, gitExclude);
-    const file = await instructionTargetPath(tool, paths, localConfig, gitExclude);
+  // A tool the team does not map still names the files earlier releases wrote its blocks to.
+  for (const tool of new Set([...Object.keys(TOOLS), ...Object.keys(install.toolPaths)])) {
+    const location = await locate(tool, 'blocks', install);
+    // A retired file is cleaned as the member's: one git tracks stays, emptied.
+    for (const { place } of location.retired) if (!retired.has(place.path)) retired.set(place.path, { path: place.path, tools: [], recall: false });
+    if (install.toolPaths[tool] === undefined) continue;
+    const own = ownOf(location);
+    if (own !== null) current.add(own.path);
     if (isAgentExcluded(localConfig, tool)) {
-      if (file) inUse.add(file);
-      for (const retired of await retiredInstructionFiles(tool, paths, localConfig.scope, gitExclude)) {
-        inUse.add(path.resolve(resolveToolBaseDir(tool, localConfig), retired));
-      }
+      if (own !== null) inUse.add(own.path);
+      for (const { place } of location.retired) inUse.add(place.path);
       continue;
     }
-    if (entry?.hook) {
-      // Codex's hooks are user-level, so a project without its own `.codex/`
-      // still reaches an installed Codex.
-      // Probe at the member's recorded root (toolRoots), as hook install does.
-      let probeConfig = localConfig;
-      let probePaths = paths;
-      if (entry === codexHook) {
-        // A project config records no tool roots; the member's are in the
-        // user config, which a user-scope init may have written later.
-        const { loadLocalConfig } = await import('./config.js');
-        const toolRoots = localConfig.toolRoots ?? (await loadLocalConfig())?.toolRoots;
-        probeConfig = { ...localConfig, scope: 'user', toolRoots };
-        probePaths = scopedToolPaths(teamConfig, probeConfig)[tool] ?? paths;
+    if (!location.gates.every((gate) => gate.met)) continue;
+    switch (location.channel) {
+      case 'run-time':
+        hooks.push({ tool, probe: location.probe, recall: await hasRecallAgent(tool, install), limit: location.limit ?? undefined });
+        break;
+      case 'files': {
+        if (own === null) break;
+        inUse.add(own.path);
+        const target = targets.get(own.path) ?? instructionTargetOf(own);
+        // The subagent block only where every tool reading the file has the subagent.
+        target.recall = await hasRecallAgent(tool, install) && (target.tools.length === 0 || target.recall);
+        target.tools.push(tool);
+        targets.set(own.path, target);
+        break;
       }
-      if (await isInstructionToolInstalled(tool, probePaths, probeConfig)) {
-        hooks.push({ tool, recall: hasRecallAgent(tool, paths, localConfig.scope), limit: entry.hookLimit });
+      case 'none':
+      case 'unknown':
+        break;
+      default: {
+        const unhandled: never = location;
+        return unhandled;
       }
-      continue;
     }
-    if (!file || !await isInstructionToolInstalled(tool, paths, localConfig)) continue;
-    inUse.add(file);
-    const target = targets.get(file) ?? await instructionTargetAt(tool, file, localConfig.scope, paths, gitExclude);
-    // The subagent block only where every tool reading the file has the subagent.
-    target.recall = hasRecallAgent(tool, paths, localConfig.scope) && (target.tools.length === 0 || target.recall);
-    target.tools.push(tool);
-    targets.set(file, target);
   }
-  const stale = [...(await retiredTargets(toolPaths, localConfig, gitExclude)).values()].filter((t) => !inUse.has(t.path));
+  const stale = [...retired.values()].filter((t) => !current.has(t.path) && !inUse.has(t.path));
+  const opencode = [...targets.values()].find((target) => target.tools.includes('opencode'));
+  if (install.scope !== 'user' || opencode === undefined) return { targets: [...targets.values()], hooks, stale, opencodeFallback: null, opencodeFallbackStale: false };
   // OpenCode V1 reads ~/.claude/CLAUDE.md while its own user AGENTS.md does
   // not exist; when Claude's blocks are there, listing OpenCode's file too
   // would duplicate them. That holds for blocks an excluded Claude left there
   // too: V1 reads them all the same. V2 reads neither CLAUDE.md nor
   // `instructions`, so OpenCode's file is still written for teamai's plugin.
-  const opencode = [...targets.values()].find((target) => target.tools.includes('opencode'));
-  const claudeFile = path.join(getUserHome(), '.claude', 'CLAUDE.md');
-  const claudeHolds = !targets.has(claudeFile) && await holdsInstructionBlocks(claudeFile);
-  const opencodeFallback = localConfig.scope === 'user' && opencode !== undefined
-    ? await opencodeClaudeFallback(getUserHome(), [...targets.keys(), ...claudeHolds ? [claudeFile] : []])
-    : null;
-  return { targets: [...targets.values()], hooks, stale, opencodeFallback, opencodeFallbackStale: Boolean(opencodeFallback) && claudeHolds };
+  const claude = writable(await locate('claude', 'blocks', install));
+  const claudeFile = opencodeV1ClaudeFile(getUserHome());
+  const claudeDelivers = claude !== null && claude.path === claudeFile && targets.get(claudeFile)?.tools.includes('claude') === true;
+  const claudeHolds = !claudeDelivers && await holdsInstructionBlocks(claudeFile);
+  const opencodeFallback = (claudeDelivers || claudeHolds) && !await pathExists(path.join(path.dirname(opencode.path), 'AGENTS.md')) ? claudeFile : null;
+  return { targets: [...targets.values()], hooks, stale, opencodeFallback, opencodeFallbackStale: opencodeFallback !== null && claudeHolds };
 }
 
 /** Retire a file only after every installed tool that wrote it has replacement delivery. */
@@ -672,19 +433,20 @@ export async function retiredFilesOfReached(
   localConfig: LocalConfig,
   reached: readonly string[],
 ): Promise<InstructionTarget[]> {
-  const { stale, hooks } = await resolveInstructionTargets(teamConfig, localConfig);
-  const gitExclude = isGitExcludeEnabled(localConfig, teamConfig);
+  const { stale } = await resolveInstructionTargets(teamConfig, localConfig);
+  const install = installOf(teamConfig, localConfig);
   const writers = new Map<string, string[]>();
-  for (const [tool, paths] of Object.entries(scopedToolPaths(teamConfig, localConfig))) {
-    if (!hooks.some((hook) => hook.tool === tool) && !await isInstructionToolInstalled(tool, paths, localConfig)) continue;
+  for (const tool of Object.keys(install.toolPaths)) {
+    const location = await locate(tool, 'blocks', install);
+    // A tool installed where its hook runs, or in this checkout, excluded or
+    // not, keeps the files it wrote until it is reached. Agents have no
+    // run-time channel, so their location carries this scope's own gates.
+    const installed = (gates: readonly Gate[]) => gates.every((gate) => gate.kind === 'selected' || gate.met);
+    if (!installed(location.gates) && !installed((await locate(tool, 'agents', install)).gates)) continue;
     // A tool with no file and no hook channel here (OpenClaw in a project, #946)
     // has no replacement to wait for; a hook tool whose hook is not installed does.
-    if (!entryFor(tool, localConfig.scope, gitExclude)?.hook
-      && await instructionTargetPath(tool, paths, localConfig, gitExclude) === undefined) continue;
-    for (const file of await retiredInstructionFiles(tool, paths, localConfig.scope, gitExclude)) {
-      const absolute = path.resolve(resolveToolBaseDir(tool, localConfig), file);
-      writers.set(absolute, [...writers.get(absolute) ?? [], tool]);
-    }
+    if (location.channel !== 'run-time' && ownOf(location) === null) continue;
+    for (const { place } of location.retired) writers.set(place.path, [...writers.get(place.path) ?? [], tool]);
   }
   return stale.filter((target) => (writers.get(target.path) ?? []).every((tool) => reached.includes(tool)));
 }
@@ -704,9 +466,10 @@ export async function registerOpencodeContext(
   dryRun: boolean,
   files: readonly InstructionFileResult[],
 ): Promise<string | null> {
-  const paths = scopedToolPaths(teamConfig, localConfig).opencode;
-  const contextFile = paths && await instructionTargetPath('opencode', paths, localConfig);
-  if (!contextFile) return null;
+  if (teamConfig.toolPaths.opencode === undefined) return null;
+  const location = await locate('opencode', 'blocks', installOf(teamConfig, localConfig));
+  const contextFile = ownOf(location)?.path;
+  if (contextFile === undefined || location.channel !== 'files') return null;
   // OpenCode V2 ignores the entry, and teamai's plugin reads the file (#915).
   const { opencodeDeliversThroughPlugin } = await import('./opencode-hooks.js');
   if (await opencodeDeliversThroughPlugin(teamConfig, localConfig)) return null;
@@ -722,6 +485,7 @@ export async function registerOpencodeContext(
   if (!delivered && await pathExists(contextFile)) return null;
   // Old or malformed blocks the plan could not replace are not this sync's.
   const present = wanted && delivered && ready;
+  // Pull, doctor and uninstall read the entry from the config beside the file, whatever the team maps MCP to.
   const { config, entry } = opencodeContextReference(contextFile, localConfig.scope, resolveToolBaseDir('opencode', localConfig));
   // An entry goes only if teamai recorded adding it: one the member listed
   // before teamai wrote the file is theirs.
@@ -817,6 +581,18 @@ export async function holdsInstructionBlocks(file: string): Promise<boolean> {
   return content !== null && hasTeamaiBlock(content);
 }
 
+/** Whether a shared instruction file contains complete TeamAI blocks and no member text. */
+export async function holdsOnlyInstructionBlocks(file: string): Promise<boolean> {
+  let content = await readFileSafe(file);
+  if (content === null || !hasTeamaiBlock(content)) return false;
+  for (const pair of STALE_BLOCKS) {
+    const edited = editBlock(content, pair, null);
+    if ('malformed' in edited) return false;
+    content = edited.content;
+  }
+  return content.trim() === '';
+}
+
 function withoutHeader(content: string, header: string | undefined): string {
   return header && content.startsWith(header) ? content.substring(header.length) : content;
 }
@@ -878,7 +654,7 @@ async function planFile(
 }
 
 /** Every header a target writes, so a file teamai created can be recognised later. */
-const KNOWN_HEADERS = [ALWAYS_APPLY, APPLY_TO_ALL];
+const KNOWN_HEADERS = Object.values(HEADERS);
 
 /**
  * Remove teamai instruction blocks from `file` (those whose start marker is in

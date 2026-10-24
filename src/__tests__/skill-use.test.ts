@@ -200,9 +200,41 @@ describe('skill use from a tool call (#1221)', () => {
     expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
   });
 
+  it('credits a Codex skill read on one line of a multi-line command', async () => {
+    const file = install('.codex/skills');
+    const command = `sed -n '1,260p' ${file}\nrg -n -i "review|gate" ${path.join(home, '.codex', 'memories', 'MEMORY.md')}\nfind .scratch -maxdepth 3 -type f -name '*.md' -print | sort`;
+    await toolCall({ ...fixture('codex-real-a-cat'), tool_input: { command } }, 'codex');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
+  });
+
+  it('credits nothing for a relative skill read after a cd in a multi-line command', async () => {
+    install('.claude/skills', { project: true });
+    const command = `cd ${path.join(tmp, 'other')}\nsed -n '1,260p' .claude/skills/${SKILL}/SKILL.md\nrg -n gate notes.md`;
+    await toolCall({ ...fixture('claude-skill'), tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: `# ${SKILL}\n`, stderr: '' } }, 'claude');
+    expect(await credits()).toEqual([]);
+  });
+
   it('credits a Claude Bash skill read guarded by a test', async () => {
     const file = install('.claude/skills');
     await toolCall({ ...fixture('claude-skill'), tool_name: 'Bash', tool_input: { command: `test -f ${file} && cat ${file}` }, tool_response: { stdout: `# ${SKILL}\n`, stderr: '' } }, 'claude');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'claude' }]);
+  });
+
+  it('credits nothing for a skill read after || that the command shows may not run', async () => {
+    const file = install('.claude/skills');
+    await toolCall({ ...fixture('claude-skill'), tool_name: 'Bash', tool_input: { command: `true || cat ${file}` }, tool_response: { stdout: '', stderr: '' } }, 'claude');
+    expect(await credits()).toEqual([]);
+  });
+
+  it('credits a skill read before &&', async () => {
+    const file = install('.claude/skills');
+    await toolCall({ ...fixture('claude-skill'), tool_name: 'Bash', tool_input: { command: `cat ${file} && echo ok` }, tool_response: { stdout: `# ${SKILL}\nok\n`, stderr: '' } }, 'claude');
+    expect(await credits()).toEqual([{ skill: SKILL, tool: 'claude' }]);
+  });
+
+  it('credits a skill read after ;', async () => {
+    const file = install('.claude/skills');
+    await toolCall({ ...fixture('claude-skill'), tool_name: 'Bash', tool_input: { command: `cd ${tmp}; cat ${file}` }, tool_response: { stdout: `# ${SKILL}\n`, stderr: '' } }, 'claude');
     expect(await credits()).toEqual([{ skill: SKILL, tool: 'claude' }]);
   });
 

@@ -188,6 +188,8 @@ function runGit(args: string[], cwd: string): Promise<ExecResult> {
  */
 async function locateExclude(dir: string): Promise<{ excludeFile: string; root: string; prefix: string } | { error: string }> {
   if (await gitFindsNoRepository(dir)) return { error: `${dir} is not in a git repository` };
+  // git cannot start there: an agent's config directory not created yet.
+  if (!await pathExists(dir)) return { error: `${dir} does not exist` };
   const located = await checkoutLocation(dir);
   if (located) return { excludeFile: located.excludeFile, root: located.toplevel, prefix: located.prefix };
   const result = await runGit(['rev-parse', '--show-toplevel', '--show-prefix', '--git-path', 'info/exclude'], dir);
@@ -452,6 +454,13 @@ async function readExisting(file: string): Promise<string | null> {
   }
 }
 
+let lockRetryMs = 100;
+
+/** Shorten the wait between lock attempts in {@link updateFileLocked} (for testing only). */
+export function _setExcludeLockRetryMs(ms: number): void {
+  lockRetryMs = ms;
+}
+
 /**
  * Rewrite `file` with `edit` (null: leave it as it is), holding a lock
  * across the read and an atomic write: the worktrees of a repository share
@@ -478,7 +487,7 @@ export async function updateFileLocked(
   let held = false;
   for (let attempt = 0; attempt < 25 && !held; attempt++) {
     held = await acquireLock(lockPath);
-    if (!held) await new Promise((resolve) => setTimeout(resolve, 100));
+    if (!held) await new Promise((resolve) => setTimeout(resolve, lockRetryMs));
   }
   if (!held) return 'locked';
   try {

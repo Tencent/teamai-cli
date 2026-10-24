@@ -3,7 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { TOOLS, type HomeMove } from './tools.js';
 import type { ToolId } from './types.js';
-import { pathExists, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
+import { pathExists, readFileSafe, readJsonObject, writeJsonAtomic, type JsonObjectRead } from './utils/fs.js';
 import { getUserHome } from './utils/home.js';
 
 export type Host = {
@@ -20,6 +20,12 @@ export type Host = {
   exists(file: string): Promise<boolean>;
   /** A JSON object file, as `readJsonObject` reads it: OpenClaw's openclaw.json. */
   readJson(file: string): Promise<JsonObjectRead>;
+  /** `file` through its links; `file` itself when it cannot be resolved (missing, a loop, unreadable). */
+  realpath(file: string): Promise<string>;
+  /** A small text file, or null when it is missing or unreadable: a linked worktree's `.git` and its `commondir`. */
+  readText(file: string): Promise<string | null>;
+  /** The `toolRoots` the member's user config records: a project config that records none follows them (`resolveMemberToolRoots`). */
+  userToolRoots(): Promise<Readonly<Record<string, string>> | undefined>;
 };
 
 /** The machine teamai runs on, the default host of every function that takes one. */
@@ -33,6 +39,9 @@ export function realHost(overrides: Partial<Pick<Host, 'env'>> = {}): Host {
     cwd: () => process.cwd(),
     exists: pathExists,
     readJson: readJsonObject,
+    realpath: (file) => fs.promises.realpath(file).catch(() => file),
+    readText: readFileSafe,
+    userToolRoots: async () => (await (await import('./config.js')).loadLocalConfig())?.toolRoots,
   };
 }
 
@@ -90,7 +99,12 @@ function absoluteEnv(host: Host, name: string): string | null {
 
 /** Where `tool`'s home sits on `host`: the recorded home, else the env's, else under `$HOME`. */
 export function toolHome(tool: ToolId, host: Host = realHost()): string {
-  return recordedHomes(host)[tool] ?? envToolHome(tool, host)?.dir ?? defaultToolHome(tool, host);
+  return movedToolHome(tool, host) ?? defaultToolHome(tool, host);
+}
+
+/** The recorded home, else the env's, or null when nothing moves `tool`'s home. */
+export function movedToolHome(tool: ToolId, host: Host = realHost()): string | null {
+  return recordedHomes(host)[tool] ?? envToolHome(tool, host)?.dir ?? null;
 }
 
 /** The homes `host` records: none while the record is missing or invalid. */

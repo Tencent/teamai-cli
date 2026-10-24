@@ -22,6 +22,8 @@ vi.mock('../utils/logger.js', () => ({
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(),
   },
   setStderrOnly: vi.fn(),
+  isSilent: () => false,
+  setSilent: vi.fn(),
 }));
 
 import { loadLocalConfig, loadStateForScope, loadTeamConfig, saveStateForScope } from '../config.js';

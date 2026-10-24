@@ -138,6 +138,11 @@ describe('workflow HITL', () => {
     expect(parseNextPayload({ driver: { ...driver, can: { hitl: true, unknown: 'secret' } }, other: 1 })).toEqual({ request: { driver, hitl: true }, ignored: ['other', 'driver.can.unknown'] });
     expect(parseNextPayload({ driver: { ...driver, can: { hitl: 'yes' } } })).toBe('driver.can.hitl must be a boolean');
   });
+
+  it('reads claim as a request to take the run over, and refuses one that is not a boolean', () => {
+    expect(parseNextPayload({ driver, claim: true })).toEqual({ request: { driver, claim: true }, ignored: [] });
+    expect(parseNextPayload({ driver, claim: 'yes' })).toBe('claim must be a boolean');
+  });
 });
 
 

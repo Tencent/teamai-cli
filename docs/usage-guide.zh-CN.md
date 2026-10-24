@@ -13,6 +13,7 @@
 - [基础 Harness](guide/zh-CN/sharing.md) — skills、rules、env、agents、hooks、MCP、models、团队包
 - [工作流](guide/zh-CN/workflow.md) — `workflows/*.yaml` 里的 command 步骤：pull、start、next、report
 - [高级工作流](guide/zh-CN/workflow-advanced.md) — 并行步骤、循环、`for_each`、到达结局时取消未完成的步骤、表达式参考
+- [评分器](guide/zh-CN/scorers.md) — `scorers/*.md` 里评判工作流步骤的评分标准
 - [团队上下文](guide/zh-CN/knowledge.md) — learnings、代码知识图谱、teamwiki、CI
 - [团队文化](guide/zh-CN/team-culture.md) — 注入到每个 Agent 的公司与团队文化
 - [Dashboard](guide/zh-CN/dashboard.md) — 本地看板与会话存档

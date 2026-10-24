@@ -11,38 +11,39 @@ import {
   reverseFromOpencode,
   toolExtrasFor,
   type AgentSpec,
-  type ToolName,
 } from '../resources/agent-format.js';
-import { observeLaunch } from '../agent-observation.js';
+import { installOf, locate, ownOf } from '../locate.js';
+import { isAgentToolId } from '../tools.js';
+import { observeLaunch, type Used } from '../agent-observation.js';
 import { detectProjectConfig } from '../config.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { commandSignalPolicy, exitLike, terminalReachesCommand } from '../env-exec.js';
 import { workflowLaunch } from '../launch-context.js';
-import { getDataHome, resolveToolBaseDir, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { getDataHome, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { readFileSafe, readJson, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
 import { AgentSession } from '../session-flow/agent-session.js';
+import { openSessionArchive, type SessionArchive } from '../session-flow/archive.js';
+import { deliveredTeamSkills, usedSkills } from '../skill-use.js';
 import { interactiveHitlRequired, leaseNext, reportAttempt } from './engine.js';
 import { respondToHitl } from './run-controls.js';
 import { isRecord } from './expression.js';
 import {
   createLocalToolAdapter,
-  isLocalWorkflowTool,
-  localToolFamily,
   type LocalToolAdapter,
   type LocalToolResult,
   type LocalToolRun,
-  type LocalWorkflowTool,
 } from './local-tool-adapter.js';
-import { driverLockPath, isRunId } from './store.js';
-import { stopProcess } from './process-stop.js';
+import { driverLockPath, isRunId, readRun, updateRun } from './store.js';
+import { stopProcess } from '../tool-launch/process-stop.js';
+import { isLaunchTool, localToolFamily, type LaunchTool } from '../tool-launch/tools.js';
 import { chooseStepModel } from './step-model.js';
 import type { StepRead } from './step-state.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from './types.js';
 import { isWorkflowError } from './types.js';
-import type { WorkspaceContract } from './workspace.js';
+import type { LeaseSession, SessionRef, WorkspaceContract } from './workspace.js';
 import {
-  applyBaseConfig, commitWork, ensureWorktree, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, mergeBranch, offBranch, pushIfOrigin, putBackCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, unrestoredCopy, worktreePath,
+  applyBaseConfig, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, stepCheckout, unrestoredCopy, worktreePath,
 } from './worktree.js';
 
 /** Local lease identity, stable across restarts in the same workspace. */
@@ -73,6 +74,14 @@ interface CommandProcess {
 }
 
 const STOP_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGQUIT', 'SIGTERM', 'SIGHUP'];
+
+/** How long the driver waits for a command or prompt before asking the run again; half that while a question is open. */
+let pollMs = 2000;
+
+/** Shorten the driver's poll (for testing only). */
+export function _setDriverPollMs(ms: number): void {
+  pollMs = ms;
+}
 
 /**
  * Starts a leased command. The lease `env` is set over the inherited environment, so values reach the shell only as
@@ -143,6 +152,7 @@ export interface LocalDriverOptions {
   /** The terminal question implementation, injectable for callers without readline. */
   question?: (hitl: LocalHitl, signal: AbortSignal) => Promise<string>;
   tools?: Record<string, string>;
+  /** The team's `toolPaths`, as teamai.yaml states them. */
   toolPaths?: TeamaiConfig['toolPaths'];
   adapter?: LocalToolAdapter;
 }
@@ -161,7 +171,7 @@ interface Lease {
   workspace?: WorkspaceContract;
   /** The lease named a workspace this driver cannot read. The step fails instead of running in the active checkout. */
   unreadableWorkspace?: true;
-  session?: { tool: string; id: string };
+  session?: LeaseSession;
   /** Set once the step has a directory to run in. */
   cwd?: string;
   before?: WorktreeSnapshot;
@@ -188,8 +198,8 @@ function resultPath(config: LocalConfig, runId: string, attempt: string): string
   return path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts', attempt, 'result.json');
 }
 
-function supportedTool(value: string): value is LocalWorkflowTool {
-  return isLocalWorkflowTool(value);
+function supportedTool(value: string): value is LaunchTool {
+  return isLaunchTool(value);
 }
 
 function ignoredCodexSettings(agent: AgentSpec): string[] {
@@ -197,12 +207,12 @@ function ignoredCodexSettings(agent: AgentSpec): string[] {
   return agent.tools?.length ? ['tools', ...extras] : extras;
 }
 
-function definitionRun(tool: LocalWorkflowTool, name: string, agent: AgentSpec): NonNullable<LocalToolRun['agent']> {
+function definitionRun(tool: LaunchTool, name: string, agent: AgentSpec): NonNullable<LocalToolRun['agent']> {
   const settings = localToolFamily(tool) === 'opencode' ? toolExtrasFor(agent, 'opencode') : undefined;
   return { name, instructions: agent.instructions, ...(agent.model ? { model: agent.model } : {}), ...(settings ? { settings } : {}) };
 }
 
-function reverseAgent(tool: LocalWorkflowTool, file: string, content: string) {
+function reverseAgent(tool: LaunchTool, file: string, content: string) {
   const family = localToolFamily(tool);
   if (family === 'claude') return reverseFromClaude(file, content);
   if (family === 'codex') return reverseFromCodex(file, content);
@@ -211,15 +221,16 @@ function reverseAgent(tool: LocalWorkflowTool, file: string, content: string) {
 
 /** A deployed agent and the file it was read from, which is the key its pull recorded it under. */
 async function loadAgent(
-  tool: LocalWorkflowTool,
+  tool: LaunchTool,
   name: string,
   config: LocalConfig,
   toolPaths: TeamaiConfig['toolPaths'] | undefined,
 ): Promise<{ spec: AgentSpec; file: string } | null> {
-  const agents = toolPaths?.[tool]?.agents;
-  if (!agents) return null;
-  // The same directory `teamai pull` writes: the tool base for this scope, not the step's cwd.
-  const file = path.join(resolveToolBaseDir(tool, config), agents, `${name}${agentFileExtensionForTool(tool as ToolName)}`);
+  if (toolPaths === undefined || !isAgentToolId(tool)) return null;
+  // The same directory `teamai pull` writes, not the step's cwd.
+  const agents = ownOf(await locate(tool, 'agents', installOf({ toolPaths }, config)))?.path;
+  if (agents === undefined) return null;
+  const file = path.join(agents, `${name}${agentFileExtensionForTool(tool)}`);
   const content = await readFileSafe(file);
   if (content === null) return null;
   const reversed = reverseAgent(tool, file, content);
@@ -347,8 +358,9 @@ function parseLease(raw: unknown): Lease | undefined {
   if (!rawLease || typeof rawLease.step !== 'string' || typeof rawLease.attempt !== 'string' || typeof rawLease.revision !== 'number') return undefined;
   const env = stringMap(rawLease.env);
   const workspace = workspaceOf(rawLease.workspace);
-  const session = isRecord(rawLease.session) && typeof rawLease.session.tool === 'string' && typeof rawLease.session.id === 'string'
-    ? { tool: rawLease.session.tool, id: rawLease.session.id } : undefined;
+  const session = sessionRefOf(rawLease.session);
+  const earlier = isRecord(rawLease.session) && Array.isArray(rawLease.session.earlier)
+    ? rawLease.session.earlier.map(sessionRefOf).filter((ref) => ref !== undefined) : [];
   const lease: Lease = {
     step: rawLease.step,
     attempt: rawLease.attempt,
@@ -362,14 +374,24 @@ function parseLease(raw: unknown): Lease | undefined {
     ...(rawLease.readOnly === true ? { readOnly: true } : {}),
     ...(typeof rawLease.defaultModel === 'string' ? { defaultModel: rawLease.defaultModel } : {}),
     ...(workspace ? { workspace } : rawLease.workspace !== undefined ? { unreadableWorkspace: true } : {}),
-    ...(session ? { session } : {}),
+    ...(session ? { session: { ...session, ...(earlier.length > 0 ? { earlier } : {}) } } : {}),
   };
   return (lease.command === undefined) === (lease.prompt === undefined) ? undefined : lease;
 }
 
-/** The checkout this lease uses. A step without a workspace shares the active checkout; a workspace has its own worktree. */
+function sessionRefOf(value: unknown): SessionRef | undefined {
+  return isRecord(value) && typeof value.tool === 'string' && typeof value.id === 'string' ? { tool: value.tool, id: value.id } : undefined;
+}
+
+/** Each commit a lease starts from, merges, or restores agent files from, with the branch that holds it. */
+function leaseCommits(workspace: WorkspaceContract): Array<{ commit: string; branch?: string }> {
+  const { base, start } = workspace;
+  const startBranch = start.branch ?? (start.commit === base.commit ? base.ref : workspace.branch);
+  return [{ commit: start.commit, branch: startBranch }, ...workspace.merge, { commit: workspace.configCommit, branch: base.ref }];
+}
+
 function placeOf(lease: Lease, active: string): string {
-  return lease.cwd ?? (lease.workspace ? worktreePath(active, lease.workspace.branch) : active);
+  return lease.cwd ?? stepCheckout(active, lease.workspace?.branch);
 }
 
 async function stageLease(lease: Lease, { active, runId }: { active: string; runId: string }): Promise<WorkflowFailure | undefined> {
@@ -389,6 +411,16 @@ async function stageLease(lease: Lease, { active, runId }: { active: string; run
     const { branch, commit, step, reason } = blocked.marker;
     return { code: 'workspace_base', message: `Step "${step}" read workspace ${blocked.dir} and it was not put back (${reason}). It is still not back: ${blocked.left}. Put ${blocked.dir} back on ${branch} at ${commit} as the step found it, then retry this step with teamai workflow retry ${runId} ${lease.step}.` };
   }
+  const needed = new Map(leaseCommits(lease.workspace).map((item) => [item.commit, item]));
+  const fetched = await fetchMissingCommits(active, { run: runId, commits: [...needed.keys()] });
+  if (fetched.missing.length > 0) {
+    const named = fetched.missing.map((commit) => {
+      const branch = needed.get(commit)?.branch;
+      return branch ? `commit ${commit} from branch ${branch}` : `commit ${commit}, the run's base, which is on no branch`;
+    });
+    const said = fetched.fetchError ? ` Git said: ${fetched.fetchError}.` : '';
+    return { code: 'workspace_base', message: `Step "${lease.step}" needs ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then retry this step with teamai workflow retry ${runId} ${lease.step}.` };
+  }
   const opened = await ensureWorktree(active, lease.workspace.branch, lease.workspace.start.commit);
   if ('error' in opened) return { code: 'workspace_base', message: opened.error };
   lease.cwd = opened.dir;
@@ -406,7 +438,10 @@ async function stageLease(lease: Lease, { active, runId }: { active: string; run
       continue;
     }
     const result = await mergeBranch(opened.dir, merge.commit);
-    if (result.conflict) conflict = { branch: merge.branch, files: result.files };
+    if (result.state === 'failed') {
+      return { code: 'workspace_base', message: `Step "${lease.step}" could not merge branch ${merge.branch} at ${merge.commit} into workspace ${opened.dir}. Git stopped without a conflict to resolve, so the step did not run. Git said: ${result.error.replace(/\.$/, '')}. Fix what git reported in ${opened.dir}, then retry this step with teamai workflow retry ${runId} ${lease.step}.` };
+    }
+    if (result.state === 'conflict') conflict = { branch: merge.branch, files: result.files };
   }
   if (conflict && lease.command !== undefined) {
     const files = conflict.files.join(', ');
@@ -426,8 +461,9 @@ async function stageLease(lease: Lease, { active, runId }: { active: string; run
     // Taken over the base overlay, so only what the step itself changes differs from it.
     lease.before = await snapshotWorktree(opened.dir);
     if (lease.before.ok && lease.before.head) return undefined;
-    await restoreLeaseOverlay(lease);
-    return { code: 'workspace_base', message: `Step "${lease.step}" could not read workspace ${lease.workspace.branch}` };
+    const unrestored = await restoreLeaseOverlay(lease);
+    const message = `Step "${lease.step}" could not read workspace ${lease.workspace.branch}`;
+    return { code: 'workspace_base', message: unrestored ? `${message}. ${unrestoredConfig(unrestored, opened.dir)}` : message };
   }
   await reopenConfigConflicts(opened.dir, applied.saved);
   lease.conflicts = await rememberedConflicts(opened.dir);
@@ -451,21 +487,36 @@ async function deliverTeamAssets(dir: string): Promise<void> {
   }
 }
 
-async function resumeSession(lease: Lease, tool: LocalWorkflowTool, cwd: string): Promise<string | undefined> {
-  const session = lease.session;
-  if (!session || !supportedTool(session.tool)) return undefined;
-  if (localToolFamily(session.tool) === localToolFamily(tool) && localToolFamily(tool) !== 'opencode') {
-    const platform = AgentSession.platformForTool(session.tool);
-    if (!platform) return undefined;
-    const found = await AgentSession.find({ platform, sessionId: session.id }, { scrub: false });
-    return found.status === 'done' ? session.id : undefined;
-  }
-  const from = AgentSession.platformForTool(session.tool);
+/**
+ * The session the step's tool resumes, and the lease session it continues: the lease's session, else each earlier one it
+ * continued, newest first. Each is tried on this machine, then as a copy in this tool, then as a copy of the one the team
+ * session archive holds. OpenCode has no flag to resume one, so its step starts a new session.
+ */
+async function resumeSession(archive: SessionArchive, lease: Lease, tool: LaunchTool, cwd: string): Promise<{ id: string; resumed: SessionRef } | undefined> {
   const to = AgentSession.platformForTool(tool);
-  if (!from || !to) return undefined;
-  const copied = await AgentSession.copy({ from: { platform: from, sessionId: session.id }, to: { platform: to, cwd } });
-  if (copied.status !== 'done' || localToolFamily(tool) === 'opencode') return undefined;
-  return copied.sessionId;
+  if (!lease.session || !to) return undefined;
+  const resumes = localToolFamily(tool) !== 'opencode';
+  const misses: string[] = [];
+  for (const session of [lease.session, ...(lease.session.earlier ?? [])]) {
+    if (!supportedTool(session.tool)) continue;
+    const from = AgentSession.platformForTool(session.tool);
+    if (!from) continue;
+    const resumed = { tool: session.tool, id: session.id };
+    if (localToolFamily(session.tool) === localToolFamily(tool) && resumes) {
+      const found = await AgentSession.find({ platform: from, sessionId: session.id }, { scrub: false });
+      if (found.status === 'done') return { id: session.id, resumed };
+      misses.push(found.failure.message);
+    } else {
+      const copied = await AgentSession.copy({ from: { platform: from, sessionId: session.id }, to: { platform: to, cwd } });
+      if (copied.status === 'done') return resumes ? { id: copied.sessionId, resumed } : undefined;
+      misses.push(copied.failure.message);
+    }
+    const restored = await archive.restore({ platform: from, sessionId: session.id }, { platform: to, cwd });
+    if (restored.status !== 'fresh') return resumes ? { id: restored.sessionId, resumed } : undefined;
+    misses.push(restored.reason);
+  }
+  if (misses.length > 0) log.warn(`Step "${lease.step}" starts a new ${tool} session: ${misses.join(' ')}`);
+  return undefined;
 }
 
 async function conflictsPath(dir: string): Promise<string> {
@@ -535,10 +586,12 @@ async function unresolvedConflicts(dir: string, before: Map<string, string> | un
   return [...open];
 }
 
-async function restoreLeaseOverlay(lease: Lease): Promise<void> {
-  if (!lease.overlay || !lease.cwd || !lease.workspace) return;
-  await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
+/** Why the branch's agent files are not back, when git could not list the copy's files. */
+async function restoreLeaseOverlay(lease: Lease): Promise<string | undefined> {
+  if (!lease.overlay || !lease.cwd || !lease.workspace) return undefined;
+  const unrestored = await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
   lease.overlay = undefined;
+  return unrestored;
 }
 
 /** How a reader left its copy. `kept` holds what the step changed; an unrestored copy lacks it when keeping failed. */
@@ -561,24 +614,32 @@ async function leaveReadCopy(lease: Lease): Promise<ReadCopy | undefined> {
   // The full ref: --short prints heads/<branch> when a tag has the same name.
   const onBranch = (await git(cwd, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim() === `refs/heads/${workspace.branch}`;
   if (!onBranch && !changed.includes('HEAD')) changed.push('HEAD');
-  await restoreLeaseOverlay(lease);
+  const unrestored = await restoreLeaseOverlay(lease);
   const read = { branch: workspace.branch, base: workspace.base.commit, commit: before.head };
+  // The copy keeps its mark, so later steps there are refused until it is back.
+  if (unrestored) return { read, state: 'unrestored', changed, reason: unrestored, dir: cwd };
   const put = await putBackCopy({ dir: cwd, branch: read.branch, commit: read.commit, found, changed, attempt: lease.attempt, step: lease.step });
   return put.state === 'unrestored' ? { read, changed, dir: cwd, ...put } : put.state === 'restored' ? { read, changed, ...put } : { read, ...put };
 }
 
-/** A reader that changed its copy fails. `changed` is the step's own sentence naming the paths. */
+/**
+ * A reader that changed its copy, or whose copy could not be put back, fails. `changed` is the step's own sentence naming
+ * the paths, empty when it changed none.
+ */
 function readCopyFailure(left: Exclude<ReadCopy, { state: 'untouched' }>, changed: string): WorkflowFailure {
   const { branch, commit } = left.read;
+  const lead = changed === '' ? '' : `${changed} `;
   switch (left.state) {
     case 'restored':
-      return { code: 'read_only_dirty', message: `${changed} Workspace ${branch} was put back at ${commit}. ${keptSentence(left.kept)}` };
+      return { code: 'read_only_dirty', message: `${lead}Workspace ${branch} was put back at ${commit}. ${keptSentence(left.kept)}` };
     case 'unrestored':
       return {
         code: 'workspace_base',
         message: left.kept
-          ? `${changed} Workspace ${branch} could NOT be put back at ${commit}: ${left.reason}. ${keptSentence(left.kept)} Later steps there fail until ${left.dir} is back on ${branch} at ${commit} as the step found it.`
-          : `${changed} Workspace ${branch} could NOT be put back at ${commit}: ${left.reason}. Its changes were NOT saved and are still in ${left.dir}. Copy them out before you put ${left.dir} back on ${branch} at ${commit} as the step found it. Later steps there fail until it is.`,
+          ? `${lead}Workspace ${branch} could NOT be put back at ${commit}: ${left.reason}. ${keptSentence(left.kept)} Later steps there fail until ${left.dir} is back on ${branch} at ${commit} as the step found it.`
+          : left.changed.length === 0
+            ? `${lead}Workspace ${branch} could NOT be put back at ${commit}: ${left.reason}. Put ${left.dir} back on ${branch} at ${commit} as the step found it. Later steps there fail until it is.`
+            : `${lead}Workspace ${branch} could NOT be put back at ${commit}: ${left.reason}. Its changes were NOT saved and are still in ${left.dir}. Copy them out before you put ${left.dir} back on ${branch} at ${commit} as the step found it. Later steps there fail until it is.`,
       };
     default: {
       const unhandled: never = left;
@@ -587,10 +648,15 @@ function readCopyFailure(left: Exclude<ReadCopy, { state: 'untouched' }>, change
   }
 }
 
-async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?: { branch: string; base: string; from: string; to: string; commits: string[] }; failure?: WorkflowFailure }> {
+/**
+ * Commits a writer's workspace and pushes it, whether or not the step failed, so the commits it reports are on origin.
+ * A failed push fails a step that succeeded with `push_failed`. A step that already `failed` keeps its own failure and
+ * gets `unpushed`, the sentence its message adds.
+ */
+async function finishWorkspace(lease: Lease, failed: boolean): Promise<{ changes?: { branch: string; base: string; from: string; to: string; commits: string[] }; failure?: WorkflowFailure; unpushed?: string }> {
   if (!lease.workspace || lease.workspace.mode === 'read-only' || !lease.cwd) return {};
-  if (lease.overlay) await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
-  lease.overlay = undefined;
+  const unrestored = await restoreLeaseOverlay(lease);
+  if (unrestored) return { failure: { code: 'workspace_base', message: `Step "${lease.step}" ran, but nothing was committed or pushed. ${unrestoredConfig(unrestored, lease.cwd)}` } };
   // A commit on whatever HEAD the step left would be reported and pushed as the leased branch, which would lack it.
   const on = await offBranch(lease.cwd, lease.workspace.branch);
   if (on) return { failure: { code: 'workspace_base', message: `Step "${lease.step}" left workspace ${lease.cwd} ${on}, not on branch ${lease.workspace.branch}, so nothing was committed or pushed. Check out ${lease.workspace.branch} in ${lease.cwd} with the changes to keep, then retry the step.` } };
@@ -599,7 +665,7 @@ async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?:
   const committed = await commitWork(lease.cwd, `teamai: ${lease.step}`, lease.rangeFrom);
   if ('error' in committed) return { failure: { code: 'push_failed', message: committed.error } };
   await clearRememberedConflicts(lease.cwd);
-  const pushed = push ? await pushIfOrigin(lease.cwd, lease.workspace.branch, committed.commits) : 'unchanged';
+  const pushed = await pushIfOrigin(lease.cwd, lease.workspace.branch, committed.commits);
   const changes = {
     branch: lease.workspace.branch,
     base: lease.workspace.base.commit,
@@ -608,7 +674,17 @@ async function finishWorkspace(lease: Lease, push: boolean): Promise<{ changes?:
     commits: committed.commits,
   };
   if (typeof pushed !== 'object') return { changes };
-  return { changes, failure: { code: 'push_failed', message: `Step "${lease.step}" committed on ${lease.workspace.branch} in ${lease.cwd}, but pushing it to origin failed. The commits stay on ${lease.workspace.branch}. Fix what blocked the push, then push ${lease.workspace.branch} from ${lease.cwd} or retry the step. Git said: ${pushed.error}` } };
+  const unpushed = `Step "${lease.step}" committed on ${lease.workspace.branch} in ${lease.cwd}, but pushing it to origin failed. The commits stay on ${lease.workspace.branch}. Fix what blocked the push, then push ${lease.workspace.branch} from ${lease.cwd} or retry the step. Git said: ${pushed.error}`;
+  return failed ? { changes, unpushed } : { changes, failure: { code: 'push_failed', message: unpushed } };
+}
+
+/** What a step's failure adds when git could not list its copy `dir` to put the branch's agent files back. */
+function unrestoredConfig(reason: string, dir: string): string {
+  return `The branch's agent files were not put back: ${reason}. Fix what git reported and copy those files into ${dir}, then retry the step.`;
+}
+
+function withUnpushed(message: string, unpushed: string | undefined): string {
+  return unpushed ? `${message.replace(/\.?$/, '.')} ${unpushed}` : message;
 }
 
 async function commandReport(attemptResultPath: string, driver: DriverIdentity, lease: Lease, result: CommandResult): Promise<ReportBody> {
@@ -629,12 +705,13 @@ async function commandReport(attemptResultPath: string, driver: DriverIdentity, 
     ? undefined
     : snippet === '' ? `command exited with status ${result.exitCode}` : `command exited with status ${result.exitCode}: ${snippet}`;
   // A failing command keeps its own failure, and still says where the changes it made went.
-  const copy = touched && readCopyFailure(touched, `${exited ? `${exited}. ` : ''}Read-only command step changed repository paths: ${touched.changed.join(', ')}.`);
+  const said = touched && touched.changed.length > 0 ? ` Read-only command step changed repository paths: ${touched.changed.join(', ')}.` : '';
+  const copy = touched && readCopyFailure(touched, `${exited ? `${exited}.` : ''}${said}`.trim());
   const dirty = copy && (!exited || copy.code === 'workspace_base') ? copy : undefined;
-  const finished = lease.workspace && !left ? await finishWorkspace(lease, result.exitCode === 0) : {};
+  const finished = lease.workspace && !left ? await finishWorkspace(lease, result.exitCode !== 0) : {};
   const failure = dirty ?? finished.failure;
   const failed = result.exitCode !== 0 || failure;
-  const message = failure?.message ?? copy?.message ?? exited;
+  const message = failure?.message ?? copy?.message ?? (exited && withUnpushed(exited, finished.unpushed));
   return {
     attempt: lease.attempt,
     revision: lease.revision,
@@ -649,6 +726,21 @@ async function commandReport(attemptResultPath: string, driver: DriverIdentity, 
   };
 }
 
+/**
+ * The team skills the pass's session and its subagents loaded since `launchedAt`, credited by `teamSkills`, what its
+ * checkout held as delivered at launch. A load before it, by a pass whose session this one resumes, is that pass's.
+ * Undefined when the session cannot be read.
+ */
+async function usedInSession(tool: LaunchTool, sessionId: string, cwd: string, teamSkills: Record<string, string[]>, launchedAt: number): Promise<Used | undefined> {
+  const platform = AgentSession.platformForTool(tool);
+  if (!platform) return undefined;
+  const found = await AgentSession.find({ platform, sessionId, cwd }, { subagents: true }).catch(() => undefined);
+  const atOrAfterLaunch = (timestamp: string | undefined): boolean => timestamp === undefined || !(Date.parse(timestamp) < launchedAt);
+  return found?.status === 'done'
+    ? { skills: usedSkills(AgentSession.toolForPlatform(platform), found, (timestamp) => atOrAfterLaunch(timestamp) ? teamSkills : {}) }
+    : undefined;
+}
+
 async function promptReport(
   config: LocalConfig,
   attemptResultPath: string,
@@ -657,15 +749,14 @@ async function promptReport(
   tools: Record<string, string>,
   adapter: LocalToolAdapter,
   options: LocalDriverOptions,
+  archive: SessionArchive,
   signal: AbortSignal,
 ): Promise<ReportBody> {
   const selected = lease.agent && tools[lease.agent] ? tools[lease.agent] : tools.default;
   const giveUp = async (failure: WorkflowFailure, tool?: string): Promise<ReportBody> => {
-    if (lease.overlay && lease.cwd && lease.workspace) {
-      await restoreUneditedConfig(lease.cwd, lease.workspace.configCommit, lease.overlay);
-      lease.overlay = undefined;
-    }
-    return { attempt: lease.attempt, revision: lease.revision, driver, ...(tool ? { tool } : {}), ...failureReport(failure) };
+    const unrestored = await restoreLeaseOverlay(lease);
+    const reported = unrestored && lease.cwd ? { ...failure, message: `${failure.message.replace(/\.?$/, '.')} ${unrestoredConfig(unrestored, lease.cwd)}` } : failure;
+    return { attempt: lease.attempt, revision: lease.revision, driver, ...(tool ? { tool } : {}), ...failureReport(reported) };
   };
   if (!selected) return giveUp({ code: 'tool_unconfigured', message: 'No local workflow tool is configured for this prompt step' });
   if (!supportedTool(selected)) {
@@ -693,23 +784,29 @@ async function promptReport(
   }
   const cwd = lease.cwd ?? driver.workspace;
   const before = lease.interactive && !lease.readOnly ? undefined : (lease.before ?? await snapshotWorktree(cwd));
-  const resume = await resumeSession(lease, selected, cwd);
+  const resume = await resumeSession(archive, lease, selected, cwd);
   const definitionModel = chosen.model && chosen.by === 'definition'
     ? { model: chosen.model.name, ...(chosen.model.effort ? { effort: chosen.model.effort } : {}) }
     : {};
-  const [observed, launch] = await Promise.all([
+  const { teamDelivery } = await import('../pull.js');
+  const delivery = await teamDelivery(stepConfig, selected).catch(() => undefined);
+  const delivered = delivery?.record?.delivered;
+  const [observed, launch, teamSkills] = await Promise.all([
     observeLaunch({
       config: stepConfig,
       tool: selected,
       cwd,
+      delivery: delivery ?? null,
       ...(lease.agent && loaded ? { definition: { stem: lease.agent, file: loaded.file, ...definitionModel } } : {}),
       ...(chosen.model && chosen.by !== 'definition'
         ? { chosen: { model: chosen.model.name, ...(chosen.model.effort ? { effort: chosen.model.effort } : {}), ...(chosen.alias ? { alias: chosen.alias } : {}) } }
         : {}),
     }),
     workflowLaunch(stepConfig, selected),
+    delivered ? deliveredTeamSkills(stepConfig, cwd, delivered).catch(() => undefined) : undefined,
   ]);
   let result: LocalToolResult;
+  const launchedAt = Date.now();
   try {
     if (lease.interactive) log.info(`Step "${lease.step}" opens ${selected} here for interactive work.`);
     const run = lease.interactive ? adapter.runInteractive.bind(adapter) : adapter.run.bind(adapter);
@@ -718,7 +815,7 @@ async function promptReport(
       cwd,
       resultPath: attemptResultPath,
       ...(launch ? { launch } : {}),
-      ...(resume ? { resume } : {}),
+      ...(resume ? { resume: resume.id } : {}),
       ...(agent ? { agent: definitionRun(selected, lease.agent!, agent) } : {}),
       ...(chosen.model ? { model: chosen.model } : {}),
     }, signal);
@@ -733,11 +830,12 @@ async function promptReport(
   const touched = left?.state === 'untouched' ? undefined : left;
   const paths = !left && before && !lease.workspace ? changedPaths(before, await snapshotWorktree(cwd)) : [];
   const dirtyFailure = touched
-    ? readCopyFailure(touched, `Read-only prompt step changed repository paths: ${touched.changed.join(', ')}.`)
+    ? readCopyFailure(touched, touched.changed.length > 0 ? `Read-only prompt step changed repository paths: ${touched.changed.join(', ')}.` : '')
     : paths.length === 0 ? undefined : { code: 'read_only_dirty', message: `Read-only prompt step changed repository paths: ${paths.join(', ')}` };
-  const finished = lease.workspace && !left && !dirtyFailure ? await finishWorkspace(lease, result.exitCode === 0 && !result.failure) : {};
-  const failure = dirtyFailure ?? finished.failure ?? result.failure;
+  const finished = lease.workspace && !left && !dirtyFailure ? await finishWorkspace(lease, result.failure !== undefined) : {};
+  const failure = dirtyFailure ?? finished.failure ?? (result.failure && { ...result.failure, message: withUnpushed(result.failure.message, finished.unpushed) });
   const ran = result.started ? result : undefined;
+  const used = ran?.session && teamSkills ? await usedInSession(selected, ran.session, cwd, teamSkills, launchedAt) : undefined;
   return {
     attempt: lease.attempt,
     revision: lease.revision,
@@ -745,10 +843,12 @@ async function promptReport(
     tool: selected,
     ...(ran?.model ? { model: ran.model } : {}),
     ...(ran?.session ? { session: ran.session } : {}),
+    ...(ran && resume ? { resumed: resume.resumed } : {}),
     ...(ran?.tokens ? { tokens: ran.tokens } : {}),
     ...(ran?.output !== undefined ? { outputs: ran.output } : {}),
     // How the definition was handed over is known only once the launch resolved its tool: OpenCode's depends on its major.
     ...(ran ? { agent: ran.applied ? { ...observed, definition: { applied: ran.applied } } : observed } : {}),
+    ...(used ? { used } : {}),
     exitCode: result.exitCode,
     ...(finished.changes ? { changes: finished.changes } : {}),
     ...(left ? { read: left.read } : {}),
@@ -766,6 +866,18 @@ export async function runLocalDriver(
   cwd: string,
   options: LocalDriverOptions = {},
 ): Promise<WorkflowEnvelope> {
+  return withDriverLock(config, runId, (drive) => drive(cwd, options));
+}
+
+/**
+ * Runs `body` holding this machine's driver lock of run `runId`, or answers `driver_running` without running it. `body`
+ * drives the run through `drive`, so whatever it changes first, such as a claim, no other local driver of the run sees.
+ */
+export async function withDriverLock(
+  config: LocalConfig,
+  runId: string,
+  body: (drive: (cwd: string, options: LocalDriverOptions) => Promise<WorkflowEnvelope>) => Promise<WorkflowEnvelope>,
+): Promise<WorkflowEnvelope> {
   if (!isRunId(runId)) return { error: { code: 'invalid_run', message: 'Run id must look like r followed by 8 or 16 hex digits' } };
   const lock = driverLockPath(config, runId);
   if (!await acquireLock(lock)) {
@@ -775,17 +887,47 @@ export async function runLocalDriver(
       : `Run ${runId} has a local driver lock whose process id is unknown. Stop that driver, or inspect its driver.lock file.` } };
   }
   try {
-    return await driveRun(config, runId, cwd, options);
+    return await body((cwd, options) => driveRun(config, runId, cwd, options));
   } finally {
     await releaseLock(lock);
   }
 }
 
+/**
+ * Once after this machine took run `runId` over, before its first lease: brings the local branch of each copy the run
+ * recorded a commit for to that commit, fetched the way a lease fetches what it lacks. A settled run waits for a retry
+ * to reopen it, since it leases nothing before that.
+ */
+async function reconcileTakenCopies(config: LocalConfig, runId: string, active: string): Promise<WorkflowFailure | undefined> {
+  const run = await readRun(config, runId);
+  if (typeof run !== 'object' || !run.publication?.reconcileCopies || run.status !== 'running') return undefined;
+  const recorded = Object.entries(run.copies ?? {}).flatMap(([branch, copy]) => (copy.commit === undefined ? [] : [{ branch, commit: copy.commit }]));
+  const fetched = await fetchMissingCommits(active, { run: runId, commits: recorded.map((copy) => copy.commit) });
+  if (fetched.missing.length > 0) {
+    const named = recorded.filter((copy) => fetched.missing.includes(copy.commit)).map((copy) => `commit ${copy.commit} from branch ${copy.branch}`);
+    const said = fetched.fetchError ? ` Git said: ${fetched.fetchError}.` : '';
+    return { code: 'workspace_base', message: `Run ${runId} records ${named.join(', ')}, which this checkout does not have, even after fetching the run's branches from origin.${said} Push each branch to origin from the machine that has its commit, then resume the run.` };
+  }
+  for (const { branch, commit } of recorded) {
+    const refused = await reconcileCopy(active, branch, commit);
+    if (refused) return { code: 'branch_diverged', message: refused.error };
+  }
+  await updateRun(config, runId, async (local) => {
+    if (local === 'missing' || !local.publication?.reconcileCopies) return { value: undefined };
+    const { reconcileCopies: _done, ...publication } = local.publication;
+    return { value: undefined, write: { ...local, publication } };
+  });
+  return undefined;
+}
+
 async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
+  const unreconciled = await reconcileTakenCopies(config, runId, cwd);
+  if (unreconciled) return { error: unreconciled };
   const canHitl = options.hitl ?? (process.stdin.isTTY === true && process.stderr.isTTY === true);
   const driver = localDriver(cwd);
   const tools = { ...config.workflows?.tools, ...options.tools };
   const adapter = options.adapter ?? createLocalToolAdapter();
+  const archive = openSessionArchive(config);
   const maxParallel = config.workflows?.max_parallel ?? 1;
   // One command at a time keeps the terminal: Ctrl-C reaches it, and it can prompt on /dev/tty. Parallel commands get
   // process groups of their own, which `stop` and the signal handlers below can end as a whole.
@@ -817,13 +959,20 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
   let interactiveIgnores: readonly NodeJS.Signals[] = [];
   let signalled: NodeJS.Signals | undefined;
   let wake = (): void => {};
+  let handled: readonly NodeJS.Signals[] = [];
+  const handle = (signals: readonly NodeJS.Signals[]): void => {
+    for (const name of handled) process.off(name, onSignal);
+    handled = signals;
+    for (const name of handled) process.on(name, onSignal);
+  };
   const exitOn = (signal: NodeJS.Signals): void => {
-    for (const name of STOP_SIGNALS) process.off(name, onSignal);
+    handle([]);
     exitLike({ kind: 'signaled', signal });
   };
-  // Parallel commands and detached prompt tools do not get the terminal's Ctrl-C, so the driver stops them before it
-  // exits the way the signal would. An interactive tool that the terminal's signals reach handles them itself. With
-  // nothing running, the signal ends teamai at once, as it would without a handler.
+  // Parallel commands and detached prompt tools do not get the terminal's Ctrl-C, and no command gets a signal sent to
+  // teamai alone, so the driver stops them before it exits the way the signal would. An interactive tool that the
+  // terminal's signals reach handles them itself. With nothing running, the signal ends teamai at once, as it would
+  // without a handler.
   const onSignal = (signal: NodeJS.Signals): void => {
     if (prompt?.lease.interactive && interactiveIgnores.includes(signal)) return;
     if (inFlight.size === 0 && dying.size === 0 && !prompt) return exitOn(signal);
@@ -831,7 +980,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
     prompt?.controller.abort(signal);
     wake();
   };
-  if (maxParallel > 1) for (const name of STOP_SIGNALS) process.on(name, onSignal);
+  if (maxParallel > 1) handle(STOP_SIGNALS);
   const report = async (body: ReportBody, lease?: Lease): Promise<WorkflowEnvelope | undefined> => {
     const answer = await reportAttempt(config, runId, body);
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
@@ -904,6 +1053,8 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
           if (failed) return failed;
           continue;
         }
+        // An attached command already has the signals its terminal sends to the whole group; a second would force-quit some tools.
+        if (maxParallel === 1) handle(commandSignalPolicy(await terminalReachesCommand()).forwarded);
         inFlight.set(lease.attempt, { lease, command: startCommand(lease.command!, lease.cwd ?? cwd, lease.env ?? {}, detached) });
       }
       if (!prompt && busy() < maxParallel) {
@@ -934,8 +1085,8 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
             interactiveIgnores = commandSignalPolicy(await terminalReachesCommand()).ignored;
           }
           const controller = new AbortController();
-          if (maxParallel === 1) for (const name of STOP_SIGNALS) process.on(name, onSignal);
-          prompt = { lease, controller, exit: promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options, controller.signal) };
+          if (maxParallel === 1) handle(STOP_SIGNALS);
+          prompt = { lease, controller, exit: promptReport(config, resultPath(config, runId, lease.attempt), driver, lease, tools, adapter, options, archive, controller.signal) };
         }
       }
       if (canHitl && hitl && !question && !prompt?.lease.interactive) {
@@ -964,7 +1115,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
         ...(question ? [question.exit] : []),
         new Promise<undefined>((resolve) => {
           wake = () => resolve(undefined);
-          timer = setTimeout(wake, question ? 1000 : 2000);
+          timer = setTimeout(wake, question ? pollMs / 2 : pollMs);
         }),
       ]);
       clearTimeout(timer);
@@ -984,7 +1135,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       if (exited.kind === 'prompt') {
         const lease = prompt?.lease;
         prompt = undefined;
-        if (maxParallel === 1) for (const name of STOP_SIGNALS) process.off(name, onSignal);
+        if (maxParallel === 1) handle([]);
         const failed = await report(exited.body, lease);
         if (failed) return failed;
         continue;
@@ -992,10 +1143,12 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       if (exited.kind === 'stopped') {
         const stopping = dying.get(exited.attempt);
         dying.delete(exited.attempt);
+        if (maxParallel === 1) handle([]);
         if (stopping) await (stopping.lease.workspace?.mode === 'read-only' ? leaveReadCopy(stopping.lease) : restoreLeaseOverlay(stopping.lease));
         continue;
       }
       inFlight.delete(exited.attempt);
+      if (maxParallel === 1) handle([]);
       const failed = await report(await commandReport(resultPath(config, runId, exited.attempt), driver, exited.lease, exited.result), exited.lease);
       if (failed) return failed;
     }
@@ -1008,7 +1161,8 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       await command.stop();
       await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
     }));
+    await archive.close();
     if (signalled) exitOn(signalled);
-    for (const name of STOP_SIGNALS) process.off(name, onSignal);
+    handle([]);
   }
 }

@@ -144,13 +144,35 @@ const pullHandler: HookHandler = {
     } catch (e) {
       log.debug(`hook-dispatch: seedProjectAgentRoot failed: ${(e as Error).message}`);
     }
-    const { pull } = await import('./pull.js');
+    const { pull, settleLateUsageReport } = await import('./pull.js');
+    const { SessionCaptures } = await import('./session-flow/captures.js');
+    const before = config && await SessionCaptures.checkoutDelivery(config, tool);
     await pull({ silent: true });
+    if (config && before) await SessionCaptures.markTeamChanged(config, tool, stdin, before);
     await packageHints.stashPackageHintAfterPull(
       hintCwd,
       deriveSessionId(stdin, { includeCwd: true }),
       packageHashBeforePull,
     );
+    // The detached background pass exits once its handlers settle, which would
+    // cut the push of a report pull() stopped waiting for. The host does not
+    // wait for this pass, so waiting here does not delay the session.
+    await settleLateUsageReport();
+    return null;
+  },
+};
+
+/**
+ * Adds the tool's version to the capture the foreground pass wrote at session start (#1178), which never waits on it,
+ * and sweeps the captures of sessions that are gone.
+ */
+const sessionCaptureHandler: HookHandler = {
+  name: 'session-capture',
+  async execute(stdin, tool, config) {
+    if (!config) return null;
+    const { SessionCaptures } = await import('./session-flow/captures.js');
+    await SessionCaptures.addToolVersion(config, tool, stdin);
+    await SessionCaptures.sweep(config).catch((e: unknown) => log.debug(`session capture: could not sweep captures: ${e instanceof Error ? e.message : String(e)}`));
     return null;
   },
 };
@@ -335,7 +357,7 @@ const dashboardReportHandler: HookHandler = {
   async execute(stdin, tool, config) {
     // Registered with requiresConfig: a session outside any scope is not recorded.
     if (!config) return null;
-    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventProjectAnchor, addGitStateAtStart } = await import('./dashboard-collector.js');
+    const { parseHookEvent, appendEvent, compactEvents, dataHomeKey, eventProjectAnchor, addGitStateAtStart, gitStateIn } = await import('./dashboard-collector.js');
     const { getDataHome } = await import('./types.js');
     const raw = JSON.stringify(stdin);
     const event = await parseHookEvent(raw, tool, {
@@ -348,7 +370,7 @@ const dashboardReportHandler: HookHandler = {
       event.dataHomeKey = await dataHomeKey(getDataHome(config));
       const [projectAnchor] = await Promise.all([
         eventProjectAnchor(event.cwd, event.sessionId),
-        addGitStateAtStart(event),
+        addGitStateAtStart(event, gitStateIn(stdin)),
       ]);
       event.projectAnchor = projectAnchor;
       await appendEvent(event);
@@ -1129,6 +1151,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     // on a slow network cannot delay session startup. Its own generous budget
     // (PULL_TIMEOUT_MS) — the shared 15s truncated the pull itself.
     { event: 'session-start', matcher: '*', handler: pullHandler, timeoutMs: PULL_TIMEOUT_MS, background: true },
+    { event: 'session-start', matcher: '*', handler: sessionCaptureHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: teamRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: cursorUserRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, yieldsToContextLimit: true },

@@ -3,32 +3,12 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import matter from 'gray-matter';
 import { stringify as stringifyToml, parse as parseToml } from 'smol-toml';
 import { getDispatchCommand } from '../builtin-hooks.js';
+import type { AgentToolId } from '../tools.js';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
-/** The built-in tools that get subagents. `ToolId` (types.ts) is the full built-in set. */
-export type ToolName = 'claude' | 'claude-internal' | 'tclaude' | 'codebuddy' | 'codex' | 'codex-internal' | 'tcodex' | 'cursor' | 'copilot' | 'joycode' | 'qoder' | 'qoder-cn' | 'kiro' | 'zcode' | 'omp' | 'opencode' | 'workbuddy' | 'muse';
-
-export const ALL_SUPPORTED_TOOLS: ToolName[] = [
-  'claude',
-  'claude-internal',
-  'tclaude',
-  'codebuddy',
-  'codex',
-  'codex-internal',
-  'tcodex',
-  'cursor',
-  'copilot',
-  'joycode',
-  'qoder',
-  'qoder-cn',
-  'kiro',
-  'zcode',
-  'omp',
-  'opencode',
-  'workbuddy',
-  'muse',
-];
+/** The built-in tools that get subagents: their descriptor has an agents channel (tools.ts). `ToolId` (types.ts) is the full built-in set. */
+export type ToolName = AgentToolId;
 
 export type AgentFileExtension = '.agent.md' | '.md' | '.toml' | '.json';
 

@@ -21,7 +21,8 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { AgentAdapter, type SessionMeta, type SessionReadRef } from './base.js';
+import { z } from 'zod';
+import { AgentAdapter, type SessionMeta, type SessionReadRef, type Subagent, type SubagentsRead } from './base.js';
 import type { Session, Message, ContentBlock, ImageBlock } from '../ir.js';
 import { assertSafeSessionFileId, deriveTargetSessionId } from '../ids.js';
 import { imagePlaceholderText } from '../ir.js';
@@ -295,6 +296,24 @@ function irBlockToCc(block: ContentBlock, session?: Session): Record<string, unk
   }
 }
 
+const SubagentMetaSchema = z.object({
+  toolUseId: z.string().optional(),
+  spawnDepth: z.number().int().positive().optional(),
+  finished: z.boolean().optional(),
+});
+
+function readJsonFile(file: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf-8')) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function toolCallIds(session: Session): string[] {
+  return session.messages.flatMap((message) => message.content.flatMap((block) => (block.type === 'tool_call' ? [block.callId] : [])));
+}
+
 // ---------------------------------------------------------------------------
 // ClaudeCodeAdapter
 // ---------------------------------------------------------------------------
@@ -458,6 +477,44 @@ export class ClaudeCodeAdapter extends AgentAdapter {
         `Claude Code session file not found: session_id=${ref.sessionId}, project_path=${ref.projectPath ?? 'undefined'}`,
       );
     }
+    return this.readTranscript(jsonlPath, 'main');
+  }
+
+  /**
+   * The agents a session started: `<session id>/subagents/agent-<id>.jsonl` beside its transcript, each with a
+   * `.meta.json` naming the tool call that started it (`toolUseId`). Each agent follows the session or agent whose
+   * call started it, in call order; one whose call is not found goes last.
+   */
+  async readSubagents(session: Session, ref: SessionReadRef): Promise<SubagentsRead> {
+    const jsonlPath = ref.filePath ?? this.findSessionFile(session.sessionId, ref.projectPath);
+    if (!jsonlPath) return { status: 'unread', reason: `The transcript of session ${session.sessionId} was not found again` };
+    const dir = path.join(path.dirname(jsonlPath), path.basename(jsonlPath, '.jsonl'), 'subagents');
+    if (!dirExists(dir)) return { status: 'read', agents: [] };
+    const read = fs.readdirSync(dir).filter((name) => /^agent-.+\.jsonl$/.test(name)).sort().map((name) => {
+      const meta = SubagentMetaSchema.safeParse(readJsonFile(path.join(dir, name.replace(/\.jsonl$/, '.meta.json'))));
+      const agent = this.readTranscript(path.join(dir, name), 'subagent');
+      return { agent, meta: meta.success ? meta.data : {} };
+    });
+    const ordered: Subagent[] = [];
+    const placed = new Set<number>();
+    const visit = (parent: Session, depth: number): void => {
+      for (const callId of toolCallIds(parent)) {
+        read.forEach((item, index) => {
+          if (placed.has(index) || item.meta.toolUseId !== callId) return;
+          placed.add(index);
+          ordered.push({ session: item.agent, depth: item.meta.spawnDepth ?? depth, finished: item.meta.finished === true });
+          visit(item.agent, depth + 1);
+        });
+      }
+    };
+    visit(session, 1);
+    read.forEach((item, index) => {
+      if (!placed.has(index)) ordered.push({ session: item.agent, depth: item.meta.spawnDepth ?? 1, finished: item.meta.finished === true });
+    });
+    return { status: 'read', agents: ordered };
+  }
+
+  private readTranscript(jsonlPath: string, chain: 'main' | 'subagent'): Session {
     // The file name is the id: a listed file decides it, not the request.
     const sessionId = path.basename(jsonlPath, '.jsonl');
 
@@ -493,7 +550,7 @@ export class ClaudeCodeAdapter extends AgentAdapter {
     const sessionCwd = nativeCwd ?? bestEffortDecodeCwdClaude(cwd) ?? cwd;
 
     // Flatten the DAG
-    const messages = this.flattenDag(rawRecords);
+    const messages = this.flattenDag(rawRecords, chain);
 
     // Extract the title: prefer the summary title line (written on disk, and also used by CC /resume),
     // then unwrapped user text (mixed messages with an injection header plus a real question can still be unwrapped), and finally fall back to the id prefix.
@@ -555,9 +612,8 @@ export class ClaudeCodeAdapter extends AgentAdapter {
    * Note: the parentUuid chain may pass through skipped line types (attachment/file-history-snapshot and similar),
    * which breaks the chain. Orphan nodes whose parentUuid points at a missing record are treated as roots.
    */
-  private flattenDag(rawRecords: Record<string, unknown>[]): Message[] {
-    // Filter out sidechains
-    const mainChain = rawRecords.filter((r) => !r.isSidechain);
+  private flattenDag(rawRecords: Record<string, unknown>[], chain: 'main' | 'subagent'): Message[] {
+    const mainChain = rawRecords.filter((r) => Boolean(r.isSidechain) === (chain === 'subagent'));
 
     // uuid → record (main-chain records only)
     const uuidToRecord = new Map<string, Record<string, unknown>>();

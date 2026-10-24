@@ -5,14 +5,17 @@ import { WINDOWS_TESTS } from './helpers/windows-tests.js';
 /**
  * What makes a test file POSIX-only on a static read: a spawned POSIX shell, a
  * shebang fixture, a pinned POSIX hook rendering (Windows renders the Git Bash
- * path, `getHookShellCommand`), and mode bits or links.
+ * path, `getHookShellCommand`), and mode bits or links. A file that states
+ * `commandWindows` may pin the POSIX `command`: Codex keeps `bash -lc` on every
+ * platform and carries the Windows form beside it.
  */
 const POSIX_ONLY: readonly { readonly pattern: RegExp; readonly unless?: RegExp }[] = [
   { pattern: /\bspawn(?:Sync)?\(\s*['"](?:ba|z)?sh['"]/ },
   { pattern: /\bexec(?:File)?(?:Sync)?\(\s*['"](?:ba|z)?sh\b/ },
   { pattern: /#!\/(?:usr\/)?bin\// },
-  // A pinned POSIX rendering is safe only in a file that pins the platform it renders for.
-  { pattern: /\bbash -lc\b/, unless: /vi\.spyOn\(process, 'platform'/ },
+  // A pinned POSIX rendering is safe when the file pins the platform it renders
+  // for, or states `commandWindows` (the Windows form of that same command).
+  { pattern: /\bbash -lc\b/, unless: /vi\.spyOn\(process, 'platform'|\bcommandWindows\b/ },
   { pattern: /\bsh -c\b/ },
   { pattern: /\bchmod(?:Sync)?\(/ },
   { pattern: /\bsymlink(?:Sync)?\(/ },

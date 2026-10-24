@@ -1,3 +1,4 @@
+import { hookSettingsPath, hookToolPathsForConfig } from './types.js';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { detectProjectConfig, loadLocalConfig, loadTeamConfig } from './config.js';
@@ -25,19 +26,24 @@ import {
   installScopeName,
 } from './types.js';
 import { isToolInstalledForConfig } from './resources/base.js';
-import { installOf, locate, writableDir } from './locate.js';
-import { sameSkillDir } from './resources/skill-dirs.js';
+import { installOf, locate, writable } from './locate.js';
+import { samePlace } from './resources/places.js';
 import { describeInvalidToolHomes, envToolHome, realHost, reloadToolHomes, toolHomesPath } from './tool-home.js';
 import { isToolId } from './tools.js';
 import { isCodexTool } from './utils/tool-names.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, isCodexTrustGatedTool, codexTrustReminder, keptTeamHookEntries, readCodexHookTrustForScope } from './hooks.js';
+import { codexBuildSkewMessage } from './codex-trust.js';
 import {
   buildDeliveryChecks,
   toolPathsDroppedKeyNotes,
   buildSkillDirChecks,
   skillReadNotes,
+  buildRecordedPlaceChecks,
+  recordedPlaceNotes,
   buildRulesDeliveryChecks,
   buildAgentsDeliveryChecks,
+  buildAgentPlaceChecks,
+  agentReadNotes,
   buildInstructionDeliveryChecks,
   buildNamespaceNotes,
   buildMcpDeliveryChecks,
@@ -192,7 +198,7 @@ async function buildEnabledToolChecks(ctx: DoctorContext): Promise<Check[]> {
     // check exists to catch. A tool with no skills path (rules only) has no
     // such resolver, so it keeps the generic probe.
     const isInstalled = paths.skills
-      ? async (): Promise<boolean> => writableDir(await locate(tool, 'skills', installOf(ctx.teamConfig ?? { toolPaths }, localConfig))) !== null
+      ? async (): Promise<boolean> => writable(await locate(tool, 'skills', installOf(ctx.teamConfig ?? { toolPaths }, localConfig))) !== null
       : (): Promise<boolean> => isToolInstalledForConfig(tool, probePath, localConfig);
 
     // Pushed whether or not it passes. Every other check in the registry
@@ -299,7 +305,7 @@ function buildToolHomeChecks(localConfig: LocalConfig): Check[] {
     checks.push({
       name: `${tool} home matches ${live.variable}`,
       source: 'local',
-      check: async () => sameSkillDir(live.dir, recorded),
+      check: async () => samePlace(live.dir, recorded),
       fix: `${live.variable} puts the ${tool} home at ${live.dir}; this machine syncs ${tool} to ${recorded}. `
         + 'Re-run `teamai init` to record it.',
     });
@@ -351,7 +357,7 @@ async function buildHookChecks(
     const hookPath = hookToolPaths[tool]?.hooks
       ? path.join(resolveToolBaseDir(tool, { ...localConfig, scope: resolveHookScope(localConfig).scope }), hookToolPaths[tool]?.hooks ?? paths.hooks)
       : settings
-        ? path.join(baseDir, settings)
+        ? hookSettingsPath(tool, baseDir, settings)
         : undefined;
     if (!hookPath) continue;
     const settingsPath = hookPath;
@@ -451,19 +457,24 @@ function usageReportNote({ localConfig, teamConfig }: DoctorContext): string {
  * Whether the public Codex will run the hooks teamai wrote in this scope (#955),
  * asked read-only through `codex app-server` `hooks/list`. A check when Codex
  * answers; the trust reminder as a note when it cannot (no `codex` on PATH, the
- * app-server failed). Nothing when teamai wrote no Codex hook here.
+ * app-server failed). Nothing when teamai wrote no Codex hook here. A failing
+ * build check when the Codex builds teamai found disagree on version (#1244).
  */
 async function codexHookTrust(ctx: DoctorContext): Promise<{ checks: Check[]; notes: string[] }> {
   const report = ctx.teamConfig ? await readCodexHookTrustForScope(ctx.teamConfig, ctx.localConfig) : null;
   if (!report) return { checks: [], notes: [] };
+  const skew = report.skew;
+  const builds: Check[] = skew
+    ? [{ name: 'Codex builds agree', source: 'local', check: async () => false, fix: codexBuildSkewMessage(skew) }]
+    : [];
   if (report.kind !== 'listed') {
     const reason = report.kind === 'failed' ? ` (could not ask Codex: ${report.reason})` : '';
-    return { checks: [], notes: [`${codexTrustReminder()}${reason}`] };
+    return { checks: builds, notes: [`${codexTrustReminder()}${reason}`] };
   }
   const notLoaded = report.notTrusted.some((h) => h.status === 'not loaded');
   const notTrusted = report.notTrusted.map((h) => `${h.command} in ${h.file} (${h.status})`);
   return {
-    checks: [{
+    checks: [...builds, {
       name: 'Codex trusts the teamai hooks',
       source: 'local',
       check: async () => notTrusted.length === 0,
@@ -503,7 +514,7 @@ export async function resolveDoctorContext(options: { gitContext?: GitContext } 
   const hookScope = resolveHookScope(localConfig);
   const hookToolPaths: TeamaiConfig['toolPaths'] = teamConfig
     ? Object.fromEntries(
-      Object.entries(scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope.scope }))
+      Object.entries(hookToolPathsForConfig(teamConfig, localConfig))
         .filter(([tool]) => !isAgentExcluded(localConfig, tool)),
     )
     : {};
@@ -639,6 +650,16 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
         + 'can push to the team repo (run with --verbose to see the push error).',
     },
     {
+      // A score label waits on this machine until a push or a pull publishes it.
+      name: 'Score labels are published',
+      source: 'local',
+      check: async () => {
+        const { LabelStore } = await import('./scorers/label-store.js');
+        return await LabelStore.unpublished(localConfig) === 0;
+      },
+      fix: 'Run `teamai score --push` to publish them; it says why when it cannot.',
+    },
+    {
       // A dead process's lock cannot block anything — the next writer of that
       // same lock reclaims it — but a leftover file is exactly the noise #1027
       // reports, and the only way a SIGKILLed run ever gets cleaned up.
@@ -661,6 +682,9 @@ export async function buildChecks(ctx: DoctorContext, stage: CheckStage = 'docto
     ...await buildHookChecks(toolPaths, hookToolPaths, baseDir, localConfig),
     ...await buildDeliveryChecks(ctx),
     ...await buildSkillDirChecks(ctx),
+    ...await buildRecordedPlaceChecks(ctx, 'rules'),
+    ...await buildRecordedPlaceChecks(ctx, 'blocks'),
+    ...await buildAgentPlaceChecks(ctx),
     // Built only for `doctor`: the work is in building these, not in running
     // them, so skipping them post-pull is what keeps the budget for the rest.
     ...(stage === 'doctor' ? await buildRulesDeliveryChecks(ctx) : []),
@@ -861,6 +885,7 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
   // how each alias agent's model resolved in each tool (#830).
   const { ruleChannelNotes } = await import('./resources/rules.js');
   const { dshSandboxNote } = await import('./dsh-hooks.js');
+  const { scorerNotes } = await import('./doctor-scorers.js');
   const notes = [
     ...await buildNamespaceNotes(ctx),
     ...await entryNamespaceNotes(ctx),
@@ -868,6 +893,8 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...ctx.teamConfig ? await keptTeamHookEntries(ctx.teamConfig, localConfig) : [],
     ...await aliasNamespaceNotes(ctx),
     ...await agentModelNotes(ctx),
+    // Invalid scorer files and scorers a workflow step lists without one, which a silent hook pull never shows.
+    ...await scorerNotes(localConfig),
     ...(await envAdvisories(localConfig, ctx.teamConfig, ctx.teamEnv)).map(describeEnvAdvisory),
     // A team MCP server a tool cannot use over its transport.
     ...await mcpTransportNotes(ctx),
@@ -882,6 +909,9 @@ export async function doctor(options: DoctorOptions): Promise<boolean> {
     ...await localAgentGitExcludeNotes(),
     ...await keptDocNotes(ctx),
     ...await skillReadNotes(ctx),
+    ...await recordedPlaceNotes(ctx, 'rules'),
+    ...await recordedPlaceNotes(ctx, 'blocks'),
+    ...await agentReadNotes(ctx),
   ];
 
   if (jsonMode) {

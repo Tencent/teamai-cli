@@ -40,6 +40,7 @@ import {
   type LocalConfig,
 } from './types.js';
 import { getUserHome } from './utils/home.js';
+import type { HeadState } from './utils/git.js';
 import { estimateClaudeRequest } from './model-pricing.js';
 
 // ─── Event collection data flow ─────────────────────────
@@ -1212,17 +1213,22 @@ export interface ParseHookEventOptions {
 }
 
 function codexReplyText(prompt: string): string {
-  const match = /^\s*<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>\s*$/.exec(prompt);
+  // JSON.parse skips the whitespace around the array, so the pattern needs no
+  // whitespace quantifiers inside the tags: those backtrack on long runs.
+  const match = /^\s*<send_user_message_question_reply>([\s\S]*)<\/send_user_message_question_reply>\s*$/.exec(prompt);
   if (!match) return prompt;
   try {
     const replies: unknown = JSON.parse(match[1]);
     if (!Array.isArray(replies) || replies.length === 0) return prompt;
+    const items: unknown[] = replies;
     const answers: string[] = [];
-    for (const reply of replies) {
-      if (!reply || typeof reply !== 'object' || typeof reply.answer !== 'string') return prompt;
+    for (const reply of items) {
+      if (!reply || typeof reply !== 'object' || !('answer' in reply) || typeof reply.answer !== 'string') return prompt;
       answers.push(reply.answer);
     }
-    return answers.join('\n');
+    // A reply with no answer text keeps the prompt, so the turn is still counted.
+    const text = answers.join('\n');
+    return text.trim() ? text : prompt;
   } catch {
     return prompt;
   }
@@ -1302,7 +1308,7 @@ export async function parseHookEvent(
   // is purely injected content produces no event at all, so it neither inflates the
   // prompt count nor shows up as a session prompt.
   if (eventType === 'prompt_submit' && typeof hookData.prompt === 'string') {
-    const prompt = normalizeToolName(tool) === 'codex' ? codexReplyText(hookData.prompt) : hookData.prompt;
+    const prompt = isCodexTool(tool) ? codexReplyText(hookData.prompt) : hookData.prompt;
     const human = stripInjectedPrompt(prompt);
     if (!human) return null;
     // Decide "correction" here, over the full prompt, because only the hook knows
@@ -2455,26 +2461,46 @@ export async function eventProjectAnchor(cwd: string | undefined, sessionId: str
 const GIT_STATE_TIMEOUT_MS = 2_000;
 
 /**
- * Add to a `session_start` event the commit its `cwd` had checked out and
- * whether tracked files had changes, so the session can be replayed on the
- * code it ran against. Every start records its own (resume and compaction fire
- * SessionStart too). Other events, and events with no cwd (Copilot), are left
- * as they are, so no other hook runs git. A failure leaves the field absent
- * and the event is still written. Both event writers go through here.
+ * The hook payload field in which the session-start dispatcher hands its readers, the session capture and this event,
+ * the one git state it read: a state, or null when it found none.
  */
-export async function addGitStateAtStart(event: DashboardEvent): Promise<void> {
-  if (event.type !== 'session_start' || !event.cwd) return;
+export const GIT_AT_START_PAYLOAD_KEY = 'teamai_git_at_start';
+
+/** The git state `payload` carries from its session start's one read: a state, null for none, undefined when it carries none. */
+export function gitStateIn(payload: Record<string, unknown>): HeadState | null | undefined {
+  if (!(GIT_AT_START_PAYLOAD_KEY in payload)) return undefined;
+  const value = payload[GIT_AT_START_PAYLOAD_KEY];
+  return value !== null && typeof value === 'object' && 'head' in value && typeof value.head === 'string' && 'dirty' in value && typeof value.dirty === 'boolean'
+    ? { head: value.head, dirty: value.dirty }
+    : null;
+}
+
+/**
+ * The commit `cwd` had checked out at a session start and whether tracked files had changes, or null when it has no
+ * commit, is not in git, or `git status` takes longer than its time cap. A failure is logged at debug level.
+ */
+export async function readGitStateAtStart(cwd: string): Promise<HeadState | null> {
   try {
     const { getHeadState } = await import('./utils/git.js');
-    const state = await getHeadState(event.cwd, AbortSignal.timeout(GIT_STATE_TIMEOUT_MS));
-    if (!state) {
-      log.debug(`dashboard: ${event.cwd} has no commit yet, so session_start records no git state`);
-      return;
-    }
-    event.gitAtStart = state;
+    const state = await getHeadState(cwd, AbortSignal.timeout(GIT_STATE_TIMEOUT_MS));
+    if (!state) log.debug(`dashboard: ${cwd} has no commit yet, so session_start records no git state`);
+    return state;
   } catch (e) {
-    log.debug(`dashboard: could not read the git state of ${event.cwd} at session_start: ${e instanceof Error ? e.message : String(e)}`);
+    log.debug(`dashboard: could not read the git state of ${cwd} at session_start: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
   }
+}
+
+/**
+ * Add to a `session_start` event the git state its `cwd` started on, so the session can be replayed on the code it ran
+ * against: `known`, the state the session-start dispatcher read once for the session capture too, else one read here.
+ * Every start records its own (resume and compaction fire SessionStart too). Other events, and events with no cwd
+ * (Copilot), are left as they are. Without a state the event is still written. Both event writers go through here.
+ */
+export async function addGitStateAtStart(event: DashboardEvent, known?: HeadState | null): Promise<void> {
+  if (event.type !== 'session_start' || !event.cwd) return;
+  const state = known === undefined ? await readGitStateAtStart(event.cwd) : known;
+  if (state) event.gitAtStart = state;
 }
 
 // ─── CLI entry point ────────────────────────────────────
@@ -2518,7 +2544,7 @@ export async function dashboardReport(toolArg?: string): Promise<void> {
   event.dataHomeKey = await dataHomeKey(getDataHome(config));
   const [projectAnchor] = await Promise.all([
     eventProjectAnchor(event.cwd, event.sessionId),
-    addGitStateAtStart(event),
+    addGitStateAtStart(event, gitStateIn(hookData)),
   ]);
   event.projectAnchor = projectAnchor;
   await appendEvent(event);

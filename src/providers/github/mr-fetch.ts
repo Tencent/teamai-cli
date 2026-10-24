@@ -199,9 +199,7 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
   const pr = await githubApiGet(`/repos/${owner}/${repo}/pulls/${number}`) as GitHubApiPR;
 
   // ── 2. 提交列表 ──────────────────────────────────────────
-  const commitsRaw = await githubApiGet(
-    `/repos/${owner}/${repo}/pulls/${number}/commits?per_page=50`,
-  ) as GitHubApiCommit[];
+  const commitsRaw = await readPages<GitHubApiCommit>(githubApiGet, `/repos/${owner}/${repo}/pulls/${number}/commits`);
   const commits = commitsRaw.map((c) => ({
     hash: c.sha,
     message: c.commit.message.split('\n')[0],

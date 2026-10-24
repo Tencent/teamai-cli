@@ -324,6 +324,32 @@ async function originHasReportsBranch(origin: string): Promise<boolean> {
   return heads.split('\n').includes('teamai-reports');
 }
 
+describe('git-kind reports: commit identity', () => {
+  async function reportsCommitIdentity(origin: string): Promise<string> {
+    return (await simpleGit(origin).raw(['log', '-1', '--format=%an <%ae> / %cn <%ce>', 'teamai-reports'])).trim();
+  }
+
+  it('commits as TeamAI where git can resolve no identity', async () => {
+    const { origin } = await seedBareOrigin();
+    const clone = path.join(tmp, 'ci', 'team-repo');
+    fs.mkdirSync(path.dirname(clone), { recursive: true });
+    await simpleGit().clone(origin, clone);
+    // Stands in for a CI runner with no user.email whose hostname gives git no usable one.
+    await simpleGit(clone).addConfig('user.useConfigOnly', 'true');
+
+    expect(await publish(gitConfig(clone, origin), 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    expect(await reportsCommitIdentity(origin)).toBe('TeamAI <teamai@localhost> / TeamAI <teamai@localhost>');
+  });
+
+  it('keeps the identity the member configured', async () => {
+    const { origin } = await seedBareOrigin();
+    const cfg = await cloneCheckout(origin, 'member');
+
+    expect(await publish(cfg, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    expect(await reportsCommitIdentity(origin)).toBe('t <t@t.com> / t <t@t.com>');
+  });
+});
+
 describe('git-kind reports: read-only cold start (#558)', () => {
   it('materializes a local reports view without publishing the branch', async () => {
     const { origin, clone } = await seedBareOrigin();
@@ -811,6 +837,55 @@ exit 0
 
     const votes = readUserVotesFromContent(await originReportsFile(origin, 'votes/alice.yaml'));
     expect(votes.votes['doc-a']).toMatchObject({ recalled_count: 1, upvoted_count: 1 });
+  }, 60_000);
+});
+
+describe('git-kind reports: a retry that finds its content already committed', () => {
+  /** Makes `origin` refuse every push while it holds a `refuse-push` file, and returns that file. */
+  function refusePushes(origin: string): string {
+    const hook = path.join(origin, 'hooks', 'pre-receive');
+    fs.writeFileSync(hook, '#!/bin/sh\nif [ -f "$(dirname "$0")/../refuse-push" ]; then echo "push refused" >&2; exit 1; fi\nexit 0\n');
+    fs.chmodSync(hook, 0o755);
+    const flag = path.join(origin, 'refuse-push');
+    fs.writeFileSync(flag, '');
+    return flag;
+  }
+
+  /** Writes `stats/alice.yaml` unless the worktree already holds it, then names it, or no file when it was there. */
+  async function writeStats(wt: string): Promise<{ files: string[]; message: string }> {
+    const file = path.join(wt, 'stats', 'alice.yaml');
+    const there = fs.existsSync(file);
+    if (!there) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, 'runs: 1\n');
+    }
+    return { files: there ? [] : ['stats/alice.yaml'], message: '[teamai] Update stats' };
+  }
+
+  it('pushes the commit a refused push left behind when the retry writes no file', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const cfg = gitConfig(clone, origin);
+    expect(await publish(cfg, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    const flag = refusePushes(origin);
+    expect(await updateReports(cfg, writeStats)).toMatchObject({ status: 'failed' });
+    fs.rmSync(flag);
+
+    expect(await updateReports(cfg, writeStats)).toEqual({ status: 'published' });
+    expect(await originReportsFile(origin, 'stats/alice.yaml')).toBe('runs: 1\n');
+  }, 60_000);
+
+  it('pushes nothing for a write that returns null, and leaves the commit for the next writer', async () => {
+    const { origin, clone } = await seedBareOrigin();
+    const cfg = gitConfig(clone, origin);
+    expect(await publish(cfg, 'members/alice.yaml', 'username: alice\n')).toBe(true);
+    const flag = refusePushes(origin);
+    expect(await updateReports(cfg, writeStats)).toMatchObject({ status: 'failed' });
+    fs.rmSync(flag);
+
+    expect(await updateReports(cfg, async () => null)).toEqual({ status: 'already-present' });
+    await expect(originReportsFile(origin, 'stats/alice.yaml')).rejects.toThrow();
+    expect(await updateReports(cfg, writeStats)).toEqual({ status: 'published' });
+    expect(await originReportsFile(origin, 'stats/alice.yaml')).toBe('runs: 1\n');
   }, 60_000);
 });
 

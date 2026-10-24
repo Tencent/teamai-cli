@@ -249,6 +249,9 @@ export function toolUsesPwshShell(tool: string): boolean {
  * The command of a team-hook dispatcher entry (#915): it runs the team hooks of
  * the project the hook's cwd belongs to. Unlike the built-ins it keeps stderr
  * and the exit status, which carry a team hook's blocking decision (exit 2).
+ * A Codex tool keeps bare `bash` on Windows too: Codex runs its Windows form
+ * from the entry's `commandWindows` (getTeamHookDispatchCommandWindows), and a
+ * machine-specific Git Bash path here would rewrite a committed hooks.json.
  */
 export function getTeamHookDispatchCommand(event: string, tool: string): string {
   const shell = isCodexTool(tool) ? 'bash' : getHookShellCommand();

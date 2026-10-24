@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import YAML from 'yaml';
 import { injectHermesHooks, removeHermesHooks, getReportScriptPath, getInstructionsPluginDir } from '../hermes-hooks.js';
 import { log } from '../utils/logger.js';
-import { instructionHookChannel } from '../instruction-targets.js';
+import { channelReadiness } from '../instruction-targets.js';
 
 let tmpDir: string;
 let savedHermesHome: string | undefined;
@@ -22,6 +23,27 @@ afterEach(() => {
 });
 
 describe('injectHermesHooks', () => {
+  it('migrates a raw command and its approval without removing member hooks', async () => {
+    process.env.HERMES_HOME = path.join(tmpDir, 'Hermes home');
+    fs.mkdirSync(process.env.HERMES_HOME);
+    const raw = getReportScriptPath();
+    const configPath = path.join(process.env.HERMES_HOME, 'config.yaml');
+    const allowlistPath = path.join(process.env.HERMES_HOME, 'shell-hooks-allowlist.json');
+    fs.writeFileSync(configPath, YAML.stringify({ hooks: { on_session_start: [{ command: raw }, { command: 'echo mine' }] } }));
+    fs.writeFileSync(allowlistPath, JSON.stringify({ approvals: [{ event: 'on_session_start', command: raw }, { event: 'on_session_start', command: 'echo mine' }] }));
+    await injectHermesHooks();
+    const entries = YAML.parse(fs.readFileSync(configPath, 'utf8')).hooks.on_session_start;
+    expect(entries).toHaveLength(2);
+    expect(entries.some((entry: { command: string }) => entry.command === raw)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(allowlistPath, 'utf8')).approvals).toEqual(entries.map((entry: { command: string }) => ({ event: 'on_session_start', command: entry.command })));
+    const before = fs.readFileSync(configPath, 'utf8');
+    await injectHermesHooks();
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before);
+    await removeHermesHooks();
+    expect(YAML.parse(fs.readFileSync(configPath, 'utf8')).hooks.on_session_start).toEqual([{ command: 'echo mine' }]);
+    expect(JSON.parse(fs.readFileSync(allowlistPath, 'utf8')).approvals).toEqual([{ event: 'on_session_start', command: 'echo mine' }]);
+  });
+
   it('reports the injection only when the script, hook entry or allowlist changes', async () => {
     const success = vi.spyOn(log, 'success').mockImplementation(() => {});
     try {
@@ -80,7 +102,7 @@ describe('the teamai-instructions plugin (#945)', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${dir} exists without the TeamAI marker`));
     expect(fs.readFileSync(path.join(dir, '__init__.py'), 'utf8')).toBe('def register(ctx): pass\n');
     expect(fs.existsSync(getReportScriptPath())).toBe(true);
-    expect(await instructionHookChannel('hermes')).toEqual({ ready: false, fix: expect.stringContaining(`${dir} holds a plugin teamai did not write`) });
+    expect(await channelReadiness('hermes', 'hermes-plugin')).toEqual({ ready: false, fix: expect.stringContaining(`${dir} holds a plugin teamai did not write`) });
 
     await removeHermesHooks();
     expect(fs.readdirSync(dir).sort()).toEqual(['__init__.py', 'notes.txt', 'plugin.yaml']);

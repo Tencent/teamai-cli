@@ -25,7 +25,7 @@ teamai contribute --file /tmp/session.md
 teamai contribute --file /tmp/session.md --namespace payments
 ```
 
-`--namespace` 必须是当前 scope 在 `manifest/projects.yaml` 里声明的 learnings namespace。
+`--namespace` 必须是当前 scope 的项目在 `manifest/projects.yaml` 里、或其角色在 `manifest/roles.yaml` 里声明的 learnings namespace。`--namespace ""` 写入共享根目录 `learnings/`。
 
 不想要这条提醒时，在 `teamai.yaml` 里写：
 
@@ -105,6 +105,8 @@ teamai recall maintenance --update-quality
 
 置信度至少 0.90、至少 5 次 upvote、至少 2 个贡献者、存在至少 14 天，可以升成 skill、rule 或 doc。
 
+晋升后的 skill 位于 `skills/<learningId>/SKILL.md`，缺少的 `name` 和 `description` 前置信息会自动补齐，便于工具识别。rule 和 doc 仍是各自目录下的 Markdown 文件。
+
 ```bash
 teamai recall promote
 teamai recall promote <learningId> --category skills
@@ -130,9 +132,13 @@ teamai import --from-repo https://github.com/org/repo --skip-enrich
 
 `--from-mr` 可以一次传多个 MR URL：每个草稿照旧单独确认（`--all` 则都不问），接受的 learning 在最后一次性发布，每个仓库的 teamwiki 只更新一次。其中一个 MR 失败不影响其余，运行结束时给出汇总，有失败则退出码非零。
 
-每个 GitLab MR API 请求都有 30 秒期限，包含读取响应正文。元信息超时会使该 MR 失败；commits、diff 或评审 threads 超时则省略相应可选数据并继续处理。评审 threads 的每一页都有独立期限。
+GitHub 导入从 `gh` 回退到 REST 时，会按每页 100 个提交继续读取，最多返回 [GitHub 此接口限制的 250 个提交](https://docs.github.com/en/rest/pulls/pulls#list-commits-on-a-pull-request)。任一提交页失败都会使该 PR 在 AI 提炼前失败。
+
+GitLab MR 导入会按每页 50 个继续读取提交，而不是只读取第一页，最多读取 100 页。每个 GitLab MR API 请求都有 30 秒期限，包含读取响应正文。元信息超时会使该 MR 失败；commits、diff 或评审 threads 超时则省略相应可选数据并继续处理。提交和评审 threads 的每一页都有独立期限。后续提交页失败时会省略整个提交列表，不把不完整的历史交给提炼流程。
 
 提炼时除了 MR 的描述、提交和 diff，还会读取评审 threads：GitLab 的 discussions，GitHub 的 review 评论、review 结论和会话评论，TGit 的 notes。每个 thread 带上它锚定的文件和行、是否已 resolved，以及按顺序标为 MR 作者或评审者的各条 note 进入提示词；已 resolved 的 thread 里的决定比 diff 更重要。teamai 自己的 CI 评论会被跳过。`--no-discussions` 不读取 threads，`teamai ci extract-mr` 同样适用。`teamai.yaml` 设了 `language: en` 时 learning 用英文写，否则用中文。
+
+AI 生成的 MR learning 中，`title` 不是字符串时，摘要和入队文件名使用 MR 标题；`tags` 只展示数组中的字符串项。不会为了修复元数据而改写草稿正文。
 
 `--incremental` 只重新提取上次导入后改过的文件，基线随每个代码库存在它自己的 `evidence/code/<slug>/` 里。远端仓库的 slug 是 `<provider>__<owner>__<repo>`，`--from-repo`、`--from-mr` 和 `teamai ci extract-mr` 用的都是它；`--dir` 用仓库名。
 
@@ -149,6 +155,8 @@ teamai codebase --lint
 没有团队仓库时，给 `teamai import` 和 `teamai codebase` 都加上 `--output <dir>`，两者都用 `<dir>/teamwiki/`。
 
 `teamai codebase --extract` 已移除，改用 `teamai import --dir`。
+
+AI 子进程失败时优先显示 stderr，否则显示 stdout；都没有内容时显示退出码或终止信号。因此，OpenClaw 在 stdout 打印的服务错误会在深度加工时保留具体原因，不再只显示空的 `AI call failed:`。
 
 recall 结果里的 `Source freshness:`：`current` 是内容和上次扫描一致，`stale` 是变了，`missing` 是文件不在了，`unknown` 是对不上。`current` 也不代表文档本身正确。
 

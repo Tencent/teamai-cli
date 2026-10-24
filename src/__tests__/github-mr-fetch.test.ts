@@ -33,7 +33,13 @@ const CONVERSATION = [
   { body: 'Merging after the split.', user: { login: 'dev' } },
 ];
 
-function mockResponses(failedPath?: string, status = 200, body = '', responseError?: Error): string[] {
+function mockResponses(
+  failedPath?: string,
+  status = 200,
+  body = '',
+  responseError?: Error,
+  commits = [{ sha: 'abc123', commit: { message: 'Fix retries\n\nDetails' } }],
+): string[] {
   const seen: string[] = [];
   const request = (options: https.RequestOptions, callback: (res: IncomingMessage) => void) => {
     const url = String(options.path);
@@ -41,12 +47,15 @@ function mockResponses(failedPath?: string, status = 200, body = '', responseErr
     const diff = options.headers && (options.headers as Record<string, string>).Accept.includes('.diff');
     const key = diff ? `${url}.diff` : url;
     const failed = key === failedPath;
+    const params = new URL(url, 'https://api.github.com').searchParams;
+    const pageSize = Number(params.get('per_page') ?? 100);
+    const start = (Number(params.get('page') ?? 1) - 1) * pageSize;
     const response = failed ? body : diff ? 'diff --git a/a b/a\n+fixed\n'
       : url === PR ? JSON.stringify(METADATA)
       : url.startsWith(`${PR}/comments`) ? JSON.stringify(REVIEW_COMMENTS)
       : url.startsWith(`${PR}/reviews`) ? JSON.stringify(REVIEWS)
       : url.startsWith('/repos/team/repo/issues/42/comments') ? JSON.stringify(CONVERSATION)
-      : JSON.stringify([{ sha: 'abc123', commit: { message: 'Fix retries\n\nDetails' } }]);
+      : JSON.stringify(commits.slice(start, start + pageSize));
     const req = Object.assign(new EventEmitter(), {
       setTimeout: vi.fn(),
       destroy: vi.fn(),
@@ -75,7 +84,7 @@ function mockResponses(failedPath?: string, status = 200, body = '', responseErr
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('GitHub PR REST fallback', () => {
-  it.each([PR, `${PR}/commits?per_page=50`, `${PR}.diff`])(
+  it.each([PR, `${PR}/commits?per_page=100&page=1`, `${PR}.diff`])(
     'rejects when the response stream fails at %s', async (endpoint) => {
       const error = new Error('aborted');
       const seen = mockResponses(endpoint, 200, 'partial response', error);
@@ -98,7 +107,7 @@ describe('GitHub PR REST fallback', () => {
   });
 
   it('reports a commits endpoint error instead of calling map on an error object', async () => {
-    mockResponses(`${PR}/commits?per_page=50`, 429, '{"message":"Too many requests"}');
+    mockResponses(`${PR}/commits?per_page=100&page=1`, 429, '{"message":"Too many requests"}');
     await expect(fetchGitHubPR('https://github.com/team/repo/pull/42'))
       .rejects.toThrow('GitHub API error 429: {"message":"Too many requests"}');
   });
@@ -116,6 +125,29 @@ describe('GitHub PR REST fallback', () => {
       commits: [{ hash: 'abc123', message: 'Fix retries' }],
       diff: 'diff --git a/a b/a\n+fixed\n',
     });
+  });
+
+  it.each([0, 1, 50, 51, 100, 101, 250])('paginates %i commits without dropping or reordering them', async (count) => {
+    const commits = Array.from({ length: count }, (_, i) => ({
+      sha: `commit-${i + 1}`, commit: { message: `Change ${i + 1}\n\nDetails` },
+    }));
+    const seen = mockResponses(undefined, 200, '', undefined, commits);
+    const mr = await fetchGitHubPR('https://github.com/team/repo/pull/42', { discussions: false });
+    expect(mr.commits).toEqual(commits.map((c) => ({ hash: c.sha, message: c.commit.message.split('\n')[0] })));
+    expect(seen.filter((u) => u.includes('/commits?'))).toEqual(
+      Array.from({ length: Math.floor(count / 100) + 1 }, (_, i) => `${PR}/commits?per_page=100&page=${i + 1}`),
+    );
+  });
+
+  it.each([
+    [429, '{"message":"Too many requests"}', undefined, 'GitHub API error 429'],
+    [200, '{"message":"Not a commit list"}', undefined, 'GitHub API returned no list'],
+    [200, 'partial response', new Error('aborted'), 'aborted'],
+  ] as const)('rejects a failed later commit page (%i, %s) instead of returning partial history', async (status, body, error, message) => {
+    const commits = Array.from({ length: 100 }, (_, i) => ({ sha: `commit-${i}`, commit: { message: `Change ${i}` } }));
+    const seen = mockResponses(`${PR}/commits?per_page=100&page=2`, status, body, error, commits);
+    await expect(fetchGitHubPR('https://github.com/team/repo/pull/42', { discussions: false })).rejects.toThrow(message);
+    expect(seen.at(-1)).toBe(`${PR}/commits?per_page=100&page=2`);
   });
 });
 
