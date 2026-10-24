@@ -2,6 +2,7 @@
 
 import type { PinnedScorer } from '../scorers/pin.js';
 import type { ArchivedPass, SessionContinuation, StepState } from './step-state.js';
+import type { Requirements, Unenforced } from './requirements.js';
 import type { LeaseSession } from './workspace.js';
 
 /** The driver's lease ownership, independent of its per-request capabilities. */
@@ -75,9 +76,11 @@ export interface WorkflowStep {
    * Where the step runs. A command that omits it uses the active checkout and is read-only.
    * A prompt that omits it continues an enclosing `new` or `continue` copy, or stays read-only.
    */
-  workspace?: 'read-only' | 'new' | 'continue';
+  workspace?: typeof WORKSPACE_MODES[number];
   /** A session this step resumes. `continue` uses this step's previous pass. `from` names another step. */
   session?: { continue: true } | { from: string };
+  /** What the driver that runs this step, or every step of the workflow it runs, must provide. */
+  requires?: Requirements;
 }
 
 /** A `for_each`: the list of items, and how many of them may run at once. */
@@ -110,6 +113,9 @@ export interface StepLoop {
   maxIterations: number;
 }
 
+/** Where a step runs: in the checkout as it is, in a new copy, or in the copy an enclosing step opened. */
+export const WORKSPACE_MODES = ['read-only', 'new', 'continue'] as const;
+
 /** The keys that give a step its action, as YAML writes them, each with the definition field it fills. */
 export const STEP_ACTIONS = { command: 'command', prompt: 'prompt', prompt_file: 'promptFile', workflow: 'workflow' } as const satisfies Record<string, keyof WorkflowStep>;
 
@@ -137,6 +143,8 @@ export interface WorkflowDefaults {
   model?: string;
   /** Whether a step's scorers share one judge call when the step does not say. */
   scorers?: { batch: boolean };
+  /** Requirements as if written on every step of the file. */
+  requires?: Requirements;
 }
 
 /** `scorers: [a, b]`, or `scorers: { names: [a, b], batch: true }`. Each name is a file in `scorers/`. */
@@ -197,6 +205,8 @@ export interface StepLease {
   driver: DriverIdentity;
   /** The session the lease offers the step: the report may name it, or one it continued, as `resumed`. */
   session?: LeaseSession;
+  /** The best-effort requirements the driver could not enforce, decided when the lease was issued; a hand-back only adds. */
+  unenforced?: Unenforced[];
 }
 
 export interface WorkflowFailure {

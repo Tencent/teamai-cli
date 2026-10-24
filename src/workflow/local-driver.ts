@@ -41,8 +41,8 @@ import { isLaunchTool, localToolFamily, type LaunchTool } from '../tool-launch/t
 import { chooseStepModel } from './step-model.js';
 import type { StepRead } from './step-state.js';
 import type { DriverIdentity, StepHitl, WorkflowEnvelope, WorkflowFailure } from './types.js';
-import { isWorkflowError } from './types.js';
-import { WORKSPACE_MODES, type LeaseSession, type SessionRef, type WorkspaceContract } from './workspace.js';
+import { isWorkflowError, WORKSPACE_MODES } from './types.js';
+import type { LeaseSession, SessionRef, WorkspaceContract } from './workspace.js';
 import {
   applyBaseConfig, commitWork, ensureWorktree, fetchMissingCommits, git, headCommit, hooksPath, keptSentence, type KeptChanges, markReadCopy, mergeBranch, offBranch, pushIfOrigin, putBackCopy, reconcileCopy, recordConfigOverlay, removeWorktree, reopenConfigConflicts, restoreUneditedConfig, stepCheckout, unrestoredCopy, worktreePath,
 } from './worktree.js';
@@ -921,16 +921,19 @@ async function reconcileTakenCopies(config: LocalConfig, runId: string, active: 
   return undefined;
 }
 
-/** What this driver declares on every `next`. Every key is set, so a new capability does not compile until it is decided. */
-function localCan(hitl: boolean): Required<DriverCan> {
-  return { hitl, workspace: [...WORKSPACE_MODES] };
+/**
+ * What this driver declares on every `next`. Every key is set, so a new capability does not compile until it is decided.
+ * It cannot deny a step the network, and keeps it from the member's machine only on a host the member marks `sandbox`.
+ */
+function localCan(config: LocalConfig, hitl: boolean): Required<DriverCan> {
+  return { hitl, workspace: [...WORKSPACE_MODES], network: false, isolation: config.workflows?.sandbox ? 'sandbox' : 'none' };
 }
 
 async function driveRun(config: LocalConfig, runId: string, cwd: string, options: LocalDriverOptions): Promise<WorkflowEnvelope> {
   const unreconciled = await reconcileTakenCopies(config, runId, cwd);
   if (unreconciled) return { error: unreconciled };
   const canHitl = options.hitl ?? (process.stdin.isTTY === true && process.stderr.isTTY === true);
-  const can = localCan(canHitl);
+  const can = localCan(config, canHitl);
   const driver = localDriver(cwd);
   const tools = { ...config.workflows?.tools, ...options.tools };
   const adapter = options.adapter ?? createLocalToolAdapter();

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AgentObservationSchema, UsedSchema } from '../agent-observation.js';
 import { DriverSchema } from '../driver-identity.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
+import { UnenforcedSchema } from './requirements.js';
 import type { StepLease, WorkflowFailure } from './types.js';
 import type { WorkspaceMode } from './workspace.js';
 
@@ -23,6 +24,7 @@ const LeaseSessionSchema = SessionRefSchema.extend({ earlier: z.array(SessionRef
 
 const LeaseSchema: z.ZodType<StepLease> = z.object({
   attempt: z.string(), revision: z.number(), driver: DriverSchema, session: LeaseSessionSchema.optional(),
+  unenforced: z.array(UnenforcedSchema).optional(),
 });
 
 const ChangesSchema = z.object({
@@ -60,6 +62,8 @@ const report = {
   used: UsedSchema.optional().catch(undefined),
   /** The install whose `report` settled the attempt, so scoring knows which machine holds its session after a claim. */
   installId: z.string().optional(),
+  /** The best-effort requirements the attempt's driver could not enforce. */
+  unenforced: z.array(UnenforcedSchema).optional(),
 };
 
 export const OutcomeSchema = z.enum(['success', 'failed', 'skipped', 'cancelled']);

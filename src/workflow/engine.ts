@@ -25,7 +25,7 @@ import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, item
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspacePlan } from './workspace.js';
-import { CAN_KEYS, CanSchema, heldFor, negotiate, type DriverCan, type Held, type Negotiation } from './requirements.js';
+import { CAN_KEYS, CanSchema, heldFor, mergeRequirements, negotiate, unionUnenforced, type DriverCan, type Held, type Negotiation, type Requirements } from './requirements.js';
 import { generateRunId, installOwner, isRunId, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
 import { isLeaseRef } from '../scorers/entry.js';
@@ -239,7 +239,7 @@ function answerWithoutHitl(config: LocalConfig, run: RunState, now: string, auto
 }
 
 function leaseData(
-  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease, plan?: WorkspacePlan,
+  run: RunState, state: LeasedStep, definition: WorkflowStep, rendered: RenderedLease, requires: Requirements, plan?: WorkspacePlan,
 ): Record<string, unknown> {
   return { lease: {
     run: run.id,
@@ -258,6 +258,8 @@ function leaseData(
     ...(plan?.session ? { session: plan.session } : {}),
     ...(definition.interactive ? { interactive: true } : {}),
     ...(definition.workspace === 'read-only' ? { readOnly: true } : {}),
+    ...(Object.keys(requires).length > 0 ? { requires } : {}),
+    ...(state.lease.unenforced ? { unenforced: state.lease.unenforced } : {}),
   } };
 }
 
@@ -835,8 +837,10 @@ function missingNeeds(run: RunState): string | undefined {
 }
 
 /** What the driver asking for `step` is offered. Both places that hand out a lease ask here. */
-function offerTerms(step: WorkflowStep, can: DriverCan): Negotiation {
-  return negotiate({ interactive: step.interactive === true }, can);
+function offerTerms(scope: Scope, step: WorkflowStep, plan: WorkspacePlan | undefined, can: DriverCan): Negotiation {
+  return negotiate({
+    requires: mergeRequirements(scope.requires, step.requires), interactive: step.interactive === true, hasContract: plan?.contract !== undefined,
+  }, can);
 }
 
 /** What a driver tells `next` besides who it is. */
@@ -932,35 +936,40 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
             failed = true;
             break;
           }
-          const terms = offerTerms(definition, can);
+          const terms = offerTerms(located.scope, definition, plan, can);
           if (terms.kind === 'hold') {
             held.push(heldFor(state.id, terms.missing));
             continue;
           }
           if (plan.contract && options.base && !run.base) run.base = options.base;
-          const step = lease(state, offering({ attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver }, plan.session));
+          const { unenforced } = terms.terms;
+          const step = lease(state, offering({
+            attempt: `a${randomBytes(4).toString('hex')}`, revision: run.revision, driver, ...(unenforced.length > 0 ? { unenforced } : {}),
+          }, plan.session));
           rememberCopy(run, plan, driver);
-          return answer(leaseData(run, step, definition, rendered, plan));
+          return answer(leaseData(run, step, definition, rendered, terms.terms.requires, plan));
         }
         if (failed) continue;
         return answer({ wait: { reason: held.map((item) => item.reason).join('; '), held } });
       }
       const located = locateStep(run, leased.id);
       if (!located) return { save: false, envelope: error('run_unreadable', `Run ${run.id} has no definition for step "${leased.id}"`) };
-      // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping.
-      if (offerTerms(located.step, can).kind === 'hold') {
-        (run.cancelledAttempts ??= []).push(leased.attempt);
-        release(leased);
-        continue;
-      }
       const rendered = renderLease(located.scope, statesIn(run, located.scope), leased, located.step);
       if (!('code' in rendered)) {
         const plan = planWorkspace(run, located.scope, leased, located.step, {
           driver, modes: can.workspace, base: run.base ?? options.base,
         }, true);
         const offered = plan.fail ? undefined : plan;
-        leased.lease = offering(leased.lease, offered?.session);
-        return answer(leaseData(run, leased, located.step, rendered, offered));
+        const terms = offerTerms(located.scope, located.step, offered, can);
+        // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping.
+        if (terms.kind === 'hold') {
+          (run.cancelledAttempts ??= []).push(leased.attempt);
+          release(leased);
+          continue;
+        }
+        const unenforced = unionUnenforced(leased.lease.unenforced ?? [], terms.terms.unenforced);
+        leased.lease = offering({ ...leased.lease, ...(unenforced.length > 0 ? { unenforced } : {}) }, offered?.session);
+        return answer(leaseData(run, leased, located.step, rendered, terms.terms.requires, offered));
       }
       failStep(leased, rendered, leased.lease.revision);
     }
@@ -1333,6 +1342,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       ...(report.read ? { read: report.read } : {}),
       agent: settleObservation(report, defined?.agent),
       ...(report.used ? { used: report.used } : {}),
+      ...(step.lease.unenforced ? { unenforced: step.lease.unenforced } : {}),
       installId: install.id,
     };
     if (outcome !== 'released') continueSession(run, report);
@@ -1352,7 +1362,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       envelope: ok({
         accepted: true,
         revision: run.revision,
-        step: { id: settledStep.id, status: settledStep.status, outcome },
+        step: { id: settledStep.id, status: settledStep.status, outcome, ...(settlement.unenforced ? { unenforced: settlement.unenforced } : {}) },
         ...(cleanup ? { cleanup: true } : {}),
       }),
     };

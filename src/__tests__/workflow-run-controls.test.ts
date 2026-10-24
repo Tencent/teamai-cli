@@ -488,6 +488,17 @@ describe('run control recovery invariants', () => {
     expect(data(await f.next()).lease).toMatchObject({ step: 'pair', interactive: true });
   });
 
+  it('adds what a handed-back lease can no longer enforce to what it recorded, and settles the step with both', async () => {
+    const f = await fixture('  - id: fetch\n    command: echo fetch\n    requires: { network: false, isolation: sandbox }');
+    const lease = data(await leaseNext(f.config, f.id, driver, { can: { isolation: 'sandbox' } })).lease;
+    expect(lease).toMatchObject({ unenforced: [{ requirement: 'network', asked: false }] });
+    const again = await leaseNext(f.config, f.id, driver, { can: { network: true } });
+    const both = [{ requirement: 'network', asked: false }, { requirement: 'isolation', asked: 'sandbox', provided: 'none' }];
+    expect(again).toMatchObject({ data: { lease: { attempt: lease.attempt, unenforced: both } } });
+    expect(await f.report(lease)).toMatchObject({ data: { step: { id: 'fetch', unenforced: both } } });
+    expect((await f.state()).steps[0]).toMatchObject({ status: 'succeeded', unenforced: both });
+  });
+
   it('lists only the steps changed by cancellation before reconciliation', async () => {
     const f = await fixture('  - id: work\n    command: echo work\n  - id: dependent\n    needs: [work]\n    command: echo later\n  - id: recover\n    needs: [work]\n    if: steps.work.outcome == \'cancelled\'\n    end: recovered', 'ends: { recovered: succeeded }\n');
     await f.next();

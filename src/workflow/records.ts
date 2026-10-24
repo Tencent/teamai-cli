@@ -26,6 +26,7 @@ import { snapshotPath } from './snapshot.js';
 import { installOwner, runLockPath } from './store.js';
 import { settled, VISIBLE_OUTCOMES, type StepPass, type StepState, type VisibleOutcome } from './step-state.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
+import type { Unenforced } from './requirements.js';
 import type { DriverIdentity, RunState, RunStatus, WorkflowFailure } from './types.js';
 
 /**
@@ -88,6 +89,8 @@ export type WorkflowRunRecord = {
     tokens?: TokenUsage;
     /** Answer provenance only; free-text notes and answer times stay local. */
     answer?: Pick<NonNullable<StepPass['answer']>, 'choice' | 'channel' | 'agent'>;
+    /** The best-effort requirements the pass's driver could not enforce. */
+    unenforced?: Unenforced[];
   }>;
   /**
    * Counts of the step instances the run ended with, by status. A step a loop
@@ -106,7 +109,7 @@ export type CurrentWorkflowRunRecord = WorkflowRunRecord & { sourceHash: string 
 type StepEntry = NonNullable<WorkflowRunRecord['steps']>[number];
 
 /** What one pass of a step reported. */
-type Reported = Pick<StepPass, 'outcome' | 'tool' | 'model' | 'tokens' | 'agent' | 'answer'>;
+type Reported = Pick<StepPass, 'outcome' | 'tool' | 'model' | 'tokens' | 'agent' | 'answer' | 'unenforced'>;
 
 /** The directory on the reports branch that holds every run record. */
 export const RECORDS_DIR = 'workflows/runs';
@@ -197,6 +200,7 @@ export function buildEndRecord(
       ...(reported?.model && isNameShaped(reported.model) ? { model: reported.model } : {}),
       ...(outcome ? { outcome } : {}),
       ...(reported?.tokens ? { tokens: reported.tokens } : {}),
+      ...(reported?.unenforced ? { unenforced: reported.unenforced } : {}),
     };
   };
   // A loop keeps a step's earlier passes in `passes`, and the passes of the

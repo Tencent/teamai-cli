@@ -17,10 +17,11 @@ import {
 import { parseHitl } from './parse-hitl.js';
 import { loopProblems } from './loop.js';
 import { modelValueProblem } from '../models/aliases.js';
+import { REQUIREMENT_KEYS, RequirementsSchema, type Requirements } from './requirements.js';
 
 const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'steps']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
@@ -385,6 +386,8 @@ function parseBody(
       if (scorersPair && commandPair) {
         diagnostics.push(locate(file, lineCounter, scorersPair.key ?? item, `${field}.scorers`, 'scorers is only allowed on a prompt, prompt_file, or workflow step'));
       }
+      const requiresPair = item.items.find((pair) => scalarString(pair.key) === 'requires');
+      const requires = requiresPair ? parseRequires(requiresPair.value ?? requiresPair.key, `${field}.requires`, ctx) : undefined;
       const envPair = item.items.find((pair) => scalarString(pair.key) === 'env');
       const env = envPair ? parseEnv(envPair.value ?? envPair.key, `${field}.env`, label, ctx) : undefined;
       const withPair = item.items.find((pair) => scalarString(pair.key) === 'with');
@@ -538,6 +541,7 @@ function parseBody(
           ...(agent ? { agent } : {}),
           ...(model !== undefined ? { model } : {}),
           ...(scorers ? { scorers } : {}),
+          ...(requires ? { requires } : {}),
           ...(output ? { output } : {}),
           ...(end ? { end } : {}),
           ...(loop ? { loop } : {}),
@@ -794,15 +798,17 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
   }
   let model: string | undefined;
   let scorers: { batch: boolean } | undefined;
+  let requires: Requirements | undefined;
   for (const pair of node.items) {
     const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
     const key = scalarString(keyNode);
     if (key === 'model') model = parseModel(valueNode(node, 'model'), 'defaults.model', ctx);
     else if (key === 'scorers') scorers = parseDefaultScorers(valueNode(node, 'scorers'), ctx);
+    else if (key === 'requires') requires = parseRequires(valueNode(node, 'requires'), 'defaults.requires', ctx);
     else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.${key ?? 'key'}`, key ?? 'key'));
   }
-  if (model === undefined && scorers === undefined) return undefined;
-  return { ...(model !== undefined ? { model } : {}), ...(scorers ? { scorers } : {}) };
+  if (model === undefined && scorers === undefined && requires === undefined) return undefined;
+  return { ...(model !== undefined ? { model } : {}), ...(scorers ? { scorers } : {}), ...(requires ? { requires } : {}) };
 }
 
 function parseBatch(node: Node | undefined, field: string, ctx: ParseContext): boolean | undefined {
@@ -859,6 +865,33 @@ function parseScorers(node: Node | null | undefined, field: string, ctx: ParseCo
     }
   }
   return { names, ...(batch !== undefined ? { batch } : {}) };
+}
+
+/**
+ * `requires` maps requirement names to values. A name this version does not know is `unknown_key`, so an older CLI
+ * drops the workflow rather than run it without the requirement.
+ */
+function parseRequires(node: Node | null | undefined, field: string, ctx: ParseContext): Requirements | undefined {
+  const { file, lineCounter, diagnostics } = ctx;
+  if (!isMap(node)) {
+    diagnostics.push(locate(file, lineCounter, node, field, `${field} must map ${[...REQUIREMENT_KEYS].join(', ')} to values`));
+    return undefined;
+  }
+  const before = diagnostics.length;
+  for (const pair of node.items) {
+    const keyNode = isYamlNode(pair.key) ? pair.key : undefined;
+    const key = scalarString(keyNode);
+    if (key === undefined || !REQUIREMENT_KEYS.has(key)) diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `${field}.${key ?? 'key'}`, key ?? 'key'));
+  }
+  const parsed = RequirementsSchema.safeParse(node.toJSON());
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      const [key] = issue.path;
+      const at = typeof key === 'string' ? valueNode(node, key) ?? node : node;
+      diagnostics.push(locate(file, lineCounter, at, [field, ...issue.path].join('.'), `${[field, ...issue.path].join('.')}: ${issue.message}`));
+    }
+  }
+  return parsed.success && diagnostics.length === before ? parsed.data : undefined;
 }
 
 /** `env` maps variable names to text. A YAML number or boolean is read as its text. */

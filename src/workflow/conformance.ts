@@ -21,6 +21,8 @@ export interface ConformanceScenario {
   operations: ConformanceOperation[];
   /** Expected fields in the persisted run after all operations. */
   expectState?: Record<string, unknown>;
+  /** Expected fields in the run's queued end record after all operations. */
+  expectRecord?: Record<string, unknown>;
 }
 
 /**
@@ -74,10 +76,11 @@ export type ConformanceExpect = (actual: unknown, message?: string) => {
   not: { toHaveProperty(property: string): void };
 };
 
-/** What a runner provides: its client, how it reads the run file, and how it moves the clock. */
+/** What a runner provides: its client, how it reads the run file and the queued end record, and how it moves the clock. */
 export interface ConformanceRunner {
   client: WorkflowClient;
   readRun(runId: string): Promise<RunState>;
+  readEndRecord(runId: string): Promise<unknown>;
   advance(ms: number): Promise<void>;
   expect: ConformanceExpect;
 }
@@ -148,6 +151,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
     }
   }
   if (scenario.expectState) expect(await runner.readRun(runId)).toMatchObject(scenario.expectState);
+  if (scenario.expectRecord) expect(await runner.readEndRecord(runId)).toMatchObject(scenario.expectRecord);
 }
 
 const TWO_STEPS = `schemaVersion: v1alpha1
@@ -827,6 +831,53 @@ workflowConformanceScenarios.push(
   },
 );
 
+
+const NO_NETWORK = controlsYaml('  - id: fetch\n    command: echo fetch\n    requires: { network: false }');
+workflowConformanceScenarios.push(
+  {
+    name: 'a driver that cannot deny the network still gets the step, and the run records network as unenforced', workflowName: 'build', yaml: NO_NETWORK,
+    operations: [
+      { kind: 'next', saveAs: 'fetch', as: 'external', expect: { data: { lease: {
+        step: 'fetch', requires: { network: false }, unenforced: [{ requirement: 'network', asked: false }],
+      } } } },
+      { kind: 'report', lease: 'fetch', as: 'external', body: { outcome: 'success' }, expect: { data: { accepted: true, step: {
+        id: 'fetch', status: 'succeeded', unenforced: [{ requirement: 'network', asked: false }],
+      } } } },
+      { kind: 'next', saveAs: 'done', as: 'external', expect: { data: { done: { outcome: 'succeeded' } } } },
+    ],
+    expectState: { steps: [{ id: 'fetch', status: 'succeeded', unenforced: [{ requirement: 'network', asked: false }] }] },
+    expectRecord: { steps: [{ step: 'fetch', outcome: 'success', unenforced: [{ requirement: 'network', asked: false }] }] },
+  },
+  {
+    name: 'defaults.requires applies to every step, and a step adds to it', workflowName: 'build',
+    yaml: NO_NETWORK.replace('steps:\n', 'defaults:\n  requires: { isolation: sandbox }\nsteps:\n')
+      .replace('requires: { network: false }', 'requires: { network: false }\n  - id: open\n    needs: []\n    command: echo open\n    requires: { network: true, isolation: worktree }'),
+    operations: [
+      { kind: 'next', saveAs: 'fetch', as: 'external', expect: { data: { lease: {
+        step: 'fetch', requires: { network: false, isolation: 'sandbox' },
+        unenforced: [{ requirement: 'network', asked: false }, { requirement: 'isolation', asked: 'sandbox', provided: 'none' }],
+      } } } },
+      { kind: 'next', saveAs: 'open', as: 'external', running: ['fetch'], expect: { data: { lease: {
+        step: 'open', requires: { network: true, isolation: 'worktree' }, unenforced: [{ requirement: 'isolation', asked: 'worktree', provided: 'none' }],
+      } } } },
+    ],
+  },
+  {
+    name: 'a hand-back keeps what the lease left unenforced', workflowName: 'build',
+    yaml: controlsYaml('  - id: fetch\n    command: echo fetch\n    requires: { network: false, isolation: sandbox }'),
+    operations: [
+      { kind: 'next', saveAs: 'fetch', as: 'external', expect: { data: { lease: {
+        unenforced: [{ requirement: 'network', asked: false }, { requirement: 'isolation', asked: 'sandbox', provided: 'none' }],
+      } } } },
+      { kind: 'next', saveAs: 'again', as: 'external', expect: { data: { lease: {
+        unenforced: [{ requirement: 'network', asked: false }, { requirement: 'isolation', asked: 'sandbox', provided: 'none' }],
+      } } } },
+    ],
+    expectState: { steps: [{ id: 'fetch', status: 'leased', lease: {
+      unenforced: [{ requirement: 'network', asked: false }, { requirement: 'isolation', asked: 'sandbox', provided: 'none' }],
+    } }] },
+  },
+);
 
 workflowConformanceScenarios.push({
   name: 'a driver UI answers a required HITL request',

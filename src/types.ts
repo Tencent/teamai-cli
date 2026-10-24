@@ -883,6 +883,8 @@ export const LocalConfigSchema = z.object({
     max_parallel: z.number().int().positive().optional(),
     /** Whether a driver without HITL automatically answers optional approve requests and uses choose defaults. Unset means false. */
     auto_approve: z.boolean().optional(),
+    /** This host contains what it runs, such as a CI VM or a container, so the local driver declares `sandbox` isolation. */
+    sandbox: z.boolean().optional(),
   }).optional(),
   /**
    * Per-machine map from a gateway/proxy model alias to a known Claude model

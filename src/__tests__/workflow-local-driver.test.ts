@@ -1900,6 +1900,23 @@ steps:
     expect(await runLocalDriver(config, absent, workspace)).toMatchObject({ error: { code: 'run_not_found' } });
     expect(fs.existsSync(driverLockPath(config, absent))).toBe(false);
   });
+
+  it.each([
+    [false, [{ requirement: 'network', asked: false }, { requirement: 'isolation', asked: 'sandbox', provided: 'none' }]],
+    [true, [{ requirement: 'network', asked: false }]],
+  ])('records what it cannot enforce, and isolates to sandbox only on a host marked sandbox (%s)', async (sandbox, unenforced) => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Run contained.
+steps:
+  - id: work
+    command: echo work
+    requires: { network: false, isolation: sandbox }
+`);
+    config.workflows = { tools: {}, sandbox };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(await readRun(config, runId)).toMatchObject({ steps: [{ id: 'work', status: 'succeeded', unenforced }] });
+  });
 });
 
 

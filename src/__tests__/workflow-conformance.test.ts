@@ -7,6 +7,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { runConformanceScenario, workflowConformanceScenarios, type WorkflowClient } from '../workflow/conformance.js';
 import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, startRun, withIgnored } from '../workflow/engine.js';
 import { cancelRun, respondToHitl, retryStep } from '../workflow/run-controls.js';
+import { pendingRecords } from '../workflow/records.js';
 import { readRun } from '../workflow/store.js';
 
 const dirs: string[] = [];
@@ -67,6 +68,7 @@ describe('workflow protocol conformance in process', () => {
           if (typeof stored !== 'object') throw new Error('run was not stored');
           return stored;
         },
+        readEndRecord: async (runId) => (await pendingRecords(config)).find((record) => record.run === runId && record.phase === 'end'),
         // Only Date is faked, so the run lock's retry timers still run.
         advance: async (ms) => {
           vi.useFakeTimers({ toFake: ['Date'] });

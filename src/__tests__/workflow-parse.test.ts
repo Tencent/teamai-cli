@@ -947,14 +947,14 @@ name: build
 description: Build it.
 defaults:
   model: fast
-  requires: [git]
+  retries: 2
 steps:
   - id: plan
     prompt: Plan it.
 `);
     expect(unknown.ok).toBe(false);
     if (unknown.ok) return;
-    expect(unknown.diagnostics).toEqual([expect.objectContaining({ field: 'defaults.requires', line: 6, code: 'unknown_key' })]);
+    expect(unknown.diagnostics).toEqual([expect.objectContaining({ field: 'defaults.retries', line: 6, code: 'unknown_key' })]);
 
     const scalar = parse(`schemaVersion: v1alpha1
 name: build
@@ -967,6 +967,50 @@ steps:
     expect(scalar.ok).toBe(false);
     if (scalar.ok) return;
     expect(scalar.diagnostics.map(formatDiagnostic)).toEqual(['workflows/build.yaml:4: field "defaults": defaults must be a mapping']);
+  });
+
+  it('parses requires on a step and in defaults', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  requires: { network: false }
+steps:
+  - id: plan
+    prompt: Plan it.
+    requires: { network: true, isolation: sandbox }
+`);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.definition.defaults).toEqual({ requires: { network: false } });
+    expect(result.definition.steps[0]?.requires).toEqual({ network: true, isolation: 'sandbox' });
+  });
+
+  it('reports a requires key this version does not know as unknown_key, a value of the wrong type, and requires on a step with no action', () => {
+    const result = parse(`schemaVersion: v1alpha1
+name: build
+description: Build it.
+defaults:
+  requires: [network]
+steps:
+  - id: plan
+    prompt: Plan it.
+    requires: { network: maybe, isolation: vm, gpu: true }
+  - id: done
+    needs: [plan]
+    end: shipped
+    requires: { network: true }
+ends: { shipped: succeeded }
+`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual(expect.arrayContaining([
+      'workflows/build.yaml:5: field "defaults.requires": defaults.requires must map network, isolation to values',
+      'workflows/build.yaml:9: field "steps[0].requires.network": steps[0].requires.network: Expected boolean, received string',
+      expect.stringContaining('field "steps[0].requires.isolation": steps[0].requires.isolation: Invalid enum value'),
+      expect.stringContaining('field "steps[1].requires": step "done" has no action'),
+    ]));
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({ field: 'steps[0].requires.gpu', code: 'unknown_key' }));
   });
 
   it('reports defaults on an inline workflow, which carries none', () => {

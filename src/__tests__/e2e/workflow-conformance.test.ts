@@ -79,6 +79,10 @@ describe('workflow protocol conformance through the CLI', () => {
           const dataHome = await resolveProjectDataHome(repo);
           return JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'runs', `${runId}.json`), 'utf8')) as RunState;
         },
+        readEndRecord: async (runId) => {
+          const dataHome = await resolveProjectDataHome(repo);
+          return JSON.parse(fs.readFileSync(path.join(dataHome, 'workflows', 'pending', `${runId}.end.json`), 'utf8')) as unknown;
+        },
         // Each CLI call reads the system clock, so the runner waits for real.
         advance: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
         expect,

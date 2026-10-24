@@ -6,9 +6,8 @@ import { itemsAfter, itemsOf } from './fan-out.js';
 import { localId, statesIn, stepDefinitions, type Scope } from './scope.js';
 import { parseStepPath } from './step-path.js';
 import { passOf, type StepState } from './step-state.js';
-import type { DriverIdentity, RunState, WorkflowFailure, WorkflowStep } from './types.js';
+import type { DriverIdentity, RunState, WorkflowFailure, WorkflowStep, WORKSPACE_MODES } from './types.js';
 
-export const WORKSPACE_MODES = ['read-only', 'new', 'continue'] as const;
 export type WorkspaceMode = typeof WORKSPACE_MODES[number];
 
 /** What a driver reports for a step that ran in a change branch. */
