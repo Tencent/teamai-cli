@@ -289,9 +289,11 @@ export interface RunState {
   checkout?: string;
   /**
    * Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. A copy a
-   * claim brought from another machine has no owner until a driver leases it.
+   * claim brought from another machine has no owner until a driver leases it. `used` is set once a step ran in the copy:
+   * a report on a lease of it was accepted, neither `released` nor a setup failure. Only a lease on an unused copy
+   * carries setup, and only an unused copy's owner gives it up when it hands its lease back. Local run state only.
    */
-  copies?: Record<string, { owner?: DriverIdentity; commit?: string }>;
+  copies?: Record<string, { owner?: DriverIdentity; commit?: string; used?: true }>;
   /**
    * Sessions a step resumed and continued under another id, in report order: a copy on another machine or in another
    * tool. `to` holds the turns of `from` and the ones that step added, so a step that would resume `from` resumes `to`.

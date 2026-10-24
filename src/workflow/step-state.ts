@@ -279,11 +279,11 @@ export function release(state: LeasedStep | HandedLease): PendingStep {
 export type UnleasedStep = Exclude<StepState, { status: 'leased' }>;
 
 /**
- * A step another driver takes over, which runs in workspace `mode`: one of a run this machine takes, or a lease its
- * driver gave up. A lease is released; one that opened a copy of its own moves to its next pass, so it gets a new branch
- * rather than the one the earlier driver owns and may have pushed part of its work to. Every other step stays as it was.
+ * A step of a run this machine takes over, which runs in workspace `mode`. A lease another machine held is released; one
+ * that opened a copy of its own moves to its next pass, so it gets a new branch rather than the one that machine may have
+ * pushed part of its work to. Every other step stays as it was.
  */
-export function takeOver(step: StepCheckpoint | LeasedStep, mode: WorkspaceMode | undefined): UnleasedStep {
+export function takeOver(step: StepCheckpoint, mode: WorkspaceMode | undefined): UnleasedStep {
   switch (step.status) {
     case 'leased':
       return mode === 'new' ? repend(release(step)) : release(step);

@@ -18,7 +18,7 @@ import {
 } from './template.js';
 import { parseStepPath } from './step-path.js';
 import {
-  ReadSchema, answerHitl, fail, lease, release, settled, skip, start, stopWhere, stopped, succeed, takeOver, waitForAnswer,
+  ReadSchema, answerHitl, fail, lease, release, settled, skip, start, stopWhere, stopped, succeed, waitForAnswer,
   type ItemResult, type LeasedStep, type StepRead, type StepState,
 } from './step-state.js';
 import { budgetSpent, expire, leaseDeadline, ownDeadline, startLimits } from './limits.js';
@@ -884,13 +884,12 @@ interface OfferContext {
 
 /**
  * What the driver asking for step instance `id` is offered. Both places that hand out a lease ask here. Setup comes with
- * a lease that may create its workspace: one on a branch no driver holds yet, or a handed-back one, whose driver may not
- * have created it.
+ * a lease on a copy no step has run in yet, whose driver may still have to create it.
  */
 function offerTerms(
-  run: RunState, id: string, { scope, step }: { scope: Scope; step: WorkflowStep }, plan: WorkspacePlan | undefined, context: OfferContext, handback = false,
+  run: RunState, id: string, { scope, step }: { scope: Scope; step: WorkflowStep }, plan: WorkspacePlan | undefined, context: OfferContext,
 ): Negotiation {
-  const creates = plan?.contract !== undefined && (handback || run.copies?.[plan.contract.branch]?.owner === undefined);
+  const creates = plan?.contract !== undefined && run.copies?.[plan.contract.branch]?.used !== true;
   return negotiate({
     step: id,
     requires: mergeRequirements(scope.requires, step.requires),
@@ -1038,12 +1037,14 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           driver, modes: can.workspace, base: run.base ?? options.base,
         }, true);
         const offered = plan.fail ? undefined : plan;
-        const terms = offerTerms(run, leased.id, located, offered, context, true);
-        // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping,
-        // in a copy no other driver is kept from.
+        const terms = offerTerms(run, leased.id, located, offered, context);
+        // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping.
+        // No step has run in an unused copy, so the driver gives up the copy too, and another driver may take the step.
         if (terms.kind === 'hold') {
           (run.cancelledAttempts ??= []).push(leased.attempt);
-          takeOver(leased, offered?.contract?.mode);
+          release(leased);
+          const copy = offered?.contract && run.copies?.[offered.contract.branch];
+          if (copy && !copy.used) delete copy.owner;
           continue;
         }
         if (terms.kind === 'fail') {
@@ -1468,6 +1469,9 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
       copy.owner ??= report.driver;
       copy.commit = report.changes.to;
       run.copies[report.changes.branch] = copy;
+    }
+    if (contract && outcome !== 'released' && !failure?.code.startsWith('setup_')) {
+      ((run.copies ??= {})[contract.branch] ??= { owner: report.driver }).used = true;
     }
     const settledStep = outcome === 'released' ? release(step)
       : outcome === 'success' ? succeed(step, { ...settlement, ...(report.outputs !== undefined ? { outputs: report.outputs } : {}) })

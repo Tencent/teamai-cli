@@ -12,7 +12,7 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { outputMismatch } from '../workflow/output.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
-import { cancelRun } from '../workflow/run-controls.js';
+import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
@@ -2628,7 +2628,7 @@ describe('held-back steps', () => {
     } });
   });
 
-  it('gives a new copy a driver handed back for a capability it lost to another driver, on a branch of its own', async () => {
+  it('lets another driver take a new copy a driver handed back unused for a capability it lost', async () => {
     vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
     const { config, runId } = await startBuild(graph(`  - id: a
     workspace: new
@@ -2641,7 +2641,7 @@ describe('held-back steps', () => {
       data: { wait: { held: [{ step: 'a', missing: ['env'] }] } },
     });
     const taken = await leaseNext(config, runId, driverB, { can: { workspace: [...allModes], env: true }, base });
-    expect(taken).toMatchObject({ data: { lease: { step: 'a', pass: 2 } } });
+    expect(taken).toMatchObject({ data: { lease: { step: 'a', workspace: { branch: expect.stringMatching(/a/) } } } });
   });
 
   it('asks for setup only on a lease that opens its workspace, not on one that continues a copy another lease opened', async () => {
@@ -2669,6 +2669,95 @@ describe('held-back steps', () => {
     const c = await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes] }, base });
     expect(c).toMatchObject({ data: { lease: { step: 'box.b.c' } } });
     expect(c).not.toHaveProperty('data.lease.setup');
+  });
+
+  it('keeps setup on the lease that replaces a released one, since no report has used the copy yet', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: a
+    workspace: new
+    command: node a.js
+`, 'setup:\n  command: npm ci\n'));
+    const can = { workspace: [...allModes], setup: true };
+    const first = await leaseNext(config, runId, driverA, { can, base });
+    expect(first).toMatchObject({ data: { lease: { step: 'a', setup: { command: 'npm ci' } } } });
+    await reportAttempt(config, runId, { ...leaseIn(first), outcome: 'released', driver: driverA });
+
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'a', missing: ['setup'] }] } },
+    });
+    expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({
+      data: { lease: { step: 'a', setup: { command: 'npm ci' } } },
+    });
+  });
+
+  it('keeps a copy a step ran in with its owner when the owner hands back a later step it can no longer run', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          command: node a.js
+        - id: b
+          needs: [a]
+          workspace: continue
+          requires: { env: [DEPLOY_TOKEN] }
+          command: node b.js
+`));
+    const can = { workspace: [...allModes], env: true };
+    const a = leaseIn(await leaseNext(config, runId, driverA, { can, base }));
+    await reportAttempt(config, runId, { ...a, outcome: 'success', driver: driverA });
+    expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({ data: { lease: { step: 'box.b' } } });
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'box.b', missing: ['env'] }] } },
+    });
+
+    expect(await leaseNext(config, runId, driverB, { can, base })).toMatchObject({
+      data: { wait: { reason: 'step "box.b" continues a workspace owned by another driver' } },
+    });
+  });
+
+  it('carries setup again when a step is retried after its setup failed, since no step ran in the copy', async () => {
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          command: node a.js
+`, 'setup:\n  command: npm ci\n'));
+    const can = { workspace: [...allModes], setup: true };
+    const a = leaseIn(await leaseNext(config, runId, driverA, { can, base }));
+    await reportAttempt(config, runId, {
+      ...a, outcome: 'failed', driver: driverA, failure: { code: 'setup_failed', message: 'Setup "npm ci" exited with code 1, so the step did not run.' },
+    });
+    expect(await retryStep(config, runId, 'box.a')).toMatchObject({ data: {} });
+
+    expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({
+      data: { lease: { step: 'box.a', setup: { command: 'npm ci' } } },
+    });
+  });
+
+  it('lets another driver take the first step of an enclosing copy a driver handed back unused for a capability it lost', async () => {
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-value');
+    const { config, runId } = await startBuild(graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: work
+          workspace: continue
+          requires: { env: [DEPLOY_TOKEN] }
+          command: node work.js
+`));
+    const first = await leaseNext(config, runId, driverA, { can: { workspace: [...allModes], env: true }, base });
+    expect(first).toMatchObject({ data: { lease: { step: 'box.work' } } });
+    expect(await leaseNext(config, runId, driverA, { can: { workspace: [...allModes] }, base })).toMatchObject({
+      data: { wait: { held: [{ step: 'box.work', missing: ['env'] }] } },
+    });
+
+    expect(await leaseNext(config, runId, driverB, { can: { workspace: [...allModes], env: true }, base })).toMatchObject({
+      data: { lease: { step: 'box.work' } },
+    });
   });
 
   it('waits when every ready step is held back, and names each one in order', async () => {

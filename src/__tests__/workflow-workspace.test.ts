@@ -2760,7 +2760,7 @@ steps:
     const run = await readRun(config, runId);
     if (typeof run !== 'object') throw new Error('run missing');
     expect(run.steps.find((step) => step.id === 'change.test')).toMatchObject({ read });
-    expect(run.copies?.[branch]).toEqual({ owner, commit: commit('c') });
+    expect(run.copies?.[branch]).toEqual({ owner, commit: commit('c'), used: true });
   });
 
   it('keeps the copy when a writer reports while its reader is pending, and refuses read for a writable lease', async () => {
