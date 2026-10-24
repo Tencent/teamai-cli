@@ -173,7 +173,9 @@ const SucceededSchema = StepBaseSchema.extend({
 });
 const FailedSchema = StepBaseSchema.extend({ status: z.literal('failed'), outcome: z.literal('failed').default('failed'), ...settledFields, failure: FailureSchema.optional() });
 const SkippedSchema = StepBaseSchema.extend({ status: z.literal('skipped'), settledAt: z.number().int().default(0) });
-const CancelledSchema = StepBaseSchema.extend({ status: z.literal('cancelled'), settledAt: z.number().int().default(0), attempt: z.string().optional(), failure: FailureSchema });
+const CancelledSchema = StepBaseSchema.extend({
+  status: z.literal('cancelled'), settledAt: z.number().int().default(0), attempt: z.string().optional(), failure: FailureSchema, unenforced: report.unenforced,
+});
 
 export const StepStateSchema = z.discriminatedUnion('status', [
   PendingSchema,
@@ -318,16 +320,20 @@ export function fail(state: StepState, settlement: Settlement<FailedStep>): Fail
   return become<FailedStep>(state, { status: 'failed', outcome: 'failed', ...settlement });
 }
 
-/** A leased or running step whose deadline passed fails with `timeout`. A leased one keeps its invalidated attempt. */
-export function timeOut(state: LeasedStep | RunningStep, failure: WorkflowFailure & { code: 'timeout' }, settledAt: number): FailedStep {
-  return become<FailedStep>(state, {
-    status: 'failed', outcome: 'failed', settledAt, ...(state.status === 'leased' ? { attempt: state.attempt } : {}), message: failure.message, failure,
-  });
+/** What a lease the engine stops leaves on its step: the invalidated attempt, and what the lease did not enforce. */
+function stoppedLease(state: StepState): { attempt?: string; unenforced?: StepLease['unenforced'] } {
+  if (state.status !== 'leased') return {};
+  return { attempt: state.attempt, ...(state.lease.unenforced ? { unenforced: state.lease.unenforced } : {}) };
 }
 
-/** An open step is cancelled before it settles. A leased one keeps its invalidated attempt. */
+/** A leased or running step whose deadline passed fails with `timeout`. */
+export function timeOut(state: LeasedStep | RunningStep, failure: WorkflowFailure & { code: 'timeout' }, settledAt: number): FailedStep {
+  return become<FailedStep>(state, { status: 'failed', outcome: 'failed', settledAt, ...stoppedLease(state), message: failure.message, failure });
+}
+
+/** An open step is cancelled before it settles. */
 export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running'>, failure: WorkflowFailure, settledAt: number): CancelledStep {
-  return become<CancelledStep>(state, { status: 'cancelled', settledAt, ...(state.status === 'leased' ? { attempt: state.attempt } : {}), failure });
+  return become<CancelledStep>(state, { status: 'cancelled', settledAt, ...stoppedLease(state), failure });
 }
 
 /** The current pass of a settled step, as `passes` keeps it once a loop runs the step again; undefined while it has not settled. */

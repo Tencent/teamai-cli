@@ -12,6 +12,7 @@ import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { getCurrentVersion } from '../package-info.js';
 import { outputMismatch } from '../workflow/output.js';
 import { pendingRecords, type WorkflowRunRecord } from '../workflow/records.js';
+import { cancelRun } from '../workflow/run-controls.js';
 import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
@@ -4509,6 +4510,35 @@ describe('deadlines', () => {
         { id: 'batch', status: 'running', expiresAt: at(50) },
         { id: 'batch[0]', status: 'running' },
         { id: 'batch[0].work', status: 'leased', lease: { expiresAt: at(65) } },
+      ] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps what a lease did not enforce on the step its timeout or a cancel stopped', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(at(0)));
+      const { config, runId } = await startBuild(graph(`  - id: slow
+    timeout: 10m
+    requires: { network: false }
+    command: echo slow
+  - id: other
+    needs: []
+    requires: { network: false }
+    command: echo other
+`));
+      const slow = leaseIn(await leaseNext(config, runId, driverA));
+      const other = leaseIn(await leaseNext(config, runId, driverA, { running: [slow.attempt] }));
+      expect(other.step).toBe('other');
+      vi.setSystemTime(new Date(at(15)));
+      expect(await leaseNext(config, runId, driverA, { running: [slow.attempt, other.attempt] })).toMatchObject({ data: { cancelled: [slow.attempt] } });
+      await cancelRun(config, runId);
+      const unenforced = [{ requirement: 'network', asked: false }];
+      expect(await readRun(config, runId)).toMatchObject({ steps: [
+        { id: 'slow', status: 'failed', failure: { code: 'timeout' }, unenforced },
+        { id: 'other', status: 'cancelled', unenforced },
       ] });
     } finally {
       vi.useRealTimers();
