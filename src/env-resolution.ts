@@ -401,9 +401,13 @@ export function variablesKeptWarning(reason: string): string {
   return `${reason} Team env variables keep the values the last pull wrote until it is fixed.`;
 }
 
-/** The team env a workflow step can be given here: the declared keys, each value, and why it cannot be read when it cannot. */
+/**
+ * The team env a workflow step can be given here: the declared keys, the secrets among them, each value, and why it
+ * cannot be read when it cannot.
+ */
 export interface WorkflowEnvValues {
   readonly declared: ReadonlySet<string>;
+  readonly secrets: ReadonlySet<string>;
   readonly values: ReadonlyMap<string, string>;
   readonly unreadable?: string;
 }
@@ -414,7 +418,7 @@ export interface WorkflowEnvValues {
  */
 export async function workflowEnvValues(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<WorkflowEnvValues> {
   const fromEnvironment = (): Map<string, string> => new Map(Object.entries(env).flatMap(([key, value]) => (value ? [[key, value]] : [])));
-  if (!resolvesTeamEnv(localConfig)) return { declared: new Set(), values: fromEnvironment() };
+  if (!resolvesTeamEnv(localConfig)) return { declared: new Set(), secrets: new Set(), values: fromEnvironment() };
   const teamEnv = await resolveTeamEnv(localConfig, undefined, env);
   const applied = appliedTeamEnv(teamEnv);
   const declared = new Set([...applied.variables.keys(), ...applied.secretKeys]);
@@ -426,11 +430,11 @@ export async function workflowEnvValues(localConfig: LocalConfig, env: NodeJS.Pr
   const unreadable = failed?.kind === 'failed' ? describeEntryFailure(failed.failure)
     : teamEnv.secrets.kind === 'store-unreadable' ? teamEnv.secrets.reason
       : teamEnv.variableValues.kind === 'store-unreadable' ? teamEnv.variableValues.reason : undefined;
-  return { declared, values, ...(unreadable !== undefined ? { unreadable } : {}) };
+  return { declared, secrets: new Set(applied.secretKeys), values, ...(unreadable !== undefined ? { unreadable } : {}) };
 }
 
 /** The same, by name only, which is all the workflow engine may hold. */
 export async function workflowEnvFacts(localConfig: LocalConfig): Promise<EnvFacts> {
-  const { declared, values, unreadable } = await workflowEnvValues(localConfig);
-  return { declared, present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) };
+  const { declared, secrets, values, unreadable } = await workflowEnvValues(localConfig);
+  return { declared, secrets, present: new Set(values.keys()), ...(unreadable !== undefined ? { unreadable } : {}) };
 }

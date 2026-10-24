@@ -1083,6 +1083,30 @@ steps:
     expect(await startRun(fixture.config, 'build', { note: 'team-token-value-1082' })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
   });
 
+  it('fails env_conflict only for a step env that shadows a team secret or a required key, not a plain team variable', async () => {
+    const fixture = testConfig();
+    fs.mkdirSync(path.join(fixture.config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'env.yaml'), 'variables:\n  - key: NODE_ENV\n    value: production\n');
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GH_TOKEN\n');
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: test
+    command: npm test
+    env: { NODE_ENV: test }
+  - id: push
+    needs: [test]
+    command: git push
+    env: { GH_TOKEN: plain }
+`));
+    await syncWorkflowDefinitions(fixture.config);
+    const started = await startRun(fixture.config, 'build');
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const test = leaseIn(await leaseNext(fixture.config, runId, driverA, { can: { env: true } }));
+    expect(test.step).toBe('test');
+    await reportAttempt(fixture.config, runId, { attempt: test.attempt, revision: test.revision, outcome: 'success', driver: driverA });
+    expect(await leaseNext(fixture.config, runId, driverA, { can: { env: true } })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect(await readRun(fixture.config, runId)).toMatchObject({ steps: [{ id: 'test', status: 'succeeded' }, { id: 'push', status: 'failed', failure: { code: 'env_conflict' } }] });
+  });
+
   it('starts a run whose input shares a name with a secret env key', async () => {
     vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
     const fixture = testConfig();

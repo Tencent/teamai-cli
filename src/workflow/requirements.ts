@@ -176,6 +176,8 @@ export function mergeRequirements(...levels: ReadonlyArray<Requirements | undefi
 export interface EnvFacts {
   /** Keys env.yaml or env/secrets.yaml declare here. */
   declared: ReadonlySet<string>;
+  /** The keys among them env/secrets.yaml declares. */
+  secrets: ReadonlySet<string>;
   /** Keys with a value here: team values, or the environment. */
   present: ReadonlySet<string>;
   /** Why the team env cannot be read here, when it cannot. */
@@ -220,15 +222,15 @@ export type Negotiation =
 
 /**
  * Decides whether this driver may take the step, and on what terms. Pure: the engine calls it at both places it hands
- * out a lease. In order: an `env:` key that shadows a team or required key fails; what the member's policy refuses
+ * out a lease. In order: an `env:` key that shadows a team secret or a required key fails; what the member's policy refuses
  * holds; every strict capability the driver lacks holds; a required key with no value here fails, for a driver that
  * would provide it; else the step is granted, with each best-effort gap listed in `unenforced`.
  */
 export function negotiate(offer: Offer, can: DriverCan, allow: Allow, env: EnvFacts): Negotiation {
   const guarded = [...env.declared, ...offer.runEnvKeys];
-  const shadowed = offer.envKeys.filter((key) => sameEnvName(guarded, key) !== undefined);
+  const shadowed = offer.envKeys.filter((key) => sameEnvName([...env.secrets, ...offer.runEnvKeys], key) !== undefined);
   if (shadowed.length > 0) {
-    return { kind: 'fail', failure: { code: 'env_conflict', message: `Step "${offer.step}" sets env ${shadowed.join(', ')}, which the team env or a requires.env of the run names. Rename the step's variable, or remove it from env:.` } };
+    return { kind: 'fail', failure: { code: 'env_conflict', message: `Step "${offer.step}" sets env ${shadowed.join(', ')}, which a team secret or a requires.env of the run names. Rename the step's variable, or remove it from env:.` } };
   }
   const required = offer.requires.env ?? [];
   const setupKeys = offer.setup?.requires?.env ?? [];
