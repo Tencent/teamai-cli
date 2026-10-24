@@ -35,8 +35,8 @@ steps:
 
 1. 结算运行。如果运行已经结束，返回 `done`。
 2. 把本驱动的、`running` 里没有列出的未结租约交还给它。重启后的驱动发送 `"running":[]`，每次调用拿回一个未结租约。
-3. 按文件顺序租出第一个就绪的步骤。子工作流的步骤位于运行它的那个步骤的位置。需要 `driver.can.workspace` 未列出的工作区模式的步骤，或使用其他驱动打开的工作区的步骤，会被暂缓，改为租出下一个就绪的步骤。
-4. 每个就绪的步骤都已租出时，返回 `wait`，`reason` 指出第一个未结租约。每个就绪的步骤都被暂缓时，`reason` 逐一列出它们，以 `; ` 分隔。
+3. 按文件顺序租出第一个就绪的步骤。子工作流的步骤位于运行它的那个步骤的位置。需要 `driver.can.workspace` 未列出的工作区模式的步骤、需要 `driver.can` 未声明的其他能力的步骤（见[要求和限制](#要求和限制)），或使用其他驱动打开的工作区的步骤，会被暂缓，改为租出下一个就绪的步骤。
+4. 每个就绪的步骤都已租出时，返回 `wait`，`reason` 指出第一个未结租约。每个就绪的步骤都被暂缓时，`reason` 逐一列出它们，以 `; ` 分隔，`held` 以 `{ step, reason, missing }` 列出它们。`missing` 指出驱动缺少什么，例如 `hitl` 或 `workspace.new`；其他驱动占用该工作区时为空。
 
 不发送 `running` 的驱动每次调用都会拿回自己的未结租约，因此一次只运行一个步骤。
 
@@ -578,6 +578,77 @@ steps:
 提示词需要每一项时，像 `fan-build` 中的 `explain` 那样传入整个列表。
 
 
+## 要求和限制
+
+步骤在 `requires` 中声明它需要什么。工作流文件中的 `defaults.requires` 作用于其中每个步骤。步骤自己的键会替换这些键，`env` 列表则会合并。工作流文件还可以设置 `setup`、`timeout` 和 `budget`，prompt 步骤可以设置 `max_turns`。
+
+```yaml
+schemaVersion: v1alpha1
+name: release
+description: Build the package, then review it.
+timeout: 1h
+budget: { tokens: 200000 }
+setup:
+  command: npm ci
+  requires: { env: [NPM_TOKEN] }
+defaults:
+  requires: { network: false }
+steps:
+  - id: build
+    workspace: new
+    timeout: 10m
+    requires: { env: [SIGNING_KEY] }
+    command: npm run build
+  - id: review
+    needs: [build]
+    prompt: Review the build.
+    max_turns: 5
+```
+
+| 键 | 作用 | 驱动做不到时 |
+|---|---|---|
+| `requires.env` | 把这些[团队 env](sharing.md#env环境变量) 键交给步骤。其他团队 env 键，以及运行中其他步骤要求的键，都不会交给它。运行中只记录键名。某个键在本机没有值时，步骤在运行前以 `missing_env` 失败，并给出要执行的 `teamai env set` 命令。步骤 `env:` 中的项与团队 env 键或被要求的键同名时，以 `env_conflict` 失败。 | 步骤等待。 |
+| `requires.network` | `false` 要求步骤不能访问网络。 | 步骤照常运行，其 `unenforced` 列出 `network`。本地驱动无法禁止网络。 |
+| `requires.isolation` | `none`、`worktree` 或 `sandbox`。有工作区的步骤至少是 `worktree`。 | 步骤照常运行，其 `unenforced` 列出 `isolation`。 |
+| `setup` | 驱动在它创建的每个工作区中、在步骤之前运行 `command`。setup 获得它的 `requires.env` 键；步骤只有自己也要求时才会获得。setup 以非零退出（`setup_failed`）、改动 git 会提交的文件（`setup_dirty`），或把自己某个键的值留在它写入的文件中（包括被忽略的文件，`setup_secret`）时，步骤不运行即失败，工作区被删除。步骤的 `timeout` 也约束 setup。 | 新工作区中的步骤等待。 |
+| `timeout` | `500ms`、`30s`、`10m` 或 `2h`，写在步骤或工作流文件上。超时的步骤被停止，结果为 `timeout`。写在 workflow 步骤上时，会停止其中每个步骤。写在工作流文件上时，运行以 `failed` 结束，失败码为 `timeout`。重试会重新开始计时。 | 不是能力。每个驱动都会在租约上拿到 `expiresAt`。 |
+| `budget` | `{ tokens: N }`，写在工作流文件或 workflow 步骤上。其下每个步骤的输入和输出 token 都计入。达到 `N` 时，其中未结束的步骤停止，并以 `budget_exceeded` 失败。 | 预算内的 prompt 步骤等待。没有 token 的成功报告以 `budget_unmeasured` 失败。 |
+| `max_turns` | 限制 prompt 步骤的智能体轮数。本地驱动只把它传给无头 Claude。 | 步骤照常运行，其 `unenforced` 列出 `max_turns`。 |
+
+`unenforced` 出现在租约、步骤和运行记录中。每个 `interactive: true` 步骤还需要支持 HITL 的驱动，见 [HITL](#hitl人在回路中)。
+
+成员可以在本地配置中、`max_parallel` 旁边，设置本机上任何驱动可以使用什么：
+
+```yaml
+workflows:
+  max_parallel: 4
+  sandbox: true
+  allow:
+    network: false
+    env: [NPM_TOKEN]
+```
+
+- `allow.network: false` 会暂缓每个要求 `network: true` 的步骤。`allow.env` 会暂缓 `requires.env`（或其 setup 的 `requires.env`）中含有未列出键的步骤。`wait.held[].missing` 指出 `policy.network` 或 `policy.env`。
+- `sandbox: true` 表示本机会隔离它运行的内容，例如 CI 虚拟机或容器，因此本地驱动声明 `sandbox` 隔离。
+- `max_parallel` 还限制本机上所有驱动同时持有同一运行的租约数。
+
+每个团队 secret 的值，以及名称看起来像 secret 的环境变量的值，在运行文件、运行记录和每个 `teamai workflow` 输出中都会显示为 `<REDACTED:KEY>`。`start` 拒绝包含这些值的输入，返回 `invalid_inputs`，只指出键名，不显示值。
+
+`local` 以外的驱动在每次 `next` 的 `driver.can` 中声明它能做什么：
+
+| `driver.can` 键 | 驱动 |
+|---|---|
+| `hitl` | 让人回答 HITL 请求并在交互步骤中工作。 |
+| `workspace` | 接受这些工作区模式的租约：`read-only`、`new`、`continue`。 |
+| `env` | 自己解析 `lease.envScope.provide`，移除 `lease.envScope.withhold`，并且不把值交给运行步骤的程序。由智能体运行步骤的驱动不要声明它。 |
+| `setup` | 在它创建的每个工作区中用 `lease.setup.envScope` 运行 `lease.setup.command`，并以上述失败码让步骤失败。 |
+| `tokens` | 报告每个成功 prompt 步骤的 token。 |
+| `max_turns` | 把 `lease.maxTurns` 传给它能限制的工具，对其他工具报告 `"unenforced":["max_turns"]`。 |
+| `network` | 能禁止步骤访问网络。 |
+| `isolation` | 以此级别运行每个步骤：`none`、`worktree` 或 `sandbox`。 |
+
+省略的键表示驱动做不到。`next` 会在 `ignored` 中列出其他键。
+
 ## HITL（人在回路中）
 
 HITL 包括需要人参与的 `approve`、`choose` 和 `interactive` 步骤。
@@ -619,7 +690,7 @@ teamai workflow resume <run>
 
 非 `local` 驱动使用相同的 HITL 契约。每次 `next` 请求都发送 `driver.can.hitl`，包括忙碌时的轮询。有人可以回答 HITL 请求并参与交互步骤时，将其设为 `true`。没有可租出的工作时，`next` 返回 `hitl`，包括 `run`、`step`、`pass`、`kind`、渲染后的 `message`、`options`、可选 `default`、`required`，以及 `respond` 命令模板。向该用户展示 `hitl.message` 和 `hitl.respond`，由其将 `<option>` 替换为选择后运行 `teamai workflow respond`。模板会给 `'items[0].ask'` 这样的 fan-out 步骤路径加上引号；运行时保留这些引号。`cli` 渠道只能回答可选 HITL 请求。有自己 UI 的驱动可以用 `respond --json '{"driver":{"kind":"ide","machine":"host","workspace":"/work"}}'` 提交用户的回答，包括必需审批；这会记录渠道 `driver`、`agent: false`，并在本地保留驱动身份。驱动声明答案由用户在其 UI 中给出，绝不能提交 agent 自己选择的答案；与 TTY 约定一样，这只是声明，不是保护机制。
 
-有就绪租约时优先返回租约。工具运行期间，将其 attempt id 放入 `running`，以 `canTakeLease: false` 轮询 `next`，展示返回的 HITL 请求，并停止 attempt id 出现在 `cancelled` 中的工具。只有支持 HITL 的驱动才能获取 `interactive` 租约；没有 HITL 的驱动会以 `hitl_required` 失败。
+有就绪租约时优先返回租约。工具运行期间，将其 attempt id 放入 `running`，以 `canTakeLease: false` 轮询 `next`，展示返回的 HITL 请求，并停止 attempt id 出现在 `cancelled` 中的工具。只有支持 HITL 的驱动才能获取 `interactive` 租约；交互步骤会等待这样的驱动。
 
 未声明此能力时，可以获取租约的 `next` 请求按下表处理。忙碌时的轮询保留等待中的 HITL 请求，不代为回答；驱动没有 HITL 能力时返回 `wait`。
 
@@ -632,7 +703,7 @@ teamai workflow resume <run>
 
 每次无 HITL 决策和 hitl_required 失败都会向 stderr 写警告。在本地配置中与 `workflows.max_parallel` 一起设置 `workflows.auto_approve`，或给 `start --driver local`、`resume` 传 `--auto-approve`，仅对当前进程生效。JSON next 不能设置此覆盖。本地驱动仅在 stdin 和 stderr 都是 TTY 时声明支持 HITL，通过 stderr 提问，接受选择及其后的可选备注，并在提问期间继续轮询。其他进程回答或取消 HITL 请求会关闭问题。交互工具占用终端时，HITL 请求提问会等待。
 
-`interactive: true` 要求 `prompt` 或 `prompt_file`。没有 HITL 的驱动以 `hitl_required` 失败。本地驱动在工作目录以前台方式打开工具，继承 stdio，并把 prompt 作为第一条消息。人对仓库的修改会保留，步骤成功。设置了 `workspace: read-only` 的交互步骤和命令一样检查：改了检出目录就以 `read_only_dirty` 失败，改动留在原地。在外层步骤打开的工作区里，改动保存在 `refs/teamai/kept/<attempt>`，并从工作区移除。在自己工作区里的交互步骤仍可以改那个工作区。无头 prompt 仍然只读。终端的 Ctrl-C 和 Ctrl-\ 交给交互工具处理；SIGTERM 和 SIGHUP 会停止工具和驱动。交互工具以 0 退出且没有输出时可以不写结果文件。驱动在 prompt 运行时每两秒轮询，发现取消后停止工具。
+`interactive: true` 要求 `prompt` 或 `prompt_file`。步骤会等待支持 HITL 的驱动。没有终端时，`--driver local` 以 `busy` 停止，原因中指出 `hitl`；请在终端中运行 `resume`。本地驱动在工作目录以前台方式打开工具，继承 stdio，并把 prompt 作为第一条消息。人对仓库的修改会保留，步骤成功。设置了 `workspace: read-only` 的交互步骤和命令一样检查：改了检出目录就以 `read_only_dirty` 失败，改动留在原地。在外层步骤打开的工作区里，改动保存在 `refs/teamai/kept/<attempt>`，并从工作区移除。在自己工作区里的交互步骤仍可以改那个工作区。无头 prompt 仍然只读。终端的 Ctrl-C 和 Ctrl-\ 交给交互工具处理；SIGTERM 和 SIGHUP 会停止工具和驱动。交互工具以 0 退出且没有输出时可以不写结果文件。驱动在 prompt 运行时每两秒轮询，发现取消后停止工具。
 
 ## 重试、取消和继续运行
 
