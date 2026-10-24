@@ -29,7 +29,8 @@ import {
   deliverPr, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
-import { completeDelivery, deliveringStep, nextDelivery, resolveCreate, sameCreate, unresolvedCreate, type DeliveryKey, type UnresolvedCreate } from './delivery-ledger.js';
+import { completeDelivery, deliveringStep, nextDelivery, resolveCreate, sameCreate, unresolvedCreate } from './delivery-ledger.js';
+import type { DeliveryKey, UnresolvedCreate } from './delivery-schema.js';
 import { deliveryLockPath, generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
 import { withFileLock } from '../update.js';
 import { pinScorers } from '../scorers/cache.js';

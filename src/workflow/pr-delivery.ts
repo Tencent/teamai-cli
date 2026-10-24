@@ -8,7 +8,7 @@ import { providerForRemote, type OriginProvider } from '../providers/registry.js
 import { NON_INTERACTIVE_GIT_ENV } from '../utils/git-env.js';
 import type { PullRequestRef } from '../providers/types.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
-import type { DeliveryKey, UnresolvedCreate } from './delivery-ledger.js';
+import type { DeliveryKey, UnresolvedCreate } from './delivery-schema.js';
 import type { DeliveryFailure } from './step-state.js';
 import { fetchMissingCommits, git, protectedPaths } from './worktree.js';
 

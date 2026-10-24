@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { canonicalJson } from '../utils/canonical-json.js';
 import { redact } from '../utils/redact.js';
 import { isRecord } from './expression.js';
-import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from './delivery-ledger.js';
+import { CommitIdSchema, DeliveryReceiptSchema, UnresolvedCreateSchema } from './delivery-schema.js';
 import {
   ArchivedPassSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
