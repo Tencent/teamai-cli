@@ -1482,6 +1482,32 @@ describe('retrying and cancelling a delivery', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('takes no open pull request when a sibling that writes the shared branch is leased while the lookup finds it, and checks its commit once it reports', async () => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl) });
+    const branch = impl.workspace?.branch ?? '';
+    let docs: Lease | undefined;
+    const create = providerDouble(async () => {
+      docs ??= await take(config, runId);
+      return 'https://github.com/fixture/app/pull/1';
+    }, async () => 'https://github.com/fixture/app/pull/2');
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { lease: { step: 'work.docs' } } });
+    const waiting = await state(config, runId);
+    expect(waiting.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'delivering' });
+    expect(waiting.deliveries).toBeUndefined();
+
+    if (!docs) throw new Error('work.docs was never leased');
+    const sibling = pushOnto(root, branch, { '.github/workflows/x.yml': 'on: push\n' });
+    await succeed(config, runId, docs, { to: sibling });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const run = await state(config, runId);
+    expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`commit ${sibling}, which a later report recorded on the shared branch ${branch}`) } });
+    expect(run.deliveries).toBeUndefined();
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('asks the host nothing while a sibling that writes the shared branch is leased, however many calls come', async () => {
     const { config, root, runId } = await fixture(IMPL_AND_DOCS);
     const gh = fakeGh(path.join(root, 'gh'));

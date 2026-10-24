@@ -83,20 +83,25 @@ function recordReceipt(run: RunState, key: DeliveryKey, target: string, url: PrU
  * job's listed request; a failed delivery leaves it listed, since a create that failed may still have opened one. The
  * step settles only while it still delivers what `job` delivered, at the revision its agent's report settled it. Origin's
  * branch ahead of the recorded commit fails it only once no report of that tip can come: no step that writes the branch
- * is leased, and no report recorded another commit on it since the job was picked.
+ * is leased, and no report recorded another commit on it since the job was picked. Until then a pull request settles
+ * nothing either, and one the job did not open gets no receipt: a later call checks the branch again and finds it.
  * `requeueEnd` is set when the receipt reached a run that already ended, whose end record must go out again to list it.
  */
 export function completeDelivery(
   run: RunState, job: DeliveryJob, outcome: DeliveryOutcome,
   reconcile: (run: RunState) => unknown, writerLeased: (run: RunState, branch: string) => boolean,
 ): { requeueEnd: boolean } {
-  const receipted = outcome.ok && recordReceipt(run, job.key, job.target, outcome.pr);
-  if (outcome.ok) forgetCreate(run, { ...job.key, target: job.target });
+  const create = { ...job.key, target: job.target };
+  const unchecked = (): boolean => writerLeased(run, job.key.branch) || run.copies?.[job.key.branch]?.commit !== job.recordedHead;
+  const settles = !unchecked();
+  // A request this job opened gets its receipt whatever became of the branch; one it found or was told of waits.
+  const taken = settles || run.creating?.some((listed) => sameCreate(listed, create)) === true;
+  const receipted = outcome.ok && taken && recordReceipt(run, job.key, job.target, outcome.pr);
+  if (outcome.ok && taken) forgetCreate(run, create);
   if (run.status === 'running') reconcile(run);
   const step = deliveringStep(run, job.key);
-  const awaited = !outcome.ok && outcome.fault.kind === 'branch_ahead'
-    && (writerLeased(run, job.key.branch) || run.copies?.[job.key.branch]?.commit !== job.recordedHead);
-  if (step && outcome.ok) delivered(step);
+  const awaited = !outcome.ok && outcome.fault.kind === 'branch_ahead' && unchecked();
+  if (step && outcome.ok && settles) delivered(step);
   else if (step && !outcome.ok && !awaited) deliveryFailed(step, deliveryFailure(job, outcome.fault));
   return { requeueEnd: receipted && run.status !== 'running' };
 }
