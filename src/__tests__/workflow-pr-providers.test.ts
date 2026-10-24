@@ -207,7 +207,7 @@ describe('the provider of a checkout origin', () => {
     expect(origin.kind === 'provider' && [origin.provider.name, origin.repo]).toEqual([provider, repo]);
   });
 
-  it.each(['/srv/git/app.git', 'file:///srv/git/app.git', 'https://git.example.internal/acme/app.git', 'https://github.com/acme'])(
+  it.each(['/srv/git/app.git', 'file:///srv/git/app.git', 'https://git.example.internal/acme/app.git', 'https://github.com/acme', 'https://cnb.cool/acme/app.git'])(
     'reaches %s through git alone, which opens no pull request',
     (remote) => expect(providerForRemote(remote)).toEqual({ kind: 'transport' }),
   );
