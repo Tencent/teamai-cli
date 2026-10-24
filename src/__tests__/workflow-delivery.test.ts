@@ -951,6 +951,34 @@ describe('retrying and cancelling a delivery', () => {
     expect(creates(gh)).toEqual([]);
   });
 
+  it('refuses a recorded later tip whose history no longer holds the delivering step\'s commit', async () => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const impl = await take(config, runId);
+    const own = pushWork(root, impl);
+    await succeed(config, runId, impl, { to: own });
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+    const branch = docs.workspace?.branch ?? '';
+    const clone = fs.mkdtempSync(path.join(root, 'rewrite-'));
+    git(root, ['clone', '-q', '-b', branch, path.join(root, 'remote.git'), clone]);
+    git(clone, ['reset', '-q', '--hard', `${own}~1`]);
+    fs.writeFileSync(path.join(clone, 'docs.txt'), 'docs');
+    git(clone, ['add', '-A']);
+    git(clone, ['-c', 'user.name=Driver', '-c', 'user.email=driver@example.com', 'commit', '-qm', 'rewrite']);
+    git(clone, ['push', '-q', '--force', 'origin', branch]);
+    const rewritten = git(clone, ['rev-parse', 'HEAD']);
+    await succeed(config, runId, docs, { to: rewritten });
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const failure = (await state(config, runId)).steps.find((step) => step.id === 'work.impl');
+    expect(failure).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`commit ${rewritten}, the last one a report recorded on branch ${branch}, does not contain commit ${own} the step reported`) } });
+    expect(creates(gh)).toEqual([]);
+    expect((await state(config, runId)).deliveries).toBeUndefined();
+  });
+
   it('checks only the selected recorded tip when later work removed an earlier protected change', async () => {
     const { config, root, runId } = await fixture(`  - id: work
     workspace: new

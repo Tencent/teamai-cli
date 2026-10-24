@@ -38,6 +38,8 @@ export type DeliveryFault =
   | { kind: 'branch_moved' }
   /** Origin's branch holds the recorded commit and more, at `tip`: a report of `tip` may still be on its way. */
   | { kind: 'branch_ahead'; tip: string }
+  /** The recorded commit origin's branch is at lacks the step's head: a later step rewrote the branch's history. */
+  | { kind: 'branch_rewritten' }
   | { kind: 'branch_missing' }
   | { kind: 'branch_unreadable' }
   | { kind: 'no_provider' }
@@ -81,6 +83,11 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
     const ahead = await contains(job, { commit: tip.commit, ancestor: job.recordedHead ?? job.key.head });
     if ('fault' in ahead) return failed(ahead.fault);
     return failed(ahead.contains ? { kind: 'branch_ahead', tip: tip.commit } : { kind: 'branch_moved' });
+  }
+  if (tip.commit !== job.key.head) {
+    const holds = await contains(job, { commit: tip.commit, ancestor: job.key.head });
+    if ('fault' in holds) return failed(holds.fault);
+    if (!holds.contains) return failed({ kind: 'branch_rewritten' });
   }
   const changed = await changedFiles({ ...job, key: { ...job.key, head: tip.commit } });
   if ('fault' in changed) return failed(changed.fault);
@@ -203,7 +210,9 @@ async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promis
 async function contains({ runId, checkout }: DeliveryJob, { commit, ancestor }: { commit: string; ancestor: string }): Promise<{ contains: boolean } | { fault: DeliveryFault }> {
   if (!OBJECT_ID.test(commit) || !OBJECT_ID.test(ancestor)) return { contains: false };
   const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [ancestor, commit] });
-  if (fetched.missing.length > 0) return { fault: { kind: 'unreadable' } };
+  if (fetched.missing.includes(commit)) return { fault: { kind: 'unreadable' } };
+  // A commit the checkout holds brings its history, so an ancestor still missing is not in it.
+  if (fetched.missing.length > 0) return { contains: false };
   return { contains: (await git(checkout, ['merge-base', '--is-ancestor', ancestor, commit])).code === 0 };
 }
 
@@ -250,6 +259,11 @@ export function deliveryFailure({ runId, key, recordedHead }: Pick<DeliveryJob, 
       return {
         code: 'delivery_failed',
         message: `PR delivery for step "${step}" failed: branch ${branch} on origin moved away from commit ${head}, the last one a report recorded on it, so it no longer holds the changes TeamAI checked, and no pull request was opened or accepted. Put branch ${branch} on origin back at ${head}, then run: ${retry}`,
+      };
+    case 'branch_rewritten':
+      return {
+        code: 'delivery_failed',
+        message: `PR delivery for step "${step}" failed: commit ${head}, the last one a report recorded on branch ${branch}, does not contain commit ${key.head} the step reported, so a pull request from it would not hold the step's work, and none was opened or accepted. Have a step on that branch record a commit that contains both, or put branch ${branch} on origin back at ${key.head}, then run: ${retry}`,
       };
     case 'branch_unreadable':
       return {
