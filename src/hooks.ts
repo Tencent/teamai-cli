@@ -3015,7 +3015,7 @@ export async function injectHooksToAllTools(toolPaths: Record<string, { settings
     if (tool === 'kiro') {
       try {
         const { injectKiroHooks } = await import('./kiro-hooks.js');
-        await injectKiroHooks();
+        await injectKiroHooks(resolvedBaseDir);
       } catch (e) {
         log.warn(`Failed to inject Kiro hooks: ${(e as Error).message}`);
       }
@@ -3166,7 +3166,7 @@ export async function reconcileHooksToAllTools(
       try {
         const { injectKiroHooks, removeKiroHooks } = await import('./kiro-hooks.js');
         if (opts.removeAll) await removeKiroHooks();
-        else await injectKiroHooks();
+        else await injectKiroHooks(opts.installedBaseDir ?? baseDir);
       } catch (e) {
         log.warn(`Failed to reconcile Kiro hooks: ${(e as Error).message}`);
         opts.unwritten?.push(tool);

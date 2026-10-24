@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
+import { getDispatchCommand } from '../../builtin-hooks.js';
 import { commitTeamRepo } from '../helpers/team-repo-history.js';
 
 const cli = fileURLToPath(new URL('../../../dist/index.js', import.meta.url));
@@ -24,8 +25,12 @@ it('manages a Kiro default-agent lifecycle hook without any team agent', () => {
     fs.writeFileSync(personal, '{"version":"v1","hooks":[]}\n');
     const file = path.join(home, '.kiro/hooks/teamai.json');
     const run = (args: string[]) => spawnSync(process.execPath, [cli, ...args], { cwd: home, env: { ...process.env, HOME: home, USERPROFILE: home, FORCE_COLOR: '0' }, encoding: 'utf8', timeout: 30_000 });
+    const edited = path.join(home, '.kiro/agents/reviewer.json');
+    fs.mkdirSync(path.dirname(edited), { recursive: true });
+    fs.writeFileSync(edited, JSON.stringify({ name: 'reviewer', prompt: 'Member-edited prompt', hooks: { agentSpawn: [{ command: getDispatchCommand('session-start', 'kiro') }, { command: 'echo personal' }] } }));
     const pull = run(['pull', '--force']);
     expect(pull.status, pull.stdout + pull.stderr).toBe(0);
+    expect(JSON.parse(fs.readFileSync(edited, 'utf8'))).toEqual({ name: 'reviewer', prompt: 'Member-edited prompt', hooks: { agentSpawn: [{ command: 'echo personal' }] } });
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ version: 'v1', hooks: [{ trigger: 'SessionStart', action: { type: 'command' } }] });
     const list = run(['hooks', 'list']);
     expect(list.status, list.stdout + list.stderr).toBe(0);
@@ -34,7 +39,7 @@ it('manages a Kiro default-agent lifecycle hook without any team agent', () => {
     const doctor = () => {
       const result = run(['doctor', '--json']);
       const report = JSON.parse(result.stdout) as { checks: { name: string; ok: boolean }[] };
-      return report.checks.find(check => check.name === 'teamai hooks in Kiro standalone hook file');
+      return report.checks.find(check => check.name === 'teamai hooks in Kiro standalone hook file (requires Kiro CLI V3)');
     };
     expect(doctor()?.ok).toBe(true);
     expect(run(['hooks', 'remove']).status).toBe(0);
@@ -46,6 +51,10 @@ it('manages a Kiro default-agent lifecycle hook without any team agent', () => {
     expect(uninstall.status, uninstall.stdout + uninstall.stderr).toBe(0);
     expect(fs.existsSync(file)).toBe(false);
     expect(fs.readFileSync(personal, 'utf8')).toBe('{"version":"v1","hooks":[]}\n');
+    fs.writeFileSync(file, '{"version":"v1","hooks":[{"name":"personal"}]}\n');
+    const refused = run(['hooks', 'inject']);
+    expect(refused.status, refused.stdout + refused.stderr).toBe(1);
+    expect(refused.stdout).not.toContain('Hooks injected into all');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
