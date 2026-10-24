@@ -8,7 +8,7 @@ import {
   indexedSkills, resolveDesiredAgents, resolveDesiredRules, resolveDesiredSkills, type RolePullContext,
 } from './resources/desired.js';
 import type { IndexedSkills, UnreadableFile } from './utils/search-index.js';
-import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, saveStateForScope, saveLocalConfigForScope } from './config.js';
+import { detectProjectConfig, describeUnreadableConfig, loadLocalConfigForScope, loadTeamConfig, loadStateForScope, refreshRoleAssignment, saveStateForScope, saveLocalConfigForScope } from './config.js';
 import { getHeadRev, getHeadCommit, createGit, getDefaultBranch, completeWorktreeList, gitCommonDir, isLiveCheckout, isLiveProjectCheckout, listWorktrees, resolveAnchors } from './utils/git.js';
 import { publishQueuedLearnings } from './utils/learnings-publish.js';
 import { pendingLearningsDir } from './utils/pending-learnings.js';
@@ -1130,15 +1130,25 @@ function setChildren(record: CheckoutRecord, localConfig: LocalConfig): void {
 
 /** The selection `localConfig` makes a pull deliver for, as the checkout's record keeps it. */
 export function deliverySelection(localConfig: LocalConfig): DeliverySelection {
-  const { scope, primaryRole, additionalRoles, projects, subscribedTags, excludedSkills, inheritUserScope } = localConfig;
+  const { scope, primaryRole, additionalRoles, roleAssignment, projects, subscribedTags, excludedSkills, inheritUserScope } = localConfig;
   const lists = Object.entries({ projects, subscribedTags, excludedSkills }).flatMap(([key, values]) => values ? [[key, [...values].sort()]] : []);
   return DeliverySelectionSchema.parse({
     scope,
     ...(primaryRole !== undefined ? { primaryRole } : {}),
     additionalRoles: [...additionalRoles].sort(),
+    ...(roleAssignment ? { rolesAssigned: true } : {}),
     ...Object.fromEntries(lists),
     ...(inheritUserScope !== undefined ? { inheritUserScope } : {}),
   });
+}
+
+/**
+ * The part of a selection that manifest/members.yaml decides (#1186). The rest
+ * changes only through commands that clear lastPullRev; an assignment arrives
+ * with a fetch, so the fast path has to compare this itself.
+ */
+function assignedRolePart(selection: DeliverySelection): Pick<DeliverySelection, 'primaryRole' | 'additionalRoles' | 'rolesAssigned'> {
+  return { primaryRole: selection.primaryRole, additionalRoles: [...selection.additionalRoles].sort(), rolesAssigned: selection.rolesAssigned ?? false };
 }
 
 /** Put `agentModels` on `record`, leaving the key out while there are none. */
@@ -1395,6 +1405,16 @@ async function pullForScope(
     }
     return;
   }
+
+  // manifest/members.yaml lives in the repo the refresh above just moved, so the
+  // roles read when the config loaded are the previous pull's (#1186).
+  // Re-resolving here is what lets a reassignment take effect on the pull that
+  // fetches it, rather than on the one after — by which time this pull has
+  // recorded the new revision as synced and the fast path skips it.
+  // Outside the refresh's try: a failure here is not a failure to fetch.
+  // In place: the hooks, MCP and env stages after this scope reconcile the
+  // object `pull` holds, and key `teamEnvs`/`instructions` on its identity.
+  await refreshRoleAssignment(localConfig);
 
   // Settle the placement records against the tree just refreshed, before
   // delivery reads them: a placement whose PR has merged becomes a record, one
@@ -1738,7 +1758,21 @@ async function pullForScope(
       // commit: the record names the children it delivered (#913).
       const sameChildren = !workspaceKey || state.lastPullByWorkspace?.[workspaceKey]?.children === localConfig.children?.fingerprint;
       if (!sameChildren) log.debug(`[${scopeLabel}] The workspace's children changed, syncing`);
-      if (currentRev && state[revisionField] === currentRev && recorded?.rev === currentRev && recorded.teamRef === localConfig.repo.ref && listed && sameChildren) {
+      const checkout = recordKey ? state.lastPullByWorkspace?.[recordKey] : undefined;
+      // A change in manifest/members.yaml arrives with the fetch and can leave
+      // the checked-out revision where it was — a pinned workspace reads
+      // origin/<default> for it (#1186). A local selection change clears
+      // lastPullRev instead; an assignment has no command to do that, so the
+      // roles the record delivered for gate the fast path: which ones, and
+      // whether the team assigned them, since holding none then filters where
+      // a bare config does not. Only the roles: the rest of the selection is
+      // compared by nothing else either, and a config edited by hand kept the
+      // fast path before. A record without a selection is from an older CLI
+      // and is read as unchanged.
+      const sameRoles = checkout?.selection === undefined
+        || isDeepStrictEqual(assignedRolePart(checkout.selection), assignedRolePart(deliverySelection(localConfig)));
+      if (!sameRoles) log.debug(`[${scopeLabel}] The roles delivered for changed, syncing`);
+      if (currentRev && state[revisionField] === currentRev && recorded?.rev === currentRev && recorded.teamRef === localConfig.repo.ref && listed && sameChildren && sameRoles) {
         currentTargets = await getInstalledResourceTargets(freshConfig, localConfig);
         const previousTargets = recorded.targets;
         const syncedTargets = new Set(previousTargets ?? []);
@@ -1748,7 +1782,6 @@ async function pullForScope(
         // A tool whose skills directory moved (a recorded home changed) is still
         // a target by name: compare the directories too.
         currentPlaces = await placesOf(installOf(freshConfig, localConfig));
-        const checkout = recordKey ? state.lastPullByWorkspace?.[recordKey] : undefined;
         const recordedPlaces = placesRecordOf(checkout);
         if (targetSetMatches && recordedPlaces === undefined) log.debug(`[${scopeLabel}] No record of the skills directories yet, syncing`);
 

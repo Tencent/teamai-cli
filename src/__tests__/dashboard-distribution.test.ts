@@ -212,4 +212,32 @@ describe('dashboard distribution', () => {
     expect((await rejection(saveRoles(config, { revision: stale, primaryRole: 'frontend' }))).status).toBe(409);
     expect(await fse.pathExists(path.join(homeDir, '.teamai', 'config.yaml'))).toBe(false);
   });
+
+  // The team assigns the roles (#1186): the page shows them, and a save here
+  // would be overlaid away on the next load.
+  describe('with roles assigned in the team repo', () => {
+    beforeEach(() => {
+      config.roleAssignment = { source: 'assigned', local: { additionalRoles: [] } };
+    });
+
+    it('says the roles are assigned, so the page can show them read-only', async () => {
+      expect((await readDistribution(config)).rolesAssigned)
+        .toEqual({ file: 'manifest/members.yaml', source: 'assigned' });
+    });
+
+    it('refuses a role save and a role preview, naming the file', async () => {
+      const save = await rejection(saveRoles(config, { revision: await revision(), primaryRole: 'backend' }));
+      expect(save.status).toBe(409);
+      expect(save.message).toContain('manifest/members.yaml');
+      expect((await rejection(previewDistribution(config, { primaryRole: 'backend' }))).status).toBe(409);
+      expect(await fse.pathExists(path.join(homeDir, '.teamai', 'config.yaml'))).toBe(false);
+    });
+
+    it('still saves the active projects, which each workspace still picks', async () => {
+      await saveProjects(config, { revision: await revision(), projects: ['pay'] });
+
+      const saved = YAML.parse(await fse.readFile(path.join(homeDir, '.teamai', 'config.yaml'), 'utf8'));
+      expect(saved.projects).toEqual(['pay']);
+    });
+  });
 });

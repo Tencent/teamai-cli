@@ -51,6 +51,12 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   const primaryRole = localConfig.primaryRole;
   const hasRole = !!primaryRole;
   const hasProjects = activeProjects.length > 0;
+  // The team assigns this member's roles (#1186). Every unfiltered fallback
+  // below is then closed: a member the team assigned no roles — or whose
+  // assignment names a role the manifest dropped — receives the shared root
+  // only. Falling through to "sync everything" would hand back exactly what
+  // assigning roles was meant to take away.
+  const rolesAssigned = !!localConfig.roleAssignment;
 
   // Load the projects manifest up front: its mere existence means this team uses
   // project partitioning, which changes the "no active filter" semantics below.
@@ -86,7 +92,7 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
   // through to an unfiltered sync that reinstalls every project's skills/rules.
   // So we return a real (possibly empty-active) context and let the cleanup path
   // below prune the now-inactive project namespaces.
-  if (!hasRole && !hasProjects && !teamHasProjects) return null;
+  if (!rolesAssigned && !hasRole && !hasProjects && !teamHasProjects) return null;
 
   // ── Role namespaces (optional) ──
   let roleNamespaces: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
@@ -110,12 +116,13 @@ async function resolveOwnResourceNamespaces(localConfig: LocalConfig) {
         });
         allRoleSkillNamespaces = new Set(rolesManifest.roles.flatMap((role) => role.resources.skills));
       } catch {
-        warnOnce(`Role "${localConfig.primaryRole}" not found in manifest. Falling back to unfiltered sync.`);
-        warnOnce('Run `teamai roles set <role>` to pick a valid role.');
+        warnOnce(`Role "${localConfig.primaryRole}" not found in manifest.`
+          + (rolesAssigned ? ' Delivering shared resources only.' : ' Falling back to unfiltered sync.'));
+        if (!rolesAssigned) warnOnce('Run `teamai roles set <role>` to pick a valid role.');
         // A misconfigured role, with nothing else to scope by, can't filter safely.
-        if (!hasProjects && !teamHasProjects) return null;
+        if (!rolesAssigned && !hasProjects && !teamHasProjects) return null;
       }
-    } else if (!hasProjects && !teamHasProjects) {
+    } else if (!rolesAssigned && !hasProjects && !teamHasProjects) {
       return null;
     }
   }

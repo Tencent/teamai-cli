@@ -196,9 +196,43 @@ teamai pull
 
 `repo.localPath` accepts home-relative paths such as `~/.teamai/team-repo`, including the native `~\.teamai\team-repo` form on Windows.
 
+## Assigning roles in the team repo
+
+By default each member picks their own role and can change it at any time. A team that also uses the effective roles as a limit — a hook that lets a `frontend` member's agent change `frontend/` and shared files only — wants that assignment to be a reviewed change in the team repo. `manifest/members.yaml` makes it one:
+
+```yaml
+# manifest/members.yaml
+version: 1
+members:
+  alice: [frontend]
+  bob: [backend, ki]
+default: []        # roles of a member this file does not list
+```
+
+The first role listed is the member's primary role, the rest are additional. While the file exists:
+
+- A member's effective roles are the ones assigned here. `teamai roles set` refuses, and so does the dashboard's Distribution page, which shows the roles instead of offering them.
+- A member the file does not list holds `default` — no roles unless you say otherwise — and receives shared resources only, rather than the unfiltered sync a role-less member gets without this file.
+- Who may assign roles is your forge's decision, as it already is for `roles.yaml`: a protected branch, a merge request, code owners for `manifest/`. teamai keeps no access list of its own.
+
+The member key is the username in the member's own teamai config, which `teamai init` records from the git provider. Deleting the file hands role selection back to each member. teamai reads it from the team repo's fetched default branch, not from the clone on the member's machine, so editing or deleting that copy changes nothing: only what your forge merged counts.
+
+A reassignment takes effect on the next pull.
+
+A team hook reads the effective roles without parsing any config file:
+
+```bash
+teamai roles list --json
+# {"roles":["frontend"],"primaryRole":"frontend","additionalRoles":[],"source":"assigned","assignmentFile":"manifest/members.yaml"}
+```
+
+`source` is `assigned` (listed in the file), `default` (not listed), `local` (no such file, so the member's own selection) or `none`.
+
+This is not a boundary against a determined process running as the member: the agent runs as that member and could edit the config the username comes from, or teamai itself. What it gives you is a role change that is a reviewed team decision with a history, instead of one command on a laptop.
+
 ## Restricting skills to some members
 
-Namespaces only filter for members who have set a role: a member with no `primaryRole` syncs everything, so `manifest/roles.yaml` alone restricts no one. `teamai init` makes new members pick a role; members from before the manifest need `teamai roles set <role-id>` once. Their next pull withdraws teamai-delivered copies outside the new namespaces (locally modified copies are kept).
+Namespaces only filter for members who have set a role: a member with no `primaryRole` syncs everything, so `manifest/roles.yaml` alone restricts no one. With `manifest/members.yaml` in place that gap is closed — an unlisted member receives shared resources only. `teamai init` makes new members pick a role; members from before the manifest need `teamai roles set <role-id>` once. Their next pull withdraws teamai-delivered copies outside the new namespaces (locally modified copies are kept).
 
 To remind members who never set a role, enforce a rule that asks the agent to check `teamai roles list` and prompt them — enforced rules cannot be deleted:
 

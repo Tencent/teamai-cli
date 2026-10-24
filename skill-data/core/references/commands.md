@@ -111,7 +111,8 @@ Generated: do not edit by hand. Regenerate with
 - `teamai roles` — Manage team roles and resource namespaces
   - `teamai roles init` — Create a roles manifest for the team repo (admin)
   - `teamai roles list` — List all defined roles and your current role
-  - `teamai roles set <primary>` — Set your primary role (updates local config)
+    - `--json` — Print your effective roles and where they come from (assigned, default, local, none)
+  - `teamai roles set <primary>` — Set your primary role (updates local config; refused when manifest/members.yaml assigns roles)
     - `--add <roles...>` — Additional roles to include
   - `teamai roles add <id>` — Add a new role to the manifest (admin)
     - `--namespaces <ns>` — Comma-separated resource namespaces (e.g. common,hai)
