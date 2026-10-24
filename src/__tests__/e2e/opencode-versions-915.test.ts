@@ -279,7 +279,7 @@ describe('moving from OpenCode V1 to V2', () => {
     fs.writeFileSync(plugin(m), `${read(plugin(m))}// an older build\n`);
     m.opencode(V2);
     m.ok(['pull']);
-    expect(read(plugin(m))).toBe(buildPluginSource(path.join(m.home, '.config', 'opencode')));
+    expect(read(plugin(m))).toBe(buildPluginSource(path.join(m.home, '.config', 'opencode'), CLI));
     expectV2Delivery(m);
     expect(m.blockLines('delivered')).not.toContain('/opencode.json');
 
