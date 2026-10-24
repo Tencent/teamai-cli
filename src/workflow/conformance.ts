@@ -1,4 +1,4 @@
-import type { WorkflowEnvelope } from './types.js';
+import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 
 export interface WorkflowClient {
   start(name: string): Promise<WorkflowEnvelope>;
@@ -24,22 +24,131 @@ export interface ConformanceScenario {
 }
 
 /**
+ * The kinds of driver a scenario speaks as. Each is its own driver identity, so a lease one holds is another driver's
+ * to the rest, and each declares what it can do in `driver.can`. `hitl` comes from the operation, since a local driver
+ * has a person only when it runs in a terminal.
+ */
+export const DRIVER_PROFILES = {
+  /** The in-process driver `teamai workflow run` uses. */
+  local: { can: { workspace: ['read-only', 'new', 'continue'] } },
+  /** An agent session that runs the protocol itself, with a person in the chat. */
+  session: { can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
+  /** A program that speaks only the CLI JSON protocol, such as an IDE or an orchestrator. */
+  external: { can: { workspace: ['read-only', 'new', 'continue'] } },
+} as const satisfies Record<string, { can: Record<string, unknown> }>;
+export type DriverProfile = keyof typeof DRIVER_PROFILES;
+
+/** The identity a scenario's `as` profile sends. */
+export function profileDriver(profile: DriverProfile): DriverIdentity {
+  return { kind: profile, machine: 'conformance', workspace: '/work' };
+}
+
+/**
  * `running` and `cancelled` name leases that earlier operations saved; `cancelled` must match exactly.
- * `absent` lists fields the lease must not carry.
+ * `absent` lists fields the lease must not carry. `as` picks the driver profile, `local` when omitted.
+ * `state` is matched against the persisted run after the operation. `advance` moves the clock the engine reads.
  */
 export type ConformanceOperation =
-  | { kind: 'next'; saveAs: string; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean; cancelled?: string[]; absent?: string[]; expect: Record<string, unknown> }
-  | { kind: 'respond'; step: string; choice: string; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
+  | {
+    kind: 'next'; saveAs: string; as?: DriverProfile; running?: string[]; canTakeLease?: boolean; hitl?: boolean; claim?: boolean;
+    cancelled?: string[]; absent?: string[]; expect: Record<string, unknown>; state?: Record<string, unknown>;
+  }
+  | { kind: 'respond'; step: string; choice: string; as?: DriverProfile; note?: string; pass?: number; json?: unknown; expect: Record<string, unknown> }
   | { kind: 'retry'; step: string; expect: Record<string, unknown> }
   | { kind: 'cancel'; step?: string; expect: Record<string, unknown> }
+  | { kind: 'advance'; ms: number }
   | {
     kind: 'report';
     lease?: string;
+    as?: DriverProfile;
     attempt?: string;
     revision?: number;
     body: Record<string, unknown>;
     expect: Record<string, unknown>;
   };
+
+/** The assertions a runner lends the interpreter, so the scenarios do not depend on a test framework. */
+export type ConformanceExpect = (actual: unknown, message?: string) => {
+  toMatchObject(expected: Record<string, unknown>): void;
+  toEqual(expected: unknown): void;
+  not: { toHaveProperty(property: string): void };
+};
+
+/** What a runner provides: its client, how it reads the run file, and how it moves the clock. */
+export interface ConformanceRunner {
+  client: WorkflowClient;
+  readRun(runId: string): Promise<RunState>;
+  advance(ms: number): Promise<void>;
+  expect: ConformanceExpect;
+}
+
+/**
+ * Runs one scenario as a driver that speaks only the protocol: it keeps each lease's attempt and revision, and lists
+ * the attempts an operation names in `running`.
+ */
+export async function runConformanceScenario(scenario: ConformanceScenario, runner: ConformanceRunner): Promise<void> {
+  const { client, expect } = runner;
+  const started = await client.start(scenario.workflowName);
+  if ('error' in started) throw new Error(started.error.message);
+  const runId = String(started.data.run);
+  const leases = new Map<string, { attempt: string; revision: number }>();
+  const attemptOf = (name: string): string | undefined => leases.get(name)?.attempt;
+  for (const operation of scenario.operations) {
+    switch (operation.kind) {
+      case 'next': {
+        const profile = operation.as ?? 'local';
+        const { can } = DRIVER_PROFILES[profile];
+        const envelope = await client.next(runId, {
+          driver: { ...profileDriver(profile), can: { ...can, ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}) } },
+          ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
+          ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
+          ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
+        });
+        expect(envelope).toMatchObject(operation.expect);
+        if (operation.state) expect(await runner.readRun(runId)).toMatchObject(operation.state);
+        if ('data' in envelope && envelope.data.hitl) {
+          const hitl = envelope.data.hitl as { step: string; pass: number; respond: string };
+          expect(hitl.respond).toEqual(`teamai workflow respond ${runId} ${hitl.step} <option> --pass ${hitl.pass}`);
+        }
+        if (operation.cancelled) expect('data' in envelope && envelope.data.cancelled).toEqual(operation.cancelled.map(attemptOf));
+        for (const field of operation.absent ?? []) expect('data' in envelope ? envelope.data.lease : undefined).not.toHaveProperty(field);
+        if ('data' in envelope && envelope.data.lease) {
+          leases.set(operation.saveAs, envelope.data.lease as { attempt: string; revision: number });
+        }
+        break;
+      }
+      case 'respond': {
+        const json = 'json' in operation || !operation.as ? operation.json : { driver: profileDriver(operation.as) };
+        expect(await client.respond(runId, operation.step, operation.choice, { note: operation.note, pass: operation.pass, json })).toMatchObject(operation.expect);
+        break;
+      }
+      case 'retry':
+        expect(await client.retry(runId, operation.step)).toMatchObject(operation.expect);
+        break;
+      case 'cancel':
+        expect(await client.cancel(runId, operation.step)).toMatchObject(operation.expect);
+        break;
+      case 'advance':
+        await runner.advance(operation.ms);
+        break;
+      case 'report': {
+        const lease = operation.lease ? leases.get(operation.lease) : undefined;
+        expect(await client.report(runId, {
+          attempt: operation.attempt ?? lease?.attempt,
+          revision: operation.revision ?? lease?.revision,
+          driver: profileDriver(operation.as ?? 'local'),
+          ...operation.body,
+        })).toMatchObject(operation.expect);
+        break;
+      }
+      default: {
+        const unhandled: never = operation;
+        throw new Error(`unknown conformance operation ${JSON.stringify(unhandled)}`);
+      }
+    }
+  }
+  if (scenario.expectState) expect(await runner.readRun(runId)).toMatchObject(scenario.expectState);
+}
 
 const TWO_STEPS = `schemaVersion: v1alpha1
 name: build
@@ -256,6 +365,10 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
       },
       { kind: 'next', saveAs: 'done', expect: { data: { done: { outcome: 'succeeded' } } } },
     ],
+    expectState: { steps: [{ id: 'one', status: 'succeeded' }, {
+      id: 'two', status: 'succeeded', outcome: 'success', outputs: { ok: true }, tool: 'claude', model: 'claude-sonnet', session: 'session-1',
+      tokens: { input: 3, output: 2, cachedInput: 1 },
+    }] },
   },
   {
     name: 'report with an unread payload field lists it in ignored',
@@ -284,6 +397,7 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
         expect: { data: { step: { status: 'failed', outcome: 'failed' } } },
       },
     ],
+    expectState: { steps: [{ id: 'two', status: 'failed', failure: { code: 'invalid_output', message: 'stdout JSON does not match output: output.ok must be a boolean' } }] },
   },
   {
     name: 'repeated report',
@@ -597,7 +711,8 @@ workflowConformanceScenarios.push(
     operations: [
       { kind: 'next', saveAs: 'parallel', hitl: true, expect: { data: { lease: { step: 'parallel' } } } },
       { kind: 'next', saveAs: 'hitl', hitl: true, canTakeLease: false, running: ['parallel'], expect: { data: { hitl: { step: 'work', kind: 'approve', pass: 1, options: ['yes', 'no'] } } } },
-      { kind: 'next', saveAs: 'busy', canTakeLease: false, running: ['parallel'], expect: { data: { wait: { reason: 'parallel is leased' } } } },
+      { kind: 'next', saveAs: 'busy', canTakeLease: false, running: ['parallel'], expect: { data: { wait: { reason: 'parallel is leased' } } },
+        state: { steps: [{ id: 'work', status: 'waiting' }, { id: 'later', status: 'pending' }, { id: 'parallel', status: 'leased' }] } },
       { kind: 'respond', step: 'work', choice: 'yes', pass: 1, expect: { data: { answered: { step: 'work', choice: 'yes', channel: 'cli' }, run: { revision: 1 } } } },
       { kind: 'respond', step: 'work', choice: 'no', expect: { error: { code: 'repeated_response' } } },
       { kind: 'next', saveAs: 'work', hitl: true, running: ['parallel'], expect: { data: { lease: { step: 'work' } } } },
