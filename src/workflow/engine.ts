@@ -25,7 +25,9 @@ import { addItems, afterStanding, expandItems, isItem, itemsAfter, itemsOf, item
 import { decideRound, decideStepLoop, exhaustedAtStart, firstPass, loopSettled } from './loop.js';
 import { childScope, contextOf, insertChildren, localId, statesIn, stepDefinitions, topScope, type Scope } from './scope.js';
 import { deliverableOf, deliveryProblem, deliveryTarget, planWorkspace, plannedBranch, sessionOf, type LeaseSession, type SessionRef, type WorkspaceContract, type WorkspaceMode, type WorkspacePlan } from './workspace.js';
-import { deliverPr, deliveryFailure, reportedPrMismatch, type DeliveryJob, type DeliveryKey, type DeliveryOutcome } from './pr-delivery.js';
+import {
+  deliverPr, deliveryFailure, findDelivered, reportedPrMismatch, type DeliveryJob, type DeliveryKey, type DeliveryOutcome, type UnresolvedCreate,
+} from './pr-delivery.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
 import { deliveryLockPath, generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
 import { withFileLock } from '../update.js';
@@ -884,12 +886,14 @@ function deliveryKey(step: DeliveringStep): DeliveryKey {
   return { step: step.id, pass: step.pass ?? 1, settledAt: step.settledAt, branch: step.delivery.branch, head: step.delivery.head };
 }
 
+/** Whether `a` and `b` name one delivery: the same pass of the same step, settled at the same revision, of one commit. */
+function sameKey(a: DeliveryKey, b: DeliveryKey): boolean {
+  return a.step === b.step && a.pass === b.pass && a.settledAt === b.settledAt && a.branch === b.branch && a.head === b.head;
+}
+
 /** The step `key` names, while it still delivers that pass of that commit. */
 function deliveringStep(run: RunState, key: DeliveryKey): DeliveringStep | undefined {
-  const step = run.steps.find((item): item is DeliveringStep => item.status === 'delivering' && item.id === key.step);
-  if (!step) return undefined;
-  const current = deliveryKey(step);
-  return current.pass === key.pass && current.settledAt === key.settledAt && current.branch === key.branch && current.head === key.head ? step : undefined;
+  return run.steps.find((item): item is DeliveringStep => item.status === 'delivering' && sameKey(deliveryKey(item), key));
 }
 
 /**
@@ -917,42 +921,41 @@ function nextDelivery(run: RunState): DeliveryJob | undefined {
   return undefined;
 }
 
-/**
- * A request a step asked its host to open before it settled otherwise, cancelled or failed, with no receipt for its pass:
- * the host may hold one the run does not list. Its job is only looked up, never opened. `tried` holds the steps this
- * drain already looked up, so one the host cannot answer for now waits for a later call.
- */
-function unresolvedCreation(run: RunState, tried: ReadonlySet<string>): DeliveryJob | undefined {
-  if (!run.checkout || !run.base) return undefined;
-  for (const step of run.steps) {
-    if (step.status === 'delivering' || !('delivery' in step) || !step.delivery?.creating || tried.has(step.id)) continue;
-    const key = { step: step.id, pass: step.pass ?? 1, settledAt: step.settledAt, branch: step.delivery.branch, head: step.delivery.head };
-    if (run.deliveries?.some((receipt) => receipt.step === key.step && receipt.pass === key.pass && receipt.branch === key.branch)) continue;
-    const target = deliveryTarget(run, key.branch);
-    if (target !== undefined) return { key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target };
-  }
-  return undefined;
+/** The first request in `run.creating` that this drain has not looked up yet. */
+function unresolvedCreate(run: RunState, tried: readonly UnresolvedCreate[]): { create: UnresolvedCreate; checkout: string } | undefined {
+  const { checkout } = run;
+  const create = run.creating?.find((listed) => !tried.some((done) => sameCreate(done, listed)));
+  return create && checkout ? { create, checkout } : undefined;
 }
 
-/** Drops the mark of the request `key` asked for, once a lookup said whether its host holds it. */
-function creationResolved(run: RunState, key: DeliveryKey): void {
-  const step = run.steps.find((item) => item.id === key.step && (item.pass ?? 1) === key.pass);
-  if (step && step.status !== 'delivering' && 'delivery' in step && step.delivery?.branch === key.branch && step.delivery.head === key.head) {
-    delete step.delivery.creating;
-  }
+function sameCreate(a: UnresolvedCreate, b: UnresolvedCreate): boolean {
+  return sameKey(a, b) && a.target === b.target;
+}
+
+/** Drops `create` from the requests the run has no receipt for. */
+function forgetCreate(run: RunState, create: UnresolvedCreate): void {
+  const left = run.creating?.filter((listed) => !sameCreate(listed, create));
+  if (left?.length) run.creating = left;
+  else delete run.creating;
+}
+
+/** Lists `url` as what `key` delivered into `target`, once; true when the run had no receipt for it yet. */
+function recordReceipt(run: RunState, key: DeliveryKey, target: string, url: PrUrl): boolean {
+  if (run.deliveries?.some((receipt) => receipt.url === url)) return false;
+  (run.deliveries ??= []).push({ url, branch: key.branch, base: target, step: key.step, pass: key.pass });
+  return true;
 }
 
 /**
  * Applies a delivery's outcome to the job it was picked as. A pull request gets its receipt whatever became of the step
- * meanwhile: one opened while a cancel landed cannot be taken back, so the run says it exists. The step settles only
- * while it still delivers what `job` delivered, at the revision its agent's report settled it. `requeueEnd` is set when
- * the receipt reached a run that already ended, whose end record must go out again to list it.
+ * meanwhile: one opened while a cancel landed cannot be taken back, so the run says it exists. The receipt settles the
+ * job's listed request; a failed delivery leaves it listed, since a create that failed may still have opened one. The
+ * step settles only while it still delivers what `job` delivered, at the revision its agent's report settled it.
+ * `requeueEnd` is set when the receipt reached a run that already ended, whose end record must go out again to list it.
  */
 function completeDelivery(run: RunState, job: DeliveryJob, outcome: DeliveryOutcome): { requeueEnd: boolean } {
-  const receipted = outcome.ok && !run.deliveries?.some((receipt) => receipt.url === outcome.pr);
-  if (outcome.ok && receipted) {
-    (run.deliveries ??= []).push({ url: outcome.pr, branch: job.key.branch, base: job.target, step: job.key.step, pass: job.key.pass });
-  }
+  const receipted = outcome.ok && recordReceipt(run, job.key, job.target, outcome.pr);
+  if (outcome.ok) forgetCreate(run, { ...job.key, target: job.target });
   if (run.status === 'running') reconcileRun(run);
   const step = deliveringStep(run, job.key);
   if (step && outcome.ok) delivered(step);
@@ -961,9 +964,20 @@ function completeDelivery(run: RunState, job: DeliveryJob, outcome: DeliveryOutc
 }
 
 /**
+ * Applies what a lookup said of a request in `run.creating`, and touches no step. One the host holds gets its receipt,
+ * and one it does not hold is dropped. One it could not answer for stays for a later drain.
+ */
+function resolveCreate(run: RunState, create: UnresolvedCreate, found: Awaited<ReturnType<typeof findDelivered>>): { requeueEnd: boolean } {
+  if (found.kind === 'failed') return { requeueEnd: false };
+  const receipted = found.kind === 'found' && recordReceipt(run, create, create.target, found.pr);
+  forgetCreate(run, create);
+  return { requeueEnd: receipted && run.status !== 'running' };
+}
+
+/**
  * The gate before a pull request is opened: with what reports and controls left pending applied, whether the step still
- * delivers `job`. If it does, it is marked as creating in the same write, so a request opened by a process that then
- * stops is looked up rather than opened again.
+ * delivers `job`. If it does, the run lists its request in the same write, so one opened by a process that then stops
+ * is looked up, whatever becomes of the step, rather than lost.
  */
 async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob): Promise<boolean> {
   const marked = await updateRun(config, runId, async (run) => {
@@ -971,7 +985,8 @@ async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob
     const settledRun = reconcileRun(run);
     const step = 'unreadable' in settledRun || 'outcome' in settledRun ? undefined : deliveringStep(run, job.key);
     if (!step) return { value: false };
-    step.delivery.creating = true;
+    const create = { ...job.key, target: job.target };
+    if (!run.creating?.some((listed) => sameCreate(listed, create))) (run.creating ??= []).push(create);
     return { value: true, write: { ...run, updatedAt: new Date().toISOString() } };
   });
   return marked.status === 'done' && marked.value;
@@ -979,40 +994,46 @@ async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob
 
 /**
  * Delivers the run's delivering steps one at a time, before `next` answers, whichever driver called it, then looks up
- * the requests that steps which stopped delivering may have left open, on an ended run too. The run lock is held to pick
- * a delivery and to apply its outcome, never across git or a provider. While another process of this machine delivers,
- * it holds the delivery lock, and this call leaves the work to it.
+ * each request in `run.creating` once, on an ended run too. The run lock is held to pick a delivery and to apply its
+ * outcome, never across git or a provider. While another process of this machine delivers, it holds the delivery lock,
+ * and this call leaves the work to it.
  */
 async function drainDeliveries(config: LocalConfig, runId: string): Promise<void> {
   if (!isRunId(runId)) return;
   const loaded = await readRun(config, runId);
   if (typeof loaded === 'string') return;
   const delivering = loaded.status === 'running' && loaded.steps.some((step) => step.status === 'delivering');
-  if (!delivering && !unresolvedCreation(loaded, new Set())) return;
+  if (!delivering && !unresolvedCreate(loaded, [])) return;
   const drained = await withFileLock(deliveryLockPath(config, runId), { attempts: 1, delayMs: 0 }, async () => {
     let requeued = false;
-    const tried = new Set<string>();
+    const tried: UnresolvedCreate[] = [];
     for (;;) {
       const picked = await updateRun(config, runId, async (run) => {
         if (run === 'missing') return { value: undefined };
         const before = JSON.stringify(run);
-        const next = nextDelivery(run);
-        const unresolved = next ? undefined : unresolvedCreation(run, tried);
-        const value = next ? { job: next, lookupOnly: false } : unresolved && { job: unresolved, lookupOnly: true };
+        const job = nextDelivery(run);
+        const value = job ? { job } : unresolvedCreate(run, tried);
         return { value, ...(JSON.stringify(run) !== before ? { write: { ...run, updatedAt: new Date().toISOString() } } : {}) };
       });
       if (picked.status !== 'done' || !picked.value) return requeued;
-      const { job, lookupOnly } = picked.value;
-      if (lookupOnly) tried.add(job.key.step);
-      // A gate that never opens leaves a lookup: the request is found, or `withdrawn` says the host holds none.
-      const outcome = await deliverPr(job, lookupOnly ? async () => false : () => markCreating(config, runId, job));
+      let apply: (run: RunState) => { requeueEnd: boolean };
+      if ('job' in picked.value) {
+        const { job } = picked.value;
+        const outcome = await deliverPr(job, () => markCreating(config, runId, job));
+        apply = (run) => completeDelivery(run, job, outcome);
+      } else {
+        const { create, checkout } = picked.value;
+        tried.push(create);
+        const found = await findDelivered(checkout, create);
+        apply = (run) => resolveCreate(run, create, found);
+      }
       const applied = await updateRun(config, runId, async (run) => {
         if (run === 'missing') return { value: undefined };
-        const { requeueEnd } = completeDelivery(run, job, outcome);
-        if (lookupOnly && (outcome.ok || outcome.fault.kind === 'withdrawn')) creationResolved(run, job.key);
+        const before = JSON.stringify(run);
+        const { requeueEnd } = apply(run);
         // Queued under the lock with the receipt, as finishRun queues an end; it publishes once the lock is released.
         if (requeueEnd) run.endRecordQueued = await queueRunRecord(config, run, run.driver, 'end');
-        return { value: requeueEnd, write: { ...run, updatedAt: new Date().toISOString() } };
+        return { value: requeueEnd, ...(JSON.stringify(run) !== before ? { write: { ...run, updatedAt: new Date().toISOString() } } : {}) };
       });
       if (applied.status !== 'done' || applied.value === undefined) return requeued;
       requeued ||= applied.value;

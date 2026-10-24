@@ -299,9 +299,9 @@ describe('delivering a step', () => {
     const run = await state(config, runId);
     expect(run.deliveries?.map((receipt) => receipt.url)).toEqual([url]);
     expect(gh.calls().map((call) => call.args[0])).toEqual('create' in options ? ['api', 'pr', 'api'] : ['api']);
-    // A step marked before it asks GitHub to open a request looks one up first after a crash; one found needs no mark.
-    expect(run.steps[0]).toMatchObject({ delivery: { branch, ...('create' in options ? { creating: true } : {}) } });
-    if (!('create' in options)) expect(run.steps[0]).not.toHaveProperty('delivery.creating');
+    // The receipt settles the request the run listed before it asked GitHub to open one.
+    expect(run.creating).toBeUndefined();
+    expect(run.steps[0]).toMatchObject({ delivery: { branch } });
     const handed = projectRun(run, {});
     expect(handed.ok && handed.value.steps[0]).toEqual(run.steps[0]);
   });
@@ -838,7 +838,8 @@ describe('retrying and cancelling a delivery', () => {
     await creating;
     // A stopped process leaves its delivery lock to whoever comes next.
     fs.rmSync(deliveryLockPath(config, runId), { force: true });
-    expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'cancelled', delivery: { branch, creating: true } });
+    expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'cancelled', delivery: { branch } });
+    expect((await state(config, runId)).creating).toEqual([expect.objectContaining({ step: 'fix', pass: 1, branch, target: 'main' })]);
     expect((await state(config, runId)).deliveries).toBeUndefined();
 
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
@@ -868,13 +869,109 @@ describe('retrying and cancelling a delivery', () => {
     void leaseNext(config, runId, remote, writable);
     await creating;
     fs.rmSync(deliveryLockPath(config, runId), { force: true });
-    expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'cancelled', delivery: { branch, creating: true } });
+    expect((await state(config, runId)).steps[0]).toMatchObject({ id: 'fix', status: 'cancelled', delivery: { branch } });
+    expect((await state(config, runId)).creating).toEqual([expect.objectContaining({ step: 'fix', pass: 1, branch, target: 'main' })]);
 
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: {} } });
     const run = await state(config, runId);
     expect(create).toHaveBeenCalledTimes(1);
     expect(run.deliveries).toBeUndefined();
     expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'cancelled', delivery: { branch } });
-    expect(run.steps[0]).not.toMatchObject({ delivery: { creating: true } });
+    expect(run.creating).toBeUndefined();
+  });
+
+  it('records a pull request a cancelled delivery opened before its process stopped, when the step is retried before any later call', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const url = 'https://github.com/fixture/app/pull/8';
+    const open: string[] = [];
+    let opened = (): void => {};
+    const creating = new Promise<void>((resolve) => { opened = resolve; });
+    const create = providerDouble(async ({ source, target }) => (source === branch && target === 'main' ? open[0] : undefined), async () => {
+      await cancelRun(config, runId, 'fix');
+      open.push(url);
+      opened();
+      return new Promise<string>(() => {});
+    });
+    void leaseNext(config, runId, remote, writable);
+    await creating;
+    fs.rmSync(deliveryLockPath(config, runId), { force: true });
+    expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: { retried: { step: 'fix', pass: 2 } } });
+
+    expect(await take(config, runId)).toMatchObject({ step: 'fix', pass: 2 });
+    expect((await state(config, runId)).deliveries).toEqual([{ url, branch, base: 'main', step: 'fix', pass: 1 }]);
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a step that was retried while a lookup-only reconcile ran delivering, and delivers it', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const url = 'https://github.com/fixture/app/pull/3';
+    let retried = false;
+    let opened: string | undefined;
+    const create = providerDouble(async () => {
+      const step = (await state(config, runId)).steps[0];
+      if (step?.status === 'failed' && !retried) {
+        retried = true;
+        expect(await retryStep(config, runId, 'fix')).toMatchObject({ data: { retried: { step: 'fix', pass: 1 } } });
+        return undefined;
+      }
+      if (create.mock.calls.length === 1 && !retried) throw new Error('GitHub timed out');
+      return opened;
+    }, async () => {
+      if (create.mock.calls.length === 1) throw new Error('GitHub timed out');
+      opened = url;
+      return url;
+    });
+
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    const run = await state(config, runId);
+    expect(retried).toBe(true);
+    expect(run.steps[0]).toMatchObject({ id: 'fix', status: 'succeeded' });
+    expect(run.deliveries?.map((receipt) => receipt.url)).toEqual([url]);
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
+  it('looks up before it opens again a pull request of a step that still delivers after its process stopped inside the create', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    const to = pushWork(root, fix);
+    await succeed(config, runId, fix, { to });
+    const url = 'https://github.com/fixture/app/pull/4';
+    const asked: string[] = [];
+    const open: string[] = [];
+    let stopped = (): void => {};
+    const creating = new Promise<void>((resolve) => { stopped = resolve; });
+    const create = providerDouble(async () => {
+      asked.push('find');
+      return open[0];
+    }, async () => {
+      asked.push('create');
+      if (create.mock.calls.length > 1) {
+        open.push(url);
+        return url;
+      }
+      stopped();
+      // The process stops here, before the host opened anything, and the step still delivers.
+      return new Promise<string>(() => {});
+    });
+    void leaseNext(config, runId, remote, writable);
+    await creating;
+    fs.rmSync(deliveryLockPath(config, runId), { force: true });
+    const marked = await state(config, runId);
+    expect(marked.steps[0]).toMatchObject({ id: 'fix', status: 'delivering' });
+    expect(marked.creating).toEqual([{ step: 'fix', pass: 1, settledAt: 2, branch, head: to, target: 'main' }]);
+    const handed = projectRun(marked, {});
+    expect(handed.ok && handed.value.creating).toEqual(marked.creating);
+
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    expect(asked).toEqual(['find', 'create', 'find', 'create', 'find']);
+    const run = await state(config, runId);
+    expect(run.deliveries).toEqual([{ url, branch, base: 'main', step: 'fix', pass: 1 }]);
+    expect(run.creating).toBeUndefined();
   });
 });

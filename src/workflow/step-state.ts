@@ -131,12 +131,8 @@ type StepBase = z.infer<typeof StepBaseSchema>;
 /**
  * What a step that delivers hands to delivery once its agent succeeded: the branch, the commit that branch must hold on
  * origin, and a URL its driver reported and the engine kept. The target is not kept; it follows from the run.
- * `creating` is set under the run lock right before TeamAI asks the host to open a request, and stays: a request may
- * exist with no receipt after a crash or a cancel, so such a step is looked up before anything opens another.
  */
-const DeliverySchema = z.object({
-  branch: z.string().min(1), head: z.string().min(1), reported: PrUrlSchema.optional(), creating: z.literal(true).optional(),
-});
+const DeliverySchema = z.object({ branch: z.string().min(1), head: z.string().min(1), reported: PrUrlSchema.optional() });
 export type Delivery = z.infer<typeof DeliverySchema>;
 
 /**
@@ -328,7 +324,7 @@ export function fail(state: StepState, settlement: Settlement<FailedStep>): Fail
 
 /**
  * An open step is cancelled before it settles. A leased or delivering one keeps the attempt it no longer settles, and a
- * delivering one what it was delivering, since a request it asked for may exist with no receipt yet.
+ * delivering one the branch that holds its work.
  */
 export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running' | 'delivering'>, failure: WorkflowFailure, settledAt: number): CancelledStep {
   const attempt = state.status === 'leased' || state.status === 'delivering' ? state.attempt : undefined;

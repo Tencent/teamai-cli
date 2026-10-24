@@ -10,6 +10,7 @@ import {
   ArchivedPassSchema, SessionContinuationSchema, StepCheckpointSchema, type ArchivedPass, type HitlAnswer, type StepPass, type StepState,
 } from './step-state.js';
 import type { RunState, StepLease, WorkflowDefinition, WorkflowFailure } from './types.js';
+import type { UnresolvedCreate } from './pr-delivery.js';
 
 /**
  * The run state one install hands to another, at `workflows/runs/<id>/state.json` on `teamai-reports`. It carries what
@@ -37,6 +38,10 @@ function withCommitIds<T extends z.ZodTypeAny>(schema: T): z.ZodEffects<T> {
   });
 }
 
+const UnresolvedCreateSchema: z.ZodType<UnresolvedCreate> = z.object({
+  step: z.string(), pass: z.number().int(), settledAt: z.number().int(), branch: z.string().min(1), head: z.string().min(1), target: z.string().min(1),
+});
+
 const BodySchema = z.object({
   schemaVersion: z.literal('v1alpha1'),
   name: z.string(),
@@ -56,6 +61,8 @@ const BodySchema = z.object({
   /** The run's workspaces by branch, with the commit each was last reported at. Which driver holds one stays local. */
   copies: z.record(z.object({ commit: CommitIdSchema.optional(), from: z.string().optional() })),
   deliveries: z.array(DeliveryReceiptSchema).optional(),
+  /** The requests a claimer looks up before anything opens another: the machine that handed the run over may have opened them. */
+  creating: z.array(UnresolvedCreateSchema).optional(),
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
   /** The scorers the run pinned, by hash only: the machine that claims the run uses its own copy when the hash matches. */
   scorers: z.record(z.object({ sourceHash: z.string() })).optional(),
@@ -197,7 +204,7 @@ const RUN_RULES = {
   end: 'publish', failure: 'rewrite', inputs: 'publish', sourceHash: 'publish', teamRevision: 'publish',
   definition: 'rewrite', workflows: 'rewrite', scorers: 'rewrite', steps: 'rewrite', settledAttempts: 'rewrite', settledCount: 'rewrite',
   endRecordQueued: 'drop', cancelledAttempts: 'rewrite', archive: 'rewrite', round: 'publish', base: 'publish',
-  checkout: 'drop', copies: 'rewrite', deliveries: 'publish', sessionContinuations: 'publish', publication: 'drop', createdAt: 'publish', updatedAt: 'publish',
+  checkout: 'drop', copies: 'rewrite', deliveries: 'publish', creating: 'publish', sessionContinuations: 'publish', publication: 'drop', createdAt: 'publish', updatedAt: 'publish',
 } satisfies FieldRules<RunState>;
 
 const STEP_RULES = {

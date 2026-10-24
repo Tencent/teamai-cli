@@ -1,6 +1,7 @@
 /** Workflow types for the v1alpha1 local-driver subset. */
 
 import type { PinnedScorer } from '../scorers/pin.js';
+import type { UnresolvedCreate } from './pr-delivery.js';
 import type { DeliveryReceipt } from './pr-url.js';
 import type { ArchivedPass, SessionContinuation, StepState } from './step-state.js';
 import type { LeaseSession } from './workspace.js';
@@ -266,6 +267,11 @@ export interface RunState {
    * request was opened, never that it is still open, so whether a delivery reuses one is its host's lookup to say.
    */
   deliveries?: DeliveryReceipt[];
+  /**
+   * The pull requests TeamAI asked a host to open and has no receipt for, listed under the run lock right before each
+   * create. A receipt or a lookup removes one; a retry, a cancel or an archive of its step does not.
+   */
+  creating?: UnresolvedCreate[];
   /**
    * Sessions a step resumed and continued under another id, in report order: a copy on another machine or in another
    * tool. `to` holds the turns of `from` and the ones that step added, so a step that would resume `from` resumes `to`.
