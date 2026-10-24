@@ -1,4 +1,4 @@
-import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
+import type { GitProvider, PrCreateOptions, PullRequestLookup, RepoInfo, OrgRepoInfo } from '../types.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   ensureGitLabAvailable,
@@ -7,6 +7,7 @@ import {
   gitlabRepoClone,
   gitlabCreateRepo,
   gitlabMrCreate,
+  gitlabFindOpenMr,
   GitLabRepoNotFoundError,
 } from './gitlab-api.js';
 import { gitlabListOrgRepos } from './org.js';
@@ -22,8 +23,7 @@ import type { MRData } from '../../types.js';
  */
 export class GitLabProvider implements GitProvider {
   readonly name = 'gitlab';
-  /** Workflow delivery cannot look up GitLab merge requests yet, so it opens none. */
-  readonly pullRequests = null;
+  readonly pullRequests: PullRequestLookup = { findOpen: gitlabFindOpenMr };
 
   parseRepoInput(input: string): RepoInfo {
     return parseGitLabRepoInput(input);

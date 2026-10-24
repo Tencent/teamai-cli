@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GitHubProvider } from '../providers/github/index.js';
+import { GitLabProvider } from '../providers/gitlab/index.js';
 import { GenericGitProvider } from '../providers/git/index.js';
 import { providerForRemote } from '../providers/registry.js';
-import type { PullRequestLookup, PullRequestRef } from '../providers/types.js';
+import type { GitProvider, PullRequestLookup, PullRequestRef } from '../providers/types.js';
 import { fakeGh, resolveGh } from './helpers/fake-gh.js';
 
 const ref: PullRequestRef = { repo: 'acme/app', source: 'teamai/run/work/p1', target: 'main', timeoutMs: 1000 };
@@ -61,14 +62,81 @@ describe('GitHub pull request lookup', () => {
   });
 });
 
+function lookupOf(provider: GitProvider): PullRequestLookup {
+  if (!provider.pullRequests) throw new Error(`${provider.name} has no pull request lookup`);
+  return provider.pullRequests;
+}
+
+/** Answers every request with `body` as JSON and `status`, and returns the spy. */
+function answering(body: unknown, status = 200) {
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify(body), { status }));
+  vi.stubGlobal('fetch', fetcher);
+  return fetcher;
+}
+
+/** Answers no request until its signal aborts it, as a host that never responds. */
+function hanging(): void {
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>((_url, init) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+  })));
+}
+
+/** An open merge request as the GitLab API lists it. */
+const mr = (source: string, iid = 7, sourceProject = 1, url = `https://gitlab.com/acme/app/-/merge_requests/${iid}`) => ({
+  web_url: url, state: 'opened', source_branch: source, target_branch: 'main', source_project_id: sourceProject, target_project_id: 1,
+});
+
+describe('GitLab merge request lookup', () => {
+  beforeEach(() => {
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    vi.stubEnv('GITLAB_URL', '');
+    vi.stubEnv('TEAMAI_GITLAB_HOST', '');
+  });
+
+  it('finds the open request of this project branch into the target, never one from a fork with the same branch name', async () => {
+    const fetcher = answering([mr(ref.source, 6, 2), mr('other', 8), mr(ref.source)]);
+
+    expect(await lookupOf(new GitLabProvider()).findOpen(ref)).toBe('https://gitlab.com/acme/app/-/merge_requests/7');
+    const url = new URL(String(fetcher.mock.calls[0]?.[0]));
+    expect([`${url.origin}${url.pathname}`, url.searchParams.get('state'), url.searchParams.get('source_branch'), url.searchParams.get('target_branch')])
+      .toEqual(['https://gitlab.com/api/v4/projects/acme%2Fapp/merge_requests', 'opened', ref.source, 'main']);
+    answering([mr(ref.source, 6, 2)]);
+    expect(await lookupOf(new GitLabProvider()).findOpen(ref)).toBeUndefined();
+  });
+
+  it('fails, rather than finding nothing, without a token, on an answer it cannot read or see past, on another host, or with no answer in time', async () => {
+    const lookup = lookupOf(new GitLabProvider());
+    vi.stubEnv('GITLAB_TOKEN', ''); vi.stubEnv('GITLAB_PRIVATE_TOKEN', ''); vi.stubEnv('GITLAB_PAT', '');
+    await expect(lookup.findOpen(ref)).rejects.toThrow('GitLab authentication unavailable');
+    vi.stubEnv('GITLAB_TOKEN', 'test-token');
+    answering({ message: 'private-token-in-body' }, 403);
+    await expect(lookup.findOpen(ref)).rejects.toThrow(/^GitLab answered the open merge request lookup with HTTP 403\.(?!.*private-token-in-body)/);
+    answering({ message: 'private-token-in-body' });
+    await expect(lookup.findOpen(ref)).rejects.toThrow(/^GitLab answered the open merge request lookup with data TeamAI cannot read\.$/);
+    answering(Array.from({ length: 100 }, (_, index) => mr(`other-${index}`, index)));
+    await expect(lookup.findOpen(ref)).rejects.toThrow('more open merge requests than one page');
+    answering([mr(ref.source, 7, 1, 'https://evil.example/acme/app/-/merge_requests/7')]);
+    await expect(lookup.findOpen(ref)).rejects.toThrow('on another host');
+    hanging();
+    await expect(lookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
+  });
+
+  it('gives up on a create GitLab does not answer in time', async () => {
+    hanging();
+    await expect(new GitLabProvider().createPullRequest({ repo: 'acme/app', source: ref.source, target: 'main', title: 't', spawnTimeoutMs: 20 })).rejects.toThrow();
+  });
+});
+
 describe('the provider of a checkout origin', () => {
   it.each([
-    ['https://user:secret@github.com/acme/app.git', 'acme/app'],
-    ['ssh://git@github.com/acme/app.git', 'acme/app'],
-    ['git@github.com:acme/app.git', 'acme/app'],
-  ])('reads GitHub and the repository from %s', (remote, repo) => {
+    ['https://user:secret@github.com/acme/app.git', 'github', 'acme/app'],
+    ['ssh://git@github.com/acme/app.git', 'github', 'acme/app'],
+    ['git@github.com:acme/app.git', 'github', 'acme/app'],
+    ['git@gitlab.com:acme/platform/app.git', 'gitlab', 'acme/platform/app'],
+  ])('reads the provider and the repository from %s', (remote, provider, repo) => {
+    vi.stubEnv('GITLAB_URL', ''); vi.stubEnv('TEAMAI_GITLAB_HOST', '');
     const origin = providerForRemote(remote);
-    expect(origin.kind === 'provider' && [origin.provider.name, origin.repo]).toEqual(['github', repo]);
+    expect(origin.kind === 'provider' && [origin.provider.name, origin.repo]).toEqual([provider, repo]);
   });
 
   it.each(['/srv/git/app.git', 'file:///srv/git/app.git', 'https://git.example.internal/acme/app.git', 'https://github.com/acme'])(
