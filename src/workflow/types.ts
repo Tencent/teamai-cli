@@ -257,9 +257,10 @@ export interface RunState {
   checkout?: string;
   /**
    * Workspaces this run has handed out, by branch. A `continue` step stays with the driver that opened the copy. A copy a
-   * claim brought from another machine has no owner until a driver leases it.
+   * claim brought from another machine has no owner until a driver leases it. `from` is the run branch the copy started
+   * from, `after` items before other needs, so a pull request from it targets the nearest delivered branch it grew from.
    */
-  copies?: Record<string, { owner?: DriverIdentity; commit?: string; origin?: string }>;
+  copies?: Record<string, { owner?: DriverIdentity; commit?: string; from?: string }>;
   /**
    * The pull requests delivered on this run, once each, in the order they first appeared. Append-only: a receipt says a
    * request was opened, never that it is still open, so whether a delivery reuses one is its host's lookup to say.

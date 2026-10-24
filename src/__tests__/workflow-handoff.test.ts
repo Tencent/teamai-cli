@@ -92,6 +92,19 @@ steps:
     command: echo change > change.txt
 `;
 
+const STACK = `schemaVersion: v1alpha1
+name: stack
+description: A change, and one that starts from it.
+steps:
+  - id: a
+    workspace: new
+    command: echo a > a.txt
+  - id: b
+    needs: [a]
+    workspace: new
+    command: echo b > b.txt
+`;
+
 const WORKSPACES = ['read-only', 'new', 'continue'] as const;
 
 interface Member {
@@ -518,7 +531,7 @@ describe('workflow handoff through teamai-reports', () => {
   });
 
   interface HandedStep { id: string; changes: { branch: string; base: string; from: string; to: string; commits: string[] }; read?: unknown; passes?: unknown[] }
-  interface HandedRun { base: { commit: string }; copies: Record<string, { commit: string }>; steps: HandedStep[]; archive: unknown[] }
+  interface HandedRun { base: { commit: string }; copies: Record<string, { commit: string; from?: string }>; steps: HandedStep[]; archive: unknown[] }
   it.each<[string, (snapshot: HandedRun, step: HandedStep, branch: string) => void, (at: number, branch: string) => string]>([
     ['its base', (snapshot) => { snapshot.base.commit = 'main'; }, () => 'base.commit'],
     ['a copy', (snapshot, _step, branch) => { snapshot.copies[branch] = { commit: 'HEAD' }; }, (_at, branch) => `copies.${branch}.commit`],
@@ -560,9 +573,13 @@ describe('workflow handoff through teamai-reports', () => {
     expect(await readRun(bob.config, runId)).toBe('missing');
   });
 
-  it.each([['a branch outside any run', 'main'], ['a branch of another run', 'teamai/r0123456789abcdef/change/p1']])(
-    'refuses to claim a snapshot whose copy is %s, and changes nothing',
-    async (_name, branch) => {
+  it.each<[string, (branch: string, commit: string) => HandedRun['copies'], (branch: string) => string]>([
+    ['is a branch outside any run', (_branch, commit) => ({ main: { commit } }), () => 'copies.main'],
+    ['is a branch of another run', (_branch, commit) => ({ 'teamai/r0123456789abcdef/change/p1': { commit } }), () => 'copies.teamai/r0123456789abcdef/change/p1'],
+    ['started from a branch outside the run', (branch, commit) => ({ [branch]: { commit, from: 'main' } }), (branch) => `copies.${branch}.from`],
+  ])(
+    'refuses to claim a snapshot whose copy %s, and changes nothing',
+    async (_name, copies, field) => {
       const acme = team({ ship: SHIP });
       const alice = await acme.member('alice');
       const bob = await acme.member('bob');
@@ -573,12 +590,12 @@ describe('workflow handoff through teamai-reports', () => {
       git(path.dirname(acme.origin), 'clone', '-q', '--branch', 'teamai-reports', acme.origin, editor);
       const rel = `workflows/runs/${runId}/state.json`;
       const snapshot: HandedRun = JSON.parse(fs.readFileSync(path.join(editor, rel), 'utf8'));
-      snapshot.copies = { [branch]: { commit: wrote.commit } };
+      snapshot.copies = copies(wrote.branch, wrote.commit);
       fs.writeFileSync(path.join(editor, rel), `${JSON.stringify(snapshot, null, 2)}\n`);
       git(editor, 'commit', '-qam', 'hand edit');
       git(editor, 'push', '-q', 'origin', 'teamai-reports');
 
-      expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: false, error: { code: 'snapshot_unsupported', field: `copies.${branch}` } });
+      expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: false, error: { code: 'snapshot_unsupported', field: field(wrote.branch) } });
       expect(await readRun(bob.config, runId)).toBe('missing');
     },
   );
@@ -1315,6 +1332,20 @@ describe('workflow handoff through teamai-reports', () => {
     const more = await work(bob, runId, 'more.txt');
     expect(more).toMatchObject({ step: 'change.more', branch: wrote.branch });
     expect(git(bob.checkout, 'rev-parse', `${more.commit}^`)).toBe(wrote.commit);
+  });
+
+  it('hands over a copy that started from the branch of a step it needs, with the branch it started from', async () => {
+    const acme = team({ stack: STACK });
+    const alice = await acme.member('alice');
+    const bob = await acme.member('bob');
+    const runId = await startIn(alice, 'stack');
+    const a = await work(alice, runId, 'a.txt');
+    const b = await work(alice, runId, 'b.txt');
+
+    expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true, value: { publication: 'published' } });
+    expect(await claimRun(bob.config, runId, { checkout: bob.checkout })).toMatchObject({ ok: true, value: { ownership: 'claimed' } });
+    const claimed = await readRun(bob.config, runId);
+    expect(typeof claimed !== 'string' && claimed.copies?.[b.branch]).toEqual({ commit: b.commit, from: a.branch });
   });
 
   it('refuses to publish, telling to publish again, when the run moves while publish checks the business origin', async () => {

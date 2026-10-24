@@ -265,17 +265,20 @@ function leaseData(
   } };
 }
 
-/** Records who opened a workspace the first time a driver takes its branch, or who first leases a copy a claim brought in. */
+/**
+ * Records who opened a workspace the first time a driver takes its branch, or who first leases a copy a claim brought in,
+ * and, before the copy has a commit, the branch it starts from.
+ */
 function rememberCopy(run: RunState, plan: WorkspacePlan, driver: DriverIdentity): void {
   const branch = plan.contract?.branch;
   if (!branch) return;
-  const origin = plan.contract?.start.branch ?? plan.contract?.merge[0]?.branch;
+  const from = plan.contract?.start.branch ?? plan.contract?.merge[0]?.branch;
   const copy = (run.copies ??= {})[branch];
   if (copy) {
     copy.owner ??= driver;
-    if (!copy.origin && !copy.commit && origin && origin !== branch) copy.origin = origin;
+    if (!copy.from && !copy.commit && from && from !== branch) copy.from = from;
   }
-  else run.copies[branch] = { owner: driver, ...(origin ? { origin } : {}) };
+  else run.copies[branch] = { owner: driver, ...(from && from !== branch ? { from } : {}) };
 }
 
 /**

@@ -54,7 +54,7 @@ const BodySchema = z.object({
   round: z.number().int().optional(),
   base: z.object({ ref: z.string().optional(), commit: CommitIdSchema }).optional(),
   /** The run's workspaces by branch, with the commit each was last reported at. Which driver holds one stays local. */
-  copies: z.record(z.object({ commit: CommitIdSchema.optional() })),
+  copies: z.record(z.object({ commit: CommitIdSchema.optional(), from: z.string().optional() })),
   deliveries: z.array(DeliveryReceiptSchema).optional(),
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
   /** The scorers the run pinned, by hash only: the machine that claims the run uses its own copy when the hash matches. */
@@ -75,8 +75,12 @@ const SnapshotSchema = z.object({
   write: z.string().min(1),
 }).merge(BodySchema).superRefine((snapshot, ctx) => {
   // A claim hands each copy's branch to git, so a snapshot never names a branch outside its own run.
-  for (const branch of Object.keys(snapshot.copies)) {
+  for (const [branch, copy] of Object.entries(snapshot.copies)) {
     if (!branch.startsWith(`teamai/${snapshot.run}/`)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['copies', branch], message: 'is not a branch of this run' });
+    // A pull request from the copy may target the branch it started from.
+    if (copy.from !== undefined && !copy.from.startsWith(`teamai/${snapshot.run}/`)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['copies', branch, 'from'], message: 'is not a branch of this run' });
+    }
   }
 });
 export type RunSnapshot = z.infer<typeof SnapshotSchema>;
@@ -222,7 +226,7 @@ const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldR
 // A lease another machine held is released when the run is handed over, so the session it offered stays here.
 const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop' } satisfies FieldRules<StepLease>;
 
-const COPY_RULES = { owner: 'drop', commit: 'publish', origin: 'publish' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
+const COPY_RULES = { owner: 'drop', commit: 'publish', from: 'publish' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
 
 const FAILURE_REWRITES = {
   message: () => ({ message: HANDED_FAILURE_MESSAGE }),
