@@ -33,6 +33,7 @@ If it fails, Node.js ≥ 20 is missing — have them install Node 20+ first.
 ## Step 2 — Choose scope (ASK)
 
 - **This project only** (default): `cd` into the project directory first.
+  Inside Git, init uses the repository root. If it already has a workspace config, re-run init at that root; a plain subfolder cannot replace it, even with `--force`. Nested repositories and linked worktrees keep their own roots.
 - **Whole machine**: add `--scope user`.
 - **A folder holding several repos** (a workspace): set up each repo from
   inside it, then run the same `init` in the folder. The folder also receives

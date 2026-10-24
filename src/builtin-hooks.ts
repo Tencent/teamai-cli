@@ -171,7 +171,10 @@ export function skipToolsWithoutShell(tools: string[]): Set<string> {
       skipped.add(tool);
     }
   }
-  if (withShell) ensureTeamaiWrapper();
+  // Non-login POSIX dispatch must not rely on a project git hook creating this.
+  const nonLoginWrapper = process.platform !== 'win32'
+    && tools.some(tool => tool === 'zcode' || tool === 'dsh') && hasShell();
+  if (withShell || nonLoginWrapper) ensureTeamaiWrapper();
   if (skipped.size > 0) {
     log.warn(
       `Skipping hook injection for ${[...skipped].join(', ')}: no shell is available in this environment to execute hooks. ` +
@@ -239,7 +242,7 @@ const WINDOWS_PWSH_TOOLS = new Set(['dsh']);
 /**
  * True when this tool's hook runner is PowerShell on this platform, so the
  * rendered command must be PowerShell syntax (getPwshDispatchCommand). Kept
- * platform-gated: the same tool's POSIX hosts keep the bash wrapper.
+ * platform-gated: POSIX hosts use their shell and TeamAI's PATH wrapper.
  */
 export function toolUsesPwshShell(tool: string): boolean {
   return process.platform === 'win32' && WINDOWS_PWSH_TOOLS.has(tool);
@@ -274,7 +277,7 @@ export function getTeamHookDispatchCommandWindows(event: string, tool: string): 
 /**
  * Raw dispatch command without a shell wrapper. Used by ZCode, whose hook
  * entries are `process`-typed (an executable plus an argv vector): the writer
- * puts `bash -lc <raw>` into `args` itself, so the wrapper must not be baked
+ * puts `bash -c <raw>` into `args` itself, so the wrapper must not be baked
  * into the command string.
  */
 export function getRawDispatchCommand(event: string, tool: string, matcher?: string): string {
@@ -285,7 +288,7 @@ export function getRawDispatchCommand(event: string, tool: string, matcher?: str
 /**
  * Build a hook command that prepends `$HOME/.teamai/bin` to PATH so the
  * wrapper script is found even without the user's login shell PATH.
- * Used by GUI tools (WorkBuddy, CodeBuddy) that spawn hook subprocesses
+ * Used by GUI tools (WorkBuddy, CodeBuddy) and POSIX DSH that spawn hook subprocesses
  * with a limited environment. The PATH value uses the `$HOME` shell literal
  * so that golden fixture output stays stable across machines.
  */
@@ -410,7 +413,7 @@ export function builtinHookDefs(tool: string): HookDef[] {
     ? getRawDispatchCommand
     : toolUsesPwshShell(tool)
       ? getPwshDispatchCommand
-      : WRAPPER_TOOLS.has(tool)
+      : WRAPPER_TOOLS.has(tool) || tool === 'dsh'
         ? getWrapperDispatchCommand
         : getDispatchCommand;
   const specs = [
@@ -424,7 +427,8 @@ export function builtinHookDefs(tool: string): HookDef[] {
     key: spec.key,
     event: spec.event,
     matcher: spec.matcher,
-    command: buildCommand(spec.dispatchEvent, tool, spec.matcher),
+    command: (tool === 'zcode' && process.platform !== 'win32' ? `PATH="$HOME/${TEAMAI_BIN_DIR}:$PATH" ` : '')
+      + buildCommand(spec.dispatchEvent, tool, spec.matcher),
     timeout: withTimeout ? spec.timeoutSec : undefined,
     // The team rules reach the Codex family through its start hooks (#938);
     // Codex would otherwise keep only the start and end of a large rule set.

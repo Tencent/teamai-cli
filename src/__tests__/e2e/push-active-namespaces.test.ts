@@ -154,6 +154,77 @@ afterEach(() => fs.rmSync(sandbox, { recursive: true, force: true }));
 
 afterAll(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
 
+describe('explicit shared-root pushes (#1314)', () => {
+  it('publishes a new document scanned from the clone without colliding with itself', () => {
+    const clone = path.join(project, '.teamai/team-repo');
+    writeFile(path.join(clone, 'docs/new.md'), '# Shared document\n');
+    const pushed = run(['push', '--all', '--shared']);
+    const branches = git(['for-each-ref', '--format=%(refname:short)', 'refs/heads/teamai/push/'], origin).split('\n').filter(Boolean);
+    expect(branches.length, pushed.output).toBe(1);
+    expect(git(['show', `${branches[0]}:docs/new.md`], origin)).toContain('Shared document');
+  }, 120000);
+
+  it('refuses an explicit shared push when the clone cannot refresh collision evidence', () => {
+    commitOnTeam('agents/race.md', '---\nname: race\ndescription: teammate\n---\nTeammate instructions.\n');
+    writeFile(path.join(project, '.claude/agents/race.md'), '---\nname: race\ndescription: member\n---\nMember instructions.\n');
+    const clone = path.join(project, '.teamai/team-repo');
+    git(['remote', 'set-url', '--push', 'origin', origin], clone);
+    git(['remote', 'set-url', 'origin', 'https://127.0.0.1:9/unreachable.git'], clone);
+    const pushed = run(['push', '--all', '--shared']);
+    expect(pushed.code, pushed.output).not.toBe(0);
+    expect(pushed.output).toContain('could not be refreshed');
+    expect(pushed.output).not.toContain('--role <ns>');
+    expect(pushedFiles()).toEqual([]);
+  }, 120000);
+
+  it('keeps a namespaced rule review intact when a separate explicit root review is requested', () => {
+    writeFile(path.join(project, '.claude', 'rules', 'root-review.md'), '# A new rule\n');
+    const first = run(['push', '--all', '--project', 'svc-a']);
+    const oldBranch = git(['for-each-ref', '--format=%(refname)', 'refs/heads/teamai/push/'], origin);
+    expect(oldBranch, first.output).not.toBe('');
+    const oldHead = git(['rev-parse', oldBranch], origin);
+    const branch = 'teamai/push/member/shared-review';
+    const shared = run(['push', '--all', '--shared', '--branch', branch]);
+    expect(git(['show', `${branch}:rules/root-review.md`], origin), shared.output).toContain('A new rule');
+    expect(git(['rev-parse', oldBranch], origin)).toBe(oldHead);
+    expect(git(['show', `${oldBranch}:rules/svc-a/root-review.md`], origin)).toContain('A new rule');
+  }, 120000);
+
+  it('pushes new shared resources and reuses the root review destination on the next edit', () => {
+    commitOnTeam('manifest/roles.yaml', YAML.stringify({ version: 1, roles: [{ id: 'dev', description: 'Developer', resources: { skills: ['svc-a'], knowledge: ['svc-a'], agents: [] } }] }));
+    setConfig({ primaryRole: 'dev' });
+    const skill = path.join(project, '.claude', 'skills', 'shared-new', 'SKILL.md');
+    writeFile(skill, skillMd('shared-new'));
+    writeFile(path.join(project, '.claude', 'rules', 'shared-rule.md'), '# Shared rule\n');
+    writeFile(path.join(project, '.claude', 'agents', 'shared-agent.md'), '---\nname: shared-agent\ndescription: shared agent\n---\nShared instructions.\n');
+    const first = run(['push', '--all', '--shared']);
+    const expected = ['skills/shared-new/SKILL.md', 'rules/shared-rule.md', 'agents/shared-agent.yaml'];
+    expect(pushedFiles(), first.output).toEqual(expect.arrayContaining(expected));
+    expect(pushedFiles().some(file => file.includes('svc-a/shared'))).toBe(false);
+    const branches = git(['for-each-ref', '--format=%(refname)', 'refs/heads/teamai/push/'], origin);
+    fs.appendFileSync(skill, '\nSecond shared edit.\n');
+    const again = run(['push', '--all', '--shared']);
+    expect(pushedFiles(), again.output).toEqual(expect.arrayContaining(expected));
+    expect(git(['for-each-ref', '--format=%(refname)', 'refs/heads/teamai/push/'], origin)).toBe(branches);
+    const branch = branches.split('\n')[0];
+    const review = run(['review', '--branch', branch.replace('refs/heads/', ''), '--json']);
+    const findings = JSON.parse(review.output) as { findings: { check: string; message: string }[] };
+    expect(findings.findings.filter(finding => finding.check === 'structure' && /undeclared|not declared/.test(finding.message)), review.output).toEqual([]);
+    expect(git(['show', `${branch}:skills/shared-new/SKILL.md`], origin)).toContain('Second shared edit.');
+    git(['update-ref', 'refs/heads/main', git(['rev-parse', branch], origin)], origin);
+    commitOnTeam('tags.yaml', YAML.stringify({ skills: { 'shared-new': ['shared'] } }));
+    setConfig({ subscribedTags: ['shared'] });
+    const pulled = run(['pull']);
+    expect(pulled.code, pulled.output).toBe(0);
+    fs.appendFileSync(skill, '\nEdit after merge.\n');
+    const mergedEdit = run(['push', '--all']);
+    const nextBranches = git(['for-each-ref', '--format=%(refname)', 'refs/heads/teamai/push/'], origin).split('\n');
+    const next = nextBranches.find(name => !branches.split('\n').includes(name));
+    expect(next, mergedEdit.output).toBeDefined();
+    expect(git(['show', `${next}:skills/shared-new/SKILL.md`], origin)).toContain('Edit after merge.');
+  }, 120000);
+});
+
 describe('push an edit of a skill pull kept after a project switch (#1020)', () => {
   it('pushes two tool edits to their distinct delivered destinations', () => {
     const svcB = `${skillMd('a-skill')}\nThe svc-b version.\n`;

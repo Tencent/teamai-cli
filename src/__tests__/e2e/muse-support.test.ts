@@ -3,6 +3,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import YAML from 'yaml';
 import { fileURLToPath } from 'node:url';
 
 // ─── Muse Code support ──────────────────────────────────────────────────────
@@ -144,6 +145,93 @@ describe('Muse Code resource delivery', () => {
     const uninstall = await runCLI(['uninstall', '--agent', 'muse', '--force'], cwd, home);
     expect(uninstall.code, uninstall.output).toBe(0);
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).mcpServers).toEqual({ personal });
+  }, 120_000);
+
+  it.each(['repository', 'linked worktree', 'nested repository', 'plain folder'])(
+    'anchors a subdirectory init to its %s root', async (kind) => {
+      const home = makeHome(`home-anchor-${kind}-${Date.now()}`);
+      fs.mkdirSync(path.join(home, '.config', 'muse'), { recursive: true });
+      const parent = fs.mkdtempSync(path.join(sandbox, `anchor-${kind}-`));
+      fs.mkdirSync(parent, { recursive: true });
+      let root = parent;
+      if (kind !== 'plain folder') git(['init', '-q', '-b', 'main'], parent, home);
+      if (kind === 'linked worktree') {
+        git(['commit', '-q', '--allow-empty', '-m', 'fixture'], parent, home);
+        root = `${parent}-linked`;
+        git(['worktree', 'add', '-q', '-b', 'linked', root], parent, home);
+      }
+      if (kind === 'nested repository') {
+        root = path.join(parent, 'nested');
+        fs.mkdirSync(root);
+        git(['init', '-q', '-b', 'main'], root, home);
+      }
+      const cwd = path.join(root, 'packages', 'web');
+      fs.mkdirSync(cwd, { recursive: true });
+      const expected = fs.realpathSync.native(kind === 'plain folder' ? cwd : root);
+      const result = await runCLI(['init', FAKE_URL, '--scope', 'workspace', '--role', 'dev', '--agent', 'muse', '--force'], cwd, home);
+      expect(result.code, result.output).toBe(0);
+      expect(result.output).toContain(`Scope: workspace (${expected})`);
+      expect(fs.existsSync(path.join(expected, '.agents', 'skills', 'teamai', 'SKILL.md'))).toBe(true);
+      if (kind !== 'plain folder') expect(fs.existsSync(path.join(cwd, '.agents'))).toBe(false);
+      const pulled = await runCLI(['pull'], cwd, home);
+      expect(pulled.code, pulled.output).toBe(0);
+      expect(fs.existsSync(path.join(expected, '.agents', 'skills', 'demo', 'SKILL.md'))).toBe(true);
+    }, 120_000,
+  );
+
+  it.each([['git', false], ['git', true], ['http', false], ['http', true]] as const)(
+    'rejects reinitializing an existing ancestor from a plain folder (%s, force=%s)', async (mode, force) => {
+      const home = makeHome(`home-guard-${mode}-${force}-${Date.now()}`);
+      fs.mkdirSync(path.join(home, '.config', 'muse'), { recursive: true });
+      const root = fs.mkdtempSync(path.join(sandbox, `guard-${mode}-${force}-`));
+      const cwd = path.join(root, 'backend');
+      fs.mkdirSync(cwd, { recursive: true });
+      git(['init', '-q', '-b', 'main'], root, home);
+      const first = await runCLI(['init', FAKE_URL, '--scope', 'workspace', '--role', 'dev', '--agent', 'muse', '--force'], root, home);
+      expect(first.code, first.output).toBe(0);
+      const configFiles = () => fs.readdirSync(path.join(home, '.teamai'), { recursive: true })
+        .filter(file => String(file).endsWith('config.yaml'))
+        .map(file => [String(file), fs.readFileSync(path.join(home, '.teamai', String(file)), 'utf8')]);
+      const before = configFiles();
+      expect(before.length).toBeGreaterThan(0);
+      const args = mode === 'git' ? ['init', FAKE_URL] : ['init', '--http', 'http://127.0.0.1:1', '--token', 'must-not-be-saved'];
+      const result = await runCLI([...args, '--scope', 'workspace', '--role', 'ops', '--agent', 'muse', ...(force ? ['--force'] : [])], cwd, home);
+      expect(result.code, result.output).toBe(1);
+      expect(result.output).toContain('already has a workspace config');
+      expect(result.output).toContain(fs.realpathSync.native(root));
+      expect(configFiles()).toEqual(before);
+      expect(fs.existsSync(path.join(cwd, '.agents'))).toBe(false);
+      expect(fs.existsSync(path.join(home, '.teamai', 'apikey'))).toBe(false);
+    }, 120_000,
+  );
+
+  it.each(['invalid', 'legacy'])('leaves an existing %s ancestor config byte-identical', async (kind) => {
+    const home = makeHome(`home-existing-${kind}-${Date.now()}`);
+    fs.mkdirSync(path.join(home, '.config', 'muse'), { recursive: true });
+    const root = fs.mkdtempSync(path.join(sandbox, `existing-${kind}-`));
+    const cwd = path.join(root, 'backend');
+    fs.mkdirSync(cwd);
+    git(['init', '-q', '-b', 'main'], root, home);
+    const first = await runCLI(['init', FAKE_URL, '--scope', 'workspace', '--role', 'dev', '--agent', 'muse', '--force'], root, home);
+    expect(first.code, first.output).toBe(0);
+    const relative = fs.readdirSync(path.join(home, '.teamai'), { recursive: true })
+      .find(file => String(file).endsWith('config.yaml'));
+    expect(relative).toBeDefined();
+    const file = path.join(home, '.teamai', String(relative));
+    const config = YAML.parse(fs.readFileSync(file, 'utf8'));
+    if (kind === 'invalid') fs.writeFileSync(file, 'repo: [broken\n');
+    else {
+      delete config.primaryRole;
+      fs.writeFileSync(file, YAML.stringify(config));
+      const manifest = path.join(config.repo.localPath, 'manifest', 'roles.yaml');
+      fs.mkdirSync(path.dirname(manifest), { recursive: true });
+      fs.writeFileSync(manifest, YAML.stringify({ version: 1, roles: [{ id: 'hai', resources: { knowledge: [], skills: [] } }] }));
+    }
+    const before = fs.readFileSync(file, 'utf8');
+    const result = await runCLI(['init', FAKE_URL, '--scope', 'workspace', '--role', 'ops', '--agent', 'muse', '--force'], cwd, home);
+    expect(result.code, result.output).toBe(1);
+    expect(result.output).toContain('already has a workspace config');
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
   }, 120_000);
 
   it('keeps Muse-normalized MCP entries removable through the real CLI', async () => {

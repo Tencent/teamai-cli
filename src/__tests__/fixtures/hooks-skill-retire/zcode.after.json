@@ -9,8 +9,8 @@
               "type": "process",
               "command": "bash",
               "args": [
-                "-lc",
-                "teamai hook-dispatch session-start --tool zcode"
+                "-c",
+                "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch session-start --tool zcode"
               ],
               "timeoutMs": 180000
             }
@@ -24,8 +24,8 @@
               "type": "process",
               "command": "bash",
               "args": [
-                "-lc",
-                "teamai hook-dispatch stop --tool zcode"
+                "-c",
+                "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch stop --tool zcode"
               ],
               "timeoutMs": 60000
             }
@@ -39,8 +39,8 @@
               "type": "process",
               "command": "bash",
               "args": [
-                "-lc",
-                "teamai hook-dispatch post-tool-use --tool zcode"
+                "-c",
+                "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool zcode"
               ],
               "timeoutMs": 30000
             }
@@ -52,8 +52,8 @@
               "type": "process",
               "command": "bash",
               "args": [
-                "-lc",
-                "teamai hook-dispatch post-tool-use --tool zcode --matcher TodoWrite"
+                "-c",
+                "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch post-tool-use --tool zcode --matcher TodoWrite"
               ],
               "timeoutMs": 30000
             }
@@ -68,8 +68,8 @@
               "type": "process",
               "command": "bash",
               "args": [
-                "-lc",
-                "teamai hook-dispatch prompt-submit --tool zcode"
+                "-c",
+                "PATH=\"$HOME/.teamai/bin:$PATH\" teamai hook-dispatch prompt-submit --tool zcode"
               ],
               "timeoutMs": 60000
             }

@@ -49,6 +49,8 @@ You need the repo URL.
    teamai init https://github.com/your-org/your-repo
    ```
    Add `--scope user` to install into your home directory. Every project on this machine then sees the files. Without that flag, files install into this project.
+
+   Inside a Git repository, init uses the repository root even when run from a subdirectory. If that root already has a workspace config, run init at the root to change it; a plain subfolder cannot hold a separate config, even with `--force`. A nested repository or linked worktree has its own workspace root.
 2. Check it.
    ```bash
    teamai doctor
