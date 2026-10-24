@@ -53,7 +53,7 @@ const BodySchema = z.object({
   round: z.number().int().optional(),
   base: z.object({ ref: z.string().optional(), commit: CommitIdSchema }).optional(),
   /** The run's workspaces by branch, with the commit each was last reported at. Which driver holds one stays local. */
-  copies: z.record(z.object({ commit: CommitIdSchema.optional() })),
+  copies: z.record(z.object({ commit: CommitIdSchema.optional(), origin: z.string().optional() })),
   sessionContinuations: z.array(SessionContinuationSchema).optional(),
   /** The scorers the run pinned, by hash only: the machine that claims the run uses its own copy when the hash matches. */
   scorers: z.record(z.object({ sourceHash: z.string() })).optional(),
@@ -196,7 +196,7 @@ const RUN_RULES = {
 
 const STEP_RULES = {
   id: 'publish', pass: 'publish', passes: 'rewrite', answer: 'rewrite', item: 'publish', inputs: 'publish',
-  iteration: 'publish', round: 'publish', status: 'publish', attempt: 'publish', lease: 'rewrite', outcome: 'publish',
+  iteration: 'publish', round: 'publish', deliveryDeadline: 'publish', status: 'publish', attempt: 'publish', lease: 'rewrite', outcome: 'publish',
   outputs: 'publish', end: 'publish', results: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
   tool: 'publish', model: 'publish', session: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
   agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite',
@@ -220,7 +220,7 @@ const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldR
 // A lease another machine held is released when the run is handed over, so the session it offered stays here.
 const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop' } satisfies FieldRules<StepLease>;
 
-const COPY_RULES = { owner: 'drop', commit: 'publish' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
+const COPY_RULES = { owner: 'drop', commit: 'publish', origin: 'publish' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
 
 const FAILURE_REWRITES = {
   message: () => ({ message: HANDED_FAILURE_MESSAGE }),

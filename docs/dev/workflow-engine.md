@@ -43,3 +43,5 @@ Each rule below spans more than one file. The rule names the code that owns it, 
 ## Tests
 
 Test parsing through `parseWorkflow` and `syncWorkflowDefinitions`. Test the engine through `startRun`, `leaseNext`, and `reportAttempt`. Every driver must pass the protocol scenarios in `src/workflow/conformance.ts`, and a driver that takes workspace leases the git scenarios there too. If a driver can see a new behavior, add a scenario there.
+
+Pending PR delivery is part of the handoff snapshot: preserve the `delivering` step, its deadline and the copy's origin branch. Claiming releases execution leases but does not rerun completed agent work while delivery is pending. `snapshot.ts` and `StepCheckpointSchema` must both accept those fields.

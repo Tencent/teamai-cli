@@ -186,6 +186,7 @@ export const StepCheckpointSchema = z.discriminatedUnion('status', [
     status: z.literal('leased'), attempt: z.string(), lease: z.object({ attempt: z.string(), revision: z.number(), driverKind: z.string() }),
   }),
   RunningSchema,
+  StepBaseSchema.extend({ status: z.literal('delivering'), ...settledFields }),
   SucceededSchema,
   FailedSchema,
   SkippedSchema,
@@ -265,6 +266,7 @@ export function takeOver(step: StepCheckpoint, mode: WorkspaceMode | undefined):
     case 'pending':
     case 'waiting':
     case 'running':
+    case 'delivering':
     case 'succeeded':
     case 'failed':
     case 'skipped':

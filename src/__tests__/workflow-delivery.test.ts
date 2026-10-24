@@ -6,10 +6,12 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseWorkflow } from '../workflow/parse.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';
+import { projectRun } from '../workflow/snapshot.js';
+import { takeOver } from '../workflow/step-state.js';
 import { sanitizePrUrl } from '../workflow/pr-url.js';
 import { deliveryTarget, protectedDeliveryPaths, validateReportedPr } from '../workflow/delivery.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
-import { readRun, writeRun } from '../workflow/store.js';
+import { readRun, updateRun } from '../workflow/store.js';
 import { runLocalDriver } from '../workflow/local-driver.js';
 import { GitHubProvider } from '../providers/github/index.js';
 import { buildEndRecord } from '../workflow/records.js';
@@ -17,6 +19,11 @@ import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import { settled, stopped } from '../workflow/step-state.js';
 import type { LocalConfig } from '../types.js';
 import type { RunState } from '../workflow/types.js';
+
+async function writeRun(config: LocalConfig, run: RunState): Promise<void> {
+  const result = await updateRun(config, run.id, async () => ({ value: undefined, write: run }));
+  expect(result.status).toBe('done');
+}
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -205,6 +212,20 @@ describe('durable PR delivery', () => {
     const run = await state(config, runId);
     expect(buildEndRecord(run, driver, 'tester').prs).toEqual(expected ? [expected] : undefined);
     expect(JSON.stringify(run)).not.toContain('session=');
+  });
+
+  it('publishes and hands over a pending delivery without dropping its origin or deadline', async () => {
+    const { config, runId } = await fixture(`  - id: write\n    command: echo test\n`);
+    const run = await state(config, runId);
+    const branch = `teamai/${runId}/write/p1`;
+    const commit = run.base!.commit;
+    run.copies = { [branch]: { owner: driver, commit, origin: 'main' } };
+    run.steps = [{ id: 'write', status: 'delivering', settledAt: 1, deliveryDeadline: 12345,
+      changes: { branch, base: commit, from: commit, to: commit, commits: [] } }];
+    const projected = projectRun(run, {});
+    expect(projected, JSON.stringify(projected)).toMatchObject({ ok: true, value: { copies: { [branch]: { origin: 'main' } }, steps: [{ status: 'delivering', deliveryDeadline: 12345 }] } });
+    if (!projected.ok) throw new Error(projected.error.message);
+    expect(takeOver(projected.value.steps[0]!, 'new')).toMatchObject({ status: 'delivering', deliveryDeadline: 12345 });
   });
 
   it('can cancel a persisted delivery without treating it as settled success', async () => {

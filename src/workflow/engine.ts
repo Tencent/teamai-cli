@@ -30,6 +30,7 @@ import { pinScorers } from '../scorers/cache.js';
 import { isLeaseRef } from '../scorers/entry.js';
 import { deliverPending, validateReportedPr } from './delivery.js';
 import type {
+  WorkflowDefinition,
   DriverIdentity,
   OutputSchema,
   RunState,
