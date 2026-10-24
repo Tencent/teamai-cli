@@ -52,6 +52,21 @@ describe('GitHub pull request lookup', () => {
     expect(gh.calls()).toMatchObject([{ args: ['api', expect.stringMatching(/^repos\/acme\/app\/pulls\?/)], prompt: '0' }]);
   });
 
+  it('keeps the process running while gh answers, and gives up on a gh that does not answer in time', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fake-gh-'));
+    dirs.push(dir);
+    fakeGh(dir, { hold: 'lookup', open: [pull(ref.source)] });
+    await expect(lookup().findOpen({ ...ref, timeoutMs: 300 })).rejects.toThrow('gh could not look up open pull requests');
+
+    // Only a timer of this process lets gh answer, so a lookup that blocked the process would time out instead.
+    const release = setTimeout(() => fs.writeFileSync(path.join(dir, 'release'), ''), 50);
+    try {
+      expect(await lookup().findOpen({ ...ref, timeoutMs: 5000 })).toBe('https://github.com/acme/app/pull/7');
+    } finally {
+      clearTimeout(release);
+    }
+  });
+
   it('fails, rather than finding nothing, without credentials or on an answer it cannot read, and never repeats what GitHub said', async () => {
     resolveGh(null);
     vi.stubEnv('GITHUB_TOKEN', ''); vi.stubEnv('GH_TOKEN', '');

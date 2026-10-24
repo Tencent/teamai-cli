@@ -628,8 +628,9 @@ export async function ghFindOpenPull({ repo, source, target, timeoutMs }: PullRe
 }
 
 async function ghApiGet(path: string, timeoutMs: number): Promise<unknown> {
-  if (isGhInstalled()) {
-    const result = ghExec(['api', path], { timeoutMs, env: { GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' } });
+  const ghPath = getGhPath();
+  if (ghPath) {
+    const result = await ghSpawn(ghPath, ['api', path], { timeoutMs, env: { GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' } });
     if (result.status !== 0) throw new Error('gh could not look up open pull requests. Check gh auth status and its access to the repository.');
     try {
       return JSON.parse(result.stdout);
@@ -650,4 +651,27 @@ async function ghApiGet(path: string, timeoutMs: number): Promise<unknown> {
   } catch {
     throw new Error('GitHub answered the open pull request lookup with data TeamAI cannot read.');
   }
+}
+
+/**
+ * Runs gh as `ghExec` does, through cross-spawn with the same arguments, environment and timeout, but without blocking
+ * the process, which a workflow driver shares with the agents it runs, while gh waits on GitHub.
+ */
+function ghSpawn(ghPath: string, args: string[], { env, timeoutMs }: { env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<{ stdout: string; status: number }> {
+  log.debug(`gh exec: ${ghPath} ${args.join(' ')}`);
+  return new Promise((resolve) => {
+    const child = crossSpawn(ghPath, args, { env: { ...process.env, ...env }, timeout: timeoutMs });
+    let stdout = '';
+    let settled = false;
+    const finish = (status: number): void => {
+      if (settled) return;
+      settled = true;
+      resolve({ stdout: stdout.trim(), status });
+    };
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr?.resume();
+    child.on('error', () => finish(1));
+    child.on('close', (code) => finish(code ?? 1));
+  });
 }
