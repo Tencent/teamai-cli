@@ -112,14 +112,14 @@ export async function withRun<T extends WorkflowEnvelope>(
   config: LocalConfig,
   runId: string,
   secrets: Record<string, string>,
-  mutate: (run: RunState, now: string, secrets: Record<string, string>) => Promise<{ envelope: T; save: boolean }>,
+  mutate: (run: RunState, now: string) => Promise<{ envelope: T; save: boolean }>,
 ): Promise<T> {
   if (!isRunId(runId)) return error('invalid_run', 'Run id must look like r followed by 8 or 16 hex digits') as T;
   const updated = await updateRun(config, runId, secrets, async (loaded) => {
     if (loaded === 'missing') return { value: error('run_not_found', `Run ${runId} was not found`) as T };
     // One timestamp per operation, so a settled run's end record and its run file agree.
     const now = new Date().toISOString();
-    const result = await mutate(loaded, now, secrets);
+    const result = await mutate(loaded, now);
     if (!result.save) return { value: result.envelope };
     loaded.updatedAt = now;
     return { value: result.envelope, write: loaded };
@@ -948,7 +948,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   // the lock other engine operations wait on.
   let queued = false;
   let alreadySettled: RunState | undefined;
-  const envelope = await withRun(config, runId, env.secrets, async (run, now, secrets) => {
+  const envelope = await withRun(config, runId, env.secrets, async (run, now) => {
     const before = JSON.stringify(run);
     // Whatever settling changed is saved. `cancelled` is derived after settling: the attempts the driver runs that
     // are no longer its open leases.
@@ -961,7 +961,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       }),
     });
     const done = async (result: WorkflowResult): Promise<{ save: boolean; envelope: WorkflowEnvelope }> => {
-      queued = await finishRun(config, run, now, result, secrets, driver);
+      queued = await finishRun(config, run, now, result, env.secrets, driver);
       return answer(doneData(run));
     };
     const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => (
