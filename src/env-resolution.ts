@@ -331,14 +331,17 @@ function variableValues(
 /**
  * The value of each secret the team declares in `env/secrets.yaml`, as this
  * member resolves it, keyed by name, for redaction. A declared name need not
- * look secret, so `collectEnvSecrets` misses these. Empty when the values
- * can't be read. A value too short to tell from ordinary text is left out,
- * with a warning that names it.
+ * look secret, so `collectEnvSecrets` misses these. Empty, with a warning,
+ * when the values can't be read. A value too short to tell from ordinary text
+ * is left out, with a warning that names it.
  */
 export async function collectTeamSecrets(localConfig: LocalConfig, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, string>> {
   if (!resolvesTeamEnv(localConfig)) return {};
   const { secrets } = await resolveTeamEnv(localConfig, undefined, env);
-  if (secrets.kind !== 'resolved') return {};
+  if (secrets.kind !== 'resolved') {
+    warnOnce(`${secrets.reason} Until it can be read, teamai does not mask the team's secret values in what it writes.`);
+    return {};
+  }
   return Object.fromEntries([...secrets.values].flatMap(([key, { value }]) => {
     if (value.length >= MIN_DECLARED_SECRET_LENGTH) return [[key, value]];
     if (value) warnOnce(`Secret ${key} in env/secrets.yaml is shorter than ${MIN_DECLARED_SECRET_LENGTH} characters, so teamai cannot tell it from ordinary text and does not mask it. Give it a longer value.`);

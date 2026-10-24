@@ -1083,6 +1083,19 @@ steps:
     expect(await startRun(fixture.config, 'build', { note: 'team-token-value-1082' })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
   });
 
+  it('warns that it cannot mask the team secrets when their store cannot be read', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const fixture = testConfig();
+    fs.mkdirSync(path.join(fixture.config.repo.localPath, 'env'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: GH_TOKEN\n');
+    fs.mkdirSync(path.dirname(getTeamSecretsPath(fixture.config)), { recursive: true });
+    fs.writeFileSync(getTeamSecretsPath(fixture.config), '{ not json');
+    fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n'));
+    await syncWorkflowDefinitions(fixture.config);
+    expect(await startRun(fixture.config, 'build')).toMatchObject({ data: { status: 'running' } });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('does not mask the team\'s secret values'));
+  });
+
   it('fails env_conflict only for a step env that shadows a team secret or a required key, not a plain team variable', async () => {
     const fixture = testConfig();
     fs.mkdirSync(path.join(fixture.config.repo.localPath, 'env'), { recursive: true });
