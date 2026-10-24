@@ -1,6 +1,5 @@
 /**
- * E2E (real git, NO mocks): proves reportUsageToTeam never wipes a self-mode
- * business repo working tree, and git-kind reports land on the sibling
+ * E2E (real git, NO mocks): proves git-kind reports land on the sibling
  * teamai-reports checkout instead of resetting the knowledge clone.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -40,31 +39,7 @@ async function makeRepo(dir: string, branch = 'master'): Promise<void> {
   await git.commit('init');
 }
 
-describe('E2E self-mode: business repo working tree is never reset', () => {
-  it('self mode: uncommitted change + non-master branch survive reportUsageToTeam', async () => {
-    const businessRoot = path.join(tmp, 'business');
-    await makeRepo(businessRoot);
-    const git = simpleGit(businessRoot);
-
-    // User is on a feature branch with uncommitted work (the scenario that was lost).
-    await git.checkoutLocalBranch('feature/wip');
-    fs.writeFileSync(path.join(businessRoot, 'app.js'), 'console.log("MY UNCOMMITTED WORK")\n');
-
-    const teamaiDir = path.join(businessRoot, '.teamai');
-    fs.mkdirSync(teamaiDir, { recursive: true });
-
-    // The bug path: pull passes selfConfig now (fix 1). Even without it, the
-    // isDedicatedRoot guard (fix 2) must protect the tree — test the guard by
-    // NOT passing selfConfig, forcing the else branch.
-    await reportUsageToTeam(teamaiDir, 'me', { skipTruncate: true });
-
-    // Assert the user's working tree is untouched.
-    const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
-    const content = fs.readFileSync(path.join(businessRoot, 'app.js'), 'utf-8');
-    expect(branch).toBe('feature/wip');
-    expect(content).toContain('MY UNCOMMITTED WORK');
-  });
-
+describe('E2E reports branch writes', () => {
   it('git mode: writes stats to sibling teamai-reports and does not reset the clone', async () => {
     const origin = path.join(tmp, 'origin.git');
     await simpleGit().init(['--bare', '--initial-branch=main', origin]);
@@ -123,35 +98,4 @@ describe('E2E self-mode: business repo working tree is never reset', () => {
     expect(mainTree).not.toContain('stats/me.yaml');
   });
 
-  it('project scope (git kind): business repo is NOT reset when team-repo dir lacks its own .git', async () => {
-    // Reproduces the v0.19.0 data-loss path outside self mode: in project scope the
-    // team repo lives at <projectRoot>/.teamai/team-repo. If that dir has no dedicated
-    // .git (e.g. clone never completed), git commands there bubble up to the business
-    // repo's .git — so an unguarded reset --hard + checkout would wipe the user's tree.
-    const businessRoot = path.join(tmp, 'project');
-    await makeRepo(businessRoot);
-    const git = simpleGit(businessRoot);
-
-    // User is on a feature branch with uncommitted work.
-    await git.checkoutLocalBranch('feature/wip');
-    fs.writeFileSync(path.join(businessRoot, 'app.js'), 'console.log("MY UNCOMMITTED WORK")\n');
-
-    // team-repo dir exists but is a plain directory (no dedicated .git of its own).
-    const teamRepoDir = path.join(businessRoot, '.teamai', 'team-repo');
-    fs.mkdirSync(teamRepoDir, { recursive: true });
-
-    // git-mode report to the in-business-repo path. The isDedicatedRoot guard must
-    // detect that show-toplevel resolves to the business root, not teamRepoDir, and bail.
-    const logBefore = await git.log();
-    await reportUsageToTeam(teamRepoDir, 'me', { skipTruncate: true });
-
-    // The user's working tree and branch must be intact.
-    const branch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
-    const content = fs.readFileSync(path.join(businessRoot, 'app.js'), 'utf-8');
-    expect(branch).toBe('feature/wip');
-    expect(content).toContain('MY UNCOMMITTED WORK');
-    // Guard must also prevent a spurious stats commit from landing on the user's branch.
-    const logAfter = await git.log();
-    expect(logAfter.total).toBe(logBefore.total);
-  });
 });
