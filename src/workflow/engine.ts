@@ -1191,9 +1191,6 @@ const REPORT_FIELDS = new Set([
   'attempt', 'revision', 'outcome', 'driver', 'outputs', 'exitCode', 'message', 'tool', 'model', 'session', 'resumed', 'tokens', 'failure', 'changes', 'read', 'agent', 'used',
 ]);
 
-/** The `changes` fields that say what a branch holds, which `parseReport` reads together. */
-const CHANGES_FACTS = ['branch', 'base', 'from', 'to', 'commits'] as const;
-
 /**
  * The payload fields this CLI does not read: top-level names first, then `driver.<field>` names.
  * Names only, never values, because an unknown field may hold anything (#1164).
@@ -1287,16 +1284,13 @@ export function parseReport(value: unknown): ParsedReport | string {
   if (record.changes !== undefined) {
     if (!record.changes || typeof record.changes !== 'object' || Array.isArray(record.changes)) return 'changes must be an object';
     const value = record.changes as Record<string, unknown>;
-    // A driver whose commit and push teamai does, so it fills the branch facts, sends pr_url alone.
-    if (value.pr_url === undefined || CHANGES_FACTS.some((key) => value[key] !== undefined)) {
-      if (typeof value.branch !== 'string' || typeof value.base !== 'string' || typeof value.from !== 'string' || typeof value.to !== 'string') {
-        return 'changes must include branch, base, from, and to';
-      }
-      if (!Array.isArray(value.commits) || !value.commits.every((commit): commit is string => typeof commit === 'string')) {
-        return 'changes.commits must be an array of strings';
-      }
-      report.changes = { branch: value.branch, base: value.base, from: value.from, to: value.to, commits: value.commits };
+    if (typeof value.branch !== 'string' || typeof value.base !== 'string' || typeof value.from !== 'string' || typeof value.to !== 'string') {
+      return 'changes must include branch, base, from, and to';
     }
+    if (!Array.isArray(value.commits) || !value.commits.every((commit): commit is string => typeof commit === 'string')) {
+      return 'changes.commits must be an array of strings';
+    }
+    report.changes = { branch: value.branch, base: value.base, from: value.from, to: value.to, commits: value.commits };
     if (value.pr_url !== undefined) report.prUrl = value.pr_url;
   }
   if (record.read !== undefined) {
@@ -1316,7 +1310,7 @@ export function parseReport(value: unknown): ParsedReport | string {
   }
   const ignored = unreadFields(record, REPORT_FIELDS);
   if (isRecord(record.changes)) {
-    const known = new Set<string>([...CHANGES_FACTS, 'pr_url']);
+    const known = new Set(['branch', 'base', 'from', 'to', 'commits', 'pr_url']);
     ignored.push(...Object.keys(record.changes).filter((key) => !known.has(key)).map((key) => `changes.${key}`));
   }
   return { report, ignored };

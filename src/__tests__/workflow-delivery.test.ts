@@ -162,10 +162,10 @@ describe('workflow PR delivery contract', () => {
     expect(JSON.stringify(parsed)).not.toContain('secret');
   });
 
-  it('reads changes.pr_url sent alone, from a driver that leaves its other changes to teamai', () => {
+  it('refuses a reported pull request without branch facts', () => {
     const driver = { kind: 'remote', machine: 'host', workspace: 'work' };
     expect(parseReport({ attempt: 'a1', revision: 1, outcome: 'success', driver, changes: { pr_url: 'https://review.example/1' } }))
-      .toEqual({ report: { attempt: 'a1', revision: 1, outcome: 'success', driver, prUrl: 'https://review.example/1' }, ignored: [] });
+      .toBe('changes must include branch, base, from, and to');
   });
 
   it.each([
@@ -740,19 +740,6 @@ describe('reported URLs from a driver', () => {
 
     expect(accepted).toMatchObject({ data: { accepted: true, dropped: [{ field: 'changes.pr_url', reason }] } });
     expect(JSON.stringify(accepted)).not.toContain('changes/4821');
-    expect((await state(config, runId)).deliveries).toBeUndefined();
-    expect(gh.calls()).toEqual([]);
-  });
-
-  it.each([
-    ['succeeds with no commits', 'success', 'succeeded', 'the branch has no changes beyond the run base'],
-    ['fails', 'failed', 'failed', 'the step failed'],
-  ])('drops a URL sent alone from a report that %s, saying why, since nothing delivers it', async (_case, outcome, status, reason) => {
-    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
-    const gh = fakeGh(path.join(root, 'gh'));
-    const fix = await take(config, runId);
-    expect(await report(config, runId, { attempt: fix.attempt, revision: fix.revision, outcome, changes: { pr_url: 'https://github.com/fixture/app/pull/1' } }))
-      .toMatchObject({ data: { accepted: true, step: { id: 'fix', status }, dropped: [{ field: 'changes.pr_url', reason }] } });
     expect((await state(config, runId)).deliveries).toBeUndefined();
     expect(gh.calls()).toEqual([]);
   });
