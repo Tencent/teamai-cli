@@ -17,6 +17,7 @@ import { getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
 import { readRun, runFilePath, runLockPath, runsDir, updateRun } from '../workflow/store.js';
 import type { TokenUsage } from '../tool-launch/stdout.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
+import { runSecrets, startSecrets } from './helpers/workflow-secrets.js';
 
 _setDriverPollMs(20);
 
@@ -54,7 +55,7 @@ async function startBuild(body: string): Promise<{ config: LocalConfig; work: st
   const fixture = testConfig();
   fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), body);
   await syncWorkflowDefinitions(fixture.config);
-  const started = await startRun(fixture.config, 'build');
+  const started = await startRun(fixture.config, 'build', {}, { secrets: await startSecrets(fixture.config, 'build') });
   if ('error' in started) throw new Error(started.error.message);
   return { ...fixture, runId: String(started.data.run) };
 }
@@ -503,7 +504,7 @@ steps:
     fs.writeFileSync(path.join(work, 'two.js'), "process.stdout.write(JSON.stringify({ ok: true }))\n");
     await syncWorkflowDefinitions(config);
 
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     expect(started.data).not.toHaveProperty('record');
     const runId = String(started.data.run);
@@ -519,7 +520,7 @@ steps:
     fs.writeFileSync(path.join(work, 'one.js'), "process.stdout.write(JSON.stringify({ ok: true }))\n");
     fs.writeFileSync(path.join(work, 'two.js'), "process.stdout.write(JSON.stringify({ ok: true }))\n");
     await syncWorkflowDefinitions(config);
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     await runLocalDriver(config, runId, work);
@@ -534,7 +535,7 @@ steps:
     await syncWorkflowDefinitions(config);
     const locked = vi.spyOn(update, 'acquireLock').mockResolvedValue(false);
     try {
-      const started = await startRun(config, 'build');
+      const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
 
       expect(started).toMatchObject({ error: { code: 'busy' } });
       expect(await pendingRecords(config)).toEqual([]);
@@ -554,7 +555,7 @@ steps:
     fs.writeFileSync(queue, '');
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
 
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const settling = await runLocalDriver(config, runId, work);
@@ -580,7 +581,7 @@ steps:
     // The fixture has no reports remote; clearing this run's queue entries stands in for a delivery.
     const queue = path.join(config.dataHome!, 'workflows', 'pending');
     for (const file of fs.readdirSync(queue)) if (file.startsWith(`${runId}.`)) fs.rmSync(path.join(queue, file));
-    const other = await startRun(config, 'build');
+    const other = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
     if ('error' in other) throw new Error(other.error.message);
     expect(other.data.record).toBe('pending');
 
@@ -612,7 +613,7 @@ steps:
       TITLE: "{{ inputs.title }}"
 `, 'inputs:\n  title: string\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { title: '$(touch pwned)' });
+    const started = await startRun(fixture.config, 'build', { title: '$(touch pwned)' }, { secrets: await startSecrets(fixture.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
 
     const done = await runLocalDriver(fixture.config, String(started.data.run), fixture.work);
@@ -985,7 +986,7 @@ steps:
     command: node ship.js
 `, 'inputs:\n  ship: boolean\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { ship: true });
+    const started = await startRun(fixture.config, 'build', { ship: true }, { secrets: await startSecrets(fixture.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
 
     const { leased } = await drive(fixture.config, String(started.data.run));
@@ -1051,7 +1052,7 @@ steps:
 `, 'inputs:\n  issue: number\n  title: string\n'));
     await syncWorkflowDefinitions(fixture.config);
 
-    expect(await startRun(fixture.config, 'build', inputs)).toEqual({ error: { code: 'invalid_inputs', message } });
+    expect(await startRun(fixture.config, 'build', inputs, { secrets: await startSecrets(fixture.config, 'build') })).toEqual({ error: { code: 'invalid_inputs', message } });
     expect(fs.existsSync(path.join(fixture.config.dataHome!, 'workflows', 'runs'))).toBe(false);
   });
 
@@ -1066,7 +1067,7 @@ steps:
     fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph(`  - id: fix\n${step}`, 'inputs:\n  DEPLOY_TOKEN: string\n'));
     await syncWorkflowDefinitions(fixture.config);
 
-    expect(await startRun(fixture.config, 'build', inputs)).toEqual({ error: { code: 'invalid_inputs', message } });
+    expect(await startRun(fixture.config, 'build', inputs, { secrets: await startSecrets(fixture.config, 'build') })).toEqual({ error: { code: 'invalid_inputs', message } });
     expect(fs.existsSync(runsDir(fixture.config))).toBe(false);
   });
 
@@ -1079,8 +1080,8 @@ steps:
     fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n', 'inputs:\n  note: string\n'));
     await syncWorkflowDefinitions(fixture.config);
 
-    expect(await startRun(fixture.config, 'build', { note: 'personal-token-value-1082' })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
-    expect(await startRun(fixture.config, 'build', { note: 'team-token-value-1082' })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
+    expect(await startRun(fixture.config, 'build', { note: 'personal-token-value-1082' }, { secrets: await startSecrets(fixture.config, 'build') })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
+    expect(await startRun(fixture.config, 'build', { note: 'team-token-value-1082' }, { secrets: await startSecrets(fixture.config, 'build') })).toMatchObject({ error: { code: 'invalid_inputs', message: expect.stringContaining('requires.env: [GH_TOKEN]') } });
   });
 
   it('warns that it cannot mask the team secrets when their store cannot be read', async () => {
@@ -1092,7 +1093,7 @@ steps:
     fs.writeFileSync(getTeamSecretsPath(fixture.config), '{ not json');
     fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n'));
     await syncWorkflowDefinitions(fixture.config);
-    expect(await startRun(fixture.config, 'build')).toMatchObject({ data: { status: 'running' } });
+    expect(await startRun(fixture.config, 'build', {}, { secrets: await startSecrets(fixture.config, 'build') })).toMatchObject({ data: { status: 'running' } });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('does not mask the team\'s secret values'));
   });
 
@@ -1110,7 +1111,7 @@ steps:
     env: { GH_TOKEN: plain }
 `));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build');
+    const started = await startRun(fixture.config, 'build', {}, { secrets: await startSecrets(fixture.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const test = leaseIn(await leaseNext(fixture.config, runId, driverA, { can: { env: true } }));
@@ -1126,7 +1127,7 @@ steps:
     fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', 'build.yaml'), graph('  - id: fix\n    command: node fix.js\n', 'inputs:\n  DEPLOY_TOKEN: string\n'));
     await syncWorkflowDefinitions(fixture.config);
 
-    const started = await startRun(fixture.config, 'build', { DEPLOY_TOKEN: 'staging' });
+    const started = await startRun(fixture.config, 'build', { DEPLOY_TOKEN: 'staging' }, { secrets: await startSecrets(fixture.config, 'build') });
     const stored = await readRun(fixture.config, String('data' in started ? started.data.run : ''));
     expect(typeof stored === 'object' ? stored.inputs : stored).toEqual({ DEPLOY_TOKEN: 'staging' });
   });
@@ -1143,7 +1144,7 @@ steps:
     prompt: "Fix #{{ inputs.issue }} {{inputs.title}} in {{ steps.plan.outputs.task }}. Keep \${{ secrets.TOKEN }} and {{ name }}."
 `, 'inputs:\n  issue: number\n  title: string\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { issue: 42, title: 'Crash' });
+    const started = await startRun(fixture.config, 'build', { issue: 42, title: 'Crash' }, { secrets: await startSecrets(fixture.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const plan = await leaseNext(fixture.config, runId, driverA);
@@ -1171,7 +1172,7 @@ steps:
       PORT: 8080
 `, 'inputs:\n  issue: number\n  title: string\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { issue: 42, title: '$(touch pwned)' });
+    const started = await startRun(fixture.config, 'build', { issue: 42, title: '$(touch pwned)' }, { secrets: await startSecrets(fixture.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const plan = await leaseNext(fixture.config, runId, driverA);
@@ -1201,7 +1202,7 @@ steps:
     prompt: "Review {{ inputs.owner }}/{{ inputs.repo }}."
 `, 'inputs:\n  owner: string\n  repo: string\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { owner: 'tencent', repo: 'teamai-cli' });
+    const started = await startRun(fixture.config, 'build', { owner: 'tencent', repo: 'teamai-cli' }, { secrets: await startSecrets(fixture.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
 
@@ -1279,7 +1280,7 @@ async function startTree(
     fs.writeFileSync(path.join(fixture.config.repo.localPath, 'workflows', `${file}.yaml`), body);
   }
   await syncWorkflowDefinitions(fixture.config);
-  const started = await startRun(fixture.config, name, inputs);
+  const started = await startRun(fixture.config, name, inputs, { secrets: await startSecrets(fixture.config, name) });
   if ('error' in started) throw new Error(started.error.message);
   return { ...fixture, runId: String(started.data.run) };
 }
@@ -1348,7 +1349,7 @@ describe('file sub-workflows', () => {
     await syncWorkflowDefinitions(fixture.config);
     restoreShip();
 
-    expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
+    expect(await startRun(fixture.config, 'ship', {}, { secrets: await startSecrets(fixture.config, 'ship') })).toEqual({ error: {
       code: 'workflow_not_found',
       message: 'Workflow "ship" step "check" runs workflow "check", which has no runnable version. Check workflows/check.yaml and pull again.',
     } });
@@ -1365,7 +1366,7 @@ describe('file sub-workflows', () => {
     command: node other.js
 `));
     await syncWorkflowDefinitions(config);
-    const second = await startRun(config, 'ship');
+    const second = await startRun(config, 'ship', {}, { secrets: await startSecrets(config, 'ship') });
     if ('error' in second) throw new Error(second.error.message);
     fs.writeFileSync(path.join(workflows, 'ship.yaml'), `${ship}  - id: extra\n    needs: []\n    command: node extra.js\n`);
     await syncWorkflowDefinitions(config);
@@ -1615,7 +1616,7 @@ describe('file sub-workflows', () => {
     // The cache now holds check running ship next to the ship that runs check.
     restoreShip();
 
-    expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
+    expect(await startRun(fixture.config, 'ship', {}, { secrets: await startSecrets(fixture.config, 'ship') })).toEqual({ error: {
       code: 'workflow_recursion',
       message: 'Workflow "ship" cannot start: its sub-workflows run in a cycle: ship -> check -> ship',
     } });
@@ -1642,7 +1643,7 @@ describe('with on prompt steps', () => {
       task: "{{ steps.plan.outputs.task }}"
 `, 'inputs:\n  issue: number\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { issue: 42 });
+    const started = await startRun(fixture.config, 'build', { issue: 42 }, { secrets: await startSecrets(fixture.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const plan = await leaseNext(fixture.config, runId, driverA);
@@ -1880,7 +1881,7 @@ describe('inline workflows', () => {
     // The cache now holds check running ship next to the ship that runs check.
     restoreShip();
 
-    expect(await startRun(fixture.config, 'ship')).toEqual({ error: {
+    expect(await startRun(fixture.config, 'ship', {}, { secrets: await startSecrets(fixture.config, 'ship') })).toEqual({ error: {
       code: 'workflow_recursion',
       message: 'Workflow "ship" cannot start: its sub-workflows run in a cycle: ship -> check -> ship',
     } });
@@ -2292,7 +2293,7 @@ describe('parallel leases', () => {
     command: node after.js
 `, 'inputs:\n  skip: boolean\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build', { skip: false });
+    const started = await startRun(fixture.config, 'build', { skip: false }, { secrets: await startSecrets(fixture.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const a = leaseIn(await leaseNext(fixture.config, runId, driverA));
@@ -2660,7 +2661,7 @@ describe('held-back steps', () => {
 `));
     fs.writeFileSync(path.join(workflows, 'inner.yaml'), 'schemaVersion: v1alpha1\nname: inner\ndescription: Inner.\nsetup:\n  command: npm ci\nsteps:\n  - id: c\n    workspace: continue\n    command: node c.js\n');
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'build');
+    const started = await startRun(fixture.config, 'build', {}, { secrets: await startSecrets(fixture.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const a = leaseIn(await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes] }, base }));
@@ -2731,7 +2732,7 @@ describe('held-back steps', () => {
     await reportAttempt(config, runId, {
       ...a, outcome: 'failed', driver: driverA, failure: { code: 'setup_failed', message: 'Setup "npm ci" exited with code 1, so the step did not run.' },
     });
-    expect(await retryStep(config, runId, 'box.a')).toMatchObject({ data: {} });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'box.a')).toMatchObject({ data: {} });
 
     expect(await leaseNext(config, runId, driverA, { can, base })).toMatchObject({
       data: { lease: { step: 'box.a', setup: { command: 'npm ci' } } },
@@ -2822,7 +2823,7 @@ ${build}  - id: stop
     const { config } = testConfig();
     fs.writeFileSync(path.join(config.repo.localPath, 'workflows', 'build.yaml'), body);
     expect((await syncWorkflowDefinitions(config)).invalid).toEqual([]);
-    const started = await startRun(config, 'build', { items: [1] });
+    const started = await startRun(config, 'build', { items: [1] }, { secrets: await startSecrets(config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const built = leaseIn(await leaseNext(config, runId, driverA));
@@ -3735,7 +3736,7 @@ describe('for_each', () => {
     prompt: "Build {{ item.dir }}."
 `, 'inputs:\n  packages: [{ dir: string }]\n'));
     await syncWorkflowDefinitions(fixture.config);
-    const started = await startRun(fixture.config, 'fan', { packages: [{ dir: 'packages/core' }] });
+    const started = await startRun(fixture.config, 'fan', { packages: [{ dir: 'packages/core' }] }, { secrets: await startSecrets(fixture.config, 'fan') });
     if ('error' in started) throw new Error(started.error.message);
     const leases: Array<Pick<LoopLease, 'step' | 'command' | 'prompt' | 'env'>> = [];
 
@@ -3789,7 +3790,7 @@ describe('for_each', () => {
 `, 'inputs:\n  packages: [{ id: string, dir: string }]\n'));
     const synced = await syncWorkflowDefinitions(fixture.config);
     expect(synced.invalid.map((diagnostic) => diagnostic.message)).toEqual([]);
-    const started = await startRun(fixture.config, 'triage', { packages: [{ id: 'core', dir: 'packages/core' }, { id: 'cli', dir: 'packages/cli' }] });
+    const started = await startRun(fixture.config, 'triage', { packages: [{ id: 'core', dir: 'packages/core' }, { id: 'cli', dir: 'packages/cli' }] }, { secrets: await startSecrets(fixture.config, 'triage') });
     if ('error' in started) throw new Error(started.error.message);
     const leases: Array<Pick<LoopLease, 'step' | 'prompt' | 'env'>> = [];
 
@@ -4225,7 +4226,7 @@ ${pair(prompt, '      ')}`, header) }), 'each[0].s', true],
     expect(pulled.invalid.map((diagnostic) => diagnostic.message).filter((message) => message.includes('steps.p'))).toHaveLength(bound ? 1 : 0);
     if (bound) return;
     // Where item is not bound, the step reads no step, so it does not wait for p.
-    const started = await startRun(fixture.config, 'top', inputs);
+    const started = await startRun(fixture.config, 'top', inputs, { secrets: await startSecrets(fixture.config, 'top') });
     if ('error' in started) throw new Error(started.error.message);
     expect(leaseIn(await leaseNext(fixture.config, String(started.data.run), driverA)).step).toBe(step);
   });
@@ -4687,7 +4688,7 @@ describe('deadlines', () => {
       expect(other.step).toBe('other');
       vi.setSystemTime(new Date(at(15)));
       expect(await leaseNext(config, runId, driverA, { running: [slow.attempt, other.attempt] })).toMatchObject({ data: { cancelled: [slow.attempt] } });
-      await cancelRun(config, runId);
+      await cancelRun(config, runId, await runSecrets(config, runId));
       const unenforced = [{ requirement: 'network', asked: false }];
       expect(await readRun(config, runId)).toMatchObject({ steps: [
         { id: 'slow', status: 'failed', failure: { code: 'timeout' }, unenforced },
@@ -4707,7 +4708,7 @@ describe('deadlines', () => {
       fs.writeFileSync(path.join(workflows, 'build.yaml'), graph('  - id: check\n    workflow: check\n    timeout: 1h\n'));
       fs.writeFileSync(path.join(workflows, 'check.yaml'), 'schemaVersion: v1alpha1\nname: check\ndescription: Check it.\ntimeout: 10m\nsteps:\n  - id: inner\n    command: echo inner\n');
       await syncWorkflowDefinitions(fixture.config);
-      const started = await startRun(fixture.config, 'build');
+      const started = await startRun(fixture.config, 'build', {}, { secrets: await startSecrets(fixture.config, 'build') });
       if ('error' in started) throw new Error(started.error.message);
       const runId = String(started.data.run);
       expect(await leaseNext(fixture.config, runId, driverA)).toMatchObject({ data: { lease: { step: 'check.inner', expiresAt: at(10) } } });
@@ -4818,7 +4819,7 @@ describe('token budgets', () => {
     const c = leaseIn(await leaseNext(config, runId, driverA, { ...reports, running: [a.attempt, b.attempt] }));
     await report(config, runId, a, 'success', { input: 12 });
     expect(await leaseNext(config, runId, driverA, { ...reports, running: [b.attempt, c.attempt] })).toMatchObject({ data: { done: { outcome: 'failed' } } });
-    expect(await retryStep(config, runId, 'b')).toMatchObject({ data: { reopened: true } });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'b')).toMatchObject({ data: { reopened: true } });
     expect(await reportAttempt(config, runId, { attempt: c.attempt, revision: c.revision, outcome: 'success', driver: driverA, tokens: { input: 20 } }))
       .toMatchObject({ error: { code: 'lease_cancelled' } });
 
@@ -4834,8 +4835,8 @@ describe('token budgets', () => {
 `, 'budget: { tokens: 100 }\n'));
     const a = leaseIn(await leaseNext(config, runId, driverA, reports));
     const b = leaseIn(await leaseNext(config, runId, driverA, { ...reports, running: [a.attempt] }));
-    expect(await cancelRun(config, runId, 'a')).toMatchObject({ data: { cancelled: { attempts: [a.attempt] } } });
-    expect(await retryStep(config, runId, 'a')).toMatchObject({ data: {} });
+    expect(await cancelRun(config, runId, await runSecrets(config, runId), 'a')).toMatchObject({ data: { cancelled: { attempts: [a.attempt] } } });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'a')).toMatchObject({ data: {} });
     expect(await reportAttempt(config, runId, { attempt: a.attempt, revision: a.revision, outcome: 'success', driver: driverA, tokens: { input: 7 } }))
       .toMatchObject({ error: { code: 'lease_cancelled' } });
 

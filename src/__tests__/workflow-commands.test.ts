@@ -25,6 +25,7 @@ import { startRun } from '../workflow/engine.js';
 import { publishRun } from '../workflow/handoff.js';
 import { driverLockPath, readRun } from '../workflow/store.js';
 import { workflowNext, workflowPublish, workflowReport, workflowResume, workflowStart } from '../workflow-commands.js';
+import { startSecrets } from './helpers/workflow-secrets.js';
 
 const dirs: string[] = [];
 
@@ -55,7 +56,7 @@ steps:
     command: node one.js
 `);
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'build');
+  const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
   if ('error' in started) throw new Error(started.error.message);
   return { config, runId: String(started.data.run) };
 }
@@ -316,7 +317,7 @@ describe('workflow publish and resume --claim', () => {
     };
     const alice = await member('alice');
     const bob = await member('bob');
-    const started = await startRun(alice.config, 'build');
+    const started = await startRun(alice.config, 'build', {}, { secrets: await startSecrets(alice.config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     expect(await publishRun(alice.config, runId, { env: {}, checkout: alice.checkout })).toMatchObject({ ok: true });

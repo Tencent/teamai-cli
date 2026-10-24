@@ -3,7 +3,7 @@ import { resolveWorkflowEnv, type WorkflowEnv } from './env-resolution.js';
 import { isLeaseRef } from './scorers/entry.js';
 import { log, setStderrOnly } from './utils/logger.js';
 import { collectEnvSecrets, redactJson } from './utils/redact.js';
-import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, resolveRunEnv, resumableSessions, startRun, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
+import { leaseNext, parseNextPayload, parseReport, parseResponsePayload, reportAttempt, requiredKeysOf, resumableSessions, startKeysOf, startRun, withIgnored, type ParsedResponsePayload } from './workflow/engine.js';
 import { publishRun, resumeRun } from './workflow/handoff.js';
 import { cancelRun, respondToHitl, retryStep } from './workflow/run-controls.js';
 import { localDriver, runLocalDriver, withDriverLock } from './workflow/local-driver.js';
@@ -55,17 +55,24 @@ function readJson(payload: string | undefined, missing: string): JsonRead {
 }
 
 /**
- * The member's config, and the team env resolved once for the command on run `runId`: the secrets every envelope it
- * prints masks, which `next` and `report` also offer against and mask with.
+ * The member's config, and the team env resolved once for the command, for the keys the run it works on requires: the
+ * secrets every envelope it prints masks, which the operation offers against and masks its writes with.
  */
-async function readyConfig(runId?: string): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> } | undefined> {
+async function readyConfig(
+  required: (config: LocalConfig) => Promise<Iterable<string>>,
+): Promise<{ config: LocalConfig; teamConfig: TeamaiConfig; env: WorkflowEnv; secrets: Record<string, string> } | undefined> {
   const loaded = await loadConfig();
   if (!('config' in loaded)) {
     writeEnvelope(loaded, collectEnvSecrets());
     return undefined;
   }
-  const env = runId === undefined ? await resolveWorkflowEnv(loaded.config, []) : await resolveRunEnv(loaded.config, runId);
+  const env = await resolveWorkflowEnv(loaded.config, await required(loaded.config));
   return { ...loaded, env, secrets: env.secrets };
+}
+
+/** The keys run `runId` requires, for `readyConfig`. */
+function ofRun(runId: string): (config: LocalConfig) => Promise<Set<string>> {
+  return (config) => requiredKeysOf(config, runId);
 }
 
 function parseTools(value: string | undefined): Record<string, string> | string {
@@ -83,7 +90,7 @@ function parseTools(value: string | undefined): Record<string, string> | string 
 
 export async function workflowStart(name: string, options: { driver?: string; tools?: string; inputs?: string; autoApprove?: boolean }): Promise<void> {
   setStderrOnly(true);
-  const loaded = await readyConfig();
+  const loaded = await readyConfig((config) => startKeysOf(config, name));
   if (!loaded) return;
   const { config, teamConfig, secrets } = loaded;
   if (options.driver !== undefined && options.driver !== 'local') {
@@ -105,7 +112,7 @@ export async function workflowStart(name: string, options: { driver?: string; to
     }
   }
   const base = await headCommit(process.cwd());
-  const started = await startRun(config, name, inputs, base ? { base, checkout: process.cwd() } : {});
+  const started = await startRun(config, name, inputs, { secrets, ...(base ? { base, checkout: process.cwd() } : {}) });
   if ('error' in started || options.driver !== 'local') {
     writeEnvelope(started, secrets);
     return;
@@ -121,7 +128,7 @@ export async function workflowStart(name: string, options: { driver?: string; to
 
 export async function workflowNext(runId: string, options: { json?: string }): Promise<void> {
   setStderrOnly(true);
-  const loaded = await readyConfig(runId);
+  const loaded = await readyConfig(ofRun(runId));
   if (!loaded) return;
   const { config, env, secrets } = loaded;
   const payload = readJson(options.json, 'Pass --json with a driver object');
@@ -140,7 +147,7 @@ export async function workflowNext(runId: string, options: { json?: string }): P
 
 export async function workflowReport(runId: string, options: { json?: string }): Promise<void> {
   setStderrOnly(true);
-  const loaded = await readyConfig(runId);
+  const loaded = await readyConfig(ofRun(runId));
   if (!loaded) return;
   const { config, secrets } = loaded;
   if (isLeaseRef(runId)) {
@@ -161,10 +168,10 @@ export async function workflowReport(runId: string, options: { json?: string }):
 }
 
 
-async function workflowControl(runId: string, operation: (config: LocalConfig) => Promise<WorkflowEnvelope>): Promise<void> {
+async function workflowControl(runId: string, operation: (config: LocalConfig, secrets: Record<string, string>) => Promise<WorkflowEnvelope>): Promise<void> {
   setStderrOnly(true);
-  const loaded = await readyConfig(runId);
-  if (loaded) writeEnvelope(await operation(loaded.config), loaded.secrets);
+  const loaded = await readyConfig(ofRun(runId));
+  if (loaded) writeEnvelope(await operation(loaded.config, loaded.secrets), loaded.secrets);
 }
 
 /** Records a HITL answer with terminal or declared driver UI provenance. */
@@ -188,7 +195,7 @@ export async function workflowRespond(runId: string, step: string, choice: strin
     }
     driverAnswer = declared;
   }
-  await workflowControl(runId, async (config) => withIgnored(await respondToHitl(config, runId, {
+  await workflowControl(runId, async (config, secrets) => withIgnored(await respondToHitl(config, runId, secrets, {
     step, choice, ...(options.note !== undefined ? { note: options.note } : {}), ...(pass !== undefined ? { pass } : {}),
     ...(driverAnswer ? driverAnswer.response
       : { channel: process.stdin.isTTY ? 'tty' : 'cli', agent: !process.stdin.isTTY }),
@@ -197,18 +204,18 @@ export async function workflowRespond(runId: string, step: string, choice: strin
 
 /** Retries a step without starting another local driver. */
 export async function workflowRetry(runId: string, step: string): Promise<void> {
-  await workflowControl(runId, (config) => retryStep(config, runId, step));
+  await workflowControl(runId, (config, secrets) => retryStep(config, runId, secrets, step));
 }
 
 /** Cancels a run or step through the shared control operation. */
 export async function workflowCancel(runId: string, step?: string): Promise<void> {
-  await workflowControl(runId, (config) => cancelRun(config, runId, step));
+  await workflowControl(runId, (config, secrets) => cancelRun(config, runId, secrets, step));
 }
 
 /** Publishes a run to teamai-reports, with the sessions its unsettled steps continue when asked. */
 export async function workflowPublish(runId: string, options: { sessions?: boolean } = {}): Promise<void> {
   setStderrOnly(true);
-  const loaded = await readyConfig(runId);
+  const loaded = await readyConfig(ofRun(runId));
   if (!loaded) return;
   const { secrets } = loaded;
   const published = await publishRun(loaded.config, runId, { checkout: process.cwd(), ...(options.sessions ? { sessions: resumableSessions } : {}) });
@@ -221,7 +228,7 @@ export async function workflowPublish(runId: string, options: { sessions?: boole
 
 export async function workflowResume(runId: string, options: { tools?: string; autoApprove?: boolean; claim?: boolean }): Promise<void> {
   setStderrOnly(true);
-  const loaded = await readyConfig(runId);
+  const loaded = await readyConfig(ofRun(runId));
   if (!loaded) return;
   const { secrets } = loaded;
   if (!isRunId(runId)) {

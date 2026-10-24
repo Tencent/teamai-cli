@@ -9,6 +9,7 @@ import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { nextJudgeLease, submitJudgeLease } from '../workflow/scoring.js';
 import type { LocalConfig } from '../types.js';
 import type { WorkflowEnvelope } from '../workflow/types.js';
+import { startSecrets } from './helpers/workflow-secrets.js';
 
 function data(envelope: WorkflowEnvelope): Record<string, unknown> {
   if ('error' in envelope) throw new Error(envelope.error.message);
@@ -26,7 +27,7 @@ it(scenario.name, async () => {
     const config: LocalConfig = { repo: { localPath: knowledge, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
     await syncWorkflowDefinitions(config);
     const driver = { kind: 'external', machine: 'm1', workspace: '/w' };
-    const runId = String(data(await startRun(config, 'judged')).run);
+    const runId = String(data(await startRun(config, 'judged', {}, { secrets: await startSecrets(config, 'judged') })).run);
     const work = z.object({ attempt: z.string(), revision: z.number() }).parse(data(await leaseNext(config, runId, driver)).lease);
     data(await reportAttempt(config, runId, { ...work, driver, outcome: 'success', outputs: { reviewed: true } }));
     data(await leaseNext(config, runId, driver));

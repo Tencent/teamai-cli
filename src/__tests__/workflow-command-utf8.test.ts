@@ -8,6 +8,7 @@ import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { startRun } from '../workflow/engine.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { readRun } from '../workflow/store.js';
+import { startSecrets } from './helpers/workflow-secrets.js';
 
 _setDriverPollMs(20);
 
@@ -63,7 +64,7 @@ steps:
     scope: 'project', projectRoot: workspace, dataHome: path.join(root, 'data'), additionalRoles: [],
   };
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'unicode');
+  const started = await startRun(config, 'unicode', {}, { secrets: await startSecrets(config, 'unicode') });
   if ('error' in started) throw new Error(started.error.message);
   const runId = String(started.data.run);
   const done = await runLocalDriver(config, runId, workspace);

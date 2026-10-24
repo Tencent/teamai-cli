@@ -22,6 +22,7 @@ import { nextJudgeLease, submitJudgeLease, type JudgeRequest } from '../workflow
 import { branchName } from '../workflow/workspace.js';
 import { worktreePath } from '../workflow/worktree.js';
 import type { DriverIdentity, WorkflowEnvelope } from '../workflow/types.js';
+import { startSecrets } from './helpers/workflow-secrets.js';
 
 const SECRET = 'sk-ABCDEFGH1234567890abcdefghij';
 
@@ -116,7 +117,7 @@ async function scoredRun(driver: 'external' | 'local' = 'external', files: Recor
     username: 'tester', scope: 'project', additionalRoles: [], projectRoot: checkout, dataHome: path.join(root, 'data'),
   };
   await syncWorkflowDefinitions(config);
-  const runId = String(data(await startRun(config, 'build', undefined, { base: { ref: 'main', commit: from }, checkout })).run);
+  const runId = String(data(await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build'), base: { ref: 'main', commit: from }, checkout })).run);
 
   const write = z.object({ attempt: z.string(), revision: z.number(), workspace: z.object({ branch: z.string() }) }).parse(data(await leaseNext(config, runId, work, { can: { workspace: ['new', 'continue', 'read-only'] } })).lease);
   git(checkout, 'checkout', '-q', '-B', write.workspace.branch, from);

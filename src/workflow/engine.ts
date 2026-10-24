@@ -30,7 +30,7 @@ import {
   CAN_KEYS, CanSchema, ReportedUnenforcedSchema, heldFor, mergeRequirements, negotiate, reportedUnenforced, requiredEnvKeys, runEnvKeys, unionUnenforced,
   type Allow, type DriverCan, type EnvFacts, type Held, type Negotiation, type ReportedUnenforced, type Terms,
 } from './requirements.js';
-import { knownSecrets, resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
+import { resolveWorkflowEnv, secretKey, type WorkflowEnv } from '../env-resolution.js';
 import { redactJson } from '../utils/redact.js';
 import { generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
 import { pinScorers } from '../scorers/cache.js';
@@ -113,23 +113,29 @@ export async function requiredKeysOf(config: LocalConfig, runId: string): Promis
   return typeof run === 'object' ? runEnvKeys(run) : new Set();
 }
 
+/** The env keys a new run of workflow `name` would require: none when it has no runnable version, which start reports. */
+export async function startKeysOf(config: LocalConfig, name: string): Promise<Set<string>> {
+  const cached = await loadCachedWorkflow(config, name);
+  const tree = cached && await loadWorkflowTree(config, cached);
+  return cached && tree && !('failed' in tree) ? requiredEnvKeys([cached.definition, ...Object.values(tree.workflows)]) : new Set();
+}
+
 /** The team env for one operation on run `runId`, resolved before its lock. */
 export async function resolveRunEnv(config: LocalConfig, runId: string): Promise<WorkflowEnv> {
   return resolveWorkflowEnv(config, await requiredKeysOf(config, runId));
 }
 
 /**
- * Applies one operation under the run lock and saves only when requested. The secrets the run file and records mask
- * are resolved before the lock, since resolving them can read the team env, unless the operation already resolved them.
+ * Applies one operation under the run lock and saves only when requested. `secrets`, what the run file and records
+ * mask, are the ones the operation resolved before the lock, since resolving them can read the team env.
  */
 export async function withRun<T extends WorkflowEnvelope>(
   config: LocalConfig,
   runId: string,
+  secrets: Record<string, string>,
   mutate: (run: RunState, now: string, secrets: Record<string, string>) => Promise<{ envelope: T; save: boolean }>,
-  resolved?: Record<string, string>,
 ): Promise<T> {
   if (!isRunId(runId)) return error('invalid_run', 'Run id must look like r followed by 8 or 16 hex digits') as T;
-  const secrets = resolved ?? (await resolveRunEnv(config, runId)).secrets;
   const updated = await updateRun(config, runId, secrets, async (loaded) => {
     if (loaded === 'missing') return { value: error('run_not_found', `Run ${runId} was not found`) as T };
     // One timestamp per operation, so a settled run's end record and its run file agree.
@@ -818,12 +824,15 @@ function listedScorers(definitions: ReadonlyArray<{ steps: WorkflowStep[] }>): s
   ]));
 }
 
-/** Creates a run. `inputs` are checked against the declared inputs before the run file exists. */
+/**
+ * Creates a run. `inputs` are checked against the declared inputs before the run file exists. `secrets` are what the
+ * caller resolved for the operation, for the keys the workflow requires (`startKeysOf`).
+ */
 export async function startRun(
   config: LocalConfig,
   name: string,
-  inputs: unknown = {},
-  options: { driver?: DriverIdentity; base?: RunState['base']; checkout?: string } = {},
+  inputs: unknown,
+  { secrets, ...options }: { secrets: Record<string, string>; driver?: DriverIdentity; base?: RunState['base']; checkout?: string },
 ): Promise<WorkflowEnvelope> {
   const cached = await loadCachedWorkflow(config, name);
   if (!cached) {
@@ -834,7 +843,6 @@ export async function startRun(
   const tree = await loadWorkflowTree(config, cached);
   if ('failed' in tree) return error(tree.failed.code, tree.failed.message);
   const scorers = await pinScorers(config, listedScorers([cached.definition, ...Object.values(tree.workflows)]));
-  const secrets = await knownSecrets(config, requiredEnvKeys([cached.definition, ...Object.values(tree.workflows)]));
   const pinned = Object.fromEntries([
     ...[cached.definition, ...Object.values(tree.workflows)].map((definition) => [`workflows/${definition.name}.yaml`, definition]),
     ...Object.entries(scorers).map(([name, scorer]) => [`scorer ${name}`, scorer]),
@@ -953,7 +961,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
   // the lock other engine operations wait on.
   let queued = false;
   let alreadySettled: RunState | undefined;
-  const envelope = await withRun(config, runId, async (run, now, secrets) => {
+  const envelope = await withRun(config, runId, env.secrets, async (run, now, secrets) => {
     const before = JSON.stringify(run);
     // Whatever settling changed is saved. `cancelled` is derived after settling: the attempts the driver runs that
     // are no longer its open leases.
@@ -1072,7 +1080,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       }
       failStep(leased, rendered, leased.lease.revision);
     }
-  }, env.secrets);
+  });
   const done = (envelope as { data?: { done?: Record<string, unknown> } }).data?.done;
   // Every `next` that answers `done` publishes the end again, so an end saved by a process that stopped before it was
   // published still reaches teamai-reports; an end already there writes nothing.
@@ -1394,7 +1402,7 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
     return error('judge_lease', `Attempt ${report.attempt} is a judge lease, which workflow report does not settle. Submit its answer with: teamai score --lease ${report.attempt} --submit --stdin`);
   }
   const install = await installOwner(config);
-  return withRun(config, runId, async (run, now) => {
+  return withRun(config, runId, secrets ?? (await resolveRunEnv(config, runId)).secrets, async (run, now) => {
     // Settled membership wins. An old revision of a settled attempt is still repeated_report.
     if (run.settledAttempts.includes(report.attempt)) {
       return { save: false, envelope: error('repeated_report', `Attempt ${report.attempt} was already reported`) };
@@ -1499,5 +1507,5 @@ export async function reportAttempt(config: LocalConfig, runId: string, report: 
         ...(cleanup ? { cleanup: true } : {}),
       }),
     };
-  }, secrets);
+  });
 }

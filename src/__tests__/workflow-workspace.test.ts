@@ -26,6 +26,7 @@ import { applyBaseConfig, ensureWorktree, hooksPath, pushIfOrigin, worktreePath 
 import { launchHoldsCheckout } from '../launch-context.js';
 import { teamDelivery } from '../pull.js';
 import { pendingRecords } from '../workflow/records.js';
+import { runSecrets, startSecrets } from './helpers/workflow-secrets.js';
 
 _setDriverPollMs(20);
 
@@ -36,7 +37,7 @@ async function saveRun(config: LocalConfig, run: RunState): Promise<void> {
 
 const dirs: string[] = [];
 
-async function fixture(yaml: string, inputs?: unknown): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
+async function fixture(yaml: string, inputs: unknown = {}): Promise<{ config: LocalConfig; workspace: string; runId: string }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-workspace-'));
   dirs.push(root);
   const knowledge = path.join(root, 'knowledge');
@@ -58,7 +59,7 @@ async function fixture(yaml: string, inputs?: unknown): Promise<{ config: LocalC
   };
   fs.writeFileSync(path.join(knowledge, 'workflows', 'build.yaml'), yaml);
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'build', inputs);
+  const started = await startRun(config, 'build', inputs, { secrets: await startSecrets(config, 'build') });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
 }
@@ -113,7 +114,7 @@ async function teamWorkspace(yaml: string): Promise<{ config: LocalConfig; works
   if (!config) throw new Error('project config was not found');
   config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
   await syncWorkflowDefinitions(config);
-  const started = await startRun(config, 'build');
+  const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
   if ('error' in started) throw new Error(started.error.message);
   return { config, workspace, runId: String(started.data.run) };
 }
@@ -919,7 +920,7 @@ steps:
     fs.symlinkSync(outside, path.join(workspace, '.github'));
     execFileSync('git', ['add', '.github'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'link'], { cwd: workspace });
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
 
@@ -946,7 +947,7 @@ steps:
     fs.writeFileSync(path.join(workspace, '.github', 'agents', 'a.md'), 'agent');
     execFileSync('git', ['add', '.github'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agent'], { cwd: workspace });
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
 
@@ -1523,7 +1524,7 @@ steps:
     fs.writeFileSync(path.join(workspace, 'AGENTS.md'), 'base rules\n');
     execFileSync('git', ['add', 'AGENTS.md'], { cwd: workspace });
     execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'agents'], { cwd: workspace });
-    const started = await startRun(config, 'build');
+    const started = await startRun(config, 'build', {}, { secrets: await startSecrets(config, 'build') });
     if ('error' in started) throw new Error(started.error.message);
     const runId = String(started.data.run);
     const branch = branchName(runId, 'work', 1);
@@ -1534,7 +1535,7 @@ steps:
     if (typeof run !== 'object') throw new Error('run missing');
     expect(run.steps.find((step) => step.id === 'work.check')).toMatchObject({ status: 'failed', failure: { code: 'base_config', message: expect.stringContaining('smudge filter boom failed') } });
     fs.rmSync(path.join(workspace, '.git', 'info', 'attributes'));
-    expect(await retryStep(config, runId, 'work.check')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'work.check')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     const done = await runLocalDriver(config, runId, workspace);
 
@@ -1888,7 +1889,7 @@ steps:
 
     const failed = await runLocalDriver(config, runId, workspace);
     expect(failed, JSON.stringify(failed)).toMatchObject({ data: { done: { outcome: 'failed' } } });
-    const opened = await retryStep(config, runId, 'work.ask');
+    const opened = await retryStep(config, runId, await runSecrets(config, runId), 'work.ask');
     expect(opened, JSON.stringify(opened)).toMatchObject({ data: { retried: { pass: 2 } } });
     config.workflows = { tools: { default: 'claude' }, max_parallel: 1 };
     const adapter: LocalToolAdapter = {
@@ -2590,7 +2591,7 @@ setInterval(() => {}, 1000);
       if (Date.now() > deadline) throw new Error('the command did not start');
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    expect(await cancelRun(config, runId, 'work.slow')).not.toHaveProperty('error');
+    expect(await cancelRun(config, runId, await runSecrets(config, runId), 'work.slow')).not.toHaveProperty('error');
     await driving;
     fs.writeFileSync(again, '');
     const stored = await readRun(config, runId);
@@ -2892,7 +2893,7 @@ ${steps}`, steps.startsWith('inputs:') ? { items: ['a', 'b'] } : undefined);
       if (!lease) {
         const hitl = next.data.hitl as { step: string } | undefined;
         if (!hitl) throw new Error(JSON.stringify(next));
-        await respondToHitl(config, runId, { step: hitl.step, choice: 'yes', channel: 'cli', agent: false });
+        await respondToHitl(config, runId, await runSecrets(config, runId), { step: hitl.step, choice: 'yes', channel: 'cli', agent: false });
         continue;
       }
       const contract = lease.workspace;
@@ -3115,7 +3116,7 @@ steps:
     const copy = worktreePath(workspace, branch);
     expect(fs.existsSync(path.join(copy, 'polish.txt'))).toBe(false);
     git(['checkout', '-q', '-b', branch], copy);
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     const done = await runLocalDriver(config, runId, workspace);
 
@@ -3229,7 +3230,7 @@ steps:
     fs.writeFileSync(marker, staged);
     fs.writeFileSync(path.join(copy, 'junk.txt'), 'reader');
     fs.writeFileSync(path.join(workspace, 'go'), '');
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     await runLocalDriver(config, runId, workspace);
 
@@ -3240,7 +3241,7 @@ steps:
     });
     expect(() => git(['show', `${branch}:junk.txt`], workspace)).toThrow();
     fs.rmSync(path.join(copy, 'junk.txt'));
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 3 } } });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'change.polish')).toMatchObject({ data: { retried: { pass: 3 } } });
 
     await runLocalDriver(config, runId, workspace);
 
@@ -3273,7 +3274,7 @@ steps:
     const copy = worktreePath(workspace, branch);
     git(['checkout', '-q', '--detach'], copy);
     fs.writeFileSync(path.join(workspace, 'go'), '');
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     await runLocalDriver(config, runId, workspace);
 
@@ -3351,7 +3352,7 @@ steps:
     await runLocalDriver(config, runId, workspace);
     fs.rmSync(worktreePath(workspace, branch), { recursive: true, force: true });
     fs.writeFileSync(path.join(workspace, 'go'), '');
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     await runLocalDriver(config, runId, workspace);
 
@@ -3416,7 +3417,7 @@ steps:
     await runLocalDriver(config, runId, workspace);
     fs.mkdirSync(path.resolve(copy, git(['rev-parse', '--git-path', 'teamai-unrestored'], copy).trim()));
     fs.writeFileSync(path.join(workspace, 'go'), '');
-    expect(await retryStep(config, runId, 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
+    expect(await retryStep(config, runId, await runSecrets(config, runId), 'change.polish')).toMatchObject({ data: { retried: { pass: 2 } } });
 
     await runLocalDriver(config, runId, workspace);
 

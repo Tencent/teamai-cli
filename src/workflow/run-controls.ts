@@ -16,12 +16,13 @@ import type { RunState, WorkflowEnvelope } from './types.js';
 async function controlRun(
   config: LocalConfig,
   runId: string,
+  secrets: Record<string, string>,
   operation: (run: RunState, now: string, finish: (result: WorkflowResult) => Promise<void>) => Promise<WorkflowEnvelope>,
 ): Promise<WorkflowEnvelope> {
   let queued = false;
   let settled = false;
   let checkout = process.cwd();
-  const envelope = await withRun(config, runId, async (run, now, secrets) => {
+  const envelope = await withRun(config, runId, secrets, async (run, now) => {
     const before = JSON.stringify(run);
     checkout = run.driver?.workspace ?? checkout;
     const finish = async (result: WorkflowResult): Promise<void> => {
@@ -66,8 +67,8 @@ export interface ResponseInput {
 }
 
 /** Records a HITL request answer under the run lock and settles any work it enables. */
-export async function respondToHitl(config: LocalConfig, runId: string, input: ResponseInput): Promise<WorkflowEnvelope> {
-  return controlRun(config, runId, async (run, now, finish) => {
+export async function respondToHitl(config: LocalConfig, runId: string, secrets: Record<string, string>, input: ResponseInput): Promise<WorkflowEnvelope> {
+  return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
     const result = reconcileRun(run, now);
     if ('unreadable' in result) return error('run_unreadable', result.unreadable);
@@ -100,8 +101,8 @@ export async function respondToHitl(config: LocalConfig, runId: string, input: R
 }
 
 /** Stops a whole run or one open step and invalidates the attempts it cancelled. */
-export async function cancelRun(config: LocalConfig, runId: string, step?: string): Promise<WorkflowEnvelope> {
-  return controlRun(config, runId, async (run, now, finish) => {
+export async function cancelRun(config: LocalConfig, runId: string, secrets: Record<string, string>, step?: string): Promise<WorkflowEnvelope> {
+  return controlRun(config, runId, secrets, async (run, now, finish) => {
     if (run.status !== 'running') return settledRunError(run);
     const failure = { code: 'cancelled', message: 'Cancelled by teamai workflow cancel' };
     if (step !== undefined) {
@@ -245,8 +246,8 @@ function retryInstance(run: RunState, state: StepState, now: string): void {
 }
 
 /** Retries a step and its dependency cone, retaining pass history and reopening a settled run. */
-export async function retryStep(config: LocalConfig, runId: string, step: string): Promise<WorkflowEnvelope> {
-  return controlRun(config, runId, async (run, now, finish) => {
+export async function retryStep(config: LocalConfig, runId: string, secrets: Record<string, string>, step: string): Promise<WorkflowEnvelope> {
+  return controlRun(config, runId, secrets, async (run, now, finish) => {
     // A run this reconcile finds ended, by its timeout or budget too, is reopened by the retry like a settled one.
     let ended = run.status !== 'running';
     if (!ended) {

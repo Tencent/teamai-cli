@@ -15,7 +15,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from '../types.js';
 import { LabelStore, type PassScore } from '../scorers/label-store.js';
-import { locateStep } from '../workflow/engine.js';
+import { locateStep, resolveRunEnv } from '../workflow/engine.js';
 import { buildEndRecord, RECORDS_DIR, runRecordStates, type RecordState, type WorkflowRunRecord } from '../workflow/records.js';
 import { respondToHitl } from '../workflow/run-controls.js';
 import { isRunId, readRun, runsDir } from '../workflow/store.js';
@@ -298,7 +298,7 @@ export async function answerFromDashboard(config: LocalConfig, body: Record<stri
   const parsed = AnswerSchema.safeParse(body);
   if (!parsed.success) throw new HttpError(400, 'Send run, step, pass and choice of the HITL request you answer.');
   const { run, step, pass, choice } = parsed.data;
-  const envelope = await respondToHitl(config, run, { step, choice, pass, channel: 'dashboard', agent: false });
+  const envelope = await respondToHitl(config, run, (await resolveRunEnv(config, run)).secrets, { step, choice, pass, channel: 'dashboard', agent: false });
   if ('error' in envelope) throw new HttpError(STALE_CODES.has(envelope.error.code) ? 409 : 400, envelope.error.message);
   return { answered: envelope.data.answered };
 }

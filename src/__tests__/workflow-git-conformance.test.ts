@@ -13,6 +13,7 @@ import type { StepState } from '../workflow/step-state.js';
 import { readRun } from '../workflow/store.js';
 import type { DriverIdentity, RunState } from '../workflow/types.js';
 import type { WorkspaceContract } from '../workflow/workspace.js';
+import { startSecrets } from './helpers/workflow-secrets.js';
 
 const dirs: string[] = [];
 
@@ -93,7 +94,7 @@ describe('workflow git conformance of the local driver', () => {
       // Without a handoff the other machine's driver reports into the same install.
       const starter = scenario.handoff ? install('elsewhere', elsewhere, path.join(root, 'other', 'team-repo')) : config;
       if (starter !== config) await syncWorkflowDefinitions(starter);
-      const started = await startRun(starter, scenario.workflowName, undefined, { base: { ref: 'main', commit: git(elsewhere, 'rev-parse', 'HEAD') } });
+      const started = await startRun(starter, scenario.workflowName, {}, { secrets: await startSecrets(starter, scenario.workflowName), base: { ref: 'main', commit: git(elsewhere, 'rev-parse', 'HEAD') } });
       if ('error' in started) throw new Error(started.error.message);
       const runId = String(started.data.run);
 
