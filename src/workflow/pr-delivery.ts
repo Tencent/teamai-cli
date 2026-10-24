@@ -150,8 +150,9 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
 
 /**
  * Why a URL a driver reported for `branch` is not kept: on the origin's host it must be the open request of the branch
- * into `target`, as the provider's lookup answers. A URL on another host, such as a private review service, an origin
- * only git reaches, or a lookup that cannot answer keeps it, and delivery accepts it as it is.
+ * into `target`, as the provider's lookup answers, so one the lookup cannot confirm is not kept either; delivery's own
+ * lookup still finds the open request. A URL on another host, such as a private review service, or an origin only git
+ * reaches, keeps it, and delivery accepts it as it is.
  */
 export async function reportedPrMismatch(
   { checkout, url, branch, target }: { checkout: string; url: PrUrl; branch: string; target: string },
@@ -160,8 +161,8 @@ export async function reportedPrMismatch(
   if (origin.kind === 'transport' || new URL(url).hostname !== origin.hostname) return undefined;
   const found = await findOpen(origin, { repo: origin.repo, source: branch, target, timeoutMs: DELIVERY_TIMEOUT_MS });
   if (found.kind === 'none') return `branch ${branch} has no open pull request into ${target}`;
-  if (found.kind === 'found' && found.pr !== url) return `is not the open pull request of branch ${branch} into ${target}`;
-  return undefined;
+  if (found.kind !== 'found') return `could not be checked against the open pull requests of branch ${branch} into ${target}`;
+  return found.pr === url ? undefined : `is not the open pull request of branch ${branch} into ${target}`;
 }
 
 /**

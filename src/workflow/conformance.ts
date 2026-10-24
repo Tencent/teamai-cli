@@ -988,7 +988,7 @@ export const workflowDeliveryConformanceScenarios: DeliveryConformanceScenario[]
     name: 'a delivery that cannot reach the host fails naming the branch, which stays on origin',
     unreachable: true,
     opened: { creates: 0, run: 'failed', work: 'failed', prs: 0, failure: 'delivery_failed' },
-    reported: REPORTED,
+    reported: { creates: 0, run: 'failed', work: 'failed', prs: 0, failure: 'delivery_failed' },
   },
   {
     name: 'a driver polls while another process of its machine delivers, and gets the step that needs it once delivered',

@@ -14,7 +14,7 @@ import * as store from '../workflow/store.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/local-driver.js';
 import { acquireLock, releaseLock } from '../update.js';
 import { AGENT_PATHS, DELIVERY_ONLY_PATHS, protectedPaths } from '../workflow/worktree.js';
-import { fakeGh } from './helpers/fake-gh.js';
+import { fakeGh, type FakeGhOptions } from './helpers/fake-gh.js';
 import { deliverPr } from '../workflow/pr-delivery.js';
 import { buildEndRecord, pendingRecords } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
@@ -837,13 +837,10 @@ describe('reported URLs from a driver', () => {
     expect((await state(config, runId)).deliveries?.map((receipt) => receipt.url)).toEqual([`https://github.com/fixture/app/pull/${delivered}`]);
   });
 
-  it.each([
-    ['is the open pull request of its branch', {}],
-    ['cannot be checked while GitHub cannot be reached', { lookup: 'fail' as const }],
-  ])('keeps a URL on the origin host that %s, and opens nothing for it', async (_case, options) => {
+  it('keeps a URL on the origin host that is the open pull request of its branch, and opens nothing for it', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     const fix = await take(config, runId);
-    const gh = fakeGh(path.join(root, 'gh'), { ...options, open: [pull(4, `teamai/${runId}/fix/p1`)] });
+    const gh = fakeGh(path.join(root, 'gh'), { open: [pull(4, `teamai/${runId}/fix/p1`)] });
     const accepted = await succeed(config, runId, fix, { to: pushWork(root, fix), pr_url: 'https://github.com/fixture/app/pull/4?tab=files#top' });
     expect(accepted).toMatchObject({ data: { accepted: true, step: { id: 'fix', status: 'delivering' } } });
     expect(accepted).not.toHaveProperty('data.dropped');
@@ -851,6 +848,27 @@ describe('reported URLs from a driver', () => {
     expect(await take(config, runId)).toMatchObject({ step: 'review' });
     expect((await state(config, runId)).deliveries?.map((receipt) => receipt.url)).toEqual(['https://github.com/fixture/app/pull/4']);
     expect(gh.calls().filter((call) => call.args[0] === 'pr')).toEqual([]);
+  });
+
+  it.each([
+    ['cannot answer', (): FakeGhOptions => ({ lookup: 'fail' })],
+    ['answers with a URL on another host', (branch: string): FakeGhOptions => ({ open: [{ ...pull(4, branch), html_url: 'https://github.example.net/fixture/app/pull/4' }] })],
+  ])('drops a URL on the origin host when the lookup that checks it %s, without its value, and delivers the open one later', async (_case, options) => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    const branch = `teamai/${runId}/fix/p1`;
+    const gh = fakeGh(path.join(root, 'gh'), options(branch));
+    const accepted = await succeed(config, runId, fix, { to: pushWork(root, fix), pr_url: 'https://github.com/fixture/app/pull/4' });
+    expect(accepted).toMatchObject({ data: {
+      accepted: true, step: { id: 'fix', status: 'delivering' }, dropped: [{ field: 'changes.pr_url', reason: `could not be checked against the open pull requests of branch ${branch} into main` }],
+    } });
+    expect(JSON.stringify(accepted)).not.toContain('pull/4');
+    expect((await state(config, runId)).steps[0]).not.toHaveProperty('delivery.reported');
+
+    gh.configure({ open: [pull(4, branch)] });
+    expect(await take(config, runId)).toMatchObject({ step: 'review' });
+    expect((await state(config, runId)).deliveries?.map((receipt) => receipt.url)).toEqual(['https://github.com/fixture/app/pull/4']);
+    expect(creates(gh)).toEqual([]);
   });
 });
 
