@@ -632,7 +632,7 @@ workflows:
 - `sandbox: true` 表示本机会隔离它运行的内容，例如 CI 虚拟机或容器，因此本地驱动声明 `sandbox` 隔离。
 - `max_parallel` 还限制本机上所有驱动同时持有同一运行的租约数。
 
-每个团队 secret 的值，以及名称看起来像 secret 的环境变量的值，在运行文件、运行记录和每个 `teamai workflow` 输出中都会显示为 `<REDACTED:KEY>`。`start` 拒绝包含这些值的输入，返回 `invalid_inputs`，只指出键名，不显示值。
+每个团队 secret 的值，以及名称看起来像 secret 的环境变量的值，在运行文件、运行记录、每个 `teamai workflow` 输出以及本地驱动为每次 attempt 保留的 `result.json` 中都会显示为 `<REDACTED:KEY>`。`start` 拒绝包含这些值的输入，返回 `invalid_inputs`，只指出键名，不显示值。
 
 `local` 以外的驱动在每次 `next` 的 `driver.can` 中声明它能做什么：
 

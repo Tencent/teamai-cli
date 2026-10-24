@@ -22,6 +22,7 @@ import { workflowLaunch } from '../launch-context.js';
 import { getDataHome, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { readFileSafe, readJson, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
+import { redactJson } from '../utils/redact.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../skill-use.js';
@@ -243,6 +244,14 @@ function stringMap(value: unknown): Record<string, string> | undefined {
 
 function resultPath(config: LocalConfig, runId: string, attempt: string): string {
   return path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts', attempt, 'result.json');
+}
+
+/** Masks the secret values an attempt's result file holds, so the copy it keeps on disk carries none. */
+async function maskResultFile(file: string, secrets: Record<string, string>): Promise<void> {
+  const kept = await readJson(file);
+  if (kept === null) return;
+  const masked = redactJson(kept, secrets);
+  if (JSON.stringify(masked) !== JSON.stringify(kept)) await writeJsonAtomic(file, masked);
 }
 
 function supportedTool(value: string): value is LaunchTool {
@@ -977,6 +986,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
   };
   if (maxParallel > 1) handle(STOP_SIGNALS);
   const report = async (body: ReportBody, lease?: Lease): Promise<WorkflowEnvelope | undefined> => {
+    await maskResultFile(resultPath(config, runId, body.attempt), await knownSecrets(config));
     const answer = await reportAttempt(config, runId, body);
     // Cancelled while it ran: the next `next` lists it in `cancelled`, and the run goes on without it.
     if (isWorkflowError(answer)) return answer.error.code === 'lease_cancelled' ? undefined : answer;

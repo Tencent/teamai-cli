@@ -12,7 +12,7 @@ import { AgentSession } from '../session-flow/agent-session.js';
 import { encodeCwdClaude } from '../session-flow/fs.js';
 import type { Session } from '../session-flow/ir.js';
 import { SyncManager, defaultSyncMeta, getRepoIdentity } from '../session-flow/sync.js';
-import { getReportsDir, type LocalConfig, type TeamaiConfig } from '../types.js';
+import { getDataHome, getReportsDir, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { log } from '../utils/logger.js';
 import { syncWorkflowDefinitions } from '../workflow/cache.js';
 import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
@@ -1973,6 +1973,25 @@ steps:
     vi.stubEnv('TEAM_URL', 'exported-by-another-shell');
     expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     vi.unstubAllEnvs();
+  });
+
+  it('leaves no secret value in the result file an attempt keeps on disk', async () => {
+    const { config, workspace, runId } = await workflowFixture(`schemaVersion: v1alpha1
+name: build
+description: Print a secret.
+steps:
+  - id: deploy
+    command: printf '{"token":"%s"}' "$DEPLOY_TOKEN"
+    requires: { env: [DEPLOY_TOKEN] }
+`);
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false })).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    vi.unstubAllEnvs();
+    const attempts = path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
+    const [attempt] = fs.readdirSync(attempts);
+    const kept = fs.readFileSync(path.join(attempts, attempt ?? '', 'result.json'), 'utf8');
+    expect(kept).toContain('<REDACTED:DEPLOY_TOKEN>');
+    expect(kept).not.toContain('deploy-secret-value-1082');
   });
 });
 

@@ -83,7 +83,7 @@ describe('workflow requirements and limits (real CLI, #1082)', () => {
 
   /** The run file and the run's records, queued or published. */
   function filesOfRun(runId: string): string[] {
-    const found = filesUnder(home).filter((file) => path.basename(file).startsWith(runId));
+    const found = filesUnder(home).filter((file) => path.basename(file).startsWith(runId) || file.includes(path.join('runs', runId, 'attempts')));
     expect(found.length).toBeGreaterThan(2);
     return found.map((file) => fs.readFileSync(file, 'utf8'));
   }
