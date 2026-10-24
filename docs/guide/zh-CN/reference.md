@@ -216,3 +216,7 @@ teamai models remove local:my-gateway
 ```
 
 只还原 TeamAI 改过的字段。你自己改过的 Agent，之后的 switch 和 restore 会跳过。
+
+## ZCode hook stdout 容量
+
+Doctor 会按 UTF-8 字节计算项目规则回复序列化后的大小，并与 `~/.zcode/cli/config.json` 中的 `hooks.maxOutputBytes`（默认 32768）比较。这只是大小下界：其他会话提示还会增加完整回复的字节数。即使 hook 已注册，ZCode 仍会截断超限的标准输出，并静默丢弃截断后无法解析的回复。请缩短规则，或将该正整数上限增大到足以容纳完整回复，再启动新的 ZCode 会话。TeamAI 不会自行修改上限或截断规则。

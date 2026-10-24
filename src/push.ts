@@ -235,11 +235,12 @@ type NewResourceDestination =
  */
 async function resolveNamespaceForNew(
   type: PlaceableType,
-  options: { role?: string; project?: string; silent?: boolean },
+  options: { role?: string; project?: string; shared?: boolean; silent?: boolean },
   localConfig: LocalConfig,
   projectsManifest: ProjectsManifest | null,
   roleNamespaces: readonly NamespaceEntry[] | null,
 ): Promise<NewResourceDestination> {
+  if (options.shared) return { kind: 'shared-root' };
   const flagged = options.project && projectsManifest
     ? resolveProjectNamespace(projectsManifest, options.project, type)
     : options.role ? resolveRoleNamespace(roleNamespaces, options.role, type) : null;
@@ -272,7 +273,7 @@ async function resolveNamespaceForNew(
     return {
       kind: 'unresolvable',
       message: `Several ${NAMESPACE_AXIS[type]} namespaces could take new ${type} (${candidates.join(', ')}), `
-        + 'and there is no terminal to ask on. Pass --role <ns> to name one.',
+        + 'and there is no terminal to ask on. Pass --role <ns> to name one, or --shared for the shared root.',
     };
   }
 
@@ -281,18 +282,21 @@ async function resolveNamespaceForNew(
   candidates.forEach((ns, index) => {
     console.log(`  ${index + 1}. ${ns}`);
   });
+  console.log(`  ${candidates.length + 1}. Shared root (all roles)`);
   console.log('');
   const answer = await askQuestion(
-    `Choose namespace [1-${candidates.length}] (default: 1 = ${candidates[0]}): `,
+    `Choose namespace [1-${candidates.length + 1}] (default: 1 = ${candidates[0]}): `,
   );
   const selection = answer ? Number.parseInt(answer, 10) : 1;
-  if (Number.isNaN(selection) || selection < 1 || selection > candidates.length) {
+  if (Number.isNaN(selection) || selection < 1 || selection > candidates.length + 1) {
     return {
       kind: 'invalid-selection',
-      message: `Invalid selection. Choose a number between 1 and ${candidates.length}.`,
+      message: `Invalid selection. Choose a number between 1 and ${candidates.length + 1}.`,
     };
   }
-  return { kind: 'namespace', namespace: candidates[selection - 1] };
+  return selection === candidates.length + 1
+    ? { kind: 'shared-root' }
+    : { kind: 'namespace', namespace: candidates[selection - 1] };
 }
 
 /**
@@ -582,7 +586,7 @@ function reuseRecordedDestinations(groups: PushGroup[]): Set<ResourceItem> {
  */
 async function placeNewResources(args: {
   items: ResourceItem[];
-  options: { role?: string; project?: string; silent?: boolean };
+  options: { role?: string; project?: string; shared?: boolean; silent?: boolean };
   localConfig: LocalConfig;
   projectsManifest: ProjectsManifest | null;
   /** What `--role` may name: every namespace the manifests declare, null with neither manifest. */
@@ -620,7 +624,7 @@ async function placeNewResources(args: {
       log.error(
         `Cannot place new ${type}: the team repo could not be refreshed, so where new ${type} belong `
         + '(manifest/roles.yaml, or the namespaces the repo already has) may be out of date. '
-        + 'Fix the pull and retry, or name the namespace with --role <ns>.',
+        + (options.shared ? 'Fix the pull and retry the shared-root push.' : 'Fix the pull and retry, or name the namespace with --role <ns>.'),
       );
       process.exitCode = 1;
       return false;
@@ -639,7 +643,17 @@ async function placeNewResources(args: {
         // The one destination that reaches the whole team is the one worth
         // saying out loud, so it is never the result of a silent fallback.
         for (const item of newAtRoot) {
-          log.warn(`[${type}] ${item.name} → ${item.relativePath} (shared with everyone: no namespace resolved)`);
+          if (options.shared) {
+            const taken = await Promise.all(collisionPaths(type, item.relativePath).map(async candidate =>
+              path.resolve(localConfig.repo.localPath, candidate) !== path.resolve(item.sourcePath)
+                && await pathExists(path.join(localConfig.repo.localPath, candidate)) ? candidate : null));
+            if (taken.some(Boolean)) {
+              log.error(`[${type}] ${item.name} cannot be placed: ${taken.filter(Boolean).join(', ')} already exists in the team repo. Pull and edit that copy, or rename this new resource.`);
+              process.exitCode = 2;
+              return false;
+            }
+          }
+          log.warn(`[${type}] ${item.name} → ${item.relativePath} (shared with everyone: ${options.shared ? 'explicit shared-root request' : 'no namespace resolved'})`);
         }
         continue;
       case 'namespace':
@@ -895,7 +909,7 @@ async function validateWorkflows(localConfig: LocalConfig, dryRun: boolean): Pro
 }
 
 export async function push(
-  options: GlobalOptions & { all?: boolean; role?: string; project?: string; branch?: string },
+  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string },
   /**
    * Optional out-param: set to `{ completed: true }` only when a real push
    * actually happened (resources or config pushed) — never on dry-run, cancel,
@@ -904,6 +918,11 @@ export async function push(
    */
   result?: { completed: boolean },
 ): Promise<void> {
+  if (options.shared && (options.role || options.project)) {
+    log.error('Use --shared without --role or --project.');
+    process.exitCode = 2;
+    return;
+  }
   // Auto-detect scope: project scope if cwd has project config, else user scope.
   // An unreadable project config stops here instead of selecting another team.
   // A workspace sends an edit back where it came from, a child's namespace
@@ -1109,6 +1128,24 @@ async function itemsChangedOnDefaultBranch(
       retiring.push(item);
       continue;
     }
+    if (item.type === 'skills') {
+      const source = path.resolve(item.sourcePath);
+      const destination = teamFile(item.relativePath);
+      // A skill is copied as a directory, including references and deletions.
+      // The scanner already leaves out an unchanged historical skill. Any
+      // remaining edit must not replace an upstream file with its stale copy,
+      // even when the member edited a different file in that directory.
+      for (const [file, change] of blobs) {
+        const root = [source, destination].find((dir) => file.startsWith(dir + path.sep));
+        if (!root) continue;
+        const memberBlob = await hashObject(memberRoot, path.join(source, path.relative(root, file)));
+        if (change.atTip !== memberBlob) {
+          edited.push(item);
+          break;
+        }
+      }
+      continue;
+    }
     const changes = [...new Set([path.resolve(item.sourcePath), teamFile(item.relativePath)])]
       .flatMap((file) => blobs.get(file) ?? []);
     if (changes.length === 0) continue;
@@ -1186,7 +1223,7 @@ async function defaultBranchGuard(
 async function pushCore(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
-  options: GlobalOptions & { all?: boolean; role?: string; project?: string; branch?: string },
+  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string },
   initialPendingTeamConfig: string | null = null,
   result?: { completed: boolean },
 ): Promise<void> {
@@ -1416,7 +1453,7 @@ async function pushCore(
   // `--skill`, and the placement of a new rule, skill or agent. Without them
   // each could only guess from the role alone, so stop here once for all of
   // them. A flag names the destination instead.
-  if (!options.role && !options.project) {
+  if (!options.role && !options.project && !options.shared) {
     const activeProjects = await resolveActiveProjectNamespaces(localConfig);
     if (!activeProjects.ok) {
       log.error(activeProjects.message);
@@ -1556,7 +1593,7 @@ async function pushCore(
   // explicit --role/--project is what answers that. Rules and skills are placed
   // after selection, so their scan needs nothing. An unsafe --role resolves to
   // no candidate here and is rejected with exit 2 before anything is pushed.
-  let requestedAgentsNamespace: string | undefined;
+  let requestedAgentsNamespace: string | undefined = options.shared ? '' : undefined;
   let agentsDestinationError: string | undefined;
   const flaggedAgents = options.project && projectsManifest
     ? resolveProjectNamespace(projectsManifest, options.project, 'agents')
@@ -1572,7 +1609,7 @@ async function pushCore(
     const resolved = resolveProjectNamespace(projectsManifest, options.project, 'skills');
     if (resolved.ok) requestedSkillsNamespace = resolved.namespace;
   } else {
-    requestedSkillsNamespace = options.role;
+    requestedSkillsNamespace = options.shared ? '' : options.role;
   }
 
   // Open PRs are proof of where a new skill goes, so the skills scan reads
@@ -1845,6 +1882,14 @@ async function pushCore(
   }
   const pendingPushes = pushState.pendingPushes;
 
+  if (options.shared) {
+    for (const item of allItems) {
+      if (item.type !== 'skills' || item.status !== 'new') continue;
+      item.namespace = undefined;
+      item.relativePath = `skills/${item.name}`;
+    }
+  }
+
   // An explicit --role or --project is a destination override for every selected
   // skill, including modified ones. Keep relativePath aligned with pushItem's
   // destination so git stages the files that were actually copied (#331).
@@ -1986,6 +2031,7 @@ async function pushCore(
   // sends it is the namespace the user NAMED, or else the path it was scanned
   // with, such as a kept skill's inactive namespace (#1020).
   const requestedNamespaceFor = (type: PlaceableType): string | undefined => {
+    if (options.shared) return '';
     if (options.role) return options.role;
     if (!options.project || !projectsManifest) return undefined;
     const resolved = resolveProjectNamespace(projectsManifest, options.project, type);
@@ -1996,8 +2042,9 @@ async function pushCore(
   // the shared root (step 4). Anything else keeps the path it was scanned with,
   // so an open PR recording that path is still the right one to update, and
   // treating it as a conflict opened a second PR on the same file (#649 review).
-  const movedByFlag = (item: ResourceItem): boolean => isRelocatedByFlag(item)
-    || (item.status === 'new' && !item.namespace && isAtSharedRoot(item));
+  const movedByFlag = (item: ResourceItem): boolean => options.shared
+    ? item.status === 'new' && isAtSharedRoot(item)
+    : isRelocatedByFlag(item) || (item.status === 'new' && !item.namespace && isAtSharedRoot(item));
   const conflictsWithRequest = (
     recorded: PendingPushItem,
   ): boolean => {
@@ -2018,7 +2065,7 @@ async function pushCore(
     // branch and rebuild it with the namespaced path, moving a review the
     // user did not name from "everyone" to one namespace (#649 review).
     const requested = requestedNamespaceFor(recorded.type as PlaceableType);
-    return requested !== undefined && requested !== recordedNamespace(recorded);
+    return requested !== undefined && requested !== (recordedNamespace(recorded) ?? '');
   };
   const reusablePending = pendingPushes.filter((entry) => {
     const conflicting = entry.items.filter(conflictsWithRequest);

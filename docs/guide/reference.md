@@ -216,3 +216,7 @@ teamai models remove local:my-gateway
 ```
 
 `restore` puts back only the fields TeamAI changed. An agent you edited yourself is skipped by later switches and restores.
+
+## ZCode hook stdout budget
+
+Doctor measures the serialized project-rules reply in UTF-8 bytes against `hooks.maxOutputBytes` in `~/.zcode/cli/config.json` (32768 by default). This is a lower bound: other session hints add bytes to the complete reply. ZCode truncates oversized stdout and silently drops a reply that no longer parses, even when its hook is registered. Shorten the rules or increase that positive integer limit enough for the complete reply, then start a new ZCode session. TeamAI does not change the limit or truncate rules.

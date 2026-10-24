@@ -964,7 +964,7 @@ const ZCODE_PROBE_TIMEOUT_MS = 10_000;
 
 function zcodeEntryCarriesItsReply(entry: { command: string; args: string[] }): boolean {
   // The tail is the entry's last argument: the dispatch command on POSIX
-  // (`bash -lc <tail>`), the same command behind the launcher on Windows
+  // (`bash -c <tail>`), the same command behind the launcher on Windows
   // (`node <launcher> <tail>`). Replacing only that slot leaves the rest of the
   // entry — the launcher included — exactly as ZCode will invoke it, which is
   // the point: the launcher is where #1030 broke.
@@ -979,11 +979,8 @@ function zcodeEntryCarriesItsReply(entry: { command: string; args: string[] }): 
   const probe = Buffer.from('{"probe":"teamai-zcode-delivery"}', 'utf8');
   const echoed = run('node -e "process.stdin.pipe(process.stdout)"', probe);
   if (echoed.error || echoed.status !== 0 || !Buffer.isBuffer(echoed.stdout)) return false;
-  // A substring rather than an exact match: on POSIX the entry runs its tail
-  // through `bash -lc`, and a login profile that prints puts its own bytes in
-  // front of the reply. What this has to catch is the reply going missing, not
-  // extra bytes around it.
-  if (!echoed.stdout.includes(probe)) return false;
+  // ZCode parses the whole reply as JSON: any startup output corrupts it.
+  if (!echoed.stdout.equals(probe)) return false;
   return run('node -e "process.exit(7)"').status === 7;
 }
 
@@ -1013,7 +1010,7 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
   if (zcodeSettings && !isAgentExcluded(localConfig, 'zcode') && await pathExists(path.join(home, '.zcode'))) {
     const file = path.join(home, zcodeSettings);
     const read = await readJsonObject(file);
-    const hooks = read.kind === 'ok' ? read.value.hooks as { enabled?: unknown; events?: unknown } | undefined : undefined;
+    const hooks = read.kind === 'ok' ? read.value.hooks as { enabled?: unknown; events?: unknown; maxOutputBytes?: unknown } | undefined : undefined;
     const entries = sessionStartDispatchEntries(hooks?.events);
     const registered = entries.length > 0;
     const enabled = hooks?.enabled === true;
@@ -1036,6 +1033,24 @@ async function buildProjectRulesHookChecks(ctx: DoctorContext): Promise<Check[]>
     // already fails and names the reason.
     const entry = entries[0];
     if (entry && enabled) {
+      const { teamRulesContext } = await import('./resources/rules.js');
+      const rules = await teamRulesContext(teamConfig, localConfig);
+      if (rules !== null) {
+        // ZCode caps the serialized stdout, not the number of context characters.
+        // Other session hints can make the final reply larger; this is a lower bound.
+        const bytes = Buffer.byteLength(JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: rules } }), 'utf8');
+        const limit = hooks?.maxOutputBytes ?? 32_768;
+        const valid = typeof limit === 'number' && Number.isSafeInteger(limit) && limit > 0;
+        checks.push({
+          name: 'Project rules fit the zcode hook stdout budget',
+          source: 'local',
+          check: async () => valid && bytes <= limit,
+          fix: `The project rules alone need ${bytes} UTF-8 bytes of hook stdout, before other session hints. `
+            + `${file} uses hooks.maxOutputBytes=${String(limit)} (default 32768). ZCode truncates oversized stdout and drops the reply when it no longer parses, `
+            + 'so registration can be healthy while no rules reach the model. Shorten the project rules or set '
+            + 'hooks.maxOutputBytes to a positive integer large enough for the complete reply, then start a new ZCode session.',
+        });
+      }
       checks.push({
         name: 'The teamai SessionStart hook for zcode returns its reply to the session',
         source: 'local',
@@ -2462,6 +2477,27 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
       fix: plan.warnings.length > 0
         ? plan.warnings.join(' ')
         : `${target.path} does not hold this member's current team instructions. ${pullNow}`,
+    });
+  }
+
+  const hermesSoul = targets.find((target) => target.tools.includes('hermes'));
+  if (hermesSoul && await holdsInstructionBlocks(hermesSoul.path)) {
+    const { hermesContextFileBudget, getHermesConfigPath } = await import('./hermes-config.js');
+    const budget = await hermesContextFileBudget();
+    // Hermes counts Python Unicode code points after stripping whitespace.
+    // Python str.strip includes C0 separators and NEL, and excludes BOM.
+    // eslint-disable-next-line no-control-regex
+    const length = Array.from((await readFileSafe(hermesSoul.path) ?? '').replace(/^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/gu, '')).length;
+    checks.push({
+      name: 'Hermes SOUL.md fits the context-file read budget',
+      source: 'local',
+      informational: !budget.explicit && !budget.error,
+      check: async () => !budget.error && length <= budget.limit,
+      fix: budget.error
+        ? `${getHermesConfigPath()} cannot be parsed, so the SOUL.md read budget is unknown: ${budget.error}. Fix its YAML and run teamai doctor again.`
+        : `${hermesSoul.path} has ${length} characters including member text and all TeamAI blocks, over the `
+          + `${budget.limit}-character ${budget.explicit ? 'context_file_max_chars cap, so Hermes truncates it' : 'minimum default context-file cap; Hermes may truncate it unless the selected model raises the cap'}. `
+          + `Shorten the complete file or set context_file_max_chars in ${getHermesConfigPath()} to a suitable limit. Teamai does not truncate your instructions.`,
     });
   }
 

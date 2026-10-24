@@ -1,7 +1,8 @@
 /**
  * Retiring the `post-tool-use --matcher Skill` hook (#1221): each `*.before.json`
  * is the file the previous release wrote for one format family; reconcile it
- * and only the Skill entry goes, every other byte stays. A project's team-only
+ * and the Skill entry goes. ZCode also upgrades its login-shell runner; other
+ * formats retain every other byte. A project's team-only
  * file never held the built-in, so it is written as before.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -60,7 +61,7 @@ const FAMILIES = [
 ];
 
 describe('reconcile retires the Skill dispatch hook (#1221)', () => {
-  it.each(FAMILIES)('$name: removes only the Skill entry', async ({ name, file }) => {
+  it.each(FAMILIES)('$name: removes Skill and retains the current runner contract', async ({ name, file }) => {
     const before = fs.readFileSync(path.join(FIXTURES, `${name}.before.json`), 'utf-8');
     expect(before).toContain('--matcher Skill');
     const settings = path.join(tmp, name, file);
@@ -70,7 +71,8 @@ describe('reconcile retires the Skill dispatch hook (#1221)', () => {
     await injectHooks(settings, name);
 
     const after = fs.readFileSync(settings, 'utf-8');
-    expect(JSON.parse(after)).toEqual(withoutSkillHook(JSON.parse(before)));
+    // ZCode intentionally upgrades -lc to its clean process runner (#1221).
+    if (name !== 'zcode') expect(JSON.parse(after)).toEqual(withoutSkillHook(JSON.parse(before)));
     await expect(after).toMatchFileSnapshot(path.join(FIXTURES, `${name}.after.json`));
   });
 

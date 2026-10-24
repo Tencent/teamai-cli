@@ -102,7 +102,10 @@ The doc lands in the team's `learnings/` and appears for teammates on their next
    stays at the shared root and reaches the whole team. When an active project
    cannot be resolved (not in `manifest/projects.yaml`, or that file is
    missing), push stops with exit 2 until you fix it or pass `--role` /
-   `--project`. An edit of a skill, rule or agent you received from a namespace
+   `--project`, or explicitly choose the shared root with `--shared`. This flag
+   places new resources at the shared root even when namespaces exist and
+   cannot combine with `--role` or `--project`. Shared-root skills retain the
+   existing tag-subscription delivery rules. An edit of a skill, rule or agent you received from a namespace
    goes back to that namespace, even when it replaces a shared item of the same
    name; the shared one is left as it is. A delivered skill copy is pushed only
    when its recorded version matches exactly one current team skill, using that
@@ -122,8 +125,10 @@ The doc lands in the team's `learnings/` and appears for teammates on their next
    or copy the team's current file over it), redo the edit on top, and push again.
    Any other team file under `.teamai/` that the default branch changed since
    your branch left it is left out of the push when you did not edit it. A file
-   you edited too, a rule included but not a skill's file, stops the push with
-   exit 2; merge the default branch and push again.
+   you edited too stops the push with exit 2; merge the default branch and push
+   again. Skills are checked as whole directories, including reference files
+   and deletions: a skill edit stops when it would replace any changed upstream
+   file with a stale local copy, even if you edited a different file.
 
 ## After contributing
 

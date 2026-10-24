@@ -197,9 +197,10 @@ program
   .option('--skill <path>', 'Push a specific skill by path (e.g., ~/.claude/skills/hai/my-skill or skills/hai_dev/my-skill)')
   .option('--role <id>', 'Namespace for every new resource type (skills/<id>/, rules/<id>/, docs/<id>/, env/<id>/, etc.). '
     + 'When the team has manifest/roles.yaml or manifest/projects.yaml, a role or project there must declare it for each type it places. '
-    + 'Without --role or --project, the namespaces of your role and active projects decide')
+    + 'Without --role, --project or --shared, the namespaces of your role and active projects decide')
   .option('--project <id>', "Target a project: each new resource goes to that project's namespace for its own type "
     + '— skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)')
+  .option('--shared', 'Place new resources at the shared root for all roles; cannot combine with --role or --project')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts() as GlobalOptions;
