@@ -41,7 +41,13 @@ export function isGhInstalled(): boolean {
  */
 export function ghExec(
   args: string[],
-  options?: { inheritStdio?: boolean; cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
+  options?: {
+    inheritStdio?: boolean;
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+    maxBuffer?: number;
+  },
 ): { stdout: string; stderr: string; status: number } {
   const ghPath = getGhPath();
   if (!ghPath) {
@@ -65,7 +71,7 @@ export function ghExec(
   const result = crossSpawn.sync(ghPath, args, {
     env: { ...process.env, ...options?.env },
     encoding: 'utf-8',
-    maxBuffer: 10 * 1024 * 1024,
+    maxBuffer: options?.maxBuffer ?? 10 * 1024 * 1024,
     cwd: options?.cwd,
     ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
   });
