@@ -894,7 +894,11 @@ async function markCreating(config: LocalConfig, runId: string, job: DeliveryJob
     const step = 'unreadable' in settledRun || 'outcome' in settledRun ? undefined : deliveringStep(run, job.key);
     if (!step) return { value: 'refused' };
     const create = { ...job.key, target: job.target };
-    if (!run.creating?.some((listed) => sameCreate(listed, create))) (run.creating ??= []).push({ ...create, lookups: { total: 0, none: 0, failed: 0 } });
+    const listed = run.creating?.find((item) => sameCreate(item, create));
+    // A request listed before is asked again now, so its lookups count from this create.
+    const lookups = { total: 0, none: 0, failed: 0 };
+    if (listed) listed.lookups = lookups;
+    else (run.creating ??= []).push({ ...create, lookups });
     return { value: 'open', write: { ...run, updatedAt: new Date().toISOString() } };
   });
   return marked.status === 'done' ? marked.value : 'busy';

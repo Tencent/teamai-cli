@@ -1263,6 +1263,26 @@ describe('retrying and cancelling a delivery', () => {
     expect(lookup).toHaveBeenCalledTimes(4);
   });
 
+  it('counts the lookups of a retried create from zero, so one empty lookup after it keeps the request listed', async () => {
+    const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
+    const fix = await take(config, runId);
+    await succeed(config, runId, fix, { to: pushWork(root, fix) });
+    const lookup = vi.fn(async () => undefined);
+    const create = providerDouble(lookup, async () => {
+      throw new Error('create timed out');
+    });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    await leaseNext(config, runId, remote, writable);
+    expect((await state(config, runId)).creating).toEqual([expect.objectContaining({ lookups: { total: 1, none: 1, failed: 0 } })]);
+
+    await retryStep(config, runId, 'fix');
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    expect((await state(config, runId)).creating).toEqual([expect.objectContaining({ lookups: { total: 0, none: 0, failed: 0 } })]);
+    await leaseNext(config, runId, remote, writable);
+    expect((await state(config, runId)).creating).toEqual([expect.objectContaining({ lookups: { total: 1, none: 1, failed: 0 } })]);
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
   it('records a pull request a cancelled delivery opened before its process stopped, by looking it up on a later call, and opens no other', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     config.usageReportEnabled = true;
