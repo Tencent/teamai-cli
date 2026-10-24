@@ -57,7 +57,7 @@ describe('assigned roles (#1186)', () => {
       ? path.join(remoteRepo, 'skills', name)
       : path.join(remoteRepo, 'skills', namespace, name);
     fs.mkdirSync(skillDir, { recursive: true });
-    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `# ${name}\n`);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} fixture\n---\n\n# ${name}\n`);
   }
 
   /** A project checkout of the team repo whose config names `username`. */
@@ -198,7 +198,7 @@ describe('assigned roles (#1186)', () => {
     // A plain pull, as a session start runs it: one pull, no --force.
     const second = await runCLI(['pull'], homeDir, projectRoot);
     expect(second.code, second.output).toBe(0);
-    expect(deliveredSkills(projectRoot)).toContain('backend-only');
+    expect(deliveredSkills(projectRoot), second.output).toEqual(['backend-only', 'teamai']);
     const list = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
     expect(JSON.parse(list.output)).toMatchObject({ roles: ['backend'] });
   });
@@ -275,13 +275,7 @@ describe('assigned roles (#1186)', () => {
     const second = await runCLI(['pull'], homeDir, projectRoot);
     expect(second.code, second.output).toBe(0);
     expect(second.output).not.toContain('Already synced');
-    // The sync withdraws both role skills, or keeps a copy it cannot verify and
-    // says so — the fixture's copies take that path, as a plain `roles set`
-    // change does with no members.yaml at all. Either way the pull judged them.
-    for (const skill of ['backend-only', 'frontend-only']) {
-      const withdrawn = !deliveredSkills(projectRoot).includes(skill) || second.output.includes(`Kept skill "${skill}"`);
-      expect(withdrawn, second.output).toBe(true);
-    }
+    expect(deliveredSkills(projectRoot), second.output).toEqual(['teamai']);
     const list = await runCLI(['roles', 'list', '--json'], homeDir, projectRoot);
     expect(JSON.parse(list.output)).toMatchObject({ roles: [], source: 'default' });
   });

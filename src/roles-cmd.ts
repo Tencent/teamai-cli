@@ -6,7 +6,7 @@ import { loadRolesManifest, saveRolesManifest, findRole, listRoleIds } from './r
 import type { RolesManifest, TeamRole } from './roles.js';
 import { ROLE_ASSIGNMENTS_FILE, type RoleSource } from './role-assignments.js';
 import { pathExists } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log, setStderrOnly } from './utils/logger.js';
 import { pullLatest, runManifestEdit, pushManifestChange } from './manifest-edit.js';
 import type { GlobalOptions, LocalConfig, TeamaiConfig } from './types.js';
 import { askQuestion, askConfirmation } from './utils/prompt.js';
@@ -182,6 +182,19 @@ export function assignedRolesNotice(effective: ReturnType<typeof effectiveRoles>
 }
 
 export async function rolesList(options: { json?: boolean } = {}): Promise<void> {
+    if (!options.json) return listRoles(options);
+    // --json: stdout is the data channel a hook parses. The load may warn — an
+    // assigned role roles.yaml does not declare, a members.yaml that cannot be
+    // read — so every log line goes to stderr, as doctor --json routes them.
+    const stderrOnly = setStderrOnly(true);
+    try {
+        await listRoles(options);
+    } finally {
+        setStderrOnly(stderrOnly);
+    }
+}
+
+async function listRoles(options: { json?: boolean }): Promise<void> {
     // Read-only: the load never persists a migration (#893). Its preview notice
     // would precede the JSON, so --json, read by hooks, omits it.
     const { localConfig } = await autoDetectInit(undefined, { dryRun: true, suppressMigrationNotice: options.json });

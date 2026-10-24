@@ -87,11 +87,11 @@ teamai status
 
 ```bash
 teamai roles list
-teamai roles set hai
+teamai roles set hai   # 团队统一分配角色时除外（见下）
 teamai pull
 ```
 
-角色怎么定义，见[分发管理机制](./distribution.md#角色和项目)。
+角色怎么定义，见[分发管理机制](./distribution.md#角色和项目)。如果团队在 `manifest/members.yaml` 里分配角色，你的角色由该文件决定：`roles list` 显示它们，`roles set` 会被拒绝，改动要通过该文件——见[在团队仓库里分配角色](./distribution.md#在团队仓库里分配角色)。
 
 ### 标签订阅
 

@@ -101,6 +101,25 @@ describe('roles commands with assigned roles', () => {
     });
   });
 
+  // The load warns about an assigned role roles.yaml does not declare, or a
+  // members.yaml it cannot read. A hook parses stdout whole.
+  it('keeps a warning the load emits off stdout for --json', async () => {
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((line?: unknown) => { errors.push(String(line ?? '')); });
+    vi.mocked(autoDetectInit).mockImplementation(async () => {
+      log.warn('manifest/members.yaml assigns ops, which manifest/roles.yaml does not declare.');
+      return { localConfig: assigned(['frontend']), teamConfig };
+    });
+
+    await rolesList({ json: true });
+
+    expect(JSON.parse(printed.join('\n'))).toMatchObject({ roles: ['frontend'] });
+    expect(errors.join('\n')).toContain('does not declare');
+    // The route is this command's alone: the next command logs to stdout again.
+    log.warn('after');
+    expect(printed.at(-1)).toContain('after');
+  });
+
   it('loads without the migration notice for --json, which a hook parses', async () => {
     given(assigned(['frontend']));
 
