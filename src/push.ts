@@ -624,7 +624,7 @@ async function placeNewResources(args: {
       log.error(
         `Cannot place new ${type}: the team repo could not be refreshed, so where new ${type} belong `
         + '(manifest/roles.yaml, or the namespaces the repo already has) may be out of date. '
-        + 'Fix the pull and retry, or name the namespace with --role <ns>.',
+        + (options.shared ? 'Fix the pull and retry the shared-root push.' : 'Fix the pull and retry, or name the namespace with --role <ns>.'),
       );
       process.exitCode = 1;
       return false;

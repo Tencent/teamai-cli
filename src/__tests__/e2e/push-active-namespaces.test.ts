@@ -173,6 +173,7 @@ describe('explicit shared-root pushes (#1314)', () => {
     const pushed = run(['push', '--all', '--shared']);
     expect(pushed.code, pushed.output).not.toBe(0);
     expect(pushed.output).toContain('could not be refreshed');
+    expect(pushed.output).not.toContain('--role <ns>');
     expect(pushedFiles()).toEqual([]);
   }, 120000);
 
