@@ -1777,3 +1777,50 @@ describe('retrying and cancelling a delivery', () => {
     expect(run.creating).toBeUndefined();
   });
 });
+
+describe('limits that stop a delivering run', () => {
+  const at = (minutes: number): Date => new Date(Date.UTC(2026, 0, 1) + minutes * 60_000);
+  const TIMED_WORK = `  - id: work
+    workspace: new
+    timeout: 10m
+    workflow:
+      steps:
+        - id: impl
+          command: echo impl
+          workspace: continue
+          deliver: pr
+  - id: after
+    needs: [work]
+    command: echo after
+`;
+
+  it.each([
+    ['while its step delivers', 'before'],
+    ['while its delivery looks for an open pull request', 'lookup'],
+  ] as const)('opens nothing once a timeout passes %s', async (_case, when) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(at(0));
+      const { config, root, runId } = await fixture(TIMED_WORK);
+      const impl = await take(config, runId);
+      await succeed(config, runId, impl, { to: pushWork(root, impl) });
+      const lookup = vi.fn(async () => {
+        if (when === 'lookup') vi.setSystemTime(at(15));
+        return undefined;
+      });
+      const create = providerDouble(lookup, async () => 'https://github.com/fixture/app/pull/1');
+      if (when === 'before') vi.setSystemTime(at(15));
+
+      await leaseNext(config, runId, remote, writable);
+      const run = await state(config, runId);
+      expect(create).not.toHaveBeenCalled();
+      expect(run.deliveries).toBeUndefined();
+      expect(run.creating).toBeUndefined();
+      expect(run.steps.find((step) => step.id === 'work')).toMatchObject({ status: 'failed', failure: { code: 'timeout' } });
+      expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'cancelled' });
+      if (when === 'before') expect(lookup).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
