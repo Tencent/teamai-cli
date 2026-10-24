@@ -9,7 +9,9 @@ import path from 'node:path';
  */
 export function desktopCodexBinaries(): string[] {
   const macOS = [
+    path.join('/Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex-cli', 'bin', 'codex'),
     path.join('/Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex'),
+    path.join(homedir(), 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex-cli', 'bin', 'codex'),
     path.join(homedir(), 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex'),
     path.join('/Applications', 'Codex.app', 'Contents', 'Resources', 'codex'),
   ];

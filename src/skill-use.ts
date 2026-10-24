@@ -4,7 +4,8 @@
  *
  *   post-tool-use  the tool's skill tool (TOOLS[tool].skillLoad.calls) by name,
  *                  or a read of a SKILL.md under a skill root (classifyToolCall),
- *                  also by one reader of a longer shell command (namedReads),
+ *                  also by any reader a longer shell command names (namedReads)
+ *                  when the output shows that skill (showsSkill),
  *                  or OMP's `read skill://<name>`
  *   prompt-submit  a mention: `/name` at the start, Codex `$name`, or the
  *                  `<skill>` block Pi expands `/skill:name` into
@@ -79,28 +80,58 @@ function isSkillCall(tool: string, hostName: string): boolean {
   return load.calls.some((call) => call.name === hostName) || LEGACY_PLUGIN_SKILL_CALL[tool] === hostName;
 }
 
-/** The skills one PostToolUse payload shows loaded, before the existence gate. */
-function toolCallCandidates(stdin: Record<string, unknown>, tool: string): SkillCandidate[] {
+/**
+ * The skills one PostToolUse payload shows: `loaded`, the ones it surely loaded, and `named`, the SKILL.md reads a
+ * longer shell command names that may not have run (`false && cat …/SKILL.md; true`), with the call's `output`.
+ */
+type ToolCallSkills = { readonly loaded: SkillCandidate[]; readonly named: SkillCandidate[]; readonly output?: string };
+
+const NO_SKILLS: ToolCallSkills = { loaded: [], named: [] };
+
+function toolCallSkills(stdin: Record<string, unknown>, tool: string): ToolCallSkills {
   const hostName = typeof stdin.tool_name === 'string' ? stdin.tool_name : '';
   const input = asObject(stdin.tool_input);
-  if (!hostName || !input) return [];
+  if (!hostName || !input) return NO_SKILLS;
   if (isSkillCall(tool, hostName)) {
     const skill = extractSkillName(input);
-    return skill ? [{ skill }] : [];
+    return { loaded: skill ? [{ skill }] : [], named: [] };
   }
   const load = skillLoadOf(tool);
-  if (load === undefined || load === 'unknown') return [];
+  if (load === undefined || load === 'unknown') return NO_SKILLS;
   const call = classifyToolCall(stdin, tool);
-  if (call.status === 'failure') return [];
+  if (call.status === 'failure') return NO_SKILLS;
   const uri = call.category === 'read' && typeof input.path === 'string' ? SKILL_URI.exec(input.path.trim()) : null;
-  if (uri) return [{ skill: uri[1] }];
+  if (uri) return { loaded: [{ skill: uri[1] }], named: [] };
+  if (call.category === 'read') return { loaded: skillReads(call.paths), named: [] };
+  if (call.command === undefined) return NO_SKILLS;
   const cwd = resolveHookCwd(stdin);
-  const files = call.category === 'read' ? call.paths : call.command === undefined ? []
-    : namedReads(call.command, { powershell: normalizeToolName(hostName).toLowerCase() === 'powershell', home: getUserHome() }).map((file) => resolvePath(file, cwd));
+  const named = namedReads(call.command, { powershell: normalizeToolName(hostName).toLowerCase() === 'powershell', home: getUserHome() });
+  return { loaded: [], named: skillReads(named.map((file) => resolvePath(file, cwd))), ...(call.output === undefined ? {} : { output: call.output }) };
+}
+
+/** The skills one PostToolUse payload shows loaded, before the existence gate: a named read counts when its output shows it. */
+function toolCallCandidates(stdin: Record<string, unknown>, tool: string): SkillCandidate[] {
+  const { loaded, named, output } = toolCallSkills(stdin, tool);
+  return [...loaded, ...named.filter((candidate) => showsSkill(output, candidate.skill))];
+}
+
+/** The skills whose SKILL.md is among `files`. */
+function skillReads(files: readonly string[]): SkillCandidate[] {
   return files.flatMap((file) => {
     const match = SKILL_MD.exec(file);
     return match ? [{ skill: match[1], file }] : [];
   });
+}
+
+/**
+ * A SKILL.md frontmatter `name:` line, a whole line however the output prints lines: `cat -n` numbers them, and a Codex
+ * code-mode script that prints a command's result as JSON escapes its newlines and tabs as `\n` and `\t`.
+ */
+const NAME_LINE = new RegExp(`(?:^|\\\\n)(?:[ \\t]*\\d+(?:\\t|\\\\t))?name:(?:[ \\t]|\\\\t)*(?:\\\\?["'])?(${SKILL_NAME_CHARS}+)(?:\\\\?["'])?(?:[ \\t]|\\\\t)*(?:$|\\r|\\\\[rn])`, 'gm');
+
+/** Whether a call's output shows the SKILL.md of `skill`, by its `name:` line. */
+function showsSkill(output: string | undefined, skill: string): boolean {
+  return output !== undefined && [...output.matchAll(NAME_LINE)].some((match) => match[1] === skill);
 }
 
 function promptFormOf(tool: string): '$name' | 'skill-block' | '/name' {
@@ -171,18 +202,27 @@ function inWorkdir(cwd: string, workdir: unknown): string {
 }
 
 /**
- * The hook events a block of a session message stands for: a tool call as PostToolUse sends it, or a prompt the member
- * typed as UserPromptSubmit sends it. Codex records a command as `cmd`, and its hook sends `command`; the command runs
- * in its `workdir`. A Codex code-mode `exec` is recorded as one script, and its hook sends each command the script runs.
+ * The skills a block of a session message shows loaded, by the rules the skill-use hooks apply to the events it stands
+ * for: a tool call as PostToolUse sends it with its `output`, or a prompt the member typed as UserPromptSubmit sends it.
+ * Codex records a command as `cmd`, and its hook sends `command`; the command runs in its `workdir`. A Codex code-mode
+ * `exec` is recorded as one script, and its hook sends each command the script runs. The script holds commands it may
+ * never have run (`if (false) { … }`), and its output is all of theirs, so a skill one of them reads counts when that
+ * output shows it, and no command's diagnostics are judged from another's.
  */
-function hookEventsOf(message: Message, block: ContentBlock, cwd: string): Array<Record<string, unknown>> {
+function blockCandidates(message: Message, block: ContentBlock, cwd: string, output: string | undefined, tool: string): SkillCandidate[] {
   if (block.type === 'tool_call') {
     const input = block.arguments;
-    if (block.toolName === 'exec' && typeof input.input === 'string') return codeModeEvents(input.input, cwd);
-    return [{ tool_name: block.toolName, tool_input: typeof input.cmd === 'string' && input.command === undefined ? { ...input, command: input.cmd } : input, cwd: inWorkdir(cwd, input.workdir) }];
+    if (block.toolName === 'exec' && typeof input.input === 'string') {
+      return codeModeEvents(input.input, cwd).flatMap((event) => {
+        const { loaded, named } = toolCallSkills(event, tool);
+        return [...loaded, ...named];
+      }).filter((candidate) => showsSkill(output, candidate.skill));
+    }
+    const toolInput = typeof input.cmd === 'string' && input.command === undefined ? { ...input, command: input.cmd } : input;
+    return skillCandidates({ tool_name: block.toolName, tool_input: toolInput, cwd: inWorkdir(cwd, input.workdir), ...(output === undefined ? {} : { tool_response: output }) }, tool);
   }
   const prompt = typedIn(message, block);
-  return prompt ? [{ prompt, cwd }] : [];
+  return prompt ? skillCandidates({ prompt, cwd }, tool) : [];
 }
 
 /** The candidates that name an installed skill, each once. */
@@ -263,12 +303,13 @@ export function usedSkills(
   const subagents = found.subagents?.status === 'read' ? found.subagents.agents.map((agent) => agent.session) : [];
   const used = new Set<string>();
   for (const session of [found.session, ...subagents]) {
-    const failed = new Set(session.messages.flatMap((message) => message.content.flatMap((block) => block.type === 'tool_result' && block.isError ? [block.callId] : [])));
+    const results = new Map(session.messages.flatMap((message) => message.content.flatMap((block) => block.type === 'tool_result' ? [[block.callId, block] as const] : [])));
     const cwd = session.cwd || found.session.cwd;
     for (const message of session.messages) {
       for (const block of message.content) {
-        const events = block.type === 'tool_call' && failed.has(block.callId) ? [] : hookEventsOf(message, block, cwd);
-        for (const event of events) for (const skill of recordedTeamSkills(skillCandidates(event, tool), teamSkillsAt(message.timestamp), cwd)) used.add(skill);
+        const result = block.type === 'tool_call' ? results.get(block.callId) : undefined;
+        if (result?.isError) continue;
+        for (const skill of recordedTeamSkills(blockCandidates(message, block, cwd, result?.content, tool), teamSkillsAt(message.timestamp), cwd)) used.add(skill);
       }
     }
   }

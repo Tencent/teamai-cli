@@ -1360,6 +1360,7 @@ describe('session resume of a session already restored', () => {
     const projects = path.join(mocks.home, '.claude', 'projects');
     const [transcript] = (fs.readdirSync(projects, { recursive: true }) as string[]).filter((f) => f.endsWith('.jsonl'));
     const restoredId = path.basename(transcript, '.jsonl');
+    expect(out.join('\n')).toContain(`To continue: claude --resume ${restoredId}`);
     fs.appendFileSync(path.join(projects, transcript), JSON.stringify({ type: 'user', message: { content: 'later turn' } }) + '\n');
     const before = fs.readFileSync(path.join(projects, transcript), 'utf-8');
     out = [];
@@ -1367,6 +1368,7 @@ describe('session resume of a session already restored', () => {
     await resume();
 
     expect(out.join('\n')).toContain(`Session already restored as ${restoredId}, nothing written.`);
+    expect(out.join('\n')).toContain(`To continue: claude --resume ${restoredId}`);
     expect(fs.readFileSync(path.join(projects, transcript), 'utf-8')).toBe(before);
     expect(process.exitCode).not.toBe(1);
   });
