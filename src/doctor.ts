@@ -329,7 +329,7 @@ async function buildHookChecks(
     if (tool === 'kiro') {
       if (!await pathExists(path.join(getUserHome(), '.kiro'))) continue;
       const { hasKiroHooks } = await import('./kiro-hooks.js');
-      checks.push({ name: 'teamai hooks in Kiro standalone hook file', source: 'local', check: hasKiroHooks, fix: 'Run `teamai hooks inject`; standalone hooks require Kiro CLI V3.' });
+      checks.push({ name: 'teamai hooks in Kiro standalone hook file (requires Kiro CLI V3)', source: 'local', check: hasKiroHooks, fix: 'Run `teamai hooks inject`; standalone hooks require Kiro CLI V3.' });
       continue;
     }
     if (tool === 'pi') {

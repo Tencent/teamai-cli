@@ -116,7 +116,7 @@ export async function hooksInject(options: GlobalOptions): Promise<void> {
         }
     }
     // The reason is already reported; the installed team hooks were left as they were.
-    if (!reconciled.ok) {
+    if (!reconciled.ok || reconciled.unwritten?.length) {
         process.exitCode = 1;
         return;
     }
