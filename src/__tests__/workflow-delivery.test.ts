@@ -142,6 +142,21 @@ function pull(number: number, head: string, base = 'main', repo = 'fixture/app')
 
 const FIX_THEN_REVIEW = `  - id: fix\n    workspace: new\n    command: node fix.js\n    deliver: pr\n  - id: review\n    needs: [fix]\n    command: echo review\n`;
 
+/** Two independent steps that continue one shared branch, the first delivering it. */
+const IMPL_AND_DOCS = `  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: impl
+          command: echo impl
+          workspace: continue
+          deliver: pr
+        - id: docs
+          needs: []
+          command: echo docs
+          workspace: continue
+`;
+
 describe('workflow PR delivery contract', () => {
   it('parses delivery on a writable step and rejects unsupported delivery', () => {
     const yaml = 'schemaVersion: v1alpha1\nname: ship\ndescription: Ship changes\nsteps:\n  - id: write\n    command: node write.js\n    workspace: new\n    deliver: pr\n';
@@ -410,10 +425,11 @@ describe('delivering a step', () => {
     pushOnto(root, branch, { '.github/workflows/x.yml': 'on: push\n' });
     expect(await succeed(config, runId, fix, { to: checked, ...changes })).not.toHaveProperty('data.dropped');
 
+    for (const _drain of [1, 2]) expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { wait: { delivering: ['fix'] } } });
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
     const run = await state(config, runId);
     expect(run.steps).toMatchObject([
-      { id: 'fix', status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`branch ${branch} on origin moved after the step reported commit ${checked}`) } },
+      { id: 'fix', status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(`branch ${branch} on origin moved away from commit ${checked}`) } },
       { id: 'review', status: 'skipped' },
     ]);
     expect(run.steps[0]).toMatchObject({ failure: { message: expect.stringContaining(`teamai workflow retry ${runId} fix`) } });
@@ -946,6 +962,53 @@ describe('retrying and cancelling a delivery', () => {
     expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
     expect(creates(gh)).toEqual([[branch, 'main']]);
     expect((await state(config, runId)).deliveries).toHaveLength(1);
+  });
+
+  it.each(['moved', 'missing'] as const)('names the commit the run recorded last when the shared branch on origin is %s at a retry', async (change) => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const gh = fakeGh(path.join(root, 'gh'), { lookup: 'fail' });
+    const impl = await take(config, runId);
+    const own = pushWork(root, impl);
+    await succeed(config, runId, impl, { to: own });
+    const docs = await take(config, runId);
+    const branch = docs.workspace?.branch ?? '';
+    const recorded = pushOnto(root, branch, { 'docs.txt': 'docs' });
+    await succeed(config, runId, docs, { to: recorded });
+    if (change === 'moved') pushOnto(root, branch, { 'later.txt': 'later' });
+    else git(root, ['--git-dir=remote.git', 'update-ref', '-d', `refs/heads/${branch}`]);
+    gh.configure({});
+    await retryStep(config, runId, 'work.impl');
+
+    const drains = change === 'moved' ? 3 : 1;
+    for (let drain = 1; drain < drains; drain += 1) {
+      expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
+    }
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    const failure = (await state(config, runId)).steps.find((step) => step.id === 'work.impl');
+    const remedy = change === 'moved' ? `Put branch ${branch} on origin back at ${recorded}, then run` : `push ${recorded} to it, then run`;
+    expect(failure).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed', message: expect.stringContaining(remedy) } });
+    expect(failure).not.toMatchObject({ failure: { message: expect.stringContaining(own) } });
+    expect(creates(gh)).toEqual([]);
+  });
+
+  it('keeps a step delivering while origin\'s branch is ahead of what the run recorded, and delivers it once a report records that commit', async () => {
+    const { config, root, runId } = await fixture(IMPL_AND_DOCS);
+    const gh = fakeGh(path.join(root, 'gh'));
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl) });
+    const lock = deliveryLockPath(config, runId);
+    expect(await acquireLock(lock)).toBe(true);
+    const docs = await take(config, runId);
+    await releaseLock(lock);
+    const branch = docs.workspace?.branch ?? '';
+    const ahead = pushOnto(root, branch, { 'docs.txt': 'docs' });
+
+    expect(await leaseNext(config, runId, remote, { ...writable, running: [docs.attempt] })).toMatchObject({ data: { wait: { delivering: ['work.impl'] } } });
+    expect(creates(gh)).toEqual([]);
+    await succeed(config, runId, docs, { to: ahead });
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
+    expect(creates(gh)).toEqual([[branch, 'main']]);
+    expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'succeeded' });
   });
 
   it('records only the canonical receipt after an unconfirmed TGit-style create and a retry', async () => {

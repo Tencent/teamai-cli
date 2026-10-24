@@ -34,6 +34,8 @@ export type DeliveryFault =
   | { kind: 'unreadable' }
   | { kind: 'protected_path'; files: string[] }
   | { kind: 'branch_moved' }
+  /** Origin's branch holds the recorded commit and more, at `tip`: a report of `tip` may still be on its way. */
+  | { kind: 'branch_ahead'; tip: string }
   | { kind: 'branch_missing' }
   | { kind: 'branch_unreadable' }
   | { kind: 'no_provider' }
@@ -73,7 +75,11 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   const tip = await originTip(job.checkout, job.key.branch);
   if (tip.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
   if (tip.commit === undefined) return failed({ kind: 'branch_missing' });
-  if (tip.commit !== job.key.head && tip.commit !== job.recordedHead) return failed({ kind: 'branch_moved' });
+  if (tip.commit !== job.key.head && tip.commit !== job.recordedHead) {
+    const ahead = await contains(job, { commit: tip.commit, ancestor: job.recordedHead ?? job.key.head });
+    if ('fault' in ahead) return failed(ahead.fault);
+    return failed(ahead.contains ? { kind: 'branch_ahead', tip: tip.commit } : { kind: 'branch_moved' });
+  }
   const changed = await changedFiles({ ...job, key: { ...job.key, head: tip.commit } });
   if ('fault' in changed) return failed(changed.fault);
   const files = protectedPaths(changed.files);
@@ -185,11 +191,20 @@ async function changedFiles({ key, runId, checkout, base }: DeliveryJob): Promis
   return { files: diff.stdout.split('\0').filter(Boolean) };
 }
 
+/** Whether `commit` holds `ancestor`, read in the run's checkout once it fetched what it lacks. */
+async function contains({ runId, checkout }: DeliveryJob, { commit, ancestor }: { commit: string; ancestor: string }): Promise<{ contains: boolean } | { fault: DeliveryFault }> {
+  if (!OBJECT_ID.test(commit) || !OBJECT_ID.test(ancestor)) return { contains: false };
+  const fetched = await fetchMissingCommits(checkout, { run: runId, commits: [ancestor, commit] });
+  if (fetched.missing.length > 0) return { fault: { kind: 'unreadable' } };
+  return { contains: (await git(checkout, ['merge-base', '--is-ancestor', ancestor, commit])).code === 0 };
+}
+
 const LISTED_FILES = 20;
 
 /** The failure a step keeps for `fault`: what happened, where the work is, and what to do next. */
-export function deliveryFailure({ runId, key }: Pick<DeliveryJob, 'runId' | 'key'>, fault: DeliveryFault): DeliveryFailure {
+export function deliveryFailure({ runId, key, recordedHead }: Pick<DeliveryJob, 'runId' | 'key' | 'recordedHead'>, fault: DeliveryFault): DeliveryFailure {
   const { step, branch } = key;
+  const head = recordedHead ?? key.head;
   const retry = `teamai workflow retry ${runId} ${step}`;
   switch (fault.kind) {
     case 'no_checkout':
@@ -213,12 +228,13 @@ export function deliveryFailure({ runId, key }: Pick<DeliveryJob, 'runId' | 'key
     case 'branch_missing':
       return {
         code: 'delivery_failed',
-        message: `PR delivery for step "${step}" failed: origin has no branch ${branch}; push ${key.head} to it, then run: ${retry}`,
+        message: `PR delivery for step "${step}" failed: origin has no branch ${branch}; push ${head} to it, then run: ${retry}`,
       };
     case 'branch_moved':
+    case 'branch_ahead':
       return {
         code: 'delivery_failed',
-        message: `PR delivery for step "${step}" failed: branch ${branch} on origin moved after the step reported commit ${key.head}, so it no longer holds the changes TeamAI checked, and no pull request was opened or accepted. Put branch ${branch} on origin back at ${key.head}, then run: ${retry}`,
+        message: `PR delivery for step "${step}" failed: branch ${branch} on origin moved away from commit ${head}, the last one a report recorded on it, so it no longer holds the changes TeamAI checked, and no pull request was opened or accepted. Put branch ${branch} on origin back at ${head}, then run: ${retry}`,
       };
     case 'branch_unreadable':
       return {

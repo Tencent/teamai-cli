@@ -162,7 +162,11 @@ const PendingSchema = StepBaseSchema.extend({ status: z.literal('pending') });
 const WaitingSchema = StepBaseSchema.extend({ status: z.literal('waiting') });
 const RunningSchema = StepBaseSchema.extend({ status: z.literal('running') });
 /** `delivering`: the agent succeeded and its work is on its branch; dependents wait until that branch has its pull request. */
-const DeliveringSchema = StepBaseSchema.extend({ status: z.literal('delivering'), ...settledFields, delivery: DeliverySchema });
+const DeliveringSchema = StepBaseSchema.extend({
+  status: z.literal('delivering'), ...settledFields, delivery: DeliverySchema,
+  /** The commit origin's branch was found ahead at, past the recorded one, and how many drains in a row found it there. */
+  unrecordedTip: z.object({ commit: z.string(), drains: z.number().int().positive() }).optional(),
+});
 const SucceededSchema = StepBaseSchema.extend({
   status: z.literal('succeeded'), outcome: z.literal('success').default('success'), ...settledFields, loopFinal: z.boolean().optional(),
 });
@@ -298,7 +302,7 @@ export function startDelivery(state: StepState, settlement: Settlement<Succeeded
 
 /** A delivered step settles as its agent left it, at the revision the agent's report settled it. */
 export function delivered(state: DeliveringStep): SucceededStep {
-  const { id: _id, status: _status, ...settlement } = state;
+  const { id: _id, status: _status, unrecordedTip: _tip, ...settlement } = state;
   return succeed(state, settlement);
 }
 
@@ -308,7 +312,7 @@ export type DeliveryFailure = { code: (typeof DELIVERY_FAILURE_CODES)[number]; m
 
 /** A delivery that failed stops the step, keeping what its agent did and the branch a retry delivers again. */
 export function deliveryFailed(state: DeliveringStep, failure: DeliveryFailure): FailedStep {
-  const { id: _id, status: _status, ...settlement } = state;
+  const { id: _id, status: _status, unrecordedTip: _tip, ...settlement } = state;
   return fail(state, { ...settlement, message: failure.message, failure });
 }
 
@@ -328,7 +332,7 @@ export function fail(state: StepState, settlement: Settlement<FailedStep>): Fail
  */
 export function cancel(state: StepIn<'pending' | 'waiting' | 'leased' | 'running' | 'delivering'>, failure: WorkflowFailure, settledAt: number): CancelledStep {
   if (state.status === 'delivering') {
-    const { id: _id, status: _status, ...settlement } = state;
+    const { id: _id, status: _status, unrecordedTip: _tip, ...settlement } = state;
     return become<CancelledStep>(state, { ...settlement, status: 'cancelled', failure });
   }
   const attempt = state.status === 'leased' ? state.attempt : undefined;

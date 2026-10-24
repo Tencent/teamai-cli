@@ -29,7 +29,7 @@ import {
   deliverPr, findDelivered, reportedPrMismatch, type DeliveryJob,
 } from './pr-delivery.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
-import { completeDelivery, deliveringStep, nextDelivery, resolveCreate, sameCreate, unresolvedCreate, type UnresolvedCreate } from './delivery-ledger.js';
+import { completeDelivery, deliveringStep, nextDelivery, resolveCreate, sameCreate, unresolvedCreate, type DeliveryKey, type UnresolvedCreate } from './delivery-ledger.js';
 import { deliveryLockPath, generateRunId, installOwner, isRunId, readRun, updateRun } from './store.js';
 import { withFileLock } from '../update.js';
 import { pinScorers } from '../scorers/cache.js';
@@ -915,11 +915,12 @@ async function drainDeliveries(config: LocalConfig, runId: string): Promise<void
   const drained = await withFileLock(deliveryLockPath(config, runId), { attempts: 1, delayMs: 0 }, async () => {
     let requeued = false;
     const tried: Array<Omit<UnresolvedCreate, 'lookups'>> = [];
+    const waiting: DeliveryKey[] = [];
     for (;;) {
       const picked = await updateRun(config, runId, async (run) => {
         if (run === 'missing') return { value: undefined };
         const before = JSON.stringify(run);
-        const job = nextDelivery(run, reconcileRun);
+        const job = nextDelivery(run, reconcileRun, waiting);
         const value = job ? { job } : unresolvedCreate(run, tried);
         return { value, ...(JSON.stringify(run) !== before ? { write: { ...run, updatedAt: new Date().toISOString() } } : {}) };
       });
@@ -931,6 +932,7 @@ async function drainDeliveries(config: LocalConfig, runId: string): Promise<void
         const outcome = await deliverPr(job, () => markCreating(config, runId, job));
         // As when the pick is busy: the step still delivers, and a later call delivers it.
         if (outcome === 'busy') return requeued;
+        if (!outcome.ok && outcome.fault.kind === 'branch_ahead') waiting.push(job.key);
         apply = (run) => completeDelivery(run, job, outcome, reconcileRun);
       } else {
         const { create, checkout } = picked.value;
@@ -984,8 +986,8 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
       return answer(doneData(run));
     };
     const wait = (open = run.steps.find((step) => step.status === 'leased')): { save: boolean; envelope: WorkflowEnvelope } => {
-      // Steps still delivering here are being delivered by another process of this machine, or waited for a busy run
-      // lock; a driver polls until they settle.
+      // Steps still delivering here are being delivered by another process of this machine, waited for a busy run
+      // lock, or wait for a report of the commit their branch is ahead at on origin; a driver polls until they settle.
       const delivering = run.steps.filter((step) => step.status === 'delivering').map((step) => step.id);
       const reason = open ? `${open.id} is leased` : delivering.length > 0 ? `${delivering[0]} is delivering` : 'canTakeLease is false';
       return answer({ wait: { reason, ...(delivering.length > 0 ? { delivering } : {}) } });

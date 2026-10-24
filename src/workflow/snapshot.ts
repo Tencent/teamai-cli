@@ -205,6 +205,7 @@ const STEP_RULES = {
   outputs: 'publish', end: 'publish', results: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
   tool: 'publish', model: 'publish', session: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
   agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite', delivery: 'publish',
+  unrecordedTip: 'drop',
 } satisfies FieldRules<StepState>;
 
 const PASS_RULES = {

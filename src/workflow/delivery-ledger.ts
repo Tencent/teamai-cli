@@ -49,16 +49,17 @@ export function deliveringStep(run: RunState, key: DeliveryKey): DeliveringStep 
 
 /**
  * The first delivery to run, after what reports and controls left pending is applied, so a step an end or a cancel
- * stopped is not delivered. Undefined when nothing delivers, or when the run settles, which the locked body of `next`
- * finishes.
+ * stopped is not delivered. One in `waiting`, whose branch this drain found ahead of the recorded commit, waits for a
+ * later drain. Undefined when nothing delivers, or when the run settles, which the locked body of `next` finishes.
  */
-export function nextDelivery(run: RunState, reconcile: (run: RunState) => object): DeliveryJob | undefined {
+export function nextDelivery(run: RunState, reconcile: (run: RunState) => object, waiting: readonly DeliveryKey[]): DeliveryJob | undefined {
   if (run.status !== 'running') return undefined;
   const settledRun = reconcile(run);
   if ('unreadable' in settledRun || 'outcome' in settledRun) return undefined;
   for (const step of run.steps) {
     if (step.status !== 'delivering') continue;
     const key = deliveryKey(step);
+    if (waiting.some((ahead) => sameKey(ahead, key))) continue;
     const target = deliveryTarget(run, key.branch);
     if (!run.checkout || !run.base || target === undefined) {
       deliveryFailed(step, deliveryFailure({ runId: run.id, key }, { kind: 'no_checkout' }));
@@ -102,7 +103,8 @@ function recordReceipt(run: RunState, key: DeliveryKey, target: string, url: PrU
  * Applies a delivery's outcome to the job it was picked as. A pull request gets its receipt whatever became of the step
  * meanwhile: one opened while a cancel landed cannot be taken back, so the run says it exists. The receipt settles the
  * job's listed request; a failed delivery leaves it listed, since a create that failed may still have opened one. The
- * step settles only while it still delivers what `job` delivered, at the revision its agent's report settled it.
+ * step settles only while it still delivers what `job` delivered, at the revision its agent's report settled it, and not
+ * while origin's branch is ahead of the recorded commit and a report of it may still come.
  * `requeueEnd` is set when the receipt reached a run that already ended, whose end record must go out again to list it.
  */
 export function completeDelivery(run: RunState, job: DeliveryJob, outcome: DeliveryOutcome, reconcile: (run: RunState) => unknown): { requeueEnd: boolean } {
@@ -111,8 +113,24 @@ export function completeDelivery(run: RunState, job: DeliveryJob, outcome: Deliv
   if (run.status === 'running') reconcile(run);
   const step = deliveringStep(run, job.key);
   if (step && outcome.ok) delivered(step);
-  else if (step && !outcome.ok) deliveryFailed(step, deliveryFailure(job, outcome.fault));
+  else if (step && !outcome.ok && !(outcome.fault.kind === 'branch_ahead' && awaitsReport(step, outcome.fault.tip))) {
+    deliveryFailed(step, deliveryFailure(job, outcome.fault));
+  }
   return { requeueEnd: receipted && run.status !== 'running' };
+}
+
+/** How many drains in a row may find origin's branch ahead of the recorded commit, at one commit, before delivery fails. */
+const AHEAD_DRAINS = 3;
+
+/**
+ * Whether `step` still waits for a report of `tip`, the commit origin's branch is ahead at: one may be on its way, from a
+ * step of the same branch that pushed before it reported. The drain that finds it there a third time fails the step.
+ */
+function awaitsReport(step: DeliveringStep, tip: string): boolean {
+  const drains = step.unrecordedTip?.commit === tip ? step.unrecordedTip.drains + 1 : 1;
+  if (drains >= AHEAD_DRAINS) return false;
+  step.unrecordedTip = { commit: tip, drains };
+  return true;
 }
 
 /**
