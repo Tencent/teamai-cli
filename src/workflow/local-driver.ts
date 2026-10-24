@@ -20,9 +20,9 @@ import { commandSignalPolicy, exitLike, stepEnvironment, terminalReachesCommand 
 import { knownSecrets } from '../env-resolution.js';
 import { workflowLaunch } from '../launch-context.js';
 import { getDataHome, type LocalConfig, type TeamaiConfig } from '../types.js';
-import { readFileSafe, readJson, writeJsonAtomic } from '../utils/fs.js';
+import { readFileSafe, readJson, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
 import { log } from '../utils/logger.js';
-import { redactJson } from '../utils/redact.js';
+import { redact, redactJson } from '../utils/redact.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive, type SessionArchive } from '../session-flow/archive.js';
 import { deliveredTeamSkills, usedSkills } from '../skill-use.js';
@@ -242,16 +242,37 @@ function stringMap(value: unknown): Record<string, string> | undefined {
   return entries.every(([, item]) => typeof item === 'string') ? Object.fromEntries(entries) as Record<string, string> : undefined;
 }
 
-function resultPath(config: LocalConfig, runId: string, attempt: string): string {
-  return path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts', attempt, 'result.json');
+function attemptsDir(config: LocalConfig, runId: string): string {
+  return path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
 }
 
-/** Masks the secret values an attempt's result file holds, so the copy it keeps on disk carries none. */
+function resultPath(config: LocalConfig, runId: string, attempt: string): string {
+  return path.join(attemptsDir(config, runId), attempt, 'result.json');
+}
+
+/**
+ * Masks the secret values an attempt's result file holds, so the copy it keeps on disk carries none. A file that is
+ * not JSON, such as one a tool stopped writing halfway, is masked as text.
+ */
 async function maskResultFile(file: string, secrets: Record<string, string>): Promise<void> {
-  const kept = await readJson(file);
-  if (kept === null) return;
+  const text = await readFileSafe(file);
+  if (text === null) return;
+  let kept: unknown;
+  try {
+    kept = JSON.parse(text);
+  } catch {
+    const masked = redact(text, { envSecrets: secrets, patterns: false });
+    if (masked !== text) await writeFileAtomic(file, masked);
+    return;
+  }
   const masked = redactJson(kept, secrets);
   if (JSON.stringify(masked) !== JSON.stringify(kept)) await writeJsonAtomic(file, masked);
+}
+
+/** Masks the result file of every attempt of the run, so one that ended without a report, on a signal too, keeps no secret. */
+async function maskAttemptFiles(config: LocalConfig, runId: string, secrets: Record<string, string>): Promise<void> {
+  const listed = await fs.readdir(attemptsDir(config, runId)).catch(() => []);
+  await Promise.all(listed.map((attempt) => maskResultFile(resultPath(config, runId, attempt), secrets)));
 }
 
 function supportedTool(value: string): value is LaunchTool {
@@ -1165,6 +1186,7 @@ async function driveRun(config: LocalConfig, runId: string, cwd: string, options
       await command.stop();
       await (lease.workspace?.mode === 'read-only' ? leaveReadCopy(lease) : restoreLeaseOverlay(lease));
     }));
+    await maskAttemptFiles(config, runId, await knownSecrets(config));
     await archive.close();
     if (signalled) exitOn(signalled);
     handle([]);

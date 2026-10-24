@@ -1993,6 +1993,41 @@ steps:
     expect(kept).toContain('<REDACTED:DEPLOY_TOKEN>');
     expect(kept).not.toContain('deploy-secret-value-1082');
   });
+
+  function keptResult(config: LocalConfig, runId: string): string {
+    const attempts = path.join(getDataHome(config), 'workflows', 'runs', runId, 'attempts');
+    return fs.readdirSync(attempts).map((attempt) => fs.readFileSync(path.join(attempts, attempt, 'result.json'), 'utf8')).join('\n');
+  }
+
+  it('masks a result file that is not valid JSON', async () => {
+    const { config, workspace, runId } = await fixture();
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>(async (_tool, input) => {
+      fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
+      fs.writeFileSync(input.resultPath, '{"output":{"token":"deploy-secret-value-1082');
+      return { started: true, exitCode: 1, failure: { code: 'tool_failed', message: 'claude wrote no result' } };
+    }) };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ data: { done: { outcome: 'failed' } } });
+    vi.unstubAllEnvs();
+    expect(keptResult(config, runId)).toBe('{"output":{"token":"<REDACTED:DEPLOY_TOKEN>');
+  });
+
+  it('masks the result file of a prompt a signal stopped before it was reported', async () => {
+    const { config, workspace, runId } = await fixture();
+    vi.stubEnv('DEPLOY_TOKEN', 'deploy-secret-value-1082');
+    vi.spyOn(envExec, 'exitLike').mockImplementation(() => {});
+    const before = new Set(process.listeners('SIGTERM'));
+    const adapter: LocalToolAdapter = { runInteractive: vi.fn(), run: vi.fn<LocalToolAdapter['run']>((_tool, input, signal) => new Promise((resolve) => {
+      fs.mkdirSync(path.dirname(input.resultPath), { recursive: true });
+      fs.writeFileSync(input.resultPath, JSON.stringify({ output: { token: 'deploy-secret-value-1082' } }));
+      signal?.addEventListener('abort', () => resolve({ started: true, exitCode: 1 }));
+      for (const handler of process.listeners('SIGTERM')) if (!before.has(handler)) handler('SIGTERM');
+    })) };
+    expect(await runLocalDriver(config, runId, workspace, { hitl: false, adapter })).toMatchObject({ error: { code: 'interrupted' } });
+    vi.unstubAllEnvs();
+    expect(keptResult(config, runId)).toContain('<REDACTED:DEPLOY_TOKEN>');
+    expect(keptResult(config, runId)).not.toContain('deploy-secret-value-1082');
+  });
 });
 
 
