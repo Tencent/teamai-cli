@@ -2631,6 +2631,33 @@ describe('held-back steps', () => {
     expect(taken).toMatchObject({ data: { lease: { step: 'a', pass: 2 } } });
   });
 
+  it('asks for setup only on a lease that opens its workspace, not on one that continues a copy another lease opened', async () => {
+    const fixture = testConfig();
+    const workflows = path.join(fixture.config.repo.localPath, 'workflows');
+    fs.writeFileSync(path.join(workflows, 'build.yaml'), graph(`  - id: box
+    workspace: new
+    workflow:
+      steps:
+        - id: a
+          workspace: continue
+          command: node a.js
+        - id: b
+          needs: [a]
+          workflow: inner
+`));
+    fs.writeFileSync(path.join(workflows, 'inner.yaml'), 'schemaVersion: v1alpha1\nname: inner\ndescription: Inner.\nsetup:\n  command: npm ci\nsteps:\n  - id: c\n    workspace: continue\n    command: node c.js\n');
+    await syncWorkflowDefinitions(fixture.config);
+    const started = await startRun(fixture.config, 'build');
+    if ('error' in started) throw new Error(started.error.message);
+    const runId = String(started.data.run);
+    const a = leaseIn(await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes] }, base }));
+    expect(a.step).toBe('box.a');
+    await reportAttempt(fixture.config, runId, { attempt: a.attempt, revision: a.revision, outcome: 'success', driver: driverA });
+    const c = await leaseNext(fixture.config, runId, driverA, { can: { workspace: [...allModes] }, base });
+    expect(c).toMatchObject({ data: { lease: { step: 'box.b.c' } } });
+    expect(c).not.toHaveProperty('data.lease.setup');
+  });
+
   it('waits when every ready step is held back, and names each one in order', async () => {
     const { config, runId } = await startBuild(graph(`  - id: a
     workspace: new

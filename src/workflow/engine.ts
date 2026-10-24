@@ -999,10 +999,15 @@ interface OfferContext {
   facts: EnvFacts;
 }
 
-/** What the driver asking for step instance `id` is offered. Both places that hand out a lease ask here. */
+/**
+ * What the driver asking for step instance `id` is offered. Both places that hand out a lease ask here. Setup comes with
+ * a lease that may create its workspace: one on a branch no driver holds yet, or a handed-back one, whose driver may not
+ * have created it.
+ */
 function offerTerms(
-  run: RunState, id: string, { scope, step }: { scope: Scope; step: WorkflowStep }, plan: WorkspacePlan | undefined, context: OfferContext,
+  run: RunState, id: string, { scope, step }: { scope: Scope; step: WorkflowStep }, plan: WorkspacePlan | undefined, context: OfferContext, handback = false,
 ): Negotiation {
+  const creates = plan?.contract !== undefined && (handback || run.copies?.[plan.contract.branch]?.owner === undefined);
   return negotiate({
     step: id,
     requires: mergeRequirements(scope.requires, step.requires),
@@ -1012,7 +1017,7 @@ function offerTerms(
     runEnvKeys: requiredEnvKeys([run.definition, ...Object.values(run.workflows ?? {})]),
     budgeted: step.prompt !== undefined && scope.budgeted,
     ...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}),
-    ...(plan?.contract && scope.setup ? { setup: scope.setup } : {}),
+    ...(creates && scope.setup ? { setup: scope.setup } : {}),
   }, context.can, context.allow, context.facts);
 }
 
@@ -1146,7 +1151,7 @@ export async function leaseNext(config: LocalConfig, runId: string, driver: Driv
           driver, modes: can.workspace, base: run.base ?? options.base,
         }, true);
         const offered = plan.fail ? undefined : plan;
-        const terms = offerTerms(run, leased.id, located, offered, context);
+        const terms = offerTerms(run, leased.id, located, offered, context, true);
         // A driver that can no longer run its lease gives it up, so the step waits for one that can instead of looping,
         // in a copy no other driver is kept from.
         if (terms.kind === 'hold') {
