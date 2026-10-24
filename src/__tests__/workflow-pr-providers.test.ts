@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GitHubProvider } from '../providers/github/index.js';
 import { GitLabProvider } from '../providers/gitlab/index.js';
 import { TGitProvider } from '../providers/tgit/index.js';
+import { GitCodeProvider } from '../providers/gitcode/index.js';
 import { GenericGitProvider } from '../providers/git/index.js';
 import { providerForRemote } from '../providers/registry.js';
 import type { GitProvider, PullRequestLookup, PullRequestRef } from '../providers/types.js';
@@ -160,6 +161,38 @@ describe('TGit merge request lookup', () => {
   });
 });
 
+describe('GitCode pull request lookup', () => {
+  const gitcodePull = (head: string, repo = 'acme/app', number = 7, state = 'open', url = `https://gitcode.com/acme/app/pull/${number}`) => ({
+    ...pull(head, repo, number), html_url: url, state,
+  });
+  beforeEach(() => vi.stubEnv('GITCODE_TOKEN', 'test-token'));
+
+  it('finds the open request of this repository branch into the target, never a fork with the same branch name', async () => {
+    const fetcher = answering([gitcodePull(ref.source, 'fork/app', 6), gitcodePull('other', 'acme/app', 8), gitcodePull(ref.source)]);
+
+    expect(await lookupOf(new GitCodeProvider()).findOpen(ref)).toBe('https://gitcode.com/acme/app/pull/7');
+    const url = new URL(String(fetcher.mock.calls[0]?.[0]));
+    expect([`${url.origin}${url.pathname}`, url.searchParams.get('state'), url.searchParams.get('head'), url.searchParams.get('base')])
+      .toEqual(['https://api.gitcode.com/api/v5/repos/acme/app/pulls', 'open', ref.source, 'main']);
+    answering([gitcodePull(ref.source, 'fork/app', 6), gitcodePull(ref.source, 'acme/app', 5, 'merged')]);
+    expect(await lookupOf(new GitCodeProvider()).findOpen(ref)).toBeUndefined();
+  });
+
+  it('fails, rather than finding nothing, on an answer it cannot read or see past, on another host, or with no answer in time', async () => {
+    const lookup = lookupOf(new GitCodeProvider());
+    answering({ message: 'private-token-in-body' }, 401);
+    await expect(lookup.findOpen(ref)).rejects.toThrow(/^GitCode answered the open pull request lookup with HTTP 401\.(?!.*private-token-in-body)/);
+    answering([gitcodePull(ref.source, 'acme/app', 7, 'opened')]);
+    await expect(lookup.findOpen(ref)).rejects.toThrow(/^GitCode answered the open pull request lookup with data TeamAI cannot read\.$/);
+    answering(Array.from({ length: 100 }, (_, index) => gitcodePull(`other-${index}`, 'acme/app', index)));
+    await expect(lookup.findOpen(ref)).rejects.toThrow('more open pull requests than one page');
+    answering([gitcodePull(ref.source, 'acme/app', 7, 'open', 'https://evil.example/acme/app/pull/7')]);
+    await expect(lookup.findOpen(ref)).rejects.toThrow('on another host');
+    hanging();
+    await expect(lookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
+  });
+});
+
 describe('the provider of a checkout origin', () => {
   it.each([
     ['https://user:secret@github.com/acme/app.git', 'github', 'acme/app'],
@@ -167,6 +200,7 @@ describe('the provider of a checkout origin', () => {
     ['git@github.com:acme/app.git', 'github', 'acme/app'],
     ['git@gitlab.com:acme/platform/app.git', 'gitlab', 'acme/platform/app'],
     ['https://git.woa.com/acme/app.git', 'tgit', 'acme/app'],
+    ['https://gitcode.com/acme/app.git', 'gitcode', 'acme/app'],
   ])('reads the provider and the repository from %s', (remote, provider, repo) => {
     vi.stubEnv('GITLAB_URL', ''); vi.stubEnv('TEAMAI_GITLAB_HOST', '');
     const origin = providerForRemote(remote);

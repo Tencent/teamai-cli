@@ -1,4 +1,4 @@
-import type { GitProvider, PrCreateOptions, RepoInfo, OrgRepoInfo } from '../types.js';
+import type { GitProvider, PrCreateOptions, PullRequestLookup, RepoInfo, OrgRepoInfo } from '../types.js';
 import { RepoNotFoundError } from '../types.js';
 import {
   gitcodeIsAuthenticated,
@@ -6,6 +6,7 @@ import {
   gitcodeRepoClone,
   gitcodeCreateRepo,
   gitcodePullCreate,
+  gitcodeFindOpenPull,
   writeNetrcToken,
   GitCodeRepoNotFoundError,
 } from './gitcode-api.js';
@@ -26,8 +27,7 @@ import { askQuestion, isInteractive } from '../../utils/prompt.js';
  */
 export class GitCodeProvider implements GitProvider {
   readonly name = 'gitcode';
-  /** Workflow delivery cannot look up GitCode pull requests yet, so it opens none. */
-  readonly pullRequests = null;
+  readonly pullRequests: PullRequestLookup = { findOpen: gitcodeFindOpenPull };
 
   parseRepoInput(input: string): RepoInfo {
     return parseGitCodeRepoInput(input);
