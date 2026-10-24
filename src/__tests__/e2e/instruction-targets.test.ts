@@ -112,6 +112,9 @@ it('pulls Pi rules and instructions into the existing override and preserves per
   try {
     const pull = await runCLI(['pull', '--force'], { HOME: home }, home);
     expect(pull.code, pull.output).toBe(0);
+    const doctor = await runCLI(['doctor'], { HOME: home }, home);
+    expect(doctor.code, doctor.output).toBe(0);
+    expect(pull.output).not.toContain('pi does not read');
     const read = fs.readFileSync(override, 'utf8');
     expect(read).toContain('# Personal override');
     expect(read).toContain('Be kind.');
