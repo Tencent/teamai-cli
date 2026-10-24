@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GitHubProvider } from '../providers/github/index.js';
 import { GitLabProvider } from '../providers/gitlab/index.js';
+import { TGitProvider } from '../providers/tgit/index.js';
 import { GenericGitProvider } from '../providers/git/index.js';
 import { providerForRemote } from '../providers/registry.js';
 import type { GitProvider, PullRequestLookup, PullRequestRef } from '../providers/types.js';
@@ -127,12 +128,45 @@ describe('GitLab merge request lookup', () => {
   });
 });
 
+describe('TGit merge request lookup', () => {
+  const tgitMr = (source: string, iid = 7, sourceProject = 1, state = 'opened', url = `https://git.woa.com/acme/app/merge_requests/${iid}`) => ({
+    ...mr(source, iid, sourceProject, url), state,
+  });
+  beforeEach(() => vi.stubEnv('TGIT_TOKEN', 'test-token'));
+
+  it('finds the open or reopened request of this project branch into the target, never one from a fork with the same branch name', async () => {
+    const fetcher = answering([tgitMr(ref.source, 6, 2), tgitMr('other', 8), tgitMr(ref.source, 9, 1, 'reopened')]);
+
+    expect(await lookupOf(new TGitProvider()).findOpen(ref)).toBe('https://git.woa.com/acme/app/merge_requests/9');
+    const url = new URL(String(fetcher.mock.calls[0]?.[0]));
+    expect([`${url.origin}${url.pathname}`, url.searchParams.get('state'), url.searchParams.get('source_branch'), url.searchParams.get('target_branch')])
+      .toEqual(['https://git.woa.com/api/v3/projects/acme%2Fapp/merge_requests', 'opened', ref.source, 'main']);
+    answering([tgitMr(ref.source, 6, 2), tgitMr(ref.source, 5, 1, 'merged')]);
+    expect(await lookupOf(new TGitProvider()).findOpen(ref)).toBeUndefined();
+  });
+
+  it('fails, rather than finding nothing, on an answer it cannot read or see past, on another host, or with no answer in time', async () => {
+    const lookup = lookupOf(new TGitProvider());
+    answering({ message: 'private-token-in-body' }, 404);
+    await expect(lookup.findOpen(ref)).rejects.toThrow(/^TGit answered the open merge request lookup with HTTP 404\.(?!.*private-token-in-body)/);
+    answering([{ web_url: 'https://git.woa.com/acme/app/merge_requests/7', state: 'opened' }]);
+    await expect(lookup.findOpen(ref)).rejects.toThrow(/^TGit answered the open merge request lookup with data TeamAI cannot read\.$/);
+    answering(Array.from({ length: 100 }, (_, index) => tgitMr(`other-${index}`, index)));
+    await expect(lookup.findOpen(ref)).rejects.toThrow('more open merge requests than one page');
+    answering([tgitMr(ref.source, 7, 1, 'opened', 'https://evil.example/acme/app/merge_requests/7')]);
+    await expect(lookup.findOpen(ref)).rejects.toThrow('on another host');
+    hanging();
+    await expect(lookup.findOpen({ ...ref, timeoutMs: 20 })).rejects.toThrow();
+  });
+});
+
 describe('the provider of a checkout origin', () => {
   it.each([
     ['https://user:secret@github.com/acme/app.git', 'github', 'acme/app'],
     ['ssh://git@github.com/acme/app.git', 'github', 'acme/app'],
     ['git@github.com:acme/app.git', 'github', 'acme/app'],
     ['git@gitlab.com:acme/platform/app.git', 'gitlab', 'acme/platform/app'],
+    ['https://git.woa.com/acme/app.git', 'tgit', 'acme/app'],
   ])('reads the provider and the repository from %s', (remote, provider, repo) => {
     vi.stubEnv('GITLAB_URL', ''); vi.stubEnv('TEAMAI_GITLAB_HOST', '');
     const origin = providerForRemote(remote);
