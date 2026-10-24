@@ -13,6 +13,24 @@ export interface WorkflowClient {
   cancel(runId: string, step?: string): Promise<WorkflowEnvelope>;
 }
 
+export const PARALLEL_ROOTS = `schemaVersion: v1alpha1
+name: build
+description: Two roots a driver runs in parallel, then a join.
+steps:
+  - id: a
+    command: echo a
+  - id: b
+    needs: []
+    command: echo b
+  - id: join
+    needs: [a, b]
+    command: echo join
+`;
+
+export function controlsYaml(steps: string): string {
+  return `schemaVersion: v1alpha1\nname: build\ndescription: Exercise manual controls.\nsteps:\n${steps}\n`;
+}
+
 export interface ConformanceScenario {
   name: string;
   workflowName: string;

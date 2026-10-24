@@ -1,4 +1,5 @@
-import type { ConformanceScenario } from './conformance-interpreter.js';
+import { PARALLEL_ROOTS, controlsYaml, type ConformanceScenario } from './conformance-interpreter.js';
+import { limitsConformanceScenarios } from './limits-conformance.js';
 
 const TWO_STEPS = `schemaVersion: v1alpha1
 name: build
@@ -108,20 +109,6 @@ steps:
       task: "{{ steps.plan.outputs.task }}"
 `;
 
-export const PARALLEL_ROOTS = `schemaVersion: v1alpha1
-name: build
-description: Two roots a driver runs in parallel, then a join.
-steps:
-  - id: a
-    command: echo a
-  - id: b
-    needs: []
-    command: echo b
-  - id: join
-    needs: [a, b]
-    command: echo join
-`;
-
 const END_WHILE_RUNNING = `schemaVersion: v1alpha1
 name: build
 description: A step reaches the end while another one runs.
@@ -198,6 +185,7 @@ steps:
     session: { from: plan }
 `;
 
+/** Every protocol scenario a driver must pass, the ones each concern keeps in its own file included. */
 export const workflowConformanceScenarios: ConformanceScenario[] = [
   {
     name: 'two-step command success',
@@ -525,10 +513,6 @@ export const workflowConformanceScenarios: ConformanceScenario[] = [
   },
 ];
 
-
-export function controlsYaml(steps: string): string {
-  return `schemaVersion: v1alpha1\nname: build\ndescription: Exercise manual controls.\nsteps:\n${steps}\n`;
-}
 const APPROVE = controlsYaml('  - id: work\n    approve: Build it?\n    command: echo work\n  - id: later\n    needs: [work]\n    command: echo later');
 const CHOOSE = controlsYaml(`  - id: decide
     choose: { message: Pick one, options: [build, revise] }
@@ -695,6 +679,8 @@ workflowConformanceScenarios.push({
   expectState: { steps: [{ id: 'work', status: 'leased', answer: { choice: 'yes', channel: 'driver', agent: false,
     note: 'Person approved in the UI', driver: { kind: 'ide', machine: 'host', workspace: '/ui' } } }, { id: 'later', status: 'pending' }] },
 });
+
+workflowConformanceScenarios.push(...limitsConformanceScenarios);
 
 /** A value a scenario reads from the run once it is done: its base, or what a step reported in `changes`. */
 export type GitConformanceName = 'base.commit' | 'base.ref' | `steps.${string}.commit` | `steps.${string}.branch`;

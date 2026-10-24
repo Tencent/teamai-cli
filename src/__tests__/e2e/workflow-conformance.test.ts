@@ -7,7 +7,6 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolveProjectDataHome } from '../../config.js';
 import { runConformanceScenario, type WorkflowClient } from '../../workflow/conformance-interpreter.js';
 import { workflowConformanceScenarios, workflowGitConformanceScenarios, type GitConformanceName } from '../../workflow/conformance.js';
-import { limitsConformanceScenarios } from '../../workflow/limits-conformance.js';
 import type { StepState } from '../../workflow/step-state.js';
 import type { RunState, WorkflowEnvelope } from '../../workflow/types.js';
 import type { WorkspaceContract } from '../../workflow/workspace.js';
@@ -54,7 +53,7 @@ describe('workflow protocol conformance through the CLI', () => {
     if (repo) fs.rmSync(repo, { recursive: true, force: true });
   });
 
-  for (const scenario of [...workflowConformanceScenarios, ...limitsConformanceScenarios]) {
+  for (const scenario of workflowConformanceScenarios) {
     it(scenario.name, async () => {
       const workflows = path.join(repo, '.teamai', 'workflows');
       fs.mkdirSync(workflows, { recursive: true });

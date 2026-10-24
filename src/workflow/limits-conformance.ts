@@ -1,6 +1,5 @@
 /** Conformance scenarios for what a step requires, its env and secrets, its setup, and the run's deadlines and budgets. */
-import type { ConformanceScenario } from './conformance-interpreter.js';
-import { PARALLEL_ROOTS, controlsYaml } from './conformance.js';
+import { PARALLEL_ROOTS, controlsYaml, type ConformanceScenario } from './conformance-interpreter.js';
 
 export const limitsConformanceScenarios: ConformanceScenario[] = [];
 
@@ -52,7 +51,7 @@ limitsConformanceScenarios.push(
 );
 
 /** A value long enough to be masked, which no scenario output may carry. */
-export const CONFORMANCE_SECRET = 'conformance-secret-value-1082';
+const CONFORMANCE_SECRET = 'conformance-secret-value-1082';
 const NEEDS_TOKEN = controlsYaml('  - id: deploy\n    command: echo deploy\n    requires: { env: [CONFORMANCE_TOKEN] }\n  - id: build\n    needs: []\n    command: echo build');
 limitsConformanceScenarios.push(
   {
