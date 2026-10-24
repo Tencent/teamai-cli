@@ -171,7 +171,10 @@ export function skipToolsWithoutShell(tools: string[]): Set<string> {
       skipped.add(tool);
     }
   }
-  if (withShell) ensureTeamaiWrapper();
+  // Non-login POSIX dispatch must not rely on a project git hook creating this.
+  const nonLoginWrapper = process.platform !== 'win32'
+    && tools.some(tool => tool === 'zcode' || tool === 'dsh') && hasShell();
+  if (withShell || nonLoginWrapper) ensureTeamaiWrapper();
   if (skipped.size > 0) {
     log.warn(
       `Skipping hook injection for ${[...skipped].join(', ')}: no shell is available in this environment to execute hooks. ` +
