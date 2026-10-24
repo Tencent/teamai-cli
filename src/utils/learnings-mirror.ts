@@ -20,8 +20,10 @@ async function isDirectory(dir: string): Promise<boolean> {
 /** Preserve the cache fingerprint when a pull has not changed its bytes. */
 async function copyIfChanged(source: string, destination: string): Promise<void> {
   if (await pathExists(destination)) {
-    const [incoming, existing] = await Promise.all([fse.readFile(source), fse.readFile(destination)]);
-    if (incoming.equals(existing)) return;
+    const [incoming, existing, sourceStat, destinationStat] = await Promise.all([
+      fse.readFile(source), fse.readFile(destination), fse.stat(source), fse.stat(destination),
+    ]);
+    if (incoming.equals(existing) && (sourceStat.mode & 0o777) === (destinationStat.mode & 0o777)) return;
   }
   await fse.copy(source, destination, { overwrite: true });
 }
