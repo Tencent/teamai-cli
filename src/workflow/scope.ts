@@ -5,7 +5,6 @@
 import { branchNames, type ExpressionStep } from './expression.js';
 import { isItem } from './fan-out.js';
 import { passesOf, previousPass, stepLoops, type StepLoops } from './loop.js';
-import { mergeRequirements, type WorkflowRequirements, type WorkflowSetup } from './requirements.js';
 import { parseStepPath } from './step-path.js';
 import { settled, VISIBLE_OUTCOMES, type StepState } from './step-state.js';
 import type { TemplateContext } from './template.js';
@@ -26,13 +25,11 @@ export interface Scope {
   item?: unknown;
   /** The `defaults.model` in effect: the workflow file's own, else the enclosing scope's. */
   defaultModel?: string;
-  requirements?: WorkflowRequirements;
-  setup?: WorkflowSetup;
 }
 
 export function topScope(run: RunState): Scope {
   return {
-    prefix: '', definition: run.definition, requirements: run.definition.requires, setup: run.definition.setup, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
+    prefix: '', definition: run.definition, inputs: run.inputs, loops: stepLoops(run.definition.steps), defaultModel: run.definition.defaults?.model,
   };
 }
 
@@ -44,15 +41,13 @@ export function childScope(run: RunState, scope: Scope, states: StepState[], sta
   if (typeof step.workflow === 'object') {
     return {
       prefix: `${state.id}.`, definition: step.workflow, inputs: scope.inputs, outer: expressionSteps(scope, states, state),
-      requirements: mergeRequirements(scope.requirements, scope.definition.defaults?.requires, step.requires, step.workflow.requires), setup: step.workflow.setup ?? scope.setup,
-      loops: stepLoops(step.workflow.steps), runner: state, ...itemOf(scope, state), defaultModel: step.workflow.defaults?.model ?? scope.defaultModel,
+      loops: stepLoops(step.workflow.steps), runner: state, ...itemOf(scope, state), defaultModel: scope.defaultModel,
     };
   }
   const definition = step.workflow === undefined ? undefined : run.workflows?.[step.workflow];
   return definition && {
     prefix: `${state.id}.`, definition, inputs: state.inputs, loops: stepLoops(definition.steps), runner: state,
     defaultModel: definition.defaults?.model ?? scope.defaultModel,
-    requirements: mergeRequirements(scope.requirements, scope.definition.defaults?.requires, step.requires, definition.requires), setup: definition.setup ?? scope.setup,
   };
 }
 

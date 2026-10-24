@@ -16,12 +16,11 @@ import {
 } from './reads.js';
 import { parseHitl } from './parse-hitl.js';
 import { loopProblems } from './loop.js';
-import { RequirementsSchema, StepExecutionSchema, WorkflowExecutionSchema } from './requirements.js';
 import { modelValueProblem } from '../models/aliases.js';
 
-const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'steps', 'requires', 'setup', 'budget', 'timeout']);
+const HEADER_KEYS = new Set(['schemaVersion', 'name', 'description', 'inputs', 'defaults', 'ends', 'outputs', 'loop', 'steps']);
 const ACTION_KEYS = Object.keys(STEP_ACTIONS);
-const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers', 'requires', 'timeout', 'max_turns']);
+const STEP_KEYS = new Set(['id', 'needs', 'if', ...ACTION_KEYS, 'env', 'with', 'agent', 'model', 'output', 'end', 'loop', 'break', 'for_each', 'approve', 'choose', 'interactive', 'workspace', 'session', 'scorers']);
 const STEP_LOOP_KEYS = new Set(['back_to', 'while', 'max_iterations']);
 const FOR_EACH_KEYS = new Set(['items', 'max_parallel']);
 const WORKFLOW_LOOP_KEYS = new Set(['while', 'max_iterations']);
@@ -182,15 +181,18 @@ export function parseWorkflow(file: string, content: string, files?: WorkflowFil
     if (schema?.type === 'object') inputs = schema.fields;
   }
 
+  const defaultsPair = root.items.find((pair) => scalarString(pair.key) === 'defaults');
+  const defaults = defaultsPair ? parseDefaults(defaultsPair.value ?? defaultsPair.key, ctx) : undefined;
+
   // A malformed inputs header is already reported; checking reads against it would only add noise.
-  const { workflow: { ends, outputs, loop, steps, requires, setup, timeout, budget, defaults } } = parseBody(root, '', 'workflow', ctx, inputsPair && !inputs ? undefined : inputs ?? {}, false);
+  const { workflow: { ends, outputs, loop, steps } } = parseBody(root, '', 'workflow', ctx, inputsPair && !inputs ? undefined : inputs ?? {}, false);
 
   if (diagnostics.length > 0 || !name || !description) return { ok: false, diagnostics };
   return {
     ok: true,
     definition: {
       schemaVersion: 'v1alpha1', name, description, ...(inputs ? { inputs } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}),
-      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), ...(requires ? { requires } : {}), ...(setup ? { setup } : {}), ...(timeout ? { timeout } : {}), ...(budget ? { budget } : {}), steps,
+      ...(loop ? { loop } : {}), ...(defaults ? { defaults } : {}), steps,
     },
     promptFileLocations,
   };
@@ -212,9 +214,6 @@ function parseBody(
   checks?: Array<() => void>,
 ): { workflow: InlineWorkflow; outer: ReadSite[] } {
   const { file, lineCounter, diagnostics, promptFileLocations, files } = ctx;
-  const execution = parseExecution(root, at, ctx, false);
-  const defaultsNode = valueNode(root, 'defaults');
-  const defaults = defaultsNode ? parseDefaults(defaultsNode, ctx) : undefined;
   const endsPair = root.items.find((pair) => scalarString(pair.key) === 'ends');
   const ends = endsPair ? parseEnds(endsPair.value ?? endsPair.key, at, ctx) : undefined;
 
@@ -341,7 +340,7 @@ function parseBody(
         for (const pair of item.items) {
           const key = scalarString(pair.key);
           if (!key || !STEP_KEYS.has(key) || ACTIONLESS_KEYS.has(key) || (key === 'interactive' && isScalar(pair.value) && pair.value.value === false)) continue;
-          diagnostics.push({ ...locate(file, lineCounter, pair.key as Node, `${field}.${key}`, `${label} has no action, so it carries only id, needs, if, end, approve, choose, loop, and break`), ...(['requires', 'timeout', 'max_turns'].includes(key) ? { code: 'bad_requirements' as const } : {}) });
+          diagnostics.push(locate(file, lineCounter, pair.key as Node, `${field}.${key}`, `${label} has no action, so it carries only id, needs, if, end, approve, choose, loop, and break`));
         }
       }
       if (actions.length > 1 || (actions.length === 0 && !endPair && !approvePair && !choosePair)) {
@@ -522,11 +521,9 @@ function parseBody(
           session = undefined;
         }
       }
-      const execution = parseExecution(item, `${field}.`, ctx, true);
-      if (execution.maxTurns && !promptPair && !promptFilePair) diagnostics.push({ ...locate(file, lineCounter, item, `${field}.max_turns`, 'max_turns requires a prompt step'), code: 'bad_requirements' });
       if (id && TOKEN.test(id) && (actions.length === 1 || endPair || hitl) && !diagnostics.some((d) => d.field === field || d.field.startsWith(`${field}.`))) {
         steps.push({
-          id, ...execution,
+          id,
           ...(hitl ? { hitl } : {}),
           ...(interactive ? { interactive: true } : {}),
           ...(needs ? { needs } : {}),
@@ -572,7 +569,7 @@ function parseBody(
     if (!endsPair || ends) diagnostics.push(...endDiagnostics(ctx, ends, endsPair?.value, at, endings, graph));
     diagnostics.push(...outputDiagnostics(ctx, outputEntries ?? [], at, seen, steps, children));
   }
-  return { workflow: { ...execution, ...(defaults ? { defaults } : {}), ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}), ...(loop ? { loop } : {}), steps }, outer };
+  return { workflow: { ...(ends ? { ends } : {}), ...(outputs ? { outputs } : {}), ...(loop ? { loop } : {}), steps }, outer };
 }
 
 function stepReads(sites: ReadSite[]): Map<string, Set<string>> {
@@ -599,7 +596,7 @@ function parseInline(
   const { file, lineCounter, diagnostics } = ctx;
   for (const pair of node.items) {
     const key = scalarString(pair.key);
-    if (key === 'steps' || key === 'outputs' || key === 'ends' || key === 'loop' || key === 'requires' || key === 'setup' || key === 'defaults' || key === 'budget' || key === 'timeout') continue;
+    if (key === 'steps' || key === 'outputs' || key === 'ends' || key === 'loop') continue;
     if (!key || !HEADER_KEYS.has(key)) {
       diagnostics.push(unknownKey(file, lineCounter, pair.key ?? node, `${field}.${key ?? 'key'}`, key ?? 'key'));
     } else if (key === 'inputs') {
@@ -802,13 +799,10 @@ function parseDefaults(node: Node | null | undefined, ctx: ParseContext): Workfl
     const key = scalarString(keyNode);
     if (key === 'model') model = parseModel(valueNode(node, 'model'), 'defaults.model', ctx);
     else if (key === 'scorers') scorers = parseDefaultScorers(valueNode(node, 'scorers'), ctx);
-    else if (key !== 'requires') diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.${key ?? 'key'}`, key ?? 'key'));
+    else diagnostics.push(unknownKey(file, lineCounter, keyNode ?? node, `defaults.${key ?? 'key'}`, key ?? 'key'));
   }
-  const raw = valueNode(node, 'requires');
-  const parsed = raw ? RequirementsSchema.safeParse(raw.toJSON()) : undefined;
-  if (parsed && !parsed.success) diagnostics.push({ ...locate(file, lineCounter, raw, 'defaults.requires', 'invalid requirements: ' + parsed.error.issues.map((issue) => issue.path.join('.') + ': ' + issue.message).join('; ')), code: 'bad_requirements' });
-  if (model === undefined && scorers === undefined && !parsed?.success) return undefined;
-  return { ...(model !== undefined ? { model } : {}), ...(scorers ? { scorers } : {}), ...(parsed?.success ? { requires: parsed.data } : {}) };
+  if (model === undefined && scorers === undefined) return undefined;
+  return { ...(model !== undefined ? { model } : {}), ...(scorers ? { scorers } : {}) };
 }
 
 function parseBatch(node: Node | undefined, field: string, ctx: ParseContext): boolean | undefined {
@@ -1105,16 +1099,4 @@ function isPromptFilePath(value: string | undefined): value is string {
   if (!value || value.trim() === '' || pathIsAbsolute(value)) return false;
   const segments = value.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.');
   return segments.length >= 2 && segments[0] === 'prompts' && !segments.includes('..');
-}
-
-/** Parse safety fields together so invalid limits invalidate an older runnable cache too. */
-function parseExecution(root: YAMLMap.Parsed, at: string, ctx: ParseContext, step: boolean): { requires?: import('./requirements.js').WorkflowRequirements; setup?: import('./requirements.js').WorkflowSetup; timeout?: number; budget?: { tokens: number }; maxTurns?: number } {
-  const schema = step ? StepExecutionSchema : WorkflowExecutionSchema;
-  const result = schema.safeParse(root.toJSON());
-  if (!result.success) {
-    for (const issue of result.error.issues) ctx.diagnostics.push({ ...locate(ctx.file, ctx.lineCounter, valueNode(root, String(issue.path[0])) ?? root, at + issue.path.join('.'), issue.message), code: 'bad_requirements' });
-    return {};
-  }
-  const { max_turns: maxTurns, ...rest } = result.data as import('zod').infer<typeof WorkflowExecutionSchema> & { max_turns?: number };
-  return { ...rest, ...(maxTurns ? { maxTurns } : {}) };
 }

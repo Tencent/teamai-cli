@@ -199,7 +199,7 @@ const STEP_RULES = {
   iteration: 'publish', round: 'publish', status: 'publish', attempt: 'publish', lease: 'rewrite', outcome: 'publish',
   outputs: 'publish', end: 'publish', results: 'publish', settledAt: 'publish', exitCode: 'publish', message: 'drop',
   tool: 'publish', model: 'publish', session: 'publish', tokens: 'publish', changes: 'publish', read: 'publish',
-  agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite', startedAt: 'publish',
+  agent: 'publish', used: 'publish', installId: 'publish', loopFinal: 'publish', failure: 'rewrite',
 } satisfies FieldRules<StepState>;
 
 const PASS_RULES = {
@@ -218,7 +218,7 @@ const ANSWER_RULES = {
 const FAILURE_RULES = { 'code': 'publish', message: 'rewrite' } satisfies FieldRules<WorkflowFailure>;
 
 // A lease another machine held is released when the run is handed over, so the session it offered stays here.
-const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop', startedAt: 'drop', deadline: 'drop' } satisfies FieldRules<StepLease>;
+const LEASE_RULES = { attempt: 'publish', revision: 'publish', driver: 'rewrite', session: 'drop' } satisfies FieldRules<StepLease>;
 
 const COPY_RULES = { owner: 'drop', commit: 'publish' } satisfies FieldRules<NonNullable<RunState['copies']>[string]>;
 

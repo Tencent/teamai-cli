@@ -1165,7 +1165,7 @@ steps:
     needs: []
     command: node -e "process.exit(0)"
     end: done
-`, 2);
+`, 1);
     fs.writeFileSync(path.join(workspace, 'slow.js'), `const fs = require('fs');
 fs.writeFileSync('slow.started', '');
 const timer = setInterval(() => { if (fs.existsSync('go')) clearInterval(timer); }, 20);
@@ -1228,13 +1228,11 @@ steps:
     command: node log.js b
 `, 1);
     fs.writeFileSync(path.join(workspace, 'log.js'), LOG);
-    config.workflows!.max_parallel = 2; // The earlier driver ran before the member lowered its ceiling.
     const earlier = localDriver(workspace);
     const a = await leaseNext(config, runId, earlier);
     const attempt = 'data' in a ? (a.data.lease as { attempt: string }).attempt : '';
     expect(await leaseNext(config, runId, earlier, { running: [attempt] })).toMatchObject({ data: { lease: { step: 'b' } } });
 
-    config.workflows!.max_parallel = 1;
     const done = await runLocalDriver(config, runId, workspace);
 
     expect(done).toMatchObject({ data: { done: { outcome: 'succeeded' } } });
@@ -1259,7 +1257,6 @@ steps:
     command: node log.js c2
 `, 2);
     fs.writeFileSync(path.join(workspace, 'log.js'), LOG);
-    config.workflows!.max_parallel = 3;
     const earlier = localDriver(workspace);
     const running: string[] = [];
     for (const step of ['c1', 'ask', 'c2']) {
@@ -1267,7 +1264,6 @@ steps:
       expect(leased).toMatchObject({ data: { lease: { step } } });
       if ('data' in leased) running.push((leased.data.lease as { attempt: string }).attempt);
     }
-    config.workflows!.max_parallel = 2;
     const logAtPrompt: string[] = [];
     const adapter: LocalToolAdapter = {
       runInteractive: vi.fn(),

@@ -811,7 +811,7 @@ workflowCmd
 
 workflowCmd
   .command('next <run>')
-  .description('Get a lease, hitl, wait, or done JSON envelope. Declare enforced requirements in driver.can (network, env, isolation, human, resume, tokens, max_turns, setup). Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.')
+  .description('Get a lease, hitl, wait, or done JSON envelope. Show hitl.message and hitl.respond to a person, who replaces <option> with a choice.')
   .option('--json <payload>', 'Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}. Optional: running, the attempt ids of its open leases the driver still runs (an open lease left out is handed back), canTakeLease, false to poll while a tool runs without taking a new lease, and driver.can.hitl, true when a person can answer HITL requests and work interactively. Send driver.can.hitl on every next request, including busy polls. claim, true to take a run another install published from teamai-reports before leasing; a run this install owns stays as it is. Every answer lists in cancelled the running attempts whose tools the driver must stop.')
   .action(async (run: string, cmdOpts: { json?: string }) => {
     const { workflowNext } = await import('./workflow-commands.js');

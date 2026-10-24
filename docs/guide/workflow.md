@@ -33,7 +33,7 @@ A prompt step can set `model`: an alias from `models/aliases.yaml` or a model na
 3. `defaults.model`;
 4. the tool's default model.
 
-A step's `model` replaces the agent's model and effort, and keeps its other settings. A model name that is not an alias runs at the tool's default effort. A workflow file that another runs uses its own `defaults.model`, else the one in effect for the step that runs it. An inline workflow can set its own defaults, otherwise it uses the enclosing ones. When the alias has no model for the step's tool, or the member's `~/.teamai/models/aliases.yaml` turns it off, the step fails with `model_unavailable` before the tool starts. On OpenCode 1, so does a step whose `model` is its agent's own model with no effort while the agent file sets `variant` and a `mode` other than `subagent`, since OpenCode 1 would apply that variant. OpenCode 2 does not take the model or variant from the agent file, and OpenCode 1 does not start a subagent with `opencode run --agent`, so the driver passes the definition's own model and variant on the command line. For an agent file with `mode: subagent`, which pull writes by default, OpenCode 1 gets the agent's instructions in the prompt, and the driver warns about the file settings that then do not apply. A lease carries `model` and `defaultModel` as written, and the driver resolves them.
+A step's `model` replaces the agent's model and effort, and keeps its other settings. A model name that is not an alias runs at the tool's default effort. A workflow file that another runs uses its own `defaults.model`, else the one in effect for the step that runs it. An inline workflow uses the enclosing one. When the alias has no model for the step's tool, or the member's `~/.teamai/models/aliases.yaml` turns it off, the step fails with `model_unavailable` before the tool starts. On OpenCode 1, so does a step whose `model` is its agent's own model with no effort while the agent file sets `variant` and a `mode` other than `subagent`, since OpenCode 1 would apply that variant. OpenCode 2 does not take the model or variant from the agent file, and OpenCode 1 does not start a subagent with `opencode run --agent`, so the driver passes the definition's own model and variant on the command line. For an agent file with `mode: subagent`, which pull writes by default, OpenCode 1 gets the agent's instructions in the prompt, and the driver warns about the file settings that then do not apply. A lease carries `model` and `defaultModel` as written, and the driver resolves them.
 
 A prompt or workflow step can list [scorers](scorers.md) that judge its succeeded passes:
 
@@ -248,41 +248,3 @@ The operation that settles the run queues its end record under the run lock and 
 Run ids are `r` plus 16 hex digits. Runs created before this scheme used 8 hex digits and still resolve.
 
 Workflow totals (runs, succeeded, failed, cumulative duration) are folded into `stats/<username>.yaml` on the reports branch at publication time and shown by `teamai digest`.
-
-## Requirements and execution limits
-
-```yaml
-schemaVersion: v1alpha1
-name: implement-task
-description: Implement a task with scoped credentials and limits.
-requires: { isolation: worktree }
-defaults:
-  requires: { network: true }
-setup:
-  command: npm ci
-  requires: { network: true, env: [NPM_TOKEN] }
-  timeout: 10m
-timeout: 2h
-budget: { tokens: 20M }
-steps:
-  - id: implement
-    workspace: new
-    prompt: Implement the task.
-    requires: { env: [API_TOKEN] }
-    timeout: 30m
-    max_turns: 30
-```
-
-`requires` supports `network` (boolean), `env` (declared key names), `isolation` (`none`, `worktree`, `sandbox`), `human` and `resume` (booleans). Workflow requirements apply to descendants. Defaults fill each step; a step replaces scalar defaults and merges `env` names. Nested workflows inherit requirements and setup and may declare their own. Requirements are checked before leasing against the member's `workflows.allow` ceiling and the driver's capabilities. A held step does not block another ready step. An explicit `workflows.max_parallel` also caps external drivers' outstanding leases. `allow.network: false` requires network-off enforcement even when the workflow omits that requirement.
-
-The local driver declares network access, scoped env, worktree isolation, token reporting and session resume. It cannot disable networking or provide a sandbox: such requests wait with an explicit reason. Worktree isolation requires a separate workspace contract; a step running in the current checkout cannot claim it. A worktree separates git changes, not access to the rest of the machine. `human` follows whether the driver has a person present. OpenCode cannot resume sessions here. Only headless Claude enforces `max_turns`; other tools and interactive prompts wait instead of silently ignoring it.
-
-An external driver sends these capabilities in `driver.can`: `network`, `env` (whether it scopes keys), `isolation`, `human`, `resume`, `tokens`, `max_turns`, and `setup`, alongside `workspace` and `hitl`. `can.network` is a fixed boolean mode, or `[true, false]` when the driver enforces network access separately for setup and the agent. Declare only what the driver enforces. TeamAI trusts the driver; this is not protection against a hostile program on the same machine.
-
-`requires.env` names keys in the active `env.yaml` or `env/secrets.yaml`. Values use the existing TeamAI resolution order, including the process environment for CI secrets. Leases and state carry names only. Missing keys fail before execution with `missing_env` and a `teamai env set KEY` hint. The driver withholds every declared team key not listed by that step, including inherited team variables, and otherwise keeps the host environment. Setup receives only its own required keys. Command `env` and workflow inputs cannot shadow declared keys; known secret values cannot be persisted as inputs or literal definitions. Every string value in a report is masked before validation and persistence, including nested outputs and failure messages; object keys stay visible. Encoded or transformed secrets are not recognized, and undeclared host credentials are outside this key-based policy.
-
-Setup runs after base configuration and team assets are delivered, once per new workspace. It must remove credentials before returning. Changes to tracked or non-ignored files fail with `setup_dirty`; a known secret retained in a workspace file, including ignored files, fails with `setup_secret`. The agent never starts and nothing from that step is pushed. Failed setup is retried when the step is retried. Setup has a default 30 minute timeout when none is set, also bounded by the step and workflow deadlines.
-
-Timeouts are positive durations such as `500ms`, `30s`, `10m`, or `2h`. A workflow timeout spans all its work and rounds. A step timeout spans its lease or nested workflow. The engine enforces deadlines on the first `next` or `report` after they pass; the local driver polls while work runs, cancels expired leases and stops their processes. Late reports return `lease_cancelled`. A timed-out step has outcome `failed` and failure code `timeout`, so recovery steps can read it.
-
-A workflow budget sums reported `input`, `output`, and `cachedInput` tokens across current steps, all previous passes and archived children. Nested budgets apply to that workflow's descendants as well as the outer budget. A prompt requires a driver declaring `tokens`; a successful report without usage fails with `unsupported_enforcement`. Usage is checked after reports, so in-flight work may spend beyond the threshold before it is reported. At exhaustion, all outstanding leases in that budget are cancelled and the workflow fails with `budget_exceeded`.

@@ -137,15 +137,15 @@ description: Build it.
 steps:
   - id: one
     command: npm test
-    future_timeout: 10m
+    timeout: 10m
 `);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: 'unknown_key',
-        field: 'steps[0].future_timeout',
-        message: 'workflows/build.yaml uses `future_timeout`, which this teamai does not know. Update teamai.',
+        field: 'steps[0].timeout',
+        message: 'workflows/build.yaml uses `timeout`, which this teamai does not know. Update teamai.',
       }),
     ]));
   });
@@ -947,14 +947,14 @@ name: build
 description: Build it.
 defaults:
   model: fast
-  future_requires: [git]
+  requires: [git]
 steps:
   - id: plan
     prompt: Plan it.
 `);
     expect(unknown.ok).toBe(false);
     if (unknown.ok) return;
-    expect(unknown.diagnostics).toEqual([expect.objectContaining({ field: 'defaults.future_requires', line: 6, code: 'unknown_key' })]);
+    expect(unknown.diagnostics).toEqual([expect.objectContaining({ field: 'defaults.requires', line: 6, code: 'unknown_key' })]);
 
     const scalar = parse(`schemaVersion: v1alpha1
 name: build
@@ -969,7 +969,7 @@ steps:
     expect(scalar.diagnostics.map(formatDiagnostic)).toEqual(['workflows/build.yaml:4: field "defaults": defaults must be a mapping']);
   });
 
-  it('reads defaults on an inline workflow', () => {
+  it('reports defaults on an inline workflow, which carries none', () => {
     const result = parse(`schemaVersion: v1alpha1
 name: build
 description: Build it.
@@ -982,8 +982,12 @@ steps:
         - id: plan
           prompt: Plan it.
 `);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.definition.steps[0].workflow).toMatchObject({ defaults: { model: 'fast' } });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.diagnostics.map(formatDiagnostic)).toEqual([
+      'workflows/build.yaml:7: field "steps[0].workflow.defaults": step "check" runs an inline workflow, which carries only steps, outputs, ends, and loop',
+    ]);
+    expect(result.diagnostics[0]?.code).toBeUndefined();
   });
 });
 

@@ -12,13 +12,8 @@ import { stopProcess } from '../tool-launch/process-stop.js';
 import { toolStdout, type TokenUsage, type ToolReport } from '../tool-launch/stdout.js';
 import { localToolFamily, opencodeModelArgs, type LaunchTool } from '../tool-launch/tools.js';
 import type { WorkflowFailure } from './types.js';
-import { maskSecrets } from './requirements.js';
 
 export interface LocalToolRun {
-  /** Already scoped by the workflow driver; never persisted or returned in the lease. */
-  env?: NodeJS.ProcessEnv;
-  secrets?: readonly string[];
-  maxTurns?: number;
   prompt: string;
   cwd: string;
   resultPath: string;
@@ -89,7 +84,7 @@ function invocation(tool: LaunchTool, input: LocalToolRun, opencodeMajor: number
     return [...agent, ...model, '--prompt', prompt];
   }
   if (family === 'claude') {
-    return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...(input.maxTurns ? ['--max-turns', String(input.maxTurns)] : []), ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
+    return ['-p', prompt, '--output-format', 'stream-json', '--verbose', ...agent, ...model, ...(effort ? ['--effort', effort] : []), ...resume];
   }
   if (family === 'codex') {
     const codexModel = input.model?.name ?? input.agent?.model;
@@ -113,15 +108,10 @@ function parseResultFile(value: unknown): ResultFile | null {
   return result;
 }
 
-async function readResultFile(resultPath: string, secrets: readonly string[] = []): Promise<ResultFile | null> {
+async function readResultFile(resultPath: string): Promise<ResultFile | null> {
   try {
-    const raw: unknown = JSON.parse(await fs.readFile(resultPath, 'utf8'));
-    const sanitized = maskSecrets(raw, secrets);
-    // Invalid result schemas still contain arbitrary tool output. Sanitize them before validation can return null.
-    if (secrets.length) await writeJsonAtomic(resultPath, sanitized);
-    return parseResultFile(sanitized);
+    return parseResultFile(JSON.parse(await fs.readFile(resultPath, 'utf8')) as unknown);
   } catch {
-    if (secrets.length) await fs.rm(resultPath, { force: true });
     return null;
   }
 }
@@ -167,7 +157,6 @@ export function createLocalToolAdapter(
           failure: { code: 'tool_unavailable', message: `The ${tool} executable is not available on PATH` },
         };
       }
-      if (input.maxTurns && (interactive || localToolFamily(tool) !== 'claude')) return { started: false, exitCode: 1, failure: { code: 'unsupported_enforcement', message: 'max_turns is supported only for headless Claude' } };
       const opencode = localToolFamily(tool) === 'opencode';
       const opencodeMajor = opencode && (input.agent || input.model?.effort) ? await opencodeMajorVersion(executable) : 1;
       if (opencode && input.agent) {
@@ -204,7 +193,7 @@ export function createLocalToolAdapter(
         try {
           child = spawnTool(executable, args, {
             cwd: input.cwd,
-            env: { ...(input.env ?? process.env), ...(input.launch ? launchEnv(input.launch) : {}), TEAMAI_WORKFLOW_RESULT: input.resultPath },
+            env: { ...process.env, ...(input.launch ? launchEnv(input.launch) : {}), TEAMAI_WORKFLOW_RESULT: input.resultPath },
             // OpenCode waits for the end of a piped stdin before it starts.
             stdio: interactive ? 'inherit' : ['ignore', 'pipe', 'pipe'],
             detached: !interactive && process.platform !== 'win32',
@@ -234,7 +223,6 @@ export function createLocalToolAdapter(
       const completed = await closed;
       if (signal?.aborted) await stop?.();
       signal?.removeEventListener('abort', abort);
-      const fileResult = await readResultFile(input.resultPath, input.secrets);
       if (!started || completed.error?.code === 'ENOENT') {
         return {
           started: false,
@@ -252,8 +240,9 @@ export function createLocalToolAdapter(
           failure: { code: 'tool_failed', message: `${tool} could not be started` },
         };
       }
+      const fileResult = await readResultFile(input.resultPath);
       const reported = toolStdout(tool, completed.stdout);
-      const result = maskSecrets(combineResults(fileResult, reported) ?? (interactive ? {} : null), input.secrets ?? []);
+      const result = combineResults(fileResult, reported) ?? (interactive ? {} : null);
       if (!result) {
         return {
           started: true,
@@ -266,7 +255,7 @@ export function createLocalToolAdapter(
       if (completed.exitCode !== 0 && !result.failure) {
         result.failure = { code: 'tool_failed', message: `${tool} exited with status ${completed.exitCode}` };
       }
-      if (!fileResult || input.secrets?.length) await persistFallback(input.resultPath, result);
+      if (!fileResult) await persistFallback(input.resultPath, result);
       return { started: true, exitCode: completed.exitCode, ...applied, ...result };
     };
   return {

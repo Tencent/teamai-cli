@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
@@ -34,27 +33,6 @@ afterEach(async () => {
 });
 
 describe('local tool adapter', () => {
-  it.each(['{"failure":{"message":"fixture-private-token"}}', 'invalid fixture-private-token {'])('sanitizes an unusable tool artifact before returning failure (%s)', async (raw) => {
-    const resultPath = path.join(os.tmpdir(), `teamai-invalid-result-${Date.now()}.json`); files.push(resultPath);
-    const adapter = createLocalToolAdapter(() => {
-      writeFileSync(resultPath, raw);
-      return child('') as ReturnType<ToolSpawn>;
-    }, () => 'claude');
-    expect(await adapter.run('claude', { prompt: 'Work.', cwd: os.tmpdir(), resultPath, secrets: ['fixture-private-token'] }))
-      .toMatchObject({ failure: { code: 'tool_failed' } });
-    expect(existsSync(resultPath) ? readFileSync(resultPath, 'utf8') : '').not.toContain('fixture-private-token');
-  });
-  it('passes max_turns only to headless Claude and persists masked strings', async () => {
-    const resultPath = path.join(os.tmpdir(), `teamai-workflow-limits-${Date.now()}.json`);
-    files.push(resultPath);
-    const spawnTool = vi.fn(() => child(claudeStream('claude-sonnet', { result: JSON.stringify({ nested: ['fixture-private-token'] }) }))) as unknown as ToolSpawn;
-    const adapter = createLocalToolAdapter(spawnTool, () => 'claude');
-    await adapter.run('claude', { prompt: 'Work.', cwd: os.tmpdir(), resultPath, maxTurns: 3, env: { PATH: process.env.PATH }, secrets: ['fixture-private-token'] });
-    expect(spawnTool).toHaveBeenCalledWith('claude', expect.arrayContaining(['--max-turns', '3']), expect.objectContaining({ env: expect.not.objectContaining({ WORKFLOW_SETUP_TOKEN: expect.anything() }) }));
-    expect(await fs.readFile(resultPath, 'utf8')).not.toContain('fixture-private-token');
-    expect(await adapter.run('codex', { prompt: 'Work.', cwd: os.tmpdir(), resultPath, maxTurns: 3 })).toMatchObject({ started: false, failure: { code: 'unsupported_enforcement' } });
-    expect(await adapter.runInteractive('claude', { prompt: 'Work.', cwd: os.tmpdir(), resultPath, maxTurns: 3 })).toMatchObject({ started: false, failure: { code: 'unsupported_enforcement' } });
-  });
   it('preserves UTF-8 split across stdout chunks in the result and persisted fallback', async () => {
     const resultPath = path.join(os.tmpdir(), `teamai-workflow-utf8-${Date.now()}.json`);
     files.push(resultPath);

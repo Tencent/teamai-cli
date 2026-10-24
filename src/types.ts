@@ -881,8 +881,6 @@ export const LocalConfigSchema = z.object({
     tools: z.record(z.string(), z.string().min(1)).default({}),
     /** How many command steps the local driver runs at once. Unset means 1. */
     max_parallel: z.number().int().positive().optional(),
-    /** Ceiling for workflow requirements; omitted keys do not restrict them. */
-    allow: z.object({ network: z.boolean().optional(), env: z.array(z.string()).optional(), isolation: z.enum(['none', 'worktree', 'sandbox']).optional(), human: z.boolean().optional(), resume: z.boolean().optional() }).strict().optional(),
     /** Whether a driver without HITL automatically answers optional approve requests and uses choose defaults. Unset means false. */
     auto_approve: z.boolean().optional(),
   }).optional(),

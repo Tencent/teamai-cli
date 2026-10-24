@@ -69,7 +69,7 @@ describe('workflow protocol conformance in process', () => {
       for (const operation of scenario.operations) {
         if (operation.kind === 'next') {
           const envelope = await client.next(runId, {
-            driver: { ...driver, ...((operation.hitl !== undefined || operation.can) ? { can: { ...operation.can, ...(operation.hitl !== undefined ? { hitl: operation.hitl } : {}) } } : {}) },
+            driver: { ...driver, ...(operation.hitl !== undefined ? { can: { hitl: operation.hitl } } : {}) },
             ...(operation.running ? { running: operation.running.map(attemptOf) } : {}),
             ...(operation.canTakeLease !== undefined ? { canTakeLease: operation.canTakeLease } : {}),
             ...(operation.claim !== undefined ? { claim: operation.claim } : {}),
