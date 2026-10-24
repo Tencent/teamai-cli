@@ -37,6 +37,8 @@ export async function runSetup({ command, dir, env, keys, signal }: SetupRun): P
   if (signal?.aborted) return stopped;
   const tracked = await snapshotWorktree(dir);
   const stamps = await fileStamps(dir);
+  // An abort while the workspace was read is not replayed to the listener `runCommand` adds.
+  if (signal?.aborted) return stopped;
   const exit = await runCommand(command, dir, env, signal);
   if (signal?.aborted) return stopped;
   const values = keys.flatMap((key) => {

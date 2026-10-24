@@ -54,6 +54,15 @@ describe('workspace setup', () => {
     expect(failure?.message).not.toContain(TOKEN);
   });
 
+  it('does not start setup that was stopped while it read the workspace', async () => {
+    const dir = workspace();
+    const controller = new AbortController();
+    const running = runSetup({ command: 'touch started', dir, env: process.env, keys: [], signal: controller.signal });
+    controller.abort();
+    expect(await running).toMatchObject({ code: 'setup_failed', message: expect.stringContaining('was stopped') });
+    expect(fs.existsSync(path.join(dir, 'started'))).toBe(false);
+  });
+
   it('scans only the files setup created or changed, and never .git', async () => {
     const dir = workspace();
     fs.writeFileSync(path.join(dir, '.npmrc'), TOKEN);
