@@ -13,8 +13,10 @@ describe('hooks inject with ChatGPT.app Codex', () => {
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-desktop-codex-'));
     try {
       const home = path.join(sandbox, 'home');
+      const emptyBin = path.join(sandbox, 'bin');
       const teamRepo = path.join(home, '.teamai', 'team-repo');
       const codexHome = path.join(home, '.codex');
+      fs.mkdirSync(emptyBin);
       fs.mkdirSync(path.join(teamRepo, 'hooks'), { recursive: true });
       fs.mkdirSync(codexHome, { recursive: true });
       fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: desktop-codex\nrepo: https://example.com/team.git\nprovider: git\n');
@@ -31,13 +33,14 @@ describe('hooks inject with ChatGPT.app Codex', () => {
       ].join('\n'));
       const desktop = path.join(installFakeCodex({
         dir: path.join(home, 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex-cli', 'bin'),
+        version: '9999.0.0',
       }), 'codex');
 
       const run = spawnSync(process.execPath, [CLI, 'hooks', 'inject'], {
         cwd: home,
         env: {
           ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome,
-          PATH: path.dirname(process.execPath), FORCE_COLOR: '0',
+          PATH: emptyBin, FORCE_COLOR: '0',
         },
         encoding: 'utf8',
         timeout: 20_000,
