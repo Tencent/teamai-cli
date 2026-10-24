@@ -26,6 +26,7 @@ import {
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { loadOpencodePlugin, loadPluginDefinition, loadV2Plugin } from './helpers/opencode-plugin.js';
 import { log } from '../utils/logger.js';
+import * as builtinHooks from '../builtin-hooks.js';
 
 describe('resolveOpencodePluginDir', () => {
   it('project scope → <base>/.opencode/plugin', () => {
@@ -38,6 +39,26 @@ describe('resolveOpencodePluginDir', () => {
 
 describe('buildPluginSource', () => {
   const src = buildPluginSource();
+  it.each(['linux', 'win32'])('dispatches through the installed Node entry without a shell on %s', async (platform) => {
+    const entry = platform === 'win32' ? 'C:\\Program Files\\teamai\\index.js' : '/opt/team ai/index.js';
+    const resolver = vi.spyOn(builtinHooks, 'resolveCliEntry').mockReturnValue(entry);
+    const spawn = vi.fn((_command: string, _args: string[], _options: Record<string, unknown>) => {
+      const child = new EventEmitter() as any;
+      child.stdin = { write: vi.fn(), end: () => queueMicrotask(() => child.emit('close', 0)) };
+      return child;
+    });
+    try {
+      const plugin = loadPluginDefinition(buildPluginSource(), { __childProcess: { spawn }, process: { platform } });
+      const hooks = await plugin.server({ directory: '/work/proj' });
+      await hooks.event({ event: { type: 'session.created' } });
+      expect(spawn).toHaveBeenCalledExactlyOnceWith(process.execPath,
+        [entry, 'hook-dispatch', 'session-start', '--tool', 'opencode'],
+        expect.objectContaining({ windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] }));
+      expect(spawn.mock.calls[0][2]).not.toHaveProperty('shell', true);
+    } finally {
+      resolver.mockRestore();
+    }
+  });
   it('loads as a default plugin definition for both OpenCode APIs', async () => {
     const plugin = loadPluginDefinition(src);
     expect(plugin.id).toBe('teamai.hooks');
@@ -130,7 +151,7 @@ describe('OpenCode plugin: bridge payloads (#884)', () => {
     await hooks['chat.message']({ sessionID: PARENT }, { parts: [{ type: 'text', text: '/retry now' }] });
     await hooks.event({ event: { type: 'session.idle', properties: { sessionID: PARENT } } });
 
-    expect(dispatches.map((d) => [d.args[1], d.payload])).toEqual([
+    expect(dispatches.map((d) => [d.args[2], d.payload])).toEqual([
       ['session-start', { cwd: '/work/proj', session_id: PARENT }],
       ['session-start', { cwd: '/work/proj', session_id: CHILD }],
       ['prompt-submit', { cwd: '/work/proj', session_id: PARENT, prompt: '/retry now' }],
@@ -231,6 +252,20 @@ describe('injectOpencodeHooks / removeOpencodeHooks', () => {
     const first = await fse.readFile(file, 'utf8');
     await injectOpencodeHooks(tmp, 'project');
     expect(await fse.readFile(file, 'utf8')).toBe(first);
+  });
+
+  it('keeps an installed plugin if this process cannot resolve the CLI entry', async () => {
+    await injectOpencodeHooks(tmp, 'project');
+    const file = path.join(tmp, '.opencode', 'plugin', OPENCODE_HOOK_FILE);
+    const before = await fse.readFile(file, 'utf8');
+    const resolver = vi.spyOn(builtinHooks, 'resolveCliEntry').mockReturnValue(null);
+    try {
+      await injectOpencodeHooks(tmp, 'project');
+      expect(await fse.readFile(file, 'utf8')).toBe(before);
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('cannot resolve the teamai CLI entry'));
+    } finally {
+      resolver.mockRestore();
+    }
   });
 
   it('reports the injection only when the plugin changes', async () => {
@@ -401,7 +436,7 @@ describe('OpenCode V2 built-in plugin', () => {
     await host.emit('session.created', { sessionID: 'ses_other' }, { directory: '/other' });
     await host.emit('session.status', { sessionID: 'ses_v2', status: { type: 'idle' } });
     await host.emit('session.idle', { sessionID: 'ses_v2' });
-    expect(host.dispatches.map((d) => [d.args[1], d.payload])).toEqual([
+    expect(host.dispatches.map((d) => [d.args[2], d.payload])).toEqual([
       ['session-start', { cwd: '/work/proj', session_id: 'ses_v2' }],
       ['stop', { cwd: '/work/proj', session_id: 'ses_v2' }],
     ]);
@@ -417,7 +452,7 @@ describe('OpenCode V2 built-in plugin', () => {
     await host.callbacks['tool.execute.after']({ tool: 'shell', sessionID: 'ses_v2', input: { command: 'false' }, status: 'completed', result: { content: 'failed', metadata: { exit: 1 } } });
     await host.callbacks['tool.execute.after']({ tool: 'shell', sessionID: 'ses_v2', input: {}, status: 'error', error: { message: 'denied' } });
     await host.callbacks['tool.execute.after']({ tool: 'subagent', sessionID: 'ses_v2', input: {}, status: 'completed', result: { content: 'child done', metadata: { sessionID: 'ses_child' } } });
-    expect(host.dispatches.map((d) => d.args)).toEqual([
+    expect(host.dispatches.map((d) => d.args.slice(1))).toEqual([
       ['hook-dispatch', 'prompt-submit', '--tool', 'opencode'],
       ['hook-dispatch', 'post-tool-use', '--tool', 'opencode'],
       ['hook-dispatch', 'post-tool-use', '--tool', 'opencode'],
