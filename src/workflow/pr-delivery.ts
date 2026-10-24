@@ -34,6 +34,8 @@ export interface DeliveryJob {
   checkout: string;
   /** The run base commit the delivered branch is compared with. */
   base: string;
+  /** The latest commit a report recorded on this branch, read under the run lock. */
+  recordedHead?: string;
   /** The branch the pull request goes into. */
   target: string;
   /** A URL the step's driver reported and the engine kept: nothing is opened for it. */
@@ -86,7 +88,13 @@ export async function deliverPr(job: DeliveryJob, gate: CreateGate): Promise<Del
   // after this read still reaches a request opened below; only the driver that holds the branch can make that push.
   const tip = await originTip(job.checkout, job.key.branch);
   if (tip.kind === 'unreadable') return failed({ kind: 'branch_unreadable' });
-  if (tip.commit !== job.key.head) return failed({ kind: 'branch_moved' });
+  if (tip.commit !== job.key.head) {
+    if (tip.commit === undefined || tip.commit !== job.recordedHead) return failed({ kind: 'branch_moved' });
+    const latest = await changedFiles({ ...job, key: { ...job.key, head: tip.commit } });
+    if ('fault' in latest) return failed(latest.fault);
+    const protectedFiles = protectedPaths(latest.files);
+    if (protectedFiles.length > 0) return failed({ kind: 'protected_path', files: protectedFiles });
+  }
   if (job.reported) return { ok: true, pr: job.reported };
   const origin = await originOf(job.checkout);
   if (origin.kind === 'transport') return failed({ kind: 'no_provider' });

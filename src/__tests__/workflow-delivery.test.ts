@@ -874,6 +874,45 @@ describe('retrying and cancelling a delivery', () => {
     expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ settledAt: settledAt && 'settledAt' in settledAt ? settledAt.settledAt : undefined });
   });
 
+  it.each([false, true])('retries delivery at a later recorded shared-branch tip and checks its protected paths (%s)', async (protectedChange) => {
+    const { config, root, runId } = await fixture(`  - id: work
+    workspace: new
+    workflow:
+      steps:
+        - id: impl
+          command: echo impl
+          workspace: continue
+          deliver: pr
+        - id: docs
+          needs: []
+          command: echo docs
+          workspace: continue
+`);
+    const gh = fakeGh(path.join(root, 'gh'), { lookup: 'fail' });
+    const impl = await take(config, runId);
+    await succeed(config, runId, impl, { to: pushWork(root, impl) });
+    const docs = await take(config, runId);
+    expect((await state(config, runId)).steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'delivery_failed' } });
+    const file = protectedChange ? '.github/workflows/docs.yml' : 'docs.txt';
+    const to = pushOnto(root, docs.workspace?.branch ?? '', { [file]: 'docs' });
+    await succeed(config, runId, docs, { to });
+    expect((await state(config, runId)).copies?.[docs.workspace?.branch ?? '']?.commit).toBe(to);
+    gh.configure({});
+    await retryStep(config, runId, 'work.impl');
+
+    expect(await leaseNext(config, runId, remote, writable)).toMatchObject({ data: { done: { outcome: protectedChange ? 'failed' : 'succeeded' } } });
+    const run = await state(config, runId);
+    if (protectedChange) {
+      expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'failed', failure: { code: 'protected_path', message: expect.stringContaining(file) } });
+      expect(creates(gh)).toEqual([]);
+      expect(run.deliveries).toBeUndefined();
+    } else {
+      expect(run.steps.find((step) => step.id === 'work.impl')).toMatchObject({ status: 'succeeded' });
+      expect(creates(gh)).toEqual([[docs.workspace?.branch, 'main']]);
+      expect(run.deliveries).toHaveLength(1);
+    }
+  });
+
   it('retries a failed delivery in the same pass and attempt, without a lease, and opens the pull request on the next call', async () => {
     const { config, root, runId } = await fixture(FIX_THEN_REVIEW);
     const gh = fakeGh(path.join(root, 'gh'), { lookup: 'fail' });

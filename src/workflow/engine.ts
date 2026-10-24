@@ -915,6 +915,7 @@ function nextDelivery(run: RunState): DeliveryJob | undefined {
     }
     return {
       key, runId: run.id, runName: run.name, checkout: run.checkout, base: run.base.commit, target,
+      recordedHead: run.copies?.[key.branch]?.commit,
       ...(step.delivery.reported ? { reported: step.delivery.reported } : {}),
     };
   }
