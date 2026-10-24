@@ -1703,7 +1703,9 @@ export async function init(options: GlobalOptions & {
   // it clones it now or reuses one an earlier init left: settle that install
   // now, as the config save below would, instead of leaving its config to run
   // against this clone should init stop first.
+  let replacedInstallSettled = false;
   const settleReplacedInstall = async (): Promise<void> => {
+    if (replacedInstallSettled) return;
     const next: LocalConfig = {
       repo: { localPath, remote: repoInfo.httpsUrl },
       username,
@@ -1716,6 +1718,7 @@ export async function init(options: GlobalOptions & {
       ? !sameQueueOwner(queueOwner(existingLocalConfig), queueOwner(next))
       : await pathExists(existingConfigPath);
     if (replacesAnother) await settleModeSwitch(existingLocalConfig, next, () => moveConfigAside(existingConfigPath, next));
+    replacedInstallSettled = true;
   };
 
   if (await pathExists(localPath)) {
@@ -1763,15 +1766,25 @@ export async function init(options: GlobalOptions & {
           // Hold both branch locks from inspection through removal or relocation;
           // otherwise a writer can mutate a checkout while its Git dir moves.
           await reportsBranch.withLock(previous, () => learningsBranch.withLock(previous, async () => {
-            if (changesOwner && (await reportsBranch.isDirty(previous) || await learningsBranch.isDirty(previous))) {
+            const reportsOwned = await reportsBranch.ownsCheckout(previous);
+            const learningsOwned = await learningsBranch.ownsCheckout(previous);
+            const ownedCheckoutIsDirty =
+              (reportsOwned && await reportsBranch.isDirty(previous)) ||
+              (learningsOwned && await learningsBranch.isDirty(previous));
+            if (changesOwner && ownedCheckoutIsDirty) {
+              await settleReplacedInstall();
               let aside = `${localPath}.previous`;
               for (let n = 1; await pathExists(aside); n++) aside = `${localPath}.previous.${n}`;
               await fs.promises.rename(localPath, aside);
               await createGitWithBlockTimeout(aside).raw(['worktree', 'repair']);
               log.warn(`Kept the old clone and its uncommitted side checkout(s) at ${aside}.`);
             } else {
-              await reportsBranch.retireWhileLocked(previous);
-              await learningsBranch.retireWhileLocked(previous);
+              // A checkout not registered to this clone belongs to an older or
+              // different install. Leave it for the existing foreign-checkout
+              // handling instead of blocking replacement of the current clone.
+              if (reportsOwned) await reportsBranch.retireWhileLocked(previous);
+              if (learningsOwned) await learningsBranch.retireWhileLocked(previous);
+              await settleReplacedInstall();
               await remove(localPath);
             }
           }));

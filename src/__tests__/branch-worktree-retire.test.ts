@@ -165,4 +165,11 @@ describe('retiring a branch worktree before replacing its clone', () => {
 
     expect(fs.readFileSync(path.join(checkout, 'keep.txt'), 'utf8')).toBe('unknown owner\n');
   });
+
+  it('does not claim an unregistered directory at the managed path', async () => {
+    git(['worktree', 'remove', checkout], clone);
+    fs.mkdirSync(checkout);
+
+    expect(await reportsBranch.ownsCheckout(config)).toBe(false);
+  });
 });

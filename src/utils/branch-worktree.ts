@@ -359,6 +359,15 @@ async function registeredCheckoutImpl(spec: BranchWorktreeSpec, localConfig: Loc
   return checkout ?? null;
 }
 
+/** Whether the managed path is registered to this repository for this branch. */
+async function ownsCheckoutImpl(spec: BranchWorktreeSpec, localConfig: LocalConfig): Promise<boolean> {
+  if (!usesBranchWorktree(localConfig)) return false;
+  const wt = worktreePath(spec, localConfig);
+  if (!(await pathExists(wt))) return false;
+  const registered = await registeredCheckoutImpl(spec, localConfig);
+  return registered !== null && (await fse.realpath(registered)) === (await fse.realpath(wt));
+}
+
 /**
  * Remove this repository's side-branch checkout before its dedicated clone is
  * replaced. Push first so a clean checkout with local-only commits is not
@@ -1273,6 +1282,8 @@ export interface BranchWorktree {
   isForeignByFiles(localConfig: LocalConfig): Promise<boolean>;
   /** Where this repository has the branch checked out, the old `.teamai/` place included; creates nothing. */
   registeredCheckout(localConfig: LocalConfig): Promise<string | null>;
+  /** Whether the managed checkout path is registered to this repository. */
+  ownsCheckout(localConfig: LocalConfig): Promise<boolean>;
   /** Whether this repository owns a side checkout with uncommitted changes. */
   isDirty(localConfig: LocalConfig): Promise<boolean>;
   /** Run an action while holding this branch's writer lock. */
@@ -1310,6 +1321,7 @@ export function createBranchWorktree(spec: BranchWorktreeSpec): BranchWorktree {
     checkOwner: (localConfig) => checkOwnerImpl(spec, localConfig),
     isForeignByFiles: (localConfig) => isForeignByFilesImpl(spec, localConfig),
     registeredCheckout: (localConfig) => registeredCheckoutImpl(spec, localConfig),
+    ownsCheckout: (localConfig) => ownsCheckoutImpl(spec, localConfig),
     isDirty: (localConfig) => dirtyImpl(spec, localConfig),
     withLock: (localConfig, action) => withLockImpl(spec, localConfig, action),
     retireWhileLocked: (localConfig) => retireWhileLockedImpl(spec, localConfig),
